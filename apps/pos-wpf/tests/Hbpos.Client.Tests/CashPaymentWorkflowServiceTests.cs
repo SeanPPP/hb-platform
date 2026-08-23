@@ -392,6 +392,434 @@ public sealed class CashPaymentWorkflowServiceTests
     }
 
     [Fact]
+    public async Task Linkly_recovered_refund_order_save_completes_finalize_pending_with_cas()
+    {
+        var cart = CreateReturnCart(4m);
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        var orders = new RecordingOrderRepository();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new RecordingIdempotentCardRefundClient(
+                new PaymentAuthorizationResult(true, "ANZ:RECOVERED-REFUND", "APPROVED", AuthorizedAmount: 4m)),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateLocalLinklySettings()));
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var tender = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "ANZ:SALE-RECOVERY",
+            cartSnapshot: cart.CreateSnapshot());
+        var pending = Assert.Single(attempts.Attempts);
+        attempts.Attempts[0] = pending with
+        {
+            RecoveryPhase = CardRecoveryPhases.FinalizePending,
+            RecoveryTargetStatus = LocalCardPaymentAttemptStatus.OrderCompleted.ToString()
+        };
+
+        var result = await workflow.CompletePaymentAsync(cart, session, [tender.Tender!], cashTenderedAmount: 0m);
+
+        var completed = Assert.Single(attempts.Attempts);
+        Assert.Single(orders.SavedOrders);
+        Assert.False(result.HasPostCommitWarning);
+        Assert.Equal(1, attempts.FinalizeRecoveryCount);
+        Assert.Equal(0, attempts.MarkOrderCompletedCount);
+        Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, completed.Status);
+        Assert.Equal(CardRecoveryPhases.None, completed.RecoveryPhase);
+        Assert.Null(completed.RecoveryTargetStatus);
+    }
+
+    [Fact]
+    public async Task Linkly_recovered_refund_order_save_ignores_attempt_key_on_non_card_tender()
+    {
+        var sourceCart = CreateReturnCart(4m);
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        var orders = new RecordingOrderRepository();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new RecordingIdempotentCardRefundClient(
+                new PaymentAuthorizationResult(true, "ANZ:RECOVERED-NON-CARD", "APPROVED", AuthorizedAmount: 4m)),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateLocalLinklySettings()));
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var tender = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "ANZ:SALE-RECOVERY-NON-CARD",
+            cartSnapshot: sourceCart.CreateSnapshot());
+        var pending = Assert.Single(attempts.Attempts);
+        attempts.Attempts[0] = pending with
+        {
+            RecoveryPhase = CardRecoveryPhases.FinalizePending,
+            RecoveryTargetStatus = LocalCardPaymentAttemptStatus.OrderCompleted.ToString()
+        };
+        var cart = new PosCartService();
+        Assert.True(cart.TryPublishRecoverySnapshot(
+            pending.AttemptGuid,
+            cart.Revision,
+            sourceCart.CreateSnapshot()).Succeeded);
+        var nonCardTender = tender.Tender! with { Method = PaymentMethodKind.Cash };
+
+        var result = await workflow.CompletePaymentAsync(cart, session, [nonCardTender], cashTenderedAmount: 0m);
+
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Single(orders.SavedOrders);
+        Assert.Equal(0, attempts.FinalizeRecoveryCount);
+        var unresolved = Assert.Single(attempts.Attempts);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, unresolved.Status);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, unresolved.RecoveryPhase);
+        Assert.Equal(pending.AttemptGuid, cart.RecoveryOwnerAttemptGuid);
+        Assert.False(cart.IsEmpty);
+    }
+
+    [Fact]
+    public async Task Linkly_recovered_refund_order_save_reports_warning_when_finalize_cas_has_no_terminal_winner()
+    {
+        var cart = CreateReturnCart(4m);
+        var attempts = new RecordingCardPaymentAttemptRepository { FinalizeRecoveryResult = false };
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new RecordingIdempotentCardRefundClient(
+                new PaymentAuthorizationResult(true, "ANZ:RECOVERED-REFUND-CAS", "APPROVED", AuthorizedAmount: 4m)),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateLocalLinklySettings()));
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var tender = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "ANZ:SALE-RECOVERY-CAS",
+            cartSnapshot: cart.CreateSnapshot());
+        var pending = Assert.Single(attempts.Attempts);
+        attempts.Attempts[0] = pending with
+        {
+            RecoveryPhase = CardRecoveryPhases.FinalizePending,
+            RecoveryTargetStatus = LocalCardPaymentAttemptStatus.OrderCompleted.ToString()
+        };
+
+        var result = await workflow.CompletePaymentAsync(cart, session, [tender.Tender!], cashTenderedAmount: 0m);
+
+        var unresolved = Assert.Single(attempts.Attempts);
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Equal(1, attempts.FinalizeRecoveryCount);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, unresolved.Status);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, unresolved.RecoveryPhase);
+    }
+
+    [Fact]
+    public async Task Square_recovered_refund_order_save_completes_finalize_pending_with_cas()
+    {
+        var cart = CreateReturnCart(4m);
+        var attempts = new RecordingSquarePaymentAttemptRepository();
+        var orders = new RecordingOrderRepository();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new RecordingIdempotentCardRefundClient(
+                new PaymentAuthorizationResult(true, "SQRF:recovered-refund", "COMPLETED", AuthorizedAmount: 4m)),
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var tender = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "SQ:payment-recovery",
+            cartSnapshot: cart.CreateSnapshot());
+        var pending = Assert.Single(attempts.Attempts);
+        attempts.Attempts[0] = pending with
+        {
+            RecoveryPhase = CardRecoveryPhases.FinalizePending,
+            RecoveryTargetStatus = LocalSquarePaymentAttemptStatus.OrderCompleted
+        };
+
+        var result = await workflow.CompletePaymentAsync(cart, session, [tender.Tender!], cashTenderedAmount: 0m);
+
+        var completed = Assert.Single(attempts.Attempts);
+        Assert.Single(orders.SavedOrders);
+        Assert.False(result.HasPostCommitWarning);
+        Assert.Equal(1, attempts.CompleteRecoveryFinalizationCount);
+        Assert.Equal(0, attempts.MarkOrderCompletedCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.OrderCompleted, completed.Status);
+        Assert.Equal(CardRecoveryPhases.None, completed.RecoveryPhase);
+        Assert.Null(completed.RecoveryTargetStatus);
+    }
+
+    [Fact]
+    public async Task Square_recovered_refund_order_save_ignores_attempt_key_on_non_card_tender()
+    {
+        var sourceCart = CreateReturnCart(4m);
+        var attempts = new RecordingSquarePaymentAttemptRepository();
+        var orders = new RecordingOrderRepository();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new RecordingIdempotentCardRefundClient(
+                new PaymentAuthorizationResult(true, "SQRF:recovered-non-card", "COMPLETED", AuthorizedAmount: 4m)),
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var tender = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "SQ:recovered-non-card",
+            cartSnapshot: sourceCart.CreateSnapshot());
+        var pending = Assert.Single(attempts.Attempts);
+        attempts.Attempts[0] = pending with
+        {
+            RecoveryPhase = CardRecoveryPhases.FinalizePending,
+            RecoveryTargetStatus = LocalSquarePaymentAttemptStatus.OrderCompleted
+        };
+        var cart = new PosCartService();
+        Assert.True(cart.TryPublishRecoverySnapshot(
+            pending.AttemptGuid,
+            cart.Revision,
+            sourceCart.CreateSnapshot()).Succeeded);
+        var nonCardTender = tender.Tender! with { Method = PaymentMethodKind.Cash };
+
+        var result = await workflow.CompletePaymentAsync(cart, session, [nonCardTender], cashTenderedAmount: 0m);
+
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Single(orders.SavedOrders);
+        Assert.Equal(0, attempts.CompleteRecoveryFinalizationCount);
+        var unresolved = Assert.Single(attempts.Attempts);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, unresolved.Status);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, unresolved.RecoveryPhase);
+        Assert.Equal(pending.AttemptGuid, cart.RecoveryOwnerAttemptGuid);
+        Assert.False(cart.IsEmpty);
+    }
+
+    [Fact]
+    public async Task Square_recovered_refund_order_save_reports_warning_when_finalize_cas_has_no_terminal_winner()
+    {
+        var cart = CreateReturnCart(4m);
+        var attempts = new RecordingSquarePaymentAttemptRepository { CompleteRecoveryFinalizationResult = false };
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new RecordingIdempotentCardRefundClient(
+                new PaymentAuthorizationResult(true, "SQRF:recovered-refund-cas", "COMPLETED", AuthorizedAmount: 4m)),
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var tender = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "SQ:payment-recovery-cas",
+            cartSnapshot: cart.CreateSnapshot());
+        var pending = Assert.Single(attempts.Attempts);
+        attempts.Attempts[0] = pending with
+        {
+            RecoveryPhase = CardRecoveryPhases.FinalizePending,
+            RecoveryTargetStatus = LocalSquarePaymentAttemptStatus.OrderCompleted
+        };
+
+        var result = await workflow.CompletePaymentAsync(cart, session, [tender.Tender!], cashTenderedAmount: 0m);
+
+        var unresolved = Assert.Single(attempts.Attempts);
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Equal(1, attempts.CompleteRecoveryFinalizationCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, unresolved.Status);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, unresolved.RecoveryPhase);
+    }
+
+    [Fact]
+    public async Task Linkly_recovered_refund_order_save_releases_owned_cart_after_finalize_cas()
+    {
+        var sourceCart = CreateReturnCart(4m);
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new RecordingIdempotentCardRefundClient(
+                new PaymentAuthorizationResult(true, "ANZ:OWNED-RECOVERY", "APPROVED", AuthorizedAmount: 4m)),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateLocalLinklySettings()));
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var tender = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "ANZ:SALE-OWNED-RECOVERY",
+            cartSnapshot: sourceCart.CreateSnapshot());
+        var pending = Assert.Single(attempts.Attempts);
+        attempts.Attempts[0] = pending with
+        {
+            RecoveryPhase = CardRecoveryPhases.FinalizePending,
+            RecoveryTargetStatus = LocalCardPaymentAttemptStatus.OrderCompleted.ToString()
+        };
+        var cart = new PosCartService();
+        Assert.True(cart.TryPublishRecoverySnapshot(
+            pending.AttemptGuid,
+            cart.Revision,
+            sourceCart.CreateSnapshot()).Succeeded);
+
+        var result = await workflow.CompletePaymentAsync(cart, session, [tender.Tender!], cashTenderedAmount: 0m);
+
+        Assert.False(result.HasPostCommitWarning);
+        Assert.True(cart.IsEmpty);
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+        Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, Assert.Single(attempts.Attempts).Status);
+    }
+
+    [Fact]
+    public async Task Linkly_recovered_refund_finalize_cas_failure_rolls_back_owned_cart()
+    {
+        var sourceCart = CreateReturnCart(4m);
+        var attempts = new RecordingCardPaymentAttemptRepository { FinalizeRecoveryResult = false };
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new RecordingIdempotentCardRefundClient(
+                new PaymentAuthorizationResult(true, "ANZ:OWNED-RECOVERY-FAIL", "APPROVED", AuthorizedAmount: 4m)),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateLocalLinklySettings()));
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var tender = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "ANZ:SALE-OWNED-RECOVERY-FAIL",
+            cartSnapshot: sourceCart.CreateSnapshot());
+        var pending = Assert.Single(attempts.Attempts);
+        attempts.Attempts[0] = pending with
+        {
+            RecoveryPhase = CardRecoveryPhases.FinalizePending,
+            RecoveryTargetStatus = LocalCardPaymentAttemptStatus.OrderCompleted.ToString()
+        };
+        var cart = new PosCartService();
+        Assert.True(cart.TryPublishRecoverySnapshot(
+            pending.AttemptGuid,
+            cart.Revision,
+            sourceCart.CreateSnapshot()).Succeeded);
+
+        var result = await workflow.CompletePaymentAsync(cart, session, [tender.Tender!], cashTenderedAmount: 0m);
+
+        Assert.True(result.HasPostCommitWarning);
+        Assert.True(cart.IsEmpty);
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+        var unresolved = Assert.Single(attempts.Attempts);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, unresolved.Status);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, unresolved.RecoveryPhase);
+    }
+
+    [Fact]
+    public async Task Square_recovered_refund_order_save_releases_owned_cart_after_finalize_cas()
+    {
+        var sourceCart = CreateReturnCart(4m);
+        var attempts = new RecordingSquarePaymentAttemptRepository();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new RecordingIdempotentCardRefundClient(
+                new PaymentAuthorizationResult(true, "SQRF:owned-recovery", "COMPLETED", AuthorizedAmount: 4m)),
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var tender = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "SQ:owned-recovery",
+            cartSnapshot: sourceCart.CreateSnapshot());
+        var pending = Assert.Single(attempts.Attempts);
+        attempts.Attempts[0] = pending with
+        {
+            RecoveryPhase = CardRecoveryPhases.FinalizePending,
+            RecoveryTargetStatus = LocalSquarePaymentAttemptStatus.OrderCompleted
+        };
+        var cart = new PosCartService();
+        Assert.True(cart.TryPublishRecoverySnapshot(
+            pending.AttemptGuid,
+            cart.Revision,
+            sourceCart.CreateSnapshot()).Succeeded);
+
+        var result = await workflow.CompletePaymentAsync(cart, session, [tender.Tender!], cashTenderedAmount: 0m);
+
+        Assert.False(result.HasPostCommitWarning);
+        Assert.True(cart.IsEmpty);
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.OrderCompleted, Assert.Single(attempts.Attempts).Status);
+    }
+
+    [Fact]
+    public async Task Square_recovered_refund_finalize_cas_failure_rolls_back_owned_cart()
+    {
+        var sourceCart = CreateReturnCart(4m);
+        var attempts = new RecordingSquarePaymentAttemptRepository { CompleteRecoveryFinalizationResult = false };
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardTerminalClient: new RecordingIdempotentCardRefundClient(
+                new PaymentAuthorizationResult(true, "SQRF:owned-recovery-fail", "COMPLETED", AuthorizedAmount: 4m)),
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var tender = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "SQ:owned-recovery-fail",
+            cartSnapshot: sourceCart.CreateSnapshot());
+        var pending = Assert.Single(attempts.Attempts);
+        attempts.Attempts[0] = pending with
+        {
+            RecoveryPhase = CardRecoveryPhases.FinalizePending,
+            RecoveryTargetStatus = LocalSquarePaymentAttemptStatus.OrderCompleted
+        };
+        var cart = new PosCartService();
+        Assert.True(cart.TryPublishRecoverySnapshot(
+            pending.AttemptGuid,
+            cart.Revision,
+            sourceCart.CreateSnapshot()).Succeeded);
+
+        var result = await workflow.CompletePaymentAsync(cart, session, [tender.Tender!], cashTenderedAmount: 0m);
+
+        Assert.True(result.HasPostCommitWarning);
+        Assert.True(cart.IsEmpty);
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+        var unresolved = Assert.Single(attempts.Attempts);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, unresolved.Status);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, unresolved.RecoveryPhase);
+    }
+
+    [Fact]
     public async Task Cash_payment_workflow_persists_rounded_cash_order_without_overstating_local_payment()
     {
         var cart = new PosCartService();
@@ -1584,6 +2012,210 @@ public sealed class CashPaymentWorkflowServiceTests
         Assert.Equal("ANZBACKEND:TXN-1:session=backend-session-1:environment=Sandbox", completion.Order.Payments.Single().Reference);
     }
 
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public async Task Card_order_post_commit_acknowledge_propagates_fatal_exception(string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("fatal acknowledge failure")
+            : new StackOverflowException("fatal acknowledge failure");
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-ACK-FATAL", "Fatal Ack Tea", "930399F", 10m));
+        var orders = new RecordingOrderRepository();
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        var attemptGuid = Guid.NewGuid();
+        var now = DateTimeOffset.UtcNow;
+        await attempts.CreateAsync(new LocalCardPaymentAttempt(
+            attemptGuid,
+            "backend-session-fatal",
+            "TXN-ACK-FATAL",
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.CloudBackendAsync.ToString(),
+            "P",
+            10m,
+            LocalCardPaymentAttemptStatus.Approved,
+            "{}",
+            "S001",
+            "POS-01",
+            "C001",
+            "00",
+            "APPROVED",
+            "ANZ:TXN-ACK-FATAL",
+            now.AddMinutes(-1),
+            now,
+            now,
+            null));
+        var backend = new RecordingLinklyBackendTerminalClient
+        {
+            AcknowledgeException = fatal
+        };
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()),
+            linklyBackendTerminalClient: backend);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var tender = new PaymentTender(
+            PaymentMethodKind.Card,
+            10m,
+            "ANZ:TXN-ACK-FATAL",
+            IdempotencyKey: $"CARD_ATTEMPT:{attemptGuid:N}");
+
+        var thrown = await Record.ExceptionAsync(() =>
+            workflow.CompletePaymentAsync(cart, session, [tender], cashTenderedAmount: 0m));
+
+        Assert.Same(fatal, thrown);
+        Assert.Single(orders.SavedOrders);
+        var completed = Assert.Single(attempts.Attempts);
+        Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, completed.Status);
+        Assert.Null(completed.AcknowledgedAt);
+    }
+
+    [Theory]
+    [InlineData(LinklyConnectionMode.LocalIp, LinklyConnectionMode.CloudBackendAsync)]
+    [InlineData(LinklyConnectionMode.CloudBackendAsync, LinklyConnectionMode.LocalIp)]
+    public async Task Card_sale_uses_first_settings_snapshot_for_route_and_persisted_identity(
+        LinklyConnectionMode firstMode,
+        LinklyConnectionMode laterMode)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-SNAPSHOT-SALE", "Snapshot Sale Tea", "930SNAPSHOTSALE", 10m));
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        var squareAttempts = new RecordingSquarePaymentAttemptRepository();
+        var context = new LinklyPaymentAttemptContextAccessor();
+        var settingsProvider = new TxnRefSequencedCardTerminalSettingsProvider(
+            firstMode == LinklyConnectionMode.LocalIp ? CreateLocalLinklySettings() : CreateBackendLinklySettings(),
+            laterMode == LinklyConnectionMode.LocalIp ? CreateLocalLinklySettings() : CreateBackendLinklySettings());
+        var routedLinkly = new TxnRefSnapshotLinklyTerminalClient(context);
+        using var httpClient = new HttpClient();
+        var configuredTerminal = new ConfiguredCardTerminalClient(
+            settingsProvider,
+            httpClient,
+            routedLinkly,
+            linklyPaymentAttemptContextAccessor: context);
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: configuredTerminal,
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: settingsProvider,
+            squarePaymentAttemptRepository: squareAttempts,
+            linklyPaymentAttemptContextAccessor: context);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: 10m,
+            currentTenders: [],
+            amountText: "10",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.True(result.Succeeded, result.StatusMessage);
+        var attempt = Assert.Single(attempts.Attempts);
+        Assert.Equal(CardTerminalSettings.FormatLinklyConnectionMode(firstMode), attempt.ConnectionMode);
+        Assert.Equal(firstMode, routedLinkly.LastMode);
+        Assert.Equal(firstMode == LinklyConnectionMode.LocalIp ? 1 : 0, routedLinkly.LocalPurchaseCalls);
+        Assert.Equal(firstMode == LinklyConnectionMode.CloudBackendAsync ? 1 : 0, routedLinkly.CloudPurchaseCalls);
+        Assert.Equal(attempt.AttemptGuid, routedLinkly.LastAttemptGuid);
+        Assert.Equal(attempt.TxnRef, routedLinkly.LastTxnRef);
+        Assert.False(string.IsNullOrWhiteSpace(attempt.TxnRef));
+        Assert.Empty(squareAttempts.Attempts);
+        Assert.Equal(1, settingsProvider.GetSettingsCalls);
+    }
+
+    [Theory]
+    [InlineData(CardProcessorKind.Linkly, CardProcessorKind.Square)]
+    [InlineData(CardProcessorKind.Square, CardProcessorKind.Linkly)]
+    public async Task Card_sale_freezes_processor_and_creates_only_matching_attempt(
+        CardProcessorKind firstProcessor,
+        CardProcessorKind laterProcessor)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-PROCESSOR-SALE", "Processor Sale Tea", "930PROCESSORSALE", 10m));
+        var linklyAttempts = new RecordingCardPaymentAttemptRepository();
+        var squareAttempts = new RecordingSquarePaymentAttemptRepository();
+        var linklyContext = new LinklyPaymentAttemptContextAccessor();
+        var squareContext = new SquarePaymentAttemptContextAccessor();
+        var settingsProvider = new TxnRefSequencedCardTerminalSettingsProvider(
+            firstProcessor == CardProcessorKind.Linkly ? CreateLocalLinklySettings() : CreateSquareSettings(),
+            laterProcessor == CardProcessorKind.Linkly ? CreateLocalLinklySettings() : CreateSquareSettings());
+        var terminal = new SettingsBoundRecordingCardTerminalClient(linklyContext, squareContext);
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: linklyAttempts,
+            cardTerminalSettingsProvider: settingsProvider,
+            squarePaymentAttemptRepository: squareAttempts,
+            linklyPaymentAttemptContextAccessor: linklyContext,
+            squarePaymentAttemptContextAccessor: squareContext);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: 10m,
+            currentTenders: [],
+            amountText: "10",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.True(result.Succeeded, result.StatusMessage);
+        Assert.Equal(1, settingsProvider.GetSettingsCalls);
+        Assert.Equal(1, terminal.BoundAuthorizeCallCount);
+        Assert.Equal(0, terminal.LegacyAuthorizeCallCount);
+        Assert.Equal(firstProcessor, terminal.LastSettings?.Processor);
+        Assert.Equal(firstProcessor == CardProcessorKind.Linkly ? 1 : 0, linklyAttempts.Attempts.Count);
+        Assert.Equal(firstProcessor == CardProcessorKind.Square ? 1 : 0, squareAttempts.Attempts.Count);
+    }
+
+    [Fact]
+    public async Task Cloud_direct_sale_keeps_first_snapshot_without_creating_other_processor_attempt()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-CLOUD-DIRECT", "Cloud Direct Tea", "930CLOUDDIRECT", 10m));
+        var linklyAttempts = new RecordingCardPaymentAttemptRepository();
+        var squareAttempts = new RecordingSquarePaymentAttemptRepository();
+        var linklyContext = new LinklyPaymentAttemptContextAccessor();
+        var squareContext = new SquarePaymentAttemptContextAccessor();
+        var settingsProvider = new TxnRefSequencedCardTerminalSettingsProvider(
+            CreateCloudDirectLinklySettings(),
+            CreateSquareSettings());
+        var terminal = new SettingsBoundRecordingCardTerminalClient(linklyContext, squareContext);
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: linklyAttempts,
+            cardTerminalSettingsProvider: settingsProvider,
+            squarePaymentAttemptRepository: squareAttempts,
+            linklyPaymentAttemptContextAccessor: linklyContext,
+            squarePaymentAttemptContextAccessor: squareContext);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: 10m,
+            currentTenders: [],
+            amountText: "10",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.True(result.Succeeded, result.StatusMessage);
+        Assert.Equal(1, settingsProvider.GetSettingsCalls);
+        Assert.Equal(CardProcessorKind.Linkly, terminal.LastSettings?.Processor);
+        Assert.Equal(LinklyConnectionMode.CloudDirectSync, terminal.LastSettings?.LinklyConnectionMode);
+        Assert.Empty(linklyAttempts.Attempts);
+        Assert.Empty(squareAttempts.Attempts);
+    }
+
     [Fact]
     public async Task Local_ip_card_tender_creates_recoverable_attempt_before_terminal_request_and_reuses_txn_ref()
     {
@@ -1592,16 +2224,10 @@ public sealed class CashPaymentWorkflowServiceTests
         var orders = new RecordingOrderRepository();
         var attempts = new RecordingCardPaymentAttemptRepository();
         var linklyAttemptContextAccessor = new LinklyPaymentAttemptContextAccessor();
+        LocalCardPaymentAttempt? persistedAtSubmission = null;
         var terminal = new LocalReferenceCardTerminalClient(
             linklyAttemptContextAccessor,
-            () =>
-            {
-                var attempt = Assert.Single(attempts.Attempts);
-                Assert.Equal(LocalCardPaymentAttemptStatus.Pending, attempt.Status);
-                Assert.Equal(LinklyConnectionMode.LocalIp.ToString(), attempt.ConnectionMode);
-                Assert.False(string.IsNullOrWhiteSpace(attempt.TxnRef));
-                Assert.Contains("\"cardAmount\":10", attempt.OrderDraftJson, StringComparison.OrdinalIgnoreCase);
-            });
+            () => persistedAtSubmission = attempts.Attempts.SingleOrDefault());
         var backend = new RecordingLinklyBackendTerminalClient();
         var workflow = new CashPaymentWorkflowService(
             new CashCheckoutService(),
@@ -1622,6 +2248,14 @@ public sealed class CashPaymentWorkflowServiceTests
             "10.00",
             cancellationToken: CancellationToken.None,
             cartSnapshot: cart.CreateSnapshot());
+        Assert.NotNull(persistedAtSubmission);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Pending, persistedAtSubmission.Status);
+        Assert.Equal(LinklyConnectionMode.LocalIp.ToString(), persistedAtSubmission.ConnectionMode);
+        AssertLocalTxnRef('P', persistedAtSubmission.TxnRef);
+        Assert.Equal(
+            LinklyLocalTxnRef.Create('P', persistedAtSubmission.AttemptGuid.ToString("D")),
+            persistedAtSubmission.TxnRef);
+        Assert.Contains("\"cardAmount\":10", persistedAtSubmission.OrderDraftJson, StringComparison.OrdinalIgnoreCase);
         var completion = await workflow.CompletePaymentAsync(
             cart,
             session,
@@ -1630,6 +2264,7 @@ public sealed class CashPaymentWorkflowServiceTests
 
         var attemptAfterCompletion = Assert.Single(attempts.Attempts);
         Assert.True(tenderResult.Succeeded);
+        AssertLocalTxnRef('P', terminal.SeenTxnRef);
         Assert.Equal(attemptAfterCompletion.TxnRef, terminal.SeenTxnRef);
         Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, attemptAfterCompletion.Status);
         Assert.Null(attemptAfterCompletion.AcknowledgedAt);
@@ -1930,6 +2565,142 @@ public sealed class CashPaymentWorkflowServiceTests
         Assert.Equal(10.05m, roundedUp.Tender.Amount);
     }
 
+    [Theory]
+    [InlineData("10")]
+    [InlineData("20")]
+    public async Task Cash_tender_never_reads_card_settings_or_calls_terminal(string amountText)
+    {
+        var linklyAttempts = new RecordingCardPaymentAttemptRepository();
+        var squareAttempts = new RecordingSquarePaymentAttemptRepository();
+        var terminal = new ApprovedCardTerminalClient("CARD-MUST-NOT-RUN");
+        var settingsProvider = new TxnRefSequencedCardTerminalSettingsProvider(
+            CreateLocalLinklySettings(),
+            CreateSquareSettings());
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: linklyAttempts,
+            cardTerminalSettingsProvider: settingsProvider,
+            squarePaymentAttemptRepository: squareAttempts);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Cash,
+            session,
+            actualAmount: 10m,
+            currentTenders: [],
+            amountText: amountText);
+
+        Assert.True(result.Succeeded, result.StatusMessage);
+        Assert.Equal(PaymentMethodKind.Cash, result.Tender?.Method);
+        Assert.Equal(0, settingsProvider.GetSettingsCalls);
+        Assert.Equal(0, terminal.AuthorizeCallCount);
+        Assert.Empty(linklyAttempts.Attempts);
+        Assert.Empty(squareAttempts.Attempts);
+    }
+
+    [Fact]
+    public async Task Fully_cash_paid_order_blocks_later_card_before_settings_or_terminal()
+    {
+        var linklyAttempts = new RecordingCardPaymentAttemptRepository();
+        var squareAttempts = new RecordingSquarePaymentAttemptRepository();
+        var terminal = new ApprovedCardTerminalClient("CARD-MUST-NOT-RUN");
+        var settingsProvider = new TxnRefSequencedCardTerminalSettingsProvider(
+            CreateLocalLinklySettings(),
+            CreateSquareSettings());
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: linklyAttempts,
+            cardTerminalSettingsProvider: settingsProvider,
+            squarePaymentAttemptRepository: squareAttempts);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: 10m,
+            currentTenders: [new PaymentTender(PaymentMethodKind.Cash, 10m)],
+            amountText: "10");
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("payment.status.alreadyFullyPaid", result.StatusKey);
+        Assert.Equal(0, settingsProvider.GetSettingsCalls);
+        Assert.Equal(0, terminal.AuthorizeCallCount);
+        Assert.Empty(linklyAttempts.Attempts);
+        Assert.Empty(squareAttempts.Attempts);
+    }
+
+    [Theory]
+    [InlineData("5", "payment.status.cardMustBeFinalTender")]
+    [InlineData("11", "payment.status.cardExceedsRemaining")]
+    public async Task Invalid_card_amount_is_rejected_before_settings_or_attempts(
+        string amountText,
+        string expectedStatusKey)
+    {
+        var linklyAttempts = new RecordingCardPaymentAttemptRepository();
+        var squareAttempts = new RecordingSquarePaymentAttemptRepository();
+        var terminal = new ApprovedCardTerminalClient("CARD-MUST-NOT-RUN");
+        var settingsProvider = new TxnRefSequencedCardTerminalSettingsProvider(
+            CreateLocalLinklySettings(),
+            CreateSquareSettings());
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: linklyAttempts,
+            cardTerminalSettingsProvider: settingsProvider,
+            squarePaymentAttemptRepository: squareAttempts);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: 10m,
+            currentTenders: [],
+            amountText: amountText);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(expectedStatusKey, result.StatusKey);
+        Assert.Equal(0, settingsProvider.GetSettingsCalls);
+        Assert.Equal(0, terminal.AuthorizeCallCount);
+        Assert.Empty(linklyAttempts.Attempts);
+        Assert.Empty(squareAttempts.Attempts);
+    }
+
+    [Fact]
+    public async Task Partial_cash_then_card_for_exact_remainder_calls_card_once()
+    {
+        var terminal = new ApprovedCardTerminalClient("CARD-REMAINDER");
+        var settingsProvider = new TxnRefSequencedCardTerminalSettingsProvider(
+            CreateLocalLinklySettings(),
+            CreateSquareSettings());
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardTerminalSettingsProvider: settingsProvider);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: 10m,
+            currentTenders: [new PaymentTender(PaymentMethodKind.Cash, 4m)],
+            amountText: "6");
+
+        Assert.True(result.Succeeded, result.StatusMessage);
+        Assert.Equal(6m, result.Tender?.Amount);
+        Assert.Equal(1, settingsProvider.GetSettingsCalls);
+        Assert.Equal(1, terminal.AuthorizeCallCount);
+    }
+
     [Fact]
     public void Payment_workflow_uses_cash_rounding_after_non_cash_tender()
     {
@@ -2153,13 +2924,119 @@ public sealed class CashPaymentWorkflowServiceTests
         Assert.Equal("REFUND:SQ:payment-1", CardRefundReference.GetDisplayReference(tender.Tender.Reference));
     }
 
+    [Theory]
+    [InlineData(LinklyConnectionMode.LocalIp, LinklyConnectionMode.CloudBackendAsync)]
+    [InlineData(LinklyConnectionMode.CloudBackendAsync, LinklyConnectionMode.LocalIp)]
+    public async Task Card_refund_uses_first_settings_snapshot_for_route_and_persisted_identity(
+        LinklyConnectionMode firstMode,
+        LinklyConnectionMode laterMode)
+    {
+        var cart = CreateReturnCart(4m);
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        var squareAttempts = new RecordingSquarePaymentAttemptRepository();
+        var context = new LinklyPaymentAttemptContextAccessor();
+        var settingsProvider = new TxnRefSequencedCardTerminalSettingsProvider(
+            firstMode == LinklyConnectionMode.LocalIp ? CreateLocalLinklySettings() : CreateBackendLinklySettings(),
+            laterMode == LinklyConnectionMode.LocalIp ? CreateLocalLinklySettings() : CreateBackendLinklySettings());
+        var routedLinkly = new TxnRefSnapshotLinklyTerminalClient(context);
+        using var httpClient = new HttpClient();
+        var configuredTerminal = new ConfiguredCardTerminalClient(
+            settingsProvider,
+            httpClient,
+            routedLinkly,
+            linklyPaymentAttemptContextAccessor: context);
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: configuredTerminal,
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: settingsProvider,
+            squarePaymentAttemptRepository: squareAttempts,
+            linklyPaymentAttemptContextAccessor: context);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "ANZ:SNAPSHOT-SALE",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.True(result.Succeeded, result.StatusMessage);
+        var attempt = Assert.Single(attempts.Attempts);
+        Assert.Equal(CardTerminalSettings.FormatLinklyConnectionMode(firstMode), attempt.ConnectionMode);
+        Assert.Equal(firstMode, routedLinkly.LastMode);
+        Assert.Equal(firstMode == LinklyConnectionMode.LocalIp ? 1 : 0, routedLinkly.LocalRefundCalls);
+        Assert.Equal(firstMode == LinklyConnectionMode.CloudBackendAsync ? 1 : 0, routedLinkly.CloudRefundCalls);
+        Assert.Equal(attempt.AttemptGuid, routedLinkly.LastAttemptGuid);
+        Assert.Equal(attempt.TxnRef, routedLinkly.LastTxnRef);
+        Assert.Equal(attempt.TxnRef, routedLinkly.LastRefundIdempotencyKey);
+        Assert.Empty(squareAttempts.Attempts);
+        Assert.Equal(1, settingsProvider.GetSettingsCalls);
+    }
+
+    [Theory]
+    [InlineData(CardProcessorKind.Linkly, CardProcessorKind.Square)]
+    [InlineData(CardProcessorKind.Square, CardProcessorKind.Linkly)]
+    public async Task Card_refund_freezes_processor_and_creates_only_matching_attempt(
+        CardProcessorKind firstProcessor,
+        CardProcessorKind laterProcessor)
+    {
+        var cart = CreateReturnCart(4m);
+        var linklyAttempts = new RecordingCardPaymentAttemptRepository();
+        var squareAttempts = new RecordingSquarePaymentAttemptRepository();
+        var linklyContext = new LinklyPaymentAttemptContextAccessor();
+        var squareContext = new SquarePaymentAttemptContextAccessor();
+        var settingsProvider = new TxnRefSequencedCardTerminalSettingsProvider(
+            firstProcessor == CardProcessorKind.Linkly ? CreateLocalLinklySettings() : CreateSquareSettings(),
+            laterProcessor == CardProcessorKind.Linkly ? CreateLocalLinklySettings() : CreateSquareSettings());
+        var terminal = new SettingsBoundRecordingCardTerminalClient(linklyContext, squareContext);
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: linklyAttempts,
+            cardTerminalSettingsProvider: settingsProvider,
+            squarePaymentAttemptRepository: squareAttempts,
+            linklyPaymentAttemptContextAccessor: linklyContext,
+            squarePaymentAttemptContextAccessor: squareContext);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var originalReference = firstProcessor == CardProcessorKind.Linkly
+            ? "ANZ:PROCESSOR-SALE"
+            : "SQ:processor-sale";
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: originalReference,
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.True(result.Succeeded, result.StatusMessage);
+        Assert.Equal(1, settingsProvider.GetSettingsCalls);
+        Assert.Equal(1, terminal.BoundRefundCallCount);
+        Assert.Equal(0, terminal.LegacyRefundCallCount);
+        Assert.Equal(firstProcessor, terminal.LastSettings?.Processor);
+        Assert.Equal(firstProcessor == CardProcessorKind.Linkly ? 1 : 0, linklyAttempts.Attempts.Count);
+        Assert.Equal(firstProcessor == CardProcessorKind.Square ? 1 : 0, squareAttempts.Attempts.Count);
+    }
+
     [Fact]
     public async Task Card_refund_persists_new_linkly_txn_ref_and_passes_it_as_idempotency_key()
     {
         var cart = CreateReturnCart(4m);
         var attempts = new RecordingCardPaymentAttemptRepository();
-        var terminal = new RecordingIdempotentCardRefundClient(
-            new PaymentAuthorizationResult(true, "ANZ:REFUND-1", "APPROVED", AuthorizedAmount: 4m));
+        LocalCardPaymentAttempt? persistedAtSubmission = null;
+        RecordingIdempotentCardRefundClient? terminal = null;
+        terminal = new RecordingIdempotentCardRefundClient(
+            new PaymentAuthorizationResult(true, "ANZ:REFUND-1", "APPROVED", AuthorizedAmount: 4m),
+            () => persistedAtSubmission = attempts.Attempts.SingleOrDefault());
         var workflow = new CashPaymentWorkflowService(
             new CashCheckoutService(),
             new RecordingOrderRepository(),
@@ -2178,6 +3055,13 @@ public sealed class CashPaymentWorkflowServiceTests
             referenceText: "ANZ:SALE-1",
             cartSnapshot: cart.CreateSnapshot());
 
+        Assert.NotNull(persistedAtSubmission);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, persistedAtSubmission.Status);
+        AssertLocalTxnRef('R', persistedAtSubmission.TxnRef);
+        Assert.Equal(
+            LinklyLocalTxnRef.Create('R', persistedAtSubmission.AttemptGuid.ToString("D")),
+            persistedAtSubmission.TxnRef);
+        Assert.Equal(persistedAtSubmission.TxnRef, terminal.LastIdempotencyKey);
         var attempt = Assert.Single(attempts.Attempts);
         var draft = JsonSerializer.Deserialize<CardPaymentOrderDraft>(
             attempt.OrderDraftJson,
@@ -2185,12 +3069,275 @@ public sealed class CashPaymentWorkflowServiceTests
         Assert.True(tender.Succeeded);
         Assert.Equal("Refund", attempt.OperationKind);
         Assert.Equal("R", attempt.TxnType);
-        Assert.False(string.IsNullOrWhiteSpace(attempt.TxnRef));
+        AssertLocalTxnRef('R', attempt.TxnRef);
         Assert.NotEqual("SALE-1", attempt.TxnRef);
         Assert.Equal(attempt.TxnRef, terminal.LastIdempotencyKey);
         Assert.Equal("ANZ:SALE-1", terminal.LastOriginalReference);
         Assert.Equal("ANZ:SALE-1", draft!.OriginalReference);
         Assert.Equal(draft.OrderGuid, attempt.OperationGuid);
+    }
+
+    [Fact]
+    public async Task Local_ip_card_refund_reuses_persisted_txn_ref_after_restart()
+    {
+        var cart = CreateReturnCart(4m);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var now = DateTimeOffset.UtcNow;
+        var draft = new CardPaymentOrderDraft(
+            Guid.NewGuid(),
+            session,
+            cart.CreateSnapshot(),
+            [],
+            -4m,
+            4m,
+            "R",
+            "ANZ:SALE-RESTART",
+            now);
+        const string persistedTxnRef = "R0123456789ABCDE";
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        await attempts.CreateAsync(new LocalCardPaymentAttempt(
+            Guid.Parse("6ec9586c-6db7-4e9f-aaca-d312ab93c671"),
+            null,
+            persistedTxnRef,
+            CardProcessorKind.Linkly.ToString(),
+            CardTerminalEnvironment.Sandbox.ToString(),
+            LinklyConnectionMode.LocalIp.ToString(),
+            "R",
+            4m,
+            LocalCardPaymentAttemptStatus.Pending,
+            JsonSerializer.Serialize(draft, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+            session.StoreCode,
+            session.DeviceCode,
+            session.CashierId,
+            null,
+            null,
+            null,
+            now,
+            now,
+            null,
+            null,
+            "Refund",
+            draft.OrderGuid));
+        LocalCardPaymentAttempt? persistedAtSubmission = null;
+        RecordingIdempotentCardRefundClient? terminal = null;
+        terminal = new RecordingIdempotentCardRefundClient(
+            new PaymentAuthorizationResult(true, "ANZ:REFUND-RESTART", "APPROVED", AuthorizedAmount: 4m),
+            () => persistedAtSubmission = attempts.Attempts.SingleOrDefault());
+        var restartedWorkflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateLocalLinklySettings()));
+
+        var tender = await restartedWorkflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "ANZ:SALE-RESTART",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.NotNull(persistedAtSubmission);
+        Assert.Equal(persistedTxnRef, persistedAtSubmission.TxnRef);
+        Assert.Equal(persistedAtSubmission.TxnRef, terminal.LastIdempotencyKey);
+        Assert.True(tender.Succeeded);
+        Assert.Single(attempts.Attempts);
+        AssertLocalTxnRef('R', terminal.LastIdempotencyKey);
+        Assert.Equal(persistedTxnRef, terminal.LastIdempotencyKey);
+        Assert.Equal(1, terminal.IdempotentRefundCallCount);
+    }
+
+    [Theory]
+    [InlineData(LinklyConnectionMode.LocalIp, LinklyConnectionMode.CloudBackendAsync, false)]
+    [InlineData(LinklyConnectionMode.CloudBackendAsync, LinklyConnectionMode.LocalIp, false)]
+    [InlineData(LinklyConnectionMode.LocalIp, LinklyConnectionMode.CloudBackendAsync, true)]
+    [InlineData(LinklyConnectionMode.CloudBackendAsync, LinklyConnectionMode.LocalIp, true)]
+    public async Task Open_refund_attempt_with_different_connection_mode_is_blocked_before_claim_and_terminal(
+        LinklyConnectionMode currentMode,
+        LinklyConnectionMode persistedMode,
+        bool simulateCreateRace)
+    {
+        var cart = CreateReturnCart(4m);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        const string originalReference = "ANZ:MODE-MISMATCH";
+        var persistedTxnRef = persistedMode == LinklyConnectionMode.LocalIp
+            ? "R0123456789ABCDE"
+            : Guid.NewGuid().ToString("N");
+        var winner = CreateOpenLinklyRefundAttempt(
+            session,
+            cart.CreateSnapshot(),
+            persistedMode,
+            "R",
+            persistedTxnRef,
+            originalReference);
+        var attempts = new RaceWinningCardPaymentAttemptRepository(winner, exposeWinnerDuringLookup: !simulateCreateRace);
+        var terminal = new RecordingIdempotentCardRefundClient(
+            new PaymentAuthorizationResult(true, "ANZ:SHOULD-NOT-REFUND", "APPROVED", AuthorizedAmount: 4m));
+        var settings = (currentMode == LinklyConnectionMode.LocalIp
+            ? CreateLocalLinklySettings()
+            : CreateBackendLinklySettings()) with
+        {
+            LinklyConnectionMode = currentMode
+        };
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(settings));
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: originalReference,
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", result.StatusKey);
+        Assert.Equal(winner.AttemptGuid, result.RecoveryAttemptKey?.AttemptGuid);
+        Assert.Equal(0, terminal.IdempotentRefundCallCount);
+        Assert.Equal(0, attempts.RefundSubmissionClaimCalls);
+        Assert.Equal(simulateCreateRace ? 1 : 0, attempts.CreateOrGetOpenRefundCalls);
+        Assert.Equal(0, attempts.CreateAsyncCalls);
+        Assert.Single(attempts.PersistedAttempts);
+        Assert.Equal(winner, attempts.PersistedAttempt);
+    }
+
+    [Theory]
+    [InlineData("P", "R0123456789ABCDE", false)]
+    [InlineData("R", "R0123456789ABCDEF", false)]
+    [InlineData("R", "R0123\u001f", true)]
+    [InlineData("R", "RCAFÉ", true)]
+    [InlineData("R", "ANZ:", false)]
+    [InlineData("R", "ANZ:   ", true)]
+    public async Task Local_ip_open_refund_attempt_with_invalid_type_or_reference_is_blocked_before_claim_and_terminal(
+        string txnType,
+        string txnRef,
+        bool simulateCreateRace)
+    {
+        var cart = CreateReturnCart(4m);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        const string originalReference = "ANZ:INVALID-LOCAL-REF";
+        var winner = CreateOpenLinklyRefundAttempt(
+            session,
+            cart.CreateSnapshot(),
+            LinklyConnectionMode.LocalIp,
+            txnType,
+            txnRef,
+            originalReference);
+        var attempts = new RaceWinningCardPaymentAttemptRepository(winner, exposeWinnerDuringLookup: !simulateCreateRace);
+        var terminal = new RecordingIdempotentCardRefundClient(
+            new PaymentAuthorizationResult(true, "ANZ:SHOULD-NOT-REFUND", "APPROVED", AuthorizedAmount: 4m));
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateLocalLinklySettings()));
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: originalReference,
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("payment.card.resultUnknown", result.StatusKey);
+        Assert.Equal(winner.AttemptGuid, result.RecoveryAttemptKey?.AttemptGuid);
+        Assert.Equal(0, terminal.IdempotentRefundCallCount);
+        Assert.Equal(0, attempts.RefundSubmissionClaimCalls);
+        Assert.Equal(simulateCreateRace ? 1 : 0, attempts.CreateOrGetOpenRefundCalls);
+        Assert.Single(attempts.PersistedAttempts);
+        Assert.Equal(winner, attempts.PersistedAttempt);
+    }
+
+    [Theory]
+    [InlineData("R")]
+    [InlineData("R-OLD#1")]
+    [InlineData("R0123456789ABCDE")]
+    public async Task Local_ip_open_refund_accepts_printable_historical_persisted_reference(string persistedTxnRef)
+    {
+        var cart = CreateReturnCart(4m);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        const string originalReference = "ANZ:SHORT-LOCAL-REF";
+        var winner = CreateOpenLinklyRefundAttempt(
+            session,
+            cart.CreateSnapshot(),
+            LinklyConnectionMode.LocalIp,
+            "R",
+            persistedTxnRef,
+            originalReference);
+        var attempts = new RaceWinningCardPaymentAttemptRepository(winner, exposeWinnerDuringLookup: true);
+        var terminal = new RecordingIdempotentCardRefundClient(
+            new PaymentAuthorizationResult(true, "ANZ:SHORT-REFUND", "APPROVED", AuthorizedAmount: 4m));
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateLocalLinklySettings()));
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: originalReference,
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.True(result.Succeeded, result.StatusMessage);
+        Assert.Equal(1, terminal.IdempotentRefundCallCount);
+        Assert.Equal(persistedTxnRef, terminal.LastIdempotencyKey);
+        Assert.Equal(persistedTxnRef, attempts.PersistedAttempt.TxnRef);
+    }
+
+    [Fact]
+    public async Task Cloud_ordinary_refund_persists_and_submits_legacy_32_hex_txn_ref()
+    {
+        var cart = CreateReturnCart(4m);
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        LocalCardPaymentAttempt? persistedAtSubmission = null;
+        var terminal = new RecordingIdempotentCardRefundClient(
+            new PaymentAuthorizationResult(true, "ANZ:CLOUD-REFUND", "APPROVED", AuthorizedAmount: 4m),
+            () => persistedAtSubmission = attempts.Attempts.SingleOrDefault());
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()));
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "ANZ:CLOUD-SALE",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.True(result.Succeeded, result.StatusMessage);
+        Assert.NotNull(persistedAtSubmission);
+        Assert.Equal(LinklyConnectionMode.CloudBackendAsync.ToString(), persistedAtSubmission.ConnectionMode);
+        Assert.Equal("R", persistedAtSubmission.TxnType);
+        Assert.Matches("^[0-9a-f]{32}$", persistedAtSubmission.TxnRef!);
+        Assert.Equal(persistedAtSubmission.TxnRef, terminal.LastIdempotencyKey);
+        Assert.DoesNotMatch("^[PR][0-9ABCDEFGHJKMNPQRSTVWXYZ]{15}$", terminal.LastIdempotencyKey!);
     }
 
     [Fact]
@@ -2893,6 +4040,14 @@ public sealed class CashPaymentWorkflowServiceTests
             LinklyConnectionMode.LocalIp);
     }
 
+    private static CardTerminalSettings CreateCloudDirectLinklySettings()
+    {
+        return CreateLocalLinklySettings() with
+        {
+            LinklyConnectionMode = LinklyConnectionMode.CloudDirectSync
+        };
+    }
+
     private static CardTerminalSettings CreateSquareSettings()
     {
         return new CardTerminalSettings(
@@ -3090,9 +4245,184 @@ public sealed class CashPaymentWorkflowServiceTests
             Task.FromResult<IReadOnlyList<SyncQueueListItem>>([]);
     }
 
+    private static void AssertLocalTxnRef(char transactionType, string? txnRef)
+    {
+        Assert.NotNull(txnRef);
+        Assert.Equal(16, txnRef.Length);
+        Assert.Equal(transactionType, txnRef[0]);
+        Assert.Matches("^[PR][0-9ABCDEFGHJKMNPQRSTVWXYZ]{15}$", txnRef);
+    }
+
+    private static LocalCardPaymentAttempt CreateOpenLinklyRefundAttempt(
+        PosSessionState session,
+        PosCartSnapshot cartSnapshot,
+        LinklyConnectionMode connectionMode,
+        string txnType,
+        string? txnRef,
+        string originalReference)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var draft = new CardPaymentOrderDraft(
+            Guid.NewGuid(),
+            session,
+            cartSnapshot,
+            [],
+            -4m,
+            4m,
+            "R",
+            originalReference,
+            now);
+        return new LocalCardPaymentAttempt(
+            Guid.NewGuid(),
+            null,
+            txnRef,
+            CardProcessorKind.Linkly.ToString(),
+            CardTerminalEnvironment.Sandbox.ToString(),
+            connectionMode.ToString(),
+            txnType,
+            4m,
+            LocalCardPaymentAttemptStatus.Pending,
+            JsonSerializer.Serialize(draft, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+            session.StoreCode,
+            session.DeviceCode,
+            session.CashierId,
+            null,
+            null,
+            null,
+            now,
+            now,
+            null,
+            null,
+            "Refund",
+            draft.OrderGuid);
+    }
+
+    private sealed class RaceWinningCardPaymentAttemptRepository(
+        LocalCardPaymentAttempt persistedAttempt,
+        bool exposeWinnerDuringLookup) : ILocalCardPaymentAttemptRepository
+    {
+        private LocalCardPaymentAttempt _persistedAttempt = persistedAttempt;
+
+        public int CreateAsyncCalls { get; private set; }
+        public int CreateOrGetOpenRefundCalls { get; private set; }
+        public int RefundSubmissionClaimCalls { get; private set; }
+        public LocalCardPaymentAttempt PersistedAttempt => _persistedAttempt;
+        public IReadOnlyList<LocalCardPaymentAttempt> PersistedAttempts => [_persistedAttempt];
+
+        public Task CreateAsync(LocalCardPaymentAttempt attempt, CancellationToken cancellationToken = default)
+        {
+            CreateAsyncCalls++;
+            throw new InvalidOperationException("The race-losing refund attempt must not be persisted.");
+        }
+
+        public Task<LocalCardPaymentAttempt> CreateOrGetOpenRefundAsync(
+            LocalCardPaymentAttempt attempt,
+            CancellationToken cancellationToken = default)
+        {
+            CreateOrGetOpenRefundCalls++;
+            return Task.FromResult(_persistedAttempt);
+        }
+
+        public Task<bool> TryBeginRefundSubmissionAsync(
+            Guid attemptGuid,
+            DateTimeOffset expectedUpdatedAt,
+            string submissionToken,
+            DateTimeOffset updatedAt,
+            CancellationToken cancellationToken = default)
+        {
+            RefundSubmissionClaimCalls++;
+            _persistedAttempt = _persistedAttempt with
+            {
+                Status = LocalCardPaymentAttemptStatus.Recovering,
+                SubmissionToken = submissionToken,
+                UpdatedAt = updatedAt
+            };
+            return Task.FromResult(true);
+        }
+
+        public Task UpdateSessionAsync(
+            Guid attemptGuid,
+            string sessionId,
+            string? txnRef,
+            DateTimeOffset updatedAt,
+            CancellationToken cancellationToken = default)
+        {
+            _persistedAttempt = _persistedAttempt with
+            {
+                SessionId = sessionId,
+                TxnRef = txnRef,
+                Status = LocalCardPaymentAttemptStatus.SessionStarted,
+                UpdatedAt = updatedAt
+            };
+            return Task.CompletedTask;
+        }
+
+        public Task UpdateOutcomeAsync(
+            Guid attemptGuid,
+            LocalCardPaymentAttemptStatus status,
+            string? responseCode,
+            string? responseText,
+            string? paymentReference,
+            DateTimeOffset completedAt,
+            CancellationToken cancellationToken = default)
+        {
+            _persistedAttempt = _persistedAttempt with
+            {
+                Status = status,
+                ResponseCode = responseCode,
+                ResponseText = responseText,
+                PaymentReference = paymentReference,
+                UpdatedAt = completedAt
+            };
+            return Task.CompletedTask;
+        }
+
+        public Task MarkOrderCompletedAsync(Guid attemptGuid, DateTimeOffset completedAt, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task MarkAcknowledgedAsync(Guid attemptGuid, DateTimeOffset acknowledgedAt, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+
+        public Task MarkRecoveringAsync(Guid attemptGuid, DateTimeOffset updatedAt, CancellationToken cancellationToken = default)
+        {
+            _persistedAttempt = _persistedAttempt with
+            {
+                Status = LocalCardPaymentAttemptStatus.Recovering,
+                UpdatedAt = updatedAt
+            };
+            return Task.CompletedTask;
+        }
+
+        public Task<LocalCardPaymentAttempt?> GetLatestOpenAttemptAsync(
+            string storeCode,
+            string deviceCode,
+            string? cashierId,
+            string environment,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<LocalCardPaymentAttempt?>(_persistedAttempt);
+
+        public Task<IReadOnlyList<LocalCardPaymentAttempt>> GetOpenRefundAttemptsAsync(
+            string storeCode,
+            string deviceCode,
+            string environment,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<IReadOnlyList<LocalCardPaymentAttempt>>(
+                exposeWinnerDuringLookup ? [_persistedAttempt] : []);
+
+        public Task<LocalCardPaymentAttempt?> GetAttemptAsync(Guid attemptGuid, CancellationToken cancellationToken = default) =>
+            Task.FromResult<LocalCardPaymentAttempt?>(
+                attemptGuid == _persistedAttempt.AttemptGuid ? _persistedAttempt : null);
+    }
+
     private sealed class RecordingCardPaymentAttemptRepository : ILocalCardPaymentAttemptRepository
     {
         public List<LocalCardPaymentAttempt> Attempts { get; } = [];
+
+        public int MarkOrderCompletedCount { get; private set; }
+
+        public int FinalizeRecoveryCount { get; private set; }
+
+        public bool FinalizeRecoveryResult { get; init; } = true;
 
         public Exception? MarkOrderCompletedException { get; init; }
 
@@ -3163,6 +4493,7 @@ public sealed class CashPaymentWorkflowServiceTests
             DateTimeOffset completedAt,
             CancellationToken cancellationToken = default)
         {
+            MarkOrderCompletedCount++;
             if (RejectCancelledTokens)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -3180,6 +4511,36 @@ public sealed class CashPaymentWorkflowServiceTests
                 UpdatedAt = completedAt
             });
             return Task.CompletedTask;
+        }
+
+        public Task<bool> TryFinalizeRecoveryOutcomeAsync(
+            Guid attemptGuid,
+            LocalCardPaymentAttemptStatus expectedStatus,
+            DateTimeOffset expectedUpdatedAt,
+            LocalCardPaymentAttemptStatus recoveryTargetStatus,
+            DateTimeOffset completedAt,
+            CancellationToken cancellationToken = default)
+        {
+            FinalizeRecoveryCount++;
+            var current = Attempts.Single(attempt => attempt.AttemptGuid == attemptGuid);
+            if (!FinalizeRecoveryResult ||
+                current.Status != expectedStatus ||
+                current.UpdatedAt != expectedUpdatedAt ||
+                !string.Equals(current.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) ||
+                !string.Equals(current.RecoveryTargetStatus, recoveryTargetStatus.ToString(), StringComparison.Ordinal))
+            {
+                return Task.FromResult(false);
+            }
+
+            Update(attemptGuid, attempt => attempt with
+            {
+                Status = recoveryTargetStatus,
+                RecoveryPhase = CardRecoveryPhases.None,
+                RecoveryTargetStatus = null,
+                CompletedAt = attempt.CompletedAt ?? completedAt,
+                UpdatedAt = completedAt
+            });
+            return Task.FromResult(true);
         }
 
         public Task MarkAcknowledgedAsync(
@@ -3272,6 +4633,12 @@ public sealed class CashPaymentWorkflowServiceTests
     private sealed class RecordingSquarePaymentAttemptRepository : ILocalSquarePaymentAttemptRepository
     {
         public List<LocalSquarePaymentAttempt> Attempts { get; } = [];
+
+        public int MarkOrderCompletedCount { get; private set; }
+
+        public int CompleteRecoveryFinalizationCount { get; private set; }
+
+        public bool CompleteRecoveryFinalizationResult { get; init; } = true;
 
         public bool RejectCancelledTokens { get; init; }
 
@@ -3506,6 +4873,7 @@ public sealed class CashPaymentWorkflowServiceTests
 
         public Task MarkOrderCompletedAsync(Guid attemptGuid, DateTimeOffset completedAt, CancellationToken cancellationToken = default)
         {
+            MarkOrderCompletedCount++;
             Update(attemptGuid, attempt => attempt with
             {
                 Status = LocalSquarePaymentAttemptStatus.OrderCompleted,
@@ -3513,6 +4881,41 @@ public sealed class CashPaymentWorkflowServiceTests
                 UpdatedAt = completedAt
             });
             return Task.CompletedTask;
+        }
+
+        public Task<bool> TryCompleteRecoveryFinalizationAsync(
+            Guid attemptGuid,
+            LocalSquarePaymentAttemptStatus expectedStatus,
+            DateTimeOffset expectedUpdatedAt,
+            LocalSquarePaymentAttemptStatus targetStatus,
+            DateTimeOffset completedAt,
+            CancellationToken cancellationToken = default)
+        {
+            CompleteRecoveryFinalizationCount++;
+            var current = Attempts.Single(attempt => attempt.AttemptGuid == attemptGuid);
+            if (!CompleteRecoveryFinalizationResult ||
+                current.Status != expectedStatus ||
+                current.UpdatedAt != expectedUpdatedAt ||
+                !string.Equals(current.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) ||
+                current.RecoveryTargetStatus != targetStatus)
+            {
+                return Task.FromResult(false);
+            }
+
+            Update(attemptGuid, attempt => attempt with
+            {
+                Status = targetStatus,
+                RecoveryPhase = CardRecoveryPhases.None,
+                RecoveryTargetStatus = null,
+                OrderCompletedAt = targetStatus == LocalSquarePaymentAttemptStatus.OrderCompleted
+                    ? completedAt
+                    : attempt.OrderCompletedAt,
+                ResolvedAt = targetStatus == LocalSquarePaymentAttemptStatus.OrderCompleted
+                    ? attempt.ResolvedAt
+                    : completedAt,
+                UpdatedAt = completedAt
+            });
+            return Task.FromResult(true);
         }
 
         public Task<LocalSquarePaymentAttempt?> GetLatestOpenAttemptAsync(
@@ -3816,6 +5219,8 @@ public sealed class CashPaymentWorkflowServiceTests
 
     private sealed class RecordingLinklyBackendTerminalClient : ILinklyBackendTerminalClient
     {
+        public Exception? AcknowledgeException { get; init; }
+
         public string? AcknowledgedSessionId { get; private set; }
 
         public CardTerminalSettings? AcknowledgedSettings { get; private set; }
@@ -3875,7 +5280,154 @@ public sealed class CashPaymentWorkflowServiceTests
         {
             AcknowledgedSettings = settings;
             AcknowledgedSessionId = sessionId;
+            if (AcknowledgeException is not null)
+            {
+                throw AcknowledgeException;
+            }
+
             return Task.CompletedTask;
+        }
+    }
+
+    private sealed class SettingsBoundRecordingCardTerminalClient(
+        ILinklyPaymentAttemptContextAccessor linklyContext,
+        ISquarePaymentAttemptContextAccessor squareContext) :
+        ICardTerminalClient,
+        ICardTerminalSettingsBoundClient,
+        IIdempotentCardRefundClient
+    {
+        public int BoundAuthorizeCallCount { get; private set; }
+
+        public int BoundRefundCallCount { get; private set; }
+
+        public int LegacyAuthorizeCallCount { get; private set; }
+
+        public int LegacyRefundCallCount { get; private set; }
+
+        public CardTerminalSettings? LastSettings { get; private set; }
+
+        public Task<PaymentAuthorizationResult> AuthorizeAsync(
+            decimal amount,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            LegacyAuthorizeCallCount++;
+            throw new InvalidOperationException("设置已冻结的 Card 流程不得调用旧收款入口。");
+        }
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            CancellationToken cancellationToken = default)
+        {
+            LegacyRefundCallCount++;
+            throw new InvalidOperationException("设置已冻结的 Card 流程不得调用旧退款入口。");
+        }
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            string idempotencyKey,
+            CancellationToken cancellationToken = default)
+        {
+            LegacyRefundCallCount++;
+            throw new InvalidOperationException("设置已冻结的 Card 流程不得调用旧幂等退款入口。");
+        }
+
+        public async Task<PaymentAuthorizationResult> AuthorizeWithSettingsAsync(
+            CardTerminalSettings settings,
+            decimal amount,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            BoundAuthorizeCallCount++;
+            LastSettings = settings;
+            if (settings.Processor == CardProcessorKind.Square)
+            {
+                var attempt = Assert.IsType<SquarePaymentAttemptContext>(squareContext.Current);
+                Assert.NotNull(attempt.BindCheckoutAsync);
+                await attempt.BindCheckoutAsync!(
+                    "checkout-settings-snapshot",
+                    "COMPLETED",
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None);
+                return CreateSquareResult(amount, isRefund: false, settings);
+            }
+
+            return CreateLinklyResult(amount, "P", settings);
+        }
+
+        public async Task<PaymentAuthorizationResult> RefundWithSettingsAsync(
+            CardTerminalSettings settings,
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            string? idempotencyKey,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            BoundRefundCallCount++;
+            LastSettings = settings;
+            Assert.False(string.IsNullOrWhiteSpace(idempotencyKey));
+            if (settings.Processor == CardProcessorKind.Square)
+            {
+                var attempt = Assert.IsType<SquarePaymentAttemptContext>(squareContext.Current);
+                Assert.NotNull(attempt.BindRefundAsync);
+                await attempt.BindRefundAsync!(
+                    "refund-settings-snapshot",
+                    "COMPLETED",
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None);
+                return CreateSquareResult(amount, isRefund: true, settings);
+            }
+
+            return CreateLinklyResult(amount, "R", settings);
+        }
+
+        private PaymentAuthorizationResult CreateLinklyResult(
+            decimal amount,
+            string txnType,
+            CardTerminalSettings settings)
+        {
+            var mode = CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode);
+            var txnRef = linklyContext.Current?.TxnRef;
+            if (mode == LinklyConnectionMode.LocalIp)
+            {
+                Assert.False(string.IsNullOrWhiteSpace(txnRef));
+            }
+
+            txnRef ??= "CLOUDSNAPSHOT001";
+            return new PaymentAuthorizationResult(
+                true,
+                $"ANZ:{txnRef}",
+                "APPROVED",
+                amount,
+                Processor: CardProcessorKind.Linkly.ToString(),
+                Environment: settings.Environment.ToString(),
+                ConnectionMode: CardTerminalSettings.FormatLinklyConnectionMode(mode),
+                TxnType: txnType,
+                TxnRef: txnRef,
+                ResponseCode: "00",
+                ResponseText: "APPROVED");
+        }
+
+        private static PaymentAuthorizationResult CreateSquareResult(
+            decimal amount,
+            bool isRefund,
+            CardTerminalSettings settings)
+        {
+            return new PaymentAuthorizationResult(
+                true,
+                isRefund ? "SQRF:refund-settings-snapshot" : "SQ:payment-settings-snapshot",
+                "COMPLETED",
+                amount,
+                Processor: CardProcessorKind.Square.ToString(),
+                Environment: settings.Environment.ToString(),
+                ResponseCode: "00",
+                ResponseText: "COMPLETED");
         }
     }
 
@@ -4119,5 +5671,169 @@ public sealed class CashPaymentWorkflowServiceTests
 
             return Task.CompletedTask;
         }
+    }
+}
+
+internal sealed class TxnRefSequencedCardTerminalSettingsProvider(
+    CardTerminalSettings first,
+    CardTerminalSettings later) : ICardTerminalSettingsProvider
+{
+    private int _calls;
+
+    public int GetSettingsCalls => Volatile.Read(ref _calls);
+
+    public Task<CardTerminalSettings> GetSettingsAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var call = Interlocked.Increment(ref _calls);
+        return Task.FromResult(call == 1 ? first : later);
+    }
+}
+
+internal sealed class TxnRefSnapshotLinklyTerminalClient(
+    ILinklyPaymentAttemptContextAccessor context) : ILinklyTerminalClient
+{
+    public int LocalPurchaseCalls { get; private set; }
+    public int CloudPurchaseCalls { get; private set; }
+    public int LocalRefundCalls { get; private set; }
+    public int CloudRefundCalls { get; private set; }
+    public LinklyConnectionMode? LastMode { get; private set; }
+    public Guid? LastAttemptGuid { get; private set; }
+    public string? LastTxnRef { get; private set; }
+    public string? LastRefundIdempotencyKey { get; private set; }
+
+    public Task<LinklyConnectionTestResult> TestConnectionAsync(
+        string host,
+        int port,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    public Task<PaymentAuthorizationResult> PurchaseAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        CancellationToken cancellationToken = default) =>
+        CompleteAsync("P", amount, settings, persistedTxnRef: null, cancellationToken);
+
+    public Task<PaymentAuthorizationResult> PurchaseWithReferenceAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string txnRef,
+        CancellationToken cancellationToken = default) =>
+        CompleteAsync("P", amount, settings, txnRef, cancellationToken);
+
+    public Task<PaymentAuthorizationResult> RecoverLastTransactionAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string txnRef,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    public Task<PaymentAuthorizationResult> RefundAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string? originalReference,
+        CancellationToken cancellationToken = default) =>
+        CompleteAsync("R", amount, settings, persistedTxnRef: null, cancellationToken);
+
+    public Task<PaymentAuthorizationResult> RefundWithReferenceAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string? originalReference,
+        string refundTxnRef,
+        CancellationToken cancellationToken = default)
+    {
+        LastRefundIdempotencyKey = refundTxnRef;
+        return CompleteAsync("R", amount, settings, refundTxnRef, cancellationToken);
+    }
+
+    public Task<PaymentAuthorizationResult> VoidAsync(
+        decimal amount,
+        PosSessionState session,
+        CardTerminalSettings settings,
+        string? originalReference,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException();
+
+    private async Task<PaymentAuthorizationResult> CompleteAsync(
+        string txnType,
+        decimal amount,
+        CardTerminalSettings settings,
+        string? persistedTxnRef,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var mode = CardTerminalSettings.NormalizeLinklyConnectionMode(settings.LinklyConnectionMode);
+        var attempt = context.Current;
+        var txnRef = persistedTxnRef ?? attempt?.TxnRef ??
+            (txnType == "P" ? "PLOCALSNAPSHOT01" : "RLOCALSNAPSHOT01");
+        LastMode = mode;
+        LastAttemptGuid = attempt?.AttemptGuid;
+        LastTxnRef = txnRef;
+
+        if (mode == LinklyConnectionMode.LocalIp)
+        {
+            if (txnType == "P")
+            {
+                LocalPurchaseCalls++;
+            }
+            else
+            {
+                LocalRefundCalls++;
+            }
+        }
+        else
+        {
+            if (txnType == "P")
+            {
+                CloudPurchaseCalls++;
+            }
+            else
+            {
+                CloudRefundCalls++;
+            }
+
+            if (attempt is not null)
+            {
+                await attempt.BindSessionAsync(
+                    $"snapshot-{txnType.ToLowerInvariant()}-session",
+                    txnRef,
+                    DateTimeOffset.UtcNow,
+                    CancellationToken.None);
+            }
+        }
+
+        return new PaymentAuthorizationResult(
+            true,
+            $"ANZ:{txnRef}",
+            "APPROVED",
+            amount,
+            [new CardTransactionDto(
+                "ANZ",
+                txnRef,
+                null,
+                null,
+                null,
+                null,
+                null,
+                "00",
+                "APPROVED",
+                null,
+                DateTimeOffset.UtcNow,
+                amount,
+                null)],
+            "ANZ",
+            settings.Environment.ToString(),
+            CardTerminalSettings.FormatLinklyConnectionMode(mode),
+            txnType,
+            mode == LinklyConnectionMode.LocalIp ? null : $"snapshot-{txnType.ToLowerInvariant()}-session",
+            txnRef,
+            "00",
+            "APPROVED");
     }
 }

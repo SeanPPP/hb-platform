@@ -28,7 +28,8 @@ public sealed record CardRecoveryQueueItem(
     string? ResponseText = null,
     string? PaymentReference = null,
     string? PaymentId = null,
-    Guid? OperationGuid = null)
+    Guid? OperationGuid = null,
+    string? PaymentStatus = null)
 {
     public CardRecoveryAttemptKey Key => new(Processor, AttemptGuid);
 }
@@ -47,4 +48,12 @@ public sealed record CardRecoveryResolutionResult(
     string Message,
     CardPaymentRecoveryResult? RecoveryResult = null,
     bool RetryAllowed = false,
-    bool LockRetained = false);
+    bool LockRetained = false,
+    bool ResolutionPersisted = false,
+    bool ResolutionApplied = false);
+
+public static class CardRecoveryPhases
+{
+    public const string None = "None";
+    public const string FinalizePending = "FinalizePending";
+}

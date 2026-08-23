@@ -8,6 +8,7 @@ using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Contracts.Cashiers;
+using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Tests;
 
@@ -17,7 +18,7 @@ public sealed class CardRefundRecoveryPresenterTests
     private static readonly Guid OperationGuid = Guid.Parse("66666666-7777-8888-9999-aaaaaaaaaaaa");
 
     [Fact]
-    public async Task Resolve_refund_requires_supervisor_permission_and_records_authorized_evidence_audit()
+    public async Task Resolve_refund_requires_supervisor_permission_without_duplicate_presenter_audit()
     {
         var session = CreateSession(CreateCashier("REQUESTER"));
         var authorization = new StubOperationAuthorizationService(CreateCashier(
@@ -28,8 +29,10 @@ public sealed class CardRefundRecoveryPresenterTests
         {
             ResolveResult = new CardRefundSupervisorResolutionResult(
                 true,
-                "The refund remains locked.",
-                LockRetained: true)
+                "The return is ready to retry.",
+                LockRetained: false,
+                ResolutionPersisted: true,
+                ResolutionApplied: true)
         };
         var presenter = CreatePresenter(recovery, authorization, audit, session);
 
@@ -46,15 +49,35 @@ public sealed class CardRefundRecoveryPresenterTests
         Assert.NotNull(recovery.Resolution);
         Assert.Equal("Bank portal has no matching refund", recovery.Resolution.Evidence);
         Assert.Equal(CardRefundSupervisorDecision.ConfirmNotRefunded, recovery.Resolution.Decision);
-        var savedAudit = Assert.Single(audit.Events);
-        Assert.Equal("RETURN_REFUND_COMPLETE", savedAudit.OperationType);
-        Assert.Equal("ConfirmNotRefunded", savedAudit.Outcome);
-        Assert.Equal(CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded, savedAudit.ReasonCode);
-        Assert.Contains("Bank portal has no matching refund", savedAudit.SafeMessage, StringComparison.Ordinal);
-        Assert.Equal("REQUESTER", savedAudit.Properties?["requestingCashierId"]);
-        Assert.Equal("SUPERVISOR", savedAudit.Properties?["authorizingCashierId"]);
-        Assert.Equal(Permissions.PosTerminal.Returns.Confirm, savedAudit.Properties?["permissionCode"]);
+        Assert.Empty(audit.Events);
         Assert.False(presenter.IsCardRecoveryResultDialogOpen);
+    }
+
+    [Fact]
+    public async Task Resolve_refund_does_not_emit_duplicate_completion_audit_from_presenter()
+    {
+        var session = CreateSession(CreateCashier("REQUESTER"));
+        var audit = new RecordingAuditLogger();
+        var recovery = new StubRecoveryService
+        {
+            ResolveResult = new CardRefundSupervisorResolutionResult(
+                true,
+                "The return is ready to retry.",
+                ResolutionPersisted: true,
+                ResolutionApplied: true)
+        };
+        var presenter = CreatePresenter(
+            recovery,
+            new StubOperationAuthorizationService(CreateCashier(
+                "SUPERVISOR",
+                Permissions.PosTerminal.Returns.Confirm)),
+            audit,
+            session);
+
+        await presenter.RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+        await presenter.ResolveCardRefundCommand.ExecuteAsync(CardRefundSupervisorDecision.ConfirmNotRefunded);
+
+        Assert.Empty(audit.Events);
     }
 
     [Fact]
@@ -77,24 +100,109 @@ public sealed class CardRefundRecoveryPresenterTests
     }
 
     [Fact]
-    public async Task Resolve_payment_uses_audit_permission_and_authorizing_supervisor_identity_without_global_lock()
+    public async Task Resolve_refund_does_not_emit_completion_audit_when_finalization_is_pending()
     {
         var session = CreateSession(CreateCashier("REQUESTER"));
         var authorization = new StubOperationAuthorizationService(CreateCashier(
             "SUPERVISOR",
-            Permissions.PosTerminal.Audit.View));
+            Permissions.PosTerminal.Returns.Confirm));
+        var audit = new RecordingAuditLogger();
+        var recovery = new StubRecoveryService
+        {
+            ResolveResult = new CardRefundSupervisorResolutionResult(
+                false,
+                "The supervisor decision was saved, but finalization is still pending.",
+                LockRetained: true,
+                ResolutionPersisted: true,
+                ResolutionApplied: true)
+        };
+        var presenter = CreatePresenter(recovery, authorization, audit, session);
+
+        await presenter.RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+        await presenter.ResolveCardRefundCommand.ExecuteAsync(CardRefundSupervisorDecision.ContinueWaiting);
+
+        Assert.Empty(audit.Events);
+        Assert.True(presenter.IsCardRecoveryResultDialogOpen);
+    }
+
+    [Fact]
+    public async Task Resolve_refund_applies_restored_draft_when_finalization_lock_is_retained()
+    {
+        var session = CreateSession(CreateCashier("REQUESTER"));
+        var restoredTender = new PaymentTender(
+            PaymentMethodKind.Card,
+            -12.34m,
+            $"CARD_ATTEMPT:{AttemptGuid:D}");
+        var recovery = new StubRecoveryService
+        {
+            ResolveResult = new CardRefundSupervisorResolutionResult(
+                true,
+                "The refund draft was restored; save the order to finish recovery.",
+                RecoveryResult: new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.DraftRestored,
+                    "The refund draft was restored; save the order to finish recovery.",
+                    RestoredTenders: [restoredTender]),
+                RetryAllowed: true,
+                LockRetained: true,
+                ResolutionPersisted: true,
+                ResolutionApplied: true)
+        };
+        var navigated = false;
+        IReadOnlyList<PaymentTender>? appliedTenders = null;
+        string? appliedMessage = null;
+        var presenter = CreatePresenter(
+            recovery,
+            new StubOperationAuthorizationService(CreateCashier(
+                "SUPERVISOR",
+                Permissions.PosTerminal.Returns.Confirm)),
+            new RecordingAuditLogger(),
+            session,
+            navigateToPaymentOnDraft: () =>
+            {
+                navigated = true;
+                return Task.CompletedTask;
+            },
+            onCardRecoveryDraftRestored: (tenders, message) =>
+            {
+                appliedTenders = tenders;
+                appliedMessage = message;
+            });
+
+        await presenter.RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+        var dialog = Assert.IsType<CardRecoveryResultDialogViewModel>(presenter.CardRecoveryResultDialog);
+        dialog.RefundReference = "BANK-REFUND-001";
+
+        await presenter.ResolveCardRefundCommand.ExecuteAsync(CardRefundSupervisorDecision.ConfirmRefunded);
+
+        Assert.True(navigated);
+        Assert.Equal([restoredTender], appliedTenders);
+        Assert.Equal(recovery.ResolveResult.Message, appliedMessage);
+        Assert.True(presenter.IsCardRecoveryResultDialogOpen);
+        Assert.Null(presenter.CardRecoveryResultDialog?.RefundDetails);
+    }
+
+    [Fact]
+    public async Task Resolve_payment_uses_payment_confirm_permission_without_duplicate_presenter_audit()
+    {
+        var session = CreateSession(CreateCashier("REQUESTER"));
+        var authorization = new StubOperationAuthorizationService(CreateCashier(
+            "SUPERVISOR",
+            Permissions.PosTerminal.Payment.Confirm));
+        var audit = new RecordingAuditLogger();
         var recovery = new StubRecoveryService
         {
             RecoverResult = CreatePaymentSupervisorRecoveryResult(),
             PaymentResolveResult = new CardPaymentSupervisorResolutionResult(
                 true,
-                "Payment result saved.")
+                "Payment result saved.",
+                ResolutionPersisted: true,
+                ResolutionApplied: true)
         };
         var lockChanges = new List<(bool Blocked, string? Message)>();
         var presenter = CreatePresenter(
             recovery,
             authorization,
-            new RecordingAuditLogger(),
+            audit,
             session,
             (blocked, message) => lockChanges.Add((blocked, message)));
 
@@ -106,7 +214,7 @@ public sealed class CardRefundRecoveryPresenterTests
 
         await presenter.ResolveCardPaymentCommand.ExecuteAsync(CardPaymentSupervisorDecision.ConfirmPaid);
 
-        Assert.Equal(Permissions.PosTerminal.Audit.View, authorization.PermissionCode);
+        Assert.Equal(Permissions.PosTerminal.Payment.Confirm, authorization.PermissionCode);
         Assert.Equal("card-recovery", authorization.Screen);
         Assert.Equal("resolve-payment/confirmpaid", authorization.Action);
         var resolution = Assert.IsType<CardPaymentSupervisorResolution>(recovery.PaymentResolution);
@@ -117,8 +225,211 @@ public sealed class CardRefundRecoveryPresenterTests
         Assert.Equal("BANK-PAYMENT-001", resolution.PaymentReference);
         Assert.Equal("Bank portal shows approved", resolution.Evidence);
         Assert.Equal(string.Empty, resolution.Reason);
+        Assert.Empty(audit.Events);
         Assert.False(presenter.IsCardRecoveryResultDialogOpen);
         Assert.Empty(lockChanges);
+    }
+
+    [Fact]
+    public async Task Resolve_payment_does_not_emit_completion_audit_when_finalization_is_pending()
+    {
+        var session = CreateSession(CreateCashier("REQUESTER"));
+        var authorization = new StubOperationAuthorizationService(CreateCashier(
+            "SUPERVISOR",
+            Permissions.PosTerminal.Payment.Confirm));
+        var audit = new RecordingAuditLogger();
+        var recovery = new StubRecoveryService
+        {
+            RecoverResult = CreatePaymentSupervisorRecoveryResult(),
+            PaymentResolveResult = new CardPaymentSupervisorResolutionResult(
+                false,
+                "The supervisor decision was saved, but finalization is still pending.",
+                LockRetained: true,
+                ResolutionPersisted: true,
+                ResolutionApplied: true)
+        };
+        var presenter = CreatePresenter(recovery, authorization, audit, session);
+
+        await presenter.RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+        await presenter.ResolveCardPaymentCommand.ExecuteAsync(CardPaymentSupervisorDecision.ConfirmNotPaid);
+
+        Assert.Empty(audit.Events);
+        Assert.True(presenter.IsCardRecoveryResultDialogOpen);
+    }
+
+    [Fact]
+    public async Task Resolve_payment_does_not_audit_requested_decision_when_another_resolution_won_cas()
+    {
+        var session = CreateSession(CreateCashier("REQUESTER"));
+        var recovery = new StubRecoveryService
+        {
+            RecoverResult = CreatePaymentSupervisorRecoveryResult(),
+            PaymentResolveResult = new CardPaymentSupervisorResolutionResult(
+                true,
+                "A newer supervisor decision was retained.",
+                LockRetained: false,
+                ResolutionPersisted: true,
+                ResolutionApplied: false)
+        };
+        var audit = new RecordingAuditLogger();
+        var presenter = CreatePresenter(
+            recovery,
+            new StubOperationAuthorizationService(CreateCashier(
+                "SUPERVISOR",
+                Permissions.PosTerminal.Payment.Confirm)),
+            audit,
+            session);
+
+        await presenter.RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+        await presenter.ResolveCardPaymentCommand.ExecuteAsync(CardPaymentSupervisorDecision.ConfirmPaid);
+
+        Assert.Empty(audit.Events);
+        Assert.False(presenter.IsCardRecoveryResultDialogOpen);
+    }
+
+    [Fact]
+    public async Task Resolve_refund_does_not_audit_requested_decision_when_another_resolution_won_cas()
+    {
+        var session = CreateSession(CreateCashier("REQUESTER"));
+        var recovery = new StubRecoveryService
+        {
+            ResolveResult = new CardRefundSupervisorResolutionResult(
+                true,
+                "A newer supervisor decision was retained.",
+                LockRetained: false,
+                ResolutionPersisted: true,
+                ResolutionApplied: false)
+        };
+        var audit = new RecordingAuditLogger();
+        var presenter = CreatePresenter(
+            recovery,
+            new StubOperationAuthorizationService(CreateCashier(
+                "SUPERVISOR",
+                Permissions.PosTerminal.Returns.Confirm)),
+            audit,
+            session);
+
+        await presenter.RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+        await presenter.ResolveCardRefundCommand.ExecuteAsync(CardRefundSupervisorDecision.ConfirmRefunded);
+
+        Assert.Empty(audit.Events);
+        Assert.False(presenter.IsCardRecoveryResultDialogOpen);
+    }
+
+    [Fact]
+    public async Task Resolve_payment_closes_dialog_when_persisted_resolution_reached_terminal_without_draft()
+    {
+        var session = CreateSession(CreateCashier("REQUESTER"));
+        var recovery = new StubRecoveryService
+        {
+            RecoverResult = CreatePaymentSupervisorRecoveryResult(),
+            PaymentResolveResult = new CardPaymentSupervisorResolutionResult(
+                false,
+                "The unpaid result was finalized; continue the current order.",
+                RecoveryResult: new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.ActiveSessionNotPaid,
+                    "The unpaid result was finalized; continue the current order."),
+                LockRetained: false,
+                ResolutionPersisted: true,
+                ResolutionApplied: true)
+        };
+        var audit = new RecordingAuditLogger();
+        var presenter = CreatePresenter(
+            recovery,
+            new StubOperationAuthorizationService(CreateCashier(
+                "SUPERVISOR",
+                Permissions.PosTerminal.Payment.Confirm)),
+            audit,
+            session);
+
+        await presenter.RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+        await presenter.ResolveCardPaymentCommand.ExecuteAsync(CardPaymentSupervisorDecision.ConfirmNotPaid);
+
+        Assert.False(presenter.IsCardRecoveryResultDialogOpen);
+        Assert.Empty(audit.Events);
+    }
+
+    [Fact]
+    public async Task Resolve_payment_post_commit_status_callback_failure_does_not_reopen_or_misreport_resolution()
+    {
+        var session = CreateSession(CreateCashier("REQUESTER"));
+        var recovery = new StubRecoveryService
+        {
+            RecoverResult = CreatePaymentSupervisorRecoveryResult(),
+            PaymentResolveResult = new CardPaymentSupervisorResolutionResult(
+                true,
+                "Payment result saved.",
+                ResolutionPersisted: true,
+                ResolutionApplied: true)
+        };
+        var audit = new RecordingAuditLogger();
+        var failStatusCallback = false;
+        var presenter = CreatePresenter(
+            recovery,
+            new StubOperationAuthorizationService(CreateCashier(
+                "SUPERVISOR",
+                Permissions.PosTerminal.Payment.Confirm)),
+            audit,
+            session,
+            setStatusMessage: _ =>
+            {
+                if (failStatusCallback)
+                {
+                    throw new InvalidOperationException("subscriber failed");
+                }
+            });
+
+        await presenter.RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+        failStatusCallback = true;
+        Action<string> throwingLogSubscriber = line =>
+        {
+            if (line.Contains(
+                    $"post-commit action failed context=payment resolution status attemptGuid={AttemptGuid:D}",
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("diagnostic subscriber failed");
+            }
+        };
+        ConsoleLog.LineWritten += throwingLogSubscriber;
+        try
+        {
+            await presenter.ResolveCardPaymentCommand.ExecuteAsync(CardPaymentSupervisorDecision.ConfirmPaid);
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= throwingLogSubscriber;
+        }
+
+        Assert.False(presenter.IsCardRecoveryResultDialogOpen);
+        Assert.Empty(audit.Events);
+    }
+
+    [Fact]
+    public async Task Resolve_payment_does_not_depend_on_presenter_audit_logger()
+    {
+        var session = CreateSession(CreateCashier("REQUESTER"));
+        var recovery = new StubRecoveryService
+        {
+            RecoverResult = CreatePaymentSupervisorRecoveryResult(),
+            PaymentResolveResult = new CardPaymentSupervisorResolutionResult(
+                true,
+                "Payment result saved.",
+                ResolutionPersisted: true,
+                ResolutionApplied: true)
+        };
+        var presenter = CreatePresenter(
+            recovery,
+            new StubOperationAuthorizationService(CreateCashier(
+                "SUPERVISOR",
+                Permissions.PosTerminal.Payment.Confirm)),
+            new ThrowingAuditLogger(new OutOfMemoryException("fatal audit failure")),
+            session);
+
+        await presenter.RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+
+        await presenter.ResolveCardPaymentCommand.ExecuteAsync(CardPaymentSupervisorDecision.ConfirmPaid);
+
+        Assert.False(presenter.IsCardRecoveryResultDialogOpen);
     }
 
     [Fact]
@@ -127,14 +438,16 @@ public sealed class CardRefundRecoveryPresenterTests
         var session = CreateSession(CreateCashier("REQUESTER"));
         var authorization = new StubOperationAuthorizationService(CreateCashier(
             "SUPERVISOR",
-            Permissions.PosTerminal.Audit.View));
+            Permissions.PosTerminal.Payment.Confirm));
         var recovery = new StubRecoveryService
         {
             RecoverResult = CreatePaymentSupervisorRecoveryResult(),
             PaymentResolveResult = new CardPaymentSupervisorResolutionResult(
                 true,
                 "Continue waiting for the bank.",
-                LockRetained: true)
+                LockRetained: true,
+                ResolutionPersisted: true,
+                ResolutionApplied: true)
         };
         var lockChanges = new List<(bool Blocked, string? Message)>();
         var presenter = CreatePresenter(
@@ -157,6 +470,36 @@ public sealed class CardRefundRecoveryPresenterTests
     }
 
     [Fact]
+    public async Task Resolve_payment_continue_waiting_does_not_emit_false_sale_completion_audit()
+    {
+        var session = CreateSession(CreateCashier("REQUESTER"));
+        var audit = new RecordingAuditLogger();
+        var recovery = new StubRecoveryService
+        {
+            RecoverResult = CreatePaymentSupervisorRecoveryResult(),
+            PaymentResolveResult = new CardPaymentSupervisorResolutionResult(
+                false,
+                "The payment remains pending.",
+                LockRetained: true,
+                ResolutionPersisted: true,
+                ResolutionApplied: true)
+        };
+        var presenter = CreatePresenter(
+            recovery,
+            new StubOperationAuthorizationService(CreateCashier(
+                "SUPERVISOR",
+                Permissions.PosTerminal.Payment.Confirm)),
+            audit,
+            session);
+
+        await presenter.RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+        await presenter.ResolveCardPaymentCommand.ExecuteAsync(CardPaymentSupervisorDecision.ContinueWaiting);
+
+        Assert.Empty(audit.Events);
+        Assert.True(presenter.IsCardRecoveryResultDialogOpen);
+    }
+
+    [Fact]
     public async Task Active_session_unknown_exposes_supervisor_resolution_and_close_without_global_payment_lock()
     {
         var session = CreateSession(CreateCashier("REQUESTER"));
@@ -169,7 +512,7 @@ public sealed class CardRefundRecoveryPresenterTests
             recovery,
             new StubOperationAuthorizationService(CreateCashier(
                 "SUPERVISOR",
-                Permissions.PosTerminal.Audit.View)),
+            Permissions.PosTerminal.Payment.Confirm)),
             new RecordingAuditLogger(),
             session,
             (blocked, message) => lockChanges.Add((blocked, message)));
@@ -197,14 +540,16 @@ public sealed class CardRefundRecoveryPresenterTests
             PaymentResolveResult = new CardPaymentSupervisorResolutionResult(
                 true,
                 "Continue waiting for the active session.",
-                LockRetained: true)
+                LockRetained: true,
+                ResolutionPersisted: true,
+                ResolutionApplied: true)
         };
         var lockChanges = new List<(bool Blocked, string? Message)>();
         var presenter = CreatePresenter(
             recovery,
             new StubOperationAuthorizationService(CreateCashier(
                 "SUPERVISOR",
-                Permissions.PosTerminal.Audit.View)),
+                Permissions.PosTerminal.Payment.Confirm)),
             new RecordingAuditLogger(),
             session,
             (blocked, message) => lockChanges.Add((blocked, message)));
@@ -225,12 +570,95 @@ public sealed class CardRefundRecoveryPresenterTests
         Assert.False(await recoveryTask);
     }
 
+    [Fact]
+    public async Task Active_session_terminal_resolution_completes_waiter_when_close_subscriber_fails()
+    {
+        var session = CreateSession(CreateCashier("REQUESTER"));
+        var recovery = new StubRecoveryService
+        {
+            ActiveSessionResult = CreatePaymentSupervisorRecoveryResult(),
+            PaymentResolveResult = new CardPaymentSupervisorResolutionResult(
+                true,
+                "Payment result finalized.",
+                LockRetained: false,
+                ResolutionPersisted: true,
+                ResolutionApplied: true)
+        };
+        var failNotification = false;
+        var presenter = CreatePresenter(
+            recovery,
+            new StubOperationAuthorizationService(CreateCashier(
+                "SUPERVISOR",
+                Permissions.PosTerminal.Payment.Confirm)),
+            new RecordingAuditLogger(),
+            session,
+            notifyPropertyChanged: _ =>
+            {
+                if (failNotification)
+                {
+                    throw new InvalidOperationException("property subscriber failed");
+                }
+            });
+
+        var recoveryTask = presenter.RecoverActiveCardPaymentSessionFromPaymentAsync();
+        await WaitUntilAsync(() => presenter.CardRecoveryResultDialog?.CanResolvePayment == true);
+        failNotification = true;
+
+        await presenter.ResolveCardPaymentCommand.ExecuteAsync(CardPaymentSupervisorDecision.ConfirmPaid);
+
+        Assert.False(await recoveryTask.WaitAsync(TimeSpan.FromSeconds(1)));
+        Assert.False(presenter.IsCardRecoveryResultDialogOpen);
+    }
+
+    [Fact]
+    public async Task Active_session_retry_releases_waiter_when_close_subscriber_throws_fatal_exception()
+    {
+        var session = CreateSession(CreateCashier("REQUESTER"));
+        var recovery = new StubRecoveryService
+        {
+            ActiveSessionResult = CreatePaymentSupervisorRecoveryResult()
+        };
+        var failNextNotification = false;
+        var presenter = CreatePresenter(
+            recovery,
+            new StubOperationAuthorizationService(CreateCashier(
+                "SUPERVISOR",
+                Permissions.PosTerminal.Payment.Confirm)),
+            new RecordingAuditLogger(),
+            session,
+            notifyPropertyChanged: _ =>
+            {
+                if (failNextNotification)
+                {
+                    failNextNotification = false;
+                    throw new OutOfMemoryException("fatal property subscriber failure");
+                }
+            });
+
+        var recoveryTask = presenter.RecoverActiveCardPaymentSessionFromPaymentAsync();
+        await WaitUntilAsync(() => presenter.IsCardRecoveryResultDialogOpen);
+        failNextNotification = true;
+
+        Assert.Throws<OutOfMemoryException>(
+            () => presenter.RetryActiveSessionRecoveryCommand.Execute(null));
+
+        await WaitUntilAsync(() => recovery.ActiveSessionCallCount >= 2);
+        await WaitUntilAsync(() => presenter.IsCardRecoveryResultDialogOpen);
+        presenter.CloseCardRecoveryResultDialogCommand.Execute(null);
+
+        Assert.False(await recoveryTask.WaitAsync(TimeSpan.FromSeconds(1)));
+    }
+
     private static CardRecoveryPresenter CreatePresenter(
         ICardPaymentRecoveryService recovery,
         IOperationAuthorizationService authorization,
         IOperationAuditLogger audit,
         PosSessionState session,
-        Action<bool, string?>? setPaymentRecoveryBlocked = null)
+        Action<bool, string?>? setPaymentRecoveryBlocked = null,
+        Action<string?>? setStatusMessage = null,
+        Action<string>? notifyPropertyChanged = null,
+        Func<Task>? navigateToPaymentOnDraft = null,
+        Action<IReadOnlyList<PaymentTender>?, string?>? onCardRecoveryDraftRestored = null)
     {
         return new CardRecoveryPresenter(
             recovery,
@@ -243,6 +671,10 @@ public sealed class CardRefundRecoveryPresenterTests
             linklyBankReceiptPrinter: null,
             mainChildViewModelFactory: null!,
             cart: new PosCartService(),
+            setStatusMessage: setStatusMessage,
+            notifyPropertyChanged: notifyPropertyChanged,
+            navigateToPaymentOnDraft: navigateToPaymentOnDraft,
+            onCardRecoveryDraftRestored: onCardRecoveryDraftRestored,
             getSession: () => session,
             operationAuthorizationService: authorization,
             operationAuditLogger: audit,
@@ -321,6 +753,8 @@ public sealed class CardRefundRecoveryPresenterTests
 
         public CardPaymentRecoveryResult? ActiveSessionResult { get; init; }
 
+        public int ActiveSessionCallCount { get; private set; }
+
         public CardRefundSupervisorResolutionResult ResolveResult { get; init; } =
             new(true, "Saved.", LockRetained: true);
 
@@ -378,8 +812,11 @@ public sealed class CardRefundRecoveryPresenterTests
         public Task<CardPaymentRecoveryResult> RecoverActiveSessionAsync(
             PosCartService cart,
             PosSessionState session,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(ActiveSessionResult ?? CardPaymentRecoveryResult.None);
+            CancellationToken cancellationToken = default)
+        {
+            ActiveSessionCallCount++;
+            return Task.FromResult(ActiveSessionResult ?? CardPaymentRecoveryResult.None);
+        }
 
         public Task<CardPaymentRecoveryResult> ManuallyClearActiveSessionAsync(
             string sessionId,
@@ -461,5 +898,10 @@ public sealed class CardRefundRecoveryPresenterTests
         public List<OperationAuditEventDto> Events { get; } = [];
 
         public void Record(OperationAuditEventDto auditEvent) => Events.Add(auditEvent);
+    }
+
+    private sealed class ThrowingAuditLogger(Exception exception) : IOperationAuditLogger
+    {
+        public void Record(OperationAuditEventDto auditEvent) => throw exception;
     }
 }

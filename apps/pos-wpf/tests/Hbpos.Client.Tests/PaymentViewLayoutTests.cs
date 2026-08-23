@@ -115,7 +115,22 @@ public sealed class PaymentViewLayoutTests
             (string?)condition.Attribute("Binding") == "{Binding CardPaymentErrorOverlay.PrimaryActionKind}" &&
             (string?)condition.Attribute("Value") ==
             "{x:Static vm:CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious}");
+        Assert.Contains(conditions, condition =>
+            (string?)condition.Attribute("Binding") == "{Binding CardPaymentErrorOverlay.HasPrimaryAction}" &&
+            (string?)condition.Attribute("Value") == "True");
         Assert.True(HasSetter(trigger, "Visibility", "Visible"));
+
+        var safeExitButton = Assert.Single(document.Descendants(presentation + "Button").Where(element =>
+            (string?)element.Attribute("AutomationProperties.AutomationId") == "OpenCardRecoveryCenterFromCardErrorButton"));
+        Assert.Equal(
+            "{Binding OpenCardRecoveryCenterCommand}",
+            (string?)safeExitButton.Attribute("Command"));
+        var safeExitTrigger = Assert.Single(safeExitButton.Descendants(presentation + "MultiDataTrigger"));
+        var safeExitConditions = safeExitTrigger.Descendants(presentation + "Condition").ToArray();
+        Assert.Contains(safeExitConditions, condition =>
+            (string?)condition.Attribute("Binding") == "{Binding CardPaymentErrorOverlay.HasPrimaryAction}" &&
+            (string?)condition.Attribute("Value") == "False");
+        Assert.True(HasSetter(safeExitTrigger, "Visibility", "Visible"));
     }
 
     private static bool HasSetter(XElement trigger, string property, string value)

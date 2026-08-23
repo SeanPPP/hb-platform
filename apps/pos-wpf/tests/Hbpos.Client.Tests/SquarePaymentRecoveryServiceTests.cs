@@ -343,7 +343,14 @@ public sealed class SquarePaymentRecoveryServiceTests
                     10m,
                     PriceSourceKind.StoreRetailPrice)
             ],
-            []);
+            [
+                new LocalPayment(
+                    Guid.NewGuid(),
+                    PaymentMethodKind.Card,
+                    10m,
+                    "SQ:PAYMENT-EXISTING",
+                    IdempotencyKey: "SQUARE_ATTEMPT:bbbbbbbbccccddddeeeeffffffffffff")
+            ]);
     }
 
     /// <summary>与 CreateDraft 冻结购物车（SKU-10, $10.00）逐行一致的 claim canonical。</summary>

@@ -43,7 +43,10 @@ public sealed class ConfiguredLinklyTerminalClientTests
             CreateSettings(LinklyConnectionMode.LocalIp));
 
         Assert.True(result.Approved);
-        Assert.Equal("ANZ:LOCAL-1", result.Reference);
+        var request = Assert.IsType<EFTTransactionRequest>(localFactory.Client.LastRequest);
+        Assert.StartsWith("P", request.TxnRef, StringComparison.Ordinal);
+        Assert.Equal(16, request.TxnRef.Length);
+        Assert.Equal($"ANZ:{request.TxnRef}", result.Reference);
         Assert.Equal(1, localFactory.Client.ConnectCallCount);
     }
 
@@ -733,13 +736,15 @@ public sealed class ConfiguredLinklyTerminalClientTests
                 });
             }
 
+            var transactionRequest = Assert.IsType<EFTTransactionRequest>(LastRequest);
             return Task.FromResult<EFTResponse?>(new EFTTransactionResponse
             {
                 Success = true,
-                TxnRef = "LOCAL-1",
+                TxnRef = transactionRequest.TxnRef,
+                TxnType = transactionRequest.TxnType,
                 ResponseCode = "00",
                 ResponseText = "APPROVED",
-                AmtPurchase = 10m
+                AmtPurchase = transactionRequest.AmtPurchase
             });
         }
 

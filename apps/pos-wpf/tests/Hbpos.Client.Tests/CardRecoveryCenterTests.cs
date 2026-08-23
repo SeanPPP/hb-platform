@@ -237,7 +237,7 @@ public sealed class CardRecoveryCenterTests
     }
 
     [Fact]
-    public async Task Square_ResolveAttemptAsync_sale_confirm_not_processed_requires_empty_cart()
+    public async Task Square_ResolveAttemptAsync_sale_confirm_not_processed_persists_resolution_but_defers_restore_for_non_empty_cart()
     {
         var baseTime = DateTimeOffset.Parse("2026-06-05T09:00:00+10:00");
         var attempt = CreateSquareAttempt(
@@ -262,7 +262,9 @@ public sealed class CardRecoveryCenterTests
 
         Assert.False(result.Succeeded);
         Assert.True(result.LockRetained);
-        Assert.Null(repository.LastPaymentResolution);
+        Assert.True(result.ResolutionPersisted);
+        Assert.NotNull(repository.LastPaymentResolution);
+        Assert.False(cart.IsEmpty);
     }
 
     [Fact]
@@ -777,7 +779,7 @@ public sealed class CardRecoveryCenterTests
         Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.RecoveryResult!.Outcome);
         Assert.NotNull(orders.SavedOrder);
         var payment = Assert.Single(orders.SavedOrder!.Payments);
-        Assert.Equal("SQ:ref-1", payment.Reference);
+        Assert.Equal("ref-1", payment.Reference);
         var transaction = Assert.Single(payment.CardTransactions!);
         Assert.Equal("ref-1", transaction.TxnRef);
     }
@@ -1323,10 +1325,14 @@ public sealed class CardRecoveryCenterTests
                 {
                     CardRecoverySupervisorDecision.ConfirmProcessed => existing with
                     {
-                        Status = LocalSquarePaymentAttemptStatus.PaymentVerified,
-                        PaymentId = resolution.PaymentReference ?? ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
-                        PaymentStatus = ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
-                        ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedPaid
+                        Status = LocalSquarePaymentAttemptStatus.Recovering,
+                        SupervisorFinancialReference = resolution.PaymentReference,
+                        ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
+                        RecoveryPhase = CardRecoveryPhases.FinalizePending,
+                        RecoveryTargetStatus = LocalSquarePaymentAttemptStatus.OrderCompleted,
+                        CompletedAt = resolution.ResolvedAt,
+                        ResolvedAt = resolution.ResolvedAt,
+                        UpdatedAt = resolution.ResolvedAt
                     },
                     CardRecoverySupervisorDecision.ConfirmNotProcessed => existing with
                     {
@@ -1334,17 +1340,102 @@ public sealed class CardRecoveryCenterTests
                         CheckoutId = null,
                         PaymentId = null,
                         PaymentStatus = null,
-                        ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid
+                        SupervisorFinancialReference = null,
+                        ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+                        RecoveryPhase = CardRecoveryPhases.FinalizePending,
+                        RecoveryTargetStatus = LocalSquarePaymentAttemptStatus.Abandoned,
+                        CompletedAt = null,
+                        OrderCompletedAt = null,
+                        ResolvedAt = null,
+                        UpdatedAt = resolution.ResolvedAt
                     },
                     _ => existing with
                     {
                         Status = LocalSquarePaymentAttemptStatus.Recovering,
-                        ResponseCode = ActiveSessionSupervisorResolutionCodes.ContinueWaiting
+                        ResponseCode = ActiveSessionSupervisorResolutionCodes.ContinueWaiting,
+                        RecoveryPhase = CardRecoveryPhases.None,
+                        RecoveryTargetStatus = null,
+                        UpdatedAt = resolution.ResolvedAt
                     }
                 };
                 ReplaceAttempt(updated);
             }
 
+            return Task.FromResult(true);
+        }
+
+        public Task<bool> TryBeginRecoveryFinalizationAsync(
+            Guid attemptGuid,
+            LocalSquarePaymentAttemptStatus expectedStatus,
+            DateTimeOffset expectedUpdatedAt,
+            LocalSquarePaymentAttemptStatus targetStatus,
+            DateTimeOffset updatedAt,
+            CancellationToken cancellationToken = default)
+        {
+            var existing = _attempts.FirstOrDefault(attempt =>
+                attempt.AttemptGuid == attemptGuid &&
+                attempt.Status == expectedStatus &&
+                attempt.UpdatedAt == expectedUpdatedAt &&
+                !string.Equals(attempt.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal));
+            if (existing is null)
+            {
+                return Task.FromResult(false);
+            }
+
+            ReplaceAttempt(existing with
+            {
+                RecoveryPhase = CardRecoveryPhases.FinalizePending,
+                RecoveryTargetStatus = targetStatus,
+                UpdatedAt = updatedAt
+            });
+            return Task.FromResult(true);
+        }
+
+        public Task<bool> TryCompleteRecoveryFinalizationAsync(
+            Guid attemptGuid,
+            LocalSquarePaymentAttemptStatus expectedStatus,
+            DateTimeOffset expectedUpdatedAt,
+            LocalSquarePaymentAttemptStatus targetStatus,
+            DateTimeOffset completedAt,
+            CancellationToken cancellationToken = default)
+        {
+            if (TerminalizeException is not null)
+            {
+                throw TerminalizeException;
+            }
+
+            var existing = _attempts.FirstOrDefault(attempt =>
+                attempt.AttemptGuid == attemptGuid &&
+                attempt.Status == expectedStatus &&
+                attempt.UpdatedAt == expectedUpdatedAt &&
+                string.Equals(attempt.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) &&
+                attempt.RecoveryTargetStatus == targetStatus);
+            if (existing is null)
+            {
+                return Task.FromResult(false);
+            }
+
+            if (targetStatus == LocalSquarePaymentAttemptStatus.OrderCompleted)
+            {
+                MarkOrderCompletedCount++;
+            }
+            else if (targetStatus == LocalSquarePaymentAttemptStatus.Abandoned)
+            {
+                TerminalizeNotPaidCount++;
+                LastTerminalizedAttemptGuid = attemptGuid;
+            }
+
+            ReplaceAttempt(existing with
+            {
+                Status = targetStatus,
+                RecoveryPhase = CardRecoveryPhases.None,
+                RecoveryTargetStatus = null,
+                OrderCompletedAt = targetStatus == LocalSquarePaymentAttemptStatus.OrderCompleted
+                    ? completedAt
+                    : existing.OrderCompletedAt,
+                ResolvedAt = completedAt,
+                UpdatedAt = completedAt
+            });
             return Task.FromResult(true);
         }
 

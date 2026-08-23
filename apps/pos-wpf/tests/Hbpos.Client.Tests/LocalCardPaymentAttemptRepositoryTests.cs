@@ -24,6 +24,11 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
             Assert.Equal(1, await ReadScalarIntAsync(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'LocalSquarePaymentAttempts';"));
             Assert.Equal(1, await ReadScalarIntAsync(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'IX_LocalSquarePaymentAttempts_RecoverLatest';"));
             Assert.Equal(1, await ReadScalarIntAsync(connection, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'IX_LocalSquarePaymentAttempts_CheckoutId';"));
+            Assert.Equal(1, await ReadScalarIntAsync(connection, "SELECT COUNT(*) FROM pragma_table_info('LocalCardPaymentAttempts') WHERE name = 'RecoveryPhase';"));
+            Assert.Equal(1, await ReadScalarIntAsync(connection, "SELECT COUNT(*) FROM pragma_table_info('LocalCardPaymentAttempts') WHERE name = 'RecoveryTargetStatus';"));
+            Assert.Equal(1, await ReadScalarIntAsync(connection, "SELECT COUNT(*) FROM pragma_table_info('LocalSquarePaymentAttempts') WHERE name = 'RecoveryPhase';"));
+            Assert.Equal(1, await ReadScalarIntAsync(connection, "SELECT COUNT(*) FROM pragma_table_info('LocalSquarePaymentAttempts') WHERE name = 'RecoveryTargetStatus';"));
+            Assert.Equal(1, await ReadScalarIntAsync(connection, "SELECT COUNT(*) FROM pragma_table_info('LocalSquarePaymentAttempts') WHERE name = 'SupervisorFinancialReference';"));
             Assert.Equal(
                 [
                     "Pending",
@@ -274,7 +279,7 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
                 operationKind: "Refund") with
             {
                 CheckoutId = "checkout-1",
-                PaymentId = "payment-1"
+                PaymentId = null
             };
 
             await schema.InitializeAsync();
@@ -306,6 +311,8 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
             Assert.Null(saved.CheckoutId);
             Assert.Null(saved.PaymentId);
             Assert.Equal(CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded, saved.ResponseCode);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, saved.RecoveryPhase);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, saved.RecoveryTargetStatus);
             Assert.Contains("Bank search returned no refund", saved.ResponseText, StringComparison.Ordinal);
         }
         finally
@@ -329,7 +336,7 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
                 operationKind: "Refund") with
             {
                 CheckoutId = "checkout-refund",
-                PaymentId = "payment-original"
+                PaymentId = null
             };
 
             await schema.InitializeAsync();
@@ -356,11 +363,14 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
             Assert.True(applied);
             Assert.False(duplicate);
             Assert.NotNull(saved);
-            Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, saved.Status);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, saved.Status);
             Assert.Equal(attempt.IdempotencyKey, saved.IdempotencyKey);
-            Assert.Equal("refund-square-1", saved.PaymentId);
-            Assert.Equal(CardRefundSupervisorResolutionCodes.ConfirmedRefunded, saved.PaymentStatus);
+            Assert.Null(saved.PaymentId);
+            Assert.Null(saved.PaymentStatus);
+            Assert.Equal("refund-square-1", saved.SupervisorFinancialReference);
             Assert.Equal(CardRefundSupervisorResolutionCodes.ConfirmedRefunded, saved.ResponseCode);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, saved.RecoveryPhase);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.OrderCompleted, saved.RecoveryTargetStatus);
             Assert.NotNull(saved.CompletedAt);
             Assert.NotNull(saved.ResolvedAt);
         }
@@ -998,6 +1008,76 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
     }
 
     [Fact]
+    public async Task Local_schema_service_migrates_open_attempts_to_none_phase_without_changing_status()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await using (var connection = await store.OpenConnectionAsync())
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    CREATE TABLE LocalCardPaymentAttempts (
+                        AttemptGuid TEXT PRIMARY KEY, SessionId TEXT NULL, TxnRef TEXT NULL,
+                        Processor TEXT NOT NULL, Environment TEXT NOT NULL, ConnectionMode TEXT NOT NULL,
+                        TxnType TEXT NOT NULL, Amount TEXT NOT NULL, Status TEXT NOT NULL,
+                        OrderDraftJson TEXT NOT NULL, StoreCode TEXT NOT NULL, DeviceCode TEXT NOT NULL,
+                        CashierId TEXT NOT NULL, ResponseCode TEXT NULL, ResponseText TEXT NULL,
+                        PaymentReference TEXT NULL, CreatedAt TEXT NOT NULL, UpdatedAt TEXT NOT NULL,
+                        CompletedAt TEXT NULL, AcknowledgedAt TEXT NULL,
+                        OperationKind TEXT NOT NULL DEFAULT 'Sale', OperationGuid TEXT NULL,
+                        SubmissionToken TEXT NULL, RefundBusinessKey TEXT NULL);
+                    CREATE TABLE LocalSquarePaymentAttempts (
+                        AttemptGuid TEXT PRIMARY KEY, CheckoutId TEXT NULL, IdempotencyKey TEXT NOT NULL,
+                        DeviceId TEXT NOT NULL, LocationId TEXT NOT NULL, Environment TEXT NOT NULL,
+                        Amount TEXT NOT NULL, AmountCents INTEGER NOT NULL, Currency TEXT NOT NULL,
+                        Status TEXT NOT NULL, CheckoutStatus TEXT NULL, CancelReason TEXT NULL,
+                        OrderDraftJson TEXT NOT NULL, StoreCode TEXT NOT NULL, DeviceCode TEXT NOT NULL,
+                        CashierId TEXT NOT NULL, PaymentId TEXT NULL, PaymentStatus TEXT NULL,
+                        ResponseCode TEXT NULL, ResponseText TEXT NULL, CreatedAt TEXT NOT NULL,
+                        UpdatedAt TEXT NOT NULL, CompletedAt TEXT NULL, OrderCompletedAt TEXT NULL,
+                        ResolvedAt TEXT NULL, OperationKind TEXT NOT NULL DEFAULT 'Sale',
+                        OperationGuid TEXT NULL, SubmissionToken TEXT NULL, RefundBusinessKey TEXT NULL);
+                    INSERT INTO LocalCardPaymentAttempts (
+                        AttemptGuid, Processor, Environment, ConnectionMode, TxnType, Amount, Status,
+                        OrderDraftJson, StoreCode, DeviceCode, CashierId, CreatedAt, UpdatedAt)
+                    VALUES ('11111111-1111-1111-1111-111111111111', 'Linkly', 'Production', 'LocalIp',
+                        'P', '10', 'Approved', '{}', 'S001', 'POS-01', 'C001', '2026-01-01', '2026-01-02');
+                    INSERT INTO LocalSquarePaymentAttempts (
+                        AttemptGuid, IdempotencyKey, DeviceId, LocationId, Environment, Amount,
+                        AmountCents, Currency, Status, OrderDraftJson, StoreCode, DeviceCode,
+                        CashierId, CreatedAt, UpdatedAt)
+                    VALUES ('22222222-2222-2222-2222-222222222222', 'idem', 'dev', 'loc', 'Production',
+                        '10', 1000, 'AUD', 'PaymentVerified', '{}', 'S001', 'POS-01', 'C001',
+                        '2026-01-01', '2026-01-02');
+                    """;
+                await command.ExecuteNonQueryAsync();
+            }
+
+            await new LocalSchemaService(store).InitializeAsync();
+
+            await using var migrated = await store.OpenConnectionAsync();
+            Assert.Equal(
+                "Approved|None",
+                await ReadScalarStringAsync(
+                    migrated,
+                    "SELECT Status || '|' || RecoveryPhase FROM LocalCardPaymentAttempts LIMIT 1;"));
+            Assert.Equal(
+                "PaymentVerified|None",
+                await ReadScalarStringAsync(
+                    migrated,
+                    "SELECT Status || '|' || RecoveryPhase FROM LocalSquarePaymentAttempts LIMIT 1;"));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
     public async Task Square_payment_resolution_persists_three_state_cas_and_journal()
     {
         var databasePath = CreateTempDatabasePath();
@@ -1029,17 +1109,20 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
                 CreateSquareSaleJournal(confirmedAttempt.AttemptGuid, "ConfirmProcessed", "Confirmed paid"));
             var confirmedSaved = await repository.GetAttemptAsync(confirmedAttempt.AttemptGuid);
             Assert.True(confirmed);
-            Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, confirmedSaved!.Status);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, confirmedSaved!.Status);
             Assert.Equal("SUPERVISOR_CONFIRMED_PAID", confirmedSaved.ResponseCode);
-            Assert.Equal("ref-1", confirmedSaved.PaymentId);
+            Assert.Null(confirmedSaved.PaymentId);
+            Assert.Equal("ref-1", confirmedSaved.SupervisorFinancialReference);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, confirmedSaved.RecoveryPhase);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.OrderCompleted, confirmedSaved.RecoveryTargetStatus);
 
             var duplicate = await repository.ResolvePaymentWithJournalAsync(
                 new SquarePaymentResolution(
                     confirmedAttempt.AttemptGuid,
                     CardRecoverySupervisorDecision.ConfirmProcessed,
                     "Duplicate",
-                    Evidence: null,
-                    PaymentReference: null,
+                    Evidence: "Bank matched again",
+                    PaymentReference: "ref-duplicate",
                     confirmedAttempt.Status,
                     confirmedAttempt.UpdatedAt,
                     resolvedAt),
@@ -1070,6 +1153,8 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
             Assert.Equal(LocalSquarePaymentAttemptStatus.Pending, notPaidSaved!.Status);
             Assert.Equal("SUPERVISOR_CONFIRMED_NOT_PAID", notPaidSaved.ResponseCode);
             Assert.Null(notPaidSaved.CheckoutId);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, notPaidSaved.RecoveryPhase);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, notPaidSaved.RecoveryTargetStatus);
 
             var waitingAttempt = CreateSquareAttempt(
                 attemptGuid: Guid.Parse("40000000-0000-0000-0000-000000000003"),
@@ -1275,5 +1360,12 @@ public sealed class LocalCardPaymentAttemptRepositoryTests
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
         return Convert.ToInt32(await command.ExecuteScalarAsync());
+    }
+
+    private static async Task<string> ReadScalarStringAsync(SqliteConnection connection, string sql)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return Convert.ToString(await command.ExecuteScalarAsync()) ?? string.Empty;
     }
 }

@@ -44,7 +44,9 @@ public sealed record LocalCardPaymentAttempt(
     string OperationKind = "Sale",
     Guid? OperationGuid = null,
     string? SubmissionToken = null,
-    string? RefundBusinessKey = null);
+    string? RefundBusinessKey = null,
+    string RecoveryPhase = CardRecoveryPhases.None,
+    string? RecoveryTargetStatus = null);
 
 public enum ActiveSessionSupervisorDecision
 {
@@ -89,7 +91,11 @@ public sealed record LinklyPaymentAttemptContext(
     Func<string, string?, DateTimeOffset, CancellationToken, Task> BindSessionAsync,
     string? TxnRef = null,
     string? SubmissionToken = null,
-    Func<CardTerminalSettings, LinklyCloudBackendSessionResponse, CancellationToken, Task<LinklyActiveSessionTakeoverResult>>? TakeOverActiveSessionAsync = null);
+    Func<CardTerminalSettings, LinklyCloudBackendSessionResponse, CancellationToken, Task<LinklyActiveSessionTakeoverResult>>? TakeOverActiveSessionAsync = null)
+{
+    // 中文注释：仅在当前异步调用内固定 attempt 创建时的路由配置，不持久化也不记录敏感设置。
+    internal CardTerminalSettings? SettingsSnapshot { get; init; }
+}
 
 public interface ILinklyPaymentAttemptContextAccessor
 {
@@ -203,6 +209,19 @@ public interface ILocalCardPaymentAttemptRepository
         DateTimeOffset updatedAt,
         CancellationToken cancellationToken = default);
 
+    async Task<bool> TryUpdateSessionAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        string sessionId,
+        string? txnRef,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await UpdateSessionAsync(attemptGuid, sessionId, txnRef, updatedAt, cancellationToken);
+        return true;
+    }
+
     Task UpdateOutcomeAsync(
         Guid attemptGuid,
         LocalCardPaymentAttemptStatus status,
@@ -211,6 +230,28 @@ public interface ILocalCardPaymentAttemptRepository
         string? paymentReference,
         DateTimeOffset completedAt,
         CancellationToken cancellationToken = default);
+
+    async Task<bool> TryUpdateOutcomeAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        LocalCardPaymentAttemptStatus status,
+        string? responseCode,
+        string? responseText,
+        string? paymentReference,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await UpdateOutcomeAsync(
+            attemptGuid,
+            status,
+            responseCode,
+            responseText,
+            paymentReference,
+            completedAt,
+            cancellationToken);
+        return true;
+    }
 
     Task MarkOrderCompletedAsync(
         Guid attemptGuid,
@@ -226,6 +267,138 @@ public interface ILocalCardPaymentAttemptRepository
         Guid attemptGuid,
         DateTimeOffset updatedAt,
         CancellationToken cancellationToken = default);
+
+    // 以下为恢复中心的乐观并发(CAS)写入。旧实现仍保留旧签名，作为未覆盖 fake 的兼容回退。
+    async Task<bool> TryMarkRecoveringAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await MarkRecoveringAsync(attemptGuid, updatedAt, cancellationToken);
+        return true;
+    }
+
+    async Task<bool> TryPersistRecoveryOutcomeAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus openStatus,
+        string? responseCode,
+        string? responseText,
+        string? paymentReference,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        LocalCardPaymentAttemptStatus recoveryTargetStatus,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await UpdateOutcomeAsync(
+            attemptGuid,
+            openStatus,
+            responseCode,
+            responseText,
+            paymentReference,
+            updatedAt,
+            cancellationToken);
+        return true;
+    }
+
+    async Task<bool> TryFinalizeRecoveryOutcomeAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken = default)
+    {
+        return await TryFinalizeRecoveryOutcomeAsync(
+            attemptGuid,
+            expectedStatus,
+            expectedUpdatedAt,
+            LocalCardPaymentAttemptStatus.OrderCompleted,
+            completedAt,
+            cancellationToken);
+    }
+
+    async Task<bool> TryFinalizeRecoveryOutcomeAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        LocalCardPaymentAttemptStatus recoveryTargetStatus,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken = default)
+    {
+        if (recoveryTargetStatus == LocalCardPaymentAttemptStatus.OrderCompleted)
+        {
+            await MarkOrderCompletedAsync(attemptGuid, completedAt, cancellationToken);
+            return true;
+        }
+
+        var current = await GetAttemptAsync(attemptGuid, cancellationToken);
+        await UpdateOutcomeAsync(
+            attemptGuid,
+            recoveryTargetStatus,
+            current?.ResponseCode,
+            current?.ResponseText,
+            current?.PaymentReference,
+            completedAt,
+            cancellationToken);
+        return true;
+    }
+
+    async Task<bool> TryFinalizeSupervisorNotPaidAndAcknowledgeAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken = default)
+    {
+        // 旧 fake 只实现拆开的 CAS 时仍可编译；真实 SQLite 实现覆盖为单条原子更新。
+        var finalized = await TryFinalizeRecoveryOutcomeAsync(
+            attemptGuid,
+            expectedStatus,
+            expectedUpdatedAt,
+            LocalCardPaymentAttemptStatus.Abandoned,
+            completedAt,
+            cancellationToken);
+        return finalized && await TryMarkAcknowledgedAsync(
+            attemptGuid,
+            LocalCardPaymentAttemptStatus.Abandoned,
+            completedAt,
+            completedAt,
+            cancellationToken);
+    }
+
+    Task<bool> TryRetargetRecoveryFinalizationAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        LocalCardPaymentAttemptStatus expectedTargetStatus,
+        LocalCardPaymentAttemptStatus targetStatus,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(true);
+
+    async Task<bool> TryMarkOrderCompletedAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await MarkOrderCompletedAsync(attemptGuid, completedAt, cancellationToken);
+        return true;
+    }
+
+    async Task<bool> TryMarkAcknowledgedAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        DateTimeOffset acknowledgedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await MarkAcknowledgedAsync(attemptGuid, acknowledgedAt, cancellationToken);
+        return true;
+    }
 
     Task<LocalCardPaymentAttempt?> GetLatestOpenAttemptAsync(
         string storeCode,
@@ -257,6 +430,14 @@ public interface ILocalCardPaymentAttemptRepository
         LocalFinancialSupervisorResolution journal,
         CancellationToken cancellationToken = default) =>
         ResolveRefundAsync(resolution, cancellationToken);
+
+    Task<bool> ResolveRefundWithJournalAsync(
+        CardRefundAttemptResolution resolution,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        LocalFinancialSupervisorResolution journal,
+        CancellationToken cancellationToken = default) =>
+        ResolveRefundWithJournalAsync(resolution, journal, cancellationToken);
 
     Task<bool> ResolveActiveSessionWithJournalAsync(
         ActiveSessionResolution resolution,
@@ -322,7 +503,9 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                 OperationKind,
                 OperationGuid,
                 SubmissionToken,
-                RefundBusinessKey
+                RefundBusinessKey,
+                RecoveryPhase,
+                RecoveryTargetStatus
             )
             VALUES
             (
@@ -349,7 +532,9 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                 $OperationKind,
                 $OperationGuid,
                 $SubmissionToken,
-                $RefundBusinessKey
+                $RefundBusinessKey,
+                $RecoveryPhase,
+                $RecoveryTargetStatus
             );
             """;
         AddAttemptParameters(command, attempt);
@@ -380,7 +565,7 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                     TxnType, Amount, Status, OrderDraftJson, StoreCode, DeviceCode, CashierId,
                     ResponseCode, ResponseText, PaymentReference, CreatedAt, UpdatedAt,
                     CompletedAt, AcknowledgedAt, OperationKind, OperationGuid, SubmissionToken,
-                    RefundBusinessKey
+                    RefundBusinessKey, RecoveryPhase, RecoveryTargetStatus
                 )
                 VALUES
                 (
@@ -388,7 +573,7 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                     $TxnType, $Amount, $Status, $OrderDraftJson, $StoreCode, $DeviceCode, $CashierId,
                     $ResponseCode, $ResponseText, $PaymentReference, $CreatedAt, $UpdatedAt,
                     $CompletedAt, $AcknowledgedAt, $OperationKind, $OperationGuid, $SubmissionToken,
-                    $RefundBusinessKey
+                    $RefundBusinessKey, $RecoveryPhase, $RecoveryTargetStatus
                 );
                 """;
             AddAttemptParameters(insertCommand, attempt);
@@ -434,6 +619,30 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         DateTimeOffset updatedAt,
         CancellationToken cancellationToken = default)
     {
+        var current = await GetAttemptAsync(attemptGuid, cancellationToken)
+            ?? throw new InvalidOperationException("Card payment attempt does not exist.");
+        if (!await TryUpdateSessionAsync(
+                attemptGuid,
+                current.Status,
+                current.UpdatedAt,
+                sessionId,
+                txnRef,
+                updatedAt,
+                cancellationToken))
+        {
+            throw new InvalidOperationException("Card payment attempt changed before the session could be bound.");
+        }
+    }
+
+    public async Task<bool> TryUpdateSessionAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        string sessionId,
+        string? txnRef,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
         await using var connection = await store.OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
         command.CommandText = """
@@ -444,24 +653,62 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                 Status = $Status,
                 UpdatedAt = $UpdatedAt
             WHERE AttemptGuid = $AttemptGuid
-              AND COALESCE(ResponseCode, '') NOT IN (
+                  AND COALESCE(ResponseCode, '') NOT IN (
                     $ResolvedCode1,
                     $ResolvedCode2,
                     $ResolvedCode3,
                     $ResolvedCode4
-                  );
+                  )
+              AND Status = $ExpectedStatus
+              AND UpdatedAt = $ExpectedUpdatedAt
+              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5, $TerminalStatus6)
+              AND COALESCE(RecoveryPhase, 'None') != 'FinalizePending';
             """;
         command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
         command.Parameters.AddWithValue("$SessionId", sessionId);
         command.Parameters.AddWithValue("$TxnRef", (object?)txnRef ?? DBNull.Value);
         command.Parameters.AddWithValue("$Status", LocalCardPaymentAttemptStatus.SessionStarted.ToString());
+        command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
+        command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
         command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
+        for (var i = 0; i < TerminalStatuses.Length; i++)
+        {
+            command.Parameters.AddWithValue($"$TerminalStatus{i + 1}", TerminalStatuses[i]);
+        }
         AddSupervisorResolvedCodeParameters(command);
-        await EnsureSingleUpdateAsync(command, cancellationToken);
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
     public async Task UpdateOutcomeAsync(
         Guid attemptGuid,
+        LocalCardPaymentAttemptStatus status,
+        string? responseCode,
+        string? responseText,
+        string? paymentReference,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken = default)
+    {
+        var current = await GetAttemptAsync(attemptGuid, cancellationToken)
+            ?? throw new InvalidOperationException("Card payment attempt does not exist.");
+        if (!await TryUpdateOutcomeAsync(
+                attemptGuid,
+                current.Status,
+                current.UpdatedAt,
+                status,
+                responseCode,
+                responseText,
+                paymentReference,
+                completedAt,
+                cancellationToken))
+        {
+            throw new InvalidOperationException("Card payment attempt changed before the outcome could be saved.");
+        }
+    }
+
+    public async Task<bool> TryUpdateOutcomeAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
         LocalCardPaymentAttemptStatus status,
         string? responseCode,
         string? responseText,
@@ -486,17 +733,27 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                     $ResolvedCode2,
                     $ResolvedCode3,
                     $ResolvedCode4
-                  );
+                  )
+              AND Status = $ExpectedStatus
+              AND UpdatedAt = $ExpectedUpdatedAt
+              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5, $TerminalStatus6)
+              AND COALESCE(RecoveryPhase, 'None') != 'FinalizePending';
             """;
         command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
         command.Parameters.AddWithValue("$Status", status.ToString());
         command.Parameters.AddWithValue("$ResponseCode", (object?)responseCode ?? DBNull.Value);
         command.Parameters.AddWithValue("$ResponseText", (object?)responseText ?? DBNull.Value);
         command.Parameters.AddWithValue("$PaymentReference", (object?)paymentReference ?? DBNull.Value);
+        command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
+        command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
         command.Parameters.AddWithValue("$CompletedAt", completedAt.ToString("O"));
         command.Parameters.AddWithValue("$UpdatedAt", completedAt.ToString("O"));
+        for (var i = 0; i < TerminalStatuses.Length; i++)
+        {
+            command.Parameters.AddWithValue($"$TerminalStatus{i + 1}", TerminalStatuses[i]);
+        }
         AddSupervisorResolvedCodeParameters(command);
-        await EnsureSingleUpdateAsync(command, cancellationToken);
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
     public async Task MarkOrderCompletedAsync(
@@ -557,13 +814,280 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                     $ResolvedCode2,
                     $ResolvedCode3,
                     $ResolvedCode4
-                  );
+                  )
+              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5, $TerminalStatus6)
+              AND COALESCE(RecoveryPhase, 'None') != 'FinalizePending';
             """;
         command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
         command.Parameters.AddWithValue("$Status", LocalCardPaymentAttemptStatus.Recovering.ToString());
         command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
+        AddTerminalStatusParameters(command);
         AddSupervisorResolvedCodeParameters(command);
         await EnsureSingleUpdateAsync(command, cancellationToken);
+    }
+
+    public async Task<bool> TryMarkRecoveringAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE LocalCardPaymentAttempts
+            SET
+                Status = $Status,
+                UpdatedAt = $UpdatedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND Status = $ExpectedStatus
+              AND UpdatedAt = $ExpectedUpdatedAt
+              AND COALESCE(ResponseCode, '') NOT IN (
+                    $ResolvedCode1,
+                    $ResolvedCode2,
+                    $ResolvedCode3,
+                    $ResolvedCode4
+                  )
+              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5, $TerminalStatus6)
+              AND COALESCE(RecoveryPhase, 'None') != 'FinalizePending';
+            """;
+        command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
+        command.Parameters.AddWithValue("$Status", LocalCardPaymentAttemptStatus.Recovering.ToString());
+        command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
+        command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
+        AddTerminalStatusParameters(command);
+        AddSupervisorResolvedCodeParameters(command);
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    public async Task<bool> TryPersistRecoveryOutcomeAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus openStatus,
+        string? responseCode,
+        string? responseText,
+        string? paymentReference,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        LocalCardPaymentAttemptStatus recoveryTargetStatus,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE LocalCardPaymentAttempts
+            SET
+                Status = $Status,
+                ResponseCode = $ResponseCode,
+                ResponseText = $ResponseText,
+                PaymentReference = $PaymentReference,
+                RecoveryPhase = 'FinalizePending',
+                RecoveryTargetStatus = $RecoveryTargetStatus,
+                UpdatedAt = $UpdatedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND Status = $ExpectedStatus
+              AND UpdatedAt = $ExpectedUpdatedAt
+              AND COALESCE(ResponseCode, '') NOT IN (
+                    $ResolvedCode1,
+                    $ResolvedCode2,
+                    $ResolvedCode3,
+                    $ResolvedCode4
+                  )
+              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5, $TerminalStatus6)
+              AND COALESCE(RecoveryPhase, 'None') != 'FinalizePending';
+            """;
+        command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
+        command.Parameters.AddWithValue("$Status", openStatus.ToString());
+        command.Parameters.AddWithValue("$ResponseCode", (object?)responseCode ?? DBNull.Value);
+        command.Parameters.AddWithValue("$ResponseText", (object?)responseText ?? DBNull.Value);
+        command.Parameters.AddWithValue("$PaymentReference", (object?)paymentReference ?? DBNull.Value);
+        command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
+        command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$RecoveryTargetStatus", recoveryTargetStatus.ToString());
+        command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
+        AddTerminalStatusParameters(command);
+        AddSupervisorResolvedCodeParameters(command);
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    public async Task<bool> TryFinalizeRecoveryOutcomeAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken = default)
+    {
+        return await TryFinalizeRecoveryOutcomeAsync(
+            attemptGuid,
+            expectedStatus,
+            expectedUpdatedAt,
+            LocalCardPaymentAttemptStatus.OrderCompleted,
+            completedAt,
+            cancellationToken);
+    }
+
+    public async Task<bool> TryFinalizeRecoveryOutcomeAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        LocalCardPaymentAttemptStatus recoveryTargetStatus,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE LocalCardPaymentAttempts
+            SET
+                Status = $RecoveryTargetStatus,
+                RecoveryPhase = 'None',
+                RecoveryTargetStatus = NULL,
+                CompletedAt = COALESCE(CompletedAt, $CompletedAt),
+                UpdatedAt = $CompletedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND Status = $ExpectedStatus
+              AND UpdatedAt = $ExpectedUpdatedAt
+              AND RecoveryPhase = 'FinalizePending'
+              AND RecoveryTargetStatus = $RecoveryTargetStatus;
+            """;
+        command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
+        command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
+        command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$RecoveryTargetStatus", recoveryTargetStatus.ToString());
+        command.Parameters.AddWithValue("$CompletedAt", completedAt.ToString("O"));
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    public async Task<bool> TryFinalizeSupervisorNotPaidAndAcknowledgeAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE LocalCardPaymentAttempts
+            SET
+                Status = $AbandonedStatus,
+                RecoveryPhase = 'None',
+                RecoveryTargetStatus = NULL,
+                CompletedAt = COALESCE(CompletedAt, $CompletedAt),
+                AcknowledgedAt = $CompletedAt,
+                UpdatedAt = $CompletedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND Status = $ExpectedStatus
+              AND UpdatedAt = $ExpectedUpdatedAt
+              AND ResponseCode = $ConfirmedNotPaidCode
+              AND RecoveryPhase = 'FinalizePending'
+              AND RecoveryTargetStatus = $AbandonedStatus
+              AND AcknowledgedAt IS NULL;
+            """;
+        command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
+        command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
+        command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$AbandonedStatus", LocalCardPaymentAttemptStatus.Abandoned.ToString());
+        command.Parameters.AddWithValue("$ConfirmedNotPaidCode", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
+        command.Parameters.AddWithValue("$CompletedAt", completedAt.ToString("O"));
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    public async Task<bool> TryRetargetRecoveryFinalizationAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        LocalCardPaymentAttemptStatus expectedTargetStatus,
+        LocalCardPaymentAttemptStatus targetStatus,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE LocalCardPaymentAttempts
+            SET RecoveryTargetStatus = $TargetStatus,
+                UpdatedAt = $UpdatedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND Status = $ExpectedStatus
+              AND UpdatedAt = $ExpectedUpdatedAt
+              AND RecoveryPhase = 'FinalizePending'
+              AND RecoveryTargetStatus = $ExpectedTargetStatus;
+            """;
+        command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
+        command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
+        command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$ExpectedTargetStatus", expectedTargetStatus.ToString());
+        command.Parameters.AddWithValue("$TargetStatus", targetStatus.ToString());
+        command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    public async Task<bool> TryMarkOrderCompletedAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        DateTimeOffset completedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE LocalCardPaymentAttempts
+            SET
+                Status = $Status,
+                RecoveryPhase = 'None',
+                RecoveryTargetStatus = NULL,
+                CompletedAt = COALESCE(CompletedAt, $CompletedAt),
+                UpdatedAt = $CompletedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND Status = $ExpectedStatus
+              AND UpdatedAt = $ExpectedUpdatedAt
+              AND COALESCE(ResponseCode, '') NOT IN (
+                    $ResolvedCode1,
+                    $ResolvedCode2,
+                    $ResolvedCode3,
+                    $ResolvedCode4
+                  )
+              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5, $TerminalStatus6)
+              AND COALESCE(RecoveryPhase, 'None') != 'FinalizePending';
+            """;
+        command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
+        command.Parameters.AddWithValue("$Status", LocalCardPaymentAttemptStatus.OrderCompleted.ToString());
+        command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
+        command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$CompletedAt", completedAt.ToString("O"));
+        AddTerminalStatusParameters(command);
+        AddSupervisorResolvedCodeParameters(command);
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
+    }
+
+    public async Task<bool> TryMarkAcknowledgedAsync(
+        Guid attemptGuid,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        DateTimeOffset acknowledgedAt,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = await store.OpenConnectionAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            UPDATE LocalCardPaymentAttempts
+            SET
+                AcknowledgedAt = $AcknowledgedAt,
+                UpdatedAt = $AcknowledgedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND Status = $ExpectedStatus
+              AND UpdatedAt = $ExpectedUpdatedAt
+              AND COALESCE(RecoveryPhase, 'None') != 'FinalizePending';
+            """;
+        command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
+        command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
+        command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue("$AcknowledgedAt", acknowledgedAt.ToString("O"));
+        return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
     public async Task<LocalCardPaymentAttempt> CreateOrGetOpenRefundAsync(
@@ -607,7 +1131,9 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                     OperationKind,
                     OperationGuid,
                     SubmissionToken,
-                    RefundBusinessKey
+                    RefundBusinessKey,
+                    RecoveryPhase,
+                    RecoveryTargetStatus
                 )
                 VALUES
                 (
@@ -634,7 +1160,9 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                     $OperationKind,
                     $OperationGuid,
                     $SubmissionToken,
-                    $RefundBusinessKey
+                    $RefundBusinessKey,
+                    $RecoveryPhase,
+                    $RecoveryTargetStatus
                 );
                 """;
             AddAttemptParameters(insertCommand, attempt);
@@ -670,7 +1198,9 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                     OperationKind,
                     OperationGuid,
                     SubmissionToken,
-                    RefundBusinessKey
+                    RefundBusinessKey,
+                    RecoveryPhase,
+                    RecoveryTargetStatus
                 FROM LocalCardPaymentAttempts
                 WHERE OperationKind = 'Refund'
                   AND RefundBusinessKey = $RefundBusinessKey
@@ -713,7 +1243,8 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
               AND Status = $PendingStatus
               AND UpdatedAt = $ExpectedUpdatedAt
               AND SubmissionToken IS NULL
-              AND COALESCE(ResponseCode, '') IN ('', $ConfirmedNotRefunded);
+              AND COALESCE(ResponseCode, '') IN ('', $ConfirmedNotRefunded)
+              AND COALESCE(RecoveryPhase, 'None') = 'None';
             """;
         command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
         command.Parameters.AddWithValue("$PendingStatus", LocalCardPaymentAttemptStatus.Pending.ToString());
@@ -836,12 +1367,20 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
-    public Task<bool> ResolveRefundAsync(
+    public async Task<bool> ResolveRefundAsync(
         CardRefundAttemptResolution resolution,
-        CancellationToken cancellationToken = default) =>
-        ResolveRefundCoreAsync(resolution, journal: null, cancellationToken);
+        CancellationToken cancellationToken = default)
+    {
+        var current = await GetAttemptAsync(resolution.AttemptGuid, cancellationToken);
+        return current is not null && await ResolveRefundCoreAsync(
+            resolution,
+            current.Status,
+            current.UpdatedAt,
+            journal: null,
+            cancellationToken);
+    }
 
-    public Task<bool> ResolveRefundWithJournalAsync(
+    public async Task<bool> ResolveRefundWithJournalAsync(
         CardRefundAttemptResolution resolution,
         LocalFinancialSupervisorResolution journal,
         CancellationToken cancellationToken = default)
@@ -853,11 +1392,41 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
             throw new ArgumentException("主管结案 journal 与 Linkly 退款 attempt 不匹配。", nameof(journal));
         }
 
-        return ResolveRefundCoreAsync(resolution, journal, cancellationToken);
+        var current = await GetAttemptAsync(resolution.AttemptGuid, cancellationToken);
+        return current is not null && await ResolveRefundCoreAsync(
+            resolution,
+            current.Status,
+            current.UpdatedAt,
+            journal,
+            cancellationToken);
+    }
+
+    public Task<bool> ResolveRefundWithJournalAsync(
+        CardRefundAttemptResolution resolution,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        LocalFinancialSupervisorResolution journal,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+        if (journal.Target != LocalFinancialSupervisorResolutionTarget.CardRefund ||
+            journal.AttemptGuid != resolution.AttemptGuid)
+        {
+            throw new ArgumentException("主管结案 journal 与 Linkly 退款 attempt 不匹配。", nameof(journal));
+        }
+
+        return ResolveRefundCoreAsync(
+            resolution,
+            expectedStatus,
+            expectedUpdatedAt,
+            journal,
+            cancellationToken);
     }
 
     private async Task<bool> ResolveRefundCoreAsync(
         CardRefundAttemptResolution resolution,
+        LocalCardPaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
         LocalFinancialSupervisorResolution? journal,
         CancellationToken cancellationToken)
     {
@@ -875,10 +1444,15 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                     ResponseText = $ResponseText,
                     PaymentReference = $PaymentReference,
                     SubmissionToken = NULL,
+                    RecoveryPhase = $RecoveryPhase,
+                    RecoveryTargetStatus = $RecoveryTargetStatus,
                     CompletedAt = $ResolvedAt,
                     UpdatedAt = $ResolvedAt
                 WHERE AttemptGuid = $AttemptGuid
                   AND OperationKind = 'Refund'
+                  AND Status = $ExpectedStatus
+                  AND UpdatedAt = $ExpectedUpdatedAt
+                  AND COALESCE(RecoveryPhase, $NoRecoveryPhase) <> $FinalizePending
                   AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
                   AND Status IN ($ReviewStatus1, $ReviewStatus2, $ReviewStatus3);
                 """,
@@ -892,11 +1466,16 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                     ResponseText = $ResponseText,
                     PaymentReference = NULL,
                     SubmissionToken = NULL,
+                    RecoveryPhase = $RecoveryPhase,
+                    RecoveryTargetStatus = $RecoveryTargetStatus,
                     CompletedAt = NULL,
                     AcknowledgedAt = NULL,
                     UpdatedAt = $ResolvedAt
                 WHERE AttemptGuid = $AttemptGuid
                   AND OperationKind = 'Refund'
+                  AND Status = $ExpectedStatus
+                  AND UpdatedAt = $ExpectedUpdatedAt
+                  AND COALESCE(RecoveryPhase, $NoRecoveryPhase) <> $FinalizePending
                   AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
                   AND Status IN ($ReviewStatus1, $ReviewStatus2, $ReviewStatus3);
                 """,
@@ -907,9 +1486,14 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                     ResponseCode = $ResponseCode,
                     ResponseText = $ResponseText,
                     SubmissionToken = NULL,
+                    RecoveryPhase = $RecoveryPhase,
+                    RecoveryTargetStatus = $RecoveryTargetStatus,
                     UpdatedAt = $ResolvedAt
                 WHERE AttemptGuid = $AttemptGuid
                   AND OperationKind = 'Refund'
+                  AND Status = $ExpectedStatus
+                  AND UpdatedAt = $ExpectedUpdatedAt
+                  AND COALESCE(RecoveryPhase, $NoRecoveryPhase) <> $FinalizePending
                   AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
                   AND Status IN ($ReviewStatus1, $ReviewStatus2, $ReviewStatus3);
                 """
@@ -932,6 +1516,23 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         command.Parameters.AddWithValue("$PaymentReference", (object?)Normalize(resolution.RefundReference) ?? DBNull.Value);
         command.Parameters.AddWithValue("$RetryTxnRef", (object?)Normalize(resolution.RetryTxnRef) ?? DBNull.Value);
         command.Parameters.AddWithValue("$ResolvedAt", resolution.ResolvedAt.ToString("O"));
+        command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
+        command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
+        command.Parameters.AddWithValue(
+            "$RecoveryPhase",
+            resolution.Decision == CardRefundSupervisorDecision.ContinueWaiting
+                ? CardRecoveryPhases.None
+                : CardRecoveryPhases.FinalizePending);
+        command.Parameters.AddWithValue(
+            "$RecoveryTargetStatus",
+            resolution.Decision switch
+            {
+                CardRefundSupervisorDecision.ConfirmRefunded => LocalCardPaymentAttemptStatus.OrderCompleted.ToString(),
+                CardRefundSupervisorDecision.ConfirmNotRefunded => LocalCardPaymentAttemptStatus.Abandoned.ToString(),
+                _ => DBNull.Value
+            });
+        command.Parameters.AddWithValue("$NoRecoveryPhase", CardRecoveryPhases.None);
+        command.Parameters.AddWithValue("$FinalizePending", CardRecoveryPhases.FinalizePending);
         command.Parameters.AddWithValue("$ResolvedCode1", CardRefundSupervisorResolutionCodes.ConfirmedRefunded);
         command.Parameters.AddWithValue("$ResolvedCode2", CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded);
         command.Parameters.AddWithValue("$ReviewStatus1", LocalCardPaymentAttemptStatus.Recovering.ToString());
@@ -1007,15 +1608,14 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                 LocalCardPaymentAttemptStatus.Recovering or
                 LocalCardPaymentAttemptStatus.RequiresReview))
         {
-            throw new ArgumentException(
-                "ActiveSession can only be resolved from an unresolved status.",
-                nameof(resolution));
+            // 列表读取后记录可能已经被其他恢复流程终态化；这属于 CAS 失利，不是调用参数错误。
+            return false;
         }
 
         var nextStatus = resolution.Decision switch
         {
             ActiveSessionSupervisorDecision.ConfirmPaid => LocalCardPaymentAttemptStatus.Approved,
-            ActiveSessionSupervisorDecision.ConfirmNotPaid => LocalCardPaymentAttemptStatus.Cancelled,
+            ActiveSessionSupervisorDecision.ConfirmNotPaid => LocalCardPaymentAttemptStatus.Recovering,
             _ => LocalCardPaymentAttemptStatus.Recovering
         };
         var responseCode = resolution.Decision switch
@@ -1044,13 +1644,17 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                 ResponseCode = $ResponseCode,
                 ResponseText = $ResponseText,
                 PaymentReference = $PaymentReference,
+                RecoveryPhase = $RecoveryPhase,
+                RecoveryTargetStatus = $RecoveryTargetStatus,
                 CompletedAt = $CompletedAt,
                 UpdatedAt = $ResolvedAt
             WHERE AttemptGuid = $AttemptGuid
               AND OperationKind IN ('Sale', 'ActiveSession')
               AND COALESCE(SessionId, TxnRef) = $SessionId
               AND Status = $ExpectedStatus
-              AND UpdatedAt = $ExpectedUpdatedAt;
+              AND UpdatedAt = $ExpectedUpdatedAt
+              AND COALESCE(RecoveryPhase, $NoRecoveryPhase) <> $FinalizePending
+              AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
             """;
         command.Parameters.AddWithValue("$AttemptGuid", resolution.AttemptGuid.ToString());
         command.Parameters.AddWithValue("$SessionId", resolution.SessionId.Trim());
@@ -1069,6 +1673,23 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
             resolution.Decision == ActiveSessionSupervisorDecision.ContinueWaiting
                 ? DBNull.Value
                 : resolution.ResolvedAt.ToString("O"));
+        command.Parameters.AddWithValue(
+            "$RecoveryPhase",
+            resolution.Decision == ActiveSessionSupervisorDecision.ContinueWaiting
+                ? CardRecoveryPhases.None
+                : CardRecoveryPhases.FinalizePending);
+        command.Parameters.AddWithValue(
+            "$RecoveryTargetStatus",
+            resolution.Decision switch
+            {
+                ActiveSessionSupervisorDecision.ConfirmPaid => LocalCardPaymentAttemptStatus.OrderCompleted.ToString(),
+                ActiveSessionSupervisorDecision.ConfirmNotPaid => LocalCardPaymentAttemptStatus.Abandoned.ToString(),
+                _ => DBNull.Value
+            });
+        command.Parameters.AddWithValue("$NoRecoveryPhase", CardRecoveryPhases.None);
+        command.Parameters.AddWithValue("$FinalizePending", CardRecoveryPhases.FinalizePending);
+        command.Parameters.AddWithValue("$ResolvedCode1", ActiveSessionSupervisorResolutionCodes.ConfirmedPaid);
+        command.Parameters.AddWithValue("$ResolvedCode2", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
         command.Parameters.AddWithValue("$ResolvedAt", resolution.ResolvedAt.ToString("O"));
 
         if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)
@@ -1149,7 +1770,9 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                 OperationKind,
                 OperationGuid,
                 SubmissionToken,
-                RefundBusinessKey
+                RefundBusinessKey,
+                RecoveryPhase,
+                RecoveryTargetStatus
             FROM LocalCardPaymentAttempts
             WHERE StoreCode = $StoreCode
               AND DeviceCode = $DeviceCode
@@ -1218,7 +1841,9 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                 OperationKind,
                 OperationGuid,
                 SubmissionToken,
-                RefundBusinessKey
+                RefundBusinessKey,
+                RecoveryPhase,
+                RecoveryTargetStatus
             FROM LocalCardPaymentAttempts
             WHERE AttemptGuid = $AttemptGuid;
             """;
@@ -1263,7 +1888,9 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                 OperationKind,
                 OperationGuid,
                 SubmissionToken,
-                RefundBusinessKey
+                RefundBusinessKey,
+                RecoveryPhase,
+                RecoveryTargetStatus
             FROM LocalCardPaymentAttempts
             WHERE StoreCode = $StoreCode
               AND DeviceCode = $DeviceCode
@@ -1326,7 +1953,9 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                 OperationKind,
                 OperationGuid,
                 SubmissionToken,
-                RefundBusinessKey
+                RefundBusinessKey,
+                RecoveryPhase,
+                RecoveryTargetStatus
             FROM LocalCardPaymentAttempts
             WHERE StoreCode = $StoreCode
               AND DeviceCode = $DeviceCode
@@ -1426,6 +2055,8 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         command.Parameters.AddWithValue("$OperationGuid", attempt.OperationGuid?.ToString() ?? (object)DBNull.Value);
         command.Parameters.AddWithValue("$SubmissionToken", (object?)attempt.SubmissionToken ?? DBNull.Value);
         command.Parameters.AddWithValue("$RefundBusinessKey", (object?)attempt.RefundBusinessKey ?? DBNull.Value);
+        command.Parameters.AddWithValue("$RecoveryPhase", attempt.RecoveryPhase);
+        command.Parameters.AddWithValue("$RecoveryTargetStatus", (object?)attempt.RecoveryTargetStatus ?? DBNull.Value);
     }
 
     private static string BuildResolutionText(CardRefundAttemptResolution resolution)
@@ -1465,7 +2096,17 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
             ReadNullableString(reader, "OperationKind") ?? "Sale",
             ReadNullableGuid(reader, "OperationGuid"),
             ReadNullableString(reader, "SubmissionToken"),
-            ReadNullableString(reader, "RefundBusinessKey"));
+            ReadNullableString(reader, "RefundBusinessKey"),
+            ReadString(reader, "RecoveryPhase"),
+            ReadNullableString(reader, "RecoveryTargetStatus"));
+    }
+
+    private static void AddTerminalStatusParameters(SqliteCommand command)
+    {
+        for (var i = 0; i < TerminalStatuses.Length; i++)
+        {
+            command.Parameters.AddWithValue($"$TerminalStatus{i + 1}", TerminalStatuses[i]);
+        }
     }
 
     private static Guid ReadGuid(SqliteDataReader reader, string name)

@@ -371,7 +371,7 @@ internal static class OperationAuditEvents
             // 操作日志永远是旁路能力，记录器异常不能反向打断销售、付款或退款。
             logger.Record(auditEvent);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             Debug.WriteLine($"[HBPOS][OperationAudit] record failed error={ex.GetType().Name}");
             Trace.WriteLine($"[HBPOS][OperationAudit] record failed error={ex.GetType().Name}");

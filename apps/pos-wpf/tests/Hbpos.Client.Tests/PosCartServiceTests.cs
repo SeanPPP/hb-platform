@@ -1235,6 +1235,126 @@ public sealed class PosCartServiceTests
         Assert.Equal(5m, line.DiscountAmount);
     }
 
+    [Fact]
+    public void Recovery_publication_requires_empty_cart_and_matching_revision()
+    {
+        var cart = new PosCartService();
+        var staleRevision = cart.Revision;
+        cart.AddItem(CreateItem(productCode: "CURRENT", lookupCode: "CURRENT"));
+
+        var nonEmpty = cart.TryPublishRecoverySnapshot(
+            Guid.NewGuid(),
+            cart.Revision,
+            CreateRecoverySnapshot());
+        Assert.False(nonEmpty.Succeeded);
+        Assert.Single(cart.Lines);
+
+        cart.Clear();
+        var stale = cart.TryPublishRecoverySnapshot(
+            Guid.NewGuid(),
+            staleRevision,
+            CreateRecoverySnapshot());
+        Assert.False(stale.Succeeded);
+        Assert.True(cart.IsEmpty);
+    }
+
+    [Fact]
+    public void Recovery_publication_blocks_normal_mutations_until_matching_owner_completes()
+    {
+        var cart = new PosCartService();
+        var attemptGuid = Guid.NewGuid();
+
+        var published = cart.TryPublishRecoverySnapshot(
+            attemptGuid,
+            cart.Revision,
+            CreateRecoverySnapshot());
+
+        Assert.True(published.Succeeded);
+        Assert.Equal(attemptGuid, cart.RecoveryOwnerAttemptGuid);
+        Assert.Throws<InvalidOperationException>(() =>
+            cart.AddItem(CreateItem(productCode: "NEW", lookupCode: "NEW")));
+        Assert.False(cart.CompleteRecoveryPublication(Guid.NewGuid()));
+        Assert.Equal(attemptGuid, cart.RecoveryOwnerAttemptGuid);
+
+        Assert.True(cart.CompleteRecoveryPublication(attemptGuid));
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+        cart.AddItem(CreateItem(productCode: "NEW", lookupCode: "NEW"));
+        Assert.Equal(2, cart.Lines.Count);
+    }
+
+    [Fact]
+    public void Recovery_publication_rollback_only_clears_matching_owner_snapshot()
+    {
+        var cart = new PosCartService();
+        var attemptGuid = Guid.NewGuid();
+        Assert.True(cart.TryPublishRecoverySnapshot(
+            attemptGuid,
+            cart.Revision,
+            CreateRecoverySnapshot()).Succeeded);
+
+        Assert.False(cart.RollbackRecoveryPublication(Guid.NewGuid()).Succeeded);
+        Assert.Single(cart.Lines);
+        Assert.Equal(attemptGuid, cart.RecoveryOwnerAttemptGuid);
+
+        var rolledBack = cart.RollbackRecoveryPublication(attemptGuid);
+        Assert.True(rolledBack.Succeeded);
+        Assert.True(cart.IsEmpty);
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+    }
+
+    [Fact]
+    public void Recovery_publication_validates_snapshot_before_exposing_any_lines()
+    {
+        var cart = new PosCartService();
+        var validLine = CreateRecoverySnapshot().Lines[0];
+        var invalidSnapshot = new PosCartSnapshot(
+        [
+            validLine,
+            validLine with { ProductCode = "INVALID", LookupCode = "INVALID", Quantity = 0.5m }
+        ]);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            cart.TryPublishRecoverySnapshot(Guid.NewGuid(), cart.Revision, invalidSnapshot));
+        Assert.True(cart.IsEmpty);
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+    }
+
+    [Fact]
+    public void Recovery_publication_treats_non_fatal_subscriber_failure_as_warning()
+    {
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new InvalidOperationException("subscriber failed");
+
+        var published = cart.TryPublishRecoverySnapshot(
+            Guid.NewGuid(),
+            cart.Revision,
+            CreateRecoverySnapshot());
+
+        Assert.True(published.Succeeded);
+        Assert.True(published.NotificationWarning);
+        Assert.Single(cart.Lines);
+    }
+
+    [Fact]
+    public void Recovery_publication_propagates_out_of_memory_from_subscriber()
+    {
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new OutOfMemoryException("fatal");
+
+        Assert.Throws<OutOfMemoryException>(() =>
+            cart.TryPublishRecoverySnapshot(
+                Guid.NewGuid(),
+                cart.Revision,
+                CreateRecoverySnapshot()));
+    }
+
+    private static PosCartSnapshot CreateRecoverySnapshot()
+    {
+        var stagingCart = new PosCartService();
+        stagingCart.AddItem(CreateItem(productCode: "RECOVERY", lookupCode: "RECOVERY"));
+        return stagingCart.CreateSnapshot();
+    }
+
     private static SellableItemDto CreateItem(
         string storeCode = "S001",
         string productCode = "SKU-001",

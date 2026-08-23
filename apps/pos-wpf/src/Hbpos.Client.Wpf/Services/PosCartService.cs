@@ -8,8 +8,11 @@ public sealed class PosCartService
 {
     private readonly List<CartLine> _lines = [];
     private readonly List<OrderReturnPaymentCapacityDto> _returnPaymentCapacities = [];
+    private readonly ReaderWriterLockSlim _recoveryPublicationLock = new(LockRecursionPolicy.SupportsRecursion);
     private IReadOnlyList<CatalogPromotionRuleDto> _automaticPromotionRules = [];
     private Guid? _sharedHeldOrderClaimId;
+    private Guid? _recoveryOwnerAttemptGuid;
+    private long _revision;
     private bool _preserveSharedPromotionDiscounts;
     private bool _preserveSharedSnapshotCatalogValues;
 
@@ -34,10 +37,29 @@ public sealed class PosCartService
 
     public bool HasReturnLine => _lines.Any(line => line.IsReturnLine);
 
+    public long Revision => Interlocked.Read(ref _revision);
+
+    public Guid? RecoveryOwnerAttemptGuid
+    {
+        get
+        {
+            _recoveryPublicationLock.EnterReadLock();
+            try
+            {
+                return _recoveryOwnerAttemptGuid;
+            }
+            finally
+            {
+                _recoveryPublicationLock.ExitReadLock();
+            }
+        }
+    }
+
     public event EventHandler? CartChanged;
 
     public void SetAutomaticPromotionRules(IEnumerable<CatalogPromotionRuleDto> rules)
     {
+        using var mutation = EnterMutationScope();
         ArgumentNullException.ThrowIfNull(rules);
         _automaticPromotionRules = rules
             .Where(rule => rule.Products.Count > 0)
@@ -52,6 +74,7 @@ public sealed class PosCartService
 
     public CartLine AddItem(SellableItemDto item)
     {
+        using var mutation = EnterMutationScope();
         if (!IsPositiveIntegerQuantity(item.QuantityFactor))
         {
             throw new InvalidOperationException("Cart item quantity must be a positive integer.");
@@ -81,6 +104,7 @@ public sealed class PosCartService
 
     public CartLine AddConsecutiveItem(SellableItemDto item)
     {
+        using var mutation = EnterMutationScope();
         if (!IsPositiveIntegerQuantity(item.QuantityFactor))
         {
             throw new InvalidOperationException("Cart item quantity must be a positive integer.");
@@ -128,6 +152,7 @@ public sealed class PosCartService
 
     public CartLine AddOpenItem(SellableItemDto item, decimal unitPrice)
     {
+        using var mutation = EnterMutationScope();
         if (!IsPositiveIntegerQuantity(item.QuantityFactor))
         {
             throw new InvalidOperationException("Cart item quantity must be a positive integer.");
@@ -146,6 +171,7 @@ public sealed class PosCartService
 
     public CartLine AddReturnLine(ReturnCartLineRequest request)
     {
+        using var mutation = EnterMutationScope();
         if (!IsPositiveIntegerQuantity(request.Quantity))
         {
             throw new InvalidOperationException("Return cart line quantity must be a positive integer.");
@@ -167,6 +193,7 @@ public sealed class PosCartService
 
     public void AddReturnPaymentCapacities(IEnumerable<OrderReturnPaymentCapacityDto> capacities)
     {
+        using var mutation = EnterMutationScope();
         var capacityList = capacities
             .Where(capacity => capacity.RemainingAmount > 0m)
             .ToList();
@@ -224,6 +251,7 @@ public sealed class PosCartService
 
     public bool UpdateLineFromRemote(string storeCode, string lookupCode, SellableItemDto item)
     {
+        using var mutation = EnterMutationScope();
         var line = FindLineByLookupCode(storeCode, lookupCode);
 
         if (line is null || _preserveSharedSnapshotCatalogValues)
@@ -246,6 +274,7 @@ public sealed class PosCartService
 
     public bool UpdateLineFromRemote(CartLine line, SellableItemDto item)
     {
+        using var mutation = EnterMutationScope();
         if (!_lines.Contains(line) || _preserveSharedSnapshotCatalogValues)
         {
             return false;
@@ -266,6 +295,7 @@ public sealed class PosCartService
 
     public bool RemoveLineByLookupCode(string storeCode, string lookupCode)
     {
+        using var mutation = EnterMutationScope();
         var line = FindLineByLookupCode(storeCode, lookupCode);
 
         if (line is null)
@@ -288,6 +318,7 @@ public sealed class PosCartService
 
     public bool RemoveLine(CartLine line)
     {
+        using var mutation = EnterMutationScope();
         if (!_lines.Contains(line))
         {
             return false;
@@ -312,6 +343,7 @@ public sealed class PosCartService
 
     public bool IncreaseLine(CartLine? line)
     {
+        using var mutation = EnterMutationScope();
         if (line is null || line.IsLocked || !_lines.Contains(line) || !IsPositiveIntegerQuantity(line.Quantity))
         {
             return false;
@@ -324,6 +356,7 @@ public sealed class PosCartService
 
     public bool DecreaseLine(CartLine? line)
     {
+        using var mutation = EnterMutationScope();
         if (line is null || line.IsLocked || !_lines.Contains(line) || !IsPositiveIntegerQuantity(line.Quantity))
         {
             return false;
@@ -352,6 +385,7 @@ public sealed class PosCartService
 
     public bool SetLineQuantity(CartLine? line, decimal quantity)
     {
+        using var mutation = EnterMutationScope();
         // 数量必须是正有限整数，0/负数/小数一律拒绝：绑定共享 claim 的购物车
         // 永远不会通过 SetLineQuantity 被静默清空并遗留服务端 Active。
         if (line is null || line.IsLocked || !_lines.Contains(line) || !IsPositiveIntegerQuantity(quantity))
@@ -366,6 +400,7 @@ public sealed class PosCartService
 
     public bool SetLineUnitPrice(CartLine? line, decimal unitPrice)
     {
+        using var mutation = EnterMutationScope();
         if (line is null || line.IsLocked || !_lines.Contains(line) || unitPrice < 0m)
         {
             return false;
@@ -380,6 +415,7 @@ public sealed class PosCartService
 
     public bool SetLineDiscountAmount(CartLine? line, decimal discountAmount)
     {
+        using var mutation = EnterMutationScope();
         if (line is null || line.IsLocked || !_lines.Contains(line) || discountAmount < 0m || discountAmount > line.GrossAmount)
         {
             return false;
@@ -392,6 +428,7 @@ public sealed class PosCartService
 
     public bool SetLineDiscountPercent(CartLine? line, decimal discountPercent)
     {
+        using var mutation = EnterMutationScope();
         if (line is null || line.IsLocked || !_lines.Contains(line) || discountPercent < 0m || discountPercent > 100m)
         {
             return false;
@@ -404,6 +441,7 @@ public sealed class PosCartService
 
     internal void ApplyPromotionDiscounts(IEnumerable<PromotionLineDiscount> discounts)
     {
+        using var mutation = EnterMutationScope();
         var incomingDiscounts = discounts
             .GroupBy(discount => discount.Line)
             .ToDictionary(group => group.Key, group => group.Last().DiscountAmount);
@@ -466,6 +504,7 @@ public sealed class PosCartService
 
     public bool SetOrderDiscountAmount(decimal discountAmount)
     {
+        using var mutation = EnterMutationScope();
         if (_lines.Count == 0 || HasReturnLine || discountAmount < 0m || discountAmount > TotalAmount)
         {
             return false;
@@ -478,6 +517,7 @@ public sealed class PosCartService
 
     public bool SetOrderDiscountPercent(decimal discountPercent)
     {
+        using var mutation = EnterMutationScope();
         if (_lines.Count == 0 || HasReturnLine || discountPercent < 0m || discountPercent > 100m)
         {
             return false;
@@ -493,6 +533,7 @@ public sealed class PosCartService
 
     public void Clear()
     {
+        using var mutation = EnterMutationScope();
         if (_lines.Count == 0)
         {
             if (_returnPaymentCapacities.Count > 0 || _sharedHeldOrderClaimId is not null)
@@ -544,7 +585,96 @@ public sealed class PosCartService
             _sharedHeldOrderClaimId);
     }
 
+    /// <summary>
+    /// 以 attempt 所有权把已验证快照一次性发布到空购物车。revision 用于拒绝核验后发生的陈旧发布。
+    /// </summary>
+    public PosCartRecoveryPublicationResult TryPublishRecoverySnapshot(
+        Guid attemptGuid,
+        long expectedRevision,
+        PosCartSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        // 先在隔离购物车中完整物化，任何语义错误都不能触碰真实购物车。
+        var stagingCart = new PosCartService();
+        stagingCart.RestoreSnapshot(snapshot);
+        var validatedSnapshot = stagingCart.CreateSnapshot();
+
+        _recoveryPublicationLock.EnterWriteLock();
+        try
+        {
+            if (_recoveryOwnerAttemptGuid is not null ||
+                _revision != expectedRevision ||
+                !IsEmpty)
+            {
+                return new PosCartRecoveryPublicationResult(false, false, _revision);
+            }
+
+            _recoveryOwnerAttemptGuid = attemptGuid;
+            RestoreSnapshotCore(validatedSnapshot);
+            var notificationWarning = OnCartChangedBestEffort();
+            return new PosCartRecoveryPublicationResult(true, notificationWarning, _revision);
+        }
+        finally
+        {
+            _recoveryPublicationLock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>最终状态已经持久化后释放购物车所有权，保留已发布内容。</summary>
+    public bool CompleteRecoveryPublication(Guid attemptGuid)
+    {
+        _recoveryPublicationLock.EnterWriteLock();
+        try
+        {
+            if (_recoveryOwnerAttemptGuid != attemptGuid)
+            {
+                return false;
+            }
+
+            _recoveryOwnerAttemptGuid = null;
+            return true;
+        }
+        finally
+        {
+            _recoveryPublicationLock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>仅回滚指定 attempt 发布的购物车，绝不清理其他恢复或普通购物车。</summary>
+    public PosCartRecoveryPublicationResult RollbackRecoveryPublication(Guid attemptGuid)
+    {
+        _recoveryPublicationLock.EnterWriteLock();
+        try
+        {
+            if (_recoveryOwnerAttemptGuid != attemptGuid)
+            {
+                return new PosCartRecoveryPublicationResult(false, false, _revision);
+            }
+
+            _lines.Clear();
+            _returnPaymentCapacities.Clear();
+            _sharedHeldOrderClaimId = null;
+            _preserveSharedPromotionDiscounts = false;
+            _preserveSharedSnapshotCatalogValues = false;
+            _recoveryOwnerAttemptGuid = null;
+            var notificationWarning = OnCartChangedBestEffort();
+            return new PosCartRecoveryPublicationResult(true, notificationWarning, _revision);
+        }
+        finally
+        {
+            _recoveryPublicationLock.ExitWriteLock();
+        }
+    }
+
     public void RestoreSnapshot(PosCartSnapshot snapshot)
+    {
+        using var mutation = EnterMutationScope();
+        RestoreSnapshotCore(snapshot);
+        OnCartChanged();
+    }
+
+    private void RestoreSnapshotCore(PosCartSnapshot snapshot)
     {
         _lines.Clear();
         _returnPaymentCapacities.Clear();
@@ -603,7 +733,6 @@ public sealed class PosCartService
 
         _sharedHeldOrderClaimId = snapshot.SharedHeldOrderClaimId;
         // 快照用于挂单和支付恢复，必须保留当时金额；后续编辑或规则刷新再重新计算满减。
-        OnCartChanged();
     }
 
     /// <summary>
@@ -613,6 +742,7 @@ public sealed class PosCartService
     /// </summary>
     public void RestoreSharedSaleSnapshot(PosCartSnapshot snapshot)
     {
+        using var mutation = EnterMutationScope();
         _lines.Clear();
         _returnPaymentCapacities.Clear();
         _sharedHeldOrderClaimId = null;
@@ -669,7 +799,56 @@ public sealed class PosCartService
 
     private void OnCartChanged()
     {
+        Interlocked.Increment(ref _revision);
         CartChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private bool OnCartChangedBestEffort()
+    {
+        Interlocked.Increment(ref _revision);
+        var handlers = CartChanged?.GetInvocationList();
+        if (handlers is null)
+        {
+            return false;
+        }
+
+        var warning = false;
+        foreach (var callback in handlers)
+        {
+            try
+            {
+                ((EventHandler)callback)(this, EventArgs.Empty);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                warning = true;
+            }
+        }
+
+        return warning;
+    }
+
+    private IDisposable EnterMutationScope()
+    {
+        _recoveryPublicationLock.EnterReadLock();
+        if (_recoveryOwnerAttemptGuid is not null)
+        {
+            _recoveryPublicationLock.ExitReadLock();
+            throw new InvalidOperationException(
+                "The cart is locked while a payment recovery is being finalized.");
+        }
+
+        return new RecoveryMutationScope(_recoveryPublicationLock);
+    }
+
+    private sealed class RecoveryMutationScope(ReaderWriterLockSlim publicationLock) : IDisposable
+    {
+        private ReaderWriterLockSlim? _publicationLock = publicationLock;
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _publicationLock, null)?.ExitReadLock();
+        }
     }
 
     private void ClearSharedHeldOrderBindingIfCartEmpty()
@@ -688,6 +867,7 @@ public sealed class PosCartService
     /// </summary>
     public bool ClearSharedHeldOrderClaim(Guid claimId)
     {
+        using var mutation = EnterMutationScope();
         if (_sharedHeldOrderClaimId != claimId)
         {
             return false;
@@ -1067,6 +1247,11 @@ public sealed class PosCartService
 public sealed record PosCartSnapshot(
     IReadOnlyList<PosCartLineSnapshot> Lines,
     Guid? SharedHeldOrderClaimId = null);
+
+public readonly record struct PosCartRecoveryPublicationResult(
+    bool Succeeded,
+    bool NotificationWarning,
+    long Revision);
 
 public sealed record PosCartLineSnapshot(
     string StoreCode,

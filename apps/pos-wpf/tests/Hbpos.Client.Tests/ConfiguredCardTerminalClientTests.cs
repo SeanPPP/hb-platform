@@ -29,6 +29,291 @@ public sealed class ConfiguredCardTerminalClientTests
         Assert.Equal("Card terminal is not configured.", result.Message);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("P1234567890123456")]
+    [InlineData("P1234\n5678")]
+    [InlineData("P交易")]
+    public async Task RecoverLinklyAsync_rejects_invalid_local_historical_txn_ref_before_get_last(
+        string txnRef)
+    {
+        var terminal = new StubLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            "ANZ:P000000000000001",
+            AuthorizedAmount: 10m,
+            TxnType: "P",
+            TxnRef: "P000000000000001"));
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateLinklySettings()),
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            terminal);
+
+        var result = await client.RecoverLinklyAsync(
+            CreateLinklyRecoveryAttempt(txnRef),
+            CreateSession());
+
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(0, terminal.RecoverCallCount);
+    }
+
+    [Fact]
+    public async Task RecoverLinklyAsync_normalizes_anz_wrapper_and_protocol_padding_before_exact_match()
+    {
+        const string txnRef = "P000000000000201";
+        var terminal = new StubLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            $"ANZ:{txnRef}   ",
+            AuthorizedAmount: 10m,
+            TxnType: "P",
+            TxnRef: $"{txnRef}   "));
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateLinklySettings()),
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            terminal);
+
+        var result = await client.RecoverLinklyAsync(
+            CreateLinklyRecoveryAttempt($" ANZ:{txnRef}   "),
+            CreateSession());
+
+        Assert.True(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal(txnRef, terminal.LastRecoveryTxnRef);
+    }
+
+    [Theory]
+    [InlineData("reference")]
+    [InlineData("transaction-reference")]
+    [InlineData("transaction-amount")]
+    public async Task RecoverLinklyAsync_any_returned_identity_or_nonzero_amount_conflict_stays_unknown(
+        string conflict)
+    {
+        const string txnRef = "P000000000000208";
+        const string conflictingTxnRef = "P000000000000209";
+        var returnedReference = string.Equals(conflict, "reference", StringComparison.Ordinal)
+            ? $"ANZ:{conflictingTxnRef}"
+            : $"ANZ:{txnRef}";
+        var transactionTxnRef = string.Equals(conflict, "transaction-reference", StringComparison.Ordinal)
+            ? conflictingTxnRef
+            : txnRef;
+        var transactionAmount = string.Equals(conflict, "transaction-amount", StringComparison.Ordinal)
+            ? 9m
+            : 10m;
+        var terminal = new StubLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            returnedReference,
+            AuthorizedAmount: 10m,
+            CardTransactions:
+            [
+                new CardTransactionDto(
+                    "ANZ",
+                    txnRef,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    "00",
+                    "APPROVED",
+                    null,
+                    null,
+                    10m,
+                    null),
+                new CardTransactionDto(
+                    "ANZ",
+                    transactionTxnRef,
+                    null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    "00",
+                    "APPROVED",
+                    null,
+                    null,
+                    transactionAmount,
+                    null)
+            ],
+            TxnType: "P",
+            TxnRef: txnRef));
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateLinklySettings()),
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            terminal);
+
+        var result = await client.RecoverLinklyAsync(
+            CreateLinklyRecoveryAttempt(txnRef),
+            CreateSession());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(1, terminal.RecoverCallCount);
+    }
+
+    [Theory]
+    [InlineData("p000000000000202", "P")]
+    [InlineData("P000000000000202", "R")]
+    [InlineData("P00000000000020", "P")]
+    public async Task RecoverLinklyAsync_approved_reference_or_txn_type_conflict_stays_unknown(
+        string returnedTxnRef,
+        string returnedTxnType)
+    {
+        const string persistedTxnRef = "P000000000000202";
+        var terminal = new StubLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            $"ANZ:{returnedTxnRef}",
+            AuthorizedAmount: 10m,
+            TxnType: returnedTxnType,
+            TxnRef: returnedTxnRef));
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateLinklySettings()),
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            terminal);
+
+        var result = await client.RecoverLinklyAsync(
+            CreateLinklyRecoveryAttempt(persistedTxnRef),
+            CreateSession());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal(1, terminal.RecoverCallCount);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    public async Task RecoverLinklyAsync_approved_missing_or_zero_amount_stays_unknown(int? returnedAmount)
+    {
+        const string txnRef = "P000000000000203";
+        var terminal = new StubLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            $"ANZ:{txnRef}",
+            AuthorizedAmount: returnedAmount,
+            TxnType: "P",
+            TxnRef: txnRef));
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateLinklySettings()),
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            terminal);
+
+        var result = await client.RecoverLinklyAsync(
+            CreateLinklyRecoveryAttempt(txnRef),
+            CreateSession());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+    }
+
+    [Fact]
+    public async Task RecoverLinklyAsync_approved_amount_requires_exact_decimal_match()
+    {
+        const string txnRef = "P000000000000204";
+        var terminal = new StubLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            $"ANZ:{txnRef}",
+            AuthorizedAmount: 10.0005m,
+            TxnType: "P",
+            TxnRef: txnRef));
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateLinklySettings()),
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            terminal);
+
+        var result = await client.RecoverLinklyAsync(
+            CreateLinklyRecoveryAttempt(txnRef),
+            CreateSession());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    [InlineData(10)]
+    public async Task RecoverLinklyAsync_final_decline_accepts_missing_zero_or_exact_amount(
+        int? returnedAmount)
+    {
+        const string txnRef = "P000000000000205";
+        var terminal = new StubLinklyTerminalClient(new PaymentAuthorizationResult(
+            false,
+            $"ANZ:{txnRef}",
+            "DECLINED",
+            returnedAmount,
+            TxnType: "P",
+            TxnRef: txnRef,
+            ResponseCode: "05",
+            ResponseText: "DECLINED"));
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateLinklySettings()),
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            terminal);
+
+        var result = await client.RecoverLinklyAsync(
+            CreateLinklyRecoveryAttempt(txnRef),
+            CreateSession());
+
+        Assert.False(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("05", result.ResponseCode);
+    }
+
+    [Fact]
+    public async Task RecoverLinklyAsync_final_decline_with_nonzero_amount_mismatch_stays_unknown()
+    {
+        const string txnRef = "P000000000000206";
+        var terminal = new StubLinklyTerminalClient(new PaymentAuthorizationResult(
+            false,
+            $"ANZ:{txnRef}",
+            "DECLINED",
+            9m,
+            TxnType: "P",
+            TxnRef: txnRef,
+            ResponseCode: "05",
+            ResponseText: "DECLINED"));
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateLinklySettings()),
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            terminal);
+
+        var result = await client.RecoverLinklyAsync(
+            CreateLinklyRecoveryAttempt(txnRef),
+            CreateSession());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+    }
+
+    [Fact]
+    public async Task RecoverLinklyAsync_provider_unknown_does_not_require_identity_fields()
+    {
+        const string txnRef = "P000000000000207";
+        var terminal = new StubLinklyTerminalClient(new PaymentAuthorizationResult(
+            false,
+            Message: "Terminal outcome unavailable.",
+            ResultUnknown: true));
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(CreateLinklySettings()),
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            terminal);
+
+        var result = await client.RecoverLinklyAsync(
+            CreateLinklyRecoveryAttempt(txnRef),
+            CreateSession());
+
+        Assert.False(result.Approved);
+        Assert.True(result.ResultUnknown);
+        Assert.Equal("Terminal outcome unavailable.", result.Message);
+    }
+
     [Fact]
     public async Task AuthorizeAsync_fails_closed_for_linkly_when_adapter_is_unavailable()
     {
@@ -92,6 +377,174 @@ public sealed class ConfiguredCardTerminalClientTests
 
         Assert.True(result.Approved);
         Assert.Equal("LOCAL-TXN-001", linkly.LastPurchaseReference);
+    }
+
+    [Fact]
+    public async Task AuthorizeAsync_uses_attempt_settings_snapshot_for_route_and_txn_ref()
+    {
+        const string txnRef = "P000000000000210";
+        var snapshot = CreateLinklySettings();
+        var current = snapshot with { LinklyConnectionMode = LinklyConnectionMode.CloudBackendAsync };
+        var linkly = new StubLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            $"ANZ:{txnRef}",
+            AuthorizedAmount: 10m,
+            TxnType: "P",
+            TxnRef: txnRef));
+        var attemptContext = new LinklyPaymentAttemptContextAccessor();
+        var client = new ConfiguredCardTerminalClient(
+            new StaticCardTerminalSettingsProvider(current),
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            linkly,
+            linklyPaymentAttemptContextAccessor: attemptContext);
+        using var scope = attemptContext.Begin(new LinklyPaymentAttemptContext(
+            Guid.NewGuid(),
+            (_, _, _, _) => Task.CompletedTask,
+            txnRef)
+        {
+            SettingsSnapshot = snapshot
+        });
+
+        var result = await client.AuthorizeAsync(10m, CreateSession());
+
+        Assert.True(result.Approved);
+        Assert.Equal(txnRef, linkly.LastPurchaseReference);
+        Assert.Equal(LinklyConnectionMode.LocalIp, linkly.LastSettings?.LinklyConnectionMode);
+    }
+
+    [Fact]
+    public async Task Bound_authorize_uses_explicit_settings_without_reading_provider()
+    {
+        var explicitSettings = CreateLinklySettings();
+        var settingsProvider = new TxnRefSequencedCardTerminalSettingsProvider(
+            CreateSquareSettings(),
+            CreateSquareSettings());
+        var linkly = new StubLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            "ANZ:BOUND-AUTH",
+            AuthorizedAmount: 10m));
+        var client = new ConfiguredCardTerminalClient(
+            settingsProvider,
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            linkly);
+
+        var result = await ((ICardTerminalSettingsBoundClient)client).AuthorizeWithSettingsAsync(
+            explicitSettings,
+            10m,
+            CreateSession());
+
+        Assert.True(result.Approved);
+        Assert.Equal(0, settingsProvider.GetSettingsCalls);
+        Assert.Equal(10m, linkly.LastAmount);
+        Assert.Equal(CardProcessorKind.Linkly, linkly.LastSettings?.Processor);
+    }
+
+    [Fact]
+    public async Task Bound_refund_uses_explicit_settings_without_reading_provider()
+    {
+        var explicitSettings = CreateLinklySettings();
+        var settingsProvider = new TxnRefSequencedCardTerminalSettingsProvider(
+            CreateSquareSettings(),
+            CreateSquareSettings());
+        var linkly = new StubLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            "ANZ:BOUND-REFUND",
+            AuthorizedAmount: 6m));
+        var client = new ConfiguredCardTerminalClient(
+            settingsProvider,
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            linkly);
+
+        var result = await ((ICardTerminalSettingsBoundClient)client).RefundWithSettingsAsync(
+            explicitSettings,
+            6m,
+            CreateSession(),
+            "ANZ:ORIGINAL-BOUND",
+            "R000000000000001");
+
+        Assert.True(result.Approved);
+        Assert.Equal(0, settingsProvider.GetSettingsCalls);
+        Assert.Equal(6m, linkly.LastRefundAmount);
+        Assert.Equal("ANZ:ORIGINAL-BOUND", linkly.LastOriginalReference);
+        Assert.Equal("R000000000000001", linkly.LastRefundTransactionReference);
+        Assert.Equal(CardProcessorKind.Linkly, linkly.LastSettings?.Processor);
+    }
+
+    [Fact]
+    public async Task Bound_authorize_routes_explicit_square_settings_without_reading_provider()
+    {
+        var settingsProvider = new TxnRefSequencedCardTerminalSettingsProvider(
+            CreateLinklySettings(),
+            CreateLinklySettings());
+        var handler = new StubHttpMessageHandler((request, _) =>
+        {
+            if (request.Method == HttpMethod.Post)
+            {
+                return JsonResponse("""
+                    { "checkout": { "id": "checkout-bound-square", "status": "PENDING" } }
+                    """);
+            }
+
+            if (request.RequestUri!.AbsolutePath.Contains("/api/v1/square/payments/", StringComparison.Ordinal))
+            {
+                return JsonResponse("""
+                    {
+                      "payment": {
+                        "id": "payment-bound-square",
+                        "status": "COMPLETED",
+                        "amount_money": { "amount": 500, "currency": "AUD" }
+                      }
+                    }
+                    """);
+            }
+
+            return JsonResponse("""
+                {
+                  "checkout": {
+                    "id": "checkout-bound-square",
+                    "status": "COMPLETED",
+                    "amount_money": { "amount": 500, "currency": "AUD" },
+                    "payment_ids": [ "payment-bound-square" ]
+                  }
+                }
+                """);
+        });
+        var client = new ConfiguredCardTerminalClient(settingsProvider, CreateApiClient(handler));
+
+        var result = await ((ICardTerminalSettingsBoundClient)client).AuthorizeWithSettingsAsync(
+            CreateSquareSettings(),
+            5m,
+            CreateSession());
+
+        Assert.True(result.Approved);
+        Assert.Equal("SQ:payment-bound-square", result.Reference);
+        Assert.Equal(0, settingsProvider.GetSettingsCalls);
+    }
+
+    [Fact]
+    public async Task Public_authorize_still_reads_current_settings_once()
+    {
+        var settingsProvider = new TxnRefSequencedCardTerminalSettingsProvider(
+            CreateLinklySettings(),
+            CreateSquareSettings());
+        var linkly = new StubLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            "ANZ:PUBLIC-AUTH",
+            AuthorizedAmount: 10m));
+        var client = new ConfiguredCardTerminalClient(
+            settingsProvider,
+            CreateApiClient(new StubHttpMessageHandler((_, _) =>
+                Task.FromException<HttpResponseMessage>(new InvalidOperationException("HTTP should not be called.")))),
+            linkly);
+
+        var result = await client.AuthorizeAsync(10m, CreateSession());
+
+        Assert.True(result.Approved);
+        Assert.Equal(1, settingsProvider.GetSettingsCalls);
+        Assert.Equal(10m, linkly.LastAmount);
     }
 
     [Fact]
@@ -1790,6 +2243,50 @@ public sealed class ConfiguredCardTerminalClientTests
             terminalTimeout ?? TimeSpan.FromSeconds(10));
     }
 
+    private static CardTerminalSettings CreateLinklySettings()
+    {
+        return new CardTerminalSettings(
+            CardProcessorKind.Linkly,
+            CardTerminalEnvironment.Production,
+            "127.0.0.1",
+            2011,
+            null,
+            null,
+            null,
+            CardTerminalSettings.GetSquareApiBaseUrl(CardTerminalEnvironment.Production),
+            TimeSpan.FromSeconds(10),
+            LinklyConnectionMode.LocalIp);
+    }
+
+    private static LocalCardPaymentAttempt CreateLinklyRecoveryAttempt(
+        string txnRef,
+        decimal amount = 10m,
+        string txnType = "P")
+    {
+        var now = DateTimeOffset.Parse("2026-08-23T10:00:00+10:00");
+        return new LocalCardPaymentAttempt(
+            Guid.Parse("11111111-2222-3333-4444-555555555555"),
+            null,
+            txnRef,
+            CardProcessorKind.Linkly.ToString(),
+            CardTerminalEnvironment.Production.ToString(),
+            LinklyConnectionMode.LocalIp.ToString(),
+            txnType,
+            amount,
+            LocalCardPaymentAttemptStatus.SessionStarted,
+            "{}",
+            "1001",
+            "TERM-1",
+            "C001",
+            null,
+            null,
+            null,
+            now.AddMinutes(-2),
+            now.AddMinutes(-1),
+            null,
+            null);
+    }
+
     private static LocalSquarePaymentAttempt CreateSquareRecoveryAttempt(string checkoutId)
     {
         var now = DateTimeOffset.UtcNow;
@@ -1950,6 +2447,10 @@ public sealed class ConfiguredCardTerminalClientTests
 
     private sealed class StubLinklyTerminalClient(PaymentAuthorizationResult result) : ILinklyTerminalClient
     {
+        public int RecoverCallCount { get; private set; }
+
+        public string? LastRecoveryTxnRef { get; private set; }
+
         public decimal LastAmount { get; private set; }
 
         public decimal LastRefundAmount { get; private set; }
@@ -2002,7 +2503,9 @@ public sealed class ConfiguredCardTerminalClientTests
             string txnRef,
             CancellationToken cancellationToken = default)
         {
-            throw new NotSupportedException();
+            RecoverCallCount++;
+            LastRecoveryTxnRef = txnRef;
+            return Task.FromResult(result);
         }
 
         public Task<PaymentAuthorizationResult> RefundAsync(
