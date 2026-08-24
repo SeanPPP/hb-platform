@@ -434,6 +434,74 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task CreateBatchAsync_带前缀时普通商品套装父项和子项共用批次前缀()
+        {
+            using var database = new DomesticProductCreationTestDatabase();
+
+            var result = await database.CreateService().CreateBatchAsync(
+                new CreateDomesticProductBatchRequest
+                {
+                    SupplierCode = "HB001",
+                    PrefixCode = "prefix-yw",
+                    PrefixName = "YW",
+                    Items = new List<CreateBatchItemDto>
+                    {
+                        new() { ProductName = "普通商品", ProductType = 0 },
+                        new()
+                        {
+                            ProductName = "套装商品",
+                            ProductType = 1,
+                            SubItems = new List<CreateBatchItemDto>
+                            {
+                                new() { ProductName = "套装子项1", ProductType = 2 },
+                                new() { ProductName = "套装子项2", ProductType = 2 },
+                            },
+                        },
+                    },
+                }
+            );
+
+            Assert.True(result.Success, result.Message);
+            var normalItem = Assert.Single(result.Data!.Items, item => item.ProductType == 0);
+            var setItem = Assert.Single(result.Data.Items, item => item.ProductType == 1);
+            Assert.Equal("HB001-YW-001", normalItem.HBProductNo);
+            Assert.Equal("HB001-YW-002", setItem.HBProductNo);
+            Assert.Equal(
+                new[] { "HB001-YW-002-01", "HB001-YW-002-02" },
+                setItem.SubItems.Select(item => item.HBProductNo).ToArray()
+            );
+
+            var itemNumbers = result
+                .Data.Items.Select(item => item.HBProductNo)
+                .Concat(
+                    result.Data.Items.SelectMany(item => item.SubItems).Select(item => item.HBProductNo)
+                )
+                .ToList();
+            Assert.Equal(
+                itemNumbers.Count,
+                itemNumbers.Distinct(StringComparer.OrdinalIgnoreCase).Count()
+            );
+            var barcodes = result
+                .Data.Items.Select(item => item.Barcode)
+                .Concat(
+                    result.Data.Items.SelectMany(item => item.SubItems).Select(item => item.Barcode)
+                )
+                .ToList();
+            Assert.Equal(
+                barcodes.Count,
+                barcodes.Distinct(StringComparer.OrdinalIgnoreCase).Count()
+            );
+
+            var logs = await database.Db.Queryable<DomesticProductCreationLog>().ToListAsync();
+            Assert.Equal(4, logs.Count);
+            Assert.All(logs, log =>
+            {
+                Assert.Equal("prefix-yw", log.PrefixCode);
+                Assert.Equal("YW", log.PrefixName);
+            });
+        }
+
+        [Fact]
         public async Task CreateBatchAsync_二十四组套装子项保持父子对应且全局唯一()
         {
             using var database = new DomesticProductCreationTestDatabase();

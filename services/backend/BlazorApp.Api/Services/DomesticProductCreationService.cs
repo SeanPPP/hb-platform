@@ -224,7 +224,7 @@ namespace BlazorApp.Api.Services
                         request.SupplierCode,
                         ProductTypeEnum.Set,
                         expandedSetItems.Count,
-                        null
+                        request.PrefixName
                     );
 
                     for (var i = 0; i < expandedSetItems.Count && i < codes.Count; i++)
