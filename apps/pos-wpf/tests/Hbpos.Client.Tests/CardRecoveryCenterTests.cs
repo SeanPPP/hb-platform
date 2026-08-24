@@ -342,6 +342,44 @@ public sealed class CardRecoveryCenterTests
     }
 
     [Fact]
+    public async Task Coordinator_CompleteDraftHandoffAsync_routes_by_exact_provider_key()
+    {
+        var attempt = CreateLinklyAttempt(
+            Guid.Parse("30000000-0000-0000-0000-000000000044"),
+            LocalCardPaymentAttemptStatus.Pending,
+            "Refund",
+            "C001",
+            DateTimeOffset.Parse("2026-06-05T09:00:00+10:00")) with
+        {
+            ResponseCode = CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded,
+            RecoveryPhase = CardRecoveryPhases.FinalizePending,
+            RecoveryTargetStatus = LocalCardPaymentAttemptStatus.Abandoned.ToString()
+        };
+        var repository = new FakeLinklyAttemptRepository(attempt);
+        var coordinator = new CardPaymentRecoveryCoordinator(
+            new FakeSettingsProvider(CardProcessorKind.Square),
+            CreateLinklyService(repository),
+            new FakeSquareRecoveryService());
+        var cart = new PosCartService();
+        Assert.True(cart.TryPublishRecoverySnapshot(
+            new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid),
+            cart.Revision,
+            NonEmptySnapshot()).Succeeded);
+
+        Assert.True(await coordinator.CompleteDraftHandoffAsync(
+            new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid),
+            cart));
+
+        var completed = Assert.IsType<LocalCardPaymentAttempt>(
+            await repository.GetAttemptAsync(attempt.AttemptGuid));
+        Assert.Equal(LocalCardPaymentAttemptStatus.Abandoned, completed.Status);
+        Assert.Equal(CardRecoveryPhases.None, completed.RecoveryPhase);
+        Assert.Null(completed.RecoveryTargetStatus);
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+        Assert.False(cart.IsEmpty);
+    }
+
+    [Fact]
     public async Task Coordinator_isolates_same_guid_across_different_providers()
     {
         var sharedGuid = Guid.Parse("30000000-0000-0000-0000-000000000043");
@@ -1257,6 +1295,39 @@ public sealed class CardRecoveryCenterTests
 
         public Task MarkRecoveringAsync(Guid attemptGuid, DateTimeOffset updatedAt, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
+
+        public Task<bool> TryFinalizeRecoveryOutcomeAsync(
+            Guid attemptGuid,
+            LocalCardPaymentAttemptStatus expectedStatus,
+            DateTimeOffset expectedUpdatedAt,
+            LocalCardPaymentAttemptStatus recoveryTargetStatus,
+            DateTimeOffset completedAt,
+            CancellationToken cancellationToken = default)
+        {
+            var index = _attempts.FindIndex(attempt =>
+                attempt.AttemptGuid == attemptGuid &&
+                attempt.Status == expectedStatus &&
+                attempt.UpdatedAt == expectedUpdatedAt &&
+                string.Equals(attempt.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) &&
+                string.Equals(
+                    attempt.RecoveryTargetStatus,
+                    recoveryTargetStatus.ToString(),
+                    StringComparison.Ordinal));
+            if (index < 0)
+            {
+                return Task.FromResult(false);
+            }
+
+            _attempts[index] = _attempts[index] with
+            {
+                Status = recoveryTargetStatus,
+                RecoveryPhase = CardRecoveryPhases.None,
+                RecoveryTargetStatus = null,
+                CompletedAt = completedAt,
+                UpdatedAt = completedAt
+            };
+            return Task.FromResult(true);
+        }
     }
 
     private sealed class FakeSquareAttemptRepository : ILocalSquarePaymentAttemptRepository

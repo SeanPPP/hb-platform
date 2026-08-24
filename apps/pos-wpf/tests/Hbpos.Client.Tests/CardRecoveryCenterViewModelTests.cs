@@ -218,7 +218,9 @@ public sealed class CardRecoveryCenterViewModelTests
         Assert.Equal(decision, recovery.ResolvedDecision);
         Assert.Equal("settlement checked", recovery.ResolvedReason);
         Assert.Equal("bank portal evidence", recovery.ResolvedEvidence);
-        Assert.Equal("BANK-REF-1", recovery.ResolvedReference);
+        Assert.Equal(
+            decision == CardRecoverySupervisorDecision.ContinueWaiting ? null : "BANK-REF-1",
+            recovery.ResolvedReference);
         Assert.Equal("SUPERVISOR", recovery.AuthorizingCashierIdDuringResolve);
         Assert.False(Assert.Single(authorization.IssuedScopes).IsActive);
         Assert.Empty(viewModel.OpenAttempts);
@@ -349,6 +351,51 @@ public sealed class CardRecoveryCenterViewModelTests
         Assert.Same(refreshedSelected, viewModel.SelectedAttempt);
         Assert.Equal([2, 2], counts);
         Assert.Equal("Loaded 2 open card transactions.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Selection_inputs_survive_same_key_refresh_and_clear_when_provider_attempt_key_changes()
+    {
+        var first = CreateQueueItem(
+            CardProcessorKind.Linkly,
+            Guid.Parse("44000000-0000-0000-0000-000000000010"),
+            updatedAt: Now);
+        var selected = CreateQueueItem(
+            CardProcessorKind.Square,
+            Guid.Parse("44000000-0000-0000-0000-000000000011"),
+            updatedAt: Now.AddMinutes(-1),
+            operationKind: "Refund");
+        var recovery = new RecordingRecoveryService { OpenItems = [first, selected] };
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization());
+        await viewModel.LoadAsync();
+        viewModel.SelectedAttempt = selected;
+        viewModel.ResolutionReason = "Keep waiting";
+        viewModel.ResolutionEvidence = "Bank portal checked";
+        viewModel.ResolutionReference = "REF-KEEP";
+        var refreshedSelected = selected with
+        {
+            Status = "Pending",
+            UpdatedAt = Now.AddMinutes(1)
+        };
+        recovery.OpenItems = [first, refreshedSelected];
+
+        await viewModel.RefreshCommand.ExecuteAsync(null);
+
+        Assert.Same(refreshedSelected, viewModel.SelectedAttempt);
+        Assert.Equal("Keep waiting", viewModel.ResolutionReason);
+        Assert.Equal("Bank portal checked", viewModel.ResolutionEvidence);
+        Assert.Equal("REF-KEEP", viewModel.ResolutionReference);
+
+        viewModel.SelectedAttempt = first;
+
+        Assert.Equal(string.Empty, viewModel.ResolutionReason);
+        Assert.Equal(string.Empty, viewModel.ResolutionEvidence);
+        Assert.Equal(string.Empty, viewModel.ResolutionReference);
     }
 
     [Fact]
@@ -916,6 +963,33 @@ public sealed class CardRecoveryCenterViewModelTests
     }
 
     [Fact]
+    public void Alternative_refund_resources_are_bilingual_and_actionable()
+    {
+        var resourceRoot = Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Resources");
+        var english = LoadResources(Path.Combine(resourceRoot, "Strings.resx"));
+        var chinese = LoadResources(Path.Combine(resourceRoot, "Strings.zh-CN.resx"));
+
+        Assert.Equal(
+            "Square confirmed that no refund was processed. The return was restored, but card refund is blocked for this recovery. Use cash or voucher.",
+            english["cardRecovery.refund.squareAlternativeMethodRequired"]);
+        Assert.Equal(
+            "This recovered Square refund must be completed with cash or voucher. Card refund is unavailable.",
+            english["payment.refund.status.alternativeMethodRequired"]);
+        Assert.Equal(
+            "Square 已确认未发生退款。原退货已恢复，但本次恢复禁止再次使用银行卡退款，请改用现金或代金券。",
+            chinese["cardRecovery.refund.squareAlternativeMethodRequired"]);
+        Assert.Equal(
+            "此 Square 恢复退款必须使用现金或代金券完成，银行卡退款不可用。",
+            chinese["payment.refund.status.alternativeMethodRequired"]);
+    }
+
+    [Fact]
     public async Task RefreshCommand_contains_service_failure_and_keeps_current_list_available()
     {
         var item = CreateQueueItem(
@@ -987,6 +1061,150 @@ public sealed class CardRecoveryCenterViewModelTests
         Assert.False(viewModel.IsBusy);
         Assert.Equal("Decision saved; recovery is still pending.", viewModel.StatusMessage);
         Assert.Equal([item], viewModel.OpenAttempts);
+    }
+
+    [Fact]
+    public async Task RecoverCommand_draft_handoff_failure_reports_fail_closed_status_instead_of_success()
+    {
+        var item = CreateQueueItem(
+            CardProcessorKind.Square,
+            Guid.Parse("46000000-0000-0000-0000-000000000004"),
+            updatedAt: Now);
+        var recovery = new RecordingRecoveryService
+        {
+            OpenItems = [item],
+            RecoverResult = new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.DraftRestored,
+                "The refund draft is ready.")
+        };
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization(),
+            recoveryResultHandledAsync: _ =>
+                throw new InvalidOperationException("payment projection failed"));
+        await viewModel.LoadAsync();
+
+        await viewModel.RecoverCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsBusy);
+        Assert.Equal(
+            "The recovery result was saved, but the payment draft could not be handed off safely. Run recovery again before taking another payment or refund. payment projection failed",
+            viewModel.StatusMessage);
+        Assert.DoesNotContain("The refund draft is ready.", viewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task RecoverCommand_committed_draft_handoff_warning_does_not_request_financial_retry()
+    {
+        var item = CreateQueueItem(
+            CardProcessorKind.Square,
+            Guid.Parse("46000000-0000-0000-0000-000000000007"),
+            updatedAt: Now);
+        var recovery = new RecordingRecoveryService
+        {
+            OpenItems = [item],
+            RecoverResult = new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.DraftRestored,
+                "The refund draft is ready.")
+        };
+        const string warning =
+            "Recovery was committed, but the payment page remains locked. Review the recovery center before continuing.";
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization(),
+            recoveryResultHandledAsync: _ =>
+                throw new CardRecoveryDraftHandoffPostCommitException(warning));
+        await viewModel.LoadAsync();
+
+        await viewModel.RecoverCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsBusy);
+        Assert.Equal(warning, viewModel.StatusMessage);
+        Assert.DoesNotContain("Run recovery again", viewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ResolveCommand_draft_handoff_failure_reports_fail_closed_status_instead_of_success()
+    {
+        var item = CreateQueueItem(
+            CardProcessorKind.Linkly,
+            Guid.Parse("46000000-0000-0000-0000-000000000005"),
+            operationKind: "Refund",
+            updatedAt: Now);
+        var recoveredDraft = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.DraftRestored,
+            "The supervisor recovery draft is ready.");
+        var recovery = new RecordingRecoveryService
+        {
+            OpenItems = [item],
+            ResolveResult = new CardRecoveryResolutionResult(
+                true,
+                "The supervisor decision was saved.",
+                recoveredDraft,
+                RetryAllowed: true,
+                LockRetained: true,
+                ResolutionPersisted: true,
+                ResolutionApplied: true)
+        };
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization(),
+            recoveryResultHandledAsync: _ =>
+                throw new InvalidOperationException("payment command refresh failed"));
+        await viewModel.LoadAsync();
+        viewModel.ResolutionReason = "Verified with the processor.";
+
+        await viewModel.ConfirmNotPaidCommand.ExecuteAsync(null);
+
+        Assert.False(viewModel.IsBusy);
+        Assert.Equal(
+            "The recovery result was saved, but the payment draft could not be handed off safely. Run recovery again before taking another payment or refund. payment command refresh failed",
+            viewModel.StatusMessage);
+        Assert.DoesNotContain("The supervisor decision was saved.", viewModel.StatusMessage, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task RecoverCommand_draft_handoff_propagates_fatal_callback_exception(bool outOfMemory)
+    {
+        var item = CreateQueueItem(
+            CardProcessorKind.Square,
+            Guid.Parse("46000000-0000-0000-0000-000000000006"),
+            updatedAt: Now);
+        Exception fatal = outOfMemory
+            ? new OutOfMemoryException("fatal projection failure")
+            : new StackOverflowException("fatal projection failure");
+        var recovery = new RecordingRecoveryService
+        {
+            OpenItems = [item],
+            RecoverResult = new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.DraftRestored,
+                "The refund draft is ready.")
+        };
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization(),
+            recoveryResultHandledAsync: _ => throw fatal);
+        await viewModel.LoadAsync();
+
+        var thrown = await Assert.ThrowsAnyAsync<Exception>(
+            () => viewModel.RecoverCommand.ExecuteAsync(null));
+
+        Assert.Same(fatal, thrown);
+        Assert.False(viewModel.IsBusy);
     }
 
     [Fact]

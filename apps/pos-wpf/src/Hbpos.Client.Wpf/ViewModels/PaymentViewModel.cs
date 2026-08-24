@@ -48,8 +48,25 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private string? _installmentDraftFingerprint;
     private Guid? _installmentDraftPaymentGuid;
     private string? _installmentDraftCardIdempotencyKey;
+    private bool _requiresAlternativeRefundMethod;
     private int _shutdownStarted;
     private bool _disposed;
+
+    private sealed record RecoveredPaymentProjectionSnapshot(
+        bool RequiresAlternativeRefundMethod,
+        IReadOnlyList<PaymentTender> Tenders,
+        string StatusKey,
+        string? StatusTextOverride,
+        string TenderAmountText,
+        string VoucherCodeText,
+        string VoucherEntryText,
+        bool IsVoucherEntryDialogOpen,
+        PaymentMethodKind SelectedPaymentMethod,
+        PaymentEntryMode PaymentMode,
+        decimal TotalTendered,
+        decimal RemainingAmount,
+        decimal ChangeDue,
+        decimal WorkflowRemainingAmount);
 
     [ObservableProperty]
     private PosSessionState _session;
@@ -594,13 +611,17 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         VoucherEntryText = string.Empty;
         IsVoucherEntryDialogOpen = false;
         TenderAmountText = string.Empty;
-        _statusKey = GetReadyStatusKey();
+        _statusKey = _requiresAlternativeRefundMethod
+            ? "payment.refund.status.alternativeMethodRequired"
+            : GetReadyStatusKey();
         _statusTextOverride = null;
         SelectedPaymentMethod = PaymentMethodKind.Cash;
         RefreshCart();
         if (!HasBlockingCartIssue())
         {
-            SetStatus(GetReadyStatusKey());
+            SetStatus(_requiresAlternativeRefundMethod
+                ? "payment.refund.status.alternativeMethodRequired"
+                : GetReadyStatusKey());
         }
 
         OnPropertyChanged(nameof(StatusMessage));
@@ -626,6 +647,12 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     public void RefreshCart()
     {
+        if (_cart.IsEmpty)
+        {
+            // 非卡退款限制属于当前恢复购物车；只有购物车真正清空后才可释放，页面往返不能绕过。
+            _requiresAlternativeRefundMethod = false;
+        }
+
         PaymentMode = CalculatePaymentMode();
         CartLines.ReplaceWith(_cart.Lines);
         OnPropertyChanged(nameof(TotalAmount));
@@ -636,23 +663,159 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         NotifyPaymentCommandStates();
     }
 
+    /// <summary>
+    /// 原子投影恢复草稿的退款策略、完整 tender 快照和状态消息。
+    /// </summary>
+    /// <remarks>
+    /// 先物化并校验外部快照，再开始改变付款页。普通通知失败时尽力恢复旧投影并把原异常继续抛给 Presenter，
+    /// 由 Presenter 负责保持恢复锁；OOM/StackOverflowException 不在这里拦截。
+    /// </remarks>
+    internal bool TryApplyRecoveredPaymentProjection(
+        bool requiresAlternativeRefundMethod,
+        IReadOnlyList<PaymentTender>? tenders,
+        string? statusMessage)
+    {
+        var materializedTenders = MaterializeRecoveredPaymentTenders(tenders);
+        var previous = new RecoveredPaymentProjectionSnapshot(
+            _requiresAlternativeRefundMethod,
+            PaymentTenders.ToArray(),
+            _statusKey,
+            _statusTextOverride,
+            TenderAmountText,
+            VoucherCodeText,
+            VoucherEntryText,
+            IsVoucherEntryDialogOpen,
+            SelectedPaymentMethod,
+            PaymentMode,
+            TotalTendered,
+            RemainingAmount,
+            ChangeDue,
+            _workflowRemainingAmount);
+
+        try
+        {
+            _requiresAlternativeRefundMethod = requiresAlternativeRefundMethod;
+            PaymentTenders.Clear();
+            foreach (var tender in materializedTenders)
+            {
+                PaymentTenders.Add(tender);
+            }
+
+            TenderAmountText = string.Empty;
+            VoucherCodeText = string.Empty;
+            VoucherEntryText = string.Empty;
+            IsVoucherEntryDialogOpen = false;
+
+            // 中文注释：恢复已批准 tender 只回填付款页状态，剩余金额仍由收银员补齐后走现有完成订单流程。
+            RefreshCart();
+            // 空购物车刷新会释放旧的退款限制；恢复结果本身仍必须保留服务端要求的策略。
+            _requiresAlternativeRefundMethod = requiresAlternativeRefundMethod;
+            SetStatus(
+                materializedTenders.Count > 0
+                    ? "payment.status.cardTenderAdded"
+                    : requiresAlternativeRefundMethod
+                        ? "payment.refund.status.alternativeMethodRequired"
+                        : GetReadyStatusKey(),
+                statusMessage);
+            NotifyPaymentCommandStates();
+            return true;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            RestoreRecoveredPaymentProjectionBestEffort(previous);
+            throw;
+        }
+    }
+
     internal void RestoreRecoveredPaymentTenders(IReadOnlyList<PaymentTender> tenders, string? statusMessage)
     {
-        PaymentTenders.Clear();
-        foreach (var tender in tenders)
+        _ = TryApplyRecoveredPaymentProjection(
+            _requiresAlternativeRefundMethod,
+            tenders,
+            statusMessage);
+    }
+
+    private static IReadOnlyList<PaymentTender> MaterializeRecoveredPaymentTenders(
+        IReadOnlyList<PaymentTender>? tenders)
+    {
+        if (tenders is null || tenders.Count == 0)
         {
-            PaymentTenders.Add(tender);
+            return [];
         }
 
-        TenderAmountText = string.Empty;
-        VoucherCodeText = string.Empty;
-        VoucherEntryText = string.Empty;
-        IsVoucherEntryDialogOpen = false;
+        var materialized = new List<PaymentTender>(tenders.Count);
+        for (var index = 0; index < tenders.Count; index++)
+        {
+            var tender = tenders[index];
+            ArgumentNullException.ThrowIfNull(tender, nameof(tenders));
+            if (!Enum.IsDefined(tender.Method))
+            {
+                throw new ArgumentOutOfRangeException(nameof(tenders), tender.Method, "The recovered tender method is invalid.");
+            }
 
-        // 中文注释：恢复已批准卡 tender 只回填付款页状态，剩余金额仍由收银员补齐后走现有完成订单流程。
-        RefreshCart();
-        SetStatus("payment.status.cardTenderAdded", statusMessage);
-        NotifyPaymentCommandStates();
+            materialized.Add(tender);
+        }
+
+        return materialized;
+    }
+
+    private void RestoreRecoveredPaymentProjectionBestEffort(RecoveredPaymentProjectionSnapshot snapshot)
+    {
+        _requiresAlternativeRefundMethod = snapshot.RequiresAlternativeRefundMethod;
+
+        TryBestEffortProjectionAction(() => PaymentTenders.Clear());
+        foreach (var tender in snapshot.Tenders)
+        {
+            TryBestEffortProjectionAction(() => PaymentTenders.Add(tender));
+        }
+
+        // 中文注释：回滚直接恢复 backing field，避免失败订阅者再次覆盖原异常；通知本身仍逐项尽力发送。
+#pragma warning disable MVVMTK0034 // 原子投影失败后的 best-effort 回滚必须绕过可能再次抛错的生成 setter。
+        _tenderAmountText = snapshot.TenderAmountText;
+        _voucherCodeText = snapshot.VoucherCodeText;
+        _voucherEntryText = snapshot.VoucherEntryText;
+        _isVoucherEntryDialogOpen = snapshot.IsVoucherEntryDialogOpen;
+        _selectedPaymentMethod = snapshot.SelectedPaymentMethod;
+        _paymentMode = snapshot.PaymentMode;
+        _totalTendered = snapshot.TotalTendered;
+        _remainingAmount = snapshot.RemainingAmount;
+        _changeDue = snapshot.ChangeDue;
+#pragma warning restore MVVMTK0034
+        _workflowRemainingAmount = snapshot.WorkflowRemainingAmount;
+        _statusKey = snapshot.StatusKey;
+        _statusTextOverride = snapshot.StatusTextOverride;
+
+        TryNotifyRecoveredProjectionProperty(nameof(TenderAmountText));
+        TryNotifyRecoveredProjectionProperty(nameof(VoucherCodeText));
+        TryNotifyRecoveredProjectionProperty(nameof(VoucherEntryText));
+        TryNotifyRecoveredProjectionProperty(nameof(IsVoucherEntryDialogOpen));
+        TryNotifyRecoveredProjectionProperty(nameof(SelectedPaymentMethod));
+        TryNotifyRecoveredProjectionProperty(nameof(PaymentMode));
+        TryNotifyRecoveredProjectionProperty(nameof(IsRefundMode));
+        TryNotifyRecoveredProjectionProperty(nameof(IsZeroSettlementMode));
+        TryNotifyRecoveredProjectionProperty(nameof(IsPaymentMode));
+        TryNotifyRecoveredProjectionProperty(nameof(TotalTendered));
+        TryNotifyRecoveredProjectionProperty(nameof(RemainingAmount));
+        TryNotifyRecoveredProjectionProperty(nameof(ChangeDue));
+        TryNotifyRecoveredProjectionProperty(nameof(StatusMessage));
+        TryBestEffortProjectionAction(NotifyPaymentCommandStates);
+    }
+
+    private void TryNotifyRecoveredProjectionProperty(string propertyName)
+    {
+        TryBestEffortProjectionAction(() => OnPropertyChanged(propertyName));
+    }
+
+    private static void TryBestEffortProjectionAction(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 回滚通知是 best-effort；OOM/StackOverflowException 仍由过滤器外传播。
+        }
     }
 
     internal void CompleteCardPaymentHandoff()
@@ -662,6 +825,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _pendingVoucherUploadOrderGuid = null;
         _pendingVoucherTenderedAmount = 0m;
         _pendingVoucherChangeAmount = 0m;
+        _requiresAlternativeRefundMethod = false;
         PaymentTenders.Clear();
         VoucherCodeText = string.Empty;
         VoucherEntryText = string.Empty;
@@ -929,6 +1093,14 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private async Task AddTenderByMethodAsync(PaymentMethodKind method)
     {
+        if (method == PaymentMethodKind.Card && _requiresAlternativeRefundMethod)
+        {
+            // Square 恢复退款只能改用其他退款方式；即使命令被程序化调用也不能再次进入卡工作流。
+            SetStatus("payment.refund.status.alternativeMethodRequired");
+            NotifyPaymentCommandStates();
+            return;
+        }
+
         if (IsInstallmentPaymentEnabled && PaymentTenders.Count > 0)
         {
             SetStatus("payment.installment.status.singleTenderOnly");
@@ -1060,7 +1232,12 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             await ReleaseVoucherTendersAfterCardFailureAsync();
             return;
         }
-        catch (Exception ex) when (isCard && ex is not OperationCanceledException)
+        // 中文注释：卡终端致命异常绕过普通失败处理，确保原异常实例继续向上传播。
+        catch (Exception ex) when (
+            isCard &&
+            ex is not OperationCanceledException &&
+            ex is not OutOfMemoryException &&
+            ex is not StackOverflowException)
         {
             if (!IsCurrentPaymentEntry(paymentEntryVersion))
             {
@@ -1113,7 +1290,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             NotifyPaymentCommandStates();
             return;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             var correlation = OperationAuditEvents.CreateCorrelation();
             OperationAuditEvents.RecordAction(
@@ -1564,14 +1741,22 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
         // 中文注释：自动完成和人工确认共用此入口，首次等待前同步上锁，防止同一订单并发结算。
         IsPaymentInteractionLocked = true;
+        var preservePaymentInteractionLock = false;
         try
         {
             await CompletePaymentFromTendersCoreAsync();
+        }
+        catch (Exception ex) when (ex is OutOfMemoryException or StackOverflowException)
+        {
+            // 中文注释：致命异常必须原样传播，同时保留页面锁，避免异常后继续操作当前付款。
+            preservePaymentInteractionLock = true;
+            throw;
         }
         finally
         {
             // 结算期间若发现已批准卡款无法安全落盘，finally 不能覆盖待恢复锁。
             IsPaymentInteractionLocked =
+                preservePaymentInteractionLock ||
                 IsShuttingDown ||
                 _cardSession.HasUnknownResult;
         }
@@ -1584,6 +1769,17 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         if (!string.IsNullOrWhiteSpace(statusMessage))
         {
             SetStatus(required ? "payment.card.resultUnknown" : GetReadyStatusKey(), statusMessage);
+        }
+
+        NotifyPaymentCommandStates();
+    }
+
+    internal void SetAlternativeRefundMethodRequired(bool required)
+    {
+        _requiresAlternativeRefundMethod = required;
+        if (required)
+        {
+            SetStatus("payment.refund.status.alternativeMethodRequired");
         }
 
         NotifyPaymentCommandStates();
@@ -1667,7 +1863,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             NotifyPaymentCommandStates();
             return;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             var correlation = OperationAuditEvents.CreateCorrelation();
             OperationAuditEvents.RecordAction(
@@ -2085,7 +2281,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             _pendingVoucherChangeAmount = ex.ChangeAmount;
             SetStatus("payment.status.uploadFailed", ex.Message);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             var correlation = OperationAuditEvents.CreateCorrelation();
             OperationAuditEvents.RecordAction(
@@ -2117,6 +2313,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _pendingVoucherUploadOrderGuid = null;
         _pendingVoucherTenderedAmount = 0m;
         _pendingVoucherChangeAmount = 0m;
+        _requiresAlternativeRefundMethod = false;
         PaymentTenders.Clear();
         PendingSyncCount = result.PendingSyncCount;
         Session = result.UpdatedSession;
@@ -2139,6 +2336,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private bool CanAddTender(PaymentMethodKind method, bool allowDefaultAmount)
     {
+        if (method == PaymentMethodKind.Card && _requiresAlternativeRefundMethod)
+        {
+            return false;
+        }
+
         if (IsPaymentInteractionLocked ||
             _cardSession.IsActive ||
             _cardSession.HasUnknownResult ||

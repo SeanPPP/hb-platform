@@ -882,7 +882,10 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                 Status = $Status,
                 ResponseCode = $ResponseCode,
                 ResponseText = $ResponseText,
-                PaymentReference = $PaymentReference,
+                PaymentReference = CASE
+                    WHEN NULLIF(TRIM(COALESCE(PaymentReference, '')), '') IS NULL THEN $PaymentReference
+                    ELSE PaymentReference
+                END,
                 RecoveryPhase = 'FinalizePending',
                 RecoveryTargetStatus = $RecoveryTargetStatus,
                 UpdatedAt = $UpdatedAt
@@ -1237,6 +1240,8 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
                 ResponseCode = NULL,
                 ResponseText = NULL,
                 SubmissionToken = $SubmissionToken,
+                RecoveryPhase = $NoRecoveryPhase,
+                RecoveryTargetStatus = NULL,
                 UpdatedAt = $UpdatedAt
             WHERE AttemptGuid = $AttemptGuid
               AND OperationKind = 'Refund'
@@ -1244,7 +1249,14 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
               AND UpdatedAt = $ExpectedUpdatedAt
               AND SubmissionToken IS NULL
               AND COALESCE(ResponseCode, '') IN ('', $ConfirmedNotRefunded)
-              AND COALESCE(RecoveryPhase, 'None') = 'None';
+              AND (
+                    COALESCE(RecoveryPhase, $NoRecoveryPhase) = $NoRecoveryPhase
+                    OR (
+                        RecoveryPhase = $FinalizePending
+                        AND RecoveryTargetStatus = $AbandonedStatus
+                        AND ResponseCode = $ConfirmedNotRefunded
+                    )
+                  );
             """;
         command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
         command.Parameters.AddWithValue("$PendingStatus", LocalCardPaymentAttemptStatus.Pending.ToString());
@@ -1253,6 +1265,9 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         command.Parameters.AddWithValue("$SubmissionToken", submissionToken);
         command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
         command.Parameters.AddWithValue("$ConfirmedNotRefunded", CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded);
+        command.Parameters.AddWithValue("$NoRecoveryPhase", CardRecoveryPhases.None);
+        command.Parameters.AddWithValue("$FinalizePending", CardRecoveryPhases.FinalizePending);
+        command.Parameters.AddWithValue("$AbandonedStatus", LocalCardPaymentAttemptStatus.Abandoned.ToString());
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 
@@ -1637,13 +1652,17 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         await using var command = connection.CreateCommand();
         command.Transaction = transaction;
         // ExpectedUpdatedAt 与状态共同组成 CAS，避免两个主管同时结案。
+        // PaymentReference 是金融证据：仓储层只允许 ConfirmPaid 写入，其他决定保留数据库现值。
         command.CommandText = """
             UPDATE LocalCardPaymentAttempts
             SET
                 Status = $NextStatus,
                 ResponseCode = $ResponseCode,
                 ResponseText = $ResponseText,
-                PaymentReference = $PaymentReference,
+                PaymentReference = CASE
+                    WHEN $CanWritePaymentReference = 1 THEN $PaymentReference
+                    ELSE PaymentReference
+                END,
                 RecoveryPhase = $RecoveryPhase,
                 RecoveryTargetStatus = $RecoveryTargetStatus,
                 CompletedAt = $CompletedAt,
@@ -1654,7 +1673,13 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
               AND Status = $ExpectedStatus
               AND UpdatedAt = $ExpectedUpdatedAt
               AND COALESCE(RecoveryPhase, $NoRecoveryPhase) <> $FinalizePending
-              AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
+              AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
+              AND NULLIF(TRIM(COALESCE(PaymentReference, '')), '') IS NULL
+              AND UPPER(TRIM(COALESCE(ResponseCode, ''))) NOT IN (
+                    $ApprovedCode1,
+                    $ApprovedCode2,
+                    $ApprovedCode3
+                  );
             """;
         command.Parameters.AddWithValue("$AttemptGuid", resolution.AttemptGuid.ToString());
         command.Parameters.AddWithValue("$SessionId", resolution.SessionId.Trim());
@@ -1665,6 +1690,9 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         command.Parameters.AddWithValue("$NextStatus", nextStatus.ToString());
         command.Parameters.AddWithValue("$ResponseCode", responseCode);
         command.Parameters.AddWithValue("$ResponseText", responseText);
+        command.Parameters.AddWithValue(
+            "$CanWritePaymentReference",
+            resolution.Decision == ActiveSessionSupervisorDecision.ConfirmPaid ? 1 : 0);
         command.Parameters.AddWithValue(
             "$PaymentReference",
             (object?)Normalize(resolution.PaymentReference) ?? DBNull.Value);
@@ -1690,6 +1718,9 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         command.Parameters.AddWithValue("$FinalizePending", CardRecoveryPhases.FinalizePending);
         command.Parameters.AddWithValue("$ResolvedCode1", ActiveSessionSupervisorResolutionCodes.ConfirmedPaid);
         command.Parameters.AddWithValue("$ResolvedCode2", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
+        command.Parameters.AddWithValue("$ApprovedCode1", "00");
+        command.Parameters.AddWithValue("$ApprovedCode2", "08");
+        command.Parameters.AddWithValue("$ApprovedCode3", "11");
         command.Parameters.AddWithValue("$ResolvedAt", resolution.ResolvedAt.ToString("O"));
 
         if (await command.ExecuteNonQueryAsync(cancellationToken) != 1)

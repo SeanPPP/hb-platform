@@ -323,6 +323,217 @@ public sealed class LinklyRecoveryCasRepositoryTests
         }
     }
 
+    [Fact]
+    public async Task Continue_waiting_with_existing_payment_reference_loses_cas_without_clearing_evidence()
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(databasePath);
+            var updatedAt = DateTimeOffset.Parse("2026-06-05T10:00:00+10:00");
+            var attempt = CreateAttempt(LocalCardPaymentAttemptStatus.Recovering, updatedAt) with
+            {
+                ResponseCode = "05",
+                PaymentReference = "BANK-EXISTING-002"
+            };
+            await repository.CreateAsync(attempt);
+
+            var applied = await repository.ResolvePaymentWithJournalAsync(
+                CreatePaymentResolution(
+                    attempt,
+                    ActiveSessionSupervisorDecision.ContinueWaiting,
+                    updatedAt.AddMinutes(1)),
+                CreatePaymentJournal(
+                    attempt,
+                    ActiveSessionSupervisorDecision.ContinueWaiting,
+                    updatedAt.AddMinutes(1)));
+
+            Assert.False(applied);
+            var persisted = await repository.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.NotNull(persisted);
+            Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, persisted.Status);
+            Assert.Equal("05", persisted.ResponseCode);
+            Assert.Equal("BANK-EXISTING-002", persisted.PaymentReference);
+            Assert.Equal(updatedAt, persisted.UpdatedAt);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Continue_waiting_payment_reference_stays_audit_only_then_terminal_approval_writes_real_reference()
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(databasePath);
+            var updatedAt = DateTimeOffset.Parse("2026-06-05T10:00:00+10:00");
+            var waitingResolvedAt = updatedAt.AddMinutes(1);
+            const string supervisorInputReference = "SUPERVISOR-INPUT-001";
+            const string terminalReference = "TERMINAL-REF-001";
+            var attempt = CreateAttempt(LocalCardPaymentAttemptStatus.SessionStarted, updatedAt);
+            await repository.CreateAsync(attempt);
+
+            var resolution = CreatePaymentResolution(
+                attempt,
+                ActiveSessionSupervisorDecision.ContinueWaiting,
+                waitingResolvedAt) with
+            {
+                PaymentReference = supervisorInputReference
+            };
+            var journal = CreatePaymentJournal(
+                attempt,
+                ActiveSessionSupervisorDecision.ContinueWaiting,
+                waitingResolvedAt) with
+            {
+                FinancialReference = supervisorInputReference
+            };
+
+            Assert.True(await repository.ResolvePaymentWithJournalAsync(resolution, journal));
+
+            var waiting = Assert.IsType<LocalCardPaymentAttempt>(
+                await repository.GetAttemptAsync(attempt.AttemptGuid));
+            Assert.Equal(ActiveSessionSupervisorResolutionCodes.ContinueWaiting, waiting.ResponseCode);
+            Assert.Null(waiting.PaymentReference);
+            Assert.Equal(waitingResolvedAt, waiting.UpdatedAt);
+            Assert.Equal(CardRecoveryPhases.None, waiting.RecoveryPhase);
+
+            var journalRepository = new LocalFinancialSupervisorResolutionRepository(
+                new LocalSqliteStore(databasePath));
+            var persistedJournal = Assert.Single(await journalRepository.GetPendingAuditAsync(10));
+            Assert.Equal(supervisorInputReference, persistedJournal.FinancialReference);
+
+            var approvedAt = waitingResolvedAt.AddMinutes(1);
+            Assert.True(await repository.TryPersistRecoveryOutcomeAsync(
+                attempt.AttemptGuid,
+                LocalCardPaymentAttemptStatus.Recovering,
+                "00",
+                "APPROVED",
+                terminalReference,
+                waiting.Status,
+                waiting.UpdatedAt,
+                LocalCardPaymentAttemptStatus.OrderCompleted,
+                approvedAt));
+
+            var approved = Assert.IsType<LocalCardPaymentAttempt>(
+                await repository.GetAttemptAsync(attempt.AttemptGuid));
+            Assert.Equal("00", approved.ResponseCode);
+            Assert.Equal(terminalReference, approved.PaymentReference);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, approved.RecoveryPhase);
+            Assert.Equal(
+                LocalCardPaymentAttemptStatus.OrderCompleted.ToString(),
+                approved.RecoveryTargetStatus);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Automatic_approval_and_supervisor_not_paid_cas_have_exactly_one_winner()
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            var automaticRepository = await CreateRepositoryAsync(databasePath);
+            var supervisorRepository = new LocalCardPaymentAttemptRepository(new LocalSqliteStore(databasePath));
+            var updatedAt = DateTimeOffset.Parse("2026-06-05T10:00:00+10:00");
+            var attempt = CreateAttempt(LocalCardPaymentAttemptStatus.SessionStarted, updatedAt);
+            await automaticRepository.CreateAsync(attempt);
+
+            var automatic = automaticRepository.TryPersistRecoveryOutcomeAsync(
+                attempt.AttemptGuid,
+                LocalCardPaymentAttemptStatus.Recovering,
+                "00",
+                "APPROVED",
+                "AUTO-REF-001",
+                attempt.Status,
+                attempt.UpdatedAt,
+                LocalCardPaymentAttemptStatus.OrderCompleted,
+                updatedAt.AddMinutes(1));
+            var supervisor = supervisorRepository.ResolvePaymentWithJournalAsync(
+                CreatePaymentResolution(
+                    attempt,
+                    ActiveSessionSupervisorDecision.ConfirmNotPaid,
+                    updatedAt.AddMinutes(1)),
+                CreatePaymentJournal(
+                    attempt,
+                    ActiveSessionSupervisorDecision.ConfirmNotPaid,
+                    updatedAt.AddMinutes(1)));
+
+            var outcomes = await Task.WhenAll(automatic, supervisor);
+
+            Assert.Equal(1, outcomes.Count(applied => applied));
+            var winner = await automaticRepository.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.NotNull(winner);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, winner.RecoveryPhase);
+            if (winner.ResponseCode == "00")
+            {
+                Assert.Equal("AUTO-REF-001", winner.PaymentReference);
+                Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, winner.Status);
+            }
+            else
+            {
+                Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, winner.ResponseCode);
+                Assert.Null(winner.PaymentReference);
+                Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, winner.Status);
+            }
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    private static ActiveSessionResolution CreatePaymentResolution(
+        LocalCardPaymentAttempt attempt,
+        ActiveSessionSupervisorDecision decision,
+        DateTimeOffset resolvedAt) =>
+        new(
+            attempt.AttemptGuid,
+            attempt.SessionId ?? attempt.TxnRef ?? throw new InvalidOperationException("Missing session id."),
+            decision,
+            attempt.Status,
+            attempt.UpdatedAt,
+            "Supervisor decision",
+            decision == ActiveSessionSupervisorDecision.ConfirmNotPaid
+                ? "Bank evidence"
+                : null,
+            null,
+            resolvedAt);
+
+    private static LocalFinancialSupervisorResolution CreatePaymentJournal(
+        LocalCardPaymentAttempt attempt,
+        ActiveSessionSupervisorDecision decision,
+        DateTimeOffset resolvedAt) =>
+        new(
+            Guid.NewGuid(),
+            LocalFinancialSupervisorResolutionTarget.ActiveSession,
+            attempt.Processor,
+            attempt.Environment,
+            attempt.StoreCode,
+            attempt.DeviceCode,
+            attempt.AttemptGuid,
+            null,
+            attempt.OperationGuid,
+            attempt.SessionId ?? attempt.TxnRef,
+            decision.ToString(),
+            "MANAGER-01",
+            null,
+            "Manager One",
+            "Supervisor decision",
+            decision == ActiveSessionSupervisorDecision.ConfirmNotPaid
+                ? "Bank evidence"
+                : null,
+            null,
+            null,
+            resolvedAt,
+            Guid.NewGuid(),
+            "{}");
+
     private static async Task<LocalCardPaymentAttemptRepository> CreateRepositoryAsync(string databasePath)
     {
         var store = new LocalSqliteStore(databasePath);

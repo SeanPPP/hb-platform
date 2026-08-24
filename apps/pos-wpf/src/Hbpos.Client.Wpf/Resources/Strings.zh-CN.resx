@@ -1538,6 +1538,9 @@
   <data name="payment.refund.status.voucherOfflineUnavailable" xml:space="preserve">
     <value>离线状态下不可使用退款代金券。请恢复联网后再使用。</value>
   </data>
+  <data name="payment.refund.status.alternativeMethodRequired" xml:space="preserve">
+    <value>此 Square 恢复退款必须使用现金或代金券完成，银行卡退款不可用。</value>
+  </data>
   <data name="payment.status.duplicateVoucher" xml:space="preserve">
     <value>该代金券已经添加。</value>
   </data>
@@ -2629,6 +2632,8 @@
   <data name="cardRecovery.linkly.failedReasonFallback" xml:space="preserve"><value>未获批准</value></data>
   <data name="cardRecovery.linkly.supervisorWaiting" xml:space="preserve"><value>付款仍处于锁定状态。银行结果可用后请再次恢复。</value></data>
   <data name="cardRecovery.linkly.paymentAlreadyFinalized" xml:space="preserve"><value>所选付款已经终态化，不能再次修改。</value></data>
+  <data name="cardRecovery.linkly.paymentEvidenceExists" xml:space="preserve"><value>已存在银行付款证据，请改为执行恢复。</value></data>
+  <data name="cardRecovery.linkly.notPaidPaymentReferenceNotAllowed" xml:space="preserve"><value>确认未付款时，请勿填写付款参考号。</value></data>
   <data name="cardRecovery.linkly.supervisorNotPaidRestored" xml:space="preserve"><value>银行确认未发生付款，原订单已恢复，可以再次付款。</value></data>
   <data name="cardRecovery.linkly.supervisorPaidNoDraft" xml:space="preserve"><value>主管确认上一笔已付款。会话已清理，但本地没有可用订单草稿；请核对订单后再继续。</value></data>
   <data name="cardRecovery.linkly.approvedRecoveryRequiresReview" xml:space="preserve"><value>上一笔卡付款已批准，但 POS 无法安全重建订单。请主管确认付款后再继续。</value></data>
@@ -2727,6 +2732,7 @@
   <data name="cardRecovery.refund.resolveFailed" xml:space="preserve"><value>退款决定保存失败。再次退款前请重新运行恢复。</value></data>
   <data name="cardRecovery.refund.squareReferenceRequired" xml:space="preserve"><value>主管确认 Square 已退款时必须提供真实退款参考号。</value></data>
   <data name="cardRecovery.refund.squarePending" xml:space="preserve"><value>Square 仍在处理退款。请勿再次退款，稍后重新运行恢复。</value></data>
+  <data name="cardRecovery.refund.squareAlternativeMethodRequired" xml:space="preserve"><value>Square 已确认未发生退款。原退货已恢复，但本次恢复禁止再次使用银行卡退款，请改用现金或代金券。</value></data>
   <data name="cardRecovery.refund.waitingSaved" xml:space="preserve"><value>退款仍保持锁定。取得银行结果后请再次运行恢复。</value></data>
   <data name="cardRecovery.refund.retryAllowed" xml:space="preserve"><value>银行已确认未发生退款。原退货已恢复，可使用同一操作重试。</value></data>
   <data name="cardRecovery.refund.confirmedSaved" xml:space="preserve"><value>已记录确认退款，并恢复原退货。</value></data>
@@ -2817,7 +2823,9 @@
   <data name="cardRecovery.center.status.refreshFailed" xml:space="preserve"><value>刷新卡交易失败。{0}</value></data>
   <data name="cardRecovery.center.status.recoverFailed" xml:space="preserve"><value>查询所选交易失败。{0}</value></data>
   <data name="cardRecovery.center.status.resolveFailed" xml:space="preserve"><value>保存主管决定失败。{0}</value></data>
+  <data name="cardRecovery.center.status.draftHandoffFailed" xml:space="preserve"><value>恢复结果已保存，但付款草稿未能安全交接。再次收款或退款前，请重新运行恢复。{0}</value></data>
   <data name="cardRecovery.center.status.unexpected" xml:space="preserve"><value>卡交易异常中心发生意外错误。{0}</value></data>
   <data name="cardRecovery.resolutionSavedPending" xml:space="preserve"><value>主管决定已保存，但恢复尚未完成。再次收款或退款前请重新运行恢复。</value></data>
+  <data name="cardRecovery.draftHandoff.unlockWarning" xml:space="preserve"><value>恢复已提交，但付款页未能安全解锁。页面将保持锁定，请先检查异常中心再继续。</value></data>
   <data name="cardRecovery.center.value.none" xml:space="preserve"><value>-</value></data>
 </root>

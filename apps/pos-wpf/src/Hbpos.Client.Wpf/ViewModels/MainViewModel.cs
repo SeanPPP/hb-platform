@@ -651,6 +651,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _mainChildViewModelFactory,
             _cart,
             setStatusMessage: msg => StatusMessage = msg ?? string.Empty,
+            setPaymentRecoveryBlocked: (blocked, message) =>
+                CashPayment?.SetCurrentCardRecoveryRequired(blocked, message),
             getOwner: () => CurrentOwner,
             navigateToPaymentOnDraft: () =>
             {
@@ -682,6 +684,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
                 CashPayment?.RefreshCart();
             },
+            tryApplyCardRecoveryDraft: (requiresAlternativeRefundMethod, restoredTenders, restoredStatusMessage) =>
+            {
+                PosTerminal?.RefreshCart();
+                return CashPayment?.TryApplyRecoveredPaymentProjection(
+                    requiresAlternativeRefundMethod,
+                    restoredTenders,
+                    restoredStatusMessage) ?? false;
+            },
+            completeRecoveredDraftHandoffAsync: (attemptKey, cancellationToken) =>
+                _cardPaymentRecoveryService is CardPaymentRecoveryCoordinator coordinator
+                    ? coordinator.CompleteDraftHandoffAsync(attemptKey, _cart, cancellationToken)
+                    : Task.FromResult(false),
             refreshPendingSyncAsync: () => RefreshPendingSyncAsync(),
             printReceiptAsync: (receipt, reason) => PrintReceiptWithShellPermissionAsync(receipt, reason),
             canPrintReceipt: () => IsShellPermissionAllowed(Permissions.PosTerminal.Receipt.PrintLast),
@@ -690,7 +704,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             notifyPropertyChanged: name => OnPropertyChanged(name),
             operationAuthorizationService: _operationAuthorizationService,
             operationAuditLogger: _operationAuditLogger,
-            requirePermission: TryRequireShellPermission);
+            requirePermission: TryRequireShellPermission,
+            setAlternativeRefundMethodRequired: required => CashPayment?.SetAlternativeRefundMethodRequired(required));
 
     private SyncOrchestrator CreateSyncOrchestrator(
         ILinklySettlementUploadQueueReader? linklySettlementUploadQueueReader,
@@ -2388,6 +2403,22 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task HandleCardRecoveryCenterResultAsync(CardPaymentRecoveryResult result)
     {
+        if (result.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
+        {
+            // Recovery Center 与启动恢复共用同一条原子交接，不能再次手工投影并绕过 owner 收尾。
+            var presenter = _cardRecoveryPresenter ??
+                throw new InvalidOperationException("Card recovery presenter is unavailable.");
+            var postCommitWarning =
+                await presenter.HandoffRecoveredCardDraftFromRecoveryCenterAsync(result);
+            if (!string.IsNullOrWhiteSpace(postCommitWarning))
+            {
+                // 让异常中心显示“已提交但仍锁定”的明确告警，不能回退成普通成功提示。
+                throw new CardRecoveryDraftHandoffPostCommitException(postCommitWarning);
+            }
+
+            return;
+        }
+
         if (result.UpdatedSession is not null)
         {
             Session = result.UpdatedSession;
@@ -2408,24 +2439,6 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        if (result.Outcome != CardPaymentRecoveryOutcome.DraftRestored)
-        {
-            return;
-        }
-
-        // 未付款旧单只会在当前购物车为空时由恢复服务还原；回到支付页继续，不触碰其他活动订单。
-        _screenNavigator.PrepareCachedCashPaymentScreen();
-        CashPayment?.PrepareForEntry(Session);
-        if (result.RestoredTenders is { Count: > 0 })
-        {
-            CashPayment?.RestoreRecoveredPaymentTenders(result.RestoredTenders, result.Message);
-        }
-        else
-        {
-            CashPayment?.RefreshCart();
-        }
-
-        CurrentScreen = CashPayment;
     }
 
     private Window? CurrentOwner => _windowOwnerProvider?.CurrentOwner;

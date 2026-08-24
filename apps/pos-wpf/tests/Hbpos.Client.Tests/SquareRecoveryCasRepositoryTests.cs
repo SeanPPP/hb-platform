@@ -425,6 +425,495 @@ public sealed class SquareRecoveryCasRepositoryTests
         }
     }
 
+    [Theory]
+    [InlineData("FAILED")]
+    [InlineData("REJECTED")]
+    public async Task Refund_failure_persists_financial_status_and_finalize_phase_atomically_without_replacing_refund_identity(
+        string paymentStatus)
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            ILocalSquarePaymentAttemptRepository repository = await CreateRepositoryAsync(databasePath);
+            var attempt = CreateSaleAttempt() with
+            {
+                AttemptGuid = Guid.NewGuid(),
+                OperationKind = "Refund",
+                Status = LocalSquarePaymentAttemptStatus.Recovering,
+                PaymentId = "REFUND-AUTHORITATIVE-001",
+                PaymentStatus = "PENDING",
+                ResponseCode = string.Empty,
+                ResponseText = string.Empty,
+                SubmissionToken = "refund-token"
+            };
+            await repository.CreateAsync(attempt);
+            var finalizedAt = attempt.UpdatedAt.AddMinutes(1);
+
+            var applied = await repository.TryPersistRefundFailureForFinalizationAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                attempt.SubmissionToken!,
+                paymentStatus,
+                responseCode: "SQUARE_FAILURE",
+                responseText: "Square refund reached a terminal failure.",
+                finalizedAt);
+
+            Assert.True(applied);
+            var saved = Assert.IsType<LocalSquarePaymentAttempt>(
+                await repository.GetAttemptAsync(attempt.AttemptGuid));
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, saved.Status);
+            Assert.Equal(paymentStatus, saved.PaymentStatus);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, saved.RecoveryPhase);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, saved.RecoveryTargetStatus);
+            Assert.Equal(attempt.PaymentId, saved.PaymentId);
+            Assert.Equal("SQUARE_FAILURE", saved.ResponseCode);
+            Assert.Equal("Square refund reached a terminal failure.", saved.ResponseText);
+            Assert.Equal(finalizedAt, saved.UpdatedAt);
+            Assert.Null(saved.CompletedAt);
+            Assert.Null(saved.ResolvedAt);
+            Assert.Contains(
+                saved,
+                await repository.GetOpenAttemptsAsync(
+                    saved.StoreCode,
+                    saved.DeviceCode,
+                    saved.Environment));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Refund_failure_cas_preserves_existing_response_evidence_and_rejects_completed_winner()
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            ILocalSquarePaymentAttemptRepository repository = await CreateRepositoryAsync(databasePath);
+            var attempt = CreateSaleAttempt() with
+            {
+                AttemptGuid = Guid.NewGuid(),
+                OperationKind = "Refund",
+                Status = LocalSquarePaymentAttemptStatus.Recovering,
+                PaymentId = "REFUND-AUTHORITATIVE-002",
+                PaymentStatus = "PENDING",
+                ResponseCode = "EXISTING-CODE",
+                ResponseText = "Existing provider evidence.",
+                SubmissionToken = "refund-token"
+            };
+            await repository.CreateAsync(attempt);
+
+            var completedAt = attempt.UpdatedAt.AddMinutes(1);
+            Assert.True(await repository.TryMarkRefundPaymentVerifiedAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                attempt.SubmissionToken!,
+                attempt.PaymentId!,
+                "COMPLETED",
+                responseCode: attempt.ResponseCode,
+                responseText: attempt.ResponseText,
+                completedAt));
+
+            var applied = await repository.TryPersistRefundFailureForFinalizationAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                attempt.SubmissionToken!,
+                "FAILED",
+                responseCode: "LATE-FAILURE",
+                responseText: "Late failure must not win.",
+                attempt.UpdatedAt.AddMinutes(2));
+
+            Assert.False(applied);
+            var saved = Assert.IsType<LocalSquarePaymentAttempt>(
+                await repository.GetAttemptAsync(attempt.AttemptGuid));
+            Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, saved.Status);
+            Assert.Equal("COMPLETED", saved.PaymentStatus);
+            Assert.Equal(attempt.PaymentId, saved.PaymentId);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, saved.RecoveryPhase);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.OrderCompleted, saved.RecoveryTargetStatus);
+            Assert.Equal("EXISTING-CODE", saved.ResponseCode);
+            Assert.Equal("Existing provider evidence.", saved.ResponseText);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Refund_failure_cas_does_not_mutate_recovering_completed_evidence_with_matching_version_and_submission_token()
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            ILocalSquarePaymentAttemptRepository repository = await CreateRepositoryAsync(databasePath);
+            var attempt = CreateSaleAttempt() with
+            {
+                AttemptGuid = Guid.NewGuid(),
+                OperationKind = "Refund",
+                Status = LocalSquarePaymentAttemptStatus.Recovering,
+                PaymentId = "REFUND-COMPLETED-LOCAL",
+                PaymentStatus = " completed ",
+                SubmissionToken = "refund-token",
+                RecoveryPhase = CardRecoveryPhases.None,
+                RecoveryTargetStatus = null
+            };
+            await repository.CreateAsync(attempt);
+
+            var applied = await repository.TryPersistRefundFailureForFinalizationAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                attempt.SubmissionToken!,
+                "FAILED",
+                responseCode: "LATE-FAILURE",
+                responseText: "Late failure must not win.",
+                attempt.UpdatedAt.AddMinutes(1));
+
+            Assert.False(applied);
+            Assert.Equal(attempt, await repository.GetAttemptAsync(attempt.AttemptGuid));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Refund_failure_cas_rejects_supervisor_terminal_and_finalize_pending_winners()
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            ILocalSquarePaymentAttemptRepository repository = await CreateRepositoryAsync(databasePath);
+            var supervisorWinner = CreateSaleAttempt() with
+            {
+                AttemptGuid = Guid.NewGuid(),
+                OperationKind = "Refund",
+                Status = LocalSquarePaymentAttemptStatus.Recovering,
+                PaymentId = "REFUND-SUPERVISOR-001",
+                SubmissionToken = "refund-token",
+                ResponseCode = CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded,
+                RecoveryPhase = CardRecoveryPhases.FinalizePending,
+                RecoveryTargetStatus = LocalSquarePaymentAttemptStatus.Abandoned
+            };
+            await repository.CreateAsync(supervisorWinner);
+
+            var applied = await repository.TryPersistRefundFailureForFinalizationAsync(
+                supervisorWinner.AttemptGuid,
+                supervisorWinner.Status,
+                supervisorWinner.UpdatedAt,
+                supervisorWinner.SubmissionToken!,
+                "REJECTED",
+                responseCode: "LATE-FAILURE",
+                responseText: "Late failure must not win.",
+                supervisorWinner.UpdatedAt.AddMinutes(1));
+
+            Assert.False(applied);
+            Assert.Equal(supervisorWinner, await repository.GetAttemptAsync(supervisorWinner.AttemptGuid));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Refund_failure_finalization_winner_rejects_legacy_token_only_writes_without_mutation()
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            ILocalSquarePaymentAttemptRepository repository = await CreateRepositoryAsync(databasePath);
+            var attempt = CreateSaleAttempt() with
+            {
+                AttemptGuid = Guid.NewGuid(),
+                OperationKind = "Refund",
+                Status = LocalSquarePaymentAttemptStatus.Recovering,
+                PaymentId = "REFUND-AUTHORITATIVE-003",
+                PaymentStatus = "PENDING",
+                ResponseCode = string.Empty,
+                ResponseText = string.Empty,
+                SubmissionToken = "refund-token"
+            };
+            await repository.CreateAsync(attempt);
+            var finalizedAt = attempt.UpdatedAt.AddMinutes(1);
+
+            Assert.True(await repository.TryPersistRefundFailureForFinalizationAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                attempt.SubmissionToken!,
+                "FAILED",
+                responseCode: "SQUARE_FAILURE",
+                responseText: "Square refund reached a terminal failure.",
+                finalizedAt));
+
+            var finalized = Assert.IsType<LocalSquarePaymentAttempt>(
+                await repository.GetAttemptAsync(attempt.AttemptGuid));
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, finalized.Status);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, finalized.RecoveryPhase);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, finalized.RecoveryTargetStatus);
+
+            Assert.False(await repository.TryRecordRefundResponseAsync(
+                attempt.AttemptGuid,
+                attempt.SubmissionToken!,
+                "LATE-REFUND",
+                "PENDING",
+                finalizedAt.AddMinutes(1)));
+            Assert.Equal(finalized, await repository.GetAttemptAsync(attempt.AttemptGuid));
+
+            Assert.False(await repository.TryMarkRefundPaymentVerifiedAsync(
+                attempt.AttemptGuid,
+                attempt.SubmissionToken!,
+                "LATE-COMPLETED",
+                "COMPLETED",
+                responseCode: "LATE-COMPLETED",
+                responseText: "Late completed callback.",
+                completedAt: finalizedAt.AddMinutes(2)));
+            Assert.Equal(finalized, await repository.GetAttemptAsync(attempt.AttemptGuid));
+
+            Assert.False(await repository.TryMarkRefundFailedAsync(
+                attempt.AttemptGuid,
+                attempt.SubmissionToken!,
+                status: LocalSquarePaymentAttemptStatus.Failed,
+                checkoutStatus: "FAILED",
+                paymentStatus: "FAILED",
+                responseCode: "LATE-FAILED",
+                responseText: "Late failed callback.",
+                resolvedAt: finalizedAt.AddMinutes(3)));
+            Assert.Equal(finalized, await repository.GetAttemptAsync(attempt.AttemptGuid));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Versioned_refund_failure_uses_status_and_timestamp_cas_and_preserves_financial_write_semantics()
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            ILocalSquarePaymentAttemptRepository repository = await CreateRepositoryAsync(databasePath);
+            var attempt = CreateSaleAttempt() with
+            {
+                AttemptGuid = Guid.NewGuid(),
+                OperationKind = "Refund",
+                Status = LocalSquarePaymentAttemptStatus.Recovering,
+                PaymentId = "REFUND-CAS-001",
+                PaymentStatus = "PENDING",
+                SubmissionToken = "refund-token"
+            };
+            await repository.CreateAsync(attempt);
+            var resolvedAt = attempt.UpdatedAt.AddMinutes(1);
+
+            Assert.False(await repository.TryMarkRefundFailedAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt.AddTicks(-1),
+                attempt.SubmissionToken!,
+                LocalSquarePaymentAttemptStatus.Unknown,
+                checkoutStatus: "FAILED",
+                paymentStatus: "FAILED",
+                responseCode: "SQUARE_FAILURE",
+                responseText: "Stale failure must not win.",
+                resolvedAt,
+                cancelReason: "stale"));
+            Assert.Equal(attempt, await repository.GetAttemptAsync(attempt.AttemptGuid));
+
+            Assert.True(await repository.TryMarkRefundFailedAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                attempt.SubmissionToken!,
+                LocalSquarePaymentAttemptStatus.Unknown,
+                checkoutStatus: "FAILED",
+                paymentStatus: "FAILED",
+                responseCode: "SQUARE_FAILURE",
+                responseText: "Square refund failed.",
+                resolvedAt,
+                cancelReason: "provider failure"));
+
+            var saved = Assert.IsType<LocalSquarePaymentAttempt>(
+                await repository.GetAttemptAsync(attempt.AttemptGuid));
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, saved.Status);
+            Assert.Equal("FAILED", saved.CheckoutStatus);
+            Assert.Equal("provider failure", saved.CancelReason);
+            Assert.Equal("FAILED", saved.PaymentStatus);
+            Assert.Equal("SQUARE_FAILURE", saved.ResponseCode);
+            Assert.Equal("Square refund failed.", saved.ResponseText);
+            Assert.Equal(resolvedAt, saved.ResolvedAt);
+            Assert.Equal(resolvedAt, saved.UpdatedAt);
+            Assert.Equal(attempt.PaymentId, saved.PaymentId);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Versioned_refund_failure_rejects_finalize_pending_rows()
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            ILocalSquarePaymentAttemptRepository repository = await CreateRepositoryAsync(databasePath);
+            var attempt = CreateSaleAttempt() with
+            {
+                AttemptGuid = Guid.NewGuid(),
+                OperationKind = "Refund",
+                Status = LocalSquarePaymentAttemptStatus.Recovering,
+                SubmissionToken = "refund-token",
+                RecoveryPhase = CardRecoveryPhases.FinalizePending,
+                RecoveryTargetStatus = LocalSquarePaymentAttemptStatus.Abandoned
+            };
+            await repository.CreateAsync(attempt);
+
+            Assert.False(await repository.TryMarkRefundFailedAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                attempt.SubmissionToken!,
+                LocalSquarePaymentAttemptStatus.Failed,
+                checkoutStatus: "FAILED",
+                paymentStatus: "FAILED",
+                responseCode: "LATE-FAILED",
+                responseText: "Late failure must not win.",
+                resolvedAt: attempt.UpdatedAt.AddMinutes(1)));
+            Assert.Equal(attempt, await repository.GetAttemptAsync(attempt.AttemptGuid));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Refund_late_failure_and_pending_callbacks_reject_completed_evidence()
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            ILocalSquarePaymentAttemptRepository repository = await CreateRepositoryAsync(databasePath);
+            var attempt = CreateSaleAttempt() with
+            {
+                AttemptGuid = Guid.NewGuid(),
+                OperationKind = "Refund",
+                Status = LocalSquarePaymentAttemptStatus.Recovering,
+                PaymentId = "REFUND-COMPLETED-WINNER",
+                PaymentStatus = " completed ",
+                SubmissionToken = "refund-token"
+            };
+            await repository.CreateAsync(attempt);
+
+            Assert.False(await repository.TryRecordRefundResponseAsync(
+                attempt.AttemptGuid,
+                attempt.SubmissionToken!,
+                "REFUND-LATE-PENDING",
+                "PENDING",
+                attempt.UpdatedAt.AddMinutes(1)));
+            Assert.False(await repository.TryRecordRefundResponseAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                attempt.SubmissionToken!,
+                "REFUND-LATE-PENDING",
+                "PENDING",
+                attempt.UpdatedAt.AddMinutes(1)));
+            Assert.False(await repository.TryMarkRefundFailedAsync(
+                attempt.AttemptGuid,
+                attempt.SubmissionToken!,
+                LocalSquarePaymentAttemptStatus.Failed,
+                checkoutStatus: "FAILED",
+                paymentStatus: "FAILED",
+                responseCode: "LATE-FAILED",
+                responseText: "Late failure must not win.",
+                resolvedAt: attempt.UpdatedAt.AddMinutes(1)));
+            Assert.False(await repository.TryMarkRefundFailedAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                attempt.SubmissionToken!,
+                LocalSquarePaymentAttemptStatus.Failed,
+                checkoutStatus: "FAILED",
+                paymentStatus: "FAILED",
+                responseCode: "LATE-VERSIONED-FAILED",
+                responseText: "Late versioned failure must not win.",
+                resolvedAt: attempt.UpdatedAt.AddMinutes(1)));
+
+            Assert.Equal(attempt, await repository.GetAttemptAsync(attempt.AttemptGuid));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Theory]
+    [InlineData(LocalSquarePaymentAttemptStatus.Canceled)]
+    [InlineData(LocalSquarePaymentAttemptStatus.TimedOut)]
+    [InlineData(LocalSquarePaymentAttemptStatus.Failed)]
+    [InlineData(LocalSquarePaymentAttemptStatus.OrderCompleted)]
+    [InlineData(LocalSquarePaymentAttemptStatus.Abandoned)]
+    public async Task Refund_failure_writes_reject_all_terminal_rows(
+        LocalSquarePaymentAttemptStatus terminalStatus)
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            ILocalSquarePaymentAttemptRepository repository = await CreateRepositoryAsync(databasePath);
+            var attempt = CreateSaleAttempt() with
+            {
+                AttemptGuid = Guid.NewGuid(),
+                OperationKind = "Refund",
+                Status = terminalStatus,
+                SubmissionToken = "refund-token"
+            };
+            await repository.CreateAsync(attempt);
+
+            Assert.False(await repository.TryMarkRefundPaymentVerifiedAsync(
+                attempt.AttemptGuid,
+                attempt.SubmissionToken!,
+                "LATE-COMPLETED",
+                "COMPLETED",
+                responseCode: "LATE-COMPLETED",
+                responseText: "Late completed callback.",
+                completedAt: attempt.UpdatedAt.AddMinutes(1)));
+            Assert.False(await repository.TryMarkRefundFailedAsync(
+                attempt.AttemptGuid,
+                attempt.SubmissionToken!,
+                status: LocalSquarePaymentAttemptStatus.Failed,
+                checkoutStatus: "FAILED",
+                paymentStatus: "FAILED",
+                responseCode: "LATE-FAILED",
+                responseText: "Late failed callback.",
+                resolvedAt: attempt.UpdatedAt.AddMinutes(1)));
+            Assert.False(await repository.TryMarkRefundFailedAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                attempt.SubmissionToken!,
+                LocalSquarePaymentAttemptStatus.Failed,
+                checkoutStatus: "FAILED",
+                paymentStatus: "FAILED",
+                responseCode: "LATE-VERSIONED-FAILED",
+                responseText: "Late versioned failure callback.",
+                resolvedAt: attempt.UpdatedAt.AddMinutes(1)));
+            Assert.Equal(attempt, await repository.GetAttemptAsync(attempt.AttemptGuid));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     [Fact]
     public async Task FinalizePending_refund_cannot_begin_a_second_submission()
     {

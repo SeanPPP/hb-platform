@@ -160,7 +160,8 @@ internal static class CardPaymentSupervisorResolutionRules
     public static bool TryNormalize(
         CardPaymentSupervisorResolution resolution,
         out CardPaymentSupervisorResolution normalized,
-        out string error)
+        out string error,
+        Func<string, string, string>? localize = null)
     {
         var reason = Normalize(resolution.Reason);
         var evidence = Normalize(resolution.Evidence);
@@ -170,7 +171,10 @@ internal static class CardPaymentSupervisorResolutionRules
         {
             Reason = reason ?? string.Empty,
             Evidence = evidence,
-            PaymentReference = paymentReference,
+            // ContinueWaiting 不是金融结论，不能把恢复中心的共享输入固化成付款证据。
+            PaymentReference = resolution.Decision == CardPaymentSupervisorDecision.ContinueWaiting
+                ? null
+                : paymentReference,
             OperatorCashierId = operatorCashierId ?? string.Empty,
             OperatorUserGuid = Normalize(resolution.OperatorUserGuid),
             OperatorName = Normalize(resolution.OperatorName)
@@ -200,6 +204,14 @@ internal static class CardPaymentSupervisorResolutionRules
             return false;
         }
 
+        if (resolution.Decision == CardPaymentSupervisorDecision.ConfirmNotPaid &&
+            paymentReference is not null)
+        {
+            const string fallback = "Do not enter a payment reference when confirming that no payment was processed.";
+            error = localize?.Invoke("cardRecovery.linkly.notPaidPaymentReferenceNotAllowed", fallback) ?? fallback;
+            return false;
+        }
+
         error = string.Empty;
         return true;
     }
@@ -222,6 +234,12 @@ public sealed record CardPaymentRecoveryResult(
     bool HasPostCommitWarning = false,
     CardPaymentSupervisorDetails? PaymentSupervisorDetails = null)
 {
+    public bool RequiresAlternativeRefundMethod { get; init; }
+
+    // 仅需要在 UI 原子投影成功后立即终态化的草稿携带此键；部分 approved tender
+    // 和替代退款必须继续由订单落库路径收尾，因此不会设置该键。
+    internal CardRecoveryAttemptKey? DraftHandoffKey { get; init; }
+
     public static CardPaymentRecoveryResult None { get; } = new(CardPaymentRecoveryOutcome.None, string.Empty);
 }
 
@@ -1662,7 +1680,8 @@ public sealed class CardPaymentRecoveryService(
         if (!CardPaymentSupervisorResolutionRules.TryNormalize(
                 resolution,
                 out var normalized,
-                out var validationError))
+                out var validationError,
+                T))
         {
             return new CardPaymentSupervisorResolutionResult(
                 false,
@@ -1706,6 +1725,16 @@ public sealed class CardPaymentRecoveryService(
                     "The selected payment has already been finalized and cannot be changed."),
                 LockRetained: acknowledgementPending,
                 ResolutionPersisted: IsSupervisorResolvedPayment(attempt));
+        }
+
+        if (HasPersistedLinklyPaymentEvidence(attempt))
+        {
+            return new CardPaymentSupervisorResolutionResult(
+                false,
+                T(
+                    "cardRecovery.linkly.paymentEvidenceExists",
+                    "Bank payment evidence already exists. Run recovery instead."),
+                LockRetained: true);
         }
 
         var resolvedAt = DateTimeOffset.UtcNow;
@@ -2089,7 +2118,7 @@ public sealed class CardPaymentRecoveryService(
                 try
                 {
                     publication = cart.TryPublishRecoverySnapshot(
-                        attempt.AttemptGuid,
+                        new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid),
                         cart.Revision,
                         draft.CartSnapshot);
                 }
@@ -2115,7 +2144,8 @@ public sealed class CardPaymentRecoveryService(
                 if (publication is not null)
                 {
                     // 终端/本地确认未完成时只撤回本 attempt 发布的购物车，主管决定继续保留。
-                    cart.RollbackRecoveryPublication(attempt.AttemptGuid);
+                    cart.RollbackRecoveryPublication(
+                        new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid));
                 }
 
                 return BuildUnresolvedActiveSessionResult(
@@ -2146,7 +2176,8 @@ public sealed class CardPaymentRecoveryService(
             {
                 if (publication is not null)
                 {
-                    cart.RollbackRecoveryPublication(attempt.AttemptGuid);
+                    cart.RollbackRecoveryPublication(
+                        new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid));
                 }
 
                 return BuildUnresolvedActiveSessionResult(
@@ -2155,7 +2186,8 @@ public sealed class CardPaymentRecoveryService(
             }
 
             var ownershipReleased = publication is null ||
-                cart.CompleteRecoveryPublication(attempt.AttemptGuid);
+                cart.CompleteRecoveryPublication(
+                    new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid));
 
             return new CardPaymentRecoveryResult(
                 draft is null
@@ -2388,7 +2420,7 @@ public sealed class CardPaymentRecoveryService(
             {
                 // 部分退款必须把原退货草稿实际发布到空的活动购物车；仅返回 tenders 不算恢复成功。
                 publication = cart.TryPublishRecoverySnapshot(
-                    attempt.AttemptGuid,
+                    new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid),
                     cart.Revision,
                     draft.CartSnapshot);
             }
@@ -2507,7 +2539,7 @@ public sealed class CardPaymentRecoveryService(
             HasPostCommitWarning: hasPostCommitWarning);
     }
 
-    private async Task<CardPaymentRecoveryResult> RestoreSupervisorApprovedRetryAsync(
+    private Task<CardPaymentRecoveryResult> RestoreSupervisorApprovedRetryAsync(
         PosCartService cart,
         LocalCardPaymentAttempt attempt,
         CancellationToken cancellationToken)
@@ -2515,50 +2547,158 @@ public sealed class CardPaymentRecoveryService(
         var draft = TryDeserializeDraft(attempt);
         if (draft is null)
         {
-            return new CardPaymentRecoveryResult(
+            return Task.FromResult(new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
                 ResolutionPendingMessage(),
-                DialogDetails: BuildDialogDetails(attempt));
+                DialogDetails: BuildDialogDetails(attempt)));
         }
         var publication = cart.TryPublishRecoverySnapshot(
-            attempt.AttemptGuid,
+            new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid),
             cart.Revision,
             draft.CartSnapshot);
         if (!publication.Succeeded)
         {
-            return new CardPaymentRecoveryResult(
+            return Task.FromResult(new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
                 T("cardRecovery.linkly.currentCartNotEmpty", "The bank confirmed that no refund was processed, but the current cart is not empty. Complete or clear it, then run recovery again."),
                 DialogDetails: BuildDialogDetails(attempt),
-                HasPostCommitWarning: publication.NotificationWarning);
+                HasPostCommitWarning: publication.NotificationWarning));
         }
 
-        var finalized = await FinalizeRecoveryOutcomeAsync(
-            attempt,
-            attempt.Status,
-            attempt.UpdatedAt,
-            LocalCardPaymentAttemptStatus.Abandoned,
-            DateTimeOffset.UtcNow,
-            cancellationToken);
-        if (!finalized)
-        {
-            cart.RollbackRecoveryPublication(attempt.AttemptGuid);
-            return new CardPaymentRecoveryResult(
-                CardPaymentRecoveryOutcome.Unknown,
-                T("cardRecovery.refund.requiresReview", "A previous card refund is still unresolved. Do not refund again; ask a supervisor to reconcile the terminal and the original sale."),
-                DialogDetails: BuildDialogDetails(attempt));
-        }
-
-        // 发布成功即释放 ownership，收银员才能继续编辑被恢复的草稿。
-        cart.CompleteRecoveryPublication(attempt.AttemptGuid);
-        return new CardPaymentRecoveryResult(
+        // 中文注释：ConfirmedNotRefunded 仍是可回滚的退款恢复草稿；UI 原子投影前不能
+        // 完成 Abandoned CAS 或释放 owner，失败时 Presenter 才能按精确 attempt 回滚。
+        return Task.FromResult(new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.DraftRestored,
             T("cardRecovery.refund.retryAllowed", "The bank confirmed that no refund was processed. The original return is ready to retry with the same operation."),
             TenderedAmount: draft.CurrentTenders.Sum(tender => tender.Amount),
             DialogDetails: BuildDialogDetails(attempt),
             RestoredTenders: draft.CurrentTenders,
-            HasPostCommitWarning: publication.NotificationWarning);
+            HasPostCommitWarning: publication.NotificationWarning)
+        {
+            DraftHandoffKey = new CardRecoveryAttemptKey(
+                CardProcessorKind.Linkly,
+                attempt.AttemptGuid)
+        });
     }
+
+    /// <summary>
+    /// UI 已完整接收 Linkly 主管确认“未退款”的草稿后，终结旧 attempt 并释放精确 publication。
+    /// 已批准 tender 仍由订单落库路径完成为 OrderCompleted。
+    /// </summary>
+    internal async Task<bool> CompleteDraftHandoffAsync(
+        Guid attemptGuid,
+        PosCartService cart,
+        CancellationToken cancellationToken = default)
+    {
+        var attemptKey = new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attemptGuid);
+        LocalCardPaymentAttempt? attempt;
+        try
+        {
+            attempt = await RunLocalStoreAsync(
+                () => attemptRepository.GetAttemptAsync(attemptGuid, CancellationToken.None),
+                CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            TryWriteRecoveryLog(
+                $"linkly draft handoff read failed attemptGuid={attemptGuid} error={ex.GetType().Name}");
+            return false;
+        }
+
+        if (!IsConfirmedNotRefundedDraftHandoff(attempt))
+        {
+            return false;
+        }
+
+        var current = attempt!;
+        var isTerminal = IsCompletedDraftHandoff(current);
+        if (cart.RecoveryOwnerAttemptKey is not CardRecoveryAttemptKey ownerKey)
+        {
+            return isTerminal;
+        }
+
+        if (ownerKey != attemptKey)
+        {
+            return false;
+        }
+
+        if (!isTerminal)
+        {
+            if (current.Status != LocalCardPaymentAttemptStatus.Pending ||
+                !string.Equals(current.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) ||
+                !string.Equals(
+                    current.RecoveryTargetStatus,
+                    LocalCardPaymentAttemptStatus.Abandoned.ToString(),
+                    StringComparison.Ordinal) ||
+                !await FinalizeRecoveryOutcomeAsync(
+                    current,
+                    current.Status,
+                    current.UpdatedAt,
+                    LocalCardPaymentAttemptStatus.Abandoned,
+                    DateTimeOffset.UtcNow,
+                    cancellationToken))
+            {
+                LocalCardPaymentAttempt? winner;
+                try
+                {
+                    winner = await RunLocalStoreAsync(
+                        () => attemptRepository.GetAttemptAsync(attemptGuid, CancellationToken.None),
+                        CancellationToken.None);
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+                {
+                    TryWriteRecoveryLog(
+                        $"linkly draft handoff winner read failed attemptGuid={attemptGuid} error={ex.GetType().Name}");
+                    return false;
+                }
+
+                if (!IsCompletedConfirmedNotRefundedDraftHandoff(winner))
+                {
+                    return false;
+                }
+            }
+        }
+
+        LocalCardPaymentAttempt? persistedWinner;
+        try
+        {
+            persistedWinner = await RunLocalStoreAsync(
+                () => attemptRepository.GetAttemptAsync(attemptGuid, CancellationToken.None),
+                CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            TryWriteRecoveryLog(
+                $"linkly draft handoff verification failed attemptGuid={attemptGuid} error={ex.GetType().Name}");
+            return false;
+        }
+
+        if (!IsCompletedConfirmedNotRefundedDraftHandoff(persistedWinner))
+        {
+            return false;
+        }
+
+        // 数据库终态确认后才释放精确 owner；其它 attempt 的 publication 永远不能被本次交接触碰。
+        return cart.CompleteRecoveryPublication(attemptKey);
+    }
+
+    private static bool IsConfirmedNotRefundedDraftHandoff(LocalCardPaymentAttempt? attempt) =>
+        attempt is not null &&
+        string.Equals(attempt.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(
+            attempt.ResponseCode,
+            CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded,
+            StringComparison.Ordinal);
+
+    private static bool IsCompletedConfirmedNotRefundedDraftHandoff(LocalCardPaymentAttempt? attempt) =>
+        IsConfirmedNotRefundedDraftHandoff(attempt) &&
+        attempt is not null &&
+        IsCompletedDraftHandoff(attempt);
+
+    private static bool IsCompletedDraftHandoff(LocalCardPaymentAttempt attempt) =>
+        attempt.Status == LocalCardPaymentAttemptStatus.Abandoned &&
+        string.Equals(attempt.RecoveryPhase, CardRecoveryPhases.None, StringComparison.Ordinal) &&
+        attempt.RecoveryTargetStatus is null;
 
     private static CardRefundRecoveryDetails BuildRefundDetails(
         LocalCardPaymentAttempt attempt,
@@ -3144,7 +3284,7 @@ public sealed class CardPaymentRecoveryService(
         }
 
         var publication = cart.TryPublishRecoverySnapshot(
-            attempt.AttemptGuid,
+            new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid),
             cart.Revision,
             draft.CartSnapshot);
         if (!publication.Succeeded)
@@ -3160,7 +3300,8 @@ public sealed class CardPaymentRecoveryService(
         if (acknowledgeAsync is not null && !await acknowledgeAsync())
         {
             // Linkly 尚未确认清理时，不能把恢复草稿暴露给收银员，也不能把本地 attempt 终态化。
-            cart.RollbackRecoveryPublication(attempt.AttemptGuid);
+            cart.RollbackRecoveryPublication(
+                new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid));
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
                 T("cardRecovery.linkly.activeSessionAcknowledgeFailed", "The previous Linkly result was confirmed, but POS could not clear it with Linkly. Try recovery again before taking another payment."),
@@ -3178,7 +3319,8 @@ public sealed class CardPaymentRecoveryService(
                 cancellationToken))
         {
             // 最终 CAS 失败：只回滚本 attempt 发布的购物车，记录保持 FinalizePending 继续开放待恢复。
-            cart.RollbackRecoveryPublication(attempt.AttemptGuid);
+            cart.RollbackRecoveryPublication(
+                new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid));
             return new CardPaymentRecoveryResult(
                 CardPaymentRecoveryOutcome.Unknown,
                 T("cardRecovery.linkly.unknown", "The previous card result cannot be confirmed. Ask a supervisor to confirm the Linkly backend status before continuing."),
@@ -3203,7 +3345,8 @@ public sealed class CardPaymentRecoveryService(
             }
         }
 
-        var ownershipReleased = cart.CompleteRecoveryPublication(attempt.AttemptGuid);
+        var ownershipReleased = cart.CompleteRecoveryPublication(
+            new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid));
         var hasWarning = publication.NotificationWarning || !ownershipReleased || !markerPersisted;
 
         return new CardPaymentRecoveryResult(
@@ -3356,10 +3499,21 @@ public sealed class CardPaymentRecoveryService(
         if (string.Equals(current.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) &&
             string.Equals(
                 current.RecoveryTargetStatus,
-                LocalCardPaymentAttemptStatus.Approved.ToString(),
+                LocalCardPaymentAttemptStatus.OrderCompleted.ToString(),
                 StringComparison.Ordinal))
         {
             return current;
+        }
+
+        // 中文注释：旧版本可能把部分已批准付款错误改成 Approved 目标；这里只把它恢复为
+        // 订单落盘后才能完成的 OrderCompleted，绝不能在 UI 投影前终态化或释放 owner。
+        if (!string.Equals(current.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) ||
+            !string.Equals(
+                current.RecoveryTargetStatus,
+                LocalCardPaymentAttemptStatus.Approved.ToString(),
+                StringComparison.Ordinal))
+        {
+            return null;
         }
 
         var updatedAt = DateTimeOffset.UtcNow;
@@ -3368,8 +3522,8 @@ public sealed class CardPaymentRecoveryService(
                 current.AttemptGuid,
                 current.Status,
                 current.UpdatedAt,
-                LocalCardPaymentAttemptStatus.OrderCompleted,
                 LocalCardPaymentAttemptStatus.Approved,
+                LocalCardPaymentAttemptStatus.OrderCompleted,
                 updatedAt,
                 CancellationToken.None),
             cancellationToken);
@@ -3378,7 +3532,7 @@ public sealed class CardPaymentRecoveryService(
             return current with
             {
                 RecoveryPhase = CardRecoveryPhases.FinalizePending,
-                RecoveryTargetStatus = LocalCardPaymentAttemptStatus.Approved.ToString(),
+                RecoveryTargetStatus = LocalCardPaymentAttemptStatus.OrderCompleted.ToString(),
                 UpdatedAt = updatedAt
             };
         }
@@ -3390,7 +3544,7 @@ public sealed class CardPaymentRecoveryService(
             string.Equals(winner.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) &&
             string.Equals(
                 winner.RecoveryTargetStatus,
-                LocalCardPaymentAttemptStatus.Approved.ToString(),
+                LocalCardPaymentAttemptStatus.OrderCompleted.ToString(),
                 StringComparison.Ordinal)
             ? winner
             : null;
@@ -3442,7 +3596,7 @@ public sealed class CardPaymentRecoveryService(
         {
             // 终端已批准但未覆盖整单时，以 attempt 所有权一次性发布购物车和 tender。
             publication = cart.TryPublishRecoverySnapshot(
-                attempt.AttemptGuid,
+                new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid),
                 cart.Revision,
                 draft.CartSnapshot);
         }
@@ -3466,30 +3620,15 @@ public sealed class CardPaymentRecoveryService(
                 PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
         }
 
-        if (!await FinalizeRecoveryOutcomeAsync(
-                attempt,
-                attempt.Status,
-                attempt.UpdatedAt,
-                LocalCardPaymentAttemptStatus.Approved,
-                DateTimeOffset.UtcNow,
-                cancellationToken))
-        {
-            cart.RollbackRecoveryPublication(attempt.AttemptGuid);
-            return new CardPaymentRecoveryResult(
-                CardPaymentRecoveryOutcome.Unknown,
-                T("cardRecovery.linkly.approvedRecoveryRequiresReview", "The previous card payment was approved, but POS could not safely rebuild the order. Ask a supervisor to confirm the payment before continuing."),
-                DialogDetails: dialogDetails,
-                PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
-        }
-
-        var ownershipReleased = cart.CompleteRecoveryPublication(attempt.AttemptGuid);
+        // 中文注释：publication 只代表草稿已准备好；必须等 UI 原子投影和本地订单保存后，
+        // CashPaymentWorkflowService 才能完成 OrderCompleted CAS 并释放精确 owner。
         return new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.DraftRestored,
             T("cardRecovery.linkly.approvedTenderRestored", "The previous card payment was approved and restored as a tender. Complete the remaining payment amount before finishing the order."),
             TenderedAmount: tenders.Sum(tender => tender.Amount),
             DialogDetails: dialogDetails,
             RestoredTenders: tenders,
-            HasPostCommitWarning: publication.NotificationWarning || !ownershipReleased);
+            HasPostCommitWarning: publication.NotificationWarning);
     }
 
     private Task<CardPaymentRecoveryResult> MarkApprovedRecoveryRequiresReviewAsync(
@@ -4924,6 +5063,12 @@ public sealed class CardPaymentRecoveryService(
     private static string? NormalizeOptional(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private static bool HasPersistedLinklyPaymentEvidence(LocalCardPaymentAttempt attempt)
+    {
+        return NormalizeOptional(attempt.PaymentReference) is not null ||
+            LinklyApprovalResponseCodes.IsApproved(attempt.ResponseCode);
     }
 
     private static bool TextEquals(string? left, string? right)

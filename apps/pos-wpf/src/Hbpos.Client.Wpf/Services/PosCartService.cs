@@ -12,6 +12,7 @@ public sealed class PosCartService
     private IReadOnlyList<CatalogPromotionRuleDto> _automaticPromotionRules = [];
     private Guid? _sharedHeldOrderClaimId;
     private Guid? _recoveryOwnerAttemptGuid;
+    private CardRecoveryAttemptKey? _recoveryOwnerAttemptKey;
     private long _revision;
     private bool _preserveSharedPromotionDiscounts;
     private bool _preserveSharedSnapshotCatalogValues;
@@ -47,6 +48,23 @@ public sealed class PosCartService
             try
             {
                 return _recoveryOwnerAttemptGuid;
+            }
+            finally
+            {
+                _recoveryPublicationLock.ExitReadLock();
+            }
+        }
+    }
+
+    /// <summary>带 provider 的恢复 publication 所有权；旧 GUID 发布保留为 null 以兼容既有调用。</summary>
+    internal CardRecoveryAttemptKey? RecoveryOwnerAttemptKey
+    {
+        get
+        {
+            _recoveryPublicationLock.EnterReadLock();
+            try
+            {
+                return _recoveryOwnerAttemptKey;
             }
             finally
             {
@@ -593,6 +611,31 @@ public sealed class PosCartService
         long expectedRevision,
         PosCartSnapshot snapshot)
     {
+        return TryPublishRecoverySnapshotCore(
+            attemptGuid,
+            recoveryOwnerAttemptKey: null,
+            expectedRevision,
+            snapshot);
+    }
+
+    internal PosCartRecoveryPublicationResult TryPublishRecoverySnapshot(
+        CardRecoveryAttemptKey attemptKey,
+        long expectedRevision,
+        PosCartSnapshot snapshot)
+    {
+        return TryPublishRecoverySnapshotCore(
+            attemptKey.AttemptGuid,
+            attemptKey,
+            expectedRevision,
+            snapshot);
+    }
+
+    private PosCartRecoveryPublicationResult TryPublishRecoverySnapshotCore(
+        Guid attemptGuid,
+        CardRecoveryAttemptKey? recoveryOwnerAttemptKey,
+        long expectedRevision,
+        PosCartSnapshot snapshot)
+    {
         ArgumentNullException.ThrowIfNull(snapshot);
 
         // 先在隔离购物车中完整物化，任何语义错误都不能触碰真实购物车。
@@ -611,6 +654,7 @@ public sealed class PosCartService
             }
 
             _recoveryOwnerAttemptGuid = attemptGuid;
+            _recoveryOwnerAttemptKey = recoveryOwnerAttemptKey;
             RestoreSnapshotCore(validatedSnapshot);
             var notificationWarning = OnCartChangedBestEffort();
             return new PosCartRecoveryPublicationResult(true, notificationWarning, _revision);
@@ -633,6 +677,29 @@ public sealed class PosCartService
             }
 
             _recoveryOwnerAttemptGuid = null;
+            _recoveryOwnerAttemptKey = null;
+            return true;
+        }
+        finally
+        {
+            _recoveryPublicationLock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>仅在 provider 与 attempt 均精确匹配时释放购物车所有权。</summary>
+    internal bool CompleteRecoveryPublication(CardRecoveryAttemptKey attemptKey)
+    {
+        _recoveryPublicationLock.EnterWriteLock();
+        try
+        {
+            if (_recoveryOwnerAttemptKey != attemptKey ||
+                _recoveryOwnerAttemptGuid != attemptKey.AttemptGuid)
+            {
+                return false;
+            }
+
+            _recoveryOwnerAttemptGuid = null;
+            _recoveryOwnerAttemptKey = null;
             return true;
         }
         finally
@@ -658,6 +725,35 @@ public sealed class PosCartService
             _preserveSharedPromotionDiscounts = false;
             _preserveSharedSnapshotCatalogValues = false;
             _recoveryOwnerAttemptGuid = null;
+            _recoveryOwnerAttemptKey = null;
+            var notificationWarning = OnCartChangedBestEffort();
+            return new PosCartRecoveryPublicationResult(true, notificationWarning, _revision);
+        }
+        finally
+        {
+            _recoveryPublicationLock.ExitWriteLock();
+        }
+    }
+
+    /// <summary>仅回滚 provider 与 attempt 均精确匹配的恢复购物车。</summary>
+    internal PosCartRecoveryPublicationResult RollbackRecoveryPublication(CardRecoveryAttemptKey attemptKey)
+    {
+        _recoveryPublicationLock.EnterWriteLock();
+        try
+        {
+            if (_recoveryOwnerAttemptKey != attemptKey ||
+                _recoveryOwnerAttemptGuid != attemptKey.AttemptGuid)
+            {
+                return new PosCartRecoveryPublicationResult(false, false, _revision);
+            }
+
+            _lines.Clear();
+            _returnPaymentCapacities.Clear();
+            _sharedHeldOrderClaimId = null;
+            _preserveSharedPromotionDiscounts = false;
+            _preserveSharedSnapshotCatalogValues = false;
+            _recoveryOwnerAttemptGuid = null;
+            _recoveryOwnerAttemptKey = null;
             var notificationWarning = OnCartChangedBestEffort();
             return new PosCartRecoveryPublicationResult(true, notificationWarning, _revision);
         }

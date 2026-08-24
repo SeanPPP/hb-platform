@@ -4719,6 +4719,109 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Card_recovery_center_draft_restored_applies_alternative_refund_policy_to_payment_page()
+    {
+        var cart = new PosCartService();
+        cart.AddReturnLine(new ReturnCartLineRequest(
+            "1042",
+            "SKU-RECOVER-ALTERNATIVE",
+            null,
+            "Recovered Alternative Refund",
+            "930RECOVERALTERNATIVE",
+            "ITEM-RECOVER-ALTERNATIVE",
+            null,
+            1m,
+            10m,
+            PriceSourceKind.StoreRetailPrice,
+            PriceSourceKind.StoreRetailPrice.ToString(),
+            "RETURN-RECOVER-ALTERNATIVE",
+            Guid.NewGuid(),
+            Guid.NewGuid()));
+        cart.AddReturnPaymentCapacities(
+        [
+            new OrderReturnPaymentCapacityDto(
+                PaymentMethodKind.Card,
+                10m,
+                0m,
+                10m,
+                "SQ:recovered-original-card")
+        ]);
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cart: cart);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var result = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.DraftRestored,
+            "Use cash or voucher for this recovered Square refund.")
+        {
+            RequiresAlternativeRefundMethod = true
+        };
+
+        await InvokeHandleCardRecoveryCenterResultAsync(viewModel, result);
+
+        Assert.Same(viewModel.CashPayment, viewModel.CurrentScreen);
+        Assert.NotNull(viewModel.CashPayment);
+        Assert.False(viewModel.CashPayment!.SelectCardCommand.CanExecute(null));
+        Assert.True(viewModel.CashPayment.SelectCashCommand.CanExecute(null));
+        Assert.True(viewModel.CashPayment.SelectVoucherCommand.CanExecute(null));
+        Assert.Equal(
+            "Use cash or voucher for this recovered Square refund.",
+            viewModel.CashPayment.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Card_recovery_center_draft_projection_failure_keeps_payment_page_locked()
+    {
+        var cart = new PosCartService();
+        cart.AddReturnLine(new ReturnCartLineRequest(
+            "1042",
+            "SKU-RECOVER-FAIL-CLOSED",
+            null,
+            "Recovered Refund",
+            "930RECOVERFAILCLOSED",
+            "ITEM-RECOVER-FAIL-CLOSED",
+            null,
+            1m,
+            10m,
+            PriceSourceKind.StoreRetailPrice,
+            PriceSourceKind.StoreRetailPrice.ToString(),
+            "RETURN-RECOVER-FAIL-CLOSED",
+            Guid.NewGuid(),
+            Guid.NewGuid()));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cart: cart);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var payment = Assert.IsType<PaymentViewModel>(viewModel.CashPayment);
+        payment.PaymentTenders.CollectionChanged += (_, args) =>
+        {
+            if (args.NewItems is { Count: > 0 })
+            {
+                throw new InvalidOperationException("tender projection subscriber failed");
+            }
+        };
+        var result = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.DraftRestored,
+            "Complete the recovered refund.",
+            RestoredTenders:
+            [
+                new PaymentTender(
+                    PaymentMethodKind.Cash,
+                    -5m,
+                    "RECOVERED-CASH-REFUND")
+            ]);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => InvokeHandleCardRecoveryCenterResultAsync(viewModel, result));
+
+        Assert.Equal("tender projection subscriber failed", exception.Message);
+        Assert.Same(payment, viewModel.CurrentScreen);
+        Assert.True(payment.IsPaymentInteractionLocked);
+        Assert.Empty(payment.PaymentTenders);
+        Assert.False(payment.ConfirmPaymentCommand.CanExecute(null));
+    }
+
+    [Fact]
     public async Task Card_payment_recovery_completed_during_startup_prints_card_receipt()
     {
         var printService = new RecordingReceiptPrintService();
@@ -5513,6 +5616,20 @@ public sealed class MainViewModelScannerTests
         Assert.NotNull(method);
         var task = (Task<bool>)method!.Invoke(viewModel, [navigateToPaymentOnDraft])!;
         return await task;
+    }
+
+    private static async Task InvokeHandleCardRecoveryCenterResultAsync(
+        MainViewModel viewModel,
+        CardPaymentRecoveryResult result)
+    {
+        var method = typeof(MainViewModel).GetMethod(
+            "HandleCardRecoveryCenterResultAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic,
+            binder: null,
+            [typeof(CardPaymentRecoveryResult)],
+            modifiers: null);
+        Assert.NotNull(method);
+        await (Task)method!.Invoke(viewModel, [result])!;
     }
 
     private sealed class RecordingOperationAuditLogger : IOperationAuditLogger

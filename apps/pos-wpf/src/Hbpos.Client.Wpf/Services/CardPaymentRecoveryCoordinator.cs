@@ -167,6 +167,29 @@ public sealed class CardPaymentRecoveryCoordinator(
         };
     }
 
+    internal Task<bool> CompleteDraftHandoffAsync(
+        CardRecoveryAttemptKey key,
+        PosCartService cart,
+        CancellationToken cancellationToken = default)
+    {
+        // 必须按 provider + attempt 精确路由；同一 GUID 即使同时存在于两张 provider 表中，
+        // 也不能让一次 UI handoff 终态化另一处理器的金融记录。
+        return key.Processor switch
+        {
+            CardProcessorKind.Linkly => linklyRecoveryService.CompleteDraftHandoffAsync(
+                key.AttemptGuid,
+                cart,
+                cancellationToken),
+            CardProcessorKind.Square when squareRecoveryService is SquarePaymentRecoveryService squareRecovery =>
+                squareRecovery.CompleteDraftHandoffAsync(
+                    key.AttemptGuid,
+                    cart,
+                    cancellationToken),
+            CardProcessorKind.Square => Task.FromResult(false),
+            _ => Task.FromResult(false)
+        };
+    }
+
     private async Task ReplaySupervisorAuditAsync(CancellationToken cancellationToken)
     {
         if (supervisorAuditReplay is not null)

@@ -30,9 +30,15 @@ internal static class CardRecoveryCartMaterializer
             // 中文注释：先在隔离购物车中完整物化并重新快照，语义错误不得触碰活动购物车。
             var recoveryCart = new PosCartService();
             recoveryCart.RestoreSnapshot(candidate.CartSnapshot);
+            var normalizedSnapshot = recoveryCart.CreateSnapshot();
+            if (normalizedSnapshot.Lines.Count == 0)
+            {
+                return false;
+            }
+
             draft = candidate with
             {
-                CartSnapshot = recoveryCart.CreateSnapshot(),
+                CartSnapshot = normalizedSnapshot,
                 CurrentTenders = candidate.CurrentTenders.ToArray()
             };
             return true;

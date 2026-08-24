@@ -543,6 +543,7 @@
   <data name="payment.refund.status.noTendersAdded" xml:space="preserve"><value>Add at least one refund tender before completing the refund.</value></data>
   <data name="payment.refund.status.remainingBalance" xml:space="preserve"><value>The refund must be fully covered before completion.</value></data>
   <data name="payment.refund.status.voucherOfflineUnavailable" xml:space="preserve"><value>Voucher refunds are unavailable while offline. Reconnect before using refund voucher.</value></data>
+  <data name="payment.refund.status.alternativeMethodRequired" xml:space="preserve"><value>This recovered Square refund must be completed with cash or voucher. Card refund is unavailable.</value></data>
   <data name="payment.status.duplicateVoucher" xml:space="preserve"><value>This voucher has already been added.</value></data>
   <data name="payment.status.voucherCodeRequired" xml:space="preserve"><value>Enter a voucher code before adding voucher payment.</value></data>
   <data name="payment.status.duplicatePaymentMethod" xml:space="preserve"><value>This payment method has already been added.</value></data>
@@ -977,6 +978,8 @@
   <data name="cardRecovery.linkly.failedReasonFallback" xml:space="preserve"><value>Not approved</value></data>
   <data name="cardRecovery.linkly.supervisorWaiting" xml:space="preserve"><value>The payment remains locked. Run recovery again after the bank result is available.</value></data>
   <data name="cardRecovery.linkly.paymentAlreadyFinalized" xml:space="preserve"><value>The selected payment has already been finalized and cannot be changed.</value></data>
+  <data name="cardRecovery.linkly.paymentEvidenceExists" xml:space="preserve"><value>Bank payment evidence already exists. Run recovery instead.</value></data>
+  <data name="cardRecovery.linkly.notPaidPaymentReferenceNotAllowed" xml:space="preserve"><value>Do not enter a payment reference when confirming that no payment was processed.</value></data>
   <data name="cardRecovery.linkly.supervisorNotPaidRestored" xml:space="preserve"><value>The bank confirmed that no payment was processed. The original order has been restored and can be paid again.</value></data>
   <data name="cardRecovery.linkly.supervisorPaidNoDraft" xml:space="preserve"><value>The supervisor confirmed the previous payment. The session is cleared, but no local order draft was available; reconcile the order before continuing.</value></data>
   <data name="cardRecovery.linkly.approvedRecoveryRequiresReview" xml:space="preserve"><value>The previous card payment was approved, but POS could not safely rebuild the order. Ask a supervisor to confirm the payment before continuing.</value></data>
@@ -1075,6 +1078,7 @@
   <data name="cardRecovery.refund.resolveFailed" xml:space="preserve"><value>The refund decision could not be saved. Run recovery again before attempting another refund.</value></data>
   <data name="cardRecovery.refund.squareReferenceRequired" xml:space="preserve"><value>A real Square refund reference is required before confirming the refund.</value></data>
   <data name="cardRecovery.refund.squarePending" xml:space="preserve"><value>Square is still processing the refund. Do not refund again; run recovery later.</value></data>
+  <data name="cardRecovery.refund.squareAlternativeMethodRequired" xml:space="preserve"><value>Square confirmed that no refund was processed. The return was restored, but card refund is blocked for this recovery. Use cash or voucher.</value></data>
   <data name="cardRecovery.refund.waitingSaved" xml:space="preserve"><value>The refund remains locked. Run recovery again after the bank result is available.</value></data>
   <data name="cardRecovery.refund.retryAllowed" xml:space="preserve"><value>The bank confirmed that no refund was processed. The original return is ready to retry with the same operation.</value></data>
   <data name="cardRecovery.refund.confirmedSaved" xml:space="preserve"><value>The confirmed refund was recorded and the original return was recovered.</value></data>
@@ -1165,7 +1169,9 @@
   <data name="cardRecovery.center.status.refreshFailed" xml:space="preserve"><value>Could not refresh card transactions. {0}</value></data>
   <data name="cardRecovery.center.status.recoverFailed" xml:space="preserve"><value>Could not check the selected transaction. {0}</value></data>
   <data name="cardRecovery.center.status.resolveFailed" xml:space="preserve"><value>Could not save the supervisor decision. {0}</value></data>
+  <data name="cardRecovery.center.status.draftHandoffFailed" xml:space="preserve"><value>The recovery result was saved, but the payment draft could not be handed off safely. Run recovery again before taking another payment or refund. {0}</value></data>
   <data name="cardRecovery.center.status.unexpected" xml:space="preserve"><value>The card transaction center encountered an unexpected error. {0}</value></data>
   <data name="cardRecovery.resolutionSavedPending" xml:space="preserve"><value>The supervisor decision was saved, but recovery is still pending. Run recovery again before taking another payment or refund.</value></data>
+  <data name="cardRecovery.draftHandoff.unlockWarning" xml:space="preserve"><value>The recovery was committed, but the payment page could not be unlocked safely. The page remains locked; review the recovery center before continuing.</value></data>
   <data name="cardRecovery.center.value.none" xml:space="preserve"><value>-</value></data>
 </root>

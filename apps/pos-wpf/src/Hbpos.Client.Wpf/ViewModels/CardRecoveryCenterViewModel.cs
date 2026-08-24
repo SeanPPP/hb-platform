@@ -133,8 +133,16 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         get => _selectedAttempt;
         set
         {
+            var previousKey = _selectedAttempt?.Key;
             if (SetProperty(ref _selectedAttempt, value))
             {
+                if (previousKey != value?.Key)
+                {
+                    ResolutionReason = string.Empty;
+                    ResolutionEvidence = string.Empty;
+                    ResolutionReference = string.Empty;
+                }
+
                 var matchingRow = value is null
                     ? null
                     : OpenAttemptRows.FirstOrDefault(row => row.Key == value.Key);
@@ -404,10 +412,17 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
                 $"targeted recovery refresh processor={selected.Processor} attempt={selected.AttemptGuid:D}");
             if (_recoveryResultHandledAsync is not null)
             {
-                await RunPostCommitActionAsync(
-                    () => _recoveryResultHandledAsync(result),
-                    actionMessage,
-                    $"targeted recovery callback processor={selected.Processor} attempt={selected.AttemptGuid:D}");
+                Func<Task> callback = () => _recoveryResultHandledAsync(result);
+                var context =
+                    $"targeted recovery callback processor={selected.Processor} attempt={selected.AttemptGuid:D}";
+                if (result.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
+                {
+                    await RunRecoveryResultHandoffAsync(callback, context);
+                }
+                else
+                {
+                    await RunPostCommitActionAsync(callback, actionMessage, context);
+                }
             }
         }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
@@ -554,7 +569,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
                 decision,
                 reason,
                 evidence,
-                reference,
+                decision == CardRecoverySupervisorDecision.ContinueWaiting ? null : reference,
                 _cart,
                 _session);
             var actionMessage = string.IsNullOrWhiteSpace(result.Message)
@@ -566,10 +581,18 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
                 $"targeted resolution refresh processor={selected.Processor} attempt={selected.AttemptGuid:D} decision={decision}");
             if (result.RecoveryResult is not null && _recoveryResultHandledAsync is not null)
             {
-                await RunPostCommitActionAsync(
-                    () => _recoveryResultHandledAsync(result.RecoveryResult),
-                    actionMessage,
-                    $"targeted resolution callback processor={selected.Processor} attempt={selected.AttemptGuid:D} decision={decision}");
+                var recoveryResult = result.RecoveryResult;
+                Func<Task> callback = () => _recoveryResultHandledAsync(recoveryResult);
+                var context =
+                    $"targeted resolution callback processor={selected.Processor} attempt={selected.AttemptGuid:D} decision={decision}";
+                if (recoveryResult.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
+                {
+                    await RunRecoveryResultHandoffAsync(callback, context);
+                }
+                else
+                {
+                    await RunPostCommitActionAsync(callback, actionMessage, context);
+                }
             }
         }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
@@ -616,6 +639,57 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
 
             TryWritePostCommitWarning(
                 $"post-commit action failed context={context} error={ex.GetType().Name}",
+                ex);
+        }
+    }
+
+    private async Task RunRecoveryResultHandoffAsync(Func<Task> action, string context)
+    {
+        try
+        {
+            await action();
+        }
+        catch (CardRecoveryDraftHandoffPostCommitException ex)
+        {
+            // 金融与订单状态已经耐久提交；这里只能保留锁并显示真实告警，不能提示再次执行金融恢复。
+            try
+            {
+                SetLiteralStatus(ex.Message);
+            }
+            catch (Exception statusException) when (
+                statusException is not OutOfMemoryException and
+                not StackOverflowException)
+            {
+                TryWritePostCommitWarning(
+                    $"committed draft handoff status failed context={context} error={statusException.GetType().Name}",
+                    statusException);
+            }
+
+            TryWritePostCommitWarning(
+                $"committed draft handoff remains locked context={context}",
+                ex);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 草稿交接失败不是普通提交后刷新失败；必须显示失败关闭提示并保留恢复锁。
+            try
+            {
+                SetStatusResource(
+                    "cardRecovery.center.status.draftHandoffFailed",
+                    "The recovery result was saved, but the payment draft could not be handed off safely. Run recovery again before taking another payment or refund. {0}",
+                    ex.Message);
+            }
+            catch (Exception statusException) when (
+                statusException is not OutOfMemoryException and
+                not StackOverflowException)
+            {
+                TryWritePostCommitWarning(
+                    $"draft handoff status failed context={context} error={statusException.GetType().Name}",
+                    statusException);
+            }
+
+            TryWritePostCommitWarning(
+                $"draft handoff failed context={context} error={ex.GetType().Name}",
                 ex);
         }
     }

@@ -209,6 +209,18 @@ public interface ILocalSquarePaymentAttemptRepository
             completedAt,
             cancellationToken);
 
+    Task<bool> TryPersistRefundFailureForFinalizationAsync(
+        Guid attemptGuid,
+        LocalSquarePaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        string submissionToken,
+        string paymentStatus,
+        string? responseCode,
+        string? responseText,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(false);
+
     async Task<bool> TryMarkRefundFailedAsync(
         Guid attemptGuid,
         string submissionToken,
@@ -233,6 +245,22 @@ public interface ILocalSquarePaymentAttemptRepository
             cancelReason);
         return true;
     }
+
+    // 未实现版本化 CAS 的仓储必须保守失败，不能退回 token-only 写入覆盖并发金融结果。
+    Task<bool> TryMarkRefundFailedAsync(
+        Guid attemptGuid,
+        LocalSquarePaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        string submissionToken,
+        LocalSquarePaymentAttemptStatus status,
+        string? checkoutStatus,
+        string? paymentStatus,
+        string? responseCode,
+        string? responseText,
+        DateTimeOffset resolvedAt,
+        CancellationToken cancellationToken = default,
+        string? cancelReason = null) =>
+        Task.FromResult(false);
 
     Task MarkCheckoutCreatedAsync(
         Guid attemptGuid,
@@ -617,6 +645,8 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 ResponseCode = NULL,
                 ResponseText = NULL,
                 SubmissionToken = $SubmissionToken,
+                RecoveryPhase = $NoRecoveryPhase,
+                RecoveryTargetStatus = NULL,
                 UpdatedAt = $UpdatedAt
             WHERE AttemptGuid = $AttemptGuid
               AND OperationKind = 'Refund'
@@ -624,7 +654,14 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
               AND UpdatedAt = $ExpectedUpdatedAt
               AND SubmissionToken IS NULL
               AND COALESCE(ResponseCode, '') IN ('', $ConfirmedNotRefunded)
-              AND COALESCE(RecoveryPhase, 'None') = 'None';
+              AND (
+                    COALESCE(RecoveryPhase, $NoRecoveryPhase) = $NoRecoveryPhase
+                    OR (
+                        RecoveryPhase = $FinalizePending
+                        AND RecoveryTargetStatus = $AbandonedStatus
+                        AND ResponseCode = $ConfirmedNotRefunded
+                    )
+                  );
             """,
             command =>
             {
@@ -635,6 +672,9 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 command.Parameters.AddWithValue("$SubmissionToken", submissionToken);
                 command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
                 command.Parameters.AddWithValue("$ConfirmedNotRefunded", CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded);
+                command.Parameters.AddWithValue("$NoRecoveryPhase", CardRecoveryPhases.None);
+                command.Parameters.AddWithValue("$FinalizePending", CardRecoveryPhases.FinalizePending);
+                command.Parameters.AddWithValue("$AbandonedStatus", LocalSquarePaymentAttemptStatus.Abandoned.ToString());
             },
             cancellationToken) == 1;
     }
@@ -690,6 +730,11 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
               AND OperationKind = 'Refund'
               AND SubmissionToken = $SubmissionToken
               AND Status IN ($RecoveringStatus, $UnknownStatus)
+              AND COALESCE(RecoveryPhase, $NoRecoveryPhase) <> $FinalizePending
+              AND (
+                    UPPER(TRIM(COALESCE(PaymentStatus, ''))) <> 'COMPLETED'
+                    OR UPPER(TRIM($RefundStatus)) = 'COMPLETED'
+                  )
               AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
             """,
             attemptGuid,
@@ -702,6 +747,8 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 command.Parameters.AddWithValue("$RefundId", refundId);
                 command.Parameters.AddWithValue("$RefundStatus", refundStatus);
                 command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
+                command.Parameters.AddWithValue("$NoRecoveryPhase", CardRecoveryPhases.None);
+                command.Parameters.AddWithValue("$FinalizePending", CardRecoveryPhases.FinalizePending);
             },
             cancellationToken);
     }
@@ -730,6 +777,10 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
               AND UpdatedAt = $ExpectedUpdatedAt
               AND Status IN ($RecoveringStatus, $UnknownStatus)
               AND COALESCE(RecoveryPhase, $NoRecoveryPhase) <> $FinalizePending
+              AND (
+                    UPPER(TRIM(COALESCE(PaymentStatus, ''))) <> 'COMPLETED'
+                    OR UPPER(TRIM($RefundStatus)) = 'COMPLETED'
+                  )
               AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
             """,
             attemptGuid,
@@ -773,6 +824,8 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
             WHERE AttemptGuid = $AttemptGuid
               AND OperationKind = 'Refund'
               AND SubmissionToken = $SubmissionToken
+              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5)
+              AND COALESCE(RecoveryPhase, $NoRecoveryPhase) <> $FinalizePending
               AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
             """,
             attemptGuid,
@@ -785,6 +838,13 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 command.Parameters.AddWithValue("$ResponseCode", (object?)responseCode ?? DBNull.Value);
                 command.Parameters.AddWithValue("$ResponseText", (object?)responseText ?? DBNull.Value);
                 command.Parameters.AddWithValue("$CompletedAt", completedAt.ToString("O"));
+                for (var i = 0; i < TerminalStatuses.Length; i++)
+                {
+                    command.Parameters.AddWithValue($"$TerminalStatus{i + 1}", TerminalStatuses[i]);
+                }
+
+                command.Parameters.AddWithValue("$NoRecoveryPhase", CardRecoveryPhases.None);
+                command.Parameters.AddWithValue("$FinalizePending", CardRecoveryPhases.FinalizePending);
             },
             cancellationToken);
     }
@@ -871,6 +931,9 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
             WHERE AttemptGuid = $AttemptGuid
               AND OperationKind = 'Refund'
               AND SubmissionToken = $SubmissionToken
+              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5)
+              AND COALESCE(RecoveryPhase, $NoRecoveryPhase) <> $FinalizePending
+              AND UPPER(TRIM(COALESCE(PaymentStatus, ''))) <> 'COMPLETED'
               AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2);
             """,
             attemptGuid,
@@ -884,8 +947,129 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 command.Parameters.AddWithValue("$ResponseCode", (object?)responseCode ?? DBNull.Value);
                 command.Parameters.AddWithValue("$ResponseText", (object?)responseText ?? DBNull.Value);
                 command.Parameters.AddWithValue("$ResolvedAt", resolvedAt.ToString("O"));
+                for (var i = 0; i < TerminalStatuses.Length; i++)
+                {
+                    command.Parameters.AddWithValue($"$TerminalStatus{i + 1}", TerminalStatuses[i]);
+                }
+
+                command.Parameters.AddWithValue("$NoRecoveryPhase", CardRecoveryPhases.None);
+                command.Parameters.AddWithValue("$FinalizePending", CardRecoveryPhases.FinalizePending);
             },
             cancellationToken);
+    }
+
+    public async Task<bool> TryMarkRefundFailedAsync(
+        Guid attemptGuid,
+        LocalSquarePaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        string submissionToken,
+        LocalSquarePaymentAttemptStatus status,
+        string? checkoutStatus,
+        string? paymentStatus,
+        string? responseCode,
+        string? responseText,
+        DateTimeOffset resolvedAt,
+        CancellationToken cancellationToken = default,
+        string? cancelReason = null)
+    {
+        return await ExecuteUpdateCountAsync(
+            """
+            UPDATE LocalSquarePaymentAttempts
+            SET Status = $Status,
+                CheckoutStatus = COALESCE($CheckoutStatus, CheckoutStatus),
+                CancelReason = COALESCE($CancelReason, CancelReason),
+                PaymentStatus = COALESCE($PaymentStatus, PaymentStatus),
+                ResponseCode = $ResponseCode,
+                ResponseText = $ResponseText,
+                ResolvedAt = $ResolvedAt,
+                UpdatedAt = $ResolvedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND OperationKind = 'Refund'
+              AND SubmissionToken = $SubmissionToken
+              AND Status = $ExpectedStatus
+              AND UpdatedAt = $ExpectedUpdatedAt
+              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5)
+              AND COALESCE(RecoveryPhase, $NoRecoveryPhase) <> $FinalizePending
+              AND UPPER(TRIM(COALESCE(PaymentStatus, ''))) <> 'COMPLETED'
+              AND COALESCE(ResponseCode, '') NOT IN ($SupervisorPaid, $SupervisorNotPaid, $SupervisorRefunded, $SupervisorNotRefunded);
+            """,
+            command =>
+            {
+                command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
+                command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
+                command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
+                command.Parameters.AddWithValue("$SubmissionToken", submissionToken);
+                command.Parameters.AddWithValue("$Status", status.ToString());
+                command.Parameters.AddWithValue("$CheckoutStatus", (object?)checkoutStatus ?? DBNull.Value);
+                command.Parameters.AddWithValue("$CancelReason", (object?)cancelReason ?? DBNull.Value);
+                command.Parameters.AddWithValue("$PaymentStatus", (object?)paymentStatus ?? DBNull.Value);
+                command.Parameters.AddWithValue("$ResponseCode", (object?)responseCode ?? DBNull.Value);
+                command.Parameters.AddWithValue("$ResponseText", (object?)responseText ?? DBNull.Value);
+                command.Parameters.AddWithValue("$ResolvedAt", resolvedAt.ToString("O"));
+                AddAutomaticWriteGuardParameters(command);
+            },
+            cancellationToken) == 1;
+    }
+
+    public async Task<bool> TryPersistRefundFailureForFinalizationAsync(
+        Guid attemptGuid,
+        LocalSquarePaymentAttemptStatus expectedStatus,
+        DateTimeOffset expectedUpdatedAt,
+        string submissionToken,
+        string paymentStatus,
+        string? responseCode,
+        string? responseText,
+        DateTimeOffset updatedAt,
+        CancellationToken cancellationToken = default)
+    {
+        if (!string.Equals(paymentStatus, "FAILED", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(paymentStatus, "REJECTED", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException("Square 退款失败终态必须是 FAILED 或 REJECTED。", nameof(paymentStatus));
+        }
+
+        // SQLite 端规范化当前状态，避免迟到的 FAILED/REJECTED 覆盖已保存的 COMPLETED 证据。
+        return await ExecuteUpdateCountAsync(
+            """
+            UPDATE LocalSquarePaymentAttempts
+            SET Status = $Status,
+                PaymentStatus = $PaymentStatus,
+                ResponseCode = CASE
+                    WHEN NULLIF(TRIM(COALESCE(ResponseCode, '')), '') IS NULL THEN $ResponseCode
+                    ELSE ResponseCode
+                END,
+                ResponseText = CASE
+                    WHEN NULLIF(TRIM(COALESCE(ResponseText, '')), '') IS NULL THEN $ResponseText
+                    ELSE ResponseText
+                END,
+                RecoveryPhase = $FinalizePending,
+                RecoveryTargetStatus = $RecoveryTargetStatus,
+                UpdatedAt = $UpdatedAt
+            WHERE AttemptGuid = $AttemptGuid
+              AND OperationKind = 'Refund'
+              AND SubmissionToken = $SubmissionToken
+              AND Status = $ExpectedStatus
+              AND UpdatedAt = $ExpectedUpdatedAt
+              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5)
+              AND COALESCE(RecoveryPhase, $NoRecoveryPhase) = $NoRecoveryPhase
+              AND UPPER(TRIM(COALESCE(PaymentStatus, ''))) <> 'COMPLETED'
+              AND COALESCE(ResponseCode, '') NOT IN ($SupervisorPaid, $SupervisorNotPaid, $SupervisorRefunded, $SupervisorNotRefunded);
+            """,
+            command =>
+            {
+                command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
+                command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
+                command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
+                command.Parameters.AddWithValue("$SubmissionToken", submissionToken);
+                command.Parameters.AddWithValue("$Status", LocalSquarePaymentAttemptStatus.Unknown.ToString());
+                command.Parameters.AddWithValue("$PaymentStatus", paymentStatus.ToUpperInvariant());
+                command.Parameters.AddWithValue("$ResponseCode", (object?)responseCode ?? DBNull.Value);
+                command.Parameters.AddWithValue("$ResponseText", (object?)responseText ?? DBNull.Value);
+                command.Parameters.AddWithValue("$RecoveryTargetStatus", LocalSquarePaymentAttemptStatus.Abandoned.ToString());
+                command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
+                AddAutomaticWriteGuardParameters(command);
+            },
+            cancellationToken) == 1;
     }
 
     public async Task MarkCheckoutCreatedAsync(
@@ -1276,8 +1460,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                   AND OperationKind = 'Refund'
                   AND Status = $ExpectedStatus
                   AND UpdatedAt = $ExpectedUpdatedAt
-                  AND PaymentId IS NULL
-                  AND PaymentStatus IS NULL
+                  AND UPPER(COALESCE(PaymentStatus, '')) NOT IN ('COMPLETED', 'FAILED', 'REJECTED')
                   AND COALESCE(RecoveryPhase, $NoRecoveryPhase) <> $FinalizePending
                   AND COALESCE(ResponseCode, '') NOT IN ($ResolvedCode1, $ResolvedCode2)
                   AND Status IN ($ReviewStatus1, $ReviewStatus2, $ReviewStatus3);

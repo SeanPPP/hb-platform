@@ -30,6 +30,21 @@ public sealed class CardRecoveryCartMaterializerTests
     }
 
     [Fact]
+    public void TryPrepare_returns_false_for_empty_cart_snapshot()
+    {
+        var draft = CreateDraft();
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        var json = JsonSerializer.Serialize(
+            draft with { CartSnapshot = draft.CartSnapshot with { Lines = [] } },
+            options);
+
+        var prepared = CardRecoveryCartMaterializer.TryPrepare(json, options, out var materialized);
+
+        Assert.False(prepared);
+        Assert.Null(materialized);
+    }
+
+    [Fact]
     public void TryPrepare_returns_false_when_order_identity_is_missing()
     {
         var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
