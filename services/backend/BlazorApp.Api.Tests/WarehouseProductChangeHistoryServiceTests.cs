@@ -45,7 +45,9 @@ public sealed class WarehouseProductChangeHistoryServiceTests : IDisposable
         _db.CodeFirst.InitTables(
             typeof(Product),
             typeof(WarehouseProduct),
-            typeof(DomesticProduct)
+            typeof(DomesticProduct),
+            typeof(ProductLocation),
+            typeof(Location)
         );
         _db.Ado.ExecuteCommand(
             """
@@ -731,11 +733,12 @@ public sealed class WarehouseProductChangeHistoryServiceTests : IDisposable
         await StartupSchemaMigrator.EnsureAsync(_db, NullLogger.Instance);
 
         Assert.Equal(
-            5,
+            6,
             await _db.Ado.GetIntAsync(
                 "SELECT COUNT(1) FROM sqlite_master "
                     + "WHERE type IN ('index', 'trigger') "
-                    + "AND name IN ('IX_WarehouseProductChangeHistory_ProductCode_OccurredAtUtc_Id', "
+                    + "AND name IN ('IX_WarehouseProductChangeHistory_OccurredAtUtc_Id', "
+                    + "'IX_WarehouseProductChangeHistory_ProductCode_OccurredAtUtc_Id', "
                     + "'IX_WarehouseProductChangeHistory_BatchGuid', "
                     + "'UX_WarehouseProductChangeHistory_BatchGuid_ProductCode', "
                     + "'TR_WarehouseProductChangeHistory_AppendOnly_Update', "
@@ -824,6 +827,194 @@ public sealed class WarehouseProductChangeHistoryServiceTests : IDisposable
         Assert.Equal("ContainerDetail", eventItem.Source);
         Assert.Equal("新操作人", eventItem.ActorName);
         Assert.Equal("retailPrice", Assert.Single(eventItem.Changes).FieldKey);
+    }
+
+    [Fact]
+    public async Task WarehouseRetailPriceChangeQuery_SQLite按月筛选最新价格并覆盖仓库商品边界()
+    {
+        await SeedProductAsync();
+        await SeedRetailPriceQueryProductsAsync();
+        await SeedRetailPriceQueryLocationsAsync();
+
+        var startUtc = new DateTime(2026, 7, 31, 14, 0, 0, DateTimeKind.Utc);
+        var sameOccurredAtUtc = new DateTime(2026, 8, 10, 0, 0, 0, DateTimeKind.Utc);
+        await InsertRetailPriceHistoryAsync("P01", "Create", startUtc, "1.00");
+        await InsertHistoryAsync("P01", "Patch", startUtc, "[{\"fieldKey\":\"productName\",\"afterValue\":\"名称\"}]");
+        await InsertRetailPriceHistoryAsync("P01", "Patch", startUtc, "2.00");
+        await InsertRetailPriceHistoryAsync("P01", "Patch", sameOccurredAtUtc, "3.00");
+        await InsertRetailPriceHistoryAsync("P01", "Patch", sameOccurredAtUtc, null);
+        await InsertRetailPriceHistoryAsync(
+            "P01",
+            "Patch",
+            new DateTime(2026, 8, 31, 14, 0, 0, DateTimeKind.Utc),
+            "99.00"
+        );
+        await InsertRetailPriceHistoryAsync(
+            "P02",
+            "Patch",
+            new DateTime(2026, 8, 15, 0, 0, 0, DateTimeKind.Utc),
+            "8.50"
+        );
+        await InsertRetailPriceHistoryAsync(
+            "P03",
+            "Patch",
+            new DateTime(2026, 8, 16, 0, 0, 0, DateTimeKind.Utc),
+            "9.50"
+        );
+        await InsertRetailPriceHistoryAsync(
+            "P04",
+            "Patch",
+            new DateTime(2026, 8, 17, 0, 0, 0, DateTimeKind.Utc),
+            "10.50"
+        );
+
+        var queryService = new WarehouseRetailPriceChangeService(CreateSqlSugarContext(_db));
+        var query = new WarehouseRetailPriceChangeQuery
+        {
+            StartDate = new DateOnly(2026, 8, 1),
+            EndDate = new DateOnly(2026, 8, 31),
+        };
+
+        var defaultLocationPage = await queryService.GetAsync(query);
+
+        Assert.Equal(new DateOnly(2026, 8, 1), defaultLocationPage.StartDate);
+        Assert.Equal(new DateOnly(2026, 8, 31), defaultLocationPage.EndDate);
+        Assert.True(defaultLocationPage.OnlyWithLocation);
+        Assert.Equal(1, defaultLocationPage.PageNumber);
+        Assert.Equal(50, defaultLocationPage.PageSize);
+        Assert.Equal(1, defaultLocationPage.Total);
+        var p01 = Assert.Single(defaultLocationPage.Items);
+        Assert.Equal("P01", p01.ProductCode);
+        Assert.Equal("image-01", p01.ProductImage);
+        Assert.Equal("ITEM-01", p01.ItemNumber);
+        Assert.Equal("6926393337100", p01.Barcode);
+        Assert.Null(p01.LatestRetailPrice);
+        Assert.Equal(sameOccurredAtUtc, p01.LastPriceChangedAtUtc);
+        Assert.Equal(DateTimeKind.Utc, p01.LastPriceChangedAtUtc.Kind);
+
+        var itemProperties = typeof(WarehouseRetailPriceChangeItem).GetProperties()
+            .Select(property => property.Name)
+            .OrderBy(name => name)
+            .ToArray();
+        Assert.Equal(
+            ["Barcode", "ItemNumber", "LastPriceChangedAtUtc", "LatestRetailPrice", "ProductCode", "ProductImage"],
+            itemProperties
+        );
+
+        var allLocationsPage = await queryService.GetAsync(query with { OnlyWithLocation = false });
+        Assert.Equal(3, allLocationsPage.Total);
+        Assert.Equal(["P03", "P02", "P01"], allLocationsPage.Items.Select(item => item.ProductCode));
+        var metadataMissing = allLocationsPage.Items[0];
+        Assert.Null(metadataMissing.ProductImage);
+        Assert.Null(metadataMissing.ItemNumber);
+        Assert.Null(metadataMissing.Barcode);
+        var domesticFallback = allLocationsPage.Items[1];
+        Assert.Equal("D-ITEM-02", domesticFallback.ItemNumber);
+        Assert.Equal("D-BARCODE-02", domesticFallback.Barcode);
+        Assert.DoesNotContain(allLocationsPage.Items, item => item.ProductCode == "P04");
+
+        var keywordPage = await queryService.GetAsync(
+            query with { Keyword = "D-BARCODE-02", OnlyWithLocation = false }
+        );
+        Assert.Equal("P02", Assert.Single(keywordPage.Items).ProductCode);
+
+        var firstPage = await queryService.GetAsync(query with { OnlyWithLocation = false, PageSize = 1 });
+        var secondPage = await queryService.GetAsync(
+            query with { OnlyWithLocation = false, PageNumber = 2, PageSize = 1 }
+        );
+        var thirdPage = await queryService.GetAsync(
+            query with { OnlyWithLocation = false, PageNumber = 3, PageSize = 1 }
+        );
+        Assert.Equal("P03", Assert.Single(firstPage.Items).ProductCode);
+        Assert.Equal("P02", Assert.Single(secondPage.Items).ProductCode);
+        Assert.Equal("P01", Assert.Single(thirdPage.Items).ProductCode);
+
+        var normalizedDefault = WarehouseRetailPriceChangeService.NormalizeQuery(
+            new WarehouseRetailPriceChangeQuery(),
+            new DateTimeOffset(2026, 8, 24, 0, 0, 0, TimeSpan.Zero)
+        );
+        Assert.Equal(new DateOnly(2026, 8, 1), normalizedDefault.StartDate);
+        Assert.Equal(new DateOnly(2026, 8, 31), normalizedDefault.EndDate);
+        Assert.True(normalizedDefault.OnlyWithLocation);
+        Assert.Equal(1, normalizedDefault.PageNumber);
+        Assert.Equal(50, normalizedDefault.PageSize);
+        Assert.Equal(new DateTime(2026, 7, 31, 14, 0, 0, DateTimeKind.Utc), normalizedDefault.StartUtc);
+        Assert.Equal(new DateTime(2026, 8, 31, 14, 0, 0, DateTimeKind.Utc), normalizedDefault.EndExclusiveUtc);
+    }
+
+    [Fact]
+    public void WarehouseRetailPriceChangeQuery_拒绝不完整日期和无效分页范围()
+    {
+        var now = new DateTimeOffset(2026, 8, 24, 0, 0, 0, TimeSpan.Zero);
+        Assert.Throws<ArgumentException>(() => WarehouseRetailPriceChangeService.NormalizeQuery(
+            new WarehouseRetailPriceChangeQuery { StartDate = new DateOnly(2026, 8, 1) }, now));
+        Assert.Throws<ArgumentException>(() => WarehouseRetailPriceChangeService.NormalizeQuery(
+            new WarehouseRetailPriceChangeQuery { EndDate = new DateOnly(2026, 8, 31) }, now));
+        Assert.Throws<ArgumentException>(() => WarehouseRetailPriceChangeService.NormalizeQuery(
+            new WarehouseRetailPriceChangeQuery { PageNumber = 0 }, now));
+        Assert.Throws<ArgumentException>(() => WarehouseRetailPriceChangeService.NormalizeQuery(
+            new WarehouseRetailPriceChangeQuery { PageSize = 101 }, now));
+        Assert.Throws<ArgumentException>(() => WarehouseRetailPriceChangeService.NormalizeQuery(
+            new WarehouseRetailPriceChangeQuery
+            {
+                StartDate = new DateOnly(2025, 1, 1),
+                EndDate = new DateOnly(2026, 1, 2),
+            }, now));
+        Assert.Throws<ArgumentException>(() => WarehouseRetailPriceChangeService.NormalizeQuery(
+            new WarehouseRetailPriceChangeQuery { PageNumber = int.MaxValue, PageSize = 100 }, now));
+    }
+
+    [Fact]
+    public void WarehouseRetailPriceChangeQuery_控制器路由权限和SqlServer参数化契约固定()
+    {
+        var controllerType = typeof(WarehouseRetailPriceChangesController);
+        var route = Assert.Single(controllerType.GetCustomAttributes(typeof(RouteAttribute), false));
+        Assert.Equal("api/react/v1/warehouse-retail-price-changes", ((RouteAttribute)route).Template);
+        var method = controllerType.GetMethod(nameof(WarehouseRetailPriceChangesController.Get));
+        Assert.NotNull(method);
+        Assert.Single(method!.GetCustomAttributes(typeof(HttpGetAttribute), false));
+        var authorize = Assert.Single(method.GetCustomAttributes(typeof(AuthorizeAttribute), false));
+        Assert.Equal(Permissions.Warehouse.ManageProducts, ((AuthorizeAttribute)authorize).Policy);
+
+        var sql = WarehouseRetailPriceChangeService.BuildSqlServerPageSql();
+        var countSql = WarehouseRetailPriceChangeService.BuildSqlServerCountSql();
+        Assert.Contains("ISJSON([h].[ChangesJson]) = 1", sql);
+        Assert.Contains("OPENJSON(CASE WHEN ISJSON([h].[ChangesJson]) = 1", sql);
+        Assert.Contains("ROW_NUMBER() OVER", sql);
+        Assert.Contains("CASE WHEN [p].[UUID] IS NULL", sql);
+        Assert.Contains("CHARINDEX(@Keyword, [ProductCode]) > 0", sql);
+        Assert.Contains("@StartUtc", sql);
+        Assert.Contains("@EndExclusiveUtc", sql);
+        Assert.Contains("@OnlyWithLocation", sql);
+        Assert.Contains("OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY", sql);
+        Assert.Contains("COUNT(1) AS [Total]", countSql);
+        Assert.DoesNotContain("OFFSET", countSql);
+    }
+
+    [Fact]
+    public async Task WarehouseRetailPriceChangeQuery_控制器成功时直接返回规范化页面()
+    {
+        var page = new WarehouseRetailPriceChangePage
+        {
+            StartDate = new DateOnly(2026, 8, 1),
+            EndDate = new DateOnly(2026, 8, 31),
+            OnlyWithLocation = true,
+            PageNumber = 1,
+            PageSize = 50,
+            Total = 0,
+        };
+        var service = new Mock<IWarehouseRetailPriceChangeService>();
+        service.Setup(item => item.GetAsync(It.IsAny<WarehouseRetailPriceChangeQuery>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(page);
+        var controller = new WarehouseRetailPriceChangesController(
+            service.Object,
+            NullLogger<WarehouseRetailPriceChangesController>.Instance
+        );
+
+        var result = await controller.Get(new WarehouseRetailPriceChangeQuery(), CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        Assert.Same(page, ok.Value);
     }
 
     [Fact]
@@ -963,6 +1154,129 @@ public sealed class WarehouseProductChangeHistoryServiceTests : IDisposable
             )
             .ExecuteCommandAsync();
     }
+
+    private async Task SeedRetailPriceQueryProductsAsync()
+    {
+        await _db.Insertable(new WarehouseProduct { ProductCode = "P02", IsDeleted = false, IsActive = true })
+            .ExecuteCommandAsync();
+        await _db.Insertable(
+                new DomesticProduct
+                {
+                    ProductCode = "P02",
+                    HBProductNo = "D-ITEM-02",
+                    Barcode = "D-BARCODE-02",
+                    ProductName = "国内商品二",
+                    EnglishProductName = "Domestic Two",
+                    IsDeleted = false,
+                    IsActive = true,
+                }
+            )
+            .ExecuteCommandAsync();
+        // 上架状态和库存不参与本页“当前仓库商品”筛选。
+        await _db.Insertable(
+                new WarehouseProduct
+                {
+                    ProductCode = "P03",
+                    IsDeleted = false,
+                    IsActive = false,
+                    StockQuantity = 0,
+                }
+            )
+            .ExecuteCommandAsync();
+        await _db.Insertable(
+                new Product
+                {
+                    UUID = "UUID-P03-DELETED",
+                    ProductCode = "P03",
+                    ProductName = "已删除商品",
+                    IsDeleted = true,
+                    IsActive = false,
+                }
+            )
+            .ExecuteCommandAsync();
+        // 软删除仓库商品才应被排除；它即使有变更历史也不能出现在结果中。
+        await _db.Insertable(
+                new WarehouseProduct { ProductCode = "P04", IsDeleted = true, IsActive = true }
+            )
+            .ExecuteCommandAsync();
+    }
+
+    private async Task SeedRetailPriceQueryLocationsAsync()
+    {
+        await _db.Insertable(
+                new List<Location>
+                {
+                    // 货位启用状态不参与 onlyWithLocation，只检查两张关联表未删除。
+                    new Location { LocationGuid = "LOC-A01", LocationCode = "A-01", Status = 0, IsDeleted = false },
+                    new Location { LocationGuid = "LOC-A02", LocationCode = "A-02", IsDeleted = false },
+                    new Location { LocationGuid = "LOC-OLD", LocationCode = "OLD", IsDeleted = true },
+                }
+            )
+            .ExecuteCommandAsync();
+        await _db.Insertable(
+                new List<ProductLocation>
+                {
+                    new ProductLocation
+                    {
+                        Guid = "MAP-P01-A01",
+                        ProductCode = "P01",
+                        LocationGuid = "LOC-A01",
+                        IsDeleted = false,
+                    },
+                    new ProductLocation
+                    {
+                        Guid = "MAP-P01-A02",
+                        ProductCode = "P01",
+                        LocationGuid = "LOC-A02",
+                        IsDeleted = false,
+                    },
+                    new ProductLocation
+                    {
+                        Guid = "MAP-P01-OLD",
+                        ProductCode = "P01",
+                        LocationGuid = "LOC-OLD",
+                        IsDeleted = false,
+                    },
+                }
+            )
+            .ExecuteCommandAsync();
+    }
+
+    private Task InsertRetailPriceHistoryAsync(
+        string productCode,
+        string action,
+        DateTime occurredAtUtc,
+        string? afterValue
+    )
+    {
+        var afterValueJson = afterValue == null ? "null" : JsonSerializer.Serialize(afterValue);
+        return InsertHistoryAsync(
+            productCode,
+            action,
+            occurredAtUtc,
+            $$"""[{"fieldKey":"retailPrice","beforeValue":"3.00","afterValue":{{afterValueJson}}}]"""
+        );
+    }
+
+    private Task InsertHistoryAsync(
+        string productCode,
+        string action,
+        DateTime occurredAtUtc,
+        string changesJson
+    ) => _db.Insertable(
+            new WarehouseProductChangeHistory
+            {
+                EventGuid = Guid.NewGuid(),
+                ProductCode = productCode,
+                Action = action,
+                Source = "WarehouseProducts",
+                ActorName = "测试操作人",
+                ActorType = "User",
+                OccurredAtUtc = occurredAtUtc,
+                ChangesJson = changesJson,
+            }
+        )
+        .ExecuteCommandAsync();
 
     private async Task<Dictionary<string, (string? Before, string? After)>>
         ReadSingleHistoryChangesAsync()

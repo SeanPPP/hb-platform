@@ -63,6 +63,16 @@ IF @WarehouseProductHistorySchemaLockResult < 0
 
 IF OBJECT_ID(N'[dbo].[WarehouseProductChangeHistory]', N'U') IS NOT NULL
 BEGIN
+    -- 月度变化页按日期全局排序和分页，保留原有按商品回溯索引以兼顾历史详情读取。
+    IF NOT EXISTS (
+        SELECT 1
+        FROM sys.indexes
+        WHERE name = N'IX_WarehouseProductChangeHistory_OccurredAtUtc_Id'
+          AND object_id = OBJECT_ID(N'[dbo].[WarehouseProductChangeHistory]', N'U')
+    )
+        CREATE INDEX [IX_WarehouseProductChangeHistory_OccurredAtUtc_Id]
+            ON [dbo].[WarehouseProductChangeHistory]([OccurredAtUtc] DESC, [Id] DESC);
+
     IF NOT EXISTS (
         SELECT 1
         FROM sys.indexes
@@ -131,6 +141,8 @@ END CATCH;
             const string sql = """
 CREATE INDEX IF NOT EXISTS "IX_WarehouseProductChangeHistory_ProductCode_OccurredAtUtc_Id"
     ON "WarehouseProductChangeHistory"("ProductCode", "OccurredAtUtc" DESC, "Id" DESC);
+CREATE INDEX IF NOT EXISTS "IX_WarehouseProductChangeHistory_OccurredAtUtc_Id"
+    ON "WarehouseProductChangeHistory"("OccurredAtUtc" DESC, "Id" DESC);
 CREATE INDEX IF NOT EXISTS "IX_WarehouseProductChangeHistory_BatchGuid"
     ON "WarehouseProductChangeHistory"("BatchGuid");
 CREATE UNIQUE INDEX IF NOT EXISTS "UX_WarehouseProductChangeHistory_BatchGuid_ProductCode"

@@ -64,6 +64,9 @@ export interface ContainerExportOptions {
   summary?: ContainerExportSummary
   fileName?: string
   onProgress?: (progress: number, message: string) => void
+  pdfRenderScale?: number
+  pdfImageFormat?: 'PNG' | 'JPEG'
+  pdfImageQuality?: number
 }
 
 interface ContainerExportPreparedImages {
@@ -838,20 +841,31 @@ export async function exportContainerDetailsToPdf(
     const [{ default: html2canvas }, { default: jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')])
     const pdf = new jsPDF(layout.orientation, 'mm', 'a4')
     const pages = Array.from(root.querySelectorAll<HTMLElement>('.container-detail-export-pdf-page'))
+    const html2CanvasOptions = {
+      scale: 3,
+      useCORS: true,
+      logging: false,
+      backgroundColor: '#ffffff',
+    }
+    const pdfImageQuality = Math.max(0.5, Math.min(1, options.pdfImageQuality ?? 0.95))
 
     for (const [pageIndex, pageElement] of pages.entries()) {
       const canvas = await html2canvas(pageElement, {
         // PDF 通过页面截图写入，使用更高倍率和 PNG 避免条码边缘被压缩到不可扫码。
-        scale: 3,
-        useCORS: true,
-        logging: false,
-        backgroundColor: '#ffffff',
+        ...html2CanvasOptions,
+        scale: options.pdfRenderScale ?? html2CanvasOptions.scale,
       })
-      const imageData = canvas.toDataURL('image/png')
+      const imageData = options.pdfImageFormat === 'JPEG'
+        ? canvas.toDataURL('image/jpeg', pdfImageQuality)
+        : canvas.toDataURL('image/png')
       if (pageIndex > 0) {
         pdf.addPage()
       }
-      pdf.addImage(imageData, 'PNG', 0, 0, layout.pdfWidthMm, layout.pdfHeightMm)
+      if (options.pdfImageFormat === 'JPEG') {
+        pdf.addImage(imageData, 'JPEG', 0, 0, layout.pdfWidthMm, layout.pdfHeightMm)
+      } else {
+        pdf.addImage(imageData, 'PNG', 0, 0, layout.pdfWidthMm, layout.pdfHeightMm)
+      }
       options.onProgress?.(
         75 + Math.floor(((pageIndex + 1) / Math.max(pages.length, 1)) * 20),
         `正在写入 PDF 第 ${pageIndex + 1}/${pages.length} 页...`,

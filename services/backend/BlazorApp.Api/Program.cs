@@ -665,6 +665,10 @@ builder.Services.AddScoped<
     BlazorApp.Api.Interfaces.React.IWarehouseProductChangeHistoryService,
     BlazorApp.Api.Services.React.WarehouseProductChangeHistoryService
 >();
+builder.Services.AddScoped<
+    BlazorApp.Api.Interfaces.React.IWarehouseRetailPriceChangeService,
+    BlazorApp.Api.Services.React.WarehouseRetailPriceChangeService
+>();
 builder.Services.AddSingleton<IWarehouseProductHqSyncJobService, WarehouseProductHqSyncJobService>();
 builder.Services.AddSingleton<
     IWarehouseProductBatchUpdateJobService,

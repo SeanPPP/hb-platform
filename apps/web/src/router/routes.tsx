@@ -85,6 +85,7 @@ import ContainerAllocationSalesPage from '../pages/Warehouse/ContainerAllocation
 import ContainersPage from '../pages/Warehouse/Containers'
 import WarehouseLocationsPage from '../pages/Warehouse/Locations'
 import WarehouseProductsPage from '../pages/Warehouse/Products'
+import RetailPriceChangesPage from '../pages/Warehouse/RetailPriceChanges'
 import WarehouseProductRecordsPage from '../pages/Warehouse/ProductRecords'
 import StoreOrderDetailPage from '../pages/Warehouse/StoreOrders/Detail'
 import StoreOrderInvoicePage from '../pages/Warehouse/StoreOrders/Invoice'
@@ -480,6 +481,17 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canManageWarehouseProducts',
         },
         element: <WarehouseProductsPage />,
+      },
+      {
+        path: '/warehouse/products/retail-price-changes',
+        meta: {
+          title: 'warehouse.retailPriceChanges.title',
+          hidden: true,
+          keepAlive: true,
+          accessKey: 'canManageWarehouseProducts',
+          activeMenu: '/warehouse/products',
+        },
+        element: <RetailPriceChangesPage />,
       },
       {
         path: '/warehouse/products/:productCode/records',

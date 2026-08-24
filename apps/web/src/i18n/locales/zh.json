@@ -1407,6 +1407,37 @@
   },
   "warehouse": {
     "retailPrice": "零售价",
+    "retailPriceChanges": {
+      "entry": "零售价月度变化",
+      "title": "仓库商品零售价月度变化",
+      "subtitle": "按所选日期范围查看发生过改价的仓库商品及期末最新零售价",
+      "keywordPlaceholder": "货号 / 条码",
+      "onlyWithLocation": "有货位商品",
+      "allProducts": "全部商品",
+      "resetMonth": "重置本月",
+      "auditNotice": "仅统计系统已有修改记录，审计启用前的历史无法可靠回溯。",
+      "empty": "当前筛选条件下暂无零售价变化",
+      "loadFailed": "加载零售价变化失败",
+      "total": "共 {{count}} 条",
+      "pdf": {
+        "export": "导出 PDF",
+        "empty": "当前筛选条件没有可导出的数据",
+        "success": "已导出 {{count}} 条记录",
+        "failed": "导出 PDF 失败",
+        "fileName": "仓库商品零售价变化",
+        "dateRange": "日期范围",
+        "productScope": "商品范围",
+        "keyword": "关键字",
+        "recordCount": "记录数"
+      },
+      "columns": {
+        "image": "图片",
+        "itemNumber": "货号",
+        "barcode": "条码",
+        "latestRetailPrice": "期末最新零售价",
+        "lastChangedAt": "最后改价时间（布里斯班）"
+      }
+    },
     "discountRate": "折扣率",
     "autoPricing": "自动定价",
     "changeHistory": {

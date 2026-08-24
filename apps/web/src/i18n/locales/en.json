@@ -1407,6 +1407,37 @@
   },
   "warehouse": {
     "retailPrice": "Retail Price",
+    "retailPriceChanges": {
+      "entry": "Monthly Retail Price Changes",
+      "title": "Warehouse Retail Price Changes",
+      "subtitle": "Review warehouse products with price changes in the selected date range and their latest closing retail price",
+      "keywordPlaceholder": "Item No. / Barcode",
+      "onlyWithLocation": "Products With Location",
+      "allProducts": "All Products",
+      "resetMonth": "Reset Current Month",
+      "auditNotice": "Only existing system change records are included; history before audit tracking was enabled cannot be reconstructed reliably.",
+      "empty": "No retail price changes match the current filters",
+      "loadFailed": "Failed to load retail price changes",
+      "total": "{{count}} records",
+      "pdf": {
+        "export": "Export PDF",
+        "empty": "No records are available to export for the current filters",
+        "success": "Exported {{count}} records",
+        "failed": "Failed to export PDF",
+        "fileName": "Warehouse Retail Price Changes",
+        "dateRange": "Date Range",
+        "productScope": "Product Scope",
+        "keyword": "Keyword",
+        "recordCount": "Records"
+      },
+      "columns": {
+        "image": "Image",
+        "itemNumber": "Item No.",
+        "barcode": "Barcode",
+        "latestRetailPrice": "Latest Closing Retail Price",
+        "lastChangedAt": "Last Price Change (Brisbane)"
+      }
+    },
     "discountRate": "Discount Rate",
     "autoPricing": "Auto Pricing",
     "changeHistory": {

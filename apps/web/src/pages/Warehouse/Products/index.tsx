@@ -2540,6 +2540,9 @@ export default function WarehouseProductsPage() {
     return (<>
       <style>{warehouseProductsTableStyle}</style>
       <PageContainer title={t('warehouse.productManagement')} subtitle={t('warehouse.productManagementSubtitle')} extra={<Space wrap>
+          {access.canManageWarehouseProducts ? (<Button icon={<HistoryOutlined />} onClick={() => navigate('/warehouse/products/retail-price-changes')}>
+            {t('warehouse.retailPriceChanges.entry')}
+          </Button>) : null}
           {access.isAdmin ? (<Button icon={<CloudSyncOutlined />} loading={syncingFromHq || Boolean(activeHqSyncJob)} disabled={syncingFromHq} onClick={handleSyncWarehouseProductsFromHq}>
             {t('warehouse.hqSync', '从HQ同步库存')}
           </Button>) : null}
