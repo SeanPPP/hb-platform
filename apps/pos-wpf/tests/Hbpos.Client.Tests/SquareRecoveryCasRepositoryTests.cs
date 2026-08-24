@@ -485,6 +485,135 @@ public sealed class SquareRecoveryCasRepositoryTests
         }
     }
 
+    [Theory]
+    [InlineData("FAILED")]
+    [InlineData("REJECTED")]
+    public async Task Refund_failure_handoff_reopens_exact_failed_row_into_finalize_pending(
+        string paymentStatus)
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            ILocalSquarePaymentAttemptRepository repository = await CreateRepositoryAsync(databasePath);
+            var attempt = CreateSaleAttempt() with
+            {
+                AttemptGuid = Guid.NewGuid(),
+                OperationKind = "Refund",
+                Status = LocalSquarePaymentAttemptStatus.Failed,
+                PaymentId = "REFUND-FAILED-LEGACY-001",
+                PaymentStatus = paymentStatus,
+                ResponseCode = "SQUARE_FAILURE",
+                ResponseText = "Square refund reached a terminal failure.",
+                SubmissionToken = "refund-token"
+            };
+            await repository.CreateAsync(attempt);
+            Assert.Contains(
+                await repository.GetOpenRefundAttemptsAsync(
+                    attempt.StoreCode,
+                    attempt.DeviceCode,
+                    attempt.Environment),
+                candidate => candidate.AttemptGuid == attempt.AttemptGuid);
+            Assert.Contains(
+                await repository.GetOpenAttemptsAsync(
+                    attempt.StoreCode,
+                    attempt.DeviceCode,
+                    attempt.Environment),
+                candidate => candidate.AttemptGuid == attempt.AttemptGuid);
+            var reopenedAt = attempt.UpdatedAt.AddMinutes(1);
+
+            var applied = await repository.TryPersistRefundFailureForFinalizationAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                attempt.SubmissionToken!,
+                paymentStatus,
+                attempt.ResponseCode,
+                attempt.ResponseText,
+                reopenedAt);
+
+            Assert.True(applied);
+            var saved = Assert.IsType<LocalSquarePaymentAttempt>(
+                await repository.GetAttemptAsync(attempt.AttemptGuid));
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, saved.Status);
+            Assert.Equal(paymentStatus, saved.PaymentStatus);
+            Assert.Equal(attempt.PaymentId, saved.PaymentId);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, saved.RecoveryPhase);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, saved.RecoveryTargetStatus);
+            Assert.Contains(
+                saved,
+                await repository.GetOpenRefundAttemptsAsync(
+                    saved.StoreCode,
+                    saved.DeviceCode,
+                    saved.Environment));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Theory]
+    [InlineData(ActiveSessionSupervisorResolutionCodes.ConfirmedPaid)]
+    [InlineData(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid)]
+    public async Task Failed_refund_with_any_persisted_supervisor_financial_code_stays_out_of_open_queues(
+        string responseCode)
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            ILocalSquarePaymentAttemptRepository repository = await CreateRepositoryAsync(databasePath);
+            var attempt = CreateSaleAttempt() with
+            {
+                AttemptGuid = Guid.NewGuid(),
+                OperationKind = "Refund",
+                Status = LocalSquarePaymentAttemptStatus.Failed,
+                PaymentId = "REFUND-SUPERVISOR-GUARD-001",
+                PaymentStatus = "FAILED",
+                ResponseCode = responseCode,
+                ResponseText = "A persisted supervisor decision must remain authoritative.",
+                SubmissionToken = "refund-supervisor-guard-token",
+                RecoveryPhase = CardRecoveryPhases.None,
+                RecoveryTargetStatus = null
+            };
+            await repository.CreateAsync(attempt);
+
+            Assert.DoesNotContain(
+                await repository.GetOpenRefundAttemptsAsync(
+                    attempt.StoreCode,
+                    attempt.DeviceCode,
+                    attempt.Environment),
+                candidate => candidate.AttemptGuid == attempt.AttemptGuid);
+            Assert.DoesNotContain(
+                await repository.GetOpenAttemptsAsync(
+                    attempt.StoreCode,
+                    attempt.DeviceCode,
+                    attempt.Environment),
+                candidate => candidate.AttemptGuid == attempt.AttemptGuid);
+
+            var applied = await repository.TryPersistRefundFailureForFinalizationAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                attempt.SubmissionToken!,
+                attempt.PaymentStatus!,
+                attempt.ResponseCode,
+                attempt.ResponseText,
+                attempt.UpdatedAt.AddMinutes(1));
+
+            Assert.False(applied);
+            var saved = Assert.IsType<LocalSquarePaymentAttempt>(
+                await repository.GetAttemptAsync(attempt.AttemptGuid));
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Failed, saved.Status);
+            Assert.Equal(responseCode, saved.ResponseCode);
+            Assert.Equal(CardRecoveryPhases.None, saved.RecoveryPhase);
+            Assert.Null(saved.RecoveryTargetStatus);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     [Fact]
     public async Task Refund_failure_cas_preserves_existing_response_evidence_and_rejects_completed_winner()
     {

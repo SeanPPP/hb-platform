@@ -968,6 +968,52 @@ public sealed class CashPaymentWorkflowServiceTests
         Assert.Equal(alternativeMethod == PaymentMethodKind.Voucher ? 1 : 0, vouchers.IssueRefundCallCount);
     }
 
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public async Task Square_failed_refund_post_save_finalization_propagates_fatal_and_keeps_owner(
+        string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("fatal Square owner finalization")
+            : new StackOverflowException("fatal Square owner finalization");
+        var sourceCart = CreateReturnCart(4m);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var ownerAttempt = CreateAlternativeSquareRefundAttempt(sourceCart, session);
+        var attempts = new RecordingSquarePaymentAttemptRepository
+        {
+            CompleteRecoveryFinalizationException = fatal
+        };
+        await attempts.CreateAsync(ownerAttempt);
+        var cart = new PosCartService();
+        Assert.True(cart.TryPublishRecoverySnapshot(
+            ownerAttempt.AttemptGuid,
+            cart.Revision,
+            sourceCart.CreateSnapshot()).Succeeded);
+        var orders = new RecordingOrderRepository();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 0),
+            squarePaymentAttemptRepository: attempts);
+
+        var thrown = await Record.ExceptionAsync(() =>
+            workflow.CompletePaymentAsync(
+                cart,
+                session,
+                [new PaymentTender(PaymentMethodKind.Cash, -4m, "CASH:ALT-FATAL")],
+                cashTenderedAmount: -4m));
+
+        Assert.Same(fatal, thrown);
+        Assert.Single(orders.SavedOrders);
+        Assert.Equal(ownerAttempt.AttemptGuid, cart.RecoveryOwnerAttemptGuid);
+        Assert.False(cart.IsEmpty);
+        var pending = Assert.Single(attempts.Attempts);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, pending.Status);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, pending.RecoveryPhase);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, pending.RecoveryTargetStatus);
+    }
+
     [Fact]
     public async Task Square_recovery_owner_with_same_guid_linkly_tender_uses_square_order_identity_and_finalizes_both_exact_attempts()
     {
@@ -1055,6 +1101,186 @@ public sealed class CashPaymentWorkflowServiceTests
         Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, Assert.Single(squareAttempts.Attempts).Status);
         Assert.Equal(1, squareAttempts.CompleteRecoveryFinalizationCount);
         Assert.Equal(0, squareAttempts.MarkOrderCompletedCount);
+        Assert.Null(cart.RecoveryOwnerAttemptKey);
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+        Assert.True(cart.IsEmpty);
+    }
+
+    [Fact]
+    public async Task Linkly_non_owner_post_order_failure_does_not_skip_exact_owner_finalization()
+    {
+        var sourceCart = CreateReturnCart(4m);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var now = DateTimeOffset.UtcNow;
+        var earlierAttemptGuid = Guid.NewGuid();
+        var ownerAttemptGuid = Guid.NewGuid();
+        var earlierTender = new PaymentTender(
+            PaymentMethodKind.Card,
+            -1m,
+            "ANZ:EARLIER-APPROVED",
+            IdempotencyKey: $"CARD_ATTEMPT:{earlierAttemptGuid:N}");
+        var ownerTender = new PaymentTender(
+            PaymentMethodKind.Card,
+            -1m,
+            "ANZ:OWNER-APPROVED",
+            IdempotencyKey: $"CARD_ATTEMPT:{ownerAttemptGuid:N}");
+        var ownerOrderGuid = Guid.NewGuid();
+        var draft = new CardPaymentOrderDraft(
+            ownerOrderGuid,
+            session,
+            sourceCart.CreateSnapshot(),
+            [earlierTender, ownerTender],
+            sourceCart.ActualAmount,
+            1m,
+            "R",
+            "ANZ:ORIGINAL-MULTI",
+            now);
+        var attempts = new RecordingCardPaymentAttemptRepository
+        {
+            MarkOrderCompletedException = new InvalidOperationException("earlier Linkly finalization failed")
+        };
+        await attempts.CreateAsync(new LocalCardPaymentAttempt(
+            earlierAttemptGuid,
+            null,
+            "TXN-EARLIER",
+            CardProcessorKind.Linkly.ToString(),
+            CardTerminalEnvironment.Sandbox.ToString(),
+            LinklyConnectionMode.LocalIp.ToString(),
+            "R",
+            1m,
+            LocalCardPaymentAttemptStatus.Approved,
+            JsonSerializer.Serialize(draft, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+            session.StoreCode,
+            session.DeviceCode,
+            session.CashierId,
+            "00",
+            "APPROVED",
+            earlierTender.Reference,
+            now,
+            now,
+            now,
+            null,
+            "Refund",
+            ownerOrderGuid));
+        await attempts.CreateAsync(new LocalCardPaymentAttempt(
+            ownerAttemptGuid,
+            null,
+            "TXN-OWNER",
+            CardProcessorKind.Linkly.ToString(),
+            CardTerminalEnvironment.Sandbox.ToString(),
+            LinklyConnectionMode.LocalIp.ToString(),
+            "R",
+            1m,
+            LocalCardPaymentAttemptStatus.Approved,
+            JsonSerializer.Serialize(draft, new JsonSerializerOptions(JsonSerializerDefaults.Web)),
+            session.StoreCode,
+            session.DeviceCode,
+            session.CashierId,
+            "00",
+            "APPROVED",
+            ownerTender.Reference,
+            now,
+            now,
+            now,
+            null,
+            "Refund",
+            ownerOrderGuid,
+            RecoveryPhase: CardRecoveryPhases.FinalizePending,
+            RecoveryTargetStatus: LocalCardPaymentAttemptStatus.OrderCompleted.ToString()));
+        var ownerKey = new CardRecoveryAttemptKey(CardProcessorKind.Linkly, ownerAttemptGuid);
+        var cart = new PosCartService();
+        Assert.True(cart.TryPublishRecoverySnapshot(
+            ownerKey,
+            cart.Revision,
+            sourceCart.CreateSnapshot()).Succeeded);
+        var orders = new RecordingOrderRepository();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 0),
+            cardPaymentAttemptRepository: attempts);
+
+        var result = await workflow.CompletePaymentAsync(
+            cart,
+            session,
+            [earlierTender, ownerTender, new PaymentTender(PaymentMethodKind.Cash, -2m, "CASH:MULTI")],
+            cashTenderedAmount: -2m);
+
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Single(orders.SavedOrders);
+        Assert.Equal(
+            LocalCardPaymentAttemptStatus.Approved,
+            attempts.Attempts.Single(attempt => attempt.AttemptGuid == earlierAttemptGuid).Status);
+        Assert.Equal(
+            LocalCardPaymentAttemptStatus.OrderCompleted,
+            attempts.Attempts.Single(attempt => attempt.AttemptGuid == ownerAttemptGuid).Status);
+        Assert.Null(cart.RecoveryOwnerAttemptKey);
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+        Assert.True(cart.IsEmpty);
+    }
+
+    [Fact]
+    public async Task Square_non_owner_post_order_failure_does_not_skip_alternative_refund_owner_finalization()
+    {
+        var sourceCart = CreateReturnCart(4m);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+        var earlierAttemptGuid = Guid.NewGuid();
+        var earlierTender = new PaymentTender(
+            PaymentMethodKind.Card,
+            -1m,
+            "SQRF:EARLIER-COMPLETED",
+            IdempotencyKey: $"SQUARE_ATTEMPT:{earlierAttemptGuid:N}");
+        var ownerAttempt = CreateAlternativeSquareRefundAttempt(
+            sourceCart,
+            session,
+            currentTenders: [earlierTender]);
+        var earlierAttempt = ownerAttempt with
+        {
+            AttemptGuid = earlierAttemptGuid,
+            IdempotencyKey = $"square-refund-{earlierAttemptGuid:N}",
+            Status = LocalSquarePaymentAttemptStatus.PaymentVerified,
+            PaymentId = "square-refund-earlier",
+            PaymentStatus = "COMPLETED",
+            ResponseCode = null,
+            ResponseText = "Earlier Square refund completed.",
+            OperationGuid = Guid.NewGuid(),
+            SubmissionToken = "earlier-worker-token",
+            RecoveryPhase = CardRecoveryPhases.None,
+            RecoveryTargetStatus = null
+        };
+        var attempts = new RecordingSquarePaymentAttemptRepository
+        {
+            MarkOrderCompletedException = new InvalidOperationException("earlier Square finalization failed")
+        };
+        await attempts.CreateAsync(earlierAttempt);
+        await attempts.CreateAsync(ownerAttempt);
+        var ownerKey = new CardRecoveryAttemptKey(CardProcessorKind.Square, ownerAttempt.AttemptGuid);
+        var cart = new PosCartService();
+        Assert.True(cart.TryPublishRecoverySnapshot(
+            ownerKey,
+            cart.Revision,
+            sourceCart.CreateSnapshot()).Succeeded);
+        var orders = new RecordingOrderRepository();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            orders,
+            new StubSyncQueueRepository(pendingCount: 0),
+            squarePaymentAttemptRepository: attempts);
+
+        var result = await workflow.CompletePaymentAsync(
+            cart,
+            session,
+            [earlierTender, new PaymentTender(PaymentMethodKind.Cash, -3m, "CASH:SQUARE-MULTI")],
+            cashTenderedAmount: -3m);
+
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Single(orders.SavedOrders);
+        Assert.Equal(
+            LocalSquarePaymentAttemptStatus.PaymentVerified,
+            attempts.Attempts.Single(attempt => attempt.AttemptGuid == earlierAttemptGuid).Status);
+        Assert.Equal(
+            LocalSquarePaymentAttemptStatus.Abandoned,
+            attempts.Attempts.Single(attempt => attempt.AttemptGuid == ownerAttempt.AttemptGuid).Status);
         Assert.Null(cart.RecoveryOwnerAttemptKey);
         Assert.Null(cart.RecoveryOwnerAttemptGuid);
         Assert.True(cart.IsEmpty);
@@ -3593,6 +3819,28 @@ public sealed class CashPaymentWorkflowServiceTests
         Assert.False(released);
     }
 
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public async Task Payment_workflow_voucher_release_propagates_fatal_exception_instance(string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("fatal voucher release failure")
+            : new StackOverflowException("fatal voucher release failure");
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            voucherTenderClient: new ThrowingVoucherTenderClient(fatal));
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var thrown = await Assert.ThrowsAnyAsync<Exception>(() => workflow.ReleaseVoucherTenderAsync(
+            new PaymentTender(PaymentMethodKind.Voucher, 5m, "VOUCHER:VC100:LOCK-1:15.00"),
+            session));
+
+        Assert.Same(fatal, thrown);
+    }
+
     [Fact]
     public async Task Payment_workflow_retries_failed_voucher_upload_without_saving_duplicate_order()
     {
@@ -4523,7 +4771,7 @@ public sealed class CashPaymentWorkflowServiceTests
     }
 
     [Fact]
-    public async Task Square_refund_failure_handoff_incompatible_cas_winner_still_returns_durable_attempt_identity()
+    public async Task Square_refund_failure_handoff_incompatible_cas_winner_does_not_return_unverified_attempt_identity()
     {
         var cart = CreateReturnCart(4m);
         var attempts = new RecordingSquarePaymentAttemptRepository
@@ -4559,17 +4807,128 @@ public sealed class CashPaymentWorkflowServiceTests
         var winner = Assert.Single(attempts.Attempts);
         Assert.False(result.Succeeded);
         Assert.True(result.CardResult?.RequiresRecovery);
+        Assert.Null(result.RecoveryAttemptKey);
+        Assert.Null(result.RecoveryOrderGuid);
+        Assert.Equal("replacement-worker-token", winner.SubmissionToken);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, winner.Status);
+        Assert.Equal(CardRecoveryPhases.None, winner.RecoveryPhase);
+        Assert.Contains(
+            winner,
+            await attempts.GetOpenRefundAttemptsAsync(
+                session.StoreCode,
+                session.DeviceCode,
+                CardTerminalEnvironment.Production.ToString()));
+    }
+
+    [Theory]
+    [InlineData(LocalSquarePaymentAttemptStatus.Canceled)]
+    [InlineData(LocalSquarePaymentAttemptStatus.TimedOut)]
+    [InlineData(LocalSquarePaymentAttemptStatus.Abandoned)]
+    [InlineData(LocalSquarePaymentAttemptStatus.OrderCompleted)]
+    public async Task Square_refund_failure_handoff_terminal_cas_winner_never_returns_unreachable_identity(
+        LocalSquarePaymentAttemptStatus terminalStatus)
+    {
+        var cart = CreateReturnCart(4m);
+        var attempts = new RecordingSquarePaymentAttemptRepository
+        {
+            RefundFailureHandoffCasWinnerStatus = terminalStatus
+        };
+        var terminal = new RecordingIdempotentCardRefundClient(
+            new PaymentAuthorizationResult(
+                false,
+                null,
+                "Square returned a stale failure after a terminal winner.",
+                AuthorizedAmount: 4m,
+                ResponseCode: "STALE_FAILURE"),
+            beforeResult: () => attempts.SimulateRefundResponse("FAILED"));
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "SQ:payment-terminal-winner",
+            cartSnapshot: cart.CreateSnapshot());
+
+        var winner = Assert.Single(attempts.Attempts);
+        Assert.False(result.Succeeded);
+        Assert.True(result.CardResult?.RequiresRecovery);
+        Assert.Null(result.RecoveryAttemptKey);
+        Assert.Null(result.RecoveryOrderGuid);
+        Assert.Equal(terminalStatus, winner.Status);
+        Assert.DoesNotContain(
+            winner,
+            await attempts.GetOpenRefundAttemptsAsync(
+                session.StoreCode,
+                session.DeviceCode,
+                CardTerminalEnvironment.Production.ToString()));
+    }
+
+    [Fact]
+    public async Task Square_refund_failure_handoff_repairs_exact_failed_cas_winner_into_open_queue()
+    {
+        var cart = CreateReturnCart(4m);
+        var attempts = new RecordingSquarePaymentAttemptRepository
+        {
+            RefundFailureHandoffCasWinnerStatus = LocalSquarePaymentAttemptStatus.Failed
+        };
+        var terminal = new RecordingIdempotentCardRefundClient(
+            new PaymentAuthorizationResult(
+                false,
+                null,
+                "Square refund failed while another local writer terminalized the attempt.",
+                AuthorizedAmount: 4m,
+                ResponseCode: "SQUARE_REFUND_FAILURE"),
+            beforeResult: () => attempts.SimulateRefundResponse("FAILED"));
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "SQ:payment-failed-winner",
+            cartSnapshot: cart.CreateSnapshot());
+
+        var winner = Assert.Single(attempts.Attempts);
+        Assert.False(result.Succeeded);
+        Assert.True(result.CardResult?.RequiresRecovery);
         Assert.Equal(
             new CardRecoveryAttemptKey(CardProcessorKind.Square, winner.AttemptGuid),
             result.RecoveryAttemptKey);
         Assert.Equal(winner.OperationGuid, result.RecoveryOrderGuid);
-        Assert.Equal("replacement-worker-token", winner.SubmissionToken);
-        Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, winner.Status);
-        Assert.Equal(CardRecoveryPhases.None, winner.RecoveryPhase);
+        Assert.Equal(2, attempts.RefundFailureFinalizationCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, winner.Status);
+        Assert.Equal("FAILED", winner.PaymentStatus);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, winner.RecoveryPhase);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, winner.RecoveryTargetStatus);
+        Assert.Contains(
+            winner,
+            await attempts.GetOpenRefundAttemptsAsync(
+                session.StoreCode,
+                session.DeviceCode,
+                CardTerminalEnvironment.Production.ToString()));
     }
 
     [Fact]
-    public async Task Square_refund_failure_handoff_repository_failure_still_returns_durable_attempt_identity()
+    public async Task Square_refund_failure_handoff_persistent_repository_failure_does_not_return_unverified_identity()
     {
         var cart = CreateReturnCart(4m);
         var attempts = new RecordingSquarePaymentAttemptRepository
@@ -4605,13 +4964,118 @@ public sealed class CashPaymentWorkflowServiceTests
         var persisted = Assert.Single(attempts.Attempts);
         Assert.False(result.Succeeded);
         Assert.True(result.CardResult?.RequiresRecovery);
+        Assert.Null(result.RecoveryAttemptKey);
+        Assert.Null(result.RecoveryOrderGuid);
+        Assert.Equal(2, attempts.RefundFailureFinalizationCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, persisted.Status);
+        Assert.Equal("FAILED", persisted.PaymentStatus);
+        Assert.Equal(CardRecoveryPhases.None, persisted.RecoveryPhase);
+    }
+
+    [Fact]
+    public async Task Square_refund_failure_handoff_transient_write_failure_repairs_exact_recovering_row()
+    {
+        var cart = CreateReturnCart(4m);
+        var attempts = new RecordingSquarePaymentAttemptRepository
+        {
+            RefundFailureFinalizationException = new IOException("simulated transient refund handoff failure"),
+            RefundFailureFinalizationExceptionsRemaining = 1
+        };
+        var terminal = new RecordingIdempotentCardRefundClient(
+            new PaymentAuthorizationResult(
+                false,
+                null,
+                "Square refund reached a terminal failure.",
+                AuthorizedAmount: 4m,
+                ResponseCode: "SQUARE_REFUND_FAILURE"),
+            beforeResult: () => attempts.SimulateRefundResponse("FAILED"));
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "SQ:payment-transient-recovering-handoff",
+            cartSnapshot: cart.CreateSnapshot());
+
+        var persisted = Assert.Single(attempts.Attempts);
+        Assert.False(result.Succeeded);
+        Assert.True(result.CardResult?.RequiresRecovery);
         Assert.Equal(
             new CardRecoveryAttemptKey(CardProcessorKind.Square, persisted.AttemptGuid),
             result.RecoveryAttemptKey);
         Assert.Equal(persisted.OperationGuid, result.RecoveryOrderGuid);
-        Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, persisted.Status);
+        Assert.Equal(2, attempts.RefundFailureFinalizationCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, persisted.Status);
         Assert.Equal("FAILED", persisted.PaymentStatus);
-        Assert.Equal(CardRecoveryPhases.None, persisted.RecoveryPhase);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, persisted.RecoveryPhase);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, persisted.RecoveryTargetStatus);
+    }
+
+    [Fact]
+    public async Task Square_refund_failure_handoff_transient_write_failure_repairs_exact_failed_row()
+    {
+        var cart = CreateReturnCart(4m);
+        var attempts = new RecordingSquarePaymentAttemptRepository
+        {
+            RefundFailureFinalizationException = new IOException("simulated transient refund handoff failure"),
+            RefundFailureFinalizationExceptionsRemaining = 1
+        };
+        var terminal = new RecordingIdempotentCardRefundClient(
+            new PaymentAuthorizationResult(
+                false,
+                null,
+                "Square refund reached a terminal failure.",
+                AuthorizedAmount: 4m,
+                ResponseCode: "SQUARE_REFUND_FAILURE"),
+            beforeResult: () => attempts.SimulateRefundResponse(
+                "FAILED",
+                LocalSquarePaymentAttemptStatus.Failed));
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateSquareSettings()),
+            squarePaymentAttemptRepository: attempts);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            actualAmount: -4m,
+            currentTenders: [],
+            amountText: "4",
+            referenceText: "SQ:payment-transient-handoff-failure",
+            cartSnapshot: cart.CreateSnapshot());
+
+        var persisted = Assert.Single(attempts.Attempts);
+        Assert.False(result.Succeeded);
+        Assert.True(result.CardResult?.RequiresRecovery);
+        Assert.Equal(
+            new CardRecoveryAttemptKey(CardProcessorKind.Square, persisted.AttemptGuid),
+            result.RecoveryAttemptKey);
+        Assert.Equal(persisted.OperationGuid, result.RecoveryOrderGuid);
+        Assert.Equal(2, attempts.RefundFailureFinalizationCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Unknown, persisted.Status);
+        Assert.Equal("FAILED", persisted.PaymentStatus);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, persisted.RecoveryPhase);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, persisted.RecoveryTargetStatus);
+        Assert.Contains(
+            persisted,
+            await attempts.GetOpenRefundAttemptsAsync(
+                session.StoreCode,
+                session.DeviceCode,
+                CardTerminalEnvironment.Production.ToString()));
     }
 
     [Fact]
@@ -5911,11 +6375,18 @@ public sealed class CashPaymentWorkflowServiceTests
 
         public bool CompleteRecoveryFinalizationResult { get; init; } = true;
 
+        public Exception? CompleteRecoveryFinalizationException { get; init; }
+
+        public Exception? MarkOrderCompletedException { get; init; }
+
         public bool CompleteRefundDuringFailureHandoff { get; init; }
 
         public bool ReplaceRefundDuringFailureHandoff { get; init; }
 
+        public LocalSquarePaymentAttemptStatus? RefundFailureHandoffCasWinnerStatus { get; init; }
+
         public Exception? RefundFailureFinalizationException { get; init; }
+        public int RefundFailureFinalizationExceptionsRemaining { get; set; } = int.MaxValue;
 
         public bool RejectCancelledTokens { get; init; }
 
@@ -6103,12 +6574,14 @@ public sealed class CashPaymentWorkflowServiceTests
             });
         }
 
-        public void SimulateRefundResponse(string paymentStatus)
+        public void SimulateRefundResponse(
+            string paymentStatus,
+            LocalSquarePaymentAttemptStatus status = LocalSquarePaymentAttemptStatus.Recovering)
         {
             var attempt = Assert.Single(Attempts);
             Update(attempt.AttemptGuid, current => current with
             {
-                Status = LocalSquarePaymentAttemptStatus.Recovering,
+                Status = status,
                 PaymentId = "square-refund-terminal",
                 PaymentStatus = paymentStatus,
                 UpdatedAt = current.UpdatedAt.AddTicks(1)
@@ -6127,8 +6600,14 @@ public sealed class CashPaymentWorkflowServiceTests
             CancellationToken cancellationToken = default)
         {
             RefundFailureFinalizationCount++;
-            if (RefundFailureFinalizationException is not null)
+            if (RefundFailureFinalizationException is not null &&
+                RefundFailureFinalizationExceptionsRemaining != 0)
             {
+                if (RefundFailureFinalizationExceptionsRemaining != int.MaxValue)
+                {
+                    RefundFailureFinalizationExceptionsRemaining--;
+                }
+
                 throw RefundFailureFinalizationException;
             }
 
@@ -6154,6 +6633,26 @@ public sealed class CashPaymentWorkflowServiceTests
                 {
                     Status = LocalSquarePaymentAttemptStatus.Recovering,
                     SubmissionToken = "replacement-worker-token",
+                    UpdatedAt = current.UpdatedAt.AddTicks(1)
+                });
+                return Task.FromResult(false);
+            }
+
+            if (RefundFailureHandoffCasWinnerStatus is { } terminalWinnerStatus &&
+                RefundFailureFinalizationCount == 1)
+            {
+                Update(attemptGuid, current => current with
+                {
+                    Status = terminalWinnerStatus,
+                    PaymentStatus = terminalWinnerStatus == LocalSquarePaymentAttemptStatus.OrderCompleted
+                        ? "COMPLETED"
+                        : "FAILED",
+                    ResponseCode = terminalWinnerStatus == LocalSquarePaymentAttemptStatus.OrderCompleted
+                        ? "SQUARE_COMPLETED"
+                        : "SQUARE_FAILURE",
+                    ResponseText = "A concurrent worker persisted a terminal winner.",
+                    RecoveryPhase = CardRecoveryPhases.None,
+                    RecoveryTargetStatus = null,
                     UpdatedAt = current.UpdatedAt.AddTicks(1)
                 });
                 return Task.FromResult(false);
@@ -6359,6 +6858,11 @@ public sealed class CashPaymentWorkflowServiceTests
         public Task MarkOrderCompletedAsync(Guid attemptGuid, DateTimeOffset completedAt, CancellationToken cancellationToken = default)
         {
             MarkOrderCompletedCount++;
+            if (MarkOrderCompletedException is not null)
+            {
+                throw MarkOrderCompletedException;
+            }
+
             Update(attemptGuid, attempt => attempt with
             {
                 Status = LocalSquarePaymentAttemptStatus.OrderCompleted,
@@ -6467,6 +6971,11 @@ public sealed class CashPaymentWorkflowServiceTests
             CancellationToken cancellationToken = default)
         {
             CompleteRecoveryFinalizationCount++;
+            if (CompleteRecoveryFinalizationException is not null)
+            {
+                throw CompleteRecoveryFinalizationException;
+            }
+
             var current = Attempts.Single(attempt => attempt.AttemptGuid == attemptGuid);
             if (!CompleteRecoveryFinalizationResult ||
                 current.Status != expectedStatus ||
@@ -7239,6 +7748,13 @@ public sealed class CashPaymentWorkflowServiceTests
 
     private sealed class ThrowingVoucherTenderClient : IVoucherTenderClient
     {
+        private readonly Exception _releaseException;
+
+        public ThrowingVoucherTenderClient(Exception? releaseException = null)
+        {
+            _releaseException = releaseException ?? new HttpRequestException("release unavailable");
+        }
+
         public Task<PaymentAuthorizationResult> RedeemAsync(
             decimal amount,
             PosSessionState session,
@@ -7265,7 +7781,7 @@ public sealed class CashPaymentWorkflowServiceTests
             string reservationToken,
             CancellationToken cancellationToken = default)
         {
-            throw new HttpRequestException("release unavailable");
+            throw _releaseException;
         }
     }
 

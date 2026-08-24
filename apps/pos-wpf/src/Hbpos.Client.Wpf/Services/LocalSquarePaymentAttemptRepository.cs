@@ -1050,7 +1050,13 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
               AND SubmissionToken = $SubmissionToken
               AND Status = $ExpectedStatus
               AND UpdatedAt = $ExpectedUpdatedAt
-              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5)
+              AND (
+                    Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5)
+                    OR (
+                        Status = $FailedStatus
+                        AND UPPER(TRIM(COALESCE(PaymentStatus, ''))) IN ('FAILED', 'REJECTED')
+                    )
+                  )
               AND COALESCE(RecoveryPhase, $NoRecoveryPhase) = $NoRecoveryPhase
               AND UPPER(TRIM(COALESCE(PaymentStatus, ''))) <> 'COMPLETED'
               AND COALESCE(ResponseCode, '') NOT IN ($SupervisorPaid, $SupervisorNotPaid, $SupervisorRefunded, $SupervisorNotRefunded);
@@ -1062,6 +1068,7 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
                 command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
                 command.Parameters.AddWithValue("$SubmissionToken", submissionToken);
                 command.Parameters.AddWithValue("$Status", LocalSquarePaymentAttemptStatus.Unknown.ToString());
+                command.Parameters.AddWithValue("$FailedStatus", LocalSquarePaymentAttemptStatus.Failed.ToString());
                 command.Parameters.AddWithValue("$PaymentStatus", paymentStatus.ToUpperInvariant());
                 command.Parameters.AddWithValue("$ResponseCode", (object?)responseCode ?? DBNull.Value);
                 command.Parameters.AddWithValue("$ResponseText", (object?)responseText ?? DBNull.Value);
@@ -2034,7 +2041,22 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
               AND DeviceCode = $DeviceCode
               AND Environment = $Environment
               AND OperationKind = $OperationKind
-              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5)
+              AND (
+                    Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5)
+                    OR (
+                        Status = $FailedStatus
+                        AND UPPER(TRIM(COALESCE(PaymentStatus, ''))) IN ('FAILED', 'REJECTED')
+                        AND COALESCE(RecoveryPhase, $NoRecoveryPhase) = $NoRecoveryPhase
+                        AND RecoveryTargetStatus IS NULL
+                        AND NULLIF(TRIM(COALESCE(SubmissionToken, '')), '') IS NOT NULL
+                        AND COALESCE(ResponseCode, '') NOT IN (
+                            $SupervisorPaid,
+                            $SupervisorNotPaid,
+                            $SupervisorRefunded,
+                            $SupervisorNotRefunded,
+                            $SupervisorContinueWaiting)
+                    )
+                  )
             ORDER BY UpdatedAt DESC, CreatedAt DESC;
             """;
         command.Parameters.AddWithValue("$StoreCode", storeCode);
@@ -2045,6 +2067,13 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         {
             command.Parameters.AddWithValue($"$TerminalStatus{i + 1}", TerminalStatuses[i]);
         }
+        command.Parameters.AddWithValue("$FailedStatus", LocalSquarePaymentAttemptStatus.Failed.ToString());
+        command.Parameters.AddWithValue("$NoRecoveryPhase", CardRecoveryPhases.None);
+        command.Parameters.AddWithValue("$SupervisorPaid", ActiveSessionSupervisorResolutionCodes.ConfirmedPaid);
+        command.Parameters.AddWithValue("$SupervisorNotPaid", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
+        command.Parameters.AddWithValue("$SupervisorRefunded", CardRefundSupervisorResolutionCodes.ConfirmedRefunded);
+        command.Parameters.AddWithValue("$SupervisorNotRefunded", CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded);
+        command.Parameters.AddWithValue("$SupervisorContinueWaiting", CardRefundSupervisorResolutionCodes.ContinueWaiting);
 
         var attempts = new List<LocalSquarePaymentAttempt>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
@@ -2072,7 +2101,23 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
               AND DeviceCode = $DeviceCode
               AND Environment = $Environment
               AND OperationKind IN ('Sale', 'Refund')
-              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5)
+              AND (
+                    Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5)
+                    OR (
+                        OperationKind = 'Refund'
+                        AND Status = $FailedStatus
+                        AND UPPER(TRIM(COALESCE(PaymentStatus, ''))) IN ('FAILED', 'REJECTED')
+                        AND COALESCE(RecoveryPhase, $NoRecoveryPhase) = $NoRecoveryPhase
+                        AND RecoveryTargetStatus IS NULL
+                        AND NULLIF(TRIM(COALESCE(SubmissionToken, '')), '') IS NOT NULL
+                        AND COALESCE(ResponseCode, '') NOT IN (
+                            $SupervisorPaid,
+                            $SupervisorNotPaid,
+                            $SupervisorRefunded,
+                            $SupervisorNotRefunded,
+                            $SupervisorContinueWaiting)
+                    )
+                  )
             ORDER BY UpdatedAt DESC, CreatedAt DESC;
             """;
         command.Parameters.AddWithValue("$StoreCode", storeCode);
@@ -2082,6 +2127,13 @@ public sealed class LocalSquarePaymentAttemptRepository(LocalSqliteStore store) 
         {
             command.Parameters.AddWithValue($"$TerminalStatus{i + 1}", TerminalStatuses[i]);
         }
+        command.Parameters.AddWithValue("$FailedStatus", LocalSquarePaymentAttemptStatus.Failed.ToString());
+        command.Parameters.AddWithValue("$NoRecoveryPhase", CardRecoveryPhases.None);
+        command.Parameters.AddWithValue("$SupervisorPaid", ActiveSessionSupervisorResolutionCodes.ConfirmedPaid);
+        command.Parameters.AddWithValue("$SupervisorNotPaid", ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid);
+        command.Parameters.AddWithValue("$SupervisorRefunded", CardRefundSupervisorResolutionCodes.ConfirmedRefunded);
+        command.Parameters.AddWithValue("$SupervisorNotRefunded", CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded);
+        command.Parameters.AddWithValue("$SupervisorContinueWaiting", CardRefundSupervisorResolutionCodes.ContinueWaiting);
 
         var attempts = new List<LocalSquarePaymentAttempt>();
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);

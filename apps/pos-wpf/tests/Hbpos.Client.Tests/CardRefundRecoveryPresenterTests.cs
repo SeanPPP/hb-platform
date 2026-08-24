@@ -475,7 +475,7 @@ public sealed class CardRefundRecoveryPresenterTests
     }
 
     [Fact]
-    public async Task Recover_draft_unlock_failure_after_durable_finalize_keeps_terminal_owner_released_and_page_locked()
+    public async Task Recover_draft_unlock_notification_failure_after_durable_finalize_does_not_relock_page()
     {
         var session = CreateSession(CreateCashier("REQUESTER"));
         var recovery = new StubRecoveryService
@@ -490,6 +490,7 @@ public sealed class CardRefundRecoveryPresenterTests
         var cart = new PosCartService();
         PublishRecoveryOwner(cart);
         var lockChanges = new List<(bool Blocked, string? Message)>();
+        var isPaymentLocked = true;
         var statusMessages = new List<string?>();
         var presenter = CreatePresenter(
             recovery,
@@ -498,12 +499,12 @@ public sealed class CardRefundRecoveryPresenterTests
             session,
             setPaymentRecoveryBlocked: (blocked, message) =>
             {
+                isPaymentLocked = blocked;
+                lockChanges.Add((blocked, message));
                 if (!blocked)
                 {
                     throw new InvalidOperationException("unlock notification failed");
                 }
-
-                lockChanges.Add((blocked, message));
             },
             setStatusMessage: message => statusMessages.Add(message),
             tryApplyCardRecoveryDraft: (_, _, _) => true,
@@ -516,12 +517,101 @@ public sealed class CardRefundRecoveryPresenterTests
         Assert.Null(cart.RecoveryOwnerAttemptGuid);
         Assert.False(presenter.IsCardRecoveryResultDialogOpen);
         Assert.NotEmpty(lockChanges);
-        Assert.True(lockChanges[^1].Blocked);
+        Assert.False(isPaymentLocked);
+        Assert.False(lockChanges[^1].Blocked);
         Assert.Contains(
             statusMessages,
             message => message?.Contains(
                 "The recovery was committed, but the payment page could not be unlocked safely.",
                 StringComparison.Ordinal) == true);
+    }
+
+    [Theory]
+    [InlineData(CardPaymentRecoveryOutcome.OrderCompleted, true)]
+    [InlineData(CardPaymentRecoveryOutcome.None, false)]
+    public async Task Recover_terminal_result_projection_failure_does_not_relock_payment_page(
+        CardPaymentRecoveryOutcome outcome,
+        bool expectedHandled)
+    {
+        var session = CreateSession(CreateCashier("REQUESTER"));
+        var order = outcome == CardPaymentRecoveryOutcome.OrderCompleted
+            ? new LocalOrder(
+                Guid.NewGuid(),
+                "1002",
+                "Terminal 04",
+                "C001",
+                "Alice",
+                DateTimeOffset.UtcNow,
+                0m,
+                0m,
+                0m,
+                [],
+                [])
+            : null;
+        var recovery = new StubRecoveryService
+        {
+            RecoverResult = new CardPaymentRecoveryResult(
+                outcome,
+                "The durable recovery result is ready.",
+                order)
+        };
+        var isPaymentLocked = true;
+        var lockChanges = new List<bool>();
+        var presenter = CreatePresenter(
+            recovery,
+            new StubOperationAuthorizationService(CreateCashier("SUPERVISOR")),
+            new RecordingAuditLogger(),
+            session,
+            setPaymentRecoveryBlocked: (blocked, _) =>
+            {
+                // 生产回调先更新逻辑锁，再触发可能抛错的 PropertyChanged/命令通知。
+                isPaymentLocked = blocked;
+                lockChanges.Add(blocked);
+                if (!blocked)
+                {
+                    throw new InvalidOperationException("recovery status notification failed");
+                }
+            });
+
+        Assert.Equal(
+            expectedHandled,
+            await presenter.RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false));
+
+        Assert.False(isPaymentLocked);
+        Assert.NotEmpty(lockChanges);
+        Assert.True(lockChanges[0]);
+        Assert.DoesNotContain(true, lockChanges.Skip(1));
+        Assert.False(lockChanges[^1]);
+        Assert.False(presenter.IsCardRecoveryResultDialogOpen);
+    }
+
+    [Fact]
+    public async Task Recover_unknown_result_projection_failure_keeps_payment_page_locked()
+    {
+        var session = CreateSession(CreateCashier("REQUESTER"));
+        var recovery = new StubRecoveryService
+        {
+            RecoverResult = new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                "The recovery result is still unknown.")
+        };
+        var isPaymentLocked = false;
+        var presenter = CreatePresenter(
+            recovery,
+            new StubOperationAuthorizationService(CreateCashier("SUPERVISOR")),
+            new RecordingAuditLogger(),
+            session,
+            setPaymentRecoveryBlocked: (blocked, _) =>
+            {
+                isPaymentLocked = blocked;
+                throw new InvalidOperationException("recovery status notification failed");
+            });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => presenter.RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false));
+
+        Assert.True(isPaymentLocked);
+        Assert.False(presenter.IsCardRecoveryResultDialogOpen);
     }
 
     [Fact]
@@ -584,6 +674,7 @@ public sealed class CardRefundRecoveryPresenterTests
         };
         var cart = new PosCartService();
         PublishRecoveryOwner(cart);
+        var isPaymentLocked = true;
         var presenter = CreatePresenter(
             recovery,
             new StubOperationAuthorizationService(CreateCashier("SUPERVISOR")),
@@ -591,6 +682,7 @@ public sealed class CardRefundRecoveryPresenterTests
             session,
             setPaymentRecoveryBlocked: (blocked, _) =>
             {
+                isPaymentLocked = blocked;
                 if (!blocked)
                 {
                     throw fatal;
@@ -606,6 +698,7 @@ public sealed class CardRefundRecoveryPresenterTests
 
         Assert.Same(fatal, thrown);
         Assert.Null(cart.RecoveryOwnerAttemptGuid);
+        Assert.False(isPaymentLocked);
     }
 
     [Fact]

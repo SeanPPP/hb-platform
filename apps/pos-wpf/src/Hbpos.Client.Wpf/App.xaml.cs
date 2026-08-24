@@ -189,7 +189,7 @@ public partial class App : Application
                         shutdownCoordinator?.GetOrStartRemainingBudget() ??
                         TimeSpan.FromSeconds(ShutdownPreparationTimeoutSeconds));
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                 {
                     LogShutdownCleanupFailure("prepare", ex);
                 }
@@ -268,8 +268,18 @@ public partial class App : Application
                 .WaitAsync(waitBudget)
                 .GetAwaiter()
                 .GetResult();
+
+            var detachedFailureBudget = coordinator.GetOrStartRemainingBudget();
+            if (detachedFailureBudget > TimeSpan.Zero)
+            {
+                // 中文注释：单步超时不阻塞后续清理；OnExit 使用剩余共享预算观察迟到的致命异常。
+                coordinator
+                    .ObserveDetachedFailuresAsync(detachedFailureBudget, cancellation.Token)
+                    .GetAwaiter()
+                    .GetResult();
+            }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             LogShutdownCleanupFailure("prepare-wait", ex);
         }

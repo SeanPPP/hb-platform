@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using System.Windows;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -126,6 +127,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private long _languageSaveRequestVersion;
     private Task<bool>? _connectivityRefreshTask;
     private Task _shutdownCancellationTask = Task.CompletedTask;
+    private Task _paymentShutdownCancellationTask = Task.CompletedTask;
 
     private SyncOrchestrator? _syncOrchestrator;
     private CardRecoveryPresenter? _cardRecoveryPresenter;
@@ -965,14 +967,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _shutdownCancellationTask = CancelForShutdownAsync(
                 _shutdownCancellation,
                 "main-view-model");
+            // 中文注释：持有精确付款取消 Task，shutdown coordinator 必须正式观察其中的致命异常。
+            _paymentShutdownCancellationTask = CashPayment?.BeginShutdown() ?? Task.CompletedTask;
         }
 
         _clockTimer.Stop();
         _connectivityTimer.Stop();
         _catalogDownloadHideTimer.Stop();
 
-        // 先冻结支付入口；支付会话自身也会把终端取消回调调度到后台。
-        CashPayment?.BeginShutdown();
     }
 
     public void Dispose()
@@ -2549,6 +2551,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public async Task ReportOfflineForShutdownAsync(CancellationToken cancellationToken = default)
     {
         BeginShutdown();
+        // 中文注释：取消 Task 即使超过 runtime-offline 的单步预算也继续由协调器观察；
+        // 步骤 token 只能中止后续网络清理，不能丢弃迟到的终端 OOM/SO。
+        await ObserveCriticalShutdownCancellationsAsync();
         if (!_shutdownLogoutRecorded && Session.CashierSession is not null)
         {
             _shutdownLogoutRecorded = true;
@@ -2560,7 +2565,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 reasonCode: "APP_SHUTDOWN");
         }
 
-        await ObserveShutdownCancellationAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         await ObserveConnectivityRefreshForShutdownAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         await ReportRuntimeStatusSafeAsync(
@@ -2570,15 +2575,61 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             throwOnCancellation: true);
     }
 
-    private async Task ObserveShutdownCancellationAsync(CancellationToken cancellationToken)
+    private async Task ObserveCriticalShutdownCancellationsAsync()
     {
-        Task cancellationTask;
+        Task shellCancellationTask;
+        Task paymentCancellationTask;
         lock (_connectivityRefreshSync)
         {
-            cancellationTask = _shutdownCancellationTask;
+            shellCancellationTask = _shutdownCancellationTask;
+            paymentCancellationTask = _paymentShutdownCancellationTask;
         }
 
-        await cancellationTask.WaitAsync(cancellationToken);
+        var fatalExceptionSource = new TaskCompletionSource<Exception>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var shellObservationTask = ObserveShutdownCancellationTaskAsync(
+            shellCancellationTask,
+            "main-view-model",
+            fatalExceptionSource);
+        var paymentObservationTask = ObserveShutdownCancellationTaskAsync(
+            paymentCancellationTask,
+            "payment-view-model",
+            fatalExceptionSource);
+        var allObservationTasks = Task.WhenAll(shellObservationTask, paymentObservationTask);
+
+        await Task.WhenAny(allObservationTasks, fatalExceptionSource.Task);
+        if (fatalExceptionSource.Task.IsCompletedSuccessfully)
+        {
+            var fatalException = await fatalExceptionSource.Task;
+            ExceptionDispatchInfo.Capture(fatalException).Throw();
+        }
+
+        await allObservationTasks;
+    }
+
+    private static async Task ObserveShutdownCancellationTaskAsync(
+        Task cancellationTask,
+        string stage,
+        TaskCompletionSource<Exception> fatalExceptionSource)
+    {
+        try
+        {
+            await cancellationTask.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            var fatalException = FindFatalException(ex);
+            if (fatalException is not null)
+            {
+                fatalExceptionSource.TrySetResult(fatalException);
+                return;
+            }
+
+            ConsoleLog.WriteError(
+                "Shutdown",
+                $"shutdown cancellation observation failed stage={stage} error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
     }
 
     private async Task ObserveConnectivityRefreshForShutdownAsync(CancellationToken cancellationToken)
@@ -2658,12 +2709,45 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             }
             catch (Exception ex)
             {
+                var fatalException = FindFatalException(ex);
+                if (fatalException is not null)
+                {
+                    // CancellationTokenSource 会聚合回调异常；致命异常必须以原实例穿过 shutdown coordinator。
+                    ExceptionDispatchInfo.Capture(fatalException).Throw();
+                }
+
                 ConsoleLog.WriteError(
                     "Shutdown",
                     $"shutdown cancellation failed stage={stage} error={ex.GetType().Name} message={ex.Message}",
                     exception: ex);
             }
         });
+    }
+
+    private static Exception? FindFatalException(Exception exception)
+    {
+        if (exception is OutOfMemoryException or StackOverflowException)
+        {
+            return exception;
+        }
+
+        if (exception is AggregateException aggregateException)
+        {
+            foreach (var innerException in aggregateException.InnerExceptions)
+            {
+                var fatalException = FindFatalException(innerException);
+                if (fatalException is not null)
+                {
+                    return fatalException;
+                }
+            }
+
+            return null;
+        }
+
+        return exception.InnerException is null
+            ? null
+            : FindFatalException(exception.InnerException);
     }
 
     private void DisposeShutdownCancellationWhenSafe()

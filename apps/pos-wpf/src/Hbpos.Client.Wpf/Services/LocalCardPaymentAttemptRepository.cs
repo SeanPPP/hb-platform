@@ -1084,12 +1084,55 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
             WHERE AttemptGuid = $AttemptGuid
               AND Status = $ExpectedStatus
               AND UpdatedAt = $ExpectedUpdatedAt
-              AND COALESCE(RecoveryPhase, 'None') != 'FinalizePending';
+              AND (
+                    COALESCE(RecoveryPhase, $NoRecoveryPhase) != $FinalizePending
+                    OR (
+                        UPPER(TRIM(COALESCE(Processor, ''))) = 'LINKLY'
+                        AND OperationKind = 'Sale'
+                        AND RecoveryPhase = $FinalizePending
+                        AND (
+                            (
+                                RecoveryTargetStatus = $AbandonedStatus
+                                AND ResponseCode = $ResolvedCode4
+                            )
+                            OR (
+                                RecoveryTargetStatus IN (
+                                    $DeclinedStatus,
+                                    $TimedOutStatus,
+                                    $CancelledStatus,
+                                    $FailedStatus
+                                )
+                                AND TRIM(COALESCE(ResponseCode, '')) NOT IN (
+                                    $ResolvedCode1,
+                                    $ResolvedCode2,
+                                    $ResolvedCode3,
+                                    $ResolvedCode4,
+                                    $ContinueWaitingCode,
+                                    $ApprovedCode1,
+                                    $ApprovedCode2,
+                                    $ApprovedCode3
+                                )
+                            )
+                        )
+                    )
+                  );
             """;
         command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
         command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
         command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
         command.Parameters.AddWithValue("$AcknowledgedAt", acknowledgedAt.ToString("O"));
+        command.Parameters.AddWithValue("$NoRecoveryPhase", CardRecoveryPhases.None);
+        command.Parameters.AddWithValue("$FinalizePending", CardRecoveryPhases.FinalizePending);
+        command.Parameters.AddWithValue("$AbandonedStatus", LocalCardPaymentAttemptStatus.Abandoned.ToString());
+        command.Parameters.AddWithValue("$DeclinedStatus", LocalCardPaymentAttemptStatus.Declined.ToString());
+        command.Parameters.AddWithValue("$TimedOutStatus", LocalCardPaymentAttemptStatus.TimedOut.ToString());
+        command.Parameters.AddWithValue("$CancelledStatus", LocalCardPaymentAttemptStatus.Cancelled.ToString());
+        command.Parameters.AddWithValue("$FailedStatus", LocalCardPaymentAttemptStatus.Failed.ToString());
+        command.Parameters.AddWithValue("$ContinueWaitingCode", ActiveSessionSupervisorResolutionCodes.ContinueWaiting);
+        command.Parameters.AddWithValue("$ApprovedCode1", "00");
+        command.Parameters.AddWithValue("$ApprovedCode2", "08");
+        command.Parameters.AddWithValue("$ApprovedCode3", "11");
+        AddSupervisorResolvedCodeParameters(command);
         return await command.ExecuteNonQueryAsync(cancellationToken) == 1;
     }
 

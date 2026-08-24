@@ -594,6 +594,27 @@ public sealed class MainViewModelScannerTests
         await shutdownCancellationTask.WaitAsync(TimeSpan.FromSeconds(1));
     }
 
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public async Task Shutdown_offline_step_propagates_fatal_shell_cancellation_instance(string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("fatal shell shutdown callback")
+            : new StackOverflowException("fatal shell shutdown callback");
+        using var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService());
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var cancellation = Assert.IsType<CancellationTokenSource>(
+            typeof(MainViewModel)
+                .GetField("_shutdownCancellation", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(viewModel));
+        using var registration = cancellation.Token.Register(() => throw fatal);
+
+        var thrown = await Record.ExceptionAsync(() => viewModel.ReportOfflineForShutdownAsync());
+
+        Assert.Same(fatal, thrown);
+    }
+
     [Fact]
     public async Task Begin_shutdown_stops_shell_timers_and_locks_cached_payment()
     {
@@ -623,6 +644,95 @@ public sealed class MainViewModelScannerTests
         Assert.NotNull(viewModel.CashPayment);
         Assert.True(viewModel.CashPayment!.IsPaymentInteractionLocked);
         Assert.False(viewModel.CashPayment.SelectCardCommand.CanExecute(null));
+    }
+
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public async Task Shutdown_offline_step_propagates_fatal_payment_cancellation_instance(string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("fatal payment shutdown callback")
+            : new StackOverflowException("fatal payment shutdown callback");
+        using var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService());
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var payment = Assert.IsType<PaymentViewModel>(viewModel.CashPayment);
+        var cardSession = Assert.IsType<CardPaymentSession>(
+            typeof(PaymentViewModel)
+                .GetField("_cardSession", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(payment));
+        var activePayment = cardSession.BeginCardPayment();
+        using var registration = activePayment.Token.Register(() => throw fatal);
+
+        try
+        {
+            var thrown = await Record.ExceptionAsync(() => viewModel.ReportOfflineForShutdownAsync());
+
+            Assert.Same(fatal, thrown);
+            Assert.True(payment.IsPaymentInteractionLocked);
+        }
+        finally
+        {
+            cardSession.EndCardPayment(activePayment);
+        }
+    }
+
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public async Task Shutdown_coordinator_propagates_payment_fatal_after_runtime_offline_step_timeout(
+        string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("late fatal payment shutdown callback")
+            : new StackOverflowException("late fatal payment shutdown callback");
+        using var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService());
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        var payment = Assert.IsType<PaymentViewModel>(viewModel.CashPayment);
+        var cardSession = Assert.IsType<CardPaymentSession>(
+            typeof(PaymentViewModel)
+                .GetField("_cardSession", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(payment));
+        var activePayment = cardSession.BeginCardPayment();
+        using var releaseCallback = new ManualResetEventSlim(false);
+        using var registration = activePayment.Token.Register(() =>
+        {
+            releaseCallback.Wait();
+            throw fatal;
+        });
+        var coordinator = new AppShutdownCoordinator(totalBudget: TimeSpan.FromSeconds(1));
+        var nextStepCalled = false;
+        coordinator.RegisterStep(
+            "runtime-offline",
+            100,
+            TimeSpan.FromMilliseconds(20),
+            token => viewModel.ReportOfflineForShutdownAsync(token));
+        coordinator.RegisterStep(
+            "release-payment-callback",
+            200,
+            TimeSpan.FromSeconds(1),
+            _ =>
+            {
+                nextStepCalled = true;
+                releaseCallback.Set();
+                return Task.CompletedTask;
+            });
+
+        try
+        {
+            var thrown = await Record.ExceptionAsync(
+                () => Task.Run(() =>
+                    App.WaitForShutdownPreparation(coordinator, TimeSpan.FromSeconds(1))));
+
+            Assert.Same(fatal, thrown);
+            Assert.True(nextStepCalled);
+            Assert.True(payment.IsPaymentInteractionLocked);
+        }
+        finally
+        {
+            releaseCallback.Set();
+            cardSession.EndCardPayment(activePayment);
+        }
     }
 
     [Fact]

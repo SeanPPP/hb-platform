@@ -3867,6 +3867,32 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.Equal("payment.status.voucherReleaseFailed", viewModel.StatusMessage);
     }
 
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public async Task Payment_page_voucher_remove_propagates_fatal_release_exception_instance(string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("fatal manual voucher release")
+            : new StackOverflowException("fatal manual voucher release");
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-153F-FATAL", "Fatal Voucher Remove Tea", "930153FFATAL", PriceSourceKind.StoreRetailPrice, 20m));
+        var workflow = new FakeCashPaymentWorkflowService();
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+
+        viewModel.TenderAmountText = "5";
+        viewModel.VoucherCodeText = "VOUCHER-153F-FATAL";
+        await viewModel.SelectVoucherCommand.ExecuteAsync(null);
+        var voucherTender = Assert.Single(viewModel.PaymentTenders, tender => tender.Method == PaymentMethodKind.Voucher);
+        workflow.ThrowOnReleaseVoucherTender = fatal;
+
+        var thrown = await Assert.ThrowsAnyAsync<Exception>(
+            () => viewModel.RemoveTenderCommand.ExecuteAsync(voucherTender));
+
+        Assert.Same(fatal, thrown);
+        Assert.Same(voucherTender, Assert.Single(viewModel.PaymentTenders));
+    }
+
     [Fact]
     public async Task Payment_page_keeps_voucher_when_release_after_card_decline_fails()
     {
@@ -3891,6 +3917,37 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.Contains(viewModel.PaymentTenders, tender => tender.Method == PaymentMethodKind.Voucher);
         Assert.Contains(viewModel.PaymentTenders, tender => tender.Method == PaymentMethodKind.Cash);
         Assert.Equal("payment.status.voucherReleaseFailed", viewModel.StatusMessage);
+    }
+
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public async Task Payment_page_card_decline_voucher_release_propagates_fatal_exception_instance(string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("fatal automatic voucher release")
+            : new StackOverflowException("fatal automatic voucher release");
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-153D-FATAL", "Fatal Decline Release Tea", "930153DFATAL", PriceSourceKind.StoreRetailPrice, 20m));
+        var workflow = new FakeCashPaymentWorkflowService();
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+
+        viewModel.TenderAmountText = "5";
+        viewModel.VoucherCodeText = "VOUCHER-153D-FATAL";
+        await viewModel.SelectVoucherCommand.ExecuteAsync(null);
+        viewModel.TenderAmountText = "5";
+        await viewModel.SelectCashCommand.ExecuteAsync(null);
+        workflow.ThrowOnReleaseVoucherTender = fatal;
+        workflow.AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Fail("payment.status.cardDeclined", "DECLINED"));
+        viewModel.TenderAmountText = "10";
+
+        var thrown = await Assert.ThrowsAnyAsync<Exception>(
+            () => viewModel.SelectCardCommand.ExecuteAsync(null));
+
+        Assert.Same(fatal, thrown);
+        Assert.Contains(viewModel.PaymentTenders, tender => tender.Method == PaymentMethodKind.Voucher);
+        Assert.Contains(viewModel.PaymentTenders, tender => tender.Method == PaymentMethodKind.Cash);
     }
 
     [Fact]
@@ -3922,6 +3979,81 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.Empty(workflow.ReleasedVoucherTenders);
         Assert.True(viewModel.IsPaymentInteractionLocked);
         Assert.Equal("Result unknown", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Payment_page_unknown_card_error_does_not_lock_the_next_new_order()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-153C-OLD", "Unknown Old Order Tea", "930153COLD", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
+            "payment.card.resultUnknown",
+            StatusMessage: "The previous card result requires supervisor reconciliation.",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true)));
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+
+        cart.Clear();
+        cart.AddItem(CreateItem("SKU-153C-NEW", "Next Order Tea", "930153CNEW", PriceSourceKind.StoreRetailPrice, 12m));
+        viewModel.PrepareForEntry(Session);
+
+        Assert.False(viewModel.IsPaymentInteractionLocked);
+        Assert.True(viewModel.SelectCashCommand.CanExecute(null));
+        Assert.True(viewModel.SelectCardCommand.CanExecute(null));
+        Assert.True(viewModel.SelectVoucherCommand.CanExecute(null));
+        Assert.True(viewModel.BackToPosCommand.CanExecute(null));
+        Assert.Equal("payment.status.ready", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public void Payment_page_alternative_refund_policy_does_not_block_the_next_new_sale()
+    {
+        var cart = new PosCartService();
+        cart.AddReturnLine(new ReturnCartLineRequest(
+            "S001",
+            "SKU-ALT-OLD",
+            null,
+            "Previous Alternative Refund Tea",
+            "930ALTOLD",
+            "ITEM-ALT-OLD",
+            null,
+            1m,
+            10m,
+            PriceSourceKind.StoreRetailPrice,
+            PriceSourceKind.StoreRetailPrice.ToString(),
+            "RETURN-ALT-OLD",
+            Guid.NewGuid(),
+            Guid.NewGuid()));
+        var viewModel = new PaymentViewModel(cart, new FakeCashPaymentWorkflowService(), Session);
+        viewModel.SetAlternativeRefundMethodRequired(true);
+        Assert.False(viewModel.SelectCardCommand.CanExecute(null));
+
+        // 模拟收银员放弃旧退款、回到 POS 后直接建立下一笔销售；中间没有付款页 RefreshCart。
+        cart.Clear();
+        cart.AddItem(CreateItem(
+            "SKU-ALT-NEW",
+            "Next Sale Tea",
+            "930ALTNEW",
+            PriceSourceKind.StoreRetailPrice,
+            12m));
+        viewModel.PrepareForEntry(Session);
+
+        Assert.False(viewModel.IsPaymentInteractionLocked);
+        Assert.True(viewModel.SelectCashCommand.CanExecute(null));
+        Assert.True(viewModel.SelectCardCommand.CanExecute(null));
+        Assert.True(viewModel.SelectVoucherCommand.CanExecute(null));
+        Assert.True(viewModel.BackToPosCommand.CanExecute(null));
+        Assert.Equal("payment.status.ready", viewModel.StatusMessage);
     }
 
     [Fact]
@@ -3992,8 +4124,8 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var paymentTask = viewModel.SelectCardCommand.ExecuteAsync(null);
         await workflow.AddTenderStarted.Task;
 
-        viewModel.BeginShutdown();
-        viewModel.BeginShutdown();
+        _ = viewModel.BeginShutdown();
+        _ = viewModel.BeginShutdown();
         await paymentTask;
 
         Assert.True(workflow.LastAddTenderCancellationToken.IsCancellationRequested);
@@ -4035,7 +4167,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         });
 
         var beginStartedAt = Stopwatch.GetTimestamp();
-        viewModel.BeginShutdown();
+        _ = viewModel.BeginShutdown();
         Assert.True(Stopwatch.GetElapsedTime(beginStartedAt) < TimeSpan.FromSeconds(1));
         await callbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
 
@@ -4045,6 +4177,35 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.True(viewModel.IsPaymentInteractionLocked);
 
         await callbackCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        await paymentTask;
+    }
+
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public async Task Payment_page_shutdown_cancellation_task_propagates_fatal_callback_instance(string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("fatal shutdown cancellation callback")
+            : new StackOverflowException("fatal shutdown cancellation callback");
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-SHUTDOWN-FATAL", "Fatal Shutdown Tea", "930SHUTDOWNFATAL", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderStarted = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var paymentTask = viewModel.SelectCardCommand.ExecuteAsync(null);
+        await workflow.AddTenderStarted.Task;
+        using var registration = workflow.LastAddTenderCancellationToken.Register(() => throw fatal);
+        var shutdownCancellationTask = viewModel.BeginShutdown();
+        var thrown = await Assert.ThrowsAnyAsync<Exception>(
+            () => shutdownCancellationTask.WaitAsync(TimeSpan.FromSeconds(1)));
+
+        Assert.Same(fatal, thrown);
+        Assert.True(workflow.LastAddTenderCancellationToken.IsCancellationRequested);
+        Assert.True(viewModel.IsPaymentInteractionLocked);
         await paymentTask;
     }
 
@@ -4077,7 +4238,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         var activeCancellation = Assert.IsType<CancellationTokenSource>(
             activeProperty.GetValue(cardSession));
 
-        viewModel.BeginShutdown();
+        _ = viewModel.BeginShutdown();
         var shutdownCancellationTask = Assert.IsAssignableFrom<Task>(
             cardSession.GetType()
                 .GetField("_shutdownCancellationTask", BindingFlags.Instance | BindingFlags.NonPublic)!
@@ -4230,7 +4391,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
-    public void Payment_page_prepare_for_entry_drops_historical_recovery_lock_for_new_order()
+    public void Payment_page_prepare_for_entry_keeps_unknown_result_lock_for_same_cart_transaction()
     {
         var cart = new PosCartService();
         cart.AddItem(CreateItem("SKU-RECOVERY-LOCK", "Recovery Lock Tea", "930RECOVERYLOCK", PriceSourceKind.StoreRetailPrice, 10m));
@@ -4239,11 +4400,12 @@ public sealed class PosTerminalCashPaymentViewModelTests
         viewModel.SetCurrentCardRecoveryRequired(true, "Previous card result is unknown.");
         viewModel.PrepareForEntry(Session);
 
-        Assert.False(viewModel.IsPaymentInteractionLocked);
-        Assert.True(viewModel.SelectCashCommand.CanExecute(null));
-        Assert.True(viewModel.SelectCardCommand.CanExecute(null));
-        Assert.True(viewModel.SelectVoucherCommand.CanExecute(null));
-        Assert.True(viewModel.BackToPosCommand.CanExecute(null));
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.False(viewModel.SelectCashCommand.CanExecute(null));
+        Assert.False(viewModel.SelectCardCommand.CanExecute(null));
+        Assert.False(viewModel.SelectVoucherCommand.CanExecute(null));
+        Assert.False(viewModel.BackToPosCommand.CanExecute(null));
+        Assert.Equal("Previous card result is unknown.", viewModel.StatusMessage);
     }
 
     [Fact]
@@ -4992,6 +5154,109 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public async Task Payment_page_confirmed_handoff_collection_notification_failure_still_unlocks_next_order()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-158V5-NOTIFY", "Handoff Notification Tea", "930158V5N", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var attemptGuid = Guid.Parse("10000000-0000-0000-0000-000000000164");
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
+            "linkly.backend.resultUnknown",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true),
+            RecoveryAttemptKey: new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attemptGuid),
+            RecoveryOrderGuid: Guid.Parse("20000000-0000-0000-0000-000000000164")));
+        var candidate = new CardPaymentHandoffCandidate(CardProcessorKind.Linkly, attemptGuid);
+        var returnedToPos = false;
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            onBackToPos: () => returnedToPos = true,
+            prepareCardPaymentHandoffAsync: _ => Task.FromResult<CardPaymentHandoffCandidate?>(candidate),
+            handoffCardPaymentAsync: (_, _) => Task.FromResult(true));
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+        viewModel.PaymentTenders.Add(new PaymentTender(PaymentMethodKind.Cash, 2m));
+        var throwOnce = true;
+        viewModel.PaymentTenders.CollectionChanged += (_, _) =>
+        {
+            if (throwOnce)
+            {
+                throwOnce = false;
+                throw new InvalidOperationException("simulated tender projection listener failure");
+            }
+        };
+
+        var thrown = await Record.ExceptionAsync(
+            () => viewModel.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null));
+
+        Assert.Null(thrown);
+        Assert.True(returnedToPos);
+        Assert.Empty(cart.Lines);
+        Assert.Empty(viewModel.PaymentTenders);
+        Assert.Null(viewModel.CardPaymentErrorOverlay);
+        Assert.False(viewModel.IsPaymentInteractionLocked);
+
+        cart.AddItem(CreateItem("SKU-158V5-NEXT", "Next Order Tea", "930158V5NEXT", PriceSourceKind.StoreRetailPrice, 12m));
+        viewModel.PrepareForEntry(Session);
+
+        Assert.True(viewModel.SelectCashCommand.CanExecute(null));
+        Assert.True(viewModel.SelectCardCommand.CanExecute(null));
+        Assert.True(viewModel.SelectVoucherCommand.CanExecute(null));
+    }
+
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public async Task Payment_page_confirmed_handoff_collection_notification_propagates_fatal_and_retains_recovery(
+        string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("fatal tender projection listener failure")
+            : new StackOverflowException("fatal tender projection listener failure");
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-158V5-FATAL", "Fatal Handoff Notification Tea", "930158V5F", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var attemptGuid = Guid.Parse("10000000-0000-0000-0000-000000000165");
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
+            "linkly.backend.resultUnknown",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true),
+            RecoveryAttemptKey: new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attemptGuid),
+            RecoveryOrderGuid: Guid.Parse("20000000-0000-0000-0000-000000000165")));
+        var candidate = new CardPaymentHandoffCandidate(CardProcessorKind.Linkly, attemptGuid);
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            prepareCardPaymentHandoffAsync: _ => Task.FromResult<CardPaymentHandoffCandidate?>(candidate),
+            handoffCardPaymentAsync: (_, _) => Task.FromResult(true));
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+        viewModel.PaymentTenders.Add(new PaymentTender(PaymentMethodKind.Cash, 2m));
+        viewModel.PaymentTenders.CollectionChanged += (_, _) => throw fatal;
+
+        var thrown = await Assert.ThrowsAnyAsync<Exception>(
+            () => viewModel.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null));
+
+        Assert.Same(fatal, thrown);
+        Assert.Single(cart.Lines);
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.NotNull(viewModel.CardPaymentErrorOverlay);
+    }
+
+    [Fact]
     public async Task Payment_page_handoff_qualification_failure_keeps_current_order_locked()
     {
         var cart = new PosCartService();
@@ -5031,6 +5296,140 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.NotNull(viewModel.CardPaymentErrorOverlay);
         Assert.False(viewModel.CardPaymentErrorOverlay!.HasPrimaryAction);
         Assert.False(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
+    }
+
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public async Task Payment_page_handoff_qualification_propagates_fatal_exception_instance(string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("fatal handoff qualification failure")
+            : new StackOverflowException("fatal handoff qualification failure");
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-158V6-FATAL", "Fatal Qualification Tea", "930158V6FATAL", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
+            "linkly.backend.resultUnknown",
+            StatusMessage: "The Linkly card result is still unknown.",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true),
+            RecoveryAttemptKey: new CardRecoveryAttemptKey(
+                CardProcessorKind.Linkly,
+                Guid.Parse("10000000-0000-0000-0000-000000000161")),
+            RecoveryOrderGuid: Guid.Parse("20000000-0000-0000-0000-000000000161")));
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            prepareCardPaymentHandoffAsync: _ =>
+                Task.FromException<CardPaymentHandoffCandidate?>(fatal),
+            handoffCardPaymentAsync: (_, _) => Task.FromResult(true));
+
+        var thrown = await Assert.ThrowsAnyAsync<Exception>(
+            () => viewModel.SelectCardCommand.ExecuteAsync(null));
+
+        Assert.Same(fatal, thrown);
+        Assert.Single(cart.Lines);
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.NotNull(viewModel.CardPaymentErrorOverlay);
+    }
+
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public async Task Payment_page_handoff_execution_propagates_fatal_exception_instance(string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("fatal handoff execution failure")
+            : new StackOverflowException("fatal handoff execution failure");
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-158V7-FATAL", "Fatal Handoff Tea", "930158V7FATAL", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var attemptGuid = Guid.Parse("10000000-0000-0000-0000-000000000162");
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
+            "linkly.backend.resultUnknown",
+            StatusMessage: "The Linkly card result is still unknown.",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true),
+            RecoveryAttemptKey: new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attemptGuid),
+            RecoveryOrderGuid: Guid.Parse("20000000-0000-0000-0000-000000000162")));
+        var candidate = new CardPaymentHandoffCandidate(CardProcessorKind.Linkly, attemptGuid);
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            prepareCardPaymentHandoffAsync: _ => Task.FromResult<CardPaymentHandoffCandidate?>(candidate),
+            handoffCardPaymentAsync: (_, _) => Task.FromException<bool>(fatal));
+
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+        Assert.True(viewModel.CardPaymentErrorPrimaryActionCommand.CanExecute(null));
+
+        var thrown = await Assert.ThrowsAnyAsync<Exception>(
+            () => viewModel.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null));
+
+        Assert.Same(fatal, thrown);
+        Assert.Single(cart.Lines);
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.NotNull(viewModel.CardPaymentErrorOverlay);
+    }
+
+    [Fact]
+    public async Task Payment_page_handoff_command_notification_cannot_mask_fatal_exception()
+    {
+        var fatal = new OutOfMemoryException("fatal handoff must remain authoritative");
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-158V8-FATAL", "Fatal Notification Tea", "930158V8FATAL", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        var attemptGuid = Guid.Parse("10000000-0000-0000-0000-000000000163");
+        workflow.AddTenderResult.SetResult(new PaymentTenderAttemptResult(
+            false,
+            "linkly.backend.resultUnknown",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true),
+            RecoveryAttemptKey: new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attemptGuid),
+            RecoveryOrderGuid: Guid.Parse("20000000-0000-0000-0000-000000000163")));
+        var candidate = new CardPaymentHandoffCandidate(CardProcessorKind.Linkly, attemptGuid);
+        var viewModel = new PaymentViewModel(
+            cart,
+            workflow,
+            Session,
+            prepareCardPaymentHandoffAsync: _ => Task.FromResult<CardPaymentHandoffCandidate?>(candidate),
+            handoffCardPaymentAsync: (_, _) => Task.FromException<bool>(fatal));
+
+        await viewModel.SelectCardCommand.ExecuteAsync(null);
+        viewModel.CardPaymentErrorPrimaryActionCommand.CanExecuteChanged += (_, _) =>
+            throw new InvalidOperationException("command notification must not replace fatal handoff failure");
+        var cardSession = typeof(PaymentViewModel)
+            .GetField("_cardSession", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(viewModel)!;
+        var executionTask = Assert.IsAssignableFrom<Task>(
+            cardSession.GetType()
+                .GetMethod("ExecuteErrorPrimaryActionAsync", BindingFlags.Instance | BindingFlags.Public)!
+                .Invoke(cardSession, null));
+
+        var thrown = await Assert.ThrowsAnyAsync<Exception>(() => executionTask);
+
+        Assert.Same(fatal, thrown);
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.Single(cart.Lines);
     }
 
     [Fact]
@@ -5110,7 +5509,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
             });
 
         await viewModel.SelectCardCommand.ExecuteAsync(null);
-        viewModel.BeginShutdown();
+        _ = viewModel.BeginShutdown();
         await viewModel.CardPaymentErrorPrimaryActionCommand.ExecuteAsync(null);
 
         Assert.True(viewModel.IsPaymentInteractionLocked);
@@ -5659,6 +6058,58 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.Equal("IO-NEW", createdOrder!.OrderNumber);
         Assert.Empty(cart.Lines);
         Assert.Empty(viewModel.PaymentTenders);
+    }
+
+    [Theory]
+    [InlineData(false, "oom")]
+    [InlineData(false, "stack")]
+    [InlineData(true, "oom")]
+    [InlineData(true, "stack")]
+    public async Task Payment_page_installment_submission_propagates_fatal_exception_and_keeps_lock(
+        bool isRepayment,
+        string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("fatal installment submission")
+            : new StackOverflowException("fatal installment submission");
+        var cart = new PosCartService();
+        var installmentService = new FakeInstallmentOrderService
+        {
+            ThrowOnCreateOrder = isRepayment ? null : fatal,
+            ThrowOnAddRepayment = isRepayment ? fatal : null
+        };
+        var viewModel = new PaymentViewModel(
+            cart,
+            new FakeCashPaymentWorkflowService(),
+            Session,
+            installmentOrderService: installmentService);
+
+        if (isRepayment)
+        {
+            viewModel.PrepareForInstallmentRepayment(
+                Session,
+                CreateInstallmentOrder("IO-FATAL", "Alice", "0400111222", paidAmount: 30m, outstandingAmount: 90m));
+            viewModel.TenderAmountText = "30";
+        }
+        else
+        {
+            cart.AddItem(CreateItem("SKU-INST-FATAL", "Fatal Installment Tea", "939003FATAL", PriceSourceKind.StoreRetailPrice, 80m));
+            viewModel.IsInstallmentPaymentEnabled = true;
+            viewModel.InstallmentCustomerName = "Alice";
+            viewModel.InstallmentCustomerPhone = "0400111222";
+            viewModel.TenderAmountText = "20";
+        }
+
+        await viewModel.SelectCashCommand.ExecuteAsync(null);
+        var thrown = await Record.ExceptionAsync(() => viewModel.ConfirmPaymentCommand.ExecuteAsync(null));
+
+        Assert.Same(fatal, thrown);
+        Assert.True(viewModel.IsPaymentInteractionLocked);
+        Assert.Single(viewModel.PaymentTenders);
+        if (!isRepayment)
+        {
+            Assert.Single(cart.Lines);
+        }
     }
 
     [Fact]
@@ -6475,6 +6926,8 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         public bool ReleaseVoucherTenderResult { get; set; } = true;
 
+        public Exception? ThrowOnReleaseVoucherTender { get; set; }
+
         public bool TryParseTenderedAmount(string? amountTenderedText, out decimal tenderedAmount)
         {
             return decimal.TryParse(amountTenderedText, out tenderedAmount);
@@ -6594,6 +7047,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
             CancellationToken cancellationToken = default)
         {
             ReleasedVoucherTenders.Add(tender);
+            if (ThrowOnReleaseVoucherTender is not null)
+            {
+                throw ThrowOnReleaseVoucherTender;
+            }
+
             return Task.FromResult(ReleaseVoucherTenderResult);
         }
 
@@ -6622,6 +7080,10 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
     private sealed class FakeInstallmentOrderService : IInstallmentOrderService
     {
+        public Exception? ThrowOnCreateOrder { get; init; }
+
+        public Exception? ThrowOnAddRepayment { get; init; }
+
         public InstallmentOrderCreateRequest? LastCreateRequest { get; private set; }
 
         public InstallmentOrderRepaymentRequest? LastRepaymentRequest { get; private set; }
@@ -6669,6 +7131,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
         public Task<InstallmentOrderCreateResult> CreateOrderAsync(InstallmentOrderCreateRequest request, CancellationToken cancellationToken = default)
         {
             LastCreateRequest = request;
+            if (ThrowOnCreateOrder is not null)
+            {
+                throw ThrowOnCreateOrder;
+            }
+
             return Task.FromResult(new InstallmentOrderCreateResult(
                 true,
                 "分期单已创建。",
@@ -6678,6 +7145,11 @@ public sealed class PosTerminalCashPaymentViewModelTests
         public Task<InstallmentOrderActionResult> AddRepaymentAsync(InstallmentOrderRepaymentRequest request, CancellationToken cancellationToken = default)
         {
             LastRepaymentRequest = request;
+            if (ThrowOnAddRepayment is not null)
+            {
+                throw ThrowOnAddRepayment;
+            }
+
             return Task.FromResult(new InstallmentOrderActionResult(true, "补款已记录。"));
         }
 

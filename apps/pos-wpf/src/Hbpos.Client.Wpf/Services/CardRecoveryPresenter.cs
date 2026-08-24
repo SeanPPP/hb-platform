@@ -303,6 +303,20 @@ internal sealed class CardRecoveryPresenter
         }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
+            var durableOutcomeWithoutRecoveryOwner = result.Outcome is
+                CardPaymentRecoveryOutcome.OrderCompleted or
+                CardPaymentRecoveryOutcome.None;
+            if (durableOutcomeWithoutRecoveryOwner)
+            {
+                // 中文注释：服务已返回不需要恢复锁的耐久结果（尤其 OrderCompleted/None）后，
+                // UI、打印或命令通知失败只能记为 post-commit 告警，绝不能制造没有开放 attempt 的新锁。
+                TrySetPaymentRecoveryBlocked(false, result.Message);
+                TryWritePostCommitWarning(
+                    $"recovery result projection failed after durable outcome={result.Outcome} error={ex.GetType().Name}",
+                    ex);
+                return result.Outcome != CardPaymentRecoveryOutcome.None;
+            }
+
             TrySetPaymentRecoveryBlocked(true, ex.Message);
             throw;
         }
@@ -733,7 +747,9 @@ internal sealed class CardRecoveryPresenter
                 not StackOverflowException)
             {
                 var warning = BuildDraftHandoffPostCommitWarning(result);
-                TrySetPaymentRecoveryBlocked(true, warning);
+                // 中文注释：生产回调会先清除恢复状态和交互锁，再发送 UI 通知；
+                // owner 已耐久释放后若通知失败，绝不能重新制造一个没有开放 attempt 的永久锁。
+                TrySetPaymentRecoveryBlocked(false, warning);
                 TryWritePostCommitWarning(
                     $"payment recovery unlock failed after durable draft handoff attemptGuid={capturedOwnerAttemptGuid:D} error={ex.GetType().Name}",
                     ex);

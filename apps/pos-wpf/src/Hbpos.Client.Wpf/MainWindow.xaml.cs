@@ -430,7 +430,7 @@ public partial class MainWindow : Window
         {
             _rawScannerService.Stop();
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             ConsoleLog.WriteError(
                 "Shutdown",
@@ -444,7 +444,7 @@ public partial class MainWindow : Window
                 () => _windowModeSaveTask,
                 _appShutdownCoordinator);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             ConsoleLog.WriteError(
                 "Shutdown",

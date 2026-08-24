@@ -236,8 +236,8 @@ public sealed record CardPaymentRecoveryResult(
 {
     public bool RequiresAlternativeRefundMethod { get; init; }
 
-    // 仅需要在 UI 原子投影成功后立即终态化的草稿携带此键；部分 approved tender
-    // 和替代退款必须继续由订单落库路径收尾，因此不会设置该键。
+    // 需要 UI 原子投影后继续交接的草稿携带此键；attempt 会保持 FinalizePending，
+    // 直到订单/草稿 handoff 完成后再由 CAS 终态化并释放精确 owner。
     internal CardRecoveryAttemptKey? DraftHandoffKey { get; init; }
 
     public static CardPaymentRecoveryResult None { get; } = new(CardPaymentRecoveryOutcome.None, string.Empty);
@@ -2153,6 +2153,38 @@ public sealed class CardPaymentRecoveryService(
                     T("cardRecovery.linkly.activeSessionAcknowledgeFailed", "The previous Linkly result was confirmed, but POS could not clear it with Linkly. Try recovery again or ask a supervisor before charging again."));
             }
 
+            if (draft is not null)
+            {
+                var markerPersisted = true;
+                try
+                {
+                    // 中文注释：终端 acknowledge 成功后只补充本地 marker；草稿交接前不得终态化。
+                    markerPersisted = await TryPersistAcknowledgedMarkerAsync(
+                        attempt.AttemptGuid,
+                        CancellationToken.None);
+                }
+                catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+                {
+                    markerPersisted = false;
+                    TryWriteRecoveryLog(
+                        $"supervisor not-paid acknowledge marker failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                }
+
+                return new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.DraftRestored,
+                    T("cardRecovery.linkly.supervisorNotPaidRestored", "The bank confirmed that no payment was processed. The original order has been restored and can be paid again."),
+                    TenderedAmount: draft.CurrentTenders.Sum(tender => tender.Amount),
+                    DialogDetails: BuildDialogDetails(attempt),
+                    RestoredTenders: draft.CurrentTenders,
+                    HasPostCommitWarning: publication?.NotificationWarning == true || !markerPersisted)
+                {
+                    DraftHandoffKey = new CardRecoveryAttemptKey(
+                        CardProcessorKind.Linkly,
+                        attempt.AttemptGuid)
+                };
+            }
+
+            // 无草稿的 ActiveSessionNotPaid 仍可在 acknowledge 后即时终态化。
             var finalizedAt = DateTimeOffset.UtcNow;
             var finalized = false;
             try
@@ -2185,19 +2217,11 @@ public sealed class CardPaymentRecoveryService(
                     T("cardRecovery.linkly.activeSessionAcknowledgeFailed", "The previous Linkly result was confirmed, but POS could not finalize it locally. Run recovery again before charging again."));
             }
 
-            var ownershipReleased = publication is null ||
-                cart.CompleteRecoveryPublication(
-                    new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid));
-
             return new CardPaymentRecoveryResult(
-                draft is null
-                    ? CardPaymentRecoveryOutcome.ActiveSessionNotPaid
-                    : CardPaymentRecoveryOutcome.DraftRestored,
-                draft is null
-                    ? T("cardRecovery.linkly.activeSessionNotPaidCleared", "The previous Linkly transaction was not paid successfully and has been cleared. Continue the current order and retry payment if needed.")
-                    : T("cardRecovery.linkly.supervisorNotPaidRestored", "The bank confirmed that no payment was processed. The original order has been restored and can be paid again."),
+                CardPaymentRecoveryOutcome.ActiveSessionNotPaid,
+                T("cardRecovery.linkly.activeSessionNotPaidCleared", "The previous Linkly transaction was not paid successfully and has been cleared. Continue the current order and retry payment if needed."),
                 DialogDetails: BuildDialogDetails(attempt),
-                HasPostCommitWarning: publication?.NotificationWarning == true || !ownershipReleased);
+                HasPostCommitWarning: false);
         }
 
         if (draft is null)
@@ -2582,8 +2606,8 @@ public sealed class CardPaymentRecoveryService(
     }
 
     /// <summary>
-    /// UI 已完整接收 Linkly 主管确认“未退款”的草稿后，终结旧 attempt 并释放精确 publication。
-    /// 已批准 tender 仍由订单落库路径完成为 OrderCompleted。
+    /// UI 已完整接收 Linkly 草稿后，按精确金融结论 CAS 终结旧 attempt 并释放 publication。
+    /// 在此之前必须保持 FinalizePending 与精确 provider owner。
     /// </summary>
     internal async Task<bool> CompleteDraftHandoffAsync(
         Guid attemptGuid,
@@ -2605,13 +2629,17 @@ public sealed class CardPaymentRecoveryService(
             return false;
         }
 
-        if (!IsConfirmedNotRefundedDraftHandoff(attempt))
+        var isRefundHandoff = IsConfirmedNotRefundedDraftHandoff(attempt);
+        var isSaleHandoff = IsSaleDraftHandoff(attempt);
+        if (!isRefundHandoff && !isSaleHandoff)
         {
             return false;
         }
 
         var current = attempt!;
-        var isTerminal = IsCompletedDraftHandoff(current);
+        var isTerminal = isRefundHandoff
+            ? IsCompletedDraftHandoff(current)
+            : IsCompletedSaleDraftHandoff(current);
         if (cart.RecoveryOwnerAttemptKey is not CardRecoveryAttemptKey ownerKey)
         {
             return isTerminal;
@@ -2624,37 +2652,71 @@ public sealed class CardPaymentRecoveryService(
 
         if (!isTerminal)
         {
-            if (current.Status != LocalCardPaymentAttemptStatus.Pending ||
-                !string.Equals(current.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) ||
-                !string.Equals(
-                    current.RecoveryTargetStatus,
-                    LocalCardPaymentAttemptStatus.Abandoned.ToString(),
-                    StringComparison.Ordinal) ||
-                !await FinalizeRecoveryOutcomeAsync(
-                    current,
-                    current.Status,
-                    current.UpdatedAt,
-                    LocalCardPaymentAttemptStatus.Abandoned,
-                    DateTimeOffset.UtcNow,
-                    cancellationToken))
+            if (isRefundHandoff)
             {
-                LocalCardPaymentAttempt? winner;
-                try
+                if (current.Status != LocalCardPaymentAttemptStatus.Pending ||
+                    !string.Equals(current.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) ||
+                    !string.Equals(
+                        current.RecoveryTargetStatus,
+                        LocalCardPaymentAttemptStatus.Abandoned.ToString(),
+                        StringComparison.Ordinal) ||
+                    !await FinalizeRecoveryOutcomeAsync(
+                        current,
+                        current.Status,
+                        current.UpdatedAt,
+                        LocalCardPaymentAttemptStatus.Abandoned,
+                        DateTimeOffset.UtcNow,
+                        cancellationToken))
                 {
-                    winner = await RunLocalStoreAsync(
-                        () => attemptRepository.GetAttemptAsync(attemptGuid, CancellationToken.None),
-                        CancellationToken.None);
-                }
-                catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
-                {
-                    TryWriteRecoveryLog(
-                        $"linkly draft handoff winner read failed attemptGuid={attemptGuid} error={ex.GetType().Name}");
-                    return false;
-                }
+                    LocalCardPaymentAttempt? winner;
+                    try
+                    {
+                        winner = await RunLocalStoreAsync(
+                            () => attemptRepository.GetAttemptAsync(attemptGuid, CancellationToken.None),
+                            CancellationToken.None);
+                    }
+                    catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+                    {
+                        TryWriteRecoveryLog(
+                            $"linkly draft handoff winner read failed attemptGuid={attemptGuid} error={ex.GetType().Name}");
+                        return false;
+                    }
 
-                if (!IsCompletedConfirmedNotRefundedDraftHandoff(winner))
+                    if (!IsCompletedConfirmedNotRefundedDraftHandoff(winner))
+                    {
+                        return false;
+                    }
+                }
+            }
+            else
+            {
+                if (!TryGetSaleDraftHandoffTarget(current, out var recoveryTarget) ||
+                    !await FinalizeRecoveryOutcomeAsync(
+                        current,
+                        current.Status,
+                        current.UpdatedAt,
+                        recoveryTarget,
+                        DateTimeOffset.UtcNow,
+                        cancellationToken))
                 {
-                    return false;
+                    LocalCardPaymentAttempt? winner;
+                    try
+                    {
+                        winner = await RunLocalStoreAsync(
+                            () => attemptRepository.GetAttemptAsync(attemptGuid, CancellationToken.None),
+                            CancellationToken.None);
+                    }
+                    catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+                    {
+                        TryWriteRecoveryLog(
+                            $"linkly sale draft handoff winner read failed attemptGuid={attemptGuid} error={ex.GetType().Name}");
+                        return false;
+                    }
+
+                    if (!IsCompletedSaleDraftHandoff(winner))
+                    {
+                        return false;
+                    }
                 }
             }
         }
@@ -2673,7 +2735,9 @@ public sealed class CardPaymentRecoveryService(
             return false;
         }
 
-        if (!IsCompletedConfirmedNotRefundedDraftHandoff(persistedWinner))
+        if (isRefundHandoff
+                ? !IsCompletedConfirmedNotRefundedDraftHandoff(persistedWinner)
+                : !IsCompletedSaleDraftHandoff(persistedWinner))
         {
             return false;
         }
@@ -2699,6 +2763,93 @@ public sealed class CardPaymentRecoveryService(
         attempt.Status == LocalCardPaymentAttemptStatus.Abandoned &&
         string.Equals(attempt.RecoveryPhase, CardRecoveryPhases.None, StringComparison.Ordinal) &&
         attempt.RecoveryTargetStatus is null;
+
+    private static bool IsSaleDraftHandoff(LocalCardPaymentAttempt? attempt) =>
+        IsCompletedSaleDraftHandoff(attempt) ||
+        TryGetSaleDraftHandoffTarget(attempt, out _);
+
+    private static bool TryGetSaleDraftHandoffTarget(
+        LocalCardPaymentAttempt? attempt,
+        out LocalCardPaymentAttemptStatus recoveryTarget)
+    {
+        recoveryTarget = default;
+        if (!IsLinklySaleAttempt(attempt) ||
+            attempt is null ||
+            !string.Equals(attempt.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) ||
+            !Enum.TryParse(attempt.RecoveryTargetStatus, ignoreCase: false, out recoveryTarget))
+        {
+            return false;
+        }
+
+        if (recoveryTarget == LocalCardPaymentAttemptStatus.Abandoned)
+        {
+            return string.Equals(
+                       attempt.ResponseCode,
+                       ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+                       StringComparison.Ordinal) &&
+                HasRequiredLinklyAcknowledgeEvidence(attempt);
+        }
+
+        return IsSaleFailureTarget(recoveryTarget) &&
+            HasSaleFailureFinancialEvidence(attempt) &&
+            HasRequiredLinklyAcknowledgeEvidence(attempt);
+    }
+
+    private static bool IsCompletedSaleDraftHandoff(LocalCardPaymentAttempt? attempt)
+    {
+        if (!IsLinklySaleAttempt(attempt) ||
+            attempt is null ||
+            !string.Equals(attempt.RecoveryPhase, CardRecoveryPhases.None, StringComparison.Ordinal) ||
+            attempt.RecoveryTargetStatus is not null ||
+            !HasRequiredLinklyAcknowledgeEvidence(attempt))
+        {
+            return false;
+        }
+
+        if (string.Equals(
+                attempt.ResponseCode,
+                ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+                StringComparison.Ordinal))
+        {
+            return attempt.Status == LocalCardPaymentAttemptStatus.Abandoned;
+        }
+
+        return IsSaleFailureTarget(attempt.Status) &&
+            HasSaleFailureFinancialEvidence(attempt);
+    }
+
+    private static bool IsLinklySaleAttempt(LocalCardPaymentAttempt? attempt) =>
+        attempt is not null &&
+        string.Equals(attempt.Processor, CardProcessorKind.Linkly.ToString(), StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(attempt.OperationKind, "Sale", StringComparison.Ordinal);
+
+    private static bool HasRequiredLinklyAcknowledgeEvidence(LocalCardPaymentAttempt attempt) =>
+        string.IsNullOrWhiteSpace(attempt.SessionId) || attempt.AcknowledgedAt is not null;
+
+    private static bool HasSaleFailureFinancialEvidence(LocalCardPaymentAttempt attempt) =>
+        attempt.Status != LocalCardPaymentAttemptStatus.Approved &&
+        !LinklyApprovalResponseCodes.IsApproved(attempt.ResponseCode) &&
+        !IsSupervisorResolutionCode(attempt.ResponseCode) &&
+        !string.Equals(
+            attempt.ResponseCode,
+            CardRefundSupervisorResolutionCodes.ConfirmedRefunded,
+            StringComparison.Ordinal) &&
+        !string.Equals(
+            attempt.ResponseCode,
+            CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded,
+            StringComparison.Ordinal);
+
+    private static bool IsSupervisorResolutionCode(string? responseCode) =>
+        string.Equals(responseCode, ActiveSessionSupervisorResolutionCodes.ConfirmedPaid, StringComparison.Ordinal) ||
+        string.Equals(responseCode, ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, StringComparison.Ordinal) ||
+        string.Equals(responseCode, ActiveSessionSupervisorResolutionCodes.ContinueWaiting, StringComparison.Ordinal);
+
+    private static bool IsSaleFailureTarget(LocalCardPaymentAttemptStatus status) =>
+        status is
+            LocalCardPaymentAttemptStatus.Declined or
+            LocalCardPaymentAttemptStatus.TimedOut or
+            LocalCardPaymentAttemptStatus.Cancelled or
+            LocalCardPaymentAttemptStatus.Failed;
 
     private static CardRefundRecoveryDetails BuildRefundDetails(
         LocalCardPaymentAttempt attempt,
@@ -3257,7 +3408,7 @@ public sealed class CardPaymentRecoveryService(
                 return await ReconcileRecoveryConflictAsync(attempt, dialogDetails, cancellationToken);
             }
 
-            // 崩溃/最终 CAS 失败后的续跑：金融结果已持久化，直接重新发布并完成，不能再次覆盖证据。
+            // 崩溃/最终 CAS 失败后的续跑：金融结果已持久化，直接重新发布并等待 handoff，不能再次覆盖证据。
             persistedAt = current.UpdatedAt;
             responseCode = current.ResponseCode;
             responseText = current.ResponseText;
@@ -3309,25 +3460,6 @@ public sealed class CardPaymentRecoveryService(
                 PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
         }
 
-        var completedAt = DateTimeOffset.UtcNow;
-        if (!await FinalizeRecoveryOutcomeAsync(
-                attempt,
-                openStatus,
-                persistedAt,
-                failureStatus,
-                completedAt,
-                cancellationToken))
-        {
-            // 最终 CAS 失败：只回滚本 attempt 发布的购物车，记录保持 FinalizePending 继续开放待恢复。
-            cart.RollbackRecoveryPublication(
-                new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid));
-            return new CardPaymentRecoveryResult(
-                CardPaymentRecoveryOutcome.Unknown,
-                T("cardRecovery.linkly.unknown", "The previous card result cannot be confirmed. Ask a supervisor to confirm the Linkly backend status before continuing."),
-                DialogDetails: dialogDetails,
-                PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
-        }
-
         var markerPersisted = true;
         if (acknowledgeAsync is not null)
         {
@@ -3345,15 +3477,20 @@ public sealed class CardPaymentRecoveryService(
             }
         }
 
-        var ownershipReleased = cart.CompleteRecoveryPublication(
-            new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attempt.AttemptGuid));
-        var hasWarning = publication.NotificationWarning || !ownershipReleased || !markerPersisted;
+        var hasWarning = publication.NotificationWarning || !markerPersisted;
 
         return new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.DraftRestored,
             Format("cardRecovery.linkly.failed", "The previous card payment failed: {0}. The order has been restored. Select a payment method again.", reason),
+            TenderedAmount: draft.CurrentTenders.Sum(tender => tender.Amount),
             DialogDetails: dialogDetails,
-            HasPostCommitWarning: hasWarning);
+            RestoredTenders: draft.CurrentTenders,
+            HasPostCommitWarning: hasWarning)
+        {
+            DraftHandoffKey = new CardRecoveryAttemptKey(
+                CardProcessorKind.Linkly,
+                attempt.AttemptGuid)
+        };
     }
 
     private async Task<CardPaymentRecoveryResult> ReconcileRecoveryConflictAsync(
@@ -3960,6 +4097,12 @@ public sealed class CardPaymentRecoveryService(
         LinklyConnectionMode mode,
         CancellationToken cancellationToken)
     {
+        // 中文注释：本地 marker 只在 acknowledge 成功后写入；重启恢复时不能再次触发同一终端 API。
+        if (attempt.AcknowledgedAt is not null)
+        {
+            return true;
+        }
+
         var sessionId = NormalizeOptional(attempt.SessionId);
         if (mode == LinklyConnectionMode.CloudBackendAsync && sessionId is not null)
         {

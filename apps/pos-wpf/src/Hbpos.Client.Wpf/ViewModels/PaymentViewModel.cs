@@ -49,11 +49,16 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private Guid? _installmentDraftPaymentGuid;
     private string? _installmentDraftCardIdempotencyKey;
     private bool _requiresAlternativeRefundMethod;
+    private long? _alternativeRefundCartRevision;
+    private long _cartTransactionEpoch;
+    private long? _unknownCardResultCartEpoch;
+    private bool _cartWasEmpty;
     private int _shutdownStarted;
     private bool _disposed;
 
     private sealed record RecoveredPaymentProjectionSnapshot(
         bool RequiresAlternativeRefundMethod,
+        long? AlternativeRefundCartRevision,
         IReadOnlyList<PaymentTender> Tenders,
         string StatusKey,
         string? StatusTextOverride,
@@ -198,6 +203,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         Action? openCardRecoveryCenter = null)
     {
         _cart = cart;
+        _cartWasEmpty = cart.IsEmpty;
+        _cart.CartChanged += OnCartTransactionChanged;
         _workflowService = workflowService;
         _installmentOrderService = installmentOrderService ?? NoopInstallmentOrderService.Instance;
         _session = session;
@@ -274,20 +281,34 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             _localization.CultureChanged -= OnCultureChanged;
         }
 
+        _cart.CartChanged -= OnCartTransactionChanged;
         _cardSession.Dispose();
     }
 
-    public void BeginShutdown()
+    public Task BeginShutdown()
     {
         if (Interlocked.Exchange(ref _shutdownStarted, 1) != 0)
         {
-            return;
+            return _cardSession.CancelForShutdownAsync();
         }
 
         // 关闭窗口期间只取消仍在等待的终端调用，保留 attempt 与恢复锁给下次启动核对。
         IsPaymentInteractionLocked = true;
-        _ = _cardSession.CancelForShutdownAsync();
-        NotifyPaymentCommandStates();
+        var cancellationTask = _cardSession.CancelForShutdownAsync();
+        try
+        {
+            NotifyPaymentCommandStates();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 中文注释：关机命令通知是 best-effort，不能阻止主 shutdown step 观察终端取消任务。
+            ConsoleLog.WriteError(
+                "Shutdown",
+                $"payment shutdown command notification failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
+
+        return cancellationTask;
     }
 
     internal bool IsShuttingDown => Volatile.Read(ref _shutdownStarted) == 1;
@@ -592,12 +613,28 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _pendingVoucherChangeAmount = 0m;
         _paymentEntryVersion++;
         _cardSession.ResetManualCancellationState();
-        // 新订单只继承进程关闭状态；历史卡交易恢复状态不得跨订单锁住付款页。
-        _cardSession.SetResultUnknownRecoveryRequired(false);
+        if (_cardSession.HasUnknownResult &&
+            _unknownCardResultCartEpoch is long protectedEpoch &&
+            protectedEpoch != _cartTransactionEpoch)
+        {
+            // 只有购物车确实经过清空边界进入下一笔交易，才允许释放上一单的未知结果锁。
+            _cardSession.SetResultUnknownRecoveryRequired(false);
+        }
+
         _cardSession.Cancel();
         _cardSession.DetachCanceledActiveCardPayment();
         IsCardPaymentInProgress = false;
-        IsPaymentInteractionLocked = IsShuttingDown;
+        IsPaymentInteractionLocked = IsShuttingDown || _cardSession.HasUnknownResult;
+        if (_requiresAlternativeRefundMethod &&
+            _cart.RecoveryOwnerAttemptGuid is null &&
+            _alternativeRefundCartRevision is long protectedRevision &&
+            protectedRevision != _cart.Revision)
+        {
+            // 上一笔替代退款策略只绑定当时的恢复购物车；清空后装入的新订单不得继承禁卡状态。
+            _requiresAlternativeRefundMethod = false;
+            _alternativeRefundCartRevision = null;
+        }
+
         _installmentRepaymentOrder = null;
         IsInstallmentSwitchLocked = false;
         IsInstallmentPaymentEnabled = false;
@@ -611,13 +648,17 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         VoucherEntryText = string.Empty;
         IsVoucherEntryDialogOpen = false;
         TenderAmountText = string.Empty;
-        _statusKey = _requiresAlternativeRefundMethod
-            ? "payment.refund.status.alternativeMethodRequired"
-            : GetReadyStatusKey();
-        _statusTextOverride = null;
+        if (!_cardSession.HasUnknownResult)
+        {
+            _statusKey = _requiresAlternativeRefundMethod
+                ? "payment.refund.status.alternativeMethodRequired"
+                : GetReadyStatusKey();
+            _statusTextOverride = null;
+        }
+
         SelectedPaymentMethod = PaymentMethodKind.Cash;
         RefreshCart();
-        if (!HasBlockingCartIssue())
+        if (!_cardSession.HasUnknownResult && !HasBlockingCartIssue())
         {
             SetStatus(_requiresAlternativeRefundMethod
                 ? "payment.refund.status.alternativeMethodRequired"
@@ -625,6 +666,28 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
 
         OnPropertyChanged(nameof(StatusMessage));
+    }
+
+    private void OnCartTransactionChanged(object? sender, EventArgs e)
+    {
+        var isEmpty = _cart.IsEmpty;
+        if (isEmpty && !_cartWasEmpty)
+        {
+            _cartTransactionEpoch++;
+        }
+
+        _cartWasEmpty = isEmpty;
+    }
+
+    internal void OnCardResultUnknownRecoveryChanged(bool required)
+    {
+        if (required)
+        {
+            _unknownCardResultCartEpoch ??= _cartTransactionEpoch;
+            return;
+        }
+
+        _unknownCardResultCartEpoch = null;
     }
 
     public void PrepareForInstallmentRepayment(PosSessionState session, InstallmentOrderSummary order)
@@ -651,6 +714,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         {
             // 非卡退款限制属于当前恢复购物车；只有购物车真正清空后才可释放，页面往返不能绕过。
             _requiresAlternativeRefundMethod = false;
+            _alternativeRefundCartRevision = null;
         }
 
         PaymentMode = CalculatePaymentMode();
@@ -678,6 +742,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         var materializedTenders = MaterializeRecoveredPaymentTenders(tenders);
         var previous = new RecoveredPaymentProjectionSnapshot(
             _requiresAlternativeRefundMethod,
+            _alternativeRefundCartRevision,
             PaymentTenders.ToArray(),
             _statusKey,
             _statusTextOverride,
@@ -710,6 +775,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             RefreshCart();
             // 空购物车刷新会释放旧的退款限制；恢复结果本身仍必须保留服务端要求的策略。
             _requiresAlternativeRefundMethod = requiresAlternativeRefundMethod;
+            _alternativeRefundCartRevision = requiresAlternativeRefundMethod
+                ? _cart.Revision
+                : null;
             SetStatus(
                 materializedTenders.Count > 0
                     ? "payment.status.cardTenderAdded"
@@ -762,6 +830,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private void RestoreRecoveredPaymentProjectionBestEffort(RecoveredPaymentProjectionSnapshot snapshot)
     {
         _requiresAlternativeRefundMethod = snapshot.RequiresAlternativeRefundMethod;
+        _alternativeRefundCartRevision = snapshot.AlternativeRefundCartRevision;
 
         TryBestEffortProjectionAction(() => PaymentTenders.Clear());
         foreach (var tender in snapshot.Tenders)
@@ -818,27 +887,55 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
     }
 
-    internal void CompleteCardPaymentHandoff()
+    internal bool CompleteCardPaymentHandoff()
     {
         // 安全移交只清理当前活动订单和付款页投影；持久化 attempt、草稿、tender 与终端证据由恢复中心继续持有。
+        void RunPostHandoffAction(string stage, Action action)
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                // 中文注释：集合和 WPF 通知可能在 backing state 已更新后抛错；继续完成可验证的核心 handoff。
+                ConsoleLog.WriteError(
+                    "CardPayment",
+                    $"card payment handoff UI action failed stage={stage} error={ex.GetType().Name}",
+                    exception: ex);
+            }
+        }
+
         _paymentEntryVersion++;
         _pendingVoucherUploadOrderGuid = null;
         _pendingVoucherTenderedAmount = 0m;
         _pendingVoucherChangeAmount = 0m;
         _requiresAlternativeRefundMethod = false;
-        PaymentTenders.Clear();
-        VoucherCodeText = string.Empty;
-        VoucherEntryText = string.Empty;
-        IsVoucherEntryDialogOpen = false;
-        TenderAmountText = string.Empty;
-        SelectedPaymentMethod = PaymentMethodKind.Cash;
-        CardPaymentErrorOverlay = null;
-        _cart.Clear();
-        RefreshCart();
-        IsPaymentInteractionLocked = IsShuttingDown;
-        SetStatus(GetReadyStatusKey());
-        NotifyPaymentCommandStates();
-        _navigationActions.BackToPos?.Invoke();
+        _alternativeRefundCartRevision = null;
+        RunPostHandoffAction("clear-tenders", PaymentTenders.Clear);
+        RunPostHandoffAction("clear-voucher-code", () => VoucherCodeText = string.Empty);
+        RunPostHandoffAction("clear-voucher-entry", () => VoucherEntryText = string.Empty);
+        RunPostHandoffAction("close-voucher-dialog", () => IsVoucherEntryDialogOpen = false);
+        RunPostHandoffAction("clear-tender-amount", () => TenderAmountText = string.Empty);
+        RunPostHandoffAction("select-cash", () => SelectedPaymentMethod = PaymentMethodKind.Cash);
+        RunPostHandoffAction("close-error-overlay", () => CardPaymentErrorOverlay = null);
+        RunPostHandoffAction("clear-cart", _cart.Clear);
+
+        if (PaymentTenders.Count != 0 || !_cart.IsEmpty)
+        {
+            // 核心集合未清空时 handoff 尚未完成，保留原 recovery identity 与交互锁供重试。
+            RunPostHandoffAction("retain-lock", () => IsPaymentInteractionLocked = true);
+            return false;
+        }
+
+        // 只有核心购物车与 tender 均已确认清空后，才释放当前页的未知结果身份。
+        _cardSession.SetResultUnknownRecoveryRequired(false);
+        RunPostHandoffAction("refresh-cart", RefreshCart);
+        RunPostHandoffAction("unlock-payment", () => IsPaymentInteractionLocked = IsShuttingDown);
+        RunPostHandoffAction("ready-status", () => SetStatus(GetReadyStatusKey()));
+        RunPostHandoffAction("notify-commands", NotifyPaymentCommandStates);
+        RunPostHandoffAction("navigate-pos", () => _navigationActions.BackToPos?.Invoke());
+        return true;
     }
 
     internal CardPaymentHandoffRequest CreateCardPaymentHandoffRequest() =>
@@ -1497,7 +1594,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             {
                 released = await _workflowService.ReleaseVoucherTenderAsync(tender, Session);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
             {
                 var correlation = OperationAuditEvents.CreateCorrelation();
                 OperationAuditEvents.RecordAction(
@@ -1595,7 +1692,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             {
                 released = await _workflowService.ReleaseVoucherTenderAsync(tender, Session);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
             {
                 var correlation = OperationAuditEvents.CreateCorrelation();
                 OperationAuditEvents.RecordAction(
@@ -1777,6 +1874,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     internal void SetAlternativeRefundMethodRequired(bool required)
     {
         _requiresAlternativeRefundMethod = required;
+        _alternativeRefundCartRevision = required ? _cart.Revision : null;
         if (required)
         {
             SetStatus("payment.refund.status.alternativeMethodRequired");
@@ -1910,6 +2008,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
 
         IsPaymentInteractionLocked = true;
+        var preservePaymentInteractionLock = false;
         var auditCart = OperationAuditEvents.CaptureCart(_cart.Lines);
         try
         {
@@ -1925,7 +2024,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                             Session,
                             CreateInstallmentPaymentDraft(appliedTender)));
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                 {
                     var correlation = OperationAuditEvents.CreateCorrelation();
                     OperationAuditEvents.RecordAction(
@@ -2037,7 +2136,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                         CreateInstallmentPaymentDraft(appliedTender),
                         string.Empty));
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
             {
                 var correlation = OperationAuditEvents.CreateCorrelation();
                 OperationAuditEvents.RecordAction(
@@ -2127,10 +2226,19 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             SetStatus("payment.installment.status.created", createResult.Message);
             OnPropertyChanged(nameof(InstallmentOrderInfoText));
         }
+        catch (Exception ex) when (ex is OutOfMemoryException or StackOverflowException)
+        {
+            // 中文注释：分期提交的致命异常必须原样传播，并保持付款页锁定，避免继续操作金融状态未确认的订单。
+            preservePaymentInteractionLock = true;
+            throw;
+        }
         finally
         {
-            IsPaymentInteractionLocked = false;
-            NotifyPaymentCommandStates();
+            if (!preservePaymentInteractionLock)
+            {
+                IsPaymentInteractionLocked = false;
+                NotifyPaymentCommandStates();
+            }
         }
     }
 
@@ -2314,6 +2422,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _pendingVoucherTenderedAmount = 0m;
         _pendingVoucherChangeAmount = 0m;
         _requiresAlternativeRefundMethod = false;
+        _alternativeRefundCartRevision = null;
         PaymentTenders.Clear();
         PendingSyncCount = result.PendingSyncCount;
         Session = result.UpdatedSession;

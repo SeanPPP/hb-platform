@@ -308,7 +308,7 @@ public sealed class CashPaymentWorkflowService(
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             ConsoleLog.Write(
                 "VoucherRelease",
@@ -1260,12 +1260,11 @@ public sealed class CashPaymentWorkflowService(
                         CancellationToken.None);
                     if (recoveryAttempt is null)
                     {
-                        // CAS 输家即使无法确认 handoff 阶段，也必须返回已耐久创建的精确 attempt 身份，
-                        // 让付款页保持锁定并可由主管按同一草稿继续恢复。
+                        // CAS 输家只能返回重读后仍位于开放队列的真实 winner；终态或换 token 的
+                        // attempt 不能伪装成可恢复身份，否则付款页会拿到异常中心永远查不到的 key。
                         return CreateCardFailureResult(
                             "payment.card.resultUnknown",
-                            "Square refund evidence changed while the recovery handoff was being persisted. Supervisor recovery is required.",
-                            squareRecoveryAttempt: squareAttemptAfterAuthorization);
+                            "Square refund evidence changed while the recovery handoff was being persisted. Supervisor reconciliation is required.");
                     }
 
                     return CreateCardFailureResult(
@@ -1276,11 +1275,10 @@ public sealed class CashPaymentWorkflowService(
                 catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                 {
                     LogCardRecoveryWarning("persist-square-refund-failure-finalization", squareAttempt.AttemptGuid, ex);
-                    // attempt 和草稿在 Square 调用前已经落盘；handoff 写入失败不能丢失这份精确身份。
+                    // 无法重读并验证开放 winner 时必须失败关闭，不能退回 pre-CAS 快照伪造恢复身份。
                     return CreateCardFailureResult(
                         "payment.card.resultUnknown",
-                        "Square refund failure could not be durably handed off. Supervisor recovery is required.",
-                        squareRecoveryAttempt: squareAttemptAfterAuthorization);
+                        "Square refund failure could not be durably handed off. Supervisor reconciliation is required.");
                 }
             }
 
@@ -1787,22 +1785,35 @@ public sealed class CashPaymentWorkflowService(
             ?? throw new InvalidOperationException("Square payment attempt repository is not configured.");
         var paymentStatus = observedAttempt.PaymentStatus!.Trim().ToUpperInvariant();
         var updatedAt = NextAttemptTimestamp(observedAttempt.UpdatedAt);
-        await RunLocalStoreAsync(
-            () => repository.TryPersistRefundFailureForFinalizationAsync(
+        try
+        {
+            await RunLocalStoreAsync(
+                () => repository.TryPersistRefundFailureForFinalizationAsync(
+                    observedAttempt.AttemptGuid,
+                    observedAttempt.Status,
+                    observedAttempt.UpdatedAt,
+                    submissionToken,
+                    paymentStatus,
+                    observedAttempt.ResponseCode ?? authorization.ResponseCode,
+                    observedAttempt.ResponseText ?? authorization.Message,
+                    updatedAt,
+                    cancellationToken),
+                cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 写入异常后仍重读数据库。只有仍在开放队列且证据与当前退款一致的 winner
+            // 才能作为 handoff 身份返回；绝不能退回调用前的对象快照。
+            LogCardRecoveryWarning(
+                "persist-square-refund-failure-finalization",
                 observedAttempt.AttemptGuid,
-                observedAttempt.Status,
-                observedAttempt.UpdatedAt,
-                submissionToken,
-                paymentStatus,
-                observedAttempt.ResponseCode ?? authorization.ResponseCode,
-                observedAttempt.ResponseText ?? authorization.Message,
-                updatedAt,
-                cancellationToken),
-            cancellationToken);
+                ex);
+        }
 
         // 无论本 worker 是 CAS 赢家还是输家，都必须重读并服从数据库中的金融证据。
-        var winner = await RunLocalStoreAsync(
-            () => repository.GetAttemptAsync(observedAttempt.AttemptGuid, cancellationToken),
+        var winner = await ReadSquareRefundFailureHandoffWinnerAsync(
+            repository,
+            observedAttempt.AttemptGuid,
             cancellationToken);
         if (winner is null)
         {
@@ -1813,16 +1824,50 @@ public sealed class CashPaymentWorkflowService(
             return null;
         }
 
-        var matchingFailureHandoff =
-            string.Equals(winner.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(winner.SubmissionToken, submissionToken, StringComparison.Ordinal) &&
-            IsTerminalSquareRefundFailure(winner.PaymentStatus) &&
-            winner.Status == LocalSquarePaymentAttemptStatus.Unknown &&
-            string.Equals(winner.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) &&
-            winner.RecoveryTargetStatus == LocalSquarePaymentAttemptStatus.Abandoned;
-        if (matchingFailureHandoff || HasStrongerSquareRefundEvidence(winner))
+        if (IsQueueReachableSquareRefundFailureHandoff(winner, submissionToken) ||
+            IsQueueReachableStrongerSquareRefundEvidence(winner))
         {
             return winner;
+        }
+
+        // 兼容写入异常、旧版本或并发通用失败写入：同一退款 worker 已保存 FAILED/REJECTED
+        // 但尚未建立 FinalizePending 时，必须先精确补齐耐久 handoff；其它终态保持单调。
+        if (IsRepairableSquareRefundFailure(winner, submissionToken))
+        {
+            var repairUpdatedAt = NextAttemptTimestamp(winner.UpdatedAt);
+            try
+            {
+                await RunLocalStoreAsync(
+                    () => repository.TryPersistRefundFailureForFinalizationAsync(
+                        winner.AttemptGuid,
+                        winner.Status,
+                        winner.UpdatedAt,
+                        submissionToken,
+                        winner.PaymentStatus!.Trim().ToUpperInvariant(),
+                        winner.ResponseCode ?? authorization.ResponseCode,
+                        winner.ResponseText ?? authorization.Message,
+                        repairUpdatedAt,
+                        cancellationToken),
+                    cancellationToken);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                LogCardRecoveryWarning(
+                    "repair-square-refund-failure-finalization",
+                    winner.AttemptGuid,
+                    ex);
+            }
+
+            winner = await ReadSquareRefundFailureHandoffWinnerAsync(
+                repository,
+                observedAttempt.AttemptGuid,
+                cancellationToken);
+            if (winner is not null &&
+                (IsQueueReachableSquareRefundFailureHandoff(winner, submissionToken) ||
+                 IsQueueReachableStrongerSquareRefundEvidence(winner)))
+            {
+                return winner;
+            }
         }
 
         LogCardRecoveryWarning(
@@ -1832,6 +1877,57 @@ public sealed class CashPaymentWorkflowService(
                 "Square refund finalization CAS was lost to an incompatible state; no recovery identity was returned."));
         return null;
     }
+
+    private async Task<LocalSquarePaymentAttempt?> ReadSquareRefundFailureHandoffWinnerAsync(
+        ILocalSquarePaymentAttemptRepository repository,
+        Guid attemptGuid,
+        CancellationToken cancellationToken) =>
+        await RunLocalStoreAsync(
+            () => repository.GetAttemptAsync(attemptGuid, cancellationToken),
+            cancellationToken);
+
+    private static bool IsQueueReachableSquareRefundFailureHandoff(
+        LocalSquarePaymentAttempt attempt,
+        string submissionToken) =>
+        IsQueueReachableSquareRefundAttempt(attempt) &&
+        string.Equals(attempt.SubmissionToken, submissionToken, StringComparison.Ordinal) &&
+        IsTerminalSquareRefundFailure(attempt.PaymentStatus) &&
+        attempt.Status == LocalSquarePaymentAttemptStatus.Unknown &&
+        string.Equals(attempt.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) &&
+        attempt.RecoveryTargetStatus == LocalSquarePaymentAttemptStatus.Abandoned;
+
+    private static bool IsQueueReachableStrongerSquareRefundEvidence(LocalSquarePaymentAttempt attempt) =>
+        IsQueueReachableSquareRefundAttempt(attempt) &&
+        HasStrongerSquareRefundEvidence(attempt);
+
+    private static bool IsQueueReachableSquareRefundAttempt(LocalSquarePaymentAttempt attempt) =>
+        string.Equals(attempt.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase) &&
+        attempt.Status is not (
+            LocalSquarePaymentAttemptStatus.Canceled or
+            LocalSquarePaymentAttemptStatus.TimedOut or
+            LocalSquarePaymentAttemptStatus.Failed or
+            LocalSquarePaymentAttemptStatus.OrderCompleted or
+            LocalSquarePaymentAttemptStatus.Abandoned);
+
+    private static bool IsRepairableSquareRefundFailure(
+        LocalSquarePaymentAttempt attempt,
+        string submissionToken) =>
+        string.Equals(attempt.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(attempt.SubmissionToken, submissionToken, StringComparison.Ordinal) &&
+        (attempt.Status is LocalSquarePaymentAttemptStatus.Pending or
+            LocalSquarePaymentAttemptStatus.Recovering or
+            LocalSquarePaymentAttemptStatus.Unknown or
+            LocalSquarePaymentAttemptStatus.Failed) &&
+        IsTerminalSquareRefundFailure(attempt.PaymentStatus) &&
+        string.Equals(attempt.RecoveryPhase, CardRecoveryPhases.None, StringComparison.Ordinal) &&
+        attempt.RecoveryTargetStatus is null &&
+        !IsSquareSupervisorResolution(attempt.ResponseCode);
+
+    private static bool IsSquareSupervisorResolution(string? responseCode) =>
+        string.Equals(responseCode, ActiveSessionSupervisorResolutionCodes.ConfirmedPaid, StringComparison.Ordinal) ||
+        string.Equals(responseCode, ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, StringComparison.Ordinal) ||
+        string.Equals(responseCode, CardRefundSupervisorResolutionCodes.ConfirmedRefunded, StringComparison.Ordinal) ||
+        string.Equals(responseCode, CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded, StringComparison.Ordinal);
 
     private static bool IsTerminalSquareRefundFailure(string? paymentStatus) =>
         string.Equals(paymentStatus?.Trim(), "FAILED", StringComparison.OrdinalIgnoreCase) ||
@@ -2778,12 +2874,20 @@ public sealed class CashPaymentWorkflowService(
             return;
         }
 
-        foreach (var attemptGuid in tenders
+        var attemptGuids = tenders
             .Where(tender => tender.Method == PaymentMethodKind.Card)
             .Select(tender => TryReadCardAttemptTenderKey(tender.IdempotencyKey, out var attemptGuid) ? attemptGuid : (Guid?)null)
             .Where(attemptGuid => attemptGuid is not null)
             .Select(attemptGuid => attemptGuid!.Value)
-            .Distinct())
+            .Distinct()
+            // 中文注释：同一订单可能包含多个 Linkly tender；精确 owner 必须最后处理且不能被前一个普通告警跳过。
+            .OrderBy(attemptGuid => IsCapturedRecoveryOwner(
+                recoveryOwnerAttemptKey,
+                recoveryOwnerAttemptGuid,
+                new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attemptGuid)))
+            .ToArray();
+        List<Exception>? nonOwnerFailures = null;
+        foreach (var attemptGuid in attemptGuids)
         {
             var attemptKey = new CardRecoveryAttemptKey(CardProcessorKind.Linkly, attemptGuid);
             var isCapturedOwner = IsCapturedRecoveryOwner(
@@ -2864,7 +2968,9 @@ public sealed class CashPaymentWorkflowService(
 
                 await AcknowledgeCompletedCardAttemptAsync(attemptGuid, cancellationToken);
             }
-            catch (Exception) when (isCapturedOwner)
+            catch (Exception ex) when (
+                isCapturedOwner &&
+                ex is not OutOfMemoryException and not StackOverflowException)
             {
                 // 中文注释：订单已落盘但 attempt 未能终态化时，撤回本 attempt 发布的活动购物车，避免双重有效状态。
                 if (recoveryOwnerAttemptKey is null)
@@ -2878,6 +2984,21 @@ public sealed class CashPaymentWorkflowService(
 
                 throw;
             }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                // 订单已经耐久保存；一个普通 tender 的收尾告警不能阻止后面的精确 owner 终态化与解锁。
+                nonOwnerFailures ??= [];
+                nonOwnerFailures.Add(new InvalidOperationException(
+                    $"Linkly attempt {attemptGuid:D} post-order finalization failed.",
+                    ex));
+            }
+        }
+
+        if (nonOwnerFailures is { Count: > 0 })
+        {
+            throw new AggregateException(
+                "One or more Linkly attempts could not be finalized after the order was saved.",
+                nonOwnerFailures);
         }
     }
 
@@ -3295,6 +3416,7 @@ public sealed class CashPaymentWorkflowService(
         }
 
         // 已批准 tender 先完成订单映射；owner-only 的失败退款最后收尾并释放 publication。
+        List<Exception>? nonOwnerFailures = null;
         foreach (var attemptGuid in attemptGuids.OrderBy(attemptGuid =>
             squareOwnerGuid == attemptGuid ? 1 : 0))
         {
@@ -3399,7 +3521,9 @@ public sealed class CashPaymentWorkflowService(
                     }
                 }
             }
-            catch (Exception) when (isCapturedOwner)
+            catch (Exception ex) when (
+                isCapturedOwner &&
+                ex is not OutOfMemoryException and not StackOverflowException)
             {
                 // 中文注释：最终 CAS 失败时只撤回当前 attempt 发布的草稿，保留 FinalizePending 供下次重放。
                 if (recoveryOwnerAttemptKey is null)
@@ -3413,6 +3537,21 @@ public sealed class CashPaymentWorkflowService(
 
                 throw;
             }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                // 非 owner 的告警留给异常中心重放，但不能让已保存的替代退款 owner 永久停在空购物车上。
+                nonOwnerFailures ??= [];
+                nonOwnerFailures.Add(new InvalidOperationException(
+                    $"Square attempt {attemptGuid:D} post-order finalization failed.",
+                    ex));
+            }
+        }
+
+        if (nonOwnerFailures is { Count: > 0 })
+        {
+            throw new AggregateException(
+                "One or more Square attempts could not be finalized after the order was saved.",
+                nonOwnerFailures);
         }
     }
 

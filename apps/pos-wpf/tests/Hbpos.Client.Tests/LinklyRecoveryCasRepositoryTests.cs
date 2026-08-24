@@ -323,6 +323,109 @@ public sealed class LinklyRecoveryCasRepositoryTests
         }
     }
 
+    [Theory]
+    [InlineData(LocalCardPaymentAttemptStatus.Abandoned, ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid)]
+    [InlineData(LocalCardPaymentAttemptStatus.Declined, "05")]
+    [InlineData(LocalCardPaymentAttemptStatus.TimedOut, null)]
+    [InlineData(LocalCardPaymentAttemptStatus.Cancelled, "17")]
+    [InlineData(LocalCardPaymentAttemptStatus.Failed, null)]
+    public async Task TryMarkAcknowledged_allows_only_exact_sale_failure_finalize_pending_target(
+        LocalCardPaymentAttemptStatus targetStatus,
+        string? responseCode)
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(databasePath);
+            var updatedAt = DateTimeOffset.Parse("2026-06-05T10:00:00+10:00");
+            var acknowledgedAt = updatedAt.AddMinutes(1);
+            var attempt = CreateAttempt(
+                LocalCardPaymentAttemptStatus.Recovering,
+                updatedAt,
+                responseCode,
+                CardRecoveryPhases.FinalizePending,
+                targetStatus.ToString());
+            await repository.CreateAsync(attempt);
+
+            var applied = await repository.TryMarkAcknowledgedAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                acknowledgedAt);
+
+            Assert.True(applied);
+            var persisted = Assert.IsType<LocalCardPaymentAttempt>(
+                await repository.GetAttemptAsync(attempt.AttemptGuid));
+            Assert.Equal(attempt.Status, persisted.Status);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, persisted.RecoveryPhase);
+            Assert.Equal(targetStatus.ToString(), persisted.RecoveryTargetStatus);
+            Assert.Equal(acknowledgedAt, persisted.AcknowledgedAt);
+            Assert.Equal(acknowledgedAt, persisted.UpdatedAt);
+
+            var completedAt = acknowledgedAt.AddMinutes(1);
+            Assert.True(await repository.TryFinalizeRecoveryOutcomeAsync(
+                attempt.AttemptGuid,
+                persisted.Status,
+                persisted.UpdatedAt,
+                targetStatus,
+                completedAt));
+            var completed = Assert.IsType<LocalCardPaymentAttempt>(
+                await repository.GetAttemptAsync(attempt.AttemptGuid));
+            Assert.Equal(targetStatus, completed.Status);
+            Assert.Equal(CardRecoveryPhases.None, completed.RecoveryPhase);
+            Assert.Null(completed.RecoveryTargetStatus);
+            Assert.Equal(acknowledgedAt, completed.AcknowledgedAt);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Theory]
+    [InlineData("Sale", LocalCardPaymentAttemptStatus.OrderCompleted, "00")]
+    [InlineData("Sale", LocalCardPaymentAttemptStatus.Abandoned, "05")]
+    [InlineData("Sale", LocalCardPaymentAttemptStatus.Declined, "00")]
+    [InlineData("Refund", LocalCardPaymentAttemptStatus.Declined, "05")]
+    public async Task TryMarkAcknowledged_refuses_unrelated_or_approved_finalize_pending_target(
+        string operationKind,
+        LocalCardPaymentAttemptStatus targetStatus,
+        string? responseCode)
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(databasePath);
+            var updatedAt = DateTimeOffset.Parse("2026-06-05T10:00:00+10:00");
+            var attempt = CreateAttempt(
+                LocalCardPaymentAttemptStatus.Recovering,
+                updatedAt,
+                responseCode,
+                CardRecoveryPhases.FinalizePending,
+                targetStatus.ToString(),
+                operationKind);
+            await repository.CreateAsync(attempt);
+
+            var applied = await repository.TryMarkAcknowledgedAsync(
+                attempt.AttemptGuid,
+                attempt.Status,
+                attempt.UpdatedAt,
+                updatedAt.AddMinutes(1));
+
+            Assert.False(applied);
+            var persisted = Assert.IsType<LocalCardPaymentAttempt>(
+                await repository.GetAttemptAsync(attempt.AttemptGuid));
+            Assert.Null(persisted.AcknowledgedAt);
+            Assert.Equal(updatedAt, persisted.UpdatedAt);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, persisted.RecoveryPhase);
+            Assert.Equal(targetStatus.ToString(), persisted.RecoveryTargetStatus);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     [Fact]
     public async Task Continue_waiting_with_existing_payment_reference_loses_cas_without_clearing_evidence()
     {

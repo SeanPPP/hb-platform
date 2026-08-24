@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.ExceptionServices;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Orders;
@@ -52,6 +53,7 @@ internal sealed class CardPaymentSession
     public void SetResultUnknownRecoveryRequired(bool value)
     {
         _cardPaymentResultUnknownRequiresRecovery = value;
+        _vm.OnCardResultUnknownRecoveryChanged(value);
         if (!value)
         {
             _cardPaymentHandoffCandidate = null;
@@ -158,6 +160,14 @@ internal sealed class CardPaymentSession
                 }
                 catch (Exception ex)
                 {
+                    var fatalException = FindFatalException(ex);
+                    if (fatalException is not null)
+                    {
+                        // CancellationTokenSource 会把回调异常包装进 AggregateException；
+                        // OOM/SO 必须按原异常继续传播，不能让进程在不可靠状态下继续退出流程。
+                        ExceptionDispatchInfo.Capture(fatalException).Throw();
+                    }
+
                     ConsoleLog.WriteError(
                         "Shutdown",
                         $"card payment shutdown cancellation failed error={ex.GetType().Name} message={ex.Message}",
@@ -281,7 +291,7 @@ internal sealed class CardPaymentSession
     {
         if (result.CardResult?.RequiresRecovery == true)
         {
-            _cardPaymentResultUnknownRequiresRecovery = true;
+            SetResultUnknownRecoveryRequired(true);
             _cardPaymentHandoffCandidate = null;
             _recoveryAttemptKey = result.RecoveryAttemptKey is { AttemptGuid: var attemptGuid } key &&
                 attemptGuid != Guid.Empty
@@ -387,7 +397,7 @@ internal sealed class CardPaymentSession
         {
             _cardPaymentHandoffCandidate = await prepare(_vm.CreateCardPaymentHandoffRequest());
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             // 查询失败必须保持当前订单锁定；不能把持久化异常升级成清单或导航动作。
             ConsoleLog.WriteError(
@@ -439,32 +449,32 @@ internal sealed class CardPaymentSession
             if (!await handoff(candidate, _vm.CreateCardPaymentHandoffRequest()))
             {
                 RestoreUnknownResultStatus();
+                _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
                 return;
             }
 
-            _cardPaymentResultUnknownRequiresRecovery = false;
-            _cardPaymentHandoffCandidate = null;
-            _recoveryAttemptKey = null;
-            _recoveryOrderGuid = null;
-            _unknownResultStatusKey = null;
-            _unknownResultStatusMessage = null;
-            _vm.CompleteCardPaymentHandoff();
+            if (!_vm.CompleteCardPaymentHandoff())
+            {
+                RestoreUnknownResultStatus();
+                _vm.IsPaymentInteractionLocked = true;
+                _vm.NotifyPaymentCommandStates();
+                return;
+            }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             ConsoleLog.WriteError(
                 "CardPayment",
                 $"card payment handoff failed error={ex.GetType().Name}",
                 exception: ex);
-            _cardPaymentResultUnknownRequiresRecovery = true;
+            SetResultUnknownRecoveryRequired(true);
             _vm.IsPaymentInteractionLocked = true;
             RestoreUnknownResultStatus();
             _vm.NotifyPaymentCommandStates();
         }
-        finally
-        {
-            _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
-        }
+
+        // 致命异常会绕过上面的普通异常 catch；不得在 finally 中执行 UI 通知覆盖原异常。
+        _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
     }
 
     private void RestoreUnknownResultStatus()
@@ -628,5 +638,31 @@ internal sealed class CardPaymentSession
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
             TaskScheduler.Default);
+    }
+
+    private static Exception? FindFatalException(Exception exception)
+    {
+        if (exception is OutOfMemoryException or StackOverflowException)
+        {
+            return exception;
+        }
+
+        if (exception is AggregateException aggregateException)
+        {
+            foreach (var innerException in aggregateException.InnerExceptions)
+            {
+                var fatalException = FindFatalException(innerException);
+                if (fatalException is not null)
+                {
+                    return fatalException;
+                }
+            }
+
+            return null;
+        }
+
+        return exception.InnerException is null
+            ? null
+            : FindFatalException(exception.InnerException);
     }
 }

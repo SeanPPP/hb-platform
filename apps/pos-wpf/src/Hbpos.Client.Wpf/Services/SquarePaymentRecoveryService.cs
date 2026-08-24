@@ -195,8 +195,10 @@ public sealed class SquarePaymentRecoveryService(
             return CardPaymentRecoveryResult.None;
         }
 
-        // 终态 attempt 不可再恢复；双保险之一，避免 Abandoned 等终态被重复恢复。
-        if (IsTerminalSquareStatus(attempt.Status))
+        // 普通终态不可再恢复；唯一例外是旧版本/崩溃留下的精确退款失败中间态，
+        // 它只允许进入本地 CAS 修复，不能重新调用 Square 金融 API。
+        if (IsTerminalSquareStatus(attempt.Status) &&
+            !IsUnfinalizedTerminalRefundFailure(attempt))
         {
             return CardPaymentRecoveryResult.None;
         }
@@ -521,16 +523,13 @@ public sealed class SquarePaymentRecoveryService(
 
     private static bool IsPersistedSquareSupervisorResolution(LocalSquarePaymentAttempt attempt)
     {
-        if (string.Equals(attempt.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase))
-        {
-            return string.Equals(attempt.ResponseCode, CardRefundSupervisorResolutionCodes.ConfirmedRefunded, StringComparison.Ordinal) ||
-                string.Equals(attempt.ResponseCode, CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded, StringComparison.Ordinal) ||
-                string.Equals(attempt.ResponseCode, CardRefundSupervisorResolutionCodes.ContinueWaiting, StringComparison.Ordinal);
-        }
-
+        // OperationKind 与 supervisor code 不一致也必须失败关闭；自动 CAS 同样拒绝全部主管金融结论。
         return string.Equals(attempt.ResponseCode, ActiveSessionSupervisorResolutionCodes.ConfirmedPaid, StringComparison.Ordinal) ||
             string.Equals(attempt.ResponseCode, ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, StringComparison.Ordinal) ||
-            string.Equals(attempt.ResponseCode, ActiveSessionSupervisorResolutionCodes.ContinueWaiting, StringComparison.Ordinal);
+            string.Equals(attempt.ResponseCode, ActiveSessionSupervisorResolutionCodes.ContinueWaiting, StringComparison.Ordinal) ||
+            string.Equals(attempt.ResponseCode, CardRefundSupervisorResolutionCodes.ConfirmedRefunded, StringComparison.Ordinal) ||
+            string.Equals(attempt.ResponseCode, CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded, StringComparison.Ordinal) ||
+            string.Equals(attempt.ResponseCode, CardRefundSupervisorResolutionCodes.ContinueWaiting, StringComparison.Ordinal);
     }
 
     private static bool IsTerminalSquareStatus(LocalSquarePaymentAttemptStatus status) =>
@@ -695,6 +694,8 @@ public sealed class SquarePaymentRecoveryService(
         LocalSquarePaymentAttempt attempt,
         CancellationToken cancellationToken)
     {
+        // 在第一次 await 前固定 provider + attempt owner；后续重启/交接只能操作这条销售恢复。
+        var attemptKey = new CardRecoveryAttemptKey(CardProcessorKind.Square, attempt.AttemptGuid);
         if (!cart.IsEmpty)
         {
             return new CardPaymentRecoveryResult(
@@ -741,7 +742,7 @@ public sealed class SquarePaymentRecoveryService(
         try
         {
             publication = cart.TryPublishRecoverySnapshot(
-                new CardRecoveryAttemptKey(CardProcessorKind.Square, attempt.AttemptGuid),
+                attemptKey,
                 expectedCartRevision,
                 draft.CartSnapshot);
         }
@@ -762,40 +763,17 @@ public sealed class SquarePaymentRecoveryService(
                 T("cardRecovery.square.notPaidRestoreFailed", "The previous Square payment could not be restored. Run recovery again."));
         }
 
-        bool finalized;
-        try
-        {
-            finalized = await CompleteRecoveryFinalizationAsync(
-                finalizePending,
-                LocalSquarePaymentAttemptStatus.Abandoned,
-                CancellationToken.None);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException and not OutOfMemoryException and not StackOverflowException)
-        {
-            ConsoleLog.Write(
-                "SquareRecovery",
-                $"not-paid terminalize failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
-            finalized = false;
-        }
-
-        if (!finalized)
-        {
-            cart.RollbackRecoveryPublication(
-                new CardRecoveryAttemptKey(CardProcessorKind.Square, attempt.AttemptGuid));
-            return new CardPaymentRecoveryResult(
-                CardPaymentRecoveryOutcome.Unknown,
-                T("cardRecovery.square.notPaidTerminalizeFailed", "The previous Square payment could not be finalized. Run recovery again."));
-        }
-
-        var ownershipReleased = cart.CompleteRecoveryPublication(
-            new CardRecoveryAttemptKey(CardProcessorKind.Square, attempt.AttemptGuid));
-
+        // DraftRestored 只是活动购物车已发布；UI 交接前必须保留 FinalizePending 和精确 owner，
+        // 这样进程退出后可从本地 draft 重放，而不会再次查询或提交 Square。
         return new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.DraftRestored,
             T("cardRecovery.square.notPaidRetryAllowed", "The bank confirmed that no payment was processed. The original order is ready to retry with the same operation."),
             TenderedAmount: draft.CurrentTenders.Sum(tender => tender.Amount),
             RestoredTenders: draft.CurrentTenders,
-            HasPostCommitWarning: publication.NotificationWarning || !ownershipReleased);
+            HasPostCommitWarning: publication.NotificationWarning)
+        {
+            DraftHandoffKey = attemptKey
+        };
     }
 
     private async Task<CardPaymentRecoveryResult> RestoreCanceledSaleAsync(
@@ -805,6 +783,61 @@ public sealed class SquarePaymentRecoveryService(
         string? cancelReason,
         CancellationToken cancellationToken)
     {
+        // 取消证据必须先落到本地，才能在交接前重启后拒绝再次 Square GET。
+        var attemptKey = new CardRecoveryAttemptKey(CardProcessorKind.Square, attempt.AttemptGuid);
+        if (!IsCanceledSaleDraftHandoff(attempt))
+        {
+            if (string.Equals(attempt.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal))
+            {
+                return new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.Unknown,
+                    UnknownResultMessage());
+            }
+
+            var evidenceAt = DateTimeOffset.UtcNow;
+            var evidencePersisted = await RunLocalStoreAsync(
+                () => attemptRepository.TryUpdateCheckoutStatusAsync(
+                    attempt.AttemptGuid,
+                    attempt.Status,
+                    attempt.UpdatedAt,
+                    attempt.Status,
+                    "CANCELED",
+                    cancelReason,
+                    evidenceAt,
+                    CancellationToken.None),
+                CancellationToken.None);
+            if (!evidencePersisted)
+            {
+                var winner = await RunLocalStoreAsync(
+                    () => attemptRepository.GetAttemptAsync(attempt.AttemptGuid, CancellationToken.None),
+                    CancellationToken.None);
+                if (winner is null || !IsCanceledSaleDraftHandoff(winner))
+                {
+                    return new CardPaymentRecoveryResult(
+                        CardPaymentRecoveryOutcome.Unknown,
+                        UnknownResultMessage());
+                }
+
+                attempt = winner;
+            }
+            else
+            {
+                attempt = attempt with
+                {
+                    CheckoutStatus = "CANCELED",
+                    CancelReason = cancelReason ?? attempt.CancelReason,
+                    UpdatedAt = evidenceAt
+                };
+            }
+        }
+
+        if (!IsCanceledSaleDraftHandoff(attempt))
+        {
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                UnknownResultMessage());
+        }
+
         var expectedRevision = cart.Revision;
         var finalizePending = await EnsureRecoveryFinalizationAsync(
             attempt,
@@ -818,7 +851,7 @@ public sealed class SquarePaymentRecoveryService(
         }
 
         var publication = cart.TryPublishRecoverySnapshot(
-            new CardRecoveryAttemptKey(CardProcessorKind.Square, attempt.AttemptGuid),
+            attemptKey,
             expectedRevision,
             draft.CartSnapshot);
         if (!publication.Succeeded)
@@ -828,28 +861,19 @@ public sealed class SquarePaymentRecoveryService(
                 CurrentCartNotEmptyMessage());
         }
 
-        var finalized = await CompleteRecoveryFinalizationAsync(
-            finalizePending,
-            LocalSquarePaymentAttemptStatus.Canceled,
-            CancellationToken.None);
-        if (!finalized)
-        {
-            cart.RollbackRecoveryPublication(
-                new CardRecoveryAttemptKey(CardProcessorKind.Square, attempt.AttemptGuid));
-            return new CardPaymentRecoveryResult(
-                CardPaymentRecoveryOutcome.Unknown,
-                UnknownResultMessage());
-        }
-
-        var ownershipReleased = cart.CompleteRecoveryPublication(
-            new CardRecoveryAttemptKey(CardProcessorKind.Square, attempt.AttemptGuid));
+        // 取消草稿也要等 UI 完成交接后才 CAS 到 Canceled 并释放精确 owner。
         return new CardPaymentRecoveryResult(
             CardPaymentRecoveryOutcome.DraftRestored,
             Format(
                 "cardRecovery.square.cancelled",
                 "The previous Square card payment was not completed: {0}. The order has been restored. Select a payment method again.",
                 cancelReason ?? "CANCELED"),
-            HasPostCommitWarning: publication.NotificationWarning || !ownershipReleased);
+            TenderedAmount: draft.CurrentTenders.Sum(tender => tender.Amount),
+            RestoredTenders: draft.CurrentTenders,
+            HasPostCommitWarning: publication.NotificationWarning)
+        {
+            DraftHandoffKey = attemptKey
+        };
     }
 
     private static CardPaymentOrderDraft? TryDeserializeDraft(LocalSquarePaymentAttempt attempt)
@@ -953,6 +977,16 @@ public sealed class SquarePaymentRecoveryService(
                 session,
                 refundAttempt,
                 cancellationToken);
+        }
+
+        if (IsUnfinalizedTerminalRefundFailure(refundAttempt))
+        {
+            // FAILED/REJECTED 已经是本地金融终态。即使上次在建立 FinalizePending 前退出，
+            // 本次也必须先补齐本地 handoff，不能重新依赖 Square GET 才允许恢复订单。
+            return await RecoverPersistedTerminalRefundFailureAsync(
+                cart,
+                session,
+                refundAttempt);
         }
 
         if (string.Equals(
@@ -1220,11 +1254,28 @@ public sealed class SquarePaymentRecoveryService(
         LocalSquarePaymentAttempt attempt,
         CancellationToken cancellationToken)
     {
-        // 主管确认未付款：在 MarkRecovering/远端 checkout 查询之前恢复并终态化，
+        // 主管确认未付款：在 MarkRecovering/远端 checkout 查询之前恢复并建立本地 handoff，
         // 避免缺 CheckoutId 遮蔽该主管状态导致永久 Unknown。
         if (IsSupervisorNotPaidSale(attempt))
         {
             return await RecoverSupervisorNotPaidSaleAsync(cart, attempt, cancellationToken);
+        }
+
+        if (IsCanceledSaleDraftHandoff(attempt))
+        {
+            // 上次可能只来得及保存 CANCELED 证据；远端查询前先从本地补齐 FinalizePending，
+            // 确保离线重启也能恢复草稿且不会再次访问 Square。
+            var canceledDraft = TryDeserializeDraft(attempt);
+            return canceledDraft is null
+                ? new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.Unknown,
+                    UnknownResultMessage())
+                : await RestoreCanceledSaleAsync(
+                    cart,
+                    attempt,
+                    canceledDraft,
+                    attempt.CancelReason,
+                    cancellationToken);
         }
 
         CardPaymentOrderDraft? draft = null;
@@ -1236,6 +1287,21 @@ public sealed class SquarePaymentRecoveryService(
             if (attempt.RecoveryTargetStatus == LocalSquarePaymentAttemptStatus.Abandoned)
             {
                 return await RecoverSupervisorNotPaidSaleAsync(cart, attempt, cancellationToken);
+            }
+
+            if (attempt.RecoveryTargetStatus == LocalSquarePaymentAttemptStatus.Canceled)
+            {
+                draft = TryDeserializeDraft(attempt);
+                return draft is null
+                    ? new CardPaymentRecoveryResult(
+                        CardPaymentRecoveryOutcome.Unknown,
+                        UnknownResultMessage())
+                    : await RestoreCanceledSaleAsync(
+                        cart,
+                        attempt,
+                        draft,
+                        attempt.CancelReason,
+                        cancellationToken);
             }
 
             if (attempt.RecoveryTargetStatus == LocalSquarePaymentAttemptStatus.OrderCompleted)
@@ -1789,6 +1855,59 @@ public sealed class SquarePaymentRecoveryService(
             session,
             verifiedAttempt,
             CancellationToken.None);
+    }
+
+    private async Task<CardPaymentRecoveryResult> RecoverPersistedTerminalRefundFailureAsync(
+        PosCartService cart,
+        PosSessionState session,
+        LocalSquarePaymentAttempt attempt)
+    {
+        var updatedAt = DateTimeOffset.UtcNow;
+        if (updatedAt <= attempt.UpdatedAt)
+        {
+            updatedAt = attempt.UpdatedAt.AddTicks(1);
+        }
+
+        try
+        {
+            await RunLocalStoreAsync(
+                () => attemptRepository.TryPersistRefundFailureForFinalizationAsync(
+                    attempt.AttemptGuid,
+                    attempt.Status,
+                    attempt.UpdatedAt,
+                    attempt.SubmissionToken!,
+                    attempt.PaymentStatus!.Trim().ToUpperInvariant(),
+                    attempt.ResponseCode,
+                    attempt.ResponseText,
+                    updatedAt,
+                    CancellationToken.None),
+                CancellationToken.None);
+
+            // CAS 成败都重读数据库，只服从真实赢家；禁止用内存快照伪造已耐久的恢复阶段。
+            var winner = await RunLocalStoreAsync(
+                () => attemptRepository.GetAttemptAsync(attempt.AttemptGuid, CancellationToken.None),
+                CancellationToken.None);
+            if (winner is not null)
+            {
+                return await ResolveSquareRefundWriteWinnerAsync(
+                    cart,
+                    session,
+                    winner,
+                    CancellationToken.None);
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            ConsoleLog.Write(
+                "SquareRecovery",
+                $"local refund failure handoff repair failed attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+        }
+
+        return new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.Unknown,
+            T("cardRecovery.refund.requiresReview", "A previous card refund is still unresolved. Do not refund again; ask a supervisor to reconcile Square and the original sale."),
+            DialogDetails: BuildRefundDialogDetails(attempt),
+            RefundDetails: BuildRefundDetails(attempt));
     }
 
     private async Task<CardPaymentRecoveryResult> ResolveSquareRefundWriteWinnerAsync(
@@ -2413,7 +2532,7 @@ public sealed class SquarePaymentRecoveryService(
     }
 
     /// <summary>
-    /// UI 已完整接收主管确认“未退款”的草稿后，才终结旧 attempt 并释放 publication。
+    /// UI 已完整接收可交接的恢复草稿后，才终结旧 attempt 并释放 publication。
     /// FAILED/REJECTED 替代退款和已批准 tender 的订单恢复仍由订单落库路径收尾。
     /// </summary>
     internal async Task<bool> CompleteDraftHandoffAsync(
@@ -2437,13 +2556,18 @@ public sealed class SquarePaymentRecoveryService(
             return false;
         }
 
-        if (!IsConfirmedNotRefundedDraftHandoff(attempt))
+        if (!TryGetDraftHandoffTargetStatus(attempt, out var targetStatus))
         {
             return false;
         }
 
         var current = attempt!;
-        var isTerminal = IsCompletedDraftHandoff(current);
+        var isTerminal = IsCompletedDraftHandoff(current, targetStatus);
+        if (!isTerminal && !IsPendingDraftHandoff(current, targetStatus))
+        {
+            return false;
+        }
+
         if (cart.RecoveryOwnerAttemptKey is not CardRecoveryAttemptKey ownerKey)
         {
             return isTerminal;
@@ -2455,12 +2579,10 @@ public sealed class SquarePaymentRecoveryService(
         }
 
         if (!isTerminal &&
-            (!string.Equals(current.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) ||
-             current.RecoveryTargetStatus != LocalSquarePaymentAttemptStatus.Abandoned ||
-             !await CompleteRecoveryFinalizationAsync(
+            !await CompleteRecoveryFinalizationAsync(
                  current,
-                 LocalSquarePaymentAttemptStatus.Abandoned,
-                 CancellationToken.None)))
+                 targetStatus,
+                 CancellationToken.None))
         {
             return false;
         }
@@ -2480,7 +2602,9 @@ public sealed class SquarePaymentRecoveryService(
             return false;
         }
 
-        if (!IsCompletedConfirmedNotRefundedDraftHandoff(persistedWinner))
+        if (!TryGetDraftHandoffTargetStatus(persistedWinner, out var persistedTargetStatus) ||
+            persistedTargetStatus != targetStatus ||
+            !IsCompletedDraftHandoff(persistedWinner!, targetStatus))
         {
             return false;
         }
@@ -2499,13 +2623,71 @@ public sealed class SquarePaymentRecoveryService(
         !string.Equals(attempt.PaymentStatus?.Trim(), "FAILED", StringComparison.OrdinalIgnoreCase) &&
         !string.Equals(attempt.PaymentStatus?.Trim(), "REJECTED", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsCompletedConfirmedNotRefundedDraftHandoff(LocalSquarePaymentAttempt? attempt) =>
-        IsConfirmedNotRefundedDraftHandoff(attempt) &&
-        attempt is not null &&
-        IsCompletedDraftHandoff(attempt);
+    private static bool TryGetDraftHandoffTargetStatus(
+        LocalSquarePaymentAttempt? attempt,
+        out LocalSquarePaymentAttemptStatus targetStatus)
+    {
+        if (IsConfirmedNotRefundedDraftHandoff(attempt) ||
+            IsSupervisorNotPaidSaleDraftHandoff(attempt))
+        {
+            targetStatus = LocalSquarePaymentAttemptStatus.Abandoned;
+            return true;
+        }
 
-    private static bool IsCompletedDraftHandoff(LocalSquarePaymentAttempt attempt) =>
-        attempt.Status == LocalSquarePaymentAttemptStatus.Abandoned &&
+        if (IsCanceledSaleDraftHandoff(attempt))
+        {
+            targetStatus = LocalSquarePaymentAttemptStatus.Canceled;
+            return true;
+        }
+
+        targetStatus = default;
+        return false;
+    }
+
+    private static bool IsSupervisorNotPaidSaleDraftHandoff(LocalSquarePaymentAttempt? attempt) =>
+        attempt is not null &&
+        string.Equals(attempt.OperationKind, "Sale", StringComparison.Ordinal) &&
+        string.Equals(
+            attempt.ResponseCode,
+            ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            StringComparison.Ordinal) &&
+        string.IsNullOrWhiteSpace(attempt.PaymentId) &&
+        string.IsNullOrWhiteSpace(attempt.PaymentStatus);
+
+    private static bool IsCanceledSaleDraftHandoff(LocalSquarePaymentAttempt? attempt) =>
+        attempt is not null &&
+        string.Equals(attempt.OperationKind, "Sale", StringComparison.Ordinal) &&
+        string.Equals(attempt.CheckoutStatus?.Trim(), "CANCELED", StringComparison.OrdinalIgnoreCase) &&
+        string.IsNullOrWhiteSpace(attempt.PaymentId) &&
+        string.IsNullOrWhiteSpace(attempt.PaymentStatus) &&
+        string.IsNullOrWhiteSpace(attempt.ResponseCode);
+
+    private static bool IsUnfinalizedTerminalRefundFailure(LocalSquarePaymentAttempt? attempt) =>
+        attempt is not null &&
+        string.Equals(attempt.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase) &&
+        !string.IsNullOrWhiteSpace(attempt.SubmissionToken) &&
+        (attempt.Status is LocalSquarePaymentAttemptStatus.Pending or
+            LocalSquarePaymentAttemptStatus.Recovering or
+            LocalSquarePaymentAttemptStatus.Unknown or
+            LocalSquarePaymentAttemptStatus.Failed) &&
+        (string.Equals(attempt.PaymentStatus?.Trim(), "FAILED", StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(attempt.PaymentStatus?.Trim(), "REJECTED", StringComparison.OrdinalIgnoreCase)) &&
+        string.Equals(attempt.RecoveryPhase, CardRecoveryPhases.None, StringComparison.Ordinal) &&
+        attempt.RecoveryTargetStatus is null &&
+        !IsPersistedSquareSupervisorResolution(attempt);
+
+    private static bool IsPendingDraftHandoff(
+        LocalSquarePaymentAttempt attempt,
+        LocalSquarePaymentAttemptStatus targetStatus) =>
+        !IsTerminalSquareStatus(attempt.Status) &&
+        attempt.Status != LocalSquarePaymentAttemptStatus.PaymentVerified &&
+        string.Equals(attempt.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) &&
+        attempt.RecoveryTargetStatus == targetStatus;
+
+    private static bool IsCompletedDraftHandoff(
+        LocalSquarePaymentAttempt attempt,
+        LocalSquarePaymentAttemptStatus targetStatus) =>
+        attempt.Status == targetStatus &&
         string.Equals(attempt.RecoveryPhase, CardRecoveryPhases.None, StringComparison.Ordinal) &&
         attempt.RecoveryTargetStatus is null;
 

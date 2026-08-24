@@ -679,6 +679,7 @@ public sealed class CardRecoveryCenterTests
             draftJson: SerializeDraft());
         var repository = new FakeSquareAttemptRepository(attempt);
         var service = CreateSquareService(repository);
+        var cart = new PosCartService();
 
         var result = await service.ResolveAttemptAsync(
             attempt.AttemptGuid,
@@ -686,11 +687,22 @@ public sealed class CardRecoveryCenterTests
             "not paid",
             "bank none",
             reference: null,
-            new PosCartService(),
+            cart,
             Session);
 
         Assert.True(result.Succeeded);
+        Assert.True(result.LockRetained);
         Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.RecoveryResult!.Outcome);
+        Assert.Equal(
+            new CardRecoveryAttemptKey(CardProcessorKind.Square, attempt.AttemptGuid),
+            result.RecoveryResult.DraftHandoffKey);
+        Assert.Equal(0, repository.TerminalizeNotPaidCount);
+        var pending = await repository.GetAttemptAsync(attempt.AttemptGuid);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Pending, pending!.Status);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, pending.RecoveryPhase);
+        Assert.Single(await service.ListOpenAsync(Session));
+
+        Assert.True(await service.CompleteDraftHandoffAsync(attempt.AttemptGuid, cart));
         Assert.Equal(1, repository.TerminalizeNotPaidCount);
         var saved = await repository.GetAttemptAsync(attempt.AttemptGuid);
         Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, saved!.Status);
@@ -728,6 +740,8 @@ public sealed class CardRecoveryCenterTests
         var recoverResult = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
 
         Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, recoverResult.Outcome);
+        Assert.Equal(0, repository.TerminalizeNotPaidCount);
+        Assert.True(await service.CompleteDraftHandoffAsync(attempt.AttemptGuid, cart));
         Assert.Equal(1, repository.TerminalizeNotPaidCount);
         var saved = await repository.GetAttemptAsync(attempt.AttemptGuid);
         Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, saved!.Status);
@@ -761,9 +775,13 @@ public sealed class CardRecoveryCenterTests
         Assert.False(raceResult.Succeeded);
 
         var secondService = CreateSquareService(repository);
-        var recoverResult = await secondService.RecoverAttemptAsync(attempt.AttemptGuid, new PosCartService(), Session);
+        var recoveredCart = new PosCartService();
+        var recoverResult = await secondService.RecoverAttemptAsync(attempt.AttemptGuid, recoveredCart, Session);
 
         Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, recoverResult.Outcome);
+        var pending = await repository.GetAttemptAsync(attempt.AttemptGuid);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Pending, pending!.Status);
+        Assert.True(await secondService.CompleteDraftHandoffAsync(attempt.AttemptGuid, recoveredCart));
         var saved = await repository.GetAttemptAsync(attempt.AttemptGuid);
         Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, saved!.Status);
     }
@@ -783,10 +801,13 @@ public sealed class CardRecoveryCenterTests
         };
         var repository = new FakeSquareAttemptRepository(attempt);
         var service = CreateSquareService(repository);
+        var cart = new PosCartService();
 
-        var result = await service.RecoverAttemptAsync(attempt.AttemptGuid, new PosCartService(), Session);
+        var result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
 
         Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.Outcome);
+        Assert.Equal(0, repository.TerminalizeNotPaidCount);
+        Assert.True(await service.CompleteDraftHandoffAsync(attempt.AttemptGuid, cart));
         Assert.Equal(1, repository.TerminalizeNotPaidCount);
     }
 
@@ -866,6 +887,7 @@ public sealed class CardRecoveryCenterTests
             TerminalizeException = new IOException("database busy")
         };
         var service = CreateSquareService(repository);
+        var cart = new PosCartService();
 
         var result = await service.ResolveAttemptAsync(
             attempt.AttemptGuid,
@@ -873,11 +895,14 @@ public sealed class CardRecoveryCenterTests
             "not paid",
             "bank none",
             reference: null,
-            new PosCartService(),
+            cart,
             Session);
 
-        Assert.False(result.Succeeded);
+        Assert.True(result.Succeeded);
         Assert.True(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.RecoveryResult?.Outcome);
+        Assert.False(await service.CompleteDraftHandoffAsync(attempt.AttemptGuid, cart));
+        Assert.Equal(attempt.AttemptGuid, cart.RecoveryOwnerAttemptGuid);
         var open = await service.ListOpenAsync(Session);
         Assert.Single(open);
     }
@@ -897,9 +922,12 @@ public sealed class CardRecoveryCenterTests
         };
         var repository = new FakeSquareAttemptRepository(attempt);
         var service = CreateSquareService(repository);
+        var cart = new PosCartService();
 
-        var first = await service.RecoverAttemptAsync(attempt.AttemptGuid, new PosCartService(), Session);
+        var first = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
         Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, first.Outcome);
+        Assert.Equal(0, repository.TerminalizeNotPaidCount);
+        Assert.True(await service.CompleteDraftHandoffAsync(attempt.AttemptGuid, cart));
         Assert.Equal(1, repository.TerminalizeNotPaidCount);
 
         var second = await service.RecoverAttemptAsync(attempt.AttemptGuid, new PosCartService(), Session);
