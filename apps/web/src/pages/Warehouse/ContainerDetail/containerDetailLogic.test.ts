@@ -3073,6 +3073,8 @@ const pushToHqPollingSource = pageSource.slice(
 )
 assertEqual(pushToHqPollingSource.includes('loadData()'), false, '发送到 HQ job 终态不应重新加载货柜明细表格')
 assertEqual(pushToHqPollingSource.includes('showPushToHqResult'), false, '发送到 HQ job 终态只使用右上角通知，不应再弹结果 Modal')
+assertEqual(pushToHqPollingSource.includes('initialPollIntervalMs: 200'), true, '发送到 HQ 前 10 次 job 查询应显式使用 200ms 快速轮询间隔')
+assertEqual(pushToHqPollingSource.includes('initialPollAttempts: 10'), true, '发送到 HQ 快速轮询应显式限制为前 10 次查询')
 assertEqual(pageSource.includes("message.warning(t('containers.messages.pushToHqSkippedNewProducts'"), false, '发送到 HQ 不应再因页面新商品状态给出跳过 warning')
 assertEqual(pageSource.includes('发送 HQ 的结果统一收敛到右上角通知'), true, '发送到 HQ 提交失败也应使用右上角通知承载结果')
 assertEqual(pageSource.includes("message: t('posAdmin.products.pushToHqFailed', '发送到 HQ 失败')"), true, '后端明确失败时应展示失败通知而不是部分成功')

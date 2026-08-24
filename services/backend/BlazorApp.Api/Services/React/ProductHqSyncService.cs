@@ -1155,15 +1155,35 @@ namespace BlazorApp.Api.Services.React
                     }
                     hqDb.Ado.CommitTran();
                 }
-                catch
+                catch (Exception operationException)
                 {
-                    hqDb.Ado.RollbackTran();
+                    RollbackPushTransaction(
+                        hqDb.Ado.RollbackTran,
+                        result,
+                        operationException
+                    );
                     throw;
                 }
 
                 result.DurationMs = (long)(DateTime.UtcNow - startedAt).TotalMilliseconds;
                 result.SuccessCount = products.Count;
                 result.FailedCount = result.TotalCount - result.SuccessCount;
+                _logger.LogInformation(
+                    "商品推送HQ完成: DurationMs={DurationMs}, SuccessCount={SuccessCount}, ActiveStoreCount={ActiveStoreCount}, ProductsAdded={ProductsAdded}, ProductsUpdated={ProductsUpdated}, StoreRetailPricesCreated={StoreRetailPricesCreated}, StoreRetailPricesUpdated={StoreRetailPricesUpdated}, ProductSetCodesCreated={ProductSetCodesCreated}, ProductSetCodesUpdated={ProductSetCodesUpdated}, StoreMultiCodesCreated={StoreMultiCodesCreated}, StoreMultiCodesUpdated={StoreMultiCodesUpdated}, WarehouseInventoriesCreated={WarehouseInventoriesCreated}, WarehouseInventoriesUpdated={WarehouseInventoriesUpdated}",
+                    result.DurationMs,
+                    result.SuccessCount,
+                    activeStoreCodes.Count,
+                    result.ProductsAdded,
+                    result.ProductsUpdated,
+                    result.StoreRetailPricesCreated,
+                    result.StoreRetailPricesUpdated,
+                    result.ProductSetCodesCreated,
+                    result.ProductSetCodesUpdated,
+                    result.StoreMultiCodesCreated,
+                    result.StoreMultiCodesUpdated,
+                    result.WarehouseInventoriesCreated,
+                    result.WarehouseInventoriesUpdated
+                );
                 return ApiResponse<PushProductsToHqResult>.OK(result, "商品推送HQ完成");
             }
             catch (Exception ex)
@@ -1294,6 +1314,47 @@ namespace BlazorApp.Api.Services.React
             var rawReason = result.Errors.FirstOrDefault(error => !string.IsNullOrWhiteSpace(error))
                 ?? fallbackReason;
             return NormalizePushFailureReason(rawReason);
+        }
+
+        internal void RollbackPushTransaction(
+            Action rollback,
+            PushProductsToHqResult result,
+            Exception operationException
+        )
+        {
+            try
+            {
+                rollback();
+            }
+            catch (Exception rollbackException)
+            {
+                // 回滚异常只能作为附加诊断，不能覆盖真正导致整单失败的写入异常。
+                _logger.LogError(
+                    rollbackException,
+                    "商品推送HQ事务回滚失败: ErrorCode={ErrorCode}, OriginalExceptionType={OriginalExceptionType}",
+                    "PRODUCT_HQ_PUSH_ROLLBACK_ERROR",
+                    operationException.GetType().Name
+                );
+            }
+            finally
+            {
+                ResetPushWriteCounts(result);
+            }
+        }
+
+        private static void ResetPushWriteCounts(PushProductsToHqResult result)
+        {
+            // HQ 写入使用整单事务；回滚后统计必须与实际提交数一致归零。
+            result.ProductsAdded = 0;
+            result.ProductsUpdated = 0;
+            result.StoreRetailPricesCreated = 0;
+            result.StoreRetailPricesUpdated = 0;
+            result.ProductSetCodesCreated = 0;
+            result.ProductSetCodesUpdated = 0;
+            result.StoreMultiCodesCreated = 0;
+            result.StoreMultiCodesUpdated = 0;
+            result.WarehouseInventoriesCreated = 0;
+            result.WarehouseInventoriesUpdated = 0;
         }
 
         private static string NormalizePushFailureReason(string rawReason)
@@ -1653,6 +1714,73 @@ namespace BlazorApp.Api.Services.React
             var effectiveAuditUser = NormalizeCode(auditUser) ?? "HBweb";
 
             var inserts = new List<DIC_商品信息字典表>();
+
+            // 已存在的商品编码中，仅在当前字段掩码下确有可写字段时才需要更新。
+            var updateProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var product in products)
+            {
+                var code = NormalizeCode(product.ProductCode);
+                if (code == null || !existingCodes.Contains(code))
+                {
+                    continue;
+                }
+
+                if (
+                    updateFields.IsAll
+                    || updateFields.HasAny(
+                        HqFieldItemNumber,
+                        HqFieldBarcode,
+                        HqFieldProductName,
+                        HqFieldEnglishName,
+                        HqFieldImage,
+                        HqFieldPurchasePrice,
+                        HqFieldRetailPrice,
+                        HqFieldMiddlePackQuantity,
+                        HqFieldSupplierCode
+                    )
+                )
+                {
+                    updateProductCodes.Add(code);
+                }
+            }
+
+            // 收集每个业务键对应的全部物理主键 ID（重复业务键需全部更新），并按是否写回 CBP 供应商编码分组。
+            var existingRows = new List<DIC_商品信息字典表>();
+            foreach (var codeBatch in updateProductCodes.Chunk(HqCodeBatchSize))
+            {
+                var codes = codeBatch.ToList();
+                existingRows.AddRange(
+                    await hqDb.Queryable<DIC_商品信息字典表>()
+                        .Where(row => row.H商品编码 != null && codes.Contains(row.H商品编码))
+                        .Select(row => new DIC_商品信息字典表
+                        {
+                            ID = row.ID,
+                            H商品编码 = row.H商品编码,
+                        })
+                        .ToListAsync()
+                );
+            }
+            var existingIdsByCode = existingRows
+                .Select(row => new
+                {
+                    Code = NormalizeCode(row.H商品编码),
+                    Row = row,
+                })
+                .Where(item => item.Code != null)
+                .GroupBy(item => item.Code!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(item => item.Row).ToList(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            var productUpdateColumns = BuildHqProductUpdateColumns(updateFields);
+            var productUpdateColumnsWithCbp = productUpdateColumns
+                .Append(nameof(DIC_商品信息字典表.CBP供应商编码))
+                .ToArray();
+            var productUpdates = new List<DIC_商品信息字典表>();
+            var productUpdatesNoCbp = new List<DIC_商品信息字典表>();
+
             foreach (var product in products)
             {
                 var code = NormalizeCode(product.ProductCode);
@@ -1676,9 +1804,9 @@ namespace BlazorApp.Api.Services.React
                     continue;
                 }
 
-                if (!updateFields.IsAll)
-                {
-                    if (!updateFields.HasAny(
+                if (
+                    !updateFields.IsAll
+                    && !updateFields.HasAny(
                         HqFieldItemNumber,
                         HqFieldBarcode,
                         HqFieldProductName,
@@ -1688,99 +1816,119 @@ namespace BlazorApp.Api.Services.React
                         HqFieldRetailPrice,
                         HqFieldMiddlePackQuantity,
                         HqFieldSupplierCode
-                    ))
-                    {
-                        continue;
-                    }
-
-                    var partialUpdate = hqDb.Updateable<DIC_商品信息字典表>()
-                        .SetColumns(row => new DIC_商品信息字典表
-                        {
-                            FGC_LastModifier = hqProduct.FGC_LastModifier,
-                            FGC_LastModifyDate = hqProduct.FGC_LastModifyDate,
-                        });
-                    if (updateFields.Has(HqFieldItemNumber))
-                    {
-                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H货号 = hqProduct.H货号 });
-                    }
-                    if (updateFields.Has(HqFieldBarcode))
-                    {
-                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H主条形码 = hqProduct.H主条形码 });
-                    }
-                    if (updateFields.Has(HqFieldEnglishName))
-                    {
-                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H商品名称 = hqProduct.H商品名称 });
-                    }
-                    if (updateFields.Has(HqFieldProductName))
-                    {
-                        // 中文名只更新 HQ 大写名称；英文显示名由 englishName 字段单独控制。
-                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H大写名称 = hqProduct.H大写名称 });
-                    }
-                    if (updateFields.Has(HqFieldPurchasePrice))
-                    {
-                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H进货价 = hqProduct.H进货价 });
-                    }
-                    if (updateFields.Has(HqFieldRetailPrice))
-                    {
-                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H零售价 = hqProduct.H零售价 });
-                    }
-                    if (updateFields.Has(HqFieldImage))
-                    {
-                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H商品图片 = hqProduct.H商品图片 });
-                    }
-                    if (updateFields.Has(HqFieldMiddlePackQuantity))
-                    {
-                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { 中包数量 = hqProduct.中包数量 });
-                    }
-                    if (updateFields.Has(HqFieldSupplierCode))
-                    {
-                        partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { H供货商编码 = hqProduct.H供货商编码 });
-                        if (!string.IsNullOrWhiteSpace(hqProduct.CBP供应商编码))
-                        {
-                            partialUpdate = partialUpdate.SetColumns(row => new DIC_商品信息字典表 { CBP供应商编码 = hqProduct.CBP供应商编码 });
-                        }
-                    }
-
-                    await partialUpdate
-                        .Where(row => row.H商品编码 == code)
-                        .ExecuteCommandAsync();
-                    result.ProductsUpdated++;
+                    )
+                )
+                {
                     continue;
                 }
 
-                // 商品字典只更新本地 POS 商品负责维护的字段；CBP 供应商只在能解析到国内供应商时修正。
-                var update = hqDb.Updateable<DIC_商品信息字典表>()
-                    .SetColumns(row => new DIC_商品信息字典表
-                    {
-                        H货号 = hqProduct.H货号,
-                        H主条形码 = hqProduct.H主条形码,
-                        H商品名称 = hqProduct.H商品名称,
-                        H大写名称 = hqProduct.H大写名称,
-                        H商品类型 = hqProduct.H商品类型,
-                        H规格 = hqProduct.H规格,
-                        H单位 = hqProduct.H单位,
-                        H进货价 = hqProduct.H进货价,
-                        H零售价 = hqProduct.H零售价,
-                        H是否自动定价 = hqProduct.H是否自动定价,
-                        H商品图片 = hqProduct.H商品图片,
-                        中包数量 = hqProduct.中包数量,
-                        H是否特殊商品 = hqProduct.H是否特殊商品,
-                        H供货商编码 = hqProduct.H供货商编码,
-                        FGC_LastModifier = hqProduct.FGC_LastModifier,
-                        FGC_LastModifyDate = hqProduct.FGC_LastModifyDate,
-                    });
-                if (!string.IsNullOrWhiteSpace(hqProduct.CBP供应商编码))
+                var updateWithCbp =
+                    updateFields.Has(HqFieldSupplierCode)
+                    && !string.IsNullOrWhiteSpace(hqProduct.CBP供应商编码);
+                var physicalIds = existingIdsByCode.GetValueOrDefault(code);
+                if (physicalIds == null || physicalIds.Count == 0)
                 {
-                    update = update.SetColumns(row => new DIC_商品信息字典表
-                    {
-                        CBP供应商编码 = hqProduct.CBP供应商编码,
-                    });
+                    throw new InvalidOperationException("HQ 商品更新快照与物理记录不一致，请重试");
                 }
 
-                await update
-                    .Where(row => row.H商品编码 == code)
-                    .ExecuteCommandAsync();
+                foreach (var physicalRow in physicalIds)
+                {
+                    var updateEntity = new DIC_商品信息字典表
+                    {
+                        ID = physicalRow.ID,
+                        FGC_LastModifier = hqProduct.FGC_LastModifier,
+                        FGC_LastModifyDate = hqProduct.FGC_LastModifyDate,
+                    };
+
+                    if (updateFields.IsAll)
+                    {
+                        updateEntity.H货号 = hqProduct.H货号;
+                        updateEntity.H主条形码 = hqProduct.H主条形码;
+                        updateEntity.H商品名称 = hqProduct.H商品名称;
+                        updateEntity.H大写名称 = hqProduct.H大写名称;
+                        updateEntity.H商品类型 = hqProduct.H商品类型;
+                        updateEntity.H规格 = hqProduct.H规格;
+                        updateEntity.H单位 = hqProduct.H单位;
+                        updateEntity.H进货价 = hqProduct.H进货价;
+                        updateEntity.H零售价 = hqProduct.H零售价;
+                        updateEntity.H是否自动定价 = hqProduct.H是否自动定价;
+                        updateEntity.H商品图片 = hqProduct.H商品图片;
+                        updateEntity.中包数量 = hqProduct.中包数量;
+                        updateEntity.H是否特殊商品 = hqProduct.H是否特殊商品;
+                        updateEntity.H供货商编码 = hqProduct.H供货商编码;
+                    }
+                    else
+                    {
+                        if (updateFields.Has(HqFieldItemNumber))
+                        {
+                            updateEntity.H货号 = hqProduct.H货号;
+                        }
+                        if (updateFields.Has(HqFieldBarcode))
+                        {
+                            updateEntity.H主条形码 = hqProduct.H主条形码;
+                        }
+                        if (updateFields.Has(HqFieldEnglishName))
+                        {
+                            updateEntity.H商品名称 = hqProduct.H商品名称;
+                        }
+                        if (updateFields.Has(HqFieldProductName))
+                        {
+                            // 中文名只更新 HQ 大写名称；英文显示名由 englishName 字段单独控制。
+                            updateEntity.H大写名称 = hqProduct.H大写名称;
+                        }
+                        if (updateFields.Has(HqFieldPurchasePrice))
+                        {
+                            updateEntity.H进货价 = hqProduct.H进货价;
+                        }
+                        if (updateFields.Has(HqFieldRetailPrice))
+                        {
+                            updateEntity.H零售价 = hqProduct.H零售价;
+                        }
+                        if (updateFields.Has(HqFieldImage))
+                        {
+                            updateEntity.H商品图片 = hqProduct.H商品图片;
+                        }
+                        if (updateFields.Has(HqFieldMiddlePackQuantity))
+                        {
+                            updateEntity.中包数量 = hqProduct.中包数量;
+                        }
+                        if (updateFields.Has(HqFieldSupplierCode))
+                        {
+                            updateEntity.H供货商编码 = hqProduct.H供货商编码;
+                        }
+                    }
+
+                    if (updateWithCbp)
+                    {
+                        updateEntity.CBP供应商编码 = hqProduct.CBP供应商编码;
+                        productUpdates.Add(updateEntity);
+                    }
+                    else
+                    {
+                        productUpdatesNoCbp.Add(updateEntity);
+                    }
+                }
+
                 result.ProductsUpdated++;
+            }
+
+            if (productUpdates.Count > 0)
+            {
+                foreach (var batch in productUpdates.Chunk(HqWriteBatchSize))
+                {
+                    await hqDb.Updateable(batch.ToList())
+                        .UpdateColumns(productUpdateColumnsWithCbp)
+                        .ExecuteCommandAsync();
+                }
+            }
+            if (productUpdatesNoCbp.Count > 0)
+            {
+                foreach (var batch in productUpdatesNoCbp.Chunk(HqWriteBatchSize))
+                {
+                    await hqDb.Updateable(batch.ToList())
+                        .UpdateColumns(productUpdateColumns)
+                        .ExecuteCommandAsync();
+                }
             }
 
             if (inserts.Count > 0)
@@ -1793,6 +1941,114 @@ namespace BlazorApp.Api.Services.React
                 }
                 result.ProductsAdded += inserts.Count;
             }
+        }
+
+        private static string[] BuildHqProductUpdateColumns(PushToHqUpdateFieldSelection updateFields)
+        {
+            if (updateFields.IsAll)
+            {
+                return new[]
+                {
+                    nameof(DIC_商品信息字典表.H货号),
+                    nameof(DIC_商品信息字典表.H主条形码),
+                    nameof(DIC_商品信息字典表.H商品名称),
+                    nameof(DIC_商品信息字典表.H大写名称),
+                    nameof(DIC_商品信息字典表.H商品类型),
+                    nameof(DIC_商品信息字典表.H规格),
+                    nameof(DIC_商品信息字典表.H单位),
+                    nameof(DIC_商品信息字典表.H进货价),
+                    nameof(DIC_商品信息字典表.H零售价),
+                    nameof(DIC_商品信息字典表.H是否自动定价),
+                    nameof(DIC_商品信息字典表.H商品图片),
+                    nameof(DIC_商品信息字典表.中包数量),
+                    nameof(DIC_商品信息字典表.H是否特殊商品),
+                    nameof(DIC_商品信息字典表.H供货商编码),
+                    nameof(DIC_商品信息字典表.FGC_LastModifier),
+                    nameof(DIC_商品信息字典表.FGC_LastModifyDate),
+                };
+            }
+
+            var columns = new List<string>
+            {
+                nameof(DIC_商品信息字典表.FGC_LastModifier),
+                nameof(DIC_商品信息字典表.FGC_LastModifyDate),
+            };
+            if (updateFields.Has(HqFieldItemNumber))
+            {
+                columns.Add(nameof(DIC_商品信息字典表.H货号));
+            }
+            if (updateFields.Has(HqFieldBarcode))
+            {
+                columns.Add(nameof(DIC_商品信息字典表.H主条形码));
+            }
+            if (updateFields.Has(HqFieldEnglishName))
+            {
+                columns.Add(nameof(DIC_商品信息字典表.H商品名称));
+            }
+            if (updateFields.Has(HqFieldProductName))
+            {
+                columns.Add(nameof(DIC_商品信息字典表.H大写名称));
+            }
+            if (updateFields.Has(HqFieldPurchasePrice))
+            {
+                columns.Add(nameof(DIC_商品信息字典表.H进货价));
+            }
+            if (updateFields.Has(HqFieldRetailPrice))
+            {
+                columns.Add(nameof(DIC_商品信息字典表.H零售价));
+            }
+            if (updateFields.Has(HqFieldImage))
+            {
+                columns.Add(nameof(DIC_商品信息字典表.H商品图片));
+            }
+            if (updateFields.Has(HqFieldMiddlePackQuantity))
+            {
+                columns.Add(nameof(DIC_商品信息字典表.中包数量));
+            }
+            if (updateFields.Has(HqFieldSupplierCode))
+            {
+                columns.Add(nameof(DIC_商品信息字典表.H供货商编码));
+            }
+            return columns.ToArray();
+        }
+
+        private static string[] BuildHqRetailPriceUpdateColumns(PushToHqUpdateFieldSelection updateFields)
+        {
+            if (updateFields.IsAll)
+            {
+                return new[]
+                {
+                    nameof(DIC_商品零售价表.H分店商品编码),
+                    nameof(DIC_商品零售价表.H供应商编码),
+                    nameof(DIC_商品零售价表.H分店供应商编码),
+                    nameof(DIC_商品零售价表.H进货价),
+                    nameof(DIC_商品零售价表.H分店零售价),
+                    nameof(DIC_商品零售价表.H是否自动定价),
+                    nameof(DIC_商品零售价表.FGC_LastModifier),
+                    nameof(DIC_商品零售价表.FGC_LastModifyDate),
+                };
+            }
+
+            var columns = new List<string>
+            {
+                nameof(DIC_商品零售价表.FGC_LastModifier),
+                nameof(DIC_商品零售价表.FGC_LastModifyDate),
+            };
+            if (updateFields.Has(HqFieldStorePurchasePrice))
+            {
+                columns.Add(nameof(DIC_商品零售价表.H进货价));
+            }
+            if (updateFields.Has(HqFieldStoreRetailPrice))
+            {
+                columns.Add(nameof(DIC_商品零售价表.H分店零售价));
+            }
+            if (updateFields.Has(HqFieldSupplierCode))
+            {
+                columns.Add(nameof(DIC_商品零售价表.H分店商品编码));
+                columns.Add(nameof(DIC_商品零售价表.H供应商编码));
+                columns.Add(nameof(DIC_商品零售价表.H分店供应商编码));
+            }
+            return columns.ToArray();
         }
 
         private static async Task UpsertHqWarehouseInventoriesAsync(
@@ -1834,6 +2090,24 @@ namespace BlazorApp.Api.Services.React
                 .ToDictionary(row => row.H商品编码!, StringComparer.OrdinalIgnoreCase);
             var now = DateTime.Now;
             var inserts = new List<CBP_DIC_商品库存表>();
+            var inventoryUpdates = new List<CBP_DIC_商品库存表>();
+            var inventoryUpdateColumns = new List<string>
+            {
+                nameof(CBP_DIC_商品库存表.FGC_LastModifier),
+                nameof(CBP_DIC_商品库存表.FGC_LastModifyDate),
+            };
+            if (updateFields.IsAll || updateFields.Has(HqFieldInventoryDomesticPrice))
+            {
+                inventoryUpdateColumns.Add(nameof(CBP_DIC_商品库存表.H国内价格));
+            }
+            if (updateFields.IsAll || updateFields.Has(HqFieldInventoryImportPrice))
+            {
+                inventoryUpdateColumns.Add(nameof(CBP_DIC_商品库存表.H进口价格));
+            }
+            if (updateFields.IsAll || updateFields.Has(HqFieldInventoryOemPrice))
+            {
+                inventoryUpdateColumns.Add(nameof(CBP_DIC_商品库存表.H贴牌价格));
+            }
 
             foreach (var productCode in inventoryProductCodes)
             {
@@ -1845,36 +2119,25 @@ namespace BlazorApp.Api.Services.React
 
                 if (existingInventoryByCode.TryGetValue(productCode, out var existingInventory))
                 {
-                    var update = hqDb.Updateable<CBP_DIC_商品库存表>()
-                        .SetColumns(row => new CBP_DIC_商品库存表
-                        {
-                            FGC_LastModifier = effectiveAuditUser,
-                            FGC_LastModifyDate = now,
-                        });
+                    var updateEntity = new CBP_DIC_商品库存表
+                    {
+                        ID = existingInventory.ID,
+                        FGC_LastModifier = effectiveAuditUser,
+                        FGC_LastModifyDate = now,
+                    };
                     if (updateFields.IsAll || updateFields.Has(HqFieldInventoryDomesticPrice))
                     {
-                        update = update.SetColumns(row => new CBP_DIC_商品库存表
-                        {
-                            H国内价格 = candidate.DomesticPrice ?? existingInventory.H国内价格,
-                        });
+                        updateEntity.H国内价格 = candidate.DomesticPrice ?? existingInventory.H国内价格;
                     }
                     if (updateFields.IsAll || updateFields.Has(HqFieldInventoryImportPrice))
                     {
-                        update = update.SetColumns(row => new CBP_DIC_商品库存表
-                        {
-                            H进口价格 = candidate.ImportPrice ?? existingInventory.H进口价格,
-                        });
+                        updateEntity.H进口价格 = candidate.ImportPrice ?? existingInventory.H进口价格;
                     }
                     if (updateFields.IsAll || updateFields.Has(HqFieldInventoryOemPrice))
                     {
-                        update = update.SetColumns(row => new CBP_DIC_商品库存表
-                        {
-                            H贴牌价格 = candidate.OemPrice ?? existingInventory.H贴牌价格,
-                        });
+                        updateEntity.H贴牌价格 = candidate.OemPrice ?? existingInventory.H贴牌价格;
                     }
-                    await update
-                        .Where(row => row.H商品编码 == productCode)
-                        .ExecuteCommandAsync();
+                    inventoryUpdates.Add(updateEntity);
                     result.WarehouseInventoriesUpdated++;
                     continue;
                 }
@@ -1897,6 +2160,16 @@ namespace BlazorApp.Api.Services.React
                     FGC_LastModifier = effectiveAuditUser,
                     FGC_LastModifyDate = now,
                 });
+            }
+
+            if (inventoryUpdates.Count > 0)
+            {
+                foreach (var batch in inventoryUpdates.Chunk(HqWriteBatchSize))
+                {
+                    await hqDb.Updateable(batch.ToList())
+                        .UpdateColumns(inventoryUpdateColumns.ToArray())
+                        .ExecuteCommandAsync();
+                }
             }
 
             if (inserts.Count > 0)
@@ -1949,6 +2222,7 @@ namespace BlazorApp.Api.Services.React
                             )
                             .Select(row => new DIC_商品零售价表
                             {
+                                ID = row.ID,
                                 H分店代码 = row.H分店代码,
                                 H商品编码 = row.H商品编码,
                             })
@@ -1956,13 +2230,27 @@ namespace BlazorApp.Api.Services.React
                     );
                 }
             }
-            var existingKeys = existingRows
-                .Select(row => BuildStoreProductKey(row.H分店代码, row.H商品编码))
+            var existingRowsByKey = existingRows
+                .Select(row => new
+                {
+                    Key = BuildStoreProductKey(row.H分店代码, row.H商品编码),
+                    Row = row,
+                })
+                .Where(item => item.Key != null)
+                .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(item => item.Row).ToList(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+            var existingKeys = existingRowsByKey.Keys
                 .Where(key => key != null)
-                .Select(key => key!)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             var inserts = new List<DIC_商品零售价表>();
+            var retailPriceUpdates = new List<DIC_商品零售价表>();
+            var retailPriceUpdateColumns = BuildHqRetailPriceUpdateColumns(updateFields);
+
             foreach (var product in products)
             {
                 var productCode = NormalizeCode(product.ProductCode);
@@ -1994,55 +2282,64 @@ namespace BlazorApp.Api.Services.React
                         continue;
                     }
 
-                    if (!updateFields.IsAll)
+                    var physicalIds = existingRowsByKey.GetValueOrDefault(key);
+                    if (physicalIds == null || physicalIds.Count == 0)
                     {
-                        var update = hqDb.Updateable<DIC_商品零售价表>()
-                            .SetColumns(row => new DIC_商品零售价表
-                            {
-                                FGC_LastModifier = hqPrice.FGC_LastModifier,
-                                FGC_LastModifyDate = hqPrice.FGC_LastModifyDate,
-                            });
-                        if (updateFields.Has(HqFieldStorePurchasePrice))
-                        {
-                            update = update.SetColumns(row => new DIC_商品零售价表 { H进货价 = hqPrice.H进货价 });
-                        }
-                        if (updateFields.Has(HqFieldStoreRetailPrice))
-                        {
-                            update = update.SetColumns(row => new DIC_商品零售价表 { H分店零售价 = hqPrice.H分店零售价 });
-                        }
-                        if (updateFields.Has(HqFieldSupplierCode))
-                        {
-                            update = update.SetColumns(row => new DIC_商品零售价表
-                            {
-                                H分店商品编码 = hqPrice.H分店商品编码,
-                                H供应商编码 = hqPrice.H供应商编码,
-                                H分店供应商编码 = hqPrice.H分店供应商编码,
-                            });
-                        }
-
-                        await update
-                            .Where(row => row.H分店代码 == storeCode && row.H商品编码 == productCode)
-                            .ExecuteCommandAsync();
                         result.StoreRetailPricesUpdated++;
                         continue;
                     }
 
-                    // 已有 HQ 分店零售价只更新价格/供应商/自动定价和修改信息，不覆盖特殊商品、库存、活动和动态销售字段。
-                    await hqDb.Updateable<DIC_商品零售价表>()
-                        .SetColumns(row => new DIC_商品零售价表
+                    foreach (var physicalRow in physicalIds)
+                    {
+                        // 已有 HQ 分店零售价只更新价格/供应商/自动定价和修改信息，不覆盖特殊商品、库存、活动和动态销售字段。
+                        var updateEntity = new DIC_商品零售价表
                         {
-                            H分店商品编码 = hqPrice.H分店商品编码,
-                            H供应商编码 = hqPrice.H供应商编码,
-                            H分店供应商编码 = hqPrice.H分店供应商编码,
-                            H进货价 = hqPrice.H进货价,
-                            H分店零售价 = hqPrice.H分店零售价,
-                            H是否自动定价 = hqPrice.H是否自动定价,
+                            ID = physicalRow.ID,
                             FGC_LastModifier = hqPrice.FGC_LastModifier,
                             FGC_LastModifyDate = hqPrice.FGC_LastModifyDate,
-                        })
-                        .Where(row => row.H分店代码 == storeCode && row.H商品编码 == productCode)
-                        .ExecuteCommandAsync();
+                        };
+
+                        if (updateFields.IsAll)
+                        {
+                            updateEntity.H分店商品编码 = hqPrice.H分店商品编码;
+                            updateEntity.H供应商编码 = hqPrice.H供应商编码;
+                            updateEntity.H分店供应商编码 = hqPrice.H分店供应商编码;
+                            updateEntity.H进货价 = hqPrice.H进货价;
+                            updateEntity.H分店零售价 = hqPrice.H分店零售价;
+                            updateEntity.H是否自动定价 = hqPrice.H是否自动定价;
+                        }
+                        else
+                        {
+                            if (updateFields.Has(HqFieldStorePurchasePrice))
+                            {
+                                updateEntity.H进货价 = hqPrice.H进货价;
+                            }
+                            if (updateFields.Has(HqFieldStoreRetailPrice))
+                            {
+                                updateEntity.H分店零售价 = hqPrice.H分店零售价;
+                            }
+                            if (updateFields.Has(HqFieldSupplierCode))
+                            {
+                                updateEntity.H分店商品编码 = hqPrice.H分店商品编码;
+                                updateEntity.H供应商编码 = hqPrice.H供应商编码;
+                                updateEntity.H分店供应商编码 = hqPrice.H分店供应商编码;
+                            }
+                        }
+
+                        retailPriceUpdates.Add(updateEntity);
+                    }
+
                     result.StoreRetailPricesUpdated++;
+                }
+            }
+
+            if (retailPriceUpdates.Count > 0)
+            {
+                foreach (var batch in retailPriceUpdates.Chunk(HqWriteBatchSize))
+                {
+                    await hqDb.Updateable(batch.ToList())
+                        .UpdateColumns(retailPriceUpdateColumns)
+                        .ExecuteCommandAsync();
                 }
             }
 
@@ -2101,8 +2398,12 @@ namespace BlazorApp.Api.Services.React
                     Row = row,
                 })
                 .Where(item => item.Key != null)
-                .GroupBy(item => item.Key!)
-                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+                .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(item => item.Row).ToList(),
+                    StringComparer.OrdinalIgnoreCase
+                );
             var existingByGuidKey = existingRows
                 .Select(row => new
                 {
@@ -2110,8 +2411,12 @@ namespace BlazorApp.Api.Services.React
                     Row = row,
                 })
                 .Where(item => item.Key != null)
-                .GroupBy(item => item.Key!)
-                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+                .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(item => item.Row).ToList(),
+                    StringComparer.OrdinalIgnoreCase
+                );
             var existingByBarcodeKey = existingRows
                 .Select(row => new
                 {
@@ -2119,8 +2424,12 @@ namespace BlazorApp.Api.Services.React
                     Row = row,
                 })
                 .Where(item => item.Key != null)
-                .GroupBy(item => item.Key!)
-                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+                .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(item => item.Row).ToList(),
+                    StringComparer.OrdinalIgnoreCase
+                );
             var allocatedProductSetPurchasePrices = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
             foreach (
                 var group in productSetCodes
@@ -2152,6 +2461,20 @@ namespace BlazorApp.Api.Services.React
             }
 
             var inserts = new List<DIC_一品多码表>();
+            var productSetCodeUpdates = new List<DIC_一品多码表>();
+            var productSetCodeUpdateColumns = new[]
+            {
+                nameof(DIC_一品多码表.H供应商编码),
+                nameof(DIC_一品多码表.H主条形码),
+                nameof(DIC_一品多码表.H多条形码),
+                nameof(DIC_一品多码表.H进货价),
+                nameof(DIC_一品多码表.H一品多码零售价),
+                nameof(DIC_一品多码表.H使用状态),
+                nameof(DIC_一品多码表.H是否自动定价),
+                nameof(DIC_一品多码表.FGC_LastModifier),
+                nameof(DIC_一品多码表.FGC_LastModifyDate),
+            };
+
             foreach (var setCode in productSetCodes)
             {
                 var productCode = NormalizeCode(setCode.ProductCode);
@@ -2177,28 +2500,30 @@ namespace BlazorApp.Api.Services.React
                 hqSetCode.FGC_LastModifier = effectiveAuditUser;
                 var guidKey = BuildProductSetCodeBusinessKey(productCode, hqSetCode.HGUID);
                 var barcodeKey = BuildProductSetCodeBusinessKey(productCode, hqSetCode.H多条形码);
-                var existing =
+                var existingRowsForUpdate =
                     existingByBusinessKey.GetValueOrDefault(key)
                     ?? (guidKey == null ? null : existingByGuidKey.GetValueOrDefault(guidKey))
                     ?? (barcodeKey == null ? null : existingByBarcodeKey.GetValueOrDefault(barcodeKey));
-                if (existing == null)
+                if (existingRowsForUpdate == null)
                 {
                     inserts.Add(hqSetCode);
-                    existingByBusinessKey[key] = hqSetCode;
+                    existingByBusinessKey[key] = new List<DIC_一品多码表> { hqSetCode };
                     if (guidKey != null)
                     {
-                        existingByGuidKey[guidKey] = hqSetCode;
+                        existingByGuidKey[guidKey] = new List<DIC_一品多码表> { hqSetCode };
                     }
                     if (barcodeKey != null)
                     {
-                        existingByBarcodeKey[barcodeKey] = hqSetCode;
+                        existingByBarcodeKey[barcodeKey] = new List<DIC_一品多码表> { hqSetCode };
                     }
                     continue;
                 }
 
-                await hqDb.Updateable<DIC_一品多码表>()
-                    .SetColumns(row => new DIC_一品多码表
+                foreach (var existing in existingRowsForUpdate)
+                {
+                    productSetCodeUpdates.Add(new DIC_一品多码表
                     {
+                        ID = existing.ID,
                         H供应商编码 = hqSetCode.H供应商编码,
                         H主条形码 = hqSetCode.H主条形码,
                         H多条形码 = hqSetCode.H多条形码,
@@ -2208,10 +2533,22 @@ namespace BlazorApp.Api.Services.React
                         H是否自动定价 = hqSetCode.H是否自动定价,
                         FGC_LastModifier = hqSetCode.FGC_LastModifier,
                         FGC_LastModifyDate = hqSetCode.FGC_LastModifyDate,
-                    })
-                    .Where(row => row.ID == existing.ID)
-                    .ExecuteCommandAsync();
+                    });
+                }
                 result.ProductSetCodesUpdated++;
+            }
+
+            if (productSetCodeUpdates.Count > 0)
+            {
+                var uniqueUpdates = productSetCodeUpdates
+                    .GroupBy(row => row.ID)
+                    .Select(group => group.Last());
+                foreach (var batch in uniqueUpdates.Chunk(HqWriteBatchSize))
+                {
+                    await hqDb.Updateable(batch.ToList())
+                        .UpdateColumns(productSetCodeUpdateColumns)
+                        .ExecuteCommandAsync();
+                }
             }
 
             if (inserts.Count > 0)
@@ -2287,8 +2624,12 @@ namespace BlazorApp.Api.Services.React
                     Row = row,
                 })
                 .Where(item => item.Key != null)
-                .GroupBy(item => item.Key!)
-                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+                .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(item => item.Row).ToList(),
+                    StringComparer.OrdinalIgnoreCase
+                );
             var existingByGuidKey = existingRows
                 .Select(row => new
                 {
@@ -2296,8 +2637,12 @@ namespace BlazorApp.Api.Services.React
                     Row = row,
                 })
                 .Where(item => item.Key != null)
-                .GroupBy(item => item.Key!)
-                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+                .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(item => item.Row).ToList(),
+                    StringComparer.OrdinalIgnoreCase
+                );
             var existingByBarcodeKey = existingRows
                 .Select(row => new
                 {
@@ -2305,8 +2650,12 @@ namespace BlazorApp.Api.Services.React
                     Row = row,
                 })
                 .Where(item => item.Key != null)
-                .GroupBy(item => item.Key!)
-                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+                .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(item => item.Row).ToList(),
+                    StringComparer.OrdinalIgnoreCase
+                );
             var existingByStoreMultiProductKey = existingRows
                 .Select(row => new
                 {
@@ -2314,8 +2663,12 @@ namespace BlazorApp.Api.Services.React
                     Row = row,
                 })
                 .Where(item => item.Key != null)
-                .GroupBy(item => item.Key!)
-                .ToDictionary(group => group.Key, group => group.First().Row, StringComparer.OrdinalIgnoreCase);
+                .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(item => item.Row).ToList(),
+                    StringComparer.OrdinalIgnoreCase
+                );
             var storeMultiCodeByKey = storeMultiCodes
                 .Select(row => new
                 {
@@ -2371,6 +2724,24 @@ namespace BlazorApp.Api.Services.React
             }
 
             var inserts = new List<DIC_分店一品多码表>();
+            var storeMultiCodeUpdates = new List<DIC_分店一品多码表>();
+            var storeMultiCodeUpdateColumns = new[]
+            {
+                nameof(DIC_分店一品多码表.H分店商品编码),
+                nameof(DIC_分店一品多码表.H分店多码商品编码),
+                nameof(DIC_分店一品多码表.H供应商编码),
+                nameof(DIC_分店一品多码表.H主条形码),
+                nameof(DIC_分店一品多码表.H多条形码),
+                nameof(DIC_分店一品多码表.H进货价),
+                nameof(DIC_分店一品多码表.H折扣率),
+                nameof(DIC_分店一品多码表.H一品多码零售价),
+                nameof(DIC_分店一品多码表.H是否自动定价),
+                nameof(DIC_分店一品多码表.H是否特殊商品),
+                nameof(DIC_分店一品多码表.H使用状态),
+                nameof(DIC_分店一品多码表.FGC_LastModifier),
+                nameof(DIC_分店一品多码表.FGC_LastModifyDate),
+            };
+
             foreach (var productGroup in productSetCodes
                 .Select(setCode => new
                 {
@@ -2414,39 +2785,39 @@ namespace BlazorApp.Api.Services.React
                         var guidKey = BuildStoreMultiCodeKey(storeCode, productCode, hqStoreMultiCode.HGUID);
                         var barcodeKey = BuildStoreMultiCodeKey(storeCode, productCode, hqStoreMultiCode.H多条形码);
                         var storeMultiProductKey = BuildStoreMultiCodeKey(storeCode, productCode, hqStoreMultiCode.H分店多码商品编码);
-                        var existing =
+                        var existingRowsForUpdate =
                             existingByBusinessKey.GetValueOrDefault(key)
                             ?? (guidKey == null ? null : existingByGuidKey.GetValueOrDefault(guidKey))
                             ?? (barcodeKey == null ? null : existingByBarcodeKey.GetValueOrDefault(barcodeKey))
                             ?? (storeMultiProductKey == null ? null : existingByStoreMultiProductKey.GetValueOrDefault(storeMultiProductKey));
-                        if (existing == null)
+                        if (existingRowsForUpdate == null)
                         {
                             inserts.Add(hqStoreMultiCode);
-                            existingByBusinessKey[key] = hqStoreMultiCode;
+                            existingByBusinessKey[key] = new List<DIC_分店一品多码表> { hqStoreMultiCode };
                             if (guidKey != null)
                             {
-                                existingByGuidKey[guidKey] = hqStoreMultiCode;
+                                existingByGuidKey[guidKey] = new List<DIC_分店一品多码表> { hqStoreMultiCode };
                             }
                             if (barcodeKey != null)
                             {
-                                existingByBarcodeKey[barcodeKey] = hqStoreMultiCode;
+                                existingByBarcodeKey[barcodeKey] = new List<DIC_分店一品多码表> { hqStoreMultiCode };
                             }
                             if (storeMultiProductKey != null)
                             {
-                                existingByStoreMultiProductKey[storeMultiProductKey] = hqStoreMultiCode;
+                                existingByStoreMultiProductKey[storeMultiProductKey] = new List<DIC_分店一品多码表> { hqStoreMultiCode };
                             }
                             continue;
                         }
 
-                        // 兼容历史错码命中时，保留 HQ 既有业务编码，避免把 HGUID 回写成多码商品编码。
-                        hqStoreMultiCode.H分店多码商品编码 = existing.H分店多码商品编码;
-
-                        // 分店一品多码更新不触碰库存、活动和动态销售字段。
-                        await hqDb.Updateable<DIC_分店一品多码表>()
-                            .SetColumns(row => new DIC_分店一品多码表
+                        foreach (var existing in existingRowsForUpdate)
+                        {
+                            // 兼容历史错码命中时，每条物理记录都保留自己的 HQ 既有业务编码。
+                            // 分店一品多码更新不触碰库存、活动和动态销售字段。
+                            storeMultiCodeUpdates.Add(new DIC_分店一品多码表
                             {
+                                ID = existing.ID,
                                 H分店商品编码 = hqStoreMultiCode.H分店商品编码,
-                                H分店多码商品编码 = hqStoreMultiCode.H分店多码商品编码,
+                                H分店多码商品编码 = existing.H分店多码商品编码,
                                 H供应商编码 = hqStoreMultiCode.H供应商编码,
                                 H主条形码 = hqStoreMultiCode.H主条形码,
                                 H多条形码 = hqStoreMultiCode.H多条形码,
@@ -2458,11 +2829,23 @@ namespace BlazorApp.Api.Services.React
                                 H使用状态 = hqStoreMultiCode.H使用状态,
                                 FGC_LastModifier = hqStoreMultiCode.FGC_LastModifier,
                                 FGC_LastModifyDate = hqStoreMultiCode.FGC_LastModifyDate,
-                            })
-                            .Where(row => row.ID == existing.ID)
-                            .ExecuteCommandAsync();
+                            });
+                        }
                         result.StoreMultiCodesUpdated++;
                     }
+                }
+            }
+
+            if (storeMultiCodeUpdates.Count > 0)
+            {
+                var uniqueUpdates = storeMultiCodeUpdates
+                    .GroupBy(row => row.ID)
+                    .Select(group => group.Last());
+                foreach (var batch in uniqueUpdates.Chunk(HqWriteBatchSize))
+                {
+                    await hqDb.Updateable(batch.ToList())
+                        .UpdateColumns(storeMultiCodeUpdateColumns)
+                        .ExecuteCommandAsync();
                 }
             }
 

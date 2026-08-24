@@ -2842,6 +2842,10 @@ export default function ContainerDetailPage() {
     const poller = createHqSyncJobPoller({
       jobId: initialJob.jobId,
       getJob: getPushProductsToHqJob,
+      // 发送到 HQ 刚提交后 job 通常秒级完成：前 10 次查询每 200ms 一次，
+      // 之后恢复常规 2000ms，避免长时间高频请求后端。
+      initialPollIntervalMs: 200,
+      initialPollAttempts: 10,
     })
 
     void poller.promise

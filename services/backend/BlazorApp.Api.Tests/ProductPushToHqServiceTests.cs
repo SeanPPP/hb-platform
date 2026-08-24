@@ -575,6 +575,325 @@ public sealed class ProductPushToHqServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task PushToHqAsync_重复推送_按主键ID批量更新而非逐行()
+    {
+        await SeedProductGraphAsync();
+        await _hqDb.Insertable(
+            Enumerable.Range(3, 39)
+                .Select(index => new HqBranch
+                {
+                    BranchCode = $"S{index:00}",
+                    BranchName = $"测试分店{index:00}",
+                })
+                .ToList()
+        ).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var first = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+        Assert.True(first.Success, first.Message);
+
+        var hqUpdateCommands = 0;
+        _hqDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (IsHqUpdateCommand(sql))
+            {
+                hqUpdateCommands++;
+            }
+        };
+
+        ApiResponse<PushProductsToHqResult> second;
+        try
+        {
+            second = await service.PushToHqAsync(new PushProductsToHqRequest
+            {
+                ProductCodes = new List<string> { "HB001" },
+            });
+        }
+        finally
+        {
+            _hqDb.Aop.OnLogExecuting = null;
+        }
+
+        Assert.True(second.Success, second.Message);
+        var updatedRows =
+            (second.Data?.ProductsUpdated ?? 0)
+            + (second.Data?.StoreRetailPricesUpdated ?? 0)
+            + (second.Data?.ProductSetCodesUpdated ?? 0)
+            + (second.Data?.StoreMultiCodesUpdated ?? 0)
+            + (second.Data?.WarehouseInventoriesUpdated ?? 0);
+        Assert.Equal(85, updatedRows);
+        Assert.Equal(41, second.Data?.StoreRetailPricesUpdated);
+        Assert.Equal(41, second.Data?.StoreMultiCodesUpdated);
+        Assert.Equal(7, hqUpdateCommands);
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_Hq重复业务键_更新全部物理记录且逻辑计数不膨胀()
+    {
+        await SeedProductGraphAsync();
+        var service = CreateService();
+
+        var first = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+        Assert.True(first.Success, first.Message);
+
+        var duplicateProduct = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        duplicateProduct.ID = 0;
+        duplicateProduct.HGUID = "duplicate-product";
+        duplicateProduct.H商品名称 = "旧英文名";
+        duplicateProduct.CBP供应商编码 = "OLD-SUP";
+        await _hqDb.Insertable(duplicateProduct)
+            .IgnoreColumns(row => row.ID)
+            .ExecuteCommandAsync();
+
+        var duplicateRetail = await _hqDb.Queryable<DIC_商品零售价表>()
+            .SingleAsync(row => row.H分店代码 == "S01" && row.H商品编码 == "HB001");
+        duplicateRetail.ID = 0;
+        duplicateRetail.HGUID = "duplicate-retail";
+        duplicateRetail.H进货价 = -1m;
+        duplicateRetail.H分店零售价 = -1m;
+        await _hqDb.Insertable(duplicateRetail)
+            .IgnoreColumns(row => row.ID)
+            .ExecuteCommandAsync();
+
+        var duplicateSetCode = await _hqDb.Queryable<DIC_一品多码表>()
+            .SingleAsync(row => row.H商品编码 == "HB001" && row.H多码商品编号 == "HB001-M1");
+        duplicateSetCode.ID = 0;
+        duplicateSetCode.HGUID = "duplicate-set-code";
+        duplicateSetCode.H进货价 = -1m;
+        duplicateSetCode.H一品多码零售价 = -1m;
+        await _hqDb.Insertable(duplicateSetCode)
+            .IgnoreColumns(row => row.ID)
+            .ExecuteCommandAsync();
+
+        var duplicateStoreMultiCode = await _hqDb.Queryable<DIC_分店一品多码表>()
+            .SingleAsync(row =>
+                row.H分店代码 == "S01"
+                && row.H商品编码 == "HB001"
+                && row.H多码商品编码 == "HB001-M1"
+            );
+        duplicateStoreMultiCode.ID = 0;
+        duplicateStoreMultiCode.HGUID = "duplicate-store-multi-code";
+        duplicateStoreMultiCode.H分店多码商品编码 = "S01-HISTORICAL-DUPLICATE";
+        duplicateStoreMultiCode.H进货价 = -1m;
+        duplicateStoreMultiCode.H一品多码零售价 = -1m;
+        await _hqDb.Insertable(duplicateStoreMultiCode)
+            .IgnoreColumns(row => row.ID)
+            .ExecuteCommandAsync();
+
+        var second = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+
+        Assert.True(second.Success, second.Message);
+        Assert.Equal(1, second.Data?.ProductsUpdated);
+        Assert.Equal(2, second.Data?.StoreRetailPricesUpdated);
+        Assert.Equal(1, second.Data?.ProductSetCodesUpdated);
+        Assert.Equal(2, second.Data?.StoreMultiCodesUpdated);
+        Assert.Equal(1, second.Data?.WarehouseInventoriesUpdated);
+        Assert.Equal(7, second.Data?.AffectedRowCount);
+
+        var products = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .Where(row => row.H商品编码 == "HB001")
+            .ToListAsync();
+        Assert.Equal(2, products.Count);
+        Assert.All(products, row =>
+        {
+            Assert.Equal("测试商品英文", row.H商品名称);
+            Assert.Equal("SUP01", row.CBP供应商编码);
+        });
+
+        var retailPrices = await _hqDb.Queryable<DIC_商品零售价表>()
+            .Where(row => row.H分店代码 == "S01" && row.H商品编码 == "HB001")
+            .ToListAsync();
+        Assert.Equal(2, retailPrices.Count);
+        Assert.All(retailPrices, row =>
+        {
+            Assert.Equal(2.5m, row.H进货价);
+            Assert.Equal(4.5m, row.H分店零售价);
+        });
+
+        var setCodes = await _hqDb.Queryable<DIC_一品多码表>()
+            .Where(row => row.H商品编码 == "HB001" && row.H多码商品编号 == "HB001-M1")
+            .ToListAsync();
+        Assert.Equal(2, setCodes.Count);
+        Assert.All(setCodes, row =>
+        {
+            Assert.Equal(2.5m, row.H进货价);
+            Assert.Equal(4.0m, row.H一品多码零售价);
+        });
+
+        var storeMultiCodes = await _hqDb.Queryable<DIC_分店一品多码表>()
+            .Where(row =>
+                row.H分店代码 == "S01"
+                && row.H商品编码 == "HB001"
+                && row.H多码商品编码 == "HB001-M1"
+            )
+            .ToListAsync();
+        Assert.Equal(2, storeMultiCodes.Count);
+        Assert.All(storeMultiCodes, row =>
+        {
+            Assert.Equal(2.5m, row.H进货价);
+            Assert.Equal(3.9m, row.H一品多码零售价);
+        });
+        Assert.Contains(storeMultiCodes, row => row.H分店多码商品编码 == "S01-HISTORICAL-DUPLICATE");
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_批量更新中途失败_回滚此前全部Hq写入()
+    {
+        await SeedProductGraphAsync();
+        var service = CreateService();
+
+        var first = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+        Assert.True(first.Success, first.Message);
+
+        await _localDb.Updateable<Product>()
+            .SetColumns(row => new Product
+            {
+                RetailPrice = 9.9m,
+                ProductName = "事务回滚后的新名称",
+            })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+        _hqDb.Ado.ExecuteCommand(
+            """
+            CREATE TRIGGER fail_hq_retail_batch_update
+            BEFORE UPDATE OF "H分店零售价" ON "DIC_商品零售价表"
+            WHEN NEW."H分店代码" = 'S02'
+            BEGIN
+                SELECT RAISE(ABORT, 'forced hq retail batch failure');
+            END
+            """
+        );
+
+        var second = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+
+        Assert.False(second.Success);
+        Assert.Equal(0, second.Data?.AffectedRowCount);
+        Assert.Equal(0, second.Data?.ProductsAdded);
+        Assert.Equal(0, second.Data?.ProductsUpdated);
+        Assert.Equal(0, second.Data?.StoreRetailPricesCreated);
+        Assert.Equal(0, second.Data?.StoreRetailPricesUpdated);
+        Assert.Equal(0, second.Data?.ProductSetCodesCreated);
+        Assert.Equal(0, second.Data?.ProductSetCodesUpdated);
+        Assert.Equal(0, second.Data?.StoreMultiCodesCreated);
+        Assert.Equal(0, second.Data?.StoreMultiCodesUpdated);
+        Assert.Equal(0, second.Data?.WarehouseInventoriesCreated);
+        Assert.Equal(0, second.Data?.WarehouseInventoriesUpdated);
+        var product = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal(4.5m, product.H零售价);
+        Assert.Equal("测试商品中文", product.H大写名称);
+        var retailPrices = await _hqDb.Queryable<DIC_商品零售价表>()
+            .Where(row => row.H商品编码 == "HB001")
+            .ToListAsync();
+        Assert.Equal(2, retailPrices.Count);
+        Assert.All(retailPrices, row => Assert.Equal(4.5m, row.H分店零售价));
+    }
+
+    [Fact]
+    public void RollbackPushTransaction_回滚动作失败_仍归零计数并记录原始异常类型()
+    {
+        var logger = new Mock<ILogger<ProductHqSyncService>>();
+        var service = CreateService(logger.Object);
+        var result = new PushProductsToHqResult
+        {
+            ProductsAdded = 1,
+            ProductsUpdated = 1,
+            StoreRetailPricesCreated = 1,
+            StoreRetailPricesUpdated = 1,
+            ProductSetCodesCreated = 1,
+            ProductSetCodesUpdated = 1,
+            StoreMultiCodesCreated = 1,
+            StoreMultiCodesUpdated = 1,
+            WarehouseInventoriesCreated = 1,
+            WarehouseInventoriesUpdated = 1,
+        };
+        var operationException = new InvalidOperationException("original write failure");
+        var invocationException = Record.Exception(() =>
+            service.RollbackPushTransaction(
+                () => throw new InvalidOperationException("rollback failure"),
+                result,
+                operationException
+            )
+        );
+
+        Assert.Null(invocationException);
+        Assert.Equal(0, result.AffectedRowCount);
+        Assert.Equal(0, result.ProductsAdded);
+        Assert.Equal(0, result.ProductsUpdated);
+        Assert.Equal(0, result.StoreRetailPricesCreated);
+        Assert.Equal(0, result.StoreRetailPricesUpdated);
+        Assert.Equal(0, result.ProductSetCodesCreated);
+        Assert.Equal(0, result.ProductSetCodesUpdated);
+        Assert.Equal(0, result.StoreMultiCodesCreated);
+        Assert.Equal(0, result.StoreMultiCodesUpdated);
+        Assert.Equal(0, result.WarehouseInventoriesCreated);
+        Assert.Equal(0, result.WarehouseInventoriesUpdated);
+        VerifyLogWritten(
+            logger,
+            LogLevel.Error,
+            state =>
+                state.Any(pair =>
+                    pair.Key == "ErrorCode"
+                    && Equals(pair.Value, "PRODUCT_HQ_PUSH_ROLLBACK_ERROR")
+                )
+                && state.Any(pair =>
+                    pair.Key == "OriginalExceptionType"
+                    && Equals(pair.Value, nameof(InvalidOperationException))
+                )
+        );
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_Hq库存重复商品编码_保持失败而不静默选择其中一条()
+    {
+        await SeedProductGraphAsync();
+        var service = CreateService();
+
+        var first = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+        Assert.True(first.Success, first.Message);
+
+        var duplicateInventory = await _hqDb.Queryable<CBP_DIC_商品库存表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        duplicateInventory.ID = 0;
+        duplicateInventory.HGUID = "duplicate-inventory";
+        duplicateInventory.H国内价格 = -1m;
+        await _hqDb.Insertable(duplicateInventory)
+            .IgnoreColumns(row => row.ID)
+            .ExecuteCommandAsync();
+
+        var second = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+
+        Assert.False(second.Success);
+        var inventories = await _hqDb.Queryable<CBP_DIC_商品库存表>()
+            .Where(row => row.H商品编码 == "HB001")
+            .ToListAsync();
+        Assert.Equal(2, inventories.Count);
+        Assert.Contains(inventories, row => row.H国内价格 == -1m);
+    }
+
+    [Fact]
     public async Task PushToHqAsync_Hq已有小货号本地历史错用Hguid时_更新既有子码且不重复创建()
     {
         await SeedProductGraphAsync();
@@ -813,6 +1132,42 @@ public sealed class ProductPushToHqServiceTests : IDisposable
         var product = await _hqDb.Queryable<DIC_商品信息字典表>()
             .SingleAsync(row => row.H商品编码 == "HB001");
         Assert.Equal("SUP01", product.CBP供应商编码);
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_全字段更新但无国内供应商编码_保留Hq既有Cbp编码()
+    {
+        await SeedProductGraphAsync();
+        var service = CreateService();
+        var first = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+        Assert.True(first.Success, first.Message);
+
+        await _localDb.Updateable<Product>()
+            .SetColumns(row => new Product { LocalSupplierCode = null })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<DomesticProduct>()
+            .SetColumns(row => new DomesticProduct { SupplierCode = string.Empty })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+        await _hqDb.Updateable<DIC_商品信息字典表>()
+            .SetColumns(row => new DIC_商品信息字典表 { CBP供应商编码 = "KEEP-CBP" })
+            .Where(row => row.H商品编码 == "HB001")
+            .ExecuteCommandAsync();
+
+        var second = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+
+        Assert.True(second.Success, second.Message);
+        Assert.Equal(1, second.Data?.ProductsUpdated);
+        var product = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .SingleAsync(row => row.H商品编码 == "HB001");
+        Assert.Equal("KEEP-CBP", product.CBP供应商编码);
     }
 
     [Fact]
@@ -2497,6 +2852,16 @@ public sealed class ProductPushToHqServiceTests : IDisposable
             ),
             Times.AtLeastOnce
         );
+    }
+
+    private static bool IsHqUpdateCommand(string sql)
+    {
+        if (string.IsNullOrWhiteSpace(sql))
+        {
+            return false;
+        }
+
+        return sql.AsSpan().TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool MatchLogState(

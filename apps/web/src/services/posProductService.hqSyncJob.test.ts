@@ -424,6 +424,82 @@ async function main() {
   })
   if (sharedPollerSuccessFailure) failures.push(sharedPollerSuccessFailure)
 
+  const sharedPollerFastPhaseFailure = await runTest('共享轮询器应先用初始快速间隔轮询指定次数再恢复常规间隔', async () => {
+    const timer = createFakeTimer()
+    const pollDelays: number[] = []
+    const requestedJobIds: string[] = []
+    const statuses = [
+      { jobId: 'fast-poller-job', status: 'Running' as const },
+      { jobId: 'fast-poller-job', status: 'Running' as const },
+      { jobId: 'fast-poller-job', status: 'Succeeded' as const },
+    ]
+
+    const poller = createProductHqSyncJobPoller({
+      jobId: 'fast-poller-job',
+      pollIntervalMs: 2000,
+      initialPollIntervalMs: 200,
+      initialPollAttempts: 2,
+      timeoutMs: 30000,
+      getJob: async (jobId) => {
+        requestedJobIds.push(jobId)
+        return statuses.shift()!
+      },
+      setTimeoutFn: timer.setTimeout as typeof setTimeout,
+      clearTimeoutFn: timer.clearTimeout as typeof clearTimeout,
+    })
+
+    pollDelays.push(timer.flushNext())
+    await Promise.resolve()
+    pollDelays.push(timer.flushNext())
+    await Promise.resolve()
+    pollDelays.push(timer.flushNext())
+    await Promise.resolve()
+
+    const result = await poller.promise
+    assertDeepEqual(pollDelays, [200, 200, 2000], '前 2 次查询应使用 200ms 初始间隔，之后恢复 2000ms 常规间隔')
+    assertDeepEqual(requestedJobIds, ['fast-poller-job', 'fast-poller-job', 'fast-poller-job'], '快速阶段与常规阶段应轮询同一个 job')
+    assertEqual(result.status, 'Succeeded', '快速阶段结束后应继续等待同一 job 终态')
+  })
+  if (sharedPollerFastPhaseFailure) failures.push(sharedPollerFastPhaseFailure)
+
+  const sharedPollerDefaultIntervalFailure = await runTest('共享轮询器缺省初始快速阶段参数时不应改变常规轮询间隔', async () => {
+    const timer = createFakeTimer()
+    const poller = createProductHqSyncJobPoller({
+      jobId: 'default-poller-job',
+      timeoutMs: 30000,
+      getJob: async () => ({ jobId: 'default-poller-job', status: 'Succeeded' }),
+      setTimeoutFn: timer.setTimeout as typeof setTimeout,
+      clearTimeoutFn: timer.clearTimeout as typeof clearTimeout,
+    })
+
+    assertEqual(timer.flushNext(), 2000, '未配置快速阶段时首个查询仍应等待默认 2000ms')
+    await Promise.resolve()
+
+    const result = await poller.promise
+    assertEqual(result.status, 'Succeeded', '未配置快速阶段时轮询器应正常完成')
+  })
+  if (sharedPollerDefaultIntervalFailure) failures.push(sharedPollerDefaultIntervalFailure)
+
+  const sharedPollerInitialIntervalFallbackFailure = await runTest('共享轮询器未指定初始间隔时应复用调用方的常规间隔', async () => {
+    const timer = createFakeTimer()
+    const poller = createProductHqSyncJobPoller({
+      jobId: 'fallback-poller-job',
+      pollIntervalMs: 350,
+      initialPollAttempts: 1,
+      timeoutMs: 30000,
+      getJob: async () => ({ jobId: 'fallback-poller-job', status: 'Succeeded' }),
+      setTimeoutFn: timer.setTimeout as typeof setTimeout,
+      clearTimeoutFn: timer.clearTimeout as typeof clearTimeout,
+    })
+
+    assertEqual(timer.flushNext(), 350, '未指定初始间隔时应复用调用方的 350ms 常规间隔')
+    await Promise.resolve()
+
+    const result = await poller.promise
+    assertEqual(result.status, 'Succeeded', '初始间隔回退后轮询器应正常完成')
+  })
+  if (sharedPollerInitialIntervalFallbackFailure) failures.push(sharedPollerInitialIntervalFallbackFailure)
+
   const sharedPollerTimeoutFailure = await runTest('商品 HQ 同步共享轮询器超时应抛出统一 timeout 错误', async () => {
     const timer = createFakeTimer()
     const poller = createProductHqSyncJobPoller({

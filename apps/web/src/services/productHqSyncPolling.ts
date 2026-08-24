@@ -24,6 +24,11 @@ export type HqProductSyncClearTimeout = (timerId: HqProductSyncTimerId) => void
 export interface HqProductSyncPollingOptions {
   pollIntervalMs?: number
   timeoutMs?: number
+  // 个别后台 job 刚提交后通常很快进入终态：前 initialPollAttempts 次查询使用
+  // initialPollIntervalMs，之后恢复 pollIntervalMs。默认 initialPollAttempts=0，
+  // 保证既有调用方行为不变（统一 2000ms）。
+  initialPollIntervalMs?: number
+  initialPollAttempts?: number
   setTimeoutFn?: HqProductSyncSetTimeout
   clearTimeoutFn?: HqProductSyncClearTimeout
 }
@@ -54,12 +59,15 @@ export function createHqSyncJobPoller<TJob extends HqSyncJobLike>({
   isTerminalStatus: isTerminalStatusOverride,
   pollIntervalMs = PRODUCT_HQ_SYNC_POLL_INTERVAL_MS,
   timeoutMs = PRODUCT_HQ_SYNC_TIMEOUT_MS,
+  initialPollIntervalMs = pollIntervalMs,
+  initialPollAttempts = 0,
   setTimeoutFn = setTimeout,
   clearTimeoutFn = clearTimeout,
 }: CreateHqSyncJobPollerOptions<TJob>) {
   let pollingTimer: HqProductSyncTimerId | null = null
   let timeoutTimer: HqProductSyncTimerId | null = null
   let stopped = false
+  let remainingInitialPollAttempts = initialPollAttempts
   let rejectPromise: ((reason?: unknown) => void) | null = null
   const isJobTerminalStatus = isTerminalStatusOverride ?? isTerminalStatus
 
@@ -78,6 +86,12 @@ export function createHqSyncJobPoller<TJob extends HqSyncJobLike>({
     rejectPromise = reject
 
     const scheduleNextPoll = () => {
+      const useInitialInterval = remainingInitialPollAttempts > 0
+      const pollDelay = useInitialInterval ? initialPollIntervalMs : pollIntervalMs
+      if (useInitialInterval) {
+        remainingInitialPollAttempts -= 1
+      }
+
       pollingTimer = setTimeoutFn(async () => {
         try {
           const result = await getJob(jobId)
@@ -100,7 +114,7 @@ export function createHqSyncJobPoller<TJob extends HqSyncJobLike>({
           clearTimers()
           reject(error)
         }
-      }, pollIntervalMs)
+      }, pollDelay)
     }
 
     timeoutTimer = setTimeoutFn(() => {
