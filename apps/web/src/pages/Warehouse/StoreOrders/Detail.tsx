@@ -17,6 +17,7 @@ import {
   Button,
   Card,
   Checkbox,
+  DatePicker,
   Descriptions,
   Empty,
   Grid,
@@ -38,6 +39,7 @@ import {
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { FilterDropdownProps, SortOrder, SorterResult } from 'antd/es/table/interface'
+import dayjs from 'dayjs'
 import type { InputNumberRef } from 'rc-input-number'
 import { useKeepAliveContext } from 'keepalive-for-react'
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
@@ -3161,27 +3163,27 @@ export default function StoreOrderDetailPage() {
                   </Tag>
                 </Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.orderDateLabel')}>
-                  <Input
-                    type="date"
+                  <DatePicker
+                    style={{ width: '100%' }}
                     disabled={!canUseWarehouseManagerActions || isReadonlyOrder}
-                    value={headerForm.orderDate ? headerForm.orderDate.slice(0, 10) : ''}
-                    onChange={(event) =>
+                    value={headerForm.orderDate ? dayjs(headerForm.orderDate.slice(0, 10)) : null}
+                    onChange={(value) =>
                       setHeaderForm((current) => ({
                         ...current,
-                        orderDate: event.target.value ? new Date(event.target.value).toISOString() : undefined,
+                        orderDate: value ? new Date(value.format('YYYY-MM-DD')).toISOString() : undefined,
                       }))
                     }
                   />
                 </Descriptions.Item>
                 <Descriptions.Item label={t('storeOrders.outboundDate')}>
-                  <Input
-                    type="date"
+                  <DatePicker
+                    style={{ width: '100%' }}
                     disabled={!canUseWarehouseManagerActions || !canEditOutboundDate}
-                    value={headerForm.outboundDate ? headerForm.outboundDate.slice(0, 10) : ''}
-                    onChange={(event) =>
+                    value={headerForm.outboundDate ? dayjs(headerForm.outboundDate.slice(0, 10)) : null}
+                    onChange={(value) =>
                       setHeaderForm((current) => ({
                         ...current,
-                        outboundDate: event.target.value || undefined,
+                        outboundDate: value?.format('YYYY-MM-DD'),
                       }))
                     }
                   />

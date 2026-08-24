@@ -1,4 +1,7 @@
 import { App as AntdApp, ConfigProvider, Result, Spin, theme } from 'antd'
+import enUS from 'antd/locale/en_US'
+import zhCN from 'antd/locale/zh_CN'
+import 'dayjs/locale/zh-cn'
 import { useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { createBrowserRouter, Navigate, Route, RouterProvider, Routes, useLocation } from 'react-router-dom'
@@ -110,8 +113,12 @@ function AppBootstrap() {
 const router = createBrowserRouter([{ path: '*', element: <AppBootstrap /> }])
 
 export default function App() {
+  const { i18n } = useTranslation()
+  const antdLocale = i18n.resolvedLanguage === 'en' ? enUS : zhCN
+
   return (
     <ConfigProvider
+      locale={antdLocale}
       theme={{
         algorithm: theme.defaultAlgorithm,
         token: {

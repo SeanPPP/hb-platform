@@ -22,6 +22,7 @@ async function runTest(name: string, execute: () => void | Promise<void>): Promi
 
 const storeOrdersFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/index.tsx')
 const detailFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/Detail.tsx')
+const appFile = path.resolve(process.cwd(), 'src/App.tsx')
 const compactCssFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/compact.css')
 const pickingListFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/PickingList.tsx')
 const invoiceFile = path.resolve(process.cwd(), 'src/pages/Warehouse/StoreOrders/Invoice.tsx')
@@ -36,6 +37,7 @@ function readSource(file: string) {
 
 const storeOrdersSource = readSource(storeOrdersFile)
 const detailSource = readSource(detailFile)
+const appSource = readSource(appFile)
 const compactCssSource = readSource(compactCssFile)
 const pickingListSource = readSource(pickingListFile)
 const invoiceSource = readSource(invoiceFile)
@@ -46,6 +48,10 @@ const detailMainTableSource = detailSource.slice(detailSource.indexOf('const col
 const detailKeyboardHandlerSource = detailSource.slice(
   detailSource.indexOf('const handleDetailInputKeyDown'),
   detailSource.indexOf('const handleCompleteOrder'),
+)
+const detailHeaderDateSource = detailSource.slice(
+  detailSource.indexOf('<Descriptions.Item label={t(\'storeOrders.orderDateLabel\')}>'),
+  detailSource.indexOf('<Descriptions.Item label={t(\'storeOrders.orderQtyLabel\')}>'),
 )
 
 function readCssRule(source: string, selector: string) {
@@ -79,6 +85,23 @@ async function main() {
     assert(detailSource.includes('renderStoreOrderDetailNumericCell('), '详情页数字列应走单行等宽数字 helper')
   })
   if (detailClassFailure) failures.push(detailClassFailure)
+
+  const datePickerLocaleFailure = await runTest('详情页日期选择器应跟随站内中英文切换', () => {
+    const detailDatePickerCount = detailHeaderDateSource.match(/<DatePicker/g)?.length ?? 0
+
+    assert(appSource.includes("import enUS from 'antd/locale/en_US'"), '应用根层应引入 AntD 英文 locale')
+    assert(appSource.includes("import zhCN from 'antd/locale/zh_CN'"), '应用根层应引入 AntD 中文 locale')
+    assert(appSource.includes("import 'dayjs/locale/zh-cn'"), '应用根层应加载 dayjs 中文日期数据')
+    assert(appSource.includes('const { i18n } = useTranslation()'), '应用根组件应订阅当前 i18n 语言')
+    assert(appSource.includes("const antdLocale = i18n.resolvedLanguage === 'en' ? enUS : zhCN"), '应用根层应按当前语言选择 AntD locale')
+    assert(appSource.includes('locale={antdLocale}'), '根 ConfigProvider 应接收当前 AntD locale')
+    assert(detailSource.includes("import dayjs from 'dayjs'"), '详情页应使用 dayjs 为 AntD DatePicker 提供日期值')
+    assert(detailDatePickerCount === 2, '订货日期和出库日期都应使用 AntD DatePicker')
+    assert(!detailHeaderDateSource.includes('type="date"'), '详情页不应继续使用跟随浏览器语言的原生 date input')
+    assert(detailHeaderDateSource.includes("orderDate: value ? new Date(value.format('YYYY-MM-DD')).toISOString() : undefined"), '订货日期切换控件后应保持原有 UTC 日期提交格式')
+    assert(detailHeaderDateSource.includes("outboundDate: value?.format('YYYY-MM-DD')"), '出库日期切换控件后应保持 YYYY-MM-DD 提交格式')
+  })
+  if (datePickerLocaleFailure) failures.push(datePickerLocaleFailure)
 
   const listOrderNoFailure = await runTest('列表页订单号复制按钮应限制在订单号列内', () => {
     const orderCellRule = readCssRule(compactCssSource, '.store-order-list-table .store-order-list-order-cell')
