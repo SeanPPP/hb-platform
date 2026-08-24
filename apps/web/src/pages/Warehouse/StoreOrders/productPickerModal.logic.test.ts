@@ -99,6 +99,25 @@ async function main() {
   })
   if (supplierColumnFailure) failures.push(supplierColumnFailure)
 
+  const retailPriceColumnFailure = await runTest('商品弹窗应在默认进口价后显示只读零售价列', () => {
+    const defaultImportPriceIndex = productPickerSource.indexOf("title: t('column.defaultImportPrice')")
+    const retailPriceIndex = productPickerSource.indexOf("title: t('column.oemPrice')")
+    const allocQuantityIndex = productPickerSource.indexOf("title: t('column.allocQuantity')")
+    const retailPriceColumnSource = productPickerSource.slice(retailPriceIndex, allocQuantityIndex)
+
+    assert(
+      defaultImportPriceIndex >= 0 &&
+        retailPriceIndex > defaultImportPriceIndex &&
+        allocQuantityIndex > retailPriceIndex &&
+        retailPriceColumnSource.includes("dataIndex: 'oemPrice'") &&
+        retailPriceColumnSource.includes('width: 62') &&
+        retailPriceColumnSource.includes('formatCurrencyAmount(value)') &&
+        !retailPriceColumnSource.includes('<InputNumber'),
+      '商品弹窗缺少位于默认进口价与发货数之间的只读零售价列，或列宽/格式不符合要求',
+    )
+  })
+  if (retailPriceColumnFailure) failures.push(retailPriceColumnFailure)
+
   const paginationFailure = await runTest('商品弹窗默认分页应为 100 且只允许 50/100/500', () => {
     assert(
       detailSource.includes('const PRODUCT_PICKER_DEFAULT_PAGE_SIZE = 100') &&

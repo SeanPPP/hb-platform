@@ -910,6 +910,12 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
       render: (value: number | undefined) => formatCurrencyAmount(value),
     },
     {
+      title: t('column.oemPrice'),
+      dataIndex: 'oemPrice',
+      width: 62,
+      render: (value: number | undefined) => formatCurrencyAmount(value),
+    },
+    {
       title: t('column.allocQuantity'),
       key: 'quantity',
       width: 70,
