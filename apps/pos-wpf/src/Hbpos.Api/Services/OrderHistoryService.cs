@@ -2,6 +2,7 @@ using BlazorApp.Shared.Models.POSM;
 using Hbpos.Api.Data;
 using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Orders;
+using SqlSugar;
 
 namespace Hbpos.Api.Services;
 
@@ -80,15 +81,20 @@ public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContex
         {
             var keyword = request.Keyword.Trim();
             var normalizedGuidKeyword = keyword.Replace("-", string.Empty, StringComparison.Ordinal);
-            var lineOrderGuids = await dbContext.PosmDb.Queryable<SalesOrderDetail>()
-            .Where(x => x.Barcode == keyword || (x.Remark != null && x.Remark.Contains($"itemNo={keyword}")))
-                .Select(x => x.OrderGuid)
-                .ToListAsync(cancellationToken);
+            var itemNumberMarker = $"itemNo={keyword}";
+            var itemNumberSuffix = $";{itemNumberMarker}";
 
+            // 明细条件必须关联到已按门店、终端和日期收窄的订单，避免先扫描并物化全库明细 GUID。
             query = query.Where(x =>
                 (x.OrderGuid != null && x.OrderGuid.Contains(keyword))
                 || (x.OrderGuid != null && x.OrderGuid.Contains(normalizedGuidKeyword))
-                || (x.OrderGuid != null && lineOrderGuids.Contains(x.OrderGuid)));
+                || SqlFunc.Subqueryable<SalesOrderDetail>()
+                    .Where(line => line.OrderGuid == x.OrderGuid
+                        && (line.Barcode == keyword
+                            || line.ProductCode == keyword
+                            || (line.Remark != null
+                                && (line.Remark == itemNumberMarker || line.Remark.EndsWith(itemNumberSuffix)))))
+                    .Any());
         }
 
         var take = Math.Clamp(request.Take, 1, 200);

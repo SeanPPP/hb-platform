@@ -40,6 +40,30 @@ public sealed class InstallmentSchemaInitializerTests
     }
 
     [Fact]
+    public async Task Initializer_adds_history_scope_and_line_lookup_indexes()
+    {
+        var executor = new CapturingExecutor();
+        var initializer = new SqlSugarInstallmentSchemaInitializer(
+            executor,
+            new InstallmentSchemaInitializationState());
+
+        await initializer.InitializeAsync();
+
+        Assert.Contains("IX_InstallmentOrder_HistoryScope", executor.RepairSql, StringComparison.Ordinal);
+        Assert.Contains("([StoreCode], [CreatedAt] DESC, [InstallmentGuid] DESC)", executor.RepairSql, StringComparison.Ordinal);
+        Assert.Contains("IX_InstallmentOrder_HistoryUpdatedScope", executor.RepairSql, StringComparison.Ordinal);
+        Assert.Contains("([StoreCode], [UpdatedAt] DESC, [InstallmentGuid] DESC)", executor.RepairSql, StringComparison.Ordinal);
+        Assert.Contains("IX_InstallmentOrderLine_HistoryLookup", executor.RepairSql, StringComparison.Ordinal);
+        Assert.Contains("([InstallmentGuid], [ItemNumber], [LookupCode])", executor.RepairSql, StringComparison.Ordinal);
+        Assert.Contains("IX_InstallmentOrderLine_ItemNumberLookup", executor.RepairSql, StringComparison.Ordinal);
+        Assert.Contains("([ItemNumber], [InstallmentGuid])", executor.RepairSql, StringComparison.Ordinal);
+        Assert.Contains("IX_InstallmentOrderLine_BarcodeLookup", executor.RepairSql, StringComparison.Ordinal);
+        Assert.Contains("([LookupCode], [InstallmentGuid])", executor.RepairSql, StringComparison.Ordinal);
+        Assert.Contains("IX_InstallmentOrderLine_ProductCodeLookup", executor.RepairSql, StringComparison.Ordinal);
+        Assert.Contains("([ProductCode], [InstallmentGuid])", executor.RepairSql, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Executor_creates_voucher_reservation_table_during_non_sql_server_startup()
     {
         var databasePath = Path.Combine(

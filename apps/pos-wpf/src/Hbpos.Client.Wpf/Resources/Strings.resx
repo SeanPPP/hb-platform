@@ -304,7 +304,7 @@
   <data name="history.dateRange" xml:space="preserve"><value>Today</value></data>
   <data name="history.allStores" xml:space="preserve"><value>All Stores</value></data>
   <data name="history.allTerminals" xml:space="preserve"><value>All Terminals</value></data>
-  <data name="history.search" xml:space="preserve"><value>Search order, cashier, or terminal...</value></data>
+  <data name="history.search" xml:space="preserve"><value>Search order, item number, or barcode...</value></data>
   <data name="history.showing" xml:space="preserve"><value>Showing {0} transactions</value></data>
   <data name="history.showingPrefix" xml:space="preserve"><value>Showing </value></data>
   <data name="history.transactions" xml:space="preserve"><value>transactions</value></data>

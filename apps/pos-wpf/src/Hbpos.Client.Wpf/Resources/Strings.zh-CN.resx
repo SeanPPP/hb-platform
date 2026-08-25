@@ -844,7 +844,7 @@
     <value>全部终端</value>
   </data>
   <data name="history.search" xml:space="preserve">
-    <value>搜索订单、收银员或终端...</value>
+    <value>搜索订单、商品货号或条码...</value>
   </data>
   <data name="history.showing" xml:space="preserve">
     <value>显示 {0} 笔交易</value>

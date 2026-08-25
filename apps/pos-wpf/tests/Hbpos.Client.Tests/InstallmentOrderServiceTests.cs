@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
@@ -9,6 +10,138 @@ namespace Hbpos.Client.Tests;
 
 public sealed class InstallmentOrderServiceTests
 {
+    [Fact]
+    [Trait("Category", "Performance")]
+    public async Task SearchAsync_matches_item_number_and_barcode_within_two_seconds_for_bounded_history()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalInstallmentOrderRepository(store);
+            var service = new InstallmentOrderService(repository, new StubInstallmentApiClient());
+
+            await schema.InitializeAsync();
+            for (var index = 0; index < 200; index++)
+            {
+                await repository.UpsertAsync(CreateSearchableOrder(index, isTarget: index == 199));
+            }
+
+            foreach (var keyword in new[] { "ITEM-TARGET", "930000000001" })
+            {
+                var stopwatch = Stopwatch.StartNew();
+
+                var result = await service.SearchAsync(CreateOnlineSession(), keyword);
+
+                stopwatch.Stop();
+                Assert.Equal("IO-SEARCH-0199", Assert.Single(result).OrderNumber);
+                Assert.True(
+                    stopwatch.Elapsed < TimeSpan.FromSeconds(2),
+                    $"分期按 {keyword} 查询耗时 {stopwatch.Elapsed.TotalMilliseconds:F1} ms，超过 2 秒预算。");
+            }
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task QueryHistoryAsync_uses_authoritative_api_when_online_and_forwards_history_filters()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalInstallmentOrderRepository(store);
+            var updatedAt = DateTimeOffset.Parse("2026-08-25T05:30:00Z");
+            var apiClient = new StubInstallmentApiClient
+            {
+                HistoryResponse = new InstallmentHistoryQueryResponse(
+                [
+                    new InstallmentSummaryDto(
+                        Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+                        "IO-REMOTE-0001",
+                        "S001",
+                        "POS-02",
+                        "Alice",
+                        "Customer",
+                        "0400111222",
+                        DateTimeOffset.Parse("2026-08-20T00:00:00Z"),
+                        120m,
+                        20m,
+                        40m,
+                        80m,
+                        InstallmentStatus.Active,
+                        updatedAt)
+                ])
+            };
+            var service = new InstallmentOrderService(repository, apiClient);
+            var updatedFrom = DateTimeOffset.Parse("2026-08-25T00:00:00Z");
+            var updatedTo = DateTimeOffset.Parse("2026-08-25T23:59:59Z");
+
+            await schema.InitializeAsync();
+            var result = await service.QueryHistoryAsync(
+                CreateOnlineSession(),
+                new InstallmentHistorySearchQuery(
+                    UpdatedFrom: updatedFrom,
+                    UpdatedTo: updatedTo,
+                    DeviceCode: "POS-02",
+                    Keyword: "ITEM-TARGET",
+                    Take: 100));
+
+            var order = Assert.Single(result);
+            Assert.Equal("IO-REMOTE-0001", order.OrderNumber);
+            Assert.Equal(updatedAt, order.UpdatedAt);
+            Assert.True(order.CanAddRepayment);
+            Assert.Equal("待补款", order.Status);
+            Assert.NotNull(apiClient.LastHistoryRequest);
+            Assert.Equal("S001", apiClient.LastHistoryRequest!.StoreCode);
+            Assert.Equal("POS-02", apiClient.LastHistoryRequest.DeviceCode);
+            Assert.Equal(updatedFrom, apiClient.LastHistoryRequest.UpdatedFrom);
+            Assert.Equal(updatedTo, apiClient.LastHistoryRequest.UpdatedTo);
+            Assert.Equal("ITEM-TARGET", apiClient.LastHistoryRequest.Keyword);
+            Assert.True(apiClient.LastHistoryRequest.OrderByUpdatedAt);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task QueryHistoryAsync_uses_local_snapshot_search_when_offline()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalInstallmentOrderRepository(store);
+            var apiClient = new StubInstallmentApiClient();
+            var service = new InstallmentOrderService(repository, apiClient);
+
+            await schema.InitializeAsync();
+            await repository.UpsertAsync(CreateSearchableOrder(1, isTarget: true));
+
+            var result = await service.QueryHistoryAsync(
+                CreateOfflineSession(),
+                new InstallmentHistorySearchQuery(Keyword: "930000000001"));
+
+            Assert.Equal("IO-SEARCH-0001", Assert.Single(result).OrderNumber);
+            Assert.Equal(0, apiClient.HistoryCallCount);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     [Fact]
     public async Task CreateAsync_returns_online_required_when_session_is_offline()
     {
@@ -634,6 +767,45 @@ public sealed class InstallmentOrderServiceTests
         }
     }
 
+    private static LocalInstallmentOrder CreateSearchableOrder(int index, bool isTarget)
+    {
+        var installmentGuid = Guid.Parse($"00000000-0000-0000-0001-{index:D12}");
+        var createdAt = DateTimeOffset.Parse("2026-08-25T10:00:00+10:00").AddSeconds(-index);
+        return new LocalInstallmentOrder(
+            installmentGuid,
+            installmentGuid,
+            $"IO-SEARCH-{index:D4}",
+            "S001",
+            "POS-01",
+            "C001",
+            "Alice",
+            $"Customer {index}",
+            $"0400{index:D6}",
+            createdAt,
+            createdAt,
+            120m,
+            20m,
+            30m,
+            30m,
+            90m,
+            InstallmentStatus.Active,
+            [
+                new InstallmentLineDto(
+                    Guid.NewGuid(),
+                    $"SKU-{index:D4}",
+                    null,
+                    "Tea",
+                    isTarget ? "930000000001" : $"9301{index:D8}",
+                    1m,
+                    120m,
+                    0m,
+                    120m,
+                    isTarget ? "ITEM-TARGET" : $"ITEM-{index:D4}")
+            ],
+            [],
+            null);
+    }
+
     private static PosSessionState CreateOfflineSession()
     {
         return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", false, 0);
@@ -931,6 +1103,12 @@ public sealed class InstallmentOrderServiceTests
 
     private sealed class StubInstallmentApiClient : IInstallmentApiClient
     {
+        public InstallmentHistoryQueryResponse? HistoryResponse { get; set; }
+
+        public InstallmentHistoryQueryRequest? LastHistoryRequest { get; private set; }
+
+        public int HistoryCallCount { get; private set; }
+
         public InstallmentCreateResponse? CreateResponse { get; set; }
 
         public InstallmentAppendPaymentResponse? AppendPaymentResponse { get; set; }
@@ -964,6 +1142,16 @@ public sealed class InstallmentOrderServiceTests
         public int CancelCallCount { get; private set; }
 
         public int VoidCallCount { get; private set; }
+
+        public Task<InstallmentHistoryQueryResponse> QueryHistoryAsync(
+            InstallmentHistoryQueryRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            HistoryCallCount++;
+            LastHistoryRequest = request;
+            return Task.FromResult(HistoryResponse ?? throw new InvalidOperationException("HistoryResponse was not configured."));
+        }
 
         public Task<InstallmentCreateResponse> CreateAsync(InstallmentCreateRequest request, CancellationToken cancellationToken = default)
         {

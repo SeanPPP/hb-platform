@@ -289,7 +289,10 @@ public sealed record InstallmentHistoryQueryRequest(
     string? Keyword = null,
     InstallmentStatus? Status = null,
     int Take = 100,
-    int Skip = 0);
+    int Skip = 0,
+    DateTimeOffset? UpdatedFrom = null,
+    DateTimeOffset? UpdatedTo = null,
+    bool OrderByUpdatedAt = false);
 
 public sealed record InstallmentHistoryQueryResponse(
     IReadOnlyList<InstallmentSummaryDto> Orders);

@@ -1466,6 +1466,16 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
             query = query.Where(x => x.CreatedAt <= request.CreatedTo.Value.UtcDateTime);
         }
 
+        if (request.UpdatedFrom is not null)
+        {
+            query = query.Where(x => x.UpdatedAt >= request.UpdatedFrom.Value.UtcDateTime);
+        }
+
+        if (request.UpdatedTo is not null)
+        {
+            query = query.Where(x => x.UpdatedAt <= request.UpdatedTo.Value.UtcDateTime);
+        }
+
         if (request.Status is not null)
         {
             query = query.Where(x => x.Status == (int)request.Status.Value);
@@ -1474,15 +1484,82 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
         if (!string.IsNullOrWhiteSpace(request.Keyword))
         {
             var keyword = request.Keyword.Trim();
-            query = query.Where(x =>
-                x.InstallmentGuid.Contains(keyword) ||
-                x.InstallmentNumber.Contains(keyword) ||
-                x.CustomerName.Contains(keyword) ||
-                x.CustomerPhone.Contains(keyword));
+            var take = Math.Clamp(request.Take, 1, 200);
+            var candidateTake = request.Skip > int.MaxValue - take
+                ? int.MaxValue
+                : request.Skip + take;
+            var lineMatchQuery = db.Queryable<InstallmentOrderLineEntity, InstallmentOrderEntity>(
+                    (line, order) => line.InstallmentGuid == order.InstallmentGuid)
+                .Where((line, order) => order.StoreCode == request.StoreCode);
+            if (!string.IsNullOrWhiteSpace(request.DeviceCode))
+            {
+                lineMatchQuery = lineMatchQuery.Where((line, order) => order.DeviceCode == request.DeviceCode);
+            }
+
+            if (request.CreatedFrom is not null)
+            {
+                lineMatchQuery = lineMatchQuery.Where((line, order) => order.CreatedAt >= request.CreatedFrom.Value.UtcDateTime);
+            }
+
+            if (request.CreatedTo is not null)
+            {
+                lineMatchQuery = lineMatchQuery.Where((line, order) => order.CreatedAt <= request.CreatedTo.Value.UtcDateTime);
+            }
+
+            if (request.UpdatedFrom is not null)
+            {
+                lineMatchQuery = lineMatchQuery.Where((line, order) => order.UpdatedAt >= request.UpdatedFrom.Value.UtcDateTime);
+            }
+
+            if (request.UpdatedTo is not null)
+            {
+                lineMatchQuery = lineMatchQuery.Where((line, order) => order.UpdatedAt <= request.UpdatedTo.Value.UtcDateTime);
+            }
+
+            if (request.Status is not null)
+            {
+                lineMatchQuery = lineMatchQuery.Where((line, order) => order.Status == (int)request.Status.Value);
+            }
+
+            lineMatchQuery = lineMatchQuery.Where((line, order) =>
+                line.ItemNumber == keyword ||
+                line.LookupCode == keyword ||
+                line.ProductCode == keyword);
+            lineMatchQuery = request.OrderByUpdatedAt
+                ? lineMatchQuery.OrderByDescending((line, order) => order.UpdatedAt)
+                : lineMatchQuery.OrderByDescending((line, order) => order.CreatedAt);
+            var lineMatches = await lineMatchQuery
+                .OrderByDescending((line, order) => order.InstallmentGuid)
+                .Select((line, order) => new
+                {
+                    order.InstallmentGuid,
+                    order.CreatedAt,
+                    order.UpdatedAt
+                })
+                .Distinct()
+                .Take(candidateTake)
+                .ToListAsync(cancellationToken);
+            var lineOrderGuids = lineMatches.Select(match => match.InstallmentGuid).ToList();
+
+            query = lineOrderGuids.Count == 0
+                ? query.Where(x =>
+                    x.InstallmentGuid.Contains(keyword) ||
+                    x.InstallmentNumber.Contains(keyword) ||
+                    x.CustomerName.Contains(keyword) ||
+                    x.CustomerPhone.Contains(keyword))
+                : query.Where(x =>
+                    x.InstallmentGuid.Contains(keyword) ||
+                    x.InstallmentNumber.Contains(keyword) ||
+                    x.CustomerName.Contains(keyword) ||
+                    x.CustomerPhone.Contains(keyword) ||
+                    lineOrderGuids.Contains(x.InstallmentGuid));
         }
 
+        // 历史页按“最近更新”展示；保留默认按创建时间排序，避免改变现有 API 调用方语义。
+        query = request.OrderByUpdatedAt
+            ? query.OrderByDescending(x => x.UpdatedAt)
+            : query.OrderByDescending(x => x.CreatedAt);
         var rows = await query
-            .OrderByDescending(x => x.CreatedAt)
             .OrderByDescending(x => x.InstallmentGuid)
             .Skip(request.Skip)
             .Take(Math.Clamp(request.Take, 1, 200))

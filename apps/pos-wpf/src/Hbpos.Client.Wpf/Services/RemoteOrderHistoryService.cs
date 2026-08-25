@@ -151,6 +151,7 @@ public interface IOrderHistoryApiClient
 public sealed class OrderHistoryApiClient(HttpClient httpClient) : IOrderHistoryApiClient
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    internal static readonly TimeSpan QueryTimeout = TimeSpan.FromSeconds(2);
 
     public async Task<OrderHistoryQueryResponse> QueryAsync(
         OrderHistoryQueryRequest request,
@@ -165,8 +166,21 @@ public sealed class OrderHistoryApiClient(HttpClient httpClient) : IOrderHistory
             ("keyword", request.Keyword),
             ("take", request.Take.ToString(CultureInfo.InvariantCulture)));
 
-        using var response = await httpClient.GetAsync(requestUri, cancellationToken);
-        return await ReadApiResultAsync<OrderHistoryQueryResponse>(response, cancellationToken);
+        using var queryTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        queryTimeout.CancelAfter(QueryTimeout);
+        try
+        {
+            using var response = await httpClient.GetAsync(requestUri, queryTimeout.Token);
+            return await ReadApiResultAsync<OrderHistoryQueryResponse>(response, queryTimeout.Token);
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new CatalogApiException(
+                "在线订单查询超过 2 秒，请缩小日期范围后重试。 / Online order search exceeded 2 seconds. Narrow the date range and retry.",
+                HttpStatusCode.RequestTimeout,
+                "ORDER_HISTORY_QUERY_TIMEOUT",
+                ex);
+        }
     }
 
     public async Task<OrderHistoryDetailsDto?> GetDetailsAsync(

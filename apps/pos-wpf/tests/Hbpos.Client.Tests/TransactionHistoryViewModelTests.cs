@@ -1342,6 +1342,34 @@ public sealed class TransactionHistoryViewModelTests
     }
 
     [Fact]
+    public async Task Installment_history_pushes_date_terminal_and_keyword_filters_to_history_service()
+    {
+        var installmentService = new CapturingInstallmentOrderService();
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(deviceCode: "POS-04"),
+            installmentOrderService: installmentService)
+        {
+            DateFrom = new DateTime(2026, 8, 25),
+            DateTo = new DateTime(2026, 8, 25),
+            SearchText = " ITEM-TARGET "
+        };
+        viewModel.IsInstallmentSourceSelected = true;
+        viewModel.SelectedTerminalOption = viewModel.TerminalOptions.Single(option => option.DeviceCode == "POS-04");
+
+        await viewModel.LoadAsync();
+
+        Assert.NotNull(installmentService.LastHistoryQuery);
+        Assert.Equal("POS-04", installmentService.LastHistoryQuery!.DeviceCode);
+        Assert.Equal("ITEM-TARGET", installmentService.LastHistoryQuery.Keyword);
+        Assert.Equal(new DateTime(2026, 8, 25), installmentService.LastHistoryQuery.UpdatedFrom?.Date);
+        Assert.Equal(new DateTime(2026, 8, 25), installmentService.LastHistoryQuery.UpdatedTo?.Date);
+        Assert.Equal(100, installmentService.LastHistoryQuery.Take);
+    }
+
+    [Fact]
     public async Task Installment_history_with_local_receipt_allows_reprint()
     {
         var order = CreateInstallmentOrder("IO-20260703-REPRINT", "王五", "0400555666", paidAmount: 40m, outstandingAmount: 80m);
@@ -1429,6 +1457,36 @@ public sealed class TransactionHistoryViewModelTests
         Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("Balance due", StringComparison.Ordinal) && preview.Text.Contains("$0.00", StringComparison.Ordinal));
         Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("Pickup: Pending", StringComparison.Ordinal));
         Assert.DoesNotContain(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains(nameof(InstallmentStatus.PaidOff), StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Installment_history_lock_failure_keeps_rows_and_disables_pickup()
+    {
+        var order = CreateInstallmentOrder(
+            "IO-20260825-LOCK-UNKNOWN",
+            "BBB",
+            "0430990026",
+            paidAmount: 55m,
+            outstandingAmount: 0m);
+        var installmentService = new CapturingInstallmentOrderService
+        {
+            Orders = [order],
+            LockedInstallmentsException = new InvalidOperationException("lock lookup failed")
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            installmentOrderService: installmentService);
+
+        viewModel.IsInstallmentSourceSelected = true;
+        await viewModel.LoadAsync();
+
+        var row = Assert.Single(viewModel.Orders);
+        Assert.True(row.CanConfirmInstallmentPickup);
+        Assert.False(viewModel.IsConfirmInstallmentPickupVisible);
+        Assert.False(viewModel.ConfirmInstallmentPickupCommand.CanExecute(row));
     }
 
     [Fact]
@@ -3377,6 +3435,8 @@ public sealed class TransactionHistoryViewModelTests
     {
         public IReadOnlyList<InstallmentOrderSummary> Orders { get; init; } = [];
 
+        public InstallmentHistorySearchQuery? LastHistoryQuery { get; private set; }
+
         public Dictionary<Guid, LocalInstallmentOrder> LocalOrders { get; } = [];
 
         public Guid? LastConfirmPickupOrderId { get; private set; }
@@ -3389,8 +3449,14 @@ public sealed class TransactionHistoryViewModelTests
 
         public IReadOnlySet<Guid> LockedInstallments { get; init; } = new HashSet<Guid>();
 
-        public Task<IReadOnlySet<Guid>> GetLockedInstallmentGuidsAsync(PosSessionState session, CancellationToken cancellationToken = default) =>
-            Task.FromResult(LockedInstallments);
+        public Exception? LockedInstallmentsException { get; init; }
+
+        public Task<IReadOnlySet<Guid>> GetLockedInstallmentGuidsAsync(PosSessionState session, CancellationToken cancellationToken = default)
+        {
+            return LockedInstallmentsException is null
+                ? Task.FromResult(LockedInstallments)
+                : Task.FromException<IReadOnlySet<Guid>>(LockedInstallmentsException);
+        }
 
         public Task<IReadOnlyList<InstallmentOrderSummary>> GetOrdersAsync(PosSessionState session, CancellationToken cancellationToken = default)
         {
@@ -3399,6 +3465,15 @@ public sealed class TransactionHistoryViewModelTests
 
         public Task<IReadOnlyList<InstallmentOrderSummary>> SearchAsync(PosSessionState session, string? keyword, CancellationToken cancellationToken = default)
         {
+            return Task.FromResult(Orders);
+        }
+
+        public Task<IReadOnlyList<InstallmentOrderSummary>> QueryHistoryAsync(
+            PosSessionState session,
+            InstallmentHistorySearchQuery query,
+            CancellationToken cancellationToken = default)
+        {
+            LastHistoryQuery = query;
             return Task.FromResult(Orders);
         }
 

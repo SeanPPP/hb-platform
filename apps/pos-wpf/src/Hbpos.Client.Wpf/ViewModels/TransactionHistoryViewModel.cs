@@ -1595,18 +1595,31 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         _isInstallmentRecoveryStateUnknown = true;
         ConfirmInstallmentPickupCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
-        var orders = await _installmentOrderService.SearchAsync(
-            Session,
-            NormalizeKeyword(SearchText),
-            cancellationToken);
-        var lockedInstallments = await _installmentOrderService.GetLockedInstallmentGuidsAsync(Session, cancellationToken);
-        _lockedInstallmentGuids.Clear();
-        _lockedInstallmentGuids.UnionWith(lockedInstallments);
-        _isInstallmentRecoveryStateUnknown = false;
-        ConfirmInstallmentPickupCommand.NotifyCanExecuteChanged();
-        OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
         var from = ParseDateFrom(DateFrom);
         var to = ParseDateTo(DateTo);
+        var historyTask = _installmentOrderService.QueryHistoryAsync(
+            Session,
+            new InstallmentHistorySearchQuery(
+                UpdatedFrom: from,
+                UpdatedTo: to,
+                DeviceCode: SelectedTerminalDeviceCode,
+                Keyword: NormalizeKeyword(SearchText),
+                Take: 100),
+            cancellationToken);
+        var recoveryLockTask = LoadInstallmentRecoveryLocksWithinDeadlineAsync(cancellationToken);
+        await Task.WhenAll(historyTask, recoveryLockTask);
+        var orders = await historyTask;
+        var recoveryLockState = await recoveryLockTask;
+        _lockedInstallmentGuids.Clear();
+        if (recoveryLockState.IsKnown)
+        {
+            _lockedInstallmentGuids.UnionWith(recoveryLockState.LockedInstallments);
+        }
+
+        // 恢复锁查询失败或超时必须保持未知状态，列表仍可展示，但提货继续禁用。
+        _isInstallmentRecoveryStateUnknown = !recoveryLockState.IsKnown;
+        ConfirmInstallmentPickupCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
         return orders
             .Where(order => SelectedTerminalDeviceCode is null ||
                 string.Equals(order.DeviceCode, SelectedTerminalDeviceCode, StringComparison.OrdinalIgnoreCase))
@@ -1637,6 +1650,25 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 CustomerPhone: order.CustomerPhone,
                 DisplayCulture: CurrentDisplayCulture))
             .ToList();
+    }
+
+    private async Task<(bool IsKnown, IReadOnlySet<Guid> LockedInstallments)> LoadInstallmentRecoveryLocksWithinDeadlineAsync(
+        CancellationToken cancellationToken)
+    {
+        using var recoveryTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        recoveryTimeout.CancelAfter(TimeSpan.FromSeconds(2));
+        try
+        {
+            var locked = await _installmentOrderService.GetLockedInstallmentGuidsAsync(Session, recoveryTimeout.Token);
+            return (true, locked);
+        }
+        catch (Exception ex) when (
+            ex is not OutOfMemoryException &&
+            ex is not StackOverflowException &&
+            (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested))
+        {
+            return (false, new HashSet<Guid>());
+        }
     }
 
     private async Task LoadSelectedReceiptAsync(CancellationToken cancellationToken)

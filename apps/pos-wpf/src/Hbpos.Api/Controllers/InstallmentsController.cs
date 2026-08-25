@@ -276,7 +276,10 @@ public sealed class InstallmentsController(
         [FromQuery] InstallmentStatus? status,
         [FromQuery] int take,
         CancellationToken cancellationToken,
-        [FromQuery] int skip = 0)
+        [FromQuery] int skip = 0,
+        [FromQuery] DateTimeOffset? updatedFrom = null,
+        [FromQuery] DateTimeOffset? updatedTo = null,
+        [FromQuery] bool orderByUpdatedAt = false)
     {
         if (string.IsNullOrWhiteSpace(storeCode))
         {
@@ -296,7 +299,18 @@ public sealed class InstallmentsController(
         }
 
         var response = await historyService.QueryAsync(
-            new InstallmentHistoryQueryRequest(storeCode, deviceCode, createdFrom, createdTo, keyword, status, take <= 0 ? 100 : take, skip),
+            new InstallmentHistoryQueryRequest(
+                storeCode,
+                deviceCode,
+                createdFrom,
+                createdTo,
+                keyword,
+                status,
+                take <= 0 ? 100 : take,
+                skip,
+                updatedFrom,
+                updatedTo,
+                orderByUpdatedAt),
             cancellationToken);
         return Ok(ApiResult<InstallmentHistoryQueryResponse>.Ok(response));
     }
