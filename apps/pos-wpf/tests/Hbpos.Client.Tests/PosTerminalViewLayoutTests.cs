@@ -213,19 +213,16 @@ public sealed class PosTerminalViewLayoutTests
             (string?)text.Attribute("Text") == "{loc:Loc ItemNumber}");
         Assert.DoesNotContain(itemColumn.Descendants(presentation + "TextBlock"), text =>
             (string?)text.Attribute("Text") == "{loc:Loc Barcode}");
-        var itemNumberLine = Assert.Single(itemColumn.Descendants(presentation + "Grid").Where(grid =>
-            (string?)grid.Attribute(x + "Name") == "CartItemNumberLine"));
-        var barcodeLine = Assert.Single(itemColumn.Descendants(presentation + "Grid").Where(grid =>
-            (string?)grid.Attribute(x + "Name") == "CartBarcodeLine"));
-        Assert.Empty(barcodeLine.Descendants(presentation + "TextBlock").Where(text =>
-            ((string?)text.Attribute("Text"))?.StartsWith("{loc:Loc", StringComparison.Ordinal) == true));
+        var itemMetadataLine = Assert.Single(itemColumn.Descendants(presentation + "StackPanel").Where(panel =>
+            (string?)panel.Attribute(x + "Name") == "CartItemMetadataLine"));
+        Assert.Equal("Horizontal", (string?)itemMetadataLine.Attribute("Orientation"));
         var itemNumberValue = Assert.Single(itemColumn.Descendants(presentation + "TextBlock").Where(text =>
             (string?)text.Attribute("Text") == "{Binding ItemNumber}" &&
             (string?)text.Attribute("FontSize") == "11"));
         Assert.Equal(
             "{Binding ItemNumber, Converter={StaticResource StringHasValueToVis}}",
             (string?)itemNumberValue.Attribute("Visibility"));
-        Assert.Equal("Wrap", (string?)itemNumberValue.Attribute("TextWrapping"));
+        Assert.Equal("NoWrap", (string?)itemNumberValue.Attribute("TextWrapping"));
         Assert.Null(itemNumberValue.Attribute("TextTrimming"));
         var barcodeValue = Assert.Single(itemColumn.Descendants(presentation + "TextBlock").Where(text =>
             (string?)text.Attribute("Text") == "{Binding LookupCode}" &&
@@ -233,12 +230,12 @@ public sealed class PosTerminalViewLayoutTests
         Assert.Equal(
             "{Binding LookupCode, Converter={StaticResource StringHasValueToVis}}",
             (string?)barcodeValue.Attribute("Visibility"));
-        Assert.Equal("Wrap", (string?)barcodeValue.Attribute("TextWrapping"));
+        Assert.Equal("NoWrap", (string?)barcodeValue.Attribute("TextWrapping"));
         Assert.Null(barcodeValue.Attribute("TextTrimming"));
-        Assert.Same(itemNumberLine, itemNumberValue.Ancestors(presentation + "Grid").First(grid =>
-            (string?)grid.Attribute(x + "Name") is not null));
-        Assert.Same(barcodeLine, barcodeValue.Ancestors(presentation + "Grid").First(grid =>
-            (string?)grid.Attribute(x + "Name") is not null));
+        Assert.Same(itemMetadataLine, itemNumberValue.Ancestors(presentation + "StackPanel").First(panel =>
+            (string?)panel.Attribute(x + "Name") is not null));
+        Assert.Same(itemMetadataLine, barcodeValue.Ancestors(presentation + "StackPanel").First(panel =>
+            (string?)panel.Attribute(x + "Name") is not null));
         var missingMetadataValues = itemColumn.Descendants(presentation + "TextBlock").Where(text =>
             (string?)text.Attribute("Text") == "-" &&
             (string?)text.Attribute("FontSize") == "11").ToArray();
@@ -254,6 +251,29 @@ public sealed class PosTerminalViewLayoutTests
         Assert.Null(cartGrid.Attribute("RowHeight"));
         Assert.Equal("67", (string?)cartGrid.Attribute("MinRowHeight"));
         Assert.Equal("36", (string?)cartGrid.Attribute("ColumnHeaderHeight"));
+        Assert.Equal("1000000", (string?)cartGrid.Attribute("AlternationCount"));
+        var cartColumns = Assert.Single(cartGrid.Elements(presentation + "DataGrid.Columns"))
+            .Elements()
+            .ToArray();
+        Assert.Equal(6, cartColumns.Length);
+        var rowNumberColumn = cartColumns[0];
+        Assert.Equal("#", (string?)rowNumberColumn.Attribute("Header"));
+        Assert.Equal("44", (string?)rowNumberColumn.Attribute("Width"));
+        Assert.Equal(
+            "{StaticResource CartColumnHeaderCenterStyle}",
+            (string?)rowNumberColumn.Attribute("HeaderStyle"));
+        var rowNumberText = Assert.Single(rowNumberColumn.Descendants(presentation + "TextBlock"));
+        Assert.Equal(
+            "{Binding RelativeSource={RelativeSource AncestorType=DataGridRow}, Path=(ItemsControl.AlternationIndex), Converter={StaticResource RowNumberConverter}}",
+            (string?)rowNumberText.Attribute("Text"));
+        Assert.Equal("13", (string?)rowNumberText.Attribute("FontSize"));
+        Assert.Equal("SemiBold", (string?)rowNumberText.Attribute("FontWeight"));
+        Assert.Equal("Center", (string?)rowNumberText.Attribute("TextAlignment"));
+        Assert.Equal("Stretch", (string?)rowNumberText.Attribute("HorizontalAlignment"));
+        Assert.Equal("Center", (string?)rowNumberText.Attribute("VerticalAlignment"));
+        Assert.Equal("{loc:Loc Item}", (string?)cartColumns[1].Attribute("Header"));
+        Assert.Equal("{loc:Loc Quantity}", (string?)cartColumns[3].Attribute("Header"));
+        Assert.Equal("122", (string?)cartColumns[3].Attribute("MinWidth"));
         var finalAmount = Assert.Single(view.Descendants(presentation + "TextBlock").Where(text =>
             ((string?)text.Attribute("Text"))?.Contains("{Binding ActualAmount", StringComparison.Ordinal) == true &&
             (string?)text.Attribute("FontSize") == "24"));

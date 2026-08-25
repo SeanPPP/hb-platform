@@ -778,6 +778,19 @@
                         </Style>
                     </DataGrid.Resources>
                     <DataGrid.Columns>
+                        <DataGridTemplateColumn Header="#" Width="44" HeaderStyle="{StaticResource CartColumnHeaderCenterStyle}">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding RelativeSource={RelativeSource AncestorType=DataGridRow}, Path=(ItemsControl.AlternationIndex), Converter={StaticResource RowNumberConverter}}"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                                               TextAlignment="Center"
+                                               HorizontalAlignment="Stretch"
+                                               VerticalAlignment="Center" />
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                         <DataGridTemplateColumn Header="{loc:Loc Item}" Width="2.6*" HeaderStyle="{StaticResource CartColumnHeaderLeftStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
@@ -818,39 +831,34 @@
                                         </Border>
                                         <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                             <TextBlock Text="{Binding DisplayName}" FontSize="13" FontWeight="Black" TextTrimming="CharacterEllipsis" />
-                                            <Grid x:Name="CartItemNumberLine" Margin="0,2,0,0">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="Auto" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                    <ColumnDefinition Width="*" />
-                                                </Grid.ColumnDefinitions>
+                                            <StackPanel x:Name="CartItemMetadataLine" Margin="0,2,0,0" Orientation="Horizontal">
                                                 <TextBlock Text="{loc:Loc ItemNumber}" FontSize="11" Foreground="#FF304B73" />
-                                                <TextBlock Grid.Column="1" Text=":" FontSize="11" Foreground="#FF304B73" />
-                                                <Grid Grid.Column="2" Margin="4,0,0,0">
+                                                <TextBlock Text=":" FontSize="11" Foreground="#FF304B73" />
+                                                <Grid Margin="4,0,0,0">
                                                     <TextBlock Text="{Binding ItemNumber}"
                                                                ToolTip="{Binding ItemNumber}"
                                                                Visibility="{Binding ItemNumber, Converter={StaticResource StringHasValueToVis}}"
                                                                FontSize="11"
                                                                Foreground="#FF304B73"
-                                                               TextWrapping="Wrap" />
+                                                               TextWrapping="NoWrap" />
                                                     <TextBlock Text="-"
                                                                Visibility="{Binding ItemNumber, Converter={StaticResource StringIsEmptyToVis}}"
                                                                FontSize="11"
                                                                Foreground="#FF304B73" />
                                                 </Grid>
-                                            </Grid>
-                                            <Grid x:Name="CartBarcodeLine" Margin="0,1,0,0">
-                                                <TextBlock Text="{Binding LookupCode}"
-                                                           ToolTip="{Binding LookupCode}"
-                                                           Visibility="{Binding LookupCode, Converter={StaticResource StringHasValueToVis}}"
-                                                           FontSize="11"
-                                                           Foreground="#FF304B73"
-                                                           TextWrapping="Wrap" />
-                                                <TextBlock Text="-"
-                                                           Visibility="{Binding LookupCode, Converter={StaticResource StringIsEmptyToVis}}"
-                                                           FontSize="11"
-                                                           Foreground="#FF304B73" />
-                                            </Grid>
+                                                <Grid Margin="14,0,0,0">
+                                                    <TextBlock Text="{Binding LookupCode}"
+                                                               ToolTip="{Binding LookupCode}"
+                                                               Visibility="{Binding LookupCode, Converter={StaticResource StringHasValueToVis}}"
+                                                               FontSize="11"
+                                                               Foreground="#FF304B73"
+                                                               TextWrapping="NoWrap" />
+                                                    <TextBlock Text="-"
+                                                               Visibility="{Binding LookupCode, Converter={StaticResource StringIsEmptyToVis}}"
+                                                               FontSize="11"
+                                                               Foreground="#FF304B73" />
+                                                </Grid>
+                                            </StackPanel>
                                         </StackPanel>
                                     </Grid>
                                 </DataTemplate>
@@ -872,7 +880,7 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="{loc:Loc Quantity}" Width="1.35*" HeaderStyle="{StaticResource CartColumnHeaderCenterStyle}">
+                        <DataGridTemplateColumn Header="{loc:Loc Quantity}" Width="1.35*" MinWidth="122" HeaderStyle="{StaticResource CartColumnHeaderCenterStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Grid HorizontalAlignment="Center" VerticalAlignment="Center">

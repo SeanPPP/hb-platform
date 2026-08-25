@@ -292,17 +292,39 @@
                         </DataGrid>
 
                         <Border Grid.Row="2" Background="#EFFFF7F7" Padding="18" CornerRadius="0,0,12,12">
-                            <DockPanel>
-                                <StackPanel>
-                                    <TextBlock Text="{loc:Loc returns.totalRefund}" Style="{StaticResource ReturnHeaderLabelStyle}" Foreground="{StaticResource PosDangerBrush}" />
-                                    <TextBlock Text="{Binding PendingTotal, StringFormat={}{0:C2}}"
+                            <!-- 退款金额与主操作上下分层，避免窄窗口或高 DPI 下相互挤压。 -->
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="12" />
+                                    <RowDefinition Height="56" />
+                                </Grid.RowDefinitions>
+
+                                <Grid Grid.Row="0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Grid.Column="0"
+                                               Text="{loc:Loc returns.totalRefund}"
+                                               Style="{StaticResource ReturnHeaderLabelStyle}"
+                                               Foreground="{StaticResource PosDangerBrush}"
+                                               VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding PendingTotal, StringFormat={}{0:C2}}"
+                                               Margin="24,0,0,0"
+                                               HorizontalAlignment="Right"
+                                               TextAlignment="Right"
                                                FontSize="34"
                                                Style="{StaticResource ReturnDangerAmountStyle}" />
-                                </StackPanel>
-                                <Button DockPanel.Dock="Right"
+                                </Grid>
+
+                                <Button Grid.Row="2"
                                         Command="{Binding ConfirmToCartCommand}"
                                         MinWidth="180"
                                         Height="56"
+                                        HorizontalAlignment="Stretch"
                                         Style="{StaticResource PosPrimaryButtonStyle}"
                                         VerticalAlignment="Center">
                                     <StackPanel Orientation="Horizontal">
@@ -310,7 +332,7 @@
                                         <TextBlock Text="{loc:Loc returns.addToCart}" Foreground="White" FontSize="16" FontWeight="Black" />
                                     </StackPanel>
                                 </Button>
-                            </DockPanel>
+                            </Grid>
                         </Border>
                     </Grid>
                 </Border>

@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
@@ -328,12 +329,47 @@ public sealed class WpfViewLifecycleTests
     {
         var targetContentHeight = targetWindowHeight - 54 - 42;
         var view = new PosTerminalView();
+        var root = Assert.IsType<System.Windows.Controls.Grid>(view.Content);
+        var cartItemsGrid = Assert.Single(root.Children
+            .OfType<System.Windows.Controls.Grid>()
+            .SelectMany(child => child.Children
+                .OfType<Border>()
+                .Select(border => border.Child)
+                .OfType<DataGrid>()));
+        cartItemsGrid.ItemsSource = Enumerable.Range(1, 4)
+            .Select(index => new CartLayoutProbe(
+                DisplayName: $"Product {index}",
+                ItemNumber: $"SKU-{index:000}",
+                LookupCode: $"69000{index}",
+                ProductImage: null,
+                UnitPrice: 4.5m,
+                SignedQuantity: 1m,
+                GrossAmount: 4.5m,
+                ActualAmount: 4.5m,
+                HasDiscount: false,
+                DiscountRateText: string.Empty,
+                HasZeroUnitPrice: false,
+                IsReturnLine: false))
+            .ToArray();
 
-        view.Measure(new Size(targetWidth, targetContentHeight));
-        view.Arrange(new Rect(0, 0, targetWidth, targetContentHeight));
+        var host = new Window
+        {
+            Content = view,
+            Width = targetWidth,
+            Height = targetContentHeight,
+            WindowStyle = WindowStyle.None,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.Manual,
+            Left = -10000,
+            Top = -10000,
+            ShowActivated = false,
+            ShowInTaskbar = false
+        };
+        host.Show();
+        host.UpdateLayout();
+        PumpDispatcher();
         view.UpdateLayout();
 
-        var root = Assert.IsType<System.Windows.Controls.Grid>(view.Content);
         Assert.Equal(3, root.ColumnDefinitions.Count);
         var cartWidth = root.ColumnDefinitions[0].ActualWidth;
         var keypadWidth = root.ColumnDefinitions[1].ActualWidth;
@@ -356,6 +392,50 @@ public sealed class WpfViewLifecycleTests
         Assert.InRange(cartSummary.ActualHeight, 91.5, 92.5);
         Assert.InRange(totalsSummary.ActualHeight, 57.5, 58.5);
         Assert.InRange(inputBuffer.ActualHeight, 77.5, 78.5);
+
+        Assert.Equal(6, cartItemsGrid.Columns.Count);
+        Assert.InRange(cartItemsGrid.Columns[0].ActualWidth, 43.5, 44.5);
+        Assert.True(
+            cartItemsGrid.Columns.Sum(column => column.ActualWidth) <= cartItemsGrid.ActualWidth + 0.5,
+            $"{targetWidth:0}×{targetWindowHeight:0} 下购物车列宽超出可视区域。");
+
+        var cartRows = Enumerable.Range(0, 4)
+            .Select(index => Assert.IsType<DataGridRow>(cartItemsGrid.ItemContainerGenerator.ContainerFromIndex(index)))
+            .ToArray();
+        Assert.All(cartRows, row => Assert.True(row.ActualHeight >= 67));
+        for (var index = 0; index < cartRows.Length; index++)
+        {
+            var rowNumberCell = FindVisualDescendants<DataGridCell>(cartRows[index])
+                .Single(cell => cell.Column.DisplayIndex == 0);
+            var rowNumber = Assert.Single(FindVisualDescendants<TextBlock>(rowNumberCell));
+            Assert.Equal((index + 1).ToString(), rowNumber.Text);
+        }
+
+        var firstRowCells = FindVisualDescendants<DataGridCell>(cartRows[0])
+            .OrderBy(cell => cell.Column.DisplayIndex)
+            .ToArray();
+        Assert.Equal(6, firstRowCells.Length);
+        Assert.All(firstRowCells, cell => AssertHorizontallyContained(cell, cartRows[0], targetWidth, targetWindowHeight));
+
+        var metadataLine = Assert.Single(FindVisualDescendants<StackPanel>(firstRowCells[1])
+            .Where(panel => panel.Name == "CartItemMetadataLine"));
+        AssertHorizontallyContained(metadataLine, firstRowCells[1], targetWidth, targetWindowHeight);
+
+        var quantityButtons = FindVisualDescendants<Button>(firstRowCells[3]).ToArray();
+        Assert.Equal(2, quantityButtons.Length);
+        Assert.All(quantityButtons, button =>
+        {
+            Assert.Equal(32, button.ActualWidth);
+            AssertHorizontallyContained(button, firstRowCells[3], targetWidth, targetWindowHeight);
+        });
+
+        var totalTexts = FindVisualDescendants<TextBlock>(firstRowCells[4]).ToArray();
+        Assert.NotEmpty(totalTexts);
+        Assert.All(totalTexts, text => AssertHorizontallyContained(text, firstRowCells[4], targetWidth, targetWindowHeight));
+
+        var deleteButton = Assert.Single(FindVisualDescendants<Button>(firstRowCells[5]));
+        Assert.Equal(32, deleteButton.ActualWidth);
+        AssertHorizontallyContained(deleteButton, firstRowCells[5], targetWidth, targetWindowHeight);
 
         var keypad = Assert.IsType<System.Windows.Controls.Primitives.UniformGrid>(view.FindName("CashierKeypad"));
         var numericParameters = new HashSet<string>(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "."]);
@@ -381,6 +461,39 @@ public sealed class WpfViewLifecycleTests
             Assert.True(button.ActualWidth >= minimumWidth, $"右侧按钮触控宽度不足：{button.ActualWidth:0.##}。");
             Assert.True(button.ActualHeight >= 62, $"右侧按钮触控高度不足：{button.ActualHeight:0.##}。");
         });
+
+        host.Close();
+    }
+
+    private static IEnumerable<T> FindVisualDescendants<T>(DependencyObject parent)
+        where T : DependencyObject
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is T match)
+            {
+                yield return match;
+            }
+
+            foreach (var descendant in FindVisualDescendants<T>(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
+    private static void AssertHorizontallyContained(
+        FrameworkElement child,
+        FrameworkElement ancestor,
+        double targetWidth,
+        double targetWindowHeight)
+    {
+        var origin = child.TransformToAncestor(ancestor).Transform(new Point());
+        Assert.True(
+            origin.X >= -0.5 && origin.X + child.ActualWidth <= ancestor.ActualWidth + 0.5,
+            $"{targetWidth:0}×{targetWindowHeight:0} 下 {child.GetType().Name} 超出 {ancestor.GetType().Name} 水平边界：" +
+            $"起点 {origin.X:0.##}，宽度 {child.ActualWidth:0.##}，容器宽度 {ancestor.ActualWidth:0.##}。");
     }
 
     private static void VerifyUnloadedViewInstancesAreCollectible()
@@ -477,7 +590,10 @@ public sealed class WpfViewLifecycleTests
 
     private static Application CreateTestApplication()
     {
-        var application = new Application();
+        var application = new Application
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown
+        };
         application.Resources.MergedDictionaries.Add(new ResourceDictionary
         {
             Source = new Uri(
@@ -605,6 +721,20 @@ public sealed class WpfViewLifecycleTests
             remove => _propertyChanged -= value;
         }
     }
+
+    private sealed record CartLayoutProbe(
+        string DisplayName,
+        string ItemNumber,
+        string LookupCode,
+        string? ProductImage,
+        decimal UnitPrice,
+        decimal SignedQuantity,
+        decimal GrossAmount,
+        decimal ActualAmount,
+        bool HasDiscount,
+        string DiscountRateText,
+        bool HasZeroUnitPrice,
+        bool IsReturnLine);
 
     private sealed class CashCountDialogBindingSource
     {
