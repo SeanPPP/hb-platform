@@ -26,6 +26,26 @@ public sealed class OrderSyncSchemaInitializerTests
     }
 
     [Fact]
+    public async Task InitializeAsync_adds_indexes_for_return_order_lookup_hot_path()
+    {
+        var executor = new CapturingOrderSyncSchemaSqlExecutor();
+        var initializer = new SqlSugarOrderSyncSchemaInitializer(executor);
+
+        await initializer.InitializeAsync();
+
+        var sql = Assert.Single(executor.SqlStatements);
+        Assert.Contains("IX_payment_detail_OrderGuid", sql);
+        Assert.Contains("ON [dbo].[payment_detail] ([OrderGuid])", sql);
+        Assert.Contains("IX_BankTransaction_OrderGuid", sql);
+        Assert.Contains("ON [dbo].[BankTransaction] ([OrderGuid])", sql);
+        Assert.Contains("IX_sales_return_record_OriginalOrderGuid", sql);
+        Assert.Contains("ON [dbo].[sales_return_record] ([OriginalOrderGuid])", sql);
+        Assert.Contains("IX_sales_return_record_ReturnOrderGuid", sql);
+        Assert.Contains("ON [dbo].[sales_return_record] ([ReturnOrderGuid])", sql);
+        Assert.Equal(4, System.Text.RegularExpressions.Regex.Matches(sql, "ERROR_NUMBER\\(\\) <> 1913").Count);
+    }
+
+    [Fact]
     public void Payment_reference_model_can_store_structured_square_refund_reference()
     {
         var property = typeof(PaymentDetail).GetProperty(nameof(PaymentDetail.Reference));

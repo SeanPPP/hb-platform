@@ -99,9 +99,12 @@ public sealed class ReceiptReturnsWorkflowService(
     IRemoteOrderHistoryService? remoteOrderHistoryService,
     LocalSellableItemIndex priceIndex,
     PosCartService cart,
-    ILocalizationService? localization = null) : IReceiptReturnsWorkflowService
+    ILocalizationService? localization = null,
+    IUiPriorityCoordinator? uiPriorityCoordinator = null) : IReceiptReturnsWorkflowService
 {
     private const string OpenItemLookupCode = "OPENITEM";
+    internal static readonly TimeSpan RemoteLookupTimeout = TimeSpan.FromSeconds(2);
+    private readonly IUiPriorityCoordinator _uiPriorityCoordinator = uiPriorityCoordinator ?? UiPriorityCoordinator.Noop;
 
     public async Task<ReceiptReturnLookupResult> LookupOrderAsync(
         PosSessionState session,
@@ -114,6 +117,8 @@ public sealed class ReceiptReturnsWorkflowService(
             return new ReceiptReturnLookupResult(null, false, false, T("returns.status.lookupPrompt", "Scan or enter an order number."));
         }
 
+        // 退货订单查询是收银员正在等待的前台操作；查询期间让目录同步在分页边界暂停，避免争抢同一 API/数据库。
+        using var uiOperation = _uiPriorityCoordinator.BeginUiOperation("receipt-return-order-lookup");
         var stopwatch = Stopwatch.StartNew();
         var queryType = TryParseOrderGuid(query, out _) ? "guid" : "keyword";
         ConsoleLog.Write(
@@ -123,12 +128,15 @@ public sealed class ReceiptReturnsWorkflowService(
 
         if (session.IsOnline && remoteOrderHistoryService is not null)
         {
+            using var remoteLookupCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            remoteLookupCancellation.CancelAfter(RemoteLookupTimeout);
+            var remoteCancellationToken = remoteLookupCancellation.Token;
             try
             {
-                var remoteOrderGuid = await ResolveRemoteOrderGuidAsync(session, query, cancellationToken);
+                var remoteOrderGuid = await ResolveRemoteOrderGuidAsync(session, query, remoteCancellationToken);
                 if (remoteOrderGuid is not null)
                 {
-                    var context = await remoteOrderHistoryService.GetReturnContextAsync(remoteOrderGuid.Value, cancellationToken);
+                    var context = await remoteOrderHistoryService.GetReturnContextAsync(remoteOrderGuid.Value, remoteCancellationToken);
                     if (context is not null)
                     {
                         var result = new ReceiptReturnLookupResult(
