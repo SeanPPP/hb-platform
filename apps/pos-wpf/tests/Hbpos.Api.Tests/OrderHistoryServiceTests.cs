@@ -44,6 +44,106 @@ public sealed class OrderHistoryServiceTests
         Assert.Empty(response.Orders);
     }
 
+    [Theory]
+    [InlineData("-")]
+    [InlineData("--")]
+    [InlineData("---")]
+    public async Task QueryAsync_hyphen_only_keyword_does_not_match_every_order_guid(string keyword)
+    {
+        using var database = await OrderHistorySqliteFixture.CreateAsync(orderCount: 100);
+        var repository = new SqlSugarOrderHistoryRepository(database.DbContext);
+
+        var response = await repository.QueryAsync(
+            new OrderHistoryQueryRequest(
+                "S001",
+                SoldFrom: DateTimeOffset.Parse("2026-08-25T00:00:00Z"),
+                SoldTo: DateTimeOffset.Parse("2026-08-25T23:59:59Z"),
+                Keyword: keyword,
+                Take: 100),
+            CancellationToken.None);
+
+        Assert.Empty(response.Orders);
+    }
+
+    [Theory]
+    [InlineData("ITEM_1", "ITEMX1")]
+    [InlineData("ITEM%1", "ITEMX1")]
+    [InlineData("ITEM[1]", "ITEM1")]
+    [InlineData("_", "X")]
+    [InlineData("%", "X")]
+    [InlineData("[", "X")]
+    public async Task QueryAsync_item_number_suffix_treats_sql_wildcards_as_literals(
+        string itemNumber,
+        string wildcardEquivalent)
+    {
+        using var database = await OrderHistorySqliteFixture.CreateAsync(orderCount: 2);
+        var targetOrderGuid = OrderHistorySqliteFixture.TargetOrderGuid.ToString("D");
+        var otherOrderGuid = await database.DbContext.PosmDb.Queryable<SalesOrder>()
+            .Where(order => order.BranchCode == "S001" && order.OrderGuid != targetOrderGuid)
+            .OrderBy(order => order.OrderTime)
+            .Select(order => order.OrderGuid)
+            .FirstAsync();
+
+        await database.DbContext.PosmDb.Updateable<SalesOrderDetail>()
+            .SetColumns(line => line.Remark == $"priceSource=1;itemNo={itemNumber}")
+            .Where(line => line.OrderGuid == targetOrderGuid)
+            .ExecuteCommandAsync();
+        await database.DbContext.PosmDb.Updateable<SalesOrderDetail>()
+            .SetColumns(line => line.Remark == $"priceSource=1;itemNo={wildcardEquivalent}")
+            .Where(line => line.OrderGuid == otherOrderGuid)
+            .ExecuteCommandAsync();
+
+        var statements = database.CaptureSql();
+        var repository = new SqlSugarOrderHistoryRepository(database.DbContext);
+        var response = await repository.QueryAsync(
+            new OrderHistoryQueryRequest(
+                "S001",
+                SoldFrom: DateTimeOffset.Parse("2026-08-25T00:00:00Z"),
+                SoldTo: DateTimeOffset.Parse("2026-08-25T23:59:59Z"),
+                Keyword: itemNumber,
+                Take: 100),
+            CancellationToken.None);
+
+        var order = Assert.Single(response.Orders);
+        Assert.Equal(OrderHistorySqliteFixture.TargetOrderGuid, order.OrderGuid);
+        var select = Assert.Single(statements, statement =>
+            statement.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase) &&
+            statement.Contains("FROM `sales_order`", StringComparison.OrdinalIgnoreCase));
+        Assert.Contains("INSTR", select, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("`Remark` like", select, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Sql_server_item_number_suffix_uses_parameterized_charindex_instead_of_like()
+    {
+        using var db = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = "Server=(localdb)\\MSSQLLocalDB;Database=hbpos-sql-preview;Trusted_Connection=True;",
+            DbType = DbType.SqlServer,
+            InitKeyType = InitKeyType.Attribute,
+            IsAutoCloseConnection = true
+        });
+        const string keyword = "ITEM_1%[";
+        var itemNumberMarker = $"itemNo={keyword}";
+        var itemNumberSuffix = $";{itemNumberMarker}";
+
+        var sql = db.Queryable<SalesOrder>()
+            .Where(order =>
+                (order.OrderGuid != null && SqlFunc.CharIndexNew(order.OrderGuid, keyword) > 0)
+                || SqlFunc.Subqueryable<SalesOrderDetail>()
+                    .Where(line => line.OrderGuid == order.OrderGuid
+                        && line.Remark != null
+                        && (line.Remark == itemNumberMarker
+                            || SqlFunc.CharIndexNew(line.Remark, itemNumberSuffix)
+                                == SqlFunc.Length(line.Remark) - itemNumberSuffix.Length + 1))
+                    .Any())
+            .ToSql();
+
+        Assert.Contains("CHARINDEX", sql.Key, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(" LIKE ", sql.Key, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(sql.Value, parameter => Equals(parameter.Value, itemNumberSuffix));
+    }
+
     private static async Task AssertFastLookupAsync(
         SqlSugarOrderHistoryRepository repository,
         OrderHistorySqliteFixture database,

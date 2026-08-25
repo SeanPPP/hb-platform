@@ -136,6 +136,7 @@ public sealed class InstallmentServiceTests
         Assert.Null(stored!.PickupInfo);
         Assert.Null(stored.CancellationInfo);
         Assert.Equal(InstallmentStatus.Active, stored.Status);
+        Assert.Equal(DateTimeOffset.Parse("2026-05-21T10:00:00Z"), stored.UpdatedAt);
     }
 
     [Fact]
@@ -581,6 +582,182 @@ public sealed class InstallmentServiceTests
             CancellationToken.None);
 
         Assert.Empty(response.Orders);
+    }
+
+    [Theory]
+    [InlineData("_")]
+    [InlineData("%")]
+    [InlineData("[")]
+    public async Task Sql_repository_history_treats_special_identifier_characters_as_literals(string keyword)
+    {
+        await using var fixture = await InstallmentSqliteFixture.CreateAsync();
+        var repository = new SqlSugarInstallmentRepository(fixture.DbContext);
+        var service = new InstallmentService(repository, new FakeReservationService());
+        var targetGuid = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        await service.CreateAsync(
+            CreateRequest() with
+            {
+                InstallmentGuid = targetGuid,
+                Lines =
+                [
+                    new InstallmentLineDto(
+                        Guid.NewGuid(),
+                        "SKU-SPECIAL",
+                        null,
+                        "Special Tea",
+                        "BAR-SPECIAL",
+                        1m,
+                        100m,
+                        0m,
+                        100m,
+                        keyword)
+                ]
+            },
+            CancellationToken.None);
+        await service.CreateAsync(
+            CreateRequest() with
+            {
+                InstallmentGuid = Guid.Parse("ffffffff-1111-2222-3333-444444444444"),
+                Lines =
+                [
+                    new InstallmentLineDto(
+                        Guid.NewGuid(),
+                        "SKU-OTHER",
+                        null,
+                        "Other Tea",
+                        "BAR-OTHER",
+                        1m,
+                        100m,
+                        0m,
+                        100m,
+                        "X")
+                ]
+            },
+            CancellationToken.None);
+
+        var response = await service.QueryAsync(
+            new InstallmentHistoryQueryRequest("S01", Keyword: keyword),
+            CancellationToken.None);
+
+        Assert.Equal(targetGuid, Assert.Single(response.Orders).InstallmentGuid);
+    }
+
+    [Fact]
+    public async Task Sql_repository_keyword_pagination_filters_and_pages_in_the_database()
+    {
+        await using var fixture = await InstallmentSqliteFixture.CreateAsync();
+        var db = fixture.DbContext.PosmDb;
+        const int orderCount = 1_205;
+        var createdAt = DateTime.Parse("2026-08-25T10:00:00Z").ToUniversalTime();
+        var orders = Enumerable.Range(0, orderCount)
+            .Select(index => new InstallmentOrderEntity
+            {
+                InstallmentGuid = Guid.Parse($"00000000-0000-0000-0000-{index:D12}").ToString("D"),
+                InstallmentNumber = $"IO-DEEP-{index:D4}",
+                StoreCode = "S01",
+                DeviceCode = "POS01",
+                CashierId = "C01",
+                CashierName = "Cashier",
+                CustomerName = "Customer",
+                CustomerPhone = "0400000000",
+                TotalAmount = 100m,
+                DownPaymentAmount = 20m,
+                PaidAmount = 20m,
+                BalanceAmount = 80m,
+                Status = (int)InstallmentStatus.Active,
+                CreatedAt = createdAt.AddSeconds(-index),
+                UpdatedAt = createdAt.AddSeconds(-index)
+            })
+            .ToList();
+        var lines = orders.Select(order => new InstallmentOrderLineEntity
+        {
+            InstallmentLineGuid = Guid.NewGuid().ToString("D"),
+            InstallmentGuid = order.InstallmentGuid,
+            ProductCode = "SKU-DEEP",
+            DisplayName = "Tea",
+            LookupCode = "930000000001",
+            ItemNumber = "ITEM-DEEP",
+            Quantity = 1m,
+            UnitPrice = 100m,
+            ActualAmount = 100m
+        }).ToList();
+        foreach (var batch in orders.Chunk(500))
+        {
+            await db.Insertable(batch).ExecuteCommandAsync();
+        }
+
+        foreach (var batch in lines.Chunk(500))
+        {
+            await db.Insertable(batch).ExecuteCommandAsync();
+        }
+
+        var statements = fixture.CaptureSql();
+        var repository = new SqlSugarInstallmentRepository(fixture.DbContext);
+
+        var response = await repository.QueryAsync(
+            new InstallmentHistoryQueryRequest("S01", Keyword: "ITEM-DEEP", Take: 5, Skip: 1_000),
+            CancellationToken.None);
+
+        var selects = statements
+            .Where(statement => statement.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        Assert.Single(selects);
+        Assert.Contains("EXISTS", selects[0], StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(" IN (", selects[0], StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(5, response.Orders.Count);
+        Assert.Equal("IO-DEEP-1000", response.Orders[0].InstallmentNumber);
+    }
+
+    [Fact]
+    public void Sql_server_keyword_pagination_translates_to_exists_without_guid_in_list()
+    {
+        using var db = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = "Server=(localdb)\\MSSQLLocalDB;Database=hbpos-sql-preview;Trusted_Connection=True;",
+            DbType = DbType.SqlServer,
+            InitKeyType = InitKeyType.Attribute,
+            IsAutoCloseConnection = true
+        });
+        const string keyword = "ITEM-DEEP";
+
+        var sql = db.Queryable<InstallmentOrderEntity>()
+            .Where(order => order.StoreCode == "S01")
+            .Where(order =>
+                SqlFunc.CharIndexNew(order.InstallmentNumber, keyword) > 0 ||
+                SqlFunc.Subqueryable<InstallmentOrderLineEntity>()
+                    .Where(line => line.InstallmentGuid == order.InstallmentGuid &&
+                        (line.ItemNumber == keyword ||
+                         line.LookupCode == keyword ||
+                         line.ProductCode == keyword))
+                    .Any())
+            .OrderByDescending(order => order.UpdatedAt)
+            .OrderByDescending(order => order.InstallmentGuid)
+            .Skip(2_200)
+            .Take(100)
+            .ToSql();
+
+        Assert.Contains("EXISTS", sql.Key, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(" IN (", sql.Key, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(" LIKE ", sql.Key, StringComparison.OrdinalIgnoreCase);
+        Assert.True(sql.Key.Length < 5_000, $"SQL Server 查询文本异常膨胀到 {sql.Key.Length} 个字符。");
+    }
+
+    [Fact]
+    public async Task Sql_repository_history_summary_preserves_cancellation_kind()
+    {
+        await using var fixture = await InstallmentSqliteFixture.CreateAsync();
+        var repository = new SqlSugarInstallmentRepository(fixture.DbContext);
+        var service = new InstallmentService(repository, new FakeReservationService());
+        var created = await service.CreateAsync(CreateRequest(), CancellationToken.None);
+
+        await service.VoidAsync(CreateVoid(created.InstallmentGuid), CancellationToken.None);
+
+        var response = await service.QueryAsync(
+            new InstallmentHistoryQueryRequest("S01", Keyword: created.InstallmentNumber),
+            CancellationToken.None);
+
+        var summary = Assert.Single(response.Orders);
+        Assert.Equal(InstallmentCancellationKind.VoidCancel, summary.CancellationKind);
     }
 
     [Fact]

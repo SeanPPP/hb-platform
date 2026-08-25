@@ -623,7 +623,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 return;
             }
 
-            await LoadSelectedReceiptAsync(cancellationToken);
+            // 列表查询完成即可进入历史页；首行详情独立加载，详情故障不能撤销已显示的列表。
+            _ = LoadSelectedReceiptSafelyAsync(SelectedOrder);
         }
         catch (Exception ex) when (
             ex is not OperationCanceledException ||
@@ -1719,6 +1720,13 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 return;
             }
 
+            if (Session.IsOnline)
+            {
+                // 在线详情失败或不存在时必须 fail closed，禁止用本地旧快照或 summary 金融字段补打。
+                ClearReceiptPreview();
+                return;
+            }
+
             ReceiptLines.Clear();
             Payments.Clear();
             ReceiptPreviewRows.ReplaceWith(BuildInstallmentPreviewRows(selectedOrder, installmentDetails));
@@ -2404,14 +2412,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     private async Task<LocalInstallmentOrder?> LoadInstallmentPreviewDetailsAsync(Guid installmentGuid, CancellationToken cancellationToken)
     {
-        try
-        {
-            return await _installmentOrderService.GetLocalOrderAsync(installmentGuid, cancellationToken);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            return null;
-        }
+        return await _installmentOrderService.GetOrderDetailsAsync(Session, installmentGuid, cancellationToken);
     }
 
     private IReadOnlyList<ReceiptPreviewRow> BuildInstallmentPreviewRows(HistoryOrderListItem order, LocalInstallmentOrder? details)

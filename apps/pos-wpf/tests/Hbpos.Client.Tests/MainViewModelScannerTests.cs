@@ -905,6 +905,38 @@ public sealed class MainViewModelScannerTests
         Assert.Equal(printSucceeded ? null : "printer offline", auditEvent.SafeMessage);
     }
 
+    [Fact]
+    public async Task Show_history_navigates_before_remote_detail_finishes_and_keeps_rows()
+    {
+        var orderGuid = Guid.NewGuid();
+        var remoteHistory = new GatedRemoteOrderHistoryService(orderGuid);
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            remoteOrderHistoryService: remoteHistory);
+
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        await viewModel.ShowHistoryCommand.ExecuteAsync(null);
+        var history = Assert.IsType<TransactionHistoryViewModel>(viewModel.TransactionHistory);
+        history.IsOnlineSourceSelected = true;
+
+        var navigationTask = viewModel.ShowHistoryCommand.ExecuteAsync(null);
+        await remoteHistory.DetailsStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            var completed = await Task.WhenAny(navigationTask, Task.Delay(500));
+
+            Assert.Same(navigationTask, completed);
+            Assert.Same(history, viewModel.CurrentScreen);
+            Assert.Equal(orderGuid, Assert.Single(history.Orders).OrderGuid);
+        }
+        finally
+        {
+            remoteHistory.DetailsGate.TrySetResult(null);
+            await navigationTask;
+        }
+    }
+
     [Theory]
     [InlineData(true, "Succeeded")]
     [InlineData(false, "Failed")]
@@ -7104,6 +7136,12 @@ public sealed class MainViewModelScannerTests
         public Task<LocalInstallmentOrder?> GetLocalOrderAsync(Guid installmentGuid, CancellationToken cancellationToken = default) =>
             Task.FromResult(CreatedLocalOrder?.InstallmentGuid == installmentGuid ? CreatedLocalOrder : null);
 
+        public Task<LocalInstallmentOrder?> GetOrderDetailsAsync(
+            PosSessionState session,
+            Guid installmentGuid,
+            CancellationToken cancellationToken = default) =>
+            GetLocalOrderAsync(installmentGuid, cancellationToken);
+
         public Task<IReadOnlyList<InstallmentOperationRecoveryResult>> RecoverPendingOperationsAsync(
             PosSessionState session,
             CancellationToken cancellationToken = default)
@@ -7384,6 +7422,48 @@ public sealed class MainViewModelScannerTests
         {
             throw new NotSupportedException();
         }
+    }
+
+    private sealed class GatedRemoteOrderHistoryService(Guid orderGuid) : IRemoteOrderHistoryService
+    {
+        public TaskCompletionSource DetailsStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public TaskCompletionSource<ReceiptDetails?> DetailsGate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<RemoteOrderHistoryResult> QueryAsync(
+            RemoteOrderHistoryQuery query,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(new RemoteOrderHistoryResult(
+            [
+                new RemoteOrderHistorySummary(
+                    orderGuid,
+                    query.StoreCode,
+                    query.DeviceCode ?? "POS-02",
+                    "Remote Cashier",
+                    DateTimeOffset.UtcNow,
+                    18m,
+                    0m,
+                    18m,
+                    1,
+                    "Cash",
+                    "Synced")
+            ]));
+        }
+
+        public Task<ReceiptDetails?> GetDetailsAsync(Guid requestedOrderGuid, CancellationToken cancellationToken = default)
+        {
+            DetailsStarted.TrySetResult();
+            return DetailsGate.Task;
+        }
+
+        public Task<OrderReturnContextDto?> GetReturnContextAsync(Guid requestedOrderGuid, CancellationToken cancellationToken = default) =>
+            Task.FromResult<OrderReturnContextDto?>(null);
+
+        public Task<OrderReturnRecordCreateResponse> CreateReturnRecordsAsync(
+            OrderReturnRecordCreateRequest request,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(new OrderReturnRecordCreateResponse(request.ReturnOrderGuid, []));
     }
 
     private sealed class RecordingLinklyBankReceiptPrinter : ILinklyBankReceiptPrinter

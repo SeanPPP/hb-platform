@@ -943,6 +943,100 @@ public sealed class TransactionHistoryViewModelTests
     }
 
     [Fact]
+    public async Task Remote_history_load_does_not_wait_for_first_detail_and_preserves_rows()
+    {
+        var orderGuid = Guid.NewGuid();
+        var detailsStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var detailsGate = new TaskCompletionSource<ReceiptDetails?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var remoteOrders = new CapturingRemoteOrderHistoryService
+        {
+            QueryResult = new RemoteOrderHistoryResult(
+            [
+                new RemoteOrderHistorySummary(
+                    orderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    DateTimeOffset.UtcNow,
+                    12m,
+                    0m,
+                    12m,
+                    1,
+                    "Cash",
+                    "Synced")
+            ])
+        };
+        remoteOrders.DetailsHandler = (_, _) =>
+        {
+            detailsStarted.TrySetResult();
+            return detailsGate.Task;
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            remoteOrders,
+            CreateSession());
+
+        viewModel.IsOnlineSourceSelected = true;
+        var loadTask = viewModel.LoadAsync();
+        await detailsStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            var completed = await Task.WhenAny(loadTask, Task.Delay(500));
+
+            Assert.Same(loadTask, completed);
+            Assert.Equal(orderGuid, Assert.Single(viewModel.Orders).OrderGuid);
+        }
+        finally
+        {
+            detailsGate.TrySetResult(null);
+            await loadTask;
+        }
+    }
+
+    [Fact]
+    public async Task Remote_history_detail_failure_does_not_clear_loaded_rows()
+    {
+        const string detailFailure = "remote detail failed";
+        var orderGuid = Guid.NewGuid();
+        var remoteOrders = new CapturingRemoteOrderHistoryService
+        {
+            QueryResult = new RemoteOrderHistoryResult(
+            [
+                new RemoteOrderHistorySummary(
+                    orderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    DateTimeOffset.UtcNow,
+                    12m,
+                    0m,
+                    12m,
+                    1,
+                    "Cash",
+                    "Synced")
+            ]),
+            DetailsHandler = (_, _) => Task.FromException<ReceiptDetails?>(new InvalidOperationException(detailFailure))
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            remoteOrders,
+            CreateSession());
+
+        viewModel.IsOnlineSourceSelected = true;
+        await viewModel.LoadAsync();
+        await WaitUntilAsync(() => viewModel.StatusMessage == detailFailure);
+
+        Assert.Equal(orderGuid, Assert.Single(viewModel.Orders).OrderGuid);
+        Assert.Null(viewModel.SelectedReceipt);
+        Assert.False(viewModel.ReprintCommand.CanExecute(null));
+    }
+
+    [Fact]
     public async Task Remote_history_selection_handles_details_timeout_without_unobserved_exception()
     {
         var firstOrderGuid = Guid.NewGuid();
@@ -1342,6 +1436,168 @@ public sealed class TransactionHistoryViewModelTests
     }
 
     [Fact]
+    public async Task Installment_history_online_preview_uses_authoritative_detail_instead_of_local_snapshot()
+    {
+        var order = CreateInstallmentOrder("IO-20260703-AUTHORITATIVE", "张三", "0400111222", paidAmount: 30m, outstandingAmount: 90m);
+        var staleLocalOrder = CreateLocalInstallmentOrder(order);
+        var authoritativeOrder = staleLocalOrder with
+        {
+            PaidAmount = 80m,
+            BalanceAmount = 40m,
+            Lines =
+            [
+                new InstallmentLineDto(
+                    Guid.NewGuid(),
+                    "SKU-AUTHORITATIVE",
+                    null,
+                    "Authoritative Item",
+                    "BAR-AUTHORITATIVE",
+                    1m,
+                    120m,
+                    0m,
+                    120m,
+                    "ITEM-AUTHORITATIVE")
+            ]
+        };
+        var installmentService = new CapturingInstallmentOrderService
+        {
+            Orders = [order],
+            LocalOrders = { [order.OrderId] = staleLocalOrder },
+            OrderDetails = authoritativeOrder with
+            {
+                Payments =
+                [
+                    new InstallmentPaymentDto(
+                        Guid.NewGuid(),
+                        PaymentMethodKind.Cash,
+                        80m,
+                        null,
+                        InstallmentPaymentStatus.Recorded,
+                        DateTimeOffset.UtcNow,
+                        "C001",
+                        "POS-01")
+                ]
+            }
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            installmentOrderService: installmentService);
+
+        viewModel.IsInstallmentSourceSelected = true;
+        await viewModel.LoadAsync();
+        await WaitUntilAsync(() => viewModel.SelectedReceipt is not null);
+
+        Assert.Contains(viewModel.ReceiptLines, line => line.DisplayName == "Authoritative Item");
+        Assert.DoesNotContain(viewModel.ReceiptLines, line => line.DisplayName == "Receipt Tea");
+        Assert.Equal(80m, Assert.Single(viewModel.Payments).Amount);
+        Assert.True(viewModel.ReprintCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Installment_history_load_does_not_wait_for_authoritative_detail()
+    {
+        var order = CreateInstallmentOrder(
+            "IO-20260703-DETAIL-GATE",
+            "张三",
+            "0400111222",
+            paidAmount: 30m,
+            outstandingAmount: 90m);
+        var detailsStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var detailsGate = new TaskCompletionSource<LocalInstallmentOrder?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var installmentService = new CapturingInstallmentOrderService
+        {
+            Orders = [order],
+            OrderDetailsHandler = (_, _, _) =>
+            {
+                detailsStarted.TrySetResult();
+                return detailsGate.Task;
+            }
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            installmentOrderService: installmentService);
+
+        viewModel.IsInstallmentSourceSelected = true;
+        var loadTask = viewModel.LoadAsync();
+        await detailsStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            var completed = await Task.WhenAny(loadTask, Task.Delay(500));
+
+            Assert.Same(loadTask, completed);
+            Assert.Equal(order.OrderId, Assert.Single(viewModel.Orders).OrderGuid);
+        }
+        finally
+        {
+            detailsGate.TrySetResult(null);
+            await loadTask;
+        }
+    }
+
+    [Fact]
+    public async Task Installment_history_online_detail_failure_does_not_reuse_stale_snapshot_or_enable_reprint()
+    {
+        const string detailFailure = "authoritative detail unavailable";
+        var order = CreateInstallmentOrder("IO-20260703-FAIL-CLOSED", "张三", "0400111222", paidAmount: 30m, outstandingAmount: 90m);
+        var staleLocalOrder = CreateLocalInstallmentOrder(order);
+        var installmentService = new CapturingInstallmentOrderService
+        {
+            Orders = [order],
+            LocalOrders = { [order.OrderId] = staleLocalOrder },
+            OrderDetailsException = new InvalidOperationException(detailFailure)
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            installmentOrderService: installmentService);
+
+        viewModel.IsInstallmentSourceSelected = true;
+        await viewModel.LoadAsync();
+        await WaitUntilAsync(() => viewModel.StatusMessage == detailFailure);
+
+        Assert.Single(viewModel.Orders);
+        Assert.Null(viewModel.SelectedReceipt);
+        Assert.Empty(viewModel.ReceiptLines);
+        Assert.False(viewModel.ReprintCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Installment_history_offline_preview_still_uses_complete_local_snapshot()
+    {
+        var order = CreateInstallmentOrder("IO-20260703-OFFLINE", "张三", "0400111222", paidAmount: 30m, outstandingAmount: 90m);
+        var localOrder = CreateLocalInstallmentOrder(order);
+        var installmentService = new CapturingInstallmentOrderService
+        {
+            Orders = [order],
+            LocalOrders = { [order.OrderId] = localOrder }
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(isOnline: false),
+            installmentOrderService: installmentService);
+
+        viewModel.IsInstallmentSourceSelected = true;
+        await viewModel.LoadAsync();
+        await WaitUntilAsync(() => viewModel.SelectedReceipt is not null);
+
+        Assert.Contains(viewModel.ReceiptLines, line => line.DisplayName == "Receipt Tea");
+        Assert.True(viewModel.ReprintCommand.CanExecute(null));
+    }
+
+    [Fact]
     public async Task Installment_history_pushes_date_terminal_and_keyword_filters_to_history_service()
     {
         var installmentService = new CapturingInstallmentOrderService();
@@ -1493,7 +1749,11 @@ public sealed class TransactionHistoryViewModelTests
     public async Task Installment_history_paid_off_order_confirms_pickup_from_selected_row()
     {
         var order = CreateInstallmentOrder("IO-20260703-0003", "BBB", "0430990026", paidAmount: 55m, outstandingAmount: 0m);
-        var installmentService = new CapturingInstallmentOrderService { Orders = [order] };
+        var installmentService = new CapturingInstallmentOrderService
+        {
+            Orders = [order],
+            LocalOrders = { [order.OrderId] = CreateLocalInstallmentOrder(order) }
+        };
         var viewModel = new TransactionHistoryViewModel(
             new CapturingReceiptQueryService(),
             new CapturingSuspendedOrderService(),
@@ -1503,6 +1763,7 @@ public sealed class TransactionHistoryViewModelTests
 
         viewModel.IsInstallmentSourceSelected = true;
         await viewModel.LoadAsync();
+        await WaitUntilAsync(() => viewModel.ReceiptPreviewRows.Count > 0);
 
         var row = Assert.Single(viewModel.Orders);
         Assert.True(row.CanConfirmInstallmentPickup);
@@ -3114,9 +3375,10 @@ public sealed class TransactionHistoryViewModelTests
     private static PosSessionState CreateSession(
         string storeCode = "S001",
         string storeName = "Main Store",
-        string deviceCode = "POS-01")
+        string deviceCode = "POS-01",
+        bool isOnline = true)
     {
-        return new PosSessionState("HB POS", storeCode, storeName, deviceCode, "C001", "Alice", true, 0);
+        return new PosSessionState("HB POS", storeCode, storeName, deviceCode, "C001", "Alice", isOnline, 0);
     }
 
     private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMilliseconds = 5000)
@@ -3451,6 +3713,12 @@ public sealed class TransactionHistoryViewModelTests
 
         public Exception? LockedInstallmentsException { get; init; }
 
+        public LocalInstallmentOrder? OrderDetails { get; init; }
+
+        public Exception? OrderDetailsException { get; init; }
+
+        public Func<PosSessionState, Guid, CancellationToken, Task<LocalInstallmentOrder?>>? OrderDetailsHandler { get; init; }
+
         public Task<IReadOnlySet<Guid>> GetLockedInstallmentGuidsAsync(PosSessionState session, CancellationToken cancellationToken = default)
         {
             return LockedInstallmentsException is null
@@ -3480,6 +3748,24 @@ public sealed class TransactionHistoryViewModelTests
         public Task<LocalInstallmentOrder?> GetLocalOrderAsync(Guid installmentGuid, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(LocalOrders.TryGetValue(installmentGuid, out var order) ? order : null);
+        }
+
+        public Task<LocalInstallmentOrder?> GetOrderDetailsAsync(
+            PosSessionState session,
+            Guid installmentGuid,
+            CancellationToken cancellationToken = default)
+        {
+            if (OrderDetailsHandler is not null)
+            {
+                return OrderDetailsHandler(session, installmentGuid, cancellationToken);
+            }
+
+            if (OrderDetailsException is not null)
+            {
+                return Task.FromException<LocalInstallmentOrder?>(OrderDetailsException);
+            }
+
+            return Task.FromResult(OrderDetails ?? (LocalOrders.TryGetValue(installmentGuid, out var order) ? order : null));
         }
 
         public Task<InstallmentWriteResult<InstallmentCreateResponse>> CreateAsync(PosSessionState session, InstallmentCreateRequest request, CancellationToken cancellationToken = default)

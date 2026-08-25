@@ -23,6 +23,14 @@ public interface IInstallmentOrderService
         CancellationToken cancellationToken = default) =>
         SearchAsync(session, query.Keyword, cancellationToken);
 
+    Task<LocalInstallmentOrder?> GetOrderDetailsAsync(
+        PosSessionState session,
+        Guid installmentGuid,
+        CancellationToken cancellationToken = default) =>
+        session.IsOnline
+            ? Task.FromException<LocalInstallmentOrder?>(new NotSupportedException("在线分期详情服务尚未接入。"))
+            : GetLocalOrderAsync(installmentGuid, cancellationToken);
+
     Task<LocalInstallmentOrder?> GetLocalOrderAsync(Guid installmentGuid, CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<InstallmentOperationRecoveryResult>> RecoverPendingOperationsAsync(PosSessionState session, CancellationToken cancellationToken = default) =>
@@ -67,6 +75,11 @@ public interface IInstallmentApiClient
         InstallmentHistoryQueryRequest request,
         CancellationToken cancellationToken = default) =>
         Task.FromException<InstallmentHistoryQueryResponse>(new NotSupportedException("当前分期 API 客户端未实现历史查询。"));
+
+    Task<InstallmentDetailsDto> GetDetailsAsync(
+        Guid installmentGuid,
+        CancellationToken cancellationToken = default) =>
+        Task.FromException<InstallmentDetailsDto>(new NotSupportedException("当前分期 API 客户端未实现详情查询。"));
 
     Task<InstallmentRepaymentCapabilitiesResponse> GetRepaymentCapabilitiesAsync(CancellationToken cancellationToken = default) =>
         Task.FromException<InstallmentRepaymentCapabilitiesResponse>(new NotSupportedException("当前分期 API 客户端未实现补款 claim 协议。"));
@@ -141,11 +154,11 @@ public sealed class InstallmentOrderService(
                 order.CustomerPhone.Contains(normalized, StringComparison.OrdinalIgnoreCase) ||
                 GetStatusText(order).Contains(normalized, StringComparison.OrdinalIgnoreCase) ||
                 order.DeviceCode.Contains(normalized, StringComparison.OrdinalIgnoreCase) ||
-                // 分期快照保留原始商品标识；与普通订单历史一致支持货号和扫描条码。
+                // 分期商品标识与服务端搜索契约一致：三种标识只接受完整匹配，不接受子串误命中。
                 order.Lines.Any(line =>
-                    (!string.IsNullOrWhiteSpace(line.ItemNumber)
-                        && line.ItemNumber.Contains(normalized, StringComparison.OrdinalIgnoreCase)) ||
-                    line.LookupCode.Contains(normalized, StringComparison.OrdinalIgnoreCase)))
+                    string.Equals(line.ProductCode, normalized, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(line.ItemNumber, normalized, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(line.LookupCode, normalized, StringComparison.OrdinalIgnoreCase)))
             .Select(MapSummary)
             .ToList();
     }
@@ -171,6 +184,26 @@ public sealed class InstallmentOrderService(
                 OrderByUpdatedAt: true),
             cancellationToken);
         return response.Orders.Select(MapSummary).ToList();
+    }
+
+    public async Task<LocalInstallmentOrder?> GetOrderDetailsAsync(
+        PosSessionState session,
+        Guid installmentGuid,
+        CancellationToken cancellationToken = default)
+    {
+        if (!session.IsOnline)
+        {
+            return await localRepository.GetAsync(installmentGuid, cancellationToken);
+        }
+
+        // 在线历史的金融明细必须以服务端为准；请求失败直接交给上层 fail closed，禁止读取陈旧快照。
+        var details = await apiClient.GetDetailsAsync(installmentGuid, cancellationToken);
+        if (details.InstallmentGuid != installmentGuid)
+        {
+            throw new InvalidOperationException("分期详情与查询订单不一致，已停止显示。 / Installment detail does not match the requested order.");
+        }
+
+        return await SaveSnapshotAsync(details, cancellationToken);
     }
 
     public Task<LocalInstallmentOrder?> GetLocalOrderAsync(Guid installmentGuid, CancellationToken cancellationToken = default)
@@ -532,7 +565,7 @@ public sealed class InstallmentOrderService(
 
     private async Task<LocalInstallmentOrder> SaveSnapshotAsync(InstallmentDetailsDto details, CancellationToken cancellationToken)
     {
-        var localOrder = new LocalInstallmentOrder(details.InstallmentGuid, details.InstallmentGuid, details.InstallmentNumber, details.StoreCode, details.DeviceCode, details.CashierId, details.CashierName, details.CustomerName, details.CustomerPhone, details.CreatedAt, DateTimeOffset.UtcNow, details.TotalAmount, details.MinimumDownPayment, details.DownPaymentAmount, details.PaidAmount, details.BalanceAmount, details.Status, details.Lines, details.Payments, details.PickupInfo, details.Note, details.CancellationInfo);
+        var localOrder = new LocalInstallmentOrder(details.InstallmentGuid, details.InstallmentGuid, details.InstallmentNumber, details.StoreCode, details.DeviceCode, details.CashierId, details.CashierName, details.CustomerName, details.CustomerPhone, details.CreatedAt, details.UpdatedAt ?? DateTimeOffset.UtcNow, details.TotalAmount, details.MinimumDownPayment, details.DownPaymentAmount, details.PaidAmount, details.BalanceAmount, details.Status, details.Lines, details.Payments, details.PickupInfo, details.Note, details.CancellationInfo);
         await localRepository.UpsertAsync(localOrder, cancellationToken);
         return localOrder;
     }
@@ -574,7 +607,7 @@ public sealed class InstallmentOrderService(
             order.Status == InstallmentStatus.PaidOff,
             order.Status == InstallmentStatus.Active && order.BalanceAmount > 0m,
             order.Status == InstallmentStatus.Active && order.BalanceAmount > 0m,
-            GetStatusText(order.Status),
+            GetStatusText(order.Status, order.CancellationKind),
             order.DeviceCode,
             order.UpdatedAt);
     }
@@ -600,13 +633,16 @@ public sealed class InstallmentOrderService(
         };
     }
 
-    private static string GetStatusText(InstallmentStatus status)
+    private static string GetStatusText(
+        InstallmentStatus status,
+        InstallmentCancellationKind? cancellationKind = null)
     {
         return status switch
         {
             InstallmentStatus.Active => "待补款",
             InstallmentStatus.PaidOff => "待提货",
             InstallmentStatus.PickedUp => "已提货",
+            InstallmentStatus.Cancelled when cancellationKind == InstallmentCancellationKind.VoidCancel => "已作废",
             InstallmentStatus.Cancelled => "已取消",
             _ => status.ToString()
         };
@@ -699,6 +735,11 @@ public sealed class InstallmentApiClient(HttpClient httpClient) : IInstallmentAp
                 ex);
         }
     }
+
+    public Task<InstallmentDetailsDto> GetDetailsAsync(
+        Guid installmentGuid,
+        CancellationToken cancellationToken = default) =>
+        GetAsync<InstallmentDetailsDto>($"api/v1/installments/{installmentGuid:D}", cancellationToken);
 
     public Task<InstallmentCreateResponse> CreateAsync(InstallmentCreateRequest request, CancellationToken cancellationToken = default) => PostAsync<InstallmentCreateRequest, InstallmentCreateResponse>("api/v1/installments", request, cancellationToken);
 

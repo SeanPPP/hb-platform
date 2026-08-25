@@ -81,6 +81,50 @@ public sealed class InstallmentHistoryApiClientTests
                 cancellation.Token));
     }
 
+    [Fact]
+    public async Task GetDetailsAsync_reads_authoritative_installment_endpoint()
+    {
+        var installmentGuid = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        var details = new InstallmentDetailsDto(
+            installmentGuid,
+            "IO-REMOTE-0001",
+            "S001",
+            "POS-02",
+            "C001",
+            "Alice",
+            "Customer",
+            "0400111222",
+            DateTimeOffset.Parse("2026-08-25T05:30:00Z"),
+            120m,
+            20m,
+            20m,
+            80m,
+            40m,
+            InstallmentStatus.Active,
+            [],
+            [],
+            null,
+            UpdatedAt: DateTimeOffset.Parse("2026-08-25T05:45:00Z"));
+        var handler = new CapturingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = JsonContent.Create(ApiResult<InstallmentDetailsDto>.Ok(details))
+        });
+        using var httpClient = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("https://hbpos.test/")
+        };
+        var client = new InstallmentApiClient(httpClient);
+
+        var result = await client.GetDetailsAsync(installmentGuid);
+
+        Assert.Equal(installmentGuid, result.InstallmentGuid);
+        Assert.Equal("IO-REMOTE-0001", result.InstallmentNumber);
+        Assert.Equal(DateTimeOffset.Parse("2026-08-25T05:45:00Z"), result.UpdatedAt);
+        Assert.Equal(
+            $"https://hbpos.test/api/v1/installments/{installmentGuid:D}",
+            handler.LastRequestUri?.AbsoluteUri);
+    }
+
     private sealed class CapturingHandler(Func<HttpRequestMessage, HttpResponseMessage> responseFactory)
         : HttpMessageHandler
     {
