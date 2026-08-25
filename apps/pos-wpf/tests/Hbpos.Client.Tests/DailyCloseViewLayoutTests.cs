@@ -82,6 +82,23 @@ public sealed class DailyCloseViewLayoutTests
     }
 
     [Fact]
+    public void Daily_close_tabs_keep_spacing_inside_the_template_so_both_outer_corners_render()
+    {
+        var view = LoadView();
+        var tabItemStyle = Assert.Single(view.Descendants(Presentation + "Style").Where(style =>
+            (string?)style.Attribute(Xaml + "Key") == "DailyCloseTabItemStyle"));
+
+        Assert.DoesNotContain(tabItemStyle.Elements(Presentation + "Setter"), setter =>
+            (string?)setter.Attribute("Property") == "Margin");
+
+        var template = Assert.Single(tabItemStyle.Descendants(Presentation + "ControlTemplate"));
+        var root = Assert.Single(template.Descendants(Presentation + "Border").Where(border =>
+            (string?)border.Attribute(Xaml + "Name") == "Root"));
+        Assert.Equal("2,0", (string?)root.Attribute("Margin"));
+        Assert.Equal("6", (string?)root.Attribute("CornerRadius"));
+    }
+
+    [Fact]
     public void Cash_count_panel_uses_denomination_buttons_without_inline_keypad_or_apply_buttons()
     {
         var view = LoadView();
