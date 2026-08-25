@@ -455,6 +455,15 @@ namespace BlazorApp.Shared.DTOs
     /// <summary>
     /// React专用：批量操作结果
     /// </summary>
+    public sealed class BatchOperationFailureDto
+    {
+        public string ItemKey { get; set; } = string.Empty;
+
+        public string Message { get; set; } = string.Empty;
+
+        public string? ErrorCode { get; set; }
+    }
+
     public class BatchOperationReactResult
     {
         /// <summary>
@@ -471,6 +480,11 @@ namespace BlazorApp.Shared.DTOs
         /// 错误信息列表
         /// </summary>
         public List<string> Errors { get; set; } = new();
+
+        /// <summary>
+        /// 结构化失败详情；保留 Errors 以兼容旧客户端。
+        /// </summary>
+        public List<BatchOperationFailureDto> FailureDetails { get; set; } = new();
     }
 
     public class BatchUpdateSupplierImagesRequest

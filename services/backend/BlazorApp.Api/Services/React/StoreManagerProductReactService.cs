@@ -292,17 +292,75 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<StoreManagerStorePriceDto>.Error("分店价格记录不存在");
                 }
 
-                if (dto.PurchasePrice.HasValue)
-                    exists.PurchasePrice = dto.PurchasePrice.Value;
-                if (dto.StoreRetailPriceValue.HasValue)
-                    exists.StoreRetailPriceValue = dto.StoreRetailPriceValue.Value;
-                if (dto.IsAutoPricing.HasValue)
-                    exists.IsAutoPricing = dto.IsAutoPricing.Value;
+                var expectedStoreCode = exists.StoreCode;
+                var expectedProductCode = exists.ProductCode;
+                if (
+                    string.IsNullOrWhiteSpace(expectedStoreCode)
+                    || string.IsNullOrWhiteSpace(expectedProductCode)
+                )
+                {
+                    return ApiResponse<StoreManagerStorePriceDto>.Error("分店价格记录缺少门店或商品编码");
+                }
 
-                exists.UpdatedBy = updatedBy;
-                exists.UpdatedAt = DateTime.UtcNow;
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        db,
+                        new[] { expectedProductCode }
+                    );
 
-                await db.Updateable(exists).ExecuteCommandAsync();
+                    // 获取业务锁后必须复读，避免 UUID 在等待锁期间被转移到其他分组。
+                    exists = await db.Queryable<StoreRetailPrice>()
+                        .Where(srp => srp.UUID == uuid && srp.IsDeleted == false)
+                        .FirstAsync();
+                    if (
+                        exists == null
+                        || !string.Equals(exists.StoreCode, expectedStoreCode, StringComparison.Ordinal)
+                        || !string.Equals(exists.ProductCode, expectedProductCode, StringComparison.Ordinal)
+                    )
+                    {
+                        throw new InvalidOperationException("分店价格记录在等待业务锁期间已变更");
+                    }
+
+                    var updatedAt = DateTime.UtcNow;
+                    var update = db.Updateable<StoreRetailPrice>()
+                        .Where(srp => srp.UUID == uuid && srp.IsDeleted == false);
+                    if (dto.PurchasePrice.HasValue)
+                        update = update.SetColumns(srp => srp.PurchasePrice == dto.PurchasePrice.Value);
+                    if (dto.StoreRetailPriceValue.HasValue)
+                        update = update.SetColumns(srp =>
+                            srp.StoreRetailPriceValue == dto.StoreRetailPriceValue.Value
+                        );
+                    if (dto.IsAutoPricing.HasValue)
+                        update = update.SetColumns(srp => srp.IsAutoPricing == dto.IsAutoPricing.Value);
+                    await update
+                        .SetColumns(srp => srp.UpdatedBy == updatedBy)
+                        .SetColumns(srp => srp.UpdatedAt == updatedAt)
+                        .ExecuteCommandAsync();
+
+                    var writeback = await new SetChildPurchasePriceService(db)
+                        .RecalculateStoresLockedAsync(
+                            lockScope,
+                            new[] { expectedProductCode },
+                            new[] { expectedStoreCode },
+                            updatedBy
+                        );
+                    if (writeback.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                    {
+                        throw new InvalidOperationException("目标门店套装子项成本重算不完整");
+                    }
+
+                    exists = await db.Queryable<StoreRetailPrice>()
+                        .Where(srp => srp.UUID == uuid && srp.IsDeleted == false)
+                        .FirstAsync();
+                    await db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
 
                 var store = await db.Queryable<Store>()
                     .Where(s => s.StoreCode == exists.StoreCode)
@@ -320,6 +378,16 @@ namespace BlazorApp.Api.Services.React
                 };
 
                 return ApiResponse<StoreManagerStorePriceDto>.OK(result);
+            }
+            catch (Exception ex) when (
+                SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict)
+            )
+            {
+                _logger.LogWarning(ex, "更新分店价格获取套装成本业务锁失败: {UUID}", uuid);
+                return ApiResponse<StoreManagerStorePriceDto>.Error(
+                    conflict!.Message,
+                    SetChildPurchasePriceMutationLock.BusyErrorCode
+                );
             }
             catch (Exception ex)
             {
@@ -346,8 +414,11 @@ namespace BlazorApp.Api.Services.React
                     Errors = new List<string>(),
                 };
 
-                foreach (var item in items)
+                var resolvedItems = new List<(int Index, StoreManagerUpdatePriceDto Item, string StoreCode, string ProductCode)>();
+                // 事务外只读解析 UUID，再按业务键分组，避免跨门店或跨商品共用事务。
+                for (var index = 0; index < items.Count; index++)
                 {
+                    var item = items[index];
                     try
                     {
                         var exists = await db.Queryable<StoreRetailPrice>()
@@ -356,32 +427,145 @@ namespace BlazorApp.Api.Services.React
 
                         if (exists == null)
                         {
-                            result.FailedCount++;
-                            result.Errors.Add($"UUID {item.UUID} 的记录不存在");
+                            AddBatchFailure(result, item.UUID, $"UUID {item.UUID} 的记录不存在");
                             continue;
                         }
 
-                        if (item.PurchasePrice.HasValue)
-                            exists.PurchasePrice = item.PurchasePrice.Value;
-                        if (item.StoreRetailPriceValue.HasValue)
-                            exists.StoreRetailPriceValue = item.StoreRetailPriceValue.Value;
-                        if (item.IsAutoPricing.HasValue)
-                            exists.IsAutoPricing = item.IsAutoPricing.Value;
+                        if (
+                            string.IsNullOrWhiteSpace(exists.StoreCode)
+                            || string.IsNullOrWhiteSpace(exists.ProductCode)
+                        )
+                        {
+                            AddBatchFailure(
+                                result,
+                                item.UUID,
+                                $"UUID {item.UUID} 的记录缺少门店或商品编码"
+                            );
+                            continue;
+                        }
 
-                        exists.UpdatedBy = updatedBy;
-                        exists.UpdatedAt = DateTime.UtcNow;
-
-                        await db.Updateable(exists).ExecuteCommandAsync();
-                        result.SuccessCount++;
+                        resolvedItems.Add((index, item, exists.StoreCode, exists.ProductCode));
                     }
                     catch (Exception ex)
                     {
-                        result.FailedCount++;
-                        result.Errors.Add($"UUID {item.UUID} 更新失败: {ex.Message}");
+                        AddBatchFailure(
+                            result,
+                            item.UUID,
+                            $"UUID {item.UUID} 更新失败: {ex.Message}"
+                        );
                     }
                 }
 
-                return ApiResponse<BatchOperationReactResult>.OK(result);
+                foreach (
+                    var group in resolvedItems
+                        .GroupBy(x => (x.StoreCode, x.ProductCode))
+                        .OrderBy(x => x.Min(item => item.Index))
+                )
+                {
+                    try
+                    {
+                        await db.Ado.BeginTranAsync();
+                        try
+                        {
+                            var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                                db,
+                                new[] { group.Key.ProductCode }
+                            );
+
+                            foreach (var entry in group.OrderBy(x => x.Index))
+                            {
+                                // 锁内复读并确认仍归属预读分组，防止等待锁时发生并发迁移。
+                                var exists = await db.Queryable<StoreRetailPrice>()
+                                    .Where(srp => srp.UUID == entry.Item.UUID && srp.IsDeleted == false)
+                                    .FirstAsync();
+                                if (
+                                    exists == null
+                                    || !string.Equals(exists.StoreCode, group.Key.StoreCode, StringComparison.Ordinal)
+                                    || !string.Equals(exists.ProductCode, group.Key.ProductCode, StringComparison.Ordinal)
+                                )
+                                {
+                                    throw new InvalidOperationException(
+                                        $"UUID {entry.Item.UUID} 在等待业务锁期间已离开目标分组"
+                                    );
+                                }
+
+                                var updatedAt = DateTime.UtcNow;
+                                var update = db.Updateable<StoreRetailPrice>()
+                                    .Where(srp => srp.UUID == entry.Item.UUID && srp.IsDeleted == false);
+                                if (entry.Item.PurchasePrice.HasValue)
+                                    update = update.SetColumns(srp =>
+                                        srp.PurchasePrice == entry.Item.PurchasePrice.Value
+                                    );
+                                if (entry.Item.StoreRetailPriceValue.HasValue)
+                                    update = update.SetColumns(srp =>
+                                        srp.StoreRetailPriceValue
+                                        == entry.Item.StoreRetailPriceValue.Value
+                                    );
+                                if (entry.Item.IsAutoPricing.HasValue)
+                                    update = update.SetColumns(srp =>
+                                        srp.IsAutoPricing == entry.Item.IsAutoPricing.Value
+                                    );
+                                await update
+                                    .SetColumns(srp => srp.UpdatedBy == updatedBy)
+                                    .SetColumns(srp => srp.UpdatedAt == updatedAt)
+                                    .ExecuteCommandAsync();
+                            }
+
+                            var writeback = await new SetChildPurchasePriceService(db)
+                                .RecalculateStoresLockedAsync(
+                                    lockScope,
+                                    new[] { group.Key.ProductCode },
+                                    new[] { group.Key.StoreCode },
+                                    updatedBy
+                                );
+                            if (writeback.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                            {
+                                throw new InvalidOperationException("目标门店套装子项成本重算不完整");
+                            }
+
+                            await db.Ado.CommitTranAsync();
+                            result.SuccessCount += group.Count();
+                        }
+                        catch
+                        {
+                            await db.Ado.RollbackTranAsync();
+                            throw;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        var errorCode = SetChildPurchasePriceMutationLock.TryResolveConflict(
+                            ex,
+                            out var conflict
+                        )
+                            ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                            : null;
+                        var message = conflict?.Message ?? ex.Message;
+                        foreach (var entry in group)
+                        {
+                            AddBatchFailure(
+                                result,
+                                entry.Item.UUID,
+                                $"UUID {entry.Item.UUID} 更新失败: {message}",
+                                errorCode
+                            );
+                        }
+                    }
+                }
+
+                return BuildBatchResponse(result);
+            }
+            catch (Exception ex) when (
+                SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict)
+            )
+            {
+                _logger.LogWarning(ex, "批量更新分店价格获取套装成本业务锁失败");
+                return new ApiResponse<BatchOperationReactResult>
+                {
+                    Success = false,
+                    ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode,
+                    Message = conflict!.Message,
+                };
             }
             catch (Exception ex)
             {
@@ -409,17 +593,87 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<StoreManagerMultiCodePriceDto>.Error("多码价格记录不存在");
                 }
 
-                if (dto.PurchasePrice.HasValue)
-                    exists.PurchasePrice = dto.PurchasePrice.Value;
-                if (dto.MultiCodeRetailPrice.HasValue)
-                    exists.MultiCodeRetailPrice = dto.MultiCodeRetailPrice.Value;
-                if (dto.IsAutoPricing.HasValue)
-                    exists.IsAutoPricing = dto.IsAutoPricing.Value;
+                var expectedStoreCode = exists.StoreCode;
+                var expectedProductCode = exists.ProductCode;
+                if (
+                    string.IsNullOrWhiteSpace(expectedStoreCode)
+                    || string.IsNullOrWhiteSpace(expectedProductCode)
+                )
+                {
+                    return ApiResponse<StoreManagerMultiCodePriceDto>.Error("多码价格记录缺少门店或商品编码");
+                }
 
-                exists.UpdatedBy = updatedBy;
-                exists.UpdatedAt = DateTime.Now;
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        db,
+                        new[] { expectedProductCode }
+                    );
 
-                await db.Updateable(exists).ExecuteCommandAsync();
+                    // 获取业务锁后必须复读，确保套装关系判断和写入属于同一业务分组。
+                    exists = await db.Queryable<StoreMultiCodeProduct>()
+                        .Where(smcp => smcp.UUID == uuid && smcp.IsDeleted == false)
+                        .FirstAsync();
+                    if (
+                        exists == null
+                        || !string.Equals(exists.StoreCode, expectedStoreCode, StringComparison.Ordinal)
+                        || !string.Equals(exists.ProductCode, expectedProductCode, StringComparison.Ordinal)
+                    )
+                    {
+                        throw new InvalidOperationException("多码价格记录在等待业务锁期间已变更");
+                    }
+
+                    var isSetChild = await db.Queryable<ProductSetCode>()
+                        .Where(x =>
+                            x.ProductCode == expectedProductCode
+                            && x.SetProductCode == exists.MultiCodeProductCode
+                            && (x.SetType == 1 || x.SetType == 2)
+                            && x.IsActive
+                            && !x.IsDeleted
+                        )
+                        .AnyAsync();
+                    var updatedAt = DateTime.UtcNow;
+                    var update = db.Updateable<StoreMultiCodeProduct>()
+                        .Where(smcp => smcp.UUID == uuid && smcp.IsDeleted == false);
+                    // 两类套装子项成本均由锁内统一重算服务写回，不能接受客户端最终成本。
+                    if (dto.PurchasePrice.HasValue && !isSetChild)
+                        update = update.SetColumns(smcp =>
+                            smcp.PurchasePrice == dto.PurchasePrice.Value
+                        );
+                    if (dto.MultiCodeRetailPrice.HasValue)
+                        update = update.SetColumns(smcp =>
+                            smcp.MultiCodeRetailPrice == dto.MultiCodeRetailPrice.Value
+                        );
+                    if (dto.IsAutoPricing.HasValue)
+                        update = update.SetColumns(smcp => smcp.IsAutoPricing == dto.IsAutoPricing.Value);
+                    await update
+                        .SetColumns(smcp => smcp.UpdatedBy == updatedBy)
+                        .SetColumns(smcp => smcp.UpdatedAt == updatedAt)
+                        .ExecuteCommandAsync();
+
+                    var writeback = await new SetChildPurchasePriceService(db)
+                        .RecalculateStoresLockedAsync(
+                            lockScope,
+                            new[] { expectedProductCode },
+                            new[] { expectedStoreCode },
+                            updatedBy
+                        );
+                    if (writeback.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                    {
+                        throw new InvalidOperationException("目标门店套装子项成本重算不完整");
+                    }
+
+                    exists = await db.Queryable<StoreMultiCodeProduct>()
+                        .Where(smcp => smcp.UUID == uuid && smcp.IsDeleted == false)
+                        .FirstAsync();
+                    await db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
 
                 var store = await db.Queryable<Store>()
                     .Where(s => s.StoreCode == exists.StoreCode)
@@ -437,6 +691,16 @@ namespace BlazorApp.Api.Services.React
                 };
 
                 return ApiResponse<StoreManagerMultiCodePriceDto>.OK(result);
+            }
+            catch (Exception ex) when (
+                SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict)
+            )
+            {
+                _logger.LogWarning(ex, "更新多码价格获取套装成本业务锁失败: {UUID}", uuid);
+                return ApiResponse<StoreManagerMultiCodePriceDto>.Error(
+                    conflict!.Message,
+                    SetChildPurchasePriceMutationLock.BusyErrorCode
+                );
             }
             catch (Exception ex)
             {
@@ -463,8 +727,11 @@ namespace BlazorApp.Api.Services.React
                     Errors = new List<string>(),
                 };
 
-                foreach (var item in items)
+                var resolvedItems = new List<(int Index, StoreManagerUpdateMultiCodePriceDto Item, string StoreCode, string ProductCode)>();
+                // 事务外只读解析 UUID，再按门店和主商品拆分独立的一致性边界。
+                for (var index = 0; index < items.Count; index++)
                 {
+                    var item = items[index];
                     try
                     {
                         var exists = await db.Queryable<StoreMultiCodeProduct>()
@@ -473,38 +740,205 @@ namespace BlazorApp.Api.Services.React
 
                         if (exists == null)
                         {
-                            result.FailedCount++;
-                            result.Errors.Add($"UUID {item.UUID} 的记录不存在");
+                            AddBatchFailure(result, item.UUID, $"UUID {item.UUID} 的记录不存在");
                             continue;
                         }
 
-                        if (item.PurchasePrice.HasValue)
-                            exists.PurchasePrice = item.PurchasePrice.Value;
-                        if (item.MultiCodeRetailPrice.HasValue)
-                            exists.MultiCodeRetailPrice = item.MultiCodeRetailPrice.Value;
-                        if (item.IsAutoPricing.HasValue)
-                            exists.IsAutoPricing = item.IsAutoPricing.Value;
+                        if (
+                            string.IsNullOrWhiteSpace(exists.StoreCode)
+                            || string.IsNullOrWhiteSpace(exists.ProductCode)
+                        )
+                        {
+                            AddBatchFailure(
+                                result,
+                                item.UUID,
+                                $"UUID {item.UUID} 的记录缺少门店或商品编码"
+                            );
+                            continue;
+                        }
 
-                        exists.UpdatedBy = updatedBy;
-                        exists.UpdatedAt = DateTime.UtcNow;
-
-                        await db.Updateable(exists).ExecuteCommandAsync();
-                        result.SuccessCount++;
+                        resolvedItems.Add((index, item, exists.StoreCode, exists.ProductCode));
                     }
                     catch (Exception ex)
                     {
-                        result.FailedCount++;
-                        result.Errors.Add($"UUID {item.UUID} 更新失败: {ex.Message}");
+                        AddBatchFailure(
+                            result,
+                            item.UUID,
+                            $"UUID {item.UUID} 更新失败: {ex.Message}"
+                        );
                     }
                 }
 
-                return ApiResponse<BatchOperationReactResult>.OK(result);
+                foreach (
+                    var group in resolvedItems
+                        .GroupBy(x => (x.StoreCode, x.ProductCode))
+                        .OrderBy(x => x.Min(item => item.Index))
+                )
+                {
+                    try
+                    {
+                        await db.Ado.BeginTranAsync();
+                        try
+                        {
+                            var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                                db,
+                                new[] { group.Key.ProductCode }
+                            );
+
+                            foreach (var entry in group.OrderBy(x => x.Index))
+                            {
+                                // 套装成本和请求字段必须在同一锁内读取、判断及写入。
+                                var exists = await db.Queryable<StoreMultiCodeProduct>()
+                                    .Where(smcp => smcp.UUID == entry.Item.UUID && smcp.IsDeleted == false)
+                                    .FirstAsync();
+                                if (
+                                    exists == null
+                                    || !string.Equals(exists.StoreCode, group.Key.StoreCode, StringComparison.Ordinal)
+                                    || !string.Equals(exists.ProductCode, group.Key.ProductCode, StringComparison.Ordinal)
+                                )
+                                {
+                                    throw new InvalidOperationException(
+                                        $"UUID {entry.Item.UUID} 在等待业务锁期间已离开目标分组"
+                                    );
+                                }
+
+                                var isSetChild = await db.Queryable<ProductSetCode>()
+                                    .Where(x =>
+                                        x.ProductCode == group.Key.ProductCode
+                                        && x.SetProductCode == exists.MultiCodeProductCode
+                                        && (x.SetType == 1 || x.SetType == 2)
+                                        && x.IsActive
+                                        && !x.IsDeleted
+                                    )
+                                    .AnyAsync();
+                                var updatedAt = DateTime.UtcNow;
+                                var update = db.Updateable<StoreMultiCodeProduct>()
+                                    .Where(smcp =>
+                                        smcp.UUID == entry.Item.UUID && smcp.IsDeleted == false
+                                    );
+                                // 两类套装子项均忽略提交成本；无套装关系的历史占位行保持原有逻辑。
+                                if (entry.Item.PurchasePrice.HasValue && !isSetChild)
+                                    update = update.SetColumns(smcp =>
+                                        smcp.PurchasePrice == entry.Item.PurchasePrice.Value
+                                    );
+                                if (entry.Item.MultiCodeRetailPrice.HasValue)
+                                    update = update.SetColumns(smcp =>
+                                        smcp.MultiCodeRetailPrice
+                                        == entry.Item.MultiCodeRetailPrice.Value
+                                    );
+                                if (entry.Item.IsAutoPricing.HasValue)
+                                    update = update.SetColumns(smcp =>
+                                        smcp.IsAutoPricing == entry.Item.IsAutoPricing.Value
+                                    );
+                                await update
+                                    .SetColumns(smcp => smcp.UpdatedBy == updatedBy)
+                                    .SetColumns(smcp => smcp.UpdatedAt == updatedAt)
+                                    .ExecuteCommandAsync();
+                            }
+
+                            var writeback = await new SetChildPurchasePriceService(db)
+                                .RecalculateStoresLockedAsync(
+                                    lockScope,
+                                    new[] { group.Key.ProductCode },
+                                    new[] { group.Key.StoreCode },
+                                    updatedBy
+                                );
+                            if (writeback.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                            {
+                                throw new InvalidOperationException("目标门店套装子项成本重算不完整");
+                            }
+
+                            await db.Ado.CommitTranAsync();
+                            result.SuccessCount += group.Count();
+                        }
+                        catch
+                        {
+                            await db.Ado.RollbackTranAsync();
+                            throw;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        var errorCode = SetChildPurchasePriceMutationLock.TryResolveConflict(
+                            ex,
+                            out var conflict
+                        )
+                            ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                            : null;
+                        var message = conflict?.Message ?? ex.Message;
+                        foreach (var entry in group)
+                        {
+                            AddBatchFailure(
+                                result,
+                                entry.Item.UUID,
+                                $"UUID {entry.Item.UUID} 更新失败: {message}",
+                                errorCode
+                            );
+                        }
+                    }
+                }
+
+                return BuildBatchResponse(result);
+            }
+            catch (Exception ex) when (
+                SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict)
+            )
+            {
+                _logger.LogWarning(ex, "批量更新多码价格获取套装成本业务锁失败");
+                return new ApiResponse<BatchOperationReactResult>
+                {
+                    Success = false,
+                    ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode,
+                    Message = conflict!.Message,
+                };
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量更新多码价格失败");
                 return ApiResponse<BatchOperationReactResult>.Error($"批量更新失败: {ex.Message}");
             }
+        }
+
+        private static void AddBatchFailure(
+            BatchOperationReactResult result,
+            string? itemKey,
+            string message,
+            string? errorCode = null
+        )
+        {
+            result.FailedCount++;
+            result.Errors.Add(message);
+            result.FailureDetails.Add(new BatchOperationFailureDto
+            {
+                ItemKey = itemKey ?? string.Empty,
+                Message = message,
+                ErrorCode = errorCode,
+            });
+        }
+
+        private static ApiResponse<BatchOperationReactResult> BuildBatchResponse(
+            BatchOperationReactResult result
+        )
+        {
+            var containsBusyFailure = result.FailureDetails.Any(failure =>
+                string.Equals(
+                    failure.ErrorCode,
+                    SetChildPurchasePriceMutationLock.BusyErrorCode,
+                    StringComparison.Ordinal
+                )
+            );
+            if (result.SuccessCount == 0 && containsBusyFailure)
+            {
+                return new ApiResponse<BatchOperationReactResult>
+                {
+                    Success = false,
+                    ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode,
+                    Message = "套装子项成本正在被其他操作更新，请稍后重试",
+                    Data = result,
+                };
+            }
+
+            return ApiResponse<BatchOperationReactResult>.OK(result);
         }
     }
 }

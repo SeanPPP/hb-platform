@@ -6,5 +6,12 @@ namespace BlazorApp.Api.Interfaces
     {
         Task<ApiResponse<ProductIntegrityCheckResultDto>> CheckIntegrityAsync(List<string>? storeCodes = null);
         Task<ApiResponse<ProductIntegrityFixResultDto>> FixIntegrityAsync(ProductIntegrityFixRequestDto request);
+        Task<ApiResponse<SetChildPurchasePriceWritebackResultDto>> PreviewSetChildPurchasePricesAsync(
+            SetChildPurchasePriceWritebackRequestDto request
+        );
+        Task<ApiResponse<SetChildPurchasePriceWritebackResultDto>> WritebackSetChildPurchasePricesAsync(
+            SetChildPurchasePriceWritebackRequestDto request,
+            string updatedBy
+        );
     }
 }

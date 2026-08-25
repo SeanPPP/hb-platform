@@ -111,6 +111,27 @@ namespace BlazorApp.Shared.DTOs
                 Timestamp = DateTime.UtcNow
             };
         }
+
+        /// <summary>
+        /// 创建失败响应并保留业务结果数据，供部分成功或可重试错误返回准确计数。
+        /// </summary>
+        public static ApiResponse<T> FailWithData(
+            T data,
+            string message,
+            string? errorCode = null,
+            object? details = null
+        )
+        {
+            return new ApiResponse<T>
+            {
+                Success = false,
+                Message = message,
+                Data = data,
+                ErrorCode = errorCode,
+                Details = details,
+                Timestamp = DateTime.UtcNow
+            };
+        }
     }
 
     /// <summary>

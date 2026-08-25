@@ -242,7 +242,17 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "[ReactSync] 商品全量同步异常");
                 result.IsSuccess = false;
                 result.ErrorCount = 1;
-                result.Message = "商品同步异常";
+                // 保留套装成本锁的 busy 语义，供上层返回可重试的 409。
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict))
+                {
+                    result.ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode;
+                    result.BusyErrorCount = 1;
+                    result.Message = conflict!.Message;
+                }
+                else
+                {
+                    result.Message = "商品同步异常";
+                }
             }
             finally
             {
@@ -1073,18 +1083,6 @@ namespace BlazorApp.Api.Services.React
                     return result;
                 }
 
-                var deleteStart = DateTime.Now;
-                var deleted = await _localContext
-                    .Db.Deleteable<StoreMultiCodeProduct>()
-                    .Where(x => x.StoreCode != null && storeCodesToProcess.Contains(x.StoreCode))
-                    .ExecuteCommandAsync();
-                var deleteDuration = DateTime.Now - deleteStart;
-                _logger.LogInformation(
-                    "[ReactSync] 清理一品多码本地数据：删除{Deleted:N0}条，耗时{Seconds:F1}s",
-                    deleted,
-                    deleteDuration.TotalSeconds
-                );
-
                 var tasks =
                     new List<
                         Task<(
@@ -1150,6 +1148,16 @@ namespace BlazorApp.Api.Services.React
 
                 result.AddedCount = totalAdded;
                 result.ErrorCount = totalErrors;
+                result.BusyErrorCount = storeErrors.Count(error =>
+                    error.ErrorMessage.StartsWith(
+                        SetChildPurchasePriceMutationLock.BusyErrorCode + ":",
+                        StringComparison.Ordinal
+                    )
+                );
+                if (result.BusyErrorCount > 0 && result.BusyErrorCount == result.ErrorCount)
+                {
+                    result.ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode;
+                }
                 result.IsSuccess = totalErrors == 0;
                 result.Message =
                     totalErrors == 0 ? "分店一品多码同步成功" : "分店一品多码同步完成，但存在错误";
@@ -1176,13 +1184,19 @@ namespace BlazorApp.Api.Services.React
 
                 if (storeErrors.Any())
                 {
+                    const int maxErrorDetails = 50;
                     var errorDetails = storeErrors
+                        .Take(maxErrorDetails)
                         .Select(e =>
                             $"分店{e.StoreCode}: {e.ErrorMessage} (处理{e.ProcessedCount:N0}条, 成功{e.InsertedCount:N0}条, 耗时{e.DurationSeconds:F1}s)"
                         )
                         .ToList();
 
-                    result.Details = "错误分店列表：\n" + string.Join("\n", errorDetails);
+                    var omittedCount = storeErrors.Count - errorDetails.Count;
+                    result.Details =
+                        "错误分店列表：\n"
+                        + string.Join("\n", errorDetails)
+                        + (omittedCount > 0 ? $"\n另有 {omittedCount} 个错误分店未展开" : string.Empty);
                 }
 
                 _logger.LogInformation(
@@ -1198,6 +1212,13 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "[ReactSync] 分店一品多码同步异常");
                 result.IsSuccess = false;
                 result.Message = "分店一品多码同步异常";
+                result.ErrorCount = Math.Max(result.ErrorCount, 1);
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict))
+                {
+                    result.ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode;
+                    result.BusyErrorCount = result.ErrorCount;
+                    result.Message = conflict!.Message;
+                }
             }
             finally
             {
@@ -1231,11 +1252,34 @@ namespace BlazorApp.Api.Services.React
             var added = 0;
             var errors = 0;
             var storeStart = DateTime.Now;
+            var localTransactionStarted = false;
             try
             {
                 storeStart = DateTime.Now;
                 localDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
                 hqDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
+                await localDb.Ado.BeginTranAsync();
+                localTransactionStarted = true;
+                var lockScope = await SetChildPurchasePriceMutationLock.AcquireAllAsync(localDb);
+                var protectedStoreMultiCodeKeys = await GetProtectedStoreMultiCodeKeysAsync(localDb);
+                var existingStoreRows = await localDb.Queryable<StoreMultiCodeProduct>()
+                    .Where(item => item.StoreCode == storeCode)
+                    .ToListAsync();
+                var deleteUuids = existingStoreRows
+                    .Where(item => !protectedStoreMultiCodeKeys.Contains(GetStoreMultiCodeBusinessKey(item)))
+                    .Select(item => item.UUID)
+                    .Where(id => !string.IsNullOrWhiteSpace(id))
+                    .ToList();
+                var deleted = deleteUuids.Count == 0
+                    ? 0
+                    : await localDb.Deleteable<StoreMultiCodeProduct>()
+                        .Where(item => deleteUuids.Contains(item.UUID))
+                        .ExecuteCommandAsync();
+                _logger.LogInformation(
+                    "[ReactSync] 分店{Store} 清理普通一品多码{Deleted:N0}条",
+                    storeCode,
+                    deleted
+                );
 
                 var countStart = DateTime.Now;
                 var totalCount = await hqDb.Queryable<DIC_分店一品多码表>()
@@ -1259,7 +1303,11 @@ namespace BlazorApp.Api.Services.React
                     .CountAsync();
                 var qDuration = DateTime.Now - countStart;
                 if (totalCount == 0)
+                {
+                    await localDb.Ado.CommitTranAsync();
+                    localTransactionStarted = false;
                     return (0, 0, 0, qDuration.TotalSeconds, 0, null);
+                }
 
                 var pages = (int)Math.Ceiling(totalCount / (double)batchSize);
                 var insertTotalSeconds = 0.0;
@@ -1331,13 +1379,29 @@ namespace BlazorApp.Api.Services.React
                     if (!hqPage.Any())
                         continue;
 
-                    var localBatch = _mapper.Map<List<StoreMultiCodeProduct>>(hqPage);
+                    var localBatch = _mapper.Map<List<StoreMultiCodeProduct>>(hqPage)
+                        .Select(item =>
+                        {
+                            // HQ 普通多码的成本不能直写，必须由锁内统一重算。
+                            item.PurchasePrice = null;
+                            return item;
+                        })
+                        // 受保护行不接受 HQ PurchasePrice 或其他字段写入，避免本地套装成本被覆盖。
+                        .Where(item =>
+                            !protectedStoreMultiCodeKeys.Contains(GetStoreMultiCodeBusinessKey(item))
+                        )
+                        .ToList();
                     var insertStart = DateTime.Now;
                     try
                     {
                         var inserted = await RetryBulkInsertAsync(localDb, localBatch, 3);
+                        if (inserted != localBatch.Count)
+                        {
+                            throw new InvalidOperationException(
+                                $"分店{storeCode}一品多码写入不完整: 期望{localBatch.Count}条，实际{inserted}条"
+                            );
+                        }
                         added += inserted;
-                        errors += localBatch.Count - inserted;
 
                         var insertDuration = DateTime.Now - insertStart;
                         _logger.LogInformation(
@@ -1361,13 +1425,26 @@ namespace BlazorApp.Api.Services.React
                             pages,
                             insertDuration.TotalSeconds
                         );
-                        errors += localBatch.Count;
+                        throw;
                     }
                     insertTotalSeconds += (DateTime.Now - insertStart).TotalSeconds;
                     processed += hqPage.Count;
                     hqPage.Clear();
                     localBatch.Clear();
                 }
+
+                var writtenGroups = await localDb.Queryable<StoreMultiCodeProduct>()
+                    .Where(item => item.StoreCode == storeCode && item.ProductCode != null)
+                    .Select(item => new { item.StoreCode, item.ProductCode })
+                    .ToListAsync();
+                await new SetChildPurchasePriceService(localDb).RecalculateStoreGroupsLockedAsync(
+                    lockScope,
+                    writtenGroups.Select(item => (item.StoreCode, item.ProductCode)),
+                    "DataSync"
+                );
+
+                await localDb.Ado.CommitTranAsync();
+                localTransactionStarted = false;
 
                 var storeDuration = DateTime.Now - storeStart;
                 _logger.LogInformation(
@@ -1382,10 +1459,18 @@ namespace BlazorApp.Api.Services.React
             }
             catch (Exception ex)
             {
+                if (localTransactionStarted && localDb != null)
+                {
+                    await localDb.Ado.RollbackTranAsync();
+                    added = 0;
+                }
                 var error = new StoreSyncError
                 {
                     StoreCode = storeCode,
-                    ErrorMessage = ex.Message,
+                    // 保留 BUSY，调用方才能把锁冲突识别为可重试而非普通同步失败。
+                    ErrorMessage = SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                        ? $"{SetChildPurchasePriceMutationLock.BusyErrorCode}: {ex.Message}"
+                        : ex.Message,
                     ExceptionType = ex.GetType().Name,
                     IsRetried = false,
                     RetryCount = 0,
@@ -1408,7 +1493,8 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 全量同步“套装多码”：HQ 一品多码 → 本地 ProductSetCode。
-        /// 读取并行、写入单通道；二次校验并过滤缺失必填字段，输出详细日志。
+        /// 先在 HQ 短事务内冻结完整源快照，再完成源身份和本地身份预检；
+        /// 只有全部预检通过后才删除旧 Type2 并从同一份快照写入。
         /// </summary>
         public async Task<SyncResult> SyncProductSetCodesFromHqAsync(
             int hqBatchSize = 50000,
@@ -1420,170 +1506,307 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 _hqContext.CheckConnection();
-                await _localContext.Db.Ado.BeginTranAsync();
+
+                // 兼容既有接口参数。全量同步改为单次冻结 HQ 快照后，不再并发重读源分页。
+                _ = maxReadConcurrency;
+                List<string?> activeProductCodes;
+                List<DIC_一品多码表> activeHqRows;
+                var hqSnapshotTransactionStarted = false;
                 try
                 {
-                    await _localContext
-                        .Db.Deleteable<ProductSetCode>()
-                        .AS("ProductSetCode")
-                        .ExecuteCommandAsync();
+                    // 两张 HQ 表必须来自同一个可串行化读取边界，避免商品状态和多码关系
+                    // 在两次查询间变化而拼出一个从未真实存在过的源集合。
+                    await _hqContext.Db.Ado.BeginTranAsync(
+                        System.Data.IsolationLevel.Serializable
+                    );
+                    hqSnapshotTransactionStarted = true;
+                    activeProductCodes = await _hqContext.Db.Queryable<DIC_商品信息字典表>()
+                        // HQ 上下文默认 NOLOCK；一致性快照必须显式覆盖，避免 Serializable 被绕过。
+                        .With(SqlWith.Null)
+                        .Where(product => product.H使用状态 == true)
+                        .Select(product => product.H商品编码)
+                        .ToListAsync();
+                    activeHqRows = await _hqContext.Db.Queryable<DIC_一品多码表>()
+                        .With(SqlWith.Null)
+                        .Where(row => (row.H使用状态 ?? false) == true)
+                        .ToListAsync();
+                    await _hqContext.Db.Ado.CommitTranAsync();
+                    hqSnapshotTransactionStarted = false;
+                }
+                catch
+                {
+                    if (hqSnapshotTransactionStarted)
+                    {
+                        await _hqContext.Db.Ado.RollbackTranAsync();
+                    }
+                    throw;
+                }
 
-                    var hqCountDb = HqSqlSugarContext.CreateConcurrentConnection(_configuration);
-                    var totalCount = await hqCountDb
-                        .Queryable<DIC_一品多码表>()
-                        .Where(x =>
-                            !string.IsNullOrEmpty(x.H商品编码)
-                            && (SqlFunc.HasValue(x.H多码商品编号) || SqlFunc.HasValue(x.H主条形码))
-                            && (x.H使用状态 ?? false) == true
-                            && SqlFunc
-                                .Subqueryable<DIC_商品信息字典表>()
-                                .Where(product =>
-                                    product.H商品编码 == x.H商品编码 && product.H使用状态 == true
-                                )
-                                .Any()
+                // 先检查完整活跃原始行，不能用业务键或条码条件把坏行过滤掉。
+                var invalidSourceRows = activeHqRows
+                    .Where(row =>
+                        string.IsNullOrWhiteSpace(row.H商品编码)
+                        || string.IsNullOrWhiteSpace(row.H多码商品编号)
+                    )
+                    .ToList();
+                if (invalidSourceRows.Count > 0)
+                {
+                    result.IsSuccess = false;
+                    result.ErrorCode = "PRODUCT_SET_CODE_SOURCE_INVALID";
+                    result.ErrorCount = invalidSourceRows.Count;
+                    result.Message = "HQ 套装多码存在空业务键，未删除或写入任何本地关系";
+                    var details = invalidSourceRows
+                        .Take(50)
+                        .Select(row =>
+                            $"HQ ID={row.ID}，GUID={ProductSetCodeIdentityResolver.Normalize(row.HGUID) ?? "(空)"}，父商品={ProductSetCodeIdentityResolver.Normalize(row.H商品编码) ?? "(空)"}，子商品={ProductSetCodeIdentityResolver.Normalize(row.H多码商品编号) ?? "(空)"}"
                         )
-                        .CountAsync();
-                    hqCountDb.Dispose();
-                    var pageCount = (int)Math.Ceiling(totalCount / (double)hqBatchSize);
+                        .ToList();
+                    var omittedCount = invalidSourceRows.Count - details.Count;
+                    result.Details = string.Join("\n", details)
+                        + (omittedCount > 0
+                            ? $"\n另有 {omittedCount} 条空业务键记录未展开"
+                            : string.Empty);
+                    return result;
+                }
 
-                    var channel = System.Threading.Channels.Channel.CreateBounded<
-                        List<ProductSetCode>
-                    >(Math.Min(12, Math.Max(4, maxReadConcurrency * 2)));
+                var activeProductCodeSet = activeProductCodes
+                    .Select(ProductSetCodeIdentityResolver.Normalize)
+                    .Where(code => code != null)
+                    .Select(code => code!)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var sourcePayloadRows = activeHqRows
+                    .Where(row =>
+                    {
+                        var productCode = ProductSetCodeIdentityResolver.Normalize(
+                            row.H商品编码
+                        );
+                        return productCode != null && activeProductCodeSet.Contains(productCode);
+                    })
+                    .ToList();
+
+                var sourcePreflight = ProductSetCodeIdentityResolver.PreflightSource(
+                    sourcePayloadRows,
+                    row => row.HGUID,
+                    row => row.H商品编码,
+                    row => row.H多码商品编号,
+                    row => row.FGC_LastModifyDate,
+                    row => row.ID
+                );
+                if (sourcePreflight.Conflicts.Count > 0)
+                {
+                    var details = sourcePreflight.Conflicts
+                        .Select(conflict => conflict.ToErrorMessage())
+                        .Take(50)
+                        .ToList();
+                    result.IsSuccess = false;
+                    result.ErrorCode = "PRODUCT_SET_CODE_IDENTITY_CONFLICT";
+                    result.ErrorCount = sourcePreflight.Conflicts.Count;
+                    result.Message = "HQ 套装多码身份预检失败，未删除或写入任何本地关系";
+                    result.Details = string.Join("\n", details);
+                    return result;
+                }
+
+                var localTransactionStarted = false;
+                await _localContext.Db.Ado.BeginTranAsync();
+                localTransactionStarted = true;
+                try
+                {
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireAllAsync(
+                        _localContext.Db
+                    );
+                    // 本地身份只能在总锁内读取和判定；通过后直到提交不会被其他合规写路径改动。
+                    var localIdentityRows = await _localContext.Db.Queryable<ProductSetCode>()
+                        .ToListAsync();
+                    var identityIndex = ProductSetCodeIdentityResolver.CreateIndex(
+                        localIdentityRows
+                    );
+                    var protectedSourceIds = new HashSet<int>();
+                    var localIdentityConflictDetails = new List<string>();
+                    foreach (var sourceRow in sourcePreflight.Rows)
+                    {
+                        var resolution = identityIndex.Resolve(
+                            sourceRow.HGUID,
+                            sourceRow.H商品编码,
+                            sourceRow.H多码商品编号
+                        );
+                        if (resolution.Kind == ProductSetCodeIdentityMatchKind.Conflict)
+                        {
+                            var businessKey = resolution.BusinessKey == null
+                                ? "(空)"
+                                : ProductSetCodeIdentityResolver.FormatBusinessKey(
+                                    resolution.BusinessKey
+                                );
+                            localIdentityConflictDetails.Add(
+                                $"本地 ProductSetCode 身份冲突：HQ ID={sourceRow.ID}，GUID={resolution.Guid ?? "(空)"}，业务键={businessKey}，本地记录={ProductSetCodeIdentityResolver.FormatLocalRecords(resolution.AllMatches)}"
+                            );
+                            continue;
+                        }
+
+                        if (resolution.AllMatches.Any(row => row.SetType == 1))
+                        {
+                            protectedSourceIds.Add(sourceRow.ID);
+                        }
+                    }
+
+                    if (localIdentityConflictDetails.Count > 0)
+                    {
+                        await _localContext.Db.Ado.RollbackTranAsync();
+                        localTransactionStarted = false;
+                        result.IsSuccess = false;
+                        result.ErrorCode = "PRODUCT_SET_CODE_IDENTITY_CONFLICT";
+                        result.ErrorCount = localIdentityConflictDetails.Count;
+                        result.Message =
+                            "本地套装多码身份预检失败，未删除或写入任何本地关系";
+                        result.Details = string.Join(
+                            "\n",
+                            localIdentityConflictDetails.Take(50)
+                        );
+                        return result;
+                    }
+
+                    var protectedSetCodeKeys = await GetProtectedSetCodeKeysAsync(_localContext.Db);
+                    var protectedSetCodeIds = await GetProtectedSetCodeIdsAsync(_localContext.Db);
+                    var acceptedSourceRows = sourcePreflight.Rows
+                        .Where(row => !protectedSourceIds.Contains(row.ID))
+                        .ToList();
+                    var sourcePages = DataSyncIncrementalService.BuildProductSetCodeSourcePages(
+                        acceptedSourceRows,
+                        hqBatchSize
+                    );
+                    var localPages = new List<List<ProductSetCode>>(sourcePages.Count);
                     var totalAdded = 0;
-                    var totalErrors = 0;
-                    var fetchErrors = 0;
                     var totalMissingProductCode = 0;
                     var totalMissingSetProductCode = 0;
                     var totalMissingSetItemNumber = 0;
+                    var recalculationProductCodes = new HashSet<string>(
+                        StringComparer.OrdinalIgnoreCase
+                    );
 
-                    var consumer = Task.Run(async () =>
+                    // 映射和必填字段校验也必须在删除前完成；这里仅消费冻结的 HQ 对象，
+                    // 不得再访问 HQ 数据库。
+                    for (var pageIndex = 0; pageIndex < sourcePages.Count; pageIndex++)
                     {
-                        await foreach (var batch in channel.Reader.ReadAllAsync())
-                        {
-                            try
+                        var localBatch = _mapper.Map<List<ProductSetCode>>(
+                                sourcePages[pageIndex]
+                            )
+                            .Select(item =>
                             {
-                                await _localContext
-                                    .Db.Fastest<ProductSetCode>()
-                                    .AS("ProductSetCode")
-                                    .PageSize(writePageSize)
-                                    .BulkCopyAsync(batch);
-                                totalAdded += batch.Count;
-                            }
-                            catch (Exception)
-                            {
-                                totalErrors += batch.Count;
-                                await Task.Delay(1500);
-                            }
-                        }
-                    });
+                                item.SetType = 2;
+                                item.SetPurchasePrice = null;
+                                return item;
+                            })
+                            .ToList();
+                        var missingProductCode = localBatch.Count(item =>
+                            string.IsNullOrWhiteSpace(item.ProductCode)
+                        );
+                        var missingSetProductCode = localBatch.Count(item =>
+                            string.IsNullOrWhiteSpace(item.SetProductCode)
+                        );
+                        var missingSetItemNumber = localBatch.Count(item =>
+                            string.IsNullOrWhiteSpace(item.SetItemNumber)
+                        );
+                        totalMissingProductCode += missingProductCode;
+                        totalMissingSetProductCode += missingSetProductCode;
+                        totalMissingSetItemNumber += missingSetItemNumber;
 
-                    var semaphore = new SemaphoreSlim(maxReadConcurrency, maxReadConcurrency);
-                    var producers = new List<Task>();
-                    for (var page = 1; page <= pageCount; page++)
-                    {
-                        var pageIndex = page;
-                        var p = Task.Run(async () =>
-                        {
-                            await semaphore.WaitAsync();
-                            try
-                            {
-                                var skip = (pageIndex - 1) * hqBatchSize;
-                                var hqDb = HqSqlSugarContext.CreateConcurrentConnection(
-                                    _configuration
-                                );
-                                var hqBatch = await hqDb.Queryable<DIC_一品多码表>()
-                                    .Where(x =>
-                                        !string.IsNullOrEmpty(x.H商品编码)
-                                        && (
-                                            SqlFunc.HasValue(x.H多码商品编号)
-                                            || SqlFunc.HasValue(x.H主条形码)
-                                        )
-                                        && (x.H使用状态 ?? false) == true
-                                        && SqlFunc
-                                            .Subqueryable<DIC_商品信息字典表>()
-                                            .Where(product =>
-                                                product.H商品编码 == x.H商品编码
-                                                && product.H使用状态 == true
-                                            )
-                                            .Any()
-                                    )
-                                    .OrderBy(x => x.ID)
-                                    .Skip(skip)
-                                    .Take(hqBatchSize)
-                                    .ToListAsync();
-                                if (hqBatch.Any())
-                                {
-                                    var localBatch = _mapper.Map<List<ProductSetCode>>(hqBatch);
-                                    // 二次字段校验与过滤
-                                    var before = localBatch.Count;
-                                    var missingProductCode = localBatch.Count(x =>
-                                        string.IsNullOrWhiteSpace(x.ProductCode)
-                                    );
-                                    var missingSetProductCode = localBatch.Count(x =>
-                                        string.IsNullOrWhiteSpace(x.SetProductCode)
-                                    );
-                                    var missingSetItemNumber = localBatch.Count(x =>
-                                        string.IsNullOrWhiteSpace(x.SetItemNumber)
-                                    );
-                                    totalMissingProductCode += missingProductCode;
-                                    totalMissingSetProductCode += missingSetProductCode;
-                                    totalMissingSetItemNumber += missingSetItemNumber;
-
-                                    localBatch = localBatch
-                                        .Where(x =>
-                                            !string.IsNullOrWhiteSpace(x.ProductCode)
-                                            && !string.IsNullOrWhiteSpace(x.SetProductCode)
-                                            && !string.IsNullOrWhiteSpace(x.SetItemNumber)
-                                        )
-                                        .ToList();
-
-                                    var after = localBatch.Count;
-                                    _logger.LogInformation(
-                                        "[ReactSync] 套装批{Page} 校验：缺失ProductCode={A} 缺失SetProductCode={B} 缺失SetItemNumber={C} 保留={Valid}",
-                                        pageIndex,
-                                        missingProductCode,
-                                        missingSetProductCode,
-                                        missingSetItemNumber,
-                                        after
-                                    );
-                                    await channel.Writer.WriteAsync(localBatch);
-                                }
-                                hqDb.Dispose();
-                            }
-                            catch (Exception)
-                            {
-                                fetchErrors++;
-                            }
-                            finally
-                            {
-                                semaphore.Release();
-                            }
-                        });
-                        producers.Add(p);
+                        localBatch = localBatch
+                            .Where(item =>
+                                !protectedSetCodeIds.Contains(item.SetCodeId)
+                                && !protectedSetCodeKeys.Contains(
+                                    GetSetCodeBusinessKey(item)
+                                )
+                            )
+                            .ToList();
+                        localPages.Add(localBatch);
+                        _logger.LogInformation(
+                            "[ReactSync] 套装多码冻结页{Page}校验：缺失ProductCode={A} 缺失SetProductCode={B} 缺失SetItemNumber={C} 保留={Valid}",
+                            pageIndex + 1,
+                            missingProductCode,
+                            missingSetProductCode,
+                            missingSetItemNumber,
+                            localBatch.Count
+                        );
                     }
 
-                    await Task.WhenAll(producers);
-                    channel.Writer.Complete();
-                    await consumer;
+                    var totalMissingRequiredFields =
+                        totalMissingProductCode
+                        + totalMissingSetProductCode
+                        + totalMissingSetItemNumber;
+                    if (totalMissingRequiredFields > 0)
+                    {
+                        await _localContext.Db.Ado.RollbackTranAsync();
+                        localTransactionStarted = false;
+                        result.IsSuccess = false;
+                        result.ErrorCode = "PRODUCT_SET_CODE_SOURCE_INVALID";
+                        result.ErrorCount = totalMissingRequiredFields;
+                        result.Message = "HQ 套装多码映射后存在空业务键，未删除或写入任何本地关系";
+                        result.Details =
+                            $"缺失 ProductCode={totalMissingProductCode}，缺失 SetProductCode={totalMissingSetProductCode}，缺失 SetItemNumber={totalMissingSetItemNumber}";
+                        return result;
+                    }
+
+                    await _localContext
+                        .Db.Deleteable<ProductSetCode>()
+                        .AS("ProductSetCode")
+                        // 所有状态的本地 Type1 都必须原样保留；停用和软删除关系也不能被 HQ 删除后复用。
+                        .Where(x => x.SetType != 1)
+                        .ExecuteCommandAsync();
+
+                    foreach (var localBatch in localPages)
+                    {
+                        if (localBatch.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        await _localContext
+                            .Db.Fastest<ProductSetCode>()
+                            .AS("ProductSetCode")
+                            .PageSize(writePageSize)
+                            .BulkCopyAsync(localBatch);
+                        foreach (
+                            var productCode in localBatch
+                                .Select(item => item.ProductCode)
+                                .Where(code => !string.IsNullOrWhiteSpace(code))
+                        )
+                        {
+                            recalculationProductCodes.Add(productCode!.Trim());
+                        }
+                        totalAdded += localBatch.Count;
+                    }
+
+                    if (recalculationProductCodes.Count > 0)
+                    {
+                        // 关系写入和 Type1/Type2 成本回写必须同事务、同业务锁提交。
+                        await new SetChildPurchasePriceService(_localContext.Db).RecalculateLockedAsync(
+                            lockScope,
+                            recalculationProductCodes,
+                            storeCodes: null,
+                            "DataSync"
+                        );
+                    }
 
                     await _localContext.Db.Ado.CommitTranAsync();
+                    localTransactionStarted = false;
                     result.AddedCount = totalAdded;
-                    result.ErrorCount = totalErrors + fetchErrors;
-                    result.IsSuccess = (totalErrors == 0 && fetchErrors == 0);
-                    result.Message =
-                        totalErrors == 0 ? "套装多码同步成功" : "套装多码同步完成，但存在错误";
+                    result.ErrorCount = 0;
+                    result.IsSuccess = true;
+                    result.Message = "套装多码同步成功";
                     _logger.LogInformation(
                         "[ReactSync] 套装多码汇总：缺失ProductCode={A} 缺失SetProductCode={B} 缺失SetItemNumber={C} 新增={Added} 错误={Err}",
                         totalMissingProductCode,
                         totalMissingSetProductCode,
                         totalMissingSetItemNumber,
                         totalAdded,
-                        totalErrors + fetchErrors
+                        0
                     );
                 }
                 catch (Exception exTran)
                 {
-                    await _localContext.Db.Ado.RollbackTranAsync();
+                    if (localTransactionStarted)
+                    {
+                        await _localContext.Db.Ado.RollbackTranAsync();
+                    }
                     throw new Exception("套装多码同步事务失败", exTran);
                 }
             }
@@ -1591,7 +1814,17 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(ex, "[ReactSync] 套装多码同步异常");
                 result.IsSuccess = false;
-                result.Message = "套装多码同步异常";
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict))
+                {
+                    result.ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode;
+                    result.BusyErrorCount = 1;
+                    result.Message = conflict!.Message;
+                }
+                else
+                {
+                    result.Message = "套装多码同步异常";
+                }
+                result.ErrorCount = Math.Max(result.ErrorCount, 1);
             }
             finally
             {
@@ -1600,6 +1833,59 @@ namespace BlazorApp.Api.Services.React
             }
 
             return result;
+        }
+
+        private static string GetSetCodeBusinessKey(ProductSetCode item) =>
+            $"{item.ProductCode?.Trim()}\u001F{item.SetProductCode?.Trim()}";
+
+        private static string GetStoreMultiCodeBusinessKey(StoreMultiCodeProduct item) =>
+            $"{item.ProductCode?.Trim()}\u001F{item.MultiCodeProductCode?.Trim()}";
+
+        private static async Task<HashSet<string>> GetProtectedSetCodeIdsAsync(ISqlSugarClient db)
+        {
+            var protectedIds = await db.Queryable<ProductSetCode>()
+                // HQ 普通多码不得复用任何状态的本地套装关系，包括停用和软删除记录。
+                .Where(item => item.SetType == 1)
+                .Select(item => item.SetCodeId)
+                .ToListAsync();
+            return new HashSet<string>(
+                protectedIds.Where(id => !string.IsNullOrWhiteSpace(id)),
+                StringComparer.OrdinalIgnoreCase
+            );
+        }
+
+        private static async Task<HashSet<string>> GetProtectedSetCodeKeysAsync(
+            ISqlSugarClient db
+        )
+        {
+            var protectedRows = await db.Queryable<ProductSetCode>()
+                .Where(item => item.SetType == 1)
+                .Select(item => new { item.ProductCode, item.SetProductCode })
+                .ToListAsync();
+
+            return new HashSet<string>(
+                protectedRows.Select(item =>
+                    $"{item.ProductCode?.Trim()}\u001F{item.SetProductCode?.Trim()}"
+                ),
+                StringComparer.OrdinalIgnoreCase
+            );
+        }
+
+        private static async Task<HashSet<string>> GetProtectedStoreMultiCodeKeysAsync(
+            ISqlSugarClient db
+        )
+        {
+            var protectedRows = await db.Queryable<ProductSetCode>()
+                .Where(item => item.SetType == 1)
+                .Select(item => new { item.ProductCode, item.SetProductCode })
+                .ToListAsync();
+
+            return new HashSet<string>(
+                protectedRows.Select(item =>
+                    $"{item.ProductCode?.Trim()}\u001F{item.SetProductCode?.Trim()}"
+                ),
+                StringComparer.OrdinalIgnoreCase
+            );
         }
 
         /// <summary>
@@ -2687,6 +2973,15 @@ namespace BlazorApp.Api.Services.React
                         if (!localBatch.Any())
                             continue;
 
+                        var pageProductCodes = localBatch
+                            .Select(entry => entry.NormalizedCode!)
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+                        var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                            _localContext.Db,
+                            pageProductCodes
+                        );
+
                         var now = DateTime.UtcNow;
                         var auditProductCodes = localBatch
                             .Select(entry => entry.NormalizedCode!)
@@ -2787,6 +3082,14 @@ namespace BlazorApp.Api.Services.React
                             }
                         }
 
+                        // ImportPrice 写入后立即在同一产品锁与事务内回写 Type1/Type2 成本。
+                        await new SetChildPurchasePriceService(_localContext.Db).RecalculateLockedAsync(
+                            lockScope,
+                            pageProductCodes,
+                            storeCodes: null,
+                            auditActorName
+                        );
+
                         _logger.LogInformation(
                             "[ReactSync] WarehouseProduct 全量更新页{Page}: 新增{Added}, 更新{Updated}",
                             page,
@@ -2821,7 +3124,21 @@ namespace BlazorApp.Api.Services.React
                         "[ReactSync] WarehouseProduct 全量同步事务失败"
                     );
                     result.IsSuccess = false;
-                    result.Message = "WarehouseProduct 同步事务失败";
+                    if (
+                        SetChildPurchasePriceMutationLock.TryResolveConflict(
+                            transactionResult.ErrorException,
+                            out var conflict
+                        )
+                    )
+                    {
+                        result.ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode;
+                        result.BusyErrorCount = 1;
+                        result.Message = conflict!.Message;
+                    }
+                    else
+                    {
+                        result.Message = "WarehouseProduct 同步事务失败";
+                    }
                     result.ErrorCount = 1;
                     return result;
                 }
@@ -2836,7 +3153,16 @@ namespace BlazorApp.Api.Services.React
             {
                 _logger.LogError(ex, "[ReactSync] WarehouseProduct 同步异常");
                 result.IsSuccess = false;
-                result.Message = "WarehouseProduct 同步异常";
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict))
+                {
+                    result.ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode;
+                    result.BusyErrorCount = 1;
+                    result.Message = conflict!.Message;
+                }
+                else
+                {
+                    result.Message = "WarehouseProduct 同步异常";
+                }
                 result.ErrorCount = 1;
             }
             finally

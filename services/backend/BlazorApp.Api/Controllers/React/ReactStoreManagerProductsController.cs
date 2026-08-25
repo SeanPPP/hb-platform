@@ -153,7 +153,9 @@ namespace BlazorApp.Api.Controllers.React
                 }
 
                 var result = await _service.UpdateStorePriceAsync(uuid, dto, userGuid);
-                return Ok(result);
+                return IsSetChildPurchasePriceBusy(result.ErrorCode)
+                    ? Conflict(result)
+                    : Ok(result);
             }
             catch (Exception ex)
             {
@@ -179,7 +181,9 @@ namespace BlazorApp.Api.Controllers.React
                 }
 
                 var result = await _service.BatchUpdateStorePricesAsync(items, userGuid);
-                return Ok(result);
+                return IsSetChildPurchasePriceBusy(result.ErrorCode)
+                    ? Conflict(result)
+                    : Ok(result);
             }
             catch (Exception ex)
             {
@@ -205,7 +209,9 @@ namespace BlazorApp.Api.Controllers.React
                 }
 
                 var result = await _service.UpdateMultiCodePriceAsync(uuid, dto, userGuid);
-                return Ok(result);
+                return IsSetChildPurchasePriceBusy(result.ErrorCode)
+                    ? Conflict(result)
+                    : Ok(result);
             }
             catch (Exception ex)
             {
@@ -231,7 +237,9 @@ namespace BlazorApp.Api.Controllers.React
                 }
 
                 var result = await _service.BatchUpdateMultiCodePricesAsync(items, userGuid);
-                return Ok(result);
+                return IsSetChildPurchasePriceBusy(result.ErrorCode)
+                    ? Conflict(result)
+                    : Ok(result);
             }
             catch (Exception ex)
             {
@@ -239,5 +247,12 @@ namespace BlazorApp.Api.Controllers.React
                 return StatusCode(500, new { success = false, message = ex.Message });
             }
         }
+
+        private static bool IsSetChildPurchasePriceBusy(string? errorCode) =>
+            string.Equals(
+                errorCode,
+                SetChildPurchasePriceMutationLock.BusyErrorCode,
+                StringComparison.Ordinal
+            );
     }
 }

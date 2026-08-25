@@ -6493,14 +6493,27 @@ namespace BlazorApp.Api.Services.React
                 var normalizedPrice = Math.Round(requestedWarehouseImportPrice.Value, 2, MidpointRounding.AwayFromZero);
                 var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
                 var batchGuid = Guid.NewGuid();
+                var parentProductCodes = await CollectSetChildPurchasePriceParentProductCodesAsync(
+                    new[] { productCode }
+                );
 
                 // 该页面编辑的是仓库商品当前进货价格，只更新 WarehouseProduct.ImportPrice。
                 await _db.Ado.BeginTranAsync();
                 try
                 {
+                    var lockScope = parentProductCodes.Count == 0
+                        ? null
+                        : await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                            _db,
+                            parentProductCodes
+                        );
                     var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(new[] { productCode });
-                    var warehouseProduct = await _db.Queryable<WarehouseProduct>()
-                        .FirstAsync(wp => wp.ProductCode == productCode && !wp.IsDeleted);
+                    // 锁内复读成本源，避免等待业务锁期间把旧快照全实体回写。
+                    var warehouseProduct = await WithProductCostUpdateLock(
+                            _db.Queryable<WarehouseProduct>()
+                                .Where(wp => wp.ProductCode == productCode && !wp.IsDeleted)
+                        )
+                        .FirstAsync();
                     if (warehouseProduct == null)
                     {
                         await _db.Ado.RollbackTranAsync();
@@ -6511,17 +6524,18 @@ namespace BlazorApp.Api.Services.React
                         };
                     }
 
-                    warehouseProduct.ImportPrice = normalizedPrice;
-                    warehouseProduct.UpdatedAt = DateTime.UtcNow;
-                    warehouseProduct.UpdatedBy = currentUser;
-                    await _db.Updateable(warehouseProduct)
-                        .UpdateColumns(wp => new
-                        {
-                            wp.ImportPrice,
-                            wp.UpdatedAt,
-                            wp.UpdatedBy,
-                        })
+                    var now = DateTime.UtcNow;
+                    await _db.Updateable<WarehouseProduct>()
+                        .SetColumns(wp => wp.ImportPrice == normalizedPrice)
+                        .SetColumns(wp => wp.UpdatedAt == now)
+                        .SetColumns(wp => wp.UpdatedBy == currentUser)
+                        .Where(wp => wp.ProductCode == productCode && !wp.IsDeleted)
                         .ExecuteCommandAsync();
+                    await RecalculateSetChildPurchasePricesAsync(
+                        lockScope,
+                        parentProductCodes,
+                        currentUser
+                    );
                     var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(new[] { productCode });
                     await _changeHistoryService.RecordChangesAsync(
                         beforeSnapshots,
@@ -6554,6 +6568,13 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "UpdateImportPriceVarianceWarehouseImportPriceAsync failed for {ProductCode}", productCode);
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                {
+                    return ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>.Error(
+                        "套装商品正在被其他操作修改，请稍后重试",
+                        SetChildPurchasePriceMutationLock.BusyErrorCode
+                    );
+                }
                 return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>
                 {
                     Success = false,
@@ -6614,13 +6635,23 @@ namespace BlazorApp.Api.Services.React
             var normalizedPrice = Math.Round(requestedBatchWarehouseImportPrice.Value, 2, MidpointRounding.AwayFromZero);
             var transactionStarted = false;
             var batchGuid = Guid.NewGuid();
+            var parentProductCodes = await CollectSetChildPurchasePriceParentProductCodesAsync(productCodes);
             try
             {
                 _db.Ado.BeginTran();
                 transactionStarted = true;
 
-                var warehouseProducts = await _db.Queryable<WarehouseProduct>()
-                    .Where(wp => productCodes.Contains(wp.ProductCode) && !wp.IsDeleted)
+                var lockScope = parentProductCodes.Count == 0
+                    ? null
+                    : await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        _db,
+                        parentProductCodes
+                    );
+                // 锁内重读整批仓库成本源，避免批量全实体更新覆盖并发修改。
+                var warehouseProducts = await WithProductCostUpdateLock(
+                        _db.Queryable<WarehouseProduct>()
+                            .Where(wp => productCodes.Contains(wp.ProductCode) && !wp.IsDeleted)
+                    )
                     .ToListAsync();
                 var existingCodeSet = warehouseProducts
                     .Select(wp => wp.ProductCode)
@@ -6639,23 +6670,19 @@ namespace BlazorApp.Api.Services.React
 
                 var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
                 var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
-                var now = DateTime.UtcNow;
-                foreach (var warehouseProduct in warehouseProducts)
-                {
-                    warehouseProduct.ImportPrice = normalizedPrice;
-                    warehouseProduct.UpdatedAt = now;
-                    warehouseProduct.UpdatedBy = currentUser;
-                }
-
                 // 该批量入口只修改 WarehouseProduct 当前参考进货价，避免误联动商品主档、分店价格或历史订单。
-                await _db.Updateable(warehouseProducts)
-                    .UpdateColumns(wp => new
-                    {
-                        wp.ImportPrice,
-                        wp.UpdatedAt,
-                        wp.UpdatedBy,
-                    })
+                var now = DateTime.UtcNow;
+                await _db.Updateable<WarehouseProduct>()
+                    .SetColumns(wp => wp.ImportPrice == normalizedPrice)
+                    .SetColumns(wp => wp.UpdatedAt == now)
+                    .SetColumns(wp => wp.UpdatedBy == currentUser)
+                    .Where(wp => productCodes.Contains(wp.ProductCode) && !wp.IsDeleted)
                     .ExecuteCommandAsync();
+                await RecalculateSetChildPurchasePricesAsync(
+                    lockScope,
+                    parentProductCodes,
+                    currentUser
+                );
 
                 var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
                 await _changeHistoryService.RecordChangesAsync(
@@ -6695,6 +6722,13 @@ namespace BlazorApp.Api.Services.React
                     "UpdateImportPriceVarianceWarehouseImportPriceBatchAsync failed for {ProductCodes}",
                     string.Join(", ", productCodes)
                 );
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                {
+                    return ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto>.Error(
+                        "套装商品正在被其他操作修改，请稍后重试",
+                        SetChildPurchasePriceMutationLock.BusyErrorCode
+                    );
+                }
                 return new ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto>
                 {
                     Success = false,
@@ -9083,9 +9117,20 @@ FinalRows AS (
 
                 var syncImportPrice = request.SyncImportPrice == true && request.ImportPrice.HasValue;
                 var batchGuid = Guid.NewGuid();
+                var parentProductCodes = syncImportPrice
+                    ? await CollectSetChildPurchasePriceParentProductCodesAsync(
+                        new[] { request.ProductCode }
+                    )
+                    : new List<string>();
                 _db.Ado.BeginTran();
                 try
                 {
+                    var lockScope = parentProductCodes.Count == 0
+                        ? null
+                        : await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                            _db,
+                            parentProductCodes
+                        );
                     IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>? beforeSnapshots = null;
                     if (syncImportPrice)
                     {
@@ -9107,6 +9152,11 @@ FinalRows AS (
                         await SyncOrderImportPriceToProductTablesAsync(
                             request.ProductCode,
                             request.ImportPrice!.Value
+                        );
+                        await RecalculateSetChildPurchasePricesAsync(
+                            lockScope,
+                            parentProductCodes,
+                            _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System"
                         );
                     }
 
@@ -9142,6 +9192,13 @@ FinalRows AS (
             catch (Exception ex)
             {
                 _logger.LogError(ex, "UpdateOrderLineAsync failed");
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                {
+                    return ApiResponse<bool>.Error(
+                        "套装商品正在被其他操作修改，请稍后重试",
+                        SetChildPurchasePriceMutationLock.BusyErrorCode
+                    );
+                }
                 return new ApiResponse<bool> { Success = false, Message = ex.Message };
             }
         }
@@ -9223,9 +9280,18 @@ FinalRows AS (
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
                 var batchGuid = Guid.NewGuid();
+                var parentProductCodes = await CollectSetChildPurchasePriceParentProductCodesAsync(
+                    syncProductCodes
+                );
                 _db.Ado.BeginTran();
                 try
                 {
+                    var lockScope = parentProductCodes.Count == 0
+                        ? null
+                        : await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                            _db,
+                            parentProductCodes
+                        );
                     IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>? beforeSnapshots = null;
                     if (syncProductCodes.Count > 0)
                     {
@@ -9251,6 +9317,16 @@ FinalRows AS (
                                 item.ImportPrice.Value
                             );
                         }
+                    }
+
+                    if (syncProductCodes.Count > 0)
+                    {
+                        // 批量先完成全部成本源窄列写入，再统一校正套装子项，避免同一商品半次校正。
+                        await RecalculateSetChildPurchasePricesAsync(
+                            lockScope,
+                            parentProductCodes,
+                            _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System"
+                        );
                     }
 
                     await UpdateOrderTotalAsync(order.OrderGUID);
@@ -9283,6 +9359,13 @@ FinalRows AS (
             catch (Exception ex)
             {
                 _logger.LogError(ex, "BatchUpdateOrderLineAsync failed");
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                {
+                    return ApiResponse<bool>.Error(
+                        "套装商品正在被其他操作修改，请稍后重试",
+                        SetChildPurchasePriceMutationLock.BusyErrorCode
+                    );
+                }
                 return new ApiResponse<bool> { Success = false, Message = ex.Message };
             }
         }
@@ -10473,21 +10556,28 @@ FinalRows AS (
 
             var now = DateTime.Now;
             var currentUser = _httpContextAccessor.HttpContext?.User?.Identity?.Name ?? "System";
-            var product = await _db.Queryable<Product>()
-                .Where(item => item.ProductCode == normalizedProductCode && !item.IsDeleted)
+            // 调用方已先取得父商品业务锁；这里在锁内复读三层成本源的主表记录。
+            var product = await WithProductCostUpdateLock(
+                    _db.Queryable<Product>()
+                        .Where(item => item.ProductCode == normalizedProductCode && !item.IsDeleted)
+                )
                 .FirstAsync();
             if (product == null)
             {
                 throw new Exception($"Product {normalizedProductCode} not found");
             }
 
-            product.PurchasePrice = importPrice;
-            product.UpdatedAt = now;
-            product.UpdatedBy = currentUser;
-            await _db.Updateable(product).ExecuteCommandAsync();
-
-            var warehouseProduct = await _db.Queryable<WarehouseProduct>()
+            await _db.Updateable<Product>()
+                .SetColumns(item => item.PurchasePrice == importPrice)
+                .SetColumns(item => item.UpdatedAt == now)
+                .SetColumns(item => item.UpdatedBy == currentUser)
                 .Where(item => item.ProductCode == normalizedProductCode && !item.IsDeleted)
+                .ExecuteCommandAsync();
+
+            var warehouseProduct = await WithProductCostUpdateLock(
+                    _db.Queryable<WarehouseProduct>()
+                        .Where(item => item.ProductCode == normalizedProductCode && !item.IsDeleted)
+                )
                 .FirstAsync();
             if (warehouseProduct == null)
             {
@@ -10508,10 +10598,23 @@ FinalRows AS (
             }
             else
             {
-                warehouseProduct.ImportPrice = importPrice;
-                warehouseProduct.UpdatedAt = now;
-                warehouseProduct.UpdatedBy = currentUser;
-                await _db.Updateable(warehouseProduct).ExecuteCommandAsync();
+                await _db.Updateable<WarehouseProduct>()
+                    .SetColumns(item => item.ImportPrice == importPrice)
+                    .SetColumns(item => item.UpdatedAt == now)
+                    .SetColumns(item => item.UpdatedBy == currentUser)
+                    .Where(item => item.ProductCode == normalizedProductCode && !item.IsDeleted)
+                    .ExecuteCommandAsync();
+            }
+
+            // 产品触发器或并发状态可能改变展示字段；写入分店价格前必须重新读取。
+            product = await WithProductCostUpdateLock(
+                    _db.Queryable<Product>()
+                        .Where(item => item.ProductCode == normalizedProductCode && !item.IsDeleted)
+                )
+                .FirstAsync();
+            if (product == null)
+            {
+                throw new Exception($"Product {normalizedProductCode} not found after update");
             }
 
             await UpsertActiveStoreRetailPurchasePricesAsync(
@@ -10568,7 +10671,14 @@ FinalRows AS (
 
             if (existingPrices.Count > 0)
             {
-                await _db.Updateable(existingPrices).ExecuteCommandAsync();
+                await _db.Updateable(existingPrices)
+                    .UpdateColumns(price => new
+                    {
+                        price.PurchasePrice,
+                        price.UpdatedAt,
+                        price.UpdatedBy,
+                    })
+                    .ExecuteCommandAsync();
             }
 
             var pricesToInsert = activeStoreCodes
@@ -10598,6 +10708,102 @@ FinalRows AS (
             {
                 await _db.Insertable(pricesToInsert).ExecuteCommandAsync();
             }
+        }
+
+        private Task<List<string>> CollectSetChildPurchasePriceParentProductCodesAsync(
+            IEnumerable<string?> productCodes
+        )
+        {
+            var normalizedCodes = SetChildPurchasePriceMutationLock.NormalizeProductCodes(productCodes);
+            // 必须锁定全部实际修改的主商品：等待锁期间即使新建了 Type1/Type2 关系，
+            // 后续锁内复读和统一校正仍处在同一个产品锁保护范围内。
+            return Task.FromResult(normalizedCodes);
+        }
+
+        private async Task RecalculateSetChildPurchasePricesAsync(
+            SetChildPurchasePriceLockScope? lockScope,
+            IReadOnlyCollection<string> parentProductCodes,
+            string updatedBy
+        )
+        {
+            if (lockScope == null || parentProductCodes.Count == 0)
+            {
+                return;
+            }
+
+            var recalculator = new SetChildPurchasePriceService(_db);
+            await recalculator.RecalculateGlobalLockedAsync(
+                lockScope,
+                parentProductCodes,
+                updatedBy
+            );
+
+            var storeGroups = await CollectActualSetChildPurchasePriceStoreGroupsAsync(
+                parentProductCodes
+            );
+            if (storeGroups.Count > 0)
+            {
+                await recalculator.RecalculateStoreGroupsLockedAsync(
+                    lockScope,
+                    storeGroups,
+                    updatedBy
+                );
+            }
+        }
+
+        private async Task<List<(string? StoreCode, string? ProductCode)>> CollectActualSetChildPurchasePriceStoreGroupsAsync(
+            IReadOnlyCollection<string> parentProductCodes
+        )
+        {
+            var retailRows = await _db.Queryable<StoreRetailPrice>()
+                .Where(item =>
+                    item.StoreCode != null
+                    && item.ProductCode != null
+                    && parentProductCodes.Contains(item.ProductCode)
+                    && item.IsActive
+                    && !item.IsDeleted
+                )
+                .Select(item => new StoreRetailPrice
+                {
+                    StoreCode = item.StoreCode,
+                    ProductCode = item.ProductCode,
+                })
+                .ToListAsync();
+            var multiCodeRows = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(item =>
+                    item.StoreCode != null
+                    && item.ProductCode != null
+                    && parentProductCodes.Contains(item.ProductCode)
+                    && item.IsActive
+                    && !item.IsDeleted
+                )
+                .Select(item => new StoreMultiCodeProduct
+                {
+                    StoreCode = item.StoreCode,
+                    ProductCode = item.ProductCode,
+                })
+                .ToListAsync();
+
+            return retailRows
+                .Select(item => (StoreCode: item.StoreCode, ProductCode: item.ProductCode))
+                .Concat(
+                    multiCodeRows.Select(item =>
+                        (StoreCode: item.StoreCode, ProductCode: item.ProductCode)
+                    )
+                )
+                .GroupBy(
+                    item => $"{item.StoreCode!}\u0001{item.ProductCode!}",
+                    StringComparer.OrdinalIgnoreCase
+                )
+                .Select(group => group.First())
+                .ToList();
+        }
+
+        private ISugarQueryable<T> WithProductCostUpdateLock<T>(ISugarQueryable<T> queryable)
+        {
+            return _db.CurrentConnectionConfig.DbType == DbType.SqlServer
+                ? queryable.With(SqlWith.UpdLock)
+                : queryable;
         }
 
         private async Task AddOrUpdateDetailAsync(

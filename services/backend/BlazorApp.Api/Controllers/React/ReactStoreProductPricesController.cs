@@ -4,6 +4,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
+using BlazorApp.Shared;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
@@ -81,7 +83,7 @@ namespace BlazorApp.Api.Controllers.React
                 return Ok(result);
             }
 
-            return BadRequest(result);
+            return BuildMutationFailure(result);
         }
 
         [HttpPost("sync-to-other-stores")]
@@ -100,7 +102,7 @@ namespace BlazorApp.Api.Controllers.React
                 return Ok(result);
             }
 
-            return BadRequest(result);
+            return BuildMutationFailure(result);
         }
 
         [HttpPost("copy-store-data")]
@@ -114,7 +116,7 @@ namespace BlazorApp.Api.Controllers.React
                 return Ok(result);
             }
 
-            return BadRequest(result);
+            return BuildMutationFailure(result);
         }
 
         [HttpGet("copy-store-data/stream")]
@@ -271,6 +273,13 @@ namespace BlazorApp.Api.Controllers.React
             }
 
             return Ok(ApiResponse<StorePriceTransferJobDto>.OK(job, "获取分店价格同步任务成功"));
+        }
+
+        private IActionResult BuildMutationFailure<T>(ApiResponse<T> result)
+        {
+            return result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                ? Conflict(result)
+                : BadRequest(result);
         }
 
         private async Task<bool> CanAccessSyncStoresAsync(string? sourceStoreCode, IEnumerable<string>? targetStoreCodes)

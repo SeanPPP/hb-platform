@@ -3,6 +3,7 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.Extensions.Logging;
@@ -407,22 +408,31 @@ namespace BlazorApp.Api.Services
             UpdateWarehouseProductDto productDto
         )
         {
+            var normalizedProductCode = productCode.Trim();
+            var now = DateTime.UtcNow;
+            _context.Db.Ado.BeginTran();
             try
             {
-                var normalizedProductCode = productCode.Trim();
-                var now = DateTime.UtcNow;
-
-                // 查找要更新的商品
+                var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                    _context.Db,
+                    new[] { normalizedProductCode }
+                );
+                // 所有源实体都必须在父商品锁内重读，避免整实体旧快照覆盖并发成本。
                 var existingProduct = await _context
                     .Db.Queryable<WarehouseProduct>()
-                    .FirstAsync(wp => wp.ProductCode == normalizedProductCode);
+                    .FirstAsync(wp =>
+                        wp.ProductCode == normalizedProductCode && !wp.IsDeleted
+                    );
 
                 if (existingProduct == null)
+                {
+                    _context.Db.Ado.RollbackTran();
                     return null;
+                }
 
                 var productEntity = await _context
                     .Db.Queryable<Product>()
-                    .FirstAsync(p => p.ProductCode == normalizedProductCode);
+                    .FirstAsync(p => p.ProductCode == normalizedProductCode && !p.IsDeleted);
                 var shouldInsertProduct = productEntity == null;
                 productEntity ??= new Product
                 {
@@ -476,54 +486,103 @@ namespace BlazorApp.Api.Services
                     );
                 }
 
-                _context.Db.Ado.BeginTran();
-                try
-                {
-                    var beforeSnapshots = await CaptureChangeSnapshotsAsync([normalizedProductCode]);
-                    await _context.Db.Updateable(existingProduct).ExecuteCommandAsync();
-
-                    if (shouldInsertProduct)
+                var beforeSnapshots = await CaptureChangeSnapshotsAsync([normalizedProductCode]);
+                await _context.Db.Updateable(existingProduct)
+                    .UpdateColumns(wp => new
                     {
-                        await _context.Db.Insertable(productEntity).ExecuteCommandAsync();
+                        wp.DomesticPrice,
+                        wp.ImportPrice,
+                        wp.OEMPrice,
+                        wp.StockQuantity,
+                        wp.MinOrderQuantity,
+                        wp.StockValue,
+                        wp.StockAlertQuantity,
+                        wp.IsActive,
+                        wp.Volume,
+                        wp.PackingQuantity,
+                        wp.UpdatedAt,
+                    })
+                    .ExecuteCommandAsync();
+
+                if (shouldInsertProduct)
+                {
+                    await _context.Db.Insertable(productEntity).ExecuteCommandAsync();
+                }
+                else
+                {
+                    await _context.Db.Updateable(productEntity)
+                        .UpdateColumns(product => new
+                        {
+                            product.ProductName,
+                            product.Barcode,
+                            product.PurchasePrice,
+                            product.RetailPrice,
+                            product.MiddlePackageQuantity,
+                            product.UpdatedAt,
+                        })
+                        .ExecuteCommandAsync();
+                }
+
+                if (storeRetailPrices.Count > 0)
+                {
+                    if (shouldInsertStoreRetailPrice)
+                    {
+                        await _context.Db.Insertable(storeRetailPrices[0]).ExecuteCommandAsync();
                     }
                     else
                     {
-                        await _context.Db.Updateable(productEntity).ExecuteCommandAsync();
+                        await _context.Db.Updateable(storeRetailPrices)
+                            .UpdateColumns(price => new
+                            {
+                                price.PurchasePrice,
+                                price.StoreRetailPriceValue,
+                                price.UpdatedAt,
+                            })
+                            .ExecuteCommandAsync();
                     }
+                }
 
-                    if (storeRetailPrices.Count > 0)
-                    {
-                        if (shouldInsertStoreRetailPrice)
-                        {
-                            await _context.Db.Insertable(storeRetailPrices[0]).ExecuteCommandAsync();
-                        }
-                        else
-                        {
-                            await _context.Db.Updateable(storeRetailPrices).ExecuteCommandAsync();
-                        }
-                    }
-
-                    await RecordChangeHistoryAsync(
-                        beforeSnapshots,
-                        [normalizedProductCode],
-                        "Update",
-                        "LegacyWarehouseProduct",
-                        Guid.NewGuid()
+                var recalculation = await new SetChildPurchasePriceService(_context.Db)
+                    .RecalculateLockedAsync(
+                        lockScope,
+                        new[] { normalizedProductCode },
+                        storeCodes: null,
+                        updatedBy: ResolveActorName()
                     );
-
-                    _context.Db.Ado.CommitTran();
-                }
-                catch
+                if (
+                    recalculation.ProductSetCode.SkippedGroupCount > 0
+                    || recalculation.StoreMultiCodeProduct.SkippedGroupCount > 0
+                )
                 {
-                    _context.Db.Ado.RollbackTran();
-                    throw;
+                    throw new InvalidOperationException(
+                        recalculation.Errors.FirstOrDefault()?.Reason
+                            ?? "套装与多码商品成本无法完整校正"
+                    );
                 }
+
+                await RecordChangeHistoryAsync(
+                    beforeSnapshots,
+                    [normalizedProductCode],
+                    "Update",
+                    "LegacyWarehouseProduct",
+                    Guid.NewGuid()
+                );
+
+                _context.Db.Ado.CommitTran();
 
                 existingProduct.Product = productEntity;
                 return _mapper.Map<WarehouseProductDto>(existingProduct);
             }
             catch (Exception ex)
             {
+                try
+                {
+                    _context.Db.Ado.RollbackTran();
+                }
+                catch
+                {
+                    // 事务可能已经回滚。
+                }
                 _logger.LogError(ex, "更新商品失败，商品编码：{ProductCode}", productCode);
                 throw;
             }

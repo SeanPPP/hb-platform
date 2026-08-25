@@ -56,6 +56,35 @@ namespace BlazorApp.Api.Controllers.React
             }
         }
 
+        [HttpPost("bootstrap")]
+        public async Task<IActionResult> Bootstrap(
+            [FromBody] LocalSupplierProductSalesAnalysisRequest request
+        )
+        {
+            try
+            {
+                var scope = await ResolveStoreScopeAsync();
+                if (scope.Forbidden)
+                {
+                    return Forbid();
+                }
+
+                var result = await _service.BootstrapAsync(request, scope.ScopedStoreCodes);
+                AppendServerTiming(result.Data?.ServerTimings);
+                return ToResult(result);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "本地商品销量分析 bootstrap 失败");
+                return StatusCode(
+                    StatusCodes.Status500InternalServerError,
+                    ApiResponse<LocalSupplierProductSalesBootstrapResponseDto>.Error(
+                        "本地商品销量分析 bootstrap 失败"
+                    )
+                );
+            }
+        }
+
         [HttpPost("candidates")]
         public async Task<IActionResult> Candidates(
             [FromBody] LocalSupplierProductSalesAnalysisRequest request
@@ -236,6 +265,24 @@ namespace BlazorApp.Api.Controllers.React
                 : StatusCode(StatusCodes.Status500InternalServerError, result);
         }
 
+        private void AppendServerTiming(
+            IReadOnlyDictionary<string, double>? timings
+        )
+        {
+            if (timings is null || timings.Count == 0)
+            {
+                return;
+            }
+
+            Response.Headers.Append(
+                "Server-Timing",
+                string.Join(
+                    ", ",
+                    timings.Select(kv => $"{kv.Key};dur={kv.Value.ToString("F2", System.Globalization.CultureInfo.InvariantCulture)}")
+                )
+            );
+        }
+
         private async Task<StoreScopeResult> ResolveStoreScopeAsync()
         {
             var userGuid = User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
@@ -262,7 +309,7 @@ namespace BlazorApp.Api.Controllers.React
 
             var userResult = await _userService.GetUserByGuidAsync(userGuid);
             var accessibleStoreCodes =
-                userResult.Data?.Stores?
+                userResult?.Data?.Stores?
                     .Select(store => NormalizeStoreCode(store.StoreCode))
                     .Where(code => !string.IsNullOrWhiteSpace(code))
                     .Select(code => code!)
@@ -271,7 +318,8 @@ namespace BlazorApp.Api.Controllers.React
 
             if (accessibleStoreCodes.Count == 0)
             {
-                return new StoreScopeResult { Forbidden = true };
+                // 零授权分店返回 200 空结果，而非 403。
+                return new StoreScopeResult { ScopedStoreCodes = new List<string>() };
             }
 
             return new StoreScopeResult { ScopedStoreCodes = accessibleStoreCodes };

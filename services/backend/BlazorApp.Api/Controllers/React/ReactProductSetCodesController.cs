@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
+using BlazorApp.Shared;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -71,7 +73,7 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     return Ok(new { success = true, message = result.Message });
                 }
-                return BadRequest(new { success = false, message = result.Message });
+                return BuildMutationFailure(result);
             }
             catch (Exception ex)
             {
@@ -92,7 +94,7 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     return Ok(new { success = true, message = result.Message });
                 }
-                return BadRequest(new { success = false, message = result.Message });
+                return BuildMutationFailure(result);
             }
             catch (Exception ex)
             {
@@ -117,7 +119,7 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     return Ok(new { success = true, message = result.Message });
                 }
-                return BadRequest(new { success = false, message = result.Message });
+                return BuildMutationFailure(result);
             }
             catch (Exception ex)
             {
@@ -193,7 +195,7 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     return Ok(new { success = true, data = result.Data, message = result.Message });
                 }
-                return BadRequest(new { success = false, message = result.Message });
+                return BuildMutationFailure(result);
             }
             catch (Exception ex)
             {
@@ -224,13 +226,20 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     return Ok(new { success = true, data = result.Data, message = result.Message });
                 }
-                return BadRequest(new { success = false, message = result.Message });
+                return BuildMutationFailure(result);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量删除并同步到分店失败");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
+        }
+
+        private IActionResult BuildMutationFailure<T>(ApiResponse<T> result)
+        {
+            return result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                ? Conflict(result)
+                : BadRequest(result);
         }
     }
 }

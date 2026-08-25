@@ -109,9 +109,13 @@ namespace BlazorApp.Api.Services.React
                     ? $"分店价格同步失败: {ex.Message}。已提交 {result.TotalProcessed} 条，已提交批次不会自动回滚"
                     : $"分店价格同步失败: {ex.Message}";
                 result.Errors.Add(failureMessage);
+                var errorCode = result.TotalProcessed == 0
+                        && SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                    ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                    : TransferFailedCode;
                 return ApiResponse<StorePriceTransferResult>.Error(
                     failureMessage,
-                    TransferFailedCode,
+                    errorCode,
                     result
                 );
             }
@@ -129,6 +133,17 @@ namespace BlazorApp.Api.Services.React
             Action<StorePriceTransferResult>? progressCallback
         )
         {
+            if (request.SyncRetailPrices && request.SyncMultiCodePrices)
+            {
+                await TransferHqRetailAndMultiToLocalAsync(
+                    request,
+                    updatedBy,
+                    result,
+                    progressCallback
+                );
+                return;
+            }
+
             if (request.SyncRetailPrices)
             {
                 await TransferHqRetailToLocalAsync(request, updatedBy, result, progressCallback);
@@ -138,6 +153,97 @@ namespace BlazorApp.Api.Services.React
             {
                 await TransferHqMultiToLocalAsync(request, updatedBy, result, progressCallback);
             }
+        }
+
+        private async Task TransferHqRetailAndMultiToLocalAsync(
+            StorePriceTransferRequest request,
+            string updatedBy,
+            StorePriceTransferResult result,
+            Action<StorePriceTransferResult>? progressCallback
+        )
+        {
+            var sourceStoreCode = request.SourceStoreCode!;
+            var retailProductCodes = await _hqContext.Db.Queryable<DIC_商品零售价表>()
+                .Where(row =>
+                    row.H分店代码 == sourceStoreCode
+                    && row.H使用状态 == true
+                    && row.H商品编码 != null
+                    && row.H商品编码 != string.Empty
+                )
+                .Select(row => row.H商品编码)
+                .Distinct()
+                .ToListAsync();
+            var multiProductCodes = await _hqContext.Db.Queryable<DIC_分店一品多码表>()
+                .Where(row =>
+                    row.H分店代码 == sourceStoreCode
+                    && row.H使用状态 == true
+                    && row.H商品编码 != null
+                    && row.H商品编码 != string.Empty
+                    && row.H多码商品编码 != null
+                    && row.H多码商品编码 != string.Empty
+                )
+                .Select(row => row.H商品编码)
+                .Distinct()
+                .ToListAsync();
+            var productCodes = NormalizeCodes(retailProductCodes.Concat(multiProductCodes));
+
+            foreach (var productCodeBatch in productCodes.Chunk(HqReadBatchSize))
+            {
+                var batchCodes = productCodeBatch.ToList();
+                var retailRows = await _hqContext.Db.Queryable<DIC_商品零售价表>()
+                    .Where(row =>
+                        row.H分店代码 == sourceStoreCode
+                        && row.H使用状态 == true
+                        && row.H商品编码 != null
+                        && batchCodes.Contains(row.H商品编码)
+                    )
+                    .OrderBy(row => row.ID)
+                    .ToListAsync();
+                var multiRows = await _hqContext.Db.Queryable<DIC_分店一品多码表>()
+                    .Where(row =>
+                        row.H分店代码 == sourceStoreCode
+                        && row.H使用状态 == true
+                        && row.H商品编码 != null
+                        && batchCodes.Contains(row.H商品编码)
+                        && row.H多码商品编码 != null
+                        && row.H多码商品编码 != string.Empty
+                    )
+                    .OrderBy(row => row.ID)
+                    .ToListAsync();
+                var retailRowsByProduct = retailRows
+                    .GroupBy(row => NormalizeCode(row.H商品编码) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+                var multiRowsByProduct = multiRows
+                    .GroupBy(row => NormalizeCode(row.H商品编码) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+
+                foreach (var productCode in batchCodes)
+                {
+                    retailRowsByProduct.TryGetValue(productCode, out var productRetailRows);
+                    multiRowsByProduct.TryGetValue(productCode, out var productMultiRows);
+                    var counts = await WriteLocalHqProductGroupAsync(
+                        productCode,
+                        productRetailRows ?? [],
+                        productMultiRows ?? [],
+                        request,
+                        updatedBy
+                    );
+                    AddRetailCounts(
+                        result,
+                        counts.Retail.Inserted,
+                        counts.Retail.Updated,
+                        counts.Retail.Skipped
+                    );
+                    AddMultiCounts(
+                        result,
+                        counts.Multi.Inserted,
+                        counts.Multi.Updated,
+                        counts.Multi.Skipped
+                    );
+                    PublishProgress(result, progressCallback);
+                }
+            }
+
         }
 
         private async Task InitializeTotalsAsync(
@@ -271,14 +377,6 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 lastId = hqBatch[^1].ID;
-                if (IsSqlServer(_localContext.Db))
-                {
-                    var counts = await MergeHqRetailToLocalSqlServerAsync(hqBatch, request, updatedBy);
-                    AddRetailCounts(result, counts.Inserted, counts.Updated, counts.Skipped);
-                    PublishProgress(result, progressCallback);
-                    continue;
-                }
-
                 var existingRows = await LoadLocalRetailRowsAsync(targetStoreCode, hqBatch.Select(row => row.H商品编码));
                 var toInsert = new List<StoreRetailPrice>();
                 var toUpdate = new List<StoreRetailPrice>();
@@ -313,7 +411,7 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
-                await WriteLocalRetailBatchAsync(toInsert, toUpdate, request);
+                await WriteLocalRetailBatchAsync(toInsert, toUpdate, request, updatedBy);
                 AddRetailCounts(result, toInsert.Count, toUpdate.Count);
                 PublishProgress(result, progressCallback);
             }
@@ -352,14 +450,47 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 lastId = hqBatch[^1].ID;
-                if (IsSqlServer(_localContext.Db))
+                var activeSetChildKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (request.SyncPurchasePrice)
                 {
-                    var counts = await MergeHqMultiToLocalSqlServerAsync(hqBatch, request, updatedBy);
-                    AddMultiCounts(result, counts.Inserted, counts.Updated, counts.Skipped);
-                    PublishProgress(result, progressCallback);
-                    continue;
+                    var batchProductCodes = hqBatch
+                        .Select(x => NormalizeCode(x.H商品编码))
+                        .Where(x => x != null)
+                        .Select(x => x!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    var batchChildCodes = hqBatch
+                        .Select(x => NormalizeCode(x.H多码商品编码))
+                        .Where(x => x != null)
+                        .Select(x => x!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    if (batchProductCodes.Count > 0 && batchChildCodes.Count > 0)
+                    {
+                        var activeSetChildren = await _localContext.Db.Queryable<ProductSetCode>()
+                            .Where(x =>
+                                batchProductCodes.Contains(x.ProductCode)
+                                && x.SetProductCode != null
+                                && batchChildCodes.Contains(x.SetProductCode)
+                                && (x.SetType == 1 || x.SetType == 2)
+                                && x.IsActive
+                                && !x.IsDeleted
+                            )
+                            .ToListAsync();
+                        activeSetChildKeys = activeSetChildren
+                            .Select(x => BuildMultiKey(x.ProductCode, x.SetProductCode!))
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    }
                 }
-
+                bool IsSetChild(DIC_分店一品多码表 row)
+                {
+                    var productCode = NormalizeCode(row.H商品编码);
+                    var childCode = NormalizeCode(row.H多码商品编码);
+                    return productCode != null
+                        && childCode != null
+                        && activeSetChildKeys.Contains(BuildMultiKey(productCode, childCode));
+                }
+                var setChildRequest = WithoutPurchasePrice(request);
                 var existingRows = await LoadLocalMultiRowsAsync(targetStoreCode, hqBatch.Select(row => row.H商品编码));
                 var toInsert = new List<StoreMultiCodeProduct>();
                 var toUpdate = new List<StoreMultiCodeProduct>();
@@ -377,11 +508,12 @@ namespace BlazorApp.Api.Services.React
                     }
 
                     var key = BuildMultiKey(productCode, multiCode);
+                    var effectiveRequest = IsSetChild(hqRow) ? setChildRequest : request;
                     if (existingRows.TryGetValue(key, out var existing))
                     {
-                        if (HasHqMultiChanges(existing, hqRow, request))
+                        if (HasHqMultiChanges(existing, hqRow, effectiveRequest))
                         {
-                            ApplyHqMultiFields(existing, hqRow, request, updatedBy, now);
+                            ApplyHqMultiFields(existing, hqRow, effectiveRequest, updatedBy, now);
                             toUpdate.Add(existing);
                         }
                         else
@@ -392,11 +524,17 @@ namespace BlazorApp.Api.Services.React
                     }
                     else
                     {
-                        toInsert.Add(BuildLocalMultiCodeProduct(hqRow, targetStoreCode, request, updatedBy, now));
+                        toInsert.Add(BuildLocalMultiCodeProduct(
+                            hqRow,
+                            targetStoreCode,
+                            effectiveRequest,
+                            updatedBy,
+                            now
+                        ));
                     }
                 }
 
-                await WriteLocalMultiBatchAsync(toInsert, toUpdate, request);
+                await WriteLocalMultiBatchAsync(toInsert, toUpdate, request, updatedBy);
                 AddMultiCounts(result, toInsert.Count, toUpdate.Count);
                 PublishProgress(result, progressCallback);
             }
@@ -1457,39 +1595,459 @@ namespace BlazorApp.Api.Services.React
             return value ?? DBNull.Value;
         }
 
+        private async Task<(
+            StorePriceTransferWriteCounts Retail,
+            StorePriceTransferWriteCounts Multi
+        )> WriteLocalHqProductGroupAsync(
+            string productCode,
+            List<DIC_商品零售价表> retailRows,
+            List<DIC_分店一品多码表> multiRows,
+            StorePriceTransferRequest request,
+            string updatedBy
+        )
+        {
+            var retailCounts = new StorePriceTransferWriteCounts();
+            var multiCounts = new StorePriceTransferWriteCounts();
+            var targetStoreCode = request.TargetStoreCode!;
+
+            await WriteLocalSetChildConsistentBatchAsync(
+                new[] { productCode },
+                targetStoreCode,
+                updatedBy,
+                async (db, _) =>
+                {
+                    // 锁内读取关系和投影，保证父成本、多码字段及统一重算看到同一组状态。
+                    var activeSetChildren = await db.Queryable<ProductSetCode>()
+                        .Where(row =>
+                            row.ProductCode == productCode
+                            && row.SetProductCode != null
+                            && (row.SetType == 1 || row.SetType == 2)
+                            && row.IsActive
+                            && !row.IsDeleted
+                        )
+                        .ToListAsync();
+                    var setChildCodes = NormalizeCodes(
+                        activeSetChildren.Select(row => row.SetProductCode)
+                    ).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var now = DateTime.UtcNow;
+
+                    var currentRetailRows = await db.Queryable<StoreRetailPrice>()
+                        .Where(row =>
+                            row.StoreCode == targetStoreCode
+                            && row.ProductCode == productCode
+                        )
+                        .ToListAsync();
+                    var currentRetail = currentRetailRows.FirstOrDefault(row => !row.IsDeleted);
+                    var hasRetailTombstone = currentRetailRows.Any(row => row.IsDeleted);
+                    foreach (var source in retailRows)
+                    {
+                        if (currentRetail == null)
+                        {
+                            if (hasRetailTombstone)
+                            {
+                                throw new InvalidOperationException(
+                                    $"门店父价格存在软删除墓碑，禁止重新创建: {targetStoreCode}/{productCode}"
+                                );
+                            }
+                            currentRetail = BuildLocalRetailPrice(
+                                source,
+                                targetStoreCode,
+                                request,
+                                updatedBy,
+                                now
+                            );
+                            if (await db.Insertable(currentRetail).ExecuteCommandAsync() != 1)
+                            {
+                                throw new InvalidOperationException($"门店父价格写入失败: {productCode}");
+                            }
+                            retailCounts.Inserted++;
+                            continue;
+                        }
+
+                        if (!HasHqRetailChanges(currentRetail, source, request))
+                        {
+                            retailCounts.Skipped++;
+                            continue;
+                        }
+
+                        ApplyHqRetailFields(currentRetail, source, request, updatedBy, now);
+                        var retailUpdate = db.Updateable<StoreRetailPrice>()
+                            .Where(row => row.UUID == currentRetail.UUID && !row.IsDeleted);
+                        if (request.SyncPurchasePrice)
+                            retailUpdate = retailUpdate.SetColumns(row =>
+                                row.PurchasePrice == currentRetail.PurchasePrice
+                            );
+                        if (request.SyncRetailPrice)
+                            retailUpdate = retailUpdate.SetColumns(row =>
+                                row.StoreRetailPriceValue == currentRetail.StoreRetailPriceValue
+                            );
+                        if (request.SyncDiscountRate)
+                            retailUpdate = retailUpdate.SetColumns(row =>
+                                row.DiscountRate == currentRetail.DiscountRate
+                            );
+                        if (request.SyncIsAutoPricing)
+                            retailUpdate = retailUpdate.SetColumns(row =>
+                                row.IsAutoPricing == currentRetail.IsAutoPricing
+                            );
+                        if (request.SyncIsSpecialProduct)
+                            retailUpdate = retailUpdate.SetColumns(row =>
+                                row.IsSpecialProduct == currentRetail.IsSpecialProduct
+                            );
+                        var retailAffected = await retailUpdate
+                            .SetColumns(row => row.UpdatedAt == currentRetail.UpdatedAt)
+                            .SetColumns(row => row.UpdatedBy == currentRetail.UpdatedBy)
+                            .ExecuteCommandAsync();
+                        if (retailAffected != 1)
+                        {
+                            throw new InvalidOperationException($"门店父价格写入失败: {productCode}");
+                        }
+                        retailCounts.Updated++;
+                    }
+
+                    var currentMultiRows = await db.Queryable<StoreMultiCodeProduct>()
+                        .Where(row =>
+                            row.StoreCode == targetStoreCode
+                            && row.ProductCode == productCode
+                        )
+                        .ToListAsync();
+                    var multiTombstoneKeys = currentMultiRows
+                        .Where(row => row.IsDeleted && !string.IsNullOrWhiteSpace(row.MultiCodeProductCode))
+                        .Select(row => BuildMultiKey(productCode, row.MultiCodeProductCode!))
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var currentMultiByKey = new Dictionary<string, StoreMultiCodeProduct>(
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                    foreach (var row in currentMultiRows.Where(row => !row.IsDeleted))
+                    {
+                        var childCode = NormalizeCode(row.MultiCodeProductCode);
+                        if (childCode != null)
+                        {
+                            currentMultiByKey.TryAdd(
+                                BuildMultiKey(productCode, childCode),
+                                row
+                            );
+                        }
+                    }
+
+                    var withoutPurchasePrice = WithoutPurchasePrice(request);
+                    foreach (var source in multiRows)
+                    {
+                        var childCode = NormalizeCode(source.H多码商品编码);
+                        if (childCode == null)
+                        {
+                            multiCounts.Skipped++;
+                            continue;
+                        }
+
+                        var key = BuildMultiKey(productCode, childCode);
+                        var effectiveRequest = setChildCodes.Contains(childCode)
+                            ? withoutPurchasePrice
+                            : request;
+                        if (!currentMultiByKey.TryGetValue(key, out var currentMulti))
+                        {
+                            if (multiTombstoneKeys.Contains(key))
+                            {
+                                throw new InvalidOperationException(
+                                    $"门店多码存在软删除墓碑，禁止重新创建: {targetStoreCode}/{productCode}/{childCode}"
+                                );
+                            }
+                            currentMulti = BuildLocalMultiCodeProduct(
+                                source,
+                                targetStoreCode,
+                                effectiveRequest,
+                                updatedBy,
+                                now
+                            );
+                            if (await db.Insertable(currentMulti).ExecuteCommandAsync() != 1)
+                            {
+                                throw new InvalidOperationException(
+                                    $"门店多码价格写入失败: {productCode}/{childCode}"
+                                );
+                            }
+                            currentMultiByKey[key] = currentMulti;
+                            multiCounts.Inserted++;
+                            continue;
+                        }
+
+                        if (!HasHqMultiChanges(currentMulti, source, effectiveRequest))
+                        {
+                            multiCounts.Skipped++;
+                            continue;
+                        }
+
+                        ApplyHqMultiFields(
+                            currentMulti,
+                            source,
+                            effectiveRequest,
+                            updatedBy,
+                            now
+                        );
+                        var multiUpdate = db.Updateable<StoreMultiCodeProduct>()
+                            .Where(row => row.UUID == currentMulti.UUID && !row.IsDeleted);
+                        if (effectiveRequest.SyncPurchasePrice)
+                            multiUpdate = multiUpdate.SetColumns(row =>
+                                row.PurchasePrice == currentMulti.PurchasePrice
+                            );
+                        if (effectiveRequest.SyncRetailPrice)
+                            multiUpdate = multiUpdate.SetColumns(row =>
+                                row.MultiCodeRetailPrice == currentMulti.MultiCodeRetailPrice
+                            );
+                        if (effectiveRequest.SyncDiscountRate)
+                            multiUpdate = multiUpdate.SetColumns(row =>
+                                row.DiscountRate == currentMulti.DiscountRate
+                            );
+                        if (effectiveRequest.SyncIsAutoPricing)
+                            multiUpdate = multiUpdate.SetColumns(row =>
+                                row.IsAutoPricing == currentMulti.IsAutoPricing
+                            );
+                        if (effectiveRequest.SyncIsSpecialProduct)
+                            multiUpdate = multiUpdate.SetColumns(row =>
+                                row.IsSpecialProduct == currentMulti.IsSpecialProduct
+                            );
+                        var multiAffected = await multiUpdate
+                            .SetColumns(row => row.UpdatedAt == currentMulti.UpdatedAt)
+                            .SetColumns(row => row.UpdatedBy == currentMulti.UpdatedBy)
+                            .ExecuteCommandAsync();
+                        if (multiAffected != 1)
+                        {
+                            throw new InvalidOperationException(
+                                $"门店多码价格写入失败: {productCode}/{childCode}"
+                            );
+                        }
+                        multiCounts.Updated++;
+                    }
+                }
+            );
+
+            return (retailCounts, multiCounts);
+        }
+
         private async Task WriteLocalRetailBatchAsync(
             List<StoreRetailPrice> toInsert,
             List<StoreRetailPrice> toUpdate,
-            StorePriceTransferRequest request
+            StorePriceTransferRequest request,
+            string updatedBy
         )
         {
-            foreach (var batch in toInsert.Chunk(WriteBatchSize))
+            var desiredRows = toInsert.Concat(toUpdate).ToList();
+            foreach (var batch in desiredRows.Chunk(WriteBatchSize))
             {
-                await ExecuteInTransactionAsync(_localContext.Db, db => db.Insertable(batch.ToList()).ExecuteCommandAsync());
-            }
+                await WriteLocalSetChildConsistentBatchAsync(
+                    batch.Select(row => row.ProductCode),
+                    batch.First().StoreCode!,
+                    updatedBy,
+                    async (db, _) =>
+                    {
+                        var rows = batch.ToList();
+                        var productCodes = NormalizeCodes(rows.Select(row => row.ProductCode));
+                        var currentRows = await db.Queryable<StoreRetailPrice>()
+                            .Where(row =>
+                                row.StoreCode == rows[0].StoreCode
+                                && row.ProductCode != null
+                                && productCodes.Contains(row.ProductCode!)
+                            )
+                            .ToListAsync();
+                        var retailTombstoneProductCodes = currentRows
+                            .Where(row => row.IsDeleted && !string.IsNullOrWhiteSpace(row.ProductCode))
+                            .Select(row => row.ProductCode!)
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        var currentByProduct = currentRows
+                            .Where(row => !row.IsDeleted)
+                            .ToDictionary(
+                            row => row.ProductCode!,
+                            StringComparer.OrdinalIgnoreCase
+                        );
 
-            foreach (var batch in toUpdate.Chunk(WriteBatchSize))
-            {
-                var updateColumns = BuildLocalRetailUpdateColumns(request);
-                await ExecuteInTransactionAsync(_localContext.Db, db => db.Updateable(batch.ToList()).UpdateColumns(updateColumns).ExecuteCommandAsync());
+                        foreach (var desired in rows)
+                        {
+                            if (!currentByProduct.TryGetValue(desired.ProductCode!, out var current))
+                            {
+                                if (retailTombstoneProductCodes.Contains(desired.ProductCode!))
+                                {
+                                    throw new InvalidOperationException(
+                                        $"门店父价格存在软删除墓碑，禁止重新创建: {rows[0].StoreCode}/{desired.ProductCode}"
+                                    );
+                                }
+                                await db.Insertable(desired).ExecuteCommandAsync();
+                                continue;
+                            }
+
+                            var update = db.Updateable<StoreRetailPrice>()
+                                .Where(row => row.UUID == current.UUID && !row.IsDeleted);
+                            if (request.SyncPurchasePrice)
+                                update = update.SetColumns(row => row.PurchasePrice == desired.PurchasePrice);
+                            if (request.SyncRetailPrice)
+                                update = update.SetColumns(row =>
+                                    row.StoreRetailPriceValue == desired.StoreRetailPriceValue
+                                );
+                            if (request.SyncDiscountRate)
+                                update = update.SetColumns(row => row.DiscountRate == desired.DiscountRate);
+                            if (request.SyncIsAutoPricing)
+                                update = update.SetColumns(row => row.IsAutoPricing == desired.IsAutoPricing);
+                            if (request.SyncIsSpecialProduct)
+                                update = update.SetColumns(row => row.IsSpecialProduct == desired.IsSpecialProduct);
+                            await update
+                                .SetColumns(row => row.UpdatedAt == desired.UpdatedAt)
+                                .SetColumns(row => row.UpdatedBy == desired.UpdatedBy)
+                                .ExecuteCommandAsync();
+                        }
+                    },
+                    // 多码关系随后会在同一轮同步写入；必须等关系就绪再重算子项成本。
+                    recalculateSetChildren: !request.SyncMultiCodePrices
+                );
             }
         }
 
         private async Task WriteLocalMultiBatchAsync(
             List<StoreMultiCodeProduct> toInsert,
             List<StoreMultiCodeProduct> toUpdate,
-            StorePriceTransferRequest request
+            StorePriceTransferRequest request,
+            string updatedBy
         )
         {
-            foreach (var batch in toInsert.Chunk(WriteBatchSize))
+            var desiredRows = toInsert.Concat(toUpdate).ToList();
+            foreach (var batch in desiredRows.Chunk(WriteBatchSize))
             {
-                await ExecuteInTransactionAsync(_localContext.Db, db => db.Insertable(batch.ToList()).ExecuteCommandAsync());
+                await WriteLocalSetChildConsistentBatchAsync(
+                    batch.Select(row => row.ProductCode),
+                    batch.First().StoreCode!,
+                    updatedBy,
+                    async (db, _) =>
+                    {
+                        var rows = batch.ToList();
+                        var productCodes = NormalizeCodes(rows.Select(row => row.ProductCode));
+                        var activeSetChildren = await db.Queryable<ProductSetCode>()
+                            .Where(row =>
+                                row.ProductCode != null
+                                && productCodes.Contains(row.ProductCode!)
+                                && (row.SetType == 1 || row.SetType == 2)
+                                && row.IsActive
+                                && !row.IsDeleted
+                            )
+                            .ToListAsync();
+                        var setChildKeys = activeSetChildren
+                            .Where(row =>
+                                !string.IsNullOrWhiteSpace(row.ProductCode)
+                                && !string.IsNullOrWhiteSpace(row.SetProductCode)
+                            )
+                            .Select(row => BuildMultiKey(row.ProductCode!, row.SetProductCode!))
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        var currentRows = await db.Queryable<StoreMultiCodeProduct>()
+                            .Where(row =>
+                                row.StoreCode == rows[0].StoreCode
+                                && row.ProductCode != null
+                                && productCodes.Contains(row.ProductCode!)
+                            )
+                            .ToListAsync();
+                        var multiTombstoneKeys = currentRows
+                            .Where(row =>
+                                row.IsDeleted
+                                && !string.IsNullOrWhiteSpace(row.ProductCode)
+                                && !string.IsNullOrWhiteSpace(row.MultiCodeProductCode)
+                            )
+                            .Select(row => BuildMultiKey(row.ProductCode!, row.MultiCodeProductCode!))
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        var currentByKey = currentRows
+                            .Where(row => !row.IsDeleted)
+                            .ToDictionary(
+                            row => BuildMultiKey(row.ProductCode!, row.MultiCodeProductCode!),
+                            StringComparer.OrdinalIgnoreCase
+                        );
+
+                        foreach (var desired in rows)
+                        {
+                            var key = BuildMultiKey(
+                                desired.ProductCode!,
+                                desired.MultiCodeProductCode!
+                            );
+                            var isSetChild = setChildKeys.Contains(key);
+                            if (!currentByKey.TryGetValue(key, out var current))
+                            {
+                                if (multiTombstoneKeys.Contains(key))
+                                {
+                                    throw new InvalidOperationException(
+                                        $"门店多码存在软删除墓碑，禁止重新创建: {rows[0].StoreCode}/{desired.ProductCode}/{desired.MultiCodeProductCode}"
+                                    );
+                                }
+                                if (isSetChild)
+                                {
+                                    // 两类套装子项最终成本只能由同一事务内的统一重算写入。
+                                    desired.PurchasePrice = null;
+                                }
+                                await db.Insertable(desired).ExecuteCommandAsync();
+                                continue;
+                            }
+
+                            var update = db.Updateable<StoreMultiCodeProduct>()
+                                .Where(row => row.UUID == current.UUID && !row.IsDeleted);
+                            if (request.SyncPurchasePrice && !isSetChild)
+                                update = update.SetColumns(row => row.PurchasePrice == desired.PurchasePrice);
+                            if (request.SyncRetailPrice)
+                                update = update.SetColumns(row =>
+                                    row.MultiCodeRetailPrice == desired.MultiCodeRetailPrice
+                                );
+                            if (request.SyncDiscountRate)
+                                update = update.SetColumns(row => row.DiscountRate == desired.DiscountRate);
+                            if (request.SyncIsAutoPricing)
+                                update = update.SetColumns(row => row.IsAutoPricing == desired.IsAutoPricing);
+                            if (request.SyncIsSpecialProduct)
+                                update = update.SetColumns(row => row.IsSpecialProduct == desired.IsSpecialProduct);
+                            await update
+                                .SetColumns(row => row.UpdatedAt == desired.UpdatedAt)
+                                .SetColumns(row => row.UpdatedBy == desired.UpdatedBy)
+                                .ExecuteCommandAsync();
+                        }
+                    }
+                );
+            }
+        }
+
+        private async Task WriteLocalSetChildConsistentBatchAsync(
+            IEnumerable<string?> productCodes,
+            string storeCode,
+            string updatedBy,
+            Func<ISqlSugarClient, SetChildPurchasePriceLockScope, Task> writeAsync,
+            bool recalculateSetChildren = true
+        )
+        {
+            var normalizedProductCodes = NormalizeCodes(productCodes);
+            if (normalizedProductCodes.Count == 0 || string.IsNullOrWhiteSpace(storeCode))
+            {
+                return;
             }
 
-            foreach (var batch in toUpdate.Chunk(WriteBatchSize))
+            var db = _localContext.Db;
+            await db.Ado.BeginTranAsync();
+            try
             {
-                var updateColumns = BuildLocalMultiUpdateColumns(request);
-                await ExecuteInTransactionAsync(_localContext.Db, db => db.Updateable(batch.ToList()).UpdateColumns(updateColumns).ExecuteCommandAsync());
+                var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                    db,
+                    normalizedProductCodes
+                );
+                // 锁后重新读取并仅写入同步字段，避免锁前实体覆盖并发写入。
+                await writeAsync(db, lockScope);
+                if (recalculateSetChildren)
+                {
+                    var writeback = await new SetChildPurchasePriceService(db)
+                        .RecalculateStoresLockedAsync(
+                            lockScope,
+                            normalizedProductCodes,
+                            new[] { storeCode },
+                            updatedBy
+                        );
+                    if (writeback.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                    {
+                        throw new InvalidOperationException(
+                            writeback.Errors.FirstOrDefault()?.Reason ?? "目标套装组无法重算"
+                        );
+                    }
+                }
+                await db.Ado.CommitTranAsync();
+            }
+            catch
+            {
+                await db.Ado.RollbackTranAsync();
+                throw;
             }
         }
 
@@ -1594,6 +2152,22 @@ namespace BlazorApp.Api.Services.React
             if (request.SyncIsSpecialProduct) columns.Add(nameof(DIC_分店一品多码表.H是否特殊商品));
             return columns.ToArray();
         }
+
+        private static StorePriceTransferRequest WithoutPurchasePrice(
+            StorePriceTransferRequest request
+        ) => new()
+        {
+            Direction = request.Direction,
+            SourceStoreCode = request.SourceStoreCode,
+            TargetStoreCode = request.TargetStoreCode,
+            SyncRetailPrices = request.SyncRetailPrices,
+            SyncMultiCodePrices = request.SyncMultiCodePrices,
+            SyncPurchasePrice = false,
+            SyncRetailPrice = request.SyncRetailPrice,
+            SyncDiscountRate = request.SyncDiscountRate,
+            SyncIsAutoPricing = request.SyncIsAutoPricing,
+            SyncIsSpecialProduct = request.SyncIsSpecialProduct,
+        };
 
         private static async Task ExecuteInTransactionAsync(
             ISqlSugarClient db,

@@ -689,7 +689,38 @@ namespace BlazorApp.Api.Services.React
                     IsDeleted = false,
                 };
 
-                await db.Insertable(entity).ExecuteCommandAsync();
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        db,
+                        new[] { dto.ProductCode }
+                    );
+                    // 业务锁后复读主商品，避免等待锁时套装关系或商品状态发生变化。
+                    if (
+                        !await db.Queryable<Product>()
+                            .Where(x => x.ProductCode == dto.ProductCode && !x.IsDeleted)
+                            .AnyAsync()
+                    )
+                    {
+                        throw new InvalidOperationException("商品在等待业务锁期间已失效");
+                    }
+                    await db.Insertable(entity).ExecuteCommandAsync();
+                    var writeback = await new SetChildPurchasePriceService(db).RecalculateStoresLockedAsync(
+                        lockScope,
+                        new[] { entity.ProductCode },
+                        new[] { entity.StoreCode! },
+                        createdBy
+                    );
+                    if (writeback.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                        throw new InvalidOperationException("目标门店套装子项成本重算不完整");
+                    await db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
 
                 var detail = await GetByUuidAsync(entity.UUID);
                 if (!detail.Success)
@@ -699,6 +730,8 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "创建失败");
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                    return BuildSetChildPurchasePriceBusyResponse<StoreRetailPriceDetailDto>();
                 return ApiResponse<StoreRetailPriceDetailDto>.Error("创建失败", "CREATE_ERROR");
             }
         }
@@ -718,22 +751,63 @@ namespace BlazorApp.Api.Services.React
                 if (entity == null)
                     return ApiResponse<StoreRetailPriceDetailDto>.Error("数据不存在", "NOT_FOUND");
 
-                if (string.IsNullOrWhiteSpace(entity.StoreProductCode))
-                    entity.StoreProductCode = UuidHelper.GenerateUuid7();
-                if (dto.PurchasePrice.HasValue)
-                    entity.PurchasePrice = dto.PurchasePrice;
-                if (dto.StoreRetailPriceValue.HasValue)
-                    entity.StoreRetailPriceValue = dto.StoreRetailPriceValue;
-                if (dto.DiscountRate.HasValue)
-                    entity.DiscountRate = dto.DiscountRate;
-                if (dto.IsActive.HasValue)
-                    entity.IsActive = dto.IsActive.Value;
-                if (dto.IsAutoPricing.HasValue)
-                    entity.IsAutoPricing = dto.IsAutoPricing.Value;
-                entity.UpdatedAt = DateTime.UtcNow;
-                entity.UpdatedBy = updatedBy;
+                var expectedProductCode = entity.ProductCode;
+                var expectedStoreCode = entity.StoreCode;
+                if (string.IsNullOrWhiteSpace(expectedProductCode) || string.IsNullOrWhiteSpace(expectedStoreCode))
+                    return ApiResponse<StoreRetailPriceDetailDto>.Error("记录缺少门店或商品编码", "DATA_ERROR");
 
-                await db.Updateable(entity).ExecuteCommandAsync();
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        db,
+                        new[] { expectedProductCode }
+                    );
+                    // 锁内复读并验证业务键，禁止把锁前实体整行回写。
+                    entity = await db.Queryable<StoreRetailPrice>()
+                        .Where(x => x.UUID == uuid && !x.IsDeleted)
+                        .FirstAsync();
+                    if (
+                        entity == null
+                        || !string.Equals(entity.ProductCode, expectedProductCode, StringComparison.Ordinal)
+                        || !string.Equals(entity.StoreCode, expectedStoreCode, StringComparison.Ordinal)
+                    )
+                        throw new InvalidOperationException("门店价格记录在等待业务锁期间已变更");
+
+                    var update = db.Updateable<StoreRetailPrice>()
+                        .Where(x => x.UUID == uuid && !x.IsDeleted);
+                    if (dto.PurchasePrice.HasValue)
+                        update = update.SetColumns(x => x.PurchasePrice == dto.PurchasePrice.Value);
+                    if (dto.StoreRetailPriceValue.HasValue)
+                        update = update.SetColumns(x => x.StoreRetailPriceValue == dto.StoreRetailPriceValue.Value);
+                    if (dto.DiscountRate.HasValue)
+                        update = update.SetColumns(x => x.DiscountRate == dto.DiscountRate.Value);
+                    if (dto.IsActive.HasValue)
+                        update = update.SetColumns(x => x.IsActive == dto.IsActive.Value);
+                    if (dto.IsAutoPricing.HasValue)
+                        update = update.SetColumns(x => x.IsAutoPricing == dto.IsAutoPricing.Value);
+                    if (string.IsNullOrWhiteSpace(entity.StoreProductCode))
+                        update = update.SetColumns(x => x.StoreProductCode == UuidHelper.GenerateUuid7());
+                    await update
+                        .SetColumns(x => x.UpdatedAt == DateTime.UtcNow)
+                        .SetColumns(x => x.UpdatedBy == updatedBy)
+                        .ExecuteCommandAsync();
+
+                    var writeback = await new SetChildPurchasePriceService(db).RecalculateStoresLockedAsync(
+                        lockScope,
+                        new[] { expectedProductCode },
+                        new[] { expectedStoreCode },
+                        updatedBy
+                    );
+                    if (writeback.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                        throw new InvalidOperationException("目标门店套装子项成本重算不完整");
+                    await db.Ado.CommitTranAsync();
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
 
                 var detail = await GetByUuidAsync(entity.UUID);
                 if (!detail.Success)
@@ -743,6 +817,8 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新失败");
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                    return BuildSetChildPurchasePriceBusyResponse<StoreRetailPriceDetailDto>();
                 return ApiResponse<StoreRetailPriceDetailDto>.Error("更新失败", "UPDATE_ERROR");
             }
         }
@@ -751,15 +827,55 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
-                var result = await _storeRetailPriceRepository.SoftDeleteByUuidAsync(
-                    uuid,
-                    updatedBy
-                );
-                return ApiResponse<bool>.OK(result > 0, result > 0 ? "删除成功" : "未找到数据");
+                var db = _context.Db;
+                var entity = await db.Queryable<StoreRetailPrice>()
+                    .Where(x => x.UUID == uuid && !x.IsDeleted)
+                    .FirstAsync();
+                if (entity == null || string.IsNullOrWhiteSpace(entity.ProductCode) || string.IsNullOrWhiteSpace(entity.StoreCode))
+                    return ApiResponse<bool>.OK(false, "未找到数据");
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        db,
+                        new[] { entity.ProductCode }
+                    );
+                    entity = await db.Queryable<StoreRetailPrice>()
+                        .Where(x => x.UUID == uuid && !x.IsDeleted)
+                        .FirstAsync();
+                    if (entity == null || string.IsNullOrWhiteSpace(entity.ProductCode) || string.IsNullOrWhiteSpace(entity.StoreCode))
+                        throw new InvalidOperationException("门店价格记录在等待业务锁期间已变更");
+                    var result = await db.Updateable<StoreRetailPrice>()
+                        .SetColumns(x => x.IsDeleted == true)
+                        .SetColumns(x => x.UpdatedAt == DateTime.UtcNow)
+                        .SetColumns(x => x.UpdatedBy == updatedBy)
+                        .Where(x => x.UUID == uuid && !x.IsDeleted)
+                        .ExecuteCommandAsync();
+                    var writeback = await new SetChildPurchasePriceService(db).RecalculateStoresLockedAsync(
+                        lockScope,
+                        new[] { entity.ProductCode },
+                        new[] { entity.StoreCode },
+                        updatedBy
+                    );
+                    if (writeback.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                        throw new InvalidOperationException("目标门店套装子项成本重算不完整");
+                    await db.Ado.CommitTranAsync();
+                    return ApiResponse<bool>.OK(
+                        result > 0,
+                        result > 0 ? "删除成功" : "未找到数据"
+                    );
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "删除失败");
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                    return BuildSetChildPurchasePriceBusyResponse<bool>();
                 return ApiResponse<bool>.Error("删除失败", "DELETE_ERROR");
             }
         }
@@ -781,43 +897,139 @@ namespace BlazorApp.Api.Services.React
                     $"BatchUpsertAsync 开始, 操作人: {updatedBy}, 数据条数: {items.Count}"
                 );
 
+                var uuids = items
+                    .Select(it => it.UUID)
+                    .Where(u => !string.IsNullOrWhiteSpace(u))
+                    .Select(u => u!.Trim())
+                    .Distinct()
+                    .ToList();
+                var storeCodes = items
+                    .Select(it => it.StoreCode)
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Select(s => s!.Trim())
+                    .Distinct()
+                    .ToList();
+                var productCodes = items
+                    .Select(it => it.ProductCode)
+                    .Where(p => !string.IsNullOrWhiteSpace(p))
+                    .Select(p => p!.Trim())
+                    .Distinct()
+                    .ToList();
+                var requestedKeys = items
+                    .Where(it =>
+                        !string.IsNullOrWhiteSpace(it.StoreCode)
+                        && !string.IsNullOrWhiteSpace(it.ProductCode)
+                    )
+                    .Select(it => $"{it.StoreCode!.Trim()}|{it.ProductCode!.Trim()}")
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                // 事务外 UUID 解析仅用于确定完整产品锁集合，锁内还会复读并核对归属。
+                var preflightUuidRows = uuids.Count == 0
+                    ? new List<StoreRetailPrice>()
+                    : await db.Queryable<StoreRetailPrice>()
+                        .Where(x => x.UUID != null && uuids.Contains(x.UUID) && !x.IsDeleted)
+                        .Select(x => new StoreRetailPrice
+                        {
+                            UUID = x.UUID,
+                            StoreCode = x.StoreCode,
+                            ProductCode = x.ProductCode,
+                        })
+                        .ToListAsync();
+                var preflightByUuid = preflightUuidRows
+                    .Where(x => !string.IsNullOrWhiteSpace(x.UUID))
+                    .ToDictionary(x => x.UUID!);
+                var lockProductCodes = productCodes
+                    .Concat(
+                        preflightUuidRows
+                            .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                            .Select(x => x.ProductCode!)
+                    )
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (lockProductCodes.Count == 0)
+                {
+                    return ApiResponse<BatchResultDto>.Error(
+                        "批量保存缺少可锁定的商品编码",
+                        "VALIDATION_ERROR"
+                    );
+                }
+
                 await db.Ado.BeginTranAsync();
                 try
                 {
-                    var uuids = items
-                        .Select(it => it.UUID)
-                        .Where(u => !string.IsNullOrWhiteSpace(u))
-                        .Select(u => u!.Trim())
-                        .Distinct()
-                        .ToList();
-                    var storeCodes = items
-                        .Select(it => it.StoreCode)
-                        .Where(s => !string.IsNullOrWhiteSpace(s))
-                        .Select(s => s!.Trim())
-                        .Distinct()
-                        .ToList();
-                    var productCodes = items
-                        .Select(it => it.ProductCode)
-                        .Where(p => !string.IsNullOrWhiteSpace(p))
-                        .Select(p => p!.Trim())
-                        .Distinct()
-                        .ToList();
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        db,
+                        lockProductCodes
+                    );
 
                     _logger.LogInformation(
                         $"查询条件 - UUIDs: {uuids.Count}, StoreCodes: {string.Join(",", storeCodes)}, ProductCodes: {string.Join(",", productCodes)}"
                     );
 
-                    var q = _storeRetailPriceRepository.QueryActive();
-                    if (uuids.Any())
-                        q = q.Where(x => x.UUID != null && uuids.Contains(x.UUID));
+                    var existing = uuids.Count == 0
+                        ? new List<StoreRetailPrice>()
+                        : await _storeRetailPriceRepository.QueryActive()
+                            .Where(x => x.UUID != null && uuids.Contains(x.UUID))
+                            .ToListAsync();
                     if (storeCodes.Any() && productCodes.Any())
-                        q = q.Where(x =>
-                            x.StoreCode != null
-                            && storeCodes.Contains(x.StoreCode)
-                            && x.ProductCode != null
-                            && productCodes.Contains(x.ProductCode)
+                    {
+                        var keyRows = await _storeRetailPriceRepository.QueryActive()
+                            .Where(x =>
+                                x.StoreCode != null
+                                && storeCodes.Contains(x.StoreCode)
+                                && x.ProductCode != null
+                                && productCodes.Contains(x.ProductCode)
+                            )
+                            .ToListAsync();
+                        existing.AddRange(
+                            keyRows.Where(row =>
+                                requestedKeys.Contains($"{row.StoreCode}|{row.ProductCode}")
+                            )
                         );
-                    var existing = await q.ToListAsync();
+                    }
+                    existing = existing
+                        .GroupBy(x =>
+                            !string.IsNullOrWhiteSpace(x.UUID)
+                                ? $"UUID:{x.UUID}"
+                                : $"KEY:{x.StoreCode}|{x.ProductCode}"
+                        )
+                        .Select(group => group.First())
+                        .ToList();
+                    foreach (var uuid in uuids)
+                    {
+                        preflightByUuid.TryGetValue(uuid, out var expected);
+                        var current = existing.FirstOrDefault(x => x.UUID == uuid);
+                        if (
+                            (expected == null) != (current == null)
+                            || (
+                                expected != null
+                                && current != null
+                                && (
+                                    !string.Equals(
+                                        expected.ProductCode?.Trim(),
+                                        current.ProductCode?.Trim(),
+                                        StringComparison.OrdinalIgnoreCase
+                                    )
+                                    || !string.Equals(
+                                        expected.StoreCode?.Trim(),
+                                        current.StoreCode?.Trim(),
+                                        StringComparison.OrdinalIgnoreCase
+                                    )
+                                )
+                            )
+                        )
+                        {
+                            throw new InvalidOperationException(
+                                $"分店价格记录 {uuid} 在等待业务锁期间归属发生变化，请重试"
+                            );
+                        }
+                    }
+                    lockScope.EnsureCovers(
+                        db,
+                        existing
+                            .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                            .Select(x => x.ProductCode!)
+                            .Concat(productCodes)
+                    );
                     _logger.LogInformation($"查询到现有记录: {existing.Count} 条");
 
                     var byUuid = existing
@@ -925,8 +1137,38 @@ namespace BlazorApp.Api.Services.React
                     }
                     if (updateList.Any())
                     {
-                        var updated = await db.Updateable(updateList).ExecuteCommandAsync();
+                        var updated = await db.Updateable(updateList)
+                            .UpdateColumns(x => new
+                            {
+                                x.StoreProductCode,
+                                x.PurchasePrice,
+                                x.StoreRetailPriceValue,
+                                x.DiscountRate,
+                                x.IsActive,
+                                x.IsAutoPricing,
+                                x.UpdatedAt,
+                                x.UpdatedBy,
+                            })
+                            .ExecuteCommandAsync();
                         _logger.LogInformation($"更新完成: {updated} 条");
+                    }
+                    var affectedRows = insertList
+                        .Concat(updateList)
+                        .Where(x =>
+                            !string.IsNullOrWhiteSpace(x.ProductCode)
+                            && !string.IsNullOrWhiteSpace(x.StoreCode)
+                        )
+                        .ToList();
+                    if (affectedRows.Count > 0)
+                    {
+                        var writeback = await new SetChildPurchasePriceService(db)
+                            .RecalculateStoreGroupsLockedAsync(
+                            lockScope,
+                            affectedRows.Select(x => (x.StoreCode, x.ProductCode)),
+                            updatedBy
+                        );
+                        if (writeback.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                            throw new InvalidOperationException("目标门店套装子项成本重算不完整");
                     }
                     await db.Ado.CommitTranAsync();
                     _logger.LogInformation("事务提交成功");
@@ -944,6 +1186,8 @@ namespace BlazorApp.Api.Services.React
                 {
                     await db.Ado.RollbackTranAsync();
                     _logger.LogError(ex, "批量保存事务失败, 事务已回滚");
+                    if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                        return BuildSetChildPurchasePriceBusyResponse<BatchResultDto>();
                     return ApiResponse<BatchResultDto>.Error(
                         $"批量保存失败: {ex.Message}",
                         "BATCH_UPSERT_ERROR"
@@ -953,6 +1197,8 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量保存失败");
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                    return BuildSetChildPurchasePriceBusyResponse<BatchResultDto>();
                 return ApiResponse<BatchResultDto>.Error(
                     $"批量保存失败: {ex.Message}",
                     "BATCH_UPSERT_ERROR"
@@ -965,13 +1211,119 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 var db = _context.Db;
+                var normalizedUuids = uuids
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Select(x => x.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                // 事务外 UUID 解析只用于确定完整产品锁集合，锁内仍会复读并核对业务键。
+                var preflightRows = normalizedUuids.Count == 0
+                    ? new List<StoreRetailPrice>()
+                    : await db.Queryable<StoreRetailPrice>()
+                        .Where(x =>
+                            x.UUID != null
+                            && normalizedUuids.Contains(x.UUID)
+                            && !x.IsDeleted
+                        )
+                        .Select(x => new StoreRetailPrice
+                        {
+                            UUID = x.UUID,
+                            StoreCode = x.StoreCode,
+                            ProductCode = x.ProductCode,
+                        })
+                        .ToListAsync();
+                if (preflightRows.Count == 0)
+                    return ApiResponse<bool>.OK(true, "成功删除 0 条");
+
+                var lockProductCodes = preflightRows
+                    .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                    .Select(x => x.ProductCode!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (preflightRows.Any(x => string.IsNullOrWhiteSpace(x.ProductCode)))
+                    return ApiResponse<bool>.Error(
+                        "待删除分店价格记录缺少商品编码",
+                        "BATCH_DELETE_ERROR"
+                    );
+
                 await db.Ado.BeginTranAsync();
                 try
                 {
-                    var count = await _storeRetailPriceRepository.SoftDeleteByUuidsAsync(
-                        uuids,
-                        updatedBy
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        db,
+                        lockProductCodes
                     );
+                    var affectedRows = await db.Queryable<StoreRetailPrice>()
+                        .Where(x =>
+                            x.UUID != null
+                            && normalizedUuids.Contains(x.UUID)
+                            && !x.IsDeleted
+                        )
+                        .ToListAsync();
+                    var currentByUuid = affectedRows
+                        .Where(x => !string.IsNullOrWhiteSpace(x.UUID))
+                        .ToDictionary(x => x.UUID!, StringComparer.OrdinalIgnoreCase);
+                    foreach (var expected in preflightRows)
+                    {
+                        if (
+                            string.IsNullOrWhiteSpace(expected.UUID)
+                            || !currentByUuid.TryGetValue(expected.UUID, out var current)
+                            || !string.Equals(
+                                expected.StoreCode?.Trim(),
+                                current.StoreCode?.Trim(),
+                                StringComparison.OrdinalIgnoreCase
+                            )
+                            || !string.Equals(
+                                expected.ProductCode?.Trim(),
+                                current.ProductCode?.Trim(),
+                                StringComparison.OrdinalIgnoreCase
+                            )
+                        )
+                        {
+                            throw new InvalidOperationException(
+                                $"分店价格记录 {expected.UUID} 在等待业务锁期间归属发生变化，请重试"
+                            );
+                        }
+                    }
+                    lockScope.EnsureCovers(
+                        db,
+                        affectedRows
+                            .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                            .Select(x => x.ProductCode!)
+                    );
+
+                    var count = 0;
+                    var now = DateTime.UtcNow;
+                    foreach (var row in affectedRows)
+                    {
+                        var changed = await db.Updateable<StoreRetailPrice>()
+                            .SetColumns(x => x.IsDeleted == true)
+                            .SetColumns(x => x.UpdatedAt == now)
+                            .SetColumns(x => x.UpdatedBy == updatedBy)
+                            .Where(x =>
+                                x.UUID == row.UUID
+                                && x.StoreCode == row.StoreCode
+                                && x.ProductCode == row.ProductCode
+                                && !x.IsDeleted
+                            )
+                            .ExecuteCommandAsync();
+                        if (changed != 1)
+                            throw new InvalidOperationException(
+                                $"分店价格记录 {row.UUID} 在更新时发生并发变化，请重试"
+                            );
+                        count += changed;
+                    }
+                    if (affectedRows.Count > 0)
+                    {
+                        var writeback = await new SetChildPurchasePriceService(db)
+                            .RecalculateStoreGroupsLockedAsync(
+                            lockScope,
+                            affectedRows.Select(x => (x.StoreCode, x.ProductCode)),
+                            updatedBy
+                        );
+                        if (writeback.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                            throw new InvalidOperationException("目标门店套装子项成本重算不完整");
+                    }
                     await db.Ado.CommitTranAsync();
                     return ApiResponse<bool>.OK(true, "成功删除 " + count + " 条");
                 }
@@ -979,12 +1331,16 @@ namespace BlazorApp.Api.Services.React
                 {
                     await db.Ado.RollbackTranAsync();
                     _logger.LogError(ex, "批量删除事务失败");
+                    if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                        return BuildSetChildPurchasePriceBusyResponse<bool>();
                     return ApiResponse<bool>.Error("批量删除失败", "BATCH_DELETE_ERROR");
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量删除失败");
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                    return BuildSetChildPurchasePriceBusyResponse<bool>();
                 return ApiResponse<bool>.Error("批量删除失败", "BATCH_DELETE_ERROR");
             }
         }
@@ -1064,6 +1420,9 @@ namespace BlazorApp.Api.Services.React
                 await db.Ado.BeginTranAsync();
                 try
                 {
+                    var lockScope = productCodes.Count == 0
+                        ? await SetChildPurchasePriceMutationLock.AcquireAllAsync(db)
+                        : await SetChildPurchasePriceMutationLock.AcquireProductsAsync(db, productCodes);
                     var q = _storeRetailPriceRepository.QueryActive();
 
                     if (productCodes.Any())
@@ -1083,15 +1442,25 @@ namespace BlazorApp.Api.Services.React
 
                     if (toDelete.Any())
                     {
-                        foreach (var entity in toDelete)
-                        {
-                            entity.IsDeleted = true;
-                            entity.UpdatedAt = now;
-                            entity.UpdatedBy = updatedBy;
-                        }
-
-                        deleted = await db.Updateable(toDelete).ExecuteCommandAsync();
+                        var deleteUuids = toDelete
+                            .Where(x => !string.IsNullOrWhiteSpace(x.UUID))
+                            .Select(x => x.UUID!)
+                            .ToList();
+                        deleted = await db.Updateable<StoreRetailPrice>()
+                            .SetColumns(x => x.IsDeleted == true)
+                            .SetColumns(x => x.UpdatedAt == now)
+                            .SetColumns(x => x.UpdatedBy == updatedBy)
+                            .Where(x => deleteUuids.Contains(x.UUID) && !x.IsDeleted)
+                            .ExecuteCommandAsync();
                         _logger.LogInformation($"已删除: {deleted} 条记录");
+                        var writeback = await new SetChildPurchasePriceService(db)
+                            .RecalculateStoreGroupsLockedAsync(
+                            lockScope,
+                            toDelete.Select(x => (x.StoreCode, x.ProductCode)),
+                            updatedBy
+                        );
+                        if (writeback.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                            throw new InvalidOperationException("目标门店套装子项成本重算不完整");
                     }
 
                     await db.Ado.CommitTranAsync();
@@ -1111,6 +1480,8 @@ namespace BlazorApp.Api.Services.React
                 {
                     await db.Ado.RollbackTranAsync();
                     _logger.LogError(ex, "批量删除事务失败, 事务已回滚");
+                    if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                        return BuildSetChildPurchasePriceBusyResponse<BatchResultDto>();
                     return ApiResponse<BatchResultDto>.Error(
                         $"批量删除失败: {ex.Message}",
                         "BATCH_DELETE_BY_PRODUCT_CODES_ERROR"
@@ -1120,11 +1491,21 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量删除失败");
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                    return BuildSetChildPurchasePriceBusyResponse<BatchResultDto>();
                 return ApiResponse<BatchResultDto>.Error(
                     $"批量删除失败: {ex.Message}",
                     "BATCH_DELETE_BY_PRODUCT_CODES_ERROR"
                 );
             }
+        }
+
+        private static ApiResponse<T> BuildSetChildPurchasePriceBusyResponse<T>()
+        {
+            return ApiResponse<T>.Error(
+                "套装商品正在被其他操作修改，请稍后重试",
+                SetChildPurchasePriceMutationLock.BusyErrorCode
+            );
         }
 
         private ISugarQueryable<StoreRetailPrice, Product, HBLocalSupplier, Store> ApplyText(

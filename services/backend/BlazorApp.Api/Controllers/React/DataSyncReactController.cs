@@ -1,5 +1,6 @@
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -47,7 +48,12 @@ namespace BlazorApp.Api.Controllers.React
                     _currentUserService.GetCurrentUserGuid(),
                     _currentUserService.GetCurrentUsername()
                 );
-                var result = ToSyncResult(productResult.Data, productResult.Success, productResult.Message);
+                var result = ToSyncResult(
+                    productResult.Data,
+                    productResult.Success,
+                    productResult.Message,
+                    productResult.ErrorCode
+                );
                 if (productResult.Success)
                 {
                     _logger.LogInformation(
@@ -58,7 +64,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "商品同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "商品同步完成，但存在错误"));
+                return CreateSyncFailureResult(result);
             }
             catch (Exception ex)
             {
@@ -98,7 +104,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "分店零售价同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "分店零售价同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "分店零售价同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -130,7 +136,7 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     return Ok(ApiResponse<SyncResult>.OK(result, "分店一品多码同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "分店一品多码同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "分店一品多码同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -154,7 +160,7 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     return Ok(ApiResponse<SyncResult>.OK(result, "套装多码同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "套装多码同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "套装多码同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -186,7 +192,7 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     return Ok(ApiResponse<SyncResult>.OK(result, "分店清货价同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "分店清货价同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "分店清货价同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -203,7 +209,7 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> SyncDomesticProducts()
         {
             var result = await _fullSyncService.SyncDomesticProductsFromHqAsync();
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         [HttpPost("domestic-set-products")]
@@ -211,7 +217,7 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> SyncDomesticSetProducts()
         {
             var result = await _fullSyncService.SyncDomesticSetProductsFromHqAsync();
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         [HttpPost("product-prefix-codes")]
@@ -219,7 +225,7 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> SyncProductPrefixCodes()
         {
             var result = await _fullSyncService.SyncProductPrefixCodesFromHqAsync();
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         [HttpPost("china-suppliers")]
@@ -227,7 +233,7 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> SyncChinaSuppliers()
         {
             var result = await _fullSyncService.SyncChinaSuppliersFromHqAsync();
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         [HttpPost("warehouse-categories")]
@@ -235,7 +241,7 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> SyncWarehouseCategories()
         {
             var result = await _fullSyncService.SyncWarehouseCategoriesFromHqAsync();
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         public class ContainerSyncRequest
@@ -258,7 +264,7 @@ namespace BlazorApp.Api.Controllers.React
             var result = await _fullSyncService.SyncContainerDetailsFromHqAsync(
                 request?.SelectedMasterGuids
             );
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         [HttpPost("containers")]
@@ -266,7 +272,7 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> SyncContainers()
         {
             var result = await _fullSyncService.SyncContainersFromHqAsync();
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         [HttpPost("warehouse-products")]
@@ -279,7 +285,7 @@ namespace BlazorApp.Api.Controllers.React
                 _currentUserService.GetCurrentUserGuid(),
                 _currentUserService.GetCurrentUsername()
             );
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         [HttpPost("store-local-supplier-invoices")]
@@ -287,7 +293,7 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> SyncStoreLocalSupplierInvoices()
         {
             var result = await _fullSyncService.SyncStoreLocalSupplierInvoicesFromHqAsync();
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         [HttpPost("store-local-supplier-invoice-details")]
@@ -295,7 +301,7 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> SyncStoreLocalSupplierInvoiceDetails()
         {
             var result = await _fullSyncService.SyncStoreLocalSupplierInvoiceDetailsFromHqAsync();
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         [HttpPost("store-local-supplier-invoices-all")]
@@ -304,7 +310,7 @@ namespace BlazorApp.Api.Controllers.React
         {
             var result =
                 await _fullSyncService.SyncStoreLocalSupplierInvoicesAndDetailsFromHqAsync();
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         [HttpPost("warehouse-orders")]
@@ -312,7 +318,7 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> SyncWareHouseOrders()
         {
             var result = await _fullSyncService.SyncWareHouseOrdersFromHqAsync();
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         [HttpPost("warehouse-order-details")]
@@ -320,7 +326,7 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> SyncWareHouseOrderDetails()
         {
             var result = await _fullSyncService.SyncWareHouseOrderDetailsFromHqAsync();
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         [HttpPost("warehouse-orders-all")]
@@ -328,7 +334,7 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> SyncWareHouseOrdersAll()
         {
             var result = await _fullSyncService.SyncWareHouseOrdersAllFromHqAsync();
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         [HttpPost("locations")]
@@ -336,7 +342,7 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> SyncLocations()
         {
             var result = await _fullSyncService.SyncLocationsFromHqAsync();
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         [HttpPost("product-locations")]
@@ -344,7 +350,7 @@ namespace BlazorApp.Api.Controllers.React
         public async Task<IActionResult> SyncProductLocations()
         {
             var result = await _fullSyncService.SyncProductLocationsFromHqAsync();
-            return Ok(ApiResponse<SyncResult>.OK(result, result.Message));
+            return CreateSyncResponse(result, result.Message);
         }
 
         /// <summary>
@@ -367,7 +373,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "收银用户同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "收银用户同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "收银用户同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -398,9 +404,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "商品-供应商映射表同步成功"));
                 }
-                return Ok(
-                    ApiResponse<SyncResult>.OK(result, "商品-供应商映射表同步完成，但存在错误")
-                );
+                return CreateSyncFailureResult(result, "商品-供应商映射表同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -438,8 +442,9 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "商品-供应商映射表增量同步成功"));
                 }
-                return Ok(
-                    ApiResponse<SyncResult>.OK(result, "商品-供应商映射表增量同步完成，但存在错误")
+                return CreateSyncFailureResult(
+                    result,
+                    "商品-供应商映射表增量同步完成，但存在错误"
                 );
             }
             catch (Exception ex)
@@ -478,7 +483,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "进货单增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "进货单增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "进货单增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -515,7 +520,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "货柜增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "货柜增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "货柜增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -553,7 +558,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "货柜详情增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "货柜详情增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "货柜详情增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -591,7 +596,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "仓库订单增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "仓库订单增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "仓库订单增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -621,7 +626,12 @@ namespace BlazorApp.Api.Controllers.React
                     _currentUserService.GetCurrentUserGuid(),
                     _currentUserService.GetCurrentUsername()
                 );
-                var result = ToSyncResult(productResult.Data, productResult.Success, productResult.Message);
+                var result = ToSyncResult(
+                    productResult.Data,
+                    productResult.Success,
+                    productResult.Message,
+                    productResult.ErrorCode
+                );
                 if (productResult.Success)
                 {
                     _logger.LogInformation(
@@ -631,7 +641,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "商品信息增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "商品信息增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result);
             }
             catch (Exception ex)
             {
@@ -646,13 +656,15 @@ namespace BlazorApp.Api.Controllers.React
         private static SyncResult ToSyncResult(
             HqProductSyncResult? source,
             bool success,
-            string message
+            string message,
+            string? errorCode
         )
         {
             var result = new SyncResult
             {
                 IsSuccess = success,
                 Message = message,
+                ErrorCode = errorCode,
                 StartTime = DateTime.UtcNow,
                 EndTime = DateTime.UtcNow,
                 AddedCount = source?.ProductsAdded ?? 0,
@@ -664,8 +676,63 @@ namespace BlazorApp.Api.Controllers.React
                     + (source?.ProductsUpdated ?? 0)
                     + (source?.ProductsSoftDeleted ?? 0),
             };
+            if (!success && errorCode == SetChildPurchasePriceMutationLock.BusyErrorCode)
+            {
+                result.BusyErrorCount = result.ErrorCount;
+            }
             result.Duration = TimeSpan.FromMilliseconds(source?.DurationMs ?? 0);
             return result;
+        }
+
+        private IActionResult CreateSyncResponse(SyncResult result, string successMessage)
+        {
+            return result.IsSuccess
+                ? Ok(ApiResponse<SyncResult>.OK(result, successMessage))
+                : CreateSyncFailureResult(result);
+        }
+
+        private IActionResult CreateSyncFailureResult(
+            SyncResult result,
+            string? failureMessage = null
+        )
+        {
+            result.IsSuccess = false;
+            if (result.ErrorCount <= 0)
+            {
+                result.ErrorCount = 1;
+            }
+
+            // 兼容尚未填充 BusyErrorCount 的旧服务结果，同时把计数约束在 ErrorCount 内。
+            if (
+                result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                && result.BusyErrorCount == 0
+            )
+            {
+                result.BusyErrorCount = result.ErrorCount;
+            }
+            result.BusyErrorCount = Math.Clamp(result.BusyErrorCount, 0, result.ErrorCount);
+
+            var committedCount = result.AddedCount + result.UpdatedCount + result.DeletedCount;
+            var allBusyWithoutCommit =
+                committedCount == 0
+                && result.BusyErrorCount > 0
+                && result.BusyErrorCount == result.ErrorCount;
+            var responseErrorCode = allBusyWithoutCommit
+                ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                : committedCount > 0
+                    ? "PARTIAL_FAILURE"
+                    : result.BusyErrorCount > 0 && result.BusyErrorCount < result.ErrorCount
+                        ? "SYNC_FAILED"
+                        : result.ErrorCode ?? "SYNC_FAILED";
+            var response = ApiResponse<SyncResult>.FailWithData(
+                result,
+                failureMessage ?? result.Message,
+                responseErrorCode,
+                result.Details
+            );
+
+            // 只有全部错误均为锁竞争且没有任何已提交写入时返回 409。
+            return allBusyWithoutCommit ? Conflict(response) : Ok(response);
         }
 
         /// <summary>
@@ -695,7 +762,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "分店零售价增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "分店零售价增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "分店零售价增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -734,9 +801,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "分店一品多码增量同步成功"));
                 }
-                return Ok(
-                    ApiResponse<SyncResult>.OK(result, "分店一品多码增量同步完成，但存在错误")
-                );
+                return CreateSyncFailureResult(result, "分店一品多码增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -774,7 +839,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "套装多码增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "套装多码增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "套装多码增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -813,7 +878,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "分店清货价增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "分店清货价增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "分店清货价增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -851,7 +916,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "国货商品增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "国货商品增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "国货商品增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -889,7 +954,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "国货套装增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "国货套装增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "国货套装增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -927,7 +992,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "商品前缀码增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "商品前缀码增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "商品前缀码增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -965,7 +1030,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "国内供应商增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "国内供应商增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "国内供应商增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -1003,7 +1068,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "仓库分类增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "仓库分类增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "仓库分类增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -1041,7 +1106,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "仓库商品增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "仓库商品增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "仓库商品增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -1079,7 +1144,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "进货单详情增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "进货单详情增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "进货单详情增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -1117,9 +1182,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "仓库订单详情增量同步成功"));
                 }
-                return Ok(
-                    ApiResponse<SyncResult>.OK(result, "仓库订单详情增量同步完成，但存在错误")
-                );
+                return CreateSyncFailureResult(result, "仓库订单详情增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -1156,7 +1219,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "库位增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "库位增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "库位增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -1194,7 +1257,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "商品库位增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "商品库位增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "商品库位增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -1232,7 +1295,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "收银用户增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "收银用户增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "收银用户增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -1265,7 +1328,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "商品分类同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "商品分类同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "商品分类同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -1303,7 +1366,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "商品分类增量同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "商品分类增量同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "商品分类增量同步完成，但存在错误");
             }
             catch (Exception ex)
             {
@@ -1339,7 +1402,7 @@ namespace BlazorApp.Api.Controllers.React
                     );
                     return Ok(ApiResponse<SyncResult>.OK(result, "特殊商品标记同步成功"));
                 }
-                return Ok(ApiResponse<SyncResult>.OK(result, "特殊商品标记同步完成，但存在错误"));
+                return CreateSyncFailureResult(result, "特殊商品标记同步完成，但存在错误");
             }
             catch (Exception ex)
             {

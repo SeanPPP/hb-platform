@@ -2699,7 +2699,7 @@ namespace BlazorApp.Api.Services.React
                 var db = _context.Db;
 
                 // 获取订单明细
-                var details = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                var preLockDetails = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
                     .Where(d =>
                         d.InvoiceGUID == dto.InvoiceGuid
                         && dto.DetailGuids.Contains(d.DetailGUID)
@@ -2707,7 +2707,7 @@ namespace BlazorApp.Api.Services.React
                     )
                     .ToListAsync();
 
-                if (details == null || details.Count == 0)
+                if (preLockDetails == null || preLockDetails.Count == 0)
                 {
                     return ApiResponse<UpdateToStorePricesResultDto>.Error("未找到要更新的明细记录", "NOT_FOUND");
                 }
@@ -2718,49 +2718,93 @@ namespace BlazorApp.Api.Services.React
                     .Distinct()
                     .ToList();
 
-                var productCodes = details
-                    .Where(d => d.ProductCode != null)
-                    .Select(d => d.ProductCode!)
-                    .Distinct()
+                var productCodes = preLockDetails
+                    .Where(d => !string.IsNullOrWhiteSpace(d.ProductCode))
+                    .Select(d => d.ProductCode!.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
-
-                var productsByCode = new Dictionary<string, Product>();
-                if (dto.UpdateFields.UpdatePurchasePrice && productCodes.Count > 0)
-                {
-                    productsByCode = (await db.Queryable<Product>()
-                            .Where(product =>
-                                product.ProductCode != null
-                                && productCodes.Contains(product.ProductCode)
-                                && product.IsDeleted == false
-                            )
-                            .ToListAsync())
-                        .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
-                        .GroupBy(product => product.ProductCode!)
-                        .ToDictionary(group => group.Key, group => group.First());
-                }
-
-                var allPotentialPrices = await db.Queryable<StoreRetailPrice>()
-                    .Where(sp =>
-                        sp.IsDeleted == false
-                        && sp.StoreCode != null
-                        && targetStoreCodes.Contains(sp.StoreCode)
-                        && sp.ProductCode != null
-                        && productCodes.Contains(sp.ProductCode)
-                    )
-                    .ToListAsync();
-
-                var priceDict = allPotentialPrices
-                    .GroupBy(sp => $"{sp.StoreCode}_{sp.ProductCode}")
-                    .ToDictionary(
-                        group => group.Key,
-                        group => group.First()
-                    );
+                var expectedDetailProducts = preLockDetails.ToDictionary(
+                    detail => detail.DetailGUID,
+                    detail => detail.ProductCode,
+                    StringComparer.OrdinalIgnoreCase
+                );
 
                 const int updateBatchSize = 500;
 
                 await db.Ado.BeginTranAsync();
                 try
                 {
+                    // 成本主档、关系与门店投影必须在同一把父商品业务锁下写入，锁内部会按编码排序，避免批量操作互相等待形成死锁。
+                    var lockScope = productCodes.Count == 0
+                        ? null
+                        : await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                            db,
+                            productCodes
+                        );
+                    // 业务锁内重新读取明细和两层主成本源，禁止继续使用等待锁之前的实体快照。
+                    var details = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                        .Where(d =>
+                            d.InvoiceGUID == dto.InvoiceGuid
+                            && dto.DetailGuids.Contains(d.DetailGUID)
+                            && d.IsDeleted == false
+                        )
+                        .ToListAsync();
+                    if (
+                        details.Count != preLockDetails.Count
+                        || details.Any(detail =>
+                            !expectedDetailProducts.TryGetValue(detail.DetailGUID, out var expectedCode)
+                            || !string.Equals(
+                                expectedCode?.Trim(),
+                                detail.ProductCode?.Trim(),
+                                StringComparison.OrdinalIgnoreCase
+                            )
+                        )
+                    )
+                    {
+                        throw new InvalidOperationException("等待商品锁期间进货单明细归属已变化，请重新读取后重试");
+                    }
+
+                    productCodes = details
+                        .Where(detail => !string.IsNullOrWhiteSpace(detail.ProductCode))
+                        .Select(detail => detail.ProductCode!.Trim())
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    lockScope?.EnsureCovers(db, productCodes);
+
+                    var productsByCode = new Dictionary<string, Product>(StringComparer.OrdinalIgnoreCase);
+                    if (dto.UpdateFields.UpdatePurchasePrice && productCodes.Count > 0)
+                    {
+                        productsByCode = (await db.Queryable<Product>()
+                                .Where(product =>
+                                    product.ProductCode != null
+                                    && productCodes.Contains(product.ProductCode)
+                                    && product.IsDeleted == false
+                                )
+                                .ToListAsync())
+                            .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                            .GroupBy(product => product.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+                    }
+
+                    var allPotentialPrices = await db.Queryable<StoreRetailPrice>()
+                        .Where(sp =>
+                            sp.IsDeleted == false
+                            && sp.StoreCode != null
+                            && targetStoreCodes.Contains(sp.StoreCode)
+                            && sp.ProductCode != null
+                            && productCodes.Contains(sp.ProductCode)
+                        )
+                        .ToListAsync();
+                    var priceDict = allPotentialPrices
+                        .GroupBy(
+                            sp => $"{sp.StoreCode}_{sp.ProductCode}",
+                            StringComparer.OrdinalIgnoreCase
+                        )
+                        .ToDictionary(
+                            group => group.Key,
+                            group => group.First(),
+                            StringComparer.OrdinalIgnoreCase
+                        );
                     // 同一分店商品只保留最后一次计算结果，避免重复明细把同一价格记录反复加入大批量更新。
                     var updateMap = new Dictionary<string, StorePriceUpdatePlan>();
                     var insertMap = new Dictionary<string, StoreRetailPrice>();
@@ -2937,6 +2981,24 @@ namespace BlazorApp.Api.Services.React
                         );
                     }
 
+                    if (lockScope != null && (inserts.Count > 0 || updates.Count > 0 || productUpdates.Count > 0))
+                    {
+                        var costWriteback = new SetChildPurchasePriceService(db);
+                        // 先回算全局关系，再只回算本次精确门店商品组；没有门店主成本时会回退全局主成本，仍保持投影一致。
+                        await costWriteback.RecalculateGlobalLockedAsync(
+                            lockScope,
+                            productCodes,
+                            updatedBy
+                        );
+                        await costWriteback.RecalculateStoreGroupsLockedAsync(
+                            lockScope,
+                            targetStoreCodes.SelectMany(storeCode => productCodes.Select(productCode =>
+                                (StoreCode: (string?)storeCode, ProductCode: (string?)productCode)
+                            )),
+                            updatedBy
+                        );
+                    }
+
                     if (inserts.Count == 0 && updates.Count == 0)
                     {
                         _logger.LogWarning("没有找到需要更新或新建的分店价格记录");
@@ -2968,16 +3030,34 @@ namespace BlazorApp.Api.Services.React
                 {
                     await db.Ado.RollbackTranAsync();
                     _logger.LogError(exTran, "更新到分店价格表事务失败");
-                    var msg = exTran.InnerException?.Message ?? exTran.Message ?? "更新失败";
-                    return ApiResponse<UpdateToStorePricesResultDto>.Error(msg, "UPDATE_ERROR");
+                    var isBusy = SetChildPurchasePriceMutationLock.TryResolveConflict(
+                        exTran,
+                        out var conflict
+                    );
+                    var msg = isBusy
+                        ? conflict!.Message
+                        : exTran.InnerException?.Message ?? exTran.Message ?? "更新失败";
+                    return ApiResponse<UpdateToStorePricesResultDto>.Error(
+                        msg,
+                        isBusy ? SetChildPurchasePriceMutationLock.BusyErrorCode : "UPDATE_ERROR"
+                    );
                 }
 
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新到分店价格表失败");
-                var msg = ex.InnerException?.Message ?? ex.Message ?? "更新失败";
-                return ApiResponse<UpdateToStorePricesResultDto>.Error(msg, "UPDATE_ERROR");
+                var isBusy = SetChildPurchasePriceMutationLock.TryResolveConflict(
+                    ex,
+                    out var conflict
+                );
+                var msg = isBusy
+                    ? conflict!.Message
+                    : ex.InnerException?.Message ?? ex.Message ?? "更新失败";
+                return ApiResponse<UpdateToStorePricesResultDto>.Error(
+                    msg,
+                    isBusy ? SetChildPurchasePriceMutationLock.BusyErrorCode : "UPDATE_ERROR"
+                );
             }
         }
 
@@ -4246,12 +4326,14 @@ namespace BlazorApp.Api.Services.React
             string invoiceGuid,
             List<string> detailGuids,
             string userName,
-            List<BatchExecuteNewProductProductTypeSelectionDto>? newProductProductTypeSelections = null
+            List<BatchExecuteNewProductProductTypeSelectionDto>? newProductProductTypeSelections = null,
+            List<BatchExecuteExpectedActionDto>? expectedActions = null,
+            IReadOnlyCollection<StoreLocalSupplierInvoiceDetails>? confirmedDetails = null
         )
         {
+            var result = new BatchExecuteActionsResultDto();
             try
             {
-                var result = new BatchExecuteActionsResultDto();
                 var db = _context.Db;
 
                 var selectedDetailGuids = detailGuids?
@@ -4262,6 +4344,63 @@ namespace BlazorApp.Api.Services.React
                 {
                     return ApiResponse<BatchExecuteActionsResultDto>.Error(
                         "请选择要执行的明细",
+                        "VALIDATION_ERROR"
+                    );
+                }
+
+                if (
+                    !TryBuildBatchExecuteConfirmedActionSnapshot(
+                        expectedActions,
+                        out var confirmedActionSnapshot,
+                        out var confirmedActionError
+                    )
+                )
+                {
+                    return ApiResponse<BatchExecuteActionsResultDto>.Error(
+                        confirmedActionError ?? "确认动作快照无效，请刷新后重试",
+                        "VALIDATION_ERROR"
+                    );
+                }
+                if (
+                    confirmedActionSnapshot != null
+                    && (
+                        confirmedActionSnapshot.Count != selectedDetailGuids.Count
+                        || selectedDetailGuids.Any(detailGuid =>
+                            !confirmedActionSnapshot.ContainsKey(detailGuid)
+                        )
+                    )
+                )
+                {
+                    return ApiResponse<BatchExecuteActionsResultDto>.Error(
+                        "批量执行确认已失效：确认动作与选中明细不一致，请刷新后重试",
+                        "VALIDATION_ERROR"
+                    );
+                }
+                if (
+                    !TryBuildBatchExecuteConfirmedDetailIdentitySnapshot(
+                        confirmedDetails,
+                        out var confirmedDetailIdentitySnapshot,
+                        out var confirmedDetailIdentityError
+                    )
+                )
+                {
+                    return ApiResponse<BatchExecuteActionsResultDto>.Error(
+                        confirmedDetailIdentityError ?? "确认明细快照无效，请刷新后重试",
+                        "VALIDATION_ERROR"
+                    );
+                }
+                if (
+                    confirmedDetailIdentitySnapshot != null
+                    && (
+                        confirmedDetailIdentitySnapshot.Count != selectedDetailGuids.Count
+                        || selectedDetailGuids.Any(detailGuid =>
+                            !confirmedDetailIdentitySnapshot.ContainsKey(detailGuid)
+                        )
+                    )
+                )
+                {
+                    return ApiResponse<BatchExecuteActionsResultDto>.Error(
+                        "批量执行确认已失效：确认明细与选中明细不一致，请刷新后重试",
                         "VALIDATION_ERROR"
                     );
                 }
@@ -4296,6 +4435,14 @@ namespace BlazorApp.Api.Services.React
                     );
                 }
 
+                var expectedHeaderIdentity = BuildBatchExecuteHeaderIdentity(header);
+                var expectedDetailIdentities = confirmedDetailIdentitySnapshot
+                    ?? details.ToDictionary(
+                        detail => detail.DetailGUID,
+                        BuildBatchExecuteDetailIdentity,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+
                 var newProductProductTypeSelectionErrors =
                     ValidateNewProductProductTypeSelectionContract(newProductProductTypeSelections);
                 var newProductProductTypeByDetailGuid =
@@ -4308,26 +4455,6 @@ namespace BlazorApp.Api.Services.React
                     .Distinct()
                     .ToList();
 
-                var productItemNumbers = new Dictionary<string, string>();
-                if (productCodes.Count > 0)
-                {
-                    var products = await db.Queryable<Product>()
-                        .Where(x => productCodes.Contains(x.ProductCode!) && x.IsDeleted == false)
-                        .Select(x => new { x.ProductCode, x.ItemNumber })
-                        .ToListAsync();
-
-                    foreach (var p in products)
-                    {
-                        if (
-                            !string.IsNullOrWhiteSpace(p.ProductCode)
-                            && !string.IsNullOrWhiteSpace(p.ItemNumber)
-                        )
-                        {
-                            productItemNumbers[p.ProductCode] = p.ItemNumber;
-                        }
-                    }
-                }
-
                 var successfulDetailGuids = new List<string>();
                 var changedProductCodes = new HashSet<string>(StringComparer.Ordinal);
                 var auditBatchGuid = Guid.NewGuid();
@@ -4335,6 +4462,116 @@ namespace BlazorApp.Api.Services.React
                 await db.Ado.BeginTranAsync();
                 try
                 {
+                    // 新建商品的编码在执行中生成，需使用总闸；其余场景则按既有父商品编码稳定排序加锁。
+                    var lockScope = details.Any(detail =>
+                        GetSavedActionForDetail(detail) == DetailAction.CreateProduct
+                    )
+                        ? await SetChildPurchasePriceMutationLock.AcquireAllAsync(db)
+                        : productCodes.Count > 0
+                            ? await SetChildPurchasePriceMutationLock.AcquireProductsAsync(db, productCodes)
+                            : null;
+                    // 锁内重新读取单头、明细及所有动作来源字段；等待期间任何归属或执行参数变化都必须回滚并重新确认。
+                    var lockedHeader = await db.Queryable<StoreLocalSupplierInvoice>()
+                        .Where(x => x.InvoiceGUID == invoiceGuid && x.IsDeleted == false)
+                        .FirstAsync();
+                    var lockedDetails = await db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                        .Where(x =>
+                            x.InvoiceGUID == invoiceGuid
+                            && selectedDetailGuids.Contains(x.DetailGUID)
+                            && x.IsDeleted == false
+                        )
+                        .ToListAsync();
+                    if (
+                        confirmedActionSnapshot != null
+                        && lockedDetails.Any(detail =>
+                            !confirmedActionSnapshot.TryGetValue(
+                                detail.DetailGUID,
+                                out var confirmedAction
+                            )
+                            || (detail.ActivityType ?? (int)DetailAction.None) != confirmedAction
+                        )
+                    )
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<BatchExecuteActionsResultDto>.Error(
+                            "批量执行确认已失效：明细动作已变化，请刷新后重试",
+                            "VALIDATION_ERROR",
+                            result
+                        );
+                    }
+                    if (
+                        confirmedDetailIdentitySnapshot != null
+                        && (
+                            lockedDetails.Count != confirmedDetailIdentitySnapshot.Count
+                            || lockedDetails.Any(detail =>
+                                !confirmedDetailIdentitySnapshot.TryGetValue(
+                                    detail.DetailGUID,
+                                    out var confirmedIdentity
+                                )
+                                || BuildBatchExecuteDetailIdentity(detail) != confirmedIdentity
+                            )
+                        )
+                    )
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        return ApiResponse<BatchExecuteActionsResultDto>.Error(
+                            "批量执行确认已失效：明细执行参数已变化，请刷新后重试",
+                            "VALIDATION_ERROR",
+                            result
+                        );
+                    }
+                    if (
+                        lockedHeader == null
+                        || BuildBatchExecuteHeaderIdentity(lockedHeader) != expectedHeaderIdentity
+                        || lockedDetails.Count != expectedDetailIdentities.Count
+                        || lockedDetails.Any(detail =>
+                            !expectedDetailIdentities.TryGetValue(
+                                detail.DetailGUID,
+                                out var expectedIdentity
+                            )
+                            || BuildBatchExecuteDetailIdentity(detail) != expectedIdentity
+                        )
+                    )
+                    {
+                        throw new InvalidOperationException(
+                            "等待商品锁期间进货单头或明细执行参数已变化，请重新读取并确认后重试"
+                        );
+                    }
+
+                    header = lockedHeader;
+                    details = lockedDetails;
+                    productCodes = details
+                        .Where(detail => !string.IsNullOrWhiteSpace(detail.ProductCode))
+                        .Select(detail => detail.ProductCode!.Trim())
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    lockScope?.EnsureCovers(db, productCodes);
+
+                    var productItemNumbers = new Dictionary<string, string>(
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                    if (productCodes.Count > 0)
+                    {
+                        var products = await db.Queryable<Product>()
+                            .Where(x =>
+                                x.ProductCode != null
+                                && productCodes.Contains(x.ProductCode)
+                                && x.IsDeleted == false
+                            )
+                            .Select(x => new { x.ProductCode, x.ItemNumber })
+                            .ToListAsync();
+                        foreach (var product in products)
+                        {
+                            if (
+                                !string.IsNullOrWhiteSpace(product.ProductCode)
+                                && !string.IsNullOrWhiteSpace(product.ItemNumber)
+                            )
+                            {
+                                productItemNumbers[product.ProductCode] = product.ItemNumber;
+                            }
+                        }
+                    }
+
                     var validationErrors = await ValidateBatchExecuteDetailsAsync(
                         details,
                         header,
@@ -4474,6 +4711,21 @@ namespace BlazorApp.Api.Services.React
                         await BatchUpdateDetailActivityTypeAsync(successfulDetailGuids, userName);
                     }
 
+                    // 不预先按 Product.PurchasePrice 过滤；统一服务负责 Product→Warehouse 回退，
+                    // 两者都无有效成本时会按普通业务规则抛错并回滚。
+                    var recalculationProductCodes = SetChildPurchasePriceMutationLock
+                        .NormalizeProductCodes(changedProductCodes);
+                    if (lockScope != null && recalculationProductCodes.Count > 0)
+                    {
+                        // 所有主成本、关系和门店投影写完后统一回算；任何结构性错误都会抛出并回滚整笔批量操作。
+                        await new SetChildPurchasePriceService(db).RecalculateLockedAsync(
+                            lockScope,
+                            recalculationProductCodes,
+                            storeCodes: null,
+                            userName
+                        );
+                    }
+
                     if (changedProductCodes.Count > 0)
                     {
                         var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
@@ -4507,11 +4759,150 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量执行操作失败");
+                var isBusy = SetChildPurchasePriceMutationLock.TryResolveConflict(
+                    ex,
+                    out var conflict
+                );
                 return ApiResponse<BatchExecuteActionsResultDto>.Error(
-                    "批量执行失败",
-                    "BATCH_EXECUTE_ERROR"
+                    isBusy ? conflict!.Message : "批量执行失败",
+                    isBusy
+                        ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                        : "BATCH_EXECUTE_ERROR",
+                    result
                 );
             }
+        }
+
+        private static string BuildBatchExecuteHeaderIdentity(
+            StoreLocalSupplierInvoice header
+        ) =>
+            JsonSerializer.Serialize(
+                new
+                {
+                    header.InvoiceGUID,
+                    header.StoreCode,
+                    header.SupplierCode,
+                }
+            );
+
+        private static bool TryBuildBatchExecuteConfirmedActionSnapshot(
+            IReadOnlyCollection<BatchExecuteExpectedActionDto>? expectedActions,
+            out Dictionary<string, int>? snapshot,
+            out string? error
+        )
+        {
+            snapshot = null;
+            error = null;
+            if (expectedActions == null || expectedActions.Count == 0)
+            {
+                return true;
+            }
+
+            snapshot = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var expectedAction in expectedActions)
+            {
+                if (string.IsNullOrWhiteSpace(expectedAction.DetailGuid))
+                {
+                    error = "确认动作快照包含空的明细标识，请刷新后重试";
+                    return false;
+                }
+
+                var action = expectedAction.GetActionValue();
+                if (action == null || !IsClientSelectableDetailAction(action.Value))
+                {
+                    error = $"明细 {expectedAction.DetailGuid} 的确认动作无效，请刷新后重试";
+                    return false;
+                }
+
+                var detailGuid = expectedAction.DetailGuid.Trim();
+                if (
+                    snapshot.TryGetValue(detailGuid, out var existingAction)
+                    && existingAction != action.Value
+                )
+                {
+                    error = $"明细 {detailGuid} 存在冲突的确认动作，请刷新后重试";
+                    return false;
+                }
+                snapshot[detailGuid] = action.Value;
+            }
+
+            return true;
+        }
+
+        private static string BuildBatchExecuteDetailIdentity(
+            StoreLocalSupplierInvoiceDetails detail
+        ) =>
+            JsonSerializer.Serialize(
+                new
+                {
+                    detail.DetailGUID,
+                    detail.InvoiceGUID,
+                    detail.StoreCode,
+                    detail.SupplierCode,
+                    detail.ProductTagGUID,
+                    detail.ProductCategoryGUID,
+                    detail.StoreProductCode,
+                    detail.ProductCode,
+                    detail.ItemNumber,
+                    detail.Barcode,
+                    detail.AdditionalBarcodesJson,
+                    detail.ProductName,
+                    detail.Specification,
+                    detail.Unit,
+                    detail.Quantity,
+                    detail.LastPurchasePrice,
+                    detail.PurchasePrice,
+                    detail.RetailPrice,
+                    detail.Amount,
+                    detail.ExistingProductCount,
+                    detail.BarcodeStatus,
+                    detail.BarcodeMatchCount,
+                    detail.ActivityType,
+                    detail.DiscountRate,
+                    detail.AutoPricing,
+                    detail.PricingFloatRate,
+                    detail.NewAutoRetailPrice,
+                    detail.IsSpecialProduct,
+                    detail.OldStoreProductCode,
+                }
+            );
+
+        private static bool TryBuildBatchExecuteConfirmedDetailIdentitySnapshot(
+            IReadOnlyCollection<StoreLocalSupplierInvoiceDetails>? confirmedDetails,
+            out Dictionary<string, string>? snapshot,
+            out string? error
+        )
+        {
+            snapshot = null;
+            error = null;
+            if (confirmedDetails == null || confirmedDetails.Count == 0)
+            {
+                return true;
+            }
+
+            snapshot = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var detail in confirmedDetails)
+            {
+                if (string.IsNullOrWhiteSpace(detail.DetailGUID))
+                {
+                    error = "确认明细快照包含空的明细标识，请刷新后重试";
+                    return false;
+                }
+
+                var detailGuid = detail.DetailGUID.Trim();
+                var identity = BuildBatchExecuteDetailIdentity(detail);
+                if (
+                    snapshot.TryGetValue(detailGuid, out var existingIdentity)
+                    && existingIdentity != identity
+                )
+                {
+                    error = $"明细 {detailGuid} 存在冲突的确认快照，请刷新后重试";
+                    return false;
+                }
+                snapshot[detailGuid] = identity;
+            }
+
+            return true;
         }
 
         private async Task<List<string>> ValidateBatchExecuteDetailsAsync(
@@ -5681,7 +6072,8 @@ namespace BlazorApp.Api.Services.React
                 SetProductCode = multiCodeProductCode,
                 SetItemNumber = detail.ItemNumber ?? string.Empty,
                 SetBarcode = barcodeToAdd,
-                SetPurchasePrice = detail.PurchasePrice,
+                // Type2 的关系成本只能由父商品回算，创建时不能把进货单明细成本当作最终成本写入。
+                SetPurchasePrice = null,
                 SetRetailPrice = retailPrice,
                 SetQuantity = 1,
                 SetType = 2,
@@ -5703,7 +6095,8 @@ namespace BlazorApp.Api.Services.React
                     MultiCodeProductCode = multiCodeProductCode,
                     StoreMultiCodeProductCode = storeCode + multiCodeProductCode,
                     MultiBarcode = barcodeToAdd,
-                    PurchasePrice = detail.PurchasePrice,
+                    // 与全局关系保持相同规则，门店投影等待同事务统一回算。
+                    PurchasePrice = null,
                     MultiCodeRetailPrice = retailPrice,
                     DiscountRate = detail.DiscountRate,
                     IsAutoPricing = detail.AutoPricing ?? true,

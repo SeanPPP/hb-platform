@@ -44,6 +44,9 @@ public sealed class ProductGradeReactServiceTests : IDisposable
             typeof(ChinaSupplier),
             typeof(WarehouseProduct),
             typeof(Product),
+            typeof(StoreRetailPrice),
+            typeof(ProductSetCode),
+            typeof(StoreMultiCodeProduct),
             typeof(WarehouseCategory)
         );
     }
@@ -58,6 +61,66 @@ public sealed class ProductGradeReactServiceTests : IDisposable
         Assert.True(result.Success);
         Assert.NotNull(result.Data);
         Assert.Empty(result.Data!);
+    }
+
+    [Fact]
+    public async Task BatchUpdateGradePriceAsync_本地主成本更新同步Type2总部和门店成本()
+    {
+        const string productCode = "P-GRADE-TYPE2";
+        await _db.Insertable(new Product
+        {
+            UUID = "P-GRADE-TYPE2-UUID",
+            ProductCode = productCode,
+            PurchasePrice = 10m,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new WarehouseProduct
+        {
+            ProductCode = productCode,
+            ImportPrice = 10m,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new StoreRetailPrice
+        {
+            UUID = "SRP-GRADE-TYPE2",
+            StoreCode = "S01",
+            ProductCode = productCode,
+            PurchasePrice = 10m,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new ProductSetCode
+        {
+            SetCodeId = "SET-GRADE-TYPE2",
+            ProductCode = productCode,
+            SetProductCode = "CHILD-GRADE-TYPE2",
+            SetItemNumber = "ITEM-GRADE-TYPE2",
+            SetPurchasePrice = 99m,
+            SetType = 2,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new StoreMultiCodeProduct
+        {
+            UUID = "SMC-GRADE-TYPE2",
+            StoreCode = "S01",
+            ProductCode = productCode,
+            MultiCodeProductCode = "CHILD-GRADE-TYPE2",
+            PurchasePrice = 99m,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().BatchUpdateGradePriceAsync(new BatchUpdateGradePriceDto
+        {
+            TargetDatabase = "Local",
+            ProductCodes = new List<string> { productCode },
+            ImportPrice = 12m,
+        });
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(12m, (await _db.Queryable<ProductSetCode>().SingleAsync()).SetPurchasePrice);
+        Assert.Equal(12m, (await _db.Queryable<StoreMultiCodeProduct>().SingleAsync()).PurchasePrice);
     }
 
     [Fact]
@@ -810,7 +873,7 @@ public sealed class ProductGradeReactServiceTests : IDisposable
             CreateHqSqlSugarContext(),
             CreateMapper(),
             NullLogger<ProductGradeReactService>.Instance,
-            Mock.Of<IWarehouseProductChangeHistoryService>(),
+            WarehouseProductChangeHistoryTestDouble.CreateNoop(),
             Mock.Of<ICurrentUserService>()
         );
     }

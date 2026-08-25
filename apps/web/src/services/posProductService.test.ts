@@ -411,6 +411,7 @@ try {
     data: {
       jobId: 'push-hq-job-1',
       status: 'completed',
+      errorCode: 'SET_CHILD_PURCHASE_PRICE_BUSY',
       result: {
         successCount: 1,
         failedCount: 1,
@@ -444,6 +445,7 @@ try {
   assertEqual(completedPushJob.result?.productSetCodesCreated, 7, '发送 HQ job 应保留套装编码新增统计')
   assertEqual(completedPushJob.result?.storeMultiCodesUpdated, 10, '发送 HQ job 应保留多码更新统计')
   assertDeepEqual(completedPushJob.result?.errors, ['HB002 写入失败'], '发送 HQ job 应保留 result 错误明细')
+  assertEqual(completedPushJob.errorCode, 'SET_CHILD_PURCHASE_PRICE_BUSY', '发送 HQ job 应保留后台错误码')
   assertDeepEqual(completedPushJob.errors, ['后台任务存在错误'], '发送 HQ job 应保留顶层错误摘要')
 
   nextPayload = {

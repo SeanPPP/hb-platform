@@ -3,6 +3,8 @@ using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
+using BlazorApp.Shared;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -87,7 +89,7 @@ namespace BlazorApp.Api.Controllers.React
                         message = result.Message,
                     }
                 );
-            return BadRequest(new { success = false, message = result.Message });
+            return BuildMutationFailure(result);
         }
 
         [HttpPut("{uuid}")]
@@ -108,7 +110,7 @@ namespace BlazorApp.Api.Controllers.React
                         message = result.Message,
                     }
                 );
-            return BadRequest(new { success = false, message = result.Message });
+            return BuildMutationFailure(result);
         }
 
         [HttpDelete("{uuid}")]
@@ -126,7 +128,7 @@ namespace BlazorApp.Api.Controllers.React
                         message = result.Message,
                     }
                 );
-            return BadRequest(new { success = false, message = result.Message });
+            return BuildMutationFailure(result);
         }
 
         [HttpPost("batch-upsert")]
@@ -202,7 +204,7 @@ namespace BlazorApp.Api.Controllers.React
                     _logger.LogWarning(
                         $"[{requestId}] BatchUpsert 失败: {result.Message} - {JsonSerializer.Serialize(errors)}"
                     );
-                    return BadRequest(new { success = false, message = result.Message, errors });
+                    return BuildMutationFailure(result);
                 }
             }
             catch (System.Exception ex)
@@ -236,7 +238,7 @@ namespace BlazorApp.Api.Controllers.React
                         message = result.Message,
                     }
                 );
-            return BadRequest(new { success = false, message = result.Message });
+            return BuildMutationFailure(result);
         }
 
         [HttpDelete("batch-delete")]
@@ -255,7 +257,7 @@ namespace BlazorApp.Api.Controllers.React
                         message = result.Message,
                     }
                 );
-            return BadRequest(new { success = false, message = result.Message });
+            return BuildMutationFailure(result);
         }
 
         [HttpPut("batch-special")]
@@ -295,6 +297,13 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             return BadRequest(new { success = false, message = result.Message });
+        }
+
+        private IActionResult BuildMutationFailure<T>(ApiResponse<T> result)
+        {
+            return result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                ? Conflict(result)
+                : BadRequest(result);
         }
     }
 }

@@ -353,6 +353,155 @@ public class LocalSupplierProductSalesAnalysisLogicTests
         Assert.Null(capturedStores);
     }
 
+    [Fact]
+    public async Task Controller_零授权分店返回空范围而非Forbid()
+    {
+        IReadOnlyList<string>? capturedStores = new List<string> { "unexpected" };
+        var service = new Mock<ILocalSupplierProductSalesAnalysisService>();
+        service.Setup(x => x.GetOptionsAsync(It.IsAny<IReadOnlyList<string>?>()))
+            .Callback<IReadOnlyList<string>?>(codes => capturedStores = codes)
+            .ReturnsAsync(ApiResponse<LocalSupplierProductSalesOptionsDto>.OK(new()));
+        var roleService = new Mock<IRoleService>();
+        roleService.Setup(x => x.GetUserPermissionSnapshotAsync("user-1"))
+            .ReturnsAsync(ApiResponse<UserPermissionSnapshotDto>.OK(new UserPermissionSnapshotDto
+            {
+                UserGuid = "user-1",
+                RoleNames = new List<string> { "User" },
+                PermissionCodes = new List<string> { Permissions.LocalPurchase.View },
+            }));
+        var userService = new Mock<IUserService>();
+        userService.Setup(x => x.GetUserByGuidAsync("user-1"))
+            .ReturnsAsync(ApiResponse<UserDetailDto>.OK(new UserDetailDto
+            {
+                UserGUID = "user-1",
+                Stores = new List<UserStoreDto>(),
+            }));
+
+        var result = await CreateController(service.Object, userService.Object, roleService.Object, "User").GetOptions();
+
+        Assert.IsType<OkObjectResult>(result);
+        Assert.NotNull(capturedStores);
+        Assert.Empty(capturedStores);
+    }
+
+    [Fact]
+    public void CleanSelection_included裁剪无效商品()
+    {
+        var valid = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "A", "B" };
+        var effective = LocalSupplierProductSalesAnalysisLogic.CleanSelection(
+            new LocalSupplierProductSalesSelectionDto
+            {
+                Mode = "included",
+                IncludedProductCodes = new List<string> { "a", " C ", "B" },
+            },
+            valid
+        );
+
+        Assert.Equal("included", effective.Mode);
+        Assert.Equal(2, effective.IncludedProductCodes!.Count);
+        Assert.Contains(
+            effective.IncludedProductCodes,
+            code => code.Equals("A", StringComparison.OrdinalIgnoreCase)
+        );
+        Assert.Contains(
+            effective.IncludedProductCodes,
+            code => code.Equals("B", StringComparison.OrdinalIgnoreCase)
+        );
+    }
+
+    [Fact]
+    public void CleanSelection_allFiltered保留模式并清理无效excluded()
+    {
+        var valid = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "A", "B" };
+        var effective = LocalSupplierProductSalesAnalysisLogic.CleanSelection(
+            new LocalSupplierProductSalesSelectionDto
+            {
+                Mode = "allFiltered",
+                ExcludedProductCodes = new List<string> { "B", "ZZZ" },
+            },
+            valid
+        );
+
+        Assert.Equal("allFiltered", effective.Mode);
+        Assert.Equal(new[] { "B" }, effective.ExcludedProductCodes);
+    }
+
+    [Fact]
+    public void ResolveSelection_autoSelectFirst为true且current失效改首个候选()
+    {
+        var codes = new List<string> { "B", "A" };
+        var outcome = LocalSupplierProductSalesAnalysisLogic.ResolveSelection(
+            codes,
+            null,
+            "ZZZ",
+            autoSelectFirst: true
+        );
+
+        Assert.Equal("B", outcome.CurrentProductCode);
+        Assert.Equal(new[] { "B", "A" }, outcome.SelectedCodes);
+    }
+
+    [Fact]
+    public void ResolveSelection_current大小写不敏感匹配()
+    {
+        var codes = new List<string> { "B", "A" };
+        var outcome = LocalSupplierProductSalesAnalysisLogic.ResolveSelection(
+            codes,
+            null,
+            "a",
+            autoSelectFirst: false
+        );
+
+        Assert.Equal("A", outcome.CurrentProductCode);
+    }
+
+    [Fact]
+    public void ResolveSelection_autoSelectFirst为false但current失效迁移到首个仍选中候选()
+    {
+        var codes = new List<string> { "B", "A" };
+        var outcome = LocalSupplierProductSalesAnalysisLogic.ResolveSelection(
+            codes,
+            null,
+            "ZZZ",
+            autoSelectFirst: false
+        );
+
+        Assert.Equal("B", outcome.CurrentProductCode);
+    }
+
+    [Fact]
+    public void ResolveSelection_current已被选择排除时迁移到首个仍选中候选()
+    {
+        var outcome = LocalSupplierProductSalesAnalysisLogic.ResolveSelection(
+            new[] { "A", "B", "C" },
+            new LocalSupplierProductSalesSelectionDto
+            {
+                Mode = "allFiltered",
+                ExcludedProductCodes = new List<string> { "B" },
+            },
+            "B",
+            autoSelectFirst: false
+        );
+
+        Assert.Equal("A", outcome.CurrentProductCode);
+        Assert.Equal(new[] { "A", "C" }, outcome.SelectedCodes);
+    }
+
+    [Fact]
+    public void ResolveSelection_选择仅作用于已过滤商品()
+    {
+        var filtered = new List<string> { "A" };
+        var outcome = LocalSupplierProductSalesAnalysisLogic.ResolveSelection(
+            filtered,
+            new LocalSupplierProductSalesSelectionDto { Mode = "allFiltered" },
+            null,
+            autoSelectFirst: true
+        );
+
+        Assert.Equal(new[] { "A" }, outcome.SelectedCodes);
+        Assert.Equal("A", outcome.CurrentProductCode);
+    }
+
     private static LocalSupplierProductSalesAnalysisController CreateController(
         ILocalSupplierProductSalesAnalysisService service,
         IUserService userService,

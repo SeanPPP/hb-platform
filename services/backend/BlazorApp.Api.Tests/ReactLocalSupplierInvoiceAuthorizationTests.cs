@@ -4,9 +4,11 @@ using System.Security.Claims;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HBweb;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -435,6 +437,77 @@ public sealed class ReactLocalSupplierInvoiceAuthorizationTests : IDisposable
                 .GetCustomAttributes<AuthorizeAttribute>(inherit: false)
         );
         Assert.Equal(Permissions.LocalPurchase.View, analysisAuthorize.Policy);
+    }
+
+    [Fact]
+    public async Task UpdateToStorePrices_成本业务锁冲突返回409和Busy错误码()
+    {
+        var invoices = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        invoices
+            .Setup(service => service.UpdateDetailsToStorePricesAsync(
+                It.IsAny<UpdateToStorePricesRequest>(),
+                "system"
+            ))
+            .ReturnsAsync(ApiResponse<UpdateToStorePricesResultDto>.Error(
+                "套装子项成本正在更新，请稍后重试",
+                SetChildPurchasePriceMutationLock.BusyErrorCode
+            ));
+        var controller = CreateController(invoices.Object, authorizationService: null, isAdmin: true);
+
+        var actionResult = await controller.UpdateToStorePrices(new UpdateToStorePricesRequest
+        {
+            InvoiceGuid = "invoice-busy",
+            DetailGuids = new List<string>(),
+            TargetStoreCodes = new List<string> { "S01" },
+            UpdateFields = new UpdateToStorePricesFields(),
+        });
+
+        var conflict = Assert.IsType<ObjectResult>(actionResult);
+        Assert.Equal(StatusCodes.Status409Conflict, conflict.StatusCode);
+        Assert.Equal(
+            SetChildPurchasePriceMutationLock.BusyErrorCode,
+            conflict.Value?.GetType().GetProperty("code")?.GetValue(conflict.Value)
+        );
+        invoices.VerifyAll();
+    }
+
+    [Fact]
+    public async Task BatchExecuteActions_成本业务锁冲突返回409和Busy错误码()
+    {
+        var invoices = new Mock<ILocalSupplierInvoicesReactService>(MockBehavior.Strict);
+        invoices
+            .Setup(service => service.BatchExecuteActionsAsync(
+                "invoice-busy",
+                It.Is<List<string>>(items => items.Count == 0),
+                "system",
+                It.Is<List<BatchExecuteNewProductProductTypeSelectionDto>?>(items =>
+                    items != null && items.Count == 0
+                ),
+                It.Is<List<BatchExecuteExpectedActionDto>?>(items =>
+                    items != null && items.Count == 0
+                ),
+                It.Is<IReadOnlyCollection<StoreLocalSupplierInvoiceDetails>?>(items =>
+                    items != null && items.Count == 0
+                )
+            ))
+            .ReturnsAsync(ApiResponse<BatchExecuteActionsResultDto>.Error(
+                "套装子项成本正在更新，请稍后重试",
+                SetChildPurchasePriceMutationLock.BusyErrorCode
+            ));
+        var controller = CreateController(invoices.Object, authorizationService: null, isAdmin: true);
+
+        var actionResult = await controller.BatchExecuteActions(
+            "invoice-busy",
+            new BatchExecuteActionsRequestDto { DetailGuids = new List<string>() }
+        );
+
+        var conflict = Assert.IsType<ObjectResult>(actionResult);
+        Assert.Equal(StatusCodes.Status409Conflict, conflict.StatusCode);
+        Assert.Equal(
+            SetChildPurchasePriceMutationLock.BusyErrorCode,
+            conflict.Value?.GetType().GetProperty("code")?.GetValue(conflict.Value)
+        );
+        invoices.VerifyAll();
     }
 
     public void Dispose()

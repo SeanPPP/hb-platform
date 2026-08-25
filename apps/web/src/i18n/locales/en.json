@@ -2875,6 +2875,7 @@
       "title": "Schedule Attendance",
       "tabs": {
         "schedules": "Weekly Schedule",
+        "records": "Attendance Records",
         "availability": "Employee Availability",
         "punches": "Punch Records",
         "approvals": "Review Center",
@@ -2892,6 +2893,10 @@
         "batchHoliday": "Batch Set",
         "addShift": "Add Shift",
         "publishWeek": "Publish This Week",
+        "adjustPunch": "Add / Correct Punch",
+        "preview": "Preview Changes",
+        "createMissingPunch": "Create Missing Punch (Keep Existing Records)",
+        "replacePunch": "Correct Existing Punch",
         "approve": "Approve",
         "reject": "Reject",
         "approveOvertime": "Approve overtime",
@@ -2904,6 +2909,7 @@
       "drawer": {
         "createSchedule": "New Schedule",
         "editSchedule": "Edit Schedule",
+        "adjustPunch": "Add or Correct Punch",
         "createHoliday": "New Public Holiday",
         "editHoliday": "Edit Public Holiday",
         "batchHoliday": "Batch Set Public Holidays",
@@ -2920,11 +2926,21 @@
         "employeeGuid": "Employee GUID",
         "workDate": "Work Date",
         "shift": "Shift",
+        "schedule": "Schedule",
+        "segments": "Effective Segments",
+        "boundaries": "First Clock-in / Final Clock-out",
+        "workedAndBreak": "Worked / Break",
+        "exceptions": "Late / Early Leave",
+        "overtime": "Early Arrival / Late Departure / Candidate / Approved",
         "weekStartDate": "Week Start",
         "availableDate": "Available Date",
         "availableTime": "Available Time",
         "punchType": "Punch Type",
         "punchTimeLocal": "Local Punch Time",
+        "adjustmentMode": "Adjustment Mode",
+        "originalPunch": "Original Punch to Correct",
+        "requestedPunchTimeLocal": "Requested Punch Time (Local)",
+        "preview": "Change Preview",
         "timeZone": "Time Zone",
         "location": "Location",
         "locationSamples": "Shift Samples",
@@ -2959,6 +2975,20 @@
         "updatedAt": "Last Updated",
         "reviewRemark": "Review Remark"
       },
+      "recordLabels": {
+        "minutes": "{{minutes}} min",
+        "late": "Late: {{minutes}} min",
+        "earlyLeave": "Early leave: {{minutes}} min",
+        "earlyArrival": "Early arrival: {{minutes}} min",
+        "lateDeparture": "Late departure: {{minutes}} min",
+        "candidateOvertime": "Candidate overtime: {{minutes}} min",
+        "approvedOvertime": "Approved overtime: {{minutes}} min",
+        "crossStore": "Cross-store missing clock-out: {{storeCode}}",
+        "original": "Original: {{time}}",
+        "effective": "Effective: {{time}}",
+        "workedMinutesChange": "Worked time: {{before}} → {{after}}",
+        "candidateOvertimeChange": "Candidate overtime: {{before}} → {{after}}"
+      },
       "approvalPresentation": {
         "Punch": {
           "title": "Punch exception",
@@ -2980,10 +3010,17 @@
         }
       },
       "status": {
+        "missingClockOut": "Missing Clock-out",
         "schedule": {
           "Draft": "Draft",
           "Active": "Active",
           "Cancelled": "Cancelled"
+        },
+        "scheduleState": {
+          "NotStarted": "Not Started",
+          "InProgress": "In Progress",
+          "Completed": "Completed",
+          "MissingClockOut": "Missing Clock-out"
         },
         "punch": {
           "Normal": "Normal",
@@ -2998,6 +3035,18 @@
         "punchType": {
           "ClockIn": "Clock In",
           "ClockOut": "Clock Out"
+        },
+        "segment": {
+          "NotStarted": "Not Started",
+          "Open": "Open",
+          "Completed": "Completed",
+          "MissingClockOut": "Missing Clock-out"
+        },
+        "overtimeApproval": {
+          "NotRequired": "Not Required",
+          "Pending": "Pending",
+          "Approved": "Approved",
+          "Rejected": "Rejected"
         },
         "review": {
           "Pending": "Pending",
@@ -3022,6 +3071,8 @@
         "userGuidRequired": "Please enter employee GUID",
         "holidayNameRequired": "Please enter holiday name",
         "storeCodesRequired": "Please select at least one store",
+        "originalPunchRequired": "Select the original punch when correcting an existing record",
+        "reasonRequired": "Enter a reason for the punch adjustment",
         "overtime": {
           "outOfRange": "Approved overtime must be between 0 and the candidate minutes",
           "invalidIncrement": "Approved overtime must be a multiple of 15 minutes",
@@ -3071,7 +3122,20 @@
         "publishWeekFailed": "Failed to publish this week's schedule",
         "reviewSuccess": "Review submitted",
         "reviewFailed": "Failed to submit review",
+        "adjustmentPreviewInvalid": "The punch adjustment preview did not pass server validation",
+        "adjustmentPreviewFailed": "Failed to preview the punch adjustment",
         "previewRevisionMissing": "The server preview did not include a revision. Run preview again before saving.",
+        "previewExpired": "The punch adjustment changed. Preview it again before saving.",
+        "adjustmentApplied": "The punch adjustment took effect immediately",
+        "adjustmentSubmitted": "The punch adjustment was submitted for approval",
+        "adjustmentFailed": "Failed to save the punch adjustment",
+        "previewBeforeSave": "Preview the changes before saving",
+        "originalPunchAudit": "Preview and save will use the same original punch and preserve the replacement audit trail.",
+        "noOriginalPunch": "No original punch is available to correct. Choose Create Missing Punch instead.",
+        "newPunchAudit": "Creating a punch will not replace existing clock-in or clock-out records; originalPunchGuid will remain empty.",
+        "proposedPunchStatusUnavailable": "The server did not return a status for this punch",
+        "adjustmentWillAutoApprove": "Server preview: because the manager is adjusting their own punch in a managed store, this change will take effect immediately.",
+        "adjustmentWillReview": "Server preview: this adjustment will be submitted for approval.",
         "directAdjustment": "Manager self-adjustment",
         "locationNotRecorded": "Location not recorded",
         "externalMapNotice": "External maps are not loaded by default. Opening the map sends this coordinate to the map provider.",

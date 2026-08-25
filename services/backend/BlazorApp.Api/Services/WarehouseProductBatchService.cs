@@ -1,6 +1,7 @@
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.Extensions.Logging;
@@ -279,10 +280,19 @@ namespace BlazorApp.Api.Services
                 // 使用事务确保数据一致性
                 var updateResult = await _db.Ado.UseTranAsync(async () =>
                 {
+                    SetChildPurchasePriceLockScope? lockScope = null;
+                    if (productCodes.Count > 0)
+                    {
+                        lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                            _db,
+                            productCodes
+                        );
+                    }
                     var beforeSnapshots = await CaptureChangeSnapshotsAsync(productCodes);
                     int successCount = 0;
                     int failedCount = 0;
                     var processedProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var updatedCostProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                     foreach (var dto in request.Products)
                     {
@@ -307,7 +317,9 @@ namespace BlazorApp.Api.Services
                         {
                             // 查询当前数据（包含RowVersion）
                             var existing = await _db.Queryable<WarehouseProduct>()
-                                .Where(wp => wp.ProductCode == normalizedProductCode)
+                                .Where(wp =>
+                                    wp.ProductCode == normalizedProductCode && !wp.IsDeleted
+                                )
                                 .FirstAsync();
 
                             if (existing == null)
@@ -344,6 +356,20 @@ namespace BlazorApp.Api.Services
 
                             // 更新数据（SqlSugar会自动处理RowVersion）
                             var affected = await _db.Updateable(existing)
+                                .UpdateColumns(wp => new
+                                {
+                                    wp.DomesticPrice,
+                                    wp.OEMPrice,
+                                    wp.ImportPrice,
+                                    wp.StockQuantity,
+                                    wp.MinOrderQuantity,
+                                    wp.StockAlertQuantity,
+                                    wp.Volume,
+                                    wp.IsActive,
+                                    wp.StockValue,
+                                    wp.UpdatedAt,
+                                    wp.UpdatedBy,
+                                })
                                 .ExecuteCommandAsync();
 
                             if (affected > 0)
@@ -355,6 +381,7 @@ namespace BlazorApp.Api.Services
                                 }
 
                                 successCount++;
+                                updatedCostProductCodes.Add(normalizedProductCode);
                             }
                             else
                             {
@@ -373,6 +400,15 @@ namespace BlazorApp.Api.Services
                     result.UpdatedCount = successCount;
                     result.FailedCount = failedCount;
                     result.Success = failedCount == 0;
+
+                    if (lockScope != null)
+                    {
+                        await RecalculateSetChildPurchasePricesLockedAsync(
+                            lockScope,
+                            updatedCostProductCodes,
+                            actorName
+                        );
+                    }
 
                     var afterSnapshots = await CaptureChangeSnapshotsAsync(productCodes);
                     await RecordChangeHistoryAsync(
@@ -403,7 +439,9 @@ namespace BlazorApp.Api.Services
                 _logger.LogError(ex, "批量更新事务失败");
                 result.Success = false;
                 result.UpdatedCount = 0;
-                result.ErrorMessage = "批量更新失败：" + ex.Message;
+                result.ErrorMessage = SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                    ? $"{SetChildPurchasePriceMutationLock.BusyErrorCode}: 套装商品正在被其他操作修改，请稍后重试"
+                    : "批量更新失败：" + ex.Message;
                 return result;
             }
         }
@@ -432,8 +470,17 @@ namespace BlazorApp.Api.Services
                 var actorName = ResolveActorName();
                 var transactionResult = await _db.Ado.UseTranAsync(async () =>
                 {
+                    SetChildPurchasePriceLockScope? lockScope = null;
+                    if (productCodes.Count > 0)
+                    {
+                        lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                            _db,
+                            productCodes
+                        );
+                    }
                     var beforeSnapshots = await CaptureChangeSnapshotsAsync(productCodes);
                     var processedProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    var updatedCostProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     foreach (var dto in request.Products)
                     {
                         var normalizedProductCode = dto.ProductCode?.Trim() ?? string.Empty;
@@ -456,7 +503,9 @@ namespace BlazorApp.Api.Services
                             var existing = await _db.Queryable<WarehouseProduct>()
                                 .Includes(wp => wp.Product)
                                 .Includes(wp => wp.Locations)
-                                .Where(wp => wp.ProductCode == normalizedProductCode)
+                                .Where(wp =>
+                                    wp.ProductCode == normalizedProductCode && !wp.IsDeleted
+                                )
                                 .FirstAsync();
 
                             if (existing == null)
@@ -486,7 +535,22 @@ namespace BlazorApp.Api.Services
                             existing.UpdatedAt = occurredAtUtc;
                             existing.UpdatedBy = actorName;
 
-                            await _db.Updateable(existing).ExecuteCommandAsync();
+                            await _db.Updateable(existing)
+                                .UpdateColumns(wp => new
+                                {
+                                    wp.DomesticPrice,
+                                    wp.OEMPrice,
+                                    wp.ImportPrice,
+                                    wp.StockQuantity,
+                                    wp.MinOrderQuantity,
+                                    wp.StockAlertQuantity,
+                                    wp.Volume,
+                                    wp.IsActive,
+                                    wp.StockValue,
+                                    wp.UpdatedAt,
+                                    wp.UpdatedBy,
+                                })
+                                .ExecuteCommandAsync();
 
                             // 更新仓位
                             if (dto.LocationGuid != null)
@@ -503,6 +567,7 @@ namespace BlazorApp.Api.Services
 
                             result.UpdatedProducts!.Add(MapToDto(updated));
                             result.SavedCount++;
+                            updatedCostProductCodes.Add(normalizedProductCode);
                         }
                         catch (Exception ex)
                         {
@@ -512,6 +577,15 @@ namespace BlazorApp.Api.Services
                     }
 
                     result.Success = result.FailedCount == 0;
+
+                    if (lockScope != null)
+                    {
+                        await RecalculateSetChildPurchasePricesLockedAsync(
+                            lockScope,
+                            updatedCostProductCodes,
+                            actorName
+                        );
+                    }
 
                     var afterSnapshots = await CaptureChangeSnapshotsAsync(productCodes);
                     await RecordChangeHistoryAsync(
@@ -538,7 +612,9 @@ namespace BlazorApp.Api.Services
                 result.Success = false;
                 result.SavedCount = 0;
                 result.UpdatedProducts?.Clear();
-                result.ErrorMessage = "增量保存失败：" + ex.Message;
+                result.ErrorMessage = SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                    ? $"{SetChildPurchasePriceMutationLock.BusyErrorCode}: 套装商品正在被其他操作修改，请稍后重试"
+                    : "增量保存失败：" + ex.Message;
                 return result;
             }
         }
@@ -566,6 +642,17 @@ namespace BlazorApp.Api.Services
                 var actorName = ResolveActorName();
                 var transactionResult = await _db.Ado.UseTranAsync(async () =>
                 {
+                    SetChildPurchasePriceLockScope? lockScope = null;
+                    if (
+                        request.PriceType.Equals("IMPORT", StringComparison.OrdinalIgnoreCase)
+                        && productCodes.Count > 0
+                    )
+                    {
+                        lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                            _db,
+                            productCodes
+                        );
+                    }
                     var beforeSnapshots = await CaptureChangeSnapshotsAsync(productCodes);
                     // 使用UpdateColumns只更新特定字段，避免更新所有字段
                     int affected = 0;
@@ -577,7 +664,9 @@ namespace BlazorApp.Api.Services
                                 .SetColumns(wp => wp.DomesticPrice == request.Price)
                                 .SetColumns(wp => wp.UpdatedAt == occurredAtUtc)
                                 .SetColumns(wp => wp.UpdatedBy == actorName)
-                                .Where(wp => productCodes.Contains(wp.ProductCode))
+                                .Where(wp =>
+                                    productCodes.Contains(wp.ProductCode) && !wp.IsDeleted
+                                )
                                 .ExecuteCommandAsync();
                             break;
 
@@ -586,14 +675,18 @@ namespace BlazorApp.Api.Services
                                 .SetColumns(wp => wp.OEMPrice == request.Price)
                                 .SetColumns(wp => wp.UpdatedAt == occurredAtUtc)
                                 .SetColumns(wp => wp.UpdatedBy == actorName)
-                                .Where(wp => productCodes.Contains(wp.ProductCode))
+                                .Where(wp =>
+                                    productCodes.Contains(wp.ProductCode) && !wp.IsDeleted
+                                )
                                 .ExecuteCommandAsync();
                             break;
 
                         case "IMPORT":
                             // 进口价变更需要重新计算库存金额
                             var products = await _db.Queryable<WarehouseProduct>()
-                                .Where(wp => productCodes.Contains(wp.ProductCode))
+                                .Where(wp =>
+                                    productCodes.Contains(wp.ProductCode) && !wp.IsDeleted
+                                )
                                 .ToListAsync();
 
                             foreach (var product in products)
@@ -607,7 +700,15 @@ namespace BlazorApp.Api.Services
                                 product.UpdatedBy = actorName;
                             }
 
-                            affected = await _db.Updateable(products).ExecuteCommandAsync();
+                            affected = await _db.Updateable(products)
+                                .UpdateColumns(wp => new
+                                {
+                                    wp.ImportPrice,
+                                    wp.StockValue,
+                                    wp.UpdatedAt,
+                                    wp.UpdatedBy,
+                                })
+                                .ExecuteCommandAsync();
                             break;
 
                         default:
@@ -616,6 +717,15 @@ namespace BlazorApp.Api.Services
 
                     result.AffectedCount = affected;
                     result.Success = affected > 0;
+
+                    if (lockScope != null)
+                    {
+                        await RecalculateSetChildPurchasePricesLockedAsync(
+                            lockScope,
+                            productCodes,
+                            actorName
+                        );
+                    }
 
                     var afterSnapshots = await CaptureChangeSnapshotsAsync(productCodes);
                     await RecordChangeHistoryAsync(
@@ -644,7 +754,9 @@ namespace BlazorApp.Api.Services
                 _logger.LogError(ex, "批量设置价格失败");
                 result.Success = false;
                 result.AffectedCount = 0;
-                result.ErrorMessage = ex.Message;
+                result.ErrorMessage = SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                    ? $"{SetChildPurchasePriceMutationLock.BusyErrorCode}: 套装商品正在被其他操作修改，请稍后重试"
+                    : ex.Message;
                 return result;
             }
         }
@@ -983,6 +1095,41 @@ namespace BlazorApp.Api.Services
                     OccurredAtUtc = occurredAtUtc ?? DateTime.UtcNow,
                 }
             );
+        }
+
+        private async Task RecalculateSetChildPurchasePricesLockedAsync(
+            SetChildPurchasePriceLockScope lockScope,
+            IEnumerable<string> productCodes,
+            string updatedBy
+        )
+        {
+            var normalizedCodes = productCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (normalizedCodes.Count == 0)
+            {
+                return;
+            }
+
+            var recalculation = await new SetChildPurchasePriceService(_db)
+                .RecalculateLockedAsync(
+                    lockScope,
+                    normalizedCodes,
+                    storeCodes: null,
+                    updatedBy: updatedBy
+                );
+            if (
+                recalculation.ProductSetCode.SkippedGroupCount > 0
+                || recalculation.StoreMultiCodeProduct.SkippedGroupCount > 0
+            )
+            {
+                throw new InvalidOperationException(
+                    recalculation.Errors.FirstOrDefault()?.Reason
+                        ?? "套装与多码商品成本无法完整校正"
+                );
+            }
         }
 
         private string ResolveActorName()

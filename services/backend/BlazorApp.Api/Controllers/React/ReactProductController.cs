@@ -255,6 +255,10 @@ namespace BlazorApp.Api.Controllers.React
                         }
                     );
                 }
+                if (result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode)
+                {
+                    return Conflict(result);
+                }
                 return BadRequest(new { success = false, message = result.Message });
             }
             catch (Exception ex)
@@ -281,6 +285,10 @@ namespace BlazorApp.Api.Controllers.React
                 if (result.Success)
                 {
                     return Ok(new { success = true, message = result.Message });
+                }
+                if (result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode)
+                {
+                    return Conflict(result);
                 }
                 return BadRequest(new { success = false, message = result.Message });
             }
@@ -318,9 +326,14 @@ namespace BlazorApp.Api.Controllers.React
                             successCount = result.Data?.SuccessCount,
                             failedCount = result.Data?.FailedCount,
                             errors = result.Data?.Errors,
+                            failureDetails = result.Data?.FailureDetails,
                             message = result.Message,
                         }
                     );
+                }
+                if (result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode)
+                {
+                    return Conflict(result);
                 }
                 return BadRequest(new { success = false, message = result.Message });
             }
@@ -450,9 +463,14 @@ namespace BlazorApp.Api.Controllers.React
                             successCount = result.Data?.SuccessCount,
                             failedCount = result.Data?.FailedCount,
                             errors = result.Data?.Errors,
+                            failureDetails = result.Data?.FailureDetails,
                             message = result.Message,
                         }
                     );
+                }
+                if (result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode)
+                {
+                    return Conflict(result);
                 }
                 return BadRequest(new { success = false, message = result.Message });
             }
@@ -701,6 +719,10 @@ namespace BlazorApp.Api.Controllers.React
                         message = result.Message
                     });
                 }
+                if (result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode)
+                {
+                    return Conflict(result);
+                }
                 return BadRequest(new { success = false, message = result.Message });
             }
             catch (Exception ex)
@@ -738,7 +760,13 @@ namespace BlazorApp.Api.Controllers.React
 
                 _logger.LogInformation("从HQ同步选中商品: {Count} 件", productCodes.Count);
                 var result = await _productHqSyncService.SyncSelectedFromHqAsync(productCodes);
-                return result.Success ? Ok(result) : BadRequest(result);
+                if (result.Success)
+                {
+                    return Ok(result);
+                }
+                return result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                    ? Conflict(result)
+                    : BadRequest(result);
             }
             catch (Exception ex)
             {
@@ -798,7 +826,14 @@ namespace BlazorApp.Api.Controllers.React
                     LogPushToHqBusinessFailure(result);
                 }
 
-                return result.Success ? Ok(result) : BadRequest(result);
+                if (result.Success)
+                {
+                    return Ok(result);
+                }
+                return result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                        && (result.Data?.SuccessCount ?? 0) == 0
+                    ? Conflict(result)
+                    : BadRequest(result);
             }
             catch (Exception ex)
             {
@@ -966,20 +1001,23 @@ namespace BlazorApp.Api.Controllers.React
                             success = true,
                             data = result.Data,
                             message = result.Message,
+                            failureDetails = result.Details,
                         }
                     );
                 }
                 else
                 {
-                    return BadRequest(
-                        new
-                        {
-                            success = false,
-                            message = result.Message,
-                            errorCode = result.ErrorCode,
-                            data = result.Data ?? result.Details,
-                        }
-                    );
+                    var body = new
+                    {
+                        success = false,
+                        message = result.Message,
+                        errorCode = result.ErrorCode,
+                        data = result.Data,
+                        failureDetails = result.Details,
+                    };
+                    return result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                        ? Conflict(body)
+                        : BadRequest(body);
                 }
             }
             catch (Exception ex)

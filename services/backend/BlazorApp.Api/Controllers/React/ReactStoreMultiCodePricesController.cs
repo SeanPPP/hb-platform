@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -64,6 +65,8 @@ namespace BlazorApp.Api.Controllers.React
                         message = result.Message,
                     }
                 );
+            if (result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode)
+                return Conflict(result);
             return BadRequest(new { success = false, message = result.Message });
         }
 
@@ -84,6 +87,8 @@ namespace BlazorApp.Api.Controllers.React
                         message = result.Message,
                     }
                 );
+            if (result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode)
+                return Conflict(result);
             return BadRequest(new { success = false, message = result.Message });
         }
 

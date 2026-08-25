@@ -4,6 +4,7 @@ using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HBweb;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Security.Claims;
@@ -224,7 +225,10 @@ namespace BlazorApp.Api.Controllers.React
             return activeStoreCodes.All(userStoreCodes.Contains);
         }
 
-        private async Task<ApiResponse<BatchExecuteConfirmationDetailsDto>?> ValidateBatchExecuteConfirmationAsync(
+        private async Task<(
+            ApiResponse<BatchExecuteConfirmationDetailsDto>? Error,
+            List<StoreLocalSupplierInvoiceDetails> ConfirmedDetails
+        )> ValidateBatchExecuteConfirmationAsync(
             string invoiceGuid,
             BatchExecuteActionsRequestDto dto
         )
@@ -235,7 +239,7 @@ namespace BlazorApp.Api.Controllers.React
                 .ToList();
 
             if (selectedDetailGuids.Count == 0)
-                return null;
+                return (null, new List<StoreLocalSupplierInvoiceDetails>());
 
             var expectedActions = dto.ExpectedActions
                 .Where(item => !string.IsNullOrWhiteSpace(item.DetailGuid))
@@ -245,16 +249,19 @@ namespace BlazorApp.Api.Controllers.React
 
             if (expectedActions.Count == 0 || dto.ConfirmedCreateProductCount == null)
             {
-                return ApiResponse<BatchExecuteConfirmationDetailsDto>.Error(
-                    "批量执行确认已失效：缺少确认动作快照，请刷新后重试",
-                    "VALIDATION_ERROR",
-                    new BatchExecuteConfirmationDetailsDto
-                    {
-                        RequestedDetailCount = selectedDetailGuids.Count,
-                        CurrentDetailCount = 0,
-                        ConfirmedCreateProductCount = dto.ConfirmedCreateProductCount,
-                        CurrentCreateProductCount = 0,
-                    }
+                return (
+                    ApiResponse<BatchExecuteConfirmationDetailsDto>.Error(
+                        "批量执行确认已失效：缺少确认动作快照，请刷新后重试",
+                        "VALIDATION_ERROR",
+                        new BatchExecuteConfirmationDetailsDto
+                        {
+                            RequestedDetailCount = selectedDetailGuids.Count,
+                            CurrentDetailCount = 0,
+                            ConfirmedCreateProductCount = dto.ConfirmedCreateProductCount,
+                            CurrentCreateProductCount = 0,
+                        }
+                    ),
+                    new List<StoreLocalSupplierInvoiceDetails>()
                 );
             }
 
@@ -264,7 +271,6 @@ namespace BlazorApp.Api.Controllers.React
                     && selectedDetailGuids.Contains(detail.DetailGUID)
                     && detail.IsDeleted == false
                 )
-                .Select(detail => new { detail.DetailGUID, detail.ActivityType })
                 .ToListAsync();
 
             var currentByDetailGuid = currentDetails.ToDictionary(detail => detail.DetailGUID);
@@ -339,7 +345,7 @@ namespace BlazorApp.Api.Controllers.React
             }
 
             if (mismatchDetails.Count == 0)
-                return null;
+                return (null, currentDetails);
 
             var details = new BatchExecuteConfirmationDetailsDto
             {
@@ -354,10 +360,13 @@ namespace BlazorApp.Api.Controllers.React
                 ? "批量执行确认已失效：创建商品数量已变化，请刷新后重试"
                 : "批量执行确认已失效：明细动作已变化，请刷新后重试";
 
-            return ApiResponse<BatchExecuteConfirmationDetailsDto>.Error(
-                message,
-                "VALIDATION_ERROR",
-                details
+            return (
+                ApiResponse<BatchExecuteConfirmationDetailsDto>.Error(
+                    message,
+                    "VALIDATION_ERROR",
+                    details
+                ),
+                new List<StoreLocalSupplierInvoiceDetails>()
             );
         }
 
@@ -936,14 +945,16 @@ namespace BlazorApp.Api.Controllers.React
                         message = result.Message,
                     }
                 );
-            return BadRequest(
-                new
-                {
-                    success = false,
-                    message = result.Message,
-                    details = result.Details ?? result.Data,
-                }
-            );
+            var error = new
+            {
+                success = false,
+                message = result.Message,
+                code = result.ErrorCode,
+                details = result.Details ?? result.Data,
+            };
+            return result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                ? StatusCode(StatusCodes.Status409Conflict, error)
+                : BadRequest(error);
         }
 
         [HttpPost("update-to-store-prices/jobs")]
@@ -1510,15 +1521,15 @@ namespace BlazorApp.Api.Controllers.React
                 return Forbid();
 
             var confirmationValidation = await ValidateBatchExecuteConfirmationAsync(invoiceGuid, dto);
-            if (confirmationValidation != null)
+            if (confirmationValidation.Error != null)
             {
                 return BadRequest(
                     new
                     {
                         success = false,
-                        message = confirmationValidation.Message,
-                        code = confirmationValidation.Code,
-                        details = confirmationValidation.Details,
+                        message = confirmationValidation.Error.Message,
+                        code = confirmationValidation.Error.Code,
+                        details = confirmationValidation.Error.Details,
                     }
                 );
             }
@@ -1528,11 +1539,22 @@ namespace BlazorApp.Api.Controllers.React
                 invoiceGuid,
                 dto.DetailGuids,
                 user,
-                dto.NewProductProductTypeSelections
+                dto.NewProductProductTypeSelections,
+                dto.ExpectedActions,
+                confirmationValidation.ConfirmedDetails
             );
             if (result.Success)
                 return Ok(new { success = true, data = result.Data, message = result.Message });
-            return BadRequest(new { success = false, message = result.Message, code = result.Code, details = result.Details });
+            var error = new
+            {
+                success = false,
+                message = result.Message,
+                code = result.Code,
+                details = result.Details,
+            };
+            return result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                ? StatusCode(StatusCodes.Status409Conflict, error)
+                : BadRequest(error);
         }
 
         [HttpPost("push-to-hq")]

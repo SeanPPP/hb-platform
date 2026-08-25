@@ -33,6 +33,7 @@ namespace BlazorApp.Shared.DTOs
         public int RetailPriceCopied { get; set; }
         public int MultiCodeCopied { get; set; }
         public string Message { get; set; } = string.Empty;
+        public string? ErrorCode { get; set; }
         public int BatchCount { get; set; }
         public DateTime Timestamp { get; set; }
     }

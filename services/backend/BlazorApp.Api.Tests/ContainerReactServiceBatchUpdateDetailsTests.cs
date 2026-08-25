@@ -47,6 +47,8 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
             typeof(WarehouseProduct),
             typeof(Product),
             typeof(StoreRetailPrice),
+            typeof(ProductSetCode),
+            typeof(StoreMultiCodeProduct),
             typeof(WarehouseCategory)
         );
     }

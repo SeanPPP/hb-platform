@@ -138,6 +138,12 @@ namespace BlazorApp.Api.Controllers.React
                 return Ok(new { success = true, data = item, message = "保存成功" });
             }
             catch (Exception ex)
+                when (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+            {
+                _logger.LogWarning(ex, "更新移动端仓库商品遇到套装成本锁冲突: {ProductCode}", productCode);
+                return BuildSetChildPurchasePriceBusy();
+            }
+            catch (Exception ex)
             {
                 _logger.LogError(ex, "更新移动端仓库商品失败: {ProductCode}", productCode);
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
@@ -440,6 +446,20 @@ namespace BlazorApp.Api.Controllers.React
                 );
             }
             catch (Exception ex)
+                when (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+            {
+                _logger.LogWarning(ex, "批量更新遇到套装成本锁冲突");
+                return BuildSetChildPurchasePriceBusy(
+                    request?.Items.Select((item, index) =>
+                        !string.IsNullOrWhiteSpace(item.ProductCode)
+                            ? item.ProductCode!
+                            : !string.IsNullOrWhiteSpace(item.ItemNumber)
+                                ? item.ItemNumber!
+                                : $"#{index + 1}"
+                    )
+                );
+            }
+            catch (Exception ex)
             {
                 _logger.LogError(ex, "批量更新失败");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
@@ -570,6 +590,20 @@ namespace BlazorApp.Api.Controllers.React
                 );
             }
             catch (Exception ex)
+                when (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+            {
+                _logger.LogWarning(ex, "批量创建遇到套装成本锁冲突");
+                return BuildSetChildPurchasePriceBusy(
+                    request?.Items.Select((item, index) =>
+                        !string.IsNullOrWhiteSpace(item.ProductCode)
+                            ? item.ProductCode!
+                            : !string.IsNullOrWhiteSpace(item.ItemNumber)
+                                ? item.ItemNumber!
+                                : $"#{index + 1}"
+                    )
+                );
+            }
+            catch (Exception ex)
             {
                 _logger.LogError(ex, "批量创建失败");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
@@ -655,6 +689,12 @@ namespace BlazorApp.Api.Controllers.React
                 );
             }
             catch (Exception ex)
+                when (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+            {
+                _logger.LogWarning(ex, "新建单个商品遇到套装成本锁冲突");
+                return BuildSetChildPurchasePriceBusy();
+            }
+            catch (Exception ex)
             {
                 _logger.LogError(ex, "新建单个商品失败");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
@@ -711,6 +751,12 @@ namespace BlazorApp.Api.Controllers.React
                         results = resp.Results,
                     }
                 );
+            }
+            catch (Exception ex)
+                when (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+            {
+                _logger.LogWarning(ex, "从国内商品导入遇到套装成本锁冲突");
+                return BuildSetChildPurchasePriceBusy(request?.ProductCodes);
             }
             catch (Exception ex)
             {
@@ -879,6 +925,12 @@ namespace BlazorApp.Api.Controllers.React
                 return BadRequest(new { success = false, message = resp.Message });
             }
             catch (Exception ex)
+                when (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+            {
+                _logger.LogWarning(ex, "仓库商品完整更新遇到套装成本锁冲突 ProductCode={ProductCode}", productCode);
+                return BuildSetChildPurchasePriceBusy();
+            }
+            catch (Exception ex)
             {
                 _logger.LogError(ex, "仓库商品完整更新失败 ProductCode={ProductCode}", productCode);
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
@@ -911,6 +963,12 @@ namespace BlazorApp.Api.Controllers.React
                 if (!resp.Success)
                     return BadRequest(new { success = false, message = resp.Message });
                 return Ok(new { success = true, message = resp.Message });
+            }
+            catch (Exception ex)
+                when (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+            {
+                _logger.LogWarning(ex, "更新仓库商品遇到套装成本锁冲突: {ProductCode}", productCode);
+                return BuildSetChildPurchasePriceBusy();
             }
             catch (Exception ex)
             {
@@ -1137,6 +1195,53 @@ namespace BlazorApp.Api.Controllers.React
         {
             // 控制器沿用仓库现有惯例传递认证用户名；非 HTTP 调用由服务层回退 System。
             return User.Identity?.Name ?? "System";
+        }
+
+        private IActionResult BuildSetChildPurchasePriceBusy(
+            IEnumerable<string>? itemKeys = null
+        )
+        {
+            var keys = itemKeys?
+                .Where(key => !string.IsNullOrWhiteSpace(key))
+                .Select(key => key.Trim())
+                .ToList() ?? new List<string>();
+            const string message = "套装子项成本正在被其他操作更新，请稍后重试";
+
+            if (keys.Count == 0)
+            {
+                return Conflict(
+                    new
+                    {
+                        success = false,
+                        message,
+                        errorCode = SetChildPurchasePriceMutationLock.BusyErrorCode,
+                    }
+                );
+            }
+
+            var failureDetails = keys
+                .Select(key => new BatchOperationFailureDto
+                {
+                    ItemKey = key,
+                    Message = message,
+                    ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode,
+                })
+                .ToList();
+            return Conflict(
+                new
+                {
+                    success = false,
+                    message,
+                    errorCode = SetChildPurchasePriceMutationLock.BusyErrorCode,
+                    data = new
+                    {
+                        successCount = 0,
+                        failedCount = failureDetails.Count,
+                        errors = failureDetails.Select(detail => $"{detail.ItemKey}: {detail.Message}"),
+                        failureDetails,
+                    },
+                }
+            );
         }
 
         #region 请求包装类

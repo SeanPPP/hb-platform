@@ -56,6 +56,8 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
             typeof(Product),
             typeof(WarehouseProduct),
             typeof(StoreRetailPrice),
+            typeof(ProductSetCode),
+            typeof(StoreMultiCodeProduct),
             typeof(DomesticProduct),
             typeof(ProductLocation),
             typeof(Location),
@@ -284,6 +286,81 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 Assert.Equal("tester", s002.UpdatedBy);
             }
         );
+    }
+
+    [Fact]
+    public async Task UpdateOrderLineAsync_WhenSyncImportPriceTrue_RecalculatesGlobalAndActualStoreSetChildCosts()
+    {
+        await SeedStoreOrderGraphAsync();
+        await SeedStoreRetailPriceAsync("S001", "P001", purchasePrice: 3m, retailPrice: 9.99m);
+        await SeedSetChildPurchasePriceRowsAsync("P001", "S001");
+        var service = CreateStoreOrderService("tester");
+
+        var result = await service.UpdateOrderLineAsync(
+            new UpdateOrderLineDto
+            {
+                OrderGUID = "order-1",
+                ProductCode = "P001",
+                Quantity = 4m,
+                ImportPrice = 5.55m,
+                SyncImportPrice = true,
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        var globalCosts = await _db.Queryable<ProductSetCode>()
+            .Where(item => item.ProductCode == "P001")
+            .OrderBy(item => item.SetProductCode)
+            .Select(item => item.SetPurchasePrice)
+            .ToListAsync();
+        var storeCosts = await _db.Queryable<StoreMultiCodeProduct>()
+            .Where(item => item.StoreCode == "S001" && item.ProductCode == "P001")
+            .OrderBy(item => item.MultiCodeProductCode)
+            .Select(item => item.PurchasePrice)
+            .ToListAsync();
+
+        Assert.Equal(new decimal?[] { 2.22m, 3.33m }, globalCosts);
+        Assert.Equal(new decimal?[] { 2.22m, 3.33m }, storeCosts);
+    }
+
+    [Fact]
+    public async Task BatchUpdateOrderLineAsync_WhenSyncImportPriceTrue_RecalculatesSetChildCostsOnceWithinTheTransaction()
+    {
+        await SeedStoreOrderGraphAsync();
+        await SeedStoreRetailPriceAsync("S001", "P001", purchasePrice: 3m, retailPrice: 9.99m);
+        await SeedSetChildPurchasePriceRowsAsync("P001", "S001");
+        var service = CreateStoreOrderService("tester");
+
+        var result = await service.BatchUpdateOrderLineAsync(
+            new BatchUpdateOrderLineDto
+            {
+                OrderGUID = "order-1",
+                Items =
+                {
+                    new BatchUpdateItemDto
+                    {
+                        ProductCode = "P001",
+                        ImportPrice = 6m,
+                        SyncImportPrice = true,
+                    },
+                },
+            }
+        );
+
+        Assert.True(result.Success, result.Message);
+        var globalCosts = await _db.Queryable<ProductSetCode>()
+            .Where(item => item.ProductCode == "P001")
+            .OrderBy(item => item.SetProductCode)
+            .Select(item => item.SetPurchasePrice)
+            .ToListAsync();
+        var storeCosts = await _db.Queryable<StoreMultiCodeProduct>()
+            .Where(item => item.StoreCode == "S001" && item.ProductCode == "P001")
+            .OrderBy(item => item.MultiCodeProductCode)
+            .Select(item => item.PurchasePrice)
+            .ToListAsync();
+
+        Assert.Equal(new decimal?[] { 2.4m, 3.6m }, globalCosts);
+        Assert.Equal(new decimal?[] { 2.4m, 3.6m }, storeCosts);
     }
 
     [Fact]
@@ -1642,6 +1719,69 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
                 StoreRetailPriceValue = retailPrice,
                 IsActive = true,
                 IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+    }
+
+    private async Task SeedSetChildPurchasePriceRowsAsync(string productCode, string storeCode)
+    {
+        _db.CodeFirst.InitTables(typeof(ProductSetCode), typeof(StoreMultiCodeProduct));
+        await _db.Insertable(
+            new[]
+            {
+                new ProductSetCode
+                {
+                    SetCodeId = $"{productCode}-set-a",
+                    ProductCode = productCode,
+                    SetProductCode = $"{productCode}-child-a",
+                    SetItemNumber = "SET-A",
+                    SetPurchasePrice = 0m,
+                    SetRetailPrice = 4m,
+                    SetType = 1,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new ProductSetCode
+                {
+                    SetCodeId = $"{productCode}-set-b",
+                    ProductCode = productCode,
+                    SetProductCode = $"{productCode}-child-b",
+                    SetItemNumber = "SET-B",
+                    SetPurchasePrice = 0m,
+                    SetRetailPrice = 6m,
+                    SetType = 1,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+            }
+        ).ExecuteCommandAsync();
+        await _db.Insertable(
+            new[]
+            {
+                new StoreMultiCodeProduct
+                {
+                    UUID = $"{storeCode}-{productCode}-child-a",
+                    StoreCode = storeCode,
+                    ProductCode = productCode,
+                    MultiCodeProductCode = $"{productCode}-child-a",
+                    StoreMultiCodeProductCode = $"{storeCode}-{productCode}-child-a",
+                    PurchasePrice = 0m,
+                    MultiCodeRetailPrice = 4m,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new StoreMultiCodeProduct
+                {
+                    UUID = $"{storeCode}-{productCode}-child-b",
+                    StoreCode = storeCode,
+                    ProductCode = productCode,
+                    MultiCodeProductCode = $"{productCode}-child-b",
+                    StoreMultiCodeProductCode = $"{storeCode}-{productCode}-child-b",
+                    PurchasePrice = 0m,
+                    MultiCodeRetailPrice = 6m,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
             }
         ).ExecuteCommandAsync();
     }

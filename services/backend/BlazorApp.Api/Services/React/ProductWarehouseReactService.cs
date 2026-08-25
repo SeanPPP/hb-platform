@@ -805,6 +805,9 @@ namespace BlazorApp.Api.Services.React
             {
                 // 开启事务
                 _context.Db.Ado.BeginTran();
+                // 先锁再读取，避免主成本、门店主价与套装子项派生价交叉覆盖。
+                var setChildPurchasePriceLock =
+                    await SetChildPurchasePriceMutationLock.AcquireAllAsync(_context.Db);
 
                 // 收集需要查询的 ProductCode 和 ItemNumber
                 var productCodes = items
@@ -1457,6 +1460,19 @@ namespace BlazorApp.Api.Services.React
                             storeRetailPrices.Count
                         );
                     }
+
+                    var recalculation = await new SetChildPurchasePriceService(
+                        _context.Db
+                    ).RecalculateLockedAsync(
+                        setChildPurchasePriceLock,
+                        codesWithImportPrice,
+                        storeCodes: null,
+                        updatedBy: effectiveUpdatedBy
+                    );
+                    EnsureSetChildPurchasePriceRecalculated(
+                        recalculation,
+                        "批量更新后的套装子项成本重算不完整"
+                    );
                 }
 
                 await RecordProductChangeHistoryAsync(
@@ -1473,6 +1489,10 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _context.Db.Ado.RollbackTran();
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                {
+                    throw;
+                }
                 _logger.LogError(ex, "批量更新失败");
                 result.Success = false;
                 result.SuccessCount = 0;
@@ -1551,12 +1571,13 @@ namespace BlazorApp.Api.Services.React
 
             var effectiveUpdatedBy = ResolveUpdatedBy(updatedBy);
             var effectiveBatchGuid = batchGuid ?? Guid.NewGuid();
+            var ownsTransaction = useTransaction || _context.Db.Ado.Transaction == null;
 
             try
             {
-                if (useTransaction)
+                if (ownsTransaction)
                 {
-                    // 默认入口自行开事务；整柜提交会传 false，由外层统一提交/回滚，避免嵌套事务提前落库。
+                    // 默认入口自行开事务；没有外层事务的显式调用也必须保证套装写入原子性。
                     _context.Db.Ado.BeginTran();
                 }
                 var now = DateTime.Now;
@@ -1567,6 +1588,12 @@ namespace BlazorApp.Api.Services.React
                     .Where(c => !string.IsNullOrWhiteSpace(c))
                     .Distinct()
                     .ToList();
+                // 编码完整时只锁本批商品；只有需要生成或按货号解析编码时才以全局锁兜底。
+                var setChildPurchasePriceLock = items.All(item =>
+                    !string.IsNullOrWhiteSpace(item.ProductCode)
+                )
+                    ? await SetChildPurchasePriceMutationLock.AcquireProductsAsync(_context.Db, codes)
+                    : await SetChildPurchasePriceMutationLock.AcquireAllAsync(_context.Db);
                 var itemNumbers = items
                     .Select(i => i.ItemNumber)
                     .Where(n => !string.IsNullOrWhiteSpace(n))
@@ -1864,20 +1891,8 @@ namespace BlazorApp.Api.Services.React
                     {
                         if (setProductsByCode.TryGetValue(code!, out var setProducts))
                         {
-                            // 套装子码进货价按子码零售价比例分摊主项进货价，子项自身进货价只作为无法分摊时的保守回退。
-                            var allocatedPurchasePrices = SetChildPurchasePriceAllocator.AllocateByRetailRatio(
-                                setProducts,
-                                item.ImportPrice,
-                                sp => sp.SetProductCode,
-                                sp => sp.OEMPrice ?? item.OEMPrice
-                            );
                             foreach (var sp in setProducts)
                             {
-                                var setPurchasePrice =
-                                    sp.SetProductCode != null
-                                    && allocatedPurchasePrices.TryGetValue(sp.SetProductCode, out var allocatedPurchasePrice)
-                                        ? allocatedPurchasePrice
-                                        : sp.ImportPrice ?? item.ImportPrice;
                                 var setCode = new ProductSetCode
                                 {
                                     SetCodeId = sp.SetProductCode!,
@@ -1885,7 +1900,8 @@ namespace BlazorApp.Api.Services.React
                                     SetProductCode = sp.SetProductCode!,
                                     SetItemNumber = sp.SetProductNo,
                                     SetBarcode = sp.SetBarcode,
-                                    SetPurchasePrice = setPurchasePrice,
+                                    // Type1/Type2 子项成本都是派生值，待全部关系和门店投影落库后统一重算。
+                                    SetPurchasePrice = null,
                                     SetRetailPrice = sp.OEMPrice ?? item.OEMPrice,
                                     SetQuantity = 1,
                                     SetType = 1,
@@ -2025,6 +2041,26 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
+                var createdSetProductCodes = toCreateSetCodes
+                    .Where(setCode => IsCostDerivedSetType(setCode.SetType))
+                    .Select(setCode => setCode.ProductCode)
+                    .ToList();
+                if (createdSetProductCodes.Count > 0)
+                {
+                    var recalculation = await new SetChildPurchasePriceService(
+                        _context.Db
+                    ).RecalculateLockedAsync(
+                        setChildPurchasePriceLock,
+                        createdSetProductCodes,
+                        storeCodes: activeStores,
+                        updatedBy: effectiveUpdatedBy
+                    );
+                    EnsureSetChildPurchasePriceRecalculated(
+                        recalculation,
+                        "批量创建后的套装子项成本重算不完整"
+                    );
+                }
+
                 await RecordProductChangeHistoryAsync(
                     beforeSnapshots,
                     auditProductCodes,
@@ -2036,16 +2072,20 @@ namespace BlazorApp.Api.Services.React
                     actorUserGuid: actorUserGuid
                 );
 
-                if (useTransaction)
+                if (ownsTransaction)
                 {
                     _context.Db.Ado.CommitTran();
                 }
             }
             catch (Exception ex)
             {
-                if (useTransaction)
+                if (ownsTransaction)
                 {
                     _context.Db.Ado.RollbackTran();
+                }
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                {
+                    throw;
                 }
                 _logger.LogError(ex, "批量创建失败");
                 return new BatchOperationResultDto
@@ -4567,6 +4607,12 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 _context.Db.Ado.BeginTran();
+                // 新建套装的关系、门店投影和派生成本必须在同一产品锁内完成。
+                var setChildPurchasePriceLock =
+                    await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        _context.Db,
+                        new[] { productCode }
+                    );
                 var now = DateTime.Now;
                 var auditProductCode = productCode!;
                 var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
@@ -4751,6 +4797,9 @@ namespace BlazorApp.Api.Services.React
 
                     foreach (var setItem in request.SetItems)
                     {
+                        var setType = request.SetType.HasValue
+                            ? (int)request.SetType.Value
+                            : 1;
                         var domesticSetProduct = new DomesticSetProduct
                         {
                             ProductCode = productCode,
@@ -4773,10 +4822,12 @@ namespace BlazorApp.Api.Services.React
                                 SetProductCode = domesticSetProduct.SetProductCode,
                                 SetItemNumber = setItem.ItemNumber,
                                 SetBarcode = setItem.Barcode,
-                                SetPurchasePrice = setItem.PurchasePrice ?? request.ImportPrice,
+                                SetPurchasePrice = IsCostDerivedSetType(setType)
+                                    ? null
+                                    : setItem.PurchasePrice ?? request.ImportPrice,
                                 SetRetailPrice = setItem.RetailPrice ?? request.OEMPrice,
                                 SetQuantity = (int)setItem.Quantity,
-                                SetType = request.SetType.HasValue ? (int)request.SetType.Value : 1,
+                                SetType = setType,
                                 IsActive = true,
                                 IsDeleted = false,
                                 CreatedAt = now,
@@ -4788,6 +4839,36 @@ namespace BlazorApp.Api.Services.React
                     {
                         await _context.Db.Insertable(domesticSetProducts).ExecuteCommandAsync();
                         await _context.Db.Insertable(productSetCodes).ExecuteCommandAsync();
+
+                        var projectedSetRows = productSetCodes
+                            .SelectMany(setCode => activeStores
+                                .Where(storeCode => !string.IsNullOrWhiteSpace(storeCode))
+                                .Select(storeCode => new StoreMultiCodeProduct
+                                {
+                                    UUID = UuidHelper.GenerateUuid7(),
+                                    ProductCode = productCode,
+                                    StoreCode = storeCode,
+                                    MultiCodeProductCode = setCode.SetProductCode,
+                                    StoreMultiCodeProductCode = storeCode + setCode.SetProductCode,
+                                    MultiBarcode = setCode.SetBarcode,
+                                    PurchasePrice = IsCostDerivedSetType(setCode.SetType)
+                                        ? null
+                                        : setCode.SetPurchasePrice,
+                                    MultiCodeRetailPrice = setCode.SetRetailPrice,
+                                    IsAutoPricing = false,
+                                    IsSpecialProduct = false,
+                                    IsActive = setCode.IsActive,
+                                    IsDeleted = false,
+                                    CreatedAt = now,
+                                    UpdatedAt = now,
+                                    CreatedBy = effectiveUpdatedBy,
+                                    UpdatedBy = effectiveUpdatedBy,
+                                }))
+                            .ToList();
+                        if (projectedSetRows.Count > 0)
+                        {
+                            await _context.Db.Insertable(projectedSetRows).ExecuteCommandAsync();
+                        }
                     }
                 }
 
@@ -4830,9 +4911,8 @@ namespace BlazorApp.Api.Services.React
                     {
                         var multiCodeItem = request.MultiCodeItems[i];
                         var barcode = resolvedBarcodes[i];
-                        var multiCodeKey = productSetCodes
-                            .First(psc => psc.SetBarcode == barcode)
-                            .SetProductCode;
+                        var matchedSetCode = productSetCodes.First(psc => psc.SetBarcode == barcode);
+                        var multiCodeKey = matchedSetCode.SetProductCode;
                         foreach (var storeCode in activeStoresForMultiCode)
                         {
                             multiCodeProducts.Add(
@@ -4845,7 +4925,10 @@ namespace BlazorApp.Api.Services.React
                                     StoreMultiCodeProductCode = storeCode + multiCodeKey,
                                     MultiBarcode = barcode,
                                     MultiCodeRetailPrice = multiCodeItem.RetailPrice,
-                                    PurchasePrice = multiCodeItem.PurchasePrice,
+                                    // Type1/Type2 子项成本由统一服务按主成本派生，不能直接采纳客户端值。
+                                    PurchasePrice = IsCostDerivedSetType(matchedSetCode.SetType)
+                                        ? null
+                                        : multiCodeItem.PurchasePrice,
                                     DiscountRate = multiCodeItem.DiscountRate,
                                     IsAutoPricing = multiCodeItem.AutoPricing,
                                     IsSpecialProduct = multiCodeItem.IsSpecialProduct,
@@ -4928,6 +5011,22 @@ namespace BlazorApp.Api.Services.React
                         await _context.Db.Insertable(toInsert).ExecuteCommandAsync();
                 }
 
+                if (productSetCodes.Any(x => IsCostDerivedSetType(x.SetType)))
+                {
+                    var recalculation = await new SetChildPurchasePriceService(
+                        _context.Db
+                    ).RecalculateLockedAsync(
+                        setChildPurchasePriceLock,
+                        new[] { productCode },
+                        storeCodes: activeStores,
+                        updatedBy: effectiveUpdatedBy
+                    );
+                    EnsureSetChildPurchasePriceRecalculated(
+                        recalculation,
+                        "创建商品后的套装子项成本重算不完整"
+                    );
+                }
+
                 await RecordProductChangeHistoryAsync(
                     beforeSnapshots,
                     new[] { auditProductCode },
@@ -4949,6 +5048,10 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _context.Db.Ado.RollbackTran();
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                {
+                    throw;
+                }
                 _logger.LogError(ex, "创建单个商品失败");
                 response.Message = "创建失败: " + ex.Message;
             }
@@ -5288,6 +5391,9 @@ namespace BlazorApp.Api.Services.React
                 _context.Db.Ado.BeginTran();
                 var now = DateTime.Now;
                 var codes = request.ProductCodes.Distinct().ToList();
+                // 国内导入会同时写主成本、套装关系和门店价格，必须先取产品锁再读取最新状态。
+                var setChildPurchasePriceLock =
+                    await SetChildPurchasePriceMutationLock.AcquireProductsAsync(_context.Db, codes);
                 var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(codes);
 
                 // ===== 批量预加载数据（避免 N+1 问题）=====
@@ -5602,14 +5708,6 @@ namespace BlazorApp.Api.Services.React
                     {
                         existingProductSetCodes.TryGetValue(productCode, out var existingSet);
                         existingSet ??= new HashSet<string>();
-                        // 国内导入补套装子码时同样按零售价比例分摊主进货价，保持和货柜创建路径一致。
-                        var allocatedPurchasePrices = SetChildPurchasePriceAllocator.AllocateByRetailRatio(
-                            setProducts,
-                            wp.ImportPrice,
-                            sp => sp.SetProductCode,
-                            sp => sp.OEMPrice ?? wp.OEMPrice
-                        );
-
                         foreach (var sp in setProducts)
                         {
                             if (string.IsNullOrWhiteSpace(sp.SetProductCode))
@@ -5618,10 +5716,6 @@ namespace BlazorApp.Api.Services.React
                             if (existingSet.Contains(setProductCode))
                                 continue;
                             existingSet.Add(setProductCode);
-                            var setPurchasePrice =
-                                allocatedPurchasePrices.TryGetValue(setProductCode, out var allocatedPurchasePrice)
-                                    ? allocatedPurchasePrice
-                                    : sp.ImportPrice ?? wp.ImportPrice;
                             toInsertProductSetCodes.Add(
                                 new ProductSetCode
                                 {
@@ -5630,7 +5724,8 @@ namespace BlazorApp.Api.Services.React
                                     SetProductCode = setProductCode,
                                     SetItemNumber = sp.SetProductNo,
                                     SetBarcode = sp.SetBarcode,
-                                    SetPurchasePrice = setPurchasePrice,
+                                    // Type1/Type2 关系先落库；成本在所有门店投影完成后锁内统一派生。
+                                    SetPurchasePrice = null,
                                     SetRetailPrice = sp.OEMPrice ?? wp.OEMPrice,
                                     SetQuantity = 1,
                                     SetType = 1,
@@ -5648,13 +5743,6 @@ namespace BlazorApp.Api.Services.React
                     {
                         existingMultiCodeKeys.TryGetValue(productCode, out var existingKeys);
                         existingKeys ??= new HashSet<(string MultiBarcode, string StoreCode)>();
-                        var allocatedPurchasePrices = SetChildPurchasePriceAllocator.AllocateByRetailRatio(
-                            setProducts,
-                            wp.ImportPrice,
-                            sp => sp.SetProductCode,
-                            sp => sp.OEMPrice ?? wp.OEMPrice
-                        );
-
                         foreach (var sp in setProducts)
                         {
                             if (string.IsNullOrWhiteSpace(sp.SetBarcode))
@@ -5665,11 +5753,6 @@ namespace BlazorApp.Api.Services.React
                                 if (existingKeys.Contains((setBarcode, storeCode)))
                                     continue;
                                 existingKeys.Add((setBarcode, storeCode));
-                                var setPurchasePrice =
-                                    sp.SetProductCode != null
-                                    && allocatedPurchasePrices.TryGetValue(sp.SetProductCode, out var allocatedPurchasePrice)
-                                        ? allocatedPurchasePrice
-                                        : sp.ImportPrice;
                                 toInsertStoreMultiCodeProducts.Add(
                                     new StoreMultiCodeProduct
                                     {
@@ -5679,7 +5762,7 @@ namespace BlazorApp.Api.Services.React
                                         MultiCodeProductCode = sp.SetProductCode,
                                         StoreMultiCodeProductCode = storeCode + sp.SetProductCode,
                                         MultiBarcode = setBarcode,
-                                        PurchasePrice = setPurchasePrice,
+                                        PurchasePrice = null,
                                         MultiCodeRetailPrice = sp.OEMPrice,
                                         DiscountRate = 0,
                                         IsAutoPricing = false,
@@ -5799,6 +5882,82 @@ namespace BlazorApp.Api.Services.React
                     await _context.Db.Insertable(toInsertStoreRetailPrices).ExecuteCommandAsync();
                 }
 
+                var successfulProductCodes = response.Results
+                    .Where(result => result.Success && !string.IsNullOrWhiteSpace(result.ProductCode))
+                    .Select(result => result.ProductCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                // 不只处理本次新插入的关系：成功导入后已存在有效 Type1/Type2 关系的主商品都要重算。
+                // 失败项未写入本批列表，不能进入重算，避免把应回滚的组意外持久化。
+                var productCodesWithCostDerivedSet = successfulProductCodes.Count == 0
+                    ? new List<string>()
+                    : (
+                        await _context.Db.Queryable<ProductSetCode>()
+                            .Where(setCode =>
+                                successfulProductCodes.Contains(setCode.ProductCode)
+                                && (setCode.SetType == 1 || setCode.SetType == 2)
+                                && setCode.IsActive
+                                && !setCode.IsDeleted
+                            )
+                            .Select(setCode => setCode.ProductCode)
+                            .ToListAsync()
+                    )
+                        .Where(productCode => !string.IsNullOrWhiteSpace(productCode))
+                        .Select(productCode => productCode!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                if (productCodesWithCostDerivedSet.Count > 0)
+                {
+                    var purchasePriceService = new SetChildPurchasePriceService(_context.Db);
+                    var globalRecalculation = await purchasePriceService
+                        .RecalculateGlobalLockedAsync(
+                            setChildPurchasePriceLock,
+                            productCodesWithCostDerivedSet,
+                            updatedBy: effectiveUpdatedBy
+                        );
+                    if (globalRecalculation.ProductSetCode.SkippedGroupCount > 0)
+                    {
+                        var reason = globalRecalculation.Errors.FirstOrDefault()?.Reason
+                            ?? "导入后的套装子项成本重算不完整";
+                        throw new InvalidOperationException(reason);
+                    }
+
+                    // 只重算实际存在门店投影的精确 (StoreCode, ProductCode) 组。
+                    // SyncMultiCodes=false 时缺失投影不属于本次导入目标，不能扩展成全部活跃门店的笛卡尔积后误判失败。
+                    var storeGroups = activeStores.Count == 0
+                        ? new List<StoreMultiCodeProduct>()
+                        : await _context.Db.Queryable<StoreMultiCodeProduct>()
+                            .Where(row =>
+                                row.ProductCode != null
+                                && productCodesWithCostDerivedSet.Contains(row.ProductCode)
+                                && row.StoreCode != null
+                                && activeStores.Contains(row.StoreCode)
+                                && row.IsActive
+                                && !row.IsDeleted
+                            )
+                            .Select(row => new StoreMultiCodeProduct
+                            {
+                                StoreCode = row.StoreCode,
+                                ProductCode = row.ProductCode,
+                            })
+                            .ToListAsync();
+                    if (storeGroups.Count > 0)
+                    {
+                        var storeRecalculation = await purchasePriceService
+                            .RecalculateStoreGroupsLockedAsync(
+                                setChildPurchasePriceLock,
+                                storeGroups.Select(row => (row.StoreCode, row.ProductCode)),
+                                effectiveUpdatedBy
+                            );
+                        if (storeRecalculation.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                        {
+                            var reason = storeRecalculation.Errors.FirstOrDefault()?.Reason
+                                ?? "导入后的门店套装子项成本重算不完整";
+                            throw new InvalidOperationException(reason);
+                        }
+                    }
+                }
+
                 var changedProductCodes = response.Results
                     .Where(item => item.Success && !string.IsNullOrWhiteSpace(item.ProductCode))
                     .Select(item => item.ProductCode)
@@ -5826,6 +5985,10 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _context.Db.Ado.RollbackTran();
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                {
+                    throw;
+                }
                 _logger.LogError(ex, "从国内商品导入失败");
                 response.Success = false;
                 response.SuccessCount = 0;
@@ -5869,6 +6032,11 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 _context.Db.Ado.BeginTran();
+                var setChildPurchasePriceLock =
+                    await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        _context.Db,
+                        new[] { productCode }
+                    );
 
                 // 1. WarehouseProduct 作为同商品写入门闩；统一先锁仓库商品，再读取国内商品与主商品。
                 var warehouseProduct = await WithWarehouseProductUpdateLock(
@@ -6120,10 +6288,28 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 // 6. 强联动：批量更新 StoreMultiCodeProduct
+                var activeSetChildCodes = new HashSet<string>(
+                    productSetCodes
+                        .Where(psc =>
+                            IsCostDerivedSetType(psc.SetType)
+                            && psc.IsActive
+                            && !string.IsNullOrWhiteSpace(psc.SetProductCode)
+                        )
+                        .Select(psc => psc.SetProductCode!),
+                    StringComparer.OrdinalIgnoreCase
+                );
                 foreach (var mcp in storeMultiCodeProducts)
                 {
-                    mcp.MultiCodeRetailPrice = mainRetail;
-                    mcp.PurchasePrice = mainPurchase;
+                    // 套装子项保留自身零售价，进货价在明细更新完成后按兄弟子项零售价统一分摊。
+                    // 普通多码商品继续沿用主商品价格联动行为。
+                    if (
+                        string.IsNullOrWhiteSpace(mcp.MultiCodeProductCode)
+                        || !activeSetChildCodes.Contains(mcp.MultiCodeProductCode)
+                    )
+                    {
+                        mcp.MultiCodeRetailPrice = mainRetail;
+                        mcp.PurchasePrice = mainPurchase;
+                    }
                     mcp.IsActive = dto.IsActive;
                     mcp.UpdatedAt = now;
                 }
@@ -6155,7 +6341,10 @@ namespace BlazorApp.Api.Services.React
                             {
                                 if (item.RetailPrice.HasValue)
                                     setCode.SetRetailPrice = item.RetailPrice;
-                                if (item.PurchasePrice.HasValue)
+                                if (
+                                    item.PurchasePrice.HasValue
+                                    && !IsCostDerivedSetType(setCode.SetType)
+                                )
                                     setCode.SetPurchasePrice = item.PurchasePrice;
                                 setCode.UpdatedAt = now;
                             }
@@ -6169,7 +6358,13 @@ namespace BlazorApp.Api.Services.React
                             {
                                 if (item.RetailPrice.HasValue)
                                     mcp.MultiCodeRetailPrice = item.RetailPrice;
-                                if (item.PurchasePrice.HasValue)
+                                if (
+                                    item.PurchasePrice.HasValue
+                                    && (
+                                        string.IsNullOrWhiteSpace(mcp.MultiCodeProductCode)
+                                        || !activeSetChildCodes.Contains(mcp.MultiCodeProductCode)
+                                    )
+                                )
                                     mcp.PurchasePrice = item.PurchasePrice;
                                 mcp.UpdatedAt = now;
                             }
@@ -6183,7 +6378,10 @@ namespace BlazorApp.Api.Services.React
                             {
                                 if (item.RetailPrice.HasValue)
                                     setCode.SetRetailPrice = item.RetailPrice;
-                                if (item.PurchasePrice.HasValue)
+                                if (
+                                    item.PurchasePrice.HasValue
+                                    && !IsCostDerivedSetType(setCode.SetType)
+                                )
                                     setCode.SetPurchasePrice = item.PurchasePrice;
                                 setCode.UpdatedAt = now;
                             }
@@ -6194,7 +6392,13 @@ namespace BlazorApp.Api.Services.React
                             {
                                 if (item.RetailPrice.HasValue)
                                     mcp.MultiCodeRetailPrice = item.RetailPrice;
-                                if (item.PurchasePrice.HasValue)
+                                if (
+                                    item.PurchasePrice.HasValue
+                                    && (
+                                        string.IsNullOrWhiteSpace(mcp.MultiCodeProductCode)
+                                        || !activeSetChildCodes.Contains(mcp.MultiCodeProductCode)
+                                    )
+                                )
                                     mcp.PurchasePrice = item.PurchasePrice;
                                 mcp.UpdatedAt = now;
                             }
@@ -6226,6 +6430,20 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
+                // 套装子项成本是派生值：忽略客户端提交的套装进货价，按最新主成本和全部子项零售价重算。
+                var recalculation = await new SetChildPurchasePriceService(
+                    _context.Db
+                ).RecalculateLockedAsync(
+                    setChildPurchasePriceLock,
+                    new[] { productCode },
+                    storeCodes: null,
+                    updatedBy: effectiveUpdatedBy
+                );
+                EnsureSetChildPurchasePriceRecalculated(
+                    recalculation,
+                    "完整更新后的套装子项成本重算不完整"
+                );
+
                 await RecordProductChangeHistoryAsync(
                     beforeSnapshots,
                     new[] { productCode },
@@ -6241,6 +6459,10 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _context.Db.Ado.RollbackTran();
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                {
+                    throw;
+                }
                 _logger.LogError(ex, "仓库商品完整更新失败 ProductCode={ProductCode}", productCode);
                 result.Message = "更新失败: " + ex.Message;
             }
@@ -6284,6 +6506,11 @@ namespace BlazorApp.Api.Services.React
             await _context.Db.Ado.BeginTranAsync();
             try
             {
+                var setChildPurchasePriceLock =
+                    await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        _context.Db,
+                        new[] { productCode }
+                    );
                 // SQL Server 使用更新锁串行化同一商品的局部更新；其他数据库保持普通事务查询。
                 var warehouseProduct = await WithWarehouseProductUpdateLock(
                         _context
@@ -6468,6 +6695,22 @@ namespace BlazorApp.Api.Services.React
                         retailPrice: dto.OEMPrice,
                         now,
                         effectiveUpdatedBy
+                    );
+                }
+
+                if (dto.ImportPrice.HasValue)
+                {
+                    var recalculation = await new SetChildPurchasePriceService(
+                        _context.Db
+                    ).RecalculateLockedAsync(
+                        setChildPurchasePriceLock,
+                        new[] { productCode },
+                        storeCodes: null,
+                        updatedBy: effectiveUpdatedBy
+                    );
+                    EnsureSetChildPurchasePriceRecalculated(
+                        recalculation,
+                        "仓库商品更新后的套装子项成本重算不完整"
                     );
                 }
 
@@ -7026,6 +7269,29 @@ namespace BlazorApp.Api.Services.React
             return string.IsNullOrWhiteSpace(updatedBy) ? SystemUpdatedBy : updatedBy;
         }
 
+        private static bool IsCostDerivedSetType(int setType)
+        {
+            // Type1 按子项零售价分摊，Type2 直接继承主成本；两者都禁止入口直接覆盖子项成本。
+            return setType == 1 || setType == 2;
+        }
+
+        private static void EnsureSetChildPurchasePriceRecalculated(
+            SetChildPurchasePriceWritebackResultDto recalculation,
+            string fallbackMessage
+        )
+        {
+            if (
+                recalculation.ProductSetCode.SkippedGroupCount == 0
+                && recalculation.StoreMultiCodeProduct.SkippedGroupCount == 0
+            )
+            {
+                return;
+            }
+
+            var reason = recalculation.Errors.FirstOrDefault()?.Reason ?? fallbackMessage;
+            throw new InvalidOperationException(reason);
+        }
+
         private async Task RecordProductChangeHistoryAsync(
             IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots,
             IEnumerable<string> productCodes,
@@ -7395,6 +7661,11 @@ namespace BlazorApp.Api.Services.React
             await _context.Db.Ado.BeginTranAsync();
             try
             {
+                var setChildPurchasePriceLock =
+                    await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        _context.Db,
+                        new[] { productCode }
+                    );
                 // 与批量、完整编辑和表格 PATCH 统一先锁 WarehouseProduct，避免跨表反向等待。
                 var lockedWarehouseProduct = await WithWarehouseProductUpdateLock(
                         _context
@@ -7586,6 +7857,22 @@ namespace BlazorApp.Api.Services.React
                         retailPrice: syncedRetailPrice,
                         now,
                         MobileWarehousePricePatchUpdatedBy
+                    );
+                }
+
+                if (syncedPurchasePrice.HasValue)
+                {
+                    var recalculation = await new SetChildPurchasePriceService(
+                        _context.Db
+                    ).RecalculateLockedAsync(
+                        setChildPurchasePriceLock,
+                        new[] { productCode },
+                        storeCodes: null,
+                        updatedBy: effectiveUpdatedBy
+                    );
+                    EnsureSetChildPurchasePriceRecalculated(
+                        recalculation,
+                        "移动端更新后的套装子项成本重算不完整"
                     );
                 }
 

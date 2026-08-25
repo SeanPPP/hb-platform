@@ -52,7 +52,9 @@ public sealed class DataSyncLegacyHistoryTests : IDisposable
             typeof(Product),
             typeof(WarehouseProduct),
             typeof(DomesticProduct),
-            typeof(ProductSetCode)
+            typeof(ProductSetCode),
+            typeof(StoreRetailPrice),
+            typeof(StoreMultiCodeProduct)
         );
         _localDb.Ado.ExecuteCommand(
             """
@@ -76,13 +78,16 @@ public sealed class DataSyncLegacyHistoryTests : IDisposable
             typeof(CBP_DIC_商品库存表),
             typeof(CPT_DIC_商品信息字典表),
             typeof(DIC_商品信息字典表),
-            typeof(DIC_一品多码表)
+            typeof(DIC_一品多码表),
+            typeof(DIC_分店一品多码表)
         );
         _hbSalesDb.CodeFirst.InitTables(typeof(CPT_DIC_商品信息字典表));
         _mapper = new MapperConfiguration(
             cfg =>
             {
                 cfg.AddProfile<ProductMappingProfile>();
+                cfg.AddProfile<ProductSetCodeMappingProfile>();
+                cfg.AddProfile<StoreMappingProfile>();
                 cfg.AddProfile<WarehouseMappingProfile>();
                 cfg.AddProfile<DomesticProductMappingProfile>();
             },
@@ -312,6 +317,498 @@ public sealed class DataSyncLegacyHistoryTests : IDisposable
         Assert.Equal("User", context.ActorType);
         Assert.NotNull(context.BatchGuid);
         Assert.Equal(1, await _localDb.Queryable<Product>().CountAsync());
+    }
+
+    [Fact]
+    public async Task SyncProductsFromHqAsync_全量同步保留同键套装子项并按HQ主成本重算()
+    {
+        await _localDb.Insertable(
+            new Product
+            {
+                UUID = "LOCAL-PROTECTED-PRODUCT",
+                ProductCode = "P-PROTECTED-FULL",
+                ProductName = "旧套装",
+                PurchasePrice = 5m,
+                RetailPrice = 10m,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = "LOCAL-PROTECTED-SET",
+                ProductCode = "P-PROTECTED-FULL",
+                SetProductCode = "M-PROTECTED",
+                SetItemNumber = "LEGACY-ITEM-NUMBER",
+                SetBarcode = "LOCAL-BARCODE",
+                SetPurchasePrice = 5m,
+                SetRetailPrice = 10m,
+                SetType = 1,
+                SetQuantity = 1,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _hqDb.Insertable(
+            new DIC_商品信息字典表
+            {
+                ID = 100,
+                HGUID = "HQ-PROTECTED-PRODUCT",
+                H商品标签GUID = "",
+                H商品分类码GUID = "",
+                H供货商编码 = "",
+                H商品编码 = "P-PROTECTED-FULL",
+                H货号 = "ITEM-PROTECTED",
+                H主条形码 = "",
+                H商品名称 = "HQ套装",
+                H大写名称 = "",
+                H规格 = "",
+                H单位 = "",
+                H进货价 = 8m,
+                H零售价 = 12m,
+                H使用状态 = true,
+                H商品图片 = "",
+                H腾讯云图地址 = "",
+                H进货单主表GUID = "",
+                H进货单详情GUID = "",
+                CBP商品中文名称 = "",
+                CBP供应商编码 = "",
+                CBP商品分类码GUID = "",
+                FGC_Creator = "",
+                FGC_LastModifier = "",
+                FGC_UpdateHelp = "",
+                FGC_CreateDate = new DateTime(2026, 8, 12),
+                FGC_LastModifyDate = new DateTime(2026, 8, 12),
+            }
+        ).ExecuteCommandAsync();
+        await _hqDb.Insertable(
+            new DIC_一品多码表
+            {
+                HGUID = "HQ-CONFLICTING-MULTI",
+                H商品编码 = "P-PROTECTED-FULL",
+                H多码商品编号 = "M-PROTECTED",
+                H多条形码 = "HQ-SHOULD-NOT-APPLY",
+                H进货价 = 99m,
+                H一品多码零售价 = 199m,
+                H使用状态 = true,
+                FGC_CreateDate = new DateTime(2026, 8, 12),
+                FGC_LastModifyDate = new DateTime(2026, 8, 12),
+            }
+        ).ExecuteCommandAsync();
+
+        var result = await CreateService(CreateRealHistoryService()).SyncProductsFromHqAsync();
+
+        Assert.True(result.IsSuccess, result.Message);
+        var protectedChild = await _localDb.Queryable<ProductSetCode>().SingleAsync();
+        Assert.Equal("LOCAL-PROTECTED-SET", protectedChild.SetCodeId);
+        Assert.Equal(1, protectedChild.SetType);
+        Assert.Equal("M-PROTECTED", protectedChild.SetProductCode);
+        Assert.Equal("LOCAL-BARCODE", protectedChild.SetBarcode);
+        Assert.Equal(8m, protectedChild.SetPurchasePrice);
+        Assert.Equal(10m, protectedChild.SetRetailPrice);
+        Assert.True(protectedChild.IsActive);
+        Assert.False(protectedChild.IsDeleted);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task SyncProductsFromHqAsync_停用或软删除Type1按Guid和规范化业务键保护(
+        bool isActive,
+        bool isDeleted
+    )
+    {
+        const string productCode = "P-TYPE1-STATE";
+        await _localDb.Insertable(
+            new Product
+            {
+                UUID = "LOCAL-TYPE1-PRODUCT",
+                ProductCode = productCode,
+                ProductName = "本地套装",
+                PurchasePrice = 5m,
+                RetailPrice = 10m,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = "LOCAL-TYPE1-ID",
+                ProductCode = productCode,
+                SetProductCode = "CHILD-STATE",
+                SetItemNumber = "CHILD-STATE",
+                SetBarcode = "LOCAL-TYPE1-BARCODE",
+                SetPurchasePrice = 5m,
+                SetRetailPrice = 10m,
+                SetType = 1,
+                SetQuantity = 1,
+                IsActive = isActive,
+                IsDeleted = isDeleted,
+            }
+        ).ExecuteCommandAsync();
+
+        var hqProduct = CreateIncrementalProduct(201, productCode);
+        hqProduct.H进货价 = 8m;
+        await _hqDb.Insertable(hqProduct).ExecuteCommandAsync();
+        await _hqDb.Insertable(
+            new[]
+            {
+                new DIC_一品多码表
+                {
+                    HGUID = "HQ-CONFLICT-BY-KEY",
+                    H商品编码 = productCode,
+                    H多码商品编号 = " child-state ",
+                    H多条形码 = "HQ-KEY-BARCODE",
+                    H进货价 = 99m,
+                    H一品多码零售价 = 199m,
+                    H使用状态 = true,
+                    FGC_LastModifyDate = new DateTime(2026, 8, 12, 3, 0, 0),
+                },
+                new DIC_一品多码表
+                {
+                    HGUID = " local-type1-id ",
+                    H商品编码 = productCode,
+                    H多码商品编号 = "OTHER-CHILD",
+                    H多条形码 = "HQ-GUID-BARCODE",
+                    H进货价 = 98m,
+                    H一品多码零售价 = 198m,
+                    H使用状态 = true,
+                    FGC_LastModifyDate = new DateTime(2026, 8, 12, 3, 0, 0),
+                },
+            }
+        ).ExecuteCommandAsync();
+
+        var result = await CreateService(CreateRealHistoryService()).SyncProductsFromHqAsync();
+
+        Assert.True(result.IsSuccess, result.Message);
+        var protectedChild = Assert.Single(await _localDb.Queryable<ProductSetCode>().ToListAsync());
+        Assert.Equal("LOCAL-TYPE1-ID", protectedChild.SetCodeId);
+        Assert.Equal(1, protectedChild.SetType);
+        Assert.Equal("CHILD-STATE", protectedChild.SetProductCode);
+        Assert.Equal("LOCAL-TYPE1-BARCODE", protectedChild.SetBarcode);
+        Assert.Equal(5m, protectedChild.SetPurchasePrice);
+        Assert.Equal(isActive, protectedChild.IsActive);
+        Assert.Equal(isDeleted, protectedChild.IsDeleted);
+    }
+
+    [Fact]
+    public async Task SyncProductsFromHqAsync_HqType2成本最终使用本地主商品成本()
+    {
+        const string productCode = "P-TYPE2-FULL";
+        var hqProduct = CreateIncrementalProduct(202, productCode);
+        hqProduct.H进货价 = 8m;
+        await _hqDb.Insertable(hqProduct).ExecuteCommandAsync();
+        await _hqDb.Insertable(
+            new DIC_一品多码表
+            {
+                HGUID = "HQ-TYPE2-FULL",
+                H商品编码 = productCode,
+                H多码商品编号 = "M-TYPE2-FULL",
+                H多条形码 = "TYPE2-FULL-BARCODE",
+                H进货价 = 99m,
+                H一品多码零售价 = 20m,
+                H使用状态 = true,
+                FGC_LastModifyDate = new DateTime(2026, 8, 12, 3, 0, 0),
+            }
+        ).ExecuteCommandAsync();
+
+        var result = await CreateService(CreateRealHistoryService()).SyncProductsFromHqAsync();
+
+        Assert.True(result.IsSuccess, result.Message);
+        var type2 = await _localDb.Queryable<ProductSetCode>().SingleAsync();
+        Assert.Equal(2, type2.SetType);
+        Assert.Equal(8m, type2.SetPurchasePrice);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task SyncProductsIncrementalFromHqAsync_停用或软删除Type1不会被更新为Type2(
+        bool isActive,
+        bool isDeleted
+    )
+    {
+        const string productCode = "P-TYPE1-INCREMENTAL";
+        await _localDb.Insertable(
+            new Product
+            {
+                UUID = "LOCAL-INCREMENTAL-PRODUCT",
+                ProductCode = productCode,
+                ProductName = "本地套装",
+                PurchasePrice = 5m,
+                RetailPrice = 10m,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = "LOCAL-INCREMENTAL-TYPE1",
+                ProductCode = productCode,
+                SetProductCode = "CHILD-INCREMENTAL",
+                SetItemNumber = "CHILD-INCREMENTAL",
+                SetBarcode = "LOCAL-INCREMENTAL-BARCODE",
+                SetPurchasePrice = 5m,
+                SetRetailPrice = 10m,
+                SetType = 1,
+                SetQuantity = 1,
+                IsActive = isActive,
+                IsDeleted = isDeleted,
+            }
+        ).ExecuteCommandAsync();
+        var hqProduct = CreateIncrementalProduct(203, productCode);
+        hqProduct.H进货价 = 8m;
+        await _hqDb.Insertable(hqProduct).ExecuteCommandAsync();
+        await _hqDb.Insertable(
+            new DIC_一品多码表
+            {
+                HGUID = "HQ-INCREMENTAL-TYPE2",
+                H商品编码 = productCode,
+                H多码商品编号 = "CHILD-INCREMENTAL",
+                H多条形码 = "HQ-INCREMENTAL-BARCODE",
+                H进货价 = 99m,
+                H一品多码零售价 = 199m,
+                H使用状态 = true,
+                FGC_LastModifyDate = new DateTime(2026, 8, 12, 3, 0, 0),
+            }
+        ).ExecuteCommandAsync();
+
+        var result = await CreateService(CreateRealHistoryService())
+            .SyncProductsIncrementalFromHqAsync(new DateTime(2026, 8, 12, 0, 0, 0));
+
+        Assert.True(result.IsSuccess, result.Message);
+        var protectedChild = Assert.Single(await _localDb.Queryable<ProductSetCode>().ToListAsync());
+        Assert.Equal("LOCAL-INCREMENTAL-TYPE1", protectedChild.SetCodeId);
+        Assert.Equal(1, protectedChild.SetType);
+        Assert.Equal("LOCAL-INCREMENTAL-BARCODE", protectedChild.SetBarcode);
+        Assert.Equal(isActive, protectedChild.IsActive);
+        Assert.Equal(isDeleted, protectedChild.IsDeleted);
+    }
+
+    [Fact]
+    public async Task SyncProductsIncrementalFromHqAsync_HqType2成本最终使用更新后的本地主商品成本()
+    {
+        const string productCode = "P-TYPE2-INCREMENTAL";
+        const string childCode = "M-TYPE2-INCREMENTAL";
+        await _localDb.Insertable(
+            new Product
+            {
+                UUID = "LOCAL-TYPE2-INCREMENTAL-PRODUCT",
+                ProductCode = productCode,
+                ProductName = "本地多码商品",
+                PurchasePrice = 5m,
+                RetailPrice = 10m,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = "LOCAL-TYPE2-INCREMENTAL-RELATION",
+                ProductCode = productCode,
+                SetProductCode = childCode,
+                SetItemNumber = childCode,
+                SetBarcode = "LOCAL-TYPE2-INCREMENTAL-BARCODE",
+                SetPurchasePrice = 5m,
+                SetRetailPrice = 10m,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        var hqProduct = CreateIncrementalProduct(206, productCode);
+        hqProduct.H进货价 = 8m;
+        await _hqDb.Insertable(hqProduct).ExecuteCommandAsync();
+        await _hqDb.Insertable(
+            new DIC_一品多码表
+            {
+                HGUID = "HQ-TYPE2-INCREMENTAL",
+                H商品编码 = productCode,
+                H多码商品编号 = childCode,
+                H多条形码 = "HQ-TYPE2-INCREMENTAL-BARCODE",
+                H进货价 = 99m,
+                H一品多码零售价 = 20m,
+                H使用状态 = true,
+                FGC_LastModifyDate = new DateTime(2026, 8, 12, 3, 0, 0),
+            }
+        ).ExecuteCommandAsync();
+
+        var result = await CreateService(CreateRealHistoryService())
+            .SyncProductsIncrementalFromHqAsync(new DateTime(2026, 8, 12, 0, 0, 0));
+
+        Assert.True(result.IsSuccess, result.Message);
+        var type2 = await _localDb.Queryable<ProductSetCode>().SingleAsync();
+        Assert.Equal(2, type2.SetType);
+        Assert.Equal(8m, type2.SetPurchasePrice);
+    }
+
+    [Fact]
+    public async Task SyncStoreMultiCodeProductsFromHqAsync_Type2成本按各门店主成本分别校正()
+    {
+        const string productCode = "P-STORE-TYPE2";
+        const string childCode = "M-STORE-TYPE2";
+        await _localDb.Insertable(
+            new Product
+            {
+                UUID = "LOCAL-STORE-TYPE2-PRODUCT",
+                ProductCode = productCode,
+                ProductName = "门店多码商品",
+                PurchasePrice = 5m,
+                RetailPrice = 20m,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = "LOCAL-STORE-TYPE2-RELATION",
+                ProductCode = productCode,
+                SetProductCode = childCode,
+                SetItemNumber = childCode,
+                SetPurchasePrice = 5m,
+                SetRetailPrice = 20m,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new[]
+            {
+                new StoreRetailPrice
+                {
+                    UUID = "STORE-PRICE-S1",
+                    StoreCode = "S1",
+                    ProductCode = productCode,
+                    PurchasePrice = 11m,
+                    StoreRetailPriceValue = 21m,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new StoreRetailPrice
+                {
+                    UUID = "STORE-PRICE-S2",
+                    StoreCode = "S2",
+                    ProductCode = productCode,
+                    PurchasePrice = 13m,
+                    StoreRetailPriceValue = 23m,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+            }
+        ).ExecuteCommandAsync();
+        await _hqDb.Insertable(CreateIncrementalProduct(204, productCode)).ExecuteCommandAsync();
+        await _hqDb.Insertable(
+            new[]
+            {
+                new DIC_分店一品多码表
+                {
+                    HGUID = "HQ-STORE-TYPE2-S1",
+                    H分店代码 = "S1",
+                    H商品编码 = productCode,
+                    H多码商品编码 = childCode,
+                    H多条形码 = "STORE-TYPE2-S1",
+                    H进货价 = 99m,
+                    H一品多码零售价 = 21m,
+                    H使用状态 = true,
+                },
+                new DIC_分店一品多码表
+                {
+                    HGUID = "HQ-STORE-TYPE2-S2",
+                    H分店代码 = "S2",
+                    H商品编码 = productCode,
+                    H多码商品编码 = childCode,
+                    H多条形码 = "STORE-TYPE2-S2",
+                    H进货价 = 98m,
+                    H一品多码零售价 = 23m,
+                    H使用状态 = true,
+                },
+            }
+        ).ExecuteCommandAsync();
+
+        var result = await CreateService(CreateRealHistoryService())
+            .SyncStoreMultiCodeProductsFromHqAsync(["S1", "S2"]);
+
+        Assert.True(result.IsSuccess, result.Message);
+        var storeCosts = (await _localDb.Queryable<StoreMultiCodeProduct>().ToListAsync())
+            .ToDictionary(item => item.StoreCode!, item => item.PurchasePrice);
+        Assert.Equal(11m, storeCosts["S1"]);
+        Assert.Equal(13m, storeCosts["S2"]);
+    }
+
+    [Fact]
+    public async Task SyncStoreMultiCodeProductsFromHqAsync_停用Type1的门店投影不会被HQ覆盖()
+    {
+        const string productCode = "P-STORE-TYPE1-INACTIVE";
+        const string childCode = "M-STORE-TYPE1-INACTIVE";
+        await _localDb.Insertable(
+            new Product
+            {
+                UUID = "LOCAL-STORE-TYPE1-PRODUCT",
+                ProductCode = productCode,
+                ProductName = "停用套装",
+                PurchasePrice = 4m,
+                RetailPrice = 10m,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = "LOCAL-STORE-TYPE1-RELATION",
+                ProductCode = productCode,
+                SetProductCode = childCode,
+                SetItemNumber = childCode,
+                SetPurchasePrice = 4m,
+                SetRetailPrice = 10m,
+                SetType = 1,
+                IsActive = false,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new StoreMultiCodeProduct
+            {
+                UUID = "LOCAL-STORE-TYPE1-PROJECTION",
+                StoreCode = "S1",
+                ProductCode = productCode,
+                MultiCodeProductCode = childCode,
+                MultiBarcode = "LOCAL-STORE-TYPE1-BARCODE",
+                PurchasePrice = 4m,
+                MultiCodeRetailPrice = 10m,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _hqDb.Insertable(CreateIncrementalProduct(205, productCode)).ExecuteCommandAsync();
+        await _hqDb.Insertable(
+            new DIC_分店一品多码表
+            {
+                HGUID = "HQ-STORE-TYPE1-CONFLICT",
+                H分店代码 = "S1",
+                H商品编码 = productCode,
+                H多码商品编码 = childCode,
+                H多条形码 = "HQ-STORE-TYPE1-BARCODE",
+                H进货价 = 99m,
+                H一品多码零售价 = 199m,
+                H使用状态 = true,
+            }
+        ).ExecuteCommandAsync();
+
+        var result = await CreateService(CreateRealHistoryService())
+            .SyncStoreMultiCodeProductsFromHqAsync(["S1"]);
+
+        Assert.True(result.IsSuccess, result.Message);
+        var protectedProjection = await _localDb.Queryable<StoreMultiCodeProduct>().SingleAsync();
+        Assert.Equal("LOCAL-STORE-TYPE1-PROJECTION", protectedProjection.UUID);
+        Assert.Equal("LOCAL-STORE-TYPE1-BARCODE", protectedProjection.MultiBarcode);
+        Assert.Equal(4m, protectedProjection.PurchasePrice);
     }
 
     [Fact]

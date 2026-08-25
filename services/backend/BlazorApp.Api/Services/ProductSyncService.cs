@@ -3,6 +3,7 @@ using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using SqlSugar;
 using Microsoft.Extensions.Logging;
 
@@ -140,7 +141,6 @@ namespace BlazorApp.Api.Services
         /// <returns>更新结果</returns>
         public async Task<BatchProductOperationResponse> BatchUpdateWarehouseProductsAsync(BatchProductUpdateRequest request)
         {
-            _db.Ado.BeginTran();
             try
             {
                 _logger.LogInformation("开始批量更新仓库商品，共 {Count} 个商品", request.Items.Count);
@@ -157,7 +157,10 @@ namespace BlazorApp.Api.Services
                     .Select(x => x.ItemNumber!)
                     .ToList();
 
-                var itemNumberToProductCodeDict = new Dictionary<string, string>();
+                var itemNumberToProductCodeDict = new Dictionary<string, string>(
+                    StringComparer.OrdinalIgnoreCase
+                );
+                var ambiguousItemNumbers = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 if (itemNumbers.Any())
                 {
                     // 货号兜底先查本地主档映射，避免在 WarehouseProduct where 中访问导航属性。
@@ -165,15 +168,30 @@ namespace BlazorApp.Api.Services
                         .Where(p =>
                             p.ItemNumber != null &&
                             p.ProductCode != null &&
+                            !p.IsDeleted &&
                             itemNumbers.Contains(p.ItemNumber)
                         )
                         .Select(p => new { p.ItemNumber, p.ProductCode })
                         .ToListAsync();
 
-                    itemNumberToProductCodeDict = productCodeRows
+                    var itemNumberGroups = productCodeRows
                         .Where(p => !string.IsNullOrEmpty(p.ItemNumber) && !string.IsNullOrEmpty(p.ProductCode))
-                        .GroupBy(p => p.ItemNumber!)
-                        .ToDictionary(g => g.Key, g => g.First().ProductCode!);
+                        .GroupBy(p => p.ItemNumber!, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    ambiguousItemNumbers = itemNumberGroups
+                        .Where(group => group
+                            .Select(row => row.ProductCode)
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .Count() != 1)
+                        .Select(group => group.Key)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    itemNumberToProductCodeDict = itemNumberGroups
+                        .Where(group => !ambiguousItemNumbers.Contains(group.Key))
+                        .ToDictionary(
+                            group => group.Key,
+                            group => group.Single().ProductCode!,
+                            StringComparer.OrdinalIgnoreCase
+                        );
                 }
 
                 var lookupProductCodes = productCodes
@@ -184,21 +202,21 @@ namespace BlazorApp.Api.Services
 
                 var allWarehouseProducts = lookupProductCodes.Any()
                     ? await _db.Queryable<WarehouseProduct>()
-                        .Where(w => lookupProductCodes.Contains(w.ProductCode))
+                        .Where(w =>
+                            w.ProductCode != null
+                            && lookupProductCodes.Contains(w.ProductCode)
+                            && !w.IsDeleted
+                        )
                         .ToListAsync()
                     : new List<WarehouseProduct>();
-
-                var beforeSnapshots = await CaptureChangeSnapshotsAsync(lookupProductCodes);
 
                 _logger.LogInformation("查询到 {Count} 个仓库商品", allWarehouseProducts.Count);
 
                 // 转换为字典，方便快速查找
                 var warehouseDictByCode = allWarehouseProducts.ToDictionary(w => w.ProductCode);
 
-                // 🔥 第二步：在内存中准备要更新的数据
-                var warehousesToUpdate = new List<WarehouseProduct>();
-                var productsToUpdate = new List<Product>();
-                var productCodesWithImportPrice = new List<string>();
+                // 先只确定本次请求实际命中的主商品，不能在获取业务锁前修改任何实体。
+                var matchedItems = new List<(ProductUpdateItem Item, string ProductCode, string MatchType)>();
                 var processedProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var item in request.Items)
@@ -209,6 +227,17 @@ namespace BlazorApp.Api.Services
                     // 🔥 优先使用商品编码匹配
                     if (!warehouseDictByCode.TryGetValue(item.ProductCode, out warehouse))
                     {
+                        if (
+                            !string.IsNullOrWhiteSpace(item.ItemNumber)
+                            && ambiguousItemNumbers.Contains(item.ItemNumber)
+                        )
+                        {
+                            var error = $"货号 {item.ItemNumber} 同时映射到多个商品，未执行更新";
+                            errors.Add(error);
+                            _logger.LogWarning(error);
+                            continue;
+                        }
+
                         // 🔥 如果商品编码匹配不到，尝试使用货号匹配
                         if (!string.IsNullOrEmpty(item.ItemNumber) &&
                             itemNumberToProductCodeDict.TryGetValue(item.ItemNumber, out var matchedProductCode) &&
@@ -239,104 +268,220 @@ namespace BlazorApp.Api.Services
                         continue;
                     }
 
-                    // 更新仓库商品字段
-                    warehouse.DomesticPrice = item.DomesticPrice ?? warehouse.DomesticPrice;
-                    warehouse.ImportPrice = item.ImportPrice ?? warehouse.ImportPrice;
-                    warehouse.OEMPrice = item.OEMPrice ?? warehouse.OEMPrice;
-                    warehouse.Volume = item.Volume ?? warehouse.Volume;
-                    // 价格类保存不应隐式改变上下架；只有请求明确带状态时才覆盖。
-                    if (item.IsActive.HasValue)
-                    {
-                        warehouse.IsActive = item.IsActive.Value;
-                    }
-                    warehouse.UpdatedAt = updateTime;
-                    warehouse.UpdatedBy = actorName;
-
-                    warehousesToUpdate.Add(warehouse);
-
-                    // 如果有进口价格，记录需要更新Product和StoreRetailPrice的商品编码（使用实际匹配到的商品编码）
-                    if (item.ImportPrice.HasValue)
-                    {
-                        // 🔥 使用仓库中实际的商品编码（因为可能是通过货号匹配的）
-                        productCodesWithImportPrice.Add(warehouse.ProductCode);
-
-                        // 准备Product更新数据
-                        productsToUpdate.Add(new Product
-                        {
-                            ProductCode = warehouse.ProductCode, // 使用实际商品编码
-                            PurchasePrice = item.ImportPrice.Value,
-                            UpdatedAt = updateTime,
-                            UpdatedBy = actorName,
-                        });
-
-                        _logger.LogDebug("准备更新商品 {ProductCode}（通过{MatchType}匹配）的进货价为 {PurchasePrice}",
-                            warehouse.ProductCode, matchType, item.ImportPrice.Value);
-                    }
+                    matchedItems.Add((item, warehouse.ProductCode, matchType));
                 }
 
-                // 🔥 第三步：批量更新WarehouseProduct
-                if (warehousesToUpdate.Any())
-                {
-                    await _db.Updateable(warehousesToUpdate)
-                        .UpdateColumns(w => new { w.DomesticPrice, w.ImportPrice, w.OEMPrice, w.Volume, w.IsActive, w.UpdatedAt, w.UpdatedBy })
-                        .ExecuteCommandAsync();
-                    _logger.LogDebug("批量更新WarehouseProduct完成，共 {Count} 条", warehousesToUpdate.Count);
-                }
+                var matchedProductCodes = matchedItems
+                    .Select(match => match.ProductCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var warehousesToUpdate = new List<WarehouseProduct>();
+                IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto> beforeSnapshots =
+                    new Dictionary<string, WarehouseProductChangeSnapshotDto>();
 
-                // 🔥 第四步：批量更新Product的PurchasePrice
-                if (productCodesWithImportPrice.Any())
-                {
-                    // 批量查询Product
-                    var products = await _db.Queryable<Product>()
-                        .Where(p => p.ProductCode != null && productCodesWithImportPrice.Contains(p.ProductCode))
-                        .ToListAsync();
+                // 锁前解析只用于确定候选锁集合；事务从这里开始，后续目标和业务键必须锁内复读确认。
+                _db.Ado.BeginTran();
 
-                    // 在内存中更新
-                    var productUpdateDict = productsToUpdate
-                        .Where(p => !string.IsNullOrWhiteSpace(p.ProductCode))
-                        .ToDictionary(p => p.ProductCode!);
-                    foreach (var product in products)
+                if (matchedProductCodes.Count > 0)
+                {
+                    // 事务已开启；按主商品稳定顺序取得 gate/product 锁后，锁内重新读取所有会写入的源行。
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        _db,
+                        matchedProductCodes
+                    );
+                    // 快照可能读取外部状态；所有实际写入目标与货号映射都要在其后锁内复读。
+                    beforeSnapshots = await CaptureChangeSnapshotsAsync(matchedProductCodes);
+                    // 业务锁内只读取有效主档；软删除记录不能作为更新目标，也不能被本次价格写入复活。
+                    var lockedWarehouseQuery = _db.Queryable<WarehouseProduct>()
+                        .Where(w =>
+                            w.ProductCode != null
+                            && matchedProductCodes.Contains(w.ProductCode)
+                            && !w.IsDeleted
+                        );
+                    if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
                     {
-                        if (product.ProductCode != null && productUpdateDict.TryGetValue(product.ProductCode, out var updateData))
+                        lockedWarehouseQuery = lockedWarehouseQuery.With(SqlWith.UpdLock);
+                    }
+                    var lockedWarehouses = await lockedWarehouseQuery.ToListAsync();
+                    var lockedWarehouseDict = lockedWarehouses.ToDictionary(w => w.ProductCode);
+                    var lockedProductsByCodeQuery = _db.Queryable<Product>()
+                        .Where(product =>
+                            product.ProductCode != null
+                            && matchedProductCodes.Contains(product.ProductCode)
+                            && !product.IsDeleted
+                        );
+                    if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+                    {
+                        lockedProductsByCodeQuery = lockedProductsByCodeQuery.With(SqlWith.UpdLock);
+                    }
+                    var lockedProductsByCode = (await lockedProductsByCodeQuery.ToListAsync())
+                        .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                        .ToDictionary(
+                            product => product.ProductCode!,
+                            product => product,
+                            StringComparer.OrdinalIgnoreCase
+                        );
+                    var itemNumbersToVerify = matchedItems
+                        .Where(match => !string.IsNullOrWhiteSpace(match.Item.ItemNumber))
+                        .Select(match => match.Item.ItemNumber!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    var lockedProductsByItemNumber = new Dictionary<string, string>(
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                    if (itemNumbersToVerify.Count > 0)
+                    {
+                        var itemNumberQuery = _db.Queryable<Product>()
+                            .Where(product =>
+                                product.ItemNumber != null
+                                && product.ProductCode != null
+                                && !product.IsDeleted
+                                && itemNumbersToVerify.Contains(product.ItemNumber)
+                            );
+                        if (_db.CurrentConnectionConfig.DbType == DbType.SqlServer)
                         {
-                            product.PurchasePrice = updateData.PurchasePrice;
-                            product.UpdatedAt = updateTime;
-                            product.UpdatedBy = actorName;
+                            // ItemNumber 不是本次 applock 的资源键，SQL Server 需额外持有更新锁到事务结束。
+                            itemNumberQuery = itemNumberQuery.With(SqlWith.UpdLock);
+                        }
+                        var lockedItemNumberGroups = (await itemNumberQuery.ToListAsync())
+                            .Where(product =>
+                                !string.IsNullOrWhiteSpace(product.ItemNumber)
+                                && !string.IsNullOrWhiteSpace(product.ProductCode)
+                            )
+                            .GroupBy(product => product.ItemNumber!, StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+                        lockedProductsByItemNumber = lockedItemNumberGroups
+                            .Where(group => group
+                                .Select(product => product.ProductCode)
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .Count() == 1)
+                            .ToDictionary(
+                                group => group.Key,
+                                group => group.First().ProductCode!,
+                                StringComparer.OrdinalIgnoreCase
+                            );
+                    }
+                    var productPurchasePrices = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+
+                    foreach (var match in matchedItems)
+                    {
+                        if (!lockedProductsByCode.TryGetValue(match.ProductCode, out _))
+                        {
+                            var error = $"商品编码 {match.ProductCode} 在获取业务锁后已不存在或已删除";
+                            errors.Add(error);
+                            _logger.LogWarning(error);
+                            continue;
+                        }
+
+                        if (
+                            !string.IsNullOrWhiteSpace(match.Item.ItemNumber)
+                            && (
+                                !lockedProductsByItemNumber.TryGetValue(
+                                    match.Item.ItemNumber,
+                                    out var lockedMatchedProductCode
+                                )
+                                || !string.Equals(
+                                    lockedMatchedProductCode,
+                                    match.ProductCode,
+                                    StringComparison.OrdinalIgnoreCase
+                                )
+                            )
+                        )
+                        {
+                            // 直连 ProductCode 和货号兜底都必须锁内确认映射；变化时不能改写原目标或追加新锁。
+                            var error = $"货号 {match.Item.ItemNumber} 在获取业务锁后映射已变化，未写入商品";
+                            errors.Add(error);
+                            _logger.LogWarning(error);
+                            continue;
+                        }
+
+                        if (!lockedWarehouseDict.TryGetValue(match.ProductCode, out var warehouse))
+                        {
+                            var error = $"商品编码 {match.ProductCode} 在获取业务锁后已不存在";
+                            errors.Add(error);
+                            _logger.LogWarning(error);
+                            continue;
+                        }
+
+                        warehouse.DomesticPrice = match.Item.DomesticPrice ?? warehouse.DomesticPrice;
+                        warehouse.ImportPrice = match.Item.ImportPrice ?? warehouse.ImportPrice;
+                        warehouse.OEMPrice = match.Item.OEMPrice ?? warehouse.OEMPrice;
+                        warehouse.Volume = match.Item.Volume ?? warehouse.Volume;
+                        // 价格类保存不应隐式改变上下架；只有请求明确带状态时才覆盖。
+                        if (match.Item.IsActive.HasValue)
+                        {
+                            warehouse.IsActive = match.Item.IsActive.Value;
+                        }
+                        warehouse.UpdatedAt = updateTime;
+                        warehouse.UpdatedBy = actorName;
+                        warehousesToUpdate.Add(warehouse);
+
+                        if (match.Item.ImportPrice.HasValue)
+                        {
+                            productPurchasePrices[warehouse.ProductCode] = match.Item.ImportPrice.Value;
                         }
                     }
 
-                    // 批量更新
-                    if (products.Any())
+                    if (warehousesToUpdate.Any())
                     {
-                        await _db.Updateable(products)
-                            .UpdateColumns(p => new { p.PurchasePrice, p.UpdatedAt, p.UpdatedBy })
+                        await _db.Updateable(warehousesToUpdate)
+                            .UpdateColumns(w => new { w.DomesticPrice, w.ImportPrice, w.OEMPrice, w.Volume, w.IsActive, w.UpdatedAt, w.UpdatedBy })
                             .ExecuteCommandAsync();
-                        _logger.LogDebug("批量更新Product完成，共 {Count} 条", products.Count);
                     }
 
-                    // 🔥 第五步：批量更新StoreRetailPrice
-                    var storeRetailPrices = await _db.Queryable<StoreRetailPrice>()
-                        .Where(s => s.ProductCode != null && productCodesWithImportPrice.Contains(s.ProductCode))
-                        .ToListAsync();
-
-                    // 在内存中更新
-                    foreach (var storeRetailPrice in storeRetailPrices)
+                    if (productPurchasePrices.Count > 0)
                     {
-                        if (productUpdateDict.TryGetValue(storeRetailPrice.ProductCode!, out var updateData))
+                        var productCodesWithImportPrice = productPurchasePrices.Keys.ToList();
+                        var products = await _db.Queryable<Product>()
+                            .Where(p =>
+                                p.ProductCode != null
+                                && productCodesWithImportPrice.Contains(p.ProductCode)
+                                && !p.IsDeleted
+                            )
+                            .ToListAsync();
+                        foreach (var product in products)
                         {
-                            storeRetailPrice.PurchasePrice = updateData.PurchasePrice;
-                            storeRetailPrice.UpdatedAt = updateTime;
-                            storeRetailPrice.UpdatedBy = actorName;
+                            if (product.ProductCode != null && productPurchasePrices.TryGetValue(product.ProductCode, out var purchasePrice))
+                            {
+                                product.PurchasePrice = purchasePrice;
+                                product.UpdatedAt = updateTime;
+                                product.UpdatedBy = actorName;
+                            }
                         }
-                    }
+                        if (products.Any())
+                        {
+                            await _db.Updateable(products)
+                                .UpdateColumns(p => new { p.PurchasePrice, p.UpdatedAt, p.UpdatedBy })
+                                .ExecuteCommandAsync();
+                        }
 
-                    // 批量更新
-                    if (storeRetailPrices.Any())
-                    {
-                        await _db.Updateable(storeRetailPrices)
-                            .UpdateColumns(s => new { s.PurchasePrice, s.UpdatedAt, s.UpdatedBy })
-                            .ExecuteCommandAsync();
-                        _logger.LogDebug("批量更新StoreRetailPrice完成，共 {Count} 条", storeRetailPrices.Count);
+                        var storeRetailPrices = await _db.Queryable<StoreRetailPrice>()
+                            .Where(s =>
+                                s.ProductCode != null
+                                && productCodesWithImportPrice.Contains(s.ProductCode)
+                                && !s.IsDeleted
+                            )
+                            .ToListAsync();
+                        foreach (var storeRetailPrice in storeRetailPrices)
+                        {
+                            if (storeRetailPrice.ProductCode != null && productPurchasePrices.TryGetValue(storeRetailPrice.ProductCode, out var purchasePrice))
+                            {
+                                storeRetailPrice.PurchasePrice = purchasePrice;
+                                storeRetailPrice.UpdatedAt = updateTime;
+                                storeRetailPrice.UpdatedBy = actorName;
+                            }
+                        }
+                        if (storeRetailPrices.Any())
+                        {
+                            await _db.Updateable(storeRetailPrices)
+                                .UpdateColumns(s => new { s.PurchasePrice, s.UpdatedAt, s.UpdatedBy })
+                                .ExecuteCommandAsync();
+                        }
+
+                        // 成本变化后必须在同一事务和同一业务锁内分摊子项成本；不可重算即整体回滚。
+                        var recalculation = await new SetChildPurchasePriceService(_db)
+                            .RecalculateLockedAsync(lockScope, productCodesWithImportPrice, null, actorName);
+                        EnsureSetChildPurchasePriceRecalculated(recalculation, productCodesWithImportPrice);
                     }
                 }
 
@@ -383,6 +528,11 @@ namespace BlazorApp.Api.Services
                 }
                 _logger.LogError(ex, "批量更新仓库商品失败");
 
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                {
+                    return BuildBusyBatchResponse(request.Items.Count);
+                }
+
                 return new BatchProductOperationResponse
                 {
                     Success = false,
@@ -425,9 +575,13 @@ namespace BlazorApp.Api.Services
                 var batchGuid = Guid.NewGuid();
                 var actorName = ResolveActorName();
 
-                // 🔥 第一步：二次检查 - 批量查询商品是否已存在
+                // 事务开始后先按请求商品获取业务锁；后续所有源数据均在锁内重新读取。
                 var productCodes = request.Items.Select(x => x.ProductCode).ToList();
                 var itemNumbers = request.Items.Select(x => x.ItemNumber).ToList();
+                var lockProductCodes = SetChildPurchasePriceMutationLock.NormalizeProductCodes(productCodes);
+                var lockScope = lockProductCodes.Count > 0
+                    ? await SetChildPurchasePriceMutationLock.AcquireProductsAsync(_db, lockProductCodes)
+                    : null;
 
                 _logger.LogDebug("执行二次检查，商品编码数: {CodeCount}，货号数: {ItemCount}",
                     productCodes.Count, itemNumbers.Count);
@@ -443,16 +597,17 @@ namespace BlazorApp.Api.Services
 
                 _logger.LogInformation("二次检查完成，发现已存在商品: {Count}", existingProducts.Count);
 
-                // 🔥 第二步：查询所有活跃的Store和套装商品信息
+                // 锁内读取门店和国内套装关系，避免以锁外快照创建不完整的子项组。
                 var activeStores = await _db.Queryable<Store>()
                     .Where(s => s.IsActive && !s.IsDeleted)
                     .ToListAsync();
 
-                // 查询所有与请求中商品编码相关的套装商品（DomesticSetProduct）
                 var domesticSets = await _db.Queryable<DomesticSetProduct>()
-                    .Where(d => d.ProductCode != null && productCodes.Contains(d.ProductCode))
+                    .Where(d => d.ProductCode != null && productCodes.Contains(d.ProductCode) && !d.IsDeleted)
                     .ToListAsync();
-                var domesticSetDict = domesticSets.ToDictionary(d => d.ProductCode);
+                var domesticSetGroups = domesticSets
+                    .GroupBy(d => d.ProductCode, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
 
                 _logger.LogInformation("查询到活跃店铺数: {StoreCount}，套装商品数: {SetCount}",
                     activeStores.Count, domesticSets.Count);
@@ -550,47 +705,55 @@ namespace BlazorApp.Api.Services
                         });
                     }
 
-                    // 如果是套装商品，准备套装相关数据
-                    if (domesticSetDict.ContainsKey(item.ItemNumber))
+                    // 同一主商品可对应多个国内套装子项，必须按 ProductCode 整组创建关系。
+                    if (domesticSetGroups.TryGetValue(item.ProductCode, out var domesticSetRows))
                     {
-                        _logger.LogDebug("检测到套装商品: {ItemNumber}", item.ItemNumber);
+                        EnsureDomesticSetGroupIsValid(item.ProductCode, domesticSetRows);
 
-                        // 准备ProductSetCode数据
-                        productSetCodesToCreate.Add(new ProductSetCode
+                        foreach (var domesticSet in domesticSetRows.OrderBy(row => row.SetProductCode, StringComparer.OrdinalIgnoreCase))
                         {
-                            SetCodeId = UuidHelper.GenerateUuid7(),
-                            ProductCode = item.ProductCode,
-                            SetItemNumber = item.ItemNumber,
-                            SetBarcode = item.Barcode,
-                            SetPurchasePrice = item.ImportPrice,
-                            SetRetailPrice = item.OEMPrice,
-                            SetQuantity = 1,
-                            SetType = 1, // 1=组合套装
-                            IsActive = true,
-                            IsDeleted = false,
-                            CreatedAt = createTime,
-                            UpdatedAt = createTime
-                        });
-
-                        // 为每个活跃店铺准备StoreMultiCodeProduct数据
-                        foreach (var store in activeStores)
-                        {
-                            storeMultiCodesToCreate.Add(new StoreMultiCodeProduct
+                            // SetType=1 的两张成本只能由统一分摊服务写入，先保持 null。
+                            productSetCodesToCreate.Add(new ProductSetCode
                             {
-                                UUID = UuidHelper.GenerateUuid7(),
-                                StoreCode = store.StoreCode,
+                                SetCodeId = domesticSet.SetProductCode,
                                 ProductCode = item.ProductCode,
-                                MultiCodeProductCode = item.ProductCode,
-                                MultiBarcode = item.Barcode,
-                                PurchasePrice = item.ImportPrice,
-                                MultiCodeRetailPrice = item.OEMPrice,
+                                SetProductCode = domesticSet.SetProductCode,
+                                SetItemNumber = domesticSet.SetProductNo,
+                                SetBarcode = domesticSet.SetBarcode,
+                                SetPurchasePrice = null,
+                                SetRetailPrice = domesticSet.OEMPrice,
+                                SetQuantity = 1,
+                                SetType = 1,
                                 IsActive = true,
-                                IsAutoPricing = false,
-                                IsSpecialProduct = false,
                                 IsDeleted = false,
                                 CreatedAt = createTime,
-                                UpdatedAt = createTime
+                                UpdatedAt = createTime,
+                                CreatedBy = actorName,
+                                UpdatedBy = actorName,
                             });
+
+                            foreach (var store in activeStores)
+                            {
+                                storeMultiCodesToCreate.Add(new StoreMultiCodeProduct
+                                {
+                                    UUID = UuidHelper.GenerateUuid7(),
+                                    StoreCode = store.StoreCode,
+                                    ProductCode = item.ProductCode,
+                                    MultiCodeProductCode = domesticSet.SetProductCode,
+                                    StoreMultiCodeProductCode = domesticSet.SetProductCode,
+                                    MultiBarcode = domesticSet.SetBarcode,
+                                    PurchasePrice = null,
+                                    MultiCodeRetailPrice = domesticSet.OEMPrice,
+                                    IsActive = true,
+                                    IsAutoPricing = false,
+                                    IsSpecialProduct = false,
+                                    IsDeleted = false,
+                                    CreatedAt = createTime,
+                                    UpdatedAt = createTime,
+                                    CreatedBy = actorName,
+                                    UpdatedBy = actorName,
+                                });
+                            }
                         }
                     }
                 }
@@ -634,6 +797,23 @@ namespace BlazorApp.Api.Services
                 {
                     await _db.Insertable(storeMultiCodesToCreate).ExecuteCommandAsync();
                     _logger.LogDebug("批量插入StoreMultiCodeProduct完成，共 {Count} 条（套装商品）", storeMultiCodesToCreate.Count);
+                }
+
+                if (productSetCodesToCreate.Any())
+                {
+                    if (lockScope == null)
+                    {
+                        throw new InvalidOperationException("创建套装子项前未获取对应的产品业务锁");
+                    }
+
+                    var setParentProductCodes = productSetCodesToCreate
+                        .Select(row => row.ProductCode)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    // 关系和零售价已经入库，提交前在同一锁与事务内统一分摊两张子项成本。
+                    var recalculation = await new SetChildPurchasePriceService(_db)
+                        .RecalculateLockedAsync(lockScope, setParentProductCodes, null, actorName);
+                    EnsureSetChildPurchasePriceRecalculated(recalculation, setParentProductCodes);
                 }
 
                 var afterSnapshots = await CaptureChangeSnapshotsAsync(auditProductCodes);
@@ -684,6 +864,11 @@ namespace BlazorApp.Api.Services
                 }
                 _logger.LogError(ex, "批量创建商品失败");
 
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                {
+                    return BuildBusyBatchResponse(request.Items.Count);
+                }
+
                 return new BatchProductOperationResponse
                 {
                     Success = false,
@@ -694,6 +879,21 @@ namespace BlazorApp.Api.Services
         }
 
         #endregion
+
+        private static BatchProductOperationResponse BuildBusyBatchResponse(int failedCount)
+        {
+            return new BatchProductOperationResponse
+            {
+                Success = false,
+                Message = "套装商品正在被其他操作修改，请稍后重试",
+                SuccessCount = 0,
+                FailedCount = failedCount,
+                Errors = new List<string>
+                {
+                    $"{SetChildPurchasePriceMutationLock.BusyErrorCode}: 套装商品正在被其他操作修改，请稍后重试",
+                },
+            };
+        }
 
         private async Task<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>
             CaptureChangeSnapshotsAsync(IEnumerable<string> productCodes)
@@ -723,6 +923,57 @@ namespace BlazorApp.Api.Services
                     ActorUserGuid = ResolveActorGuid(),
                     OccurredAtUtc = occurredAtUtc ?? DateTime.UtcNow,
                 }
+            );
+        }
+
+        private static void EnsureDomesticSetGroupIsValid(
+            string productCode,
+            IEnumerable<DomesticSetProduct> domesticSetRows
+        )
+        {
+            var rows = domesticSetRows.ToList();
+            if (rows.Any(row => string.IsNullOrWhiteSpace(row.SetProductCode)))
+            {
+                throw new InvalidOperationException($"套装商品 {productCode} 存在空的 SetProductCode");
+            }
+
+            var duplicate = rows
+                .GroupBy(row => row.SetProductCode.Trim(), StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault(group => group.Count() > 1);
+            if (duplicate != null)
+            {
+                throw new InvalidOperationException(
+                    $"套装商品 {productCode} 存在重复的 SetProductCode: {duplicate.Key}"
+                );
+            }
+        }
+
+        private static void EnsureSetChildPurchasePriceRecalculated(
+            SetChildPurchasePriceWritebackResultDto recalculation,
+            IEnumerable<string> productCodes
+        )
+        {
+            if (
+                recalculation.ProductSetCode.SkippedGroupCount == 0
+                && recalculation.StoreMultiCodeProduct.SkippedGroupCount == 0
+            )
+            {
+                return;
+            }
+
+            // 被本次成本变化命中的套装组不能带着未分摊成本提交，必须由外层事务回滚。
+            var affectedCodes = string.Join(
+                ", ",
+                productCodes.Where(code => !string.IsNullOrWhiteSpace(code)).Distinct(StringComparer.OrdinalIgnoreCase)
+            );
+            var reasons = string.Join(
+                "；",
+                recalculation.Errors.Select(error =>
+                    $"{error.TableName}/{error.StoreCode ?? "总部"}/{error.ProductCode}: {error.Reason}"
+                )
+            );
+            throw new InvalidOperationException(
+                $"套装子项成本无法重算，主商品: {affectedCodes}。{reasons}"
             );
         }
 

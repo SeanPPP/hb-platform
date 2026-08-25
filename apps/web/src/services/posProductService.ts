@@ -69,6 +69,7 @@ export interface PushProductsToHqJobResult {
   operationId?: string
   result?: PushProductsToHqResult
   message?: string
+  errorCode?: string
   errors?: string[]
 }
 
@@ -387,6 +388,7 @@ function normalizePushProductsToHqJobResult(payload: unknown, fallbackJobId = ''
     operationId: typeof raw.operationId === 'string' ? raw.operationId : undefined,
     result: nestedResult,
     message: typeof raw.message === 'string' ? raw.message : nestedResult?.message,
+    errorCode: readFirstString(raw, ['errorCode', 'ErrorCode', 'code', 'Code']),
     errors: Array.isArray(raw.errors)
       ? raw.errors.filter((item): item is string => typeof item === 'string')
       : [],

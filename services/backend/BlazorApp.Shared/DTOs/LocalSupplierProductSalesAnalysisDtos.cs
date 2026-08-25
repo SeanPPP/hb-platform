@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 
 namespace BlazorApp.Shared.DTOs
 {
@@ -31,6 +32,24 @@ namespace BlazorApp.Shared.DTOs
 
         /// <summary>为 true 时绕过 60 秒成功缓存重新查询。</summary>
         public bool ForceRefresh { get; set; }
+
+        /// <summary>
+        /// bootstrap 选择语义：为 true 时在缺少有效 currentProductCode 时自动选中首个候选
+        /// （mount/query/reset 场景）；为 false 时保留用户选择并尊重主动清空（refresh 场景）。
+        /// </summary>
+        public bool AutoSelectFirst { get; set; }
+
+        /// <summary>bootstrap 下候选分页页码（与 PageNumber 解耦）。</summary>
+        public int CandidatePageNumber { get; set; }
+
+        /// <summary>bootstrap 下候选每页数量。</summary>
+        public int CandidatePageSize { get; set; }
+
+        /// <summary>bootstrap 下汇总分页页码（与 PageNumber 解耦）。</summary>
+        public int SummaryPageNumber { get; set; }
+
+        /// <summary>bootstrap 下汇总每页数量。</summary>
+        public int SummaryPageSize { get; set; }
     }
 
     /// <summary>日期与商品/供应商过滤条件。</summary>
@@ -211,5 +230,38 @@ namespace BlazorApp.Shared.DTOs
         public decimal NetSalesQuantity { get; set; }
         public decimal NetSalesAmount { get; set; }
         public decimal? AverageUnitPrice { get; set; }
+    }
+
+    /// <summary>经过裁剪后的有效选择（included/allFiltered 语义已清洗）。</summary>
+    public class LocalSupplierProductSalesEffectiveSelectionDto : LocalSupplierProductSalesSelectionDto
+    {
+    }
+
+    /// <summary>bootstrap 聚合响应，包含所有分段与部分失败信息。</summary>
+    public class LocalSupplierProductSalesBootstrapResponseDto
+    {
+        public LocalSupplierProductSalesOptionsDto Options { get; set; } = new();
+        public LocalSupplierProductSalesPagedDto<LocalSupplierProductSalesCandidateDto> Candidates
+        {
+            get;
+            set;
+        } = new();
+        public LocalSupplierProductSalesEffectiveSelectionDto EffectiveSelection { get; set; } =
+            new();
+        public LocalSupplierProductSalesCandidateDto? CurrentProduct { get; set; }
+        public LocalSupplierProductSalesSummaryResponseDto Summary { get; set; } = new();
+        public LocalSupplierProductSalesInvoiceDetailPageDto InvoiceDetails { get; set; } = new();
+        public List<LocalSupplierProductSalesDailyDto> ProductDaily { get; set; } = new();
+        public List<LocalSupplierProductSalesBranchDto> Branches { get; set; } = new();
+
+        /// <summary>是否部分分段失败（options/summary/details/daily/branches）。</summary>
+        public bool Partial { get; set; }
+
+        /// <summary>分段失败信息，键为分段名，值为错误信息。</summary>
+        public Dictionary<string, string> SectionErrors { get; set; } = new();
+
+        /// <summary>阶段耗时（毫秒），供控制器生成 Server-Timing。</summary>
+        [JsonIgnore]
+        public Dictionary<string, double> ServerTimings { get; set; } = new();
     }
 }

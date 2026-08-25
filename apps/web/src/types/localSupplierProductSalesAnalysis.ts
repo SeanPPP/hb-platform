@@ -17,9 +17,17 @@ export interface LocalSupplierProductSalesAnalysisSelection {
 
 export interface LocalSupplierProductSalesAnalysisRequest {
   filter: LocalSupplierProductSalesAnalysisFilter
-  selection: LocalSupplierProductSalesAnalysisSelection
+  /** 可选：跨分页商品选择；bootstrap 首屏/查询省略时由服务端 autoSelectFirst 计算。 */
+  selection?: LocalSupplierProductSalesAnalysisSelection
   currentProductCode?: string
   branchCode?: string
+  /** bootstrap 专用：为 true 时服务端在无选择情况下显式选中首项候选。 */
+  autoSelectFirst?: boolean
+  /** bootstrap 专用：候选分页与汇总分页分别传参。 */
+  candidatePageNumber?: number
+  candidatePageSize?: number
+  summaryPageNumber?: number
+  summaryPageSize?: number
   pageNumber?: number
   pageSize?: number
   forceRefresh?: boolean
@@ -98,6 +106,32 @@ export interface LocalSupplierProductSalesAnalysisBranch {
   netSalesQuantity: number
   netSalesAmount: number
   averageUnitPrice: number | null
+}
+
+/** 分段错误键：options/summary/invoiceDetails/productDaily/branches。 */
+export interface LocalSupplierProductSalesAnalysisSectionErrors {
+  options?: string
+  summary?: string
+  invoiceDetails?: string
+  productDaily?: string
+  branches?: string
+}
+
+/**
+ * 统一 bootstrap 响应：一次请求带回页面全部数据分段。
+ * 候选或关键错误时整体失败（success=false）；分段失败时 success=true 且 partial=true + sectionErrors。
+ */
+export interface LocalSupplierProductSalesAnalysisBootstrap {
+  options: LocalSupplierProductSalesAnalysisOptions
+  candidates: LocalSupplierProductSalesAnalysisPaged<LocalSupplierProductSalesAnalysisCandidate>
+  effectiveSelection?: LocalSupplierProductSalesAnalysisSelection
+  currentProduct?: LocalSupplierProductSalesAnalysisCandidate | null
+  summary?: LocalSupplierProductSalesAnalysisSummary | null
+  invoiceDetails?: LocalSupplierProductSalesAnalysisPaged<LocalSupplierProductSalesAnalysisInvoiceDetail> | null
+  productDaily?: LocalSupplierProductSalesAnalysisDaily[] | null
+  branches?: LocalSupplierProductSalesAnalysisBranch[] | null
+  partial?: boolean
+  sectionErrors?: LocalSupplierProductSalesAnalysisSectionErrors
 }
 
 export interface LocalSupplierProductSalesAnalysisEnvelope<T> { data: T }

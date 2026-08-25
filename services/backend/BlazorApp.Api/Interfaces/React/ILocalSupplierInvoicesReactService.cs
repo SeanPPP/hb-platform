@@ -1,5 +1,6 @@
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HBweb;
 
 namespace BlazorApp.Api.Interfaces.React
 {
@@ -85,7 +86,9 @@ namespace BlazorApp.Api.Interfaces.React
             string invoiceGuid,
             List<string> detailGuids,
             string userName,
-            List<BatchExecuteNewProductProductTypeSelectionDto>? newProductProductTypeSelections = null
+            List<BatchExecuteNewProductProductTypeSelectionDto>? newProductProductTypeSelections = null,
+            List<BatchExecuteExpectedActionDto>? expectedActions = null,
+            IReadOnlyCollection<StoreLocalSupplierInvoiceDetails>? confirmedDetails = null
         );
         Task<SyncResult> PushInvoicesToHqAsync(List<string> invoiceGuids);
     }

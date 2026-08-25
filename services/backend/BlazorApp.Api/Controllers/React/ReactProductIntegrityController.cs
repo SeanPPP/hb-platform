@@ -1,7 +1,9 @@
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 
 namespace BlazorApp.Api.Controllers.React
 {
@@ -66,6 +68,8 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     return Ok(result);
                 }
+                if (result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode)
+                    return Conflict(result);
                 return BadRequest(result);
             }
             catch (Exception ex)
@@ -79,6 +83,45 @@ namespace BlazorApp.Api.Controllers.React
                     )
                 );
             }
+        }
+
+        [HttpPost("set-child-purchase-prices/preview")]
+        public async Task<IActionResult> PreviewSetChildPurchasePrices(
+            [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)]
+                SetChildPurchasePriceWritebackRequestDto? request
+        )
+        {
+            var result = await _integrityService.PreviewSetChildPurchasePricesAsync(
+                request ?? new SetChildPurchasePriceWritebackRequestDto()
+            );
+            return result.Success
+                ? Ok(result)
+                : result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                    ? Conflict(result)
+                    : BadRequest(result);
+        }
+
+        [HttpPost("set-child-purchase-prices/writeback")]
+        public async Task<IActionResult> WritebackSetChildPurchasePrices(
+            [FromBody(EmptyBodyBehavior = EmptyBodyBehavior.Allow)]
+                SetChildPurchasePriceWritebackRequestDto? request
+        )
+        {
+            var updatedBy = User.Identity?.Name;
+            if (string.IsNullOrWhiteSpace(updatedBy))
+            {
+                updatedBy = "SetChildPurchasePriceWriteback";
+            }
+
+            var result = await _integrityService.WritebackSetChildPurchasePricesAsync(
+                request ?? new SetChildPurchasePriceWritebackRequestDto(),
+                updatedBy
+            );
+            return result.Success
+                ? Ok(result)
+                : result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                    ? Conflict(result)
+                    : BadRequest(result);
         }
     }
 }

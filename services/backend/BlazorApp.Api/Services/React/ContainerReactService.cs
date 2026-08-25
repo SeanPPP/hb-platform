@@ -2470,6 +2470,12 @@ namespace BlazorApp.Api.Services.React
                     await _context.Db.Ado.BeginTranAsync();
                     try
                     {
+                        SetChildPurchasePriceLockScope? setChildPurchasePriceLock = null;
+                        if (productCodes.Count > 0)
+                        {
+                            setChildPurchasePriceLock = await SetChildPurchasePriceMutationLock
+                                .AcquireProductsAsync(_context.Db, productCodes);
+                        }
                         // 快照必须在同一事务内、任何业务写入前读取，避免并发写入污染 before 状态。
                         var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
 
@@ -2667,7 +2673,7 @@ namespace BlazorApp.Api.Services.React
                                 if (setClause.Count > 0)
                                 {
                                     var sql =
-                                        $"UPDATE WarehouseProduct SET {string.Join(", ", setClause)} WHERE ProductCode IN ({inClause})";
+                                        $"UPDATE WarehouseProduct SET {string.Join(", ", setClause)} WHERE ProductCode IN ({inClause}) AND (IsDeleted = 0 OR IsDeleted IS NULL)";
                                     await _context.Db.Ado.ExecuteCommandAsync(sql, pList);
                                 }
                             }
@@ -2723,7 +2729,7 @@ namespace BlazorApp.Api.Services.React
                                 setClause.Add("UpdatedAt = @ProductUpdatedAt");
                                 setClause.Add("UpdatedBy = @ProductUpdatedBy");
                                 var sql =
-                                    $"UPDATE Product SET {string.Join(", ", setClause)} WHERE ProductCode IN ({inClause})";
+                                    $"UPDATE Product SET {string.Join(", ", setClause)} WHERE ProductCode IN ({inClause}) AND (IsDeleted = 0 OR IsDeleted IS NULL)";
                                 await _context.Db.Ado.ExecuteCommandAsync(sql, pList);
                             }
 
@@ -2754,8 +2760,38 @@ namespace BlazorApp.Api.Services.React
                                         .Select(i => $"@Pc{i}")
                                 );
                                 var sql =
-                                    $"UPDATE StoreRetailPrice SET PurchasePrice = CASE {purchaseCaseBuilder} ELSE PurchasePrice END WHERE ProductCode IN ({inClause})";
+                                    $"UPDATE StoreRetailPrice SET PurchasePrice = CASE {purchaseCaseBuilder} ELSE PurchasePrice END WHERE ProductCode IN ({inClause}) AND (IsDeleted = 0 OR IsDeleted IS NULL)";
                                 await _context.Db.Ado.ExecuteCommandAsync(sql, pList);
+                            }
+
+                            if (importPriceUpdates.Count > 0 && setChildPurchasePriceLock != null)
+                            {
+                                var costProductCodes = importPriceUpdates
+                                    .Select(item => item.Detail.ProductCode)
+                                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                                    .Select(code => code!)
+                                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                                    .ToList();
+                                var recalculation = await new SetChildPurchasePriceService(
+                                    _context.Db
+                                ).RecalculateLockedAsync(
+                                    setChildPurchasePriceLock,
+                                    costProductCodes,
+                                    storeCodes: null,
+                                    updatedBy: string.IsNullOrWhiteSpace(auditActorName)
+                                        ? "System"
+                                        : auditActorName
+                                );
+                                if (
+                                    recalculation.ProductSetCode.SkippedGroupCount > 0
+                                    || recalculation.StoreMultiCodeProduct.SkippedGroupCount > 0
+                                )
+                                {
+                                    throw new InvalidOperationException(
+                                        recalculation.Errors.FirstOrDefault()?.Reason
+                                            ?? "套装与多码商品成本无法完整校正"
+                                    );
+                                }
                             }
 
                             _logger.LogInformation(

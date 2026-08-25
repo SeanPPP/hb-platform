@@ -80,6 +80,30 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public void 套装成本写入路径_必须在产品锁内统一重算且初始成本为空()
+        {
+            var source = File.ReadAllText(ResolveProductWarehouseReactServicePath());
+            var containerSource = File.ReadAllText(ResolveContainerExecutorPath());
+
+            Assert.Contains("SetChildPurchasePriceMutationLock.Acquire", source);
+            Assert.Contains(".RecalculateLockedAsync(", source);
+            Assert.DoesNotContain(".RecalculateAsync(", source);
+            Assert.DoesNotContain("SetChildPurchasePriceAllocator.AllocateByRetailRatio(", source);
+            Assert.Contains("SetPurchasePrice = null", source);
+            Assert.Contains("IsCostDerivedSetType(setCode.SetType)", source);
+            Assert.Contains("setCode.SetType == 1 || setCode.SetType == 2", source);
+
+            Assert.Contains("SetChildPurchasePriceMutationLock.Acquire", containerSource);
+            Assert.Contains(".RecalculateLockedAsync(", containerSource);
+            Assert.DoesNotContain(
+                "SetChildPurchasePriceAllocator.AllocateByRetailRatio(",
+                containerSource
+            );
+            Assert.Contains("SetPurchasePrice = null", containerSource);
+            Assert.Contains("PurchasePrice = null", containerSource);
+        }
+
+        [Fact]
         public async Task GetAntdTableDataAsync_FiltersByCategoryGuidsIncludingChildren()
         {
             await SeedWarehouseCategoryAsync("cat-root", null, "根分类");
@@ -1882,6 +1906,224 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task CreateSingleProductAsync_套装创建后统一分摊总部和门店子项成本()
+        {
+            const string productCode = "P-CREATE-SET-COST";
+            await SeedStoreAsync("S01", isActive: true, isDeleted: false);
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    new Dictionary<string, string?>
+                    {
+                        ["ConnectionStrings:DefaultConnection"] = _sqliteConnection.ConnectionString,
+                    }
+                )
+                .Build();
+
+            var result = await CreateService(configuration: configuration).CreateSingleProductAsync(
+                new CreateSingleProductRequestDto
+                {
+                    ProductType = ProductTypeEnum.Set,
+                    ProductCode = productCode,
+                    ItemNumber = "ITEM-CREATE-SET-COST",
+                    Barcode = "BAR-CREATE-SET-COST",
+                    ChineseName = "创建套装成本测试",
+                    OEMPrice = 50m,
+                    ImportPrice = 10m,
+                    SetType = SetTypeEnum.Combination,
+                    SetItems = new List<SetItemDto>
+                    {
+                        new()
+                        {
+                            ProductCode = "SET-CREATE-A",
+                            ItemNumber = "ITEM-A",
+                            Barcode = "BAR-A",
+                            Quantity = 9,
+                            PurchasePrice = 99m,
+                            RetailPrice = 20m,
+                        },
+                        new()
+                        {
+                            ProductCode = "SET-CREATE-B",
+                            ItemNumber = "ITEM-B",
+                            Barcode = "BAR-B",
+                            Quantity = 1,
+                            PurchasePrice = 99m,
+                            RetailPrice = 30m,
+                        },
+                    },
+                },
+                "创建人"
+            );
+
+            Assert.True(result.Success, result.Message);
+            var setRows = await _db.Queryable<ProductSetCode>()
+                .Where(x => x.ProductCode == productCode)
+                .OrderBy(x => x.SetRetailPrice)
+                .ToListAsync();
+            Assert.Equal(new decimal?[] { 4m, 6m }, setRows.Select(x => x.SetPurchasePrice));
+
+            var storeRows = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.ProductCode == productCode && x.StoreCode == "S01")
+                .OrderBy(x => x.MultiCodeRetailPrice)
+                .ToListAsync();
+            Assert.Equal(new decimal?[] { 4m, 6m }, storeRows.Select(x => x.PurchasePrice));
+            Assert.Equal(new decimal?[] { 20m, 30m }, storeRows.Select(x => x.MultiCodeRetailPrice));
+        }
+
+        [Fact]
+        public async Task CreateSingleProductAsync_Type2套装忽略客户端子项成本并同步总部和门店主成本()
+        {
+            const string productCode = "P-CREATE-TYPE2-SET-COST";
+            await SeedStoreAsync("S01", isActive: true, isDeleted: false);
+            var configuration = new ConfigurationBuilder()
+                .AddInMemoryCollection(
+                    new Dictionary<string, string?>
+                    {
+                        ["ConnectionStrings:DefaultConnection"] = _sqliteConnection.ConnectionString,
+                    }
+                )
+                .Build();
+
+            var result = await CreateService(configuration: configuration).CreateSingleProductAsync(
+                new CreateSingleProductRequestDto
+                {
+                    ProductType = ProductTypeEnum.Set,
+                    ProductCode = productCode,
+                    ItemNumber = "ITEM-CREATE-TYPE2-SET-COST",
+                    Barcode = "BAR-CREATE-TYPE2-SET-COST",
+                    ChineseName = "固定套装成本测试",
+                    OEMPrice = 50m,
+                    ImportPrice = 10m,
+                    SetType = SetTypeEnum.Fixed,
+                    SetItems = new List<SetItemDto>
+                    {
+                        new()
+                        {
+                            ProductCode = "SET-TYPE2-A",
+                            ItemNumber = "ITEM-TYPE2-A",
+                            Barcode = "BAR-TYPE2-A",
+                            Quantity = 1,
+                            PurchasePrice = 99m,
+                            RetailPrice = 20m,
+                        },
+                        new()
+                        {
+                            ProductCode = "SET-TYPE2-B",
+                            ItemNumber = "ITEM-TYPE2-B",
+                            Barcode = "BAR-TYPE2-B",
+                            Quantity = 1,
+                            PurchasePrice = 88m,
+                            RetailPrice = 30m,
+                        },
+                    },
+                },
+                "创建人"
+            );
+
+            Assert.True(result.Success, result.Message);
+            var setRows = await _db.Queryable<ProductSetCode>()
+                .Where(x => x.ProductCode == productCode)
+                .OrderBy(x => x.SetRetailPrice)
+                .ToListAsync();
+            Assert.Equal(new decimal?[] { 10m, 10m }, setRows.Select(x => x.SetPurchasePrice));
+            Assert.Equal(new decimal?[] { 20m, 30m }, setRows.Select(x => x.SetRetailPrice));
+
+            var storeRows = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.ProductCode == productCode && x.StoreCode == "S01")
+                .OrderBy(x => x.MultiCodeRetailPrice)
+                .ToListAsync();
+            Assert.Equal(new decimal?[] { 10m, 10m }, storeRows.Select(x => x.PurchasePrice));
+            Assert.Equal(new decimal?[] { 20m, 30m }, storeRows.Select(x => x.MultiCodeRetailPrice));
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_Type2主成本更新同步总部和门店子项成本()
+        {
+            const string productCode = "P-BATCH-TYPE2-COST";
+            await SeedPriceSyncProductAsync(productCode, 4m, 20m, 4m, 20m);
+            await SeedStoreAsync("S01", isActive: true, isDeleted: false);
+            await SeedStoreRetailPriceAsync("S01", productCode, purchasePrice: 4m, retailPrice: 20m);
+            await _db.Insertable(new ProductSetCode
+            {
+                SetCodeId = "TYPE2-BATCH-SET",
+                ProductCode = productCode,
+                SetProductCode = "TYPE2-BATCH-CHILD",
+                SetItemNumber = "TYPE2-BATCH-ITEM",
+                SetBarcode = "TYPE2-BATCH-BARCODE",
+                SetPurchasePrice = 4m,
+                SetRetailPrice = 31m,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreMultiCodeProduct
+            {
+                UUID = "TYPE2-BATCH-STORE",
+                StoreCode = "S01",
+                ProductCode = productCode,
+                MultiCodeProductCode = "TYPE2-BATCH-CHILD",
+                StoreMultiCodeProductCode = "S01TYPE2-BATCH-CHILD",
+                MultiBarcode = "TYPE2-BATCH-BARCODE",
+                PurchasePrice = 4m,
+                MultiCodeRetailPrice = 31m,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchUpdateAsync(
+                new List<UpdateItemDto> { new() { ProductCode = productCode, ImportPrice = 10m } },
+                "仓库员-Type2"
+            );
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(10m, (await _db.Queryable<Product>()
+                .SingleAsync(x => x.ProductCode == productCode)).PurchasePrice);
+            Assert.Equal(10m, (await _db.Queryable<StoreRetailPrice>()
+                .SingleAsync(x => x.ProductCode == productCode && x.StoreCode == "S01")).PurchasePrice);
+            Assert.Equal(10m, (await _db.Queryable<ProductSetCode>()
+                .SingleAsync(x => x.ProductCode == productCode)).SetPurchasePrice);
+            Assert.Equal(10m, (await _db.Queryable<StoreMultiCodeProduct>()
+                .SingleAsync(x => x.ProductCode == productCode && x.StoreCode == "S01")).PurchasePrice);
+        }
+
+        [Fact]
+        public async Task BatchUpdateAsync_Type2成本已正确时不新增审计记录()
+        {
+            const string productCode = "P-BATCH-TYPE2-AUDIT";
+            await SeedPriceSyncProductAsync(productCode, 10m, 20m, 10m, 20m);
+            await _db.Insertable(new ProductSetCode
+            {
+                SetCodeId = "TYPE2-AUDIT-SET",
+                ProductCode = productCode,
+                SetProductCode = "TYPE2-AUDIT-CHILD",
+                SetItemNumber = "TYPE2-AUDIT-ITEM",
+                SetBarcode = "TYPE2-AUDIT-BARCODE",
+                SetPurchasePrice = 10m,
+                SetRetailPrice = 31m,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService(
+                changeHistoryService: CreateRealChangeHistoryService(
+                    userGuid: "type2-audit-user",
+                    username: "type2-audit-user"
+                )
+            ).BatchUpdateAsync(
+                new List<UpdateItemDto> { new() { ProductCode = productCode, ImportPrice = 10m } },
+                "仓库员-Type2"
+            );
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(0, await _db.Queryable<WarehouseProductChangeHistory>()
+                .Where(x => x.ProductCode == productCode)
+                .CountAsync());
+            Assert.Equal(10m, (await _db.Queryable<ProductSetCode>()
+                .SingleAsync(x => x.ProductCode == productCode)).SetPurchasePrice);
+        }
+
+        [Fact]
         public async Task UpdatedBy_完整编辑写入传入操作人()
         {
             const string productCode = "P-UPDATED-BY-FULL";
@@ -1974,6 +2216,166 @@ namespace BlazorApp.Api.Tests
             Assert.Equal("仓库员F", created.CreatedBy);
             Assert.Equal("仓库员F", created.UpdatedBy);
             Assert.Equal("仓库员G", updated.UpdatedBy);
+        }
+
+        [Fact]
+        public async Task ImportFromDomesticAsync_成功项已有Type1关系也重算且失败项不参与()
+        {
+            const string succeededCode = "P-IMPORT-EXISTING-TYPE1";
+            const string failedCode = "P-IMPORT-FAILED-TYPE1";
+            await SeedDomesticImportProductAsync(succeededCode, "成功组合套装", "Imported Type1");
+            await SeedDomesticImportProductAsync(failedCode, "失败组合套装", "Failed Type1");
+            await _db.Updateable<DomesticProduct>()
+                .SetColumns(x => x.ProductType == 1)
+                .Where(x => x.ProductCode == succeededCode || x.ProductCode == failedCode)
+                .ExecuteCommandAsync();
+            await _db.Updateable<DomesticProduct>()
+                .SetColumns(x => x.ImportPrice == 0m)
+                .Where(x => x.ProductCode == failedCode)
+                .ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                new Product { ProductCode = succeededCode, ProductName = "成功组合套装", PurchasePrice = 10m, IsActive = true, IsDeleted = false },
+                new Product { ProductCode = failedCode, ProductName = "失败组合套装", PurchasePrice = 10m, IsActive = true, IsDeleted = false },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                new DomesticSetProduct { ProductCode = succeededCode, SetProductCode = "SUCCESS-A", SetProductNo = "SUCCESS-A", SetBarcode = "SUCCESS-A", OEMPrice = 20m, IsDeleted = false },
+                new DomesticSetProduct { ProductCode = succeededCode, SetProductCode = "SUCCESS-B", SetProductNo = "SUCCESS-B", SetBarcode = "SUCCESS-B", OEMPrice = 30m, IsDeleted = false },
+                new DomesticSetProduct { ProductCode = failedCode, SetProductCode = "FAILED-A", SetProductNo = "FAILED-A", SetBarcode = "FAILED-A", OEMPrice = 20m, IsDeleted = false },
+                new DomesticSetProduct { ProductCode = failedCode, SetProductCode = "FAILED-B", SetProductNo = "FAILED-B", SetBarcode = "FAILED-B", OEMPrice = 30m, IsDeleted = false },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                new ProductSetCode { SetCodeId = "SUCCESS-A", ProductCode = succeededCode, SetProductCode = "SUCCESS-A", SetItemNumber = "SUCCESS-A", SetRetailPrice = 20m, SetPurchasePrice = 99m, SetType = 1, IsActive = true, IsDeleted = false },
+                new ProductSetCode { SetCodeId = "SUCCESS-B", ProductCode = succeededCode, SetProductCode = "SUCCESS-B", SetItemNumber = "SUCCESS-B", SetRetailPrice = 30m, SetPurchasePrice = 99m, SetType = 1, IsActive = true, IsDeleted = false },
+                new ProductSetCode { SetCodeId = "FAILED-A", ProductCode = failedCode, SetProductCode = "FAILED-A", SetItemNumber = "FAILED-A", SetRetailPrice = 20m, SetPurchasePrice = 99m, SetType = 1, IsActive = true, IsDeleted = false },
+                new ProductSetCode { SetCodeId = "FAILED-B", ProductCode = failedCode, SetProductCode = "FAILED-B", SetItemNumber = "FAILED-B", SetRetailPrice = 30m, SetPurchasePrice = 99m, SetType = 1, IsActive = true, IsDeleted = false },
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().ImportFromDomesticAsync(new ImportFromDomesticRequestDto
+            {
+                ProductCodes = new List<string> { succeededCode, failedCode },
+            });
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.SuccessCount);
+            Assert.Equal(1, result.FailedCount);
+            Assert.Equal(new decimal?[] { 4m, 6m }, (await _db.Queryable<ProductSetCode>()
+                .Where(x => x.ProductCode == succeededCode)
+                .OrderBy(x => x.SetProductCode)
+                .ToListAsync()).Select(x => x.SetPurchasePrice));
+            Assert.Equal(new decimal?[] { 99m, 99m }, (await _db.Queryable<ProductSetCode>()
+                .Where(x => x.ProductCode == failedCode)
+                .OrderBy(x => x.SetProductCode)
+                .ToListAsync()).Select(x => x.SetPurchasePrice));
+        }
+
+        [Fact]
+        public async Task ImportFromDomesticAsync_成功项已有Type2关系时同步主成本()
+        {
+            const string productCode = "P-IMPORT-EXISTING-TYPE2";
+            await SeedDomesticImportProductAsync(productCode, "固定套装", "Imported Type2");
+            await _db.Updateable<DomesticProduct>()
+                .SetColumns(x => x.ProductType == 1)
+                .Where(x => x.ProductCode == productCode)
+                .ExecuteCommandAsync();
+            await _db.Insertable(new Product
+            {
+                ProductCode = productCode,
+                ProductName = "固定套装",
+                PurchasePrice = 10m,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new DomesticSetProduct
+            {
+                ProductCode = productCode,
+                SetProductCode = "TYPE2-IMPORT-CHILD",
+                SetProductNo = "TYPE2-IMPORT-ITEM",
+                SetBarcode = "TYPE2-IMPORT-BARCODE",
+                ImportPrice = 77m,
+                OEMPrice = 20m,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new ProductSetCode
+            {
+                SetCodeId = "TYPE2-IMPORT-CHILD",
+                ProductCode = productCode,
+                SetProductCode = "TYPE2-IMPORT-CHILD",
+                SetItemNumber = "TYPE2-IMPORT-ITEM",
+                SetBarcode = "TYPE2-IMPORT-BARCODE",
+                SetPurchasePrice = 99m,
+                SetRetailPrice = 20m,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().ImportFromDomesticAsync(
+                new ImportFromDomesticRequestDto { ProductCodes = new List<string> { productCode } }
+            );
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(10m, (await _db.Queryable<Product>()
+                .SingleAsync(x => x.ProductCode == productCode)).PurchasePrice);
+            Assert.Equal(10m, (await _db.Queryable<ProductSetCode>()
+                .SingleAsync(x => x.ProductCode == productCode)).SetPurchasePrice);
+        }
+
+        [Fact]
+        public async Task ImportFromDomesticAsync_默认不建门店投影时不因活跃门店缺少套装子项而回滚()
+        {
+            const string productCode = "P-IMPORT-TYPE1-NO-STORE-PROJECTION";
+            await SeedDomesticImportProductAsync(productCode, "无门店投影套装", "Set without store projection");
+            await _db.Updateable<DomesticProduct>()
+                .SetColumns(x => x.ProductType == 1)
+                .Where(x => x.ProductCode == productCode)
+                .ExecuteCommandAsync();
+            await _db.Insertable(new Store
+            {
+                StoreCode = "S-ACTIVE-NO-PROJECTION",
+                StoreName = "无投影活跃门店",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new Product
+            {
+                ProductCode = productCode,
+                ProductName = "无门店投影套装",
+                PurchasePrice = 10m,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                new DomesticSetProduct { ProductCode = productCode, SetProductCode = "NO-STORE-A", SetProductNo = "NO-STORE-A", SetBarcode = "NO-STORE-A", OEMPrice = 20m, IsDeleted = false },
+                new DomesticSetProduct { ProductCode = productCode, SetProductCode = "NO-STORE-B", SetProductNo = "NO-STORE-B", SetBarcode = "NO-STORE-B", OEMPrice = 30m, IsDeleted = false },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                new ProductSetCode { SetCodeId = "NO-STORE-A", ProductCode = productCode, SetProductCode = "NO-STORE-A", SetItemNumber = "NO-STORE-A", SetRetailPrice = 20m, SetPurchasePrice = 99m, SetType = 1, IsActive = true, IsDeleted = false },
+                new ProductSetCode { SetCodeId = "NO-STORE-B", ProductCode = productCode, SetProductCode = "NO-STORE-B", SetItemNumber = "NO-STORE-B", SetRetailPrice = 30m, SetPurchasePrice = 99m, SetType = 1, IsActive = true, IsDeleted = false },
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().ImportFromDomesticAsync(
+                new ImportFromDomesticRequestDto
+                {
+                    ProductCodes = new List<string> { productCode },
+                    // 默认行为：不创建门店多码投影。
+                    SyncMultiCodes = false,
+                }
+            );
+
+            Assert.True(result.Success);
+            Assert.Equal(1, result.SuccessCount);
+            Assert.Equal(new decimal?[] { 4m, 6m }, (await _db.Queryable<ProductSetCode>()
+                .Where(x => x.ProductCode == productCode)
+                .OrderBy(x => x.SetProductCode)
+                .ToListAsync()).Select(x => x.SetPurchasePrice));
+            Assert.Equal(0, await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.ProductCode == productCode)
+                .CountAsync());
         }
 
         [Fact]
@@ -5065,6 +5467,111 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task FullUpdateAsync_套装子项按兄弟零售价分摊且不被主商品价格覆盖()
+        {
+            const string productCode = "P-FULL-SET-COST";
+            await SeedPatchProductAsync(
+                productCode,
+                importPrice: 9m,
+                oemPrice: 45m,
+                productPurchasePrice: 9m,
+                productRetailPrice: 45m
+            );
+            await SeedStoreAsync("S01", isActive: true, isDeleted: false);
+            await SeedStoreRetailPriceAsync("S01", productCode, purchasePrice: 9m, retailPrice: 45m);
+            await _db.Insertable(new[]
+            {
+                new ProductSetCode
+                {
+                    SetCodeId = "SET-A",
+                    ProductCode = productCode,
+                    SetProductCode = "CHILD-A",
+                    SetItemNumber = "ITEM-A",
+                    SetBarcode = "BAR-A",
+                    SetPurchasePrice = 99m,
+                    SetRetailPrice = 20m,
+                    SetQuantity = 1,
+                    SetType = 1,
+                    IsActive = true,
+                    IsDeleted = false,
+                    CreatedAt = DateTime.UtcNow,
+                },
+                new ProductSetCode
+                {
+                    SetCodeId = "SET-B",
+                    ProductCode = productCode,
+                    SetProductCode = "CHILD-B",
+                    SetItemNumber = "ITEM-B",
+                    SetBarcode = "BAR-B",
+                    SetPurchasePrice = 99m,
+                    SetRetailPrice = 30m,
+                    SetQuantity = 1,
+                    SetType = 1,
+                    IsActive = true,
+                    IsDeleted = false,
+                    CreatedAt = DateTime.UtcNow,
+                },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                new StoreMultiCodeProduct
+                {
+                    UUID = "STORE-A",
+                    StoreCode = "S01",
+                    ProductCode = productCode,
+                    MultiCodeProductCode = "CHILD-A",
+                    StoreMultiCodeProductCode = "S01CHILD-A",
+                    MultiBarcode = "BAR-A",
+                    PurchasePrice = 50m,
+                    MultiCodeRetailPrice = 20m,
+                    IsActive = true,
+                    IsDeleted = false,
+                    CreatedAt = DateTime.UtcNow,
+                },
+                new StoreMultiCodeProduct
+                {
+                    UUID = "STORE-B",
+                    StoreCode = "S01",
+                    ProductCode = productCode,
+                    MultiCodeProductCode = "CHILD-B",
+                    StoreMultiCodeProductCode = "S01CHILD-B",
+                    MultiBarcode = "BAR-B",
+                    PurchasePrice = 50m,
+                    MultiCodeRetailPrice = 30m,
+                    IsActive = true,
+                    IsDeleted = false,
+                    CreatedAt = DateTime.UtcNow,
+                },
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().FullUpdateAsync(
+                productCode,
+                new WarehouseProductFullUpdateDto
+                {
+                    ImportPrice = 10m,
+                    OEMPrice = 50m,
+                    ProductType = 1,
+                    IsActive = true,
+                },
+                "仓库员-套装成本"
+            );
+
+            Assert.True(result.Success, result.Message);
+            var setRows = await _db.Queryable<ProductSetCode>()
+                .Where(x => x.ProductCode == productCode)
+                .OrderBy(x => x.SetProductCode)
+                .ToListAsync();
+            Assert.Equal(new decimal?[] { 4m, 6m }, setRows.Select(x => x.SetPurchasePrice));
+
+            var storeRows = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.ProductCode == productCode && x.StoreCode == "S01")
+                .OrderBy(x => x.MultiCodeProductCode)
+                .ToListAsync();
+            Assert.Equal(new decimal?[] { 4m, 6m }, storeRows.Select(x => x.PurchasePrice));
+            Assert.Equal(new decimal?[] { 20m, 30m }, storeRows.Select(x => x.MultiCodeRetailPrice));
+        }
+
+        [Fact]
         public async Task FullUpdateAsync_SupplierCode_UpdatesDomesticSupplier()
         {
             const string productCode = "P-FULL-SUPPLIER";
@@ -5670,6 +6177,44 @@ namespace BlazorApp.Api.Tests
             dbField!.SetValue(context, db);
 
             return context;
+        }
+
+        private static string ResolveProductWarehouseReactServicePath()
+        {
+            var directory = new DirectoryInfo(AppContext.BaseDirectory);
+            while (directory != null)
+            {
+                var path = Path.Combine(
+                    directory.FullName,
+                    "services/backend/BlazorApp.Api/Services/React/ProductWarehouseReactService.cs"
+                );
+                if (File.Exists(path))
+                {
+                    return path;
+                }
+                directory = directory.Parent;
+            }
+
+            throw new FileNotFoundException("未找到 ProductWarehouseReactService.cs");
+        }
+
+        private static string ResolveContainerExecutorPath()
+        {
+            var directory = new DirectoryInfo(AppContext.BaseDirectory);
+            while (directory != null)
+            {
+                var path = Path.Combine(
+                    directory.FullName,
+                    "services/backend/BlazorApp.Api/Services/React/ContainerProductCreationExecutorService.cs"
+                );
+                if (File.Exists(path))
+                {
+                    return path;
+                }
+                directory = directory.Parent;
+            }
+
+            throw new FileNotFoundException("未找到 ContainerProductCreationExecutorService.cs");
         }
 
         private static HqSqlSugarContext CreateHqSqlSugarContext()

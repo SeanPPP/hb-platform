@@ -37,6 +37,58 @@ public sealed class StorePriceTransferJobServiceTests
         using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
         InitLocalTables(localDb);
         InitHqTables(hqDb);
+        await localDb.Insertable(new[]
+        {
+            new Product
+            {
+                UUID = "product-p01",
+                ProductCode = "P01",
+                ProductName = "套装 P01",
+                PurchasePrice = 1m,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new Product
+            {
+                UUID = "product-p02",
+                ProductCode = "P02",
+                ProductName = "固定套装 P02",
+                PurchasePrice = 1m,
+                IsActive = true,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+        await localDb.Insertable(new[]
+        {
+            new ProductSetCode
+            {
+                SetCodeId = "set-p01-m01",
+                ProductCode = "P01",
+                SetProductCode = "M01",
+                SetItemNumber = "ITEM-M01",
+                SetBarcode = "BAR-M01",
+                SetPurchasePrice = 99m,
+                SetRetailPrice = 7m,
+                SetQuantity = 1,
+                SetType = 1,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new ProductSetCode
+            {
+                SetCodeId = "set-p02-m02",
+                ProductCode = "P02",
+                SetProductCode = "M02",
+                SetItemNumber = "ITEM-M02",
+                SetBarcode = "BAR-M02",
+                SetPurchasePrice = 99m,
+                SetRetailPrice = 0m,
+                SetQuantity = 1,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
         await localDb.Insertable(new StoreRetailPrice
         {
             UUID = "local-retail-target",
@@ -52,6 +104,16 @@ public sealed class StorePriceTransferJobServiceTests
             IsActive = true,
             IsDeleted = false,
         }).ExecuteCommandAsync();
+        await localDb.Insertable(BuildLocalRetail(
+            "local-retail-rollback",
+            "T01",
+            "P-ROLLBACK",
+            5m,
+            9m,
+            0m,
+            false,
+            false
+        )).ExecuteCommandAsync();
         await localDb.Insertable(BuildLocalMulti(
             "local-multi-target",
             "T01",
@@ -112,6 +174,14 @@ public sealed class StorePriceTransferJobServiceTests
         Assert.True(updatedRetail.IsAutoPricing);
         Assert.True(updatedRetail.IsSpecialProduct);
 
+        var updatedMulti = await localDb.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(x => x.StoreCode == "T01" && x.ProductCode == "P01");
+        Assert.Equal(5m, updatedMulti.PurchasePrice);
+        Assert.Equal(7m, updatedMulti.MultiCodeRetailPrice);
+        var unchangedGlobalSet = await localDb.Queryable<ProductSetCode>()
+            .SingleAsync(x => x.SetCodeId == "set-p01-m01");
+        Assert.Equal(99m, unchangedGlobalSet.SetPurchasePrice);
+
         var insertedRetail = await localDb.Queryable<StoreRetailPrice>()
             .SingleAsync(x => x.StoreCode == "T01" && x.ProductCode == "P02");
         Assert.Equal("T01P02", insertedRetail.StoreProductCode);
@@ -121,9 +191,357 @@ public sealed class StorePriceTransferJobServiceTests
         var insertedMulti = await localDb.Queryable<StoreMultiCodeProduct>()
             .SingleAsync(x => x.StoreCode == "T01" && x.ProductCode == "P02" && x.MultiCodeProductCode == "M02");
         Assert.Equal("T01M02", insertedMulti.StoreMultiCodeProductCode);
-        Assert.Equal(4m, insertedMulti.PurchasePrice);
+        Assert.Equal(6m, insertedMulti.PurchasePrice);
         Assert.Equal(8m, insertedMulti.MultiCodeRetailPrice);
         Assert.True(insertedMulti.IsSpecialProduct);
+    }
+
+    [Fact]
+    public void 总部同步到门店_两类套装均按完整父子键忽略源成本()
+    {
+        var source = File.ReadAllText(ResolveStorePriceTransferServicePath());
+
+        Assert.True(
+            source.Split("SetType == 1 ||").Length - 1 >= 2,
+            "HQ→Local 的独立多码与父价+多码组合路径都必须覆盖 Type1/Type2"
+        );
+        Assert.Contains("batchChildCodes.Contains(x.SetProductCode)", source);
+        Assert.Contains("setChildRequest = WithoutPurchasePrice(request)", source);
+    }
+
+    [Fact]
+    public async Task TransferAsync_HqToLocal_套装目标组无法重算时应回滚当前多码写批次()
+    {
+        await using var localConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await localConnection.OpenAsync();
+        await using var hqConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await hqConnection.OpenAsync();
+        using var localDb = new SqlSugarClient(CreateConnectionConfig(localConnection.ConnectionString));
+        using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
+        InitLocalTables(localDb);
+        InitHqTables(hqDb);
+
+        await localDb.Insertable(new Product
+        {
+            UUID = "product-rollback",
+            ProductCode = "P-ROLLBACK",
+            PurchasePrice = 5m,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await localDb.Insertable(new ProductSetCode
+        {
+            SetCodeId = "set-rollback",
+            ProductCode = "P-ROLLBACK",
+            SetProductCode = "M-ROLLBACK",
+            SetItemNumber = "ITEM-ROLLBACK",
+            SetBarcode = "BAR-ROLLBACK",
+            SetRetailPrice = 0m,
+            SetQuantity = 1,
+            SetType = 1,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await localDb.Insertable(BuildLocalMulti(
+            "local-multi-rollback",
+            "T01",
+            "P-ROLLBACK",
+            "M-ROLLBACK",
+            1m,
+            2m,
+            0m,
+            false,
+            false
+        )).ExecuteCommandAsync();
+        await hqDb.Insertable(BuildHqMulti(
+            1,
+            "S01",
+            "P-ROLLBACK",
+            "M-ROLLBACK",
+            99m,
+            0m,
+            0m,
+            false,
+            false
+        )).ExecuteCommandAsync();
+
+        var result = await CreateTransferService(localDb, hqDb).TransferAsync(new StorePriceTransferRequest
+        {
+            Direction = StorePriceTransferDirectionConstants.HqToLocal,
+            SourceStoreCode = "S01",
+            TargetStoreCode = "T01",
+            SyncRetailPrices = false,
+            SyncMultiCodePrices = true,
+            SyncPurchasePrice = true,
+            SyncRetailPrice = true,
+        }, "tester");
+
+        Assert.False(result.Success);
+        var localMulti = await localDb.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(x => x.UUID == "local-multi-rollback");
+        Assert.Equal(1m, localMulti.PurchasePrice);
+        Assert.Equal(2m, localMulti.MultiCodeRetailPrice);
+    }
+
+    [Fact]
+    public async Task TransferAsync_HqToLocal_同时同步时HQ同键多码不得绕过软删除墓碑()
+    {
+        await using var localConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await localConnection.OpenAsync();
+        await using var hqConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await hqConnection.OpenAsync();
+        using var localDb = new SqlSugarClient(CreateConnectionConfig(localConnection.ConnectionString));
+        using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
+        InitLocalTables(localDb);
+        InitHqTables(hqDb);
+
+        await localDb.Insertable(new Product
+        {
+            UUID = "product-atomic",
+            ProductCode = "P-ATOMIC",
+            PurchasePrice = 5m,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await localDb.Insertable(new ProductSetCode
+        {
+            SetCodeId = "set-atomic",
+            ProductCode = "P-ATOMIC",
+            SetProductCode = "M-MISSING",
+            SetItemNumber = "ITEM-MISSING",
+            SetBarcode = "BAR-MISSING",
+            SetRetailPrice = 0m,
+            SetQuantity = 1,
+            SetType = 2,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await localDb.Insertable(BuildLocalRetail(
+            "local-retail-atomic",
+            "T01",
+            "P-ATOMIC",
+            5m,
+            9m,
+            0m,
+            false,
+            false
+        )).ExecuteCommandAsync();
+        var deletedProjection = BuildLocalMulti(
+            "local-multi-deleted",
+            "T01",
+            "P-ATOMIC",
+            "M-MISSING",
+            1m,
+            2m,
+            0m,
+            false,
+            false
+        );
+        deletedProjection.IsActive = false;
+        deletedProjection.IsDeleted = true;
+        await localDb.Insertable(deletedProjection).ExecuteCommandAsync();
+        await hqDb.Insertable(BuildHqRetail(
+            1,
+            "S01",
+            "P-ATOMIC",
+            20m,
+            30m,
+            0m,
+            false,
+            false
+        )).ExecuteCommandAsync();
+        await hqDb.Insertable(BuildHqMulti(
+            1,
+            "S01",
+            "P-ATOMIC",
+            "M-MISSING",
+            99m,
+            40m,
+            0m,
+            false,
+            false
+        )).ExecuteCommandAsync();
+
+        var result = await CreateTransferService(localDb, hqDb).TransferAsync(new StorePriceTransferRequest
+        {
+            Direction = StorePriceTransferDirectionConstants.HqToLocal,
+            SourceStoreCode = "S01",
+            TargetStoreCode = "T01",
+            SyncRetailPrices = true,
+            SyncMultiCodePrices = true,
+            SyncPurchasePrice = true,
+            SyncRetailPrice = true,
+        }, "tester");
+
+        Assert.False(result.Success);
+        var localRetail = await localDb.Queryable<StoreRetailPrice>()
+            .SingleAsync(x => x.UUID == "local-retail-atomic");
+        Assert.Equal(5m, localRetail.PurchasePrice);
+        Assert.Equal(9m, localRetail.StoreRetailPriceValue);
+        var unchangedDeletedProjection = await localDb.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(x => x.UUID == "local-multi-deleted");
+        Assert.True(unchangedDeletedProjection.IsDeleted);
+        Assert.False(unchangedDeletedProjection.IsActive);
+        Assert.Equal(
+            0,
+            await localDb.Queryable<StoreMultiCodeProduct>()
+                .Where(x =>
+                    x.StoreCode == "T01"
+                    && x.ProductCode == "P-ATOMIC"
+                    && x.MultiCodeProductCode == "M-MISSING"
+                    && !x.IsDeleted
+                )
+                .CountAsync()
+        );
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TransferAsync_HqToLocal_父价墓碑不得旁路新建有效行(
+        bool syncMultiCodePrices
+    )
+    {
+        await using var localConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await localConnection.OpenAsync();
+        await using var hqConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await hqConnection.OpenAsync();
+        using var localDb = new SqlSugarClient(CreateConnectionConfig(localConnection.ConnectionString));
+        using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
+        InitLocalTables(localDb);
+        InitHqTables(hqDb);
+        await localDb.Insertable(new Product
+        {
+            UUID = "product-retail-tombstone",
+            ProductCode = "P-RETAIL-TOMBSTONE",
+            PurchasePrice = 5m,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        var tombstone = BuildLocalRetail(
+            "retail-tombstone",
+            "T01",
+            "P-RETAIL-TOMBSTONE",
+            5m,
+            9m,
+            0m,
+            false,
+            false
+        );
+        tombstone.IsDeleted = true;
+        tombstone.IsActive = false;
+        await localDb.Insertable(tombstone).ExecuteCommandAsync();
+        await hqDb.Insertable(BuildHqRetail(
+            1,
+            "S01",
+            "P-RETAIL-TOMBSTONE",
+            20m,
+            30m,
+            0m,
+            false,
+            false
+        )).ExecuteCommandAsync();
+
+        var result = await CreateTransferService(localDb, hqDb).TransferAsync(
+            new StorePriceTransferRequest
+            {
+                Direction = StorePriceTransferDirectionConstants.HqToLocal,
+                SourceStoreCode = "S01",
+                TargetStoreCode = "T01",
+                SyncRetailPrices = true,
+                SyncMultiCodePrices = syncMultiCodePrices,
+                SyncPurchasePrice = true,
+                SyncRetailPrice = true,
+            },
+            "tester"
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal(
+            0,
+            await localDb.Queryable<StoreRetailPrice>()
+                .Where(x =>
+                    x.StoreCode == "T01"
+                    && x.ProductCode == "P-RETAIL-TOMBSTONE"
+                    && !x.IsDeleted
+                )
+                .CountAsync()
+        );
+        var persisted = await localDb.Queryable<StoreRetailPrice>()
+            .SingleAsync(x => x.UUID == "retail-tombstone");
+        Assert.True(persisted.IsDeleted);
+        Assert.Equal(5m, persisted.PurchasePrice);
+        Assert.Equal(9m, persisted.StoreRetailPriceValue);
+    }
+
+    [Fact]
+    public async Task TransferAsync_HqToLocal_独立多码同步不得绕过软删除墓碑()
+    {
+        await using var localConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await localConnection.OpenAsync();
+        await using var hqConnection = new SqliteConnection($"Data Source={Guid.NewGuid():N};Mode=Memory;Cache=Shared");
+        await hqConnection.OpenAsync();
+        using var localDb = new SqlSugarClient(CreateConnectionConfig(localConnection.ConnectionString));
+        using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
+        InitLocalTables(localDb);
+        InitHqTables(hqDb);
+        var tombstone = BuildLocalMulti(
+            "multi-tombstone",
+            "T01",
+            "P-MULTI-TOMBSTONE",
+            "M-TOMBSTONE",
+            5m,
+            9m,
+            0m,
+            false,
+            false
+        );
+        tombstone.IsDeleted = true;
+        tombstone.IsActive = false;
+        await localDb.Insertable(tombstone).ExecuteCommandAsync();
+        await hqDb.Insertable(BuildHqMulti(
+            1,
+            "S01",
+            "P-MULTI-TOMBSTONE",
+            "M-TOMBSTONE",
+            20m,
+            30m,
+            0m,
+            false,
+            false
+        )).ExecuteCommandAsync();
+
+        var result = await CreateTransferService(localDb, hqDb).TransferAsync(
+            new StorePriceTransferRequest
+            {
+                Direction = StorePriceTransferDirectionConstants.HqToLocal,
+                SourceStoreCode = "S01",
+                TargetStoreCode = "T01",
+                SyncRetailPrices = false,
+                SyncMultiCodePrices = true,
+                SyncPurchasePrice = true,
+                SyncRetailPrice = true,
+            },
+            "tester"
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal(
+            0,
+            await localDb.Queryable<StoreMultiCodeProduct>()
+                .Where(x =>
+                    x.StoreCode == "T01"
+                    && x.ProductCode == "P-MULTI-TOMBSTONE"
+                    && x.MultiCodeProductCode == "M-TOMBSTONE"
+                    && !x.IsDeleted
+                )
+                .CountAsync()
+        );
+        Assert.True(
+            (await localDb.Queryable<StoreMultiCodeProduct>()
+                .SingleAsync(x => x.UUID == "multi-tombstone"))
+                .IsDeleted
+        );
     }
 
     [Fact]
@@ -282,6 +700,25 @@ public sealed class StorePriceTransferJobServiceTests
         Assert.Contains("#StorePriceTransferMulti", source);
         Assert.Contains("OUTPUT $action", source);
         Assert.DoesNotContain("WITH (NOLOCK)", source);
+    }
+
+    [Fact]
+    public void 跨店复制_锁前仅缓存候选键且不使用源成本写入目标()
+    {
+        var source = File.ReadAllText(ResolveStoreProductPriceReactServicePath());
+
+        Assert.Contains("Channel.CreateBounded<List<string>>", source);
+        Assert.Contains("Channel.CreateBounded<List<StoreMultiCodeCopyCandidate>>", source);
+        Assert.Contains("锁内重读源、目标与关系", source);
+        Assert.Contains("RecalculateCopiedStoreCostsAsync", source);
+        Assert.DoesNotContain(
+            "PurchasePrice = dto.SyncPurchasePrice ? source.PurchasePrice : null",
+            source
+        );
+        Assert.DoesNotContain(
+            "source.PurchasePrice.HasValue && (dto.Mode == \"Overwrite\"",
+            source
+        );
     }
 
     [Fact]
@@ -873,7 +1310,13 @@ public sealed class StorePriceTransferJobServiceTests
 
     private static void InitLocalTables(ISqlSugarClient db)
     {
-        db.CodeFirst.InitTables(typeof(StoreRetailPrice), typeof(StoreMultiCodeProduct));
+        db.CodeFirst.InitTables(
+            typeof(Product),
+            typeof(WarehouseProduct),
+            typeof(ProductSetCode),
+            typeof(StoreRetailPrice),
+            typeof(StoreMultiCodeProduct)
+        );
     }
 
     private static void InitHqTables(ISqlSugarClient db)
@@ -1238,6 +1681,22 @@ public sealed class StorePriceTransferJobServiceTests
             ?? throw new InvalidOperationException("无法解析测试文件目录");
         return Path.GetFullPath(
             Path.Combine(testDirectory, "..", "BlazorApp.Api", "Services", "React", "StorePriceTransferService.cs")
+        );
+    }
+
+    private static string ResolveStoreProductPriceReactServicePath([CallerFilePath] string testFilePath = "")
+    {
+        var testDirectory = Path.GetDirectoryName(testFilePath)
+            ?? throw new InvalidOperationException("无法解析测试文件目录");
+        return Path.GetFullPath(
+            Path.Combine(
+                testDirectory,
+                "..",
+                "BlazorApp.Api",
+                "Services",
+                "React",
+                "StoreProductPriceReactService.cs"
+            )
         );
     }
 

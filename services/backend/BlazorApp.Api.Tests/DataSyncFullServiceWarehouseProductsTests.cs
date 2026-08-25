@@ -41,13 +41,123 @@ public sealed class DataSyncFullServiceWarehouseProductsTests : IDisposable
 
         _localDb = new SqlSugarClient(CreateConnectionConfig(_localConnection.ConnectionString));
         _hqDb = new SqlSugarClient(CreateConnectionConfig(_hqConnection.ConnectionString));
-        _localDb.CodeFirst.InitTables(typeof(WarehouseProduct));
-        _hqDb.CodeFirst.InitTables(typeof(CBP_DIC_商品库存表));
+        _localDb.CodeFirst.InitTables(
+            typeof(WarehouseProduct),
+            typeof(Product),
+            typeof(ProductSetCode),
+            typeof(StoreMultiCodeProduct),
+            typeof(StoreRetailPrice)
+        );
+        _hqDb.CodeFirst.InitTables(
+            typeof(CBP_DIC_商品库存表),
+            typeof(DIC_商品信息字典表),
+            typeof(DIC_一品多码表)
+        );
 
         _mapper = new MapperConfiguration(
-            cfg => cfg.AddProfile<ReactWarehouseProductStockProfile>(),
+            cfg =>
+            {
+                cfg.AddProfile<ReactWarehouseProductStockProfile>();
+                cfg.AddProfile<ReactProductSetCodeMappingProfile>();
+            },
             NullLoggerFactory.Instance
         ).CreateMapper();
+    }
+
+    [Fact]
+    public async Task SyncProductSetCodesFromHqAsync_空多码业务键在删除前失败并保留本地关系()
+    {
+        const string productCode = "P-INVALID-EMPTY-CHILD";
+        const string localSetCodeId = "LOCAL-MUST-STAY";
+        await _localDb.Insertable(new ProductSetCode
+        {
+            SetCodeId = localSetCodeId,
+            ProductCode = productCode,
+            SetProductCode = "LOCAL-CHILD",
+            SetItemNumber = "LOCAL-CHILD",
+            SetBarcode = "LOCAL-BARCODE",
+            SetPurchasePrice = 1m,
+            SetRetailPrice = 2m,
+            SetType = 2,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _hqDb.Insertable(new DIC_商品信息字典表
+        {
+            HGUID = "HQ-PRODUCT-GUID",
+            H商品标签GUID = "HQ-TAG-GUID",
+            H商品分类码GUID = "HQ-CATEGORY-GUID",
+            H供货商编码 = "SUP",
+            H商品编码 = productCode,
+            H货号 = "ITEM-INVALID",
+            H主条形码 = "PRODUCT-BARCODE",
+            H商品名称 = "空多码业务键测试商品",
+            H商品类型 = 2,
+            H大写名称 = "INVALID CHILD KEY PRODUCT",
+            H规格 = "EA",
+            H单位 = "EA",
+            H进货价 = 1m,
+            H零售价 = 2m,
+            H是否自动定价 = false,
+            H商品图片 = "image.png",
+            中包数量 = 1,
+            H腾讯云图地址 = "https://example.invalid/image.png",
+            H使用状态 = true,
+            H是否特殊商品 = false,
+            H进货单主表GUID = "ORDER-GUID",
+            H进货单详情GUID = "ORDER-DETAIL-GUID",
+            CBP商品中文名称 = "空多码业务键测试商品",
+            CBP供应商编码 = "SUP",
+            CBP商品分类码GUID = "WAREHOUSE-CATEGORY",
+            FGC_Creator = "HQ",
+            FGC_CreateDate = DateTime.UtcNow.AddDays(-1),
+            FGC_LastModifier = "HQ",
+            FGC_LastModifyDate = DateTime.UtcNow,
+            FGC_UpdateHelp = "test",
+        }).ExecuteCommandAsync();
+        await _hqDb.Insertable(new DIC_一品多码表
+        {
+            HGUID = "HQ-INVALID-SET-GUID",
+            H商品编码 = productCode,
+            H多码商品编号 = null,
+            H主条形码 = "BARCODE-WITHOUT-BUSINESS-KEY",
+            H使用状态 = true,
+            FGC_LastModifyDate = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().SyncProductSetCodesFromHqAsync(10, 10, 1);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("PRODUCT_SET_CODE_SOURCE_INVALID", result.ErrorCode);
+        Assert.Equal(1, result.ErrorCount);
+        var local = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == localSetCodeId);
+        Assert.Equal("LOCAL-CHILD", local.SetProductCode);
+        Assert.False(local.IsDeleted);
+    }
+
+    [Fact]
+    public async Task SyncProductSetCodesFromHqAsync_空父商品业务键在删除前失败并保留本地关系()
+    {
+        await AssertInvalidProductSetSourcePreservesLocalAsync(
+            "EMPTY-PARENT",
+            hqProductCode: null,
+            hqChildCode: "HQ-CHILD",
+            hqBarcode: "HQ-BARCODE",
+            seedActiveHqProduct: false
+        );
+    }
+
+    [Fact]
+    public async Task SyncProductSetCodesFromHqAsync_空子商品且无条码时仍在删除前失败并保留本地关系()
+    {
+        await AssertInvalidProductSetSourcePreservesLocalAsync(
+            "EMPTY-CHILD-NO-BARCODE",
+            hqProductCode: "P-INVALID-EMPTY-CHILD-NO-BARCODE",
+            hqChildCode: null,
+            hqBarcode: null,
+            seedActiveHqProduct: true
+        );
     }
 
     [Fact]
@@ -475,6 +585,87 @@ public sealed class DataSyncFullServiceWarehouseProductsTests : IDisposable
             )
             .ReturnsAsync(0);
         return service.Object;
+    }
+
+    private async Task AssertInvalidProductSetSourcePreservesLocalAsync(
+        string scenario,
+        string? hqProductCode,
+        string? hqChildCode,
+        string? hqBarcode,
+        bool seedActiveHqProduct
+    )
+    {
+        var localSetCodeId = $"LOCAL-MUST-STAY-{scenario}";
+        await _localDb.Insertable(new ProductSetCode
+        {
+            SetCodeId = localSetCodeId,
+            ProductCode = $"LOCAL-PARENT-{scenario}",
+            SetProductCode = $"LOCAL-CHILD-{scenario}",
+            SetItemNumber = $"LOCAL-CHILD-{scenario}",
+            SetBarcode = $"LOCAL-BARCODE-{scenario}",
+            SetPurchasePrice = 1m,
+            SetRetailPrice = 2m,
+            SetType = 2,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        if (seedActiveHqProduct)
+        {
+            await _hqDb.Insertable(new DIC_商品信息字典表
+            {
+                ID = 1,
+                HGUID = $"HQ-PRODUCT-{scenario}",
+                H商品标签GUID = $"HQ-TAG-{scenario}",
+                H商品分类码GUID = $"HQ-CATEGORY-{scenario}",
+                H供货商编码 = "SUP",
+                H商品编码 = hqProductCode,
+                H货号 = $"ITEM-{scenario}",
+                H主条形码 = $"PRODUCT-BARCODE-{scenario}",
+                H商品名称 = $"无效套装来源测试-{scenario}",
+                H商品类型 = 2,
+                H大写名称 = $"INVALID SET SOURCE {scenario}",
+                H规格 = "EA",
+                H单位 = "EA",
+                H进货价 = 1m,
+                H零售价 = 2m,
+                H是否自动定价 = false,
+                H商品图片 = "image.png",
+                中包数量 = 1,
+                H腾讯云图地址 = "https://example.invalid/image.png",
+                H使用状态 = true,
+                H是否特殊商品 = false,
+                H进货单主表GUID = $"ORDER-{scenario}",
+                H进货单详情GUID = $"ORDER-DETAIL-{scenario}",
+                CBP商品中文名称 = $"无效套装来源测试-{scenario}",
+                CBP供应商编码 = "SUP",
+                CBP商品分类码GUID = $"WAREHOUSE-CATEGORY-{scenario}",
+                FGC_Creator = "HQ",
+                FGC_CreateDate = DateTime.UtcNow.AddDays(-1),
+                FGC_LastModifier = "HQ",
+                FGC_LastModifyDate = DateTime.UtcNow,
+                FGC_UpdateHelp = "test",
+            }).ExecuteCommandAsync();
+        }
+
+        await _hqDb.Insertable(new DIC_一品多码表
+        {
+            HGUID = $"HQ-INVALID-{scenario}",
+            H商品编码 = hqProductCode,
+            H多码商品编号 = hqChildCode,
+            H主条形码 = hqBarcode,
+            H使用状态 = true,
+            FGC_LastModifyDate = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().SyncProductSetCodesFromHqAsync(10, 10, 1);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal("PRODUCT_SET_CODE_SOURCE_INVALID", result.ErrorCode);
+        Assert.Equal(1, result.ErrorCount);
+        var local = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == localSetCodeId);
+        Assert.False(local.IsDeleted);
     }
 
     private async Task SeedLocalWarehouseProductAsync(

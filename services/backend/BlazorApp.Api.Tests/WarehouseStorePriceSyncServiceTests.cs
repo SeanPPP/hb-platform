@@ -15,6 +15,40 @@ namespace BlazorApp.Api.Tests;
 
 public sealed class WarehouseStorePriceSyncServiceTests : IDisposable
 {
+    [Fact]
+    public void 本地同步_事务内按范围取得成本锁并在提交前精确重算()
+    {
+        var source = File.ReadAllText(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "BlazorApp.Api",
+                "Services",
+                "React",
+                "WarehouseStorePriceSyncService.cs"
+            )
+        );
+
+        Assert.Contains("SetChildPurchasePriceMutationLock.AcquireAllAsync", source);
+        Assert.Contains("SetChildPurchasePriceMutationLock.AcquireProductsAsync", source);
+        Assert.Contains("RecalculateStoreGroupsLockedAsync", source);
+        Assert.Contains("SetChildPurchasePriceMutationLock.TryResolveConflict", source);
+        Assert.Contains("HasLocalPriceDifference", source);
+        var execution = ExtractMethod(source, "ExecuteAsync");
+        AssertOrdered(
+            execution,
+            "await localDb.Ado.BeginTranAsync();",
+            "SetChildPurchasePriceMutationLock.Acquire",
+            "SelectWarehouseProductsAsync(",
+            "UpsertLocalPricesAsync(",
+            "RecalculateStoreGroupsLockedAsync",
+            "await localDb.Ado.CommitTranAsync();"
+        );
+    }
+
     private readonly string _dbPath;
     private readonly SqliteConnection _connection;
     private readonly SqlSugarClient _db;
@@ -35,7 +69,9 @@ public sealed class WarehouseStorePriceSyncServiceTests : IDisposable
             typeof(Store),
             typeof(Product),
             typeof(WarehouseProduct),
-            typeof(StoreRetailPrice)
+            typeof(StoreRetailPrice),
+            typeof(ProductSetCode),
+            typeof(StoreMultiCodeProduct)
         );
     }
 
@@ -233,6 +269,45 @@ public sealed class WarehouseStorePriceSyncServiceTests : IDisposable
         Assert.Equal("price-admin", created.CreatedBy);
         Assert.Equal("price-admin", created.UpdatedBy);
         Assert.False(SqlSugarAuditScope.ShouldPreserveExplicitAuditFields);
+    }
+
+    [Fact]
+    public async Task 本地同步_主成本已正确时不刷新审计字段()
+    {
+        await SeedStoreAsync("S01", "一店");
+        await SeedProductAsync("P01", true, false, 1.25m, 2.5m);
+        var originalUpdatedAt = DateTime.UtcNow.AddDays(-3);
+        await _db.Insertable(new StoreRetailPrice
+        {
+            UUID = "existing-price-with-correct-cost",
+            StoreCode = "S01",
+            ProductCode = "P01",
+            PurchasePrice = 1.25m,
+            StoreRetailPriceValue = 2.5m,
+            DiscountRate = 0m,
+            IsAutoPricing = false,
+            IsActive = true,
+            IsDeleted = false,
+            UpdatedAt = originalUpdatedAt,
+            UpdatedBy = "previous-admin",
+        }).ExecuteCommandAsync();
+        var service = CreateService(Mock.Of<IProductHqSyncService>());
+
+        var response = await service.ExecuteAsync(
+            new WarehouseStorePriceSyncRequestDto
+            {
+                ProductCodes = ["P01"],
+                TargetStoreCodes = ["S01"],
+            },
+            "price-admin"
+        );
+
+        Assert.True(response.Success, response.Message);
+        Assert.Equal(0, response.Data?.LocalUpdatedCount);
+        var existing = await _db.Queryable<StoreRetailPrice>()
+            .SingleAsync(row => row.UUID == "existing-price-with-correct-cost");
+        Assert.Equal(originalUpdatedAt, existing.UpdatedAt);
+        Assert.Equal("previous-admin", existing.UpdatedBy);
     }
 
     [Fact]
@@ -677,5 +752,23 @@ public sealed class WarehouseStorePriceSyncServiceTests : IDisposable
                 entityInfo.SetValue("System");
             }
         };
+    }
+
+    private static void AssertOrdered(string source, params string[] fragments)
+    {
+        var previousIndex = -1;
+        foreach (var fragment in fragments)
+        {
+            var index = source.IndexOf(fragment, previousIndex + 1, StringComparison.Ordinal);
+            Assert.True(index > previousIndex, $"未按预期顺序找到: {fragment}");
+            previousIndex = index;
+        }
+    }
+
+    private static string ExtractMethod(string source, string methodName)
+    {
+        var start = source.IndexOf(methodName, StringComparison.Ordinal);
+        Assert.True(start >= 0, $"未找到方法: {methodName}");
+        return source[start..];
     }
 }

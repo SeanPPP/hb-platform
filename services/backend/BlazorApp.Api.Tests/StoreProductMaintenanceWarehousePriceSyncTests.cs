@@ -419,7 +419,7 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
     }
 
     [Fact]
-    public async Task SyncWarehousePriceAsync_既有派生记录只同步价格并保留状态与创建审计()
+    public async Task SyncWarehousePriceAsync_停用多码关系与投影不更新并保留创建审计()
     {
         await SeedAsync("200", 5m, 10m, 0.2m, DateTime.UtcNow.AddDays(-2), 6.5m, 12m);
         await SeedProjectedSetCodeAsync();
@@ -434,6 +434,10 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
         projection.CreatedAt = createdAt;
         projection.CreatedBy = "original-creator";
         await _db.Updateable(projection).ExecuteCommandAsync();
+        await _db.Updateable<ProductSetCode>()
+            .SetColumns(x => x.IsActive == false)
+            .Where(x => x.SetCodeId == "set-1")
+            .ExecuteCommandAsync();
         var service = CreateService();
 
         var preview = await service.SyncWarehousePriceAsync(
@@ -454,8 +458,8 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
         var latest = await _db.Queryable<StoreMultiCodeProduct>()
             .Where(x => x.UUID == "projection-1")
             .FirstAsync();
-        Assert.Equal(6.5m, latest.PurchasePrice);
-        Assert.Equal(12m, latest.MultiCodeRetailPrice);
+        Assert.Equal(5m, latest.PurchasePrice);
+        Assert.Equal(10m, latest.MultiCodeRetailPrice);
         Assert.Equal(0.25m, latest.DiscountRate);
         Assert.True(latest.IsAutoPricing);
         Assert.True(latest.IsSpecialProduct);
@@ -637,6 +641,172 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
         Assert.Same(latest, body.Data);
     }
 
+    [Fact]
+    public async Task UpdateMultiCodeAsync_Type1忽略提交成本并按当前门店整组比例重算()
+    {
+        const string productCode = "P-TYPE1";
+        await SeedMultiCodeParentAsync(productCode, storePurchasePrice: 30m, productPurchasePrice: 90m);
+        await _db.Insertable(new[]
+        {
+            BuildMultiCodeSetCode(productCode, "A", 10m, setType: 1),
+            BuildMultiCodeSetCode(productCode, "B", 20m, setType: 1),
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            BuildMultiCodeStoreRow(productCode, "A", 10m, 1m),
+            BuildMultiCodeStoreRow(productCode, "B", 20m, 1m),
+        }).ExecuteCommandAsync();
+
+        var response = await CreateService().UpdateMultiCodeAsync(
+            MultiCodeRowUuid(productCode, "A"),
+            new UpdateStoreProductMultiCodeDto { PurchasePrice = 999m, RetailPrice = 20m },
+            "测试用户",
+            new List<string> { StoreCode }
+        );
+
+        Assert.True(response.Success, response.Message);
+        var rows = await _db.Queryable<StoreMultiCodeProduct>()
+            .Where(x => x.ProductCode == productCode && !x.IsDeleted)
+            .OrderBy(x => x.MultiCodeProductCode)
+            .ToListAsync();
+        Assert.Equal(new[] { 15m, 15m }, rows.Select(x => x.PurchasePrice!.Value).ToArray());
+        Assert.Equal(20m, rows[0].MultiCodeRetailPrice);
+        Assert.Equal(15m, response.Data!.PurchasePrice);
+    }
+
+    [Fact]
+    public async Task UpdateMultiCodeAsync_Type2忽略提交成本并最终等于门店父成本()
+    {
+        const string productCode = "P-TYPE2";
+        await SeedMultiCodeParentAsync(productCode, storePurchasePrice: 42m, productPurchasePrice: 30m);
+        await _db.Insertable(BuildMultiCodeSetCode(productCode, "A", 18m, setType: 2))
+            .ExecuteCommandAsync();
+        await _db.Insertable(BuildMultiCodeStoreRow(productCode, "A", 18m, 1m))
+            .ExecuteCommandAsync();
+
+        var response = await CreateService().UpdateMultiCodeAsync(
+            MultiCodeRowUuid(productCode, "A"),
+            new UpdateStoreProductMultiCodeDto { PurchasePrice = -999m, RetailPrice = 18m },
+            "测试用户",
+            new List<string> { StoreCode }
+        );
+
+        Assert.True(response.Success, response.Message);
+        var persisted = await _db.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(x => x.UUID == MultiCodeRowUuid(productCode, "A"));
+        Assert.Equal(42m, persisted.PurchasePrice);
+        Assert.Equal(42m, response.Data!.PurchasePrice);
+    }
+
+    [Fact]
+    public async Task UpdateMultiCodeAsync_停用Type2忽略提交成本且不触发成本更新()
+    {
+        const string productCode = "P-TYPE2-INACTIVE";
+        await SeedMultiCodeParentAsync(productCode, storePurchasePrice: 42m, productPurchasePrice: 30m);
+        var setCode = BuildMultiCodeSetCode(productCode, "A", 18m, setType: 2);
+        setCode.IsActive = false;
+        await _db.Insertable(setCode).ExecuteCommandAsync();
+        await _db.Insertable(BuildMultiCodeStoreRow(productCode, "A", 18m, 7m))
+            .ExecuteCommandAsync();
+
+        var response = await CreateService().UpdateMultiCodeAsync(
+            MultiCodeRowUuid(productCode, "A"),
+            new UpdateStoreProductMultiCodeDto { PurchasePrice = 999m, RetailPrice = 19m },
+            "测试用户",
+            new List<string> { StoreCode }
+        );
+
+        Assert.True(response.Success, response.Message);
+        var persisted = await _db.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(x => x.UUID == MultiCodeRowUuid(productCode, "A"));
+        Assert.Equal(7m, persisted.PurchasePrice);
+        Assert.Equal(19m, persisted.MultiCodeRetailPrice);
+    }
+
+    [Fact]
+    public async Task UpdateMultiCodeAsync_普通多码遇到同组无法重算时回滚且不复活软删除子项()
+    {
+        const string productCode = "P-ROLLBACK";
+        await SeedMultiCodeParentAsync(productCode, storePurchasePrice: 30m, productPurchasePrice: 30m);
+        await _db.Insertable(new[]
+        {
+            BuildMultiCodeSetCode(productCode, "A", 10m, setType: 1),
+            BuildMultiCodeSetCode(productCode, "B", 20m, setType: 1),
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            BuildMultiCodeStoreRow(productCode, "A", 10m, 1m),
+            BuildMultiCodeStoreRow(productCode, "B", 20m, 2m, isDeleted: true),
+            BuildMultiCodeStoreRow(productCode, "NORMAL", 8m, 5m),
+        }).ExecuteCommandAsync();
+
+        var response = await CreateService().UpdateMultiCodeAsync(
+            MultiCodeRowUuid(productCode, "NORMAL"),
+            new UpdateStoreProductMultiCodeDto { PurchasePrice = 12m, RetailPrice = 15m },
+            "测试用户",
+            new List<string> { StoreCode }
+        );
+
+        Assert.False(response.Success);
+        Assert.Contains("无法完整重算", response.Message);
+        var ordinary = await _db.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(x => x.UUID == MultiCodeRowUuid(productCode, "NORMAL"));
+        var deleted = await _db.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(x => x.UUID == MultiCodeRowUuid(productCode, "B"));
+        Assert.Equal(5m, ordinary.PurchasePrice);
+        Assert.Equal(8m, ordinary.MultiCodeRetailPrice);
+        Assert.True(deleted.IsDeleted);
+        Assert.Equal(2m, deleted.PurchasePrice);
+    }
+
+    [Fact]
+    public async Task UpdateMultiCodeAsync_软删除目标保持删除且不接受更新()
+    {
+        const string productCode = "P-DELETED";
+        await SeedMultiCodeParentAsync(productCode, storePurchasePrice: 30m, productPurchasePrice: 30m);
+        await _db.Insertable(
+                BuildMultiCodeStoreRow(productCode, "A", 10m, 1m, isDeleted: true)
+            )
+            .ExecuteCommandAsync();
+
+        var response = await CreateService().UpdateMultiCodeAsync(
+            MultiCodeRowUuid(productCode, "A"),
+            new UpdateStoreProductMultiCodeDto { PurchasePrice = 999m, RetailPrice = 999m },
+            "测试用户",
+            new List<string> { StoreCode }
+        );
+
+        Assert.False(response.Success);
+        var persisted = await _db.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(x => x.UUID == MultiCodeRowUuid(productCode, "A"));
+        Assert.True(persisted.IsDeleted);
+        Assert.Equal(1m, persisted.PurchasePrice);
+        Assert.Equal(10m, persisted.MultiCodeRetailPrice);
+    }
+
+    [Fact]
+    public void UpdateMultiCodeAsync_锁内复读完整关系身份并按精确门店商品组重算()
+    {
+        var sourcePath = Path.Combine(
+            Environment.GetEnvironmentVariable("HB_PLATFORM_ROOT")
+                ?? Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."),
+            "BlazorApp.Api",
+            "Services",
+            "React",
+            "StoreProductMaintenanceReactService.cs"
+        );
+        var source = File.ReadAllText(sourcePath);
+        var methodStart = source.IndexOf("UpdateMultiCodeAsync(", StringComparison.Ordinal);
+        var methodEnd = source.IndexOf("CreateSetCodeAsync(", methodStart, StringComparison.Ordinal);
+        var methodSource = source[methodStart..methodEnd];
+
+        Assert.Contains("expectedStoreCode", methodSource);
+        Assert.Contains("expectedProductCode", methodSource);
+        Assert.Contains("expectedMultiCodeProductCode", methodSource);
+        Assert.Contains("x.SetType == 1 || x.SetType == 2", methodSource);
+        Assert.Contains("RecalculateStoreGroupsLockedAsync", methodSource);
+    }
+
     public void Dispose()
     {
         _cache.Dispose();
@@ -659,6 +829,82 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
             Mock.Of<ICurrentUserService>()
         );
     }
+
+    private async Task SeedMultiCodeParentAsync(
+        string productCode,
+        decimal storePurchasePrice,
+        decimal productPurchasePrice
+    )
+    {
+        await _db.Insertable(new Product
+        {
+            UUID = $"{productCode}-PRODUCT",
+            ProductCode = productCode,
+            ProductName = productCode,
+            LocalSupplierCode = "200",
+            PurchasePrice = productPurchasePrice,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new StoreRetailPrice
+        {
+            UUID = $"{productCode}-PRICE",
+            StoreCode = StoreCode,
+            ProductCode = productCode,
+            StoreProductCode = $"{StoreCode}-{productCode}",
+            SupplierCode = "200",
+            PurchasePrice = storePurchasePrice,
+            StoreRetailPriceValue = 50m,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+    }
+
+    private static ProductSetCode BuildMultiCodeSetCode(
+        string productCode,
+        string childCode,
+        decimal retailPrice,
+        int setType
+    ) => new()
+    {
+        SetCodeId = $"{productCode}-{childCode}-SET",
+        ProductCode = productCode,
+        SetProductCode = MultiCodeChildProductCode(productCode, childCode),
+        SetItemNumber = $"ITEM-{productCode}-{childCode}",
+        SetBarcode = $"BAR-{productCode}-{childCode}",
+        SetPurchasePrice = 1m,
+        SetRetailPrice = retailPrice,
+        SetQuantity = 1,
+        SetType = setType,
+        IsActive = true,
+        IsDeleted = false,
+    };
+
+    private static StoreMultiCodeProduct BuildMultiCodeStoreRow(
+        string productCode,
+        string childCode,
+        decimal retailPrice,
+        decimal purchasePrice,
+        bool isDeleted = false
+    ) => new()
+    {
+        UUID = MultiCodeRowUuid(productCode, childCode),
+        StoreCode = StoreCode,
+        ProductCode = productCode,
+        MultiCodeProductCode = MultiCodeChildProductCode(productCode, childCode),
+        StoreMultiCodeProductCode = $"{StoreCode}-{productCode}-{childCode}",
+        MultiBarcode = $"BAR-{productCode}-{childCode}",
+        PurchasePrice = purchasePrice,
+        MultiCodeRetailPrice = retailPrice,
+        IsActive = true,
+        IsDeleted = isDeleted,
+    };
+
+    private static string MultiCodeRowUuid(string productCode, string childCode) =>
+        $"{productCode}-{childCode}-ROW";
+
+    private static string MultiCodeChildProductCode(string productCode, string childCode) =>
+        $"{productCode}-{childCode}-CHILD";
 
     private async Task SeedAsync(
         string localSupplierCode,

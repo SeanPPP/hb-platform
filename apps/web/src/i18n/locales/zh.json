@@ -2875,6 +2875,7 @@
       "title": "排班考勤",
       "tabs": {
         "schedules": "周排班",
+        "records": "考勤记录",
         "availability": "员工可用时间",
         "punches": "打卡记录",
         "approvals": "审核中心",
@@ -2892,6 +2893,10 @@
         "batchHoliday": "批量设置",
         "addShift": "添加班次",
         "publishWeek": "发布本周",
+        "adjustPunch": "补卡 / 修改",
+        "preview": "预览变化",
+        "createMissingPunch": "新增打卡（不替换原记录）",
+        "replacePunch": "纠正已有打卡",
         "approve": "通过",
         "reject": "拒绝",
         "approveOvertime": "批准加班",
@@ -2904,6 +2909,7 @@
       "drawer": {
         "createSchedule": "新建排班",
         "editSchedule": "编辑排班",
+        "adjustPunch": "补卡 / 修改打卡",
         "createHoliday": "新建公共假期",
         "editHoliday": "编辑公共假期",
         "batchHoliday": "批量设置公共假期",
@@ -2920,11 +2926,21 @@
         "employeeGuid": "员工 GUID",
         "workDate": "工作日期",
         "shift": "班次",
+        "schedule": "排班",
+        "segments": "有效班段",
+        "boundaries": "首次上班 / 最终下班",
+        "workedAndBreak": "工时 / 间隔",
+        "exceptions": "迟到 / 早退",
+        "overtime": "早到 / 晚退 / 候选加班 / 已批准",
         "weekStartDate": "周开始日期",
         "availableDate": "可上班日期",
         "availableTime": "可上班时间",
         "punchType": "打卡类型",
         "punchTimeLocal": "本地打卡时间",
+        "adjustmentMode": "处理方式",
+        "originalPunch": "要纠正的原始打卡",
+        "requestedPunchTimeLocal": "申请打卡时间（本地）",
+        "preview": "变更预览",
         "timeZone": "时区",
         "location": "位置",
         "locationSamples": "班中样本",
@@ -2959,6 +2975,20 @@
         "updatedAt": "最后更新",
         "reviewRemark": "审核备注"
       },
+      "recordLabels": {
+        "minutes": "{{minutes}} 分",
+        "late": "迟到 {{minutes}} 分",
+        "earlyLeave": "早退 {{minutes}} 分",
+        "earlyArrival": "早到 {{minutes}} 分",
+        "lateDeparture": "晚退 {{minutes}} 分",
+        "candidateOvertime": "候选 {{minutes}} 分",
+        "approvedOvertime": "批准 {{minutes}} 分",
+        "crossStore": "跨店漏下班：{{storeCode}}",
+        "original": "原始：{{time}}",
+        "effective": "有效：{{time}}",
+        "workedMinutesChange": "工时：{{before}} → {{after}}",
+        "candidateOvertimeChange": "候选加班：{{before}} → {{after}}"
+      },
       "approvalPresentation": {
         "Punch": {
           "title": "打卡异常",
@@ -2980,10 +3010,17 @@
         }
       },
       "status": {
+        "missingClockOut": "漏下班",
         "schedule": {
           "Draft": "草稿",
           "Active": "有效",
           "Cancelled": "已取消"
+        },
+        "scheduleState": {
+          "NotStarted": "未开始",
+          "InProgress": "进行中",
+          "Completed": "已完成",
+          "MissingClockOut": "漏下班"
         },
         "punch": {
           "Normal": "正常",
@@ -2998,6 +3035,18 @@
         "punchType": {
           "ClockIn": "上班打卡",
           "ClockOut": "下班打卡"
+        },
+        "segment": {
+          "NotStarted": "未开始",
+          "Open": "进行中",
+          "Completed": "已完成",
+          "MissingClockOut": "漏下班"
+        },
+        "overtimeApproval": {
+          "NotRequired": "无需审批",
+          "Pending": "待审批",
+          "Approved": "已批准",
+          "Rejected": "已拒绝"
         },
         "review": {
           "Pending": "待审核",
@@ -3022,6 +3071,8 @@
         "userGuidRequired": "请输入员工 GUID",
         "holidayNameRequired": "请输入假期名称",
         "storeCodesRequired": "请选择至少一个分店",
+        "originalPunchRequired": "纠正已有记录必须选择原始打卡",
+        "reasonRequired": "请填写补卡原因",
         "overtime": {
           "outOfRange": "批准加班必须在 0 到候选分钟之间",
           "invalidIncrement": "批准加班必须为 15 分钟倍数",
@@ -3071,7 +3122,20 @@
         "publishWeekFailed": "发布本周排班失败",
         "reviewSuccess": "审核已提交",
         "reviewFailed": "提交审核失败",
+        "adjustmentPreviewInvalid": "补卡预览未通过服务端校验",
+        "adjustmentPreviewFailed": "补卡预览失败",
         "previewRevisionMissing": "服务端预览未返回版本号，请重新预览后再保存。",
+        "previewExpired": "补卡内容已变化，请重新预览后再保存",
+        "adjustmentApplied": "补卡已直接生效",
+        "adjustmentSubmitted": "补卡已提交审批",
+        "adjustmentFailed": "补卡保存失败",
+        "previewBeforeSave": "保存前必须先预览",
+        "originalPunchAudit": "预览与保存将使用同一条原始打卡，并保留替代审计链。",
+        "noOriginalPunch": "没有可纠正的原始打卡，请改为新增打卡",
+        "newPunchAudit": "新增打卡不会替换已有班段的上下班记录，originalPunchGuid 将保持为空。",
+        "proposedPunchStatusUnavailable": "服务端未返回本次打卡状态",
+        "adjustmentWillAutoApprove": "服务端预览：店长本人在管理分店调整自己的打卡，本次将直接生效。",
+        "adjustmentWillReview": "服务端预览：本次将进入补卡审批。",
         "directAdjustment": "店长本人直接调整",
         "locationNotRecorded": "未记录位置",
         "externalMapNotice": "默认不加载第三方地图。点击下方按钮会把该坐标发送给外部地图服务。",

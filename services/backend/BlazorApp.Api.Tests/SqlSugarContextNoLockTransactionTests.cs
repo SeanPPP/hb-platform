@@ -3,9 +3,11 @@ using System.Data.Common;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HqEntities;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using SqlSugar;
 using Xunit;
 
 namespace BlazorApp.Api.Tests;
@@ -51,6 +53,34 @@ public sealed class SqlSugarContextNoLockTransactionTests
         Assert.All(insideTransactionSql, sql => Assert.False(ContainsNoLock(sql), sql));
     }
 
+    [Fact]
+    public void HqSqlServerConfig_显式NullWith覆盖全局NoLock用于一致性快照()
+    {
+        var context = CreateProductionHqSqlServerContext();
+        var transaction = new Mock<DbTransaction>();
+        transaction.SetupGet(item => item.IsolationLevel).Returns(IsolationLevel.Serializable);
+        context.Db.Ado.Transaction = transaction.Object;
+
+        var inheritedNoLockSql = context.Db.Queryable<DIC_一品多码表>()
+            .Where(row => (row.H使用状态 ?? false) == true)
+            .ToSql().Key;
+        Assert.True(ContainsNoLock(inheritedNoLockSql), inheritedNoLockSql);
+
+        var snapshotSql = new[]
+        {
+            context.Db.Queryable<DIC_商品信息字典表>()
+                .With(SqlWith.Null)
+                .Where(product => product.H使用状态 == true)
+                .ToSql().Key,
+            context.Db.Queryable<DIC_一品多码表>()
+                .With(SqlWith.Null)
+                .Where(row => (row.H使用状态 ?? false) == true)
+                .ToSql().Key,
+        };
+
+        Assert.All(snapshotSql, sql => Assert.False(ContainsNoLock(sql), sql));
+    }
+
     private static SqlSugarContext CreateProductionSqlServerContext()
     {
         var configuration = new ConfigurationBuilder()
@@ -67,6 +97,19 @@ public sealed class SqlSugarContextNoLockTransactionTests
             NullLogger<SqlSugarContext>.Instance,
             Mock.Of<ICurrentUserService>()
         );
+    }
+
+    private static HqSqlSugarContext CreateProductionHqSqlServerContext()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:StoreHzgHQConnection"] =
+                    "Server=127.0.0.1;Database=hb_hq_sql_generation;"
+                    + "User Id=sa;Password=SqlOnly_123;TrustServerCertificate=True",
+            })
+            .Build();
+        return new HqSqlSugarContext(configuration, Mock.Of<ICurrentUserService>());
     }
 
     private static IReadOnlyList<string> BuildAuthorizationSql(SqlSugarContext context)

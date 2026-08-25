@@ -96,6 +96,33 @@ public sealed class ProductPushToHqJobServiceTests
     }
 
     [Fact]
+    public async Task StartJobAsync_套装成本锁冲突时Failed任务保留BUSY错误码()
+    {
+        var pushService = new Mock<IProductHqSyncService>();
+        pushService
+            .Setup(service => service.PushToHqAsync(It.IsAny<PushProductsToHqRequest>()))
+            .ReturnsAsync(ApiResponse<PushProductsToHqResult>.Error(
+                "套装商品正在被其他操作修改，请稍后重试",
+                "SET_CHILD_PURCHASE_PRICE_BUSY",
+                new PushProductsToHqResult
+                {
+                    FailedCount = 1,
+                    TotalCount = 1,
+                }
+            ));
+        var service = CreateService(pushService);
+
+        var started = await service.StartJobAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB-BUSY" },
+        });
+        var completed = await WaitForJobAsync(service, started.JobId);
+
+        Assert.Equal(ProductPushToHqJobStatusConstants.Failed, completed.Status);
+        Assert.Equal("SET_CHILD_PURCHASE_PRICE_BUSY", completed.ErrorCode);
+    }
+
+    [Fact]
     public async Task StartJobAsync_连续提交不同推送请求_不会复用运行中Job()
     {
         var releasePush = new TaskCompletionSource<ApiResponse<PushProductsToHqResult>>(

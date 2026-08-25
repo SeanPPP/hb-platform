@@ -428,6 +428,7 @@ namespace BlazorApp.Shared.DTOs
         public DateTime? CompletedAt { get; set; }
         public DateTime? ExpiresAt { get; set; }
         public string? Message { get; set; }
+        public string? ErrorCode { get; set; }
         public PushProductsToHqResult? Result { get; set; }
     }
 

@@ -45,6 +45,7 @@ public sealed class ProductHqSyncSplitTests : IDisposable
         // 商品 HQ 解耦同步只需要最小表集合，关联表用来验证全量同步不会误触碰。
         _localDb.CodeFirst.InitTables(
             typeof(Product),
+            typeof(WarehouseProduct),
             typeof(ProductSetCode),
             typeof(Store),
             typeof(StoreRetailPrice),
@@ -105,6 +106,222 @@ public sealed class ProductHqSyncSplitTests : IDisposable
         Assert.False((await _localDb.Queryable<StoreRetailPrice>().SingleAsync(x => x.UUID == "retail-keep")).IsDeleted);
         Assert.False((await _localDb.Queryable<StoreMultiCodeProduct>().SingleAsync(x => x.UUID == "multi-keep")).IsDeleted);
         Assert.False((await _localDb.Queryable<ProductSetCode>().SingleAsync(x => x.SetCodeId == "set-keep")).IsDeleted);
+    }
+
+    [Fact]
+    public async Task SyncFullAsync_主成本变化后同事务校正两张套装子项成本表()
+    {
+        var now = new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc);
+        await SeedHqProductAsync("P-SET-FULL", now, "全量套装商品");
+        await _localDb.Insertable(new Product
+        {
+            UUID = "local-set-full",
+            ProductCode = "P-SET-FULL",
+            ProductName = "旧套装商品",
+            PurchasePrice = 9m,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new[]
+        {
+            new ProductSetCode
+            {
+                SetCodeId = "set-full-a",
+                ProductCode = "P-SET-FULL",
+                SetProductCode = "CHILD-A",
+                SetItemNumber = "CHILD-A",
+                SetBarcode = "LOCAL-SET-A",
+                SetPurchasePrice = 99m,
+                SetRetailPrice = 1m,
+                SetQuantity = 1,
+                SetType = 1,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new ProductSetCode
+            {
+                SetCodeId = "set-full-b",
+                ProductCode = "P-SET-FULL",
+                SetProductCode = "CHILD-B",
+                SetItemNumber = "CHILD-B",
+                SetBarcode = "LOCAL-SET-B",
+                SetPurchasePrice = 99m,
+                SetRetailPrice = 3m,
+                SetQuantity = 1,
+                SetType = 1,
+                IsActive = true,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new[]
+        {
+            new StoreMultiCodeProduct
+            {
+                UUID = "store-full-a",
+                StoreCode = "S01",
+                ProductCode = "P-SET-FULL",
+                MultiCodeProductCode = "CHILD-A",
+                StoreMultiCodeProductCode = "S01-CHILD-A",
+                MultiBarcode = "LOCAL-STORE-A",
+                PurchasePrice = 99m,
+                MultiCodeRetailPrice = 1m,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new StoreMultiCodeProduct
+            {
+                UUID = "store-full-b",
+                StoreCode = "S01",
+                ProductCode = "P-SET-FULL",
+                MultiCodeProductCode = "CHILD-B",
+                StoreMultiCodeProductCode = "S01-CHILD-B",
+                MultiBarcode = "LOCAL-STORE-B",
+                PurchasePrice = 99m,
+                MultiCodeRetailPrice = 3m,
+                IsActive = true,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().SyncFullAsync();
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(
+            1.2m,
+            (await _localDb.Queryable<Product>().SingleAsync(x => x.ProductCode == "P-SET-FULL"))
+                .PurchasePrice
+        );
+        var setRows = await _localDb.Queryable<ProductSetCode>()
+            .Where(x => x.ProductCode == "P-SET-FULL")
+            .OrderBy(x => x.SetProductCode)
+            .ToListAsync();
+        Assert.Equal(new decimal?[] { 0.3m, 0.9m }, setRows.Select(x => x.SetPurchasePrice));
+        Assert.Equal(new[] { "LOCAL-SET-A", "LOCAL-SET-B" }, setRows.Select(x => x.SetBarcode));
+        var storeRows = await _localDb.Queryable<StoreMultiCodeProduct>()
+            .Where(x => x.ProductCode == "P-SET-FULL")
+            .OrderBy(x => x.MultiCodeProductCode)
+            .ToListAsync();
+        Assert.Equal(new decimal?[] { 0.3m, 0.9m }, storeRows.Select(x => x.PurchasePrice));
+        Assert.Equal(new[] { "LOCAL-STORE-A", "LOCAL-STORE-B" }, storeRows.Select(x => x.MultiBarcode));
+    }
+
+    [Fact]
+    public async Task SyncFullAsync_Type2Only主成本变化后_同事务校正全局和相关门店且不影响无关系与软删除行()
+    {
+        var now = new DateTime(2026, 6, 2, 0, 0, 0, DateTimeKind.Utc);
+        await SeedHqProductAsync("P-TYPE2-FULL", now, "全量Type2商品");
+        await _localDb.Insertable(
+            new Product
+            {
+                UUID = "local-type2-full",
+                ProductCode = "P-TYPE2-FULL",
+                ProductName = "旧Type2商品",
+                PurchasePrice = 9m,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(new[]
+        {
+            new ProductSetCode
+            {
+                SetCodeId = "type2-full-active",
+                ProductCode = "P-TYPE2-FULL",
+                SetProductCode = "TYPE2-CHILD",
+                SetItemNumber = "TYPE2-CHILD",
+                SetPurchasePrice = 99m,
+                SetQuantity = 1,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new ProductSetCode
+            {
+                SetCodeId = "type2-full-deleted",
+                ProductCode = "P-TYPE2-FULL",
+                SetProductCode = "TYPE2-DELETED",
+                SetItemNumber = "TYPE2-DELETED",
+                SetPurchasePrice = 88m,
+                SetQuantity = 1,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = true,
+            },
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new StoreRetailPrice
+            {
+                UUID = "type2-full-store-parent",
+                StoreCode = "S01",
+                ProductCode = "P-TYPE2-FULL",
+                SupplierCode = "SUP",
+                PurchasePrice = 1.1m,
+                StoreRetailPriceValue = 2.3m,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(new[]
+        {
+            new StoreMultiCodeProduct
+            {
+                UUID = "type2-full-store-active",
+                StoreCode = "S01",
+                ProductCode = "P-TYPE2-FULL",
+                MultiCodeProductCode = "TYPE2-CHILD",
+                StoreMultiCodeProductCode = "S01-TYPE2-CHILD",
+                PurchasePrice = 99m,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new StoreMultiCodeProduct
+            {
+                UUID = "type2-full-store-deleted",
+                StoreCode = "S01",
+                ProductCode = "P-TYPE2-FULL",
+                MultiCodeProductCode = "TYPE2-DELETED",
+                StoreMultiCodeProductCode = "S01-TYPE2-DELETED",
+                PurchasePrice = 77m,
+                IsActive = true,
+                IsDeleted = true,
+            },
+            new StoreMultiCodeProduct
+            {
+                UUID = "type2-full-store-unrelated",
+                StoreCode = "S01",
+                ProductCode = "P-UNRELATED",
+                MultiCodeProductCode = "UNRELATED-CHILD",
+                StoreMultiCodeProductCode = "S01-UNRELATED-CHILD",
+                PurchasePrice = 66m,
+                IsActive = true,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().SyncFullAsync();
+
+        Assert.True(result.Success, result.Message);
+        var activeGlobalChild = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(x => x.SetCodeId == "type2-full-active");
+        Assert.Equal(1.2m, activeGlobalChild.SetPurchasePrice);
+        var activeStoreChild = await _localDb.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(x => x.UUID == "type2-full-store-active");
+        Assert.Equal(1.1m, activeStoreChild.PurchasePrice);
+
+        var deletedGlobalChild = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(x => x.SetCodeId == "type2-full-deleted");
+        Assert.True(deletedGlobalChild.IsDeleted);
+        Assert.Equal(88m, deletedGlobalChild.SetPurchasePrice);
+        var deletedStoreChild = await _localDb.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(x => x.UUID == "type2-full-store-deleted");
+        Assert.True(deletedStoreChild.IsDeleted);
+        Assert.Equal(77m, deletedStoreChild.PurchasePrice);
+        Assert.Equal(
+            66m,
+            (await _localDb.Queryable<StoreMultiCodeProduct>()
+                .SingleAsync(x => x.UUID == "type2-full-store-unrelated"))
+                .PurchasePrice
+        );
     }
 
     [Fact]
@@ -326,6 +543,319 @@ public sealed class ProductHqSyncSplitTests : IDisposable
         Assert.False((await _localDb.Queryable<Product>().SingleAsync(x => x.ProductCode == "P-LOCAL-ONLY")).IsDeleted);
         Assert.NotNull(await _localDb.Queryable<StoreRetailPrice>().SingleAsync(x => x.ProductCode == "P-HQ-001" && x.StoreCode == "S01"));
         Assert.NotNull(await _localDb.Queryable<StoreMultiCodeProduct>().SingleAsync(x => x.ProductCode == "P-HQ-001" && x.StoreCode == "S01"));
+    }
+
+    [Fact]
+    public async Task SyncSelectedFromHqAsync_HQ同键多码不得覆盖本地套装及门店派生成本()
+    {
+        var now = new DateTime(2026, 6, 4, 0, 0, 0, DateTimeKind.Utc);
+        await SeedLocalStoreAsync("S01");
+        await SeedHqProductAsync("P-SET-PROTECTED", now, "HQ商品");
+        await SeedHqProductSetCodeAsync(
+            "set-protected-local",
+            "P-SET-PROTECTED",
+            "M-PROTECTED",
+            now
+        );
+        await SeedHqStoreMultiCodeAsync(
+            "multi-protected-local",
+            "S01",
+            "P-SET-PROTECTED",
+            "M-PROTECTED",
+            now
+        );
+        await _localDb.Insertable(
+            new Product
+            {
+                UUID = "product-protected-local",
+                ProductCode = "P-SET-PROTECTED",
+                ProductName = "本地套装",
+                PurchasePrice = 1.2m,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new StoreRetailPrice
+            {
+                UUID = "retail-protected-local",
+                StoreCode = "S01",
+                ProductCode = "P-SET-PROTECTED",
+                SupplierCode = "SUP",
+                PurchasePrice = 1.11m,
+                StoreRetailPriceValue = 8m,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = "set-protected-local",
+                ProductCode = "P-SET-PROTECTED",
+                SetProductCode = "M-PROTECTED",
+                SetItemNumber = "M-PROTECTED",
+                SetBarcode = "LOCAL-SET-BARCODE",
+                SetPurchasePrice = 1.2m,
+                SetRetailPrice = 4.56m,
+                SetType = 1,
+                SetQuantity = 1,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new StoreMultiCodeProduct
+            {
+                UUID = "multi-protected-local",
+                StoreCode = "S01",
+                ProductCode = "P-SET-PROTECTED",
+                MultiCodeProductCode = "M-PROTECTED",
+                StoreMultiCodeProductCode = "S01-M-PROTECTED",
+                MultiBarcode = "LOCAL-STORE-BARCODE",
+                PurchasePrice = 1.11m,
+                MultiCodeRetailPrice = 4.44m,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+
+        var result = await CreateService().SyncSelectedFromHqAsync(
+            new List<string> { "P-SET-PROTECTED" }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, result.Data!.ProductSetCodesUpdated);
+        Assert.Equal(0, result.Data.StoreMultiCodesUpdated);
+        var protectedChild = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(x => x.SetCodeId == "set-protected-local");
+        Assert.Equal(1, protectedChild.SetType);
+        Assert.Equal(1.2m, protectedChild.SetPurchasePrice);
+        Assert.Equal(4.56m, protectedChild.SetRetailPrice);
+        Assert.Equal("LOCAL-SET-BARCODE", protectedChild.SetBarcode);
+        Assert.False(protectedChild.IsDeleted);
+        var protectedStoreChild = await _localDb.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(x => x.UUID == "multi-protected-local");
+        Assert.Equal(1.11m, protectedStoreChild.PurchasePrice);
+        Assert.Equal(4.44m, protectedStoreChild.MultiCodeRetailPrice);
+        Assert.Equal("LOCAL-STORE-BARCODE", protectedStoreChild.MultiBarcode);
+        Assert.False(protectedStoreChild.IsDeleted);
+    }
+
+    [Fact]
+    public async Task SyncSelectedFromHqAsync_GUID与业务键命中不同Type2时拒绝并保留两行()
+    {
+        var now = new DateTime(2026, 6, 4, 0, 0, 0, DateTimeKind.Utc);
+        const string productCode = "P-SELECTED-CROSS";
+        await SeedHqProductAsync(productCode, now, "HQ商品");
+        await SeedHqProductSetCodeAsync(
+            "hq-selected-cross-guid",
+            productCode,
+            "CHILD-TARGET",
+            now
+        );
+        await _localDb.Insertable(
+            new Product
+            {
+                UUID = "local-selected-cross-product",
+                ProductCode = productCode,
+                ProductName = "本地商品",
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(new[]
+        {
+            new ProductSetCode
+            {
+                SetCodeId = "hq-selected-cross-guid",
+                ProductCode = productCode,
+                SetProductCode = "CHILD-GUID-OWNER",
+                SetItemNumber = "CHILD-GUID-OWNER",
+                SetBarcode = "LOCAL-GUID-OWNER",
+                SetType = 2,
+                SetQuantity = 1,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new ProductSetCode
+            {
+                SetCodeId = "local-selected-key-owner",
+                ProductCode = productCode,
+                SetProductCode = "CHILD-TARGET",
+                SetItemNumber = "CHILD-TARGET",
+                SetBarcode = "LOCAL-KEY-OWNER",
+                SetType = 2,
+                SetQuantity = 1,
+                IsActive = true,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().SyncSelectedFromHqAsync(
+            new List<string> { productCode }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, result.Data!.ProductSetCodesUpdated);
+        Assert.Contains(result.Data.Errors, error =>
+            error.Contains("本地 ProductSetCode 身份冲突", StringComparison.Ordinal)
+            && error.Contains("hq-selected-cross-guid", StringComparison.Ordinal)
+            && error.Contains("P-SELECTED-CROSS/CHILD-TARGET", StringComparison.Ordinal)
+            && error.Contains("本地记录=", StringComparison.Ordinal)
+        );
+        var guidOwner = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == "hq-selected-cross-guid");
+        var keyOwner = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == "local-selected-key-owner");
+        Assert.Equal("CHILD-GUID-OWNER", guidOwner.SetProductCode);
+        Assert.Equal("LOCAL-GUID-OWNER", guidOwner.SetBarcode);
+        Assert.False(guidOwner.IsDeleted);
+        Assert.Equal("CHILD-TARGET", keyOwner.SetProductCode);
+        Assert.Equal("LOCAL-KEY-OWNER", keyOwner.SetBarcode);
+        Assert.False(keyOwner.IsDeleted);
+    }
+
+    [Fact]
+    public async Task SyncSelectedFromHqAsync_仅GUID命中其他父商品Type2且目标键空闲时安全迁移()
+    {
+        var now = new DateTime(2026, 6, 4, 1, 0, 0, DateTimeKind.Utc);
+        const string sourceProductCode = "P-SELECTED-GUID-SOURCE";
+        const string targetProductCode = "P-SELECTED-GUID-TARGET";
+        const string targetChildCode = "CHILD-TARGET";
+        const string sharedGuid = "hq-selected-guid-migration";
+        await SeedHqProductAsync(targetProductCode, now, "HQ目标商品");
+        await SeedHqProductSetCodeAsync(
+            sharedGuid,
+            targetProductCode,
+            targetChildCode,
+            now
+        );
+        await _localDb.Insertable(
+            new Product
+            {
+                UUID = "local-selected-guid-target-product",
+                ProductCode = targetProductCode,
+                ProductName = "本地目标商品",
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = sharedGuid,
+                ProductCode = sourceProductCode,
+                SetProductCode = "CHILD-SOURCE",
+                SetItemNumber = "CHILD-SOURCE",
+                SetBarcode = "LOCAL-SOURCE-BARCODE",
+                SetType = 2,
+                SetQuantity = 1,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+
+        var result = await CreateService().SyncSelectedFromHqAsync(
+            new List<string> { targetProductCode }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(1, result.Data!.ProductSetCodesUpdated);
+        var migrated = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == sharedGuid);
+        Assert.Equal(targetProductCode, migrated.ProductCode);
+        Assert.Equal(targetChildCode, migrated.SetProductCode);
+        Assert.Equal(1, await _localDb.Queryable<ProductSetCode>().CountAsync());
+    }
+
+    [Fact]
+    public async Task SyncSelectedFromHqAsync_跨父商品GUID命中Type1时保持保护关系不变()
+    {
+        var now = new DateTime(2026, 6, 4, 2, 0, 0, DateTimeKind.Utc);
+        const string sourceProductCode = "P-SELECTED-TYPE1-SOURCE";
+        const string targetProductCode = "P-SELECTED-TYPE1-TARGET";
+        const string sharedGuid = "hq-selected-type1-protected";
+        await SeedHqProductAsync(targetProductCode, now, "HQ目标商品");
+        await SeedHqProductSetCodeAsync(sharedGuid, targetProductCode, "CHILD-TARGET", now);
+        await _localDb.Insertable(
+            new Product
+            {
+                UUID = "local-selected-type1-target-product",
+                ProductCode = targetProductCode,
+                ProductName = "本地目标商品",
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = sharedGuid,
+                ProductCode = sourceProductCode,
+                SetProductCode = "CHILD-PROTECTED",
+                SetItemNumber = "CHILD-PROTECTED",
+                SetBarcode = "LOCAL-TYPE1-BARCODE",
+                SetPurchasePrice = 3.21m,
+                SetRetailPrice = 6.54m,
+                SetType = 1,
+                SetQuantity = 1,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+
+        var result = await CreateService().SyncSelectedFromHqAsync(
+            new List<string> { targetProductCode }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, result.Data!.ProductSetCodesUpdated);
+        var protectedRow = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == sharedGuid);
+        Assert.Equal(sourceProductCode, protectedRow.ProductCode);
+        Assert.Equal("CHILD-PROTECTED", protectedRow.SetProductCode);
+        Assert.Equal("LOCAL-TYPE1-BARCODE", protectedRow.SetBarcode);
+        Assert.Equal(1, protectedRow.SetType);
+    }
+
+    [Fact]
+    public async Task SyncSelectedFromHqAsync_HQ同业务键多非空GUID时整组拒绝()
+    {
+        var now = new DateTime(2026, 6, 4, 0, 0, 0, DateTimeKind.Utc);
+        const string productCode = "P-SELECTED-SOURCE-CONFLICT";
+        const string childCode = "CHILD-CONFLICT";
+        await SeedHqProductAsync(productCode, now, "HQ商品");
+        await SeedHqProductSetCodeAsync("hq-key-guid-a", productCode, childCode, now);
+        await SeedHqProductSetCodeAsync(
+            "hq-key-guid-b",
+            productCode,
+            childCode,
+            now.AddMinutes(1)
+        );
+        await _localDb.Insertable(
+            new Product
+            {
+                UUID = "local-selected-source-conflict",
+                ProductCode = productCode,
+                ProductName = "本地商品",
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+
+        var result = await CreateService().SyncSelectedFromHqAsync(
+            new List<string> { productCode }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, result.Data!.ProductSetCodesAdded);
+        Assert.Equal(
+            0,
+            await _localDb.Queryable<ProductSetCode>()
+                .Where(row => row.ProductCode == productCode)
+                .CountAsync()
+        );
     }
 
     [Fact]

@@ -4,6 +4,7 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -248,7 +249,7 @@ namespace BlazorApp.Api.Controllers.React
                 access.ActorLabel,
                 access.StoreCodes
             );
-            return Ok(result);
+            return BuildMutationResult(result);
         }
 
         [HttpPost("store-prices/{uuid}/sync-warehouse")]
@@ -276,7 +277,7 @@ namespace BlazorApp.Api.Controllers.React
                 return Conflict(result);
             }
 
-            return Ok(result);
+            return BuildMutationResult(result);
         }
 
         [HttpPut("products/{productCode}/type")]
@@ -318,7 +319,7 @@ namespace BlazorApp.Api.Controllers.React
                 access.ActorLabel,
                 access.StoreCodes
             );
-            return Ok(result);
+            return BuildMutationResult(result);
         }
 
         [HttpPost("set-codes")]
@@ -331,7 +332,7 @@ namespace BlazorApp.Api.Controllers.React
             }
 
             var result = await _service.CreateSetCodeAsync(request, access.ActorLabel, access.StoreCodes);
-            return Ok(result);
+            return BuildMutationResult(result);
         }
 
         [HttpPut("set-codes/{setCodeId}")]
@@ -352,7 +353,7 @@ namespace BlazorApp.Api.Controllers.React
                 access.ActorLabel,
                 access.StoreCodes
             );
-            return Ok(result);
+            return BuildMutationResult(result);
         }
 
         [HttpDelete("set-codes/{setCodeId}")]
@@ -365,7 +366,7 @@ namespace BlazorApp.Api.Controllers.React
             }
 
             var result = await _service.DeleteSetCodeAsync(setCodeId, access.ActorLabel, access.StoreCodes);
-            return Ok(result);
+            return BuildMutationResult(result);
         }
 
         [HttpPut("products/{productCode}/clearance-price")]
@@ -531,6 +532,13 @@ namespace BlazorApp.Api.Controllers.React
                 DeviceAuthMs = deviceAuthSw.ElapsedMilliseconds,
                 DeviceLoadMs = deviceLoadSw.ElapsedMilliseconds,
             };
+        }
+
+        private IActionResult BuildMutationResult<T>(ApiResponse<T> result)
+        {
+            return result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                ? Conflict(result)
+                : Ok(result);
         }
 
         private bool HasElevatedStoreAccess()

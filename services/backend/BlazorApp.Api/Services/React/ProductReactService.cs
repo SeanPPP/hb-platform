@@ -1186,8 +1186,19 @@ namespace BlazorApp.Api.Services.React
 
                 if (isCodeChange)
                 {
-                    await _db.Ado.UseTranAsync(async () =>
+                    var codeChangeTransaction = await _db.Ado.UseTranAsync(async () =>
                     {
+                        var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                            _db,
+                            new[] { productCode, newProductCode! }
+                        );
+                        product = await _db.Queryable<Product>()
+                            .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                            .FirstAsync();
+                        if (product == null)
+                        {
+                            throw new InvalidOperationException("商品在更新期间已被删除，请重试");
+                        }
                         var beforeSnapshots = await CaptureProductSnapshotsAsync(
                             new[] { productCode, newProductCode! }
                         );
@@ -1196,6 +1207,19 @@ namespace BlazorApp.Api.Services.React
                             product,
                             dto,
                             newProductCode!
+                        );
+                        var recalculation = await new SetChildPurchasePriceService(
+                            _db
+                        ).RecalculateLockedAsync(
+                            lockScope,
+                            new[] { newProductCode! },
+                            storeCodes: null,
+                            updatedBy: _httpContextAccessor.HttpContext?.User?.Identity?.Name
+                                ?? "System"
+                        );
+                        EnsureSetChildPurchasePriceRecalculated(
+                            recalculation,
+                            new[] { newProductCode! }
                         );
                         var afterSnapshots = await CaptureProductSnapshotsAsync(
                             new[] { newProductCode! }
@@ -1209,11 +1233,27 @@ namespace BlazorApp.Api.Services.React
                             auditOccurredAtUtc
                         );
                     });
+                    if (!codeChangeTransaction.IsSuccess)
+                    {
+                        throw codeChangeTransaction.ErrorException
+                            ?? new InvalidOperationException("商品更新事务失败");
+                    }
                     return await GetByIdAsync(newProductCode!);
                 }
 
-                await _db.Ado.UseTranAsync(async () =>
+                var updateTransaction = await _db.Ado.UseTranAsync(async () =>
                 {
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        _db,
+                        new[] { productCode }
+                    );
+                    product = await _db.Queryable<Product>()
+                        .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                        .FirstAsync();
+                    if (product == null)
+                    {
+                        throw new InvalidOperationException("商品在更新期间已被删除，请重试");
+                    }
                     var beforeSnapshots = await CaptureProductSnapshotsAsync(
                         new[] { productCode }
                     );
@@ -1245,6 +1285,19 @@ namespace BlazorApp.Api.Services.React
                         .Where(srp => srp.ProductCode == product.ProductCode)
                         .ExecuteCommandAsync();
 
+                    var recalculation = await new SetChildPurchasePriceService(
+                        _db
+                    ).RecalculateLockedAsync(
+                        lockScope,
+                        new[] { productCode },
+                        storeCodes: null,
+                        updatedBy: currentUser
+                    );
+                    EnsureSetChildPurchasePriceRecalculated(
+                        recalculation,
+                        new[] { productCode }
+                    );
+
                     var afterSnapshots = await CaptureProductSnapshotsAsync(
                         new[] { productCode }
                     );
@@ -1257,8 +1310,23 @@ namespace BlazorApp.Api.Services.React
                         auditOccurredAtUtc
                     );
                 });
+                if (!updateTransaction.IsSuccess)
+                {
+                    throw updateTransaction.ErrorException
+                        ?? new InvalidOperationException("商品更新事务失败");
+                }
 
                 return await GetByIdAsync(productCode);
+            }
+            catch (Exception ex) when (
+                SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict)
+            )
+            {
+                _logger.LogWarning(ex, "更新商品遇到套装成本业务锁冲突: {ProductCode}", productCode);
+                return ApiResponse<ProductDto>.Error(
+                    conflict!.Message,
+                    SetChildPurchasePriceMutationLock.BusyErrorCode
+                );
             }
             catch (Exception ex)
             {
@@ -1333,10 +1401,19 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 var productDeleted = 0;
-                await _db.Ado.UseTranAsync(async () =>
+                var transaction = await _db.Ado.UseTranAsync(async () =>
                 {
+                    await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        _db,
+                        new[] { productCode }
+                    );
                     productDeleted = await CascadeDeleteProductAsync(productCode, isSoftDelete);
                 });
+                if (!transaction.IsSuccess)
+                {
+                    throw transaction.ErrorException
+                        ?? new InvalidOperationException("删除商品事务失败");
+                }
 
                 var deleteType = isSoftDelete ? "软删除" : "物理删除";
                 return new ApiResponse<bool>
@@ -1345,6 +1422,16 @@ namespace BlazorApp.Api.Services.React
                     Data = productDeleted > 0,
                     Message = productDeleted > 0 ? $"{deleteType}成功" : "商品不存在",
                 };
+            }
+            catch (Exception ex) when (
+                SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict)
+            )
+            {
+                _logger.LogWarning(ex, "删除商品获取套装成本业务锁失败: {ProductCode}", productCode);
+                return ApiResponse<bool>.Error(
+                    conflict!.Message,
+                    SetChildPurchasePriceMutationLock.BusyErrorCode
+                );
             }
             catch (Exception ex)
             {
@@ -1376,43 +1463,25 @@ namespace BlazorApp.Api.Services.React
             {
                 // 软删除：标记 IsDeleted = true
 
-                // 1. 获取关联的多码商品编码
-                var multiCodeProductCodes = await _db.Queryable<StoreMultiCodeProduct>()
-                    .Where(m => m.ProductCode == productCode)
-                    .Select(m => m.MultiCodeProductCode)
-                    .ToListAsync();
-
-                // 2. 软删除 ProductSetCode（主商品编码）
+                // 1. 套装关系以父商品+子项为业务键，删除父商品时不能仅凭子项键影响其他父商品。
                 await _db.Updateable<ProductSetCode>()
                     .SetColumns(psc => psc.IsDeleted == true)
                     .Where(psc => psc.ProductCode == productCode)
                     .ExecuteCommandAsync();
 
-                // 3. 软删除 ProductSetCode（多码商品编码）
-                if (multiCodeProductCodes != null && multiCodeProductCodes.Any())
-                {
-                    await _db.Updateable<ProductSetCode>()
-                        .SetColumns(psc => psc.IsDeleted == true)
-                        .Where(psc =>
-                            psc.SetProductCode != null
-                            && multiCodeProductCodes.Contains(psc.SetProductCode)
-                        )
-                        .ExecuteCommandAsync();
-                }
-
-                // 4. 软删除 StoreMultiCodeProduct
+                // 2. 软删除 StoreMultiCodeProduct
                 await _db.Updateable<StoreMultiCodeProduct>()
                     .SetColumns(m => m.IsDeleted == true)
                     .Where(m => m.ProductCode == productCode)
                     .ExecuteCommandAsync();
 
-                // 5. 软删除 StoreRetailPrice
+                // 3. 软删除 StoreRetailPrice
                 await _db.Updateable<StoreRetailPrice>()
                     .SetColumns(s => s.IsDeleted == true)
                     .Where(s => s.ProductCode == productCode)
                     .ExecuteCommandAsync();
 
-                // 6. 软删除 Product
+                // 4. 软删除 Product
                 var productRows = await _db.Updateable<Product>()
                     .SetColumns(p => p.IsDeleted == true)
                     .Where(p => p.ProductCode == productCode)
@@ -1424,24 +1493,10 @@ namespace BlazorApp.Api.Services.React
             {
                 // 物理删除：彻底从数据库删除
 
-                // 1. ProductSetCode：主商品编码为此商品 或 SetProductCode 属于该商品的多码
+                // 1. ProductSetCode：只删除当前父商品关系，避免跨父商品复用子项键时误删。
                 await _db.Deleteable<ProductSetCode>()
                     .Where(psc => psc.ProductCode == productCode)
                     .ExecuteCommandAsync();
-
-                var multiCodeProductCodes = await _db.Queryable<StoreMultiCodeProduct>()
-                    .Where(m => m.ProductCode == productCode)
-                    .Select(m => m.MultiCodeProductCode)
-                    .ToListAsync();
-                if (multiCodeProductCodes != null && multiCodeProductCodes.Any())
-                {
-                    await _db.Deleteable<ProductSetCode>()
-                        .Where(psc =>
-                            psc.SetProductCode != null
-                            && multiCodeProductCodes.Contains(psc.SetProductCode)
-                        )
-                        .ExecuteCommandAsync();
-                }
 
                 // 2. StoreMultiCodeProduct
                 await _db.Deleteable<StoreMultiCodeProduct>()
@@ -1535,13 +1590,21 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 // 使用事务
-                await _db.Ado.UseTranAsync(async () =>
+                var transaction = await _db.Ado.UseTranAsync(async () =>
                 {
                     var productCodes = items
                         .Select(item => item.ProductCode)
                         .Where(code => !string.IsNullOrWhiteSpace(code))
                         .Distinct(StringComparer.OrdinalIgnoreCase)
                         .ToList();
+                    SetChildPurchasePriceLockScope? lockScope = null;
+                    if (productCodes.Count > 0)
+                    {
+                        lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                            _db,
+                            productCodes
+                        );
+                    }
                     var beforeSnapshots = await CaptureProductSnapshotsAsync(productCodes);
 
                     foreach (var item in items)
@@ -1610,6 +1673,23 @@ namespace BlazorApp.Api.Services.React
                         }
                     }
 
+                    if (lockScope != null)
+                    {
+                        var recalculation = await new SetChildPurchasePriceService(
+                            _db
+                        ).RecalculateLockedAsync(
+                            lockScope,
+                            productCodes,
+                            storeCodes: null,
+                            updatedBy: _httpContextAccessor.HttpContext?.User?.Identity?.Name
+                                ?? "System"
+                        );
+                        EnsureSetChildPurchasePriceRecalculated(
+                            recalculation,
+                            productCodes
+                        );
+                    }
+
                     var afterSnapshots = await CaptureProductSnapshotsAsync(productCodes);
                     await RecordProductChangesAsync(
                         beforeSnapshots,
@@ -1620,6 +1700,11 @@ namespace BlazorApp.Api.Services.React
                         auditOccurredAtUtc
                     );
                 });
+                if (!transaction.IsSuccess)
+                {
+                    throw transaction.ErrorException
+                        ?? new InvalidOperationException("批量更新商品事务失败");
+                }
 
                 return new ApiResponse<BatchOperationReactResult>
                 {
@@ -1629,13 +1714,86 @@ namespace BlazorApp.Api.Services.React
                         $"批量更新完成: 成功{result.SuccessCount}条，失败{result.FailedCount}条",
                 };
             }
-            catch (Exception ex)
+            catch (Exception ex) when (
+                SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict)
+            )
             {
-                _logger.LogError(ex, "批量更新商品事务失败");
+                // 外层事务已回滚，循环内的成功计数不能继续对外宣称写入成功。
+                result.SuccessCount = 0;
+                result.FailedCount = 0;
+                result.Errors.Clear();
+                result.FailureDetails.Clear();
+                var message = conflict!.Message;
+                foreach (var item in items ?? new List<BatchUpdateProductReactDto>())
+                {
+                    var itemKey = string.IsNullOrWhiteSpace(item.ProductCode)
+                        ? "(空商品编码)"
+                        : item.ProductCode.Trim();
+                    result.FailedCount++;
+                    result.Errors.Add($"{itemKey}: {message}");
+                    result.FailureDetails.Add(new BatchOperationFailureDto
+                    {
+                        ItemKey = itemKey,
+                        Message = message,
+                        ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode,
+                    });
+                }
+
+                // 即使请求为空也保留一条结构化失败，避免客户端丢失事务回滚原因。
+                if (result.FailureDetails.Count == 0)
+                {
+                    result.FailedCount = 1;
+                    result.Errors.Add(message);
+                    result.FailureDetails.Add(new BatchOperationFailureDto
+                    {
+                        Message = message,
+                        ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode,
+                    });
+                }
+
+                _logger.LogWarning(ex, "批量更新商品遇到套装成本业务锁冲突，事务已回滚");
                 return new ApiResponse<BatchOperationReactResult>
                 {
                     Success = false,
-                    Message = $"批量更新失败: {ex.Message}",
+                    Message = message,
+                    ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode,
+                    Data = result,
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量更新商品事务失败");
+                // 外层事务失败时，同批已累积的成功数对应的写入均已回滚。
+                result.SuccessCount = 0;
+                result.FailedCount = 0;
+                result.Errors.Clear();
+                result.FailureDetails.Clear();
+                var message = $"批量更新失败: {ex.Message}";
+                foreach (var item in items ?? new List<BatchUpdateProductReactDto>())
+                {
+                    var itemKey = string.IsNullOrWhiteSpace(item.ProductCode)
+                        ? "(空商品编码)"
+                        : item.ProductCode.Trim();
+                    result.FailedCount++;
+                    result.Errors.Add($"{itemKey}: {message}");
+                    result.FailureDetails.Add(new BatchOperationFailureDto
+                    {
+                        ItemKey = itemKey,
+                        Message = message,
+                    });
+                }
+
+                if (result.FailureDetails.Count == 0)
+                {
+                    result.FailedCount = 1;
+                    result.Errors.Add(message);
+                    result.FailureDetails.Add(new BatchOperationFailureDto { Message = message });
+                }
+
+                return new ApiResponse<BatchOperationReactResult>
+                {
+                    Success = false,
+                    Message = message,
                     Data = result,
                 };
             }
@@ -1963,59 +2121,114 @@ namespace BlazorApp.Api.Services.React
             var result = new BatchOperationReactResult();
             var deleteType = isSoftDelete ? "软删除" : "物理删除";
 
-            try
+            foreach (var code in productCodes)
             {
-                // 使用事务
-                await _db.Ado.UseTranAsync(async () =>
+                if (string.IsNullOrWhiteSpace(code))
                 {
-                    foreach (var code in productCodes)
-                    {
-                        try
-                        {
-                            var productDeleted = await CascadeDeleteProductAsync(
-                                code,
-                                isSoftDelete
-                            );
-                            if (productDeleted > 0)
-                                result.SuccessCount++;
-                            else
-                            {
-                                result.Errors.Add($"商品不存在: {code}");
-                                result.FailedCount++;
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            result.Errors.Add($"{code}: {ex.Message}");
-                            result.FailedCount++;
-                            _logger.LogError(
-                                ex,
-                                "批量{deleteType}单个商品失败: {ProductCode}",
-                                deleteType,
-                                code
-                            );
-                        }
-                    }
-                });
+                    AddBatchDeleteFailure(result, code, "商品编码不能为空");
+                    continue;
+                }
 
-                return new ApiResponse<BatchOperationReactResult>
+                try
                 {
-                    Success = true,
-                    Data = result,
-                    Message =
-                        $"批量{deleteType}完成: 成功{result.SuccessCount}条，失败{result.FailedCount}条",
-                };
+                    await _db.Ado.BeginTranAsync();
+                    try
+                    {
+                        await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                            _db,
+                            new[] { code }
+                        );
+                        var productExists = await _db.Queryable<Product>()
+                            .Where(product =>
+                                product.ProductCode == code && product.IsDeleted == false
+                            )
+                            .AnyAsync();
+                        if (!productExists)
+                        {
+                            await _db.Ado.RollbackTranAsync();
+                            AddBatchDeleteFailure(result, code, $"商品不存在: {code}");
+                            continue;
+                        }
+
+                        var productDeleted = await CascadeDeleteProductAsync(code, isSoftDelete);
+                        if (productDeleted <= 0)
+                        {
+                            throw new InvalidOperationException("商品在等待业务锁期间已变更");
+                        }
+
+                        await _db.Ado.CommitTranAsync();
+                        result.SuccessCount++;
+                    }
+                    catch
+                    {
+                        if (_db.Ado.Transaction != null)
+                        {
+                            await _db.Ado.RollbackTranAsync();
+                        }
+                        throw;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    var errorCode = SetChildPurchasePriceMutationLock.TryResolveConflict(
+                        ex,
+                        out var conflict
+                    )
+                        ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                        : null;
+                    var message = $"{code}: {conflict?.Message ?? ex.Message}";
+                    AddBatchDeleteFailure(result, code, message, errorCode);
+                    _logger.LogError(
+                        ex,
+                        "批量{DeleteType}单个商品失败: {ProductCode}",
+                        deleteType,
+                        code
+                    );
+                }
             }
-            catch (Exception ex)
+
+            var containsBusyFailure = result.FailureDetails.Any(failure =>
+                string.Equals(
+                    failure.ErrorCode,
+                    SetChildPurchasePriceMutationLock.BusyErrorCode,
+                    StringComparison.Ordinal
+                )
+            );
+            if (result.SuccessCount == 0 && containsBusyFailure)
             {
-                _logger.LogError(ex, "批量{DeleteType}商品事务失败", deleteType);
                 return new ApiResponse<BatchOperationReactResult>
                 {
                     Success = false,
-                    Message = $"批量{deleteType}失败: {ex.Message}",
+                    ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode,
+                    Message = "套装子项成本正在被其他操作更新，请稍后重试",
                     Data = result,
                 };
             }
+
+            return new ApiResponse<BatchOperationReactResult>
+            {
+                Success = true,
+                Data = result,
+                Message =
+                    $"批量{deleteType}完成: 成功{result.SuccessCount}条，失败{result.FailedCount}条",
+            };
+        }
+
+        private static void AddBatchDeleteFailure(
+            BatchOperationReactResult result,
+            string? itemKey,
+            string message,
+            string? errorCode = null
+        )
+        {
+            result.FailedCount++;
+            result.Errors.Add(message);
+            result.FailureDetails.Add(new BatchOperationFailureDto
+            {
+                ItemKey = itemKey ?? string.Empty,
+                Message = message,
+                ErrorCode = errorCode,
+            });
         }
 
         /// <summary>
@@ -2382,6 +2595,12 @@ namespace BlazorApp.Api.Services.React
 
                 _hqContext.CheckConnection();
 
+                // 旧全量入口没有商品过滤，必须在读取本地快照前取得全局业务锁，
+                // 防止同步期间用旧实体覆盖其他入口刚写入的成本来源。
+                _db.Ado.BeginTran();
+                transactionStarted = true;
+                var childCostLockScope = await SetChildPurchasePriceMutationLock.AcquireAllAsync(_db);
+
                 _logger.LogInformation("阶段一+二：并发构建轻量索引...");
                 var localDataTask = Task.Run(async () =>
                 {
@@ -2492,8 +2711,6 @@ namespace BlazorApp.Api.Services.React
                     .Select(c => (hqFullDict[c], toUpdateProductsDict[c]))
                     .ToList();
                 int processedPage = 0;
-                _db.Ado.BeginTran();
-                transactionStarted = true;
 
                 foreach (var batch in toAdd.Chunk(ProductHqSyncWriteBatchSize))
                 {
@@ -2648,15 +2865,46 @@ namespace BlazorApp.Api.Services.React
                 foreach (var codeBatch in toDeleteCodes.Chunk(ProductHqSyncWriteBatchSize))
                 {
                     var productCodes = codeBatch.ToList();
+                    var protectedSetRows = await _db.Queryable<ProductSetCode>()
+                        .Where(p =>
+                            productCodes.Contains(p.ProductCode)
+                            && p.SetType == 1
+                        )
+                        .ToListAsync();
+                    var protectedSetKeys = protectedSetRows
+                        .Select(row => BuildKey(row.ProductCode, row.SetProductCode))
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var protectedStoreMultiIds = (await _db.Queryable<StoreMultiCodeProduct>()
+                            .Where(p => productCodes.Contains(p.ProductCode!))
+                            .ToListAsync())
+                        .Where(row =>
+                            protectedSetKeys.Contains(
+                                BuildKey(row.ProductCode, row.MultiCodeProductCode)
+                            )
+                        )
+                        .Select(row => row.UUID)
+                        .Where(uuid => !string.IsNullOrWhiteSpace(uuid))
+                        .Select(uuid => uuid!)
+                        .ToList();
                     var retailPricesDeleted = await _db.Queryable<StoreRetailPrice>()
                             .Where(p => productCodes.Contains(p.ProductCode!))
                             .CountAsync();
                         var setCodesDeleted = await _db.Queryable<ProductSetCode>()
-                            .Where(p => productCodes.Contains(p.ProductCode!))
+                            .Where(p =>
+                                productCodes.Contains(p.ProductCode!)
+                                && p.SetType != 1
+                            )
                             .CountAsync();
-                        var multiCodesDeleted = await _db.Queryable<StoreMultiCodeProduct>()
-                            .Where(p => productCodes.Contains(p.ProductCode!))
-                            .CountAsync();
+                        var multiCodesDeleted = protectedStoreMultiIds.Count == 0
+                            ? await _db.Queryable<StoreMultiCodeProduct>()
+                                .Where(p => productCodes.Contains(p.ProductCode!))
+                                .CountAsync()
+                            : await _db.Queryable<StoreMultiCodeProduct>()
+                                .Where(p =>
+                                    productCodes.Contains(p.ProductCode!)
+                                    && !protectedStoreMultiIds.Contains(p.UUID)
+                                )
+                                .CountAsync();
 
                         await _db.Updateable<Product>()
                             .SetColumns(p => p.IsDeleted == true)
@@ -2670,13 +2918,29 @@ namespace BlazorApp.Api.Services.React
 
                         await _db.Updateable<ProductSetCode>()
                             .SetColumns(p => p.IsDeleted == true)
-                            .Where(p => productCodes.Contains(p.ProductCode!))
+                            .Where(p =>
+                                productCodes.Contains(p.ProductCode!)
+                                && p.SetType != 1
+                            )
                             .ExecuteCommandAsync();
 
-                        await _db.Updateable<StoreMultiCodeProduct>()
-                            .SetColumns(p => p.IsDeleted == true)
-                            .Where(p => productCodes.Contains(p.ProductCode!))
-                            .ExecuteCommandAsync();
+                        if (protectedStoreMultiIds.Count == 0)
+                        {
+                            await _db.Updateable<StoreMultiCodeProduct>()
+                                .SetColumns(p => p.IsDeleted == true)
+                                .Where(p => productCodes.Contains(p.ProductCode!))
+                                .ExecuteCommandAsync();
+                        }
+                        else
+                        {
+                            await _db.Updateable<StoreMultiCodeProduct>()
+                                .SetColumns(p => p.IsDeleted == true)
+                                .Where(p =>
+                                    productCodes.Contains(p.ProductCode!)
+                                    && !protectedStoreMultiIds.Contains(p.UUID)
+                                )
+                                .ExecuteCommandAsync();
+                        }
 
                         result.ProductsDeleted += productCodes.Count;
                         result.StoreRetailPricesDeleted += retailPricesDeleted;
@@ -2693,6 +2957,26 @@ namespace BlazorApp.Api.Services.React
                             toDeleteCodes.Count
                         );
                     }
+                }
+
+                var affectedProductCodes = toAddCodes
+                    .Concat(toUpdateCodes)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (affectedProductCodes.Count > 0)
+                {
+                    var recalculationActor = ResolveSetChildPurchasePriceActor(actorName);
+                    var recalculation = await new SetChildPurchasePriceService(_db)
+                        .RecalculateLockedAsync(
+                            childCostLockScope,
+                            Array.Empty<string>(),
+                            null,
+                            recalculationActor
+                        );
+                    EnsureSetChildPurchasePriceRecalculated(
+                        recalculation,
+                        affectedProductCodes
+                    );
                 }
 
                 _db.Ado.CommitTran();
@@ -2775,6 +3059,42 @@ namespace BlazorApp.Api.Services.React
                 _db.Ado.CommandTimeOut = originalTimeout;
                 ProductHqSyncSemaphore.Release();
             }
+        }
+
+        private string ResolveSetChildPurchasePriceActor(string? actorName)
+        {
+            var resolved = string.IsNullOrWhiteSpace(actorName)
+                ? _currentUserService.GetCurrentUsername()
+                : actorName.Trim();
+            return string.IsNullOrWhiteSpace(resolved) ? "System" : resolved;
+        }
+
+        private static void EnsureSetChildPurchasePriceRecalculated(
+            SetChildPurchasePriceWritebackResultDto recalculation,
+            IEnumerable<string> productCodes
+        )
+        {
+            if (
+                recalculation.ProductSetCode.SkippedGroupCount == 0
+                && recalculation.StoreMultiCodeProduct.SkippedGroupCount == 0
+            )
+            {
+                return;
+            }
+
+            var affectedCodes = string.Join(
+                ", ",
+                productCodes.Distinct(StringComparer.OrdinalIgnoreCase)
+            );
+            var reasons = string.Join(
+                "；",
+                recalculation.Errors.Select(error =>
+                    $"{error.TableName}/{error.StoreCode ?? "总部"}/{error.ProductCode}: {error.Reason}"
+                )
+            );
+            throw new InvalidOperationException(
+                $"HQ 同步后的套装子项成本无法完整重算，主商品: {affectedCodes}。{reasons}"
+            );
         }
 
         private async Task<(bool Acquired, bool ShouldCloseConnection)> TryAcquireProductHqSyncDatabaseLockAsync()
@@ -3028,6 +3348,15 @@ namespace BlazorApp.Api.Services.React
             var localRows = await _db.Queryable<StoreMultiCodeProduct>()
                 .Where(row => productCodes.Contains(row.ProductCode!))
                 .ToListAsync();
+            var protectedSetKeys = (await _db.Queryable<ProductSetCode>()
+                    .Where(row =>
+                        row.SetType == 1
+                        && productCodes.Contains(row.ProductCode)
+                    )
+                    .ToListAsync())
+                .Where(row => !string.IsNullOrWhiteSpace(row.SetProductCode))
+                .Select(row => BuildKey(row.ProductCode, row.SetProductCode))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
             var byGuid = localRows
                 .Where(row => !string.IsNullOrWhiteSpace(row.UUID))
                 .GroupBy(row => row.UUID)
@@ -3056,9 +3385,15 @@ namespace BlazorApp.Api.Services.React
 
             foreach (var hqRow in hqMultiCodes)
             {
+                var productCode = hqRow.H商品编码 ?? string.Empty;
+                var multiCodeProductCode = ResolveMultiCodeProductCode(hqRow, productCode);
+                if (protectedSetKeys.Contains(BuildKey(productCode, multiCodeProductCode)))
+                {
+                    // 旧 HQ 同步只能维护普通多码，不能覆盖套装子项的门店派生成本。
+                    continue;
+                }
                 var businessKey = BuildKey(hqRow.H分店代码, hqRow.H商品编码, hqRow.H多条形码);
                 var localRow = FindByGuidOrBusinessKey(hqRow.HGUID, byGuid, byBusinessKey, businessKey);
-                var productCode = hqRow.H商品编码 ?? string.Empty;
                 if (
                     localRow == null
                     && deletedFallbackByProductStore.TryGetValue(
@@ -3088,10 +3423,11 @@ namespace BlazorApp.Api.Services.React
                 await NormalizeStoreMultiCodeIdAsync(localRow, hqRow.HGUID, byGuid);
                 localRow.StoreCode = hqRow.H分店代码;
                 localRow.ProductCode = productCode;
-                localRow.MultiCodeProductCode = ResolveMultiCodeProductCode(hqRow, productCode);
+                localRow.MultiCodeProductCode = multiCodeProductCode;
                 localRow.StoreMultiCodeProductCode = hqRow.H分店多码商品编码;
                 localRow.MultiBarcode = hqRow.H多条形码;
-                localRow.PurchasePrice = hqRow.H进货价;
+                // HQ 普通多码属于 Type2 关系时，外部成本不是最终值；保留为空以便推送回退到已校正主成本。
+                localRow.PurchasePrice = null;
                 localRow.MultiCodeRetailPrice = hqRow.H一品多码零售价;
                 localRow.DiscountRate = hqRow.H折扣率;
                 localRow.IsActive = hqRow.H使用状态 ?? true;
@@ -3103,7 +3439,13 @@ namespace BlazorApp.Api.Services.React
             }
 
             var missingRows = localRows
-                .Where(row => !row.IsDeleted && !touchedIds.Contains(row.UUID))
+                .Where(row =>
+                    !row.IsDeleted
+                    && !touchedIds.Contains(row.UUID)
+                    && !protectedSetKeys.Contains(
+                        BuildKey(row.ProductCode, row.MultiCodeProductCode)
+                    )
+                )
                 .ToList();
             foreach (var row in missingRows)
             {
@@ -3131,66 +3473,151 @@ namespace BlazorApp.Api.Services.React
             HqProductSyncResult result
         )
         {
-            var localRows = await _db.Queryable<ProductSetCode>()
-                .Where(row => productCodes.Contains(row.ProductCode))
-                .ToListAsync();
-            var byGuid = localRows
-                .Where(row => !string.IsNullOrWhiteSpace(row.SetCodeId))
-                .GroupBy(row => row.SetCodeId)
-                .ToDictionary(group => group.Key, group => group.First());
-            var byBusinessKey = localRows
-                .Where(row =>
-                    !string.IsNullOrWhiteSpace(row.ProductCode)
-                    && !string.IsNullOrWhiteSpace(row.SetBarcode)
-                    && !string.IsNullOrWhiteSpace(row.SetProductCode)
-                )
-                .GroupBy(row => BuildKey(row.ProductCode, row.SetBarcode, row.SetProductCode))
-                .ToDictionary(group => group.Key, group => group.First());
+            var sourcePreflight = ProductSetCodeIdentityResolver.PreflightSource(
+                hqMultiCodes,
+                row => row.HGUID,
+                row => row.H商品编码,
+                row => !string.IsNullOrWhiteSpace(row.H多码商品编码)
+                    ? row.H多码商品编码
+                    : row.H商品编码,
+                row => row.FGC_LastModifyDate,
+                row => row.ID
+            );
+            foreach (var conflict in sourcePreflight.Conflicts)
+            {
+                var message = conflict.ToErrorMessage();
+                if (!result.Errors.Contains(message))
+                {
+                    result.Errors.Add(message);
+                }
+            }
+            hqMultiCodes = sourcePreflight.Rows.ToList();
+
+            // 旧全量入口持有全局业务锁；GUID 仍可能命中本批商品范围外的旧父关系，
+            // 双身份解析必须覆盖全表，缺失清理则继续严格限制在本批商品范围内。
+            var identityRows = await _db.Queryable<ProductSetCode>().ToListAsync();
+            var productCodeSet = productCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var localRows = identityRows
+                .Where(row => productCodeSet.Contains(row.ProductCode))
+                .ToList();
+            var identityIndex = ProductSetCodeIdentityResolver.CreateIndex(identityRows);
+            var byGuid = identityRows
+                .Select(row => new
+                {
+                    Key = ProductSetCodeIdentityResolver.Normalize(row.SetCodeId),
+                    Row = row,
+                })
+                .Where(item => item.Key != null)
+                .GroupBy(item => item.Key!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.First().Row,
+                    StringComparer.OrdinalIgnoreCase
+                );
             var deletedFallbackByProduct = localRows
-                .Where(row => row.IsDeleted && !string.IsNullOrWhiteSpace(row.ProductCode))
-                .GroupBy(row => row.ProductCode)
+                .Where(row =>
+                    row.IsDeleted
+                    && row.SetType != 1
+                    && !string.IsNullOrWhiteSpace(row.ProductCode)
+                )
+                .GroupBy(
+                    row => ProductSetCodeIdentityResolver.Normalize(row.ProductCode)!,
+                    StringComparer.OrdinalIgnoreCase
+                )
                 .Where(group => group.Count() == 1)
-                .ToDictionary(group => group.Key, group => group.First());
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.First(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+            var preservedIds = identityRows
+                .Where(row =>
+                {
+                    var identity = ProductSetCodeIdentityResolver.CreateIdentity(row);
+                    return (identity.Guid != null
+                            && sourcePreflight.ConflictingGuids.Contains(identity.Guid))
+                        || (identity.BusinessKey != null
+                            && sourcePreflight.ConflictingBusinessKeys.Contains(
+                                identity.BusinessKey
+                            ));
+                })
+                .Select(row => row.SetCodeId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
             var insertRows = new List<ProductSetCode>();
             var updateRows = new List<ProductSetCode>();
-            var touchedIds = new HashSet<string>();
+            var pendingInsertRows = new HashSet<ProductSetCode>(ReferenceEqualityComparer.Instance);
+            var queuedUpdateRows = new HashSet<ProductSetCode>(ReferenceEqualityComparer.Instance);
+            var touchedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var hqRow in hqMultiCodes)
             {
-                var productCode = hqRow.H商品编码 ?? string.Empty;
-                var setProductCode = ResolveMultiCodeProductCode(hqRow, productCode);
-                var businessKey = BuildKey(productCode, hqRow.H多条形码, setProductCode);
-                var localRow = FindByGuidOrBusinessKey(hqRow.HGUID, byGuid, byBusinessKey, businessKey);
-                if (
-                    localRow == null
-                    && deletedFallbackByProduct.TryGetValue(productCode, out var deletedFallback)
-                )
+                var productCode = ProductSetCodeIdentityResolver.Normalize(hqRow.H商品编码)
+                    ?? string.Empty;
+                var setProductCode = ProductSetCodeIdentityResolver.Normalize(
+                        ResolveMultiCodeProductCode(hqRow, productCode)
+                    )
+                    ?? productCode;
+                var hqGuid = ProductSetCodeIdentityResolver.Normalize(hqRow.HGUID);
+                var resolution = identityIndex.Resolve(hqGuid, productCode, setProductCode);
+                if (resolution.Kind == ProductSetCodeIdentityMatchKind.Conflict)
                 {
-                    // 软删恢复场景下 HQ 可能同时修正套装条码，兜底复用唯一旧行避免重复插入。
-                    localRow = deletedFallback;
+                    // 先保留 GUID 与父子键命中的双方；不得进入 Type1、唯一软删兜底或 Last-wins。
+                    var conflictMessage =
+                        "旧 ProductSetCode Upsert 身份冲突，已保留原记录："
+                        + $"GUID={resolution.Guid ?? "(空)"}，"
+                        + $"业务键={(resolution.BusinessKey == null ? "(空)" : ProductSetCodeIdentityResolver.FormatBusinessKey(resolution.BusinessKey))}，"
+                        + $"本地记录={ProductSetCodeIdentityResolver.FormatLocalRecords(resolution.AllMatches)}";
+                    if (!result.Errors.Contains(conflictMessage))
+                    {
+                        result.Errors.Add(conflictMessage);
+                    }
+                    foreach (var matchedRow in resolution.AllMatches)
+                    {
+                        preservedIds.Add(matchedRow.SetCodeId);
+                    }
+                    continue;
                 }
 
+                var localRow = resolution.MatchedRow;
+                if (localRow?.SetType == 1)
+                {
+                    // 只有确认不存在交叉身份后，才允许 Type1 人工套装保护短路。
+                    continue;
+                }
+                if (
+                    localRow == null
+                    && resolution.Kind == ProductSetCodeIdentityMatchKind.None
+                    && deletedFallbackByProduct.TryGetValue(productCode, out var deletedFallback)
+                    && !preservedIds.Contains(deletedFallback.SetCodeId)
+                )
+                {
+                    // None 同时证明目标 GUID/业务键未占用，此时才允许唯一 Type2 旧行安全迁移并复活。
+                    localRow = deletedFallback;
+                    deletedFallbackByProduct.Remove(productCode);
+                }
+
+                var isNew = localRow == null;
                 if (localRow == null)
                 {
                     localRow = new ProductSetCode
                     {
-                        SetCodeId = NormalizeId(hqRow.HGUID) ?? UuidHelper.GenerateUuid7(),
+                        SetCodeId = hqGuid ?? UuidHelper.GenerateUuid7(),
                         CreatedAt = now,
                     };
-                    insertRows.Add(localRow);
-                }
-                else
-                {
-                    updateRows.Add(localRow);
                 }
 
-                await NormalizeProductSetCodeIdAsync(localRow, hqRow.HGUID, byGuid);
+                var previousIdentity = ProductSetCodeIdentityResolver.CreateIdentity(localRow);
+                if (!isNew)
+                {
+                    await NormalizeProductSetCodeIdAsync(localRow, hqGuid, byGuid);
+                }
                 localRow.ProductCode = productCode;
                 localRow.SetProductCode = setProductCode;
-                localRow.SetItemNumber = hqRow.H多码商品编码 ?? string.Empty;
+                localRow.SetItemNumber = setProductCode;
                 localRow.SetBarcode = hqRow.H多条形码;
-                localRow.SetPurchasePrice = hqRow.H进货价;
+                // HQ Type2 的成本只是外部输入，不是本地最终成本；关系完整后由统一成本链路决定。
+                localRow.SetPurchasePrice = null;
                 localRow.SetRetailPrice = hqRow.H一品多码零售价;
                 localRow.SetType = 2;
                 localRow.SetQuantity = localRow.SetQuantity <= 0 ? 1 : localRow.SetQuantity;
@@ -3198,10 +3625,38 @@ namespace BlazorApp.Api.Services.React
                 localRow.IsDeleted = false;
                 localRow.UpdatedAt = now;
                 touchedIds.Add(localRow.SetCodeId);
+
+                if (isNew)
+                {
+                    insertRows.Add(localRow);
+                    pendingInsertRows.Add(localRow);
+                    identityIndex.Add(localRow);
+                    var insertedGuid = ProductSetCodeIdentityResolver.Normalize(localRow.SetCodeId);
+                    if (insertedGuid != null)
+                    {
+                        byGuid[insertedGuid] = localRow;
+                    }
+                }
+                else
+                {
+                    identityIndex.Reindex(localRow, previousIdentity);
+                    if (
+                        !pendingInsertRows.Contains(localRow)
+                        && queuedUpdateRows.Add(localRow)
+                    )
+                    {
+                        updateRows.Add(localRow);
+                    }
+                }
             }
 
             var missingRows = localRows
-                .Where(row => !row.IsDeleted && !touchedIds.Contains(row.SetCodeId))
+                .Where(row =>
+                    !row.IsDeleted
+                    && !touchedIds.Contains(row.SetCodeId)
+                    && !preservedIds.Contains(row.SetCodeId)
+                    && row.SetType != 1
+                )
                 .ToList();
             foreach (var row in missingRows)
             {
@@ -3315,6 +3770,7 @@ namespace BlazorApp.Api.Services.React
                 new SugarParameter("@NewId", normalizedGuid),
                 new SugarParameter("@OldId", oldId)
             );
+            byGuid.Remove(oldId);
             localRow.SetCodeId = normalizedGuid;
             byGuid[normalizedGuid] = localRow;
         }

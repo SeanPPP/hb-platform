@@ -273,6 +273,19 @@ namespace BlazorApp.Api.Services.React
 
                 try
                 {
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        db,
+                        dto.ProductCodes
+                    );
+                    // 锁内重读目标记录，确保本次写入和后续成本分摊观察同一业务快照。
+                    await db.Queryable<StoreRetailPrice>()
+                        .Where(x =>
+                            x.ProductCode != null
+                            && dto.ProductCodes.Contains(x.ProductCode)
+                            && x.StoreCode == dto.StoreCode
+                            && !x.IsDeleted
+                        )
+                        .ToListAsync();
                     var query = db.Updateable<StoreRetailPrice>();
 
                     if (dto.PurchasePrice.HasValue)
@@ -316,6 +329,19 @@ namespace BlazorApp.Api.Services.React
 
                     var affectedRows = await query.ExecuteCommandAsync();
 
+                    if (dto.PurchasePrice.HasValue)
+                    {
+                        var writeback = await new SetChildPurchasePriceService(db)
+                            .RecalculateStoresLockedAsync(
+                            lockScope,
+                            dto.ProductCodes,
+                            new[] { dto.StoreCode },
+                            updatedBy
+                        );
+                        if (writeback.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                            throw new InvalidOperationException("目标门店套装子项成本重算不完整");
+                    }
+
                     await db.Ado.CommitTranAsync();
 
                     return ApiResponse<object>.CreateSuccess($"成功更新 {affectedRows} 条记录");
@@ -329,6 +355,8 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量更新分店零售价失败");
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                    return BuildSetChildPurchasePriceBusyResponse<object>();
                 return ApiResponse<object>.Error("批量更新失败", "DATABASE_ERROR", ex.Message);
             }
         }
@@ -377,8 +405,11 @@ namespace BlazorApp.Api.Services.React
 
                 try
                 {
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        db,
+                        dto.ProductCodes
+                    );
                     var sourcePrices = await db.Queryable<StoreRetailPrice>()
-                        .With(SqlWith.NoLock)
                         .Where(x =>
                             x.StoreCode == dto.SourceStoreCode
                             && x.ProductCode != null
@@ -404,21 +435,6 @@ namespace BlazorApp.Api.Services.React
 
                     if (dto.Mode == SyncModeConstants.Overwrite)
                     {
-                        if (dto.SyncPurchasePrice)
-                        {
-                            updateable.SetColumns(x =>
-                                x.PurchasePrice
-                                == SqlFunc
-                                    .Subqueryable<StoreRetailPrice>()
-                                    .Where(s =>
-                                        s.StoreCode == dto.SourceStoreCode
-                                        && s.ProductCode == x.ProductCode
-                                        && s.IsDeleted == false
-                                    )
-                                    .Select(s => s.PurchasePrice)
-                            );
-                        }
-
                         if (dto.SyncRetailPrice)
                         {
                             updateable.SetColumns(x =>
@@ -481,22 +497,6 @@ namespace BlazorApp.Api.Services.React
                     }
                     else if (dto.Mode == SyncModeConstants.OnlyUpdateNull)
                     {
-                        if (dto.SyncPurchasePrice)
-                        {
-                            updateable.SetColumns(x =>
-                                x.PurchasePrice
-                                == SqlFunc
-                                    .Subqueryable<StoreRetailPrice>()
-                                    .Where(s =>
-                                        s.StoreCode == dto.SourceStoreCode
-                                        && s.ProductCode == x.ProductCode
-                                        && s.IsDeleted == false
-                                    )
-                                    .Select(s => s.PurchasePrice)
-                            );
-                            updateable.Where(x => x.PurchasePrice == null);
-                        }
-
                         if (dto.SyncRetailPrice)
                         {
                             updateable.SetColumns(x =>
@@ -572,6 +572,19 @@ namespace BlazorApp.Api.Services.React
                         )
                         .ExecuteCommandAsync();
 
+                    if (dto.SyncPurchasePrice)
+                    {
+                        var writeback = await new SetChildPurchasePriceService(db)
+                            .RecalculateStoresLockedAsync(
+                            lockScope,
+                            dto.ProductCodes,
+                            dto.TargetStoreCodes,
+                            updatedBy
+                        );
+                        if (writeback.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                            throw new InvalidOperationException("目标门店套装子项成本重算不完整");
+                    }
+
                     await db.Ado.CommitTranAsync();
 
                     return ApiResponse<object>.CreateSuccess($"成功同步 {affectedRows} 条记录");
@@ -585,6 +598,8 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "同步到其他分店失败");
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                    return BuildSetChildPurchasePriceBusyResponse<object>();
                 return ApiResponse<object>.Error("同步失败", "DATABASE_ERROR", ex.Message);
             }
         }
@@ -634,7 +649,7 @@ namespace BlazorApp.Api.Services.React
                 var producerLimiter = new SemaphoreSlim(3, 3);
                 var consumerLimiter = new SemaphoreSlim(5, 5);
 
-                var allTasks = new List<Task<(int retailCount, int multiCodeCount)>>();
+                var allTasks = new List<Task<CopyStoreTargetResult>>();
 
                 foreach (var targetStore in dto.TargetStoreCodes)
                 {
@@ -644,8 +659,13 @@ namespace BlazorApp.Api.Services.React
                     allTasks.Add(
                         Task.Run(async () =>
                         {
+                            var targetResult = new CopyStoreTargetResult(store);
                             try
                             {
+                                // 批次事务各自提交；后续失败时仍要保留已提交批次的真实计数。
+                                var progress = new InlineProgress<CopyProgressDto>(
+                                    targetResult.RecordCommittedBatch
+                                );
                                 int retailCount = await ProcessStoreRetailPricePipelineAsync(
                                     db.CopyNew(),
                                     dto.SourceStoreCode,
@@ -656,9 +676,10 @@ namespace BlazorApp.Api.Services.React
                                     mergeBatchSize,
                                     producerLimiter,
                                     consumerLimiter,
-                                    null,
+                                    progress,
                                     CancellationToken.None
                                 );
+                                targetResult.RecordRetailCompletion(retailCount);
 
                                 int multiCount = 0;
                                 if (dto.SyncMultiCode)
@@ -674,17 +695,33 @@ namespace BlazorApp.Api.Services.React
                                             mergeBatchSize,
                                             producerLimiter,
                                             consumerLimiter,
-                                            null,
+                                            progress,
                                             CancellationToken.None
-                                        );
+                                    );
+                                    targetResult.RecordMultiCodeCompletion(multiCount);
                                 }
 
-                                return (retailCount, multiCount);
+                                await RecalculateCopiedStoreCostsAsync(
+                                    db.CopyNew(),
+                                    dto.SourceStoreCode,
+                                    store,
+                                    dto,
+                                    updatedBy
+                                );
+
+                                targetResult.MarkCompleted();
+                            }
+                            catch (Exception ex)
+                            {
+                                // 单个目标失败不取消其它目标，最终按已提交目标/批次返回真实结果。
+                                targetResult.RecordFailure(ex);
                             }
                             finally
                             {
                                 storeLimiter.Release();
                             }
+
+                            return targetResult;
                         })
                     );
                 }
@@ -693,8 +730,10 @@ namespace BlazorApp.Api.Services.React
                 var results = await Task.WhenAll(allTasks);
                 sw.Stop();
 
-                int retailPriceCopied = results.Sum(r => r.retailCount);
-                int multiCodeCopied = results.Sum(r => r.multiCodeCount);
+                int retailPriceCopied = results.Sum(r => r.RetailPriceCopied);
+                int multiCodeCopied = results.Sum(r => r.MultiCodeCopied);
+                var failures = results.Where(r => !r.Completed).ToList();
+                var submitted = results.Where(r => r.HasCommittedWork).ToList();
 
                 _logger.LogInformation(
                     "复制完成（Pipeline模式）：零售价 {RetailCopied} 条，多码 {MultiCodeCopied} 条，耗时 {Elapsed}ms",
@@ -703,18 +742,83 @@ namespace BlazorApp.Api.Services.React
                     sw.ElapsedMilliseconds
                 );
 
-                return ApiResponse<CopyStoreDataResultDto>.OK(
-                    new CopyStoreDataResultDto
+                var copyResult = new CopyStoreDataResultDto
+                {
+                    StoreRetailPriceCopied = retailPriceCopied,
+                    StoreMultiCodeProductCopied = multiCodeCopied,
+                };
+                if (!failures.Any())
+                {
+                    return ApiResponse<CopyStoreDataResultDto>.OK(
+                        copyResult,
+                        $"复制完成：零售价 {retailPriceCopied} 条，多码 {multiCodeCopied} 条"
+                    );
+                }
+
+                var failureDetails = failures.Select(result => new
+                {
+                    result.TargetStoreCode,
+                    ErrorCode = result.IsBusy
+                        ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                        : "COPY_STORE_DATA_FAILED",
+                    Message = result.Failure?.Message ?? "复制失败",
+                    result.RetailPriceCopied,
+                    result.MultiCodeCopied,
+                    result.CommittedBatchCount,
+                }).ToList();
+
+                if (submitted.Any())
+                {
+                    // 已提交批次不能回滚；以成功响应避免客户端将已落库数据错误重试。
+                    return new ApiResponse<CopyStoreDataResultDto>
                     {
-                        StoreRetailPriceCopied = retailPriceCopied,
-                        StoreMultiCodeProductCopied = multiCodeCopied,
-                    },
-                    $"复制完成：零售价 {retailPriceCopied} 条，多码 {multiCodeCopied} 条"
+                        Success = true,
+                        Data = copyResult,
+                        ErrorCode = "PARTIAL_SUCCESS",
+                        Message = $"部分成功：已提交 {submitted.Count} 个目标门店，零售价 {retailPriceCopied} 条，多码 {multiCodeCopied} 条",
+                        Details = new
+                        {
+                            SubmittedTargetCount = submitted.Count,
+                            SubmittedBatchCount = submitted.Sum(result => result.CommittedBatchCount),
+                            FailureDetails = failureDetails,
+                        },
+                    };
+                }
+
+                var allBusy = failures.All(result => result.IsBusy);
+                return ApiResponse<CopyStoreDataResultDto>.Error(
+                    allBusy ? "套装商品正在被其他操作修改，请稍后重试" : "复制失败",
+                    allBusy
+                        ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                        : "DATABASE_ERROR",
+                    new { FailureDetails = failureDetails }
                 );
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "复制分店数据失败");
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict))
+                {
+                    return ApiResponse<CopyStoreDataResultDto>.Error(
+                        "套装商品正在被其他操作修改，请稍后重试",
+                        SetChildPurchasePriceMutationLock.BusyErrorCode,
+                        new
+                        {
+                            FailureDetails = new[]
+                            {
+                                new
+                                {
+                                    TargetStoreCode = string.Empty,
+                                    ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode,
+                                    Message = conflict?.Message ?? ex.Message,
+                                    RetailPriceCopied = 0,
+                                    MultiCodeCopied = 0,
+                                    CommittedBatchCount = 0,
+                                },
+                            },
+                        }
+                    );
+                }
                 return ApiResponse<CopyStoreDataResultDto>.Error(
                     "复制失败",
                     "DATABASE_ERROR",
@@ -791,50 +895,38 @@ namespace BlazorApp.Api.Services.React
             int totalMulti = 0;
             int storeIndex = 0;
 
+            Exception? processingFailure = null;
             var processingTask = Task.Run(async () =>
             {
-                foreach (var targetStore in dto.TargetStoreCodes)
+                try
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    await storeLimiter.WaitAsync(cancellationToken);
-                    var store = targetStore;
-                    storeIndex++;
-
-                    await progressChannel.Writer.WriteAsync(new CopyProgressDto
+                    foreach (var targetStore in dto.TargetStoreCodes)
                     {
-                        EventType = "store_started",
-                        StoreCode = store,
-                        StoreIndex = storeIndex,
-                        TotalStores = dto.TargetStoreCodes.Count,
-                        Message = $"开始处理分店 {store}...",
-                        Timestamp = DateTime.UtcNow
-                    }, cancellationToken);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        await storeLimiter.WaitAsync(cancellationToken);
+                        var store = targetStore;
+                        storeIndex++;
 
-                    try
-                    {
-                        var progress = new Progress<CopyProgressDto>(p =>
+                        await progressChannel.Writer.WriteAsync(new CopyProgressDto
                         {
-                            p.StoreIndex = storeIndex;
-                            p.TotalStores = dto.TargetStoreCodes.Count;
-                            progressChannel.Writer.TryWrite(p);
-                        });
+                            EventType = "store_started",
+                            StoreCode = store,
+                            StoreIndex = storeIndex,
+                            TotalStores = dto.TargetStoreCodes.Count,
+                            Message = $"开始处理分店 {store}...",
+                            Timestamp = DateTime.UtcNow
+                        }, cancellationToken);
 
-                        var retailTask = ProcessStoreRetailPricePipelineAsync(
-                            db.CopyNew(),
-                            dto.SourceStoreCode,
-                            store,
-                            dto,
-                            updatedBy,
-                            sourcePageSize,
-                            mergeBatchSize,
-                            producerLimiter,
-                            consumerLimiter,
-                            progress,
-                            cancellationToken
-                        );
+                        try
+                        {
+                            var progress = new Progress<CopyProgressDto>(p =>
+                            {
+                                p.StoreIndex = storeIndex;
+                                p.TotalStores = dto.TargetStoreCodes.Count;
+                                progressChannel.Writer.TryWrite(p);
+                            });
 
-                        var multiTask = dto.SyncMultiCode
-                            ? ProcessStoreMultiCodePipelineAsync(
+                            var retailCount = await ProcessStoreRetailPricePipelineAsync(
                                 db.CopyNew(),
                                 dto.SourceStoreCode,
                                 store,
@@ -846,36 +938,86 @@ namespace BlazorApp.Api.Services.React
                                 consumerLimiter,
                                 progress,
                                 cancellationToken
-                            )
-                            : Task.FromResult(0);
+                            );
 
-                        await Task.WhenAll(retailTask, multiTask);
+                            var multiCount = dto.SyncMultiCode
+                                ? await ProcessStoreMultiCodePipelineAsync(
+                                    db.CopyNew(),
+                                    dto.SourceStoreCode,
+                                    store,
+                                    dto,
+                                    updatedBy,
+                                    sourcePageSize,
+                                    mergeBatchSize,
+                                    producerLimiter,
+                                    consumerLimiter,
+                                    progress,
+                                    cancellationToken
+                                )
+                                : 0;
+                            await RecalculateCopiedStoreCostsAsync(
+                                db.CopyNew(),
+                                dto.SourceStoreCode,
+                                store,
+                                dto,
+                                updatedBy
+                            );
+                            totalRetail += retailCount;
+                            totalMulti += multiCount;
 
-                        int retailCount = retailTask.Result;
-                        int multiCount = multiTask.Result;
-                        totalRetail += retailCount;
-                        totalMulti += multiCount;
-
-                        await progressChannel.Writer.WriteAsync(new CopyProgressDto
+                            await progressChannel.Writer.WriteAsync(new CopyProgressDto
+                            {
+                                EventType = "store_completed",
+                                StoreCode = store,
+                                StoreIndex = storeIndex,
+                                TotalStores = dto.TargetStoreCodes.Count,
+                                RetailPriceCopied = totalRetail,
+                                MultiCodeCopied = totalMulti,
+                                Message = $"分店 {store} 完成",
+                                Timestamp = DateTime.UtcNow
+                            }, cancellationToken);
+                        }
+                        finally
                         {
-                            EventType = "store_completed",
-                            StoreCode = store,
-                            StoreIndex = storeIndex,
-                            TotalStores = dto.TargetStoreCodes.Count,
-                            RetailPriceCopied = totalRetail,
-                            MultiCodeCopied = totalMulti,
-                            Message = $"分店 {store} 完成",
-                            Timestamp = DateTime.UtcNow
-                        }, cancellationToken);
-                    }
-                    finally
-                    {
-                        storeLimiter.Release();
+                            storeLimiter.Release();
+                        }
                     }
                 }
-
-                progressChannel.Writer.Complete();
-            }, cancellationToken);
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    // 客户端断开时读端会自行取消；仍需完成 Channel，避免后台任务遗留。
+                }
+                catch (Exception ex)
+                {
+                    processingFailure = ex;
+                    _logger.LogError(ex, "复制分店数据 SSE 处理失败");
+                    var isBusy = SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _);
+                    var message = isBusy
+                        ? "套装商品正在被其他操作修改，请稍后重试"
+                        : ex.Message;
+                    try
+                    {
+                        await progressChannel.Writer.WriteAsync(new CopyProgressDto
+                        {
+                            EventType = "error",
+                            ErrorCode = isBusy
+                                ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                                : "COPY_STORE_DATA_FAILED",
+                            Message = message,
+                            Timestamp = DateTime.UtcNow,
+                        }, cancellationToken);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        // 响应已断开，无需再等待错误事件写入。
+                    }
+                }
+                finally
+                {
+                    // 所有路径都关闭写端，保证 ReadAllAsync 不会因 Channel 未完成而挂起。
+                    progressChannel.Writer.TryComplete();
+                }
+            }, CancellationToken.None);
 
             await foreach (var progress in progressChannel.Reader.ReadAllAsync(cancellationToken))
             {
@@ -883,6 +1025,9 @@ namespace BlazorApp.Api.Services.React
             }
 
             await processingTask;
+
+            if (processingFailure != null)
+                yield break;
 
             yield return new CopyProgressDto
             {
@@ -909,7 +1054,7 @@ namespace BlazorApp.Api.Services.React
             CancellationToken cancellationToken = default
         )
         {
-            var channel = Channel.CreateBounded<List<StoreRetailPrice>>(
+            var channel = Channel.CreateBounded<List<string>>(
                 new BoundedChannelOptions(1)
                 {
                     FullMode = BoundedChannelFullMode.Wait,
@@ -927,7 +1072,7 @@ namespace BlazorApp.Api.Services.React
                     while (true)
                     {
                         await producerLimiter.WaitAsync();
-                        List<StoreRetailPrice> page;
+                        List<string> page;
                         try
                         {
                             page = await producerDb
@@ -936,6 +1081,8 @@ namespace BlazorApp.Api.Services.React
                                 .Where(x => x.StoreCode == sourceStoreCode && x.IsDeleted == false)
                                 .Skip(pageIndex * sourcePageSize)
                                 .Take(sourcePageSize)
+                                // 锁前只读取候选商品键；绝不把 NOLOCK 行快照带入写入决策。
+                                .Select(x => x.ProductCode!)
                                 .ToListAsync();
                         }
                         finally
@@ -965,48 +1112,7 @@ namespace BlazorApp.Api.Services.React
 
             var consumerTask = Task.Run(async () =>
             {
-                var consumerDb = db.CopyNew();
-                var targetDict = new Dictionary<string, StoreRetailPrice>();
-                int tPageIndex = 0;
-                while (true)
-                {
-                    await producerLimiter.WaitAsync();
-                    List<StoreRetailPrice> targetPage;
-                    try
-                    {
-                        targetPage = await consumerDb
-                            .Queryable<StoreRetailPrice>()
-                            .With(SqlWith.NoLock)
-                            .Where(x => x.StoreCode == targetStoreCode && x.IsDeleted == false)
-                            .Skip(tPageIndex * sourcePageSize)
-                            .Take(sourcePageSize)
-                            .ToListAsync();
-                    }
-                    finally
-                    {
-                        producerLimiter.Release();
-                    }
-                    if (targetPage == null || !targetPage.Any())
-                        break;
-                    foreach (var item in targetPage)
-                    {
-                        if (string.IsNullOrEmpty(item.ProductCode))
-                            continue;
-                        if (!targetDict.ContainsKey(item.ProductCode))
-                            targetDict[item.ProductCode] = item;
-                    }
-                    if (targetPage.Count < sourcePageSize)
-                        break;
-                    tPageIndex++;
-                }
-
-                _logger.LogInformation(
-                    "[零售价-Pipeline] 目标分店 {Target} 已加载 {Count} 条数据",
-                    targetStoreCode,
-                    targetDict.Count
-                );
-
-                var toMerge = new List<StoreRetailPrice>();
+                var toMerge = new List<string>();
                 int totalCopied = 0;
                 int batchCount = 0;
 
@@ -1014,99 +1120,11 @@ namespace BlazorApp.Api.Services.React
                 {
                     foreach (var source in sourcePage)
                     {
-                        if (string.IsNullOrEmpty(source.ProductCode))
+                        if (string.IsNullOrWhiteSpace(source))
                             continue;
 
-                        if (targetDict.TryGetValue(source.ProductCode, out var target))
-                        {
-                            var mergeItem = CloneStoreRetailPrice(target);
-                            bool needMerge = false;
-
-                            if (dto.SyncPurchasePrice && source.PurchasePrice.HasValue)
-                            {
-                                if (dto.Mode == "Overwrite" || !target.PurchasePrice.HasValue)
-                                {
-                                    mergeItem.PurchasePrice = source.PurchasePrice;
-                                    needMerge = true;
-                                }
-                            }
-                            if (dto.SyncRetailPrice && source.StoreRetailPriceValue.HasValue)
-                            {
-                                if (
-                                    dto.Mode == "Overwrite"
-                                    || !target.StoreRetailPriceValue.HasValue
-                                )
-                                {
-                                    mergeItem.StoreRetailPriceValue = source.StoreRetailPriceValue;
-                                    needMerge = true;
-                                }
-                            }
-                            if (dto.SyncIsAutoPricing)
-                            {
-                                if (dto.Mode == "Overwrite" || target.IsAutoPricing == false)
-                                {
-                                    mergeItem.IsAutoPricing = source.IsAutoPricing;
-                                    needMerge = true;
-                                }
-                            }
-                            if (dto.SyncIsSpecialProduct)
-                            {
-                                if (dto.Mode == "Overwrite" || target.IsSpecialProduct == false)
-                                {
-                                    mergeItem.IsSpecialProduct = source.IsSpecialProduct;
-                                    needMerge = true;
-                                }
-                            }
-                            if (dto.SyncDiscountRate && source.DiscountRate.HasValue)
-                            {
-                                if (dto.Mode == "Overwrite" || !target.DiscountRate.HasValue)
-                                {
-                                    mergeItem.DiscountRate = source.DiscountRate;
-                                    needMerge = true;
-                                }
-                            }
-
-                            if (needMerge)
-                            {
-                                mergeItem.UpdatedAt = DateTime.UtcNow;
-                                mergeItem.UpdatedBy = updatedBy;
-                                toMerge.Add(mergeItem);
-                            }
-                        }
-                        else
-                        {
-                            toMerge.Add(
-                                new StoreRetailPrice
-                                {
-                                    UUID = UuidHelper.GenerateUuid7(),
-                                    StoreCode = targetStoreCode,
-                                    ProductCode = source.ProductCode,
-                                    StoreProductCode = targetStoreCode + source.ProductCode,
-                                    SupplierCode = source.SupplierCode,
-                                    PurchasePrice = dto.SyncPurchasePrice
-                                        ? source.PurchasePrice
-                                        : null,
-                                    StoreRetailPriceValue = dto.SyncRetailPrice
-                                        ? source.StoreRetailPriceValue
-                                        : null,
-                                    DiscountRate = dto.SyncDiscountRate
-                                        ? source.DiscountRate
-                                        : null,
-                                    IsAutoPricing = dto.SyncIsAutoPricing
-                                        ? source.IsAutoPricing
-                                        : false,
-                                    IsSpecialProduct = dto.SyncIsSpecialProduct
-                                        ? source.IsSpecialProduct
-                                        : false,
-                                    IsActive = true,
-                                    IsDeleted = false,
-                                    CreatedAt = DateTime.UtcNow,
-                                    CreatedBy = updatedBy,
-                                    UpdatedAt = DateTime.UtcNow,
-                                    UpdatedBy = updatedBy,
-                                }
-                            );
-                        }
+                        // 缓存只保留候选键；源、目标和套装关系均在写批次锁内重新读取。
+                        toMerge.Add(source);
                     }
 
                     if (toMerge.Count >= mergeBatchSize)
@@ -1120,10 +1138,9 @@ namespace BlazorApp.Api.Services.React
                             await batchDb.Ado.BeginTranAsync();
                             try
                             {
-                                int count = await batchDb
-                                    .Fastest<StoreRetailPrice>()
-                                    .PageSize(mergeBatchSize)
-                                    .BulkMergeAsync(batch);
+                                int count = await ApplyRetailCopyBatchAsync(
+                                    batchDb, batch, sourceStoreCode, targetStoreCode, dto, updatedBy
+                                );
                                 await batchDb.Ado.CommitTranAsync();
                                 totalCopied += count;
                                 _logger.LogDebug(
@@ -1164,10 +1181,9 @@ namespace BlazorApp.Api.Services.React
                         await batchDb.Ado.BeginTranAsync();
                         try
                         {
-                            int count = await batchDb
-                                .Fastest<StoreRetailPrice>()
-                                .PageSize(mergeBatchSize)
-                                .BulkMergeAsync(toMerge);
+                            int count = await ApplyRetailCopyBatchAsync(
+                                batchDb, toMerge, sourceStoreCode, targetStoreCode, dto, updatedBy
+                            );
                             await batchDb.Ado.CommitTranAsync();
                             totalCopied += count;
                             batchCount++;
@@ -1213,6 +1229,79 @@ namespace BlazorApp.Api.Services.React
             return consumerTask.Result;
         }
 
+        private static async Task<int> ApplyRetailCopyBatchAsync(
+            ISqlSugarClient db,
+            List<string> candidateProductCodes,
+            string sourceStoreCode,
+            string targetStoreCode,
+            CopyStoreDataDto dto,
+            string updatedBy
+        )
+        {
+            var productCodes = candidateProductCodes
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (productCodes.Count == 0)
+                return 0;
+
+            _ = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(db, productCodes);
+            // 锁内重读源、目标与关系；锁前 NOLOCK 结果只负责缩小候选范围。
+            var sources = await db.Queryable<StoreRetailPrice>()
+                .Where(x =>
+                    x.StoreCode == sourceStoreCode
+                    && x.ProductCode != null
+                    && productCodes.Contains(x.ProductCode)
+                    && !x.IsDeleted
+                )
+                .ToListAsync();
+            var targets = await db.Queryable<StoreRetailPrice>()
+                .Where(x => x.StoreCode == targetStoreCode && x.ProductCode != null && productCodes.Contains(x.ProductCode) && !x.IsDeleted)
+                .ToListAsync();
+            var targetByProduct = targets
+                .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                .GroupBy(x => x.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
+            var count = 0;
+
+            foreach (var source in sources.Where(x => !string.IsNullOrWhiteSpace(x.ProductCode)))
+            {
+                if (!targetByProduct.TryGetValue(source.ProductCode!, out var target))
+                {
+                    await db.Insertable(new StoreRetailPrice
+                    {
+                        UUID = UuidHelper.GenerateUuid7(), StoreCode = targetStoreCode,
+                        ProductCode = source.ProductCode, StoreProductCode = targetStoreCode + source.ProductCode,
+                        SupplierCode = source.SupplierCode,
+                        // 跨店复制绝不传播源分店主成本；目标成本由本店主成本和统一重算确定。
+                        PurchasePrice = null,
+                        StoreRetailPriceValue = dto.SyncRetailPrice ? source.StoreRetailPriceValue : null,
+                        DiscountRate = dto.SyncDiscountRate ? source.DiscountRate : null,
+                        IsAutoPricing = dto.SyncIsAutoPricing ? source.IsAutoPricing : false,
+                        IsSpecialProduct = dto.SyncIsSpecialProduct ? source.IsSpecialProduct : false,
+                        IsActive = true, IsDeleted = false, CreatedAt = DateTime.UtcNow,
+                        CreatedBy = updatedBy, UpdatedAt = DateTime.UtcNow, UpdatedBy = updatedBy,
+                    }).ExecuteCommandAsync();
+                    count++;
+                    continue;
+                }
+
+                var update = db.Updateable<StoreRetailPrice>().Where(x => x.UUID == target.UUID && !x.IsDeleted);
+                var changed = false;
+                if (dto.SyncRetailPrice && source.StoreRetailPriceValue.HasValue && (dto.Mode == "Overwrite" || !target.StoreRetailPriceValue.HasValue)) { update = update.SetColumns(x => x.StoreRetailPriceValue == source.StoreRetailPriceValue); changed = true; }
+                if (dto.SyncDiscountRate && source.DiscountRate.HasValue && (dto.Mode == "Overwrite" || !target.DiscountRate.HasValue)) { update = update.SetColumns(x => x.DiscountRate == source.DiscountRate); changed = true; }
+                if (dto.SyncIsAutoPricing && (dto.Mode == "Overwrite" || !target.IsAutoPricing)) { update = update.SetColumns(x => x.IsAutoPricing == source.IsAutoPricing); changed = true; }
+                if (dto.SyncIsSpecialProduct && (dto.Mode == "Overwrite" || !target.IsSpecialProduct)) { update = update.SetColumns(x => x.IsSpecialProduct == source.IsSpecialProduct); changed = true; }
+                if (changed)
+                {
+                    await update.SetColumns(x => x.UpdatedAt == DateTime.UtcNow).SetColumns(x => x.UpdatedBy == updatedBy).ExecuteCommandAsync();
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
         private async Task<int> ProcessStoreMultiCodePipelineAsync(
             ISqlSugarClient db,
             string sourceStoreCode,
@@ -1227,7 +1316,7 @@ namespace BlazorApp.Api.Services.React
             CancellationToken cancellationToken = default
         )
         {
-            var channel = Channel.CreateBounded<List<StoreMultiCodeProduct>>(
+            var channel = Channel.CreateBounded<List<StoreMultiCodeCopyCandidate>>(
                 new BoundedChannelOptions(2)
                 {
                     FullMode = BoundedChannelFullMode.Wait,
@@ -1245,7 +1334,7 @@ namespace BlazorApp.Api.Services.React
                     while (true)
                     {
                         await producerLimiter.WaitAsync();
-                        List<StoreMultiCodeProduct> page;
+                        List<StoreMultiCodeCopyCandidate> page;
                         try
                         {
                             page = await producerDb
@@ -1254,6 +1343,12 @@ namespace BlazorApp.Api.Services.React
                                 .Where(x => x.StoreCode == sourceStoreCode && x.IsDeleted == false)
                                 .Skip(pageIndex * sourcePageSize)
                                 .Take(sourcePageSize)
+                                // 管道缓存只能承载候选业务键，不能承载用于写入的 NOLOCK 快照值。
+                                .Select(x => new StoreMultiCodeCopyCandidate
+                                {
+                                    ProductCode = x.ProductCode,
+                                    MultiCodeProductCode = x.MultiCodeProductCode,
+                                })
                                 .ToListAsync();
                         }
                         finally
@@ -1283,49 +1378,7 @@ namespace BlazorApp.Api.Services.React
 
             var consumerTask = Task.Run(async () =>
             {
-                var consumerDb = db.CopyNew();
-                var targetDict = new Dictionary<string, StoreMultiCodeProduct>();
-                int tPageIndex = 0;
-                while (true)
-                {
-                    await producerLimiter.WaitAsync();
-                    List<StoreMultiCodeProduct> targetPage;
-                    try
-                    {
-                        targetPage = await consumerDb
-                            .Queryable<StoreMultiCodeProduct>()
-                            .With(SqlWith.NoLock)
-                            .Where(x => x.StoreCode == targetStoreCode && x.IsDeleted == false)
-                            .Skip(tPageIndex * sourcePageSize)
-                            .Take(sourcePageSize)
-                            .ToListAsync();
-                    }
-                    finally
-                    {
-                        producerLimiter.Release();
-                    }
-                    if (targetPage == null || !targetPage.Any())
-                        break;
-                    foreach (var item in targetPage)
-                    {
-                        if (string.IsNullOrEmpty(item.ProductCode))
-                            continue;
-                        var key = $"{item.ProductCode}_{item.MultiCodeProductCode}";
-                        if (!targetDict.ContainsKey(key))
-                            targetDict[key] = item;
-                    }
-                    if (targetPage.Count < sourcePageSize)
-                        break;
-                    tPageIndex++;
-                }
-
-                _logger.LogInformation(
-                    "[多码-Pipeline] 目标分店 {Target} 已加载 {Count} 条数据",
-                    targetStoreCode,
-                    targetDict.Count
-                );
-
-                var toMerge = new List<StoreMultiCodeProduct>();
+                var toMerge = new List<StoreMultiCodeCopyCandidate>();
                 int totalCopied = 0;
                 int batchCount = 0;
 
@@ -1333,103 +1386,11 @@ namespace BlazorApp.Api.Services.React
                 {
                     foreach (var source in sourcePage)
                     {
-                        if (string.IsNullOrEmpty(source.ProductCode))
+                        if (string.IsNullOrWhiteSpace(source.ProductCode))
                             continue;
 
-                        var key = $"{source.ProductCode}_{source.MultiCodeProductCode}";
-                        if (targetDict.TryGetValue(key, out var target))
-                        {
-                            var mergeItem = CloneStoreMultiCode(target);
-                            bool needMerge = false;
-
-                            if (dto.SyncPurchasePrice && source.PurchasePrice.HasValue)
-                            {
-                                if (dto.Mode == "Overwrite" || !target.PurchasePrice.HasValue)
-                                {
-                                    mergeItem.PurchasePrice = source.PurchasePrice;
-                                    needMerge = true;
-                                }
-                            }
-                            if (
-                                dto.SyncMultiCodeRetailPrice && source.MultiCodeRetailPrice.HasValue
-                            )
-                            {
-                                if (
-                                    dto.Mode == "Overwrite"
-                                    || !target.MultiCodeRetailPrice.HasValue
-                                )
-                                {
-                                    mergeItem.MultiCodeRetailPrice = source.MultiCodeRetailPrice;
-                                    needMerge = true;
-                                }
-                            }
-                            if (dto.SyncDiscountRate && source.DiscountRate.HasValue)
-                            {
-                                if (dto.Mode == "Overwrite" || !target.DiscountRate.HasValue)
-                                {
-                                    mergeItem.DiscountRate = source.DiscountRate;
-                                    needMerge = true;
-                                }
-                            }
-                            if (dto.SyncIsAutoPricing)
-                            {
-                                if (dto.Mode == "Overwrite" || target.IsAutoPricing == false)
-                                {
-                                    mergeItem.IsAutoPricing = source.IsAutoPricing;
-                                    needMerge = true;
-                                }
-                            }
-                            if (dto.SyncIsSpecialProduct)
-                            {
-                                if (dto.Mode == "Overwrite" || target.IsSpecialProduct == false)
-                                {
-                                    mergeItem.IsSpecialProduct = source.IsSpecialProduct;
-                                    needMerge = true;
-                                }
-                            }
-
-                            if (needMerge)
-                            {
-                                mergeItem.UpdatedAt = DateTime.UtcNow;
-                                mergeItem.UpdatedBy = updatedBy;
-                                toMerge.Add(mergeItem);
-                            }
-                        }
-                        else
-                        {
-                            toMerge.Add(
-                                new StoreMultiCodeProduct
-                                {
-                                    UUID = UuidHelper.GenerateUuid7(),
-                                    StoreCode = targetStoreCode,
-                                    ProductCode = source.ProductCode,
-                                    MultiCodeProductCode = source.MultiCodeProductCode,
-                                    StoreMultiCodeProductCode = targetStoreCode + source.MultiCodeProductCode,
-                                    MultiBarcode = source.MultiBarcode,
-                                    PurchasePrice = dto.SyncPurchasePrice
-                                        ? source.PurchasePrice
-                                        : null,
-                                    MultiCodeRetailPrice = dto.SyncMultiCodeRetailPrice
-                                        ? source.MultiCodeRetailPrice
-                                        : null,
-                                    DiscountRate = dto.SyncDiscountRate
-                                        ? source.DiscountRate
-                                        : null,
-                                    IsAutoPricing = dto.SyncIsAutoPricing
-                                        ? source.IsAutoPricing
-                                        : false,
-                                    IsSpecialProduct = dto.SyncIsSpecialProduct
-                                        ? source.IsSpecialProduct
-                                        : false,
-                                    IsActive = true,
-                                    IsDeleted = false,
-                                    CreatedAt = DateTime.UtcNow,
-                                    CreatedBy = updatedBy,
-                                    UpdatedAt = DateTime.UtcNow,
-                                    UpdatedBy = updatedBy,
-                                }
-                            );
-                        }
+                        // SetType 与目标行必须在锁内复读，不能以管道缓存决定成本写入。
+                        toMerge.Add(source);
                     }
 
                     if (toMerge.Count >= mergeBatchSize)
@@ -1443,10 +1404,9 @@ namespace BlazorApp.Api.Services.React
                             await batchDb.Ado.BeginTranAsync();
                             try
                             {
-                                int count = await batchDb
-                                    .Fastest<StoreMultiCodeProduct>()
-                                    .PageSize(mergeBatchSize)
-                                    .BulkMergeAsync(batch);
+                                int count = await ApplyMultiCodeCopyBatchAsync(
+                                    batchDb, batch, sourceStoreCode, targetStoreCode, dto, updatedBy
+                                );
                                 await batchDb.Ado.CommitTranAsync();
                                 totalCopied += count;
                                 _logger.LogDebug(
@@ -1487,10 +1447,9 @@ namespace BlazorApp.Api.Services.React
                         await batchDb.Ado.BeginTranAsync();
                         try
                         {
-                            int count = await batchDb
-                                .Fastest<StoreMultiCodeProduct>()
-                                .PageSize(mergeBatchSize)
-                                .BulkMergeAsync(toMerge);
+                            int count = await ApplyMultiCodeCopyBatchAsync(
+                                batchDb, toMerge, sourceStoreCode, targetStoreCode, dto, updatedBy
+                            );
                             await batchDb.Ado.CommitTranAsync();
                             totalCopied += count;
                             batchCount++;
@@ -1534,6 +1493,296 @@ namespace BlazorApp.Api.Services.React
 
             await Task.WhenAll(producerTask, consumerTask);
             return consumerTask.Result;
+        }
+
+        private static async Task<int> ApplyMultiCodeCopyBatchAsync(
+            ISqlSugarClient db,
+            List<StoreMultiCodeCopyCandidate> candidateRows,
+            string sourceStoreCode,
+            string targetStoreCode,
+            CopyStoreDataDto dto,
+            string updatedBy
+        )
+        {
+            var productCodes = candidateRows
+                .Select(x => x.ProductCode)
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Cast<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (productCodes.Count == 0)
+                return 0;
+
+            _ = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(db, productCodes);
+            // 进入业务锁后才读取源、目标和套装关系，避免 NOLOCK 快照决定任何写入值。
+            var candidateKeys = candidateRows
+                .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                .Select(x => $"{x.ProductCode}\u0001{x.MultiCodeProductCode}")
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var sources = (await db.Queryable<StoreMultiCodeProduct>()
+                    .Where(x =>
+                        x.StoreCode == sourceStoreCode
+                        && x.ProductCode != null
+                        && productCodes.Contains(x.ProductCode)
+                        && !x.IsDeleted
+                    )
+                    .ToListAsync())
+                .Where(x => candidateKeys.Contains($"{x.ProductCode}\u0001{x.MultiCodeProductCode}"))
+                .ToList();
+            var targets = await db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.StoreCode == targetStoreCode && x.ProductCode != null && productCodes.Contains(x.ProductCode) && !x.IsDeleted)
+                .ToListAsync();
+            var targetByKey = targets
+                .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                .GroupBy(x => $"{x.ProductCode}\u0001{x.MultiCodeProductCode}", StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(x => x.Key, x => x.First(), StringComparer.OrdinalIgnoreCase);
+            _ = await db.Queryable<ProductSetCode>()
+                .Where(x =>
+                    x.ProductCode != null
+                    && productCodes.Contains(x.ProductCode)
+                    && x.SetProductCode != null
+                )
+                .Select(x => new { x.ProductCode, x.SetProductCode, x.SetType, x.IsActive, x.IsDeleted })
+                .ToListAsync();
+            var count = 0;
+
+            foreach (var source in sources.Where(x => !string.IsNullOrWhiteSpace(x.ProductCode)))
+            {
+                var key = $"{source.ProductCode}\u0001{source.MultiCodeProductCode}";
+                if (!targetByKey.TryGetValue(key, out var target))
+                {
+                    await db.Insertable(new StoreMultiCodeProduct
+                    {
+                        UUID = UuidHelper.GenerateUuid7(), StoreCode = targetStoreCode, ProductCode = source.ProductCode,
+                        MultiCodeProductCode = source.MultiCodeProductCode, StoreMultiCodeProductCode = targetStoreCode + source.MultiCodeProductCode,
+                        MultiBarcode = source.MultiBarcode,
+                        // Type1/Type2 一律不复制源分店成本；最终成本由目标主成本统一计算。
+                        PurchasePrice = null,
+                        MultiCodeRetailPrice = dto.SyncMultiCodeRetailPrice ? source.MultiCodeRetailPrice : null,
+                        DiscountRate = dto.SyncDiscountRate ? source.DiscountRate : null,
+                        IsAutoPricing = dto.SyncIsAutoPricing ? source.IsAutoPricing : false,
+                        IsSpecialProduct = dto.SyncIsSpecialProduct ? source.IsSpecialProduct : false,
+                        IsActive = true, IsDeleted = false, CreatedAt = DateTime.UtcNow, CreatedBy = updatedBy,
+                        UpdatedAt = DateTime.UtcNow, UpdatedBy = updatedBy,
+                    }).ExecuteCommandAsync();
+                    count++;
+                    continue;
+                }
+
+                var update = db.Updateable<StoreMultiCodeProduct>().Where(x => x.UUID == target.UUID && !x.IsDeleted);
+                var changed = false;
+                if (dto.SyncMultiCodeRetailPrice && source.MultiCodeRetailPrice.HasValue && (dto.Mode == "Overwrite" || !target.MultiCodeRetailPrice.HasValue)) { update = update.SetColumns(x => x.MultiCodeRetailPrice == source.MultiCodeRetailPrice); changed = true; }
+                if (dto.SyncDiscountRate && source.DiscountRate.HasValue && (dto.Mode == "Overwrite" || !target.DiscountRate.HasValue)) { update = update.SetColumns(x => x.DiscountRate == source.DiscountRate); changed = true; }
+                if (dto.SyncIsAutoPricing && (dto.Mode == "Overwrite" || !target.IsAutoPricing)) { update = update.SetColumns(x => x.IsAutoPricing == source.IsAutoPricing); changed = true; }
+                if (dto.SyncIsSpecialProduct && (dto.Mode == "Overwrite" || !target.IsSpecialProduct)) { update = update.SetColumns(x => x.IsSpecialProduct == source.IsSpecialProduct); changed = true; }
+                if (changed)
+                {
+                    await update.SetColumns(x => x.UpdatedAt == DateTime.UtcNow).SetColumns(x => x.UpdatedBy == updatedBy).ExecuteCommandAsync();
+                    count++;
+                }
+            }
+
+            return count;
+        }
+
+        private static async Task RecalculateCopiedStoreCostsAsync(
+            ISqlSugarClient db,
+            string sourceStoreCode,
+            string targetStoreCode,
+            CopyStoreDataDto dto,
+            string updatedBy
+        )
+        {
+            if (!dto.SyncMultiCode)
+            {
+                return;
+            }
+
+            // 锁前仍只取候选主商品键；真正用于回写的主成本、关系和子项都在事务锁内重读。
+            var candidateProductCodes = await db.Queryable<StoreMultiCodeProduct>()
+                .With(SqlWith.NoLock)
+                .Where(x => x.StoreCode == sourceStoreCode && x.ProductCode != null && !x.IsDeleted)
+                .Select(x => x.ProductCode!)
+                .ToListAsync();
+            var productCodes = candidateProductCodes
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (productCodes.Count == 0)
+            {
+                return;
+            }
+
+            await db.Ado.BeginTranAsync();
+            try
+            {
+                var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                    db,
+                    productCodes
+                );
+                var recalculation = await new SetChildPurchasePriceService(db)
+                    .RecalculateStoresLockedAsync(
+                        lockScope,
+                        productCodes,
+                        new[] { targetStoreCode },
+                        updatedBy
+                    );
+                if (recalculation.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                {
+                    throw new InvalidOperationException("目标门店套装子项成本重算不完整");
+                }
+
+                var type2Relations = await db.Queryable<ProductSetCode>()
+                    .Where(x =>
+                        x.ProductCode != null
+                        && x.SetProductCode != null
+                        && productCodes.Contains(x.ProductCode)
+                        && x.SetType == 2
+                        && x.IsActive
+                        && !x.IsDeleted
+                    )
+                    .ToListAsync();
+                if (type2Relations.Count > 0)
+                {
+                    var targetPrices = await db.Queryable<StoreRetailPrice>()
+                        .Where(x =>
+                            x.StoreCode == targetStoreCode
+                            && x.ProductCode != null
+                            && productCodes.Contains(x.ProductCode)
+                            && x.IsActive
+                            && !x.IsDeleted
+                        )
+                        .ToListAsync();
+                    var products = await db.Queryable<Product>()
+                        .Where(x => x.ProductCode != null && productCodes.Contains(x.ProductCode) && !x.IsDeleted)
+                        .ToListAsync();
+                    var parentCosts = targetPrices
+                        .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                        .GroupBy(x => x.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(x => x.Key, x => x.First().PurchasePrice, StringComparer.OrdinalIgnoreCase);
+                    foreach (var product in products.Where(x => !string.IsNullOrWhiteSpace(x.ProductCode)))
+                    {
+                        if (!parentCosts.ContainsKey(product.ProductCode!))
+                        {
+                            parentCosts[product.ProductCode!] = product.PurchasePrice;
+                        }
+                    }
+                    var type2Keys = type2Relations
+                        .Select(x => $"{x.ProductCode}\u0001{x.SetProductCode}")
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var targetMultiRows = await db.Queryable<StoreMultiCodeProduct>()
+                        .Where(x =>
+                            x.StoreCode == targetStoreCode
+                            && x.ProductCode != null
+                            && productCodes.Contains(x.ProductCode)
+                            && x.IsActive
+                            && !x.IsDeleted
+                        )
+                        .ToListAsync();
+                    var updates = targetMultiRows
+                        .Where(x =>
+                            !string.IsNullOrWhiteSpace(x.MultiCodeProductCode)
+                            && type2Keys.Contains($"{x.ProductCode}\u0001{x.MultiCodeProductCode}")
+                            && parentCosts.TryGetValue(x.ProductCode!, out var parentCost)
+                            && x.PurchasePrice != parentCost
+                        )
+                        .ToList();
+                    foreach (var row in updates)
+                    {
+                        row.PurchasePrice = parentCosts[row.ProductCode!];
+                        row.UpdatedAt = DateTime.UtcNow;
+                        row.UpdatedBy = updatedBy;
+                    }
+                    if (updates.Count > 0)
+                    {
+                        await db.Updateable(updates)
+                            .UpdateColumns(x => new { x.PurchasePrice, x.UpdatedAt, x.UpdatedBy })
+                            .ExecuteCommandAsync();
+                    }
+                }
+
+                await db.Ado.CommitTranAsync();
+            }
+            catch
+            {
+                await db.Ado.RollbackTranAsync();
+                throw;
+            }
+        }
+
+        private sealed class StoreMultiCodeCopyCandidate
+        {
+            public string? ProductCode { get; init; }
+            public string? MultiCodeProductCode { get; init; }
+        }
+
+        private sealed class CopyStoreTargetResult
+        {
+            private int _retailPriceCopied;
+            private int _multiCodeCopied;
+            private int _retailBatchCount;
+            private int _multiCodeBatchCount;
+
+            public CopyStoreTargetResult(string targetStoreCode)
+            {
+                TargetStoreCode = targetStoreCode;
+            }
+
+            public string TargetStoreCode { get; }
+            public Exception? Failure { get; private set; }
+            public bool Completed { get; private set; }
+            public int RetailPriceCopied => Volatile.Read(ref _retailPriceCopied);
+            public int MultiCodeCopied => Volatile.Read(ref _multiCodeCopied);
+            public int CommittedBatchCount =>
+                Volatile.Read(ref _retailBatchCount) + Volatile.Read(ref _multiCodeBatchCount);
+            public bool HasCommittedWork => Completed || CommittedBatchCount > 0;
+            public bool IsBusy => SetChildPurchasePriceMutationLock.TryResolveConflict(Failure, out _);
+
+            public void RecordCommittedBatch(CopyProgressDto progress)
+            {
+                if (progress.EventType != "batch_completed")
+                    return;
+
+                if (progress.Message.StartsWith("[零售价]", StringComparison.Ordinal))
+                {
+                    Interlocked.Exchange(ref _retailPriceCopied, progress.RetailPriceCopied);
+                    Interlocked.Exchange(ref _retailBatchCount, progress.BatchCount);
+                }
+                else if (progress.Message.StartsWith("[多码]", StringComparison.Ordinal))
+                {
+                    Interlocked.Exchange(ref _multiCodeCopied, progress.MultiCodeCopied);
+                    Interlocked.Exchange(ref _multiCodeBatchCount, progress.BatchCount);
+                }
+            }
+
+            public void RecordRetailCompletion(int count) =>
+                Interlocked.Exchange(ref _retailPriceCopied, count);
+
+            public void RecordMultiCodeCompletion(int count) =>
+                Interlocked.Exchange(ref _multiCodeCopied, count);
+
+            public void MarkCompleted() => Completed = true;
+
+            public void RecordFailure(Exception exception) => Failure = exception;
+        }
+
+        private sealed class InlineProgress<T> : IProgress<T>
+        {
+            private readonly Action<T> _report;
+
+            public InlineProgress(Action<T> report)
+            {
+                _report = report;
+            }
+
+            public void Report(T value) => _report(value);
+        }
+
+        private static ApiResponse<T> BuildSetChildPurchasePriceBusyResponse<T>()
+        {
+            return ApiResponse<T>.Error(
+                "套装商品正在被其他操作修改，请稍后重试",
+                SetChildPurchasePriceMutationLock.BusyErrorCode
+            );
         }
 
         private StoreRetailPrice CloneStoreRetailPrice(StoreRetailPrice source)

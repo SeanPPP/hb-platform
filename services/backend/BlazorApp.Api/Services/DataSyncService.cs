@@ -4,6 +4,7 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
@@ -851,6 +852,9 @@ namespace BlazorApp.Api.Services
 
                 try
                 {
+                    var childCostLockScope = await SetChildPurchasePriceMutationLock.AcquireAllAsync(
+                        _localContext.Db
+                    );
                     // 事务内先批量预取旧快照，确保清空重建与历史写入使用同一事务。
                     var existingProductCodes = await _localContext
                         .Db.Queryable<Product>()
@@ -867,14 +871,19 @@ namespace BlazorApp.Api.Services
                         auditProductCodes
                     );
 
-                    // 2. 先清空相关表数据
-                    _logger.LogInformation("清空本地ProductSetCode表和Product表数据...");
-                    await _localContext.Db.Deleteable<ProductSetCode>().ExecuteCommandAsync();
+                    // 2. 先清空相关表数据。任何状态的本地 Type1 都不能被 HQ 普通多码复用或降级。
+                    var protectedType1 = await GetAllType1ProtectionAsync(_localContext.Db);
+                    var protectedSetParentCodes = protectedType1.ProductCodes.ToList();
+                    _logger.LogInformation("清理本地ProductSetCode表（保留组合套装子项）和Product表数据...");
+                    await _localContext
+                        .Db.Deleteable<ProductSetCode>()
+                        .Where(x => x.SetType != 1)
+                        .ExecuteCommandAsync();
                     await _localContext
                         .Db.Deleteable<Product>()
                         .AS("Product")
                         .ExecuteCommandAsync();
-                    _logger.LogInformation("已清空本地ProductSetCode表和Product表数据");
+                    _logger.LogInformation("已清理本地ProductSetCode表和Product表数据");
 
                     // 3. 从HQ数据库获取商品信息数据 (使用批量操作)
                     const int batchSize = 50000; // 每批处理50000条记录，避免超时和内存问题
@@ -957,6 +966,10 @@ namespace BlazorApp.Api.Services
                     );
 
                     var totalMultiCodeAdded = 0;
+                    var affectedSetParentCodes = new HashSet<string>(
+                        protectedSetParentCodes,
+                        StringComparer.OrdinalIgnoreCase
+                    );
                     pageNumber = 1;
 
                     while (true)
@@ -993,10 +1006,33 @@ namespace BlazorApp.Api.Services
 
                         try
                         {
-                            // 转换为ProductSetCode实体（从一品多码表）
-                            var multiCodeSetCodes = hqMultiCodesBatch
-                                .Select(hqMultiCode => _mapper.Map<ProductSetCode>(hqMultiCode))
-                                .ToList();
+                            // HQ 成本不是最终值；同时按 GUID 与规范化父子键保护所有状态的本地 Type1。
+                            var multiCodeSetCodes = new List<ProductSetCode>();
+                            foreach (var hqMultiCode in hqMultiCodesBatch)
+                            {
+                                if (
+                                    TryGetProtectedType1Conflict(
+                                        hqMultiCode,
+                                        protectedType1,
+                                        out var conflictReason
+                                    )
+                                )
+                                {
+                                    _logger.LogWarning(
+                                        "跳过与本地 Type1 冲突的 HQ 多码。ProductCode={ProductCode}, ChildCode={ChildCode}, HGUID={Hguid}, Reason={Reason}",
+                                        hqMultiCode.H商品编码,
+                                        hqMultiCode.H多码商品编号,
+                                        hqMultiCode.HGUID,
+                                        conflictReason
+                                    );
+                                    continue;
+                                }
+
+                                var mapped = _mapper.Map<ProductSetCode>(hqMultiCode);
+                                mapped.SetPurchasePrice = null;
+                                multiCodeSetCodes.Add(mapped);
+                                AddNormalizedCode(affectedSetParentCodes, mapped.ProductCode);
+                            }
 
                             // 批量插入ProductSetCode数据（多码信息）
                             await _localContext
@@ -1033,6 +1069,21 @@ namespace BlazorApp.Api.Services
                         $"一品多码表同步完成 - ProductSetCode: {totalMultiCodeAdded} 条"
                     );
 
+                    if (affectedSetParentCodes.Count > 0)
+                    {
+                        var recalculation = await new SetChildPurchasePriceService(_localContext.Db)
+                            .RecalculateLockedAsync(
+                                childCostLockScope,
+                                affectedSetParentCodes,
+                                null,
+                                ResolveSetChildPurchasePriceActor()
+                            );
+                        EnsureSetChildPurchasePriceRecalculated(
+                            recalculation,
+                            affectedSetParentCodes
+                        );
+                    }
+
                     var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
                         auditProductCodes
                     );
@@ -1067,8 +1118,17 @@ namespace BlazorApp.Api.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "同步商品信息数据时发生错误");
-                result.Message = $"同步失败: {ex.Message}";
                 result.IsSuccess = false;
+                // 锁竞争前已回滚整个事务；显式标记 busy，避免调用方把它当成数据质量跳过。
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict))
+                {
+                    result.ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode;
+                    result.Message = conflict!.Message;
+                }
+                else
+                {
+                    result.Message = $"同步失败: {ex.Message}";
+                }
             }
             finally
             {
@@ -1551,6 +1611,9 @@ namespace BlazorApp.Api.Services
 
                 try
                 {
+                    var childCostLockScope = await SetChildPurchasePriceMutationLock.AcquireAllAsync(
+                        _localContext.Db
+                    );
                     // 2. 从HQ数据库获取指定日期后更新的商品信息数据
                     const int batchSize = 5000; // 每批处理5000条记录，增量同步不需要太大批次
                     var totalProcessed = 0;
@@ -1558,6 +1621,8 @@ namespace BlazorApp.Api.Services
                     var totalProductUpdated = 0;
                     var totalErrors = 0;
                     var pageNumber = 1;
+                    // 有效、停用和软删除的本地 Type1 都受 GUID 与规范化父子业务键保护。
+                    var protectedType1 = await GetAllType1ProtectionAsync(_localContext.Db);
                     var auditProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                     var beforeSnapshots =
                         new Dictionary<string, WarehouseProductChangeSnapshotDto>(
@@ -1671,6 +1736,9 @@ namespace BlazorApp.Api.Services
 
                     var totalMultiCodeAdded = 0;
                     var totalMultiCodeUpdated = 0;
+                    var syncedMultiCodeParentCodes = new HashSet<string>(
+                        StringComparer.OrdinalIgnoreCase
+                    );
                     pageNumber = 1;
 
                     while (true)
@@ -1708,15 +1776,40 @@ namespace BlazorApp.Api.Services
 
                         try
                         {
-                            // 转换为ProductSetCode实体（从一品多码表）
-                            var multiCodeSetCodes = hqMultiCodesBatch
-                                .Select(hqMultiCode => _mapper.Map<ProductSetCode>(hqMultiCode))
-                                .ToList();
+                            var multiCodeSetCodes = new List<ProductSetCode>();
+                            foreach (var hqMultiCode in hqMultiCodesBatch)
+                            {
+                                if (
+                                    TryGetProtectedType1Conflict(
+                                        hqMultiCode,
+                                        protectedType1,
+                                        out var conflictReason
+                                    )
+                                )
+                                {
+                                    _logger.LogWarning(
+                                        "跳过与本地 Type1 冲突的 HQ 增量多码。ProductCode={ProductCode}, ChildCode={ChildCode}, HGUID={Hguid}, Reason={Reason}",
+                                        hqMultiCode.H商品编码,
+                                        hqMultiCode.H多码商品编号,
+                                        hqMultiCode.HGUID,
+                                        conflictReason
+                                    );
+                                    continue;
+                                }
 
-                            // 处理ProductSetCode增量同步（基于ProductCode + SetItemNumber进行判断）
+                                var mapped = _mapper.Map<ProductSetCode>(hqMultiCode);
+                                mapped.SetPurchasePrice = null;
+                                multiCodeSetCodes.Add(mapped);
+                                AddNormalizedCode(
+                                    syncedMultiCodeParentCodes,
+                                    mapped.ProductCode
+                                );
+                            }
+
+                            // 父子业务键是关系身份，不能用 SetItemNumber 命中另一条本地关系。
                             var multiCodeStorageResult = await _localContext
                                 .Db.Storageable(multiCodeSetCodes)
-                                .WhereColumns(x => new { x.ProductCode, x.SetItemNumber }) // 基于商品编码和套装货号进行判断
+                                .WhereColumns(x => new { x.ProductCode, x.SetProductCode })
                                 .ToStorageAsync();
 
                             var multiCodeInsertResult =
@@ -1754,6 +1847,26 @@ namespace BlazorApp.Api.Services
                     _logger.LogInformation(
                         $"一品多码表增量同步完成 - ProductSetCode新增: {totalMultiCodeAdded}, 更新: {totalMultiCodeUpdated}"
                     );
+
+                    var affectedSetParentCodes = new HashSet<string>(
+                        auditProductCodes,
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                    affectedSetParentCodes.UnionWith(syncedMultiCodeParentCodes);
+                    if (affectedSetParentCodes.Count > 0)
+                    {
+                        var recalculation = await new SetChildPurchasePriceService(_localContext.Db)
+                            .RecalculateLockedAsync(
+                                childCostLockScope,
+                                affectedSetParentCodes,
+                                null,
+                                ResolveSetChildPurchasePriceActor()
+                            );
+                        EnsureSetChildPurchasePriceRecalculated(
+                            recalculation,
+                            affectedSetParentCodes
+                        );
+                    }
 
                     if (auditProductCodes.Count > 0)
                     {
@@ -1793,8 +1906,17 @@ namespace BlazorApp.Api.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "增量同步商品信息数据时发生错误");
-                result.Message = $"增量同步失败: {ex.Message}";
                 result.IsSuccess = false;
+                // 增量路径与全量路径一致：业务锁冲突必须保留为可重试失败。
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict))
+                {
+                    result.ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode;
+                    result.Message = conflict!.Message;
+                }
+                else
+                {
+                    result.Message = $"增量同步失败: {ex.Message}";
+                }
             }
             finally
             {
@@ -4268,9 +4390,52 @@ namespace BlazorApp.Api.Services
 
                 try
                 {
-                    _logger.LogInformation("🗑️ 正在清空本地分店一品多码表...");
-                    await db.Deleteable<StoreMultiCodeProduct>().ExecuteCommandAsync();
-                    _logger.LogInformation("✅ 本地分店一品多码表已清空");
+                    var childCostLockScope = await SetChildPurchasePriceMutationLock.AcquireAllAsync(
+                        db
+                    );
+                    // 所有状态的本地 Type1 关系都保护对应门店投影，不能被 HQ 普通多码覆盖。
+                    var protectedStoreMultiCodeKeys = await GetProtectedStoreMultiCodeKeysAsync(db);
+                    var normalizedSelectedStoreCodes = selectedStoreCodes?
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code.Trim())
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList() ?? [];
+                    var existingScopeQuery = db.Queryable<StoreMultiCodeProduct>();
+                    if (normalizedSelectedStoreCodes.Count > 0)
+                    {
+                        existingScopeQuery = existingScopeQuery.Where(item =>
+                            normalizedSelectedStoreCodes.Contains(item.StoreCode!)
+                        );
+                    }
+                    var existingScopeRows = await existingScopeQuery.ToListAsync();
+
+                    _logger.LogInformation("🗑️ 正在清空本地分店一品多码表（保留本地组合套装子项）...");
+                    var deleteable = db
+                        .Deleteable<StoreMultiCodeProduct>()
+                        .Where(x =>
+                            !SqlFunc
+                                .Subqueryable<ProductSetCode>()
+                                .Where(setCode =>
+                                    setCode.SetType == 1
+                                    && setCode.ProductCode != null
+                                    && setCode.SetProductCode != null
+                                    && x.ProductCode != null
+                                    && x.MultiCodeProductCode != null
+                                    && SqlFunc.ToUpper(setCode.ProductCode.Trim())
+                                        == SqlFunc.ToUpper(x.ProductCode.Trim())
+                                    && SqlFunc.ToUpper(setCode.SetProductCode.Trim())
+                                        == SqlFunc.ToUpper(x.MultiCodeProductCode.Trim())
+                                )
+                                .Any()
+                        );
+                    if (normalizedSelectedStoreCodes.Count > 0)
+                    {
+                        deleteable = deleteable.Where(x =>
+                            normalizedSelectedStoreCodes.Contains(x.StoreCode!)
+                        );
+                    }
+                    await deleteable.ExecuteCommandAsync();
+                    _logger.LogInformation("✅ 本地分店一品多码表已清理（组合套装子项已保留）");
 
                     int totalProcessed = 0;
                     int totalAdded = 0;
@@ -4281,7 +4446,28 @@ namespace BlazorApp.Api.Services
                     _logger.LogInformation("🔄 开始转换数据格式 (使用AutoMapper)...");
                     var localMultiCodeProducts = _mapper.Map<List<StoreMultiCodeProduct>>(
                         hqMultiCodeProducts
-                    );
+                    )
+                        // 受保护行不接受 HQ PurchasePrice 或其他字段写入，避免被同步结果覆盖。
+                        .Where(item => !protectedStoreMultiCodeKeys.Contains(GetStoreMultiCodeBusinessKey(item)))
+                        .ToList();
+                    foreach (var item in localMultiCodeProducts)
+                    {
+                        item.PurchasePrice = null;
+                    }
+                    var affectedStoreProductGroups = existingScopeRows
+                        .Where(item =>
+                            !protectedStoreMultiCodeKeys.Contains(
+                                GetStoreMultiCodeBusinessKey(item)
+                            )
+                        )
+                        .Concat(localMultiCodeProducts)
+                        .Where(item =>
+                            !string.IsNullOrWhiteSpace(item.StoreCode)
+                            && !string.IsNullOrWhiteSpace(item.ProductCode)
+                        )
+                        .Select(item => (item.StoreCode, item.ProductCode))
+                        .Distinct()
+                        .ToList();
                     _logger.LogInformation(
                         $"✅ 数据转换完成，共 {localMultiCodeProducts.Count:N0} 条记录"
                     );
@@ -4305,6 +4491,21 @@ namespace BlazorApp.Api.Services
                     {
                         _logger.LogError(ex, $"❌ 批量插入失败，错误: {ex.Message}");
                         totalErrors = localMultiCodeProducts.Count;
+                        throw;
+                    }
+
+                    if (affectedStoreProductGroups.Count > 0)
+                    {
+                        var recalculation = await new SetChildPurchasePriceService(db)
+                            .RecalculateStoreGroupsLockedAsync(
+                                childCostLockScope,
+                                affectedStoreProductGroups,
+                                ResolveSetChildPurchasePriceActor()
+                            );
+                        EnsureSetChildPurchasePriceRecalculated(
+                            recalculation,
+                            affectedStoreProductGroups.Select(group => group.ProductCode!)
+                        );
                     }
 
                     // 提交事务
@@ -4331,8 +4532,16 @@ namespace BlazorApp.Api.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "❌ 同步分店一品多码数据时发生错误");
-                result.Message = $"❌ 同步失败: {ex.Message}";
                 result.IsSuccess = false;
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict))
+                {
+                    result.ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode;
+                    result.Message = conflict!.Message;
+                }
+                else
+                {
+                    result.Message = $"❌ 同步失败: {ex.Message}";
+                }
             }
             finally
             {
@@ -4887,6 +5096,171 @@ namespace BlazorApp.Api.Services
                 ActorType = hasActorUserGuid || !isSystem ? "User" : "System",
                 OccurredAtUtc = occurredAtUtc,
             };
+        }
+
+        private static string GetSetCodeBusinessKey(ProductSetCode item) =>
+            $"{item.ProductCode}\u001F{item.SetProductCode}";
+
+        private static string GetStoreMultiCodeBusinessKey(StoreMultiCodeProduct item) =>
+            BuildNormalizedSetCodeBusinessKey(item.ProductCode, item.MultiCodeProductCode);
+
+        private sealed record Type1ProtectionSnapshot(
+            HashSet<string> SetCodeIds,
+            HashSet<string> BusinessKeys,
+            HashSet<string> ProductCodes
+        );
+
+        private static async Task<Type1ProtectionSnapshot> GetAllType1ProtectionAsync(
+            ISqlSugarClient db
+        )
+        {
+            var rows = await db.Queryable<ProductSetCode>()
+                .Where(item => item.SetType == 1)
+                .Select(item => new
+                {
+                    item.SetCodeId,
+                    item.ProductCode,
+                    item.SetProductCode,
+                })
+                .ToListAsync();
+
+            return new Type1ProtectionSnapshot(
+                rows.Select(item => NormalizeBusinessCode(item.SetCodeId))
+                    .Where(code => code.Length > 0)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase),
+                rows.Select(item =>
+                        BuildNormalizedSetCodeBusinessKey(
+                            item.ProductCode,
+                            item.SetProductCode
+                        )
+                    )
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase),
+                rows.Select(item => NormalizeBusinessCode(item.ProductCode))
+                    .Where(code => code.Length > 0)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase)
+            );
+        }
+
+        private static bool TryGetProtectedType1Conflict(
+            DIC_一品多码表 hqItem,
+            Type1ProtectionSnapshot protection,
+            out string reason
+        )
+        {
+            var normalizedGuid = NormalizeBusinessCode(hqItem.HGUID);
+            if (
+                normalizedGuid.Length > 0
+                && protection.SetCodeIds.Contains(normalizedGuid)
+            )
+            {
+                reason = "HQ GUID 与本地 Type1 关系冲突";
+                return true;
+            }
+
+            var businessKey = BuildNormalizedSetCodeBusinessKey(
+                hqItem.H商品编码,
+                hqItem.H多码商品编号
+            );
+            if (protection.BusinessKeys.Contains(businessKey))
+            {
+                reason = "HQ 父子业务键与本地 Type1 关系冲突";
+                return true;
+            }
+
+            reason = string.Empty;
+            return false;
+        }
+
+        private static string BuildNormalizedSetCodeBusinessKey(
+            string? productCode,
+            string? childCode
+        ) => $"{NormalizeBusinessCode(productCode)}\u001F{NormalizeBusinessCode(childCode)}";
+
+        private static string NormalizeBusinessCode(string? value) =>
+            value?.Trim().ToUpperInvariant() ?? string.Empty;
+
+        private static void AddNormalizedCode(ISet<string> target, string? value)
+        {
+            var normalized = NormalizeBusinessCode(value);
+            if (normalized.Length > 0)
+            {
+                target.Add(normalized);
+            }
+        }
+
+        private static async Task<HashSet<string>> GetProtectedSetCodeKeysAsync(
+            ISqlSugarClient db
+        )
+        {
+            var protectedRows = await db.Queryable<ProductSetCode>()
+                .Where(item => item.SetType == 1 && item.IsActive && !item.IsDeleted)
+                .Select(item => new { item.ProductCode, item.SetProductCode })
+                .ToListAsync();
+
+            return new HashSet<string>(
+                protectedRows.Select(item => $"{item.ProductCode}\u001F{item.SetProductCode}"),
+                StringComparer.OrdinalIgnoreCase
+            );
+        }
+
+        private static List<string> GetProductCodesFromBusinessKeys(
+            IEnumerable<string> businessKeys
+        ) =>
+            businessKeys
+                .Select(key => key.Split('\u001F', 2)[0])
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+        private string ResolveSetChildPurchasePriceActor()
+        {
+            var actor = _currentUserService.GetCurrentUsername();
+            return string.IsNullOrWhiteSpace(actor) ? "System" : actor.Trim();
+        }
+
+        private static void EnsureSetChildPurchasePriceRecalculated(
+            SetChildPurchasePriceWritebackResultDto recalculation,
+            IEnumerable<string> productCodes
+        )
+        {
+            if (
+                recalculation.ProductSetCode.SkippedGroupCount == 0
+                && recalculation.StoreMultiCodeProduct.SkippedGroupCount == 0
+            )
+            {
+                return;
+            }
+
+            var affectedCodes = string.Join(
+                ", ",
+                productCodes.Distinct(StringComparer.OrdinalIgnoreCase)
+            );
+            var reasons = string.Join(
+                "；",
+                recalculation.Errors.Select(error =>
+                    $"{error.TableName}/{error.StoreCode ?? "总部"}/{error.ProductCode}: {error.Reason}"
+                )
+            );
+            throw new InvalidOperationException(
+                $"HQ 同步后的套装子项成本无法完整重算，主商品: {affectedCodes}。{reasons}"
+            );
+        }
+
+        private static async Task<HashSet<string>> GetProtectedStoreMultiCodeKeysAsync(
+            ISqlSugarClient db
+        )
+        {
+            var protectedRows = await db.Queryable<ProductSetCode>()
+                .Where(item => item.SetType == 1)
+                .Select(item => new { item.ProductCode, item.SetProductCode })
+                .ToListAsync();
+
+            return new HashSet<string>(
+                protectedRows.Select(item =>
+                    BuildNormalizedSetCodeBusinessKey(item.ProductCode, item.SetProductCode)
+                ),
+                StringComparer.OrdinalIgnoreCase
+            );
         }
     }
 

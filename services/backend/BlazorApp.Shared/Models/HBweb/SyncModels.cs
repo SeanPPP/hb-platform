@@ -73,6 +73,11 @@ namespace BlazorApp.Shared.Models
         public int DeletedCount { get; set; }
         public int ErrorCount { get; set; }
 
+        /// <summary>
+        /// 因套装子项成本锁竞争而失败的错误数量；必须包含在 ErrorCount 内。
+        /// </summary>
+        public int BusyErrorCount { get; set; }
+
         public int TotalCount { get; set; }
         public int SuccessCount => AddedCount;
         public int FailedCount => ErrorCount;

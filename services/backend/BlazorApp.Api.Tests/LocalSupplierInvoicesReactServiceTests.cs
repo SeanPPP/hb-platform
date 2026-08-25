@@ -47,6 +47,7 @@ namespace BlazorApp.Api.Tests
                 typeof(UserStore),
                 typeof(HBLocalSupplier),
                 typeof(Product),
+                typeof(WarehouseProduct),
                 typeof(StoreRetailPrice),
                 typeof(StoreMultiCodeProduct),
                 typeof(ProductSetCode),
@@ -1184,6 +1185,152 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public void BatchExecuteActionsAsync_必须在获取商品锁后复读并核对完整执行身份()
+        {
+            var source = File.ReadAllText(ResolveLocalSupplierInvoicesReactServicePath());
+            var methodStart = source.IndexOf(
+                "public async Task<ApiResponse<BatchExecuteActionsResultDto>> BatchExecuteActionsAsync",
+                StringComparison.Ordinal
+            );
+            var methodEnd = source.IndexOf(
+                "private static string BuildBatchExecuteHeaderIdentity",
+                methodStart,
+                StringComparison.Ordinal
+            );
+            Assert.True(methodStart >= 0 && methodEnd > methodStart);
+            var method = source[methodStart..methodEnd];
+
+            var beginTransaction = method.IndexOf("BeginTranAsync", StringComparison.Ordinal);
+            var acquireLock = method.IndexOf(
+                "SetChildPurchasePriceMutationLock.Acquire",
+                StringComparison.Ordinal
+            );
+            var lockedHeader = method.IndexOf("var lockedHeader", StringComparison.Ordinal);
+            var lockedDetails = method.IndexOf("var lockedDetails", StringComparison.Ordinal);
+            var compareConfirmedAction = method.IndexOf(
+                "confirmedActionSnapshot != null",
+                lockedDetails,
+                StringComparison.Ordinal
+            );
+            var compareConfirmedDetail = method.IndexOf(
+                "confirmedDetailIdentitySnapshot != null",
+                compareConfirmedAction,
+                StringComparison.Ordinal
+            );
+            var compareIdentity = method.IndexOf(
+                "BuildBatchExecuteDetailIdentity(detail) != expectedIdentity",
+                StringComparison.Ordinal
+            );
+            var ensureLockCoverage = method.IndexOf("lockScope?.EnsureCovers", StringComparison.Ordinal);
+            var lockedProductLookup = method.IndexOf(
+                "var productItemNumbers = new Dictionary",
+                StringComparison.Ordinal
+            );
+            var validation = method.IndexOf(
+                "ValidateBatchExecuteDetailsAsync",
+                StringComparison.Ordinal
+            );
+
+            Assert.True(beginTransaction >= 0);
+            Assert.True(acquireLock > beginTransaction);
+            Assert.True(lockedHeader > acquireLock);
+            Assert.True(lockedDetails > lockedHeader);
+            Assert.True(compareConfirmedAction > lockedDetails);
+            Assert.True(compareConfirmedDetail > compareConfirmedAction);
+            Assert.True(compareIdentity > compareConfirmedDetail);
+            Assert.True(ensureLockCoverage > compareIdentity);
+            Assert.True(lockedProductLookup > ensureLockCoverage);
+            Assert.True(validation > lockedProductLookup);
+            Assert.Contains("detail.ActivityType", source);
+            Assert.Contains("detail.AdditionalBarcodesJson", source);
+            Assert.Contains("detail.PurchasePrice", source);
+            Assert.Contains("detail.RetailPrice", source);
+        }
+
+        [Fact]
+        public async Task BatchExecuteActionsAsync_锁内动作与用户确认快照不一致时应零写入()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            var beforeProduct = await _db.Queryable<Product>()
+                .SingleAsync(product => product.ProductCode == "P001");
+            var beforeStorePrice = await _db.Queryable<StoreRetailPrice>()
+                .SingleAsync(price => price.ProductCode == "P001");
+
+            var result = await CreateService().BatchExecuteActionsAsync(
+                "invoice-execute",
+                new List<string> { "detail-price" },
+                "tester",
+                expectedActions: new List<BatchExecuteExpectedActionDto>
+                {
+                    new()
+                    {
+                        DetailGuid = "detail-price",
+                        ActivityType = (int)DetailAction.AddMultiCode,
+                    },
+                }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("VALIDATION_ERROR", result.Code);
+            Assert.Contains("确认", result.Message);
+            var afterProduct = await _db.Queryable<Product>()
+                .SingleAsync(product => product.ProductCode == "P001");
+            var afterStorePrice = await _db.Queryable<StoreRetailPrice>()
+                .SingleAsync(price => price.ProductCode == "P001");
+            var detail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(item => item.DetailGUID == "detail-price");
+            Assert.Equal(beforeProduct.PurchasePrice, afterProduct.PurchasePrice);
+            Assert.Equal(beforeStorePrice.PurchasePrice, afterStorePrice.PurchasePrice);
+            Assert.Equal((int)DetailAction.UpdatePurchasePrice, detail.ActivityType);
+            Assert.Equal(0, await _db.Queryable<StoreMultiCodeProduct>().CountAsync());
+        }
+
+        [Fact]
+        public async Task BatchExecuteActionsAsync_确认后同动作执行参数变化时应零写入()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            var confirmedDetail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(item => item.DetailGUID == "detail-price");
+            var beforeProduct = await _db.Queryable<Product>()
+                .SingleAsync(product => product.ProductCode == "P001");
+            var beforeStorePrice = await _db.Queryable<StoreRetailPrice>()
+                .SingleAsync(price => price.ProductCode == "P001");
+            await _db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                .SetColumns(detail => detail.PurchasePrice == 99m)
+                .Where(detail => detail.DetailGUID == "detail-price")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService().BatchExecuteActionsAsync(
+                "invoice-execute",
+                new List<string> { "detail-price" },
+                "tester",
+                expectedActions: new List<BatchExecuteExpectedActionDto>
+                {
+                    new()
+                    {
+                        DetailGuid = "detail-price",
+                        ActivityType = (int)DetailAction.UpdatePurchasePrice,
+                    },
+                },
+                confirmedDetails: new[] { confirmedDetail }
+            );
+
+            Assert.False(result.Success);
+            Assert.Equal("VALIDATION_ERROR", result.Code);
+            Assert.Contains("执行参数", result.Message);
+            var afterProduct = await _db.Queryable<Product>()
+                .SingleAsync(product => product.ProductCode == "P001");
+            var afterStorePrice = await _db.Queryable<StoreRetailPrice>()
+                .SingleAsync(price => price.ProductCode == "P001");
+            var changedDetail = await _db.Queryable<StoreLocalSupplierInvoiceDetails>()
+                .SingleAsync(item => item.DetailGUID == "detail-price");
+            Assert.Equal(beforeProduct.PurchasePrice, afterProduct.PurchasePrice);
+            Assert.Equal(beforeStorePrice.PurchasePrice, afterStorePrice.PurchasePrice);
+            Assert.Equal(99m, changedDetail.PurchasePrice);
+            Assert.Equal(0, await _db.Queryable<StoreMultiCodeProduct>().CountAsync());
+        }
+
+        [Fact]
         public async Task BatchExecuteActions_确认动作与当前数据库不一致时_拒绝执行()
         {
             await SeedExecutablePriceUpdateAsync();
@@ -1679,6 +1826,26 @@ namespace BlazorApp.Api.Tests
                 ActivityType = (int)DetailAction.AddMultiCode,
                 IsDeleted = false,
             }).ExecuteCommandAsync();
+            await _db.Ado.ExecuteCommandAsync(
+                """
+                CREATE TRIGGER "reject_type2_global_cost_on_insert"
+                BEFORE INSERT ON "ProductSetCode"
+                WHEN NEW."SetPurchasePrice" IS NOT NULL
+                BEGIN
+                    SELECT RAISE(ABORT, 'Type2 global cost must be empty on insert');
+                END;
+                """
+            );
+            await _db.Ado.ExecuteCommandAsync(
+                """
+                CREATE TRIGGER "reject_type2_store_cost_on_insert"
+                BEFORE INSERT ON "StoreMultiCodeProduct"
+                WHEN NEW."PurchasePrice" IS NOT NULL
+                BEGIN
+                    SELECT RAISE(ABORT, 'Type2 store cost must be empty on insert');
+                END;
+                """
+            );
 
             var result = await CreateService().BatchExecuteActionsAsync(
                 "invoice-multi-case",
@@ -1759,6 +1926,7 @@ namespace BlazorApp.Api.Tests
                 Barcode = "191554882676",
                 ProductName = "Men Travel Perfume Assorted 35mL",
                 LocalSupplierCode = "SUP01",
+                PurchasePrice = 1.6546m,
                 IsDeleted = false,
             }).ExecuteCommandAsync();
             await _db.Insertable(new StoreLocalSupplierInvoiceDetails
@@ -2411,6 +2579,82 @@ namespace BlazorApp.Api.Tests
                 ),
                 Times.Never
             );
+        }
+
+        [Fact]
+        public async Task UpdateDetailsToStorePricesAsync_Type1与Type2同键冲突时回滚主成本更新()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            await _db.Insertable(new[]
+            {
+                new ProductSetCode
+                {
+                    SetCodeId = "set-conflict-type1",
+                    ProductCode = "P001",
+                    SetProductCode = "MC-CONFLICT",
+                    SetPurchasePrice = 0.50m,
+                    SetRetailPrice = 2m,
+                    SetType = 1,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new ProductSetCode
+                {
+                    SetCodeId = "set-conflict-type2",
+                    ProductCode = "P001",
+                    SetProductCode = "MC-CONFLICT",
+                    SetPurchasePrice = 1.11m,
+                    SetRetailPrice = 2m,
+                    SetType = 2,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreMultiCodeProduct
+            {
+                UUID = "store-multi-conflict",
+                StoreCode = "S01",
+                ProductCode = "P001",
+                MultiCodeProductCode = "MC-CONFLICT",
+                StoreMultiCodeProductCode = "S01MC-CONFLICT",
+                PurchasePrice = 0.75m,
+                MultiCodeRetailPrice = 2m,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateDetailsToStorePricesAsync(
+                new UpdateToStorePricesRequest
+                {
+                    InvoiceGuid = "invoice-execute",
+                    DetailGuids = new List<string> { "detail-price" },
+                    TargetStoreCodes = new List<string> { "S01" },
+                    UpdateFields = new UpdateToStorePricesFields
+                    {
+                        UpdatePurchasePrice = true,
+                    },
+                },
+                "tester"
+            );
+
+            var product = await _db.Queryable<Product>().SingleAsync(x => x.ProductCode == "P001");
+            var storePrice = await _db.Queryable<StoreRetailPrice>().SingleAsync(x => x.UUID == "SRP-001");
+            var globalCosts = await _db.Queryable<ProductSetCode>()
+                .Where(x => x.ProductCode == "P001")
+                .OrderBy(x => x.SetCodeId)
+                .Select(x => x.SetPurchasePrice)
+                .ToListAsync();
+            var storeCost = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.UUID == "store-multi-conflict")
+                .Select(x => x.PurchasePrice)
+                .SingleAsync();
+
+            Assert.False(result.Success);
+            Assert.Equal("UPDATE_ERROR", result.ErrorCode);
+            Assert.Equal(1.11m, product.PurchasePrice);
+            Assert.Equal(1.11m, storePrice.PurchasePrice);
+            Assert.Equal(new decimal?[] { 0.50m, 1.11m }, globalCosts);
+            Assert.Equal(0.75m, storeCost);
         }
 
         [Fact]
@@ -3202,6 +3446,207 @@ namespace BlazorApp.Api.Tests
             }
         }
 
+        [Fact]
+        public async Task BatchExecuteActionsAsync_新增Type2多码成本以父商品重算而非明细成本()
+        {
+            await SeedStoreAndSupplierAsync();
+            await InsertInvoiceAsync("invoice-type2-cost", "INV-TYPE2-COST", new DateTime(2026, 1, 12));
+            await _db.Insertable(new Product
+            {
+                UUID = "product-type2-cost",
+                ProductCode = "P-TYPE2-COST",
+                ItemNumber = "TYPE2-COST",
+                Barcode = "900000000001",
+                ProductName = "Type2 Cost Parent",
+                LocalSupplierCode = "SUP01",
+                PurchasePrice = 0m,
+                RetailPrice = 10m,
+                ProductType = 0,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new WarehouseProduct
+            {
+                ProductCode = "P-TYPE2-COST",
+                ImportPrice = 2m,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreRetailPrice
+            {
+                UUID = "store-price-type2-cost",
+                StoreCode = "S01",
+                ProductCode = "P-TYPE2-COST",
+                StoreProductCode = "S01P-TYPE2-COST",
+                SupplierCode = "SUP01",
+                PurchasePrice = 0m,
+                StoreRetailPriceValue = 10m,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-type2-cost",
+                InvoiceGUID = "invoice-type2-cost",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ProductCode = "P-TYPE2-COST",
+                ItemNumber = "TYPE2-COST",
+                Barcode = "900000000002",
+                PurchasePrice = 99m,
+                RetailPrice = 10m,
+                ExistingProductCount = 1,
+                BarcodeStatus = 2,
+                ActivityType = (int)DetailAction.AddMultiCode,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().BatchExecuteActionsAsync(
+                "invoice-type2-cost",
+                new List<string> { "detail-type2-cost" },
+                "tester"
+            );
+
+            var global = await _db.Queryable<ProductSetCode>()
+                .SingleAsync(x => x.ProductCode == "P-TYPE2-COST");
+            var store = await _db.Queryable<StoreMultiCodeProduct>()
+                .SingleAsync(x => x.ProductCode == "P-TYPE2-COST" && x.StoreCode == "S01");
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(2, global.SetType);
+            // Product 与门店主成本均为 0 时，必须继续使用 Warehouse.ImportPrice，不能采用明细提交成本。
+            Assert.Equal(2m, global.SetPurchasePrice);
+            Assert.Equal(2m, store.PurchasePrice);
+        }
+
+        [Fact]
+        public async Task UpdateDetailsToStorePricesAsync_重算全局与精确门店成本且保留门店差异()
+        {
+            await SeedStoreAndSupplierAsync();
+            await _db.Insertable(new Store
+            {
+                StoreGUID = "store-guid-type2-s02",
+                StoreCode = "S02",
+                StoreName = "Store 2",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await InsertInvoiceAsync("invoice-store-cost", "INV-STORE-COST", new DateTime(2026, 1, 12));
+            await _db.Insertable(new Product
+            {
+                UUID = "product-store-cost",
+                ProductCode = "P-STORE-COST",
+                ItemNumber = "STORE-COST",
+                Barcode = "910000000001",
+                ProductName = "Store Cost Parent",
+                LocalSupplierCode = "SUP01",
+                PurchasePrice = 4m,
+                RetailPrice = 10m,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                new StoreRetailPrice
+                {
+                    UUID = "store-price-cost-s01",
+                    StoreCode = "S01",
+                    ProductCode = "P-STORE-COST",
+                    StoreProductCode = "S01P-STORE-COST",
+                    SupplierCode = "SUP01",
+                    PurchasePrice = 5m,
+                    StoreRetailPriceValue = 10m,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new StoreRetailPrice
+                {
+                    UUID = "store-price-cost-s02",
+                    StoreCode = "S02",
+                    ProductCode = "P-STORE-COST",
+                    StoreProductCode = "S02P-STORE-COST",
+                    SupplierCode = "SUP01",
+                    PurchasePrice = 8m,
+                    StoreRetailPriceValue = 10m,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new ProductSetCode
+            {
+                SetCodeId = "set-type2-store-cost",
+                ProductCode = "P-STORE-COST",
+                SetProductCode = "MC-STORE-COST",
+                SetBarcode = "910000000002",
+                SetPurchasePrice = 99m,
+                SetRetailPrice = 10m,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new[]
+            {
+                CreateType2StoreMultiCode("store-multi-cost-s01", "S01", "P-STORE-COST", "MC-STORE-COST", 99m),
+                CreateType2StoreMultiCode("store-multi-cost-s02", "S02", "P-STORE-COST", "MC-STORE-COST", 99m),
+            }).ExecuteCommandAsync();
+            await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = "detail-store-cost",
+                InvoiceGUID = "invoice-store-cost",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ProductCode = "P-STORE-COST",
+                RetailPrice = 12m,
+                ActivityType = (int)DetailAction.UpdatePurchasePrice,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateDetailsToStorePricesAsync(
+                new UpdateToStorePricesRequest
+                {
+                    InvoiceGuid = "invoice-store-cost",
+                    DetailGuids = new List<string> { "detail-store-cost" },
+                    TargetStoreCodes = new List<string> { "S01", "S02" },
+                    UpdateFields = new UpdateToStorePricesFields { UpdateRetailPrice = true },
+                },
+                "tester"
+            );
+
+            var global = await _db.Queryable<ProductSetCode>()
+                .SingleAsync(x => x.SetCodeId == "set-type2-store-cost");
+            var storeCosts = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.ProductCode == "P-STORE-COST")
+                .OrderBy(x => x.StoreCode)
+                .ToListAsync();
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(4m, global.SetPurchasePrice);
+            Assert.Equal(
+                new[] { 5m, 8m },
+                storeCosts.Select(x => x.PurchasePrice.GetValueOrDefault()).ToArray()
+            );
+        }
+
+        private static StoreMultiCodeProduct CreateType2StoreMultiCode(
+            string uuid,
+            string storeCode,
+            string productCode,
+            string multiCodeProductCode,
+            decimal purchasePrice
+        ) => new()
+        {
+            UUID = uuid,
+            StoreCode = storeCode,
+            ProductCode = productCode,
+            MultiCodeProductCode = multiCodeProductCode,
+            StoreMultiCodeProductCode = storeCode + multiCodeProductCode,
+            MultiBarcode = multiCodeProductCode + "-BARCODE",
+            PurchasePrice = purchasePrice,
+            MultiCodeRetailPrice = 10m,
+            IsActive = true,
+            IsDeleted = false,
+        };
+
         private async Task SeedStoreAndSupplierAsync()
         {
             await _db.Insertable(new Store
@@ -3527,6 +3972,24 @@ namespace BlazorApp.Api.Tests
             var property = value.GetType().GetProperty(propertyName)
                 ?? throw new InvalidOperationException($"未找到属性 {propertyName}");
             return (T)property.GetValue(value)!;
+        }
+
+        private static string ResolveLocalSupplierInvoicesReactServicePath(
+            [CallerFilePath] string testFilePath = ""
+        )
+        {
+            var testDirectory = Path.GetDirectoryName(testFilePath)
+                ?? throw new InvalidOperationException("无法解析测试文件目录");
+            return Path.GetFullPath(
+                Path.Combine(
+                    testDirectory,
+                    "..",
+                    "BlazorApp.Api",
+                    "Services",
+                    "React",
+                    "LocalSupplierInvoicesReactService.cs"
+                )
+            );
         }
 
         private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)

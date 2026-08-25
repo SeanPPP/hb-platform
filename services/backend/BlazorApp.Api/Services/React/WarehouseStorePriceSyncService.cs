@@ -173,13 +173,48 @@ public sealed class WarehouseStorePriceSyncService : IWarehouseStorePriceSyncSer
             hqTargetStoreCodes = hqValidationResult.CanonicalTargetStoreCodes;
         }
 
-        var productMetadata = await LoadProductMetadataAsync(eligibleProducts, cancellationToken);
         var effectiveUpdatedBy = NormalizeText(updatedBy) ?? "system";
         var now = DateTime.UtcNow;
         var localDb = _context.Db;
         await localDb.Ado.BeginTranAsync();
         try
         {
+            // 全量必须持有总闸；有限商品范围只按稳定顺序持有对应主商品锁。
+            var lockScope = normalizedRequest.ApplyToAllProducts
+                ? await SetChildPurchasePriceMutationLock.AcquireAllAsync(localDb)
+                : await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                    localDb,
+                    eligibleProducts.Select(product => product.ProductCode)
+                );
+            // 锁内重新读取仓库价格，禁止把等待业务锁之前的旧快照写入目标门店。
+            var lockedSelection = await SelectWarehouseProductsAsync(
+                normalizedRequest,
+                cancellationToken
+            );
+            var lockedEligibleProducts = lockedSelection.Products
+                .Where(product => product.ImportPrice.HasValue && product.OEMPrice.HasValue)
+                .ToList();
+            if (!normalizedRequest.ApplyToAllProducts)
+            {
+                var expectedCodes = SetChildPurchasePriceMutationLock.NormalizeProductCodes(
+                    eligibleProducts.Select(product => product.ProductCode)
+                );
+                var lockedCodes = SetChildPurchasePriceMutationLock.NormalizeProductCodes(
+                    lockedEligibleProducts.Select(product => product.ProductCode)
+                );
+                if (!expectedCodes.SequenceEqual(lockedCodes, StringComparer.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        "等待商品锁期间仓库商品或价格状态已变化，请重新读取后重试"
+                    );
+                }
+            }
+
+            eligibleProducts = lockedEligibleProducts;
+            var productMetadata = await LoadProductMetadataAsync(
+                eligibleProducts,
+                cancellationToken
+            );
             // 后台 job 没有 HttpContext；保护显式审计字段，避免全局 AOP 把操作人覆盖成 System。
             using var auditScope = SqlSugarAuditScope.PreserveExplicitAuditFields();
             var writeCounts = await UpsertLocalPricesAsync(
@@ -193,6 +228,14 @@ public sealed class WarehouseStorePriceSyncService : IWarehouseStorePriceSyncSer
             );
             result.LocalCreatedCount = writeCounts.Created;
             result.LocalUpdatedCount = writeCounts.Updated;
+            // 只重算本请求指定的门店-主商品组；结构或主成本异常会由统一服务抛出并回滚本次写入。
+            await new SetChildPurchasePriceService(localDb).RecalculateStoreGroupsLockedAsync(
+                lockScope,
+                result.TargetStoreCodes.SelectMany(storeCode => eligibleProducts.Select(product =>
+                    (StoreCode: (string?)storeCode, ProductCode: (string?)product.ProductCode)
+                )),
+                effectiveUpdatedBy
+            );
             await localDb.Ado.CommitTranAsync();
             result.LocalCommitted = true;
         }
@@ -207,14 +250,20 @@ public sealed class WarehouseStorePriceSyncService : IWarehouseStorePriceSyncSer
                 _logger.LogError(rollbackEx, "仓库价格同步本地事务回滚失败");
             }
 
-            _logger.LogError(ex, "仓库价格同步本地写入失败");
+            var errorCode = SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                : "LOCAL_WRITE_FAILED";
+            var errorMessage = errorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                ? "套装子项成本正在被其他操作更新，请稍后重试"
+                : "本地分店价格写入失败";
+            _logger.LogError(ex, "仓库价格同步本地写入失败: ErrorCode={ErrorCode}", errorCode);
             result.Errors.Add(new WarehouseStorePriceSyncErrorDto
             {
                 Stage = "LocalWrite",
-                Code = "LOCAL_WRITE_FAILED",
-                Message = "本地分店价格写入失败",
+                Code = errorCode,
+                Message = errorMessage,
             });
-            return Failure("本地分店价格写入失败", "LOCAL_WRITE_FAILED", result);
+            return Failure(errorMessage, errorCode, result);
         }
 
         if (!normalizedRequest.SyncToHq)
@@ -548,6 +597,12 @@ public sealed class WarehouseStorePriceSyncService : IWarehouseStorePriceSyncSer
                 if (existingByKey.TryGetValue(key, out var existing))
                 {
                     // 关键位置：已有行严格只改四个业务字段和审计字段，保留库存、状态及映射信息。
+                    // 成本已正确时不写审计字段，避免无效同步刷新更新时间和操作人。
+                    if (!HasLocalPriceDifference(existing, warehouseProduct))
+                    {
+                        continue;
+                    }
+
                     existing.PurchasePrice = warehouseProduct.ImportPrice;
                     existing.StoreRetailPriceValue = warehouseProduct.OEMPrice;
                     existing.DiscountRate = 0m;
@@ -609,6 +664,15 @@ public sealed class WarehouseStorePriceSyncService : IWarehouseStorePriceSyncSer
 
         return new LocalWriteCounts(inserts.Count, updates.Count);
     }
+
+    private static bool HasLocalPriceDifference(
+        StoreRetailPrice existing,
+        WarehouseProduct warehouseProduct
+    ) =>
+        existing.PurchasePrice != warehouseProduct.ImportPrice
+        || existing.StoreRetailPriceValue != warehouseProduct.OEMPrice
+        || existing.DiscountRate != 0m
+        || existing.IsAutoPricing;
 
     private static ApiResponse<WarehouseStorePriceSyncResultDto> Failure(
         string message,

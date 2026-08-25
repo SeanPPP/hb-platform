@@ -27,6 +27,38 @@ namespace BlazorApp.Api.Tests;
 public class StoreRetailPriceHqSyncContractTests
 {
     [Fact]
+    public void HQ同步写入_在同一事务内取得业务锁并精确重算门店子项成本()
+    {
+        var source = File.ReadAllText(
+            Path.Combine(
+                AppContext.BaseDirectory,
+                "..",
+                "..",
+                "..",
+                "..",
+                "BlazorApp.Api",
+                "Services",
+                "React",
+                "StoreRetailPriceHqSyncService.cs"
+            )
+        );
+
+        Assert.Contains("SetChildPurchasePriceMutationLock.AcquireProductsAsync", source);
+        Assert.Contains("SetChildPurchasePriceMutationLock.AcquireAllAsync", source);
+        Assert.Contains("RecalculateStoreGroupsLockedAsync", source);
+        Assert.Contains("SetChildPurchasePriceMutationLock.TryResolveConflict", source);
+        var batchWrite = ExtractMethod(source, "UpsertAndRecalculateBatchAsync");
+        AssertOrdered(
+            batchWrite,
+            "await db.Ado.BeginTranAsync();",
+            "SetChildPurchasePriceMutationLock.AcquireProductsAsync",
+            "UpsertBatchAsync(db, batch)",
+            "RecalculateStoreGroupsLockedAsync",
+            "await db.Ado.CommitTranAsync();"
+        );
+    }
+
+    [Fact]
     public void SyncFromHq_允许Admin和管理员角色调用()
     {
         var method = typeof(ReactStoreProductPricesController).GetMethod(
@@ -163,7 +195,12 @@ public class StoreRetailPriceHqSyncContractTests
         await hqConnection.OpenAsync();
         using var localDb = new SqlSugarClient(CreateConnectionConfig(localConnection.ConnectionString));
         using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
-        localDb.CodeFirst.InitTables(typeof(Store), typeof(StoreRetailPrice));
+        localDb.CodeFirst.InitTables(
+            typeof(Store),
+            typeof(StoreRetailPrice),
+            typeof(ProductSetCode),
+            typeof(StoreMultiCodeProduct)
+        );
         CreateScheduledTaskLogTable(localDb);
         InitHqRetailPriceTables(hqDb);
         await localDb.Insertable(new Store
@@ -213,7 +250,12 @@ public class StoreRetailPriceHqSyncContractTests
         await hqConnection.OpenAsync();
         using var localDb = new SqlSugarClient(CreateConnectionConfig(localConnection.ConnectionString));
         using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
-        localDb.CodeFirst.InitTables(typeof(Store), typeof(StoreRetailPrice));
+        localDb.CodeFirst.InitTables(
+            typeof(Store),
+            typeof(StoreRetailPrice),
+            typeof(ProductSetCode),
+            typeof(StoreMultiCodeProduct)
+        );
         InitHqRetailPriceTables(hqDb);
         await localDb.Insertable(new[]
         {
@@ -271,7 +313,12 @@ public class StoreRetailPriceHqSyncContractTests
         await hqConnection.OpenAsync();
         using var localDb = new SqlSugarClient(CreateConnectionConfig(localConnection.ConnectionString));
         using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
-        localDb.CodeFirst.InitTables(typeof(Store), typeof(StoreRetailPrice));
+        localDb.CodeFirst.InitTables(
+            typeof(Store),
+            typeof(StoreRetailPrice),
+            typeof(ProductSetCode),
+            typeof(StoreMultiCodeProduct)
+        );
         CreateScheduledTaskLogTable(localDb);
         InitHqRetailPriceTables(hqDb);
         await localDb.Insertable(new Store
@@ -388,7 +435,12 @@ public class StoreRetailPriceHqSyncContractTests
         await hqConnection.OpenAsync();
         using var localDb = new SqlSugarClient(CreateConnectionConfig(localConnection.ConnectionString));
         using var hqDb = new SqlSugarClient(CreateConnectionConfig(hqConnection.ConnectionString));
-        localDb.CodeFirst.InitTables(typeof(Store), typeof(StoreRetailPrice));
+        localDb.CodeFirst.InitTables(
+            typeof(Store),
+            typeof(StoreRetailPrice),
+            typeof(ProductSetCode),
+            typeof(StoreMultiCodeProduct)
+        );
         CreateScheduledTaskLogTable(localDb);
         InitHqRetailPriceTables(hqDb);
         await localDb.Insertable(new Store
@@ -840,5 +892,26 @@ public class StoreRetailPriceHqSyncContractTests
             );
             """
         );
+    }
+
+    private static void AssertOrdered(string source, params string[] fragments)
+    {
+        var previousIndex = -1;
+        foreach (var fragment in fragments)
+        {
+            var index = source.IndexOf(fragment, StringComparison.Ordinal);
+            Assert.True(index > previousIndex, $"未按预期顺序找到: {fragment}");
+            previousIndex = index;
+        }
+    }
+
+    private static string ExtractMethod(string source, string methodName)
+    {
+        var start = source.IndexOf(
+            $"private async Task<BatchResultDto> {methodName}",
+            StringComparison.Ordinal
+        );
+        Assert.True(start >= 0, $"未找到方法: {methodName}");
+        return source[start..];
     }
 }

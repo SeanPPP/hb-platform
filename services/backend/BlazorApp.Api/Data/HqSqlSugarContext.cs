@@ -57,11 +57,14 @@ namespace BlazorApp.Api.Data
             // 设置命令超时时间（30分钟）
             _db.Ado.CommandTimeOut = 1800;
 
-            // 调试模式
-            _db.Aop.OnLogExecuting = (sql, pars) =>
+            // 调试模式 - 默认关闭时不注册逐SQL日志回调；启用后维持HQ SQL控制台输出
+            if (configuration.GetValue<bool>("Database:EnableSqlLogging", false))
             {
-                Console.WriteLine($"[HQ Database] {sql}");
-            };
+                _db.Aop.OnLogExecuting = (sql, pars) =>
+                {
+                    Console.WriteLine($"[HQ Database] {sql}");
+                };
+            }
 
             _db.Aop.DataExecuting = (oldValue, entityInfo) =>
             {

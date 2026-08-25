@@ -103,7 +103,8 @@ namespace BlazorApp.Api.Services.React
                         ? ProductPushToHqJobStatusConstants.Succeeded
                         : ProductPushToHqJobStatusConstants.Failed,
                     response.Message,
-                    result
+                    result,
+                    response.ErrorCode
                 );
             }
             catch (Exception ex)
@@ -118,7 +119,10 @@ namespace BlazorApp.Api.Services.React
                         FailedCount = 1,
                         TotalCount = 1,
                         Errors = new List<string> { ex.Message },
-                    }
+                    },
+                    SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                        ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                        : null
                 );
             }
         }
@@ -127,7 +131,8 @@ namespace BlazorApp.Api.Services.React
             ProductPushToHqJobState jobState,
             string status,
             string? message,
-            PushProductsToHqResult result
+            PushProductsToHqResult result,
+            string? errorCode
         )
         {
             lock (_jobStartSyncRoot)
@@ -140,6 +145,7 @@ namespace BlazorApp.Api.Services.React
                     jobState.ExpiresAt = completedAt.Add(_completedRetention);
                     jobState.Message = message;
                     jobState.Result = result;
+                    jobState.ErrorCode = errorCode;
                 }
 
             }
@@ -186,6 +192,7 @@ namespace BlazorApp.Api.Services.React
                     CompletedAt = jobState.CompletedAt,
                     ExpiresAt = jobState.ExpiresAt,
                     Message = jobState.Message,
+                    ErrorCode = jobState.ErrorCode,
                     Result = jobState.Result,
                 };
             }
@@ -200,6 +207,7 @@ namespace BlazorApp.Api.Services.React
             public DateTime? CompletedAt { get; set; }
             public DateTime? ExpiresAt { get; set; }
             public string? Message { get; set; }
+            public string? ErrorCode { get; set; }
             public PushProductsToHqResult? Result { get; set; }
             public PushProductsToHqRequest Request { get; init; } = new();
         }

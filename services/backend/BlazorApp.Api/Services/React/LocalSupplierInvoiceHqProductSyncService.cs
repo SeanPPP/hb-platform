@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
@@ -10,6 +11,9 @@ namespace BlazorApp.Api.Services.React
 {
     public class LocalSupplierInvoiceHqProductSyncService : ILocalSupplierInvoiceHqProductSyncService
     {
+        private const int LocalWriteBatchSize = 500;
+        private const int HqWriteBatchSize = 40;
+
         private readonly SqlSugarContext _context;
         private readonly HqSqlSugarContext _hqContext;
         private readonly ILogger<LocalSupplierInvoiceHqProductSyncService> _logger;
@@ -99,6 +103,8 @@ namespace BlazorApp.Api.Services.React
                 await db.Ado.BeginTranAsync();
                 try
                 {
+                    // 本次可能创建新的商品编码，无法在锁前完整确定产品集合；总闸覆盖本地写入和派生成本校正。
+                    var childCostLockScope = await SetChildPurchasePriceMutationLock.AcquireAllAsync(db);
                     for (var index = 0; index < details.Count; index++)
                     {
                         var detail = details[index];
@@ -113,6 +119,23 @@ namespace BlazorApp.Api.Services.React
                         );
                         if (prepared != null)
                             syncItems.Add(prepared);
+                    }
+
+                    var preparedProductCodes = SetChildPurchasePriceMutationLock.NormalizeProductCodes(
+                        syncItems
+                        .Select(item => item.Product.ProductCode)
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
+                    );
+                    if (preparedProductCodes.Count > 0)
+                    {
+                        // 所有受影响商品都必须校正；结构冲突或缺成本会抛错并回滚本地事务，禁止静默跳过。
+                        await new SetChildPurchasePriceService(db).RecalculateLockedAsync(
+                            childCostLockScope,
+                            preparedProductCodes,
+                            activeStoreCodes,
+                            updatedBy
+                        );
                     }
 
                     await RecordCreatedLocalProductHistoryAsync(
@@ -227,6 +250,11 @@ namespace BlazorApp.Api.Services.React
                 return ApiResponse<UpdateHqProductsResult>.Error("请选择要更新的HQ字段", "VALIDATION_ERROR", result);
 
             result.Total = detailGuids.Count;
+            var totalStopwatch = Stopwatch.StartNew();
+            long localPreparationMs = 0;
+            long localPriceMs = 0;
+            var hqProductAndPriceElapsed = TimeSpan.Zero;
+            var hqMultiCodeElapsed = TimeSpan.Zero;
 
             try
             {
@@ -273,16 +301,18 @@ namespace BlazorApp.Api.Services.React
                 var updateItems = new List<PreparedSyncItem>();
                 var candidateProductCodes = details.Select(_ => UuidHelper.GenerateUuid7()).ToList();
                 var auditBatchGuid = Guid.NewGuid();
+                var hbwebCreatedBeforeLocalTransaction = result.HbwebCreated;
                 await db.Ado.BeginTranAsync();
                 try
                 {
+                    var childCostLockScope = await SetChildPurchasePriceMutationLock.AcquireAllAsync(db);
+                    var localPreparationStopwatch = Stopwatch.StartNew();
                     for (var index = 0; index < details.Count; index++)
                     {
                         var detail = details[index];
                         var prepared = await PrepareLocalProductForHqUpdateAsync(
                             header,
                             detail,
-                            activeStoreCodes,
                             updatedBy,
                             result,
                             candidateProductCodes[index]
@@ -290,6 +320,34 @@ namespace BlazorApp.Api.Services.React
                         if (prepared != null)
                             updateItems.Add(prepared);
                     }
+                    localPreparationStopwatch.Stop();
+                    localPreparationMs = localPreparationStopwatch.ElapsedMilliseconds;
+
+                    var localPriceStopwatch = Stopwatch.StartNew();
+                    await UpsertLocalStorePricesForHqUpdateAsync(
+                        updateItems.Where(item => item.IsNewProduct).ToList(),
+                        activeStoreCodes,
+                        updatedBy
+                    );
+
+                    var preparedProductCodes = SetChildPurchasePriceMutationLock.NormalizeProductCodes(
+                        updateItems
+                        .Select(item => item.Product.ProductCode)
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
+                    );
+                    if (preparedProductCodes.Count > 0)
+                    {
+                        // 即使本次只推送 HQ 字段，也不能绕过本地坏组；无法校正时整笔本地事务回滚。
+                        await new SetChildPurchasePriceService(db).RecalculateLockedAsync(
+                            childCostLockScope,
+                            preparedProductCodes,
+                            activeStoreCodes,
+                            updatedBy
+                        );
+                    }
+                    localPriceStopwatch.Stop();
+                    localPriceMs = localPriceStopwatch.ElapsedMilliseconds;
 
                     await RecordCreatedLocalProductHistoryAsync(
                         updateItems,
@@ -302,6 +360,8 @@ namespace BlazorApp.Api.Services.React
                 }
                 catch
                 {
+                    // 本地主档、价格和历史记录同事务回滚，返回计数必须同步恢复。
+                    result.HbwebCreated = hbwebCreatedBeforeLocalTransaction;
                     await db.Ado.RollbackTranAsync();
                     throw;
                 }
@@ -312,15 +372,32 @@ namespace BlazorApp.Api.Services.React
                 {
                     try
                     {
-                        await UpdateHqStorePricesAsync(
-                            item,
-                            activeStoreCodes,
-                            targetStoreCodes,
-                            updateFields,
-                            updatedBy,
-                            result
-                        );
-                        await SyncHqMultiCodesAsync(item, targetStoreCodes, updatedBy, result);
+                        var hqPriceStartedAt = Stopwatch.GetTimestamp();
+                        try
+                        {
+                            await UpdateHqStorePricesAsync(
+                                item,
+                                activeStoreCodes,
+                                targetStoreCodes,
+                                updateFields,
+                                updatedBy,
+                                result
+                            );
+                        }
+                        finally
+                        {
+                            hqProductAndPriceElapsed += Stopwatch.GetElapsedTime(hqPriceStartedAt);
+                        }
+
+                        var hqMultiCodeStartedAt = Stopwatch.GetTimestamp();
+                        try
+                        {
+                            await SyncHqMultiCodesAsync(item, targetStoreCodes, updatedBy, result);
+                        }
+                        finally
+                        {
+                            hqMultiCodeElapsed += Stopwatch.GetElapsedTime(hqMultiCodeStartedAt);
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -335,6 +412,18 @@ namespace BlazorApp.Api.Services.React
 
                 if (result.Failed > 0)
                 {
+                    LogUpdateHqProductsPerformance(
+                        invoiceGuid,
+                        details.Count,
+                        activeStoreCodes.Count,
+                        targetStoreCodes.Count,
+                        result,
+                        localPreparationMs,
+                        localPriceMs,
+                        (long)hqProductAndPriceElapsed.TotalMilliseconds,
+                        (long)hqMultiCodeElapsed.TotalMilliseconds,
+                        totalStopwatch.ElapsedMilliseconds
+                    );
                     return ApiResponse<UpdateHqProductsResult>.Error(
                         "更新HQ商品部分失败",
                         "HQ_UPDATE_PARTIAL_FAILED",
@@ -342,11 +431,28 @@ namespace BlazorApp.Api.Services.React
                     );
                 }
 
+                LogUpdateHqProductsPerformance(
+                    invoiceGuid,
+                    details.Count,
+                    activeStoreCodes.Count,
+                    targetStoreCodes.Count,
+                    result,
+                    localPreparationMs,
+                    localPriceMs,
+                    (long)hqProductAndPriceElapsed.TotalMilliseconds,
+                    (long)hqMultiCodeElapsed.TotalMilliseconds,
+                    totalStopwatch.ElapsedMilliseconds
+                );
                 return ApiResponse<UpdateHqProductsResult>.OK(result, "更新HQ商品完成");
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "更新HQ商品异常");
+                _logger.LogError(
+                    ex,
+                    "更新HQ商品异常 InvoiceGuid={InvoiceGuid} TotalMs={TotalMs}",
+                    invoiceGuid,
+                    totalStopwatch.ElapsedMilliseconds
+                );
                 return ApiResponse<UpdateHqProductsResult>.Error(
                     $"更新HQ商品失败: {ex.Message}",
                     "HQ_UPDATE_ERROR",
@@ -358,7 +464,6 @@ namespace BlazorApp.Api.Services.React
         private async Task<PreparedSyncItem?> PrepareLocalProductForHqUpdateAsync(
             StoreLocalSupplierInvoice header,
             StoreLocalSupplierInvoiceDetails detail,
-            List<string> activeStoreCodes,
             string updatedBy,
             UpdateHqProductsResult result,
             string generatedProductCode
@@ -424,12 +529,6 @@ namespace BlazorApp.Api.Services.React
             // 这里只在内存中补齐商品编码，供后续本地价格和HQ价格写入使用。
             detail.ProductCode = product.ProductCode;
             detail.StoreProductCode ??= BuildStoreProductCode(detail.StoreCode, product.ProductCode!);
-
-            // 更新HQ商品时，只有新建本地商品才需要补齐所有启用分店价格。
-            if (isNewProduct)
-            {
-                await UpsertLocalStorePricesAsync(detail, product, activeStoreCodes, updatedBy);
-            }
 
             return new PreparedSyncItem(detail, product, isNewProduct);
         }
@@ -617,6 +716,161 @@ namespace BlazorApp.Api.Services.React
                 IsAutoPricing = productSource.IsAutoPricing,
                 IsActive = productSource.IsActive,
             };
+        }
+
+        private async Task UpsertLocalStorePricesForHqUpdateAsync(
+            List<PreparedSyncItem> items,
+            List<string> storeCodes,
+            string updatedBy
+        )
+        {
+            if (items.Count == 0 || storeCodes.Count == 0)
+                return;
+
+            var db = _context.Db;
+            var now = DateTime.UtcNow;
+            var productCodes = items
+                .Select(item => item.Product.ProductCode)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var existingPrices = new List<StoreRetailPrice>();
+            foreach (var codeBatch in productCodes.Chunk(LocalWriteBatchSize))
+            {
+                var codes = codeBatch.ToList();
+                existingPrices.AddRange(
+                    await db.Queryable<StoreRetailPrice>()
+                        .Where(price =>
+                            price.StoreCode != null
+                            && storeCodes.Contains(price.StoreCode)
+                            && price.ProductCode != null
+                            && codes.Contains(price.ProductCode)
+                            && price.IsDeleted == false
+                        )
+                        .ToListAsync()
+                );
+            }
+
+            var existingByKey = existingPrices
+                .Where(price =>
+                    !string.IsNullOrWhiteSpace(price.StoreCode)
+                    && !string.IsNullOrWhiteSpace(price.ProductCode)
+                )
+                .GroupBy(
+                    price => BuildStorePriceKey(price.StoreCode, price.ProductCode),
+                    StringComparer.OrdinalIgnoreCase
+                )
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.OrderByDescending(price => price.UpdatedAt ?? price.CreatedAt).First(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+            var inserts = new List<StoreRetailPrice>();
+            var updates = new List<StoreRetailPrice>();
+
+            foreach (var item in items)
+            {
+                var detail = item.Detail;
+                var product = item.Product;
+                var productCode = product.ProductCode;
+                if (string.IsNullOrWhiteSpace(productCode))
+                    continue;
+
+                foreach (var storeCode in storeCodes)
+                {
+                    var key = BuildStorePriceKey(storeCode, productCode);
+                    if (existingByKey.TryGetValue(key, out var existing))
+                    {
+                        existing.SupplierCode = product.LocalSupplierCode ?? detail.SupplierCode;
+                        existing.PurchasePrice = detail.PurchasePrice;
+                        existing.StoreRetailPriceValue = ResolveRetailPrice(detail);
+                        existing.DiscountRate = detail.DiscountRate;
+                        existing.IsAutoPricing = detail.AutoPricing ?? existing.IsAutoPricing;
+                        existing.IsSpecialProduct = detail.IsSpecialProduct ?? existing.IsSpecialProduct;
+                        existing.UpdatedAt = now;
+                        existing.UpdatedBy = updatedBy;
+                        updates.Add(existing);
+                        continue;
+                    }
+
+                    var created = new StoreRetailPrice
+                    {
+                        UUID = UuidHelper.GenerateUuid7(),
+                        StoreCode = storeCode,
+                        ProductCode = productCode,
+                        StoreProductCode = BuildStoreProductCode(storeCode, productCode),
+                        SupplierCode = product.LocalSupplierCode ?? detail.SupplierCode,
+                        PurchasePrice = detail.PurchasePrice,
+                        StoreRetailPriceValue = ResolveRetailPrice(detail),
+                        DiscountRate = detail.DiscountRate,
+                        IsActive = true,
+                        IsAutoPricing = detail.AutoPricing ?? true,
+                        IsSpecialProduct = detail.IsSpecialProduct ?? false,
+                        IsDeleted = false,
+                        CreatedAt = now,
+                        UpdatedAt = now,
+                        CreatedBy = updatedBy,
+                        UpdatedBy = updatedBy,
+                    };
+                    inserts.Add(created);
+                    existingByKey[key] = created;
+                }
+            }
+
+            if (db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+            {
+                foreach (var batch in inserts.Chunk(LocalWriteBatchSize))
+                {
+                    await db.Insertable(batch.ToList()).ExecuteCommandAsync();
+                }
+            }
+            else if (inserts.Count > 0)
+            {
+                // SQL Server 普通多值 INSERT 会受 2100 参数上限约束；BulkCopy 内部分页保持 500 行逻辑批次。
+                await db.Fastest<StoreRetailPrice>()
+                    .PageSize(LocalWriteBatchSize)
+                    .BulkCopyAsync(inserts);
+            }
+
+            if (db.CurrentConnectionConfig.DbType == DbType.Sqlite)
+            {
+                foreach (var batch in updates.Chunk(LocalWriteBatchSize))
+                {
+                    await db.Updateable(batch.ToList())
+                        .UpdateColumns(price => new
+                        {
+                            price.SupplierCode,
+                            price.PurchasePrice,
+                            price.StoreRetailPriceValue,
+                            price.DiscountRate,
+                            price.IsAutoPricing,
+                            price.IsSpecialProduct,
+                            price.UpdatedAt,
+                            price.UpdatedBy,
+                        })
+                        .ExecuteCommandAsync();
+                }
+            }
+            else if (updates.Count > 0)
+            {
+                await db.Fastest<StoreRetailPrice>()
+                    .PageSize(LocalWriteBatchSize)
+                    .BulkUpdateAsync(
+                        updates,
+                        [nameof(StoreRetailPrice.UUID)],
+                        [
+                            nameof(StoreRetailPrice.SupplierCode),
+                            nameof(StoreRetailPrice.PurchasePrice),
+                            nameof(StoreRetailPrice.StoreRetailPriceValue),
+                            nameof(StoreRetailPrice.DiscountRate),
+                            nameof(StoreRetailPrice.IsAutoPricing),
+                            nameof(StoreRetailPrice.IsSpecialProduct),
+                            nameof(StoreRetailPrice.UpdatedAt),
+                            nameof(StoreRetailPrice.UpdatedBy),
+                        ]
+                    );
+            }
         }
 
         private async Task UpsertLocalStorePricesAsync(
@@ -834,37 +1088,268 @@ namespace BlazorApp.Api.Services.React
                 .Where(x => hqPriceScope.Contains(x.H分店代码) && x.H商品编码 == hqProductCode)
                 .ToListAsync();
             var existingByStore = existingPrices.ToDictionary(x => x.H分店代码, x => x);
+            var inserts = new List<HqStorePriceWrite>();
+            var updates = new List<HqStorePriceWrite>();
 
             foreach (var storeCode in hqPriceScope)
             {
+                if (!existingByStore.TryGetValue(storeCode, out var price))
+                {
+                    price = BuildHqStorePrice(detail, product, storeCode, updatedBy, now, hqProductCode);
+                    if (
+                        !ApplyAllHqFieldsForInsert(
+                            price,
+                            detail,
+                            product,
+                            updateFields,
+                            result,
+                            storeCode,
+                            out var insertCounts
+                        )
+                    )
+                    {
+                        continue;
+                    }
+                    inserts.Add(new HqStorePriceWrite(price, detail.DetailGUID, storeCode, insertCounts));
+                    continue;
+                }
+
+                if (
+                    !ApplySelectedHqFields(
+                        price,
+                        detail,
+                        product,
+                        updateFields,
+                        result,
+                        storeCode,
+                        out var updateCounts
+                    )
+                )
+                {
+                    continue;
+                }
+                price.FGC_LastModifier = updatedBy;
+                price.FGC_LastModifyDate = now;
+                updates.Add(new HqStorePriceWrite(price, detail.DetailGUID, storeCode, updateCounts));
+            }
+
+            await ExecuteHqStorePriceInsertBatchesAsync(inserts, updateFields, result);
+            await ExecuteHqStorePriceUpdateBatchesAsync(updates, updateFields, result);
+        }
+
+        private async Task ExecuteHqStorePriceInsertBatchesAsync(
+            List<HqStorePriceWrite> writes,
+            UpdateToStorePricesFields updateFields,
+            UpdateHqProductsResult result
+        )
+        {
+            var hqDb = _hqContext.Db;
+            foreach (var batch in writes.Chunk(HqWriteBatchSize))
+            {
+                var batchWrites = batch.ToList();
                 try
                 {
-                    if (!existingByStore.TryGetValue(storeCode, out var price))
-                    {
-                        price = BuildHqStorePrice(detail, product, storeCode, updatedBy, now, hqProductCode);
-                        if (!ApplyAllHqFieldsForInsert(price, detail, product, updateFields, result, storeCode))
-                        {
-                            continue;
-                        }
-                        await hqDb.Insertable(price).IgnoreColumns(x => x.ID).ExecuteCommandAsync();
-                        result.Updated++;
-                        continue;
-                    }
-
-                    if (!ApplySelectedHqFields(price, detail, product, updateFields, result, storeCode))
-                    {
-                        continue;
-                    }
-                    price.FGC_LastModifier = updatedBy;
-                    price.FGC_LastModifyDate = now;
-                    await hqDb.Updateable(price).ExecuteCommandAsync();
-                    result.Updated++;
+                    var affectedRows = await hqDb.Insertable(batchWrites.Select(write => write.Price).ToList())
+                        .IgnoreColumns(price => price.ID)
+                        .ExecuteCommandAsync();
+                    EnsureExpectedAffectedRows(
+                        affectedRows,
+                        batchWrites.Count,
+                        "批量新增HQ分店价格"
+                    );
+                    RegisterHqStorePriceWriteSuccesses(result, batchWrites);
                 }
-                catch (Exception ex)
+                catch (Exception batchException)
                 {
-                    AddError(result, detail.DetailGUID, storeCode, $"更新HQ分店价格失败：{ex.Message}");
+                    _logger.LogWarning(
+                        batchException,
+                        "批量新增HQ分店价格失败，降级逐条处理 Count={Count}",
+                        batchWrites.Count
+                    );
+                    foreach (var write in batchWrites)
+                    {
+                        try
+                        {
+                            await UpsertHqStorePriceAfterBatchFailureAsync(write, updateFields);
+                            RegisterHqStorePriceWriteSuccess(result, write);
+                        }
+                        catch (Exception ex)
+                        {
+                            AddError(
+                                result,
+                                write.DetailGuid,
+                                write.StoreCode,
+                                $"更新HQ分店价格失败：{ex.Message}"
+                            );
+                        }
+                    }
                 }
             }
+        }
+
+        private async Task ExecuteHqStorePriceUpdateBatchesAsync(
+            List<HqStorePriceWrite> writes,
+            UpdateToStorePricesFields updateFields,
+            UpdateHqProductsResult result
+        )
+        {
+            var hqDb = _hqContext.Db;
+            // 同一请求中不同明细可能只有部分字段有效；按实际字段掩码分组，避免写回本行已跳过字段的旧值。
+            foreach (var writeGroup in writes.GroupBy(write => write.Counts))
+            {
+                var updateColumns = BuildHqPriceUpdateColumns(writeGroup.Key, updateFields);
+                foreach (var batch in writeGroup.Chunk(HqWriteBatchSize))
+                {
+                    var batchWrites = batch.ToList();
+                    try
+                    {
+                        var affectedRows = await hqDb.Updateable(batchWrites.Select(write => write.Price).ToList())
+                            .UpdateColumns(updateColumns)
+                            .ExecuteCommandAsync();
+                        EnsureExpectedAffectedRows(
+                            affectedRows,
+                            batchWrites.Count,
+                            "批量更新HQ分店价格"
+                        );
+                        RegisterHqStorePriceWriteSuccesses(result, batchWrites);
+                    }
+                    catch (Exception batchException)
+                    {
+                        _logger.LogWarning(
+                            batchException,
+                            "批量更新HQ分店价格失败，降级逐条处理 Count={Count}",
+                            batchWrites.Count
+                        );
+                        foreach (var write in batchWrites)
+                        {
+                            try
+                            {
+                                await UpsertHqStorePriceAfterBatchFailureAsync(write, updateFields);
+                                RegisterHqStorePriceWriteSuccess(result, write);
+                            }
+                            catch (Exception ex)
+                            {
+                                AddError(
+                                    result,
+                                    write.DetailGuid,
+                                    write.StoreCode,
+                                    $"更新HQ分店价格失败：{ex.Message}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        private async Task UpsertHqStorePriceAfterBatchFailureAsync(
+            HqStorePriceWrite write,
+            UpdateToStorePricesFields updateFields
+        )
+        {
+            var hqDb = _hqContext.Db;
+            var desired = write.Price;
+            var existing = await hqDb.Queryable<DIC_商品零售价表>()
+                .Where(price =>
+                    price.H分店代码 == desired.H分店代码
+                    && price.H商品编码 == desired.H商品编码
+                )
+                .FirstAsync();
+            if (existing == null)
+            {
+                var affectedRows = await hqDb.Insertable(desired)
+                    .IgnoreColumns(price => price.ID)
+                    .ExecuteCommandAsync();
+                EnsureExpectedAffectedRows(affectedRows, 1, "新增HQ分店价格");
+                return;
+            }
+
+            CopySelectedHqPriceFields(existing, desired, write.Counts);
+            existing.FGC_LastModifier = desired.FGC_LastModifier;
+            existing.FGC_LastModifyDate = desired.FGC_LastModifyDate;
+            var updatedRows = await hqDb.Updateable(existing)
+                .UpdateColumns(BuildHqPriceUpdateColumns(write.Counts, updateFields))
+                .ExecuteCommandAsync();
+            EnsureExpectedAffectedRows(updatedRows, 1, "更新HQ分店价格");
+        }
+
+        private static void CopySelectedHqPriceFields(
+            DIC_商品零售价表 target,
+            DIC_商品零售价表 source,
+            HqFieldUpdateCounts counts
+        )
+        {
+            if (counts.PurchasePrice > 0)
+                target.H进货价 = source.H进货价;
+            if (counts.RetailPrice > 0)
+                target.H分店零售价 = source.H分店零售价;
+            if (counts.AutoPricing > 0)
+                target.H是否自动定价 = source.H是否自动定价;
+            if (counts.SpecialProduct > 0)
+                target.H是否特殊商品 = source.H是否特殊商品;
+            if (counts.DiscountRate > 0)
+                target.H折扣率 = source.H折扣率;
+        }
+
+        private static string[] BuildHqPriceUpdateColumns(UpdateToStorePricesFields updateFields)
+        {
+            var columns = new List<string>
+            {
+                nameof(DIC_商品零售价表.FGC_LastModifier),
+                nameof(DIC_商品零售价表.FGC_LastModifyDate),
+            };
+            if (updateFields.UpdatePurchasePrice)
+                columns.Add(nameof(DIC_商品零售价表.H进货价));
+            if (updateFields.UpdateRetailPrice)
+                columns.Add(nameof(DIC_商品零售价表.H分店零售价));
+            if (updateFields.UpdateIsAutoPricing)
+                columns.Add(nameof(DIC_商品零售价表.H是否自动定价));
+            if (updateFields.UpdateIsSpecialProduct)
+                columns.Add(nameof(DIC_商品零售价表.H是否特殊商品));
+            if (updateFields.UpdateDiscountRate)
+                columns.Add(nameof(DIC_商品零售价表.H折扣率));
+            return columns.ToArray();
+        }
+
+        private static string[] BuildHqPriceUpdateColumns(
+            HqFieldUpdateCounts counts,
+            UpdateToStorePricesFields updateFields
+        )
+        {
+            var columns = BuildHqPriceUpdateColumns(updateFields).ToHashSet(StringComparer.Ordinal);
+            if (counts.PurchasePrice == 0)
+                columns.Remove(nameof(DIC_商品零售价表.H进货价));
+            if (counts.RetailPrice == 0)
+                columns.Remove(nameof(DIC_商品零售价表.H分店零售价));
+            if (counts.AutoPricing == 0)
+                columns.Remove(nameof(DIC_商品零售价表.H是否自动定价));
+            if (counts.SpecialProduct == 0)
+                columns.Remove(nameof(DIC_商品零售价表.H是否特殊商品));
+            if (counts.DiscountRate == 0)
+                columns.Remove(nameof(DIC_商品零售价表.H折扣率));
+            return columns.ToArray();
+        }
+
+        private static void RegisterHqStorePriceWriteSuccesses(
+            UpdateHqProductsResult result,
+            List<HqStorePriceWrite> writes
+        )
+        {
+            foreach (var write in writes)
+                RegisterHqStorePriceWriteSuccess(result, write);
+        }
+
+        private static void RegisterHqStorePriceWriteSuccess(
+            UpdateHqProductsResult result,
+            HqStorePriceWrite write
+        )
+        {
+            result.Updated++;
+            result.HqPurchasePricesUpdated += write.Counts.PurchasePrice;
+            result.HqRetailPricesUpdated += write.Counts.RetailPrice;
+            result.HqAutoPricingUpdated += write.Counts.AutoPricing;
+            result.HqSpecialProductsUpdated += write.Counts.SpecialProduct;
+            result.HqDiscountRatesUpdated += write.Counts.DiscountRate;
         }
 
         private async Task SyncHqMultiCodesAsync(
@@ -893,6 +1378,13 @@ namespace BlazorApp.Api.Services.React
                     && x.SetBarcode != null
                 )
                 .ToListAsync();
+            // 两个业务键都为空时无法安全重查，避免写入后形成不可去重的HQ多码记录。
+            productSetCodes = productSetCodes
+                .Where(x =>
+                    NormalizeCaseInsensitiveValue(x.SetProductCode) != null
+                    || NormalizeCaseInsensitiveValue(x.SetBarcode) != null
+                )
+                .ToList();
             if (productSetCodes.Count == 0)
                 return;
 
@@ -935,26 +1427,80 @@ namespace BlazorApp.Api.Services.React
                 .Where(x => !string.IsNullOrWhiteSpace(x.H多条形码))
                 .GroupBy(x => NormalizeCaseInsensitiveValue(x.H多条形码)!)
                 .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+            var productSetInserts = new List<HqEntityWrite<DIC_一品多码表>>();
+            var productSetUpdates = new List<HqEntityWrite<DIC_一品多码表>>();
+            var syncableProductSetCodes = new List<ProductSetCode>();
 
             foreach (var productSetCode in productSetCodes)
             {
                 var mapped = BuildHqProductSetCode(item, productSetCode, updatedBy, now);
-                var existing = FindExistingHqProductSetCode(
-                    productSetCode,
-                    hqProductSetByCode,
-                    hqProductSetByBarcode
-                );
+                DIC_一品多码表? existing;
+                try
+                {
+                    existing = FindExistingHqProductSetCode(
+                        productSetCode,
+                        hqProductSetByCode,
+                        hqProductSetByBarcode
+                    );
+                }
+                catch (InvalidOperationException ex)
+                {
+                    AddError(
+                        result,
+                        item.Detail.DetailGUID,
+                        null,
+                        $"同步HQ商品多码失败：{ex.Message}"
+                    );
+                    continue;
+                }
+
+                syncableProductSetCodes.Add(productSetCode);
                 if (existing == null)
                 {
-                    await hqDb.Insertable(mapped).IgnoreColumns(x => x.ID).ExecuteCommandAsync();
-                    result.HqProductSetCodesCreated++;
+                    productSetInserts.Add(
+                        new HqEntityWrite<DIC_一品多码表>(mapped, item.Detail.DetailGUID, null)
+                    );
                     continue;
                 }
 
                 ApplyHqProductSetCode(existing, mapped);
-                await hqDb.Updateable(existing).ExecuteCommandAsync();
-                result.HqProductSetCodesUpdated++;
+                productSetUpdates.Add(
+                    new HqEntityWrite<DIC_一品多码表>(existing, item.Detail.DetailGUID, null)
+                );
             }
+
+            await ExecuteHqEntityBatchesWithFallbackAsync(
+                productSetInserts,
+                entities => hqDb.Insertable(entities).IgnoreColumns(entity => entity.ID).ExecuteCommandAsync(),
+                entity => UpsertHqProductSetCodeAfterBatchFailureAsync(entity),
+                count => result.HqProductSetCodesCreated += count,
+                outcome =>
+                {
+                    if (outcome == HqFallbackWriteOutcome.Created)
+                        result.HqProductSetCodesCreated++;
+                    else
+                        result.HqProductSetCodesUpdated++;
+                },
+                result,
+                "新增HQ商品多码"
+            );
+            await ExecuteHqEntityBatchesWithFallbackAsync(
+                productSetUpdates,
+                entities => hqDb.Updateable(entities)
+                    .UpdateColumns(BuildHqProductSetCodeUpdateColumns())
+                    .ExecuteCommandAsync(),
+                entity => UpsertHqProductSetCodeAfterBatchFailureAsync(entity),
+                count => result.HqProductSetCodesUpdated += count,
+                outcome =>
+                {
+                    if (outcome == HqFallbackWriteOutcome.Created)
+                        result.HqProductSetCodesCreated++;
+                    else
+                        result.HqProductSetCodesUpdated++;
+                },
+                result,
+                "更新HQ商品多码"
+            );
 
             var existingHqStoreMultiCodes = await hqDb.Queryable<DIC_分店一品多码表>()
                 .Where(x =>
@@ -981,10 +1527,12 @@ namespace BlazorApp.Api.Services.React
                     NormalizeCaseInsensitiveValue(x.H多条形码)
                 ))
                 .ToDictionary(g => g.Key, g => g.First());
+            var storeMultiCodeInserts = new List<HqEntityWrite<DIC_分店一品多码表>>();
+            var storeMultiCodeUpdates = new List<HqEntityWrite<DIC_分店一品多码表>>();
 
             foreach (var storeCode in storeCodes)
             {
-                foreach (var productSetCode in productSetCodes)
+                foreach (var productSetCode in syncableProductSetCodes)
                 {
                     var storeMultiCode = FindLocalStoreMultiCode(
                         storeCode,
@@ -1001,25 +1549,300 @@ namespace BlazorApp.Api.Services.React
                         updatedBy,
                         now
                     );
-                    var existing = FindExistingHqStoreMultiCode(
-                        storeCode,
-                        productCode,
-                        productSetCode,
-                        hqStoreByCode,
-                        hqStoreByBarcode
-                    );
+                    DIC_分店一品多码表? existing;
+                    try
+                    {
+                        existing = FindExistingHqStoreMultiCode(
+                            storeCode,
+                            productCode,
+                            productSetCode,
+                            hqStoreByCode,
+                            hqStoreByBarcode
+                        );
+                    }
+                    catch (InvalidOperationException ex)
+                    {
+                        AddError(
+                            result,
+                            item.Detail.DetailGUID,
+                            storeCode,
+                            $"同步HQ分店多码失败：{ex.Message}"
+                        );
+                        continue;
+                    }
                     if (existing == null)
                     {
-                        await hqDb.Insertable(mapped).IgnoreColumns(x => x.ID).ExecuteCommandAsync();
-                        result.HqStoreMultiCodesCreated++;
+                        storeMultiCodeInserts.Add(
+                            new HqEntityWrite<DIC_分店一品多码表>(
+                                mapped,
+                                item.Detail.DetailGUID,
+                                storeCode
+                            )
+                        );
                         continue;
                     }
 
                     ApplyHqStoreMultiCode(existing, mapped);
-                    await hqDb.Updateable(existing).ExecuteCommandAsync();
-                    result.HqStoreMultiCodesUpdated++;
+                    storeMultiCodeUpdates.Add(
+                        new HqEntityWrite<DIC_分店一品多码表>(
+                            existing,
+                            item.Detail.DetailGUID,
+                            storeCode
+                        )
+                    );
                 }
             }
+
+            await ExecuteHqEntityBatchesWithFallbackAsync(
+                storeMultiCodeInserts,
+                entities => hqDb.Insertable(entities).IgnoreColumns(entity => entity.ID).ExecuteCommandAsync(),
+                entity => UpsertHqStoreMultiCodeAfterBatchFailureAsync(entity),
+                count => result.HqStoreMultiCodesCreated += count,
+                outcome =>
+                {
+                    if (outcome == HqFallbackWriteOutcome.Created)
+                        result.HqStoreMultiCodesCreated++;
+                    else
+                        result.HqStoreMultiCodesUpdated++;
+                },
+                result,
+                "新增HQ分店多码"
+            );
+            await ExecuteHqEntityBatchesWithFallbackAsync(
+                storeMultiCodeUpdates,
+                entities => hqDb.Updateable(entities)
+                    .UpdateColumns(BuildHqStoreMultiCodeUpdateColumns())
+                    .ExecuteCommandAsync(),
+                entity => UpsertHqStoreMultiCodeAfterBatchFailureAsync(entity),
+                count => result.HqStoreMultiCodesUpdated += count,
+                outcome =>
+                {
+                    if (outcome == HqFallbackWriteOutcome.Created)
+                        result.HqStoreMultiCodesCreated++;
+                    else
+                        result.HqStoreMultiCodesUpdated++;
+                },
+                result,
+                "更新HQ分店多码"
+            );
+        }
+
+        private async Task ExecuteHqEntityBatchesWithFallbackAsync<T>(
+            List<HqEntityWrite<T>> writes,
+            Func<List<T>, Task<int>> batchWriter,
+            Func<T, Task<HqFallbackWriteOutcome>> singleWriter,
+            Action<int> registerBatchSuccess,
+            Action<HqFallbackWriteOutcome> registerSingleSuccess,
+            UpdateHqProductsResult result,
+            string operationName
+        )
+        {
+            foreach (var batch in writes.Chunk(HqWriteBatchSize))
+            {
+                var batchWrites = batch.ToList();
+                try
+                {
+                    var affectedRows = await batchWriter(
+                        batchWrites.Select(write => write.Entity).ToList()
+                    );
+                    EnsureExpectedAffectedRows(affectedRows, batchWrites.Count, operationName);
+                    registerBatchSuccess(batchWrites.Count);
+                }
+                catch (Exception batchException)
+                {
+                    _logger.LogWarning(
+                        batchException,
+                        "{OperationName}批量写入失败，降级逐条处理 Count={Count}",
+                        operationName,
+                        batchWrites.Count
+                    );
+                    foreach (var write in batchWrites)
+                    {
+                        try
+                        {
+                            var outcome = await singleWriter(write.Entity);
+                            registerSingleSuccess(outcome);
+                        }
+                        catch (Exception ex)
+                        {
+                            AddError(
+                                result,
+                                write.DetailGuid,
+                                write.StoreCode,
+                                $"{operationName}失败：{ex.Message}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        private async Task<HqFallbackWriteOutcome> UpsertHqProductSetCodeAfterBatchFailureAsync(
+            DIC_一品多码表 desired
+        )
+        {
+            var hqDb = _hqContext.Db;
+            var existing = await FindHqProductSetCodeForFallbackAsync(desired);
+            if (existing == null)
+            {
+                var affectedRows = await hqDb.Insertable(desired)
+                    .IgnoreColumns(row => row.ID)
+                    .ExecuteCommandAsync();
+                EnsureExpectedAffectedRows(affectedRows, 1, "新增HQ商品多码");
+                return HqFallbackWriteOutcome.Created;
+            }
+
+            ApplyHqProductSetCode(existing, desired);
+            var updatedRows = await hqDb.Updateable(existing)
+                .UpdateColumns(BuildHqProductSetCodeUpdateColumns())
+                .ExecuteCommandAsync();
+            EnsureExpectedAffectedRows(updatedRows, 1, "更新HQ商品多码");
+            return HqFallbackWriteOutcome.Updated;
+        }
+
+        private async Task<HqFallbackWriteOutcome> UpsertHqStoreMultiCodeAfterBatchFailureAsync(
+            DIC_分店一品多码表 desired
+        )
+        {
+            var hqDb = _hqContext.Db;
+            var existing = await FindHqStoreMultiCodeForFallbackAsync(desired);
+            if (existing == null)
+            {
+                var affectedRows = await hqDb.Insertable(desired)
+                    .IgnoreColumns(row => row.ID)
+                    .ExecuteCommandAsync();
+                EnsureExpectedAffectedRows(affectedRows, 1, "新增HQ分店多码");
+                return HqFallbackWriteOutcome.Created;
+            }
+
+            ApplyHqStoreMultiCode(existing, desired);
+            var updatedRows = await hqDb.Updateable(existing)
+                .UpdateColumns(BuildHqStoreMultiCodeUpdateColumns())
+                .ExecuteCommandAsync();
+            EnsureExpectedAffectedRows(updatedRows, 1, "更新HQ分店多码");
+            return HqFallbackWriteOutcome.Updated;
+        }
+
+        private async Task<DIC_一品多码表?> FindHqProductSetCodeForFallbackAsync(
+            DIC_一品多码表 desired
+        )
+        {
+            var candidates = await _hqContext.Db.Queryable<DIC_一品多码表>()
+                .Where(row => row.H商品编码 == desired.H商品编码)
+                .ToListAsync();
+            var codeKey = NormalizeCaseInsensitiveValue(desired.H多码商品编号);
+            var barcodeKey = NormalizeCaseInsensitiveValue(desired.H多条形码);
+            var byCode = codeKey == null
+                ? null
+                : candidates.FirstOrDefault(row =>
+                    NormalizeCaseInsensitiveValue(row.H多码商品编号) == codeKey
+                );
+            var byBarcode = barcodeKey == null
+                ? null
+                : candidates.FirstOrDefault(row =>
+                    NormalizeCaseInsensitiveValue(row.H多条形码) == barcodeKey
+                );
+
+            EnsureFallbackKeysDoNotConflict(byCode, byBarcode, "HQ商品多码");
+            return byCode ?? byBarcode;
+        }
+
+        private async Task<DIC_分店一品多码表?> FindHqStoreMultiCodeForFallbackAsync(
+            DIC_分店一品多码表 desired
+        )
+        {
+            var candidates = await _hqContext.Db.Queryable<DIC_分店一品多码表>()
+                .Where(row =>
+                    row.H分店代码 == desired.H分店代码
+                    && row.H商品编码 == desired.H商品编码
+                )
+                .ToListAsync();
+            var codeKey = NormalizeCaseInsensitiveValue(desired.H多码商品编码);
+            var barcodeKey = NormalizeCaseInsensitiveValue(desired.H多条形码);
+            var byCode = codeKey == null
+                ? null
+                : candidates.FirstOrDefault(row =>
+                    NormalizeCaseInsensitiveValue(row.H多码商品编码) == codeKey
+                );
+            var byBarcode = barcodeKey == null
+                ? null
+                : candidates.FirstOrDefault(row =>
+                    NormalizeCaseInsensitiveValue(row.H多条形码) == barcodeKey
+                );
+
+            EnsureFallbackKeysDoNotConflict(byCode, byBarcode, "HQ分店多码");
+            return byCode ?? byBarcode;
+        }
+
+        private static void EnsureFallbackKeysDoNotConflict<T>(
+            T? byCode,
+            T? byBarcode,
+            string entityName
+        ) where T : class
+        {
+            if (byCode == null || byBarcode == null || ReferenceEquals(byCode, byBarcode))
+                return;
+
+            throw new InvalidOperationException($"{entityName}业务键冲突：商品编号和条码匹配到不同记录");
+        }
+
+        private static void EnsureExpectedAffectedRows(
+            int affectedRows,
+            int expectedRows,
+            string operationName
+        )
+        {
+            if (affectedRows == expectedRows)
+                return;
+
+            throw new InvalidOperationException(
+                $"{operationName}影响行数异常：预期{expectedRows}行，实际影响{affectedRows}行"
+            );
+        }
+
+        private static string[] BuildHqProductSetCodeUpdateColumns()
+        {
+            return
+            [
+                nameof(DIC_一品多码表.HGUID),
+                nameof(DIC_一品多码表.H商品编码),
+                nameof(DIC_一品多码表.H多码商品编号),
+                nameof(DIC_一品多码表.H供应商编码),
+                nameof(DIC_一品多码表.H主条形码),
+                nameof(DIC_一品多码表.H多条形码),
+                nameof(DIC_一品多码表.H进货价),
+                nameof(DIC_一品多码表.H一品多码零售价),
+                nameof(DIC_一品多码表.H使用状态),
+                nameof(DIC_一品多码表.H是否自动定价),
+                nameof(DIC_一品多码表.FGC_LastModifier),
+                nameof(DIC_一品多码表.FGC_LastModifyDate),
+                nameof(DIC_一品多码表.FGC_UpdateHelp),
+            ];
+        }
+
+        private static string[] BuildHqStoreMultiCodeUpdateColumns()
+        {
+            return
+            [
+                nameof(DIC_分店一品多码表.HGUID),
+                nameof(DIC_分店一品多码表.H分店代码),
+                nameof(DIC_分店一品多码表.H商品编码),
+                nameof(DIC_分店一品多码表.H分店商品编码),
+                nameof(DIC_分店一品多码表.H多码商品编码),
+                nameof(DIC_分店一品多码表.H分店多码商品编码),
+                nameof(DIC_分店一品多码表.H供应商编码),
+                nameof(DIC_分店一品多码表.H主条形码),
+                nameof(DIC_分店一品多码表.H多条形码),
+                nameof(DIC_分店一品多码表.H进货价),
+                nameof(DIC_分店一品多码表.H折扣率),
+                nameof(DIC_分店一品多码表.H一品多码零售价),
+                nameof(DIC_分店一品多码表.H自动新价格),
+                nameof(DIC_分店一品多码表.H是否自动定价),
+                nameof(DIC_分店一品多码表.H是否特殊商品),
+                nameof(DIC_分店一品多码表.H使用状态),
+                nameof(DIC_分店一品多码表.FGC_LastModifier),
+                nameof(DIC_分店一品多码表.FGC_LastModifyDate),
+            ];
         }
 
         private async Task UpsertHqStorePricesAsync(
@@ -1122,18 +1945,16 @@ namespace BlazorApp.Api.Services.React
             Dictionary<string, DIC_一品多码表> hqProductSetByBarcode
         )
         {
-            if (
-                !string.IsNullOrWhiteSpace(productSetCode.SetProductCode)
-                && hqProductSetByCode.TryGetValue(productSetCode.SetProductCode, out var byCode)
-            )
-            {
-                return byCode;
-            }
-
+            DIC_一品多码表? byCode = null;
+            if (!string.IsNullOrWhiteSpace(productSetCode.SetProductCode))
+                hqProductSetByCode.TryGetValue(productSetCode.SetProductCode, out byCode);
             var barcodeKey = NormalizeCaseInsensitiveValue(productSetCode.SetBarcode);
-            return barcodeKey != null && hqProductSetByBarcode.TryGetValue(barcodeKey, out var byBarcode)
-                ? byBarcode
-                : null;
+            DIC_一品多码表? byBarcode = null;
+            if (barcodeKey != null)
+                hqProductSetByBarcode.TryGetValue(barcodeKey, out byBarcode);
+
+            EnsureFallbackKeysDoNotConflict(byCode, byBarcode, "HQ商品多码");
+            return byCode ?? byBarcode;
         }
 
         private static StoreMultiCodeProduct? FindLocalStoreMultiCode(
@@ -1175,6 +1996,7 @@ namespace BlazorApp.Api.Services.React
             Dictionary<string, DIC_分店一品多码表> hqStoreByBarcode
         )
         {
+            DIC_分店一品多码表? byCode = null;
             if (!string.IsNullOrWhiteSpace(productSetCode.SetProductCode))
             {
                 var codeKey = BuildHqStoreMultiCodeKey(
@@ -1182,20 +2004,21 @@ namespace BlazorApp.Api.Services.React
                     productCode,
                     productSetCode.SetProductCode
                 );
-                if (hqStoreByCode.TryGetValue(codeKey, out var byCode))
-                    return byCode;
+                hqStoreByCode.TryGetValue(codeKey, out byCode);
             }
 
             var barcodeKey = NormalizeCaseInsensitiveValue(productSetCode.SetBarcode);
-            if (barcodeKey == null)
-                return null;
+            DIC_分店一品多码表? byBarcode = null;
+            if (barcodeKey != null)
+            {
+                hqStoreByBarcode.TryGetValue(
+                    BuildHqStoreMultiCodeKey(storeCode, productCode, barcodeKey),
+                    out byBarcode
+                );
+            }
 
-            return hqStoreByBarcode.TryGetValue(
-                BuildHqStoreMultiCodeKey(storeCode, productCode, barcodeKey),
-                out var byBarcode
-            )
-                ? byBarcode
-                : null;
+            EnsureFallbackKeysDoNotConflict(byCode, byBarcode, "HQ分店多码");
+            return byCode ?? byBarcode;
         }
 
         private static DIC_一品多码表 BuildHqProductSetCode(
@@ -1215,7 +2038,8 @@ namespace BlazorApp.Api.Services.React
                 H供应商编码 = product.LocalSupplierCode ?? detail.SupplierCode ?? string.Empty,
                 H主条形码 = product.Barcode ?? detail.Barcode ?? string.Empty,
                 H多条形码 = productSetCode.SetBarcode ?? string.Empty,
-                H进货价 = productSetCode.SetPurchasePrice ?? product.PurchasePrice ?? detail.PurchasePrice ?? 0,
+                // 全局多码成本仅取已回算的关系表，不允许回退商品主档或进货单明细成本。
+                H进货价 = productSetCode.SetPurchasePrice ?? 0,
                 H一品多码零售价 =
                     productSetCode.SetRetailPrice ?? product.RetailPrice ?? ResolveRetailPrice(detail),
                 H使用状态 = productSetCode.IsActive,
@@ -1256,12 +2080,8 @@ namespace BlazorApp.Api.Services.React
                 H供应商编码 = product.LocalSupplierCode ?? detail.SupplierCode ?? string.Empty,
                 H主条形码 = product.Barcode ?? detail.Barcode ?? string.Empty,
                 H多条形码 = storeMultiCode?.MultiBarcode ?? productSetCode.SetBarcode ?? string.Empty,
-                H进货价 =
-                    storeMultiCode?.PurchasePrice
-                    ?? productSetCode.SetPurchasePrice
-                    ?? product.PurchasePrice
-                    ?? detail.PurchasePrice
-                    ?? 0,
+                // 门店多码成本仅取已回算的门店投影，缺值不能用其他层级成本掩盖数据不一致。
+                H进货价 = storeMultiCode?.PurchasePrice ?? 0,
                 H折扣率 = storeMultiCode?.DiscountRate ?? detail.DiscountRate ?? 0,
                 H一品多码零售价 =
                     storeMultiCode?.MultiCodeRetailPrice
@@ -1423,18 +2243,24 @@ namespace BlazorApp.Api.Services.React
             Product product,
             UpdateToStorePricesFields updateFields,
             UpdateHqProductsResult result,
-            string storeCode
+            string storeCode,
+            out HqFieldUpdateCounts counts
         )
         {
             var updated = false;
             var skippedFields = new List<string>();
+            var purchasePriceUpdated = 0;
+            var retailPriceUpdated = 0;
+            var autoPricingUpdated = 0;
+            var specialProductUpdated = 0;
+            var discountRateUpdated = 0;
             if (updateFields.UpdatePurchasePrice)
             {
                 var value = ResolvePurchasePriceForUpdate(detail, product, updateFields);
                 if (IsPositiveValue(value))
                 {
                     price.H进货价 = value!.Value;
-                    result.HqPurchasePricesUpdated++;
+                    purchasePriceUpdated = 1;
                     updated = true;
                 }
                 else
@@ -1449,7 +2275,7 @@ namespace BlazorApp.Api.Services.React
                 if (IsPositiveValue(value))
                 {
                     price.H分店零售价 = value!.Value;
-                    result.HqRetailPricesUpdated++;
+                    retailPriceUpdated = 1;
                     updated = true;
                 }
                 else
@@ -1464,7 +2290,7 @@ namespace BlazorApp.Api.Services.React
                 if (value.HasValue)
                 {
                     price.H是否自动定价 = value.Value;
-                    result.HqAutoPricingUpdated++;
+                    autoPricingUpdated = 1;
                     updated = true;
                 }
                 else
@@ -1479,7 +2305,7 @@ namespace BlazorApp.Api.Services.React
                 if (value.HasValue)
                 {
                     price.H是否特殊商品 = value.Value;
-                    result.HqSpecialProductsUpdated++;
+                    specialProductUpdated = 1;
                     updated = true;
                 }
                 else
@@ -1494,7 +2320,7 @@ namespace BlazorApp.Api.Services.React
                 if (IsPositiveValue(value))
                 {
                     price.H折扣率 = value!.Value;
-                    result.HqDiscountRatesUpdated++;
+                    discountRateUpdated = 1;
                     updated = true;
                 }
                 else
@@ -1508,6 +2334,13 @@ namespace BlazorApp.Api.Services.React
                 AddSkipped(result, detail.DetailGUID, storeCode, string.Join("，", skippedFields));
             }
 
+            counts = new HqFieldUpdateCounts(
+                purchasePriceUpdated,
+                retailPriceUpdated,
+                autoPricingUpdated,
+                specialProductUpdated,
+                discountRateUpdated
+            );
             return updated;
         }
 
@@ -1517,11 +2350,20 @@ namespace BlazorApp.Api.Services.React
             Product product,
             UpdateToStorePricesFields updateFields,
             UpdateHqProductsResult result,
-            string storeCode
+            string storeCode,
+            out HqFieldUpdateCounts counts
         )
         {
             // 新插入价格行没有旧值可保留，使用本次更新字段优先补齐整条HQ分店价格记录。
-            return ApplySelectedHqFields(price, detail, product, updateFields, result, storeCode);
+            return ApplySelectedHqFields(
+                price,
+                detail,
+                product,
+                updateFields,
+                result,
+                storeCode,
+                out counts
+            );
         }
 
         private static bool HasAnyUpdateField(UpdateToStorePricesFields updateFields)
@@ -1639,6 +2481,15 @@ namespace BlazorApp.Api.Services.React
         private static string BuildStoreProductCode(string? storeCode, string productCode)
         {
             return $"{storeCode ?? string.Empty}{productCode}";
+        }
+
+        private static string BuildStorePriceKey(string? storeCode, string? productCode)
+        {
+            return string.Join(
+                "\u001f",
+                NormalizeCaseInsensitiveValue(storeCode) ?? string.Empty,
+                NormalizeCaseInsensitiveValue(productCode) ?? string.Empty
+            );
         }
 
         private static string BuildStoreSupplierCode(string storeCode, string? supplierCode)
@@ -1904,11 +2755,65 @@ namespace BlazorApp.Api.Services.React
             });
         }
 
+        private void LogUpdateHqProductsPerformance(
+            string invoiceGuid,
+            int detailCount,
+            int activeStoreCount,
+            int targetStoreCount,
+            UpdateHqProductsResult result,
+            long localPreparationMs,
+            long localPriceMs,
+            long hqProductAndPriceMs,
+            long hqMultiCodeMs,
+            long totalMs
+        )
+        {
+            _logger.LogInformation(
+                "更新HQ商品性能 InvoiceGuid={InvoiceGuid} DetailCount={DetailCount} ActiveStoreCount={ActiveStoreCount} TargetStoreCount={TargetStoreCount} NewLocalProducts={NewLocalProducts} NewHqProducts={NewHqProducts} UpdatedPriceRows={UpdatedPriceRows} Failed={Failed} LocalPreparationMs={LocalPreparationMs} LocalPriceMs={LocalPriceMs} HqProductAndPriceMs={HqProductAndPriceMs} HqMultiCodeMs={HqMultiCodeMs} TotalMs={TotalMs}",
+                invoiceGuid,
+                detailCount,
+                activeStoreCount,
+                targetStoreCount,
+                result.HbwebCreated,
+                result.HqCreated,
+                result.Updated,
+                result.Failed,
+                localPreparationMs,
+                localPriceMs,
+                hqProductAndPriceMs,
+                hqMultiCodeMs,
+                totalMs
+            );
+        }
+
         private sealed record PreparedSyncItem(
             StoreLocalSupplierInvoiceDetails Detail,
             Product Product,
             bool IsNewProduct,
             string? DomesticSupplierCode = null
         );
+
+        private sealed record HqStorePriceWrite(
+            DIC_商品零售价表 Price,
+            string DetailGuid,
+            string StoreCode,
+            HqFieldUpdateCounts Counts
+        );
+
+        private sealed record HqEntityWrite<T>(T Entity, string DetailGuid, string? StoreCode);
+
+        private readonly record struct HqFieldUpdateCounts(
+            int PurchasePrice,
+            int RetailPrice,
+            int AutoPricing,
+            int SpecialProduct,
+            int DiscountRate
+        );
+
+        private enum HqFallbackWriteOutcome
+        {
+            Created,
+            Updated,
+        }
     }
 }

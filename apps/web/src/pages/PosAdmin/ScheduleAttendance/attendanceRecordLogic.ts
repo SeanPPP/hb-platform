@@ -15,6 +15,42 @@ const knownAttendanceApprovalSourceTypes = new Set<AttendanceApprovalSourceType>
   'MissingClockOut',
 ])
 
+export function getAttendanceWeekdayIndex(value?: string): number | undefined {
+  const match = value?.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (!match) return undefined
+
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  // 工作日期是门店日历日期；按 UTC 校验并计算星期，避免浏览器时区造成日期偏移。
+  const date = new Date(Date.UTC(year, month - 1, day))
+  if (
+    date.getUTCFullYear() !== year
+    || date.getUTCMonth() !== month - 1
+    || date.getUTCDate() !== day
+  ) return undefined
+
+  return (date.getUTCDay() + 6) % 7
+}
+
+export function insertAttendanceWeekday(displayText: string, weekdayLabel?: string): string {
+  if (!weekdayLabel || displayText === '--') return displayText
+
+  const match = displayText.match(/^(\d{4}-\d{2}-\d{2})(.*)$/)
+  if (!match) return displayText
+
+  return `${match[1]} ${weekdayLabel}${match[2]}`
+}
+
+export function insertAttendanceWeekdaysInText(
+  text: string,
+  resolveWeekdayLabel: (dateText: string) => string | undefined,
+): string {
+  return text.replace(/\b\d{4}-\d{2}-\d{2}\b/g, (dateText) => (
+    insertAttendanceWeekday(dateText, resolveWeekdayLabel(dateText))
+  ))
+}
+
 export function isKnownAttendanceApprovalSourceType(value: string): value is AttendanceApprovalSourceType {
   return knownAttendanceApprovalSourceTypes.has(value as AttendanceApprovalSourceType)
 }

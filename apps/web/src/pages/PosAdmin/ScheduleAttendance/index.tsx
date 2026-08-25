@@ -34,9 +34,11 @@ import {
   Typography,
   message,
 } from 'antd'
+import enGB from 'antd/es/date-picker/locale/en_GB'
 import type { ColumnsType } from 'antd/es/table'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
+import 'dayjs/locale/en-gb'
 import isoWeek from 'dayjs/plugin/isoWeek'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -102,6 +104,9 @@ import {
   getProposedAdjustmentPunchStatus,
   isKnownAttendanceApprovalSourceType,
   getSupplementalAttendanceApprovalDetail,
+  getAttendanceWeekdayIndex,
+  insertAttendanceWeekday,
+  insertAttendanceWeekdaysInText,
 } from './attendanceRecordLogic'
 import type { LocalPunchAdjustmentPreview } from './attendanceRecordLogic'
 import AttendanceLocationTrajectoryMap from './AttendanceLocationTrajectoryMap'
@@ -351,6 +356,36 @@ export default function ScheduleAttendancePage() {
   const sampleRequestIdRef = useRef(0)
   const selectedAdjustmentPunchType = Form.useWatch('punchType', adjustmentForm)
   const selectedAdjustmentMode = Form.useWatch('adjustmentMode', adjustmentForm)
+  const getBusinessWeekdayLabel = useCallback((displayText: string) => {
+    const weekdayIndex = getAttendanceWeekdayIndex(displayText)
+    return weekdayIndex === undefined
+      ? undefined
+      : t(`posAdmin.scheduleAttendance.weekdays.${weekdayIndex}`)
+  }, [t])
+  const formatBusinessDisplayText = useCallback((displayText: string) => (
+    insertAttendanceWeekday(displayText, getBusinessWeekdayLabel(displayText))
+  ), [getBusinessWeekdayLabel])
+  const formatBusinessDetailText = useCallback((detailText: string) => (
+    insertAttendanceWeekdaysInText(detailText, getBusinessWeekdayLabel)
+  ), [getBusinessWeekdayLabel])
+  const formatRecordMinutes = useCallback((minutes?: number) => (
+    typeof minutes === 'number'
+      ? t('posAdmin.scheduleAttendance.recordLabels.minutes', { minutes })
+      : '--'
+  ), [t])
+  const renderBusinessDisplay = useCallback((displayText: string) => {
+    const weekdayLabel = getBusinessWeekdayLabel(displayText)
+    return (
+      <Space direction="vertical" size={0}>
+        <Typography.Text>{displayText}</Typography.Text>
+        {weekdayLabel ? (
+          <Typography.Text type="secondary" style={{ fontSize: 12, lineHeight: 1.25 }}>
+            {weekdayLabel}
+          </Typography.Text>
+        ) : null}
+      </Space>
+    )
+  }, [getBusinessWeekdayLabel])
   const trajectoryMapPoints = useMemo(
     () => trajectoryResult?.ok
       ? trajectoryResult.mapPoints.map((point) => ({
@@ -361,12 +396,12 @@ export default function ScheduleAttendancePage() {
         accuracy: point.accuracy,
         label: `${t(`posAdmin.scheduleAttendance.messages.trajectoryPoint${point.kind}`)} · ${
           point.kind === 'Sample' || !point.displayTimeSource
-            ? formatDateTimeInTimeZone(point.capturedAtUtc, sampleTimeZone)
-            : formatStoredLocalDateTime(point.displayTimeSource)
+            ? formatBusinessDisplayText(formatDateTimeInTimeZone(point.capturedAtUtc, sampleTimeZone))
+            : formatBusinessDisplayText(formatStoredLocalDateTime(point.displayTimeSource))
         }`,
       }))
       : [],
-    [sampleTimeZone, t, trajectoryResult],
+    [formatBusinessDisplayText, sampleTimeZone, t, trajectoryResult],
   )
   const trajectoryMapPointKeys = useMemo(
     () => new Set(trajectoryMapPoints.map((point) => point.key)),
@@ -376,10 +411,10 @@ export default function ScheduleAttendancePage() {
     () => adjustmentTarget && selectedAdjustmentPunchType
       ? getPunchAdjustmentOptions(adjustmentTarget, selectedAdjustmentPunchType).map((option) => ({
         value: option.value,
-        label: `#${option.segmentIndex} / ${formatDateTime(option.punchTimeLocal)} / ${option.value}`,
+        label: `#${option.segmentIndex} / ${formatBusinessDisplayText(formatDateTime(option.punchTimeLocal))} / ${option.value}`,
       }))
       : [],
-    [adjustmentTarget, selectedAdjustmentPunchType],
+    [adjustmentTarget, formatBusinessDisplayText, selectedAdjustmentPunchType],
   )
   const proposedAdjustmentPunchStatus = useMemo(
     () => adjustmentPreview && serverAdjustmentPreview
@@ -652,7 +687,7 @@ export default function ScheduleAttendancePage() {
     if (activeTab === 'records' && !access.canViewAttendancePunches) setActiveTab('schedules')
   }, [access.canViewAttendancePunches, activeTab])
 
-  const statusLabel = useCallback((type: 'schedule' | 'punch' | 'review', value?: string) => {
+  const statusLabel = useCallback((type: 'schedule' | 'punch' | 'review' | 'scheduleState' | 'segment' | 'overtimeApproval', value?: string) => {
     if (!value) return '--'
     return t(`posAdmin.scheduleAttendance.status.${type}.${value}`, value)
   }, [t])
@@ -1038,7 +1073,7 @@ export default function ScheduleAttendancePage() {
       isOwnSchedule: record.userGuid === currentUser?.userGUID,
       isManagedStore: canEditStoreCode(record.storeCode),
     })) {
-      message.error(t('message.noPermission', '无权操作该数据'))
+      message.error(t('message.noPermission'))
       return
     }
 
@@ -1083,7 +1118,7 @@ export default function ScheduleAttendancePage() {
         currentPayloadSnapshot,
       })) return
       if (!serverPreview.isValid) {
-        message.warning(serverPreview.validationMessage || t('posAdmin.scheduleAttendance.messages.adjustmentPreviewInvalid', '补卡预览未通过服务端校验'))
+        message.warning(serverPreview.validationMessage || t('posAdmin.scheduleAttendance.messages.adjustmentPreviewInvalid'))
         setAdjustmentPreview(null)
         setServerAdjustmentPreview(serverPreview)
         return
@@ -1107,7 +1142,7 @@ export default function ScheduleAttendancePage() {
       if (requestId !== previewRequestIdRef.current) return
       if (typeof error === 'object' && error !== null && 'errorFields' in error) return
       console.error(error)
-      message.error(t('posAdmin.scheduleAttendance.messages.adjustmentPreviewFailed', '补卡预览失败'))
+      message.error(t('posAdmin.scheduleAttendance.messages.adjustmentPreviewFailed'))
     } finally {
       if (requestId === previewRequestIdRef.current) setAdjustmentPreviewLoading(false)
     }
@@ -1124,7 +1159,7 @@ export default function ScheduleAttendancePage() {
       const payload = buildPunchAdjustmentPayload(adjustmentTarget, values)
       const currentPayloadSnapshot = getPunchAdjustmentPayloadSnapshot(payload)
       if (currentPayloadSnapshot !== previewPayloadSnapshot) {
-        message.warning(t('posAdmin.scheduleAttendance.messages.previewExpired', '补卡内容已变化，请重新预览后再保存'))
+        message.warning(t('posAdmin.scheduleAttendance.messages.previewExpired'))
         setAdjustmentPreview(null)
         setServerAdjustmentPreview(null)
         setPreviewPayloadSnapshot(null)
@@ -1136,8 +1171,8 @@ export default function ScheduleAttendancePage() {
         previewRevision: serverAdjustmentPreview.previewRevision,
       })
       message.success(result.status === 'Applied'
-        ? t('posAdmin.scheduleAttendance.messages.adjustmentApplied', '补卡已直接生效')
-        : t('posAdmin.scheduleAttendance.messages.adjustmentSubmitted', '补卡已提交审批'))
+        ? t('posAdmin.scheduleAttendance.messages.adjustmentApplied')
+        : t('posAdmin.scheduleAttendance.messages.adjustmentSubmitted'))
       setAdjustmentModalOpen(false)
       setAdjustmentPreview(null)
       setServerAdjustmentPreview(null)
@@ -1148,7 +1183,7 @@ export default function ScheduleAttendancePage() {
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) return
       console.error(error)
-      message.error(t('posAdmin.scheduleAttendance.messages.adjustmentFailed', '补卡保存失败'))
+      message.error(t('posAdmin.scheduleAttendance.messages.adjustmentFailed'))
     } finally {
       setSaving(false)
     }
@@ -1377,18 +1412,18 @@ export default function ScheduleAttendancePage() {
     },
     { title: t('posAdmin.scheduleAttendance.fields.employee'), key: 'user', width: 210, fixed: 'left', render: (_, record) => userCell(record) },
     {
-      title: t('posAdmin.scheduleAttendance.fields.schedule', '排班'),
+      title: t('posAdmin.scheduleAttendance.fields.schedule'),
       key: 'schedule',
       width: 180,
       render: (_, record) => (
         <Space direction="vertical" size={0}>
-          <Typography.Text>{formatDate(record.workDate)}</Typography.Text>
+          {renderBusinessDisplay(formatDate(record.workDate))}
           <Typography.Text type="secondary">{formatTime(record.startTime)} - {formatTime(record.endTime)}</Typography.Text>
         </Space>
       ),
     },
     {
-      title: t('posAdmin.scheduleAttendance.fields.segments', '有效班段'),
+      title: t('posAdmin.scheduleAttendance.fields.segments'),
       key: 'segments',
       width: 260,
       render: (_, record) => record.segments?.length ? (
@@ -1396,63 +1431,79 @@ export default function ScheduleAttendancePage() {
           {record.segments.map((segment) => (
             <Space key={`${record.scheduleGuid}-${segment.segmentIndex}`} size={6} wrap>
               <Tag style={{ marginInlineEnd: 0 }}>#{segment.segmentIndex}</Tag>
-              <Typography.Text>{formatDateTime(resolveSegmentPunchTime(segment.clockIn))} → {formatDateTime(resolveSegmentPunchTime(segment.clockOut))}</Typography.Text>
-              <Typography.Text type="secondary">{segment.durationMinutes ?? 0}m</Typography.Text>
-              {segment.status ? <Tag color={segment.status === 'Completed' ? 'green' : segment.status === 'Open' ? 'blue' : 'orange'}>{segment.status}</Tag> : null}
+              <Typography.Text>
+                {formatBusinessDisplayText(formatDateTime(resolveSegmentPunchTime(segment.clockIn)))} → {formatBusinessDisplayText(formatDateTime(resolveSegmentPunchTime(segment.clockOut)))}
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                {formatRecordMinutes(segment.durationMinutes ?? 0)}
+              </Typography.Text>
+              {segment.status ? (
+                <Tag color={segment.status === 'Completed' ? 'green' : segment.status === 'Open' ? 'blue' : 'orange'}>
+                  {statusLabel('segment', segment.status)}
+                </Tag>
+              ) : null}
             </Space>
           ))}
         </Space>
       ) : <Typography.Text type="secondary">--</Typography.Text>,
     },
     {
-      title: t('posAdmin.scheduleAttendance.fields.boundaries', '首上班 / 最终下班'),
+      title: t('posAdmin.scheduleAttendance.fields.boundaries'),
       key: 'boundaries',
       width: 205,
       render: (_, record) => {
         const summary = buildAttendanceRecordSummary(record)
         return (
           <Space direction="vertical" size={0}>
-            <Typography.Text>{formatDateTime(summary.firstClockIn)}</Typography.Text>
-            <Typography.Text>{formatDateTime(summary.finalClockOut)}</Typography.Text>
+            <Typography.Text>{formatBusinessDisplayText(formatDateTime(summary.firstClockIn))}</Typography.Text>
+            <Typography.Text>{formatBusinessDisplayText(formatDateTime(summary.finalClockOut))}</Typography.Text>
           </Space>
         )
       },
     },
     {
-      title: t('posAdmin.scheduleAttendance.fields.workedAndBreak', '工时 / 间隔'),
+      title: t('posAdmin.scheduleAttendance.fields.workedAndBreak'),
       key: 'worked',
       width: 130,
       render: (_, record) => {
         const summary = buildAttendanceRecordSummary(record)
-        return `${summary.workedMinutes}m / ${summary.breakMinutes}m`
+        return `${formatRecordMinutes(summary.workedMinutes)} / ${formatRecordMinutes(summary.breakMinutes)}`
       },
     },
     {
-      title: t('posAdmin.scheduleAttendance.fields.exceptions', '迟到 / 早退'),
+      title: t('posAdmin.scheduleAttendance.fields.exceptions'),
       key: 'exceptions',
       width: 140,
       render: (_, record) => {
         const summary = buildAttendanceRecordSummary(record)
         return (
           <Space size={4} wrap>
-            <Tag color={summary.lateMinutes ? 'red' : 'default'}>迟 {summary.lateMinutes}m</Tag>
-            <Tag color={summary.earlyLeaveMinutes ? 'red' : 'default'}>退 {summary.earlyLeaveMinutes}m</Tag>
+            <Tag color={summary.lateMinutes ? 'red' : 'default'}>
+              {t('posAdmin.scheduleAttendance.recordLabels.late', { minutes: summary.lateMinutes })}
+            </Tag>
+            <Tag color={summary.earlyLeaveMinutes ? 'red' : 'default'}>
+              {t('posAdmin.scheduleAttendance.recordLabels.earlyLeave', { minutes: summary.earlyLeaveMinutes })}
+            </Tag>
           </Space>
         )
       },
     },
     {
-      title: t('posAdmin.scheduleAttendance.fields.overtime', '早到 / 晚退 / 候选 / 批准'),
+      title: t('posAdmin.scheduleAttendance.fields.overtime'),
       key: 'overtime',
       width: 210,
       render: (_, record) => {
         const summary = buildAttendanceRecordSummary(record)
         return (
           <Space size={[4, 3]} wrap>
-            <Tag>早 {summary.earlyOvertimeMinutes}m</Tag>
-            <Tag>晚 {summary.lateOvertimeMinutes}m</Tag>
-            <Tag color={summary.candidateOvertimeMinutes ? 'gold' : 'default'}>候 {summary.candidateOvertimeMinutes}m</Tag>
-            <Tag color={summary.approvedOvertimeMinutes ? 'green' : 'default'}>批 {summary.approvedOvertimeMinutes}m</Tag>
+            <Tag>{t('posAdmin.scheduleAttendance.recordLabels.earlyArrival', { minutes: summary.earlyOvertimeMinutes })}</Tag>
+            <Tag>{t('posAdmin.scheduleAttendance.recordLabels.lateDeparture', { minutes: summary.lateOvertimeMinutes })}</Tag>
+            <Tag color={summary.candidateOvertimeMinutes ? 'gold' : 'default'}>
+              {t('posAdmin.scheduleAttendance.recordLabels.candidateOvertime', { minutes: summary.candidateOvertimeMinutes })}
+            </Tag>
+            <Tag color={summary.approvedOvertimeMinutes ? 'green' : 'default'}>
+              {t('posAdmin.scheduleAttendance.recordLabels.approvedOvertime', { minutes: summary.approvedOvertimeMinutes })}
+            </Tag>
           </Space>
         )
       },
@@ -1463,10 +1514,20 @@ export default function ScheduleAttendancePage() {
       width: 180,
       render: (_, record) => (
         <Space size={[4, 3]} wrap>
-          <Tag color={record.hasOpenSegment ? 'blue' : 'default'}>{record.scheduleState || record.status}</Tag>
-          {record.hasMissingClockOut ? <Tag color="red">{t('posAdmin.scheduleAttendance.status.missingClockOut', '漏下班')}</Tag> : null}
-          {record.crossStoreMissingClockOutStoreCode ? <Tag color="volcano">跨店 {record.crossStoreMissingClockOutStoreCode}</Tag> : null}
-          {record.overtimeApprovalStatus ? <Tag color={record.overtimeApprovalStatus === 'Approved' ? 'green' : 'orange'}>{record.overtimeApprovalStatus}</Tag> : null}
+          <Tag color={record.hasOpenSegment ? 'blue' : 'default'}>
+            {record.scheduleState ? statusLabel('scheduleState', record.scheduleState) : statusLabel('schedule', record.status)}
+          </Tag>
+          {record.hasMissingClockOut ? <Tag color="red">{t('posAdmin.scheduleAttendance.status.missingClockOut')}</Tag> : null}
+          {record.crossStoreMissingClockOutStoreCode ? (
+            <Tag color="volcano">
+              {t('posAdmin.scheduleAttendance.recordLabels.crossStore', { storeCode: record.crossStoreMissingClockOutStoreCode })}
+            </Tag>
+          ) : null}
+          {record.overtimeApprovalStatus ? (
+            <Tag color={record.overtimeApprovalStatus === 'Approved' ? 'green' : 'orange'}>
+              {statusLabel('overtimeApproval', record.overtimeApprovalStatus)}
+            </Tag>
+          ) : null}
         </Space>
       ),
     },
@@ -1482,7 +1543,7 @@ export default function ScheduleAttendancePage() {
         isManagedStore: canEditStoreCode(record.storeCode),
       }) ? (
           <Button type="link" size="small" icon={<EditOutlined />} onClick={() => openPunchAdjustmentModal(record)}>
-            {t('posAdmin.scheduleAttendance.actions.adjustPunch', '补卡/修改')}
+            {t('posAdmin.scheduleAttendance.actions.adjustPunch')}
           </Button>
         ) : null,
     },
@@ -1491,8 +1552,8 @@ export default function ScheduleAttendancePage() {
   const availabilityColumns: ColumnsType<AttendanceAvailabilityDto> = [
     { title: t('posAdmin.scheduleAttendance.fields.store'), dataIndex: 'storeCode', width: 150, render: (value: string, record) => record.storeName || storeNameMap.get(value) || value },
     { title: t('posAdmin.scheduleAttendance.fields.employee'), key: 'user', width: 220, render: (_, record) => userCell(record) },
-    { title: t('posAdmin.scheduleAttendance.fields.weekStartDate'), dataIndex: 'weekStartDate', width: 130, render: formatDate },
-    { title: t('posAdmin.scheduleAttendance.fields.availableDate'), dataIndex: 'availableDate', width: 130, render: formatDate },
+    { title: t('posAdmin.scheduleAttendance.fields.weekStartDate'), dataIndex: 'weekStartDate', width: 130, render: (value?: string) => renderBusinessDisplay(formatDate(value)) },
+    { title: t('posAdmin.scheduleAttendance.fields.availableDate'), dataIndex: 'availableDate', width: 130, render: (value?: string) => renderBusinessDisplay(formatDate(value)) },
     { title: t('posAdmin.scheduleAttendance.fields.availableTime'), key: 'time', width: 150, render: (_, record) => `${formatTime(record.startTime)} - ${formatTime(record.endTime)}` },
     { title: t('common.status'), dataIndex: 'status', width: 120, render: scheduleStatusTag },
     { title: t('column.remarks'), dataIndex: 'remark', ellipsis: true },
@@ -1519,7 +1580,7 @@ export default function ScheduleAttendancePage() {
     const nowUtc = new Date().toISOString()
     const currentStoreLocalDate = formatDateInTimeZone(nowUtc, record.storeTimeZone)
       || dayjs(record.workDate).format('YYYY-MM-DD')
-    setSampleTitle(`${record.userName || record.userGuid} / ${formatDate(record.workDate)}`)
+    setSampleTitle(`${record.userName || record.userGuid} / ${formatBusinessDisplayText(formatDate(record.workDate))}`)
     setSampleTimeZone(record.storeTimeZone || '')
     setTrajectoryResult(null)
     setTrajectoryMapVisible(false)
@@ -1615,9 +1676,9 @@ export default function ScheduleAttendancePage() {
   const punchColumns: ColumnsType<AttendancePunchDto> = [
     { title: t('posAdmin.scheduleAttendance.fields.store'), dataIndex: 'storeCode', width: 150, render: (value: string, record) => record.storeName || storeNameMap.get(value) || value },
     { title: t('posAdmin.scheduleAttendance.fields.employee'), key: 'user', width: 220, render: (_, record) => userCell(record) },
-    { title: t('posAdmin.scheduleAttendance.fields.workDate'), dataIndex: 'workDate', width: 130, render: formatDate },
+    { title: t('posAdmin.scheduleAttendance.fields.workDate'), dataIndex: 'workDate', width: 130, render: (value?: string) => renderBusinessDisplay(formatDate(value)) },
     { title: t('posAdmin.scheduleAttendance.fields.punchType'), dataIndex: 'punchType', width: 120, render: (value: string) => t(`posAdmin.scheduleAttendance.status.punchType.${value}`, value) },
-    { title: t('posAdmin.scheduleAttendance.fields.punchTimeLocal'), dataIndex: 'punchTimeLocal', width: 170, render: formatDateTime },
+    { title: t('posAdmin.scheduleAttendance.fields.punchTimeLocal'), dataIndex: 'punchTimeLocal', width: 170, render: (value?: string) => renderBusinessDisplay(formatDateTime(value)) },
     {
       title: t('posAdmin.scheduleAttendance.fields.segmentAudit', '班段 / 原始与有效'),
       key: 'segmentAudit',
@@ -1629,7 +1690,7 @@ export default function ScheduleAttendancePage() {
             {record.supersedesPunchGuid ? `原始 ${record.supersedesPunchGuid}` : '原始时间同有效时间'}
           </Typography.Text>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            有效 {formatDateTime(record.punchTimeLocal)}{record.adjustmentGuid ? ` / ${record.adjustmentGuid}` : ''}
+            有效 {formatBusinessDisplayText(formatDateTime(record.punchTimeLocal))}{record.adjustmentGuid ? ` / ${record.adjustmentGuid}` : ''}
           </Typography.Text>
           {record.isBreakBoundary ? <Tag color="blue">休息边界</Tag> : null}
         </Space>
@@ -1672,20 +1733,20 @@ export default function ScheduleAttendancePage() {
 
   const approvalSystemDetails = (record: AttendanceApprovalDto) => {
     if (!isKnownAttendanceApprovalSourceType(record.sourceType)) {
-      return record.detail ? <Typography.Text type="secondary">{record.detail}</Typography.Text> : null
+      return record.detail ? <Typography.Text type="secondary">{formatBusinessDetailText(record.detail)}</Typography.Text> : null
     }
 
     if (record.sourceType === 'PunchAdjustment') {
       return record.adjustment ? (
         <>
           {record.adjustment.originalPunchTimeLocal ? (
-            <Typography.Text>{t('posAdmin.scheduleAttendance.fields.originalPunchTime')}: {formatDateTime(record.adjustment.originalPunchTimeLocal)}</Typography.Text>
+            <Typography.Text>{t('posAdmin.scheduleAttendance.fields.originalPunchTime')}: {formatBusinessDisplayText(formatDateTime(record.adjustment.originalPunchTimeLocal))}</Typography.Text>
           ) : null}
           {record.adjustment.requestedPunchTimeLocal ? (
-            <Typography.Text>{t('posAdmin.scheduleAttendance.fields.requestedPunchTime')}: {formatDateTime(record.adjustment.requestedPunchTimeLocal)}</Typography.Text>
+            <Typography.Text>{t('posAdmin.scheduleAttendance.fields.requestedPunchTime')}: {formatBusinessDisplayText(formatDateTime(record.adjustment.requestedPunchTimeLocal))}</Typography.Text>
           ) : null}
           {record.adjustment.effectivePunchTimeLocal ? (
-            <Typography.Text>{t('posAdmin.scheduleAttendance.fields.effectivePunchTime')}: {formatDateTime(record.adjustment.effectivePunchTimeLocal)}</Typography.Text>
+            <Typography.Text>{t('posAdmin.scheduleAttendance.fields.effectivePunchTime')}: {formatBusinessDisplayText(formatDateTime(record.adjustment.effectivePunchTimeLocal))}</Typography.Text>
           ) : null}
           {record.adjustment.reason ? (
             <Typography.Text type="secondary">{t('posAdmin.scheduleAttendance.fields.reason')}: {record.adjustment.reason}</Typography.Text>
@@ -1719,11 +1780,11 @@ export default function ScheduleAttendancePage() {
           {record.workDate ? (
             <Typography.Text type="secondary">
               {t(`posAdmin.scheduleAttendance.approvalPresentation.${record.sourceType}.detail`, {
-                workDate: formatDate(record.workDate),
+                workDate: formatBusinessDisplayText(formatDate(record.workDate)),
               })}
             </Typography.Text>
           ) : null}
-          {supplementalDetail ? <Typography.Text type="secondary">{supplementalDetail}</Typography.Text> : null}
+          {supplementalDetail ? <Typography.Text type="secondary">{formatBusinessDetailText(supplementalDetail)}</Typography.Text> : null}
         </>
       )
     }
@@ -1731,7 +1792,7 @@ export default function ScheduleAttendancePage() {
     return record.workDate ? (
       <Typography.Text type="secondary">
         {t(`posAdmin.scheduleAttendance.approvalPresentation.${record.sourceType}.detail`, {
-          workDate: formatDate(record.workDate),
+          workDate: formatBusinessDisplayText(formatDate(record.workDate)),
         })}
       </Typography.Text>
     ) : null
@@ -1741,7 +1802,12 @@ export default function ScheduleAttendancePage() {
     { title: t('posAdmin.scheduleAttendance.fields.store'), dataIndex: 'storeCode', width: 150, render: (value: string, record) => record.storeName || storeNameMap.get(value) || value },
     { title: t('posAdmin.scheduleAttendance.fields.applicant'), key: 'applicant', width: 220, render: (_, record) => userCell(record) },
     { title: t('posAdmin.scheduleAttendance.fields.sourceType'), dataIndex: 'sourceType', width: 120, render: (value: string) => t(`posAdmin.scheduleAttendance.status.sourceType.${value}`, value) },
-    { title: t('posAdmin.scheduleAttendance.fields.workDate'), dataIndex: 'workDate', width: 130, render: formatDate },
+    {
+      title: t('posAdmin.scheduleAttendance.fields.workDate'),
+      dataIndex: 'workDate',
+      width: 130,
+      render: (value?: string) => renderBusinessDisplay(formatDate(value)),
+    },
     { title: t('common.status'), dataIndex: 'reviewStatus', width: 130, render: reviewStatusTag },
     {
       title: t('posAdmin.scheduleAttendance.fields.approvalDetail'),
@@ -1779,7 +1845,7 @@ export default function ScheduleAttendancePage() {
 
   const holidayColumns: ColumnsType<AttendanceStoreHolidayDto> = [
     { title: t('posAdmin.scheduleAttendance.fields.store'), dataIndex: 'storeCode', width: 150, render: (value: string, record) => record.storeName || storeNameMap.get(value) || value },
-    { title: t('posAdmin.scheduleAttendance.fields.holidayDate'), dataIndex: 'holidayDate', width: 130, render: formatDate },
+    { title: t('posAdmin.scheduleAttendance.fields.holidayDate'), dataIndex: 'holidayDate', width: 130, render: (value?: string) => renderBusinessDisplay(formatDate(value)) },
     { title: t('posAdmin.scheduleAttendance.fields.holidayName'), dataIndex: 'holidayName', width: 180 },
     { title: t('posAdmin.scheduleAttendance.fields.businessStatus'), dataIndex: 'businessStatus', width: 130, render: holidayStatusTag },
     { title: t('posAdmin.scheduleAttendance.fields.businessTime'), key: 'businessTime', width: 150, render: (_, record) => `${formatTime(record.openTime)} - ${formatTime(record.closeTime)}` },
@@ -1830,6 +1896,7 @@ export default function ScheduleAttendancePage() {
         <>
           <DatePicker
             picker="week"
+            locale={enGB}
             allowClear={false}
             placeholder={t('posAdmin.scheduleAttendance.weekTable.selectWeek')}
             value={selectedWeek}
@@ -1849,7 +1916,7 @@ export default function ScheduleAttendancePage() {
 
   const recordTabItem = access.canViewAttendancePunches ? {
     key: 'records',
-    label: t('posAdmin.scheduleAttendance.tabs.records', '考勤记录'),
+    label: t('posAdmin.scheduleAttendance.tabs.records'),
     children: (
       <Table
         rowKey="scheduleGuid"
@@ -2232,13 +2299,13 @@ export default function ScheduleAttendancePage() {
                     children: (
                       <Typography.Text>
                         {trajectoryResult.clockIn.punchTimeLocal
-                          ? formatStoredLocalDateTime(trajectoryResult.clockIn.punchTimeLocal)
-                          : formatDateTimeInTimeZone(trajectoryResult.clockIn.punchTimeUtc, sampleTimeZone)}
+                          ? formatBusinessDisplayText(formatStoredLocalDateTime(trajectoryResult.clockIn.punchTimeLocal))
+                          : formatBusinessDisplayText(formatDateTimeInTimeZone(trajectoryResult.clockIn.punchTimeUtc, sampleTimeZone))}
                         {' → '}
                         {trajectoryResult.clockOut
                           ? trajectoryResult.clockOut.punchTimeLocal
-                            ? formatStoredLocalDateTime(trajectoryResult.clockOut.punchTimeLocal)
-                            : formatDateTimeInTimeZone(trajectoryResult.clockOut.punchTimeUtc, sampleTimeZone)
+                            ? formatBusinessDisplayText(formatStoredLocalDateTime(trajectoryResult.clockOut.punchTimeLocal))
+                            : formatBusinessDisplayText(formatDateTimeInTimeZone(trajectoryResult.clockOut.punchTimeUtc, sampleTimeZone))
                           : t('posAdmin.scheduleAttendance.messages.trajectoryInProgress')}
                       </Typography.Text>
                     ),
@@ -2315,8 +2382,8 @@ export default function ScheduleAttendancePage() {
                 const hasCoordinates = typeof point.latitude === 'number' && typeof point.longitude === 'number'
                 const canOpenMap = trajectoryMapPointKeys.has(point.key)
                 const pointTime = point.kind === 'Sample' || !point.displayTimeSource
-                  ? formatDateTimeInTimeZone(point.capturedAtUtc, sampleTimeZone)
-                  : formatStoredLocalDateTime(point.displayTimeSource)
+                  ? formatBusinessDisplayText(formatDateTimeInTimeZone(point.capturedAtUtc, sampleTimeZone))
+                  : formatBusinessDisplayText(formatStoredLocalDateTime(point.displayTimeSource))
                 return {
                   color: point.kind === 'ClockIn' ? 'green' : point.kind === 'ClockOut' ? 'red' : 'blue',
                   children: (
@@ -2398,8 +2465,8 @@ export default function ScheduleAttendancePage() {
                 <Typography.Text type="secondary">
                   {t('posAdmin.scheduleAttendance.fields.locationCapturedAt')}: {
                     mapPreview.timeZone
-                      ? formatDateTimeInTimeZone(mapPreview.capturedAt, mapPreview.timeZone)
-                      : formatDateTime(mapPreview.capturedAt)
+                      ? formatBusinessDisplayText(formatDateTimeInTimeZone(mapPreview.capturedAt, mapPreview.timeZone))
+                      : formatBusinessDisplayText(formatDateTime(mapPreview.capturedAt))
                   }
                 </Typography.Text>
               ) : null}
@@ -2419,7 +2486,7 @@ export default function ScheduleAttendancePage() {
       </Modal>
 
       <Modal
-        title={t('posAdmin.scheduleAttendance.drawer.adjustPunch', '补卡 / 修改打卡')}
+        title={t('posAdmin.scheduleAttendance.drawer.adjustPunch')}
         open={adjustmentModalOpen}
         width={680}
         onCancel={() => {
@@ -2438,12 +2505,12 @@ export default function ScheduleAttendancePage() {
               setPreviewPayloadSnapshot(null)
               setAdjustmentPreviewLoading(false)
             }}>{t('common.cancel')}</Button>
-            <Button loading={adjustmentPreviewLoading} onClick={() => void previewPunchAdjustment()}>{t('posAdmin.scheduleAttendance.actions.preview', '预览变化')}</Button>
-          <Tooltip title={!adjustmentPreview
-            ? t('posAdmin.scheduleAttendance.messages.previewBeforeSave', '保存前必须先预览')
-            : !serverAdjustmentPreview?.previewRevision
-              ? t('posAdmin.scheduleAttendance.messages.previewRevisionMissing')
-              : undefined}>
+            <Button loading={adjustmentPreviewLoading} onClick={() => void previewPunchAdjustment()}>{t('posAdmin.scheduleAttendance.actions.preview')}</Button>
+            <Tooltip title={!adjustmentPreview
+              ? t('posAdmin.scheduleAttendance.messages.previewBeforeSave')
+              : !serverAdjustmentPreview?.previewRevision
+                ? t('posAdmin.scheduleAttendance.messages.previewRevisionMissing')
+                : undefined}>
               <Button type="primary" disabled={!adjustmentPreview || !previewPayloadSnapshot || !serverAdjustmentPreview?.previewRevision} loading={saving} onClick={() => void submitPunchAdjustment()}>
                 {t('common.save')}
               </Button>
@@ -2465,8 +2532,8 @@ export default function ScheduleAttendancePage() {
           <Form.Item name="punchType" label={t('posAdmin.scheduleAttendance.fields.punchType')} rules={[{ required: true }]}>
             <Select
               options={[
-                { value: 'ClockIn', label: t('posAdmin.scheduleAttendance.status.punchType.ClockIn', '上班') },
-                { value: 'ClockOut', label: t('posAdmin.scheduleAttendance.status.punchType.ClockOut', '下班') },
+                { value: 'ClockIn', label: t('posAdmin.scheduleAttendance.status.punchType.ClockIn') },
+                { value: 'ClockOut', label: t('posAdmin.scheduleAttendance.status.punchType.ClockOut') },
               ]}
               onChange={(punchType: 'ClockIn' | 'ClockOut') => {
                 if (!adjustmentTarget) return
@@ -2480,11 +2547,11 @@ export default function ScheduleAttendancePage() {
               }}
             />
           </Form.Item>
-          <Form.Item name="adjustmentMode" label={t('posAdmin.scheduleAttendance.fields.adjustmentMode', '处理方式')} rules={[{ required: true }]}>
+          <Form.Item name="adjustmentMode" label={t('posAdmin.scheduleAttendance.fields.adjustmentMode')} rules={[{ required: true }]}>
             <Select
               options={[
-                { value: 'create', label: t('posAdmin.scheduleAttendance.actions.createMissingPunch', '新增打卡（不替换原记录）') },
-                { value: 'replace', label: t('posAdmin.scheduleAttendance.actions.replacePunch', '纠正已有打卡') },
+                { value: 'create', label: t('posAdmin.scheduleAttendance.actions.createMissingPunch') },
+                { value: 'replace', label: t('posAdmin.scheduleAttendance.actions.replacePunch') },
               ]}
               onChange={(adjustmentMode: 'create' | 'replace') => {
                 adjustmentForm.setFieldValue(
@@ -2499,53 +2566,71 @@ export default function ScheduleAttendancePage() {
           {selectedAdjustmentMode === 'replace' ? (
             <Form.Item
               name="originalPunchGuid"
-              label={t('posAdmin.scheduleAttendance.fields.originalPunch', '要纠正的原始打卡')}
-              rules={[{ required: true, message: t('posAdmin.scheduleAttendance.validation.originalPunchRequired', '纠正已有记录必须选择原始打卡') }]}
-              extra={t('posAdmin.scheduleAttendance.messages.originalPunchAudit', '预览与保存将使用同一个原始打卡，保留 supersede 审计链。')}
+              label={t('posAdmin.scheduleAttendance.fields.originalPunch')}
+              rules={[{ required: true, message: t('posAdmin.scheduleAttendance.validation.originalPunchRequired') }]}
+              extra={t('posAdmin.scheduleAttendance.messages.originalPunchAudit')}
             >
               <Select
                 options={adjustmentPunchOptions}
                 placeholder={adjustmentPunchOptions.length
-                  ? t('common.select', '请选择')
-                  : t('posAdmin.scheduleAttendance.messages.noOriginalPunch', '没有可纠正的原始打卡，请选择新增打卡')}
+                  ? t('common.select')
+                  : t('posAdmin.scheduleAttendance.messages.noOriginalPunch')}
               />
             </Form.Item>
           ) : (
             <Typography.Paragraph type="secondary">
-              {t('posAdmin.scheduleAttendance.messages.newPunchAudit', '新增打卡不会替换之前班段的上下班记录，originalPunchGuid 将保持为空。')}
+              {t('posAdmin.scheduleAttendance.messages.newPunchAudit')}
             </Typography.Paragraph>
           )}
-          <Form.Item name="requestedPunchTimeLocal" label={t('posAdmin.scheduleAttendance.fields.requestedPunchTimeLocal', '申请有效时间')} rules={[{ required: true }]}>
+          <Form.Item name="requestedPunchTimeLocal" label={t('posAdmin.scheduleAttendance.fields.requestedPunchTimeLocal')} rules={[{ required: true }]}>
             <DatePicker showTime={{ format: 'HH:mm' }} format="YYYY-MM-DD HH:mm" style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="reason" label={t('posAdmin.scheduleAttendance.fields.reason', '原因')} rules={[
-            { required: true, whitespace: true, message: t('posAdmin.scheduleAttendance.validation.reasonRequired', '请填写补卡原因') },
+          <Form.Item name="reason" label={t('posAdmin.scheduleAttendance.fields.reason')} rules={[
+            { required: true, whitespace: true, message: t('posAdmin.scheduleAttendance.validation.reasonRequired') },
           ]}>
             <Input.TextArea rows={3} maxLength={500} showCount />
           </Form.Item>
         </Form>
         {adjustmentPreview ? (
           <Space direction="vertical" size={8} style={{ width: '100%', padding: 12, background: '#fafafa', border: '1px solid #f0f0f0', borderRadius: 6 }}>
-            <Typography.Text strong>{t('posAdmin.scheduleAttendance.fields.preview', '变更预览')}</Typography.Text>
+            <Typography.Text strong>{t('posAdmin.scheduleAttendance.fields.preview')}</Typography.Text>
             <Space size={[12, 4]} wrap>
-              <Typography.Text>原始：{formatDateTime(adjustmentPreview.originalPunchTimeLocal)}</Typography.Text>
-              <Typography.Text>有效：{formatDateTime(adjustmentPreview.requestedPunchTimeLocal)}</Typography.Text>
+              <Typography.Text>
+                {t('posAdmin.scheduleAttendance.recordLabels.original', {
+                  time: formatBusinessDisplayText(formatDateTime(adjustmentPreview.originalPunchTimeLocal)),
+                })}
+              </Typography.Text>
+              <Typography.Text>
+                {t('posAdmin.scheduleAttendance.recordLabels.effective', {
+                  time: formatBusinessDisplayText(formatDateTime(adjustmentPreview.requestedPunchTimeLocal)),
+                })}
+              </Typography.Text>
               {serverAdjustmentPreview ? (
                 <>
-                  <Typography.Text>工时：{serverAdjustmentPreview.existingSession?.workedMinutes ?? '--'}m → {serverAdjustmentPreview.proposedSession?.workedMinutes ?? '--'}m</Typography.Text>
-                  <Typography.Text>候选加班：{serverAdjustmentPreview.existingSession?.candidateOvertimeMinutes ?? '--'}m → {serverAdjustmentPreview.proposedSession?.candidateOvertimeMinutes ?? '--'}m</Typography.Text>
+                  <Typography.Text>
+                    {t('posAdmin.scheduleAttendance.recordLabels.workedMinutesChange', {
+                      before: formatRecordMinutes(serverAdjustmentPreview.existingSession?.workedMinutes),
+                      after: formatRecordMinutes(serverAdjustmentPreview.proposedSession?.workedMinutes),
+                    })}
+                  </Typography.Text>
+                  <Typography.Text>
+                    {t('posAdmin.scheduleAttendance.recordLabels.candidateOvertimeChange', {
+                      before: formatRecordMinutes(serverAdjustmentPreview.existingSession?.candidateOvertimeMinutes),
+                      after: formatRecordMinutes(serverAdjustmentPreview.proposedSession?.candidateOvertimeMinutes),
+                    })}
+                  </Typography.Text>
                 </>
               ) : null}
             </Space>
             <Space size={4} wrap>
               {proposedAdjustmentPunchStatus
                 ? <Tag color={proposedAdjustmentPunchStatus === 'Normal' ? 'green' : 'orange'}>{statusLabel('punch', proposedAdjustmentPunchStatus)}</Tag>
-                : <Typography.Text type="secondary">{t('posAdmin.scheduleAttendance.messages.proposedPunchStatusUnavailable', '服务端未返回本次打卡状态')}</Typography.Text>}
+                : <Typography.Text type="secondary">{t('posAdmin.scheduleAttendance.messages.proposedPunchStatusUnavailable')}</Typography.Text>}
             </Space>
             <Typography.Text type="secondary">
               {serverAdjustmentPreview?.wouldAutoApprove
-                ? t('posAdmin.scheduleAttendance.messages.adjustmentWillAutoApprove', '服务端预览：店长本人在管理分店，本次将直接生效。')
-                : t('posAdmin.scheduleAttendance.messages.adjustmentWillReview', '服务端预览：本次将进入补卡审批。')}
+                ? t('posAdmin.scheduleAttendance.messages.adjustmentWillAutoApprove')
+                : t('posAdmin.scheduleAttendance.messages.adjustmentWillReview')}
             </Typography.Text>
           </Space>
         ) : null}
@@ -2576,7 +2661,7 @@ export default function ScheduleAttendancePage() {
           <Space direction="vertical" size={2} style={{ marginBottom: 16 }}>
             <Typography.Text strong>{approvalDisplayTitle(reviewTarget)}</Typography.Text>
             {approvalSystemDetails(reviewTarget)}
-            <Typography.Text>{t('posAdmin.scheduleAttendance.fields.workDate')}: {formatDate(reviewTarget.workDate)}</Typography.Text>
+            <Typography.Text>{t('posAdmin.scheduleAttendance.fields.workDate')}: {formatBusinessDisplayText(formatDate(reviewTarget.workDate))}</Typography.Text>
           </Space>
         ) : null}
         <Form form={reviewForm} layout="vertical">

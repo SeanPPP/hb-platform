@@ -114,6 +114,17 @@ namespace BlazorApp.Api.Services.React
                 .Select(code => code!)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
+            SetChildPurchasePriceLockScope? submitSetChildPurchasePriceLock = null;
+            if (isSubmitContainer)
+            {
+                // 整柜事务先锁本柜涉及商品，再读取并写入主成本、关系和门店投影。
+                submitSetChildPurchasePriceLock = productCodes.Count == 0
+                    ? await SetChildPurchasePriceMutationLock.AcquireAllAsync(_context.Db)
+                    : await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        _context.Db,
+                        productCodes
+                    );
+            }
             var itemNumbers = rows
                 .Select(row => row.ItemNumber)
                 .Where(itemNumber => !string.IsNullOrWhiteSpace(itemNumber))
@@ -212,6 +223,7 @@ namespace BlazorApp.Api.Services.React
                             setRelationsByProductCode,
                             result,
                             effectiveUpdatedBy,
+                            submitSetChildPurchasePriceLock,
                             addResultItem: false
                         );
                     }
@@ -235,7 +247,8 @@ namespace BlazorApp.Api.Services.React
                         existingProductCodes,
                         setRelationsByProductCode,
                         result,
-                        effectiveUpdatedBy
+                        effectiveUpdatedBy,
+                        submitSetChildPurchasePriceLock
                     )
                 )
                 {
@@ -333,7 +346,10 @@ namespace BlazorApp.Api.Services.React
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "货柜创建新商品批量写入失败: {OperationId}", request.OperationId);
-                    AddError(result, null, null, null, "WAREHOUSE_BATCH_EXCEPTION", ex.Message);
+                    var reasonCode = SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                        ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                        : "WAREHOUSE_BATCH_EXCEPTION";
+                    AddError(result, null, null, null, reasonCode, ex.Message);
                 }
             }
 
@@ -342,7 +358,8 @@ namespace BlazorApp.Api.Services.React
                 await UpdateExistingProductsForSubmitAsync(
                     updateItems.Values.ToList(),
                     effectiveUpdatedBy,
-                    result
+                    result,
+                    submitSetChildPurchasePriceLock!
                 );
             }
 
@@ -377,11 +394,21 @@ namespace BlazorApp.Api.Services.React
                 submitTransactionStarted
             );
             }
+            catch (ContainerSetGroupDataQualityException ex)
+            {
+                RollbackSubmitTransaction(submitTransactionStarted);
+                _logger.LogWarning(ex, "货柜套装关系数据校验失败: {OperationId}", request.OperationId);
+                AddError(result, ex.ProductCode, null, null, "SET_GROUP_DATA_QUALITY_ERROR", ex.Message);
+                return FinalizeResult(result);
+            }
             catch (Exception ex) when (isSubmitContainer)
             {
                 RollbackSubmitTransaction(submitTransactionStarted);
                 _logger.LogError(ex, "整柜提交事务失败: {OperationId}", request.OperationId);
-                AddError(result, null, null, null, "SUBMIT_CONTAINER_EXCEPTION", ex.Message);
+                var reasonCode = SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                    ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                    : "SUBMIT_CONTAINER_EXCEPTION";
+                AddError(result, null, null, null, reasonCode, ex.Message);
                 return FinalizeResult(result);
             }
         }
@@ -435,6 +462,7 @@ namespace BlazorApp.Api.Services.React
             Dictionary<string, List<DomesticSetProduct>> setRelationsByProductCode,
             ContainerProductCreationResultDto result,
             string updatedBy,
+            SetChildPurchasePriceLockScope? transactionLockScope,
             bool addResultItem = true
         )
         {
@@ -451,36 +479,72 @@ namespace BlazorApp.Api.Services.React
                 return false;
             }
 
-            var productTypeChanged = await EnsureExistingSetProductTypeAsync(productCode, updatedBy);
-
-            // 已存在套装主商品每次按主商品编码实时查子项表，避免继续依赖货柜同组明细或旧缓存。
-            var setRelations = await EnsureSetRelationsFromSetChildTableAsync(
-                productCode,
-                itemNumber,
-                setRelationsByProductCode
-            );
-            if (setRelations.Count == 0)
+            var ownsTransaction = transactionLockScope == null && _context.Db.Ado.Transaction == null;
+            if (ownsTransaction)
             {
+                // 非整柜补码原先没有事务；单商品关系、投影和成本必须原子完成。
+                await _context.Db.Ado.BeginTranAsync();
+            }
+
+            try
+            {
+                var setChildPurchasePriceLock = transactionLockScope
+                    ?? await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        _context.Db,
+                        new[] { productCode }
+                    );
+                var productTypeChanged = await EnsureExistingSetProductTypeAsync(productCode, updatedBy);
+
+                // 已存在套装主商品每次按主商品编码实时查子项表，避免继续依赖货柜同组明细或旧缓存。
+                var setRelations = await EnsureSetRelationsFromSetChildTableAsync(
+                    productCode,
+                    itemNumber,
+                    setRelationsByProductCode
+                );
+                if (setRelations.Count == 0)
+                {
+                    if (addResultItem)
+                    {
+                        AddSkipped(result, productCode, itemNumber, row.DetailHguid, "SET_CHILD_NOT_FOUND", "未找到套装子项，已跳过");
+                    }
+                    if (ownsTransaction)
+                    {
+                        await _context.Db.Ado.CommitTranAsync();
+                    }
+                    return true;
+                }
+
+                // 按 DomesticSetProduct 检查子码三层完整性，缺 ProductSetCode 或分店多码时只补缺失层级。
+                var changed = await EnsureProductSetCodesAndStoreMultiCodesAsync(
+                    productCode,
+                    setRelations,
+                    setChildPurchasePriceLock,
+                    updatedBy
+                );
                 if (addResultItem)
                 {
-                    AddSkipped(result, productCode, itemNumber, row.DetailHguid, "SET_CHILD_NOT_FOUND", "未找到套装子项，已跳过");
+                    result.Created.Add(new ContainerProductCreationResultItemDto
+                    {
+                        ProductCode = productCode,
+                        ItemNumber = itemNumber,
+                        DetailHguid = row.DetailHguid,
+                        Message = changed || productTypeChanged ? "套装子码已补齐" : "套装子码已完整",
+                    });
+                }
+                if (ownsTransaction)
+                {
+                    await _context.Db.Ado.CommitTranAsync();
                 }
                 return true;
             }
-
-            // 按 DomesticSetProduct 检查子码三层完整性，缺 ProductSetCode 或分店多码时只补缺失层级。
-            var changed = await EnsureProductSetCodesAndStoreMultiCodesAsync(productCode, setRelations);
-            if (addResultItem)
+            catch
             {
-                result.Created.Add(new ContainerProductCreationResultItemDto
+                if (ownsTransaction)
                 {
-                    ProductCode = productCode,
-                    ItemNumber = itemNumber,
-                    DetailHguid = row.DetailHguid,
-                    Message = changed || productTypeChanged ? "套装子码已补齐" : "套装子码已完整",
-                });
+                    await _context.Db.Ado.RollbackTranAsync();
+                }
+                throw;
             }
-            return true;
         }
 
         private async Task<bool> EnsureExistingSetProductTypeAsync(
@@ -527,6 +591,8 @@ namespace BlazorApp.Api.Services.React
                 return hqRelations;
             }
 
+            // HQ 原始关系必须整组校验，禁止先过滤空键或合并重复键后再落库。
+            ValidateSetRelationGroup(productCode, hqRelations);
             await _context.Db.Insertable(hqRelations).ExecuteCommandAsync();
             setRelationsByProductCode[productCode] = hqRelations;
             return hqRelations;
@@ -548,22 +614,11 @@ namespace BlazorApp.Api.Services.React
                 .Where(row =>
                     row.商品编码 == productCode
                     && row.使用状态 == 1
-                    && (
-                        !string.IsNullOrEmpty(row.HGUID)
-                        || !string.IsNullOrEmpty(row.条形码)
-                        || !string.IsNullOrEmpty(row.商品小货号)
-                    )
                 )
                 .ToListAsync();
 
             return hqRows
                 .Select(row => MapHqSetRelation(row, productCode, productNo))
-                .Where(relation =>
-                    !string.IsNullOrWhiteSpace(relation.SetProductCode)
-                    && !string.IsNullOrWhiteSpace(relation.SetProductNo)
-                )
-                .GroupBy(relation => relation.SetProductCode, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
                 .ToList();
         }
 
@@ -573,22 +628,19 @@ namespace BlazorApp.Api.Services.React
             string? productNo
         )
         {
-            var setProductCode =
-                row.商品小货号?.Trim()
-                ?? row.条形码?.Trim()
-                ?? row.HGUID?.Trim()
-                ?? UuidHelper.GenerateUuid7();
-            var setProductNo =
-                row.商品小货号?.Trim()
-                ?? row.条形码?.Trim()
-                ?? setProductCode;
+            var setProductCode = new[] { row.商品小货号, row.条形码, row.HGUID }
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+                ?.Trim();
+            var setProductNo = new[] { row.商品小货号, row.条形码, setProductCode }
+                .FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
+                ?.Trim();
 
             return new DomesticSetProduct
             {
-                SetProductCode = setProductCode,
+                SetProductCode = setProductCode ?? string.Empty,
                 ProductCode = productCode,
                 ProductNo = productNo?.Trim(),
-                SetProductNo = setProductNo,
+                SetProductNo = setProductNo ?? string.Empty,
                 SetBarcode = row.条形码?.Trim(),
                 DomesticPrice = row.国内价格,
                 ImportPrice = row.进口价格,
@@ -600,66 +652,54 @@ namespace BlazorApp.Api.Services.React
 
         private async Task<bool> EnsureProductSetCodesAndStoreMultiCodesAsync(
             string productCode,
-            List<DomesticSetProduct> setRelations
+            List<DomesticSetProduct> setRelations,
+            SetChildPurchasePriceLockScope setChildPurchasePriceLock,
+            string updatedBy
         )
         {
             var now = DateTime.Now;
             var changed = false;
-            var validRelations = setRelations
-                .Where(relation =>
-                    !string.IsNullOrWhiteSpace(relation.SetProductCode)
-                    && !string.IsNullOrWhiteSpace(relation.SetProductNo)
-                )
-                .GroupBy(relation => relation.SetProductCode!, StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First())
-                .ToList();
-
-            if (validRelations.Count == 0)
-            {
-                return false;
-            }
+            ValidateSetRelationGroup(productCode, setRelations);
+            var validRelations = setRelations.ToList();
 
             var setProductCodes = validRelations
                 .Select(relation => relation.SetProductCode!)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            var mainPurchasePrice = await _context.Db.Queryable<Product>()
-                .Where(product => product.ProductCode == productCode && !product.IsDeleted)
-                .Select(product => product.PurchasePrice)
-                .FirstAsync();
-            // 套装子码进货价按子码零售价比例分摊主商品进货价，避免沿用子项自身进货价导致本地/HQ 不一致。
-            var allocatedPurchasePrices = SetChildPurchasePriceAllocator.AllocateByRetailRatio(
-                validRelations,
-                mainPurchasePrice,
-                relation => relation.SetProductCode,
-                relation => relation.OEMPrice
-            );
-            var existingSetCodes = await _context.Db.Queryable<ProductSetCode>()
-                .Where(code => code.ProductCode == productCode && setProductCodes.Contains(code.SetProductCode))
-                .ToListAsync();
-            var existingSetCodeMap = existingSetCodes.ToDictionary(
-                code => code.SetProductCode,
-                code => code,
-                StringComparer.OrdinalIgnoreCase
-            );
+            var existingSetCodes = (
+                await _context.Db.Queryable<ProductSetCode>()
+                    .Where(code => code.ProductCode == productCode)
+                    .ToListAsync()
+            )
+                .Where(code =>
+                    setProductCodes.Contains(
+                        code.SetProductCode?.Trim() ?? string.Empty,
+                        StringComparer.OrdinalIgnoreCase
+                    )
+                )
+                .ToList();
+            // 同一业务键只允许一个活跃候选；历史墓碑只读保留，绝不能成为补码 upsert 的目标。
+            var existingSetCodeMap = SelectActiveProductSetCodes(productCode, existingSetCodes);
             var productSetCodesToInsert = new List<ProductSetCode>();
             var productSetCodesToUpdate = new List<ProductSetCode>();
 
             foreach (var relation in validRelations)
             {
-                var setPurchasePrice = ResolveAllocatedPurchasePrice(relation, allocatedPurchasePrices);
                 if (existingSetCodeMap.TryGetValue(relation.SetProductCode!, out var existingSetCode))
                 {
-                    if (ShouldRefreshSetCode(existingSetCode, relation, setPurchasePrice))
+                    if (ShouldRefreshSetCode(existingSetCode, relation))
                     {
-                        ApplySetCodeValues(existingSetCode, relation, setPurchasePrice, now);
+                        // 已有行只刷新关系展示字段和更新审计，身份、生命周期及成本均由原记录保留。
+                        ApplyExistingSetCodeValues(existingSetCode, relation, now, updatedBy);
                         productSetCodesToUpdate.Add(existingSetCode);
                         changed = true;
                     }
                     continue;
                 }
 
-                productSetCodesToInsert.Add(BuildProductSetCode(productCode, relation, setPurchasePrice, now));
+                productSetCodesToInsert.Add(
+                    BuildProductSetCode(productCode, relation, now, updatedBy)
+                );
                 changed = true;
             }
 
@@ -670,7 +710,17 @@ namespace BlazorApp.Api.Services.React
 
             if (productSetCodesToUpdate.Count > 0)
             {
-                await _context.Db.Updateable(productSetCodesToUpdate).ExecuteCommandAsync();
+                await _context.Db.Updateable(productSetCodesToUpdate)
+                    .UpdateColumns(code => new
+                    {
+                        code.SetItemNumber,
+                        code.SetBarcode,
+                        code.SetRetailPrice,
+                        code.SetQuantity,
+                        code.UpdatedAt,
+                        code.UpdatedBy,
+                    })
+                    .ExecuteCommandAsync();
             }
 
             var activeStoreCodes = await _context.Db.Queryable<Store>()
@@ -679,44 +729,71 @@ namespace BlazorApp.Api.Services.React
                 .ToListAsync();
             if (activeStoreCodes.Count == 0)
             {
+                var globalRecalculation = await new SetChildPurchasePriceService(_context.Db).RecalculateGlobalLockedAsync(
+                    setChildPurchasePriceLock,
+                    new[] { productCode },
+                    updatedBy: updatedBy
+                );
+                if (globalRecalculation.ProductSetCode.SkippedGroupCount > 0)
+                {
+                    throw new ContainerSetGroupDataQualityException(
+                        productCode,
+                        globalRecalculation.Errors.FirstOrDefault()?.Reason ?? "套装子项成本无法完整重算"
+                    );
+                }
                 return changed;
             }
 
-            var existingStoreMultiCodes = await _context.Db.Queryable<StoreMultiCodeProduct>()
+            var existingStoreMultiCodes = (
+                await _context.Db.Queryable<StoreMultiCodeProduct>()
+                    .Where(item => item.ProductCode == productCode)
+                    .ToListAsync()
+            )
                 .Where(item =>
-                    item.ProductCode == productCode
-                    && item.MultiCodeProductCode != null
-                    && setProductCodes.Contains(item.MultiCodeProductCode)
+                    item.MultiCodeProductCode != null
+                    && setProductCodes.Contains(
+                        item.MultiCodeProductCode.Trim(),
+                        StringComparer.OrdinalIgnoreCase
+                    )
                     && item.StoreCode != null
-                    && activeStoreCodes.Contains(item.StoreCode)
+                    && activeStoreCodes.Contains(
+                        item.StoreCode.Trim(),
+                        StringComparer.OrdinalIgnoreCase
+                    )
                 )
-                .ToListAsync();
-            var existingStoreMultiCodeMap = existingStoreMultiCodes.ToDictionary(
-                item => BuildStoreMultiCodeKey(item.StoreCode, item.MultiCodeProductCode),
-                item => item,
-                StringComparer.OrdinalIgnoreCase
+                .ToList();
+            var existingStoreMultiCodeMap = SelectActiveStoreMultiCodes(
+                productCode,
+                existingStoreMultiCodes
             );
             var storeMultiCodesToInsert = new List<StoreMultiCodeProduct>();
             var storeMultiCodesToUpdate = new List<StoreMultiCodeProduct>();
 
             foreach (var relation in validRelations)
             {
-                var setPurchasePrice = ResolveAllocatedPurchasePrice(relation, allocatedPurchasePrices);
                 foreach (var storeCode in activeStoreCodes)
                 {
                     var key = BuildStoreMultiCodeKey(storeCode, relation.SetProductCode);
                     if (existingStoreMultiCodeMap.TryGetValue(key, out var existingStoreMultiCode))
                     {
-                        if (ShouldRefreshStoreMultiCode(existingStoreMultiCode, productCode, storeCode, relation, setPurchasePrice))
+                        if (ShouldRefreshStoreMultiCode(existingStoreMultiCode, storeCode, relation))
                         {
-                            ApplyStoreMultiCodeValues(existingStoreMultiCode, productCode, storeCode, relation, setPurchasePrice, now);
+                            ApplyExistingStoreMultiCodeValues(
+                                existingStoreMultiCode,
+                                storeCode,
+                                relation,
+                                now,
+                                updatedBy
+                            );
                             storeMultiCodesToUpdate.Add(existingStoreMultiCode);
                             changed = true;
                         }
                         continue;
                     }
 
-                    storeMultiCodesToInsert.Add(BuildStoreMultiCode(productCode, storeCode, relation, setPurchasePrice, now));
+                    storeMultiCodesToInsert.Add(
+                        BuildStoreMultiCode(productCode, storeCode, relation, now, updatedBy)
+                    );
                     changed = true;
                 }
             }
@@ -728,141 +805,292 @@ namespace BlazorApp.Api.Services.React
 
             if (storeMultiCodesToUpdate.Count > 0)
             {
-                await _context.Db.Updateable(storeMultiCodesToUpdate).ExecuteCommandAsync();
+                await _context.Db.Updateable(storeMultiCodesToUpdate)
+                    .UpdateColumns(item => new
+                    {
+                        item.StoreMultiCodeProductCode,
+                        item.MultiBarcode,
+                        item.MultiCodeRetailPrice,
+                        item.UpdatedAt,
+                        item.UpdatedBy,
+                    })
+                    .ExecuteCommandAsync();
             }
 
+            // 所有关系、零售价和门店投影写完后，锁内重读主成本并统一回填派生成本。
+            var fullRecalculation = await new SetChildPurchasePriceService(_context.Db).RecalculateLockedAsync(
+                setChildPurchasePriceLock,
+                new[] { productCode },
+                storeCodes: activeStoreCodes,
+                updatedBy: updatedBy
+            );
+            if (
+                fullRecalculation.ProductSetCode.SkippedGroupCount > 0
+                || fullRecalculation.StoreMultiCodeProduct.SkippedGroupCount > 0
+            )
+            {
+                throw new ContainerSetGroupDataQualityException(
+                    productCode,
+                    fullRecalculation.Errors.FirstOrDefault()?.Reason ?? "套装子项成本无法完整重算"
+                );
+            }
             return changed;
+        }
+
+        private static void ValidateSetRelationGroup(
+            string productCode,
+            IReadOnlyCollection<DomesticSetProduct> setRelations
+        )
+        {
+            if (string.IsNullOrWhiteSpace(productCode))
+            {
+                throw new ContainerSetGroupDataQualityException(productCode, "套装主商品编码不能为空");
+            }
+
+            if (setRelations.Count == 0)
+            {
+                throw new ContainerSetGroupDataQualityException(productCode, "套装子项不能为空");
+            }
+
+            foreach (var relation in setRelations)
+            {
+                if (string.IsNullOrWhiteSpace(relation.SetProductCode))
+                {
+                    throw new ContainerSetGroupDataQualityException(productCode, "存在空的套装子项编码");
+                }
+
+                if (string.IsNullOrWhiteSpace(relation.SetProductNo))
+                {
+                    throw new ContainerSetGroupDataQualityException(
+                        productCode,
+                        $"套装子项 {relation.SetProductCode.Trim()} 的货号为空"
+                    );
+                }
+
+                if (
+                    !string.IsNullOrWhiteSpace(relation.ProductCode)
+                    && !string.Equals(
+                        relation.ProductCode.Trim(),
+                        productCode.Trim(),
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    throw new ContainerSetGroupDataQualityException(
+                        productCode,
+                        $"套装子项 {relation.SetProductCode.Trim()} 属于其他主商品 {relation.ProductCode}"
+                    );
+                }
+
+                relation.ProductCode = productCode.Trim();
+                relation.SetProductCode = relation.SetProductCode.Trim();
+                relation.SetProductNo = relation.SetProductNo.Trim();
+            }
+
+            var duplicateKey = setRelations
+                .GroupBy(
+                    relation => relation.SetProductCode.Trim().ToUpperInvariant(),
+                    StringComparer.Ordinal
+                )
+                .FirstOrDefault(group => group.Count() > 1)
+                ?.Key;
+            if (duplicateKey != null)
+            {
+                throw new ContainerSetGroupDataQualityException(
+                    productCode,
+                    $"套装子项编码重复: {duplicateKey}"
+                );
+            }
+        }
+
+        private static Dictionary<string, ProductSetCode> SelectActiveProductSetCodes(
+            string productCode,
+            IEnumerable<ProductSetCode> rows
+        )
+        {
+            var selectedRows = new Dictionary<string, ProductSetCode>(
+                StringComparer.OrdinalIgnoreCase
+            );
+            foreach (
+                var group in rows.GroupBy(
+                    row => row.SetProductCode?.Trim() ?? string.Empty,
+                    StringComparer.OrdinalIgnoreCase
+                )
+            )
+            {
+                var activeRows = group.Where(row => row.IsActive && !row.IsDeleted).ToList();
+                if (activeRows.Count == 0)
+                {
+                    throw new ContainerSetGroupDataQualityException(
+                        productCode,
+                        $"套装子项 {group.Key} 仅存在停用或软删除的总部关系，禁止容器建品复活"
+                    );
+                }
+                if (activeRows.Count > 1)
+                {
+                    throw new ContainerSetGroupDataQualityException(
+                        productCode,
+                        $"套装子项 {group.Key} 存在多条活跃总部关系"
+                    );
+                }
+
+                var activeRow = activeRows[0];
+                if (activeRow.SetType != 1)
+                {
+                    throw new ContainerSetGroupDataQualityException(
+                        productCode,
+                        $"套装子项 {activeRow.SetProductCode} 已被普通多码关系占用"
+                    );
+                }
+                selectedRows.Add(group.Key, activeRow);
+            }
+            return selectedRows;
+        }
+
+        private static Dictionary<string, StoreMultiCodeProduct> SelectActiveStoreMultiCodes(
+            string productCode,
+            IEnumerable<StoreMultiCodeProduct> rows
+        )
+        {
+            var selectedRows = new Dictionary<string, StoreMultiCodeProduct>(
+                StringComparer.OrdinalIgnoreCase
+            );
+            foreach (
+                var group in rows.GroupBy(
+                    row => BuildStoreMultiCodeKey(row.StoreCode, row.MultiCodeProductCode),
+                    StringComparer.OrdinalIgnoreCase
+                )
+            )
+            {
+                var activeRows = group.Where(row => row.IsActive && !row.IsDeleted).ToList();
+                var sample = group.First();
+                if (activeRows.Count == 0)
+                {
+                    throw new ContainerSetGroupDataQualityException(
+                        productCode,
+                        $"门店 {sample.StoreCode} 套装子项 {sample.MultiCodeProductCode} 仅存在停用或软删除的门店关系，禁止容器建品复活"
+                    );
+                }
+                if (activeRows.Count > 1)
+                {
+                    throw new ContainerSetGroupDataQualityException(
+                        productCode,
+                        $"门店 {sample.StoreCode} 套装子项 {sample.MultiCodeProductCode} 存在多条活跃门店关系"
+                    );
+                }
+                selectedRows.Add(group.Key, activeRows[0]);
+            }
+            return selectedRows;
         }
 
         private static ProductSetCode BuildProductSetCode(
             string productCode,
             DomesticSetProduct relation,
-            decimal? setPurchasePrice,
-            DateTime now
+            DateTime now,
+            string updatedBy
         )
         {
-            var setCode = new ProductSetCode
+            // 新建行一次性初始化身份、类型、生命周期和创建审计；与已有行窄更新明确分离。
+            return new ProductSetCode
             {
                 SetCodeId = relation.SetProductCode!,
+                ProductCode = productCode,
+                SetProductCode = relation.SetProductCode!,
+                SetItemNumber = relation.SetProductNo,
+                SetBarcode = relation.SetBarcode,
+                SetPurchasePrice = null,
+                SetRetailPrice = relation.OEMPrice,
+                SetQuantity = 1,
+                SetType = 1,
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = now,
+                CreatedBy = updatedBy,
+                UpdatedAt = now,
+                UpdatedBy = updatedBy,
             };
-            ApplySetCodeValues(setCode, relation, setPurchasePrice, now);
-            setCode.ProductCode = productCode;
-            return setCode;
         }
 
-        private static void ApplySetCodeValues(
+        private static void ApplyExistingSetCodeValues(
             ProductSetCode setCode,
             DomesticSetProduct relation,
-            decimal? setPurchasePrice,
-            DateTime now
+            DateTime now,
+            string updatedBy
         )
         {
-            setCode.ProductCode = relation.ProductCode;
-            setCode.SetProductCode = relation.SetProductCode!;
             setCode.SetItemNumber = relation.SetProductNo;
             setCode.SetBarcode = relation.SetBarcode;
-            setCode.SetPurchasePrice = setPurchasePrice;
             setCode.SetRetailPrice = relation.OEMPrice;
             setCode.SetQuantity = 1;
-            setCode.SetType = 1;
-            setCode.IsActive = true;
-            setCode.IsDeleted = false;
             setCode.UpdatedAt = now;
-            if (setCode.CreatedAt == default)
-            {
-                setCode.CreatedAt = now;
-            }
+            setCode.UpdatedBy = updatedBy;
         }
 
         private static StoreMultiCodeProduct BuildStoreMultiCode(
             string productCode,
             string storeCode,
             DomesticSetProduct relation,
-            decimal? setPurchasePrice,
-            DateTime now
+            DateTime now,
+            string updatedBy
         )
         {
-            var storeMultiCode = new StoreMultiCodeProduct
+            // 新建门店投影才设置 UUID、业务键、生命周期及定价默认值。
+            return new StoreMultiCodeProduct
             {
                 UUID = UuidHelper.GenerateUuid7(),
+                StoreCode = storeCode,
+                ProductCode = productCode,
+                MultiCodeProductCode = relation.SetProductCode,
+                StoreMultiCodeProductCode = storeCode + relation.SetProductCode,
+                MultiBarcode = relation.SetBarcode,
+                PurchasePrice = null,
+                MultiCodeRetailPrice = relation.OEMPrice,
+                DiscountRate = null,
+                IsAutoPricing = false,
+                IsSpecialProduct = false,
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = now,
+                CreatedBy = updatedBy,
+                UpdatedAt = now,
+                UpdatedBy = updatedBy,
             };
-            ApplyStoreMultiCodeValues(storeMultiCode, productCode, storeCode, relation, setPurchasePrice, now);
-            return storeMultiCode;
         }
 
-        private static void ApplyStoreMultiCodeValues(
+        private static void ApplyExistingStoreMultiCodeValues(
             StoreMultiCodeProduct storeMultiCode,
-            string productCode,
             string storeCode,
             DomesticSetProduct relation,
-            decimal? setPurchasePrice,
-            DateTime now
+            DateTime now,
+            string updatedBy
         )
         {
-            storeMultiCode.StoreCode = storeCode;
-            storeMultiCode.ProductCode = productCode;
-            storeMultiCode.MultiCodeProductCode = relation.SetProductCode;
             storeMultiCode.StoreMultiCodeProductCode = storeCode + relation.SetProductCode;
             storeMultiCode.MultiBarcode = relation.SetBarcode;
-            storeMultiCode.PurchasePrice = setPurchasePrice;
             storeMultiCode.MultiCodeRetailPrice = relation.OEMPrice;
-            storeMultiCode.DiscountRate = null;
-            storeMultiCode.IsAutoPricing = false;
-            storeMultiCode.IsSpecialProduct = false;
-            storeMultiCode.IsActive = true;
-            storeMultiCode.IsDeleted = false;
             storeMultiCode.UpdatedAt = now;
-            if (storeMultiCode.CreatedAt == default)
-            {
-                storeMultiCode.CreatedAt = now;
-            }
-        }
-
-        private static decimal? ResolveAllocatedPurchasePrice(
-            DomesticSetProduct relation,
-            Dictionary<string, decimal> allocatedPurchasePrices
-        )
-        {
-            return relation.SetProductCode != null
-                && allocatedPurchasePrices.TryGetValue(relation.SetProductCode, out var allocatedPurchasePrice)
-                ? allocatedPurchasePrice
-                : relation.ImportPrice;
+            storeMultiCode.UpdatedBy = updatedBy;
         }
 
         private static bool ShouldRefreshSetCode(
             ProductSetCode setCode,
-            DomesticSetProduct relation,
-            decimal? setPurchasePrice
+            DomesticSetProduct relation
         )
         {
-            return setCode.IsDeleted
-                || !setCode.IsActive
-                || setCode.ProductCode != relation.ProductCode
-                || setCode.SetProductCode != relation.SetProductCode
-                || setCode.SetItemNumber != relation.SetProductNo
+            return setCode.SetItemNumber != relation.SetProductNo
                 || setCode.SetBarcode != relation.SetBarcode
-                || setCode.SetPurchasePrice != setPurchasePrice
                 || setCode.SetRetailPrice != relation.OEMPrice
-                || setCode.SetQuantity != 1
-                || setCode.SetType != 1;
+                || setCode.SetQuantity != 1;
         }
 
         private static bool ShouldRefreshStoreMultiCode(
             StoreMultiCodeProduct storeMultiCode,
-            string productCode,
             string storeCode,
-            DomesticSetProduct relation,
-            decimal? setPurchasePrice
+            DomesticSetProduct relation
         )
         {
-            return storeMultiCode.IsDeleted
-                || !storeMultiCode.IsActive
-                || storeMultiCode.StoreCode != storeCode
-                || storeMultiCode.ProductCode != productCode
-                || storeMultiCode.MultiCodeProductCode != relation.SetProductCode
-                || storeMultiCode.StoreMultiCodeProductCode != storeCode + relation.SetProductCode
+            return storeMultiCode.StoreMultiCodeProductCode != storeCode + relation.SetProductCode
                 || storeMultiCode.MultiBarcode != relation.SetBarcode
-                || storeMultiCode.PurchasePrice != setPurchasePrice
                 || storeMultiCode.MultiCodeRetailPrice != relation.OEMPrice;
         }
 
@@ -939,6 +1167,33 @@ namespace BlazorApp.Api.Services.React
                     continue;
                 }
 
+                // 套装子项关系必须是完整组：原始子项编码为空，或标准化后重复时，
+                // 不能跳过坏行后继续创建残缺套装，直接拒绝该主商品整组关系。
+                var normalizedSetChildProductCodes = sameGroupChildren
+                    .Select(childRow => childRow.ProductCode)
+                    .ToList();
+                if (
+                    normalizedSetChildProductCodes.Any(string.IsNullOrWhiteSpace)
+                    || normalizedSetChildProductCodes
+                        .Select(code => code!.Trim().ToUpperInvariant())
+                        .Distinct(StringComparer.Ordinal)
+                        .Count() != normalizedSetChildProductCodes.Count
+                )
+                {
+                    var conflictingKey = normalizedSetChildProductCodes
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!.Trim().ToUpperInvariant())
+                        .GroupBy(code => code, StringComparer.Ordinal)
+                        .FirstOrDefault(group => group.Count() > 1)
+                        ?.Key;
+                    throw new ContainerSetGroupDataQualityException(
+                        mainProductCode,
+                        conflictingKey == null
+                            ? $"混装组 {mixedGroupCode} 存在空的套装子项编码"
+                            : $"混装组 {mixedGroupCode} 的套装子项编码重复: {conflictingKey}"
+                    );
+                }
+
                 var existingRelations = setRelationsByProductCode.TryGetValue(mainProductCode, out var relations)
                     ? relations
                     : new List<DomesticSetProduct>();
@@ -953,20 +1208,32 @@ namespace BlazorApp.Api.Services.React
                 {
                     var setProductCode = childRow.ProductCode?.Trim();
                     var setProductNo = childRow.ItemNumber?.Trim();
-                    if (
-                        string.IsNullOrWhiteSpace(setProductCode)
-                        || string.IsNullOrWhiteSpace(setProductNo)
-                        || existingSetProductCodes.Contains(setProductCode)
-                        || !pendingSetProductCodes.Add(setProductCode)
-                    )
+                    if (string.IsNullOrWhiteSpace(setProductNo))
                     {
-                        continue;
+                        throw new ContainerSetGroupDataQualityException(
+                            mainProductCode,
+                            $"套装子项 {setProductCode} 的货号为空"
+                        );
+                    }
+                    if (existingSetProductCodes.Contains(setProductCode!))
+                    {
+                        throw new ContainerSetGroupDataQualityException(
+                            mainProductCode,
+                            $"套装子项编码 {setProductCode} 已被其他关系占用"
+                        );
+                    }
+                    if (!pendingSetProductCodes.Add(setProductCode!))
+                    {
+                        throw new ContainerSetGroupDataQualityException(
+                            mainProductCode,
+                            $"本次创建中套装子项编码重复: {setProductCode}"
+                        );
                     }
 
                     // 从同货柜同混装组的套装子项补齐国内套装关系，后续批量创建会复用它生成商品子码和分店子码。
                     newRelations.Add(new DomesticSetProduct
                     {
-                        SetProductCode = setProductCode,
+                        SetProductCode = setProductCode!,
                         ProductCode = mainProductCode,
                         ProductNo = mainItemNumber,
                         SetProductNo = setProductNo,
@@ -995,6 +1262,17 @@ namespace BlazorApp.Api.Services.React
             }
 
             return linkedSetChildDetailHguids;
+        }
+
+        private sealed class ContainerSetGroupDataQualityException : InvalidOperationException
+        {
+            public ContainerSetGroupDataQualityException(string? productCode, string message)
+                : base(message)
+            {
+                ProductCode = productCode;
+            }
+
+            public string? ProductCode { get; }
         }
 
         private async Task<List<ContainerProductCreationSourceRow>> LoadSetChildRowsAsync(
@@ -1231,7 +1509,8 @@ namespace BlazorApp.Api.Services.React
         private async Task UpdateExistingProductsForSubmitAsync(
             List<ContainerProductUpdateSource> sources,
             string effectiveUpdatedBy,
-            ContainerProductCreationResultDto result
+            ContainerProductCreationResultDto result,
+            SetChildPurchasePriceLockScope setChildPurchasePriceLock
         )
         {
             if (sources.Count == 0)
@@ -1328,7 +1607,12 @@ namespace BlazorApp.Api.Services.React
                 if (productsToUpdate.Count > 0)
                 {
                     await _context.Db.Updateable(productsToUpdate)
-                        .UpdateColumns(product => new { product.PurchasePrice, product.UpdatedAt })
+                        .UpdateColumns(product => new
+                        {
+                            product.PurchasePrice,
+                            product.UpdatedBy,
+                            product.UpdatedAt,
+                        })
                         .ExecuteCommandAsync();
                 }
 
@@ -1348,7 +1632,32 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 await UpsertActiveStoreRetailPricesAsync(updatedSources, now);
-                await UpsertActiveStoreMultiCodePricesAsync(updatedSources, now);
+
+                var updatedProductCodes = updatedSources
+                    .Select(source => source.Item.ProductCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .ToList();
+                if (updatedProductCodes.Count > 0)
+                {
+                    // 整柜主成本、门店主价全部写完后，在同一产品锁内重读并回填套装子项成本。
+                    var recalculation = await new SetChildPurchasePriceService(
+                        _context.Db
+                    ).RecalculateLockedAsync(
+                        setChildPurchasePriceLock,
+                        updatedProductCodes,
+                        storeCodes: null,
+                        updatedBy: effectiveUpdatedBy
+                    );
+                    if (
+                        recalculation.ProductSetCode.SkippedGroupCount > 0
+                        || recalculation.StoreMultiCodeProduct.SkippedGroupCount > 0
+                    )
+                    {
+                        var reason = recalculation.Errors.FirstOrDefault()?.Reason
+                            ?? "整柜更新后的套装子项成本重算不完整";
+                        throw new InvalidOperationException(reason);
+                    }
+                }
 
                 foreach (var source in updatedSources)
                 {
@@ -1364,7 +1673,10 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "整柜提交更新已有商品价格失败");
-                AddError(result, null, null, null, "UPDATE_EXISTING_PRODUCTS_FAILED", ex.Message);
+                var reasonCode = SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                    ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                    : "UPDATE_EXISTING_PRODUCTS_FAILED";
+                AddError(result, null, null, null, reasonCode, ex.Message);
             }
         }
 
@@ -1461,99 +1773,6 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
-        private async Task UpsertActiveStoreMultiCodePricesAsync(
-            List<ContainerProductUpdateSource> sources,
-            DateTime now
-        )
-        {
-            var activeStoreCodes = await LoadActiveStoreCodesAsync();
-            if (activeStoreCodes.Count == 0 || sources.Count == 0)
-            {
-                return;
-            }
-
-            var productCodes = sources
-                .Select(source => source.Item.ProductCode)
-                .Where(code => !string.IsNullOrWhiteSpace(code))
-                .Select(code => code!)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            var existingRows = await _context.Db.Queryable<StoreMultiCodeProduct>()
-                .Where(row =>
-                    row.StoreCode != null
-                    && activeStoreCodes.Contains(row.StoreCode)
-                    && row.ProductCode != null
-                    && productCodes.Contains(row.ProductCode)
-                    && !row.IsDeleted
-                )
-                .ToListAsync();
-            var existingMap = existingRows
-                .GroupBy(row => BuildStoreProductKey(row.StoreCode, row.ProductCode), StringComparer.OrdinalIgnoreCase)
-                .ToDictionary(
-                    group => group.Key,
-                    group => group.OrderByDescending(row => row.UpdatedAt ?? row.CreatedAt).First(),
-                    StringComparer.OrdinalIgnoreCase
-                );
-
-            var rowsToInsert = new List<StoreMultiCodeProduct>();
-            var rowsToUpdate = new List<StoreMultiCodeProduct>();
-
-            foreach (var source in sources)
-            {
-                var item = source.Item;
-                if (string.IsNullOrWhiteSpace(item.ProductCode))
-                {
-                    continue;
-                }
-
-                foreach (var storeCode in activeStoreCodes)
-                {
-                    var key = BuildStoreProductKey(storeCode, item.ProductCode);
-                    if (existingMap.TryGetValue(key, out var existing))
-                    {
-                        if (ApplyStoreMultiCodeValues(existing, item, now, updateActiveFlag: false))
-                        {
-                            rowsToUpdate.Add(existing);
-                        }
-                        continue;
-                    }
-
-                    var row = new StoreMultiCodeProduct
-                    {
-                        UUID = UuidHelper.GenerateUuid7(),
-                        StoreCode = storeCode,
-                        ProductCode = item.ProductCode,
-                        StoreMultiCodeProductCode = storeCode + item.ProductCode,
-                        IsActive = true,
-                        IsAutoPricing = false,
-                        IsDeleted = false,
-                        CreatedAt = now,
-                        UpdatedAt = now,
-                    };
-                    ApplyStoreMultiCodeValues(row, item, now, updateActiveFlag: true);
-                    rowsToInsert.Add(row);
-                    existingMap[key] = row;
-                }
-            }
-
-            if (rowsToInsert.Count > 0)
-            {
-                await _context.Db.Insertable(rowsToInsert).ExecuteCommandAsync();
-            }
-
-            if (rowsToUpdate.Count > 0)
-            {
-                await _context.Db.Updateable(rowsToUpdate)
-                    .UpdateColumns(row => new
-                    {
-                        row.PurchasePrice,
-                        row.MultiCodeRetailPrice,
-                        row.UpdatedAt,
-                    })
-                    .ExecuteCommandAsync();
-            }
-        }
-
         private async Task<List<string>> LoadActiveStoreCodesAsync()
         {
             return (await _context.Db.Queryable<Store>()
@@ -1581,37 +1800,6 @@ namespace BlazorApp.Api.Services.React
             if (item.OEMPrice.HasValue && row.StoreRetailPriceValue != item.OEMPrice)
             {
                 row.StoreRetailPriceValue = item.OEMPrice;
-                changed = true;
-            }
-            if (updateActiveFlag)
-            {
-                row.IsActive = true;
-                row.IsAutoPricing = false;
-                changed = true;
-            }
-            if (changed)
-            {
-                row.UpdatedAt = now;
-            }
-            return changed;
-        }
-
-        private static bool ApplyStoreMultiCodeValues(
-            StoreMultiCodeProduct row,
-            UpdateItemDto item,
-            DateTime now,
-            bool updateActiveFlag
-        )
-        {
-            var changed = false;
-            if (item.ImportPrice.HasValue && row.PurchasePrice != item.ImportPrice)
-            {
-                row.PurchasePrice = item.ImportPrice;
-                changed = true;
-            }
-            if (item.OEMPrice.HasValue && row.MultiCodeRetailPrice != item.OEMPrice)
-            {
-                row.MultiCodeRetailPrice = item.OEMPrice;
                 changed = true;
             }
             if (updateActiveFlag)

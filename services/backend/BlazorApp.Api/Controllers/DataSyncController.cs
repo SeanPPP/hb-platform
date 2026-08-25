@@ -1,4 +1,5 @@
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -125,6 +126,17 @@ namespace BlazorApp.Api.Controllers
                 else
                 {
                     _logger.LogWarning("商品信息数据同步失败: {Message}", result.Message);
+                    if (
+                        result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                    )
+                    {
+                        var response = ApiResponse<SyncResult>.Error(
+                            result.Message,
+                            result.ErrorCode,
+                            result
+                        );
+                        return result.TotalCount == 0 ? Conflict(response) : Ok(response);
+                    }
                     return BadRequest(
                         ApiResponse<SyncResult>.Error(result.Message, "SYNC_FAILED", result)
                     );
@@ -182,6 +194,17 @@ namespace BlazorApp.Api.Controllers
                 else
                 {
                     _logger.LogWarning("商品信息增量同步失败: {Message}", result.Message);
+                    if (
+                        result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                    )
+                    {
+                        var response = ApiResponse<SyncResult>.Error(
+                            result.Message,
+                            result.ErrorCode,
+                            result
+                        );
+                        return result.TotalCount == 0 ? Conflict(response) : Ok(response);
+                    }
                     return BadRequest(
                         ApiResponse<SyncResult>.Error(result.Message, "SYNC_FAILED", result)
                     );

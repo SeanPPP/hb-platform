@@ -1,5 +1,6 @@
 import type {
   LocalSupplierProductSalesAnalysisBranch,
+  LocalSupplierProductSalesAnalysisBootstrap,
   LocalSupplierProductSalesAnalysisCandidate,
   LocalSupplierProductSalesAnalysisDaily,
   LocalSupplierProductSalesAnalysisEnvelope,
@@ -7,6 +8,8 @@ import type {
   LocalSupplierProductSalesAnalysisOptions,
   LocalSupplierProductSalesAnalysisPaged,
   LocalSupplierProductSalesAnalysisRequest,
+  LocalSupplierProductSalesAnalysisSectionErrors,
+  LocalSupplierProductSalesAnalysisSelection,
   LocalSupplierProductSalesAnalysisSummary,
   LocalSupplierProductSalesAnalysisSummaryRow,
   LocalSupplierProductSalesAnalysisTotals,
@@ -75,6 +78,15 @@ function branch(raw: unknown): LocalSupplierProductSalesAnalysisBranch | null {
   return { branchCode, branchName: stringValue(pick(record, 'branchName', 'BranchName')), netSalesQuantity, netSalesAmount: numberValue(pick(record, 'netSalesAmount', 'NetSalesAmount')), averageUnitPrice: netSalesQuantity === 0 ? null : nullableNumber(pick(record, 'averageUnitPrice', 'AverageUnitPrice')) }
 }
 
+function selection(raw: unknown): LocalSupplierProductSalesAnalysisSelection {
+  const record = asRecord(raw) ?? {}
+  const mode = stringValue(pick(record, 'mode', 'Mode')) === 'allFiltered' ? 'allFiltered' : 'included'
+  const included = pick(record, 'includedProductCodes', 'IncludedProductCodes')
+  const excluded = pick(record, 'excludedProductCodes', 'ExcludedProductCodes')
+  const codes = (value: unknown) => Array.isArray(value) ? value.flatMap((entry) => stringValue(entry) ? [stringValue(entry)!] : []) : []
+  return { mode, includedProductCodes: codes(included), excludedProductCodes: codes(excluded) }
+}
+
 function options(raw: unknown): LocalSupplierProductSalesAnalysisOptions {
   const record = asRecord(raw) ?? {}
   const rawCategories = pick(record, 'warehouseCategories', 'WarehouseCategories')
@@ -90,6 +102,45 @@ function options(raw: unknown): LocalSupplierProductSalesAnalysisOptions {
   return { warehouseCategories, suppliers }
 }
 
+function summary(raw: unknown): LocalSupplierProductSalesAnalysisSummary {
+  const page = paged(raw, summaryRow)
+  const record = asRecord(raw) ?? {}
+  return { ...page, totals: totals(pick(record, 'totals', 'Totals')) }
+}
+
+function sectionErrors(raw: unknown): LocalSupplierProductSalesAnalysisSectionErrors {
+  const record = asRecord(raw) ?? {}
+  const result: LocalSupplierProductSalesAnalysisSectionErrors = {}
+  const keys: Array<[keyof LocalSupplierProductSalesAnalysisSectionErrors, string]> = [
+    ['options', 'Options'], ['summary', 'Summary'], ['invoiceDetails', 'InvoiceDetails'], ['productDaily', 'ProductDaily'], ['branches', 'Branches'],
+  ]
+  keys.forEach(([key, pascal]) => {
+    const message = stringValue(pick(record, key, pascal))
+    if (message) result[key] = message
+  })
+  return result
+}
+
+function bootstrap(raw: unknown): LocalSupplierProductSalesAnalysisBootstrap {
+  const record = asRecord(raw) ?? {}
+  const summaryRaw = pick(record, 'summary', 'Summary')
+  const detailsRaw = pick(record, 'invoiceDetails', 'InvoiceDetails')
+  const dailyRaw = pick(record, 'productDaily', 'ProductDaily')
+  const branchesRaw = pick(record, 'branches', 'Branches')
+  return {
+    options: options(pick(record, 'options', 'Options')),
+    candidates: paged(pick(record, 'candidates', 'Candidates'), candidate),
+    effectiveSelection: selection(pick(record, 'effectiveSelection', 'EffectiveSelection')),
+    currentProduct: candidate(pick(record, 'currentProduct', 'CurrentProduct')),
+    summary: summaryRaw === null || summaryRaw === undefined ? null : summary(summaryRaw),
+    invoiceDetails: detailsRaw === null || detailsRaw === undefined ? null : paged(detailsRaw, detail),
+    productDaily: Array.isArray(dailyRaw) ? dailyRaw.map(daily).filter((item): item is LocalSupplierProductSalesAnalysisDaily => !!item) : [],
+    branches: Array.isArray(branchesRaw) ? branchesRaw.map(branch).filter((item): item is LocalSupplierProductSalesAnalysisBranch => !!item) : [],
+    partial: pick(record, 'partial', 'Partial') === true,
+    sectionErrors: sectionErrors(pick(record, 'sectionErrors', 'SectionErrors')),
+  }
+}
+
 function unwrap<T>(raw: unknown, normalize: (value: unknown) => T): LocalSupplierProductSalesAnalysisEnvelope<T> {
   const response = asRecord(raw); if (!response) throw new Error('响应格式非法')
   if ((pick(response, 'success', 'Success') ?? pick(response, 'isSuccess', 'IsSuccess')) === false) throw new Error(stringValue(pick(response, 'message', 'Message')) ?? '请求失败')
@@ -103,8 +154,9 @@ async function post<T>(path: string, body: LocalSupplierProductSalesAnalysisRequ
 export function getLocalSupplierProductSalesAnalysisOptions(signal?: AbortSignal) {
   return request(`${API_BASE}/options`, { method: 'GET', signal }).then((raw) => unwrap(raw, options))
 }
+export function queryLocalSupplierProductSalesAnalysisBootstrap(body: LocalSupplierProductSalesAnalysisRequest, signal?: AbortSignal) { return post('/bootstrap', body, bootstrap, signal) }
 export function queryLocalSupplierProductSalesAnalysisCandidates(body: LocalSupplierProductSalesAnalysisRequest, signal?: AbortSignal) { return post('/candidates', body, (raw) => paged(raw, candidate), signal) }
-export function queryLocalSupplierProductSalesAnalysisSummary(body: LocalSupplierProductSalesAnalysisRequest, signal?: AbortSignal) { return post('/summary', body, (raw) => { const page = paged(raw, summaryRow); const record = asRecord(raw) ?? {}; return { ...page, totals: totals(pick(record, 'totals', 'Totals')) } as LocalSupplierProductSalesAnalysisSummary }, signal) }
+export function queryLocalSupplierProductSalesAnalysisSummary(body: LocalSupplierProductSalesAnalysisRequest, signal?: AbortSignal) { return post('/summary', body, summary, signal) }
 export function queryLocalSupplierProductSalesAnalysisProductDaily(body: LocalSupplierProductSalesAnalysisRequest, signal?: AbortSignal) { return post('/product-daily', body, (raw) => Array.isArray(raw) ? raw.map(daily).filter((item): item is LocalSupplierProductSalesAnalysisDaily => !!item) : [], signal) }
 export function queryLocalSupplierProductSalesAnalysisInvoiceDetails(body: LocalSupplierProductSalesAnalysisRequest, signal?: AbortSignal) { return post('/invoice-details', body, (raw) => paged(raw, detail), signal) }
 export function queryLocalSupplierProductSalesAnalysisBranches(body: LocalSupplierProductSalesAnalysisRequest, signal?: AbortSignal) { return post('/branches', body, (raw) => Array.isArray(raw) ? raw.map(branch).filter((item): item is LocalSupplierProductSalesAnalysisBranch => !!item) : [], signal) }

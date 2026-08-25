@@ -98,7 +98,22 @@ namespace BlazorApp.Api.Services.React
                         ShadowTableName
                     );
                     await ValidateShadowTableAsync(db, syncRunId, totalInserted);
-                    await SwitchShadowTableAsync(db, syncRunId);
+                    await db.Ado.BeginTranAsync();
+                    try
+                    {
+                        // 影子表切换会同时改变全部门店主成本；总闸必须覆盖切换和所有派生成本回写。
+                        var lockScope = await SetChildPurchasePriceMutationLock.AcquireAllAsync(db);
+                        var affectedGroups = await QueryStoreRetailPriceGroupsAsync(db);
+                        await SwitchShadowTableAsync(db, syncRunId);
+                        affectedGroups.AddRange(await QueryStoreRetailPriceGroupsAsync(db));
+                        await RecalculateStoreGroupsLockedAsync(db, lockScope, affectedGroups);
+                        await db.Ado.CommitTranAsync();
+                    }
+                    catch
+                    {
+                        await db.Ado.RollbackTranAsync();
+                        throw;
+                    }
 
                     result.AddedCount = totalInserted;
                     result.TotalCount = totalInserted;
@@ -119,7 +134,7 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "分店零售价全量同步失败");
                 result.IsSuccess = false;
                 result.ErrorCount = 1;
-                result.Message = $"分店零售价全量同步失败: {ex.Message}";
+                result.Message = BuildSyncFailureMessage("分店零售价全量同步失败", ex);
                 result.EndTime = DateTime.UtcNow;
                 result.Duration = result.EndTime - result.StartTime;
                 await FinishTaskIfStartedAsync(taskLog, result);
@@ -190,7 +205,7 @@ namespace BlazorApp.Api.Services.React
                                 .Where(x => !string.IsNullOrWhiteSpace(x.StoreCode) && !string.IsNullOrWhiteSpace(x.ProductCode))
                                 .ToList();
 
-                            var batchResult = await UpsertBatchAsync(db, localBatch);
+                            var batchResult = await UpsertAndRecalculateBatchAsync(db, localBatch);
                             inserted += batchResult.Inserted;
                             updated += batchResult.Updated;
                         }
@@ -227,7 +242,7 @@ namespace BlazorApp.Api.Services.React
                             .Where(x => !string.IsNullOrWhiteSpace(x.StoreCode) && !string.IsNullOrWhiteSpace(x.ProductCode))
                             .ToList();
 
-                        var batchResult = await UpsertBatchAsync(db, localBatch);
+                        var batchResult = await UpsertAndRecalculateBatchAsync(db, localBatch);
                         inserted += batchResult.Inserted;
                         updated += batchResult.Updated;
 
@@ -252,7 +267,7 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "分店零售价增量同步失败");
                 result.IsSuccess = false;
                 result.ErrorCount = 1;
-                result.Message = $"分店零售价增量同步失败: {ex.Message}";
+                result.Message = BuildSyncFailureMessage("分店零售价增量同步失败", ex);
                 result.EndTime = DateTime.UtcNow;
                 result.Duration = result.EndTime - result.StartTime;
                 await FinishTaskIfStartedAsync(taskLog, result);
@@ -333,7 +348,9 @@ namespace BlazorApp.Api.Services.React
                 payload.Errors.Add(syncResult.Message);
                 return ApiResponse<SyncRetailPriceFromHqResult>.Error(
                     syncResult.Message,
-                    "HQ_RETAIL_PRICE_SYNC_ERROR",
+                    IsSetChildPurchasePriceBusy(syncResult.Message)
+                        ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                        : "HQ_RETAIL_PRICE_SYNC_ERROR",
                     payload
                 );
             }
@@ -528,6 +545,9 @@ namespace BlazorApp.Api.Services.React
             await db.Ado.BeginTranAsync();
             try
             {
+                // 指定分店全量会删除旧主成本；用总闸避免未纳入新快照的旧商品绕过产品锁。
+                var lockScope = await SetChildPurchasePriceMutationLock.AcquireAllAsync(db);
+                var affectedGroups = await QueryStoreRetailPriceGroupsAsync(db, targetStoreCodes);
                 foreach (var storeChunk in targetStoreCodes.Chunk(1000))
                 {
                     var stores = storeChunk.ToList();
@@ -537,6 +557,8 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 inserted = await CopyHqToTableByKeysetAsync(db, targetStoreCodes, "StoreRetailPrice");
+                affectedGroups.AddRange(await QueryStoreRetailPriceGroupsAsync(db, targetStoreCodes));
+                await RecalculateStoreGroupsLockedAsync(db, lockScope, affectedGroups);
                 await db.Ado.CommitTranAsync();
                 return inserted;
             }
@@ -592,6 +614,12 @@ namespace BlazorApp.Api.Services.React
                 if (current is not null)
                 {
                     // HQ 的 HGUID 是跨供应商变更最稳定的同步键，优先用它恢复旧行，避免重复主键插入。
+                    // 正确的成本快照不能刷新审计字段，否则会制造无效的同步更新记录。
+                    if (!HasHqSyncDifference(current, incoming))
+                    {
+                        continue;
+                    }
+
                     current.StoreProductCode = incoming.StoreProductCode;
                     current.SupplierCode = incoming.SupplierCode;
                     current.PurchasePrice = incoming.PurchasePrice;
@@ -619,7 +647,11 @@ namespace BlazorApp.Api.Services.React
                 }
             }
 
-            await db.Ado.BeginTranAsync();
+            var ownsTransaction = db.Ado.Transaction == null;
+            if (ownsTransaction)
+            {
+                await db.Ado.BeginTranAsync();
+            }
             try
             {
                 if (toUpdate.Count > 0)
@@ -652,9 +684,49 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
-                await db.Ado.CommitTranAsync();
+                if (ownsTransaction)
+                {
+                    await db.Ado.CommitTranAsync();
+                }
                 result.Inserted = toInsert.Count;
                 result.Updated = toUpdate.Count;
+                return result;
+            }
+            catch
+            {
+                if (ownsTransaction)
+                {
+                    await db.Ado.RollbackTranAsync();
+                }
+                throw;
+            }
+        }
+
+        private async Task<BatchResultDto> UpsertAndRecalculateBatchAsync(
+            ISqlSugarClient db,
+            List<StoreRetailPrice> batch
+        )
+        {
+            if (batch.Count == 0)
+            {
+                return new BatchResultDto();
+            }
+
+            await db.Ado.BeginTranAsync();
+            try
+            {
+                // 增量只锁本批实际写入的主商品，并按统一实现的稳定顺序取得锁。
+                var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                    db,
+                    batch.Select(row => row.ProductCode)
+                );
+                var result = await UpsertBatchAsync(db, batch);
+                await RecalculateStoreGroupsLockedAsync(
+                    db,
+                    lockScope,
+                    batch.Select(row => (row.StoreCode, row.ProductCode))
+                );
+                await db.Ado.CommitTranAsync();
                 return result;
             }
             catch
@@ -663,6 +735,64 @@ namespace BlazorApp.Api.Services.React
                 throw;
             }
         }
+
+        private static bool HasHqSyncDifference(StoreRetailPrice current, StoreRetailPrice incoming) =>
+            current.StoreProductCode != incoming.StoreProductCode
+            || current.SupplierCode != incoming.SupplierCode
+            || current.PurchasePrice != incoming.PurchasePrice
+            || current.StoreRetailPriceValue != incoming.StoreRetailPriceValue
+            || current.DiscountRate != incoming.DiscountRate
+            || current.IsActive != incoming.IsActive
+            || current.IsAutoPricing != incoming.IsAutoPricing
+            || current.IsSpecialProduct != incoming.IsSpecialProduct
+            || current.IsDeleted;
+
+        private static async Task<List<(string? StoreCode, string? ProductCode)>> QueryStoreRetailPriceGroupsAsync(
+            ISqlSugarClient db,
+            IReadOnlyCollection<string>? storeCodes = null
+        )
+        {
+            var query = db.Queryable<StoreRetailPrice>()
+                .Where(row =>
+                    !row.IsDeleted
+                    && !string.IsNullOrWhiteSpace(row.StoreCode)
+                    && !string.IsNullOrWhiteSpace(row.ProductCode)
+                );
+            if (storeCodes?.Count > 0)
+            {
+                var stores = storeCodes.ToList();
+                query = query.Where(row => row.StoreCode != null && stores.Contains(row.StoreCode));
+            }
+
+            return (await query
+                .Select(row => new { row.StoreCode, row.ProductCode })
+                .ToListAsync())
+                .Select(row => (row.StoreCode, row.ProductCode))
+                .ToList();
+        }
+
+        private static async Task RecalculateStoreGroupsLockedAsync(
+            ISqlSugarClient db,
+            SetChildPurchasePriceLockScope lockScope,
+            IEnumerable<(string? StoreCode, string? ProductCode)> groups
+        )
+        {
+            // 只把本次变更前后出现过的门店-主商品组交给 Type1/Type2 计算，避免无关门店被重写。
+            await new SetChildPurchasePriceService(db).RecalculateStoreGroupsLockedAsync(
+                lockScope,
+                groups,
+                "ReactSync"
+            );
+        }
+
+        private static string BuildSyncFailureMessage(string operation, Exception exception) =>
+            SetChildPurchasePriceMutationLock.TryResolveConflict(exception, out _)
+                ? $"{SetChildPurchasePriceMutationLock.BusyErrorCode}: 套装子项成本正在被其他操作更新，请稍后重试"
+                : $"{operation}: {exception.Message}";
+
+        private static bool IsSetChildPurchasePriceBusy(string? message) =>
+            message?.StartsWith(SetChildPurchasePriceMutationLock.BusyErrorCode, StringComparison.Ordinal)
+            == true;
 
         private static async Task<List<StoreRetailPrice>> QueryExistingBySyncKeysAsync(
             ISqlSugarClient db,

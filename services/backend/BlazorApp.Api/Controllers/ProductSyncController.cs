@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 
 namespace BlazorApp.Api.Controllers
@@ -111,14 +112,28 @@ namespace BlazorApp.Api.Controllers
                 else
                 {
                     _logger.LogWarning("批量更新商品失败: {Message}", response.Message);
-                    return StatusCode(500, new
+                    var isBusy = HasSetChildPurchasePriceBusyError(response);
+                    var failureDetails = isBusy
+                        ? request.Items.Select(item => new BatchOperationFailureDto
+                        {
+                            ItemKey = !string.IsNullOrWhiteSpace(item.ProductCode)
+                                ? item.ProductCode
+                                : item.ItemNumber ?? string.Empty,
+                            Message = response.Message,
+                            ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode,
+                        }).ToList()
+                        : new List<BatchOperationFailureDto>();
+                    var body = new
                     {
                         success = false,
                         message = response.Message,
                         successCount = response.SuccessCount,
                         failedCount = response.FailedCount,
-                        errors = response.Errors
-                    });
+                        errors = response.Errors,
+                        errorCode = isBusy ? SetChildPurchasePriceMutationLock.BusyErrorCode : null,
+                        failureDetails,
+                    };
+                    return isBusy ? Conflict(body) : StatusCode(500, body);
                 }
             }
             catch (Exception ex)
@@ -184,7 +199,18 @@ namespace BlazorApp.Api.Controllers
                 else
                 {
                     _logger.LogWarning("批量创建商品失败: {Message}", response.Message);
-                    return StatusCode(500, new
+                    var isBusy = HasSetChildPurchasePriceBusyError(response);
+                    var failureDetails = isBusy
+                        ? request.Items.Select(item => new BatchOperationFailureDto
+                        {
+                            ItemKey = !string.IsNullOrWhiteSpace(item.ProductCode)
+                                ? item.ProductCode
+                                : item.ItemNumber,
+                            Message = response.Message,
+                            ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode,
+                        }).ToList()
+                        : new List<BatchOperationFailureDto>();
+                    var body = new
                     {
                         success = false,
                         message = response.Message,
@@ -192,8 +218,11 @@ namespace BlazorApp.Api.Controllers
                         failedCount = response.FailedCount,
                         skippedCount = response.SkippedCount,
                         errors = response.Errors,
-                        skippedItems = response.SkippedItems
-                    });
+                        skippedItems = response.SkippedItems,
+                        errorCode = isBusy ? SetChildPurchasePriceMutationLock.BusyErrorCode : null,
+                        failureDetails,
+                    };
+                    return isBusy ? Conflict(body) : StatusCode(500, body);
                 }
             }
             catch (Exception ex)
@@ -202,6 +231,13 @@ namespace BlazorApp.Api.Controllers
                 return StatusCode(500, new { success = false, message = "服务器内部错误：" + ex.Message });
             }
         }
+
+        private static bool HasSetChildPurchasePriceBusyError(BatchProductOperationResponse response)
+        {
+            return response.Errors.Any(error => error.StartsWith(
+                SetChildPurchasePriceMutationLock.BusyErrorCode,
+                StringComparison.Ordinal
+            ));
+        }
     }
 }
-

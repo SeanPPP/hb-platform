@@ -552,6 +552,46 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
+        public async Task BatchUpdate_套装成本锁冲突时返回409及逐项失败详情()
+        {
+            var items = new List<UpdateItemDto>
+            {
+                new() { ProductCode = "P-BUSY-1" },
+                new() { ItemNumber = "ITEM-BUSY-2" },
+            };
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service => service.BatchUpdateAsync(items, "测试用户"))
+                .ThrowsAsync(new SetChildPurchasePriceLockException("test", -1));
+            var controller = CreateController(serviceMock.Object);
+
+            var actionResult = await controller.BatchUpdate(
+                new ReactProductWarehouseController.BatchUpdateRequest { Items = items }
+            );
+
+            var conflict = Assert.IsType<ConflictObjectResult>(actionResult);
+            var payload = conflict.Value!;
+            Assert.Equal(
+                SetChildPurchasePriceMutationLock.BusyErrorCode,
+                payload.GetType().GetProperty("errorCode")!.GetValue(payload)
+            );
+            var data = payload.GetType().GetProperty("data")!.GetValue(payload)!;
+            Assert.Equal(0, data.GetType().GetProperty("successCount")!.GetValue(data));
+            Assert.Equal(2, data.GetType().GetProperty("failedCount")!.GetValue(data));
+            var failureDetails = Assert.IsAssignableFrom<IEnumerable<BatchOperationFailureDto>>(
+                data.GetType().GetProperty("failureDetails")!.GetValue(data)
+            );
+            Assert.All(
+                failureDetails,
+                detail =>
+                    Assert.Equal(
+                        SetChildPurchasePriceMutationLock.BusyErrorCode,
+                        detail.ErrorCode
+                    )
+            );
+        }
+
+        [Fact]
         public async Task BatchUpdate_图片本地成功但HQ失败时仍返回200和分级结果()
         {
             var items = new List<UpdateItemDto> { new() { ProductCode = "P-IMAGE-HQ" } };
@@ -966,6 +1006,25 @@ namespace BlazorApp.Api.Tests
             var ok = Assert.IsType<OkObjectResult>(result);
             Assert.Contains("保存成功", ok.Value?.ToString());
             serviceMock.Verify(service => service.PatchAsync("P001", dto, "商品更新人"), Times.Once);
+        }
+
+        [Fact]
+        public async Task Patch_套装成本锁冲突时返回409及Busy错误码()
+        {
+            var dto = new WarehouseProductPatchDto { ImportPrice = 5.55m };
+            var serviceMock = new Mock<IProductWarehouseReactService>();
+            serviceMock
+                .Setup(service => service.PatchAsync("P001", dto, "测试用户"))
+                .ThrowsAsync(new SetChildPurchasePriceLockException("test", -1));
+            var controller = CreateController(serviceMock.Object);
+
+            var actionResult = await controller.Patch("P001", dto);
+
+            var conflict = Assert.IsType<ConflictObjectResult>(actionResult);
+            Assert.Equal(
+                SetChildPurchasePriceMutationLock.BusyErrorCode,
+                conflict.Value!.GetType().GetProperty("errorCode")!.GetValue(conflict.Value)
+            );
         }
 
         [Fact]

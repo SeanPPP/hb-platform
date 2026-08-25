@@ -12,6 +12,9 @@ import {
   getProposedAdjustmentPunchStatus,
   isKnownAttendanceApprovalSourceType,
   getSupplementalAttendanceApprovalDetail,
+  getAttendanceWeekdayIndex,
+  insertAttendanceWeekday,
+  insertAttendanceWeekdaysInText,
 } from './attendanceRecordLogic'
 import type { AttendanceScheduleDto } from '../../../types/scheduleAttendance'
 
@@ -20,6 +23,32 @@ function assertEqual<T>(actual: T, expected: T, message: string) {
     throw new Error(`${message}: expected ${String(expected)}, got ${String(actual)}`)
   }
 }
+
+assertEqual(getAttendanceWeekdayIndex('2026-07-28'), 1, '工作日期应映射到周二的本地化索引')
+assertEqual(getAttendanceWeekdayIndex('2026-08-02'), 6, '周日应映射到每周最后一个本地化索引')
+assertEqual(getAttendanceWeekdayIndex('2026-08-03'), 0, '跨月后的周一应映射到每周第一个本地化索引')
+assertEqual(getAttendanceWeekdayIndex('2026-02-30'), undefined, '无效日历日期不应显示星期')
+assertEqual(getAttendanceWeekdayIndex('not-a-date'), undefined, '无效日期文本不应显示星期')
+assertEqual(getAttendanceWeekdayIndex(undefined), undefined, '缺少工作日期时不应显示星期')
+assertEqual(
+  insertAttendanceWeekday('2026-08-24 00:15', '周一'),
+  '2026-08-24 周一 00:15',
+  'UTC 时间跨午夜转换为门店本地时间后，应按展示日期插入星期',
+)
+assertEqual(insertAttendanceWeekday('2026-08-24', 'Mon'), '2026-08-24 Mon', '英文星期应插入日期之后')
+assertEqual(insertAttendanceWeekday('--', '周一'), '--', '空日期占位符不应附加星期')
+assertEqual(insertAttendanceWeekday('invalid', '周一'), 'invalid', '无法识别日期前缀时应保留原始显示值')
+assertEqual(
+  insertAttendanceWeekdaysInText(
+    '2026-07-23 – 2026-07-25 · Family care',
+    (value) => {
+      const weekdayIndex = getAttendanceWeekdayIndex(value)
+      return weekdayIndex === undefined ? undefined : ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][weekdayIndex]
+    },
+  ),
+  '2026-07-23 周四 – 2026-07-25 周六 · Family care',
+  '审核详情中的业务日期范围应逐个附加星期且保留其他原始文本',
+)
 
 for (const sourceType of ['Punch', 'Leave', 'PunchAdjustment', 'Overtime', 'MissingClockOut']) {
   assertEqual(isKnownAttendanceApprovalSourceType(sourceType), true, `${sourceType} 应使用本地化审批文案`)

@@ -40,6 +40,7 @@ public sealed class ProductSetCodeHqIncrementalSyncTests : IDisposable
 
         _localDb.CodeFirst.InitTables(
             typeof(Product),
+            typeof(WarehouseProduct),
             typeof(ProductSetCode),
             typeof(StoreRetailPrice),
             typeof(StoreMultiCodeProduct)
@@ -96,6 +97,786 @@ public sealed class ProductSetCodeHqIncrementalSyncTests : IDisposable
         Assert.True(result.Success, result.Message);
         Assert.Equal(1, result.Data!.ProductSetCodesSoftDeleted);
         Assert.True((await _localDb.Queryable<ProductSetCode>().SingleAsync(x => x.SetCodeId == "hq-set-disabled")).IsDeleted);
+    }
+
+    [Fact]
+    public async Task SyncIncrementalAsync_HQ同键多码不得覆盖或软删本地套装子项()
+    {
+        var start = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        await SeedLocalProductAsync("P-SET-PROTECTED", isDeleted: false);
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = "set-protected-local",
+                ProductCode = "P-SET-PROTECTED",
+                SetProductCode = "M-PROTECTED",
+                SetItemNumber = "M-PROTECTED",
+                SetBarcode = "LOCAL-PROTECTED",
+                SetPurchasePrice = 1.23m,
+                SetRetailPrice = 4.56m,
+                SetType = 1,
+                SetQuantity = 1,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+
+        await SeedHqProductAsync("P-SET-PROTECTED", start.AddDays(1), true);
+        await SeedHqSetCodeAsync(
+            "set-protected-local",
+            "P-SET-PROTECTED",
+            "M-PROTECTED",
+            true,
+            start.AddDays(1),
+            "HQ-SHOULD-NOT-APPLY"
+        );
+
+        var result = await CreateService().SyncIncrementalAsync(start);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, result.Data!.ProductSetCodesUpdated);
+        Assert.Equal(0, result.Data.ProductSetCodesSoftDeleted);
+        var protectedChild = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(x => x.SetCodeId == "set-protected-local");
+        Assert.Equal(1, protectedChild.SetType);
+        Assert.Equal(1.2m, protectedChild.SetPurchasePrice);
+        Assert.Equal(4.56m, protectedChild.SetRetailPrice);
+        Assert.Equal("LOCAL-PROTECTED", protectedChild.SetBarcode);
+        Assert.True(protectedChild.IsActive);
+        Assert.False(protectedChild.IsDeleted);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    public async Task SyncIncrementalAsync_HQ同GUID和父子键不得复用任意状态本地Type1(
+        bool isActive,
+        bool isDeleted
+    )
+    {
+        var start = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        const string productCode = "P-SET-ALL-STATE";
+        const string childCode = "M-SET-ALL-STATE";
+        const string localGuid = "set-protected-all-state";
+        await SeedLocalProductAsync(productCode, isDeleted: false);
+        await _localDb.Insertable(new ProductSetCode
+        {
+            SetCodeId = localGuid,
+            ProductCode = productCode,
+            SetProductCode = childCode,
+            SetItemNumber = childCode,
+            SetBarcode = "LOCAL-MUST-STAY",
+            SetPurchasePrice = 1.23m,
+            SetRetailPrice = 4.56m,
+            SetType = 1,
+            SetQuantity = 1,
+            IsActive = isActive,
+            IsDeleted = isDeleted,
+        }).ExecuteCommandAsync();
+        await SeedHqProductAsync(productCode, start.AddDays(1), true);
+        await SeedHqSetCodeAsync(
+            localGuid,
+            productCode,
+            childCode,
+            true,
+            start.AddDays(1),
+            "HQ-MUST-NOT-RESTORE"
+        );
+
+        var result = await CreateService().SyncIncrementalAsync(start);
+
+        Assert.True(result.Success, result.Message);
+        var protectedChild = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == localGuid);
+        // 本地 Type1 是人工维护的套装关系，HQ 普通多码不得借 GUID 或父子键改变其任何状态。
+        Assert.Equal(1, protectedChild.SetType);
+        Assert.Equal(isActive, protectedChild.IsActive);
+        Assert.Equal(isDeleted, protectedChild.IsDeleted);
+        Assert.Equal("LOCAL-MUST-STAY", protectedChild.SetBarcode);
+        Assert.Equal(4.56m, protectedChild.SetRetailPrice);
+    }
+
+    [Fact]
+    public async Task SyncIncrementalAsync_GUID与业务键命中不同Type2时拒绝并保留两行()
+    {
+        var start = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        const string productCode = "P-IDENTITY-CROSS";
+        await SeedLocalProductAsync(productCode, isDeleted: false);
+        await _localDb.Insertable(new[]
+        {
+            new ProductSetCode
+            {
+                SetCodeId = "hq-cross-guid",
+                ProductCode = productCode,
+                SetProductCode = "CHILD-GUID-OWNER",
+                SetItemNumber = "CHILD-GUID-OWNER",
+                SetBarcode = "LOCAL-GUID-OWNER",
+                SetType = 2,
+                SetQuantity = 1,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new ProductSetCode
+            {
+                SetCodeId = "local-key-owner",
+                ProductCode = productCode,
+                SetProductCode = "CHILD-TARGET",
+                SetItemNumber = "CHILD-TARGET",
+                SetBarcode = "LOCAL-KEY-OWNER",
+                SetType = 2,
+                SetQuantity = 1,
+                IsActive = true,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+        await SeedHqProductAsync(productCode, start.AddDays(1), true);
+        await SeedHqSetCodeAsync(
+            "hq-cross-guid",
+            productCode,
+            "CHILD-TARGET",
+            true,
+            start.AddDays(1),
+            "HQ-MUST-NOT-WIN"
+        );
+
+        var result = await CreateService().SyncIncrementalAsync(start);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, result.Data!.ProductSetCodesUpdated);
+        Assert.Contains(result.Data.Errors, error =>
+            error.Contains("本地 ProductSetCode 身份冲突", StringComparison.Ordinal)
+            && error.Contains("hq-cross-guid", StringComparison.Ordinal)
+            && error.Contains("P-IDENTITY-CROSS/CHILD-TARGET", StringComparison.Ordinal)
+            && error.Contains("本地记录=", StringComparison.Ordinal)
+        );
+        var guidOwner = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == "hq-cross-guid");
+        var keyOwner = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == "local-key-owner");
+        Assert.Equal("CHILD-GUID-OWNER", guidOwner.SetProductCode);
+        Assert.Equal("LOCAL-GUID-OWNER", guidOwner.SetBarcode);
+        Assert.False(guidOwner.IsDeleted);
+        Assert.Equal("CHILD-TARGET", keyOwner.SetProductCode);
+        Assert.Equal("LOCAL-KEY-OWNER", keyOwner.SetBarcode);
+        Assert.False(keyOwner.IsDeleted);
+    }
+
+    [Fact]
+    public async Task SyncIncrementalAsync_交叉身份包含Type1时仍先报告冲突再保留双方()
+    {
+        var start = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        const string productCode = "P-IDENTITY-TYPE1-CROSS";
+        await SeedLocalProductAsync(productCode, isDeleted: false);
+        await _localDb.Insertable(new[]
+        {
+            new ProductSetCode
+            {
+                SetCodeId = "hq-type1-cross-guid",
+                ProductCode = productCode,
+                SetProductCode = "CHILD-TYPE1",
+                SetItemNumber = "CHILD-TYPE1",
+                SetBarcode = "LOCAL-TYPE1",
+                SetPurchasePrice = 1m,
+                SetRetailPrice = 1m,
+                SetType = 1,
+                SetQuantity = 1,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new ProductSetCode
+            {
+                SetCodeId = "local-type2-key-owner",
+                ProductCode = productCode,
+                SetProductCode = "CHILD-TARGET",
+                SetItemNumber = "CHILD-TARGET",
+                SetBarcode = "LOCAL-TYPE2",
+                SetPurchasePrice = 1m,
+                SetRetailPrice = 1m,
+                SetType = 2,
+                SetQuantity = 1,
+                IsActive = true,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+        await SeedHqProductAsync(productCode, start.AddDays(1), true);
+        await SeedHqSetCodeAsync(
+            "hq-type1-cross-guid",
+            productCode,
+            "CHILD-TARGET",
+            true,
+            start.AddDays(1),
+            "HQ-MUST-NOT-WIN"
+        );
+
+        var result = await CreateService().SyncIncrementalAsync(start);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Contains(
+            result.Data!.Errors,
+            error => error.Contains("本地 ProductSetCode 身份冲突", StringComparison.Ordinal)
+        );
+        Assert.Equal(
+            "CHILD-TYPE1",
+            (await _localDb.Queryable<ProductSetCode>()
+                    .SingleAsync(row => row.SetCodeId == "hq-type1-cross-guid"))
+                .SetProductCode
+        );
+        var keyOwner = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == "local-type2-key-owner");
+        Assert.Equal("LOCAL-TYPE2", keyOwner.SetBarcode);
+        Assert.False(keyOwner.IsDeleted);
+    }
+
+    [Fact]
+    public async Task SyncIncrementalAsync_HQ同GUID多业务键时整组拒绝()
+    {
+        var start = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        const string productCode = "P-SOURCE-GUID-CONFLICT";
+        await SeedHqProductAsync(productCode, start.AddDays(1), true);
+        await SeedHqSetCodeAsync(
+            "hq-duplicate-guid",
+            productCode,
+            "CHILD-A",
+            true,
+            start.AddDays(1),
+            "BAR-A"
+        );
+        await SeedHqSetCodeAsync(
+            "hq-duplicate-guid",
+            productCode,
+            "CHILD-B",
+            true,
+            start.AddDays(2),
+            "BAR-B"
+        );
+
+        var result = await CreateService().SyncIncrementalAsync(start);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, result.Data!.ProductSetCodesAdded);
+        Assert.Equal(
+            0,
+            await _localDb.Queryable<ProductSetCode>()
+                .Where(row => row.ProductCode == productCode)
+                .CountAsync()
+        );
+    }
+
+    [Fact]
+    public async Task SyncIncrementalAsync_身份冲突跨增量时间边界时仍拒绝当前成员()
+    {
+        var start = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        const string productCode = "P-SOURCE-CROSS-WINDOW";
+        const string sharedGuid = "hq-cross-window-guid";
+        await SeedHqProductAsync(productCode, start.AddDays(1), true);
+        await SeedHqSetCodeAsync(
+            sharedGuid,
+            productCode,
+            "CHILD-OLD-OUTSIDE-WINDOW",
+            true,
+            start.AddDays(-1),
+            "BAR-OLD"
+        );
+        await SeedHqSetCodeAsync(
+            sharedGuid,
+            productCode,
+            "CHILD-NEW-IN-WINDOW",
+            true,
+            start.AddDays(1),
+            "BAR-NEW"
+        );
+
+        var result = await CreateService().SyncIncrementalAsync(start);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, result.Data!.ProductSetCodesAdded);
+        Assert.Contains(result.Data.Errors, error =>
+            error.Contains("同一 GUID 对应多个父子业务键", StringComparison.Ordinal)
+        );
+        Assert.Equal(
+            0,
+            await _localDb.Queryable<ProductSetCode>()
+                .Where(row => row.ProductCode == productCode)
+                .CountAsync()
+        );
+    }
+
+    [Fact]
+    public async Task SyncIncrementalAsync_停用成员与窗口外活跃成员同GUID时不得误删本地关系()
+    {
+        var start = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        const string productCode = "P-SOURCE-ACTIVE-INACTIVE-CROSS-WINDOW";
+        const string sharedGuid = "hq-active-inactive-cross-window-guid";
+        const string activeChildCode = "CHILD-ACTIVE-OUTSIDE-WINDOW";
+        await SeedHqProductAsync(productCode, start.AddDays(1), true);
+        await SeedHqSetCodeAsync(
+            sharedGuid,
+            productCode,
+            activeChildCode,
+            true,
+            start.AddDays(-1),
+            "BAR-ACTIVE"
+        );
+        await SeedHqSetCodeAsync(
+            sharedGuid,
+            productCode,
+            "CHILD-INACTIVE-IN-WINDOW",
+            false,
+            start.AddDays(1),
+            "BAR-INACTIVE"
+        );
+        await SeedLocalSetCodeAsync(sharedGuid, productCode, activeChildCode, false);
+
+        var result = await CreateService().SyncIncrementalAsync(start);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, result.Data!.ProductSetCodesSoftDeleted);
+        Assert.Contains(result.Data.Errors, error =>
+            error.Contains("同一 GUID 对应多个父子业务键", StringComparison.Ordinal)
+        );
+        var local = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == sharedGuid);
+        Assert.Equal(activeChildCode, local.SetProductCode);
+        Assert.True(local.IsActive);
+        Assert.False(local.IsDeleted);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DataSyncIncrementalAsync_同页GUID迁移后旧键可由另一GUID安全接管(
+        bool reverseSourceOrder
+    )
+    {
+        const string productCode = "P-DATASYNC-SAME-PAGE-MIGRATION";
+        const string migratedGuid = "hq-migrated-guid";
+        const string replacementGuid = "hq-replacement-guid";
+        const string oldChildCode = "CHILD-OLD-KEY";
+        const string newChildCode = "CHILD-NEW-KEY";
+        var local = new ProductSetCode
+        {
+            SetCodeId = migratedGuid,
+            ProductCode = productCode,
+            SetProductCode = oldChildCode,
+            SetType = 2,
+            IsActive = true,
+            IsDeleted = false,
+        };
+        var migrated = new ProductSetCode
+        {
+            SetCodeId = migratedGuid,
+            ProductCode = productCode,
+            SetProductCode = newChildCode,
+            SetBarcode = "BAR-MIGRATED",
+            SetType = 2,
+            IsActive = true,
+            IsDeleted = false,
+        };
+        var replacement = new ProductSetCode
+        {
+            SetCodeId = replacementGuid,
+            ProductCode = productCode,
+            SetProductCode = oldChildCode,
+            SetBarcode = "BAR-REPLACEMENT",
+            SetType = 2,
+            IsActive = true,
+            IsDeleted = false,
+        };
+        var sourceRows = reverseSourceOrder
+            ? new[] { replacement, migrated }
+            : new[] { migrated, replacement };
+        var identityIndex = ProductSetCodeIdentityResolver.CreateIndex(new[] { local });
+
+        var plan = DataSyncIncrementalService.BuildProductSetCodePageMutationPlan(
+            sourceRows,
+            identityIndex
+        );
+
+        var updated = Assert.Single(plan.ToUpdate);
+        Assert.Same(local, updated);
+        Assert.Equal(newChildCode, updated.SetProductCode);
+        Assert.Equal("BAR-MIGRATED", updated.SetBarcode);
+        var inserted = Assert.Single(plan.ToInsert);
+        Assert.Same(replacement, inserted);
+        Assert.Equal(oldChildCode, inserted.SetProductCode);
+    }
+
+    [Fact]
+    public void DataSyncIncrementalAsync_同修改时间超过五万行时按ID稳定分页且不重不漏()
+    {
+        var modifiedAt = new DateTime(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc);
+        var sourceRows = Enumerable.Range(1, 50001)
+            .Reverse()
+            .Select(id => new DIC_一品多码表
+            {
+                ID = id,
+                HGUID = $"GUID-{id}",
+                H商品编码 = $"P-{id}",
+                H多码商品编号 = $"CHILD-{id}",
+                FGC_LastModifyDate = modifiedAt,
+            })
+            .ToList();
+
+        var pages = DataSyncIncrementalService.BuildProductSetCodeSourcePages(
+            sourceRows,
+            50000
+        );
+
+        Assert.Equal(2, pages.Count);
+        Assert.Equal(50000, pages[0].Count);
+        Assert.Single(pages[1]);
+        var ids = pages.SelectMany(page => page).Select(row => row.ID).ToList();
+        Assert.Equal(Enumerable.Range(1, 50001), ids);
+        Assert.Equal(50001, ids.Distinct().Count());
+    }
+
+    [Fact]
+    public void DataSyncIncrementalAsync_单一父商品超过页大小时整组保留在同一事务页()
+    {
+        var modifiedAt = new DateTime(2026, 5, 2, 0, 0, 0, DateTimeKind.Utc);
+        var sourceRows = Enumerable.Range(1, 50001)
+            .Select(id => new DIC_一品多码表
+            {
+                ID = id,
+                HGUID = $"GUID-LARGE-{id}",
+                H商品编码 = "P-LARGE-GROUP",
+                H多码商品编号 = $"CHILD-{id}",
+                FGC_LastModifyDate = modifiedAt,
+            })
+            .Append(new DIC_一品多码表
+            {
+                ID = 50002,
+                HGUID = "GUID-OTHER",
+                H商品编码 = "P-OTHER-GROUP",
+                H多码商品编号 = "CHILD-OTHER",
+                FGC_LastModifyDate = modifiedAt,
+            })
+            .ToList();
+
+        var pages = DataSyncIncrementalService.BuildProductSetCodeSourcePages(
+            sourceRows,
+            50000
+        );
+
+        Assert.Equal(2, pages.Count);
+        Assert.Equal(50001, pages[0].Count);
+        Assert.All(pages[0], row => Assert.Equal("P-LARGE-GROUP", row.H商品编码));
+        var other = Assert.Single(pages[1]);
+        Assert.Equal("P-OTHER-GROUP", other.H商品编码);
+    }
+
+    [Fact]
+    public void DataSyncIncrementalAsync_分页读取身份较预检快照变化时拒绝整个父商品组()
+    {
+        var expectedRows = new[]
+        {
+            new DIC_一品多码表
+            {
+                ID = 1,
+                HGUID = "GUID-CHANGED",
+                H商品编码 = "P-SNAPSHOT",
+                H多码商品编号 = "CHILD-BEFORE",
+            },
+            new DIC_一品多码表
+            {
+                ID = 2,
+                HGUID = "GUID-UNCHANGED",
+                H商品编码 = "P-SNAPSHOT",
+                H多码商品编号 = "CHILD-STABLE",
+            },
+        };
+        var actualRows = new[]
+        {
+            new DIC_一品多码表
+            {
+                ID = 1,
+                HGUID = "GUID-CHANGED",
+                H商品编码 = "P-SNAPSHOT",
+                H多码商品编号 = "CHILD-AFTER",
+            },
+            expectedRows[1],
+        };
+
+        var validation = DataSyncIncrementalService.ValidateProductSetCodeSourcePageSnapshot(
+            expectedRows,
+            actualRows
+        );
+
+        Assert.Empty(validation.AcceptedRows);
+        Assert.Contains("P-SNAPSHOT", validation.ConflictProductCodes);
+        Assert.Contains(validation.Errors, error => error.Contains("身份在预检后改变"));
+    }
+
+    [Fact]
+    public async Task SyncIncrementalAsync_HQ完全同身份重复按修改时间再按ID取胜()
+    {
+        var start = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        const string productCode = "P-SOURCE-DUPLICATE";
+        const string childCode = "CHILD-DUPLICATE";
+        await SeedHqProductAsync(productCode, start.AddDays(1), true);
+        // 故意先插入最新记录，再插入旧记录；同步结果不能依赖数据库返回顺序的 Last-wins。
+        await SeedHqSetCodeAsync(
+            "hq-same-identity",
+            productCode,
+            childCode,
+            true,
+            start.AddDays(3),
+            "BAR-NEWEST"
+        );
+        await SeedHqSetCodeAsync(
+            "hq-same-identity",
+            productCode,
+            childCode,
+            true,
+            start.AddDays(2),
+            "BAR-OLDER"
+        );
+
+        var result = await CreateService().SyncIncrementalAsync(start);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(1, result.Data!.ProductSetCodesAdded);
+        Assert.Equal(0, result.Data.ProductSetCodesUpdated);
+        var row = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(item => item.ProductCode == productCode);
+        Assert.Equal("BAR-NEWEST", row.SetBarcode);
+    }
+
+    [Fact]
+    public async Task SyncIncrementalAsync_空GUID多业务键不构成GUID冲突()
+    {
+        var start = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        const string productCode = "P-EMPTY-GUID";
+        await SeedHqProductAsync(productCode, start.AddDays(1), true);
+        await SeedHqSetCodeAsync(
+            null,
+            productCode,
+            "CHILD-A",
+            true,
+            start.AddDays(1),
+            "BAR-A"
+        );
+        await SeedHqSetCodeAsync(
+            "   ",
+            productCode,
+            "CHILD-B",
+            true,
+            start.AddDays(2),
+            "BAR-B"
+        );
+
+        var result = await CreateService().SyncIncrementalAsync(start);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(2, result.Data!.ProductSetCodesAdded);
+        Assert.Equal(
+            new[] { "CHILD-A", "CHILD-B" },
+            (await _localDb.Queryable<ProductSetCode>()
+                    .Where(row => row.ProductCode == productCode)
+                    .OrderBy(row => row.SetProductCode)
+                    .ToListAsync())
+                .Select(row => row.SetProductCode)
+        );
+    }
+
+    [Fact]
+    public async Task SyncIncrementalAsync_Type2身份安全时允许HQ权威重键迁移与复活()
+    {
+        var start = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        const string productCode = "P-TYPE2-SAFE";
+        await SeedLocalProductAsync(productCode, isDeleted: false);
+        await _localDb.Insertable(new[]
+        {
+            new ProductSetCode
+            {
+                SetCodeId = "hq-guid-migration",
+                ProductCode = productCode,
+                SetProductCode = "CHILD-OLD",
+                SetItemNumber = "CHILD-OLD",
+                SetBarcode = "LOCAL-OLD-KEY",
+                SetType = 2,
+                SetQuantity = 1,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new ProductSetCode
+            {
+                SetCodeId = "local-key-migration",
+                ProductCode = productCode,
+                SetProductCode = "CHILD-STABLE",
+                SetItemNumber = "CHILD-STABLE",
+                SetBarcode = "LOCAL-DELETED",
+                SetType = 2,
+                SetQuantity = 1,
+                IsActive = false,
+                IsDeleted = true,
+            },
+        }).ExecuteCommandAsync();
+        await SeedHqProductAsync(productCode, start.AddDays(1), true);
+        await SeedHqSetCodeAsync(
+            "hq-guid-migration",
+            productCode,
+            "CHILD-NEW",
+            true,
+            start.AddDays(1),
+            "HQ-GUID-WINS"
+        );
+        await SeedHqSetCodeAsync(
+            "hq-key-migration",
+            productCode,
+            "CHILD-STABLE",
+            true,
+            start.AddDays(2),
+            "HQ-KEY-WINS"
+        );
+
+        var result = await CreateService().SyncIncrementalAsync(start);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(2, result.Data!.ProductSetCodesUpdated);
+        var guidMigration = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == "hq-guid-migration");
+        Assert.Equal("CHILD-NEW", guidMigration.SetProductCode);
+        Assert.Equal("HQ-GUID-WINS", guidMigration.SetBarcode);
+        Assert.False(guidMigration.IsDeleted);
+        Assert.Null(
+            await _localDb.Queryable<ProductSetCode>()
+                .SingleAsync(row => row.SetCodeId == "local-key-migration")
+        );
+        var keyMigration = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == "hq-key-migration");
+        Assert.Equal("CHILD-STABLE", keyMigration.SetProductCode);
+        Assert.Equal("HQ-KEY-WINS", keyMigration.SetBarcode);
+        Assert.True(keyMigration.IsActive);
+        Assert.False(keyMigration.IsDeleted);
+    }
+
+    [Fact]
+    public void ProductSetCodeIdentityResolver_区分五种本地命中结果()
+    {
+        var guidOwner = new ProductSetCode
+        {
+            SetCodeId = "guid-a",
+            ProductCode = " P-IDENTITY ",
+            SetProductCode = "CHILD-A",
+        };
+        var keyOwner = new ProductSetCode
+        {
+            SetCodeId = "guid-b",
+            ProductCode = "P-IDENTITY",
+            SetProductCode = " child-b ",
+        };
+        var index = ProductSetCodeIdentityResolver.CreateIndex(new[] { guidOwner, keyOwner });
+
+        Assert.Equal(
+            ProductSetCodeIdentityMatchKind.None,
+            index.Resolve("guid-none", "P-IDENTITY", "CHILD-NONE").Kind
+        );
+        Assert.Equal(
+            ProductSetCodeIdentityMatchKind.GuidOnly,
+            index.Resolve(" GUID-A ", "P-IDENTITY", "CHILD-NONE").Kind
+        );
+        Assert.Equal(
+            ProductSetCodeIdentityMatchKind.KeyOnly,
+            index.Resolve("guid-none", " p-identity ", "CHILD-A").Kind
+        );
+        Assert.Equal(
+            ProductSetCodeIdentityMatchKind.SameRecord,
+            index.Resolve("guid-a", "P-IDENTITY", " child-a ").Kind
+        );
+        Assert.Equal(
+            ProductSetCodeIdentityMatchKind.Conflict,
+            index.Resolve("guid-a", "P-IDENTITY", "CHILD-B").Kind
+        );
+    }
+
+    [Fact]
+    public void ProductSetCodeIdentityResolver_完全相同源身份按修改时间再按HQ_ID取胜()
+    {
+        var modifiedAt = new DateTime(2026, 5, 8, 0, 0, 0, DateTimeKind.Utc);
+        var rows = new[]
+        {
+            new DIC_一品多码表
+            {
+                ID = 10,
+                HGUID = "same-guid",
+                H商品编码 = " P-SAME ",
+                H多码商品编号 = "CHILD-SAME",
+                H多条形码 = "LOW-ID",
+                FGC_LastModifyDate = modifiedAt,
+            },
+            new DIC_一品多码表
+            {
+                ID = 20,
+                HGUID = " SAME-GUID ",
+                H商品编码 = "P-SAME",
+                H多码商品编号 = " child-same ",
+                H多条形码 = "HIGH-ID",
+                FGC_LastModifyDate = modifiedAt,
+            },
+            new DIC_一品多码表
+            {
+                ID = 30,
+                HGUID = "same-guid",
+                H商品编码 = "P-SAME",
+                H多码商品编号 = "CHILD-SAME",
+                H多条形码 = "NEWER-ID-BUT-OLDER-TIME",
+                FGC_LastModifyDate = modifiedAt.AddMinutes(-1),
+            },
+        };
+
+        var preflight = ProductSetCodeIdentityResolver.PreflightSource(
+            rows,
+            row => row.HGUID,
+            row => row.H商品编码,
+            row => row.H多码商品编号,
+            row => row.FGC_LastModifyDate,
+            row => row.ID
+        );
+
+        Assert.Empty(preflight.Conflicts);
+        Assert.Equal("HIGH-ID", Assert.Single(preflight.Rows).H多条形码);
+    }
+
+    [Fact]
+    public void ProductSetCodeIdentityResolver_同业务键混合空与非空GUID时拒绝避免重复关系()
+    {
+        var rows = new[]
+        {
+            new DIC_一品多码表
+            {
+                ID = 10,
+                HGUID = null,
+                H商品编码 = "P-MIXED-GUID",
+                H多码商品编号 = "CHILD-MIXED-GUID",
+                FGC_LastModifyDate = new DateTime(2026, 5, 8, 0, 0, 0, DateTimeKind.Utc),
+            },
+            new DIC_一品多码表
+            {
+                ID = 20,
+                HGUID = "hq-mixed-guid",
+                H商品编码 = "P-MIXED-GUID",
+                H多码商品编号 = "CHILD-MIXED-GUID",
+                FGC_LastModifyDate = new DateTime(2026, 5, 8, 1, 0, 0, DateTimeKind.Utc),
+            },
+        };
+
+        var preflight = ProductSetCodeIdentityResolver.PreflightSource(
+            rows,
+            row => row.HGUID,
+            row => row.H商品编码,
+            row => row.H多码商品编号,
+            row => row.FGC_LastModifyDate,
+            row => row.ID
+        );
+
+        var conflict = Assert.Single(preflight.Conflicts);
+        Assert.Equal(
+            ProductSetCodeSourceConflictKind.KeyHasMixedGuidPresence,
+            conflict.Kind
+        );
+        Assert.Empty(preflight.Rows);
+        Assert.Contains("同时存在空 GUID 与非空 GUID", conflict.ToErrorMessage());
     }
 
     public void Dispose()
@@ -322,4 +1103,5 @@ public sealed class ProductSetCodeHqIncrementalSyncTests : IDisposable
             .SetValue(context, configuration);
         return context;
     }
+
 }

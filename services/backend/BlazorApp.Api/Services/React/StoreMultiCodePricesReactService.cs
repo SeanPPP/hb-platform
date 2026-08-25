@@ -404,54 +404,200 @@ namespace BlazorApp.Api.Services.React
                 var insertList = new List<StoreMultiCodeProduct>();
                 var updateList = new List<StoreMultiCodeProduct>();
                 var errors = new List<string>();
+                var uuids = items
+                    .Select(it => it.UUID)
+                    .Where(u => !string.IsNullOrWhiteSpace(u))
+                    .Select(u => u!.Trim())
+                    .Distinct()
+                    .ToList();
+                var storeCodes = items
+                    .Select(it => it.StoreCode)
+                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                    .Select(s => s!.Trim())
+                    .Distinct()
+                    .ToList();
+                var productCodes = items
+                    .Select(it => it.ProductCode)
+                    .Where(p => !string.IsNullOrWhiteSpace(p))
+                    .Select(p => p!.Trim())
+                    .Distinct()
+                    .ToList();
+                var multiCodeProductCodes = items
+                    .Select(it => it.MultiCodeProductCode)
+                    .Where(p => !string.IsNullOrWhiteSpace(p))
+                    .Select(p => p!.Trim())
+                    .Distinct()
+                    .ToList();
+                var requestedFullKeys = items
+                    .Where(it =>
+                        !string.IsNullOrWhiteSpace(it.StoreCode)
+                        && !string.IsNullOrWhiteSpace(it.ProductCode)
+                        && !string.IsNullOrWhiteSpace(it.MultiCodeProductCode)
+                    )
+                    .Select(it =>
+                        $"{it.StoreCode!.Trim()}|{it.ProductCode!.Trim()}|{it.MultiCodeProductCode!.Trim()}"
+                    )
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var requestedMainKeys = items
+                    .Where(it =>
+                        !string.IsNullOrWhiteSpace(it.StoreCode)
+                        && !string.IsNullOrWhiteSpace(it.ProductCode)
+                        && string.IsNullOrWhiteSpace(it.MultiCodeProductCode)
+                    )
+                    .Select(it => $"{it.StoreCode!.Trim()}|{it.ProductCode!.Trim()}")
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                // 事务外只解析 UUID 当前归属，用于一次性确定稳定产品锁集合。
+                var preflightUuidRows = uuids.Count == 0
+                    ? new List<StoreMultiCodeProduct>()
+                    : await db.Queryable<StoreMultiCodeProduct>()
+                        .Where(x => x.UUID != null && uuids.Contains(x.UUID) && !x.IsDeleted)
+                        .Select(x => new StoreMultiCodeProduct
+                        {
+                            UUID = x.UUID,
+                            ProductCode = x.ProductCode,
+                        })
+                        .ToListAsync();
+                var preflightByUuid = preflightUuidRows
+                    .Where(x => !string.IsNullOrWhiteSpace(x.UUID))
+                    .ToDictionary(x => x.UUID!);
+                var lockProductCodes = productCodes
+                    .Concat(
+                        preflightUuidRows
+                            .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                            .Select(x => x.ProductCode!)
+                    )
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (lockProductCodes.Count == 0)
+                {
+                    return ApiResponse<BatchResultDtoMC>.Error(
+                        "批量保存缺少可锁定的父商品编码",
+                        "VALIDATION_ERROR"
+                    );
+                }
 
                 await db.Ado.BeginTranAsync();
                 try
                 {
-                    var uuids = items
-                        .Select(it => it.UUID)
-                        .Where(u => !string.IsNullOrWhiteSpace(u))
-                        .Select(u => u!.Trim())
-                        .Distinct()
-                        .ToList();
-                    var storeCodes = items
-                        .Select(it => it.StoreCode)
-                        .Where(s => !string.IsNullOrWhiteSpace(s))
-                        .Select(s => s!.Trim())
-                        .Distinct()
-                        .ToList();
-                    var productCodes = items
-                        .Select(it => it.ProductCode)
-                        .Where(p => !string.IsNullOrWhiteSpace(p))
-                        .Select(p => p!.Trim())
-                        .Distinct()
-                        .ToList();
-                    var multiCodeProductCodes = items
-                        .Select(it => it.MultiCodeProductCode)
-                        .Where(p => !string.IsNullOrWhiteSpace(p))
-                        .Select(p => p!.Trim())
-                        .Distinct()
-                        .ToList();
-                    var q = db.Queryable<StoreMultiCodeProduct>().Where(x => x.IsDeleted == false);
-                    if (uuids.Any())
-                        q = q.Where(x => x.UUID != null && uuids.Contains(x.UUID));
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        db,
+                        lockProductCodes
+                    );
+                    var existing = uuids.Count == 0
+                        ? new List<StoreMultiCodeProduct>()
+                        : await db.Queryable<StoreMultiCodeProduct>()
+                            .Where(x => x.UUID != null && uuids.Contains(x.UUID) && !x.IsDeleted)
+                            .ToListAsync();
                     if (storeCodes.Any())
                     {
-                        q = q.Where(x => x.StoreCode != null && storeCodes.Contains(x.StoreCode));
+                        var keyQuery = db.Queryable<StoreMultiCodeProduct>()
+                            .Where(x =>
+                                x.StoreCode != null
+                                && storeCodes.Contains(x.StoreCode)
+                                && !x.IsDeleted
+                            );
                         // 仅对非空列表使用 Contains，避免 SqlSugar 解析空列表时索引越界
                         if (productCodes.Any() && multiCodeProductCodes.Any())
-                            q = q.Where(x => (x.ProductCode != null && productCodes.Contains(x.ProductCode)) || (x.MultiCodeProductCode != null && multiCodeProductCodes.Contains(x.MultiCodeProductCode)));
+                            keyQuery = keyQuery.Where(x =>
+                                (x.ProductCode != null && productCodes.Contains(x.ProductCode))
+                                || (
+                                    x.MultiCodeProductCode != null
+                                    && multiCodeProductCodes.Contains(x.MultiCodeProductCode)
+                                )
+                            );
                         else if (productCodes.Any())
-                            q = q.Where(x => x.ProductCode != null && productCodes.Contains(x.ProductCode));
+                            keyQuery = keyQuery.Where(x =>
+                                x.ProductCode != null && productCodes.Contains(x.ProductCode)
+                            );
                         else if (multiCodeProductCodes.Any())
-                            q = q.Where(x => x.MultiCodeProductCode != null && multiCodeProductCodes.Contains(x.MultiCodeProductCode));
+                            keyQuery = keyQuery.Where(x =>
+                                x.MultiCodeProductCode != null
+                                && multiCodeProductCodes.Contains(x.MultiCodeProductCode)
+                            );
+                        var keyRows = await keyQuery.ToListAsync();
+                        existing.AddRange(
+                            keyRows.Where(row =>
+                                requestedFullKeys.Contains(
+                                    $"{row.StoreCode}|{row.ProductCode}|{row.MultiCodeProductCode}"
+                                )
+                                || requestedMainKeys.Contains(
+                                    $"{row.StoreCode}|{row.ProductCode}"
+                                )
+                            )
+                        );
                     }
-                    var existing = await q.ToListAsync();
+                    existing = existing
+                        .GroupBy(x =>
+                            !string.IsNullOrWhiteSpace(x.UUID)
+                                ? $"UUID:{x.UUID}"
+                                : $"KEY:{x.StoreCode}|{x.ProductCode}|{x.MultiCodeProductCode}"
+                        )
+                        .Select(group => group.First())
+                        .ToList();
+                    foreach (var uuid in uuids)
+                    {
+                        preflightByUuid.TryGetValue(uuid, out var expected);
+                        var current = existing.FirstOrDefault(x => x.UUID == uuid);
+                        if (
+                            (expected == null) != (current == null)
+                            || (
+                                expected != null
+                                && current != null
+                                && !string.Equals(
+                                    expected.ProductCode?.Trim(),
+                                    current.ProductCode?.Trim(),
+                                    StringComparison.OrdinalIgnoreCase
+                                )
+                            )
+                        )
+                        {
+                            throw new InvalidOperationException(
+                                $"多码记录 {uuid} 在等待业务锁期间归属发生变化，请重试"
+                            );
+                        }
+                    }
+                    var candidateProductCodes = productCodes
+                        .Concat(existing
+                            .Where(x => !string.IsNullOrWhiteSpace(x.ProductCode))
+                            .Select(x => x.ProductCode!))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    lockScope.EnsureCovers(db, candidateProductCodes);
+                    var candidateChildCodes = multiCodeProductCodes
+                        .Concat(existing
+                            .Where(x => !string.IsNullOrWhiteSpace(x.MultiCodeProductCode))
+                            .Select(x => x.MultiCodeProductCode!))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    var activeSetChildren = candidateProductCodes.Count == 0
+                        || candidateChildCodes.Count == 0
+                        ? new List<ProductSetCode>()
+                        : await db.Queryable<ProductSetCode>()
+                            .Where(x =>
+                                candidateProductCodes.Contains(x.ProductCode)
+                                && x.SetProductCode != null
+                                && candidateChildCodes.Contains(x.SetProductCode)
+                                && (x.SetType == 1 || x.SetType == 2)
+                                && x.IsActive
+                                && !x.IsDeleted
+                            )
+                            .ToListAsync();
+                    var activeSetChildKeys = activeSetChildren
+                        .Select(x => $"{x.ProductCode}\u0001{x.SetProductCode}")
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
                     var byUuid = existing
                         .Where(x => !string.IsNullOrWhiteSpace(x.UUID))
                         .ToDictionary(x => x.UUID);
                     var byKeyMain = existing.GroupBy(x => $"{x.StoreCode}|{x.ProductCode}").ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.UpdatedAt ?? x.CreatedAt).First());
-                    var byKeyMulti = existing.GroupBy(x => $"{x.StoreCode}|{x.MultiCodeProductCode}").ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.UpdatedAt ?? x.CreatedAt).First());
+                    var byKeyMulti = existing
+                        .Where(x =>
+                            !string.IsNullOrWhiteSpace(x.ProductCode)
+                            && !string.IsNullOrWhiteSpace(x.MultiCodeProductCode)
+                        )
+                        .GroupBy(x =>
+                            $"{x.StoreCode}|{x.ProductCode}|{x.MultiCodeProductCode}"
+                        )
+                        .ToDictionary(g => g.Key, g => g.OrderByDescending(x => x.UpdatedAt ?? x.CreatedAt).First());
                     foreach (var it in items)
                     {
                         try
@@ -469,11 +615,18 @@ namespace BlazorApp.Api.Services.React
                                     throw new Exception("缺少关键键值(storeCode)");
                                 if (!string.IsNullOrWhiteSpace(it.MultiCodeProductCode))
                                 {
-                                    var keyMulti = $"{sc}|{it.MultiCodeProductCode!.Trim()}";
+                                    var pc = it.ProductCode?.Trim();
+                                    if (string.IsNullOrWhiteSpace(pc))
+                                        throw new Exception("按子项编码匹配时缺少父商品编码(productCode)");
+                                    var keyMulti = $"{sc}|{pc}|{it.MultiCodeProductCode!.Trim()}";
                                     if (byKeyMulti.TryGetValue(keyMulti, out var foundByKey))
                                         entity = foundByKey;
                                 }
-                                if (entity == null && !string.IsNullOrWhiteSpace(it.ProductCode))
+                                if (
+                                    entity == null
+                                    && string.IsNullOrWhiteSpace(it.MultiCodeProductCode)
+                                    && !string.IsNullOrWhiteSpace(it.ProductCode)
+                                )
                                 {
                                     var pc = it.ProductCode?.Trim();
                                     var keyMain = $"{sc}|{pc}";
@@ -481,6 +634,13 @@ namespace BlazorApp.Api.Services.React
                                         entity = foundByKey;
                                 }
                             }
+                            var targetProductCode = entity?.ProductCode ?? it.ProductCode;
+                            var targetChildCode = entity?.MultiCodeProductCode ?? it.MultiCodeProductCode;
+                            var isSetChild = !string.IsNullOrWhiteSpace(targetProductCode)
+                                && !string.IsNullOrWhiteSpace(targetChildCode)
+                                && activeSetChildKeys.Contains(
+                                    $"{targetProductCode}\u0001{targetChildCode}"
+                                );
                             if (entity == null)
                             {
                                 var pc = it.ProductCode?.Trim();
@@ -493,7 +653,7 @@ namespace BlazorApp.Api.Services.React
                                     ProductCode = it.ProductCode,
                                     MultiCodeProductCode = it.MultiCodeProductCode,
                                     StoreMultiCodeProductCode = !string.IsNullOrWhiteSpace(it.MultiCodeProductCode) ? it.StoreCode + it.MultiCodeProductCode : it.StoreCode + it.MultiCodeRetailPrice,
-                                    PurchasePrice = it.PurchasePrice,
+                                    PurchasePrice = isSetChild ? null : it.PurchasePrice,
                                     MultiCodeRetailPrice = it.MultiCodeRetailPrice,
                                     DiscountRate = it.DiscountRate,
                                     IsActive = it.IsActive ?? true,
@@ -506,7 +666,9 @@ namespace BlazorApp.Api.Services.React
                                 };
                                 insertList.Add(entity);
                                 var sk = $"{entity.StoreCode}|{entity.ProductCode}";
-                                var skm = !string.IsNullOrWhiteSpace(entity.MultiCodeProductCode) ? $"{entity.StoreCode}|{entity.MultiCodeProductCode}" : null;
+                                var skm = !string.IsNullOrWhiteSpace(entity.MultiCodeProductCode)
+                                    ? $"{entity.StoreCode}|{entity.ProductCode}|{entity.MultiCodeProductCode}"
+                                    : null;
                                 if (!byKeyMain.ContainsKey(sk))
                                     byKeyMain[sk] = entity;
                                 if (skm != null && !byKeyMulti.ContainsKey(skm))
@@ -516,7 +678,7 @@ namespace BlazorApp.Api.Services.React
                             {
                                 if (string.IsNullOrWhiteSpace(entity.StoreMultiCodeProductCode))
                                     entity.StoreMultiCodeProductCode = UuidHelper.GenerateUuid7();
-                                if (it.PurchasePrice.HasValue)
+                                if (it.PurchasePrice.HasValue && !isSetChild)
                                     entity.PurchasePrice = it.PurchasePrice;
                                 if (it.MultiCodeRetailPrice.HasValue)
                                     entity.MultiCodeRetailPrice = it.MultiCodeRetailPrice;
@@ -540,7 +702,39 @@ namespace BlazorApp.Api.Services.React
                     if (insertList.Any())
                         await db.Insertable(insertList).ExecuteCommandAsync();
                     if (updateList.Any())
-                        await db.Updateable(updateList).ExecuteCommandAsync();
+                        await db.Updateable(updateList)
+                            .UpdateColumns(x => new
+                            {
+                                x.StoreMultiCodeProductCode,
+                                x.PurchasePrice,
+                                x.MultiCodeRetailPrice,
+                                x.DiscountRate,
+                                x.IsActive,
+                                x.IsAutoPricing,
+                                x.UpdatedAt,
+                                x.UpdatedBy,
+                            })
+                            .ExecuteCommandAsync();
+
+                    var affectedRows = insertList
+                        .Concat(updateList)
+                        .Where(x =>
+                            !string.IsNullOrWhiteSpace(x.ProductCode)
+                            && !string.IsNullOrWhiteSpace(x.StoreCode)
+                        )
+                        .ToList();
+                    if (affectedRows.Count > 0)
+                    {
+                        // 普通多码不受影响；统一服务只会重算匹配 Type1/Type2 的套装投影。
+                        var writeback = await new SetChildPurchasePriceService(db)
+                            .RecalculateStoreGroupsLockedAsync(
+                            lockScope,
+                            affectedRows.Select(x => (x.StoreCode, x.ProductCode)),
+                            updatedBy
+                        );
+                        if (writeback.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                            throw new InvalidOperationException("目标门店套装子项成本重算不完整");
+                    }
                     await db.Ado.CommitTranAsync();
 
                     var result = new BatchResultDtoMC
@@ -556,6 +750,13 @@ namespace BlazorApp.Api.Services.React
                 {
                     await db.Ado.RollbackTranAsync();
                     _logger.LogError(ex, "StoreMultiCode 批量保存事务失败");
+                    if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict))
+                    {
+                        return ApiResponse<BatchResultDtoMC>.Error(
+                            conflict!.Message,
+                            SetChildPurchasePriceMutationLock.BusyErrorCode
+                        );
+                    }
                     return ApiResponse<BatchResultDtoMC>.Error(
                         "批量保存失败",
                         "BATCH_UPSERT_ERROR"
@@ -565,6 +766,13 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "StoreMultiCode 批量保存失败");
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out var conflict))
+                {
+                    return ApiResponse<BatchResultDtoMC>.Error(
+                        conflict!.Message,
+                        SetChildPurchasePriceMutationLock.BusyErrorCode
+                    );
+                }
                 return ApiResponse<BatchResultDtoMC>.Error("批量保存失败", "BATCH_UPSERT_ERROR");
             }
         }

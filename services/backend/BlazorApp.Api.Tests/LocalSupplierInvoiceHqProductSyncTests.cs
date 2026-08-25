@@ -43,6 +43,7 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         _localDb.CodeFirst.InitTables(
             typeof(Store),
             typeof(Product),
+            typeof(WarehouseProduct),
             typeof(DomesticProduct),
             typeof(StoreRetailPrice),
             typeof(ProductSetCode),
@@ -196,6 +197,140 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateHqProductsAsync_同批商品实际更新字段不同_分组写入且库存活动字段保持不变()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01", "ITEM-001", "930000030001");
+        await SeedExistingProductAsync("P-002", "SUP01", "ITEM-002", "930000030002");
+        await SeedHqProductAsync("P-001", 5m, 10m, "ITEM-001", "930000030001");
+        await SeedHqProductAsync("P-002", 6m, 12m, "ITEM-002", "930000030002", 2);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await _hqDb.Insertable(new DIC_商品零售价表
+        {
+            ID = 2,
+            HGUID = "hq-price-S01-P-002",
+            H分店代码 = "S01",
+            H商品编码 = "P-002",
+            H分店商品编码 = "S01P-002",
+            H供应商编码 = "SUP01",
+            H分店供应商编码 = "S01SUP01",
+            H进货价 = 6m,
+            H分店零售价 = 12m,
+            H库存 = 222m,
+            H库存金额 = 2664m,
+            H活动类型 = "满减",
+            H满减活动代码 = "PROMO-002",
+            H使用状态 = true,
+            FGC_Creator = "seed",
+            FGC_CreateDate = DateTime.UtcNow,
+            FGC_LastModifier = "seed",
+            FGC_LastModifyDate = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+        await _hqDb.Updateable<DIC_商品零售价表>()
+            .SetColumns(price => new DIC_商品零售价表
+            {
+                H库存 = 111m,
+                H库存金额 = 1110m,
+                H活动类型 = "折扣",
+                H满减活动代码 = "PROMO-001",
+            })
+            .Where(price => price.H分店代码 == "S01" && price.H商品编码 == "P-001")
+            .ExecuteCommandAsync();
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-field-group-1",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            ItemNumber = "ITEM-001",
+            Barcode = "930000030001",
+            PurchasePrice = 8m,
+            RetailPrice = 18m,
+            IsDeleted = false,
+        });
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-field-group-2",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-002",
+            ItemNumber = "ITEM-002",
+            Barcode = "930000030002",
+            PurchasePrice = 0m,
+            RetailPrice = 19m,
+            IsDeleted = false,
+        });
+        await _hqDb.Ado.ExecuteCommandAsync(
+            """
+            CREATE TRIGGER "reject_unrelated_hq_price_columns"
+            BEFORE UPDATE OF "H库存", "H库存金额", "H活动类型", "H满减活动代码", "H动态销售数量"
+            ON "DIC_商品零售价表"
+            BEGIN
+                SELECT RAISE(ABORT, 'unrelated HQ price column updated');
+            END;
+            """
+        );
+
+        var hqPriceWriteCommands = 0;
+        _hqDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (IsTableWriteCommand(sql, "DIC_商品零售价表"))
+                hqPriceWriteCommands++;
+        };
+
+        ApiResponse<UpdateHqProductsResult> response;
+        try
+        {
+            response = await CreateSyncService().UpdateHqProductsAsync(
+                "invoice-1",
+                new UpdateHqProductsRequest
+                {
+                    DetailGuids = new List<string> { "detail-field-group-1", "detail-field-group-2" },
+                    TargetStoreCodes = new List<string> { "S01" },
+                    UpdateFields = new UpdateToStorePricesFields
+                    {
+                        UpdatePurchasePrice = true,
+                        UpdateRetailPrice = true,
+                    },
+                },
+                "tester"
+            );
+        }
+        finally
+        {
+            _hqDb.Aop.OnLogExecuting = null;
+        }
+
+        Assert.True(response.Success, BuildFailureMessage(response));
+        Assert.Equal(2, response.Data!.Updated);
+        Assert.Equal(1, response.Data.HqPurchasePricesUpdated);
+        Assert.Equal(2, response.Data.HqRetailPricesUpdated);
+        Assert.Equal(2, hqPriceWriteCommands);
+
+        var prices = await _hqDb.Queryable<DIC_商品零售价表>()
+            .OrderBy(price => price.H商品编码)
+            .ToListAsync();
+        Assert.Collection(
+            prices,
+            price =>
+            {
+                Assert.Equal((8m, 18m), (price.H进货价, price.H分店零售价));
+                Assert.Equal((111m, 1110m), (price.H库存, price.H库存金额));
+                Assert.Equal(("折扣", "PROMO-001"), (price.H活动类型, price.H满减活动代码));
+            },
+            price =>
+            {
+                Assert.Equal((6m, 19m), (price.H进货价, price.H分店零售价));
+                Assert.Equal((222m, 2664m), (price.H库存, price.H库存金额));
+                Assert.Equal(("满减", "PROMO-002"), (price.H活动类型, price.H满减活动代码));
+            }
+        );
+    }
+
+    [Fact]
     public async Task UpdateHqProductsAsync_同步本地多码关系到HQ()
     {
         await SeedStoreAsync("S01", true);
@@ -292,11 +427,19 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
 
         var hqSetCode = await _hqDb.Queryable<DIC_一品多码表>().SingleAsync();
         var hqStoreMulti = await _hqDb.Queryable<DIC_分店一品多码表>().SingleAsync();
+        var localSetCode = await _localDb.Queryable<ProductSetCode>().SingleAsync();
+        var localStoreMulti = await _localDb.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(x => x.StoreCode == "S01");
         Assert.Equal("P-001", hqSetCode.H商品编码);
         Assert.Equal("MC-001", hqSetCode.H多码商品编号);
         Assert.Equal("191554882690", hqSetCode.H多条形码);
+        // 推送前必须先用本地主成本回算，不能把进货单明细的 8 写到 HQ 多码关系。
+        Assert.Equal(5m, localSetCode.SetPurchasePrice);
+        Assert.Equal(5m, localStoreMulti.PurchasePrice);
+        Assert.Equal(5m, hqSetCode.H进货价);
         Assert.Equal("S01", hqStoreMulti.H分店代码);
         Assert.Equal("S01MC-001", hqStoreMulti.H分店多码商品编码);
+        Assert.Equal(5m, hqStoreMulti.H进货价);
         Assert.Equal(18m, hqStoreMulti.H一品多码零售价);
 
         var secondResult = await CreateSyncService().UpdateHqProductsAsync(
@@ -320,6 +463,480 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         Assert.Equal(1, secondResult.Data.HqStoreMultiCodesUpdated);
         Assert.Equal(1, await _hqDb.Queryable<DIC_一品多码表>().CountAsync());
         Assert.Equal(1, await _hqDb.Queryable<DIC_分店一品多码表>().CountAsync());
+    }
+
+    [Fact]
+    public async Task EnsureHqProductsAsync_受影响多码投影不完整_本地价格和明细一起回滚()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedInvoiceAsync("invoice-rollback", "S01", "SUP01");
+        await SeedExistingProductAsync("P-ROLLBACK", "SUP01");
+        await SeedLocalPriceAsync("S01", "P-ROLLBACK", 5m, 10m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-rollback",
+            InvoiceGUID = "invoice-rollback",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-ROLLBACK",
+            ItemNumber = "ITEM-OLD",
+            Barcode = "930000000000",
+            PurchasePrice = 8m,
+            RetailPrice = 18m,
+            IsDeleted = false,
+        });
+        await _localDb.Insertable(new ProductSetCode
+        {
+            SetCodeId = "set-incomplete",
+            ProductCode = "P-ROLLBACK",
+            SetProductCode = "MC-MISSING",
+            SetItemNumber = "ITEM-MC",
+            SetBarcode = "930000000001",
+            SetPurchasePrice = 99m,
+            SetRetailPrice = 18m,
+            SetType = 2,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        var response = await CreateSyncService().EnsureHqProductsAsync(
+            "invoice-rollback",
+            new EnsureHqProductsRequest
+            {
+                DetailGuids = ["detail-rollback"],
+                TargetStoreCodes = ["S01"],
+            },
+            "tester"
+        );
+
+        Assert.False(response.Success);
+        var storePrice = await _localDb.Queryable<StoreRetailPrice>()
+            .SingleAsync(row => row.StoreCode == "S01" && row.ProductCode == "P-ROLLBACK");
+        var detail = await _localDb.Queryable<StoreLocalSupplierInvoiceDetails>()
+            .SingleAsync(row => row.DetailGUID == "detail-rollback");
+        var setCode = await _localDb.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == "set-incomplete");
+        Assert.Equal((5m, 10m), (storePrice.PurchasePrice, storePrice.StoreRetailPriceValue));
+        Assert.Null(detail.LastPurchasePrice);
+        Assert.Equal(99m, setCode.SetPurchasePrice);
+        Assert.Equal(0, await _hqDb.Queryable<DIC_商品信息字典表>().CountAsync());
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_多个多码与多个目标分店_多码写入按表批量执行()
+    {
+        foreach (var storeCode in new[] { "S01", "S02", "S03" })
+        {
+            await SeedStoreAsync(storeCode, true);
+        }
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-hq-multicode-batch",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            ItemNumber = "ITEM-MULTI-BATCH",
+            Barcode = "930000020000",
+            PurchasePrice = 8m,
+            RetailPrice = 18m,
+            AutoPricing = true,
+            IsDeleted = false,
+        });
+        await _localDb.Insertable(
+            Enumerable.Range(1, 41).Select(index => new ProductSetCode
+            {
+                SetCodeId = $"set-code-batch-{index}",
+                ProductCode = "P-001",
+                SetProductCode = $"MC-BATCH-{index}",
+                SetItemNumber = "ITEM-MULTI-BATCH",
+                SetBarcode = $"93000002{index:D5}",
+                SetPurchasePrice = 8m + index,
+                SetRetailPrice = 18m + index,
+                SetQuantity = 1,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = false,
+            }).ToList()
+        ).ExecuteCommandAsync();
+        await SeedStoreMultiCodeProjectionsForAllActiveRelationsAsync("P-001");
+
+        var productSetWriteCommands = 0;
+        var storeMultiWriteCommands = 0;
+        _hqDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (IsTableWriteCommand(sql, "DIC_一品多码表"))
+                productSetWriteCommands++;
+            if (IsTableWriteCommand(sql, "DIC_分店一品多码表"))
+                storeMultiWriteCommands++;
+        };
+
+        try
+        {
+            var response = await CreateSyncService().UpdateHqProductsAsync(
+                "invoice-1",
+                new UpdateHqProductsRequest
+                {
+                    DetailGuids = new List<string> { "detail-hq-multicode-batch" },
+                    TargetStoreCodes = new List<string> { "S01", "S02", "S03" },
+                    UpdateFields = new UpdateToStorePricesFields
+                    {
+                        UpdatePurchasePrice = true,
+                    },
+                },
+                "tester"
+            );
+
+            Assert.True(response.Success, BuildFailureMessage(response));
+            Assert.Equal(41, response.Data!.HqProductSetCodesCreated);
+            Assert.Equal(123, response.Data.HqStoreMultiCodesCreated);
+        }
+        finally
+        {
+            _hqDb.Aop.OnLogExecuting = null;
+        }
+
+        Assert.Equal(41, await _hqDb.Queryable<DIC_一品多码表>().CountAsync());
+        Assert.Equal(123, await _hqDb.Queryable<DIC_分店一品多码表>().CountAsync());
+        Assert.True(productSetWriteCommands <= 2, $"HQ商品多码写入命令数为 {productSetWriteCommands}");
+        Assert.True(storeMultiWriteCommands <= 4, $"HQ分店多码写入命令数为 {storeMultiWriteCommands}");
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_多码批量失败且备用键为空_不覆盖无关HQ多码()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-hq-multicode-empty-fallback-key",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            ItemNumber = "ITEM-MULTI-EMPTY-FALLBACK",
+            Barcode = "930000030000",
+            PurchasePrice = 8m,
+            RetailPrice = 18m,
+            IsDeleted = false,
+        });
+        await _localDb.Insertable(new[]
+        {
+            new ProductSetCode
+            {
+                SetCodeId = "set-code-new-empty-barcode",
+                ProductCode = "P-001",
+                SetProductCode = "MC-NEW",
+                SetBarcode = string.Empty,
+                SetPurchasePrice = 8m,
+                SetRetailPrice = 18m,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new ProductSetCode
+            {
+                SetCodeId = "set-code-reject",
+                ProductCode = "P-001",
+                SetProductCode = "MC-REJECT",
+                SetBarcode = "930000030002",
+                SetPurchasePrice = 9m,
+                SetRetailPrice = 19m,
+                IsActive = true,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+        await SeedStoreMultiCodeProjectionsForAllActiveRelationsAsync("P-001");
+        await _hqDb.Insertable(new DIC_一品多码表
+        {
+            ID = 1,
+            HGUID = "hq-unrelated-empty-barcode",
+            H商品编码 = "P-001",
+            H多码商品编号 = "MC-EXISTING",
+            H供应商编码 = "SUP01",
+            H主条形码 = "930000030000",
+            H多条形码 = string.Empty,
+            H进货价 = 1m,
+            H一品多码零售价 = 2m,
+            H使用状态 = true,
+            FGC_Creator = "seed",
+            FGC_CreateDate = DateTime.UtcNow,
+            FGC_LastModifier = "seed",
+            FGC_LastModifyDate = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+        await _hqDb.Ado.ExecuteCommandAsync(
+            """
+            CREATE TRIGGER "reject_hq_product_set_code_insert"
+            BEFORE INSERT ON "DIC_一品多码表"
+            WHEN NEW."H多码商品编号" = 'MC-REJECT'
+            BEGIN
+                SELECT RAISE(ABORT, 'reject MC-REJECT');
+            END;
+            """
+        );
+
+        var response = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-hq-multicode-empty-fallback-key" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        var failedResult = Assert.IsType<UpdateHqProductsResult>(response.Details);
+        Assert.False(response.Success);
+        Assert.Equal("HQ_UPDATE_PARTIAL_FAILED", response.ErrorCode);
+        Assert.Equal(1, failedResult.HqProductSetCodesCreated);
+        Assert.Equal(1, failedResult.Failed);
+
+        var productSetCodes = await _hqDb.Queryable<DIC_一品多码表>()
+            .OrderBy(row => row.ID)
+            .ToListAsync();
+        Assert.Equal(2, productSetCodes.Count);
+        Assert.Equal("MC-EXISTING", productSetCodes[0].H多码商品编号);
+        Assert.Equal(1m, productSetCodes[0].H进货价);
+        Assert.Contains(productSetCodes, row => row.H多码商品编号 == "MC-NEW");
+        Assert.DoesNotContain(productSetCodes, row => row.H多码商品编号 == "MC-REJECT");
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_多码更新时记录被并发删除_降级重建并按创建计数()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-hq-multicode-concurrent-delete",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            ItemNumber = "ITEM-MULTI-CONCURRENT-DELETE",
+            Barcode = "930000030100",
+            PurchasePrice = 8m,
+            RetailPrice = 18m,
+            IsDeleted = false,
+        });
+        await _localDb.Insertable(new ProductSetCode
+        {
+            SetCodeId = "set-code-concurrent-delete",
+            ProductCode = "P-001",
+            SetProductCode = "MC-CONCURRENT-DELETE",
+            SetBarcode = "930000030101",
+            SetPurchasePrice = 8m,
+            SetRetailPrice = 18m,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedStoreMultiCodeProjectionsForAllActiveRelationsAsync("P-001");
+        await _hqDb.Insertable(new DIC_一品多码表
+        {
+            ID = 1,
+            HGUID = "hq-set-code-concurrent-delete",
+            H商品编码 = "P-001",
+            H多码商品编号 = "MC-CONCURRENT-DELETE",
+            H供应商编码 = "SUP01",
+            H主条形码 = "930000030100",
+            H多条形码 = "930000030101",
+            H进货价 = 5m,
+            H一品多码零售价 = 10m,
+            H使用状态 = true,
+            FGC_Creator = "seed",
+            FGC_CreateDate = DateTime.UtcNow,
+            FGC_LastModifier = "seed",
+            FGC_LastModifyDate = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+        await _hqDb.Ado.ExecuteCommandAsync(
+            """
+            CREATE TRIGGER "delete_hq_product_set_code_before_update"
+            BEFORE UPDATE ON "DIC_一品多码表"
+            WHEN NEW."H多码商品编号" = 'MC-CONCURRENT-DELETE'
+            BEGIN
+                DELETE FROM "DIC_一品多码表" WHERE "ID" = OLD."ID";
+                SELECT RAISE(IGNORE);
+            END;
+            """
+        );
+
+        var response = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-hq-multicode-concurrent-delete" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        Assert.True(response.Success, BuildFailureMessage(response));
+        Assert.Equal(1, response.Data!.HqProductSetCodesCreated);
+        Assert.Equal(0, response.Data.HqProductSetCodesUpdated);
+        var rebuilt = await _hqDb.Queryable<DIC_一品多码表>().SingleAsync();
+        Assert.Equal("MC-CONCURRENT-DELETE", rebuilt.H多码商品编号);
+        Assert.Equal(5m, rebuilt.H进货价);
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_商品多码编号与条码命中不同HQ记录_返回冲突且不覆盖()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-hq-multicode-key-conflict",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            ItemNumber = "ITEM-MULTI-KEY-CONFLICT",
+            Barcode = "930000030200",
+            PurchasePrice = 8m,
+            RetailPrice = 18m,
+            IsDeleted = false,
+        });
+        await _localDb.Insertable(new ProductSetCode
+        {
+            SetCodeId = "set-code-key-conflict",
+            ProductCode = "P-001",
+            SetProductCode = "MC-BY-CODE",
+            SetBarcode = "930000030202",
+            SetPurchasePrice = 8m,
+            SetRetailPrice = 18m,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedStoreMultiCodeProjectionsForAllActiveRelationsAsync("P-001");
+        await _hqDb.Insertable(new[]
+        {
+            new DIC_一品多码表
+            {
+                ID = 1,
+                HGUID = "hq-set-code-match-by-code",
+                H商品编码 = "P-001",
+                H多码商品编号 = "MC-BY-CODE",
+                H多条形码 = "930000030201",
+                H进货价 = 5m,
+                H一品多码零售价 = 10m,
+            },
+            new DIC_一品多码表
+            {
+                ID = 2,
+                HGUID = "hq-set-code-match-by-barcode",
+                H商品编码 = "P-001",
+                H多码商品编号 = "MC-BY-BARCODE",
+                H多条形码 = "930000030202",
+                H进货价 = 6m,
+                H一品多码零售价 = 12m,
+            },
+        }).ExecuteCommandAsync();
+
+        var response = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-hq-multicode-key-conflict" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        var failedResult = Assert.IsType<UpdateHqProductsResult>(response.Details);
+        Assert.False(response.Success);
+        Assert.Equal("HQ_UPDATE_PARTIAL_FAILED", response.ErrorCode);
+        Assert.Equal(1, failedResult.Failed);
+        Assert.Contains(
+            failedResult.Errors,
+            error => error.Message.Contains("HQ商品多码业务键冲突")
+        );
+
+        var productSetCodes = await _hqDb.Queryable<DIC_一品多码表>()
+            .OrderBy(row => row.ID)
+            .ToListAsync();
+        Assert.Collection(
+            productSetCodes,
+            row => Assert.Equal(("MC-BY-CODE", "930000030201", 5m), (row.H多码商品编号, row.H多条形码, row.H进货价)),
+            row => Assert.Equal(("MC-BY-BARCODE", "930000030202", 6m), (row.H多码商品编号, row.H多条形码, row.H进货价))
+        );
+        Assert.Equal(0, await _hqDb.Queryable<DIC_分店一品多码表>().CountAsync());
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_商品多码两个业务键均为空_本地校正失败且不推送HQ()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-hq-multicode-empty-keys",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            ItemNumber = "ITEM-MULTI-EMPTY-KEYS",
+            Barcode = "930000030300",
+            PurchasePrice = 8m,
+            RetailPrice = 18m,
+            IsDeleted = false,
+        });
+        await _localDb.Insertable(new ProductSetCode
+        {
+            SetCodeId = "set-code-empty-keys",
+            ProductCode = "P-001",
+            SetProductCode = string.Empty,
+            SetBarcode = string.Empty,
+            SetPurchasePrice = 8m,
+            SetRetailPrice = 18m,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        var response = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-hq-multicode-empty-keys" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        Assert.False(response.Success);
+        Assert.Equal("HQ_UPDATE_ERROR", response.ErrorCode);
+        Assert.Contains("子项业务键为空", response.Message);
+        Assert.Equal(0, await _hqDb.Queryable<DIC_一品多码表>().CountAsync());
+        Assert.Equal(0, await _hqDb.Queryable<DIC_分店一品多码表>().CountAsync());
     }
 
     [Fact]
@@ -897,6 +1514,384 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         Assert.Equal(10m, localS01.StoreRetailPriceValue);
         Assert.Equal(6m, localS02.PurchasePrice);
         Assert.Equal(12m, localS02.StoreRetailPriceValue);
+    }
+
+    [Theory]
+    [InlineData(4, 3)]
+    [InlineData(31, 20)]
+    public async Task UpdateHqProductsAsync_新建多商品为启用分店写价格_价格写入命令数应受批量上限约束(
+        int productCount,
+        int activeStoreCount
+    )
+    {
+        for (var storeIndex = 1; storeIndex <= activeStoreCount; storeIndex++)
+        {
+            await SeedStoreAsync($"S{storeIndex:D2}", true);
+        }
+        await SeedStoreAsync("S99", false);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+
+        var detailGuids = new List<string>();
+        for (var index = 1; index <= productCount; index++)
+        {
+            var detailGuid = $"detail-batch-{index}";
+            detailGuids.Add(detailGuid);
+            await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+            {
+                DetailGUID = detailGuid,
+                InvoiceGUID = "invoice-1",
+                StoreCode = "S01",
+                SupplierCode = "SUP01",
+                ItemNumber = $"ITEM-BATCH-{index}",
+                Barcode = $"93000001{index:D5}",
+                ProductName = $"批量新商品{index}",
+                PurchasePrice = 10m + index,
+                RetailPrice = 20m + index,
+                AutoPricing = true,
+                IsDeleted = false,
+            });
+        }
+
+        // 种子数据全部完成后才挂载 AOP，仅统计本次同步产生的目标表 INSERT/UPDATE 命令。
+        var localPriceWriteCommands = 0;
+        var hqPriceWriteCommands = 0;
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (IsTableWriteCommand(sql, "StoreRetailPrice"))
+                localPriceWriteCommands++;
+        };
+        _hqDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (IsTableWriteCommand(sql, "DIC_商品零售价表"))
+                hqPriceWriteCommands++;
+        };
+
+        UpdateHqProductsResult? result;
+        try
+        {
+            var response = await CreateSyncService().UpdateHqProductsAsync(
+                "invoice-1",
+                new UpdateHqProductsRequest
+                {
+                    DetailGuids = detailGuids,
+                    TargetStoreCodes = new List<string> { "S01" },
+                    UpdateFields = new UpdateToStorePricesFields
+                    {
+                        UpdatePurchasePrice = true,
+                        UpdateRetailPrice = true,
+                    },
+                },
+                "tester"
+            );
+            Assert.True(response.Success, BuildFailureMessage(response));
+            result = response.Data;
+        }
+        finally
+        {
+            _localDb.Aop.OnLogExecuting = null;
+            _hqDb.Aop.OnLogExecuting = null;
+        }
+
+        Assert.NotNull(result);
+        Assert.Equal(productCount, result!.HbwebCreated);
+        Assert.Equal(productCount, result.HqCreated);
+
+        var expectedPriceCount = productCount * activeStoreCount;
+        Assert.Equal(expectedPriceCount, await _localDb.Queryable<StoreRetailPrice>().CountAsync());
+        Assert.Equal(0, await _localDb.Queryable<StoreRetailPrice>()
+            .Where(x => x.StoreCode == "S99")
+            .CountAsync());
+        Assert.Equal(expectedPriceCount, await _hqDb.Queryable<DIC_商品零售价表>().CountAsync());
+        Assert.Equal(0, await _hqDb.Queryable<DIC_商品零售价表>()
+            .Where(x => x.H分店代码 == "S99")
+            .CountAsync());
+
+        var localCommandLimit = (int)Math.Ceiling(expectedPriceCount / 500m);
+        var hqCommandLimit = productCount * (int)Math.Ceiling(activeStoreCount / 40m);
+        var localWithinLimit = localPriceWriteCommands <= localCommandLimit;
+        var hqWithinLimit = hqPriceWriteCommands <= hqCommandLimit;
+        Assert.True(
+            localWithinLimit && hqWithinLimit,
+            $"价格写入命令数超标：本地 {localPriceWriteCommands} 条(上限{localCommandLimit})，HQ {hqPriceWriteCommands} 条(上限{hqCommandLimit})"
+        );
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_批量新增HQ价格单店失败_降级后保留其他分店并准确计数()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedStoreAsync("S02", true);
+        await SeedStoreAsync("S03", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-batch-fallback",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ItemNumber = "ITEM-BATCH-FALLBACK",
+            Barcode = "930000010099",
+            ProductName = "批量失败降级测试",
+            PurchasePrice = 8.80m,
+            RetailPrice = 18.80m,
+            AutoPricing = true,
+            IsDeleted = false,
+        });
+        await _hqDb.Ado.ExecuteCommandAsync(
+            """
+            CREATE TRIGGER "reject_hq_price_s02"
+            BEFORE INSERT ON "DIC_商品零售价表"
+            WHEN NEW."H分店代码" = 'S02'
+            BEGIN
+                SELECT RAISE(ABORT, 'reject S02');
+            END;
+            """
+        );
+
+        var response = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-batch-fallback" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        var failedResult = Assert.IsType<UpdateHqProductsResult>(response.Details);
+        Assert.False(response.Success);
+        Assert.Equal("HQ_UPDATE_PARTIAL_FAILED", response.ErrorCode);
+        Assert.Equal(1, failedResult.HqCreated);
+        Assert.Equal(2, failedResult.Updated);
+        Assert.Equal(2, failedResult.HqPurchasePricesUpdated);
+        Assert.Equal(1, failedResult.Failed);
+        Assert.Contains(
+            failedResult.Errors,
+            error => error.StoreCode == "S02" && error.Message.Contains("更新HQ分店价格失败")
+        );
+
+        var hqPrices = await _hqDb.Queryable<DIC_商品零售价表>()
+            .OrderBy(price => price.H分店代码)
+            .ToListAsync();
+        Assert.Equal(new[] { "S01", "S03" }, hqPrices.Select(price => price.H分店代码).ToArray());
+        Assert.Equal(3, await _localDb.Queryable<StoreRetailPrice>().CountAsync());
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_批量更新HQ价格单店失败_降级后只统计实际成功分店()
+    {
+        foreach (var storeCode in new[] { "S01", "S02", "S03" })
+        {
+            await SeedStoreAsync(storeCode, true);
+        }
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedHqPriceAsync("S02", "P-001", 6m, 12m);
+        await _hqDb.Insertable(new DIC_商品零售价表
+        {
+            ID = 3,
+            HGUID = "hq-price-S03-P-001",
+            H分店代码 = "S03",
+            H商品编码 = "P-001",
+            H分店商品编码 = "S03P-001",
+            H供应商编码 = "SUP01",
+            H分店供应商编码 = "S03SUP01",
+            H进货价 = 7m,
+            H分店零售价 = 14m,
+            H使用状态 = true,
+            FGC_Creator = "seed",
+            FGC_CreateDate = DateTime.UtcNow,
+            FGC_LastModifier = "seed",
+            FGC_LastModifyDate = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-update-batch-fallback",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            ItemNumber = "ITEM-UPDATE-BATCH-FALLBACK",
+            Barcode = "930000010299",
+            ProductName = "批量更新失败降级测试",
+            PurchasePrice = 8.80m,
+            RetailPrice = 18.80m,
+            IsDeleted = false,
+        });
+        await _hqDb.Ado.ExecuteCommandAsync(
+            """
+            CREATE TRIGGER "reject_hq_price_update_s02"
+            BEFORE UPDATE ON "DIC_商品零售价表"
+            WHEN NEW."H分店代码" = 'S02'
+            BEGIN
+                SELECT RAISE(ABORT, 'reject S02');
+            END;
+            """
+        );
+
+        var response = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-update-batch-fallback" },
+                TargetStoreCodes = new List<string> { "S01", "S02", "S03" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        var failedResult = Assert.IsType<UpdateHqProductsResult>(response.Details);
+        Assert.False(response.Success);
+        Assert.Equal("HQ_UPDATE_PARTIAL_FAILED", response.ErrorCode);
+        Assert.Equal(2, failedResult.Updated);
+        Assert.Equal(2, failedResult.HqPurchasePricesUpdated);
+        Assert.Equal(1, failedResult.Failed);
+        Assert.Contains(
+            failedResult.Errors,
+            error => error.StoreCode == "S02" && error.Message.Contains("更新HQ分店价格失败")
+        );
+
+        var prices = await _hqDb.Queryable<DIC_商品零售价表>()
+            .OrderBy(price => price.H分店代码)
+            .ToListAsync();
+        Assert.Collection(
+            prices,
+            price => Assert.Equal(("S01", 8.80m), (price.H分店代码, price.H进货价)),
+            price => Assert.Equal(("S02", 6m), (price.H分店代码, price.H进货价)),
+            price => Assert.Equal(("S03", 8.80m), (price.H分店代码, price.H进货价))
+        );
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_批量更新仅影响部分行_未写入分店不得计为成功()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedStoreAsync("S02", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedExistingProductAsync("P-001", "SUP01");
+        await SeedHqProductAsync("P-001", 5m, 10m);
+        await SeedHqPriceAsync("S01", "P-001", 5m, 10m);
+        await SeedHqPriceAsync("S02", "P-001", 6m, 12m);
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-update-affected-row-mismatch",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ProductCode = "P-001",
+            ItemNumber = "ITEM-AFFECTED-ROW-MISMATCH",
+            Barcode = "930000010399",
+            ProductName = "更新影响行数核验",
+            PurchasePrice = 8.90m,
+            RetailPrice = 18.90m,
+            IsDeleted = false,
+        });
+        await _hqDb.Ado.ExecuteCommandAsync(
+            """
+            CREATE TRIGGER "ignore_hq_price_update_s02"
+            BEFORE UPDATE ON "DIC_商品零售价表"
+            WHEN NEW."H分店代码" = 'S02'
+            BEGIN
+                SELECT RAISE(IGNORE);
+            END;
+            """
+        );
+
+        var response = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-update-affected-row-mismatch" },
+                TargetStoreCodes = new List<string> { "S01", "S02" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        var failedResult = Assert.IsType<UpdateHqProductsResult>(response.Details);
+        Assert.False(response.Success);
+        Assert.Equal("HQ_UPDATE_PARTIAL_FAILED", response.ErrorCode);
+        Assert.Equal(1, failedResult.Updated);
+        Assert.Equal(1, failedResult.HqPurchasePricesUpdated);
+        Assert.Equal(1, failedResult.Failed);
+        Assert.Contains(
+            failedResult.Errors,
+            error => error.StoreCode == "S02" && error.Message.Contains("实际影响0行")
+        );
+
+        var prices = await _hqDb.Queryable<DIC_商品零售价表>()
+            .OrderBy(price => price.H分店代码)
+            .ToListAsync();
+        Assert.Collection(
+            prices,
+            price => Assert.Equal(("S01", 8.90m), (price.H分店代码, price.H进货价)),
+            price => Assert.Equal(("S02", 6m), (price.H分店代码, price.H进货价))
+        );
+    }
+
+    [Fact]
+    public async Task UpdateHqProductsAsync_本地价格批量失败_本地事务回滚且创建计数恢复为0()
+    {
+        await SeedStoreAsync("S01", true);
+        await SeedStoreAsync("S02", true);
+        await SeedInvoiceAsync("invoice-1", "S01", "SUP01");
+        await SeedDetailAsync(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "detail-local-batch-rollback",
+            InvoiceGUID = "invoice-1",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ItemNumber = "ITEM-LOCAL-BATCH-ROLLBACK",
+            Barcode = "930000010199",
+            ProductName = "本地批量回滚测试",
+            PurchasePrice = 6.60m,
+            RetailPrice = 16.60m,
+            IsDeleted = false,
+        });
+        await _localDb.Ado.ExecuteCommandAsync(
+            """
+            CREATE TRIGGER "reject_local_price_s02"
+            BEFORE INSERT ON "StoreRetailPrice"
+            WHEN NEW."StoreCode" = 'S02'
+            BEGIN
+                SELECT RAISE(ABORT, 'reject S02');
+            END;
+            """
+        );
+
+        var response = await CreateSyncService().UpdateHqProductsAsync(
+            "invoice-1",
+            new UpdateHqProductsRequest
+            {
+                DetailGuids = new List<string> { "detail-local-batch-rollback" },
+                TargetStoreCodes = new List<string> { "S01" },
+                UpdateFields = new UpdateToStorePricesFields
+                {
+                    UpdatePurchasePrice = true,
+                },
+            },
+            "tester"
+        );
+
+        var failedResult = Assert.IsType<UpdateHqProductsResult>(response.Details);
+        Assert.False(response.Success);
+        Assert.Equal("HQ_UPDATE_ERROR", response.ErrorCode);
+        Assert.Equal(0, failedResult.HbwebCreated);
+        Assert.Equal(0, await _localDb.Queryable<Product>().CountAsync());
+        Assert.Equal(0, await _localDb.Queryable<StoreRetailPrice>().CountAsync());
+        Assert.Equal(0, await _hqDb.Queryable<DIC_商品信息字典表>().CountAsync());
     }
 
     [Fact]
@@ -1558,16 +2553,57 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
+    private async Task SeedStoreMultiCodeProjectionsForAllActiveRelationsAsync(
+        string productCode
+    )
+    {
+        var stores = await _localDb.Queryable<Store>()
+            .Where(store => store.IsActive && !store.IsDeleted && store.StoreCode != null)
+            .Select(store => store.StoreCode)
+            .ToListAsync();
+        var relations = await _localDb.Queryable<ProductSetCode>()
+            .Where(relation =>
+                relation.ProductCode == productCode
+                && (relation.SetType == 1 || relation.SetType == 2)
+                && relation.IsActive
+                && !relation.IsDeleted
+                && relation.SetProductCode != null
+                && relation.SetProductCode != string.Empty
+            )
+            .ToListAsync();
+        var rows = stores.SelectMany(storeCode => relations.Select(relation =>
+            new StoreMultiCodeProduct
+            {
+                UUID = $"{storeCode}-{relation.SetCodeId}",
+                StoreCode = storeCode,
+                ProductCode = productCode,
+                MultiCodeProductCode = relation.SetProductCode,
+                StoreMultiCodeProductCode = $"{storeCode}{relation.SetProductCode}",
+                MultiBarcode = relation.SetBarcode,
+                PurchasePrice = 99m,
+                MultiCodeRetailPrice = relation.SetRetailPrice,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        )).ToList();
+        if (rows.Count > 0)
+        {
+            await _localDb.Insertable(rows).ExecuteCommandAsync();
+        }
+    }
+
     private async Task SeedHqProductAsync(
         string productCode,
         decimal purchasePrice,
         decimal retailPrice,
         string itemNumber = "ITEM-OLD",
-        string barcode = "930000000000"
+        string barcode = "930000000000",
+        int id = 1
     )
     {
         await _hqDb.Insertable(new DIC_商品信息字典表
         {
+            ID = id,
             HGUID = $"hq-product-{productCode}",
             H商品标签GUID = string.Empty,
             H商品分类码GUID = string.Empty,
@@ -1652,6 +2688,22 @@ public sealed class LocalSupplierInvoiceHqProductSyncTests : IDisposable
         var property = typeof(T).GetProperty(propertyName);
         Assert.NotNull(property);
         Assert.NotNull(property!.GetCustomAttribute<RequiredAttribute>());
+    }
+
+    private static bool IsTableWriteCommand(string sql, string tableName)
+    {
+        if (string.IsNullOrWhiteSpace(sql))
+            return false;
+
+        var trimmed = sql.AsSpan().TrimStart();
+        var isInsert = trimmed.StartsWith("INSERT", StringComparison.OrdinalIgnoreCase);
+        var isUpdate = trimmed.StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase);
+        if (!isInsert && !isUpdate)
+            return false;
+
+        // SQLite 下 SqlSugar 用双引号包裹表名；同时兼容未加引号形式。
+        return sql.Contains($"\"{tableName}\"", StringComparison.Ordinal)
+            || sql.Contains(tableName, StringComparison.Ordinal);
     }
 
     public void Dispose()

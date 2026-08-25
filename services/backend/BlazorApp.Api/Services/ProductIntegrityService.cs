@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Api.Utils;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
@@ -472,6 +473,15 @@ namespace BlazorApp.Api.Services
                     $"[数据一致性修复] ===== 修复完成（DryRun={request.DryRun}），耗时 {result.DurationSeconds:F2}s ====="
                 );
 
+                if (ShouldReturnBusyFixResponse(result.Reports))
+                {
+                    return ApiResponse<ProductIntegrityFixResultDto>.Error(
+                        "套装商品正在被其他操作修改，请稍后重试",
+                        SetChildPurchasePriceMutationLock.BusyErrorCode,
+                        result
+                    );
+                }
+
                 return ApiResponse<ProductIntegrityFixResultDto>.OK(
                     result,
                     request.DryRun ? "模拟修复完成" : "修复完成"
@@ -483,6 +493,78 @@ namespace BlazorApp.Api.Services
                 Console.WriteLine($"[数据一致性修复] ❌ 修复失败: {ex.Message}");
                 return ApiResponse<ProductIntegrityFixResultDto>.Error(
                     "修复失败: " + ex.Message,
+                    "DATABASE_ERROR"
+                );
+            }
+        }
+
+        public async Task<ApiResponse<SetChildPurchasePriceWritebackResultDto>> PreviewSetChildPurchasePricesAsync(
+            SetChildPurchasePriceWritebackRequestDto request
+        )
+        {
+            try
+            {
+                var service = new SetChildPurchasePriceService(_db.Db);
+                var result = await service.PreviewAsync(request);
+                return ApiResponse<SetChildPurchasePriceWritebackResultDto>.OK(
+                    result,
+                    "套装子项进货价预览完成"
+                );
+            }
+            catch (Exception ex)
+                when (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+            {
+                _logger.LogWarning(ex, "套装子项进货价预览获取业务锁失败");
+                return ApiResponse<SetChildPurchasePriceWritebackResultDto>.Error(
+                    "套装子项成本正在被其他操作更新，请稍后重试",
+                    SetChildPurchasePriceMutationLock.BusyErrorCode
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "套装子项进货价预览失败");
+                return ApiResponse<SetChildPurchasePriceWritebackResultDto>.Error(
+                    "套装子项进货价预览失败: " + ex.Message,
+                    "DATABASE_ERROR"
+                );
+            }
+        }
+
+        public async Task<ApiResponse<SetChildPurchasePriceWritebackResultDto>> WritebackSetChildPurchasePricesAsync(
+            SetChildPurchasePriceWritebackRequestDto request,
+            string updatedBy
+        )
+        {
+            try
+            {
+                var service = new SetChildPurchasePriceService(_db.Db);
+                var result = await service.WritebackAsync(request, updatedBy);
+                _logger.LogInformation(
+                    "套装子项进货价回写完成，ProductSetCode={ProductSetUpdated}，StoreMultiCodeProduct={StoreUpdated}，跳过组={SkippedGroups}",
+                    result.ProductSetCode.UpdatedCount,
+                    result.StoreMultiCodeProduct.UpdatedCount,
+                    result.ProductSetCode.SkippedGroupCount
+                        + result.StoreMultiCodeProduct.SkippedGroupCount
+                );
+                return ApiResponse<SetChildPurchasePriceWritebackResultDto>.OK(
+                    result,
+                    "套装子项进货价回写完成"
+                );
+            }
+            catch (Exception ex)
+                when (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+            {
+                _logger.LogWarning(ex, "套装子项进货价回写获取业务锁失败");
+                return ApiResponse<SetChildPurchasePriceWritebackResultDto>.Error(
+                    "套装子项成本正在被其他操作更新，请稍后重试",
+                    SetChildPurchasePriceMutationLock.BusyErrorCode
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "套装子项进货价回写失败");
+                return ApiResponse<SetChildPurchasePriceWritebackResultDto>.Error(
+                    "套装子项进货价回写失败: " + ex.Message,
                     "DATABASE_ERROR"
                 );
             }
@@ -627,7 +709,7 @@ namespace BlazorApp.Api.Services
                                 semaphore.Release();
                                 storeDb?.Dispose();
                             }
-                        });
+                    });
                     var deleteResults = await Task.WhenAll(deleteTasks);
                     report.DeletedCount = deleteResults.Sum(r => r.Deleted);
 
@@ -868,13 +950,94 @@ namespace BlazorApp.Api.Services
                     );
                     report.ErrorCount = report.Errors.Count;
 
+                    var managedSetParentCodes = productSetCodes
+                        .Where(setCode => setCode.SetType == 1 || setCode.SetType == 2)
+                        .Select(setCode => setCode.ProductCode!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    // Type1/Type2 的门店子项成本都由统一服务派生，必须把补行、删孤儿和重算放在同一事务内。
+                    // 每次只锁一个 (门店, 主商品) 组，某组异常时仅回滚该组，其他组仍可继续修复。
+                    var managedSetResults = new List<StoreMultiCodeGroupFixResult>();
+                    foreach (var plan in changePlans)
+                    {
+                        foreach (var parentCode in managedSetParentCodes)
+                        {
+                            var managedSetCodes = productSetCodes
+                                .Where(setCode =>
+                                    (setCode.SetType == 1 || setCode.SetType == 2)
+                                    && string.Equals(
+                                        setCode.ProductCode,
+                                        parentCode,
+                                        StringComparison.OrdinalIgnoreCase
+                                    )
+                                )
+                                .ToList();
+                            var allParentSetCodes = productSetCodes
+                                .Where(setCode =>
+                                    string.Equals(
+                                        setCode.ProductCode,
+                                        parentCode,
+                                        StringComparison.OrdinalIgnoreCase
+                                    )
+                                )
+                                .ToList();
+                            managedSetResults.Add(
+                                await FixType1StoreMultiCodeGroupAsync(
+                                    plan.StoreCode,
+                                    parentCode,
+                                    managedSetCodes,
+                                    allParentSetCodes,
+                                    dryRun
+                                )
+                            );
+                        }
+                    }
+                    report.DeletedCount = managedSetResults.Sum(result => result.DeletedCount);
+                    report.AddedCount = managedSetResults.Sum(result => result.AddedCount);
+                    report.SuccessfulGroupCount = managedSetResults.Count(result =>
+                        string.IsNullOrWhiteSpace(result.Error)
+                    );
+                    report.Errors.AddRange(
+                        managedSetResults
+                            .Where(result => !string.IsNullOrWhiteSpace(result.Error))
+                            .Select(result =>
+                                $"分店 {result.StoreCode} 主商品 {result.ProductCode} Type1/Type2 修复已回滚: {result.Error}"
+                            )
+                    );
+                    report.FailureDetails.AddRange(
+                        managedSetResults
+                            .Where(result => !string.IsNullOrWhiteSpace(result.Error))
+                            .Select(result => new BatchOperationFailureDto
+                            {
+                                ItemKey = $"{result.StoreCode}|{result.ProductCode}",
+                                Message = result.Error!,
+                                ErrorCode = result.ErrorCode,
+                            })
+                    );
+                    var allManagedSetGroupsBusy =
+                        managedSetResults.Count > 0
+                        && managedSetResults.All(result =>
+                            result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                        );
+                    report.ErrorCount = report.Errors.Count;
+                    var managedSetParentCodeSet = managedSetParentCodes.ToHashSet(
+                        StringComparer.OrdinalIgnoreCase
+                    );
+
                     // 阶段二：并发执行软删除（只有UPDATE，不会死锁）
                     var deleteTasks = changePlans
-                        .Where(p => p.OrphanedCount > 0)
                         .Select(async plan =>
                         {
+                            var nonManagedSetOrphanedKeys = plan.OrphanedKeys
+                                .Where(key => !managedSetParentCodeSet.Contains(key.ProductCode))
+                                .ToList();
+                            if (nonManagedSetOrphanedKeys.Count == 0)
+                            {
+                                return (plan.StoreCode, Deleted: 0);
+                            }
                             if (dryRun)
-                                return (plan.StoreCode, Deleted: plan.OrphanedCount);
+                                return (plan.StoreCode, Deleted: nonManagedSetOrphanedKeys.Count);
 
                             await semaphore.WaitAsync();
                             ISqlSugarClient? storeDb = null;
@@ -885,7 +1048,11 @@ namespace BlazorApp.Api.Services
 
                                 var deleted = await SoftDeleteStoreMultiCodeOrphansAsync(
                                     storeDb,
-                                    plan
+                                    new StoreMultiCodeChangePlan
+                                    {
+                                        StoreCode = plan.StoreCode,
+                                        OrphanedKeys = nonManagedSetOrphanedKeys,
+                                    }
                                 );
 
                                 Console.WriteLine(
@@ -898,9 +1065,9 @@ namespace BlazorApp.Api.Services
                                 semaphore.Release();
                                 storeDb?.Dispose();
                             }
-                        });
+                    });
                     var deleteResults = await Task.WhenAll(deleteTasks);
-                    report.DeletedCount = deleteResults.Sum(r => r.Deleted);
+                    report.DeletedCount += deleteResults.Sum(r => r.Deleted);
 
                     // 阶段三：并发执行插入（只有INSERT，不会死锁）
                     var insertTasks = changePlans
@@ -908,6 +1075,7 @@ namespace BlazorApp.Api.Services
                         .Select(async plan =>
                         {
                             var newRecords = plan.MissingEntries
+                                .Where(sc => sc.SetType != 1 && sc.SetType != 2)
                                 .Select(sc => new StoreMultiCodeProduct
                                 {
                                     UUID = UuidHelper.GenerateUuid7(),
@@ -958,9 +1126,17 @@ namespace BlazorApp.Api.Services
                                 semaphore.Release();
                                 storeDb?.Dispose();
                             }
-                        });
+                    });
                     var insertResults = await Task.WhenAll(insertTasks);
-                    report.AddedCount = insertResults.Sum(r => r.Added);
+                    report.AddedCount += insertResults.Sum(r => r.Added);
+                    if (
+                        allManagedSetGroupsBusy
+                        && report.AddedCount == 0
+                        && report.DeletedCount == 0
+                    )
+                    {
+                        report.ErrorCode = SetChildPurchasePriceMutationLock.BusyErrorCode;
+                    }
 
                     Console.WriteLine(
                         $"  [StoreMultiCodeProduct] 总计删除: {report.DeletedCount}，新增: {report.AddedCount}"
@@ -1161,6 +1337,274 @@ namespace BlazorApp.Api.Services
             return deleted;
         }
 
+        private async Task<StoreMultiCodeGroupFixResult> FixType1StoreMultiCodeGroupAsync(
+            string storeCode,
+            string productCode,
+            List<ProductSetCode> managedSetCodes,
+            List<ProductSetCode> allParentSetCodes,
+            bool dryRun
+        )
+        {
+            ISqlSugarClient? storeDb = null;
+            try
+            {
+                storeDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
+                storeDb.Ado.CommandTimeOut = CommandTimeoutSeconds;
+
+                await storeDb.Ado.BeginTranAsync();
+                try
+                {
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        storeDb,
+                        new[] { productCode }
+                    );
+                    // 获取锁后重新读取关系和门店投影，禁止使用锁前套装快照决定插入或重算。
+                    var lockedParentSetCodes = await storeDb.Queryable<ProductSetCode>()
+                        .Where(setCode =>
+                            setCode.ProductCode == productCode
+                            && setCode.IsActive
+                            && !setCode.IsDeleted
+                        )
+                        .ToListAsync();
+                    var lockedManagedSetCodes = lockedParentSetCodes
+                        .Where(setCode => setCode.SetType == 1 || setCode.SetType == 2)
+                        .ToList();
+                    var currentRows = await GetActiveStoreMultiCodeGroupAsync(
+                        storeDb,
+                        storeCode,
+                        productCode
+                    );
+                    var plan = BuildType1StoreMultiCodeGroupPlan(
+                        storeCode,
+                        productCode,
+                        lockedManagedSetCodes,
+                        lockedParentSetCodes,
+                        currentRows
+                    );
+                    var storeParentPrices = await storeDb.Queryable<StoreRetailPrice>()
+                        .Where(price =>
+                            price.StoreCode == storeCode
+                            && price.ProductCode == productCode
+                            && price.IsActive
+                            && !price.IsDeleted
+                        )
+                        .ToListAsync();
+                    if (storeParentPrices.Count != 1)
+                    {
+                        throw new InvalidOperationException("门店主商品成本记录缺失或重复");
+                    }
+                    if (storeParentPrices[0].PurchasePrice.GetValueOrDefault() <= 0)
+                    {
+                        throw new InvalidOperationException("门店主商品成本为空或0");
+                    }
+                    if (dryRun)
+                    {
+                        // 预览也必须使用与正式修复相同的锁内复读结果，但事务始终零写入。
+                        await storeDb.Ado.RollbackTranAsync();
+                        return plan;
+                    }
+
+                    if (plan.OrphanedKeys.Count > 0)
+                    {
+                        plan.DeletedCount = await SoftDeleteStoreMultiCodeOrphansAsync(
+                            storeDb,
+                            new StoreMultiCodeChangePlan
+                            {
+                                StoreCode = storeCode,
+                                OrphanedKeys = plan.OrphanedKeys,
+                            }
+                        );
+                    }
+
+                    if (plan.MissingEntries.Count > 0)
+                    {
+                        // Type1/Type2 都不能复制总部或旧子项成本，统一服务随后按门店主成本回写。
+                        var newRows = plan.MissingEntries
+                            .Select(setCode => new StoreMultiCodeProduct
+                            {
+                                UUID = UuidHelper.GenerateUuid7(),
+                                StoreCode = storeCode,
+                                ProductCode = productCode,
+                                MultiCodeProductCode = setCode.SetProductCode,
+                                StoreMultiCodeProductCode = setCode.SetProductCode,
+                                MultiBarcode = setCode.SetBarcode,
+                                PurchasePrice = null,
+                                MultiCodeRetailPrice = setCode.SetRetailPrice,
+                                DiscountRate = 0m,
+                                IsAutoPricing = false,
+                                IsSpecialProduct = false,
+                                IsActive = true,
+                                IsDeleted = false,
+                                CreatedAt = DateTime.UtcNow,
+                                CreatedBy = "IntegrityFix",
+                            })
+                            .ToList();
+                        plan.AddedCount = await storeDb.Insertable(newRows).ExecuteCommandAsync();
+                    }
+
+                    var recalculation = await new SetChildPurchasePriceService(storeDb)
+                        .RecalculateStoresLockedAsync(
+                            lockScope,
+                            new[] { productCode },
+                            new[] { storeCode },
+                            "IntegrityFix"
+                        );
+                    if (recalculation.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                    {
+                        var reason = recalculation.Errors.FirstOrDefault()?.Reason
+                            ?? "目标门店套装子项成本重算不完整";
+                        throw new InvalidOperationException(reason);
+                    }
+                    await storeDb.Ado.CommitTranAsync();
+                    return plan;
+                }
+                catch (Exception ex)
+                {
+                    await storeDb.Ado.RollbackTranAsync();
+                    return new StoreMultiCodeGroupFixResult
+                    {
+                        StoreCode = storeCode,
+                        ProductCode = productCode,
+                        Error = ex.Message,
+                        ErrorCode = SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                            ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                            : null,
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                return new StoreMultiCodeGroupFixResult
+                {
+                    StoreCode = storeCode,
+                    ProductCode = productCode,
+                    Error = ex.Message,
+                    ErrorCode = SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                        ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                        : null,
+                };
+            }
+            finally
+            {
+                storeDb?.Dispose();
+            }
+        }
+
+        private static async Task<List<StoreMultiCodeProduct>> GetActiveStoreMultiCodeGroupAsync(
+            ISqlSugarClient db,
+            string storeCode,
+            string productCode
+        )
+        {
+            return await db.Queryable<StoreMultiCodeProduct>()
+                .Where(row =>
+                    row.StoreCode == storeCode
+                    && row.ProductCode == productCode
+                    && row.IsDeleted == false
+                )
+                .ToListAsync();
+        }
+
+        internal static bool ShouldReturnBusyFixResponse(
+            IEnumerable<TableFixReport> reports
+        )
+        {
+            var reportList = reports.ToList();
+            var hasBusyFailure = reportList.Any(report =>
+                report.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                || report.FailureDetails.Any(failure =>
+                    failure.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                )
+            );
+            var successCount = reportList.Sum(report =>
+                report.SuccessfulGroupCount + report.AddedCount + report.DeletedCount
+            );
+            return hasBusyFailure && successCount == 0;
+        }
+
+        private static StoreMultiCodeGroupFixResult BuildType1StoreMultiCodeGroupPlan(
+            string storeCode,
+            string productCode,
+            List<ProductSetCode> managedSetCodes,
+            List<ProductSetCode> allParentSetCodes,
+            List<StoreMultiCodeProduct> currentRows
+        )
+        {
+            var invalidManagedSetKey = managedSetCodes.FirstOrDefault(setCode =>
+                string.IsNullOrWhiteSpace(setCode.SetProductCode)
+            );
+            if (invalidManagedSetKey != null)
+            {
+                throw new InvalidOperationException("套装子项业务键不能为空");
+            }
+            var crossTypeConflict = managedSetCodes
+                .GroupBy(
+                    setCode => setCode.SetProductCode!.Trim().ToUpperInvariant(),
+                    StringComparer.Ordinal
+                )
+                .FirstOrDefault(group => group.Select(setCode => setCode.SetType).Distinct().Count() > 1);
+            if (crossTypeConflict != null)
+            {
+                throw new InvalidOperationException(
+                    $"同一子项存在活跃Type1/Type2冲突: {crossTypeConflict.Key}"
+                );
+            }
+            var duplicateManagedSetKey = managedSetCodes
+                .GroupBy(
+                    setCode => setCode.SetProductCode!.Trim().ToUpperInvariant(),
+                    StringComparer.Ordinal
+                )
+                .FirstOrDefault(group => group.Count() > 1);
+            if (duplicateManagedSetKey != null)
+            {
+                throw new InvalidOperationException(
+                    $"套装子项业务键重复: {duplicateManagedSetKey.Key}"
+                );
+            }
+            var duplicateStoreKey = currentRows
+                .Where(row => !string.IsNullOrWhiteSpace(row.MultiCodeProductCode))
+                .GroupBy(
+                    row => row.MultiCodeProductCode!.Trim().ToUpperInvariant(),
+                    StringComparer.Ordinal
+                )
+                .FirstOrDefault(group => group.Count() > 1);
+            if (duplicateStoreKey != null)
+            {
+                throw new InvalidOperationException(
+                    $"门店套装子项业务键重复: {duplicateStoreKey.Key}"
+                );
+            }
+
+            var expectedAllChildCodes = allParentSetCodes
+                .Where(setCode => !string.IsNullOrWhiteSpace(setCode.SetProductCode))
+                .Select(setCode => setCode.SetProductCode!.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var existingChildCodes = currentRows
+                .Where(row => !string.IsNullOrWhiteSpace(row.MultiCodeProductCode))
+                .Select(row => row.MultiCodeProductCode!.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var orphanedKeys = currentRows
+                .Where(row =>
+                    !string.IsNullOrWhiteSpace(row.MultiCodeProductCode)
+                    && !expectedAllChildCodes.Contains(row.MultiCodeProductCode!.Trim())
+                )
+                .Select(row => new StoreMultiCodeKey(productCode, row.MultiCodeProductCode!))
+                .Distinct()
+                .ToList();
+            var missingEntries = managedSetCodes
+                .Where(setCode => !existingChildCodes.Contains(setCode.SetProductCode!))
+                .ToList();
+            return new StoreMultiCodeGroupFixResult
+            {
+                StoreCode = storeCode,
+                ProductCode = productCode,
+                OrphanedKeys = orphanedKeys,
+                MissingEntries = missingEntries,
+                DeletedCount = orphanedKeys.Count,
+                AddedCount = missingEntries.Count,
+            };
+        }
+
         private class StoreMultiCodeChangePlan
         {
             public string StoreCode { get; set; } = "";
@@ -1171,6 +1615,18 @@ namespace BlazorApp.Api.Services
         }
 
         private sealed record StoreMultiCodeKey(string ProductCode, string MultiCodeProductCode);
+
+        private sealed class StoreMultiCodeGroupFixResult
+        {
+            public string StoreCode { get; init; } = "";
+            public string ProductCode { get; init; } = "";
+            public List<StoreMultiCodeKey> OrphanedKeys { get; init; } = new();
+            public List<ProductSetCode> MissingEntries { get; init; } = new();
+            public int DeletedCount { get; set; }
+            public int AddedCount { get; set; }
+            public string? Error { get; init; }
+            public string? ErrorCode { get; init; }
+        }
 
         private class StoreRetailPriceChangePlan
         {

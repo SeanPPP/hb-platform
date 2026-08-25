@@ -1,4 +1,5 @@
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
@@ -86,6 +87,7 @@ namespace BlazorApp.Api.Services
                     TotalProducts = request.ProductCodes.Count,
                     TotalStores = request.StoreCodes.Count,
                 };
+                var failureDetails = new List<BatchOperationFailureDto>();
 
                 var productDb = _db.ProductDb;
                 var productSetCodeDb = _db.ProductSetCodeDb;
@@ -106,20 +108,18 @@ namespace BlazorApp.Api.Services
 
                 var productCodes = products.Select(p => p.ProductCode).ToList();
 
-                var productsNeedMultiCodeSync = products
-                    .Where(p => p.ProductType != null && p.ProductType != 0)
-                    .ToList();
+                var allProductCodes = products.Select(p => p.ProductCode).ToList();
 
                 List<ProductSetCode> productSetCodes = new();
-                if (productsNeedMultiCodeSync.Count > 0)
+                if (allProductCodes.Count > 0)
                 {
-                    var productCodesNeedMultiCodeSync = productsNeedMultiCodeSync
-                        .Select(p => p.ProductCode)
-                        .ToList();
-
                     productSetCodes = await productSetCodeDb
                         .AsQueryable()
-                        .Where(p => productCodesNeedMultiCodeSync.Contains(p.ProductCode))
+                        // 门店多码关系的唯一事实来源是有效 ProductSetCode，不能依赖主商品 ProductType。
+                        .Where(p =>
+                            (p.SetType == 1 || p.SetType == 2)
+                            && allProductCodes.Contains(p.ProductCode)
+                        )
                         .Where(p => p.IsActive == true && p.IsDeleted == false)
                         .ToListAsync();
                 }
@@ -156,6 +156,7 @@ namespace BlazorApp.Api.Services
                         {
                             result.Errors.AddRange(storeResult.Errors);
                         }
+                        failureDetails.AddRange(storeResult.FailureDetails);
                     }
                 }
 
@@ -166,7 +167,17 @@ namespace BlazorApp.Api.Services
                     result.FailedCount
                 );
 
-                return BuildAggregateResponse(result);
+                return BuildAggregateResponse(result, failureDetails);
+            }
+            catch (Exception ex) when (
+                SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+            )
+            {
+                _logger.LogWarning(ex, "同步商品到分店遇到套装成本业务锁冲突");
+                return ApiResponse<SyncProductsToStoresResult>.Error(
+                    "套装商品正在被其他操作修改，请稍后重试",
+                    SetChildPurchasePriceMutationLock.BusyErrorCode
+                );
             }
             catch (Exception ex)
             {
@@ -179,18 +190,31 @@ namespace BlazorApp.Api.Services
         }
 
         public static ApiResponse<SyncProductsToStoresResult> BuildAggregateResponse(
-            SyncProductsToStoresResult result
+            SyncProductsToStoresResult result,
+            IReadOnlyCollection<BatchOperationFailureDto>? failureDetails = null
         )
         {
+            var failures = failureDetails?.ToList() ?? new List<BatchOperationFailureDto>();
+            var containsBusyFailure = failures.Any(failure =>
+                string.Equals(
+                    failure.ErrorCode,
+                    SetChildPurchasePriceMutationLock.BusyErrorCode,
+                    StringComparison.Ordinal
+                )
+            );
             if (result.FailedCount > 0 && result.CreatedCount + result.UpdatedCount == 0)
             {
                 return new ApiResponse<SyncProductsToStoresResult>
                 {
                     Success = false,
-                    Message = "商品同步到分店失败，请稍后重试或联系管理员",
-                    ErrorCode = "SYNC_PRODUCTS_TO_STORES_FAILED",
+                    Message = containsBusyFailure
+                        ? "套装商品正在被其他操作修改，请稍后重试"
+                        : "商品同步到分店失败，请稍后重试或联系管理员",
+                    ErrorCode = containsBusyFailure
+                        ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                        : "SYNC_PRODUCTS_TO_STORES_FAILED",
                     Data = result,
-                    Details = result,
+                    Details = failures.Count > 0 ? failures : result,
                     Timestamp = DateTime.UtcNow,
                 };
             }
@@ -198,7 +222,12 @@ namespace BlazorApp.Api.Services
             var message = result.FailedCount > 0
                 ? "商品同步到分店部分完成，部分分店失败"
                 : "同步成功";
-            return ApiResponse<SyncProductsToStoresResult>.OK(result, message);
+            var response = ApiResponse<SyncProductsToStoresResult>.OK(result, message);
+            if (failures.Count > 0)
+            {
+                response.Details = failures;
+            }
+            return response;
         }
 
         public static async Task<List<T>> RunStoreSyncTasksAsync<T>(
@@ -247,21 +276,55 @@ namespace BlazorApp.Api.Services
             try
             {
                 independentDb = CreateIndependentConnection();
+                await independentDb.Ado.BeginTranAsync();
+
+                var requestedProductCodes = products.Select(p => p.ProductCode).ToList();
+                var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                    independentDb,
+                    requestedProductCodes
+                );
+                // 等待业务锁期间来源主档或套装关系可能已变化，必须锁内重读，不能回写锁前缓存实体。
+                products = await independentDb.Queryable<Product>()
+                    .Where(p => p.ProductCode != null && requestedProductCodes.Contains(p.ProductCode))
+                    .Where(p => !p.IsDeleted)
+                    .ToListAsync();
+                var lockedProductCodes = products
+                    .Select(p => p.ProductCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .ToList();
+                // 锁内复读保持 ProductSetCode 事实来源，避免回写锁前关系快照或受 ProductType 影响漏行。
+                productSetCodes = lockedProductCodes.Count == 0
+                    ? new List<ProductSetCode>()
+                    : await independentDb.Queryable<ProductSetCode>()
+                        .Where(p =>
+                            (p.SetType == 1 || p.SetType == 2)
+                            && lockedProductCodes.Contains(p.ProductCode)
+                        )
+                        .Where(p => p.IsActive && !p.IsDeleted)
+                        .ToListAsync();
+                lockScope.EnsureCovers(independentDb, lockedProductCodes);
 
                 var storeMultiCodeProductDb = new SimpleClient<StoreMultiCodeProduct>(independentDb);
                 var storeRetailPriceDb = new SimpleClient<StoreRetailPrice>(independentDb);
 
                 if (productSetCodes.Count > 0)
                 {
-                    var productCodesNeedMultiCodeSync = products
-                        .Where(p => p.ProductType != null && p.ProductType != 0)
+                    var productCodesNeedMultiCodeSync = productSetCodes
                         .Select(p => p.ProductCode)
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
                         .ToList();
 
                     var existingMultiCodeRecords = await storeMultiCodeProductDb
                         .AsQueryable()
                         .Where(p => p.StoreCode == storeCode)
-                        .Where(p => productCodesNeedMultiCodeSync.Contains(p.ProductCode))
+                        .Where(p =>
+                            p.ProductCode != null
+                            && productCodesNeedMultiCodeSync.Contains(p.ProductCode)
+                        )
+                        .Where(p => !p.IsDeleted)
                         .ToListAsync();
 
                     var newMultiCodeRecords = new List<StoreMultiCodeProduct>();
@@ -271,6 +334,7 @@ namespace BlazorApp.Api.Services
                     {
                         var existingRecord = existingMultiCodeRecords.FirstOrDefault(p =>
                             p.StoreCode == storeCode
+                            && p.ProductCode == productSetCode.ProductCode
                             && p.MultiCodeProductCode == productSetCode.SetProductCode
                         );
 
@@ -284,9 +348,8 @@ namespace BlazorApp.Api.Services
                                 MultiCodeProductCode = productSetCode.SetProductCode,
                                 StoreMultiCodeProductCode = storeCode + productSetCode.SetProductCode,
                                 MultiBarcode = productSetCode.SetBarcode,
-                                PurchasePrice = request.SyncPurchasePrice
-                                    ? productSetCode.SetPurchasePrice
-                                    : null,
+                                // Type1/Type2 均先以空成本落库，统一服务再按门店主成本计算，避免复制总部旧值。
+                                PurchasePrice = null,
                                 MultiCodeRetailPrice = request.SyncRetailPrice
                                     ? productSetCode.SetRetailPrice
                                     : null,
@@ -299,8 +362,7 @@ namespace BlazorApp.Api.Services
                         }
                         else
                         {
-                            if (request.SyncPurchasePrice)
-                                existingRecord.PurchasePrice = productSetCode.SetPurchasePrice;
+                            // Type1/Type2 子项成本只能由统一服务写回，不能先覆盖为总部成本。
                             if (request.SyncRetailPrice)
                                 existingRecord.MultiCodeRetailPrice = productSetCode.SetRetailPrice;
 
@@ -323,9 +385,20 @@ namespace BlazorApp.Api.Services
 
                     if (updateMultiCodeRecords.Count > 0)
                     {
-                        await independentDb
-                            .Fastest<StoreMultiCodeProduct>()
-                            .BulkUpdateAsync(updateMultiCodeRecords);
+                        foreach (var record in updateMultiCodeRecords)
+                        {
+                            var update = independentDb.Updateable<StoreMultiCodeProduct>()
+                                .Where(x => x.UUID == record.UUID && !x.IsDeleted);
+                            if (request.SyncRetailPrice)
+                                update = update.SetColumns(x =>
+                                    x.MultiCodeRetailPrice == record.MultiCodeRetailPrice
+                                );
+                            await update
+                                .SetColumns(x => x.MultiBarcode == record.MultiBarcode)
+                                .SetColumns(x => x.UpdatedBy == record.UpdatedBy)
+                                .SetColumns(x => x.UpdatedAt == record.UpdatedAt)
+                                .ExecuteCommandAsync();
+                        }
                         result.StoreMultiCodeProductUpdatedCount = updateMultiCodeRecords.Count;
                         result.UpdatedCount += updateMultiCodeRecords.Count;
                     }
@@ -403,23 +476,113 @@ namespace BlazorApp.Api.Services
                     result.CreatedCount += newRetailPriceRecords.Count;
                 }
 
-                if (updateRetailPriceRecords.Count > 0)
-                {
-                    await independentDb
-                        .Fastest<StoreRetailPrice>()
-                        .BulkUpdateAsync(updateRetailPriceRecords);
-                    result.StoreRetailPriceUpdatedCount = updateRetailPriceRecords.Count;
+                    if (updateRetailPriceRecords.Count > 0)
+                    {
+                        foreach (var record in updateRetailPriceRecords)
+                        {
+                            var update = independentDb.Updateable<StoreRetailPrice>()
+                                .Where(x => x.UUID == record.UUID && !x.IsDeleted);
+                            if (request.SyncPurchasePrice)
+                                update = update.SetColumns(x => x.PurchasePrice == record.PurchasePrice);
+                            if (request.SyncRetailPrice)
+                                update = update.SetColumns(x =>
+                                    x.StoreRetailPriceValue == record.StoreRetailPriceValue
+                                );
+                            if (request.SyncIsAutoPricing)
+                                update = update.SetColumns(x => x.IsAutoPricing == record.IsAutoPricing);
+                            if (request.SyncIsSpecialProduct)
+                                update = update.SetColumns(x => x.IsSpecialProduct == record.IsSpecialProduct);
+                            await update
+                                .SetColumns(x => x.UpdatedBy == record.UpdatedBy)
+                                .SetColumns(x => x.UpdatedAt == record.UpdatedAt)
+                                .ExecuteCommandAsync();
+                        }
+                        result.StoreRetailPriceUpdatedCount = updateRetailPriceRecords.Count;
                     result.UpdatedCount += updateRetailPriceRecords.Count;
                 }
 
+                if (productSetCodes.Any(x => x.SetType == 1 || x.SetType == 2))
+                {
+                    var setParentCodes = productSetCodes
+                        .Select(x => x.ProductCode)
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    var storeParentPrices = await independentDb.Queryable<StoreRetailPrice>()
+                        .Where(price =>
+                            price.StoreCode == storeCode
+                            && price.ProductCode != null
+                            && setParentCodes.Contains(price.ProductCode)
+                            && price.IsActive
+                            && !price.IsDeleted
+                        )
+                        .ToListAsync();
+                    var invalidParentPrice = setParentCodes.FirstOrDefault(productCode =>
+                    {
+                        var matching = storeParentPrices
+                            .Where(price => string.Equals(price.ProductCode, productCode, StringComparison.OrdinalIgnoreCase))
+                            .ToList();
+                        return matching.Count != 1 || matching[0].PurchasePrice.GetValueOrDefault() <= 0;
+                    });
+                    if (invalidParentPrice != null)
+                    {
+                        throw new InvalidOperationException($"门店 {storeCode} 主商品 {invalidParentPrice} 成本记录缺失、重复或为空");
+                    }
+
+                    // 门店关系已完整落库后统一计算：Type1 按零售价分摊，Type2 等于对应门店主成本。
+                    var writeback = await new SetChildPurchasePriceService(independentDb)
+                        .RecalculateStoresLockedAsync(
+                            lockScope,
+                            productCodes,
+                            new[] { storeCode },
+                            "System"
+                        );
+                    if (writeback.StoreMultiCodeProduct.SkippedGroupCount > 0)
+                    {
+                        throw new InvalidOperationException(
+                            writeback.Errors.FirstOrDefault()?.Reason ?? "目标套装组无法重算"
+                        );
+                    }
+                }
+
+                await independentDb.Ado.CommitTranAsync();
                 result.Success = true;
             }
             catch (Exception ex)
             {
+                if (independentDb != null)
+                {
+                    try
+                    {
+                        await independentDb.Ado.RollbackTranAsync();
+                    }
+                    catch (Exception rollbackEx)
+                    {
+                        _logger.LogWarning(
+                            rollbackEx,
+                            "同步商品到分店 {StoreCode} 回滚失败",
+                            storeCode
+                        );
+                    }
+                }
                 _logger.LogError(ex, "同步商品到分店 {StoreCode} 失败", storeCode);
+                var isBusy = SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _);
+                var message = isBusy
+                    ? $"分店 {storeCode}: 套装商品正在被其他操作修改，请稍后重试"
+                    : $"分店 {storeCode} 同步失败，请稍后重试或联系管理员";
                 result.Success = false;
                 result.FailedCount = 1;
-                result.Errors = new List<string> { $"分店 {storeCode} 同步失败，请稍后重试或联系管理员" };
+                result.ErrorCode = isBusy
+                    ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                    : "SYNC_PRODUCTS_TO_STORES_FAILED";
+                result.Errors = new List<string> { message };
+                result.FailureDetails.Add(new BatchOperationFailureDto
+                {
+                    ItemKey = storeCode,
+                    Message = message,
+                    ErrorCode = result.ErrorCode,
+                });
             }
             finally
             {
@@ -443,6 +606,8 @@ namespace BlazorApp.Api.Services
             public int StoreRetailPriceCreatedCount { get; set; }
             public int StoreRetailPriceUpdatedCount { get; set; }
             public List<string> Errors { get; set; } = new();
+            public string? ErrorCode { get; set; }
+            public List<BatchOperationFailureDto> FailureDetails { get; set; } = new();
         }
     }
 }

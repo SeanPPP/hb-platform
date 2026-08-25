@@ -723,7 +723,18 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var db = _context.Db;
-                var productCodes = dto.ProductCodes.Distinct().ToList();
+                var productCodes = dto.ProductCodes
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                if (productCodes.Count == 0)
+                {
+                    return ApiResponse<BatchUpdateGradePriceResult>.Error(
+                        "商品编码不能为空",
+                        "NO_PRODUCT_CODE"
+                    );
+                }
                 var totalAffected = 0;
 
                 if (dto.TargetDatabase.Equals("HQ", StringComparison.OrdinalIgnoreCase))
@@ -783,6 +794,8 @@ namespace BlazorApp.Api.Services.React
                     var actorGuid = _currentUserService.GetCurrentUserGuid();
                     var transactionResult = await db.Ado.UseTranAsync(async () =>
                     {
+                        var lockScope = await SetChildPurchasePriceMutationLock
+                            .AcquireProductsAsync(db, productCodes);
                         var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
                         if (dto.ImportPrice.HasValue || dto.OEMPrice.HasValue)
                         {
@@ -850,7 +863,11 @@ namespace BlazorApp.Api.Services.React
                             }
 
                             var pUpdate = db.Updateable<Product>()
-                                .Where(p => p.ProductCode != null && productCodes.Contains(p.ProductCode));
+                                .Where(p =>
+                                    p.ProductCode != null
+                                    && productCodes.Contains(p.ProductCode)
+                                    && !p.IsDeleted
+                                );
                             if (dto.ImportPrice.HasValue)
                                 pUpdate = pUpdate.SetColumns(p =>
                                     p.PurchasePrice == dto.ImportPrice.Value
@@ -881,6 +898,27 @@ namespace BlazorApp.Api.Services.React
                                 srp.UpdatedAt == DateTime.UtcNow
                             );
                             totalAffected += await srpUpdate.ExecuteCommandAsync();
+
+                            if (dto.ImportPrice.HasValue)
+                            {
+                                var recalculation = await new SetChildPurchasePriceService(db)
+                                    .RecalculateLockedAsync(
+                                        lockScope,
+                                        productCodes,
+                                        storeCodes: null,
+                                        updatedBy: actorName
+                                    );
+                                if (
+                                    recalculation.ProductSetCode.SkippedGroupCount > 0
+                                    || recalculation.StoreMultiCodeProduct.SkippedGroupCount > 0
+                                )
+                                {
+                                    throw new InvalidOperationException(
+                                        recalculation.Errors.FirstOrDefault()?.Reason
+                                            ?? "套装与多码商品成本无法完整校正"
+                                    );
+                                }
+                            }
                         }
 
                         var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
@@ -917,6 +955,16 @@ namespace BlazorApp.Api.Services.React
                         Success = true,
                         Message = $"成功更新 {totalAffected} 条记录",
                     }
+                );
+            }
+            catch (Exception ex) when (
+                SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+            )
+            {
+                _logger.LogWarning(ex, "批量修改商品等级价格遇到套装成本业务锁冲突");
+                return ApiResponse<BatchUpdateGradePriceResult>.Error(
+                    "套装商品正在被其他操作修改，请稍后重试",
+                    SetChildPurchasePriceMutationLock.BusyErrorCode
                 );
             }
             catch (Exception ex)

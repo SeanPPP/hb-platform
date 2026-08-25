@@ -441,6 +441,151 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecuteAsync_同组原始子项编码为空时应拒绝整组套装创建()
+    {
+        await InsertContainerDetailAsync(
+            "D-SET-MAIN-EMPTY-CHILD",
+            "C001",
+            "P-SET-MAIN-EMPTY-CHILD",
+            "套装商品",
+            10m,
+            18.8m,
+            mixedGroupCode: "MG-EMPTY-CHILD"
+        );
+        await InsertDomesticProductAsync(
+            "P-SET-MAIN-EMPTY-CHILD",
+            "HB-SET-MAIN-EMPTY-CHILD",
+            "主套装",
+            "Main Set",
+            1
+        );
+        await InsertContainerDetailAsync(
+            "D-SET-CHILD-VALID",
+            "C001",
+            "P-SET-CHILD-VALID",
+            "套装子商品",
+            2m,
+            4m,
+            mixedGroupCode: "MG-EMPTY-CHILD"
+        );
+        await InsertDomesticProductAsync(
+            "P-SET-CHILD-VALID",
+            "HB-SET-CHILD-VALID",
+            "有效子项",
+            "Valid Child",
+            0
+        );
+        await InsertContainerDetailAsync(
+            "D-SET-CHILD-EMPTY",
+            "C001",
+            string.Empty,
+            "套装子商品",
+            2m,
+            4m,
+            mixedGroupCode: "MG-EMPTY-CHILD"
+        );
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-set-empty-child",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-SET-MAIN-EMPTY-CHILD" },
+            }
+        );
+
+        Assert.Equal(0, result.CreatedCount);
+        Assert.Equal(
+            0,
+            await _db.Queryable<Product>()
+                .Where(item => item.ProductCode == "P-SET-MAIN-EMPTY-CHILD")
+                .CountAsync()
+        );
+        Assert.Equal(
+            0,
+            await _db.Queryable<DomesticSetProduct>()
+                .Where(item => item.ProductCode == "P-SET-MAIN-EMPTY-CHILD")
+                .CountAsync()
+        );
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_同组原始子项编码Trim加Upper后重复时应拒绝整组套装创建()
+    {
+        await InsertContainerDetailAsync(
+            "D-SET-MAIN-DUP-CHILD",
+            "C001",
+            "P-SET-MAIN-DUP-CHILD",
+            "套装商品",
+            10m,
+            18.8m,
+            mixedGroupCode: "MG-DUP-CHILD"
+        );
+        await InsertDomesticProductAsync(
+            "P-SET-MAIN-DUP-CHILD",
+            "HB-SET-MAIN-DUP-CHILD",
+            "主套装",
+            "Main Set",
+            1
+        );
+        await InsertContainerDetailAsync(
+            "D-SET-CHILD-DUP-A",
+            "C001",
+            "P-SET-CHILD-DUP",
+            "套装子商品",
+            2m,
+            4m,
+            mixedGroupCode: "MG-DUP-CHILD"
+        );
+        await InsertDomesticProductAsync(
+            "P-SET-CHILD-DUP",
+            "HB-SET-CHILD-DUP-A",
+            "子项 A",
+            "Child A",
+            0
+        );
+        await InsertContainerDetailAsync(
+            "D-SET-CHILD-DUP-B",
+            "C001",
+            " p-set-child-dup ",
+            "套装子商品",
+            2m,
+            4m,
+            mixedGroupCode: "MG-DUP-CHILD"
+        );
+        await InsertDomesticProductAsync(
+            " p-set-child-dup ",
+            "HB-SET-CHILD-DUP-B",
+            "子项 B",
+            "Child B",
+            0
+        );
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-set-duplicate-child",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-SET-MAIN-DUP-CHILD" },
+            }
+        );
+
+        Assert.Equal(0, result.CreatedCount);
+        Assert.Equal(
+            0,
+            await _db.Queryable<Product>()
+                .Where(item => item.ProductCode == "P-SET-MAIN-DUP-CHILD")
+                .CountAsync()
+        );
+        Assert.Equal(
+            0,
+            await _db.Queryable<DomesticSetProduct>()
+                .Where(item => item.ProductCode == "P-SET-MAIN-DUP-CHILD")
+                .CountAsync()
+        );
+    }
+
+    [Fact]
     public async Task ExecuteAsync_DoesNotCountSelectedSetChildWhenSameBatchCreatesMainSet()
     {
         await InsertActiveStoreAsync("S001");
@@ -646,6 +791,162 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task ExecuteAsync_Hq套装子项规范化后重复时应拒绝整组且不落本地关系()
+    {
+        await InsertExistingProductAsync(
+            "P-SET-HQ-DUP",
+            "HB-SET-HQ-DUP",
+            8.8m,
+            18.8m,
+            productType: 0
+        );
+        await InsertExistingWarehouseProductAsync("P-SET-HQ-DUP", 1.1m, 2.2m, 3.3m);
+        await InsertContainerDetailAsync(
+            "D-SET-HQ-DUP",
+            "C001",
+            "P-SET-HQ-DUP",
+            "套装商品",
+            8.8m,
+            18.8m
+        );
+        await InsertDomesticProductAsync(
+            "P-SET-HQ-DUP",
+            "HB-SET-HQ-DUP",
+            "HQ重复套装",
+            "HQ Duplicate Set",
+            1
+        );
+        await InsertHqDomesticSetProductAsync(
+            "HQ-DUP-1",
+            "P-SET-HQ-DUP",
+            "HQ-CHILD-DUP",
+            "BAR-HQ-DUP-1",
+            12.5m,
+            2.5m,
+            6.5m
+        );
+        await InsertHqDomesticSetProductAsync(
+            "HQ-DUP-2",
+            "P-SET-HQ-DUP",
+            " hq-child-dup ",
+            "BAR-HQ-DUP-2",
+            13.5m,
+            3.5m,
+            7.5m
+        );
+        var beforeProduct = await _db.Queryable<Product>()
+            .SingleAsync(item => item.ProductCode == "P-SET-HQ-DUP");
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-existing-set-hq-duplicate",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-SET-HQ-DUP" },
+            }
+        );
+
+        Assert.Equal(0, result.CreatedCount);
+        Assert.Equal(1, result.FailedCount);
+        Assert.Contains(result.Errors, error => error.Message?.Contains("套装子项编码重复") == true);
+        Assert.Equal(
+            0,
+            await _db.Queryable<DomesticSetProduct>()
+                .Where(item => item.ProductCode == "P-SET-HQ-DUP")
+                .CountAsync()
+        );
+        var afterProduct = await _db.Queryable<Product>()
+            .SingleAsync(item => item.ProductCode == "P-SET-HQ-DUP");
+        Assert.Equal(beforeProduct.ProductType, afterProduct.ProductType);
+        Assert.Equal(beforeProduct.UpdatedAt, afterProduct.UpdatedAt);
+        Assert.Equal(beforeProduct.UpdatedBy, afterProduct.UpdatedBy);
+        Assert.Equal(
+            0,
+            await _db.Queryable<ProductSetCode>()
+                .Where(item => item.ProductCode == "P-SET-HQ-DUP")
+                .CountAsync()
+        );
+        Assert.Equal(
+            0,
+            await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(item => item.ProductCode == "P-SET-HQ-DUP")
+                .CountAsync()
+        );
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_Hq套装子项所有业务键为空时应拒绝整组且不生成随机键()
+    {
+        await InsertExistingProductAsync(
+            "P-SET-HQ-EMPTY",
+            "HB-SET-HQ-EMPTY",
+            8.8m,
+            18.8m,
+            productType: 0
+        );
+        await InsertExistingWarehouseProductAsync("P-SET-HQ-EMPTY", 1.1m, 2.2m, 3.3m);
+        await InsertContainerDetailAsync(
+            "D-SET-HQ-EMPTY",
+            "C001",
+            "P-SET-HQ-EMPTY",
+            "套装商品",
+            8.8m,
+            18.8m
+        );
+        await InsertDomesticProductAsync(
+            "P-SET-HQ-EMPTY",
+            "HB-SET-HQ-EMPTY",
+            "HQ空键套装",
+            "HQ Empty Set",
+            1
+        );
+        await InsertHqDomesticSetProductAsync(
+            "   ",
+            "P-SET-HQ-EMPTY",
+            "   ",
+            "   ",
+            12.5m,
+            2.5m,
+            6.5m
+        );
+        var beforeProduct = await _db.Queryable<Product>()
+            .SingleAsync(item => item.ProductCode == "P-SET-HQ-EMPTY");
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-existing-set-hq-empty",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-SET-HQ-EMPTY" },
+            }
+        );
+
+        Assert.Equal(0, result.CreatedCount);
+        Assert.Equal(1, result.FailedCount);
+        Assert.Contains(
+            result.Errors,
+            error => error.Message?.Contains("存在空的套装子项编码") == true
+        );
+        Assert.Equal(
+            0,
+            await _db.Queryable<DomesticSetProduct>()
+                .Where(item => item.ProductCode == "P-SET-HQ-EMPTY")
+                .CountAsync()
+        );
+        var afterProduct = await _db.Queryable<Product>()
+            .SingleAsync(item => item.ProductCode == "P-SET-HQ-EMPTY");
+        Assert.Equal(beforeProduct.ProductType, afterProduct.ProductType);
+        Assert.Equal(beforeProduct.UpdatedAt, afterProduct.UpdatedAt);
+        Assert.Equal(beforeProduct.UpdatedBy, afterProduct.UpdatedBy);
+        Assert.Equal(
+            0,
+            await _db.Queryable<ProductSetCode>()
+                .Where(item => item.ProductCode == "P-SET-HQ-EMPTY")
+                .CountAsync()
+        );
+    }
+
+    [Fact]
     public async Task ExecuteAsync_SkipsExistingSetProductWithSetChildNotFoundInsteadOfDuplicate()
     {
         await InsertExistingProductAsync("P-SET-NO-CHILD", "HB-SET-NO-CHILD", 8.8m, 18.8m);
@@ -748,6 +1049,608 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
         Assert.Equal(6m, insertedSetCode.SetPurchasePrice);
         Assert.NotNull(await _db.Queryable<StoreMultiCodeProduct>()
             .FirstAsync(p => p.ProductCode == "P-SET-PARTIAL" && p.StoreCode == "S002"));
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_Type1活跃行与历史墓碑并存时只窄更新活跃行()
+    {
+        const string productCode = "P-SET-ACTIVE-HISTORY";
+        const string childCode = "P-SET-ACTIVE-HISTORY-CHILD";
+        const string updatedBy = "容器建品回归测试";
+        var createdAt = new DateTime(2024, 1, 2, 3, 4, 5, DateTimeKind.Utc);
+        var oldUpdatedAt = createdAt.AddDays(1);
+        await PrepareExistingSetCompletionAsync(
+            productCode,
+            childCode,
+            "D-SET-ACTIVE-HISTORY",
+            productType: 1
+        );
+        await _db.Insertable(new[]
+        {
+            new ProductSetCode
+            {
+                SetCodeId = "SET-ACTIVE",
+                ProductCode = productCode,
+                SetProductCode = childCode,
+                SetItemNumber = "旧套装货号",
+                SetBarcode = "OLD-SET-BARCODE",
+                SetPurchasePrice = 10m,
+                SetRetailPrice = 1m,
+                SetQuantity = 7,
+                SetType = 1,
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = createdAt,
+                CreatedBy = "总部活跃创建人",
+                UpdatedAt = oldUpdatedAt,
+                UpdatedBy = "总部活跃旧更新人",
+            },
+            new ProductSetCode
+            {
+                SetCodeId = "SET-DELETED",
+                ProductCode = productCode,
+                SetProductCode = childCode,
+                SetItemNumber = "软删除历史货号",
+                SetBarcode = "DELETED-SET-BARCODE",
+                SetPurchasePrice = 91m,
+                SetRetailPrice = 92m,
+                SetQuantity = 9,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = true,
+                CreatedAt = createdAt.AddYears(-2),
+                CreatedBy = "总部删除创建人",
+                UpdatedAt = oldUpdatedAt.AddYears(-2),
+                UpdatedBy = "总部删除更新人",
+            },
+            new ProductSetCode
+            {
+                SetCodeId = "SET-INACTIVE",
+                ProductCode = productCode,
+                SetProductCode = childCode,
+                SetItemNumber = "停用历史货号",
+                SetBarcode = "INACTIVE-SET-BARCODE",
+                SetPurchasePrice = 81m,
+                SetRetailPrice = 82m,
+                SetQuantity = 8,
+                SetType = 3,
+                IsActive = false,
+                IsDeleted = false,
+                CreatedAt = createdAt.AddYears(-1),
+                CreatedBy = "总部停用创建人",
+                UpdatedAt = oldUpdatedAt.AddYears(-1),
+                UpdatedBy = "总部停用更新人",
+            },
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            new StoreMultiCodeProduct
+            {
+                UUID = "STORE-ACTIVE",
+                StoreCode = "S001",
+                ProductCode = productCode,
+                MultiCodeProductCode = childCode,
+                StoreMultiCodeProductCode = "LEGACY-STORE-MULTI-CODE",
+                MultiBarcode = "OLD-STORE-BARCODE",
+                PurchasePrice = 10m,
+                MultiCodeRetailPrice = 1m,
+                DiscountRate = 0.25m,
+                IsAutoPricing = true,
+                IsSpecialProduct = true,
+                IsActive = true,
+                IsDeleted = false,
+                CreatedAt = createdAt,
+                CreatedBy = "门店活跃创建人",
+                UpdatedAt = oldUpdatedAt,
+                UpdatedBy = "门店活跃旧更新人",
+            },
+            new StoreMultiCodeProduct
+            {
+                UUID = "STORE-DELETED",
+                StoreCode = "S001",
+                ProductCode = productCode,
+                MultiCodeProductCode = childCode,
+                StoreMultiCodeProductCode = "DELETED-STORE-MULTI-CODE",
+                MultiBarcode = "DELETED-STORE-BARCODE",
+                PurchasePrice = 71m,
+                MultiCodeRetailPrice = 72m,
+                DiscountRate = 0.71m,
+                IsAutoPricing = true,
+                IsSpecialProduct = true,
+                IsActive = true,
+                IsDeleted = true,
+                CreatedAt = createdAt.AddYears(-2),
+                CreatedBy = "门店删除创建人",
+                UpdatedAt = oldUpdatedAt.AddYears(-2),
+                UpdatedBy = "门店删除更新人",
+            },
+            new StoreMultiCodeProduct
+            {
+                UUID = "STORE-INACTIVE",
+                StoreCode = "S001",
+                ProductCode = productCode,
+                MultiCodeProductCode = childCode,
+                StoreMultiCodeProductCode = "INACTIVE-STORE-MULTI-CODE",
+                MultiBarcode = "INACTIVE-STORE-BARCODE",
+                PurchasePrice = 61m,
+                MultiCodeRetailPrice = 62m,
+                DiscountRate = 0.61m,
+                IsAutoPricing = true,
+                IsSpecialProduct = true,
+                IsActive = false,
+                IsDeleted = false,
+                CreatedAt = createdAt.AddYears(-1),
+                CreatedBy = "门店停用创建人",
+                UpdatedAt = oldUpdatedAt.AddYears(-1),
+                UpdatedBy = "门店停用更新人",
+            },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-active-with-history",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-SET-ACTIVE-HISTORY" },
+            },
+            updatedBy
+        );
+
+        Assert.Equal(1, result.CreatedCount);
+        Assert.Equal(0, result.FailedCount);
+
+        var setRows = await _db.Queryable<ProductSetCode>()
+            .Where(row => row.ProductCode == productCode && row.SetProductCode == childCode)
+            .ToListAsync();
+        Assert.Equal(3, setRows.Count);
+        var activeSet = Assert.Single(setRows, row => row.IsActive && !row.IsDeleted);
+        Assert.Equal("SET-ACTIVE", activeSet.SetCodeId);
+        Assert.Equal(productCode, activeSet.ProductCode);
+        Assert.Equal(childCode, activeSet.SetProductCode);
+        Assert.Equal($"ITEM-{childCode}", activeSet.SetItemNumber);
+        Assert.Equal($"BAR-ITEM-{childCode}", activeSet.SetBarcode);
+        Assert.Equal(10m, activeSet.SetPurchasePrice);
+        Assert.Equal(6.5m, activeSet.SetRetailPrice);
+        Assert.Equal(1, activeSet.SetQuantity);
+        Assert.Equal(1, activeSet.SetType);
+        Assert.Equal(createdAt, activeSet.CreatedAt);
+        Assert.Equal("总部活跃创建人", activeSet.CreatedBy);
+        Assert.Equal(updatedBy, activeSet.UpdatedBy);
+        Assert.NotEqual(oldUpdatedAt, activeSet.UpdatedAt);
+
+        var deletedSet = Assert.Single(setRows, row => row.SetCodeId == "SET-DELETED");
+        Assert.True(deletedSet.IsDeleted);
+        Assert.True(deletedSet.IsActive);
+        Assert.Equal("软删除历史货号", deletedSet.SetItemNumber);
+        Assert.Equal("DELETED-SET-BARCODE", deletedSet.SetBarcode);
+        Assert.Equal(91m, deletedSet.SetPurchasePrice);
+        Assert.Equal(92m, deletedSet.SetRetailPrice);
+        Assert.Equal(9, deletedSet.SetQuantity);
+        Assert.Equal(2, deletedSet.SetType);
+        Assert.Equal("总部删除创建人", deletedSet.CreatedBy);
+        Assert.Equal("总部删除更新人", deletedSet.UpdatedBy);
+
+        var inactiveSet = Assert.Single(setRows, row => row.SetCodeId == "SET-INACTIVE");
+        Assert.False(inactiveSet.IsActive);
+        Assert.False(inactiveSet.IsDeleted);
+        Assert.Equal("停用历史货号", inactiveSet.SetItemNumber);
+        Assert.Equal("INACTIVE-SET-BARCODE", inactiveSet.SetBarcode);
+        Assert.Equal(81m, inactiveSet.SetPurchasePrice);
+        Assert.Equal(82m, inactiveSet.SetRetailPrice);
+        Assert.Equal(8, inactiveSet.SetQuantity);
+        Assert.Equal(3, inactiveSet.SetType);
+        Assert.Equal("总部停用创建人", inactiveSet.CreatedBy);
+        Assert.Equal("总部停用更新人", inactiveSet.UpdatedBy);
+
+        var storeRows = await _db.Queryable<StoreMultiCodeProduct>()
+            .Where(row =>
+                row.StoreCode == "S001"
+                && row.ProductCode == productCode
+                && row.MultiCodeProductCode == childCode
+            )
+            .ToListAsync();
+        Assert.Equal(3, storeRows.Count);
+        var activeStore = Assert.Single(storeRows, row => row.IsActive && !row.IsDeleted);
+        Assert.Equal("STORE-ACTIVE", activeStore.UUID);
+        Assert.Equal("S001", activeStore.StoreCode);
+        Assert.Equal(productCode, activeStore.ProductCode);
+        Assert.Equal(childCode, activeStore.MultiCodeProductCode);
+        Assert.Equal($"S001{childCode}", activeStore.StoreMultiCodeProductCode);
+        Assert.Equal($"BAR-ITEM-{childCode}", activeStore.MultiBarcode);
+        Assert.Equal(10m, activeStore.PurchasePrice);
+        Assert.Equal(6.5m, activeStore.MultiCodeRetailPrice);
+        Assert.Equal(0.25m, activeStore.DiscountRate);
+        Assert.True(activeStore.IsAutoPricing);
+        Assert.True(activeStore.IsSpecialProduct);
+        Assert.Equal(createdAt, activeStore.CreatedAt);
+        Assert.Equal("门店活跃创建人", activeStore.CreatedBy);
+        Assert.Equal(updatedBy, activeStore.UpdatedBy);
+        Assert.NotEqual(oldUpdatedAt, activeStore.UpdatedAt);
+
+        var deletedStore = Assert.Single(storeRows, row => row.UUID == "STORE-DELETED");
+        Assert.True(deletedStore.IsDeleted);
+        Assert.True(deletedStore.IsActive);
+        Assert.Equal("DELETED-STORE-MULTI-CODE", deletedStore.StoreMultiCodeProductCode);
+        Assert.Equal("DELETED-STORE-BARCODE", deletedStore.MultiBarcode);
+        Assert.Equal(71m, deletedStore.PurchasePrice);
+        Assert.Equal(72m, deletedStore.MultiCodeRetailPrice);
+        Assert.Equal(0.71m, deletedStore.DiscountRate);
+        Assert.Equal("门店删除创建人", deletedStore.CreatedBy);
+        Assert.Equal("门店删除更新人", deletedStore.UpdatedBy);
+
+        var inactiveStore = Assert.Single(storeRows, row => row.UUID == "STORE-INACTIVE");
+        Assert.False(inactiveStore.IsActive);
+        Assert.False(inactiveStore.IsDeleted);
+        Assert.Equal("INACTIVE-STORE-MULTI-CODE", inactiveStore.StoreMultiCodeProductCode);
+        Assert.Equal("INACTIVE-STORE-BARCODE", inactiveStore.MultiBarcode);
+        Assert.Equal(61m, inactiveStore.PurchasePrice);
+        Assert.Equal(62m, inactiveStore.MultiCodeRetailPrice);
+        Assert.Equal(0.61m, inactiveStore.DiscountRate);
+        Assert.Equal("门店停用创建人", inactiveStore.CreatedBy);
+        Assert.Equal("门店停用更新人", inactiveStore.UpdatedBy);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_Type1仅有历史总部行时应报数据质量并回滚父商品()
+    {
+        const string productCode = "P-SET-HISTORY-ONLY-HQ";
+        const string childCode = "P-SET-HISTORY-ONLY-HQ-CHILD";
+        await PrepareExistingSetCompletionAsync(
+            productCode,
+            childCode,
+            "D-SET-HISTORY-ONLY-HQ",
+            productType: 0
+        );
+        await _db.Insertable(new[]
+        {
+            CreateProductSetProjection(
+                "SET-HISTORY-DELETED",
+                productCode,
+                childCode,
+                isActive: true,
+                isDeleted: true
+            ),
+            CreateProductSetProjection(
+                "SET-HISTORY-INACTIVE",
+                productCode,
+                childCode,
+                isActive: false,
+                isDeleted: false
+            ),
+        }).ExecuteCommandAsync();
+        var beforeProduct = await _db.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == productCode);
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-history-only-hq",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-SET-HISTORY-ONLY-HQ" },
+            },
+            "历史总部测试"
+        );
+
+        Assert.Equal(0, result.CreatedCount);
+        Assert.Equal(1, result.FailedCount);
+        Assert.Contains(result.Errors, error =>
+            error.ReasonCode == "SET_GROUP_DATA_QUALITY_ERROR"
+            && error.Message?.Contains("仅存在停用或软删除的总部关系") == true
+        );
+        var afterProduct = await _db.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == productCode);
+        Assert.Equal(beforeProduct.ProductType, afterProduct.ProductType);
+        Assert.Equal(beforeProduct.UpdatedAt, afterProduct.UpdatedAt);
+        Assert.Equal(beforeProduct.UpdatedBy, afterProduct.UpdatedBy);
+        var historyRows = await _db.Queryable<ProductSetCode>()
+            .Where(row => row.ProductCode == productCode && row.SetProductCode == childCode)
+            .ToListAsync();
+        Assert.Equal(2, historyRows.Count);
+        Assert.DoesNotContain(historyRows, row => row.IsActive && !row.IsDeleted);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_Type1多条活跃总部行时应报数据质量并回滚父商品()
+    {
+        const string productCode = "P-SET-MULTI-ACTIVE-HQ";
+        const string childCode = "P-SET-MULTI-ACTIVE-HQ-CHILD";
+        await PrepareExistingSetCompletionAsync(
+            productCode,
+            childCode,
+            "D-SET-MULTI-ACTIVE-HQ",
+            productType: 0
+        );
+        await _db.Insertable(new[]
+        {
+            CreateProductSetProjection("SET-ACTIVE-A", productCode, childCode),
+            CreateProductSetProjection("SET-ACTIVE-B", productCode, childCode),
+        }).ExecuteCommandAsync();
+        var beforeProduct = await _db.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == productCode);
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-multi-active-hq",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-SET-MULTI-ACTIVE-HQ" },
+            },
+            "多总部活跃测试"
+        );
+
+        Assert.Equal(0, result.CreatedCount);
+        Assert.Equal(1, result.FailedCount);
+        Assert.Contains(result.Errors, error =>
+            error.ReasonCode == "SET_GROUP_DATA_QUALITY_ERROR"
+            && error.Message?.Contains("存在多条活跃总部关系") == true
+        );
+        var afterProduct = await _db.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == productCode);
+        Assert.Equal(beforeProduct.ProductType, afterProduct.ProductType);
+        Assert.Equal(beforeProduct.UpdatedAt, afterProduct.UpdatedAt);
+        Assert.Equal(beforeProduct.UpdatedBy, afterProduct.UpdatedBy);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_Type1仅有历史门店行时应报数据质量并回滚已写变更()
+    {
+        const string productCode = "P-SET-HISTORY-ONLY-STORE";
+        const string childCode = "P-SET-HISTORY-ONLY-STORE-CHILD";
+        await PrepareExistingSetCompletionAsync(
+            productCode,
+            childCode,
+            "D-SET-HISTORY-ONLY-STORE",
+            productType: 0
+        );
+        var activeSet = CreateProductSetProjection("SET-ACTIVE", productCode, childCode);
+        activeSet.SetItemNumber = "回滚前总部货号";
+        activeSet.SetBarcode = "ROLLBACK-BEFORE-BARCODE";
+        activeSet.SetRetailPrice = 1m;
+        activeSet.UpdatedBy = "回滚前总部更新人";
+        await _db.Insertable(activeSet).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            CreateStoreMultiCodeProjection(
+                "STORE-HISTORY-DELETED",
+                productCode,
+                childCode,
+                isActive: true,
+                isDeleted: true
+            ),
+            CreateStoreMultiCodeProjection(
+                "STORE-HISTORY-INACTIVE",
+                productCode,
+                childCode,
+                isActive: false,
+                isDeleted: false
+            ),
+        }).ExecuteCommandAsync();
+        var beforeProduct = await _db.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == productCode);
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-history-only-store",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-SET-HISTORY-ONLY-STORE" },
+            },
+            "历史门店测试"
+        );
+
+        Assert.Equal(0, result.CreatedCount);
+        Assert.Equal(1, result.FailedCount);
+        Assert.Contains(result.Errors, error =>
+            error.ReasonCode == "SET_GROUP_DATA_QUALITY_ERROR"
+            && error.Message?.Contains("仅存在停用或软删除的门店关系") == true
+        );
+        var afterProduct = await _db.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == productCode);
+        Assert.Equal(beforeProduct.ProductType, afterProduct.ProductType);
+        Assert.Equal(beforeProduct.UpdatedAt, afterProduct.UpdatedAt);
+        Assert.Equal(beforeProduct.UpdatedBy, afterProduct.UpdatedBy);
+        var rolledBackSet = await _db.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == "SET-ACTIVE");
+        Assert.Equal("回滚前总部货号", rolledBackSet.SetItemNumber);
+        Assert.Equal("ROLLBACK-BEFORE-BARCODE", rolledBackSet.SetBarcode);
+        Assert.Equal(1m, rolledBackSet.SetRetailPrice);
+        Assert.Equal("回滚前总部更新人", rolledBackSet.UpdatedBy);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_Type1多条活跃门店行时应报数据质量并回滚整柜事务()
+    {
+        const string containerCode = "C-SET-MULTI-ACTIVE-STORE";
+        const string productCode = "P-SET-MULTI-ACTIVE-STORE";
+        const string childCode = "P-SET-MULTI-ACTIVE-STORE-CHILD";
+        await PrepareExistingSetCompletionAsync(
+            productCode,
+            childCode,
+            "D-SET-MULTI-ACTIVE-STORE",
+            containerCode,
+            productType: 0,
+            insertContainer: true
+        );
+        var activeSet = CreateProductSetProjection("SET-ACTIVE", productCode, childCode);
+        activeSet.SetItemNumber = "整柜回滚前总部货号";
+        activeSet.SetRetailPrice = 1m;
+        await _db.Insertable(activeSet).ExecuteCommandAsync();
+        await _db.Insertable(new[]
+        {
+            CreateStoreMultiCodeProjection("STORE-ACTIVE-A", productCode, childCode),
+            CreateStoreMultiCodeProjection("STORE-ACTIVE-B", productCode, childCode),
+        }).ExecuteCommandAsync();
+        var beforeProduct = await _db.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == productCode);
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = $"submit-container:{containerCode}",
+                ContainerGuid = containerCode,
+                SubmitContainer = true,
+            },
+            "多门店活跃测试"
+        );
+
+        Assert.Equal(0, result.CreatedCount);
+        Assert.Equal(1, result.FailedCount);
+        Assert.False(result.ContainerCompleted);
+        Assert.Contains(result.Errors, error =>
+            error.ReasonCode == "SET_GROUP_DATA_QUALITY_ERROR"
+            && error.Message?.Contains("存在多条活跃门店关系") == true
+        );
+        var container = await _db.Queryable<Container>()
+            .SingleAsync(row => row.ContainerCode == containerCode);
+        Assert.Equal(1, container.Status);
+        var afterProduct = await _db.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == productCode);
+        Assert.Equal(beforeProduct.ProductType, afterProduct.ProductType);
+        Assert.Equal(beforeProduct.UpdatedAt, afterProduct.UpdatedAt);
+        Assert.Equal(beforeProduct.UpdatedBy, afterProduct.UpdatedBy);
+        var rolledBackSet = await _db.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.SetCodeId == "SET-ACTIVE");
+        Assert.Equal("整柜回滚前总部货号", rolledBackSet.SetItemNumber);
+        Assert.Equal(1m, rolledBackSet.SetRetailPrice);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_Type1缺失投影时应按新建语义初始化审计与生命周期()
+    {
+        const string productCode = "P-SET-NEW-PROJECTION";
+        const string childCode = "P-SET-NEW-PROJECTION-CHILD";
+        const string updatedBy = "新建投影测试";
+        await PrepareExistingSetCompletionAsync(
+            productCode,
+            childCode,
+            "D-SET-NEW-PROJECTION",
+            productType: 1
+        );
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-new-projection-audit",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-SET-NEW-PROJECTION" },
+            },
+            updatedBy
+        );
+
+        Assert.Equal(1, result.CreatedCount);
+        Assert.Equal(0, result.FailedCount);
+        var setCode = await _db.Queryable<ProductSetCode>()
+            .SingleAsync(row => row.ProductCode == productCode && row.SetProductCode == childCode);
+        Assert.Equal(childCode, setCode.SetCodeId);
+        Assert.Equal(1, setCode.SetType);
+        Assert.True(setCode.IsActive);
+        Assert.False(setCode.IsDeleted);
+        Assert.Equal(updatedBy, setCode.CreatedBy);
+        Assert.Equal(updatedBy, setCode.UpdatedBy);
+
+        var storeMultiCode = await _db.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(row =>
+                row.StoreCode == "S001"
+                && row.ProductCode == productCode
+                && row.MultiCodeProductCode == childCode
+            );
+        Assert.False(string.IsNullOrWhiteSpace(storeMultiCode.UUID));
+        Assert.Equal($"S001{childCode}", storeMultiCode.StoreMultiCodeProductCode);
+        Assert.True(storeMultiCode.IsActive);
+        Assert.False(storeMultiCode.IsDeleted);
+        Assert.Null(storeMultiCode.DiscountRate);
+        Assert.False(storeMultiCode.IsAutoPricing);
+        Assert.False(storeMultiCode.IsSpecialProduct);
+        Assert.Equal(updatedBy, storeMultiCode.CreatedBy);
+        Assert.Equal(updatedBy, storeMultiCode.UpdatedBy);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_同父同子键已有Type2时不得改写为套装关系()
+    {
+        const string productCode = "P-SET-TYPE2-SAME-KEY";
+        const string childCode = "P-SET-TYPE2-CHILD";
+        await InsertActiveStoreAsync("S001");
+        await InsertExistingProductAsync(productCode, "HB-SET-TYPE2", 10m, 18.8m);
+        await InsertExistingWarehouseProductAsync(productCode, 1.1m, 2.2m, 3.3m);
+        await InsertContainerDetailAsync(
+            "D-SET-TYPE2-SAME-KEY",
+            "C001",
+            productCode,
+            "套装商品",
+            10m,
+            18.8m
+        );
+        await InsertDomesticProductAsync(productCode, "HB-SET-TYPE2", "套装", "Set", 1);
+        await InsertDomesticSetProductAsync(
+            productCode,
+            childCode,
+            "HB-SET-TYPE2-CHILD",
+            importPrice: 2m,
+            oemPrice: 5m
+        );
+        await _db.Insertable(new ProductSetCode
+        {
+            SetCodeId = "TYPE2-GLOBAL",
+            ProductCode = productCode,
+            SetProductCode = childCode,
+            SetItemNumber = "TYPE2-ITEM",
+            SetBarcode = "TYPE2-BARCODE",
+            SetPurchasePrice = 77m,
+            SetRetailPrice = 88m,
+            SetQuantity = 9,
+            SetType = 2,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new StoreMultiCodeProduct
+        {
+            UUID = "TYPE2-STORE",
+            StoreCode = "S001",
+            ProductCode = productCode,
+            MultiCodeProductCode = childCode,
+            StoreMultiCodeProductCode = "S001-TYPE2",
+            MultiBarcode = "TYPE2-STORE-BARCODE",
+            PurchasePrice = 66m,
+            MultiCodeRetailPrice = 77m,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "op-existing-type2-same-key",
+                ContainerGuid = "C001",
+                DetailHguids = new List<string> { "D-SET-TYPE2-SAME-KEY" },
+            }
+        );
+
+        Assert.Equal(1, result.FailedCount);
+        Assert.Contains(result.Errors, x =>
+            x.ProductCode == productCode && x.Message?.Contains("普通多码关系占用") == true
+        );
+        var globalRows = await _db.Queryable<ProductSetCode>()
+            .Where(x => x.ProductCode == productCode && x.SetProductCode == childCode)
+            .ToListAsync();
+        var globalType2 = Assert.Single(globalRows);
+        Assert.Equal(2, globalType2.SetType);
+        Assert.Equal("TYPE2-BARCODE", globalType2.SetBarcode);
+        Assert.Equal(77m, globalType2.SetPurchasePrice);
+        Assert.Equal(88m, globalType2.SetRetailPrice);
+        Assert.Equal(9, globalType2.SetQuantity);
+
+        var storeRows = await _db.Queryable<StoreMultiCodeProduct>()
+            .Where(x =>
+                x.StoreCode == "S001"
+                && x.ProductCode == productCode
+                && x.MultiCodeProductCode == childCode
+            )
+            .ToListAsync();
+        var storeType2 = Assert.Single(storeRows);
+        Assert.Equal("TYPE2-STORE-BARCODE", storeType2.MultiBarcode);
+        Assert.Equal(66m, storeType2.PurchasePrice);
+        Assert.Equal(77m, storeType2.MultiCodeRetailPrice);
     }
 
     [Fact]
@@ -1044,7 +1947,6 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
         var existingProduct = await _db.Queryable<Product>().SingleAsync(item => item.ProductCode == "P-EXISTING");
         var existingWarehouseProduct = await _db.Queryable<WarehouseProduct>().SingleAsync(item => item.ProductCode == "P-EXISTING");
         var storeRetailPrice = await _db.Queryable<StoreRetailPrice>().SingleAsync(item => item.ProductCode == "P-EXISTING");
-        var storeMultiCode = await _db.Queryable<StoreMultiCodeProduct>().SingleAsync(item => item.ProductCode == "P-EXISTING");
 
         Assert.Equal(5.6m, existingProduct.PurchasePrice);
         Assert.Equal(11.2m, existingWarehouseProduct.DomesticPrice);
@@ -1053,8 +1955,79 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
         Assert.Equal(0.12m, existingWarehouseProduct.Volume);
         Assert.Equal(5.6m, storeRetailPrice.PurchasePrice);
         Assert.Equal(7.8m, storeRetailPrice.StoreRetailPriceValue);
-        Assert.Equal(5.6m, storeMultiCode.PurchasePrice);
-        Assert.Equal(7.8m, storeMultiCode.MultiCodeRetailPrice);
+        // 普通商品没有完整子项关系时，只更新主价投影，不能生成无子项编码的 StoreMulti 占位行。
+        Assert.Empty(await _db.Queryable<StoreMultiCodeProduct>()
+            .Where(item => item.ProductCode == "P-EXISTING")
+            .ToListAsync());
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_SubmitContainer_普通商品不得随机改写既有StoreMulti子项()
+    {
+        await InsertContainerAsync("C-NO-RANDOM-STORE-MULTI", status: 1);
+        await InsertActiveStoreAsync("S001");
+        await InsertContainerDetailAsync(
+            "D-NO-RANDOM-STORE-MULTI",
+            "C-NO-RANDOM-STORE-MULTI",
+            "P-NO-RANDOM-STORE-MULTI",
+            "普通商品",
+            8.8m,
+            9.9m
+        );
+        await InsertDomesticProductAsync(
+            "P-NO-RANDOM-STORE-MULTI",
+            "HB-NO-RANDOM-STORE-MULTI",
+            "普通商品",
+            "Normal Product",
+            0
+        );
+        await InsertExistingProductAsync(
+            "P-NO-RANDOM-STORE-MULTI",
+            "HB-NO-RANDOM-STORE-MULTI",
+            1.1m,
+            2.2m
+        );
+        await InsertExistingWarehouseProductAsync(
+            "P-NO-RANDOM-STORE-MULTI",
+            domesticPrice: 3.3m,
+            importPrice: 4.4m,
+            oemPrice: 5.5m
+        );
+        await InsertStoreMultiCodeAsync(
+            "S001",
+            "P-NO-RANDOM-STORE-MULTI",
+            "CHILD-A",
+            "BAR-A",
+            purchasePrice: 1.2m,
+            retailPrice: 2.3m
+        );
+        await InsertStoreMultiCodeAsync(
+            "S001",
+            "P-NO-RANDOM-STORE-MULTI",
+            "CHILD-B",
+            "BAR-B",
+            purchasePrice: 3.4m,
+            retailPrice: 4.5m
+        );
+
+        var result = await CreateService().ExecuteAsync(
+            new ContainerProductCreationJobRequestDto
+            {
+                OperationId = "submit-container:C-NO-RANDOM-STORE-MULTI",
+                ContainerGuid = "C-NO-RANDOM-STORE-MULTI",
+                SubmitContainer = true,
+            }
+        );
+
+        var storeMultiCodes = await _db.Queryable<StoreMultiCodeProduct>()
+            .Where(item => item.ProductCode == "P-NO-RANDOM-STORE-MULTI")
+            .OrderBy(item => item.MultiCodeProductCode)
+            .ToListAsync();
+
+        Assert.Equal(0, result.FailedCount);
+        Assert.Equal(2, storeMultiCodes.Count);
+        Assert.Equal(new decimal?[] { 1.2m, 3.4m }, storeMultiCodes.Select(item => item.PurchasePrice));
+        Assert.Equal(new decimal?[] { 2.3m, 4.5m }, storeMultiCodes.Select(item => item.MultiCodeRetailPrice));
     }
 
     [Fact]
@@ -1592,6 +2565,115 @@ public sealed class ContainerProductCreationServiceTests : IDisposable
             IsActive = true,
             IsDeleted = false,
         }).ExecuteCommandAsync();
+    }
+
+    private async Task PrepareExistingSetCompletionAsync(
+        string productCode,
+        string childCode,
+        string detailCode,
+        string containerCode = "C001",
+        int productType = 0,
+        bool insertContainer = false
+    )
+    {
+        if (insertContainer)
+        {
+            await InsertContainerAsync(containerCode, status: 1);
+        }
+        await InsertActiveStoreAsync("S001");
+        await InsertExistingProductAsync(
+            productCode,
+            $"HB-{productCode}",
+            purchasePrice: 10m,
+            retailPrice: 18.8m,
+            productType
+        );
+        await InsertExistingWarehouseProductAsync(
+            productCode,
+            domesticPrice: 1.1m,
+            importPrice: 2.2m,
+            oemPrice: 3.3m
+        );
+        await InsertContainerDetailAsync(
+            detailCode,
+            containerCode,
+            productCode,
+            "套装商品",
+            importPrice: 10m,
+            oemPrice: 18.8m
+        );
+        await InsertDomesticProductAsync(
+            productCode,
+            $"HB-{productCode}",
+            "套装商品",
+            "Set Product",
+            productType: 1
+        );
+        await InsertDomesticSetProductAsync(
+            productCode,
+            childCode,
+            $"ITEM-{childCode}",
+            importPrice: 2m,
+            oemPrice: 6.5m
+        );
+    }
+
+    private static ProductSetCode CreateProductSetProjection(
+        string setCodeId,
+        string productCode,
+        string childCode,
+        bool isActive = true,
+        bool isDeleted = false
+    )
+    {
+        return new ProductSetCode
+        {
+            SetCodeId = setCodeId,
+            ProductCode = productCode,
+            SetProductCode = childCode,
+            SetItemNumber = $"OLD-{setCodeId}",
+            SetBarcode = $"BAR-{setCodeId}",
+            SetPurchasePrice = 10m,
+            SetRetailPrice = 1m,
+            SetQuantity = 7,
+            SetType = 1,
+            IsActive = isActive,
+            IsDeleted = isDeleted,
+            CreatedAt = new DateTime(2024, 1, 2, 3, 4, 5, DateTimeKind.Utc),
+            CreatedBy = $"CREATED-{setCodeId}",
+            UpdatedAt = new DateTime(2024, 2, 3, 4, 5, 6, DateTimeKind.Utc),
+            UpdatedBy = $"UPDATED-{setCodeId}",
+        };
+    }
+
+    private static StoreMultiCodeProduct CreateStoreMultiCodeProjection(
+        string uuid,
+        string productCode,
+        string childCode,
+        bool isActive = true,
+        bool isDeleted = false
+    )
+    {
+        return new StoreMultiCodeProduct
+        {
+            UUID = uuid,
+            StoreCode = "S001",
+            ProductCode = productCode,
+            MultiCodeProductCode = childCode,
+            StoreMultiCodeProductCode = $"OLD-{uuid}",
+            MultiBarcode = $"BAR-{uuid}",
+            PurchasePrice = 10m,
+            MultiCodeRetailPrice = 1m,
+            DiscountRate = 0.25m,
+            IsAutoPricing = true,
+            IsSpecialProduct = true,
+            IsActive = isActive,
+            IsDeleted = isDeleted,
+            CreatedAt = new DateTime(2024, 1, 2, 3, 4, 5, DateTimeKind.Utc),
+            CreatedBy = $"CREATED-{uuid}",
+            UpdatedAt = new DateTime(2024, 2, 3, 4, 5, 6, DateTimeKind.Utc),
+            UpdatedBy = $"UPDATED-{uuid}",
+        };
     }
 
     private ContainerProductCreationExecutorService CreateService(
