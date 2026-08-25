@@ -314,6 +314,9 @@
   <data name="history.amountItems" xml:space="preserve"><value>Amount / Items</value></data>
   <data name="history.totalOutstanding" xml:space="preserve"><value>Total / Outstanding</value></data>
   <data name="history.moreActions" xml:space="preserve"><value>More actions</value></data>
+  <data name="history.viewReceipt" xml:space="preserve"><value>View receipt</value></data>
+  <data name="history.closeReceiptPreview" xml:space="preserve"><value>Close</value></data>
+  <data name="history.receiptLoading" xml:space="preserve"><value>Loading receipt...</value></data>
   <data name="history.reprint" xml:space="preserve"><value>Reprint</value></data>
   <data name="history.detailsLoadTimeout" xml:space="preserve"><value>Order details load timed out. Please try again.</value></data>
   <data name="history.refund" xml:space="preserve"><value>Refund</value></data>
@@ -772,7 +775,7 @@
   <data name="dailyClose.title" xml:space="preserve"><value>Daily Settlement</value></data>
   <data name="dailyClose.refresh" xml:space="preserve"><value>Refresh</value></data>
   <data name="dailyClose.saveFinalize" xml:space="preserve"><value>Save &amp; Finalize</value></data>
-  <data name="dailyClose.cashCounter" xml:space="preserve"><value>Cash Counter</value></data>
+  <data name="dailyClose.cashCounter" xml:space="preserve"><value>Cash Count</value></data>
   <data name="dailyClose.apply" xml:space="preserve"><value>Apply</value></data>
   <data name="dailyClose.noteTotal" xml:space="preserve"><value>Note Total</value></data>
   <data name="dailyClose.coinTotal" xml:space="preserve"><value>Coin Total</value></data>
@@ -1174,4 +1177,13 @@
   <data name="cardRecovery.resolutionSavedPending" xml:space="preserve"><value>The supervisor decision was saved, but recovery is still pending. Run recovery again before taking another payment or refund.</value></data>
   <data name="cardRecovery.draftHandoff.unlockWarning" xml:space="preserve"><value>The recovery was committed, but the payment page could not be unlocked safely. The page remains locked; review the recovery center before continuing.</value></data>
   <data name="cardRecovery.center.value.none" xml:space="preserve"><value>-</value></data>
+  <data name="dailyClose.cashCountHint" xml:space="preserve"><value>Select a denomination to enter its quantity.</value></data>
+  <data name="dailyClose.quantityShort" xml:space="preserve"><value>Qty</value></data>
+  <data name="dailyClose.cashCountDialog.automationName" xml:space="preserve"><value>Cash quantity entry</value></data>
+  <data name="dailyClose.cashCountDialog.titlePrefix" xml:space="preserve"><value>Count</value></data>
+  <data name="dailyClose.cashCountDialog.helperPrefix" xml:space="preserve"><value>Enter the number of</value></data>
+  <data name="dailyClose.cashCountDialog.helperSuffix" xml:space="preserve"><value>in the till.</value></data>
+  <data name="dailyClose.cashCountDialog.clear" xml:space="preserve"><value>Clear</value></data>
+  <data name="dailyClose.cashCountDialog.backspace" xml:space="preserve"><value>Backspace</value></data>
+  <data name="dailyClose.cashCountDialog.apply" xml:space="preserve"><value>Apply Count</value></data>
 </root>

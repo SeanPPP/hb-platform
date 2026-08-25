@@ -29,6 +29,7 @@ public sealed class WpfViewLifecycleTests
                 VerifySettingsViewLifecycle();
                 VerifyTransactionHistoryViewLifecycle();
                 VerifyPaymentViewLifecycle();
+                VerifyDailyCloseCashCountDialogBindings();
                 VerifyUnloadedViewInstancesAreCollectible();
             }
             finally
@@ -127,6 +128,20 @@ public sealed class WpfViewLifecycleTests
         RaiseLoaded(view);
         AssertDirectHandlerCount(second, view, "PaymentViewModelPropertyChanged", 1);
         RaiseUnloaded(view);
+        view.DataContext = null;
+    }
+
+    private static void VerifyDailyCloseCashCountDialogBindings()
+    {
+        var view = new DailyCloseView
+        {
+            DataContext = new CashCountDialogBindingSource()
+        };
+
+        view.Measure(new Size(1366, 768));
+        view.Arrange(new Rect(0, 0, 1366, 768));
+        view.UpdateLayout();
+        Dispatcher.CurrentDispatcher.Invoke(static () => { }, DispatcherPriority.DataBind);
         view.DataContext = null;
     }
 
@@ -351,6 +366,24 @@ public sealed class WpfViewLifecycleTests
             add => _propertyChanged += value;
             remove => _propertyChanged -= value;
         }
+    }
+
+    private sealed class CashCountDialogBindingSource
+    {
+        public bool IsCashCountDialogOpen => true;
+
+        public int CashCountDialogQuantity => 2;
+
+        public decimal CashCountDialogSubtotal => 200m;
+
+        public string KeypadBuffer => "2";
+
+        public CashCountDialogDenomination SelectedCashDenomination { get; } = new();
+    }
+
+    private sealed class CashCountDialogDenomination
+    {
+        public string Label => "$100";
     }
 
     public class ThrowingDispatchProxy : DispatchProxy

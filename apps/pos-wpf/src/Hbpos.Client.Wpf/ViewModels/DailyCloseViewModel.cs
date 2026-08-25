@@ -12,6 +12,8 @@ namespace Hbpos.Client.Wpf.ViewModels;
 
 public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 {
+    private const int MaxCashCountDigits = 9;
+
     private readonly IDailyCloseService _dailyCloseService;
     private readonly IDailyClosePrintService _dailyClosePrintService;
     private readonly ILinklySettlementService? _linklySettlementService;
@@ -24,6 +26,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
     private readonly Func<DateTime, Task<bool>>? _confirmLinklySettlementAsync;
     private DailyCloseReport? _currentReport;
     private int _archivePreviewVersion;
+    private bool _replaceKeypadOnNextInput;
 
     [ObservableProperty]
     private PosSessionState _session;
@@ -33,6 +36,9 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private string _keypadBuffer = string.Empty;
+
+    [ObservableProperty]
+    private CashDenominationEntryViewModel? _selectedCashDenomination;
 
     [ObservableProperty]
     private bool _isBusy;
@@ -118,9 +124,15 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         CancelSettlementManualResolutionCommand = new RelayCommand(
             CancelSettlementManualResolution,
             CanCancelSettlementManualResolution);
-        KeypadInputCommand = new RelayCommand<string>(AppendKeypadInput, _ => !IsBusy);
-        KeypadBackspaceCommand = new RelayCommand(BackspaceKeypad, () => !IsBusy && KeypadBuffer.Length > 0);
-        KeypadClearCommand = new RelayCommand(ClearKeypad, () => !IsBusy && KeypadBuffer.Length > 0);
+        OpenCashCountDialogCommand = new RelayCommand<CashDenominationEntryViewModel>(
+            OpenCashCountDialog,
+            CanOpenCashCountDialog);
+        CancelCashCountDialogCommand = new RelayCommand(
+            CancelCashCountDialog,
+            () => !IsBusy && IsCashCountDialogOpen);
+        KeypadInputCommand = new RelayCommand<string>(AppendKeypadInput, _ => !IsBusy && IsCashCountDialogOpen);
+        KeypadBackspaceCommand = new RelayCommand(BackspaceKeypad, () => !IsBusy && IsCashCountDialogOpen && KeypadBuffer.Length > 0);
+        KeypadClearCommand = new RelayCommand(ClearKeypad, () => !IsBusy && IsCashCountDialogOpen && KeypadBuffer.Length > 0);
         ApplyDenominationCommand = new RelayCommand<CashDenominationEntryViewModel>(ApplyDenominationCount, CanApplyDenominationCount);
         ReturnToPosCommand = new RelayCommand(() => _returnToPos?.Invoke(), () => _returnToPos is not null);
         StatusMessage = T("dailyClose.status.ready", "Select a business date and refresh the summary.");
@@ -162,6 +174,10 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
     public IRelayCommand CancelSettlementManualResolutionCommand { get; }
 
+    public IRelayCommand<CashDenominationEntryViewModel> OpenCashCountDialogCommand { get; }
+
+    public IRelayCommand CancelCashCountDialogCommand { get; }
+
     public IRelayCommand<string> KeypadInputCommand { get; }
 
     public IRelayCommand KeypadBackspaceCommand { get; }
@@ -181,6 +197,18 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
     public decimal CoinSubtotal => CoinDenominations.Sum(item => item.Subtotal);
 
     public decimal CountedCashAmount => NoteSubtotal + CoinSubtotal;
+
+    public bool IsCashCountDialogOpen => SelectedCashDenomination is not null;
+
+    public int CashCountDialogQuantity =>
+        int.TryParse(KeypadBuffer, NumberStyles.None, CultureInfo.InvariantCulture, out var quantity)
+            ? quantity
+            : 0;
+
+    public decimal CashCountDialogSubtotal => decimal.Round(
+        (SelectedCashDenomination?.Value ?? 0m) * CashCountDialogQuantity,
+        2,
+        MidpointRounding.AwayFromZero);
 
     public decimal CashDifference => CountedCashAmount - ExpectedCashAmount;
 
@@ -853,6 +881,33 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         KeypadBackspaceCommand.NotifyCanExecuteChanged();
         KeypadClearCommand.NotifyCanExecuteChanged();
         ApplyDenominationCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(CashCountDialogQuantity));
+        OnPropertyChanged(nameof(CashCountDialogSubtotal));
+    }
+
+    partial void OnSelectedCashDenominationChanged(
+        CashDenominationEntryViewModel? oldValue,
+        CashDenominationEntryViewModel? newValue)
+    {
+        if (oldValue is not null)
+        {
+            oldValue.IsSelected = false;
+        }
+
+        if (newValue is not null)
+        {
+            newValue.IsSelected = true;
+        }
+
+        OnPropertyChanged(nameof(IsCashCountDialogOpen));
+        OnPropertyChanged(nameof(CashCountDialogQuantity));
+        OnPropertyChanged(nameof(CashCountDialogSubtotal));
+        OpenCashCountDialogCommand.NotifyCanExecuteChanged();
+        CancelCashCountDialogCommand.NotifyCanExecuteChanged();
+        KeypadInputCommand.NotifyCanExecuteChanged();
+        KeypadBackspaceCommand.NotifyCanExecuteChanged();
+        KeypadClearCommand.NotifyCanExecuteChanged();
+        ApplyDenominationCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnIsBusyChanged(bool value)
@@ -867,6 +922,8 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         PrepareSettlementManualResolutionCommand.NotifyCanExecuteChanged();
         ConfirmSettlementManualResolutionCommand.NotifyCanExecuteChanged();
         CancelSettlementManualResolutionCommand.NotifyCanExecuteChanged();
+        OpenCashCountDialogCommand.NotifyCanExecuteChanged();
+        CancelCashCountDialogCommand.NotifyCanExecuteChanged();
         KeypadInputCommand.NotifyCanExecuteChanged();
         KeypadBackspaceCommand.NotifyCanExecuteChanged();
         KeypadClearCommand.NotifyCanExecuteChanged();
@@ -1035,18 +1092,69 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         }
     }
 
-    private void AppendKeypadInput(string? input)
+    private bool CanOpenCashCountDialog(CashDenominationEntryViewModel? denomination)
     {
-        if (IsBusy || string.IsNullOrWhiteSpace(input) || !input.All(char.IsDigit))
+        return !IsBusy && !IsCashCountDialogOpen && denomination is not null;
+    }
+
+    private void OpenCashCountDialog(CashDenominationEntryViewModel? denomination)
+    {
+        if (!CanOpenCashCountDialog(denomination))
         {
             return;
         }
 
-        KeypadBuffer += input;
+        SelectedCashDenomination = denomination;
+        KeypadBuffer = denomination!.Count == 0
+            ? string.Empty
+            : denomination.Count.ToString(CultureInfo.InvariantCulture);
+        _replaceKeypadOnNextInput = true;
+    }
+
+    private void CancelCashCountDialog()
+    {
+        if (IsBusy)
+        {
+            return;
+        }
+
+        CloseCashCountDialog();
+    }
+
+    private void CloseCashCountDialog()
+    {
+        _replaceKeypadOnNextInput = false;
+        KeypadBuffer = string.Empty;
+        SelectedCashDenomination = null;
+    }
+
+    private void AppendKeypadInput(string? input)
+    {
+        if (IsBusy || !IsCashCountDialogOpen || string.IsNullOrWhiteSpace(input) || !input.All(char.IsDigit))
+        {
+            return;
+        }
+
+        var nextBuffer = _replaceKeypadOnNextInput || KeypadBuffer == "0"
+            ? input
+            : KeypadBuffer + input;
+        if (nextBuffer.Length > MaxCashCountDigits)
+        {
+            return;
+        }
+
+        KeypadBuffer = nextBuffer;
+        _replaceKeypadOnNextInput = false;
     }
 
     private void BackspaceKeypad()
     {
+        if (IsBusy || !IsCashCountDialogOpen)
+        {
+            return;
+        }
+
+        _replaceKeypadOnNextInput = false;
         if (KeypadBuffer.Length > 0)
         {
             KeypadBuffer = KeypadBuffer[..^1];
@@ -1055,23 +1163,39 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
     private void ClearKeypad()
     {
+        if (IsBusy || !IsCashCountDialogOpen)
+        {
+            return;
+        }
+
+        _replaceKeypadOnNextInput = false;
         KeypadBuffer = string.Empty;
     }
 
     private bool CanApplyDenominationCount(CashDenominationEntryViewModel? denomination)
     {
-        return !IsBusy && denomination is not null && !string.IsNullOrWhiteSpace(KeypadBuffer);
+        var target = denomination ?? SelectedCashDenomination;
+        return !IsBusy &&
+               SelectedCashDenomination is not null &&
+               ReferenceEquals(target, SelectedCashDenomination) &&
+               int.TryParse(KeypadBuffer, NumberStyles.None, CultureInfo.InvariantCulture, out var count) &&
+               count >= 0;
     }
 
     private void ApplyDenominationCount(CashDenominationEntryViewModel? denomination)
     {
-        if (denomination is null || !int.TryParse(KeypadBuffer, out var count) || count < 0)
+        var target = denomination ?? SelectedCashDenomination;
+        if (IsBusy ||
+            SelectedCashDenomination is null ||
+            !ReferenceEquals(target, SelectedCashDenomination) ||
+            !int.TryParse(KeypadBuffer, NumberStyles.None, CultureInfo.InvariantCulture, out var count) ||
+            count < 0)
         {
             return;
         }
 
-        denomination.Count = count;
-        KeypadBuffer = string.Empty;
+        target.Count = count;
+        CloseCashCountDialog();
         RaiseCashTotalsChanged();
     }
 
@@ -1100,7 +1224,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
             denomination.Count = 0;
         }
 
-        KeypadBuffer = string.Empty;
+        CloseCashCountDialog();
         RaiseCashTotalsChanged();
     }
 
@@ -1186,6 +1310,9 @@ public sealed partial class CashDenominationEntryViewModel : ObservableObject
 
     [ObservableProperty]
     private int _count;
+
+    [ObservableProperty]
+    private bool _isSelected;
 
     public decimal Value { get; }
 

@@ -26,15 +26,109 @@ public sealed class DailyCloseViewModelTests
         var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession());
         var denomination = viewModel.Denominations.Single(item => item.Label == "$50");
 
+        viewModel.OpenCashCountDialogCommand.Execute(denomination);
         viewModel.KeypadInputCommand.Execute("1");
         viewModel.KeypadInputCommand.Execute("2");
-        viewModel.ApplyDenominationCommand.Execute(denomination);
+        viewModel.ApplyDenominationCommand.Execute(viewModel.SelectedCashDenomination);
 
         Assert.Equal(12, denomination.Count);
         Assert.Equal(600m, denomination.Subtotal);
         Assert.Equal(string.Empty, viewModel.KeypadBuffer);
         Assert.Equal(600m, viewModel.NoteSubtotal);
         Assert.Equal(600m, viewModel.CountedCashAmount);
+    }
+
+    [Fact]
+    public void OpenCashCountDialogCommand_prefills_current_count_and_first_digit_replaces_it()
+    {
+        var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession());
+        var denomination = viewModel.Denominations.Single(item => item.Label == "$50");
+        denomination.Count = 24;
+
+        viewModel.OpenCashCountDialogCommand.Execute(denomination);
+
+        Assert.True(viewModel.IsCashCountDialogOpen);
+        Assert.Same(denomination, viewModel.SelectedCashDenomination);
+        Assert.True(denomination.IsSelected);
+        Assert.Equal("24", viewModel.KeypadBuffer);
+        Assert.Equal(24, viewModel.CashCountDialogQuantity);
+        Assert.Equal(1200m, viewModel.CashCountDialogSubtotal);
+        Assert.True(viewModel.KeypadInputCommand.CanExecute("3"));
+
+        viewModel.KeypadInputCommand.Execute("3");
+
+        Assert.Equal("3", viewModel.KeypadBuffer);
+        Assert.Equal(3, viewModel.CashCountDialogQuantity);
+        Assert.Equal(150m, viewModel.CashCountDialogSubtotal);
+        Assert.Equal(24, denomination.Count);
+    }
+
+    [Fact]
+    public void CancelCashCountDialogCommand_discards_pending_input_and_preserves_count()
+    {
+        var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession());
+        var denomination = viewModel.Denominations.Single(item => item.Label == "$20");
+        denomination.Count = 2;
+
+        viewModel.OpenCashCountDialogCommand.Execute(denomination);
+        viewModel.KeypadInputCommand.Execute("9");
+        viewModel.CancelCashCountDialogCommand.Execute(null);
+
+        Assert.False(viewModel.IsCashCountDialogOpen);
+        Assert.Null(viewModel.SelectedCashDenomination);
+        Assert.False(denomination.IsSelected);
+        Assert.Equal(string.Empty, viewModel.KeypadBuffer);
+        Assert.Equal(2, denomination.Count);
+        Assert.Equal(40m, denomination.Subtotal);
+    }
+
+    [Fact]
+    public void ApplyDenominationCommand_from_dialog_updates_count_totals_and_closes_dialog()
+    {
+        var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession());
+        var denomination = viewModel.Denominations.Single(item => item.Label == "$10");
+
+        viewModel.OpenCashCountDialogCommand.Execute(denomination);
+        viewModel.KeypadInputCommand.Execute("1");
+        viewModel.KeypadInputCommand.Execute("2");
+        viewModel.ApplyDenominationCommand.Execute(viewModel.SelectedCashDenomination);
+
+        Assert.Equal(12, denomination.Count);
+        Assert.Equal(120m, denomination.Subtotal);
+        Assert.Equal(120m, viewModel.NoteSubtotal);
+        Assert.Equal(120m, viewModel.CountedCashAmount);
+        Assert.False(viewModel.IsCashCountDialogOpen);
+        Assert.Null(viewModel.SelectedCashDenomination);
+        Assert.False(denomination.IsSelected);
+        Assert.Equal(string.Empty, viewModel.KeypadBuffer);
+    }
+
+    [Fact]
+    public void Cash_count_commands_reject_closed_dialog_wrong_target_and_more_than_nine_digits()
+    {
+        var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession());
+        var selected = viewModel.Denominations.Single(item => item.Label == "$20");
+        var other = viewModel.Denominations.Single(item => item.Label == "$10");
+
+        viewModel.KeypadInputCommand.Execute("7");
+        viewModel.ApplyDenominationCommand.Execute(selected);
+
+        Assert.Equal(string.Empty, viewModel.KeypadBuffer);
+        Assert.Equal(0, selected.Count);
+
+        viewModel.OpenCashCountDialogCommand.Execute(selected);
+        foreach (var digit in "1234567890")
+        {
+            viewModel.KeypadInputCommand.Execute(digit.ToString());
+        }
+
+        viewModel.ApplyDenominationCommand.Execute(other);
+
+        Assert.Equal("123456789", viewModel.KeypadBuffer);
+        Assert.Equal(123456789, viewModel.CashCountDialogQuantity);
+        Assert.Equal(0, selected.Count);
+        Assert.Equal(0, other.Count);
+        Assert.True(viewModel.IsCashCountDialogOpen);
     }
 
     [Fact]
@@ -89,8 +183,9 @@ public sealed class DailyCloseViewModelTests
         var note = viewModel.Denominations.Single(item => item.Label == "$20");
 
         await viewModel.RefreshSummaryCommand.ExecuteAsync(null);
+        viewModel.OpenCashCountDialogCommand.Execute(note);
         viewModel.KeypadInputCommand.Execute("3");
-        viewModel.ApplyDenominationCommand.Execute(note);
+        viewModel.ApplyDenominationCommand.Execute(viewModel.SelectedCashDenomination);
 
         await viewModel.SaveAndPrintCommand.ExecuteAsync(null);
 
@@ -101,6 +196,7 @@ public sealed class DailyCloseViewModelTests
         Assert.True(returnedToPos);
         Assert.All(viewModel.Denominations, item => Assert.Equal(0, item.Count));
         Assert.Equal(string.Empty, viewModel.KeypadBuffer);
+        Assert.False(viewModel.IsCashCountDialogOpen);
         Assert.Equal(0m, viewModel.CountedCashAmount);
         Assert.Equal("Daily close saved and sent to printer.", viewModel.StatusMessage);
     }
@@ -122,8 +218,9 @@ public sealed class DailyCloseViewModelTests
         var note = viewModel.Denominations.Single(item => item.Label == "$50");
 
         await viewModel.RefreshSummaryCommand.ExecuteAsync(null);
+        viewModel.OpenCashCountDialogCommand.Execute(note);
         viewModel.KeypadInputCommand.Execute("2");
-        viewModel.ApplyDenominationCommand.Execute(note);
+        viewModel.ApplyDenominationCommand.Execute(viewModel.SelectedCashDenomination);
 
         await viewModel.SaveAndPrintCommand.ExecuteAsync(null);
 
@@ -151,8 +248,9 @@ public sealed class DailyCloseViewModelTests
             returnToPos: () => returnedToPos = true);
 
         await viewModel.RefreshSummaryCommand.ExecuteAsync(null);
+        viewModel.OpenCashCountDialogCommand.Execute(viewModel.Denominations.First());
         viewModel.KeypadInputCommand.Execute("4");
-        viewModel.ApplyDenominationCommand.Execute(viewModel.Denominations.First());
+        viewModel.ApplyDenominationCommand.Execute(viewModel.SelectedCashDenomination);
 
         await viewModel.SaveAndPrintCommand.ExecuteAsync(null);
 
@@ -180,8 +278,9 @@ public sealed class DailyCloseViewModelTests
         var note = viewModel.Denominations.Single(item => item.Label == "$10");
 
         await viewModel.RefreshSummaryCommand.ExecuteAsync(null);
+        viewModel.OpenCashCountDialogCommand.Execute(note);
         viewModel.KeypadInputCommand.Execute("2");
-        viewModel.ApplyDenominationCommand.Execute(note);
+        viewModel.ApplyDenominationCommand.Execute(viewModel.SelectedCashDenomination);
 
         await viewModel.SaveAndPrintCommand.ExecuteAsync(null);
 

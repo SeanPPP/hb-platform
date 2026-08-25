@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Net;
+using System.Windows.Markup;
 using BlazorApp.Shared.Constants;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -186,6 +187,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     [ObservableProperty]
     private ReceiptDetails? _selectedReceipt;
+
+    [ObservableProperty]
+    private bool _isReceiptPreviewOpen;
+
+    [ObservableProperty]
+    private bool _isReceiptPreviewLoading;
 
     [ObservableProperty]
     private decimal _previewSubtotal;
@@ -571,6 +578,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     public string RefundLabel => T("history.refund");
 
+    public XmlLanguage CurrentUiLanguage =>
+        XmlLanguage.GetLanguage(CurrentDisplayCulture.IetfLanguageTag);
+
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
         StatusMessage = string.Empty;
@@ -705,6 +715,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     private async Task LoadSelectedReceiptSafelyAsync(HistoryOrderListItem? expectedOrder)
     {
+        IsReceiptPreviewLoading = true;
         try
         {
             await LoadSelectedReceiptAsync(CancellationToken.None);
@@ -721,6 +732,13 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             StatusMessage = ex is OperationCanceledException
                 ? T("history.detailsLoadTimeout")
                 : ex.Message;
+        }
+        finally
+        {
+            if (ReferenceEquals(SelectedOrder, expectedOrder))
+            {
+                IsReceiptPreviewLoading = false;
+            }
         }
     }
 
@@ -1630,9 +1648,10 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             return;
         }
 
-        // 远程订单必须使用当前已加载的小票直接补打；切换订单时先使旧详情失效，避免打印错单。
-        SelectedReceipt = null;
+        // 切换订单后先清空旧小票，避免弹窗加载期间短暂显示上一笔交易。
+        ClearReceiptPreview();
 
+        // 远程订单必须使用当前已加载的小票直接补打；切换订单时先使旧详情失效，避免打印错单。
         if (selectedOrder.IsInstallmentOrder)
         {
             // 分期历史使用本地快照映射正式小票；详情完整时同一对象同时供预览和补打使用。
@@ -1644,7 +1663,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
             if (installmentDetails is not null)
             {
-                // 中文注释：有本地分期快照时复用正式小票映射，右侧预览才能显示正常抬头和提货信息。
+                // 中文注释：有本地分期快照时复用正式小票映射，小票弹窗才能显示正常抬头和提货信息。
                 var installmentReceipt = InstallmentReceiptMapper.CreateReceipt(installmentDetails);
                 var previewSettings = await LoadPreviewSettingsAsync(cancellationToken);
                 if (!ReferenceEquals(SelectedOrder, selectedOrder))
@@ -2593,6 +2612,33 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         _returnToPos?.Invoke();
     }
 
+    [RelayCommand]
+    private void OpenReceiptPreview(HistoryOrderListItem? order)
+    {
+        if (order is null)
+        {
+            return;
+        }
+
+        if (!ReferenceEquals(SelectedOrder, order))
+        {
+            IsReceiptPreviewLoading = true;
+            SelectedOrder = order;
+        }
+        else if (ReceiptPreviewRows.Count == 0 && !IsReceiptPreviewLoading)
+        {
+            _ = LoadSelectedReceiptSafelyAsync(order);
+        }
+
+        IsReceiptPreviewOpen = true;
+    }
+
+    [RelayCommand]
+    private void CloseReceiptPreview()
+    {
+        IsReceiptPreviewOpen = false;
+    }
+
     private bool CanReturnToPos()
     {
         return _returnToPos is not null;
@@ -2664,6 +2710,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         RefreshSourceOptions(SelectedSource);
         RefreshTerminalOptions(SelectedTerminalOption?.DeviceCode is null);
         LocalizeSuspendedRows();
+        OnPropertyChanged(nameof(CurrentUiLanguage));
         OnPropertyChanged(nameof(TitleText));
         OnPropertyChanged(nameof(SearchHintText));
         OnPropertyChanged(nameof(ReceiptPreviewLabel));

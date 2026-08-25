@@ -59,31 +59,74 @@
         </Style>
 
         <Style x:Key="DenominationBadgeStyle" TargetType="Border">
-            <!-- 面额标签单独着色，帮助快速识别币种，同时避免整行染色影响金额阅读。 -->
             <Setter Property="MinWidth" Value="58" />
-            <Setter Property="Padding" Value="9,3" />
-            <Setter Property="CornerRadius" Value="5" />
+            <Setter Property="Padding" Value="10,5" />
+            <Setter Property="CornerRadius" Value="6" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="HorizontalAlignment" Value="Left" />
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="SnapsToDevicePixels" Value="True" />
         </Style>
 
-        <Style x:Key="DenominationMetricBadgeStyle" TargetType="Border" BasedOn="{StaticResource DenominationBadgeStyle}">
-            <!-- 数量和小计沿用同一面额色板，保证同一行视觉归属一致。 -->
-            <Setter Property="MinWidth" Value="62" />
-            <Setter Property="HorizontalAlignment" Value="Center" />
+        <Style x:Key="CashDenominationButtonStyle" TargetType="Button">
+            <Setter Property="MinHeight" Value="54" />
+            <Setter Property="Margin" Value="0,0,0,7" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="#FFE2E2E6" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="#FF191C1E" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="Root"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="8"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#FFF7FAFF" />
+                                <Setter TargetName="Root" Property="BorderBrush" Value="#FF80A9E8" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="Root" Property="BorderBrush" Value="#FF0056D2" />
+                                <Setter TargetName="Root" Property="BorderThickness" Value="2" />
+                            </Trigger>
+                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#FFEAF2FF" />
+                                <Setter TargetName="Root" Property="BorderBrush" Value="#FF0056D2" />
+                                <Setter TargetName="Root" Property="BorderThickness" Value="2" />
+                            </DataTrigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Root" Property="Opacity" Value="0.78" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Root" Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
 
         <Style x:Key="KeypadButtonStyle" TargetType="Button">
-            <Setter Property="Height" Value="34" />
-            <Setter Property="Margin" Value="2" />
+            <Setter Property="Height" Value="58" />
+            <Setter Property="MinWidth" Value="84" />
+            <Setter Property="Margin" Value="5" />
             <Setter Property="Padding" Value="0" />
             <Setter Property="Background" Value="White" />
             <Setter Property="BorderBrush" Value="#FFC3C6D6" />
             <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Foreground" Value="#FF191C1E" />
-            <Setter Property="FontSize" Value="19" />
+            <Setter Property="FontSize" Value="24" />
             <Setter Property="FontWeight" Value="Black" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
@@ -93,7 +136,7 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="4">
+                                CornerRadius="10">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
                                               TextBlock.Foreground="{TemplateBinding Foreground}" />
@@ -104,7 +147,8 @@
                                 <Setter TargetName="Root" Property="BorderBrush" Value="#FF0056D2" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Root" Property="Opacity" Value="0.75" />
+                                <Setter TargetName="Root" Property="Background" Value="#FFD6E4FA" />
+                                <Setter TargetName="Root" Property="Opacity" Value="0.82" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter TargetName="Root" Property="Opacity" Value="0.45" />
@@ -115,57 +159,59 @@
             </Setter>
         </Style>
 
-        <Style x:Key="CashApplyButtonStyle" TargetType="Button">
-            <!-- 行内按钮使用独立模板，避免全局按钮缩放和内边距在 DataGrid 行内裁切文字。 -->
-            <!-- 紧凑表格行内按钮需要覆盖全局按钮最小高度，避免在面额明细行内被裁切。 -->
-            <Setter Property="MinHeight" Value="0" />
-            <Setter Property="Height" Value="34" />
-            <Setter Property="MinWidth" Value="78" />
-            <Setter Property="Padding" Value="10,0" />
-            <Setter Property="VerticalAlignment" Value="Center" />
-            <Setter Property="HorizontalAlignment" Value="Center" />
-            <Setter Property="Background" Value="#FFEAF2FF" />
-            <Setter Property="BorderBrush" Value="#FF80A9E8" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="Foreground" Value="#FF0040A1" />
-            <Setter Property="Cursor" Value="Hand" />
-            <Setter Property="FontFamily" Value="{StaticResource PosFontFamily}" />
-            <Setter Property="FontSize" Value="12" />
-            <Setter Property="FontWeight" Value="Black" />
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="{x:Type Button}">
-                        <Border x:Name="Root"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="5"
-                                SnapsToDevicePixels="True">
-                            <ContentPresenter HorizontalAlignment="Center"
-                                              VerticalAlignment="Center"
-                                              Margin="{TemplateBinding Padding}"
-                                              TextBlock.Foreground="{TemplateBinding Foreground}"
-                                              TextBlock.FontFamily="{TemplateBinding FontFamily}"
-                                              TextBlock.FontSize="{TemplateBinding FontSize}"
-                                              TextBlock.FontWeight="{TemplateBinding FontWeight}"
-                                              RecognizesAccessKey="True" />
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <!-- 鼠标悬停只增强反馈，不覆盖面额绑定色，保持同行颜色统一。 -->
-                                <Setter TargetName="Root" Property="Opacity" Value="0.85" />
-                            </Trigger>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Root" Property="Opacity" Value="0.75" />
-                            </Trigger>
-                            <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="Root" Property="Opacity" Value="0.45" />
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
+        <DataTemplate x:Key="CashDenominationItemTemplate">
+            <Button Command="{Binding DataContext.OpenCashCountDialogCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}"
+                    CommandParameter="{Binding}"
+                    AutomationProperties.Name="{Binding Label}"
+                    Style="{StaticResource CashDenominationButtonStyle}">
+                <Grid Margin="12,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="82" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="92" />
+                        <ColumnDefinition Width="22" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0"
+                            Style="{StaticResource DenominationBadgeStyle}"
+                            Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
+                            BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}">
+                        <TextBlock Text="{Binding Label}"
+                                   Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
+                                   FontSize="14"
+                                   FontWeight="Black"
+                                   HorizontalAlignment="Center" />
+                    </Border>
+
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="{loc:Loc dailyClose.quantityShort}"
+                                   Foreground="#FF737785"
+                                   FontSize="11"
+                                   FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding Count}"
+                                   Margin="5,0,0,0"
+                                   Foreground="#FF191C1E"
+                                   FontSize="14"
+                                   FontWeight="Black" />
+                    </StackPanel>
+
+                    <TextBlock Grid.Column="2"
+                               Text="{Binding Subtotal, StringFormat={}{0:C2}}"
+                               VerticalAlignment="Center"
+                               HorizontalAlignment="Right"
+                               Foreground="#FF191C1E"
+                               FontSize="14"
+                               FontWeight="Black" />
+                    <materialDesign:PackIcon Grid.Column="3"
+                                             Kind="ChevronRight"
+                                             Width="18"
+                                             Height="18"
+                                             VerticalAlignment="Center"
+                                             HorizontalAlignment="Right"
+                                             Foreground="#FF737785" />
+                </Grid>
+            </Button>
+        </DataTemplate>
 
         <Style x:Key="DailyCloseTabItemStyle" TargetType="{x:Type TabItem}">
             <Setter Property="Height" Value="38" />
@@ -327,9 +373,10 @@
         </Style>
     </UserControl.Resources>
 
-    <TabControl Margin="20"
-                SelectedIndex="{Binding SelectedTabIndex, Mode=TwoWay}"
-                Style="{StaticResource DailyCloseTabControlStyle}">
+    <Grid>
+        <TabControl Margin="20"
+                    SelectedIndex="{Binding SelectedTabIndex, Mode=TwoWay}"
+                    Style="{StaticResource DailyCloseTabControlStyle}">
             <TabItem Header="{loc:Loc dailyClose.tab.count}">
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -350,16 +397,25 @@
                                 <ColumnDefinition Width="0.58*" />
                             </Grid.ColumnDefinitions>
 
-                            <Border Grid.Column="0" Grid.ColumnSpan="3" Style="{StaticResource SettlementCardStyle}" Padding="18,14">
+                            <Border x:Name="CashCountPanel"
+                                    Grid.Column="0"
+                                    Grid.ColumnSpan="3"
+                                    Style="{StaticResource SettlementCardStyle}"
+                                    Padding="18,14">
                                 <Grid>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto" />
                                         <RowDefinition Height="*" />
                                         <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="Auto" />
                                     </Grid.RowDefinitions>
 
-                                    <TextBlock Text="{loc:Loc dailyClose.cashCounter}" Style="{StaticResource SettlementTitleStyle}" />
+                                    <StackPanel>
+                                        <TextBlock Text="{loc:Loc dailyClose.cashCounter}" Style="{StaticResource SettlementTitleStyle}" />
+                                        <TextBlock Text="{loc:Loc dailyClose.cashCountHint}"
+                                                   Margin="0,3,0,0"
+                                                   FontSize="11"
+                                                   Foreground="#FF737785" />
+                                    </StackPanel>
 
                                     <Grid Grid.Row="1" Margin="0,12,0,10">
                                         <Grid.ColumnDefinitions>
@@ -373,72 +429,17 @@
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="*" />
                                             </Grid.RowDefinitions>
-                                            <TextBlock Text="{loc:Loc dailyClose.notes}" Style="{StaticResource SettlementLabelStyle}" />
-                                            <DataGrid Grid.Row="1"
-                                                      ItemsSource="{Binding NoteDenominations}"
-                                                      Margin="0,6,0,0"
-                                                      Style="{StaticResource SettlementDataGridStyle}"
-                                                      RowHeight="40"
-                                                      ScrollViewer.VerticalScrollBarVisibility="Disabled"
-                                                      ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                                                <DataGrid.Columns>
-                                                    <DataGridTemplateColumn Header="{loc:Loc dailyClose.denomination}" Width="*">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Border Style="{StaticResource DenominationBadgeStyle}"
-                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
-                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}">
-                                                                    <TextBlock Text="{Binding Label}"
-                                                                               Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
-                                                                               FontWeight="Black" />
-                                                                </Border>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="{loc:Loc dailyClose.quantity}" Width="88">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Border Style="{StaticResource DenominationMetricBadgeStyle}"
-                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
-                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}">
-                                                                    <TextBlock Text="{Binding Count}"
-                                                                               Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
-                                                                               FontWeight="Black"
-                                                                               HorizontalAlignment="Center" />
-                                                                </Border>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="{loc:Loc dailyClose.subtotal}" Width="118">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Border Style="{StaticResource DenominationMetricBadgeStyle}"
-                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
-                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}">
-                                                                    <TextBlock Text="{Binding Subtotal, StringFormat={}{0:C2}}"
-                                                                               Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
-                                                                               FontWeight="Black"
-                                                                               HorizontalAlignment="Center" />
-                                                                </Border>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="" Width="104">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Button Command="{Binding DataContext.ApplyDenominationCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                                                        CommandParameter="{Binding}"
-                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
-                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}"
-                                                                        Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
-                                                                        Style="{StaticResource CashApplyButtonStyle}">
-                                                                    <TextBlock Text="{loc:Loc dailyClose.apply}" FontWeight="Black" />
-                                                                </Button>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                </DataGrid.Columns>
-                                            </DataGrid>
+                                            <TextBlock Text="{loc:Loc dailyClose.notes}"
+                                                       Style="{StaticResource SettlementLabelStyle}"
+                                                       FontSize="12" />
+                                            <ScrollViewer Grid.Row="1"
+                                                          Margin="0,7,0,0"
+                                                          VerticalScrollBarVisibility="Auto"
+                                                          HorizontalScrollBarVisibility="Disabled">
+                                                <ItemsControl x:Name="NoteDenominationList"
+                                                              ItemsSource="{Binding NoteDenominations}"
+                                                              ItemTemplate="{StaticResource CashDenominationItemTemplate}" />
+                                            </ScrollViewer>
                                         </Grid>
 
                                         <Grid Grid.Column="2">
@@ -446,85 +447,32 @@
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="*" />
                                             </Grid.RowDefinitions>
-                                            <TextBlock Text="{loc:Loc dailyClose.coins}" Style="{StaticResource SettlementLabelStyle}" />
-                                            <DataGrid Grid.Row="1"
-                                                      ItemsSource="{Binding CoinDenominations}"
-                                                      Margin="0,6,0,0"
-                                                      Style="{StaticResource SettlementDataGridStyle}"
-                                                      RowHeight="40"
-                                                      ScrollViewer.VerticalScrollBarVisibility="Disabled"
-                                                      ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                                                <DataGrid.Columns>
-                                                    <DataGridTemplateColumn Header="{loc:Loc dailyClose.denomination}" Width="*">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Border Style="{StaticResource DenominationBadgeStyle}"
-                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
-                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}">
-                                                                    <TextBlock Text="{Binding Label}"
-                                                                               Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
-                                                                               FontWeight="Black" />
-                                                                </Border>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="{loc:Loc dailyClose.quantity}" Width="88">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Border Style="{StaticResource DenominationMetricBadgeStyle}"
-                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
-                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}">
-                                                                    <TextBlock Text="{Binding Count}"
-                                                                               Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
-                                                                               FontWeight="Black"
-                                                                               HorizontalAlignment="Center" />
-                                                                </Border>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="{loc:Loc dailyClose.subtotal}" Width="118">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Border Style="{StaticResource DenominationMetricBadgeStyle}"
-                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
-                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}">
-                                                                    <TextBlock Text="{Binding Subtotal, StringFormat={}{0:C2}}"
-                                                                               Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
-                                                                               FontWeight="Black"
-                                                                               HorizontalAlignment="Center" />
-                                                                </Border>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                    <DataGridTemplateColumn Header="" Width="104">
-                                                        <DataGridTemplateColumn.CellTemplate>
-                                                            <DataTemplate>
-                                                                <Button Command="{Binding DataContext.ApplyDenominationCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                                                        CommandParameter="{Binding}"
-                                                                        Background="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Background}"
-                                                                        BorderBrush="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=BorderBrush}"
-                                                                        Foreground="{Binding Value, Converter={StaticResource CashDenominationAccentBrush}, ConverterParameter=Foreground}"
-                                                                        Style="{StaticResource CashApplyButtonStyle}">
-                                                                    <TextBlock Text="{loc:Loc dailyClose.apply}" FontWeight="Black" />
-                                                                </Button>
-                                                            </DataTemplate>
-                                                        </DataGridTemplateColumn.CellTemplate>
-                                                    </DataGridTemplateColumn>
-                                                </DataGrid.Columns>
-                                            </DataGrid>
+                                            <TextBlock Text="{loc:Loc dailyClose.coins}"
+                                                       Style="{StaticResource SettlementLabelStyle}"
+                                                       FontSize="12" />
+                                            <ScrollViewer Grid.Row="1"
+                                                          Margin="0,7,0,0"
+                                                          VerticalScrollBarVisibility="Auto"
+                                                          HorizontalScrollBarVisibility="Disabled">
+                                                <ItemsControl x:Name="CoinDenominationList"
+                                                              ItemsSource="{Binding CoinDenominations}"
+                                                              ItemTemplate="{StaticResource CashDenominationItemTemplate}" />
+                                            </ScrollViewer>
                                         </Grid>
                                     </Grid>
 
                                     <Grid Grid.Row="2">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="12" />
+                                            <ColumnDefinition Width="10" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="10" />
                                             <ColumnDefinition Width="*" />
                                         </Grid.ColumnDefinitions>
                                         <Border Grid.Column="0"
                                                 Background="#FFF3F3F7"
-                                                CornerRadius="4"
-                                                Padding="12,5">
+                                                CornerRadius="8"
+                                                Padding="12,8">
                                             <StackPanel>
                                                 <TextBlock Text="{loc:Loc dailyClose.noteTotal}" Style="{StaticResource SettlementLabelStyle}" />
                                                 <TextBlock Text="{Binding NoteSubtotal, StringFormat={}{0:C2}}" Style="{StaticResource SettlementValueStyle}" />
@@ -532,65 +480,24 @@
                                         </Border>
                                         <Border Grid.Column="2"
                                                 Background="#FFF3F3F7"
-                                                CornerRadius="4"
-                                                Padding="12,5">
+                                                CornerRadius="8"
+                                                Padding="12,8">
                                             <StackPanel>
                                                 <TextBlock Text="{loc:Loc dailyClose.coinTotal}" Style="{StaticResource SettlementLabelStyle}" />
                                                 <TextBlock Text="{Binding CoinSubtotal, StringFormat={}{0:C2}}" Style="{StaticResource SettlementValueStyle}" />
                                             </StackPanel>
                                         </Border>
-                                    </Grid>
-
-                                    <Grid Grid.Row="3" Margin="0,8,0,0">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="132" />
-                                            <ColumnDefinition Width="12" />
-                                            <ColumnDefinition Width="*" />
-                                        </Grid.ColumnDefinitions>
-
-                                        <Border Grid.Column="0"
-                                                Background="#FF191C1E"
-                                                CornerRadius="5"
-                                                Padding="6">
-                                            <StackPanel HorizontalAlignment="Center">
-                                                <TextBlock Text="{loc:Loc dailyClose.quantity}"
-                                                           FontSize="10"
-                                                           FontWeight="Bold"
-                                                           Foreground="#FFC3C6D6"
-                                                   HorizontalAlignment="Center" />
-                                                <Grid Margin="0,1,0,0">
-                                                    <TextBlock Text="0"
-                                                               FontSize="20"
-                                                               FontWeight="Black"
-                                                               Foreground="White"
-                                                               HorizontalAlignment="Center"
-                                                               Visibility="{Binding KeypadBuffer, Converter={StaticResource StringIsEmptyToVis}}" />
-                                                    <TextBlock Text="{Binding KeypadBuffer}"
-                                                               FontSize="20"
-                                                               FontWeight="Black"
-                                                               Foreground="White"
-                                                               HorizontalAlignment="Center"
-                                                               Visibility="{Binding KeypadBuffer, Converter={StaticResource StringHasValueToVis}}" />
-                                                </Grid>
+                                        <Border Grid.Column="4"
+                                                Background="#FFEAF2FF"
+                                                BorderBrush="#FF80A9E8"
+                                                BorderThickness="1"
+                                                CornerRadius="8"
+                                                Padding="12,8">
+                                            <StackPanel>
+                                                <TextBlock Text="{loc:Loc dailyClose.cashCounted}" Style="{StaticResource SettlementLabelStyle}" Foreground="#FF0040A1" />
+                                                <TextBlock Text="{Binding CountedCashAmount, StringFormat={}{0:C2}}" Style="{StaticResource SettlementValueStyle}" Foreground="#FF0040A1" />
                                             </StackPanel>
                                         </Border>
-
-                                        <UniformGrid Grid.Column="2" Rows="1" Columns="12">
-                                            <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="0"><TextBlock Text="0" /></Button>
-                                            <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="1"><TextBlock Text="1" /></Button>
-                                            <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="2"><TextBlock Text="2" /></Button>
-                                            <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="3"><TextBlock Text="3" /></Button>
-                                            <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="4"><TextBlock Text="4" /></Button>
-                                            <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="5"><TextBlock Text="5" /></Button>
-                                            <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="6"><TextBlock Text="6" /></Button>
-                                            <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="7"><TextBlock Text="7" /></Button>
-                                            <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="8"><TextBlock Text="8" /></Button>
-                                            <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="9"><TextBlock Text="9" /></Button>
-                                            <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadClearCommand}" Background="#FFFFECEC" BorderBrush="#FFFFB4AB" Foreground="#FFBA1A1A"><TextBlock Text="C" /></Button>
-                                            <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadBackspaceCommand}" Background="#FFEAF2FF" BorderBrush="#FF80A9E8" Foreground="#FF0040A1">
-                                                <materialDesign:PackIcon Kind="BackspaceOutline" Width="20" Height="20" Foreground="#FF0040A1" />
-                                            </Button>
-                                        </UniformGrid>
                                     </Grid>
                                 </Grid>
                             </Border>
@@ -1063,5 +970,199 @@
                     </Grid>
                 </Grid>
             </TabItem>
-    </TabControl>
+        </TabControl>
+
+        <Grid x:Name="CashCountDialogOverlay"
+              Panel.ZIndex="100"
+              Background="#660F172A"
+              Visibility="{Binding IsCashCountDialogOpen, Converter={StaticResource BoolToVis}}"
+              IsVisibleChanged="CashCountDialogOverlayIsVisibleChanged"
+              PreviewKeyDown="CashCountDialogOverlayPreviewKeyDown"
+              FocusManager.IsFocusScope="True"
+              KeyboardNavigation.TabNavigation="Cycle"
+              KeyboardNavigation.ControlTabNavigation="None"
+              AutomationProperties.AutomationId="DailyCloseCashCountDialog"
+              AutomationProperties.Name="{loc:Loc dailyClose.cashCountDialog.automationName}">
+            <Border Width="460"
+                    MaxHeight="610"
+                    Padding="24,20"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="White"
+                    BorderBrush="#FFE2E2E6"
+                    BorderThickness="1"
+                    CornerRadius="16">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="30"
+                                      ShadowDepth="6"
+                                      Opacity="0.22"
+                                      Color="#FF101828" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock VerticalAlignment="Center"
+                                   FontSize="20"
+                                   FontWeight="Black"
+                                   Foreground="#FF191C1E">
+                            <Run Text="{loc:Loc dailyClose.cashCountDialog.titlePrefix}" />
+                            <Run Text=" " />
+                            <Run Text="{Binding SelectedCashDenomination.Label, Mode=OneWay}" />
+                        </TextBlock>
+                        <Button Grid.Column="1"
+                                Command="{Binding CancelCashCountDialogCommand}"
+                                Width="40"
+                                Height="40"
+                                MinWidth="40"
+                                MinHeight="40"
+                                Padding="0"
+                                ToolTip="{loc:Loc common.cancel}"
+                                AutomationProperties.Name="{loc:Loc common.cancel}"
+                                Style="{StaticResource PosSecondaryButtonStyle}">
+                            <materialDesign:PackIcon Kind="Close" Width="20" Height="20" />
+                        </Button>
+                    </Grid>
+
+                    <TextBlock Grid.Row="1"
+                               Margin="0,5,0,0"
+                               Foreground="#FF5F636E"
+                               FontSize="12"
+                               TextWrapping="Wrap">
+                        <Run Text="{loc:Loc dailyClose.cashCountDialog.helperPrefix}" />
+                        <Run Text=" " />
+                        <Run Text="{Binding SelectedCashDenomination.Label, Mode=OneWay}" />
+                        <Run Text=" " />
+                        <Run Text="{loc:Loc dailyClose.cashCountDialog.helperSuffix}" />
+                    </TextBlock>
+
+                    <Border Grid.Row="2"
+                            Margin="0,16,0,0"
+                            Padding="14,10"
+                            Background="#FFF7F9FC"
+                            BorderBrush="#FFE2E2E6"
+                            BorderThickness="1"
+                            CornerRadius="10">
+                        <StackPanel HorizontalAlignment="Center">
+                            <TextBlock Text="{loc:Loc dailyClose.quantity}"
+                                       FontSize="10"
+                                       FontWeight="Bold"
+                                       Foreground="#FF737785"
+                                       HorizontalAlignment="Center" />
+                            <Grid Margin="0,2,0,0">
+                                <TextBlock Text="0"
+                                           FontSize="34"
+                                           FontWeight="Black"
+                                           Foreground="#FF191C1E"
+                                           HorizontalAlignment="Center"
+                                           Visibility="{Binding KeypadBuffer, Converter={StaticResource StringIsEmptyToVis}}" />
+                                <TextBlock Text="{Binding KeypadBuffer}"
+                                           FontSize="34"
+                                           FontWeight="Black"
+                                           Foreground="#FF191C1E"
+                                           HorizontalAlignment="Center"
+                                           Visibility="{Binding KeypadBuffer, Converter={StaticResource StringHasValueToVis}}" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <StackPanel Grid.Row="3" Margin="0,10,0,6" HorizontalAlignment="Center">
+                        <TextBlock HorizontalAlignment="Center"
+                                   FontSize="12"
+                                   Foreground="#FF737785">
+                            <Run Text="{Binding CashCountDialogQuantity, Mode=OneWay}" />
+                            <Run Text=" × " />
+                            <Run Text="{Binding SelectedCashDenomination.Label, Mode=OneWay}" />
+                        </TextBlock>
+                        <TextBlock Text="{Binding CashCountDialogSubtotal, StringFormat={}{0:C2}}"
+                                   Margin="0,2,0,0"
+                                   HorizontalAlignment="Center"
+                                   FontSize="27"
+                                   FontWeight="Black"
+                                   Foreground="#FF191C1E" />
+                    </StackPanel>
+
+                    <UniformGrid x:Name="CashCountNineGrid"
+                                 Grid.Row="4"
+                                 Rows="3"
+                                 Columns="3">
+                        <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="1" AutomationProperties.Name="1"><TextBlock Text="1" /></Button>
+                        <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="2" AutomationProperties.Name="2"><TextBlock Text="2" /></Button>
+                        <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="3" AutomationProperties.Name="3"><TextBlock Text="3" /></Button>
+                        <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="4" AutomationProperties.Name="4"><TextBlock Text="4" /></Button>
+                        <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="5" AutomationProperties.Name="5"><TextBlock Text="5" /></Button>
+                        <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="6" AutomationProperties.Name="6"><TextBlock Text="6" /></Button>
+                        <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="7" AutomationProperties.Name="7"><TextBlock Text="7" /></Button>
+                        <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="8" AutomationProperties.Name="8"><TextBlock Text="8" /></Button>
+                        <Button Style="{StaticResource KeypadButtonStyle}" Command="{Binding KeypadInputCommand}" CommandParameter="9" AutomationProperties.Name="9"><TextBlock Text="9" /></Button>
+                    </UniformGrid>
+
+                    <UniformGrid x:Name="CashCountUtilityRow"
+                                 Grid.Row="5"
+                                 Rows="1"
+                                 Columns="3">
+                        <Button Style="{StaticResource KeypadButtonStyle}"
+                                Command="{Binding KeypadClearCommand}"
+                                Background="#FFFFF3F2"
+                                BorderBrush="#FFFFB4AB"
+                                Foreground="#FF93000A"
+                                FontSize="14"
+                                AutomationProperties.Name="{loc:Loc dailyClose.cashCountDialog.clear}">
+                            <TextBlock Text="{loc:Loc dailyClose.cashCountDialog.clear}" FontWeight="Bold" />
+                        </Button>
+                        <Button Style="{StaticResource KeypadButtonStyle}"
+                                Command="{Binding KeypadInputCommand}"
+                                CommandParameter="0"
+                                AutomationProperties.Name="0">
+                            <TextBlock Text="0" />
+                        </Button>
+                        <Button Style="{StaticResource KeypadButtonStyle}"
+                                Command="{Binding KeypadBackspaceCommand}"
+                                Background="#FFEAF2FF"
+                                BorderBrush="#FF80A9E8"
+                                Foreground="#FF0040A1"
+                                AutomationProperties.Name="{loc:Loc dailyClose.cashCountDialog.backspace}">
+                            <materialDesign:PackIcon Kind="BackspaceOutline" Width="24" Height="24" Foreground="#FF0040A1" />
+                        </Button>
+                    </UniformGrid>
+
+                    <Grid Grid.Row="6" Margin="5,12,5,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Button x:Name="CashCountDialogCancelButton"
+                                Grid.Column="0"
+                                Command="{Binding CancelCashCountDialogCommand}"
+                                Height="48"
+                                Style="{StaticResource PosSecondaryButtonStyle}">
+                            <TextBlock Text="{loc:Loc common.cancel}" FontWeight="Bold" />
+                        </Button>
+                        <Button Grid.Column="2"
+                                Command="{Binding ApplyDenominationCommand}"
+                                CommandParameter="{Binding SelectedCashDenomination}"
+                                Height="48"
+                                Style="{StaticResource PosPrimaryButtonStyle}">
+                            <TextBlock Text="{loc:Loc dailyClose.cashCountDialog.apply}"
+                                       Foreground="White"
+                                       FontWeight="Bold" />
+                        </Button>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
 </UserControl>

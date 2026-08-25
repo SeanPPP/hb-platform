@@ -873,6 +873,15 @@
   <data name="history.moreActions" xml:space="preserve">
     <value>更多操作</value>
   </data>
+  <data name="history.viewReceipt" xml:space="preserve">
+    <value>查看小票</value>
+  </data>
+  <data name="history.closeReceiptPreview" xml:space="preserve">
+    <value>关闭</value>
+  </data>
+  <data name="history.receiptLoading" xml:space="preserve">
+    <value>正在加载小票...</value>
+  </data>
   <data name="history.reprint" xml:space="preserve">
     <value>重打</value>
   </data>
@@ -2828,4 +2837,13 @@
   <data name="cardRecovery.resolutionSavedPending" xml:space="preserve"><value>主管决定已保存，但恢复尚未完成。再次收款或退款前请重新运行恢复。</value></data>
   <data name="cardRecovery.draftHandoff.unlockWarning" xml:space="preserve"><value>恢复已提交，但付款页未能安全解锁。页面将保持锁定，请先检查异常中心再继续。</value></data>
   <data name="cardRecovery.center.value.none" xml:space="preserve"><value>-</value></data>
+  <data name="dailyClose.cashCountHint" xml:space="preserve"><value>选择面额后输入现金数量。</value></data>
+  <data name="dailyClose.quantityShort" xml:space="preserve"><value>数量</value></data>
+  <data name="dailyClose.cashCountDialog.automationName" xml:space="preserve"><value>现金数量输入</value></data>
+  <data name="dailyClose.cashCountDialog.titlePrefix" xml:space="preserve"><value>清点</value></data>
+  <data name="dailyClose.cashCountDialog.helperPrefix" xml:space="preserve"><value>请输入钱箱中</value></data>
+  <data name="dailyClose.cashCountDialog.helperSuffix" xml:space="preserve"><value>的数量。</value></data>
+  <data name="dailyClose.cashCountDialog.clear" xml:space="preserve"><value>清空</value></data>
+  <data name="dailyClose.cashCountDialog.backspace" xml:space="preserve"><value>退格</value></data>
+  <data name="dailyClose.cashCountDialog.apply" xml:space="preserve"><value>应用数量</value></data>
 </root>
