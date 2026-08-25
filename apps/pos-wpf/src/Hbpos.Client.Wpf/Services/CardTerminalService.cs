@@ -509,7 +509,11 @@ public sealed class StaticCardTerminalSettingsProvider(CardTerminalSettings sett
     }
 }
 
-public sealed class ConfiguredCardTerminalClient : ICardTerminalClient, IIdempotentCardRefundClient, IInstallmentTerminalRecoveryClient
+public sealed class ConfiguredCardTerminalClient :
+    ICardTerminalClient,
+    ICardTerminalSettingsBoundClient,
+    IIdempotentCardRefundClient,
+    IInstallmentTerminalRecoveryClient
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly TimeSpan SquarePollInterval = TimeSpan.FromSeconds(2);
@@ -562,7 +566,35 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient, IIdempot
             return new PaymentAuthorizationResult(false, null, T("payment.card.amountMustBePositive", "Card amount must be greater than zero."));
         }
 
-        var settings = await _settingsProvider.GetSettingsAsync(cancellationToken);
+        // 中文注释：持久化 attempt 必须沿用创建时的设置快照，避免提交前设置切换导致跨通道改写引用。
+        var settings = _linklyPaymentAttemptContextAccessor?.Current?.SettingsSnapshot ??
+            await _settingsProvider.GetSettingsAsync(cancellationToken);
+        return await AuthorizeWithSettingsCoreAsync(settings, amount, session, cancellationToken);
+    }
+
+    Task<PaymentAuthorizationResult> ICardTerminalSettingsBoundClient.AuthorizeWithSettingsAsync(
+        CardTerminalSettings settings,
+        decimal amount,
+        PosSessionState session,
+        CancellationToken cancellationToken)
+    {
+        if (amount <= 0m)
+        {
+            return Task.FromResult(new PaymentAuthorizationResult(
+                false,
+                null,
+                T("payment.card.amountMustBePositive", "Card amount must be greater than zero.")));
+        }
+
+        return AuthorizeWithSettingsCoreAsync(settings, amount, session, cancellationToken);
+    }
+
+    private async Task<PaymentAuthorizationResult> AuthorizeWithSettingsCoreAsync(
+        CardTerminalSettings settings,
+        decimal amount,
+        PosSessionState session,
+        CancellationToken cancellationToken)
+    {
         return settings.Processor switch
         {
             CardProcessorKind.Linkly => _linklyTerminalClient is null
@@ -609,7 +641,51 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient, IIdempot
             return new PaymentAuthorizationResult(false, null, T("payment.card.amountMustBePositive", "Card amount must be greater than zero."));
         }
 
-        var settings = await _settingsProvider.GetSettingsAsync(cancellationToken);
+        // 中文注释：退款与其持久化引用必须在同一设置快照下路由；直接调用仍读取当前设置。
+        var settings = _linklyPaymentAttemptContextAccessor?.Current?.SettingsSnapshot ??
+            await _settingsProvider.GetSettingsAsync(cancellationToken);
+        return await RefundWithSettingsCoreAsync(
+            settings,
+            amount,
+            session,
+            originalReference,
+            idempotencyKey,
+            cancellationToken);
+    }
+
+    Task<PaymentAuthorizationResult> ICardTerminalSettingsBoundClient.RefundWithSettingsAsync(
+        CardTerminalSettings settings,
+        decimal amount,
+        PosSessionState session,
+        string? originalReference,
+        string? idempotencyKey,
+        CancellationToken cancellationToken)
+    {
+        if (amount <= 0m)
+        {
+            return Task.FromResult(new PaymentAuthorizationResult(
+                false,
+                null,
+                T("payment.card.amountMustBePositive", "Card amount must be greater than zero.")));
+        }
+
+        return RefundWithSettingsCoreAsync(
+            settings,
+            amount,
+            session,
+            originalReference,
+            idempotencyKey,
+            cancellationToken);
+    }
+
+    private async Task<PaymentAuthorizationResult> RefundWithSettingsCoreAsync(
+        CardTerminalSettings settings,
+        decimal amount,
+        PosSessionState session,
+        string? originalReference,
+        string? idempotencyKey,
+        CancellationToken cancellationToken)
+    {
         return settings.Processor switch
         {
             CardProcessorKind.Linkly => _linklyTerminalClient is null
@@ -1404,18 +1480,27 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient, IIdempot
         {
             if (mode == LinklyConnectionMode.LocalIp)
             {
-                if (_linklyTerminalClient is null || string.IsNullOrWhiteSpace(attempt.TxnRef))
+                if (_linklyTerminalClient is null)
                 {
                     return UnknownRecovery("Linkly local attempt cannot be queried.");
+                }
+
+                if (!LinklyLocalTxnRef.TryNormalizeHistoricalReference(attempt.TxnRef, out var txnRef))
+                {
+                    return UnknownRecovery(T(
+                        "cardRecovery.linkly.legacyTxnRefRequiresReview",
+                        "The saved Linkly reference is an older value that does not meet the 16-character protocol. It cannot be matched safely. Do not charge or refund again. A supervisor must compare the terminal receipt, amount, time, device, RRN, STAN and authorization code."));
                 }
 
                 var result = await _linklyTerminalClient.RecoverLastTransactionAsync(
                     attempt.Amount,
                     session,
                     settings,
-                    attempt.TxnRef,
+                    txnRef,
                     cancellationToken);
-                return MatchesRecoveredAmount(result, attempt.Amount) ? result : UnknownRecovery("Linkly recovery amount did not match the attempt.");
+                return MatchesRecoveredAmount(result, attempt)
+                    ? result
+                    : UnknownRecovery("Linkly recovery identity did not match the persisted attempt.");
             }
 
             if (_linklyBackendTerminalClient is null || string.IsNullOrWhiteSpace(attempt.SessionId))
@@ -1591,8 +1676,21 @@ public sealed class ConfiguredCardTerminalClient : ICardTerminalClient, IIdempot
     private static PaymentAuthorizationResult UnknownRecovery(string message) =>
         new(false, null, message, ResultUnknown: true);
 
-    private static bool MatchesRecoveredAmount(PaymentAuthorizationResult result, decimal expectedAmount) =>
-        !result.Approved || (result.AuthorizedAmount is decimal actual && Math.Abs(actual - expectedAmount) < 0.001m);
+    private static bool MatchesRecoveredAmount(
+        PaymentAuthorizationResult result,
+        LocalCardPaymentAttempt attempt)
+    {
+        if (result.ResultUnknown)
+        {
+            return true;
+        }
+
+        return LinklyLocalTransactionIdentity.Matches(
+            attempt.TxnRef,
+            attempt.TxnType,
+            attempt.Amount,
+            result);
+    }
 
     private PaymentAuthorizationResult FailSquareRefundRequest(System.Net.HttpStatusCode statusCode, string? responseBody)
     {

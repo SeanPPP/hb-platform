@@ -9,6 +9,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:services="clr-namespace:Hbpos.Client.Wpf.Services"
         xmlns:views="clr-namespace:Hbpos.Client.Wpf.Views.Screens"
+        xmlns:rootViews="clr-namespace:Hbpos.Client.Wpf.Views"
         xmlns:vm="clr-namespace:Hbpos.Client.Wpf.ViewModels"
         mc:Ignorable="d"
         AutomationProperties.AutomationId="PosMainWindow"
@@ -30,11 +31,11 @@
         <converters:StringNullOrWhiteSpaceToVisibilityConverter x:Key="StringHasValueToVis" />
 
         <Style x:Key="CustomerDisplayModeIconButtonStyle" TargetType="Button">
-            <Setter Property="Width" Value="36" />
-            <Setter Property="Height" Value="32" />
+            <Setter Property="Width" Value="34" />
+            <Setter Property="Height" Value="34" />
             <Setter Property="Padding" Value="0" />
-            <Setter Property="Background" Value="#FFF4F5F7" />
-            <Setter Property="BorderBrush" Value="#FFD9DCE5" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
             <Setter Property="Foreground" Value="{StaticResource PosMutedForegroundBrush}" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Focusable" Value="False" />
@@ -46,7 +47,7 @@
                                 Background="{TemplateBinding Background}"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="1"
-                                CornerRadius="8"
+                                CornerRadius="4"
                                 SnapsToDevicePixels="True">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
@@ -61,8 +62,8 @@
                                 <Setter TargetName="Root" Property="Opacity" Value="0.76" />
                             </Trigger>
                             <DataTrigger Binding="{Binding CustomerDisplayWindowMode}" Value="{x:Static services:CustomerDisplayWindowMode.Closed}">
-                                <Setter TargetName="Root" Property="Background" Value="#FFF4F5F7" />
-                                <Setter TargetName="Root" Property="BorderBrush" Value="#FFD1D5DB" />
+                                <Setter TargetName="Root" Property="Background" Value="Transparent" />
+                                <Setter TargetName="Root" Property="BorderBrush" Value="Transparent" />
                                 <Setter Property="Foreground" Value="#FF4B5563" />
                             </DataTrigger>
                             <DataTrigger Binding="{Binding CustomerDisplayWindowMode}" Value="{x:Static services:CustomerDisplayWindowMode.Normal}">
@@ -81,6 +82,80 @@
             </Setter>
         </Style>
 
+        <Style x:Key="HeaderUtilityButtonStyle" TargetType="Button">
+            <Setter Property="Height" Value="34" />
+            <Setter Property="MinWidth" Value="34" />
+            <Setter Property="Padding" Value="8,0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="Root"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True"
+                                              TextBlock.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#FFF4F7FB" />
+                                <Setter TargetName="Root" Property="BorderBrush" Value="#FFD7DDE8" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#FFE8EEF7" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="HeaderMetadataTextStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        </Style>
+
+        <Style x:Key="HeaderDividerStyle" TargetType="Border">
+            <Setter Property="Width" Value="1" />
+            <Setter Property="Height" Value="18" />
+            <Setter Property="Margin" Value="10,0" />
+            <Setter Property="Background" Value="#FFDDE2EA" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="FooterDividerStyle" TargetType="Border">
+            <Setter Property="Width" Value="1" />
+            <Setter Property="Height" Value="20" />
+            <Setter Property="Margin" Value="14,0" />
+            <Setter Property="Background" Value="#FFDDE2EA" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="FooterTextStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="10" />
+            <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        </Style>
+
         <DataTemplate DataType="{x:Type vm:PosTerminalViewModel}">
             <views:PosTerminalView />
         </DataTemplate>
@@ -92,6 +167,9 @@
         </DataTemplate>
         <DataTemplate DataType="{x:Type vm:PaymentViewModel}">
             <views:PaymentView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:CardRecoveryCenterViewModel}">
+            <rootViews:CardRecoveryCenterView />
         </DataTemplate>
         <DataTemplate DataType="{x:Type vm:InstallmentCenterViewModel}">
             <views:InstallmentCenterView />
@@ -136,9 +214,9 @@
             </Style>
         </Grid.Style>
         <Grid.RowDefinitions>
-            <RowDefinition Height="48" />
+            <RowDefinition Height="54" />
             <RowDefinition Height="*" />
-            <RowDefinition Height="32" />
+            <RowDefinition Height="42" />
         </Grid.RowDefinitions>
 
         <Border Grid.Row="0"
@@ -146,22 +224,13 @@
                 BorderBrush="#FFE7E8EB"
                 BorderThickness="0,0,0,1"
                 MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
-            <Border.Effect>
-                <DropShadowEffect BlurRadius="4" ShadowDepth="1" Opacity="0.06" />
-            </Border.Effect>
-            <Grid Margin="16,0">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-
-                <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+            <Grid Margin="16,0,8,0">
+                <StackPanel HorizontalAlignment="Left" Orientation="Horizontal" VerticalAlignment="Center" Panel.ZIndex="2">
                     <Border Width="32"
                             Height="32"
                             Margin="0,0,10,0"
-                            Background="#FFEE5835"
-                            BorderBrush="#FFD94827"
+                            Background="#FFFF5A1F"
+                            BorderBrush="#FFE64813"
                             BorderThickness="1"
                             CornerRadius="7"
                             SnapsToDevicePixels="True"
@@ -179,17 +248,24 @@
                     </Border>
                     <TextBlock Text="{loc:Loc AppName}"
                                FontWeight="Black"
-                               FontSize="16"
+                               FontSize="17"
                                Foreground="{StaticResource PosTextBrush}"
                                VerticalAlignment="Center" />
                 </StackPanel>
 
-                <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                <TextBlock Text="{Binding ActivePageTitleText}"
+                           FontSize="21"
+                           FontWeight="Black"
+                           Foreground="{StaticResource PosTextBrush}"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           Panel.ZIndex="1" />
+
+                <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" VerticalAlignment="Center" Panel.ZIndex="2">
                     <Button Command="{Binding ToggleCustomerDisplayWindowCommand}"
                             Style="{StaticResource CustomerDisplayModeIconButtonStyle}"
-                            ToolTip="{loc:Loc shell.customerDisplayWindow}"
-                            Margin="0,0,6,0">
-                        <materialDesign:PackIcon Width="18" Height="18">
+                            ToolTip="{loc:Loc shell.customerDisplayWindow}">
+                        <materialDesign:PackIcon Width="17" Height="17">
                             <materialDesign:PackIcon.Style>
                                 <Style TargetType="materialDesign:PackIcon">
                                     <Setter Property="Kind" Value="MonitorOff" />
@@ -206,62 +282,35 @@
                             </materialDesign:PackIcon.Style>
                         </materialDesign:PackIcon>
                     </Button>
-                    <Border Height="34"
-                            MinWidth="150"
-                            Padding="18,0"
-                            Margin="6,0,0,0"
-                            Background="#FFE8F0FE"
-                            BorderBrush="#FFD6E4FF"
-                            BorderThickness="1"
-                            CornerRadius="8">
-                        <TextBlock Text="{Binding ActivePageTitleText}"
-                                   FontSize="13"
-                                   FontWeight="Black"
-                                   Foreground="{StaticResource PosPrimaryBrush}"
-                                   HorizontalAlignment="Center"
-                                   VerticalAlignment="Center" />
-                    </Border>
-                </StackPanel>
-
-                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="{Binding StoreInfo}"
-                               AutomationProperties.AutomationId="CurrentStoreInfo"
-                               Foreground="{StaticResource PosMutedForegroundBrush}"
-                               FontSize="11"
-                               VerticalAlignment="Center"
-                               Margin="0,0,12,0"
-                               MaxWidth="180"
-                               TextTrimming="CharacterEllipsis" />
+                    <Border Style="{StaticResource HeaderDividerStyle}" />
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <materialDesign:PackIcon Kind="StorefrontOutline" Width="17" Height="17" Foreground="{StaticResource PosPrimaryBrush}" Margin="0,0,6,0" />
+                        <TextBlock Text="{Binding StoreInfo}"
+                                   AutomationProperties.AutomationId="CurrentStoreInfo"
+                                   Style="{StaticResource HeaderMetadataTextStyle}"
+                                   MaxWidth="132" />
+                    </StackPanel>
+                    <Border Style="{StaticResource HeaderDividerStyle}" />
                     <TextBlock Text="{Binding CashierInfo}"
                                AutomationProperties.AutomationId="CurrentCashierInfo"
-                               Foreground="{StaticResource PosMutedForegroundBrush}"
-                               FontSize="11"
-                               VerticalAlignment="Center"
-                               Margin="0,0,12,0"
-                               MaxWidth="150"
-                               TextTrimming="CharacterEllipsis" />
+                               Style="{StaticResource HeaderMetadataTextStyle}"
+                               MaxWidth="132" />
+                    <Border Style="{StaticResource HeaderDividerStyle}" />
                     <Button Content="{loc:Loc shell.languageToggle}"
                             Command="{Binding ToggleCultureCommand}"
-                            Width="72"
-                            Height="30"
-                            Padding="0"
-                            FontWeight="Black"
-                            Background="#FFE8F0FE"
-                            Foreground="{StaticResource PosPrimaryBrush}"
-                            Style="{StaticResource PosShellNavButtonStyle}"
-                            ToolTip="{loc:Loc Language}"
-                            Margin="0,0,8,0" />
-                    <Button Content="{loc:Loc shell.scannerBinding}"
-                            Command="{Binding ResetScannerBindingCommand}"
-                            Width="76"
-                            Height="30"
-                            Padding="0"
-                            FontWeight="Black"
-                            Background="#FFF5F7FA"
-                            Foreground="{StaticResource PosMutedForegroundBrush}"
-                            Style="{StaticResource PosShellNavButtonStyle}"
-                            ToolTip="{loc:Loc shell.scannerBinding.resetTooltip}"
-                            Margin="0,0,8,0" />
+                            Width="64"
+                            Style="{StaticResource HeaderUtilityButtonStyle}"
+                            ToolTip="{loc:Loc Language}" />
+                    <Border Style="{StaticResource HeaderDividerStyle}" Margin="5,0" />
+                    <Button Command="{Binding ResetScannerBindingCommand}"
+                            Width="84"
+                            Style="{StaticResource HeaderUtilityButtonStyle}"
+                            ToolTip="{loc:Loc shell.scannerBinding.resetTooltip}">
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <materialDesign:PackIcon Kind="BarcodeScan" Width="17" Height="17" Margin="0,0,6,0" />
+                            <TextBlock Text="{loc:Loc shell.scannerBinding}" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
                     <Button Click="MinimizeButton_Click"
                             Style="{StaticResource TitleBarButtonStyle}"
                             ToolTip="{loc:Loc shell.window.minimize}">
@@ -270,13 +319,13 @@
                     <Button Click="MaximizeButton_Click"
                             Style="{StaticResource TitleBarButtonStyle}"
                             ToolTip="{loc:Loc shell.window.maximize}"
-                            Margin="2,0,0,0">
+                            Margin="0">
                         <materialDesign:PackIcon Kind="WindowMaximize" Width="16" Height="16" />
                     </Button>
                     <Button Command="{Binding ExitApplicationCommand}"
                             Style="{StaticResource TitleBarCloseButtonStyle}"
                             ToolTip="{loc:Loc shell.window.close}"
-                            Margin="2,0,0,0">
+                            Margin="0">
                         <materialDesign:PackIcon Kind="Close" Width="18" Height="18" />
                     </Button>
                 </StackPanel>
@@ -591,41 +640,111 @@
             </Border>
         </Grid>
 
-        <Border Grid.Row="2" Background="#FFFAFAFA" BorderBrush="#FFE7E8EB" BorderThickness="0,1,0,0">
-            <Grid Margin="16,0">
+        <Border Grid.Row="2" Background="White" BorderBrush="#FFDDE2EA" BorderThickness="0,1,0,0">
+            <Grid Margin="18,0,12,0">
                 <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
-                <TextBlock Text="{Binding CurrentTime}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding CurrentTime}" Style="{StaticResource FooterTextStyle}" FontFamily="Consolas" />
 
-                <TextBlock Grid.Column="1"
-                           Text="{Binding StatusMessage}"
-                           FontSize="10"
-                           Foreground="{StaticResource PosMutedForegroundBrush}"
-                           VerticalAlignment="Center"
-                           Margin="18,0,0,0"
-                           TextTrimming="CharacterEllipsis">
-                    <TextBlock.Style>
-                        <Style TargetType="TextBlock">
-                            <Setter Property="Visibility" Value="Visible" />
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding IsCatalogDownloadProgressVisible}" Value="True">
-                                    <Setter Property="Visibility" Value="Collapsed" />
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </TextBlock.Style>
-                </TextBlock>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Style="{StaticResource FooterDividerStyle}" />
+                    <materialDesign:PackIcon Kind="CheckCircle" Width="14" Height="14" Foreground="{StaticResource PosSuccessBrush}" Margin="0,0,7,0" />
+                    <TextBlock Text="{Binding StatusMessage}" MaxWidth="190">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource FooterTextStyle}">
+                                <Setter Property="Visibility" Value="Visible" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsCatalogDownloadProgressVisible}" Value="True">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Style="{StaticResource FooterDividerStyle}" />
+                    <Border Width="8" Height="8" Background="{StaticResource PosSuccessBrush}" CornerRadius="4" Margin="0,0,8,0" />
+                    <TextBlock Text="{Binding OnlineStateText}" Style="{StaticResource FooterTextStyle}" FontWeight="SemiBold" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Style="{StaticResource FooterDividerStyle}" />
+                    <TextBlock Text="{Binding PendingSyncText}" Style="{StaticResource FooterTextStyle}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Style="{StaticResource FooterDividerStyle}" />
+                    <TextBlock Text="{Binding TerminalInfo}" Style="{StaticResource FooterTextStyle}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="5" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Border Style="{StaticResource FooterDividerStyle}" />
+                    <TextBlock Style="{StaticResource FooterTextStyle}">
+                        <Run Text="{loc:Loc shell.footer.currentVersion}" />
+                        <Run Text=": " />
+                        <Run Text="{Binding AppUpdate.CurrentVersion, Mode=OneWay}" />
+                    </TextBlock>
+                    <TextBlock FontSize="10"
+                               FontWeight="SemiBold"
+                               Foreground="{StaticResource PosPrimaryBrush}"
+                               VerticalAlignment="Center"
+                               Margin="10,0,0,0">
+                        <TextBlock.Style>
+                            <Style TargetType="{x:Type TextBlock}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <MultiDataTrigger>
+                                        <MultiDataTrigger.Conditions>
+                                            <Condition Binding="{Binding AppUpdate.HasDifferentTargetVersion}" Value="True" />
+                                            <Condition Binding="{Binding AppUpdate.IsRollbackTarget}" Value="False" />
+                                        </MultiDataTrigger.Conditions>
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </MultiDataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                        <Run Text="{loc:Loc shell.footer.latestVersion}" />
+                        <Run Text=": " />
+                        <Run Text="{Binding AppUpdate.TargetVersion, Mode=OneWay}" />
+                    </TextBlock>
+                    <TextBlock FontSize="10"
+                               FontWeight="SemiBold"
+                               Foreground="{StaticResource PosDangerBrush}"
+                               VerticalAlignment="Center"
+                               Margin="10,0,0,0">
+                        <TextBlock.Style>
+                            <Style TargetType="{x:Type TextBlock}">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding AppUpdate.IsRollbackTarget}" Value="True">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                        <Run Text="{loc:Loc shell.footer.targetVersion}" />
+                        <Run Text=": " />
+                        <Run Text="{Binding AppUpdate.TargetVersion, Mode=OneWay}" />
+                    </TextBlock>
+                </StackPanel>
 
                 <Border Grid.Column="1"
+                        Grid.ColumnSpan="5"
                         Visibility="{Binding IsCatalogDownloadProgressVisible, Converter={StaticResource BoolToVis}}"
-                        Margin="18,0,16,0"
+                        Margin="14,0"
                         VerticalAlignment="Center"
-                        MaxWidth="560">
+                        Background="White"
+                        Panel.ZIndex="5">
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto" />
@@ -668,95 +787,34 @@
                     </Grid>
                 </Border>
 
-                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Border Style="{StaticResource PosSyncBadgeStyle}" Margin="0,0,10,0">
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="{Binding OnlineStateText}" FontSize="10" FontWeight="Bold" Foreground="{StaticResource PosSuccessBrush}" Margin="0,0,10,0" />
-                            <TextBlock Text="{Binding PendingSyncText}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" />
-                        </StackPanel>
-                    </Border>
-
-                    <TextBlock Text="{Binding TerminalInfo}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" VerticalAlignment="Center" Margin="0,0,16,0" />
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,16,0">
-                        <TextBlock FontSize="10"
-                                   Foreground="{StaticResource PosMutedForegroundBrush}"
-                                   VerticalAlignment="Center">
-                            <Run Text="{loc:Loc shell.footer.currentVersion}" />
-                            <Run Text=": " />
-                            <Run Text="{Binding AppUpdate.CurrentVersion, Mode=OneWay}" />
+                <Button Grid.Column="6"
+                        Command="{Binding ToggleSyncCenterCommand}"
+                        Height="32"
+                        Padding="10,0"
+                        Background="Transparent"
+                        BorderBrush="Transparent"
+                        BorderThickness="1"
+                        Cursor="Hand"
+                        Style="{StaticResource HeaderUtilityButtonStyle}">
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="{loc:Loc shell.sync.title}" FontSize="10" FontWeight="Bold" Foreground="{StaticResource PosTextBrush}" Margin="0,0,12,0" />
+                        <TextBlock FontSize="10" Foreground="{StaticResource PosPrimaryBrush}" Margin="0,0,10,0">
+                            <Run Text="{loc:Loc shell.sync.pending}" />
+                            <Run Text=" " />
+                            <Run Text="{Binding PendingUploadCount, Mode=OneWay}" />
                         </TextBlock>
-                        <TextBlock FontSize="10"
-                                   FontWeight="SemiBold"
-                                   Foreground="{StaticResource PosPrimaryBrush}"
-                                   VerticalAlignment="Center"
-                                   Margin="10,0,0,0">
-                            <TextBlock.Style>
-                                <Style TargetType="{x:Type TextBlock}">
-                                    <Setter Property="Visibility" Value="Collapsed" />
-                                    <Style.Triggers>
-                                        <MultiDataTrigger>
-                                            <MultiDataTrigger.Conditions>
-                                                <Condition Binding="{Binding AppUpdate.HasDifferentTargetVersion}" Value="True" />
-                                                <Condition Binding="{Binding AppUpdate.IsRollbackTarget}" Value="False" />
-                                            </MultiDataTrigger.Conditions>
-                                            <Setter Property="Visibility" Value="Visible" />
-                                        </MultiDataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBlock.Style>
-                            <Run Text="{loc:Loc shell.footer.latestVersion}" />
-                            <Run Text=": " />
-                            <Run Text="{Binding AppUpdate.TargetVersion, Mode=OneWay}" />
+                        <TextBlock FontSize="10" Foreground="{StaticResource PosDangerBrush}" Margin="0,0,10,0">
+                            <Run Text="{loc:Loc shell.sync.failed}" />
+                            <Run Text=" " />
+                            <Run Text="{Binding FailedUploadCount, Mode=OneWay}" />
                         </TextBlock>
-                        <TextBlock FontSize="10"
-                                   FontWeight="SemiBold"
-                                   Foreground="{StaticResource PosDangerBrush}"
-                                   VerticalAlignment="Center"
-                                   Margin="10,0,0,0">
-                            <TextBlock.Style>
-                                <Style TargetType="{x:Type TextBlock}">
-                                    <Setter Property="Visibility" Value="Collapsed" />
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding AppUpdate.IsRollbackTarget}" Value="True">
-                                            <Setter Property="Visibility" Value="Visible" />
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </TextBlock.Style>
-                            <Run Text="{loc:Loc shell.footer.targetVersion}" />
-                            <Run Text=": " />
-                            <Run Text="{Binding AppUpdate.TargetVersion, Mode=OneWay}" />
+                        <TextBlock FontSize="10" Foreground="{StaticResource PosSuccessBrush}">
+                            <Run Text="{loc:Loc shell.sync.syncing}" />
+                            <Run Text=" " />
+                            <Run Text="{Binding SyncingOrderCount, Mode=OneWay}" />
                         </TextBlock>
                     </StackPanel>
-
-                    <Button Command="{Binding ToggleSyncCenterCommand}"
-                            Background="Transparent"
-                            BorderBrush="Transparent"
-                            Padding="0"
-                            Cursor="Hand">
-                        <Border Style="{StaticResource PosSyncBadgeStyle}">
-                            <StackPanel Orientation="Horizontal">
-                                <TextBlock Text="{loc:Loc shell.sync.title}" FontSize="10" FontWeight="Bold" Foreground="{StaticResource PosTextBrush}" Margin="0,0,10,0" />
-                                <TextBlock Text="{Binding OrderSyncStatusText}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,0,10,0" />
-                                <TextBlock FontSize="10" Foreground="{StaticResource PosPrimaryBrush}" Margin="0,0,8,0">
-                                    <Run Text="{loc:Loc shell.sync.pending}" />
-                                    <Run Text=": " />
-                                    <Run Text="{Binding PendingUploadCount, Mode=OneWay}" />
-                                </TextBlock>
-                                <TextBlock FontSize="10" Foreground="{StaticResource PosDangerBrush}" Margin="0,0,8,0">
-                                    <Run Text="{loc:Loc shell.sync.failed}" />
-                                    <Run Text=": " />
-                                    <Run Text="{Binding FailedUploadCount, Mode=OneWay}" />
-                                </TextBlock>
-                                <TextBlock FontSize="10" Foreground="{StaticResource PosSuccessBrush}">
-                                    <Run Text="{loc:Loc shell.sync.syncing}" />
-                                    <Run Text=": " />
-                                    <Run Text="{Binding SyncingOrderCount, Mode=OneWay}" />
-                                </TextBlock>
-                            </StackPanel>
-                        </Border>
-                    </Button>
-                </StackPanel>
+                </Button>
             </Grid>
         </Border>
 

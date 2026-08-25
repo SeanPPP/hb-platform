@@ -101,6 +101,7 @@ public sealed class CartLine : ObservableObject
         Kind = CartLineKind.Return;
         StoreCode = request.StoreCode;
         ProductCode = request.ProductCode;
+        ItemNumber = request.ItemNumber;
         ReferenceCode = request.ReferenceCode;
         ProductImage = request.ProductImage;
         DisplayName = request.DisplayName;

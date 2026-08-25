@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using System.Windows;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -126,6 +127,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private long _languageSaveRequestVersion;
     private Task<bool>? _connectivityRefreshTask;
     private Task _shutdownCancellationTask = Task.CompletedTask;
+    private Task _paymentShutdownCancellationTask = Task.CompletedTask;
 
     private SyncOrchestrator? _syncOrchestrator;
     private CardRecoveryPresenter? _cardRecoveryPresenter;
@@ -651,7 +653,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _mainChildViewModelFactory,
             _cart,
             setStatusMessage: msg => StatusMessage = msg ?? string.Empty,
-            setPaymentRecoveryBlocked: (blocked, message) => CashPayment?.SetCardRecoveryBlocked(blocked, message),
+            setPaymentRecoveryBlocked: (blocked, message) =>
+                CashPayment?.SetCurrentCardRecoveryRequired(blocked, message),
             getOwner: () => CurrentOwner,
             navigateToPaymentOnDraft: () =>
             {
@@ -683,6 +686,18 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
                 CashPayment?.RefreshCart();
             },
+            tryApplyCardRecoveryDraft: (requiresAlternativeRefundMethod, restoredTenders, restoredStatusMessage) =>
+            {
+                PosTerminal?.RefreshCart();
+                return CashPayment?.TryApplyRecoveredPaymentProjection(
+                    requiresAlternativeRefundMethod,
+                    restoredTenders,
+                    restoredStatusMessage) ?? false;
+            },
+            completeRecoveredDraftHandoffAsync: (attemptKey, cancellationToken) =>
+                _cardPaymentRecoveryService is CardPaymentRecoveryCoordinator coordinator
+                    ? coordinator.CompleteDraftHandoffAsync(attemptKey, _cart, cancellationToken)
+                    : Task.FromResult(false),
             refreshPendingSyncAsync: () => RefreshPendingSyncAsync(),
             printReceiptAsync: (receipt, reason) => PrintReceiptWithShellPermissionAsync(receipt, reason),
             canPrintReceipt: () => IsShellPermissionAllowed(Permissions.PosTerminal.Receipt.PrintLast),
@@ -691,7 +706,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             notifyPropertyChanged: name => OnPropertyChanged(name),
             operationAuthorizationService: _operationAuthorizationService,
             operationAuditLogger: _operationAuditLogger,
-            requirePermission: TryRequireShellPermission);
+            requirePermission: TryRequireShellPermission,
+            setAlternativeRefundMethodRequired: required => CashPayment?.SetAlternativeRefundMethodRequired(required));
 
     private SyncOrchestrator CreateSyncOrchestrator(
         ILinklySettlementUploadQueueReader? linklySettlementUploadQueueReader,
@@ -727,6 +743,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _confirmationDialogService,
             _customerDisplayOrchestrator,
             _linklyFallbackPromptCoordinator,
+            _cardPaymentRecoveryService,
+            HandleCardRecoveryCenterResultAsync,
             SyncCatalogAndReloadAsync,
             ResetCatalogAndReloadAsync,
             _checkForAppUpdateAsync,
@@ -738,6 +756,20 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             {
                 vm.PaymentCompleted += OnPaymentCompleted;
                 vm.PropertyChanged += OnCashPaymentPropertyChanged;
+                var cardRecoveryPresenter = _cardRecoveryPresenter!;
+                vm.ConfigureCardPaymentHandoff(
+                    cardRecoveryPresenter.PrepareCardPaymentHandoffAsync,
+                    async (candidate, request) =>
+                    {
+                        var handedOff = await cardRecoveryPresenter.HandoffCardPaymentAsync(candidate, request);
+                        if (handedOff)
+                        {
+                            await RefreshCardRecoveryCountAsync();
+                        }
+
+                        return handedOff;
+                    },
+                    () => _ = _screenNavigator.ShowCardRecoveryCenterAsync());
             },
             onPaymentDisposed: vm =>
             {
@@ -935,14 +967,14 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _shutdownCancellationTask = CancelForShutdownAsync(
                 _shutdownCancellation,
                 "main-view-model");
+            // 中文注释：持有精确付款取消 Task，shutdown coordinator 必须正式观察其中的致命异常。
+            _paymentShutdownCancellationTask = CashPayment?.BeginShutdown() ?? Task.CompletedTask;
         }
 
         _clockTimer.Stop();
         _connectivityTimer.Stop();
         _catalogDownloadHideTimer.Stop();
 
-        // 先冻结支付入口；支付会话自身也会把终端取消回调调度到后台。
-        CashPayment?.BeginShutdown();
     }
 
     public void Dispose()
@@ -1379,7 +1411,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             onOpenCashDrawerAsync: OpenCashDrawerAsync,
             onExitApplicationAsync: ExitApplicationAsync,
             tryLoginCashierFromScannerFallbackAsync: TryLoginCashierFromScannerFallbackAsync,
-            onLockCashierAsync: LockCashierAsync);
+            onLockCashierAsync: LockCashierAsync,
+            onOpenCardRecoveryCenterAsync: _screenNavigator.ShowCardRecoveryCenterAsync);
         // POS 页面在启动或重注册后才创建，考勤面板必须在此处随新页面挂载。
         PosTerminal.AttendanceQrPanel = _attendanceQrPanel;
         SpecialProducts = _mainChildViewModelFactory.CreateSpecialProductsViewModel(
@@ -2328,13 +2361,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (Session.CashierSession is null)
         {
-            // 启动恢复会触发状态弹窗和小票打印，必须等收银员身份建立后再执行。
+            // 启动阶段只统计异常数量；等收银员身份建立后再按当前门店、设备与环境查询。
             _startupCardRecoveryPendingAfterCashierLogin = true;
             return;
         }
 
         _startupCardRecoveryPendingAfterCashierLogin = false;
-        await RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+        await RefreshCardRecoveryCountAsync();
     }
 
     private async Task RecoverPendingStartupCardPaymentAttemptAfterLoginAsync()
@@ -2344,9 +2377,70 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        // pending 只消费一次，避免切换/重复登录时重复恢复同一笔启动交易。
+        // pending 只消费一次；这里只刷新提示数量，不查询终端、不恢复订单，也不弹阻断对话框。
         _startupCardRecoveryPendingAfterCashierLogin = false;
-        await RecoverCardPaymentAttemptAsync(navigateToPaymentOnDraft: false);
+        await RefreshCardRecoveryCountAsync();
+    }
+
+    private async Task RefreshCardRecoveryCountAsync()
+    {
+        if (_cardPaymentRecoveryService is null || PosTerminal is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var openAttempts = await _cardPaymentRecoveryService.ListOpenAsync(Session, CancellationToken.None);
+            PosTerminal.CardRecoveryOpenCount = openAttempts.Count;
+        }
+        catch (Exception ex)
+        {
+            // 异常中心不可用不能阻断收银；保留现有数量并记录诊断，稍后可在专门页面手动刷新。
+            ConsoleLog.Write(
+                "CardRecovery",
+                $"startup queue scan failed store={Session.StoreCode} device={Session.DeviceCode} error={ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private async Task HandleCardRecoveryCenterResultAsync(CardPaymentRecoveryResult result)
+    {
+        if (result.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
+        {
+            // Recovery Center 与启动恢复共用同一条原子交接，不能再次手工投影并绕过 owner 收尾。
+            var presenter = _cardRecoveryPresenter ??
+                throw new InvalidOperationException("Card recovery presenter is unavailable.");
+            var postCommitWarning =
+                await presenter.HandoffRecoveredCardDraftFromRecoveryCenterAsync(result);
+            if (!string.IsNullOrWhiteSpace(postCommitWarning))
+            {
+                // 让异常中心显示“已提交但仍锁定”的明确告警，不能回退成普通成功提示。
+                throw new CardRecoveryDraftHandoffPostCommitException(postCommitWarning);
+            }
+
+            return;
+        }
+
+        if (result.UpdatedSession is not null)
+        {
+            Session = result.UpdatedSession;
+        }
+
+        StatusMessage = result.Message;
+        if (result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted)
+        {
+            // 旧单由持久化快照独立完成；这里只刷新壳层状态，绝不跳成功页或清理正在进行的新购物车。
+            if (result.Order is not null)
+            {
+                _lastCompletedOrder = result.Order;
+            }
+
+            PosTerminal?.RefreshCart();
+            CashPayment?.RefreshCart();
+            await RefreshPendingSyncAsync();
+            return;
+        }
+
     }
 
     private Window? CurrentOwner => _windowOwnerProvider?.CurrentOwner;
@@ -2457,6 +2551,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public async Task ReportOfflineForShutdownAsync(CancellationToken cancellationToken = default)
     {
         BeginShutdown();
+        // 中文注释：取消 Task 即使超过 runtime-offline 的单步预算也继续由协调器观察；
+        // 步骤 token 只能中止后续网络清理，不能丢弃迟到的终端 OOM/SO。
+        await ObserveCriticalShutdownCancellationsAsync();
         if (!_shutdownLogoutRecorded && Session.CashierSession is not null)
         {
             _shutdownLogoutRecorded = true;
@@ -2468,7 +2565,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 reasonCode: "APP_SHUTDOWN");
         }
 
-        await ObserveShutdownCancellationAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
         await ObserveConnectivityRefreshForShutdownAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         await ReportRuntimeStatusSafeAsync(
@@ -2478,15 +2575,61 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             throwOnCancellation: true);
     }
 
-    private async Task ObserveShutdownCancellationAsync(CancellationToken cancellationToken)
+    private async Task ObserveCriticalShutdownCancellationsAsync()
     {
-        Task cancellationTask;
+        Task shellCancellationTask;
+        Task paymentCancellationTask;
         lock (_connectivityRefreshSync)
         {
-            cancellationTask = _shutdownCancellationTask;
+            shellCancellationTask = _shutdownCancellationTask;
+            paymentCancellationTask = _paymentShutdownCancellationTask;
         }
 
-        await cancellationTask.WaitAsync(cancellationToken);
+        var fatalExceptionSource = new TaskCompletionSource<Exception>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var shellObservationTask = ObserveShutdownCancellationTaskAsync(
+            shellCancellationTask,
+            "main-view-model",
+            fatalExceptionSource);
+        var paymentObservationTask = ObserveShutdownCancellationTaskAsync(
+            paymentCancellationTask,
+            "payment-view-model",
+            fatalExceptionSource);
+        var allObservationTasks = Task.WhenAll(shellObservationTask, paymentObservationTask);
+
+        await Task.WhenAny(allObservationTasks, fatalExceptionSource.Task);
+        if (fatalExceptionSource.Task.IsCompletedSuccessfully)
+        {
+            var fatalException = await fatalExceptionSource.Task;
+            ExceptionDispatchInfo.Capture(fatalException).Throw();
+        }
+
+        await allObservationTasks;
+    }
+
+    private static async Task ObserveShutdownCancellationTaskAsync(
+        Task cancellationTask,
+        string stage,
+        TaskCompletionSource<Exception> fatalExceptionSource)
+    {
+        try
+        {
+            await cancellationTask.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            var fatalException = FindFatalException(ex);
+            if (fatalException is not null)
+            {
+                fatalExceptionSource.TrySetResult(fatalException);
+                return;
+            }
+
+            ConsoleLog.WriteError(
+                "Shutdown",
+                $"shutdown cancellation observation failed stage={stage} error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
     }
 
     private async Task ObserveConnectivityRefreshForShutdownAsync(CancellationToken cancellationToken)
@@ -2566,12 +2709,45 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             }
             catch (Exception ex)
             {
+                var fatalException = FindFatalException(ex);
+                if (fatalException is not null)
+                {
+                    // CancellationTokenSource 会聚合回调异常；致命异常必须以原实例穿过 shutdown coordinator。
+                    ExceptionDispatchInfo.Capture(fatalException).Throw();
+                }
+
                 ConsoleLog.WriteError(
                     "Shutdown",
                     $"shutdown cancellation failed stage={stage} error={ex.GetType().Name} message={ex.Message}",
                     exception: ex);
             }
         });
+    }
+
+    private static Exception? FindFatalException(Exception exception)
+    {
+        if (exception is OutOfMemoryException or StackOverflowException)
+        {
+            return exception;
+        }
+
+        if (exception is AggregateException aggregateException)
+        {
+            foreach (var innerException in aggregateException.InnerExceptions)
+            {
+                var fatalException = FindFatalException(innerException);
+                if (fatalException is not null)
+                {
+                    return fatalException;
+                }
+            }
+
+            return null;
+        }
+
+        return exception.InnerException is null
+            ? null
+            : FindFatalException(exception.InnerException);
     }
 
     private void DisposeShutdownCancellationWhenSafe()

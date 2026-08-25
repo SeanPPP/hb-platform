@@ -119,11 +119,25 @@ public sealed class LocalizationAndSettingsTests
             "settings.linkly.localIp.portInvalid",
             "settings.linkly.localIp.timeoutInvalid",
             "settings.linkly.localIp.testing",
+            "settings.linkly.localIp.logon",
+            "settings.linkly.localIp.loggingOn",
+            "settings.linkly.localIp.logonSuccess",
+            "settings.linkly.localIp.logonFailed",
+            "settings.linkly.localIp.logonUnknown",
             "settings.linkly.test.configurationChanged",
             "settings.linkly.cloudDirect.title",
             "settings.linkly.cloudBackend.title",
             "settings.linkly.cloudBackend.description",
-            "settings.linkly.cloudBackend.test"
+            "settings.linkly.cloudBackend.test",
+            "linkly.local.logon.connectionFailed",
+            "linkly.local.logon.requestFailed",
+            "linkly.local.logon.success",
+            "linkly.local.logon.failed",
+            "linkly.local.logon.timeout",
+            "linkly.local.logon.exception",
+            "linkly.local.logon.cancelled",
+            "linkly.local.logon.cancelledUnknown",
+            "linkly.local.logon.outcomeUnknown"
         ];
         var localization = new LocalizationService();
 

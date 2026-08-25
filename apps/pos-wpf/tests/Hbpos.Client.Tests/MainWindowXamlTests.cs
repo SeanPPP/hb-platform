@@ -6,6 +6,35 @@ namespace Hbpos.Client.Tests;
 public sealed class MainWindowXamlTests
 {
     [Fact]
+    public void Cashier_shell_uses_strict_1366_by_768_frame_with_54_and_42_pixel_chrome()
+    {
+        var document = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "MainWindow.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        var window = Assert.IsType<XElement>(document.Root);
+        Assert.Equal("1366", (string?)window.Attribute("Width"));
+        Assert.Equal("768", (string?)window.Attribute("Height"));
+
+        var shellGrid = Assert.Single(window.Elements(presentation + "Grid"));
+        var rows = Assert.Single(shellGrid.Elements(presentation + "Grid.RowDefinitions"))
+            .Elements(presentation + "RowDefinition")
+            .Select(row => (string?)row.Attribute("Height"))
+            .ToArray();
+        Assert.Equal(["54", "*", "42"], rows);
+
+        var pageTitle = Assert.Single(shellGrid.Descendants(presentation + "TextBlock").Where(text =>
+            (string?)text.Attribute("Text") == "{Binding ActivePageTitleText}"));
+        Assert.Equal("Center", (string?)pageTitle.Attribute("HorizontalAlignment"));
+        Assert.Equal("21", (string?)pageTitle.Attribute("FontSize"));
+    }
+
+    [Fact]
     public void Main_window_defaults_to_maximized_and_centers_normal_mode()
     {
         var document = XDocument.Load(Path.Combine(

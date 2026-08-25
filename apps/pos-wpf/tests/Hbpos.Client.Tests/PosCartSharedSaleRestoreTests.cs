@@ -470,7 +470,7 @@ public sealed class PosCartSharedSaleRestoreTests
     }
 
     [Fact]
-    public void DecreaseLine_to_zero_on_bound_single_line_cart_fails_closed()
+    public void DecreaseLine_at_minimum_on_bound_single_line_cart_keeps_line_and_binding()
     {
         var claimId = Guid.NewGuid();
         var cart = new PosCartService();
@@ -540,7 +540,7 @@ public sealed class PosCartSharedSaleRestoreTests
     }
 
     [Fact]
-    public void Unbound_cart_remove_and_decrease_to_empty_still_work()
+    public void Unbound_cart_decrease_keeps_minimum_and_remove_can_empty()
     {
         var cart = new PosCartService();
         var item = new SellableItemDto(
@@ -559,10 +559,10 @@ public sealed class PosCartSharedSaleRestoreTests
             null);
         var line = cart.AddItem(item);
 
-        // 普通购物车行为不回归：Decrease 到零/删除唯一行仍然允许。
-        Assert.True(cart.DecreaseLine(line));
-        Assert.Empty(cart.Lines);
-        line = cart.AddItem(item);
+        // 普通购物车同样保持数量下限 1；删除唯一行必须显式走 RemoveLine。
+        Assert.False(cart.DecreaseLine(line));
+        Assert.Same(line, Assert.Single(cart.Lines));
+        Assert.Equal(1m, line.Quantity);
         Assert.True(cart.RemoveLine(line));
         Assert.Empty(cart.Lines);
         Assert.Null(cart.CreateSnapshot().SharedHeldOrderClaimId);

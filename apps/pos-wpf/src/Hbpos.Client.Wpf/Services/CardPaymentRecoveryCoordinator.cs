@@ -90,6 +90,106 @@ public sealed class CardPaymentRecoveryCoordinator(
                 LockRetained: true));
     }
 
+    public async Task<IReadOnlyList<CardRecoveryQueueItem>> ListOpenAsync(
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        await ReplaySupervisorAuditAsync(cancellationToken);
+        // 双 provider 队列：同时列出 Linkly 与 Square 的未结 attempt，全局按更新时间排序，
+        // 使配置切换后另一 provider 的历史异常仍然可见。
+        var linklyItems = await linklyRecoveryService.ListOpenAsync(session, cancellationToken);
+        var squareItems = await squareRecoveryService.ListOpenAsync(session, cancellationToken);
+        return linklyItems
+            .Concat(squareItems)
+            .OrderByDescending(item => item.UpdatedAt)
+            .ThenByDescending(item => item.CreatedAt)
+            .ToArray();
+    }
+
+    public async Task<CardPaymentRecoveryResult> RecoverAsync(
+        CardRecoveryAttemptKey key,
+        PosCartService cart,
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        await ReplaySupervisorAuditAsync(cancellationToken);
+        return key.Processor switch
+        {
+            CardProcessorKind.Linkly => await linklyRecoveryService.RecoverAttemptAsync(
+                key.AttemptGuid,
+                cart,
+                session,
+                cancellationToken),
+            CardProcessorKind.Square => await squareRecoveryService.RecoverAttemptAsync(
+                key.AttemptGuid,
+                cart,
+                session,
+                cancellationToken),
+            _ => CardPaymentRecoveryResult.None
+        };
+    }
+
+    public async Task<CardRecoveryResolutionResult> ResolveAsync(
+        CardRecoveryAttemptKey key,
+        CardRecoverySupervisorDecision decision,
+        string reason,
+        string? evidence,
+        string? reference,
+        PosCartService cart,
+        PosSessionState session,
+        CancellationToken cancellationToken = default)
+    {
+        await ReplaySupervisorAuditAsync(cancellationToken);
+        return key.Processor switch
+        {
+            CardProcessorKind.Linkly => await linklyRecoveryService.ResolveAttemptAsync(
+                key.AttemptGuid,
+                decision,
+                reason,
+                evidence,
+                reference,
+                cart,
+                session,
+                cancellationToken),
+            CardProcessorKind.Square => await squareRecoveryService.ResolveAttemptAsync(
+                key.AttemptGuid,
+                decision,
+                reason,
+                evidence,
+                reference,
+                cart,
+                session,
+                cancellationToken),
+            _ => new CardRecoveryResolutionResult(
+                false,
+                "The provider is not supported.",
+                LockRetained: true)
+        };
+    }
+
+    internal Task<bool> CompleteDraftHandoffAsync(
+        CardRecoveryAttemptKey key,
+        PosCartService cart,
+        CancellationToken cancellationToken = default)
+    {
+        // 必须按 provider + attempt 精确路由；同一 GUID 即使同时存在于两张 provider 表中，
+        // 也不能让一次 UI handoff 终态化另一处理器的金融记录。
+        return key.Processor switch
+        {
+            CardProcessorKind.Linkly => linklyRecoveryService.CompleteDraftHandoffAsync(
+                key.AttemptGuid,
+                cart,
+                cancellationToken),
+            CardProcessorKind.Square when squareRecoveryService is SquarePaymentRecoveryService squareRecovery =>
+                squareRecovery.CompleteDraftHandoffAsync(
+                    key.AttemptGuid,
+                    cart,
+                    cancellationToken),
+            CardProcessorKind.Square => Task.FromResult(false),
+            _ => Task.FromResult(false)
+        };
+    }
+
     private async Task ReplaySupervisorAuditAsync(CancellationToken cancellationToken)
     {
         if (supervisorAuditReplay is not null)

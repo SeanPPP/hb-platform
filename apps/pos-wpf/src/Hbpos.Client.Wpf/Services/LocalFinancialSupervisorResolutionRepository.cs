@@ -273,7 +273,10 @@ public sealed class FinancialSupervisorAuditReplayService
                 cancellationToken);
             return true;
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (
+            exception is not OperationCanceledException and
+            not OutOfMemoryException and
+            not StackOverflowException)
         {
             ConsoleLog.Write(
                 "FinancialSupervisorAudit",
@@ -294,7 +297,10 @@ internal sealed class FinancialSupervisorAuditReplayHostedService(
             await schema.InitializeAsync(cancellationToken);
             await replay.ReplayPendingAsync(cancellationToken);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (
+            exception is not OperationCanceledException and
+            not OutOfMemoryException and
+            not StackOverflowException)
         {
             ConsoleLog.Write(
                 "FinancialSupervisorAudit",

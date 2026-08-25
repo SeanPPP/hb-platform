@@ -513,7 +513,9 @@ public sealed class CardRefundAttemptConcurrencyTests
 
             var saved = Assert.IsType<LocalSquarePaymentAttempt>(await repository.GetAttemptAsync(attempt.AttemptGuid));
             Assert.Equal(CardRefundSupervisorResolutionCodes.ConfirmedRefunded, saved.ResponseCode);
-            Assert.Equal("confirmed-square-refund", saved.PaymentId);
+            Assert.Equal("refund-current", saved.PaymentId);
+            Assert.Equal("PENDING", saved.PaymentStatus);
+            Assert.Equal("confirmed-square-refund", saved.SupervisorFinancialReference);
             Assert.Null(saved.SubmissionToken);
         }
         finally

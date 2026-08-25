@@ -1329,28 +1329,39 @@
                                     </Border>
                                 </StackPanel>
 
-                                <StackPanel Orientation="Horizontal"
-                                            Visibility="{Binding IsLinklyStandardActionMode, Converter={StaticResource BoolToVis}}">
+                                <WrapPanel Visibility="{Binding IsLinklyStandardActionMode, Converter={StaticResource BoolToVis}}">
                                     <Button Command="{Binding TestLinklyCommand}"
                                             Style="{StaticResource PosSecondaryButtonStyle}"
                                             Height="42"
                                             MinWidth="138"
-                                            Margin="0,0,10,0">
+                                            Margin="0,0,10,10">
                                         <StackPanel Orientation="Horizontal">
                                             <materialDesign:PackIcon Kind="LanConnect" Width="18" Height="18" Margin="0,0,8,0" />
                                             <TextBlock Text="{Binding LinklyTestActionText, Mode=OneWay}" />
                                         </StackPanel>
                                     </Button>
+                                    <Button Command="{Binding LogonLinklyCommand}"
+                                            Visibility="{Binding IsLinklyLocalIpMode, Converter={StaticResource BoolToVis}}"
+                                            Style="{StaticResource PosSecondaryButtonStyle}"
+                                            Height="42"
+                                            MinWidth="138"
+                                            Margin="0,0,10,10">
+                                        <StackPanel Orientation="Horizontal">
+                                            <materialDesign:PackIcon Kind="Login" Width="18" Height="18" Margin="0,0,8,0" />
+                                            <TextBlock Text="{loc:Loc settings.linkly.localIp.logon}" />
+                                        </StackPanel>
+                                    </Button>
                                     <Button Command="{Binding SaveLinklyCommand}"
                                             Style="{StaticResource PosPrimaryButtonStyle}"
                                             Height="42"
-                                            MinWidth="138">
+                                            MinWidth="138"
+                                            Margin="0,0,0,10">
                                         <StackPanel Orientation="Horizontal">
                                             <materialDesign:PackIcon Kind="ContentSave" Width="18" Height="18" Margin="0,0,8,0" Foreground="White" />
                                             <TextBlock Text="{loc:Loc settings.linkly.enable}" Foreground="White" />
                                         </StackPanel>
                                     </Button>
-                                </StackPanel>
+                                </WrapPanel>
 
                                 <Border Background="#FFF6F8FB"
                                         BorderBrush="#FFE0E4EC"

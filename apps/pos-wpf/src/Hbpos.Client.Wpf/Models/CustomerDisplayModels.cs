@@ -9,6 +9,12 @@ public sealed record CustomerDisplayLine(
 {
     public string QuantityDisplay => Quantity.ToString("0.##");
 
+    public string? ItemNumber { get; init; }
+
+    public string? ProductImage { get; init; }
+
+    public bool HasItemNumber => !string.IsNullOrWhiteSpace(ItemNumber);
+
     public decimal GrossAmount { get; init; } = ActualAmount;
 
     public bool HasDiscount { get; init; }

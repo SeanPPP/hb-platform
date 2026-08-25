@@ -7,7 +7,10 @@ internal sealed record PaymentNavigationActions(
     Action? ShowInstallmentCenter,
     Func<Task<bool>>? RecoverPreviousCardTransactionAsync,
     Func<InstallmentOrderSummary, Task>? InstallmentOrderCreatedAsync,
-    Func<Task<bool>>? ConfirmInstallmentFullFirstPaymentAsync)
+    Func<Task<bool>>? ConfirmInstallmentFullFirstPaymentAsync,
+    Func<CardPaymentHandoffRequest, Task<CardPaymentHandoffCandidate?>>? PrepareCardPaymentHandoffAsync,
+    Func<CardPaymentHandoffCandidate, CardPaymentHandoffRequest, Task<bool>>? HandoffCardPaymentAsync,
+    Action? OpenCardRecoveryCenter)
 {
     public bool CanRecoverPreviousCardTransaction => RecoverPreviousCardTransactionAsync is not null;
 
@@ -16,7 +19,10 @@ internal sealed record PaymentNavigationActions(
         Action? onShowInstallmentCenter,
         Func<Task<bool>>? recoverPreviousCardTransactionAsync,
         Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null,
-        Func<Task<bool>>? confirmInstallmentFullFirstPaymentAsync = null)
+        Func<Task<bool>>? confirmInstallmentFullFirstPaymentAsync = null,
+        Func<CardPaymentHandoffRequest, Task<CardPaymentHandoffCandidate?>>? prepareCardPaymentHandoffAsync = null,
+        Func<CardPaymentHandoffCandidate, CardPaymentHandoffRequest, Task<bool>>? handoffCardPaymentAsync = null,
+        Action? openCardRecoveryCenter = null)
     {
         // 中文注释：先把 Payment 页依赖的外部导航/恢复回调收口，避免 ViewModel 继续直接持有零散委托。
         return new PaymentNavigationActions(
@@ -24,6 +30,9 @@ internal sealed record PaymentNavigationActions(
             onShowInstallmentCenter,
             recoverPreviousCardTransactionAsync,
             onInstallmentOrderCreatedAsync,
-            confirmInstallmentFullFirstPaymentAsync);
+            confirmInstallmentFullFirstPaymentAsync,
+            prepareCardPaymentHandoffAsync,
+            handoffCardPaymentAsync,
+            openCardRecoveryCenter);
     }
 }

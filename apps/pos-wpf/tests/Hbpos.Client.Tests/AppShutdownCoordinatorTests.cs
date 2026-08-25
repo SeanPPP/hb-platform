@@ -79,6 +79,27 @@ public sealed class AppShutdownCoordinatorTests
         Assert.True(coordinator.IsPrepared);
     }
 
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public async Task PrepareAsync_propagates_fatal_step_exception_instance(string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("fatal shutdown step")
+            : new StackOverflowException("fatal shutdown step");
+        var coordinator = new AppShutdownCoordinator();
+        coordinator.RegisterStep(
+            "fatal",
+            100,
+            TimeSpan.FromSeconds(1),
+            _ => throw fatal);
+
+        var thrown = await Record.ExceptionAsync(() => coordinator.PrepareAsync());
+
+        Assert.Same(fatal, thrown);
+        Assert.True(coordinator.IsPrepared);
+    }
+
     [Fact]
     public async Task PrepareAsync_continues_after_step_timeout()
     {
@@ -305,6 +326,71 @@ public sealed class AppShutdownCoordinatorTests
         }
     }
 
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public async Task App_exit_observer_propagates_fatal_from_timed_out_cancellation_callback_within_total_budget(
+        string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("late fatal shutdown cancellation")
+            : new StackOverflowException("late fatal shutdown cancellation");
+        var coordinator = new AppShutdownCoordinator(totalBudget: TimeSpan.FromSeconds(1));
+        var neverCompletes = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var callbackStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseCallback = new ManualResetEventSlim(false);
+        var timedOutStepCompleted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var nextStepCalled = false;
+        coordinator.RegisterStep(
+            "late-fatal-cancel",
+            100,
+            TimeSpan.FromMilliseconds(20),
+            async token =>
+            {
+                using var registration = token.Register(() =>
+                {
+                    callbackStarted.TrySetResult();
+                    releaseCallback.Wait();
+                    throw fatal;
+                });
+                try
+                {
+                    await neverCompletes.Task;
+                }
+                finally
+                {
+                    timedOutStepCompleted.TrySetResult();
+                }
+            });
+        coordinator.RegisterStep(
+            "release-late-fatal",
+            200,
+            TimeSpan.FromSeconds(1),
+            _ =>
+            {
+                nextStepCalled = true;
+                releaseCallback.Set();
+                return Task.CompletedTask;
+            });
+
+        try
+        {
+            var thrown = await Record.ExceptionAsync(
+                () => Task.Run(() =>
+                    App.WaitForShutdownPreparation(coordinator, TimeSpan.FromSeconds(1))));
+
+            Assert.Same(fatal, thrown);
+            Assert.True(nextStepCalled);
+            await callbackStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        }
+        finally
+        {
+            releaseCallback.Set();
+            neverCompletes.TrySetResult();
+            await timedOutStepCompleted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        }
+    }
+
     [Fact]
     public async Task RegisterStep_rejects_late_registration()
     {
@@ -360,6 +446,27 @@ public sealed class AppShutdownCoordinatorTests
 
         Assert.True(prepared);
         Assert.True(called);
+    }
+
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public void App_exit_fallback_propagates_fatal_shutdown_exception_instance(string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("fatal fallback shutdown")
+            : new StackOverflowException("fatal fallback shutdown");
+        var coordinator = new AppShutdownCoordinator();
+        coordinator.RegisterStep(
+            "fatal",
+            100,
+            TimeSpan.FromSeconds(1),
+            _ => throw fatal);
+
+        var thrown = Record.Exception(() =>
+            App.WaitForShutdownPreparation(coordinator, TimeSpan.FromSeconds(1)));
+
+        Assert.Same(fatal, thrown);
     }
 
     [Fact]

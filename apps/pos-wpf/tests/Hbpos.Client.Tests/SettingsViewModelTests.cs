@@ -104,6 +104,42 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
+    public void Linkly_local_ip_actions_place_logon_between_test_and_enable()
+    {
+        var xamlPath = Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "SettingsView.xaml");
+        var document = System.Xml.Linq.XDocument.Load(xamlPath);
+        var logonButton = document
+            .Descendants()
+            .Single(element =>
+                element.Name.LocalName == "Button" &&
+                element.Attribute("Command")?.Value.Contains("LogonLinklyCommand", StringComparison.Ordinal) == true);
+        var actionButtons = logonButton.Parent!
+            .Elements()
+            .Where(element => element.Name.LocalName == "Button")
+            .ToArray();
+
+        Assert.Equal("WrapPanel", logonButton.Parent!.Name.LocalName);
+        Assert.Equal(3, actionButtons.Length);
+        Assert.Contains("TestLinklyCommand", actionButtons[0].Attribute("Command")?.Value, StringComparison.Ordinal);
+        Assert.Same(logonButton, actionButtons[1]);
+        Assert.Contains("SaveLinklyCommand", actionButtons[2].Attribute("Command")?.Value, StringComparison.Ordinal);
+        Assert.Contains("IsLinklyLocalIpMode", logonButton.Attribute("Visibility")?.Value, StringComparison.Ordinal);
+        Assert.Contains(
+            logonButton.Descendants(),
+            element =>
+                element.Name.LocalName == "TextBlock" &&
+                element.Attribute("Text")?.Value == "{loc:Loc settings.linkly.localIp.logon}");
+    }
+
+    [Fact]
     public async Task LoadAsync_loads_shared_api_server_settings()
     {
         var apiServerSettings = new ApiServerSettingsViewModel(
@@ -863,6 +899,159 @@ public sealed class SettingsViewModelTests
         Assert.Equal(2011, service.SavedConfiguration.LinklyPort);
         Assert.Equal("ANZ Linkly is active for the next card payment.", viewModel.ActivePaymentProviderText);
         Assert.Equal("ANZ Linkly terminal settings saved.", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task TestLinklyCommand_online_but_not_logged_on_enables_save_and_logon()
+    {
+        var service = new FakeCardTerminalSetupService
+        {
+            LinklyTestResult = new LinklyConnectionTestResult(
+                true,
+                "Linkly PINpad is online but not logged on to the bank network.",
+                PinPadLoggedOn: false)
+        };
+        var viewModel = new SettingsViewModel(service);
+
+        await viewModel.TestLinklyCommand.ExecuteAsync(null);
+
+        Assert.True(viewModel.LinklyConnectionSucceeded);
+        Assert.False(viewModel.LinklyPinPadLoggedOn);
+        Assert.True(viewModel.SaveLinklyCommand.CanExecute(null));
+        Assert.True(viewModel.LogonLinklyCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task TestLinklyCommand_already_logged_on_keeps_logon_disabled()
+    {
+        var service = new FakeCardTerminalSetupService
+        {
+            LinklyTestResult = new LinklyConnectionTestResult(
+                true,
+                "connected",
+                PinPadLoggedOn: true)
+        };
+        var viewModel = new SettingsViewModel(service);
+
+        await viewModel.TestLinklyCommand.ExecuteAsync(null);
+
+        Assert.True(viewModel.LinklyConnectionSucceeded);
+        Assert.True(viewModel.LinklyPinPadLoggedOn);
+        Assert.True(viewModel.SaveLinklyCommand.CanExecute(null));
+        Assert.False(viewModel.LogonLinklyCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task LogonLinklyCommand_success_marks_logged_on_without_resaving_configuration()
+    {
+        var service = new FakeCardTerminalSetupService
+        {
+            LinklyTestResult = new LinklyConnectionTestResult(true, "online", PinPadLoggedOn: false),
+            LinklyLogonResult = new LinklyLogonResult(true, "logged on", "00", "APPROVED")
+        };
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.TestLinklyCommand.ExecuteAsync(null);
+
+        await viewModel.LogonLinklyCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, service.LinklyLogonCallCount);
+        Assert.True(viewModel.LinklyConnectionSucceeded);
+        Assert.True(viewModel.LinklyPinPadLoggedOn);
+        Assert.True(viewModel.SaveLinklyCommand.CanExecute(null));
+        Assert.False(viewModel.LogonLinklyCommand.CanExecute(null));
+        Assert.Equal("logged on", viewModel.LinklyTestStatusMessage);
+        Assert.Equal(0, service.SaveLinklyCallCount);
+    }
+
+    [Theory]
+    [InlineData(false, "logon failed")]
+    [InlineData(true, "logon result unknown")]
+    public async Task LogonLinklyCommand_failure_or_unknown_keeps_enable_and_retry_available(
+        bool resultUnknown,
+        string message)
+    {
+        var service = new FakeCardTerminalSetupService
+        {
+            LinklyTestResult = new LinklyConnectionTestResult(true, "online", PinPadLoggedOn: false),
+            LinklyLogonResult = new LinklyLogonResult(false, message, ResultUnknown: resultUnknown)
+        };
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.TestLinklyCommand.ExecuteAsync(null);
+
+        await viewModel.LogonLinklyCommand.ExecuteAsync(null);
+
+        Assert.True(viewModel.LinklyConnectionSucceeded);
+        Assert.False(viewModel.LinklyPinPadLoggedOn);
+        Assert.True(viewModel.SaveLinklyCommand.CanExecute(null));
+        Assert.True(viewModel.LogonLinklyCommand.CanExecute(null));
+        Assert.Equal(message, viewModel.LinklyTestStatusMessage);
+    }
+
+    [Fact]
+    public async Task LogonLinklyCommand_disables_duplicate_click_while_running()
+    {
+        var service = new FakeCardTerminalSetupService
+        {
+            LinklyTestResult = new LinklyConnectionTestResult(true, "online", PinPadLoggedOn: false),
+            LinklyLogonResult = new LinklyLogonResult(true, "logged on")
+        };
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.TestLinklyCommand.ExecuteAsync(null);
+        service.BlockNextLinklyLogon();
+
+        var logonTask = viewModel.LogonLinklyCommand.ExecuteAsync(null);
+        await service.WaitForLinklyLogonStartAsync();
+
+        Assert.Equal(1, service.LinklyLogonCallCount);
+        Assert.False(viewModel.LogonLinklyCommand.CanExecute(null));
+        Assert.False(viewModel.SaveLinklyCommand.CanExecute(null));
+
+        service.ReleaseLinklyLogon();
+        await logonTask;
+    }
+
+    [Fact]
+    public async Task LogonLinklyCommand_discards_success_when_endpoint_changes_during_logon()
+    {
+        var service = new FakeCardTerminalSetupService
+        {
+            LinklyTestResult = new LinklyConnectionTestResult(true, "online", PinPadLoggedOn: false),
+            LinklyLogonResult = new LinklyLogonResult(true, "logged on")
+        };
+        var viewModel = new SettingsViewModel(service);
+        await viewModel.TestLinklyCommand.ExecuteAsync(null);
+        service.BlockNextLinklyLogon();
+
+        var logonTask = viewModel.LogonLinklyCommand.ExecuteAsync(null);
+        await service.WaitForLinklyLogonStartAsync();
+        viewModel.LinklyHostText = "127.0.0.2";
+        service.ReleaseLinklyLogon();
+        await logonTask;
+
+        Assert.False(viewModel.LinklyConnectionSucceeded);
+        Assert.Null(viewModel.LinklyPinPadLoggedOn);
+        Assert.False(viewModel.SaveLinklyCommand.CanExecute(null));
+        Assert.False(viewModel.LogonLinklyCommand.CanExecute(null));
+        Assert.Equal(
+            "Linkly settings changed during the test. Test the current settings again.",
+            viewModel.LinklyTestStatusMessage);
+    }
+
+    [Fact]
+    public async Task LogonLinklyCommand_permission_denied_does_not_call_terminal()
+    {
+        var service = new FakeCardTerminalSetupService();
+        var viewModel = new SettingsViewModel(
+            service,
+            enforcePermissionsWhenNoCashier: true)
+        {
+            LinklyConnectionSucceeded = true,
+            LinklyPinPadLoggedOn = false
+        };
+
+        await viewModel.LogonLinklyCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, service.LinklyLogonCallCount);
     }
 
     [Fact]
@@ -1897,6 +2086,8 @@ public sealed class SettingsViewModelTests
 
         public LinklyConnectionTestResult LinklyTestResult { get; init; } = new(false, "failed");
 
+        public LinklyLogonResult LinklyLogonResult { get; init; } = new(false, "logon failed");
+
         public LinklyConnectionTestResult LinklyCloudPairResult { get; init; } = new(false, "pair failed");
 
         public LinklyConnectionTestResult LinklyCloudTestResult { get; init; } = new(false, "cloud failed");
@@ -1912,6 +2103,8 @@ public sealed class SettingsViewModelTests
         public int LinklyCloudBackendStatusTestCallCount { get; private set; }
 
         public int LinklyTestCallCount { get; private set; }
+
+        public int LinklyLogonCallCount { get; private set; }
 
         public string? LastLinklyTestHost { get; private set; }
 
@@ -1939,7 +2132,11 @@ public sealed class SettingsViewModelTests
 
         private TaskCompletionSource<bool>? _pendingLinklyTest;
 
+        private TaskCompletionSource<bool>? _pendingLinklyLogon;
+
         private TaskCompletionSource<bool> _linklyTestStarted = CreatePendingOperation();
+
+        private TaskCompletionSource<bool> _linklyLogonStarted = CreatePendingOperation();
 
         public (CardTerminalEnvironment Environment, string Username, string Password)? SavedLinklyCloudCredential { get; private set; }
 
@@ -2236,6 +2433,22 @@ public sealed class SettingsViewModelTests
             _pendingLinklyTest?.TrySetResult(true);
         }
 
+        public void BlockNextLinklyLogon()
+        {
+            _pendingLinklyLogon = CreatePendingOperation();
+            _linklyLogonStarted = CreatePendingOperation();
+        }
+
+        public Task WaitForLinklyLogonStartAsync()
+        {
+            return _linklyLogonStarted.Task;
+        }
+
+        public void ReleaseLinklyLogon()
+        {
+            _pendingLinklyLogon?.TrySetResult(true);
+        }
+
         private async Task<LinklyCloudCredentialSettings> WaitForLinklyCloudCredentialLoadAsync(
             CardTerminalEnvironment environment,
             CancellationToken cancellationToken)
@@ -2318,6 +2531,23 @@ public sealed class SettingsViewModelTests
             }
 
             return LinklyTestResult;
+        }
+
+        public async Task<LinklyLogonResult> LogonLinklyAsync(
+            string host,
+            int port,
+            TimeSpan timeout,
+            CancellationToken cancellationToken = default)
+        {
+            LinklyLogonCallCount++;
+            _linklyLogonStarted.TrySetResult(true);
+            if (_pendingLinklyLogon is not null)
+            {
+                await _pendingLinklyLogon.Task.WaitAsync(cancellationToken);
+                _pendingLinklyLogon = null;
+            }
+
+            return LinklyLogonResult;
         }
     }
 

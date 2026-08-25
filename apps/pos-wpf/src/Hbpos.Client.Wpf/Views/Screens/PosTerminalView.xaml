@@ -13,7 +13,7 @@
              AutomationProperties.AutomationId="PosTerminalScreen"
              Focusable="True"
              KeyDown="AttendanceQrView_KeyDown"
-             d:DesignHeight="688"
+             d:DesignHeight="672"
              d:DesignWidth="1366"
              Background="{StaticResource PosScreenBackgroundBrush}">
     <UserControl.Resources>
@@ -92,12 +92,13 @@
         </Style>
 
         <Style x:Key="CartDeleteButtonStyle" TargetType="Button">
-            <Setter Property="Width" Value="36" />
-            <Setter Property="Height" Value="36" />
+            <Setter Property="Width" Value="32" />
+            <Setter Property="Height" Value="32" />
             <Setter Property="Padding" Value="0" />
             <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Background" Value="#FFFFEEF0" />
-            <Setter Property="Foreground" Value="{StaticResource PosDangerBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="Foreground" Value="#FF304B73" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Focusable" Value="False" />
             <Setter Property="IsTabStop" Value="False" />
@@ -106,14 +107,17 @@
                     <ControlTemplate TargetType="{x:Type Button}">
                         <Border x:Name="Root"
                                 Background="{TemplateBinding Background}"
-                                CornerRadius="12">
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
                                               TextBlock.Foreground="{TemplateBinding Foreground}" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Root" Property="Background" Value="#FFFFDDE2" />
+                                <Setter TargetName="Root" Property="Background" Value="#FFFFF0F1" />
+                                <Setter Property="Foreground" Value="{StaticResource PosDangerBrush}" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
                                 <Setter TargetName="Root" Property="Background" Value="#FFFFC8D0" />
@@ -163,10 +167,10 @@
         </Style>
 
         <Style x:Key="CartQuantityStepButtonStyle" TargetType="Button">
-            <Setter Property="Width" Value="34" />
-            <Setter Property="Height" Value="34" />
+            <Setter Property="Width" Value="32" />
+            <Setter Property="Height" Value="32" />
             <Setter Property="Padding" Value="0" />
-            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="BorderThickness" Value="1" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Focusable" Value="False" />
             <Setter Property="IsTabStop" Value="False" />
@@ -175,7 +179,9 @@
                     <ControlTemplate TargetType="{x:Type Button}">
                         <Border x:Name="Root"
                                 Background="{TemplateBinding Background}"
-                                CornerRadius="11">
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
                                               TextBlock.Foreground="{TemplateBinding Foreground}" />
@@ -194,12 +200,14 @@
         </Style>
 
         <Style x:Key="CartQuantityIncreaseButtonStyle" TargetType="Button" BasedOn="{StaticResource CartQuantityStepButtonStyle}">
-            <Setter Property="Background" Value="#FFDCFCE7" />
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="#FFB7E3C1" />
             <Setter Property="Foreground" Value="#FF15803D" />
         </Style>
 
         <Style x:Key="CartQuantityDecreaseButtonStyle" TargetType="Button" BasedOn="{StaticResource CartQuantityStepButtonStyle}">
-            <Setter Property="Background" Value="#FFFFE4E6" />
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="#FFFFC9CD" />
             <Setter Property="Foreground" Value="#FFE11D48" />
         </Style>
 
@@ -217,226 +225,347 @@
             </Style.Triggers>
         </Style>
 
-        <Style x:Key="PosStatusCardStyle" TargetType="Border">
-            <Setter Property="Background" Value="#CCFFFFFF" />
-            <Setter Property="BorderBrush" Value="#80FFFFFF" />
+        <Style x:Key="CashierFlatButtonBaseStyle" TargetType="Button">
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="14" />
-            <Setter Property="RenderTransformOrigin" Value="0.5,0.5" />
-            <Setter Property="RenderTransform">
+            <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
+            <Setter Property="FontFamily" Value="{StaticResource PosFontFamily}" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
+            <Setter Property="Template">
                 <Setter.Value>
-                    <TransformGroup>
-                        <ScaleTransform ScaleX="1" ScaleY="1" />
-                        <TranslateTransform X="0" Y="0" />
-                    </TransformGroup>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="Root"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="5"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              RecognizesAccessKey="True"
+                                              TextBlock.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#FFF5F8FC" />
+                                <Setter TargetName="Root" Property="BorderBrush" Value="#FFB9C7DB" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#FFE9F0FA" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.48" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
                 </Setter.Value>
             </Setter>
-            <Setter Property="Effect">
+        </Style>
+
+        <Style x:Key="CashierNumberKeyStyle" TargetType="Button" BasedOn="{StaticResource CashierFlatButtonBaseStyle}">
+            <Setter Property="MinHeight" Value="44" />
+            <Setter Property="Margin" Value="2" />
+            <Setter Property="Padding" Value="4" />
+            <Setter Property="FontSize" Value="28" />
+            <Setter Property="FontWeight" Value="Black" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="CashierClearKeyStyle" TargetType="Button" BasedOn="{StaticResource CashierNumberKeyStyle}">
+            <Setter Property="Foreground" Value="{StaticResource PosDangerBrush}" />
+            <Setter Property="BorderBrush" Value="#FFFFB4AB" />
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="Medium" />
+        </Style>
+
+        <Style x:Key="CashierQuickKeyStyle" TargetType="Button" BasedOn="{StaticResource CashierNumberKeyStyle}">
+            <Setter Property="FontSize" Value="14" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+
+        <Style x:Key="CashierWholeOrderToggleStyle" TargetType="ToggleButton">
+            <Setter Property="MinHeight" Value="44" />
+            <Setter Property="Margin" Value="2" />
+            <Setter Property="Padding" Value="6,4" />
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Template">
                 <Setter.Value>
-                    <DropShadowEffect BlurRadius="16"
-                                      ShadowDepth="2"
-                                      Direction="270"
-                                      Color="#FF10233F"
-                                      Opacity="0.14" />
+                    <ControlTemplate TargetType="{x:Type ToggleButton}">
+                        <Border x:Name="Root"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="5"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              TextBlock.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#FFF5F8FC" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#FFEAF2FF" />
+                                <Setter TargetName="Root" Property="BorderBrush" Value="{StaticResource PosPrimaryBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource PosPrimaryBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.48" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
                 </Setter.Value>
             </Setter>
-            <Style.Triggers>
-                <DataTrigger Binding="{Binding StatusFeedbackKind}" Value="{x:Static vm:StatusFeedbackKind.Success}">
-                    <Setter Property="Background" Value="#FFEAF8EF" />
-                    <Setter Property="BorderBrush" Value="#FF9AD7AB" />
-                </DataTrigger>
-                <DataTrigger Binding="{Binding StatusFeedbackKind}" Value="{x:Static vm:StatusFeedbackKind.Warning}">
-                    <Setter Property="Background" Value="#FFFFF3DC" />
-                    <Setter Property="BorderBrush" Value="#FFE7B65B" />
-                </DataTrigger>
-                <DataTrigger Binding="{Binding StatusFeedbackKind}" Value="{x:Static vm:StatusFeedbackKind.Error}">
-                    <Setter Property="Background" Value="#FFFFE8EA" />
-                    <Setter Property="BorderBrush" Value="#FFF0A5AC" />
-                </DataTrigger>
-            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="CashierFunctionButtonStyle" TargetType="Button" BasedOn="{StaticResource CashierFlatButtonBaseStyle}">
+            <Setter Property="Height" Value="54" />
+            <Setter Property="Margin" Value="3" />
+            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="CashierNoBarcodeButtonStyle" TargetType="Button" BasedOn="{StaticResource CashierFlatButtonBaseStyle}">
+            <Setter Property="Height" Value="50" />
+            <Setter Property="Background" Value="{StaticResource PosPrimaryBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource PosPrimaryBrush}" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="Black" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="Root"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="5"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter Margin="{TemplateBinding Padding}"
+                                              HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                              VerticalAlignment="{TemplateBinding VerticalContentAlignment}"
+                                              RecognizesAccessKey="True"
+                                              TextBlock.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#FF095CC8" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#FF0049A8" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Root" Property="Background" Value="#FF78A9ED" />
+                                <Setter TargetName="Root" Property="BorderBrush" Value="#FF78A9ED" />
+                                <Setter Property="Opacity" Value="1" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="CashierPayButtonStyle" TargetType="Button" BasedOn="{StaticResource CashierFlatButtonBaseStyle}">
+            <Setter Property="Height" Value="64" />
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderBrush" Value="#FF0049D8" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Background">
+                <Setter.Value>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
+                        <GradientStop Color="#FF0877F9" Offset="0" />
+                        <GradientStop Color="#FF0046D5" Offset="1" />
+                    </LinearGradientBrush>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="CashierDiscountButtonStyle" TargetType="Button" BasedOn="{StaticResource CashierFlatButtonBaseStyle}">
+            <Setter Property="Height" Value="64" />
+            <Setter Property="Margin" Value="0" />
+            <Setter Property="Padding" Value="4" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0,0,1,0" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+
+        <!-- 右侧操作区保持五行两列与真实触控边界，视觉改为规范图中的扁平卡片。 -->
+        <Style x:Key="PosSidebarActionButtonStyle"
+               TargetType="Button"
+               BasedOn="{StaticResource CashierFlatButtonBaseStyle}">
+            <Setter Property="MinHeight" Value="62" />
+            <Setter Property="Margin" Value="3" />
+            <Setter Property="Padding" Value="4" />
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="PosSidebarExitButtonStyle"
+               TargetType="Button"
+               BasedOn="{StaticResource PosSidebarActionButtonStyle}">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource PosDangerBrush}" />
+        </Style>
+
+        <Style x:Key="PosSidebarActionIconHostStyle" TargetType="Border">
+            <Setter Property="Width" Value="28" />
+            <Setter Property="Height" Value="28" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+        </Style>
+
+        <Style x:Key="PosSidebarActionLabelStyle"
+               TargetType="TextBlock"
+               BasedOn="{StaticResource PosStitchTileLabelStyle}">
+            <Setter Property="MaxWidth" Value="88" />
+            <Setter Property="MaxHeight" Value="30" />
+            <Setter Property="Margin" Value="0,4,0,0" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="LineHeight" Value="14" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="TextAlignment" Value="Center" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        </Style>
+
+        <Style x:Key="PosStatusCardStyle" TargetType="Border">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="5" />
         </Style>
 
         <ControlTemplate x:Key="PosStatusCardTemplate" TargetType="{x:Type ContentControl}">
             <Border x:Name="StatusCardRoot"
                     Padding="{TemplateBinding Padding}"
                     Style="{StaticResource PosStatusCardStyle}">
-                <Grid ClipToBounds="True">
-                    <Border x:Name="StatusCardSweep"
-                            Width="96"
-                            HorizontalAlignment="Left"
-                            Opacity="0"
-                            IsHitTestVisible="False"
-                            CornerRadius="18">
-                        <Border.Background>
-                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,0">
-                                <GradientStop Color="#00FFFFFF" Offset="0" />
-                                <GradientStop Color="#66FFFFFF" Offset="0.42" />
-                                <GradientStop Color="#B3FFFFFF" Offset="0.5" />
-                                <GradientStop Color="#66FFFFFF" Offset="0.58" />
-                                <GradientStop Color="#00FFFFFF" Offset="1" />
-                            </LinearGradientBrush>
-                        </Border.Background>
-                        <Border.RenderTransform>
-                            <TranslateTransform x:Name="StatusCardSweepTranslate" X="-180" />
-                        </Border.RenderTransform>
-                    </Border>
-                    <ContentPresenter Content="{TemplateBinding Content}"
-                                      ContentTemplate="{TemplateBinding ContentTemplate}"
-                                      ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}"
-                                      ContentStringFormat="{TemplateBinding ContentStringFormat}" />
-                </Grid>
+                <ContentPresenter Content="{TemplateBinding Content}"
+                                  ContentTemplate="{TemplateBinding ContentTemplate}"
+                                  ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}"
+                                  ContentStringFormat="{TemplateBinding ContentStringFormat}" />
             </Border>
-            <ControlTemplate.Triggers>
-                <EventTrigger RoutedEvent="Binding.TargetUpdated">
-                    <BeginStoryboard>
-                        <Storyboard>
-                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="StatusCardRoot" Storyboard.TargetProperty="Opacity">
-                                <SplineDoubleKeyFrame KeyTime="0:0:0" Value="0.9" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.18" Value="1" KeySpline="0.16,1,0.3,1" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.52" Value="1" KeySpline="0.2,0,0,1" />
-                            </DoubleAnimationUsingKeyFrames>
-                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="StatusCardRoot" Storyboard.TargetProperty="RenderTransform.(TransformGroup.Children)[0].(ScaleTransform.ScaleX)">
-                                <SplineDoubleKeyFrame KeyTime="0:0:0" Value="1.06" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.18" Value="0.985" KeySpline="0.18,1,0.26,1" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.34" Value="1.014" KeySpline="0.32,0,0.14,1" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.52" Value="1" KeySpline="0.2,0.9,0.2,1" />
-                            </DoubleAnimationUsingKeyFrames>
-                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="StatusCardRoot" Storyboard.TargetProperty="RenderTransform.(TransformGroup.Children)[0].(ScaleTransform.ScaleY)">
-                                <SplineDoubleKeyFrame KeyTime="0:0:0" Value="1.06" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.18" Value="0.982" KeySpline="0.18,1,0.26,1" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.34" Value="1.018" KeySpline="0.32,0,0.14,1" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.52" Value="1" KeySpline="0.2,0.9,0.2,1" />
-                            </DoubleAnimationUsingKeyFrames>
-                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="StatusCardRoot" Storyboard.TargetProperty="RenderTransform.(TransformGroup.Children)[1].(TranslateTransform.X)">
-                                <SplineDoubleKeyFrame KeyTime="0:0:0" Value="-8" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.2" Value="3" KeySpline="0.18,1,0.26,1" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.52" Value="0" KeySpline="0.22,0,0.16,1" />
-                            </DoubleAnimationUsingKeyFrames>
-                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="StatusCardRoot" Storyboard.TargetProperty="RenderTransform.(TransformGroup.Children)[1].(TranslateTransform.Y)">
-                                <SplineDoubleKeyFrame KeyTime="0:0:0" Value="-4" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.18" Value="2" KeySpline="0.18,1,0.26,1" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.36" Value="-1" KeySpline="0.32,0,0.14,1" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.52" Value="0" KeySpline="0.22,0,0.16,1" />
-                            </DoubleAnimationUsingKeyFrames>
-                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="StatusCardRoot" Storyboard.TargetProperty="Effect.(DropShadowEffect.BlurRadius)">
-                                <SplineDoubleKeyFrame KeyTime="0:0:0" Value="18" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.18" Value="28" KeySpline="0.18,1,0.26,1" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.52" Value="16" KeySpline="0.22,0,0.16,1" />
-                            </DoubleAnimationUsingKeyFrames>
-                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="StatusCardRoot" Storyboard.TargetProperty="Effect.(DropShadowEffect.ShadowDepth)">
-                                <SplineDoubleKeyFrame KeyTime="0:0:0" Value="1" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.18" Value="10" KeySpline="0.18,1,0.26,1" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.52" Value="2" KeySpline="0.22,0,0.16,1" />
-                            </DoubleAnimationUsingKeyFrames>
-                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="StatusCardRoot" Storyboard.TargetProperty="Effect.(DropShadowEffect.Opacity)">
-                                <SplineDoubleKeyFrame KeyTime="0:0:0" Value="0.16" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.18" Value="0.28" KeySpline="0.18,1,0.26,1" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.52" Value="0.14" KeySpline="0.22,0,0.16,1" />
-                            </DoubleAnimationUsingKeyFrames>
-                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="StatusCardSweep" Storyboard.TargetProperty="Opacity">
-                                <SplineDoubleKeyFrame KeyTime="0:0:0" Value="0" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.06" Value="0.18" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.24" Value="0.58" KeySpline="0.2,0.9,0.2,1" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.56" Value="0" KeySpline="0.3,0,0.1,1" />
-                            </DoubleAnimationUsingKeyFrames>
-                            <DoubleAnimationUsingKeyFrames Storyboard.TargetName="StatusCardSweepTranslate" Storyboard.TargetProperty="X">
-                                <SplineDoubleKeyFrame KeyTime="0:0:0" Value="-180" />
-                                <SplineDoubleKeyFrame KeyTime="0:0:0.56" Value="240" KeySpline="0.16,1,0.3,1" />
-                            </DoubleAnimationUsingKeyFrames>
-                        </Storyboard>
-                    </BeginStoryboard>
-                </EventTrigger>
-            </ControlTemplate.Triggers>
         </ControlTemplate>
     </UserControl.Resources>
 
     <Grid>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="52*" MinWidth="540" />
+            <ColumnDefinition Width="58*" MinWidth="600" />
             <ColumnDefinition Width="26*" MinWidth="280" />
-            <ColumnDefinition Width="22*" MinWidth="240" />
+            <ColumnDefinition Width="16*" MinWidth="180" />
         </Grid.ColumnDefinitions>
 
-        <Grid Grid.Column="0" Background="{StaticResource PosScreenBackgroundBrush}">
+        <Grid Grid.Column="0" Background="#FFF7F8FA">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <Border Grid.Row="0" Padding="16,14,16,10" Background="{StaticResource PosSurfaceAltBrush}">
-                <Border x:Name="SearchBoxHost" Height="48" Background="#FFE2E2E6" CornerRadius="12">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-                        <materialDesign:PackIcon Kind="Magnify"
-                                                 Width="20"
-                                                 Height="20"
-                                                 Foreground="{StaticResource PosMutedForegroundBrush}"
-                                                 VerticalAlignment="Center"
-                                                 Margin="14,0,0,0" />
-                        <TextBox Grid.Column="1"
-                                 AutomationProperties.AutomationId="ProductBarcodeInput"
-                                 Text="{Binding ScanText, UpdateSourceTrigger=PropertyChanged}"
-                                 materialDesign:HintAssist.Hint="{Binding SearchPlaceholderText}"
-                                 Background="Transparent"
-                                 BorderThickness="0"
-                                 FontSize="14"
-                                 FontWeight="SemiBold"
-                                 VerticalContentAlignment="Center"
-                                 Padding="10,0">
-                            <TextBox.InputBindings>
-                                <KeyBinding Key="Enter" Command="{Binding ScanCommand}" />
-                            </TextBox.InputBindings>
-                        </TextBox>
-                        <Button Grid.Column="2"
-                                Command="{Binding ClearSearchCommand}"
-                                Style="{StaticResource CartSearchClearButtonStyle}"
-                                Visibility="{Binding ScanText, Converter={StaticResource StringHasValueToVis}}"
-                                ToolTip="{loc:Loc Clear}">
-                            <materialDesign:PackIcon Kind="CloseCircle" Width="19" Height="19" />
+            <Border Grid.Row="0" Padding="17,16,12,8" Background="#FFF7F8FA">
+                <Grid Height="48">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="10" />
+                        <ColumnDefinition Width="86" />
+                        <ColumnDefinition Width="8" />
+                        <ColumnDefinition Width="64" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border x:Name="SearchBoxHost"
+                            Grid.Column="0"
+                            Background="White"
+                            BorderBrush="{StaticResource PosBorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <materialDesign:PackIcon Kind="Magnify"
+                                                     Width="21"
+                                                     Height="21"
+                                                     Foreground="#FF304B73"
+                                                     VerticalAlignment="Center"
+                                                     Margin="14,0,0,0" />
+                            <TextBox Grid.Column="1"
+                                     AutomationProperties.AutomationId="ProductBarcodeInput"
+                                     Text="{Binding ScanText, UpdateSourceTrigger=PropertyChanged}"
+                                     materialDesign:HintAssist.Hint="{Binding SearchPlaceholderText}"
+                                     Background="Transparent"
+                                     BorderThickness="0"
+                                     FontSize="14"
+                                     FontWeight="SemiBold"
+                                     VerticalContentAlignment="Center"
+                                     Padding="10,0">
+                                <TextBox.InputBindings>
+                                    <KeyBinding Key="Enter" Command="{Binding ScanCommand}" />
+                                </TextBox.InputBindings>
+                            </TextBox>
+                            <Button Grid.Column="2"
+                                    Command="{Binding ClearSearchCommand}"
+                                    Style="{StaticResource CartSearchClearButtonStyle}"
+                                    Visibility="{Binding ScanText, Converter={StaticResource StringHasValueToVis}}"
+                                    ToolTip="{loc:Loc Clear}">
+                                <materialDesign:PackIcon Kind="CloseCircle" Width="19" Height="19" />
+                            </Button>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Column="2" Background="{StaticResource PosPrimaryBrush}" CornerRadius="6" ClipToBounds="True">
+                        <Button Command="{Binding ScanCommand}"
+                                Style="{StaticResource PosSearchSegmentButtonStyle}"
+                                HorizontalContentAlignment="Center"
+                                VerticalContentAlignment="Center">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="BarcodeScan" Width="17" Height="17" Foreground="White" Margin="0,0,6,0" />
+                                <TextBlock Text="{Binding SearchButtonText}" Foreground="White" FontSize="14" FontWeight="Bold" />
+                            </StackPanel>
                         </Button>
-                        <Border Grid.Column="3"
-                                Width="140"
-                                Height="38"
-                                Margin="0,0,6,0"
-                                CornerRadius="10"
-                                ClipToBounds="True"
-                                VerticalAlignment="Center">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="96" />
-                                    <ColumnDefinition Width="44" />
-                                </Grid.ColumnDefinitions>
-                                <Border Grid.Column="0" Background="{StaticResource PosPrimaryBrush}" CornerRadius="10,0,0,10" />
-                                <Border Grid.Column="1" Background="{StaticResource PosSurfaceBrush}" BorderBrush="#FFC3C6D6" BorderThickness="1,1,1,1" CornerRadius="0,10,10,0" />
-                                <Button Grid.Column="0"
-                                        Command="{Binding ScanCommand}"
-                                        Style="{StaticResource PosSearchSegmentButtonStyle}">
-                                    <StackPanel Orientation="Horizontal">
-                                        <materialDesign:PackIcon Kind="BarcodeScan" Width="16" Height="16" Foreground="White" Margin="0,0,6,0" />
-                                        <TextBlock Text="{Binding SearchButtonText}" Foreground="White" FontWeight="Bold" />
-                                    </StackPanel>
-                                </Button>
-                                <Button Grid.Column="1"
-                                        Command="{Binding ToggleTouchKeyboardCommand}"
-                                        Style="{StaticResource PosSearchSegmentButtonStyle}"
-                                        HorizontalContentAlignment="Stretch"
-                                        VerticalContentAlignment="Stretch"
-                                        ToolTip="{loc:Loc shell.numpad}">
-                                    <materialDesign:PackIcon Kind="KeyboardOutline"
-                                                             Width="20"
-                                                             Height="20"
-                                                             Foreground="{StaticResource PosPrimaryBrush}" />
-                                </Button>
-                            </Grid>
-                        </Border>
-                    </Grid>
-                </Border>
+                    </Border>
+
+                    <Border Grid.Column="4"
+                            Background="White"
+                            BorderBrush="{StaticResource PosBorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            ClipToBounds="True">
+                        <Button Command="{Binding ToggleTouchKeyboardCommand}"
+                                Style="{StaticResource PosSearchSegmentButtonStyle}"
+                                HorizontalContentAlignment="Center"
+                                VerticalContentAlignment="Center"
+                                ToolTip="{loc:Loc shell.numpad}">
+                            <materialDesign:PackIcon Kind="KeyboardOutline"
+                                                     Width="22"
+                                                     Height="22"
+                                                     Foreground="#FF304B73" />
+                        </Button>
+                    </Border>
+                </Grid>
             </Border>
 
             <Popup x:Name="MatchesPopup"
@@ -595,7 +724,13 @@
                 </Grid>
             </Popup>
 
-            <Grid Grid.Row="1" Margin="14,0,14,6">
+            <Border Grid.Row="1"
+                    Margin="17,0,10,10"
+                    Background="White"
+                    BorderBrush="{StaticResource PosBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    ClipToBounds="True">
                 <!-- 购物车列表使用像素级触屏滚动，保持 Win7/10/11 可用的 WPF 基础属性。 -->
                 <DataGrid ItemsSource="{Binding CartLines}"
                           AutomationProperties.AutomationId="CartItemsGrid"
@@ -607,7 +742,8 @@
                           AlternationCount="1000000"
                           AlternatingRowBackground="{StaticResource PosSurfaceAltBrush}"
                           RowBackground="{StaticResource PosSurfaceBrush}"
-                          RowHeight="78"
+                          MinRowHeight="67"
+                          ColumnHeaderHeight="36"
                           EnableRowVirtualization="True"
                           EnableColumnVirtualization="True"
                           VirtualizingPanel.IsVirtualizing="True"
@@ -619,6 +755,7 @@
                           ScrollViewer.PanningDeceleration="0.0008"
                           ScrollViewer.PanningRatio="1.0"
                           GridLinesVisibility="None"
+                          Background="White"
                           BorderThickness="0"
                           RowStyle="{StaticResource CartDataGridRowStyle}"
                           CellStyle="{StaticResource CartDataGridCellStyle}"
@@ -641,20 +778,20 @@
                         </Style>
                     </DataGrid.Resources>
                     <DataGrid.Columns>
-                        <DataGridTemplateColumn Header="#" Width="52" HeaderStyle="{StaticResource CartColumnHeaderCenterStyle}">
+                        <DataGridTemplateColumn Header="#" Width="44" HeaderStyle="{StaticResource CartColumnHeaderCenterStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <TextBlock Text="{Binding RelativeSource={RelativeSource AncestorType=DataGridRow}, Path=AlternationIndex, Converter={StaticResource RowNumberConverter}}"
-                                               FontSize="14"
-                                               FontWeight="Black"
+                                    <TextBlock Text="{Binding RelativeSource={RelativeSource AncestorType=DataGridRow}, Path=(ItemsControl.AlternationIndex), Converter={StaticResource RowNumberConverter}}"
+                                               FontSize="13"
+                                               FontWeight="SemiBold"
                                                Foreground="{StaticResource PosMutedForegroundBrush}"
                                                TextAlignment="Center"
-                                               HorizontalAlignment="Center"
+                                               HorizontalAlignment="Stretch"
                                                VerticalAlignment="Center" />
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="{loc:Loc Item}" Width="2.45*" HeaderStyle="{StaticResource CartColumnHeaderLeftStyle}">
+                        <DataGridTemplateColumn Header="{loc:Loc Item}" Width="2.6*" HeaderStyle="{StaticResource CartColumnHeaderLeftStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Grid Margin="0,6,8,6">
@@ -665,15 +802,15 @@
                                         <Border Width="52"
                                                 Height="52"
                                                 Background="#FFE8F0FE"
-                                                CornerRadius="9"
+                                                CornerRadius="6"
                                                 Margin="0,0,12,0"
                                                 SnapsToDevicePixels="True"
                                                 UseLayoutRounding="True"
                                                 ClipToBounds="True">
                                             <Grid>
-                                                <Rectangle RadiusX="7"
-                                                           RadiusY="7"
-                                                           Margin="3"
+                                                <Rectangle RadiusX="5"
+                                                           RadiusY="5"
+                                                           Margin="2"
                                                            SnapsToDevicePixels="True"
                                                            RenderOptions.BitmapScalingMode="HighQuality"
                                                            Panel.ZIndex="1">
@@ -694,8 +831,34 @@
                                         </Border>
                                         <StackPanel Grid.Column="1" VerticalAlignment="Center">
                                             <TextBlock Text="{Binding DisplayName}" FontSize="13" FontWeight="Black" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Text="{Binding ItemNumber}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="0,3,0,0" TextTrimming="CharacterEllipsis" />
-                                            <TextBlock Text="{Binding LookupCode}" FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" TextTrimming="CharacterEllipsis" />
+                                            <StackPanel x:Name="CartItemMetadataLine" Margin="0,2,0,0" Orientation="Horizontal">
+                                                <TextBlock Text="{loc:Loc ItemNumber}" FontSize="11" Foreground="#FF304B73" />
+                                                <TextBlock Text=":" FontSize="11" Foreground="#FF304B73" />
+                                                <Grid Margin="4,0,0,0">
+                                                    <TextBlock Text="{Binding ItemNumber}"
+                                                               ToolTip="{Binding ItemNumber}"
+                                                               Visibility="{Binding ItemNumber, Converter={StaticResource StringHasValueToVis}}"
+                                                               FontSize="11"
+                                                               Foreground="#FF304B73"
+                                                               TextWrapping="NoWrap" />
+                                                    <TextBlock Text="-"
+                                                               Visibility="{Binding ItemNumber, Converter={StaticResource StringIsEmptyToVis}}"
+                                                               FontSize="11"
+                                                               Foreground="#FF304B73" />
+                                                </Grid>
+                                                <Grid Margin="14,0,0,0">
+                                                    <TextBlock Text="{Binding LookupCode}"
+                                                               ToolTip="{Binding LookupCode}"
+                                                               Visibility="{Binding LookupCode, Converter={StaticResource StringHasValueToVis}}"
+                                                               FontSize="11"
+                                                               Foreground="#FF304B73"
+                                                               TextWrapping="NoWrap" />
+                                                    <TextBlock Text="-"
+                                                               Visibility="{Binding LookupCode, Converter={StaticResource StringIsEmptyToVis}}"
+                                                               FontSize="11"
+                                                               Foreground="#FF304B73" />
+                                                </Grid>
+                                            </StackPanel>
                                         </StackPanel>
                                     </Grid>
                                 </DataTemplate>
@@ -717,7 +880,7 @@
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="{loc:Loc Quantity}" Width="1.35*" HeaderStyle="{StaticResource CartColumnHeaderCenterStyle}">
+                        <DataGridTemplateColumn Header="{loc:Loc Quantity}" Width="1.35*" MinWidth="122" HeaderStyle="{StaticResource CartColumnHeaderCenterStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
                                     <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
@@ -733,14 +896,21 @@
                                                 ToolTip="{loc:Loc pos.terminal.actions.qtyMinus}">
                                             <materialDesign:PackIcon Kind="Minus" Width="18" Height="18" />
                                         </Button>
-                                        <TextBlock Grid.Column="1"
-                                                   AutomationProperties.AutomationId="CartLineQuantity"
-                                                   Text="{Binding SignedQuantity, StringFormat={}{0:0.##}}"
-                                                   FontSize="20"
-                                                   FontWeight="Black"
-                                                   TextAlignment="Center"
-                                                   HorizontalAlignment="Stretch"
-                                                   VerticalAlignment="Center" />
+                                        <Border Grid.Column="1"
+                                                Width="50"
+                                                Height="32"
+                                                Background="White"
+                                                BorderBrush="{StaticResource PosBorderBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="4">
+                                            <TextBlock AutomationProperties.AutomationId="CartLineQuantity"
+                                                       Text="{Binding SignedQuantity, StringFormat={}{0:0.##}}"
+                                                       FontSize="14"
+                                                       FontWeight="SemiBold"
+                                                       TextAlignment="Center"
+                                                       HorizontalAlignment="Stretch"
+                                                       VerticalAlignment="Center" />
+                                        </Border>
                                         <Button Grid.Column="2"
                                                 AutomationProperties.AutomationId="CartLineIncreaseButton"
                                                 Command="{Binding DataContext.IncreaseLineCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
@@ -786,88 +956,101 @@
                         </DataGridTemplateColumn>
                     </DataGrid.Columns>
                 </DataGrid>
-            </Grid>
+            </Border>
 
-            <Border Grid.Row="2" Padding="18,12,18,14" Background="{StaticResource PosSurfaceBrush}" BorderBrush="#FFE2E2E6" BorderThickness="0,1,0,0">
+            <Border Grid.Row="2" Padding="17,0,12,18" Background="#FFF7F8FA">
                 <Grid>
                     <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="92" />
+                        <RowDefinition Height="10" />
+                        <RowDefinition Height="64" />
                     </Grid.RowDefinitions>
-                    <Grid Grid.Row="0" Margin="0,0,0,10">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="Auto" />
-                        </Grid.RowDefinitions>
+                    <Border x:Name="CartSummaryPanel"
+                            Grid.Row="0"
+                            Background="White"
+                            BorderBrush="{StaticResource PosBorderBrush}"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            ClipToBounds="True">
                         <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <Border Grid.Column="0" Padding="10,6" Background="#FFF8FAFD" CornerRadius="8" Margin="0,0,4,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="34" />
+                                <RowDefinition Height="58" />
+                            </Grid.RowDefinitions>
+
+                            <Border x:Name="CartCountSummaryRow"
+                                    Grid.Row="0"
+                                    Padding="14,0"
+                                    BorderBrush="#FFE8ECF2"
+                                    BorderThickness="0,0,0,1">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Text="{loc:Loc pos.terminal.cart.itemQuantity}" FontSize="10" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
-                                    <TextBlock Grid.Column="1" Text="{Binding CartItemQuantity, StringFormat={}{0:0.##}}" FontSize="13" FontWeight="Black" TextAlignment="Right" />
+                                    <TextBlock Text="{loc:Loc pos.terminal.cart.itemQuantity}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="1" Text="{Binding CartItemQuantity, StringFormat={}{0:0.##}}" Margin="8,0,0,0" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="2" Text="{loc:Loc pos.terminal.cart.skuCount}" Margin="28,0,0,0" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Column="3" Text="{Binding CartSkuCount}" Margin="8,0,0,0" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
                                 </Grid>
                             </Border>
-                            <Border Grid.Column="1" Padding="10,6" Background="#FFF8FAFD" CornerRadius="8" Margin="4,0,0,0">
+                            <Border x:Name="CartTotalsSummaryRow" Grid.Row="1">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="0.9*" />
+                                        <ColumnDefinition Width="0.9*" />
+                                        <ColumnDefinition Width="1.2*" />
                                     </Grid.ColumnDefinitions>
-                                    <TextBlock Text="{loc:Loc pos.terminal.cart.skuCount}" FontSize="10" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
-                                    <TextBlock Grid.Column="1" Text="{Binding CartSkuCount}" FontSize="13" FontWeight="Black" TextAlignment="Right" />
+                                    <Border Grid.Column="0" Padding="14,0" BorderBrush="#FFE8ECF2" BorderThickness="0,0,1,0">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{loc:Loc Subtotal}" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1" Text="{Binding TotalAmount, StringFormat={}{0:C2}}" FontSize="14" FontWeight="SemiBold" TextAlignment="Right" VerticalAlignment="Center" Margin="10,0,0,0" />
+                                        </Grid>
+                                    </Border>
+                                    <Border Grid.Column="1" Padding="14,0" BorderBrush="#FFE8ECF2" BorderThickness="0,0,1,0">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="{loc:Loc Discount}" FontSize="12" FontWeight="SemiBold" Foreground="{StaticResource PosAccentBrush}" VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="1" Text="{Binding DiscountAmount, StringFormat={}{0:C2}}" FontSize="14" FontWeight="SemiBold" Foreground="{StaticResource PosAccentBrush}" TextAlignment="Right" VerticalAlignment="Center" Margin="10,0,0,0" />
+                                        </Grid>
+                                    </Border>
+                                    <Grid Grid.Column="2" Margin="14,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding TotalsLabelText}" FontSize="15" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" VerticalAlignment="Center" />
+                                        <TextBlock Grid.Column="1" Text="{Binding ActualAmount, StringFormat={}{0:C2}}" FontSize="24" FontWeight="Black" Foreground="{StaticResource PosAccentBrush}" TextAlignment="Right" VerticalAlignment="Center" Margin="10,0,0,0" />
+                                    </Grid>
                                 </Grid>
                             </Border>
                         </Grid>
-                        <Grid Grid.Row="1" Margin="0,6,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="{loc:Loc Subtotal}" FontSize="10" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
-                            <TextBlock Grid.Column="1" Text="{Binding TotalAmount, StringFormat={}{0:C2}}" FontSize="14" FontWeight="Black" TextAlignment="Right" Margin="16,0,0,0" />
-                        </Grid>
-                        <Grid Grid.Row="2" Margin="0,4,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="{loc:Loc Discount}" FontSize="10" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
-                            <TextBlock Grid.Column="1" Text="{Binding DiscountAmount, StringFormat={}{0:C2}}" FontSize="14" FontWeight="Black" TextAlignment="Right" Margin="16,0,0,0" />
-                        </Grid>
-                        <Grid Grid.Row="3" Margin="0,8,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="{Binding TotalsLabelText}" FontSize="12" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" />
-                            <TextBlock Grid.Column="1" Text="{Binding ActualAmount, StringFormat={}{0:C2}}" FontSize="28" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" TextAlignment="Right" Margin="16,0,0,0" />
-                        </Grid>
-                    </Grid>
-                     <Button Grid.Row="1"
+                    </Border>
+                    <Button Grid.Row="2"
                              AutomationProperties.AutomationId="OpenPaymentButton"
                              Command="{Binding OpenPaymentCommand}"
                              services:ButtonFeedback.Cue="Checkout"
-                             Height="52"
-                            Style="{StaticResource PosBlueGradientButtonStyle}">
+                             Style="{StaticResource CashierPayButtonStyle}">
                         <StackPanel Orientation="Horizontal">
-                            <materialDesign:PackIcon Kind="Cash" Width="20" Height="20" Foreground="White" Margin="0,0,10,0" />
-                            <TextBlock Text="{Binding PayNowText}" Foreground="White" FontSize="17" FontWeight="Black" />
+                            <materialDesign:PackIcon Kind="Cash" Width="26" Height="26" Foreground="White" Margin="0,0,16,0" />
+                            <TextBlock Text="{Binding PayNowText}" Foreground="White" FontSize="18" FontWeight="Black" />
                         </StackPanel>
                     </Button>
                 </Grid>
             </Border>
         </Grid>
 
-        <Grid Grid.Column="1" Background="{StaticResource PosSurfaceBrush}">
+        <Grid Grid.Column="1" Background="#FFF7F8FA">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
@@ -875,7 +1058,15 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <Border Grid.Row="0" Margin="12,8,12,6" Padding="10,4" Background="#FFE2E2E6" BorderBrush="#80C3C6D6" BorderThickness="1" CornerRadius="14">
+            <Border x:Name="InputBufferHost"
+                    Grid.Row="0"
+                    Height="78"
+                    Margin="13,10,13,8"
+                    Padding="12,6"
+                    Background="White"
+                    BorderBrush="{StaticResource PosBorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="6">
                 <!-- 输入缓冲区和退格按钮共享同一外框，保持总宽度不超过下方键盘。 -->
                 <Grid>
                     <Grid.RowDefinitions>
@@ -890,22 +1081,22 @@
                     <TextBlock Grid.Row="0"
                                Grid.ColumnSpan="2"
                                Text="{loc:Loc pos.terminal.inputBuffer}"
-                               FontSize="9"
-                               FontWeight="Black"
+                               FontSize="11"
+                               FontWeight="SemiBold"
                                Foreground="{StaticResource PosMutedForegroundBrush}" />
                     <TextBlock Grid.Row="1"
                                Grid.Column="0"
                                Text="{Binding KeypadBuffer, TargetNullValue=0}"
                                FontFamily="Consolas"
-                               FontSize="30"
+                               FontSize="34"
                                FontWeight="Black"
                                TextAlignment="Right"
                                TextTrimming="CharacterEllipsis"
                                VerticalAlignment="Center" />
                     <Button Grid.Row="1"
                             Grid.Column="1"
-                            Width="48"
-                            Height="48"
+                            Width="44"
+                            Height="44"
                             Margin="8,0,0,0"
                             Background="White"
                             BorderBrush="#1F000000"
@@ -919,14 +1110,11 @@
                                         Background="{TemplateBinding Background}"
                                         BorderBrush="{TemplateBinding BorderBrush}"
                                         BorderThickness="1"
-                                        CornerRadius="12"
+                                        CornerRadius="5"
                                         RenderTransformOrigin="0.5,0.5">
                                     <Border.RenderTransform>
                                         <ScaleTransform ScaleX="1" ScaleY="1" />
                                     </Border.RenderTransform>
-                                    <Border.Effect>
-                                        <DropShadowEffect BlurRadius="4" Opacity="0.1" ShadowDepth="1" />
-                                    </Border.Effect>
                                     <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                                 </Border>
                                 <ControlTemplate.Triggers>
@@ -951,35 +1139,31 @@
                 </Grid>
             </Border>
 
-            <UniformGrid Grid.Row="1" Columns="3" Rows="5" Margin="10,0,10,6" VerticalAlignment="Stretch">
-                <Button Content="1" Command="{Binding KeypadInputCommand}" CommandParameter="1" Style="{StaticResource PosMainNumberButtonStyle}" />
-                <Button Content="2" Command="{Binding KeypadInputCommand}" CommandParameter="2" Style="{StaticResource PosMainNumberButtonStyle}" />
-                <Button Content="3" Command="{Binding KeypadInputCommand}" CommandParameter="3" Style="{StaticResource PosMainNumberButtonStyle}" />
-                <Button Content="4" Command="{Binding KeypadInputCommand}" CommandParameter="4" Style="{StaticResource PosMainNumberButtonStyle}" />
-                <Button Content="5" Command="{Binding KeypadInputCommand}" CommandParameter="5" Style="{StaticResource PosMainNumberButtonStyle}" />
-                <Button Content="6" Command="{Binding KeypadInputCommand}" CommandParameter="6" Style="{StaticResource PosMainNumberButtonStyle}" />
-                <Button Content="7" Command="{Binding KeypadInputCommand}" CommandParameter="7" Style="{StaticResource PosMainNumberButtonStyle}" />
-                <Button Content="8" Command="{Binding KeypadInputCommand}" CommandParameter="8" Style="{StaticResource PosMainNumberButtonStyle}" />
-                <Button Content="9" Command="{Binding KeypadInputCommand}" CommandParameter="9" Style="{StaticResource PosMainNumberButtonStyle}" />
-                <Button Content="{loc:Loc Clear}" Command="{Binding KeypadInputCommand}" CommandParameter="Clear" Style="{StaticResource PosMainClearNumberButtonStyle}" />
-                <Button Content="0" Command="{Binding KeypadInputCommand}" CommandParameter="0" Style="{StaticResource PosMainNumberButtonStyle}" />
-                <Button Content="." Command="{Binding KeypadInputCommand}" CommandParameter="." Style="{StaticResource PosMainNumberButtonStyle}" />
-                <Button Content="{loc:Loc pos.terminal.quickHalf}" Command="{Binding KeypadInputCommand}" CommandParameter="QuickHalf" Style="{StaticResource PosMainQuickButtonStyle}" />
-                <Button Content="{loc:Loc pos.terminal.quickNinetyNine}" Command="{Binding KeypadInputCommand}" CommandParameter="QuickNinetyNine" Style="{StaticResource PosMainQuickButtonStyle}" />
+            <UniformGrid x:Name="CashierKeypad" Grid.Row="1" Columns="3" Rows="5" Margin="11,0,11,6" VerticalAlignment="Stretch">
+                <Button Content="1" Command="{Binding KeypadInputCommand}" CommandParameter="1" Style="{StaticResource CashierNumberKeyStyle}" />
+                <Button Content="2" Command="{Binding KeypadInputCommand}" CommandParameter="2" Style="{StaticResource CashierNumberKeyStyle}" />
+                <Button Content="3" Command="{Binding KeypadInputCommand}" CommandParameter="3" Style="{StaticResource CashierNumberKeyStyle}" />
+                <Button Content="4" Command="{Binding KeypadInputCommand}" CommandParameter="4" Style="{StaticResource CashierNumberKeyStyle}" />
+                <Button Content="5" Command="{Binding KeypadInputCommand}" CommandParameter="5" Style="{StaticResource CashierNumberKeyStyle}" />
+                <Button Content="6" Command="{Binding KeypadInputCommand}" CommandParameter="6" Style="{StaticResource CashierNumberKeyStyle}" />
+                <Button Content="7" Command="{Binding KeypadInputCommand}" CommandParameter="7" Style="{StaticResource CashierNumberKeyStyle}" />
+                <Button Content="8" Command="{Binding KeypadInputCommand}" CommandParameter="8" Style="{StaticResource CashierNumberKeyStyle}" />
+                <Button Content="9" Command="{Binding KeypadInputCommand}" CommandParameter="9" Style="{StaticResource CashierNumberKeyStyle}" />
+                <Button Content="{loc:Loc Clear}" Command="{Binding KeypadInputCommand}" CommandParameter="Clear" Style="{StaticResource CashierClearKeyStyle}" />
+                <Button Content="0" Command="{Binding KeypadInputCommand}" CommandParameter="0" Style="{StaticResource CashierNumberKeyStyle}" />
+                <Button Content="." Command="{Binding KeypadInputCommand}" CommandParameter="." Style="{StaticResource CashierNumberKeyStyle}" />
+                <Button Content="{loc:Loc pos.terminal.quickHalf}" Command="{Binding KeypadInputCommand}" CommandParameter="QuickHalf" Style="{StaticResource CashierQuickKeyStyle}" />
+                <Button Content="{loc:Loc pos.terminal.quickNinetyNine}" Command="{Binding KeypadInputCommand}" CommandParameter="QuickNinetyNine" Style="{StaticResource CashierQuickKeyStyle}" />
                 <ToggleButton Content="{loc:Loc pos.terminal.actions.wholeOrderToggle}"
                               IsChecked="{Binding IsWholeOrderOperation, Mode=TwoWay}"
-                              Style="{StaticResource PosMainSwitchButtonStyle}" />
+                              Style="{StaticResource CashierWholeOrderToggleStyle}" />
             </UniformGrid>
 
             <Button Grid.Row="2"
                     Command="{Binding AddOpenItemCommand}"
-                    Height="48"
-                    Margin="12,0,12,6"
-                    Style="{StaticResource PosNoBarcodeButtonStyle}">
-                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                    <materialDesign:PackIcon Kind="BarcodeScan" Width="20" Height="20" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" VerticalAlignment="Center" Margin="0,0,8,0" />
-                    <TextBlock Text="{loc:Loc pos.terminal.actions.noBarcode}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" FontSize="14" FontWeight="Black" VerticalAlignment="Center" />
-                </StackPanel>
+                    Margin="13,0,13,8"
+                    Style="{StaticResource CashierNoBarcodeButtonStyle}">
+                <TextBlock Text="{loc:Loc pos.terminal.actions.noBarcode}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center" />
             </Button>
 
             <Grid Grid.Row="3" Margin="9,0,9,0" VerticalAlignment="Top">
@@ -990,48 +1174,20 @@
 
                 <UniformGrid Grid.Row="0" Columns="2">
                     <Button Command="{Binding ModifySelectedLineQuantityCommand}"
-                            Style="{StaticResource PosStitchFunctionButtonStyle}">
-                        <Grid HorizontalAlignment="Stretch" VerticalAlignment="Center">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="28" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <materialDesign:PackIcon Kind="Pencil" Width="20" Height="20" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" HorizontalAlignment="Center" />
-                            <TextBlock Grid.Column="1" Text="{loc:Loc pos.terminal.actions.modifyQty}" Style="{StaticResource PosStitchTileLabelStyle}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" TextTrimming="None" />
-                        </Grid>
+                            Style="{StaticResource CashierFunctionButtonStyle}">
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.modifyQty}" FontSize="12" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" />
                     </Button>
                     <Button Command="{Binding ModifySelectedLinePriceCommand}"
-                            Style="{StaticResource PosStitchFunctionButtonStyle}">
-                        <Grid HorizontalAlignment="Stretch" VerticalAlignment="Center">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="28" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <materialDesign:PackIcon Kind="CurrencyUsd" Width="20" Height="20" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" HorizontalAlignment="Center" />
-                            <TextBlock Grid.Column="1" Text="{loc:Loc Price}" Style="{StaticResource PosStitchTileLabelStyle}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" TextTrimming="None" />
-                        </Grid>
+                            Style="{StaticResource CashierFunctionButtonStyle}">
+                        <TextBlock Text="{loc:Loc Price}" FontSize="12" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" />
                     </Button>
                     <Button Command="{Binding ApplySelectedLineDiscountAmountCommand}"
-                            Style="{StaticResource PosStitchFunctionButtonStyle}">
-                        <Grid HorizontalAlignment="Stretch" VerticalAlignment="Center">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="28" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <materialDesign:PackIcon Kind="Cash" Width="20" Height="20" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" HorizontalAlignment="Center" />
-                            <TextBlock Grid.Column="1" Text="{loc:Loc pos.terminal.actions.discountAmount}" Style="{StaticResource PosStitchTileLabelStyle}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" TextTrimming="None" />
-                        </Grid>
+                            Style="{StaticResource CashierFunctionButtonStyle}">
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.discountAmount}" FontSize="12" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" />
                     </Button>
                     <Button Command="{Binding ApplySelectedLineDiscountPercentCommand}"
-                            Style="{StaticResource PosStitchFunctionButtonStyle}">
-                        <Grid HorizontalAlignment="Stretch" VerticalAlignment="Center">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="28" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                            <materialDesign:PackIcon Kind="Percent" Width="20" Height="20" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" HorizontalAlignment="Center" />
-                            <TextBlock Grid.Column="1" Text="{loc:Loc pos.terminal.actions.discountPercent}" Style="{StaticResource PosStitchTileLabelStyle}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" TextTrimming="None" />
-                        </Grid>
+                            Style="{StaticResource CashierFunctionButtonStyle}">
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.discountPercent}" FontSize="12" FontWeight="SemiBold" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" HorizontalAlignment="Center" />
                     </Button>
                 </UniformGrid>
 
@@ -1041,29 +1197,29 @@
                         Background="White"
                         BorderBrush="{StaticResource PosBorderBrush}"
                         BorderThickness="1"
-                        CornerRadius="12">
+                        CornerRadius="5">
                     <Border.OpacityMask>
                         <VisualBrush Stretch="Fill">
                             <VisualBrush.Visual>
                                 <Border Width="{Binding ActualWidth, ElementName=QuickDiscountSegment}"
                                         Height="{Binding ActualHeight, ElementName=QuickDiscountSegment}"
                                         Background="Black"
-                                        CornerRadius="12" />
+                                        CornerRadius="5" />
                             </VisualBrush.Visual>
                         </VisualBrush>
                     </Border.OpacityMask>
                     <UniformGrid Columns="5">
-                        <Button Content="10%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="10" Style="{StaticResource PosQuickDiscountButtonStyle}" />
-                        <Button Content="20%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="20" Style="{StaticResource PosQuickDiscountButtonStyle}" />
-                        <Button Content="30%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="30" Style="{StaticResource PosQuickDiscountButtonStyle}" />
-                        <Button Content="40%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="40" Style="{StaticResource PosQuickDiscountButtonStyle}" />
-                        <Button Content="50%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="50" BorderThickness="0" Style="{StaticResource PosQuickDiscountButtonStyle}" />
+                        <Button Content="10%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="10" Style="{StaticResource CashierDiscountButtonStyle}" />
+                        <Button Content="20%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="20" Style="{StaticResource CashierDiscountButtonStyle}" />
+                        <Button Content="30%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="30" Style="{StaticResource CashierDiscountButtonStyle}" />
+                        <Button Content="40%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="40" Style="{StaticResource CashierDiscountButtonStyle}" />
+                        <Button Content="50%" Command="{Binding ApplyQuickDiscountPercentCommand}" CommandParameter="50" BorderThickness="0" Style="{StaticResource CashierDiscountButtonStyle}" />
                     </UniformGrid>
                 </Border>
             </Grid>
         </Grid>
 
-        <Grid x:Name="AttendanceQrSidebar" Grid.Column="2" Background="#FFE7E8EB">
+        <Grid x:Name="AttendanceQrSidebar" Grid.Column="2" Background="#FFF4F6F9">
             <Grid.RowDefinitions>
                 <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
@@ -1071,115 +1227,165 @@
             </Grid.RowDefinitions>
 
             <!-- 关键逻辑：右侧操作区固定五行两列，避免不同语言下按钮顺序和状态卡位置漂移。 -->
-            <UniformGrid Grid.Row="0" Columns="2" Rows="5" Margin="12,12,12,8">
-                <Button Command="{Binding OpenSpecialProductsCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
+            <UniformGrid Grid.Row="0" Columns="2" Rows="5" Margin="8,13,8,6">
+                <Button Command="{Binding OpenSpecialProductsCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
-                        <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
-                            <materialDesign:PackIcon Kind="Star" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
+                            <materialDesign:PackIcon Kind="StarOutline" Width="24" Height="24" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
-                        <TextBlock Text="{loc:Loc pos.terminal.actions.specialItems}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                        <TextBlock Text="{loc:Loc pos.terminal.actions.specialItems}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
                 </Button>
-                <Button Command="{Binding OpenReturnsCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
+                <Button Command="{Binding OpenReturnsCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
-                        <Border Style="{StaticResource PosStitchDangerIconCircleStyle}">
-                            <materialDesign:PackIcon Kind="Undo" Width="18" Height="18" Foreground="{StaticResource PosDangerBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
+                            <materialDesign:PackIcon Kind="CashRefund" Width="24" Height="24" Foreground="{StaticResource PosDangerBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
-                        <TextBlock Text="{loc:Loc Refund}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                        <TextBlock Text="{loc:Loc Refund}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
                 </Button>
-                <Button Command="{Binding HoldOrderCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
+                <Button Command="{Binding HoldOrderCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
-                        <Border Style="{StaticResource PosStitchWarmIconCircleStyle}">
-                            <materialDesign:PackIcon Kind="PauseCircle" Width="18" Height="18" Foreground="#FF8F4E00" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
+                            <materialDesign:PackIcon Kind="ClipboardTextOutline" Width="24" Height="24" Foreground="#FFFF6D1B" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
-                        <TextBlock Text="{Binding HoldOrderText}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                        <TextBlock Text="{Binding HoldOrderText}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
                 </Button>
-                <Button Command="{Binding RecallOrderCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
+                <Button Command="{Binding RecallOrderCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
-                        <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
-                            <materialDesign:PackIcon Kind="ClipboardTextClock" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
+                            <materialDesign:PackIcon Kind="FileDocumentOutline" Width="24" Height="24" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
-                        <TextBlock Text="{Binding RecallOrderText}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                        <TextBlock Text="{Binding RecallOrderText}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
                 </Button>
-                <Button Command="{Binding OpenCashDrawerCommand}" services:ButtonFeedback.Cue="CashDrawer" Style="{StaticResource PosStitchActionButtonStyle}">
+                <Button Command="{Binding OpenCashDrawerCommand}" services:ButtonFeedback.Cue="CashDrawer" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
-                        <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
-                            <materialDesign:PackIcon Kind="CashRegister" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
+                            <materialDesign:PackIcon Kind="CashRegister" Width="24" Height="24" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
-                        <TextBlock Text="{Binding OpenCashDrawerText}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                        <TextBlock Text="{Binding OpenCashDrawerText}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
                 </Button>
-                <Button Command="{Binding PrintLastReceiptCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
+                <Button Command="{Binding PrintLastReceiptCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
-                        <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
-                            <materialDesign:PackIcon Kind="Printer" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
+                            <materialDesign:PackIcon Kind="ReceiptTextOutline" Width="24" Height="24" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
-                        <TextBlock Text="{Binding PrintLastReceiptText}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                        <TextBlock Text="{Binding PrintLastReceiptText}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
                 </Button>
-                <Button Command="{Binding LockCashierCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
+                <Button Command="{Binding LockCashierCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
-                        <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
-                            <materialDesign:PackIcon Kind="ExitToApp" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
+                            <materialDesign:PackIcon Kind="LogoutVariant" Width="24" Height="24" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
-                        <TextBlock Text="{Binding LockCashierText}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                        <TextBlock Text="{Binding LockCashierText}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
                 </Button>
-                <Button Command="{Binding OpenDailyCloseCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
+                <Button Command="{Binding OpenDailyCloseCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
-                        <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
-                            <materialDesign:PackIcon Kind="CalendarCheck" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
+                            <materialDesign:PackIcon Kind="CalendarCheckOutline" Width="24" Height="24" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
-                        <TextBlock Text="{Binding DailyCloseText}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                        <TextBlock Text="{Binding DailyCloseText}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
                 </Button>
-                <Button Command="{Binding OpenSettingsCommand}" Style="{StaticResource PosStitchActionButtonStyle}">
+                <Button Command="{Binding OpenSettingsCommand}" Style="{StaticResource PosSidebarActionButtonStyle}">
                     <StackPanel>
-                        <Border Style="{StaticResource PosStitchActionIconCircleStyle}">
-                            <materialDesign:PackIcon Kind="Cog" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
+                            <materialDesign:PackIcon Kind="CogOutline" Width="24" Height="24" Foreground="{StaticResource PosPrimaryBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
-                        <TextBlock Text="{Binding SettingsText}" Style="{StaticResource PosStitchTileLabelStyle}" />
+                        <TextBlock Text="{Binding SettingsText}" Style="{StaticResource PosSidebarActionLabelStyle}" />
                     </StackPanel>
                 </Button>
-                <Button Command="{Binding ExitApplicationCommand}" Style="{StaticResource PosStitchExitButtonStyle}">
+                <Button Command="{Binding ExitApplicationCommand}" Style="{StaticResource PosSidebarExitButtonStyle}">
                     <StackPanel>
-                        <Border Style="{StaticResource PosStitchExitIconCircleStyle}">
-                            <materialDesign:PackIcon Kind="Power" Width="18" Height="18" Foreground="White" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        <Border Style="{StaticResource PosSidebarActionIconHostStyle}">
+                            <materialDesign:PackIcon Kind="Power" Width="24" Height="24" Foreground="{StaticResource PosDangerBrush}" HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
-                        <TextBlock Text="{Binding ExitApplicationText}" Style="{StaticResource PosStitchTileLabelStyle}" Foreground="White" />
+                        <TextBlock Text="{Binding ExitApplicationText}" Style="{StaticResource PosSidebarActionLabelStyle}" Foreground="{StaticResource PosDangerBrush}" />
                     </StackPanel>
                 </Button>
             </UniformGrid>
 
             <ContentControl Grid.Row="1"
-                            Margin="12,0,12,12"
-                            MaxHeight="96"
-                            Padding="12"
+                            Margin="8,0,8,8"
+                            MaxHeight="154"
+                            Padding="9,7"
                             Template="{StaticResource PosStatusCardTemplate}"
                             Tag="{Binding StatusPulseToken, NotifyOnTargetUpdated=True}">
+                <ContentControl.Style>
+                    <Style TargetType="ContentControl">
+                        <Setter Property="Height" Value="70" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding HasOpenCardRecoveryAttempts}" Value="True">
+                                <Setter Property="Height" Value="154" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </ContentControl.Style>
                 <StackPanel>
-                    <StackPanel Orientation="Horizontal">
-                        <materialDesign:PackIcon Kind="InformationOutline" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" Margin="0,0,8,0" />
-                        <TextBlock Text="{loc:Loc common.status}" FontSize="11" FontWeight="Black" Foreground="{StaticResource PosMutedForegroundBrush}" />
-                    </StackPanel>
-                    <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" FontWeight="SemiBold" FontSize="12" Margin="0,8,0,0" />
-                    <Border Style="{StaticResource PosWarningPillStyle}" Margin="0,10,0,0" HorizontalAlignment="Left">
-                        <TextBlock Text="{Binding PendingSyncText}" Foreground="#8A4B00" FontSize="11" />
-                    </Border>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="{loc:Loc common.status}" FontSize="11" FontWeight="Black" Foreground="{StaticResource PosTextBrush}" VerticalAlignment="Center" />
+                        <Border Grid.Column="1" Padding="6,2" Background="#FFF0FBF2" BorderBrush="#FF9AD7AB" BorderThickness="1" CornerRadius="3">
+                            <TextBlock Text="{Binding PendingSyncText}" Foreground="#FF20823B" FontSize="9" FontWeight="SemiBold" />
+                        </Border>
+                    </Grid>
+                    <TextBlock Text="{Binding StatusMessage}" TextWrapping="Wrap" FontWeight="SemiBold" FontSize="10" Margin="0,5,0,0" TextTrimming="CharacterEllipsis" />
+                    <Button Margin="0,10,0,0"
+                            MinHeight="44"
+                            Padding="10,6"
+                            HorizontalContentAlignment="Stretch"
+                            Background="#FFFFF4E5"
+                            BorderBrush="#FFF59E0B"
+                            BorderThickness="1"
+                            Command="{Binding OpenCardRecoveryCenterCommand}"
+                            Visibility="{Binding HasOpenCardRecoveryAttempts, Converter={StaticResource BoolToVis}}"
+                            AutomationProperties.Name="{Binding CardRecoveryOpenText}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <materialDesign:PackIcon Kind="AlertCircleOutline"
+                                                     Width="18"
+                                                     Height="18"
+                                                     Foreground="#FFB45309"
+                                                     VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="1"
+                                       Margin="8,0"
+                                       Text="{Binding CardRecoveryOpenText}"
+                                       TextWrapping="Wrap"
+                                       FontSize="11"
+                                       FontWeight="Bold"
+                                       Foreground="#FF7C2D12"
+                                       VerticalAlignment="Center" />
+                            <materialDesign:PackIcon Grid.Column="2"
+                                                     Kind="ChevronRight"
+                                                     Width="18"
+                                                     Height="18"
+                                                     Foreground="#FFB45309"
+                                                     VerticalAlignment="Center" />
+                        </Grid>
+                    </Button>
                 </StackPanel>
             </ContentControl>
 
             <Button x:Name="AttendanceQrLauncher"
                     Grid.Row="2"
-                    Height="56"
-                    Margin="12,0,12,12"
-                    Padding="12,6"
+                    Height="62"
+                    Margin="8,0,8,16"
+                    Padding="8,6"
                     HorizontalContentAlignment="Stretch"
                     Background="White"
-                    BorderBrush="#FFD7E7DD"
+                    BorderBrush="{StaticResource PosBorderBrush}"
                     BorderThickness="1"
                     Click="AttendanceQrLauncher_Click"
                     AutomationProperties.Name="{loc:Loc attendance.qr.open}">
@@ -1189,19 +1395,30 @@
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <materialDesign:PackIcon Kind="Qrcode" Width="24" Height="24" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" />
-                    <StackPanel Grid.Column="1" Margin="10,0" VerticalAlignment="Center">
-                        <TextBlock Text="{loc:Loc attendance.qr.title}" FontSize="12" FontWeight="Black" />
-                        <TextBlock FontSize="10" Foreground="{StaticResource PosMutedForegroundBrush}" TextTrimming="CharacterEllipsis">
+                    <materialDesign:PackIcon Kind="Qrcode" Width="22" Height="22" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" />
+                    <StackPanel Grid.Column="1" Margin="6,0" VerticalAlignment="Center">
+                        <TextBlock Text="{loc:Loc attendance.qr.title}" FontSize="11" FontWeight="Black" TextTrimming="CharacterEllipsis" />
+                        <TextBlock FontSize="9" Foreground="{StaticResource PosMutedForegroundBrush}" TextTrimming="CharacterEllipsis">
                             <Run Text="{Binding AttendanceQrPanel.VerificationStatusText, Mode=OneWay}" />
                             <Run Text=" " />
                             <Run Text="{Binding AttendanceQrPanel.MessageText, Mode=OneWay}" />
                         </TextBlock>
                     </StackPanel>
-                    <TextBlock Grid.Column="2" Text="{Binding AttendanceQrPanel.SecondsRemaining}" FontSize="16" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="2" Text="{Binding AttendanceQrPanel.SecondsRemaining}" FontSize="14" FontWeight="Black" Foreground="{StaticResource PosPrimaryBrush}" VerticalAlignment="Center" />
                 </Grid>
             </Button>
         </Grid>
+
+        <Border Grid.Column="0"
+                Panel.ZIndex="5"
+                BorderBrush="#FFDDE2E8"
+                BorderThickness="0,0,1,0"
+                IsHitTestVisible="False" />
+        <Border Grid.Column="1"
+                Panel.ZIndex="5"
+                BorderBrush="#FFDDE2E8"
+                BorderThickness="0,0,1,0"
+                IsHitTestVisible="False" />
 
         <!-- 关键逻辑：弹窗属于纯视图状态，覆盖收银区三列，不扩展业务 ViewModel。 -->
         <Grid x:Name="AttendanceQrOverlay"

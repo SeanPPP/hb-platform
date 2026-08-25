@@ -115,6 +115,27 @@ public sealed class MainWindowStateTests
         Assert.True(coordinator.IsPrepared);
     }
 
+    [Theory]
+    [InlineData("oom")]
+    [InlineData("stack")]
+    public async Task WaitForClosePreparationAsync_propagates_fatal_shutdown_exception_instance(string fatalKind)
+    {
+        Exception fatal = fatalKind == "oom"
+            ? new OutOfMemoryException("fatal window shutdown")
+            : new StackOverflowException("fatal window shutdown");
+        var coordinator = new AppShutdownCoordinator();
+        coordinator.RegisterStep(
+            "fatal",
+            100,
+            TimeSpan.FromSeconds(1),
+            _ => throw fatal);
+
+        var thrown = await Record.ExceptionAsync(() =>
+            MainWindow.WaitForClosePreparationAsync(() => Task.CompletedTask, coordinator));
+
+        Assert.Same(fatal, thrown);
+    }
+
     [Fact]
     public async Task WaitForClosePreparationAsync_does_not_block_shutdown_on_stuck_window_save()
     {
@@ -195,6 +216,10 @@ public sealed class MainWindowStateTests
             closingBody.IndexOf("_rawScannerService.Stop();", StringComparison.Ordinal) <
             closingBody.IndexOf("await WaitForClosePreparationAsync", StringComparison.Ordinal));
         Assert.DoesNotContain("StopExternalInputForShutdownAsync", closingBody, StringComparison.Ordinal);
+        Assert.Contains(
+            "catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)",
+            closingBody,
+            StringComparison.Ordinal);
         Assert.DoesNotContain("_rawScannerService.Stop()", closedBody, StringComparison.Ordinal);
         Assert.DoesNotContain("_viewModel.Dispose()", closedBody, StringComparison.Ordinal);
     }

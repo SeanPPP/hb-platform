@@ -967,6 +967,16 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
         {
             await ExecuteAsync(connection, "ALTER TABLE LocalCardPaymentAttempts ADD COLUMN AcknowledgedAt TEXT NULL;", cancellationToken);
         }
+
+        if (!columns.Contains("RecoveryPhase"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE LocalCardPaymentAttempts ADD COLUMN RecoveryPhase TEXT NOT NULL DEFAULT 'None';", cancellationToken);
+        }
+
+        if (!columns.Contains("RecoveryTargetStatus"))
+        {
+            await ExecuteAsync(connection, "ALTER TABLE LocalCardPaymentAttempts ADD COLUMN RecoveryTargetStatus TEXT NULL;", cancellationToken);
+        }
     }
 
     private static async Task EnsureLocalSquarePaymentAttemptColumnsAsync(
@@ -1004,7 +1014,10 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             ["UpdatedAt"] = "TEXT NOT NULL DEFAULT ''",
             ["CompletedAt"] = "TEXT NULL",
             ["OrderCompletedAt"] = "TEXT NULL",
-            ["ResolvedAt"] = "TEXT NULL"
+            ["ResolvedAt"] = "TEXT NULL",
+            ["RecoveryPhase"] = "TEXT NOT NULL DEFAULT 'None'",
+            ["RecoveryTargetStatus"] = "TEXT NULL",
+            ["SupervisorFinancialReference"] = "TEXT NULL"
         };
 
         foreach (var (columnName, definition) in expectedColumns)
@@ -1241,7 +1254,9 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             OperationKind TEXT NOT NULL DEFAULT 'Sale',
             OperationGuid TEXT NULL,
             SubmissionToken TEXT NULL,
-            RefundBusinessKey TEXT NULL
+            RefundBusinessKey TEXT NULL,
+            RecoveryPhase TEXT NOT NULL DEFAULT 'None',
+            RecoveryTargetStatus TEXT NULL
         );
         """,
         """
@@ -1274,7 +1289,10 @@ public sealed class LocalSchemaService(LocalSqliteStore store) : ILocalSchemaSer
             OperationKind TEXT NOT NULL DEFAULT 'Sale',
             OperationGuid TEXT NULL,
             SubmissionToken TEXT NULL,
-            RefundBusinessKey TEXT NULL
+            RefundBusinessKey TEXT NULL,
+            RecoveryPhase TEXT NOT NULL DEFAULT 'None',
+            RecoveryTargetStatus TEXT NULL,
+            SupervisorFinancialReference TEXT NULL
         );
         """,
         """

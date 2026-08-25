@@ -28,6 +28,126 @@ public sealed class CustomerDisplayViewModelTests
     }
 
     [Fact]
+    public void LoadLines_rounds_and_applies_normal_positive_savings()
+    {
+        var viewModel = new CustomerDisplayViewModel();
+
+        viewModel.LoadLines(
+            [new CustomerDisplayLine("Sale", "SKU-SALE", 1m, 50m, 50m)],
+            subtotal: 50m,
+            savingsAmount: 10.005m);
+
+        AssertPaymentSummary(viewModel, 10.01m, 39.99m, 3.64m, isReadyForPayment: true);
+    }
+
+    [Fact]
+    public void LoadLines_normalizes_zero_negative_and_sub_cent_savings_to_zero()
+    {
+        foreach (var savingsAmount in new[] { 0m, -2m, 0.001m })
+        {
+            var viewModel = new CustomerDisplayViewModel();
+
+            viewModel.LoadLines(
+                [new CustomerDisplayLine("Sale", "SKU-SALE", 1m, 11m, 11m)],
+                subtotal: 11m,
+                savingsAmount);
+
+            AssertPaymentSummary(viewModel, 0m, 11m, 1m, isReadyForPayment: true);
+        }
+    }
+
+    [Fact]
+    public void LoadLines_caps_savings_above_original_price()
+    {
+        var viewModel = new CustomerDisplayViewModel();
+
+        viewModel.LoadLines(
+            [new CustomerDisplayLine("Sale", "SKU-SALE", 1m, 25.50m, 25.50m)],
+            subtotal: 25.50m,
+            savingsAmount: 99m);
+
+        AssertPaymentSummary(viewModel, 25.50m, 0m, 0m, isReadyForPayment: false);
+    }
+
+    [Fact]
+    public void LoadLines_accepts_one_hundred_percent_savings()
+    {
+        var viewModel = new CustomerDisplayViewModel();
+
+        viewModel.LoadLines(
+            [
+                new CustomerDisplayLine("Sale one", "SKU-ONE", 1m, 10m, 10m),
+                new CustomerDisplayLine("Sale two", "SKU-TWO", 1m, 5m, 5m)
+            ],
+            subtotal: 15m,
+            savingsAmount: 15m);
+
+        AssertPaymentSummary(viewModel, 15m, 0m, 0m, isReadyForPayment: false);
+    }
+
+    [Fact]
+    public void LoadLines_disallows_savings_for_returns_only()
+    {
+        var viewModel = new CustomerDisplayViewModel();
+
+        viewModel.LoadLines(
+            [new CustomerDisplayLine("Return", "SKU-RETURN", 1m, 11m, -11m)],
+            subtotal: -11m,
+            savingsAmount: 5m);
+
+        AssertPaymentSummary(viewModel, 0m, -11m, -1m, isReadyForPayment: false);
+    }
+
+    [Fact]
+    public void LoadLines_caps_mixed_cart_savings_using_positive_gross_amounts_only()
+    {
+        var viewModel = new CustomerDisplayViewModel();
+
+        viewModel.LoadLines(
+            [
+                new CustomerDisplayLine("Sale", "SKU-SALE", 1m, 100m, 100m),
+                new CustomerDisplayLine("Return", "SKU-RETURN", 1m, 40m, -40m)
+            ],
+            subtotal: 60m,
+            savingsAmount: 150m);
+
+        AssertPaymentSummary(viewModel, 100m, -40m, -3.64m, isReadyForPayment: false);
+    }
+
+    [Fact]
+    public void LoadLines_notifies_HasSavings_when_positive_savings_refresh_to_zero()
+    {
+        var viewModel = new CustomerDisplayViewModel();
+        var lines = new[] { new CustomerDisplayLine("Sale", "SKU-SALE", 1m, 11m, 11m) };
+        viewModel.LoadLines(lines, subtotal: 11m, savingsAmount: 1m);
+        var changedProperties = new List<string?>();
+        viewModel.PropertyChanged += (_, eventArgs) => changedProperties.Add(eventArgs.PropertyName);
+
+        viewModel.LoadLines(lines, subtotal: 11m, savingsAmount: 0m);
+
+        Assert.False(viewModel.HasSavings);
+        Assert.Contains(nameof(CustomerDisplayViewModel.HasSavings), changedProperties);
+    }
+
+    [Fact]
+    public void CustomerDisplayLine_exposes_item_number_presence()
+    {
+        var populated = new CustomerDisplayLine("Milk", "SKU-001", 1m, 3m, 3m)
+        {
+            ItemNumber = "ITEM-001"
+        };
+        var missing = new CustomerDisplayLine("Bread", "SKU-002", 1m, 4m, 4m);
+        var whitespace = new CustomerDisplayLine("Eggs", "SKU-003", 1m, 5m, 5m)
+        {
+            ItemNumber = "   "
+        };
+
+        Assert.True(populated.HasItemNumber);
+        Assert.False(missing.HasItemNumber);
+        Assert.False(whitespace.HasItemNumber);
+    }
+
+    [Fact]
     public void CustomerDisplayView_keeps_promotion_on_right_when_cart_has_lines()
     {
         var (_, codeBehind) = ReadCustomerDisplayViewFiles();
@@ -63,6 +183,68 @@ public sealed class CustomerDisplayViewModelTests
         Assert.Contains("Text=\"{Binding GrossAmount, StringFormat={}{0:C2}}\"", xaml);
         Assert.Contains("TextDecorations=\"Strikethrough\"", xaml);
         Assert.Contains("<DataTrigger Binding=\"{Binding HasDiscount}\" Value=\"True\">", xaml);
+    }
+
+    [Fact]
+    public void CustomerDisplayView_shows_product_thumbnail_item_number_and_lookup_code()
+    {
+        var (xaml, _) = ReadCustomerDisplayViewFiles();
+        var document = XDocument.Parse(xaml);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        XNamespace converters = "clr-namespace:Hbpos.Client.Wpf.Converters";
+        XNamespace materialDesign = "http://materialdesigninxaml.net/winfx/xaml/themes";
+
+        var lineDataGrid = Assert.Single(document
+            .Descendants(presentation + "DataGrid")
+            .Where(element => element.Attribute(x + "Name")?.Value == "LineDataGrid"));
+        Assert.Equal("72", lineDataGrid.Attribute("RowHeight")?.Value);
+
+        var productImageBrush = Assert.Single(document
+            .Descendants(presentation + "ImageBrush")
+            .Where(element => element.Attribute(
+                converters + "ProductThumbnailImageSourceConverter.AsyncSourceText")?.Value ==
+                "{Binding ProductImage}"));
+        Assert.Equal(
+            "72",
+            productImageBrush.Attribute(
+                converters + "ProductThumbnailImageSourceConverter.AsyncDecodePixelWidth")?.Value);
+        Assert.Equal("Uniform", productImageBrush.Attribute("Stretch")?.Value);
+
+        var thumbnailBorder = Assert.Single(productImageBrush
+            .Ancestors(presentation + "Border")
+            .Where(element =>
+                element.Attribute("Width")?.Value == "52" &&
+                element.Attribute("Height")?.Value == "52"));
+        Assert.Contains(thumbnailBorder
+            .Descendants(materialDesign + "PackIcon"),
+            element => element.Attribute("Kind")?.Value == "Shopping");
+        Assert.Contains(thumbnailBorder
+            .Ancestors(presentation + "Grid"),
+            grid => grid
+                .Element(presentation + "Grid.ColumnDefinitions")?
+                .Elements(presentation + "ColumnDefinition")
+                .Select(column => column.Attribute("Width")?.Value)
+                .SequenceEqual(["64", "*"]) == true);
+
+        Assert.Contains(document.Descendants(presentation + "Run"),
+            element => element.Attribute("Text")?.Value == "{loc:Loc ItemNumber}");
+        Assert.Contains(document.Descendants(presentation + "Run"),
+            element => element.Attribute("Text")?.Value == "{Binding ItemNumber}");
+        Assert.Contains(document.Descendants(presentation + "TextBlock"),
+            element => element.Attribute("Text")?.Value == "{Binding LookupCode}");
+
+        var itemNumberTrigger = Assert.Single(document
+            .Descendants(presentation + "DataTrigger")
+            .Where(element =>
+                element.Attribute("Binding")?.Value == "{Binding HasItemNumber}" &&
+                element.Attribute("Value")?.Value == "True"));
+        Assert.Contains(itemNumberTrigger
+            .Ancestors(presentation + "Style")
+            .SelectMany(style => style.Elements(presentation + "Setter")),
+            setter =>
+                setter.Attribute("Property")?.Value == "Visibility" &&
+                setter.Attribute("Value")?.Value == "Collapsed");
     }
 
     [Fact]
@@ -166,6 +348,66 @@ public sealed class CustomerDisplayViewModelTests
         Assert.Equal("38", FindBoundViewbox(document, presentation, "TaxAmount").Attribute("MaxHeight")?.Value);
         Assert.Equal("38", FindBoundViewbox(document, presentation, "SavingsAmount").Attribute("MaxHeight")?.Value);
         Assert.Equal("68", FindBoundViewbox(document, presentation, "TotalToPay").Attribute("MaxHeight")?.Value);
+    }
+
+    [Fact]
+    public void CustomerDisplayView_hides_the_entire_savings_group_until_savings_exist()
+    {
+        var (xaml, _) = ReadCustomerDisplayViewFiles();
+        var document = XDocument.Parse(xaml);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
+        var savingsAmount = Assert.Single(document
+            .Descendants(presentation + "TextBlock")
+            .Where(element => element.Attribute("Text")?.Value ==
+                "{Binding SavingsAmount, StringFormat=-{0:C2}}"));
+        var savingsViewbox = Assert.IsType<XElement>(savingsAmount.Parent);
+        Assert.Equal(presentation + "Viewbox", savingsViewbox.Name);
+        var savingsPanel = Assert.IsType<XElement>(savingsViewbox.Parent);
+        Assert.Equal(presentation + "StackPanel", savingsPanel.Name);
+        Assert.Equal("2", savingsPanel.Attribute("Grid.Column")?.Value);
+        Assert.Null(savingsPanel.Attribute("Visibility"));
+
+        var summaryAmountsGrid = Assert.IsType<XElement>(savingsPanel.Parent);
+        Assert.Equal(presentation + "Grid", summaryAmountsGrid.Name);
+        Assert.True(summaryAmountsGrid
+            .Element(presentation + "Grid.ColumnDefinitions")!
+            .Elements(presentation + "ColumnDefinition")
+            .Select(column => column.Attribute("Width")?.Value)
+            .SequenceEqual(["*", "*", "*"]));
+
+        var savingsStyle = Assert.Single(savingsPanel
+            .Elements(presentation + "StackPanel.Style")
+            .SelectMany(style => style.Elements(presentation + "Style")));
+        Assert.Equal("{x:Type StackPanel}", savingsStyle.Attribute("TargetType")?.Value);
+        var defaultVisibility = Assert.Single(savingsStyle
+            .Elements(presentation + "Setter")
+            .Where(setter => setter.Attribute("Property")?.Value == "Visibility"));
+        Assert.Equal("Collapsed", defaultVisibility.Attribute("Value")?.Value);
+
+        var hasSavingsTrigger = Assert.Single(savingsStyle
+            .Elements(presentation + "Style.Triggers")
+            .Elements(presentation + "DataTrigger")
+            .Where(trigger =>
+                trigger.Attribute("Binding")?.Value == "{Binding HasSavings}" &&
+                trigger.Attribute("Value")?.Value == "True"));
+        var visibleSetter = Assert.Single(hasSavingsTrigger
+            .Elements(presentation + "Setter")
+            .Where(setter => setter.Attribute("Property")?.Value == "Visibility"));
+        Assert.Equal("Visible", visibleSetter.Attribute("Value")?.Value);
+
+        var savingsLabel = Assert.Single(savingsPanel
+            .Elements(presentation + "TextBlock")
+            .Where(element => element.Attribute("Text")?.Value == "{loc:Loc Savings}"));
+        Assert.Equal("14", savingsLabel.Attribute("FontSize")?.Value);
+        Assert.Equal("Bold", savingsLabel.Attribute("FontWeight")?.Value);
+        Assert.Null(savingsLabel.Attribute("Visibility"));
+        Assert.Equal("38", savingsViewbox.Attribute("MaxHeight")?.Value);
+        Assert.Equal("DownOnly", savingsViewbox.Attribute("StretchDirection")?.Value);
+        Assert.Null(savingsViewbox.Attribute("Visibility"));
+        Assert.Equal("28", savingsAmount.Attribute("FontSize")?.Value);
+        Assert.Equal("Black", savingsAmount.Attribute("FontWeight")?.Value);
+        Assert.Null(savingsAmount.Attribute("Visibility"));
     }
 
     [Fact]
@@ -387,6 +629,20 @@ public sealed class CustomerDisplayViewModelTests
             effectiveStart,
             effectiveEnd,
             1);
+    }
+
+    private static void AssertPaymentSummary(
+        CustomerDisplayViewModel viewModel,
+        decimal savingsAmount,
+        decimal totalToPay,
+        decimal taxAmount,
+        bool isReadyForPayment)
+    {
+        Assert.Equal(savingsAmount, viewModel.SavingsAmount);
+        Assert.Equal(savingsAmount > 0m, viewModel.HasSavings);
+        Assert.Equal(totalToPay, viewModel.TotalToPay);
+        Assert.Equal(taxAmount, viewModel.TaxAmount);
+        Assert.Equal(isReadyForPayment, viewModel.IsReadyForPayment);
     }
 
     private static string FindRepoRoot()

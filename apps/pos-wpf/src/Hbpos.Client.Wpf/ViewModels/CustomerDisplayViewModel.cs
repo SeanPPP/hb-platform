@@ -14,6 +14,7 @@ public sealed partial class CustomerDisplayViewModel : ObservableObject
     private decimal _taxAmount;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasSavings))]
     private decimal _savingsAmount;
 
     [ObservableProperty]
@@ -68,6 +69,8 @@ public sealed partial class CustomerDisplayViewModel : ObservableObject
 
     public string SavingsLabel => "Savings";
 
+    public bool HasSavings => SavingsAmount > 0m;
+
     public string CurrentAdvertisementTitle => CurrentAdvertisement?.Title ?? string.Empty;
 
     public string CurrentAdvertisementDescription => CurrentAdvertisement?.Description ?? string.Empty;
@@ -85,10 +88,18 @@ public sealed partial class CustomerDisplayViewModel : ObservableObject
     public void LoadLines(IEnumerable<CustomerDisplayLine> lines, decimal subtotal, decimal savingsAmount)
     {
         var materialized = lines.ToList();
+        // 退货行金额为负数，折扣上限只取销售行原价，避免混合购物车截断合法折扣。
+        var maximumSavingsAmount = decimal.Round(
+            materialized.Sum(line => Math.Max(0m, line.GrossAmount)),
+            2,
+            MidpointRounding.AwayFromZero);
+        var normalizedSavingsAmount = decimal.Round(savingsAmount, 2, MidpointRounding.AwayFromZero);
+        var effectiveSavingsAmount = Math.Clamp(normalizedSavingsAmount, 0m, maximumSavingsAmount);
+
         Lines.ReplaceWith(materialized);
         Subtotal = subtotal;
-        SavingsAmount = savingsAmount;
-        TotalToPay = subtotal - savingsAmount;
+        SavingsAmount = effectiveSavingsAmount;
+        TotalToPay = subtotal - effectiveSavingsAmount;
         // 客显 GST 是含税应付额里的税额组成部分，不能再加回应付金额。
         TaxAmount = decimal.Round(TotalToPay / 11m, 2, MidpointRounding.AwayFromZero);
         TotalItemQuantity = materialized.Sum(line => line.Quantity);

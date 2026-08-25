@@ -1,6 +1,7 @@
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Contracts.Catalog;
+using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Tests;
 
@@ -465,16 +466,17 @@ public sealed class PosCartServiceTests
     }
 
     [Fact]
-    public void DecreaseLine_removes_the_line_when_quantity_reaches_zero()
+    public void DecreaseLine_keeps_the_line_when_quantity_is_one()
     {
         var cart = new PosCartService();
         var line = cart.AddItem(CreateItem(price: 10m));
 
-        Assert.True(cart.DecreaseLine(line));
+        Assert.False(cart.DecreaseLine(line));
 
-        Assert.Empty(cart.Lines);
-        Assert.Equal(0m, cart.TotalAmount);
-        Assert.Equal(0m, cart.ActualAmount);
+        Assert.Same(line, Assert.Single(cart.Lines));
+        Assert.Equal(1m, line.Quantity);
+        Assert.Equal(10m, cart.TotalAmount);
+        Assert.Equal(10m, cart.ActualAmount);
     }
 
     [Fact]
@@ -847,8 +849,39 @@ public sealed class PosCartServiceTests
         Assert.False(cart.SetLineQuantity(first, 3m));
         Assert.False(cart.SetLineUnitPrice(first, 9m));
         Assert.False(cart.SetLineDiscountAmount(first, 1m));
+        Assert.Same(first, Assert.Single(cart.Lines));
+        Assert.Equal(2m, first.Quantity);
         Assert.True(cart.RemoveLine(first));
         Assert.Empty(cart.Lines);
+    }
+
+    [Fact]
+    public void ReturnLine_decrease_at_quantity_one_keeps_line_until_explicit_remove()
+    {
+        var cart = new PosCartService();
+        var line = cart.AddReturnLine(CreateReturnLine("receipt-order-line-1"));
+        cart.AddReturnPaymentCapacities(
+        [
+            new OrderReturnPaymentCapacityDto(
+                PaymentMethodKind.Card,
+                OriginalAmount: 10m,
+                RefundedAmount: 0m,
+                RemainingAmount: 10m,
+                Reference: "SQ:return-capacity")
+        ]);
+
+        Assert.False(cart.DecreaseLine(line));
+
+        Assert.Same(line, Assert.Single(cart.Lines));
+        Assert.Equal(1m, line.Quantity);
+        Assert.Equal(-10m, cart.ActualAmount);
+        Assert.True(cart.HasReturnLine);
+        Assert.Single(cart.ReturnPaymentCapacities);
+
+        Assert.True(cart.RemoveLine(line));
+        Assert.Empty(cart.Lines);
+        Assert.False(cart.HasReturnLine);
+        Assert.Empty(cart.ReturnPaymentCapacities);
     }
 
     [Fact]
@@ -1233,6 +1266,126 @@ public sealed class PosCartServiceTests
 
         Assert.True(line.IsAutomaticPromotionDiscount);
         Assert.Equal(5m, line.DiscountAmount);
+    }
+
+    [Fact]
+    public void Recovery_publication_requires_empty_cart_and_matching_revision()
+    {
+        var cart = new PosCartService();
+        var staleRevision = cart.Revision;
+        cart.AddItem(CreateItem(productCode: "CURRENT", lookupCode: "CURRENT"));
+
+        var nonEmpty = cart.TryPublishRecoverySnapshot(
+            Guid.NewGuid(),
+            cart.Revision,
+            CreateRecoverySnapshot());
+        Assert.False(nonEmpty.Succeeded);
+        Assert.Single(cart.Lines);
+
+        cart.Clear();
+        var stale = cart.TryPublishRecoverySnapshot(
+            Guid.NewGuid(),
+            staleRevision,
+            CreateRecoverySnapshot());
+        Assert.False(stale.Succeeded);
+        Assert.True(cart.IsEmpty);
+    }
+
+    [Fact]
+    public void Recovery_publication_blocks_normal_mutations_until_matching_owner_completes()
+    {
+        var cart = new PosCartService();
+        var attemptGuid = Guid.NewGuid();
+
+        var published = cart.TryPublishRecoverySnapshot(
+            attemptGuid,
+            cart.Revision,
+            CreateRecoverySnapshot());
+
+        Assert.True(published.Succeeded);
+        Assert.Equal(attemptGuid, cart.RecoveryOwnerAttemptGuid);
+        Assert.Throws<InvalidOperationException>(() =>
+            cart.AddItem(CreateItem(productCode: "NEW", lookupCode: "NEW")));
+        Assert.False(cart.CompleteRecoveryPublication(Guid.NewGuid()));
+        Assert.Equal(attemptGuid, cart.RecoveryOwnerAttemptGuid);
+
+        Assert.True(cart.CompleteRecoveryPublication(attemptGuid));
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+        cart.AddItem(CreateItem(productCode: "NEW", lookupCode: "NEW"));
+        Assert.Equal(2, cart.Lines.Count);
+    }
+
+    [Fact]
+    public void Recovery_publication_rollback_only_clears_matching_owner_snapshot()
+    {
+        var cart = new PosCartService();
+        var attemptGuid = Guid.NewGuid();
+        Assert.True(cart.TryPublishRecoverySnapshot(
+            attemptGuid,
+            cart.Revision,
+            CreateRecoverySnapshot()).Succeeded);
+
+        Assert.False(cart.RollbackRecoveryPublication(Guid.NewGuid()).Succeeded);
+        Assert.Single(cart.Lines);
+        Assert.Equal(attemptGuid, cart.RecoveryOwnerAttemptGuid);
+
+        var rolledBack = cart.RollbackRecoveryPublication(attemptGuid);
+        Assert.True(rolledBack.Succeeded);
+        Assert.True(cart.IsEmpty);
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+    }
+
+    [Fact]
+    public void Recovery_publication_validates_snapshot_before_exposing_any_lines()
+    {
+        var cart = new PosCartService();
+        var validLine = CreateRecoverySnapshot().Lines[0];
+        var invalidSnapshot = new PosCartSnapshot(
+        [
+            validLine,
+            validLine with { ProductCode = "INVALID", LookupCode = "INVALID", Quantity = 0.5m }
+        ]);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            cart.TryPublishRecoverySnapshot(Guid.NewGuid(), cart.Revision, invalidSnapshot));
+        Assert.True(cart.IsEmpty);
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+    }
+
+    [Fact]
+    public void Recovery_publication_treats_non_fatal_subscriber_failure_as_warning()
+    {
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new InvalidOperationException("subscriber failed");
+
+        var published = cart.TryPublishRecoverySnapshot(
+            Guid.NewGuid(),
+            cart.Revision,
+            CreateRecoverySnapshot());
+
+        Assert.True(published.Succeeded);
+        Assert.True(published.NotificationWarning);
+        Assert.Single(cart.Lines);
+    }
+
+    [Fact]
+    public void Recovery_publication_propagates_out_of_memory_from_subscriber()
+    {
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new OutOfMemoryException("fatal");
+
+        Assert.Throws<OutOfMemoryException>(() =>
+            cart.TryPublishRecoverySnapshot(
+                Guid.NewGuid(),
+                cart.Revision,
+                CreateRecoverySnapshot()));
+    }
+
+    private static PosCartSnapshot CreateRecoverySnapshot()
+    {
+        var stagingCart = new PosCartService();
+        stagingCart.AddItem(CreateItem(productCode: "RECOVERY", lookupCode: "RECOVERY"));
+        return stagingCart.CreateSnapshot();
     }
 
     private static SellableItemDto CreateItem(

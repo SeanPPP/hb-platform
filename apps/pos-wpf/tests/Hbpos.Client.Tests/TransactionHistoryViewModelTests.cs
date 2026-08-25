@@ -712,6 +712,18 @@ public sealed class TransactionHistoryViewModelTests
             orderGuid.ToString("D"),
             Assert.Single(viewModel.ReceiptPreviewRows, row => row.IsQrCode).QrCodeValue);
 
+        var selectedOrder = Assert.Single(viewModel.Orders);
+        Assert.False(viewModel.IsReceiptPreviewOpen);
+        Assert.True(viewModel.OpenReceiptPreviewCommand.CanExecute(selectedOrder));
+
+        viewModel.OpenReceiptPreviewCommand.Execute(selectedOrder);
+
+        Assert.True(viewModel.IsReceiptPreviewOpen);
+
+        viewModel.CloseReceiptPreviewCommand.Execute(null);
+
+        Assert.False(viewModel.IsReceiptPreviewOpen);
+
         viewModel.ReprintCommand.Execute(null);
 
         Assert.True(reprintRequested);
@@ -1192,6 +1204,47 @@ public sealed class TransactionHistoryViewModelTests
         localization.SetCulture("en-US");
 
         Assert.Equal("Jul 28, 2026 05:56", viewModel.SelectedOrder?.SoldAtDisplay);
+    }
+
+    [Fact]
+    public void Date_picker_language_follows_localization_culture()
+    {
+        var originalCulture = CultureInfo.CurrentCulture;
+        var originalUiCulture = CultureInfo.CurrentUICulture;
+        var originalDefaultCulture = CultureInfo.DefaultThreadCurrentCulture;
+        var originalDefaultUiCulture = CultureInfo.DefaultThreadCurrentUICulture;
+        try
+        {
+            var localization = new LocalizationService();
+            using var viewModel = new TransactionHistoryViewModel(
+                new CapturingReceiptQueryService(),
+                new CapturingSuspendedOrderService(),
+                new CapturingRemoteOrderHistoryService(),
+                CreateSession(),
+                localization: localization);
+            var changedProperties = new List<string?>();
+            viewModel.PropertyChanged += (_, args) => changedProperties.Add(args.PropertyName);
+
+            Assert.Equal(
+                LocalizationService.DefaultCultureName,
+                viewModel.CurrentUiLanguage.IetfLanguageTag,
+                ignoreCase: true);
+
+            localization.SetCulture(LocalizationService.ChineseCultureName);
+
+            Assert.Equal(
+                LocalizationService.ChineseCultureName,
+                viewModel.CurrentUiLanguage.IetfLanguageTag,
+                ignoreCase: true);
+            Assert.Contains(nameof(TransactionHistoryViewModel.CurrentUiLanguage), changedProperties);
+        }
+        finally
+        {
+            CultureInfo.DefaultThreadCurrentCulture = originalDefaultCulture;
+            CultureInfo.DefaultThreadCurrentUICulture = originalDefaultUiCulture;
+            CultureInfo.CurrentCulture = originalCulture;
+            CultureInfo.CurrentUICulture = originalUiCulture;
+        }
     }
 
     [Fact]

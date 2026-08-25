@@ -2,7 +2,11 @@ using System.ComponentModel;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
+using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Client.Wpf.Views.Screens;
@@ -29,6 +33,9 @@ public sealed class WpfViewLifecycleTests
                 VerifySettingsViewLifecycle();
                 VerifyTransactionHistoryViewLifecycle();
                 VerifyPaymentViewLifecycle();
+                VerifyDailyCloseCashCountDialogBindings();
+                VerifyDailyCloseCashWorkspaceRuntime();
+                VerifyPosTerminalTouchLayout();
                 VerifyUnloadedViewInstancesAreCollectible();
             }
             finally
@@ -130,6 +137,365 @@ public sealed class WpfViewLifecycleTests
         view.DataContext = null;
     }
 
+    private static void VerifyDailyCloseCashCountDialogBindings()
+    {
+        var view = new DailyCloseView
+        {
+            DataContext = new CashCountDialogBindingSource()
+        };
+
+        view.Measure(new Size(1366, 768));
+        view.Arrange(new Rect(0, 0, 1366, 768));
+        view.UpdateLayout();
+        Dispatcher.CurrentDispatcher.Invoke(static () => { }, DispatcherPriority.DataBind);
+        view.DataContext = null;
+    }
+
+    private static void VerifyDailyCloseCashWorkspaceRuntime()
+    {
+        using var viewModel = new DailyCloseViewModel(
+            new DailyCloseRuntimeService(),
+            new DailyCloseRuntimePrintService(),
+            new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0));
+        var view = new DailyCloseView { DataContext = viewModel };
+        var host = new Window
+        {
+            Width = 1080,
+            Height = 720,
+            WindowStyle = WindowStyle.None,
+            ResizeMode = ResizeMode.NoResize,
+            ShowInTaskbar = false,
+            Content = view
+        };
+
+        host.Show();
+        host.Activate();
+        try
+        {
+            var tabControl = Assert.IsType<TabControl>(view.FindName("DailyCloseTabControl"));
+            tabControl.ApplyTemplate();
+            var toolbar = Assert.IsType<Border>(tabControl.Template.FindName("DailyCloseToolbar", tabControl));
+            var toolbarLayout = Assert.IsType<Grid>(tabControl.Template.FindName("DailyCloseToolbarLayout", tabControl));
+            var navigationTabs = Assert.IsType<Border>(tabControl.Template.FindName("DailyCloseNavigationTabsBorder", tabControl));
+            var refreshHistoryButton = Assert.IsType<Button>(tabControl.Template.FindName("DailyCloseRefreshHistoryButton", tabControl));
+            var createDraftButton = Assert.IsType<Button>(tabControl.Template.FindName("DailyCloseCreateDraftButton", tabControl));
+            var continueDraftButton = Assert.IsType<Button>(tabControl.Template.FindName("DailyCloseContinueDraftButton", tabControl));
+            var historyTab = Assert.IsType<TabItem>(tabControl.Items[0]);
+            var linklyTab = Assert.IsType<TabItem>(tabControl.Items[1]);
+
+            PumpDispatcher();
+
+            Assert.Empty(toolbarLayout.RowDefinitions);
+            Assert.InRange(toolbar.ActualHeight, 60, 82);
+            Assert.InRange(navigationTabs.ActualWidth, 307.5, double.MaxValue);
+            Assert.InRange(historyTab.ActualWidth, 147.5, double.MaxValue);
+            Assert.InRange(linklyTab.ActualWidth, 147.5, double.MaxValue);
+            Assert.True(createDraftButton.IsVisible);
+            Assert.False(continueDraftButton.IsVisible);
+            AssertFullyContained(navigationTabs, toolbar);
+            AssertFullyContained(refreshHistoryButton, toolbar);
+            AssertFullyContained(createDraftButton, toolbar);
+
+            viewModel.HasDailyCloseDraft = true;
+            PumpDispatcher();
+
+            Assert.False(createDraftButton.IsVisible);
+            Assert.True(continueDraftButton.IsVisible);
+            AssertFullyContained(continueDraftButton, toolbar);
+
+            viewModel.IsCashCountWorkspaceOpen = true;
+            PumpDispatcher();
+
+            var workspace = Assert.IsType<Grid>(view.FindName("DailyCloseCashWorkspaceOverlay"));
+            var workspaceSurface = Assert.Single(workspace.Children.OfType<Border>());
+            var workspaceBody = Assert.IsType<Grid>(view.FindName("DailyCloseCashWorkspaceBody"));
+            var cashCountPanel = Assert.IsType<Border>(view.FindName("CashCountPanel"));
+            var zReportPanel = Assert.IsType<Border>(view.FindName("DailyCloseZReportPanel"));
+            var discardButton = Assert.IsType<Button>(view.FindName("DailyCloseDiscardDraftButton"));
+            var returnButton = Assert.IsType<Button>(view.FindName("DailyCloseCashWorkspaceReturnButton"));
+            var saveButton = Assert.IsType<Button>(view.FindName("DailyCloseSaveAndFinalizeButton"));
+            Assert.Equal(KeyboardNavigationMode.Cycle, KeyboardNavigation.GetTabNavigation(workspace));
+            Assert.Same(returnButton, Keyboard.FocusedElement);
+            Assert.True(returnButton.IsVisible);
+            AssertFullyContained(workspaceSurface, workspace);
+            AssertFullyContained(workspaceBody, workspaceSurface);
+            AssertFullyContained(cashCountPanel, workspaceBody);
+            AssertFullyContained(zReportPanel, workspaceBody);
+            AssertFullyContained(discardButton, workspaceSurface);
+            AssertFullyContained(returnButton, workspaceSurface);
+            AssertFullyContained(saveButton, workspaceSurface);
+
+            viewModel.OpenCashCountDialogCommand.Execute(viewModel.Denominations.First());
+            PumpDispatcher();
+
+            var keypad = Assert.IsType<Grid>(view.FindName("CashCountDialogOverlay"));
+            var keypadCancel = Assert.IsType<Button>(view.FindName("CashCountDialogCancelButton"));
+            Assert.Equal(KeyboardNavigationMode.Cycle, KeyboardNavigation.GetTabNavigation(keypad));
+            Assert.Same(keypadCancel, Keyboard.FocusedElement);
+
+            RaiseEscapeFromFocusedElement();
+
+            Assert.False(viewModel.IsCashCountDialogOpen);
+            Assert.True(viewModel.IsCashCountWorkspaceOpen);
+            Assert.True(viewModel.HasDailyCloseDraft);
+            Assert.Same(returnButton, Keyboard.FocusedElement);
+
+            RaiseEscapeFromFocusedElement();
+
+            Assert.False(viewModel.IsCashCountWorkspaceOpen);
+            Assert.True(viewModel.HasDailyCloseDraft);
+
+            viewModel.IsCashCountWorkspaceOpen = true;
+            PumpDispatcher();
+            viewModel.RequestDiscardDailyCloseDraftCommand.Execute(null);
+            PumpDispatcher();
+
+            var discard = Assert.IsType<Grid>(view.FindName("DailyCloseDiscardDraftOverlay"));
+            var discardCancel = Assert.IsType<Button>(view.FindName("DailyCloseDiscardDraftCancelButton"));
+            Assert.Equal(KeyboardNavigationMode.Cycle, KeyboardNavigation.GetTabNavigation(discard));
+            Assert.Same(discardCancel, Keyboard.FocusedElement);
+
+            RaiseEscapeFromFocusedElement();
+
+            Assert.False(viewModel.IsDiscardDailyCloseDraftConfirmationOpen);
+            Assert.True(viewModel.IsCashCountWorkspaceOpen);
+            Assert.True(viewModel.HasDailyCloseDraft);
+            Assert.Same(returnButton, Keyboard.FocusedElement);
+
+            host.Width = 2034;
+            host.Height = 1140;
+            PumpDispatcher();
+
+            Assert.InRange(workspaceSurface.ActualWidth, 1599.5, 1600.5);
+            AssertFullyContained(workspaceSurface, workspace);
+            AssertFullyContained(workspaceBody, workspaceSurface);
+            AssertFullyContained(cashCountPanel, workspaceBody);
+            AssertFullyContained(zReportPanel, workspaceBody);
+            AssertFullyContained(discardButton, workspaceSurface);
+            AssertFullyContained(returnButton, workspaceSurface);
+            AssertFullyContained(saveButton, workspaceSurface);
+        }
+        finally
+        {
+            host.Close();
+            view.DataContext = null;
+        }
+    }
+
+    private static void PumpDispatcher()
+    {
+        Dispatcher.CurrentDispatcher.Invoke(static () => { }, DispatcherPriority.ApplicationIdle);
+    }
+
+    private static void RaiseEscapeFromFocusedElement()
+    {
+        var focusedElement = Assert.IsAssignableFrom<UIElement>(Keyboard.FocusedElement);
+        var presentationSource = PresentationSource.FromVisual(focusedElement);
+        Assert.NotNull(presentationSource);
+        var keyEvent = new KeyEventArgs(
+            Keyboard.PrimaryDevice,
+            presentationSource!,
+            Environment.TickCount,
+            Key.Escape)
+        {
+            RoutedEvent = Keyboard.PreviewKeyDownEvent
+        };
+
+        focusedElement.RaiseEvent(keyEvent);
+        Assert.True(keyEvent.Handled);
+        PumpDispatcher();
+    }
+
+    private static void AssertFullyContained(FrameworkElement child, FrameworkElement ancestor)
+    {
+        var origin = child.TransformToAncestor(ancestor).Transform(new Point());
+        Assert.True(origin.X >= -0.5, $"{child.Name} 左侧超出弹窗边界。实际：{origin.X:0.##}");
+        Assert.True(origin.Y >= -0.5, $"{child.Name} 顶部超出弹窗边界。实际：{origin.Y:0.##}");
+        Assert.True(
+            origin.X + child.ActualWidth <= ancestor.ActualWidth + 0.5,
+            $"{child.Name} 右侧超出弹窗边界。");
+        Assert.True(
+            origin.Y + child.ActualHeight <= ancestor.ActualHeight + 0.5,
+            $"{child.Name} 底部超出弹窗边界。");
+    }
+
+    private static void VerifyPosTerminalTouchLayout()
+    {
+        VerifyPosTerminalTouchLayoutAtSize(1080, 720);
+        VerifyPosTerminalTouchLayoutAtSize(1366, 768);
+    }
+
+    private static void VerifyPosTerminalTouchLayoutAtSize(double targetWidth, double targetWindowHeight)
+    {
+        var targetContentHeight = targetWindowHeight - 54 - 42;
+        var view = new PosTerminalView();
+        var root = Assert.IsType<System.Windows.Controls.Grid>(view.Content);
+        var cartItemsGrid = Assert.Single(root.Children
+            .OfType<System.Windows.Controls.Grid>()
+            .SelectMany(child => child.Children
+                .OfType<Border>()
+                .Select(border => border.Child)
+                .OfType<DataGrid>()));
+        cartItemsGrid.ItemsSource = Enumerable.Range(1, 4)
+            .Select(index => new CartLayoutProbe(
+                DisplayName: $"Product {index}",
+                ItemNumber: $"SKU-{index:000}",
+                LookupCode: $"69000{index}",
+                ProductImage: null,
+                UnitPrice: 4.5m,
+                SignedQuantity: 1m,
+                GrossAmount: 4.5m,
+                ActualAmount: 4.5m,
+                HasDiscount: false,
+                DiscountRateText: string.Empty,
+                HasZeroUnitPrice: false,
+                IsReturnLine: false))
+            .ToArray();
+
+        var host = new Window
+        {
+            Content = view,
+            Width = targetWidth,
+            Height = targetContentHeight,
+            WindowStyle = WindowStyle.None,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.Manual,
+            Left = -10000,
+            Top = -10000,
+            ShowActivated = false,
+            ShowInTaskbar = false
+        };
+        host.Show();
+        host.UpdateLayout();
+        PumpDispatcher();
+        view.UpdateLayout();
+
+        Assert.Equal(3, root.ColumnDefinitions.Count);
+        var cartWidth = root.ColumnDefinitions[0].ActualWidth;
+        var keypadWidth = root.ColumnDefinitions[1].ActualWidth;
+        var sidebarWidth = root.ColumnDefinitions[2].ActualWidth;
+        Assert.True(cartWidth >= 600, $"{targetWidth:0}×{targetWindowHeight:0} 下购物车宽度不足：{cartWidth:0.##}。");
+        Assert.True(keypadWidth >= 280, $"{targetWidth:0}×{targetWindowHeight:0} 下键盘宽度不足：{keypadWidth:0.##}。");
+        Assert.True(sidebarWidth >= 180, $"{targetWidth:0}×{targetWindowHeight:0} 下右侧操作区宽度不足：{sidebarWidth:0.##}。");
+        Assert.InRange(cartWidth + keypadWidth + sidebarWidth, targetWidth - 0.5, targetWidth + 0.5);
+        if (targetWidth == 1366)
+        {
+            Assert.InRange(cartWidth, 790, 794);
+            Assert.InRange(keypadWidth, 353, 357);
+            Assert.InRange(sidebarWidth, 216, 220);
+            Assert.True(cartWidth > sidebarWidth * 3.5, "1366×768 下购物车应明显宽于右侧操作区。");
+        }
+
+        var cartSummary = Assert.IsType<Border>(view.FindName("CartSummaryPanel"));
+        var totalsSummary = Assert.IsType<Border>(view.FindName("CartTotalsSummaryRow"));
+        var inputBuffer = Assert.IsType<Border>(view.FindName("InputBufferHost"));
+        Assert.InRange(cartSummary.ActualHeight, 91.5, 92.5);
+        Assert.InRange(totalsSummary.ActualHeight, 57.5, 58.5);
+        Assert.InRange(inputBuffer.ActualHeight, 77.5, 78.5);
+
+        Assert.Equal(6, cartItemsGrid.Columns.Count);
+        Assert.InRange(cartItemsGrid.Columns[0].ActualWidth, 43.5, 44.5);
+        Assert.True(
+            cartItemsGrid.Columns.Sum(column => column.ActualWidth) <= cartItemsGrid.ActualWidth + 0.5,
+            $"{targetWidth:0}×{targetWindowHeight:0} 下购物车列宽超出可视区域。");
+
+        var cartRows = Enumerable.Range(0, 4)
+            .Select(index => Assert.IsType<DataGridRow>(cartItemsGrid.ItemContainerGenerator.ContainerFromIndex(index)))
+            .ToArray();
+        Assert.All(cartRows, row => Assert.True(row.ActualHeight >= 67));
+        for (var index = 0; index < cartRows.Length; index++)
+        {
+            var rowNumberCell = FindVisualDescendants<DataGridCell>(cartRows[index])
+                .Single(cell => cell.Column.DisplayIndex == 0);
+            var rowNumber = Assert.Single(FindVisualDescendants<TextBlock>(rowNumberCell));
+            Assert.Equal((index + 1).ToString(), rowNumber.Text);
+        }
+
+        var firstRowCells = FindVisualDescendants<DataGridCell>(cartRows[0])
+            .OrderBy(cell => cell.Column.DisplayIndex)
+            .ToArray();
+        Assert.Equal(6, firstRowCells.Length);
+        Assert.All(firstRowCells, cell => AssertHorizontallyContained(cell, cartRows[0], targetWidth, targetWindowHeight));
+
+        var metadataLine = Assert.Single(FindVisualDescendants<StackPanel>(firstRowCells[1])
+            .Where(panel => panel.Name == "CartItemMetadataLine"));
+        AssertHorizontallyContained(metadataLine, firstRowCells[1], targetWidth, targetWindowHeight);
+
+        var quantityButtons = FindVisualDescendants<Button>(firstRowCells[3]).ToArray();
+        Assert.Equal(2, quantityButtons.Length);
+        Assert.All(quantityButtons, button =>
+        {
+            Assert.Equal(32, button.ActualWidth);
+            AssertHorizontallyContained(button, firstRowCells[3], targetWidth, targetWindowHeight);
+        });
+
+        var totalTexts = FindVisualDescendants<TextBlock>(firstRowCells[4]).ToArray();
+        Assert.NotEmpty(totalTexts);
+        Assert.All(totalTexts, text => AssertHorizontallyContained(text, firstRowCells[4], targetWidth, targetWindowHeight));
+
+        var deleteButton = Assert.Single(FindVisualDescendants<Button>(firstRowCells[5]));
+        Assert.Equal(32, deleteButton.ActualWidth);
+        AssertHorizontallyContained(deleteButton, firstRowCells[5], targetWidth, targetWindowHeight);
+
+        var keypad = Assert.IsType<System.Windows.Controls.Primitives.UniformGrid>(view.FindName("CashierKeypad"));
+        var numericParameters = new HashSet<string>(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "."]);
+        var numericButtons = keypad.Children
+            .OfType<Button>()
+            .Where(button => numericParameters.Contains(button.CommandParameter?.ToString() ?? string.Empty))
+            .ToArray();
+        Assert.Equal(11, numericButtons.Length);
+        Assert.All(numericButtons, button =>
+        {
+            Assert.Equal(28, button.FontSize);
+            Assert.Equal(FontWeights.Black, button.FontWeight);
+            Assert.True(button.ActualHeight >= 44, $"数字键触控高度不足：{button.ActualHeight:0.##}。");
+        });
+
+        var sidebar = Assert.IsType<System.Windows.Controls.Grid>(view.FindName("AttendanceQrSidebar"));
+        var actionGrid = Assert.Single(sidebar.Children.OfType<System.Windows.Controls.Primitives.UniformGrid>());
+        var actionButtons = actionGrid.Children.OfType<System.Windows.Controls.Button>().ToArray();
+        Assert.Equal(10, actionButtons.Length);
+        Assert.All(actionButtons, button =>
+        {
+            var minimumWidth = targetWidth == 1366 ? 90 : 76;
+            Assert.True(button.ActualWidth >= minimumWidth, $"右侧按钮触控宽度不足：{button.ActualWidth:0.##}。");
+            Assert.True(button.ActualHeight >= 62, $"右侧按钮触控高度不足：{button.ActualHeight:0.##}。");
+        });
+
+        host.Close();
+    }
+
+    private static IEnumerable<T> FindVisualDescendants<T>(DependencyObject parent)
+        where T : DependencyObject
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, index);
+            if (child is T match)
+            {
+                yield return match;
+            }
+
+            foreach (var descendant in FindVisualDescendants<T>(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
+    private static void AssertHorizontallyContained(
+        FrameworkElement child,
+        FrameworkElement ancestor,
+        double targetWidth,
+        double targetWindowHeight)
+    {
+        var origin = child.TransformToAncestor(ancestor).Transform(new Point());
+        Assert.True(
+            origin.X >= -0.5 && origin.X + child.ActualWidth <= ancestor.ActualWidth + 0.5,
+            $"{targetWidth:0}×{targetWindowHeight:0} 下 {child.GetType().Name} 超出 {ancestor.GetType().Name} 水平边界：" +
+            $"起点 {origin.X:0.##}，宽度 {child.ActualWidth:0.##}，容器宽度 {ancestor.ActualWidth:0.##}。");
+    }
+
     private static void VerifyUnloadedViewInstancesAreCollectible()
     {
         using var settingsViewModel = CreateSettingsViewModel();
@@ -224,7 +590,10 @@ public sealed class WpfViewLifecycleTests
 
     private static Application CreateTestApplication()
     {
-        var application = new Application();
+        var application = new Application
+        {
+            ShutdownMode = ShutdownMode.OnExplicitShutdown
+        };
         application.Resources.MergedDictionaries.Add(new ResourceDictionary
         {
             Source = new Uri(
@@ -350,6 +719,93 @@ public sealed class WpfViewLifecycleTests
         {
             add => _propertyChanged += value;
             remove => _propertyChanged -= value;
+        }
+    }
+
+    private sealed record CartLayoutProbe(
+        string DisplayName,
+        string ItemNumber,
+        string LookupCode,
+        string? ProductImage,
+        decimal UnitPrice,
+        decimal SignedQuantity,
+        decimal GrossAmount,
+        decimal ActualAmount,
+        bool HasDiscount,
+        string DiscountRateText,
+        bool HasZeroUnitPrice,
+        bool IsReturnLine);
+
+    private sealed class CashCountDialogBindingSource
+    {
+        public bool IsCashCountWorkspaceOpen => true;
+
+        public bool IsCashCountDialogOpen => true;
+
+        public bool IsDiscardDailyCloseDraftConfirmationOpen => false;
+
+        public string BusinessDateText => "Tue, 25 Aug 2026";
+
+        public int CashCountDialogQuantity => 2;
+
+        public decimal CashCountDialogSubtotal => 200m;
+
+        public string KeypadBuffer => "2";
+
+        public CashCountDialogDenomination SelectedCashDenomination { get; } = new();
+    }
+
+    private sealed class CashCountDialogDenomination
+    {
+        public string Label => "$100";
+    }
+
+    private sealed class DailyCloseRuntimeService : IDailyCloseService
+    {
+        public IReadOnlyList<CashDenomination> Denominations => DailyCloseService.AustralianDenominations;
+
+        public Task<DailyCloseReport> LoadReportAsync(
+            PosSessionState session,
+            DateTime businessDate,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException("运行时弹窗测试不应加载日结汇总。");
+        }
+
+        public Task<DailyCloseArchive> SaveAsync(
+            PosSessionState session,
+            DateTime businessDate,
+            IReadOnlyList<CashDenominationCount> cashCounts,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException("运行时弹窗测试不应保存日结。");
+        }
+
+        public Task<IReadOnlyList<DailyCloseArchive>> GetArchivesAsync(
+            PosSessionState session,
+            DateTime businessDate,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException("运行时弹窗测试不应加载日结历史。");
+        }
+    }
+
+    private sealed class DailyCloseRuntimePrintService : IDailyClosePrintService
+    {
+        public Task<ReceiptPrintDocument> BuildDocumentAsync(
+            DailyCloseArchive archive,
+            ReceiptPrintReason reason = ReceiptPrintReason.Manual,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException("运行时弹窗测试不应生成打印文档。");
+        }
+
+        public Task<ReceiptPrintResult> PrintAsync(
+            DailyCloseArchive archive,
+            ReceiptPrintReason reason = ReceiptPrintReason.Manual,
+            CancellationToken cancellationToken = default)
+        {
+            throw new NotSupportedException("运行时弹窗测试不应调用打印机。");
         }
     }
 

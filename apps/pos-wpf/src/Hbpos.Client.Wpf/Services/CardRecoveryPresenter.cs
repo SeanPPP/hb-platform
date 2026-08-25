@@ -11,6 +11,9 @@ using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Wpf.Services;
 
+internal sealed class CardRecoveryDraftHandoffPostCommitException(string message)
+    : InvalidOperationException(message);
+
 internal sealed class CardRecoveryPresenter
 {
     private enum ActiveSessionRecoveryDialogAction
@@ -38,6 +41,9 @@ internal sealed class CardRecoveryPresenter
     private readonly Action<PosSessionState>? _setSession;
     private readonly Action<LocalOrder>? _onCardRecoveryOrderCompleted;
     private readonly Action<IReadOnlyList<PaymentTender>?, string?>? _onCardRecoveryDraftRestored;
+    private readonly Func<bool, IReadOnlyList<PaymentTender>?, string?, bool>? _tryApplyCardRecoveryDraft;
+    private readonly Func<CardRecoveryAttemptKey, CancellationToken, Task<bool>>? _completeRecoveredDraftHandoffAsync;
+    private readonly Action<bool>? _setAlternativeRefundMethodRequired;
     private readonly Func<Task>? _refreshPendingSyncAsync;
     private readonly Func<ReceiptDetails, ReceiptPrintReason, Task<ReceiptPrintResult>>? _printReceiptAsync;
     private readonly Func<bool>? _canPrintReceipt;
@@ -45,7 +51,6 @@ internal sealed class CardRecoveryPresenter
     private readonly Action? _notifyPrintRecoveredReceiptCanExecuteChanged;
     private readonly Action<string>? _notifyPropertyChanged;
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
-    private readonly IOperationAuditLogger? _operationAuditLogger;
     private readonly Func<string, bool>? _requirePermission;
 
     private Task<CardPaymentRecoveryResult>? _cardPaymentRecoveryTask;
@@ -71,6 +76,8 @@ internal sealed class CardRecoveryPresenter
         Action<PosSessionState>? setSession = null,
         Action<LocalOrder>? onCardRecoveryOrderCompleted = null,
         Action<IReadOnlyList<PaymentTender>?, string?>? onCardRecoveryDraftRestored = null,
+        Func<bool, IReadOnlyList<PaymentTender>?, string?, bool>? tryApplyCardRecoveryDraft = null,
+        Func<CardRecoveryAttemptKey, CancellationToken, Task<bool>>? completeRecoveredDraftHandoffAsync = null,
         Func<Task>? refreshPendingSyncAsync = null,
         Func<ReceiptDetails, ReceiptPrintReason, Task<ReceiptPrintResult>>? printReceiptAsync = null,
         Func<bool>? canPrintReceipt = null,
@@ -79,7 +86,8 @@ internal sealed class CardRecoveryPresenter
         Action<string>? notifyPropertyChanged = null,
         IOperationAuthorizationService? operationAuthorizationService = null,
         IOperationAuditLogger? operationAuditLogger = null,
-        Func<string, bool>? requirePermission = null)
+        Func<string, bool>? requirePermission = null,
+        Action<bool>? setAlternativeRefundMethodRequired = null)
     {
         _cardPaymentRecoveryService = cardPaymentRecoveryService;
         _cardRecoveryResultDialogService = cardRecoveryResultDialogService;
@@ -99,6 +107,9 @@ internal sealed class CardRecoveryPresenter
         _setSession = setSession;
         _onCardRecoveryOrderCompleted = onCardRecoveryOrderCompleted;
         _onCardRecoveryDraftRestored = onCardRecoveryDraftRestored;
+        _tryApplyCardRecoveryDraft = tryApplyCardRecoveryDraft;
+        _completeRecoveredDraftHandoffAsync = completeRecoveredDraftHandoffAsync;
+        _setAlternativeRefundMethodRequired = setAlternativeRefundMethodRequired;
         _refreshPendingSyncAsync = refreshPendingSyncAsync;
         _printReceiptAsync = printReceiptAsync;
         _canPrintReceipt = canPrintReceipt;
@@ -106,7 +117,6 @@ internal sealed class CardRecoveryPresenter
         _notifyPrintRecoveredReceiptCanExecuteChanged = notifyPrintRecoveredReceiptCanExecuteChanged;
         _notifyPropertyChanged = notifyPropertyChanged;
         _operationAuthorizationService = operationAuthorizationService;
-        _operationAuditLogger = operationAuditLogger;
         _requirePermission = requirePermission;
 
         CloseCardRecoveryResultDialogCommand = new RelayCommand(CloseCardRecoveryResultDialog);
@@ -125,6 +135,43 @@ internal sealed class CardRecoveryPresenter
     // ---- State properties ----
 
     public CardRecoveryResultDialogViewModel? CardRecoveryResultDialog { get; set; }
+
+    public async Task<CardPaymentHandoffCandidate?> PrepareCardPaymentHandoffAsync(
+        CardPaymentHandoffRequest request)
+    {
+        if (_cardPaymentRecoveryService is null)
+        {
+            return null;
+        }
+
+        var openAttempts = await _cardPaymentRecoveryService.ListOpenAsync(request.Session, CancellationToken.None);
+        return CardPaymentHandoffQualification.SelectCandidate(openAttempts, request);
+    }
+
+    public async Task<bool> HandoffCardPaymentAsync(
+        CardPaymentHandoffCandidate candidate,
+        CardPaymentHandoffRequest request)
+    {
+        if (_cardPaymentRecoveryService is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var openAttempts = await _cardPaymentRecoveryService.ListOpenAsync(request.Session, CancellationToken.None);
+            // 确认瞬间再次定点核验，避免队列刷新、GUID 漂移或草稿损坏后误清当前订单。
+            return CardPaymentHandoffQualification.CandidateStillMatches(openAttempts, candidate, request);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            ConsoleLog.WriteError(
+                "CardRecovery",
+                $"card payment handoff confirmation failed attemptGuid={candidate.AttemptGuid} error={ex.GetType().Name}",
+                exception: ex);
+            return false;
+        }
+    }
 
     public bool IsCardRecoveryResultDialogOpen { get; set; }
 
@@ -149,7 +196,9 @@ internal sealed class CardRecoveryPresenter
             return false;
         }
 
-        _setPaymentRecoveryBlocked?.Invoke(true, "Checking the previous card transaction. Please do not collect payment again.");
+        _setPaymentRecoveryBlocked?.Invoke(
+            true,
+            "Checking the previous card transaction. Please do not collect payment again.");
         var recoveryTask = _cardPaymentRecoveryTask;
         if (recoveryTask is null)
         {
@@ -171,7 +220,7 @@ internal sealed class CardRecoveryPresenter
 
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             if (ReferenceEquals(_cardPaymentRecoveryTask, recoveryTask))
             {
@@ -182,65 +231,95 @@ internal sealed class CardRecoveryPresenter
                 "CardRecovery",
                 $"recover latest card payment failed error={ex.GetType().Name} message={ex.Message}",
                 exception: ex);
+            TrySetPaymentRecoveryBlocked(true, ex.Message);
             throw;
         }
 
-        if (ShouldRetryCardPaymentRecovery(result.Outcome) &&
+        if ((ShouldRetryCardPaymentRecovery(result.Outcome) || result.Outcome == CardPaymentRecoveryOutcome.DraftRestored) &&
             ReferenceEquals(_cardPaymentRecoveryTask, recoveryTask))
         {
             _cardPaymentRecoveryTask = null;
         }
 
-        ApplyRecoveryStatus(result);
-        if (result.Outcome == CardPaymentRecoveryOutcome.None)
+        try
         {
+            if (result.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
+            {
+                var paymentPageUnlocked = await HandoffRecoveredCardDraftAsync(
+                    result,
+                    navigateToPaymentOnDraft);
+
+                if (!paymentPageUnlocked)
+                {
+                    ReportDraftHandoffPostCommitWarning(
+                        result,
+                        "recovered card draft unlock");
+                    return true;
+                }
+
+                // 中文注释：付款页交接和命令刷新成功后，提示与结果对话才属于提交后动作。
+                RunPostCommitAction(
+                    () => _setStatusMessage?.Invoke(result.Message),
+                    "recovered card draft status");
+                RunPostCommitAction(
+                    () => ShowRecoveredCardDraftDialog(result),
+                    "recovered card draft dialog");
+                return true;
+            }
+
+            ApplyRecoveryStatus(result);
+            if (result.Outcome == CardPaymentRecoveryOutcome.None)
+            {
+                return false;
+            }
+
+            if (result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted && result.Order is not null)
+            {
+                if (_refreshPendingSyncAsync is not null)
+                {
+                    await _refreshPendingSyncAsync();
+                }
+
+                LogRecoveredCardOrderCompleted(result.Order);
+                var printResult = await PrintRecoveredCardReceiptAsync(result.Order);
+                _onCardRecoveryOrderCompleted?.Invoke(result.Order);
+                await ShowRecoveredCardOrderDialogAsync(result, printResult);
+                if (result.HasPostCommitWarning)
+                {
+                    // 打印、同步等收尾失败不能覆盖“金融提交已完成”的安全提示。
+                    ApplyRecoveryStatus(result);
+                }
+
+                _notifyShowCashPaymentCanExecuteChanged?.Invoke();
+                return true;
+            }
+
+            if (result.Outcome == CardPaymentRecoveryOutcome.Unknown)
+            {
+                ShowRecoveredCardFailureDialog(result);
+            }
+
             return false;
         }
-
-        if (result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted && result.Order is not null)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
-            if (_refreshPendingSyncAsync is not null)
+            var durableOutcomeWithoutRecoveryOwner = result.Outcome is
+                CardPaymentRecoveryOutcome.OrderCompleted or
+                CardPaymentRecoveryOutcome.None;
+            if (durableOutcomeWithoutRecoveryOwner)
             {
-                await _refreshPendingSyncAsync();
+                // 中文注释：服务已返回不需要恢复锁的耐久结果（尤其 OrderCompleted/None）后，
+                // UI、打印或命令通知失败只能记为 post-commit 告警，绝不能制造没有开放 attempt 的新锁。
+                TrySetPaymentRecoveryBlocked(false, result.Message);
+                TryWritePostCommitWarning(
+                    $"recovery result projection failed after durable outcome={result.Outcome} error={ex.GetType().Name}",
+                    ex);
+                return result.Outcome != CardPaymentRecoveryOutcome.None;
             }
 
-            LogRecoveredCardOrderCompleted(result.Order);
-            var printResult = await PrintRecoveredCardReceiptAsync(result.Order);
-            _onCardRecoveryOrderCompleted?.Invoke(result.Order);
-            await ShowRecoveredCardOrderDialogAsync(result, printResult);
-            if (result.HasPostCommitWarning)
-            {
-                // 打印、同步等收尾失败不能覆盖“金融提交已完成”的安全提示。
-                ApplyRecoveryStatus(result);
-            }
-
-            _notifyShowCashPaymentCanExecuteChanged?.Invoke();
-            return true;
+            TrySetPaymentRecoveryBlocked(true, ex.Message);
+            throw;
         }
-
-        if (result.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
-        {
-            var restoredTenders = result.RestoredTenders;
-            var hasRestoredTenders = restoredTenders is { Count: > 0 };
-
-            if ((navigateToPaymentOnDraft || hasRestoredTenders) && _navigateToPaymentOnDraft is not null)
-            {
-                await _navigateToPaymentOnDraft();
-            }
-
-            _onCardRecoveryDraftRestored?.Invoke(restoredTenders, hasRestoredTenders ? result.Message : null);
-            _notifyShowCashPaymentCanExecuteChanged?.Invoke();
-
-            ShowRecoveredCardDraftDialog(result);
-            return true;
-        }
-
-        if (result.Outcome == CardPaymentRecoveryOutcome.Unknown)
-        {
-            ShowRecoveredCardFailureDialog(result);
-        }
-
-        return false;
     }
 
     private async Task ResolveCardRefundAsync(CardRefundSupervisorDecision decision)
@@ -288,22 +367,74 @@ internal sealed class CardRecoveryPresenter
                 _cart,
                 GetSession(),
                 CancellationToken.None);
-            if (!result.Succeeded)
+            if (result.RecoveryResult is not { Outcome: CardPaymentRecoveryOutcome.DraftRestored })
             {
                 dialog.RefundResolutionMessage = result.Message;
+            }
+            var hasCompletedBusinessRecovery = result.Succeeded &&
+                result.RecoveryResult is
+                    { Outcome: CardPaymentRecoveryOutcome.DraftRestored } or
+                    { Outcome: CardPaymentRecoveryOutcome.OrderCompleted, Order: not null };
+            // FinalizePending 会保留 attempt 锁，但已发布的真实恢复结果仍必须交给付款页继续完成。
+            if ((result.LockRetained && !hasCompletedBusinessRecovery) ||
+                (!result.Succeeded && !result.ResolutionPersisted))
+            {
                 return;
             }
 
-            RecordRefundSupervisorAudit(details, resolution);
             _cardPaymentRecoveryTask = null;
-            _setStatusMessage?.Invoke(result.Message);
-            CloseCardRecoveryResultDialog();
+            if (result.RecoveryResult is { Outcome: CardPaymentRecoveryOutcome.DraftRestored } recoveredDraft)
+            {
+                // 主管结案的 DraftRestored 与普通恢复必须经过同一关键交接；交接失败时保留主管对话。
+                var paymentPageUnlocked = await HandoffRecoveredCardDraftAsync(
+                    recoveredDraft,
+                    navigateToPaymentOnDraft: true);
+                if (!paymentPageUnlocked)
+                {
+                    ReportDraftHandoffPostCommitWarning(
+                        recoveredDraft,
+                        $"refund resolution draft unlock attemptGuid={details.AttemptGuid:D}");
+                    RunPostCommitAction(
+                        CloseCardRecoveryResultDialog,
+                        $"refund resolution dialog close after committed unlock warning attemptGuid={details.AttemptGuid:D}");
+                    return;
+                }
+
+                RunPostCommitAction(
+                    () => _setStatusMessage?.Invoke(result.Message),
+                    $"refund resolution status attemptGuid={details.AttemptGuid:D}");
+                RunPostCommitAction(
+                    CloseCardRecoveryResultDialog,
+                    $"refund resolution dialog close attemptGuid={details.AttemptGuid:D}");
+                RunPostCommitAction(
+                    () => ShowRecoveredCardDraftDialog(recoveredDraft),
+                    $"refund resolution draft dialog attemptGuid={details.AttemptGuid:D}");
+                return;
+            }
+
+            RunPostCommitAction(
+                () => _setStatusMessage?.Invoke(result.Message),
+                $"refund resolution status attemptGuid={details.AttemptGuid:D}");
+            RunPostCommitAction(
+                CloseCardRecoveryResultDialog,
+                $"refund resolution dialog close attemptGuid={details.AttemptGuid:D}");
             if (result.RecoveryResult is not null)
             {
-                await ApplyResolvedRefundRecoveryAsync(result.RecoveryResult);
+                await RunPostCommitActionAsync(
+                    () => ApplyResolvedRefundRecoveryAsync(result.RecoveryResult),
+                    $"refund resolution result application attemptGuid={details.AttemptGuid:D}");
+            }
+            else
+            {
+                RunPostCommitAction(
+                    () => _setPaymentRecoveryBlocked?.Invoke(false, result.Message),
+                    $"refund resolution unlock attemptGuid={details.AttemptGuid:D}");
             }
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (
+            ex is not OperationCanceledException and
+            not OutOfMemoryException and
+            not StackOverflowException)
         {
             ConsoleLog.WriteError(
                 "CardRecovery",
@@ -339,7 +470,7 @@ internal sealed class CardRecoveryPresenter
             using var authorization = await ViewModelOperationAuthorization.AuthorizeAsync(
                 _operationAuthorizationService,
                 _requirePermission ?? DenyPermission,
-                Permissions.PosTerminal.Audit.View,
+                Permissions.PosTerminal.Payment.Confirm,
                 "card-recovery",
                 $"resolve-payment/{decision.ToString().ToLowerInvariant()}",
                 session,
@@ -374,44 +505,80 @@ internal sealed class CardRecoveryPresenter
                 _cart,
                 session,
                 CancellationToken.None);
-            if (!result.Succeeded)
+            if (result.RecoveryResult is not { Outcome: CardPaymentRecoveryOutcome.DraftRestored })
             {
                 dialog.RefundResolutionMessage = result.Message;
-                _setPaymentRecoveryBlocked?.Invoke(true, result.Message);
+            }
+            var hasCompletedBusinessRecovery = result.Succeeded &&
+                result.RecoveryResult is
+                    { Outcome: CardPaymentRecoveryOutcome.DraftRestored } or
+                    { Outcome: CardPaymentRecoveryOutcome.OrderCompleted, Order: not null };
+            // 保留异常记录只阻止重新收款，不能吞掉已经完成的订单或已发布草稿。
+            if ((result.LockRetained && !hasCompletedBusinessRecovery) ||
+                (!result.Succeeded && !result.ResolutionPersisted))
+            {
                 return;
             }
 
             _cardPaymentRecoveryTask = null;
-            _setStatusMessage?.Invoke(result.Message);
-            if (result.LockRetained)
+            if (result.RecoveryResult is { Outcome: CardPaymentRecoveryOutcome.DraftRestored } recoveredDraft)
             {
-                dialog.RefundResolutionMessage = result.Message;
-                _setPaymentRecoveryBlocked?.Invoke(true, result.Message);
+                // 主管结案的 DraftRestored 与普通恢复必须经过同一关键交接；交接失败时保留主管对话。
+                var paymentPageUnlocked = await HandoffRecoveredCardDraftAsync(
+                    recoveredDraft,
+                    navigateToPaymentOnDraft: true);
+                if (!paymentPageUnlocked)
+                {
+                    ReportDraftHandoffPostCommitWarning(
+                        recoveredDraft,
+                        $"payment resolution draft unlock attemptGuid={details.AttemptGuid:D}");
+                    RunPostCommitAction(
+                        CloseCardRecoveryResultDialog,
+                        $"payment resolution dialog close after committed unlock warning attemptGuid={details.AttemptGuid:D}");
+                    return;
+                }
+
+                RunPostCommitAction(
+                    () => _setStatusMessage?.Invoke(result.Message),
+                    $"payment resolution status attemptGuid={details.AttemptGuid:D}");
+                RunPostCommitAction(
+                    CloseCardRecoveryResultDialog,
+                    $"payment resolution dialog close attemptGuid={details.AttemptGuid:D}");
+                RunPostCommitAction(
+                    () => ShowRecoveredCardDraftDialog(recoveredDraft),
+                    $"payment resolution draft dialog attemptGuid={details.AttemptGuid:D}");
                 return;
             }
 
-            CloseCardRecoveryResultDialog();
+            RunPostCommitAction(
+                () => _setStatusMessage?.Invoke(result.Message),
+                $"payment resolution status attemptGuid={details.AttemptGuid:D}");
+            RunPostCommitAction(
+                CloseCardRecoveryResultDialog,
+                $"payment resolution dialog close attemptGuid={details.AttemptGuid:D}");
             if (result.RecoveryResult is not null)
             {
-                await ApplyResolvedRefundRecoveryAsync(result.RecoveryResult);
+                await RunPostCommitActionAsync(
+                    () => ApplyResolvedRefundRecoveryAsync(result.RecoveryResult),
+                    $"payment resolution result application attemptGuid={details.AttemptGuid:D}");
             }
             else
             {
-                _setPaymentRecoveryBlocked?.Invoke(false, result.Message);
+                RunPostCommitAction(
+                    () => _setPaymentRecoveryBlocked?.Invoke(false, result.Message),
+                    $"payment resolution unlock attemptGuid={details.AttemptGuid:D}");
             }
         }
         catch (OperationCanceledException)
         {
-            _setPaymentRecoveryBlocked?.Invoke(true, dialog.Message);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             ConsoleLog.WriteError(
                 "CardRecovery",
                 $"resolve card payment failed attemptGuid={details.AttemptGuid} decision={decision} error={ex.GetType().Name}",
                 exception: ex);
             dialog.RefundResolutionMessage = _localization.T("cardRecovery.payment.resolveFailed");
-            _setPaymentRecoveryBlocked?.Invoke(true, dialog.RefundResolutionMessage);
         }
         finally
         {
@@ -474,6 +641,150 @@ internal sealed class CardRecoveryPresenter
             // 其它已确认结果表示上一笔不再处于未知状态，付款页可以解除本地阻塞。
             return true;
         }
+    }
+
+    internal async Task<string?> HandoffRecoveredCardDraftFromRecoveryCenterAsync(
+        CardPaymentRecoveryResult result)
+    {
+        if (result.Outcome != CardPaymentRecoveryOutcome.DraftRestored)
+        {
+            throw new ArgumentException(
+                "Only a restored card draft can use the recovery-center handoff.",
+                nameof(result));
+        }
+
+        var paymentPageUnlocked = await HandoffRecoveredCardDraftAsync(
+            result,
+            navigateToPaymentOnDraft: true);
+        if (!paymentPageUnlocked)
+        {
+            return ReportDraftHandoffPostCommitWarning(
+                result,
+                "recovery center draft unlock");
+        }
+
+        RunPostCommitAction(
+            () => _setStatusMessage?.Invoke(result.Message),
+            "recovery center draft status");
+        return null;
+    }
+
+    private async Task<bool> HandoffRecoveredCardDraftAsync(
+        CardPaymentRecoveryResult result,
+        bool navigateToPaymentOnDraft)
+    {
+        // 中文注释：优先记录 provider + attempt 的精确 owner；仅对旧 GUID publication 保留兼容回滚。
+        var capturedOwnerAttemptKey = _cart.RecoveryOwnerAttemptKey;
+        var capturedOwnerAttemptGuid = capturedOwnerAttemptKey?.AttemptGuid ??
+            _cart.RecoveryOwnerAttemptGuid;
+        var ownerWasDurablyReleased = false;
+        try
+        {
+            if (result.UpdatedSession is not null)
+            {
+                _setSession?.Invoke(result.UpdatedSession);
+            }
+
+            var hasRestoredTenders = result.RestoredTenders is { Count: > 0 };
+            if ((navigateToPaymentOnDraft || hasRestoredTenders) && _navigateToPaymentOnDraft is not null)
+            {
+                await _navigateToPaymentOnDraft();
+            }
+
+            // Recovery Center 可能刚创建付款页；导航完成后立即锁页，再开始任何可观察投影。
+            _setPaymentRecoveryBlocked?.Invoke(true, result.Message);
+
+            if (_tryApplyCardRecoveryDraft is not null)
+            {
+                if (!_tryApplyCardRecoveryDraft(
+                        result.RequiresAlternativeRefundMethod,
+                        result.RestoredTenders,
+                        result.Message))
+                {
+                    throw new InvalidOperationException("The recovered card draft was not projected to the payment page.");
+                }
+            }
+            else
+            {
+                // 兼容未接入复合投影的旧调用方；生产 MainViewModel 使用上面的原子回调。
+                _setAlternativeRefundMethodRequired?.Invoke(result.RequiresAlternativeRefundMethod);
+                _onCardRecoveryDraftRestored?.Invoke(
+                    result.RestoredTenders,
+                    hasRestoredTenders || navigateToPaymentOnDraft ? result.Message : null);
+            }
+
+            // 该命令刷新属于关键交接；成功后才允许解除付款页恢复锁。
+            _notifyShowCashPaymentCanExecuteChanged?.Invoke();
+            if (result.DraftHandoffKey is CardRecoveryAttemptKey handoffKey)
+            {
+                if (capturedOwnerAttemptKey != handoffKey ||
+                    _completeRecoveredDraftHandoffAsync is null ||
+                    !await _completeRecoveredDraftHandoffAsync(handoffKey, CancellationToken.None))
+                {
+                    throw new InvalidOperationException(
+                        "The recovered card draft handoff could not be durably finalized.");
+                }
+
+                // 服务返回成功仍必须验证精确 owner 已释放；否则禁止把状态不匹配误报为 durable handoff。
+                if (_cart.RecoveryOwnerAttemptKey is not null ||
+                    _cart.RecoveryOwnerAttemptGuid is not null)
+                {
+                    throw new InvalidOperationException(
+                        "The recovered card draft owner was not durably released.");
+                }
+
+                ownerWasDurablyReleased = true;
+            }
+
+            try
+            {
+                _setPaymentRecoveryBlocked?.Invoke(false, null);
+                return true;
+            }
+            catch (Exception ex) when (
+                ownerWasDurablyReleased &&
+                ex is not OutOfMemoryException and
+                not StackOverflowException)
+            {
+                var warning = BuildDraftHandoffPostCommitWarning(result);
+                // 中文注释：生产回调会先清除恢复状态和交互锁，再发送 UI 通知；
+                // owner 已耐久释放后若通知失败，绝不能重新制造一个没有开放 attempt 的永久锁。
+                TrySetPaymentRecoveryBlocked(false, warning);
+                TryWritePostCommitWarning(
+                    $"payment recovery unlock failed after durable draft handoff attemptGuid={capturedOwnerAttemptGuid:D} error={ex.GetType().Name}",
+                    ex);
+                return false;
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            RollbackCapturedRecoveryPublication(
+                capturedOwnerAttemptKey,
+                capturedOwnerAttemptGuid);
+            TrySetPaymentRecoveryBlocked(
+                true,
+                string.IsNullOrWhiteSpace(ex.Message) ? result.Message : ex.Message);
+            throw;
+        }
+    }
+
+    private string ReportDraftHandoffPostCommitWarning(
+        CardPaymentRecoveryResult result,
+        string context)
+    {
+        var warning = BuildDraftHandoffPostCommitWarning(result);
+        RunPostCommitAction(
+            () => _setStatusMessage?.Invoke(warning),
+            context);
+        return warning;
+    }
+
+    private string BuildDraftHandoffPostCommitWarning(CardPaymentRecoveryResult result)
+    {
+        var warning = _localization.T("cardRecovery.draftHandoff.unlockWarning");
+        return string.IsNullOrWhiteSpace(result.Message)
+            ? warning
+            : $"{result.Message} {warning}";
     }
 
     private void ApplyRecoveryStatus(CardPaymentRecoveryResult result)
@@ -650,6 +961,7 @@ internal sealed class CardRecoveryPresenter
                 await _navigateToPaymentOnDraft();
             }
 
+            _setAlternativeRefundMethodRequired?.Invoke(result.RequiresAlternativeRefundMethod);
             _onCardRecoveryDraftRestored?.Invoke(result.RestoredTenders, result.Message);
             _notifyShowCashPaymentCanExecuteChanged?.Invoke();
             ShowRecoveredCardDraftDialog(result);
@@ -662,30 +974,89 @@ internal sealed class CardRecoveryPresenter
         }
     }
 
-    private void RecordRefundSupervisorAudit(
-        CardRefundRecoveryDetails details,
-        CardRefundSupervisorResolution resolution)
+    private void RollbackCapturedRecoveryPublication(
+        CardRecoveryAttemptKey? capturedOwnerAttemptKey,
+        Guid? capturedOwnerAttemptGuid)
     {
-        var reasonCode = resolution.Decision switch
+        if (capturedOwnerAttemptGuid is not Guid attemptGuid)
         {
-            CardRefundSupervisorDecision.ConfirmRefunded => CardRefundSupervisorResolutionCodes.ConfirmedRefunded,
-            CardRefundSupervisorDecision.ConfirmNotRefunded => CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded,
-            _ => CardRefundSupervisorResolutionCodes.ContinueWaiting
-        };
-        var safeMessage =
-            $"decision={resolution.Decision}; note={NormalizeAuditValue(resolution.Reason)}; " +
-            $"evidence={NormalizeAuditValue(resolution.Evidence)}; refundReference={NormalizeAuditValue(resolution.RefundReference)}";
-        OperationAuditEvents.RecordAction(
-            _operationAuditLogger,
-            OperationAuditTypes.ReturnRefundComplete,
-            resolution.Decision.ToString(),
-            GetSession(),
-            reasonCode: reasonCode,
-            safeMessage: safeMessage,
-            paymentMethod: details.Processor.ToString(),
-            paymentAmount: -Math.Abs(details.Amount),
-            orderGuid: details.OperationGuid?.ToString("D"),
-            correlationId: details.AttemptGuid.ToString("D"));
+            return;
+        }
+
+        try
+        {
+            if (capturedOwnerAttemptKey is CardRecoveryAttemptKey attemptKey)
+            {
+                _cart.RollbackRecoveryPublication(attemptKey);
+            }
+            else
+            {
+                _cart.RollbackRecoveryPublication(attemptGuid);
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            TryWritePostCommitWarning(
+                $"recovered card draft publication rollback failed attemptGuid={attemptGuid:D} error={ex.GetType().Name}",
+                ex);
+        }
+    }
+
+    private void TrySetPaymentRecoveryBlocked(bool blocked, string? message)
+    {
+        try
+        {
+            _setPaymentRecoveryBlocked?.Invoke(blocked, message);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            TryWritePostCommitWarning(
+                $"payment recovery lock fallback failed blocked={blocked} error={ex.GetType().Name}",
+                ex);
+        }
+    }
+
+    private static void RunPostCommitAction(Action action, string context)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 金融决定已经提交；UI、旁路审计或订阅者失败只能作为提交后警告记录。
+            TryWritePostCommitWarning(
+                $"post-commit action failed context={context} error={ex.GetType().Name}",
+                ex);
+        }
+    }
+
+    private static async Task RunPostCommitActionAsync(Func<Task> action, string context)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            TryWritePostCommitWarning(
+                $"post-commit action failed context={context} error={ex.GetType().Name}",
+                ex);
+        }
+    }
+
+    private static void TryWritePostCommitWarning(string message, Exception exception)
+    {
+        try
+        {
+            ConsoleLog.WriteError("CardRecovery", message, exception: exception);
+        }
+        catch (Exception loggingException) when (
+            loggingException is not OutOfMemoryException and
+            not StackOverflowException)
+        {
+            // 诊断链自身失败也不能反向覆盖已经提交的金融决定。
+        }
     }
 
     private void ShowRecoveredCardFailureDialog(CardPaymentRecoveryResult result)
@@ -829,9 +1200,15 @@ internal sealed class CardRecoveryPresenter
     {
         CardRecoveryResultDialog = dialog;
         IsCardRecoveryResultDialogOpen = true;
-        _notifyPropertyChanged?.Invoke(nameof(CardRecoveryResultDialog));
-        _notifyPropertyChanged?.Invoke(nameof(IsCardRecoveryResultDialogOpen));
-        _notifyPrintRecoveredReceiptCanExecuteChanged?.Invoke();
+        RunPostCommitAction(
+            () => _notifyPropertyChanged?.Invoke(nameof(CardRecoveryResultDialog)),
+            "show recovery dialog property notification");
+        RunPostCommitAction(
+            () => _notifyPropertyChanged?.Invoke(nameof(IsCardRecoveryResultDialogOpen)),
+            "show recovery dialog visibility notification");
+        RunPostCommitAction(
+            () => _notifyPrintRecoveredReceiptCanExecuteChanged?.Invoke(),
+            "show recovery dialog print command notification");
     }
 
     private void CloseCardRecoveryResultDialog()
@@ -841,18 +1218,38 @@ internal sealed class CardRecoveryPresenter
         IsCardRecoveryResultDialogOpen = false;
         CardRecoveryResultDialog = null;
         _cardRecoveryDialogReceipt = null;
-        _notifyPropertyChanged?.Invoke(nameof(IsCardRecoveryResultDialogOpen));
-        _notifyPropertyChanged?.Invoke(nameof(CardRecoveryResultDialog));
-        _notifyPrintRecoveredReceiptCanExecuteChanged?.Invoke();
-        activeSessionSource?.TrySetResult(ActiveSessionRecoveryDialogAction.Close);
+        try
+        {
+            RunPostCommitAction(
+                () => _notifyPropertyChanged?.Invoke(nameof(IsCardRecoveryResultDialogOpen)),
+                "close recovery dialog visibility notification");
+            RunPostCommitAction(
+                () => _notifyPropertyChanged?.Invoke(nameof(CardRecoveryResultDialog)),
+                "close recovery dialog property notification");
+            RunPostCommitAction(
+                () => _notifyPrintRecoveredReceiptCanExecuteChanged?.Invoke(),
+                "close recovery dialog print command notification");
+        }
+        finally
+        {
+            // 任一 UI 订阅者失败都不能遗失 active-session 等待者的完成信号。
+            activeSessionSource?.TrySetResult(ActiveSessionRecoveryDialogAction.Close);
+        }
     }
 
     private void CompleteActiveSessionRecoveryDialog(ActiveSessionRecoveryDialogAction action)
     {
         var activeSessionSource = _activeSessionRecoveryDialogActionSource;
         _activeSessionRecoveryDialogActionSource = null;
-        CloseCardRecoveryResultDialog();
-        activeSessionSource?.TrySetResult(action);
+        try
+        {
+            CloseCardRecoveryResultDialog();
+        }
+        finally
+        {
+            // 即使关闭弹窗时 UI 通知抛出致命异常，也必须先释放 active-session 等待者。
+            activeSessionSource?.TrySetResult(action);
+        }
     }
 
     private bool CanPrintRecoveredReceipt()
@@ -889,7 +1286,10 @@ internal sealed class CardRecoveryPresenter
             {
                 settings = await _receiptPrinterSettingsStore.LoadAsync();
             }
-            catch (Exception ex) when (ex is not OperationCanceledException)
+            catch (Exception ex) when (
+                ex is not OperationCanceledException and
+                not OutOfMemoryException and
+                not StackOverflowException)
             {
                 settings = ReceiptPrinterSettings.Default;
             }
@@ -899,7 +1299,10 @@ internal sealed class CardRecoveryPresenter
         {
             return _receiptTextFormatter.Build(receipt, settings, receipt.SoldAt).PreviewRows;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (Exception ex) when (
+            ex is not OperationCanceledException and
+            not OutOfMemoryException and
+            not StackOverflowException)
         {
             return [];
         }
@@ -980,9 +1383,6 @@ internal sealed class CardRecoveryPresenter
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
-
-    private static string NormalizeAuditValue(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? "<none>" : value.Trim();
 
     private static bool DenyPermission(string permissionCode) => false;
 

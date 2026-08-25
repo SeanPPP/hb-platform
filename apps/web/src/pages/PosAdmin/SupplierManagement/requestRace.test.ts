@@ -170,7 +170,7 @@ assert(latestLoaderLayoutEffect.includes('latestLoadDataRef.current = loadData')
 const mountLifecycle = extractBlock(source, 'useLayoutEffect(() => {\n    mountedRef.current = true', '\n\n  useEffect(() => {\n    void loadData()', 'SupplierManagement 挂载生命周期')
 assert(mountLifecycle.includes('useLayoutEffect'), 'SupplierManagement 应在 layout cleanup 阶段关闭 session')
 assert(mountLifecycle.indexOf('mountedRef.current = false') < mountLifecycle.indexOf('listRequestGuardRef.current.invalidate()'), 'SupplierManagement 卸载时应先标记 unmounted 再 invalidate')
-const syncMutation = extractBlock(source, 'const handleSync = async () => {', '\n\n  const handleCreate', 'SupplierManagement 同步 mutation')
+const syncMutation = extractBlock(source, 'const handleSyncFromHq = async () => {', '\n\n  const handleSyncToHq', 'SupplierManagement 从 HQ 同步 mutation')
 const createMutation = extractBlock(source, 'const handleCreate = async () => {', '\n\n  const openEdit', 'SupplierManagement 创建 mutation')
 const editMutation = extractBlock(source, 'const handleEdit = async () => {', '\n\n  return (', 'SupplierManagement 编辑 mutation')
 for (const [label, block] of [['同步', syncMutation], ['创建', createMutation], ['编辑', editMutation]] as const) {

@@ -176,7 +176,9 @@ public sealed class LocalFinancialSupervisorResolutionRepositoryTests
             Assert.Equal(1, results.Count(result => result));
             var persisted = Assert.IsType<LocalCardPaymentAttempt>(
                 await repository1.GetAttemptAsync(attempt.AttemptGuid));
-            Assert.Equal(LocalCardPaymentAttemptStatus.Cancelled, persisted.Status);
+            Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, persisted.Status);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, persisted.RecoveryPhase);
+            Assert.Equal(LocalCardPaymentAttemptStatus.Abandoned.ToString(), persisted.RecoveryTargetStatus);
             Assert.Equal("Evidence: bank case 123", persisted.ResponseText);
             await using var connection = await store.OpenConnectionAsync();
             Assert.Equal(1L, await ReadLongAsync(
@@ -185,6 +187,105 @@ public sealed class LocalFinancialSupervisorResolutionRepositoryTests
             Assert.Equal(string.Empty, await ReadStringAsync(
                 connection,
                 $"SELECT Reason FROM LocalFinancialSupervisorResolutions WHERE AttemptGuid='{attempt.AttemptGuid:D}';"));
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Payment_resolution_cas_allows_only_one_supervisor_journal()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var store = new LocalSqliteStore(path);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository1 = new LocalCardPaymentAttemptRepository(store);
+            var repository2 = new LocalCardPaymentAttemptRepository(store);
+            var now = DateTimeOffset.Parse("2026-07-28T00:35:00+00:00");
+            var attempt = CreateLinklyAttempt(
+                Guid.Parse("21200000-0000-0000-0000-000000000001"),
+                "SESSION-PAYMENT-CAS-001",
+                "Sale") with
+            {
+                Status = LocalCardPaymentAttemptStatus.Recovering,
+                UpdatedAt = now
+            };
+            await repository1.CreateAsync(attempt);
+
+            var paidResolution = new ActiveSessionResolution(
+                attempt.AttemptGuid,
+                Assert.IsType<string>(attempt.SessionId),
+                ActiveSessionSupervisorDecision.ConfirmPaid,
+                LocalCardPaymentAttemptStatus.Recovering,
+                now,
+                string.Empty,
+                "bank confirms charge",
+                "PAYMENT-CAS-WINNER",
+                now.AddMinutes(1));
+            var notPaidResolution = new ActiveSessionResolution(
+                attempt.AttemptGuid,
+                Assert.IsType<string>(attempt.SessionId),
+                ActiveSessionSupervisorDecision.ConfirmNotPaid,
+                LocalCardPaymentAttemptStatus.Recovering,
+                now,
+                string.Empty,
+                "bank confirms no charge",
+                PaymentReference: null,
+                now.AddMinutes(2));
+            var paidJournal = CreateActiveSessionJournal(
+                Guid.Parse("21200000-0000-0000-0000-000000000101"),
+                Guid.Parse("21200000-0000-0000-0000-000000000201"),
+                attempt,
+                paidResolution.ResolvedAt,
+                "manager-paid") with
+            {
+                Decision = ActiveSessionSupervisorDecision.ConfirmPaid.ToString(),
+                Reason = string.Empty,
+                Evidence = paidResolution.Evidence,
+                FinancialReference = paidResolution.PaymentReference
+            };
+            var notPaidJournal = CreateActiveSessionJournal(
+                Guid.Parse("21200000-0000-0000-0000-000000000102"),
+                Guid.Parse("21200000-0000-0000-0000-000000000202"),
+                attempt,
+                notPaidResolution.ResolvedAt,
+                "manager-not-paid") with
+            {
+                Decision = ActiveSessionSupervisorDecision.ConfirmNotPaid.ToString(),
+                Reason = string.Empty,
+                Evidence = notPaidResolution.Evidence,
+                FinancialReference = null
+            };
+
+            var results = await Task.WhenAll(
+                repository1.ResolvePaymentWithJournalAsync(paidResolution, paidJournal),
+                repository2.ResolvePaymentWithJournalAsync(notPaidResolution, notPaidJournal));
+
+            Assert.Equal(1, results.Count(result => result));
+            var paidWon = results[0];
+            var persisted = Assert.IsType<LocalCardPaymentAttempt>(
+                await repository1.GetAttemptAsync(attempt.AttemptGuid));
+            Assert.Equal(
+                paidWon
+                    ? ActiveSessionSupervisorResolutionCodes.ConfirmedPaid
+                    : ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+                persisted.ResponseCode);
+            Assert.Equal(paidWon ? "PAYMENT-CAS-WINNER" : null, persisted.PaymentReference);
+
+            await using var connection = await store.OpenConnectionAsync();
+            Assert.Equal(1L, await ReadLongAsync(
+                connection,
+                $"SELECT COUNT(*) FROM LocalFinancialSupervisorResolutions WHERE AttemptGuid='{attempt.AttemptGuid:D}';"));
+            Assert.Equal(
+                paidWon
+                    ? ActiveSessionSupervisorDecision.ConfirmPaid.ToString()
+                    : ActiveSessionSupervisorDecision.ConfirmNotPaid.ToString(),
+                await ReadStringAsync(
+                    connection,
+                    $"SELECT Decision FROM LocalFinancialSupervisorResolutions WHERE AttemptGuid='{attempt.AttemptGuid:D}';"));
         }
         finally
         {
@@ -294,8 +395,65 @@ public sealed class LocalFinancialSupervisorResolutionRepositoryTests
                     cashierId: null,
                     attempt.Environment));
             Assert.Equal(attempt.AttemptGuid, recoverable.AttemptGuid);
-            Assert.Equal(LocalCardPaymentAttemptStatus.Cancelled, recoverable.Status);
+            Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, recoverable.Status);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, recoverable.RecoveryPhase);
+            Assert.Equal(LocalCardPaymentAttemptStatus.Abandoned.ToString(), recoverable.RecoveryTargetStatus);
             Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, recoverable.ResponseCode);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Terminal_payment_resolution_returns_cas_loss_without_writing_journal()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var store = new LocalSqliteStore(path);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalCardPaymentAttemptRepository(store);
+            var now = DateTimeOffset.Parse("2026-07-28T00:41:00+00:00");
+            var attempt = CreateLinklyAttempt(
+                Guid.Parse("21550000-0000-0000-0000-000000000001"),
+                "SESSION-TERMINAL-001",
+                "Sale") with
+            {
+                Status = LocalCardPaymentAttemptStatus.Declined,
+                UpdatedAt = now,
+                CompletedAt = now
+            };
+            await repository.CreateAsync(attempt);
+            var resolution = new ActiveSessionResolution(
+                attempt.AttemptGuid,
+                Assert.IsType<string>(attempt.SessionId),
+                ActiveSessionSupervisorDecision.ConfirmNotPaid,
+                LocalCardPaymentAttemptStatus.Declined,
+                now,
+                string.Empty,
+                "bank confirms no charge",
+                PaymentReference: null,
+                now.AddMinutes(1));
+
+            var applied = await repository.ResolvePaymentWithJournalAsync(
+                resolution,
+                CreateActiveSessionJournal(
+                    Guid.Parse("21550000-0000-0000-0000-000000000101"),
+                    Guid.Parse("21550000-0000-0000-0000-000000000201"),
+                    attempt,
+                    now.AddMinutes(1),
+                    "manager-terminal"));
+
+            Assert.False(applied);
+            Assert.Equal(
+                LocalCardPaymentAttemptStatus.Declined,
+                (await repository.GetAttemptAsync(attempt.AttemptGuid))?.Status);
+            await using var connection = await store.OpenConnectionAsync();
+            Assert.Equal(0L, await ReadLongAsync(
+                connection,
+                $"SELECT COUNT(*) FROM LocalFinancialSupervisorResolutions WHERE AttemptGuid='{attempt.AttemptGuid:D}';"));
         }
         finally
         {
@@ -362,7 +520,9 @@ public sealed class LocalFinancialSupervisorResolutionRepositoryTests
 
             var persisted = Assert.IsType<LocalCardPaymentAttempt>(
                 await repository.GetAttemptAsync(attempt.AttemptGuid));
-            Assert.Equal(LocalCardPaymentAttemptStatus.Cancelled, persisted.Status);
+            Assert.Equal(LocalCardPaymentAttemptStatus.Recovering, persisted.Status);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, persisted.RecoveryPhase);
+            Assert.Equal(LocalCardPaymentAttemptStatus.Abandoned.ToString(), persisted.RecoveryTargetStatus);
             Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, persisted.ResponseCode);
             Assert.Null(persisted.PaymentReference);
         }
@@ -551,7 +711,9 @@ public sealed class LocalFinancialSupervisorResolutionRepositoryTests
                 journal));
 
             var saved = Assert.IsType<LocalSquarePaymentAttempt>(await repository.GetAttemptAsync(attempt.AttemptGuid));
-            Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, saved.Status);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, saved.Status);
+            Assert.Equal(CardRecoveryPhases.FinalizePending, saved.RecoveryPhase);
+            Assert.Equal(LocalSquarePaymentAttemptStatus.OrderCompleted, saved.RecoveryTargetStatus);
             await using var connection = await store.OpenConnectionAsync();
             Assert.Equal("Square", await ReadStringAsync(
                 connection,

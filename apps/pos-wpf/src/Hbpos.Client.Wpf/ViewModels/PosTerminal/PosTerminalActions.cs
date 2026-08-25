@@ -16,7 +16,8 @@ internal sealed record PosTerminalActions(
     Func<Task<ReceiptPrintResult>>? OpenCashDrawerAsync,
     Func<Task>? ExitApplicationAsync,
     Func<Task>? ReregisterDeviceAsync,
-    Func<Task>? LockCashierAsync)
+    Func<Task>? LockCashierAsync,
+    Func<Task>? OpenCardRecoveryCenterAsync)
 {
     public bool CanPrintLastReceipt => PrintLastReceiptAsync is not null;
 
@@ -38,7 +39,8 @@ internal sealed record PosTerminalActions(
         Func<Task<ReceiptPrintResult>>? onOpenCashDrawerAsync,
         Func<Task>? onExitApplicationAsync,
         Func<Task>? onReregisterDeviceAsync,
-        Func<Task>? onLockCashierAsync)
+        Func<Task>? onLockCashierAsync,
+        Func<Task>? onOpenCardRecoveryCenterAsync)
     {
         // 中文注释：先收束构造器里的跨页面/外部动作，避免 VM 长期直接持有一串散落回调。
         return new PosTerminalActions(
@@ -55,6 +57,7 @@ internal sealed record PosTerminalActions(
             onOpenCashDrawerAsync,
             onExitApplicationAsync,
             onReregisterDeviceAsync,
-            onLockCashierAsync);
+            onLockCashierAsync,
+            onOpenCardRecoveryCenterAsync);
     }
 }

@@ -134,6 +134,346 @@ public sealed class InstallmentOperationServiceTests
         }
     }
 
+    [Theory]
+    [InlineData(LinklyConnectionMode.LocalIp, LinklyConnectionMode.CloudBackendAsync)]
+    [InlineData(LinklyConnectionMode.CloudBackendAsync, LinklyConnectionMode.LocalIp)]
+    public async Task Installment_purchase_uses_first_settings_snapshot_for_route_and_persisted_identity(
+        LinklyConnectionMode firstMode,
+        LinklyConnectionMode laterMode)
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var store = new LocalSqliteStore(path);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalInstallmentOperationRepository(store);
+            var attempts = new LocalCardPaymentAttemptRepository(store);
+            var context = new LinklyPaymentAttemptContextAccessor();
+            var request = CreateRepaymentRequest();
+            var firstSettings = CardTerminalSettings.FromEnvironment() with
+            {
+                Processor = CardProcessorKind.Linkly,
+                LinklyConnectionMode = firstMode
+            };
+            var laterSettings = firstSettings with { LinklyConnectionMode = laterMode };
+            var settingsProvider = new TxnRefSequencedCardTerminalSettingsProvider(firstSettings, laterSettings);
+            var routedLinkly = new TxnRefSnapshotLinklyTerminalClient(context);
+            using var httpClient = new HttpClient();
+            var configuredTerminal = new ConfiguredCardTerminalClient(
+                settingsProvider,
+                httpClient,
+                routedLinkly,
+                linklyPaymentAttemptContextAccessor: context);
+            var api = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
+            var claimState = new RepaymentClaimTestState();
+            var service = new InstallmentOperationService(
+                repository,
+                new ClaimAwareInstallmentApiTestAdapter(api, request, claimState),
+                configuredTerminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: settingsProvider,
+                cardPaymentAttemptRepository: attempts,
+                linklyPaymentAttemptContextAccessor: context);
+
+            var result = await service.ExecuteRepaymentAsync(Session, request, authorizeCard: true);
+
+            Assert.True(result.Succeeded, result.Message);
+            Assert.NotNull(routedLinkly.LastAttemptGuid);
+            var attempt = await attempts.GetAttemptAsync(routedLinkly.LastAttemptGuid.Value);
+            Assert.NotNull(attempt);
+            Assert.Equal(CardTerminalSettings.FormatLinklyConnectionMode(firstMode), attempt.ConnectionMode);
+            Assert.Equal(firstMode, routedLinkly.LastMode);
+            Assert.Equal(firstMode == LinklyConnectionMode.LocalIp ? 1 : 0, routedLinkly.LocalPurchaseCalls);
+            Assert.Equal(firstMode == LinklyConnectionMode.CloudBackendAsync ? 1 : 0, routedLinkly.CloudPurchaseCalls);
+            Assert.Equal(attempt.TxnRef, routedLinkly.LastTxnRef);
+            Assert.False(string.IsNullOrWhiteSpace(attempt.TxnRef));
+            Assert.Equal(1, api.AppendCalls);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Local_ip_installment_purchase_persists_stable_txn_ref_before_terminal_with_long_device_code()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            const string deviceCode = "POS-DEVICE-CODE-THAT-IS-DELIBERATELY-LONG-0001";
+            var store = new LocalSqliteStore(path);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalInstallmentOperationRepository(store);
+            var attempts = new LocalCardPaymentAttemptRepository(store);
+            var context = new LinklyPaymentAttemptContextAccessor();
+            var request = CreateRepaymentRequest() with { DeviceCode = deviceCode };
+            var session = Session with { DeviceCode = deviceCode };
+            var terminal = new PersistedLinklyPurchaseTerminal(attempts, context);
+            var api = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
+            var claimState = new RepaymentClaimTestState();
+            var service = new InstallmentOperationService(
+                repository,
+                new ClaimAwareInstallmentApiTestAdapter(api, request, claimState),
+                terminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CardTerminalSettings.FromEnvironment() with
+                {
+                    Processor = CardProcessorKind.Linkly,
+                    LinklyConnectionMode = LinklyConnectionMode.LocalIp
+                }),
+                cardPaymentAttemptRepository: attempts,
+                linklyPaymentAttemptContextAccessor: context);
+
+            var result = await service.ExecuteRepaymentAsync(session, request, authorizeCard: true);
+
+            Assert.True(result.Succeeded, result.Message);
+            Assert.NotNull(terminal.AttemptGuid);
+            var persisted = await attempts.GetAttemptAsync(terminal.AttemptGuid.Value);
+            Assert.NotNull(persisted);
+            AssertLocalTxnRef('P', terminal.SubmittedTxnRef);
+            Assert.Equal(persisted.TxnRef, terminal.SubmittedTxnRef);
+            Assert.Equal(
+                LinklyLocalTxnRef.Create('P', persisted.AttemptGuid.ToString("D")),
+                persisted.TxnRef);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Restarted_local_ip_installment_purchase_reuses_persisted_attempt_txn_ref()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var store = new LocalSqliteStore(path);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalInstallmentOperationRepository(store);
+            var attempts = new LocalCardPaymentAttemptRepository(store);
+            var context = new LinklyPaymentAttemptContextAccessor();
+            var request = CreateRepaymentRequest();
+            var now = DateTimeOffset.UtcNow;
+            var attemptGuid = Guid.Parse("f588a502-9129-e8ad-8627-3d9e1b2b892a");
+            const string persistedTxnRef = "P0123456789ABCDE";
+            await attempts.CreateAsync(new LocalCardPaymentAttempt(
+                attemptGuid,
+                null,
+                persistedTxnRef,
+                CardProcessorKind.Linkly.ToString(),
+                CardTerminalEnvironment.Sandbox.ToString(),
+                LinklyConnectionMode.LocalIp.ToString(),
+                "P",
+                request.Amount,
+                LocalCardPaymentAttemptStatus.Pending,
+                JsonSerializer.Serialize(request),
+                request.StoreCode,
+                request.DeviceCode,
+                request.CashierId,
+                null,
+                null,
+                null,
+                now,
+                now,
+                null,
+                null,
+                "Repayment",
+                request.PaymentGuid));
+            var terminal = new PersistedLinklyPurchaseTerminal(attempts, context);
+            var api = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
+            var claimState = new RepaymentClaimTestState();
+            var restartedService = new InstallmentOperationService(
+                repository,
+                new ClaimAwareInstallmentApiTestAdapter(api, request, claimState),
+                terminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CardTerminalSettings.FromEnvironment() with
+                {
+                    Processor = CardProcessorKind.Linkly,
+                    LinklyConnectionMode = LinklyConnectionMode.LocalIp
+                }),
+                cardPaymentAttemptRepository: attempts,
+                linklyPaymentAttemptContextAccessor: context);
+
+            var result = await restartedService.ExecuteRepaymentAsync(Session, request, authorizeCard: true);
+
+            Assert.True(result.Succeeded, result.Message);
+            Assert.Equal(attemptGuid, terminal.AttemptGuid);
+            AssertLocalTxnRef('P', terminal.SubmittedTxnRef);
+            Assert.Equal(persistedTxnRef, terminal.SubmittedTxnRef);
+            Assert.Equal(persistedTxnRef, (await attempts.GetAttemptAsync(attemptGuid))!.TxnRef);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Theory]
+    [InlineData(LinklyConnectionMode.LocalIp, LinklyConnectionMode.CloudBackendAsync)]
+    [InlineData(LinklyConnectionMode.CloudBackendAsync, LinklyConnectionMode.LocalIp)]
+    public async Task Restarted_installment_purchase_with_connection_mode_mismatch_stays_locked_without_terminal_call(
+        LinklyConnectionMode currentMode,
+        LinklyConnectionMode persistedMode)
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var store = new LocalSqliteStore(path);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalInstallmentOperationRepository(store);
+            var attempts = new LocalCardPaymentAttemptRepository(store);
+            var request = CreateRepaymentRequest();
+            var persistedAttempt = CreatePersistedInstallmentLinklyAttempt(
+                request,
+                persistedMode,
+                "P",
+                persistedMode == LinklyConnectionMode.LocalIp ? "P0123456789ABCDE" : null);
+            await attempts.CreateAsync(persistedAttempt);
+            var terminal = new CountingTerminal(approve: true);
+            var api = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
+            var claimState = new RepaymentClaimTestState();
+            var service = new InstallmentOperationService(
+                repository,
+                new ClaimAwareInstallmentApiTestAdapter(api, request, claimState),
+                terminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CardTerminalSettings.FromEnvironment() with
+                {
+                    Processor = CardProcessorKind.Linkly,
+                    LinklyConnectionMode = currentMode
+                }),
+                cardPaymentAttemptRepository: attempts,
+                linklyPaymentAttemptContextAccessor: new LinklyPaymentAttemptContextAccessor());
+
+            var result = await service.ExecuteRepaymentAsync(Session, request, authorizeCard: true);
+
+            Assert.False(result.Succeeded);
+            Assert.True(result.RequiresReview);
+            Assert.Equal(0, terminal.AuthorizeCalls);
+            Assert.Equal(0, api.AppendCalls);
+            Assert.Null(claimState.LastBeginProvider);
+            Assert.Equal(persistedAttempt, await attempts.GetAttemptAsync(persistedAttempt.AttemptGuid));
+            var operation = Assert.IsType<LocalInstallmentOperation>(await repository.GetAsync(request.PaymentGuid));
+            Assert.Equal(LocalInstallmentOperationState.ResultUnknown, operation.State);
+            Assert.Null(operation.TerminalAttemptGuid);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Theory]
+    [InlineData("R", "P0123456789ABCDE")]
+    [InlineData("P", "P0123456789ABCDEF")]
+    [InlineData("P", "P0123\u001f")]
+    [InlineData("P", "PCAFÉ")]
+    [InlineData("P", "ANZ:")]
+    [InlineData("P", "ANZ:   ")]
+    public async Task Restarted_local_ip_installment_purchase_with_invalid_type_or_reference_stays_locked_without_terminal_call(
+        string txnType,
+        string txnRef)
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var store = new LocalSqliteStore(path);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalInstallmentOperationRepository(store);
+            var attempts = new LocalCardPaymentAttemptRepository(store);
+            var request = CreateRepaymentRequest();
+            var persistedAttempt = CreatePersistedInstallmentLinklyAttempt(
+                request,
+                LinklyConnectionMode.LocalIp,
+                txnType,
+                txnRef);
+            await attempts.CreateAsync(persistedAttempt);
+            var terminal = new CountingTerminal(approve: true);
+            var api = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
+            var claimState = new RepaymentClaimTestState();
+            var service = new InstallmentOperationService(
+                repository,
+                new ClaimAwareInstallmentApiTestAdapter(api, request, claimState),
+                terminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CardTerminalSettings.FromEnvironment() with
+                {
+                    Processor = CardProcessorKind.Linkly,
+                    LinklyConnectionMode = LinklyConnectionMode.LocalIp
+                }),
+                cardPaymentAttemptRepository: attempts,
+                linklyPaymentAttemptContextAccessor: new LinklyPaymentAttemptContextAccessor());
+
+            var result = await service.ExecuteRepaymentAsync(Session, request, authorizeCard: true);
+
+            Assert.False(result.Succeeded);
+            Assert.True(result.RequiresReview);
+            Assert.Equal(0, terminal.AuthorizeCalls);
+            Assert.Equal(0, api.AppendCalls);
+            Assert.Null(claimState.LastBeginProvider);
+            Assert.Equal(persistedAttempt, await attempts.GetAttemptAsync(persistedAttempt.AttemptGuid));
+            var operation = Assert.IsType<LocalInstallmentOperation>(await repository.GetAsync(request.PaymentGuid));
+            Assert.Equal(LocalInstallmentOperationState.ResultUnknown, operation.State);
+            Assert.Null(operation.TerminalAttemptGuid);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Theory]
+    [InlineData("P")]
+    [InlineData("P-OLD#1")]
+    [InlineData("P0123456789ABCDE")]
+    public async Task Restarted_local_ip_installment_purchase_accepts_printable_historical_persisted_reference(string persistedTxnRef)
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var store = new LocalSqliteStore(path);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalInstallmentOperationRepository(store);
+            var attempts = new LocalCardPaymentAttemptRepository(store);
+            var context = new LinklyPaymentAttemptContextAccessor();
+            var request = CreateRepaymentRequest();
+            var persistedAttempt = CreatePersistedInstallmentLinklyAttempt(
+                request,
+                LinklyConnectionMode.LocalIp,
+                "P",
+                persistedTxnRef);
+            await attempts.CreateAsync(persistedAttempt);
+            var terminal = new PersistedLinklyPurchaseTerminal(attempts, context);
+            var api = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
+            var claimState = new RepaymentClaimTestState();
+            var service = new InstallmentOperationService(
+                repository,
+                new ClaimAwareInstallmentApiTestAdapter(api, request, claimState),
+                terminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CardTerminalSettings.FromEnvironment() with
+                {
+                    Processor = CardProcessorKind.Linkly,
+                    LinklyConnectionMode = LinklyConnectionMode.LocalIp
+                }),
+                cardPaymentAttemptRepository: attempts,
+                linklyPaymentAttemptContextAccessor: context);
+
+            var result = await service.ExecuteRepaymentAsync(Session, request, authorizeCard: true);
+
+            Assert.True(result.Succeeded, result.Message);
+            Assert.Equal(persistedTxnRef, terminal.SubmittedTxnRef);
+            Assert.Equal(persistedTxnRef, (await attempts.GetAttemptAsync(persistedAttempt.AttemptGuid))!.TxnRef);
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
     [Fact]
     public async Task Repayment_api_cancellation_recovers_by_replaying_only_the_original_api_request()
     {
@@ -385,16 +725,18 @@ public sealed class InstallmentOperationServiceTests
             var order = CreateLocalOrder();
             var terminal = new SequencedLinklyRefundTerminal(repository);
             var api = new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) };
-            var service = new InstallmentOperationService(
+            var settingsProvider = new StaticCardTerminalSettingsProvider(CardTerminalSettings.FromEnvironment() with
+            {
+                Processor = CardProcessorKind.Linkly,
+                LinklyConnectionMode = LinklyConnectionMode.LocalIp
+            });
+            InstallmentOperationService CreateRestartedService() => new(
                 repository,
                 api,
                 terminal,
                 new NoopVoucherTenderClient(),
-                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CardTerminalSettings.FromEnvironment() with
-                {
-                    Processor = CardProcessorKind.Linkly,
-                    LinklyConnectionMode = LinklyConnectionMode.LocalIp
-                }));
+                cardTerminalSettingsProvider: settingsProvider);
+            var service = CreateRestartedService();
 
             var initial = await service.ExecuteCancelAsync(order, Session, "客户取消");
             Assert.True(initial.RequiresReview);
@@ -411,7 +753,7 @@ public sealed class InstallmentOperationServiceTests
                     Evidence: "bank-case-001"),
                 DateTimeOffset.UtcNow));
 
-            var firstRetry = await service.ResumeCancelAfterSupervisorAsync(operation.OperationGuid, order.InstallmentNumber, Session);
+            var firstRetry = await CreateRestartedService().ResumeCancelAfterSupervisorAsync(operation.OperationGuid, order.InstallmentNumber, Session);
             Assert.True(firstRetry.RequiresReview);
 
             var secondUnknownStep = Assert.Single((await repository.GetRefundStepsAsync(operation.OperationGuid)).Where(item => item.Method == PaymentMethodKind.Card));
@@ -425,14 +767,22 @@ public sealed class InstallmentOperationServiceTests
                     Evidence: "bank-case-002"),
                 DateTimeOffset.UtcNow));
 
-            var resumed = await service.ResumeCancelAfterSupervisorAsync(operation.OperationGuid, order.InstallmentNumber, Session);
+            var resumed = await CreateRestartedService().ResumeCancelAfterSupervisorAsync(operation.OperationGuid, order.InstallmentNumber, Session);
 
             Assert.True(resumed.Succeeded, resumed.Message);
             Assert.Equal(3, terminal.RefundCalls);
             Assert.Equal(3, terminal.SubmissionReferences.Count);
             Assert.All(terminal.SubmissionReferences, reference => Assert.NotEqual("CARD-1", reference));
+            Assert.All(terminal.SubmissionReferences, reference => AssertLocalTxnRef('R', reference));
             Assert.Equal(3, terminal.PersistedReferencesAtSubmission.Count);
             Assert.Equal(terminal.SubmissionReferences, terminal.PersistedReferencesAtSubmission);
+            Assert.Equal(terminal.SubmissionReferences.Count, terminal.PersistedIdempotencyKeysAtSubmission.Count);
+            for (var index = 0; index < terminal.SubmissionReferences.Count; index++)
+            {
+                Assert.Equal(
+                    LinklyLocalTxnRef.Create('R', terminal.PersistedIdempotencyKeysAtSubmission[index]),
+                    terminal.SubmissionReferences[index]);
+            }
             Assert.NotEqual(terminal.SubmissionReferences[0], terminal.SubmissionReferences[1]);
             Assert.NotEqual(terminal.SubmissionReferences[1], terminal.SubmissionReferences[2]);
             Assert.Equal(2, terminal.RetryReferences.Count);
@@ -449,6 +799,50 @@ public sealed class InstallmentOperationServiceTests
                 Assert.Equal(original.Amount, refund.Amount);
                 Assert.Equal($"{operation.OperationGuid:D}:refund:{original.PaymentGuid:D}", refund.IdempotencyKey);
             });
+        }
+        finally
+        {
+            DeleteTempDatabase(path);
+        }
+    }
+
+    [Fact]
+    public async Task Refund_step_CAS_loser_does_not_call_terminal_or_overwrite_winner_reference()
+    {
+        var path = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(path);
+            var originalOrder = CreateLocalOrder();
+            var cardPayment = originalOrder.Payments.Single(payment => payment.Method == PaymentMethodKind.Card);
+            var order = originalOrder with
+            {
+                Payments = [cardPayment],
+                PaidAmount = cardPayment.Amount
+            };
+            var terminal = new SequencedLinklyRefundTerminal(repository);
+            var api = new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) };
+            var settingsProvider = new RefundStepCasWinnerSettingsProvider(repository, Session.StoreCode);
+            var service = new InstallmentOperationService(
+                repository,
+                api,
+                terminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: settingsProvider);
+
+            var result = await service.ExecuteCancelAsync(order, Session, "客户取消");
+
+            Assert.False(result.Succeeded);
+            Assert.True(result.RequiresReview);
+            Assert.Equal(0, terminal.RefundCalls);
+            Assert.Empty(terminal.SubmissionReferences);
+            Assert.Equal(1, settingsProvider.GetSettingsCalls);
+            Assert.Equal(0, api.CommitCancelClaimCalls);
+            var operation = Assert.Single(await repository.GetRecoverableAsync(Session.StoreCode));
+            Assert.Equal(LocalInstallmentOperationState.TerminalSubmitting, operation.State);
+            var step = Assert.Single(await repository.GetRefundStepsAsync(operation.OperationGuid));
+            Assert.Equal(LocalInstallmentRefundStepState.TerminalSubmitting, step.State);
+            Assert.Equal(RefundStepCasWinnerSettingsProvider.WinnerReference, step.RefundReference);
         }
         finally
         {
@@ -1666,6 +2060,14 @@ public sealed class InstallmentOperationServiceTests
 
     private static readonly PosSessionState Session = new("HB POS", "S001", "Main", "POS-01", "C001", "Alice", true, 0);
 
+    private static void AssertLocalTxnRef(char transactionType, string? txnRef)
+    {
+        Assert.NotNull(txnRef);
+        Assert.Equal(16, txnRef.Length);
+        Assert.Equal(transactionType, txnRef[0]);
+        Assert.Matches("^[PR][0-9ABCDEFGHJKMNPQRSTVWXYZ]{15}$", txnRef);
+    }
+
     private static async Task<LocalInstallmentOperationRepository> CreateRepositoryAsync(string path)
     {
         var store = new LocalSqliteStore(path);
@@ -1683,6 +2085,38 @@ public sealed class InstallmentOperationServiceTests
         Guid.Parse("11111111-2222-3333-4444-555555555555"),
         Guid.Parse("12345678-9999-aaaa-bbbb-cccccccccccc"),
         "S001", "POS-01", "C001", "Alice", 40m, PaymentMethodKind.Card, null, null, null, "repayment-idempotency");
+
+    private static LocalCardPaymentAttempt CreatePersistedInstallmentLinklyAttempt(
+        InstallmentAppendPaymentRequest request,
+        LinklyConnectionMode connectionMode,
+        string txnType,
+        string? txnRef)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return new LocalCardPaymentAttempt(
+            Guid.Parse("f588a502-9129-e8ad-8627-3d9e1b2b892a"),
+            null,
+            txnRef,
+            CardProcessorKind.Linkly.ToString(),
+            CardTerminalEnvironment.Sandbox.ToString(),
+            connectionMode.ToString(),
+            txnType,
+            request.Amount,
+            LocalCardPaymentAttemptStatus.Pending,
+            JsonSerializer.Serialize(request),
+            request.StoreCode,
+            request.DeviceCode,
+            request.CashierId,
+            null,
+            null,
+            null,
+            now,
+            now,
+            null,
+            null,
+            "Repayment",
+            request.PaymentGuid);
+    }
 
     private static InstallmentCreateRequest CreateInstallmentRequest(Guid paymentGuid) => new(
         paymentGuid,
@@ -2037,6 +2471,50 @@ public sealed class InstallmentOperationServiceTests
             throw new NotSupportedException();
     }
 
+    private sealed class PersistedLinklyPurchaseTerminal(
+        LocalCardPaymentAttemptRepository attempts,
+        ILinklyPaymentAttemptContextAccessor context) : ICardTerminalClient
+    {
+        public Guid? AttemptGuid { get; private set; }
+
+        public string? SubmittedTxnRef { get; private set; }
+
+        public async Task<PaymentAuthorizationResult> AuthorizeAsync(
+            decimal amount,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            var current = context.Current ?? throw new InvalidOperationException("Linkly attempt context was not available.");
+            var persisted = await attempts.GetAttemptAsync(current.AttemptGuid, cancellationToken);
+            Assert.NotNull(persisted);
+            Assert.Equal(LocalCardPaymentAttemptStatus.Pending, persisted.Status);
+            Assert.Equal(persisted.TxnRef, current.TxnRef);
+            AttemptGuid = current.AttemptGuid;
+            SubmittedTxnRef = current.TxnRef;
+            return new PaymentAuthorizationResult(
+                true,
+                $"ANZ:{SubmittedTxnRef}",
+                "APPROVED",
+                amount,
+                [new CardTransactionDto("Linkly", SubmittedTxnRef, null, null, null, null, null, "00", "APPROVED", null, DateTimeOffset.UtcNow, amount, null)],
+                "Linkly",
+                "Sandbox",
+                LinklyConnectionMode.LocalIp.ToString(),
+                "P",
+                null,
+                SubmittedTxnRef,
+                "00",
+                "APPROVED");
+        }
+
+        public Task<PaymentAuthorizationResult> RefundAsync(
+            decimal amount,
+            PosSessionState session,
+            string? originalReference,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
+
     private sealed class RepaymentOrderingVoucherClient(List<string> events) : IVoucherTenderClient
     {
         public int RedeemCalls { get; private set; }
@@ -2235,6 +2713,34 @@ public sealed class InstallmentOperationServiceTests
             throw new InvalidOperationException("settings unavailable");
     }
 
+    private sealed class RefundStepCasWinnerSettingsProvider(
+        LocalInstallmentOperationRepository repository,
+        string storeCode) : ICardTerminalSettingsProvider
+    {
+        public const string WinnerReference = "RWINNER-CAS-01";
+        public int GetSettingsCalls { get; private set; }
+
+        public async Task<CardTerminalSettings> GetSettingsAsync(CancellationToken cancellationToken = default)
+        {
+            GetSettingsCalls++;
+            var operation = Assert.Single(await repository.GetRecoverableAsync(storeCode, CancellationToken.None));
+            var step = Assert.Single((await repository.GetRefundStepsAsync(operation.OperationGuid, CancellationToken.None))
+                .Where(candidate => candidate.Method == PaymentMethodKind.Card));
+            Assert.True(await repository.TryTransitionRefundStepAsync(
+                step.RefundStepGuid,
+                [LocalInstallmentRefundStepState.Prepared],
+                LocalInstallmentRefundStepState.TerminalSubmitting,
+                DateTimeOffset.UtcNow,
+                refundReference: WinnerReference,
+                cancellationToken: CancellationToken.None));
+            return CardTerminalSettings.FromEnvironment() with
+            {
+                Processor = CardProcessorKind.Linkly,
+                LinklyConnectionMode = LinklyConnectionMode.LocalIp
+            };
+        }
+    }
+
     private sealed class MutableSquareRefundStatusClient(SquareRefundStatusResult result) : ISquareTerminalPaymentClient
     {
         public SquareRefundStatusResult Result { get; set; } = result;
@@ -2356,6 +2862,7 @@ public sealed class InstallmentOperationServiceTests
         public List<string?> PersistedReferencesAtRetry { get; } = [];
         public List<string?> SubmissionReferences { get; } = [];
         public List<string?> PersistedReferencesAtSubmission { get; } = [];
+        public List<string> PersistedIdempotencyKeysAtSubmission { get; } = [];
 
         public Task<PaymentAuthorizationResult> AuthorizeAsync(decimal amount, PosSessionState session, CancellationToken cancellationToken = default) =>
             Task.FromResult(new PaymentAuthorizationResult(false));
@@ -2367,7 +2874,9 @@ public sealed class InstallmentOperationServiceTests
         {
             RefundCalls++;
             SubmissionReferences.Add(idempotencyKey);
-            PersistedReferencesAtSubmission.Add(await ReadPersistedReferenceAsync(session, cancellationToken));
+            var persistedStep = await ReadPersistedStepAsync(session, cancellationToken);
+            PersistedReferencesAtSubmission.Add(persistedStep.RefundReference);
+            PersistedIdempotencyKeysAtSubmission.Add(persistedStep.IdempotencyKey);
             if (RefundCalls <= 2)
             {
                 if (RefundCalls == 2)
@@ -2385,9 +2894,14 @@ public sealed class InstallmentOperationServiceTests
 
         private async Task<string?> ReadPersistedReferenceAsync(PosSessionState session, CancellationToken cancellationToken)
         {
+            return (await ReadPersistedStepAsync(session, cancellationToken)).RefundReference;
+        }
+
+        private async Task<LocalInstallmentRefundStep> ReadPersistedStepAsync(PosSessionState session, CancellationToken cancellationToken)
+        {
             var operation = Assert.Single(await repository.GetRecoverableAsync(session.StoreCode, cancellationToken));
             return Assert.Single((await repository.GetRefundStepsAsync(operation.OperationGuid, cancellationToken))
-                .Where(step => step.Method == PaymentMethodKind.Card)).RefundReference;
+                .Where(step => step.Method == PaymentMethodKind.Card));
         }
     }
 

@@ -22,7 +22,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private readonly ILocalizationService? _localization;
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
-    private readonly PaymentNavigationActions _navigationActions;
+    private PaymentNavigationActions _navigationActions;
     private readonly IOperationAuditLogger? _operationAuditLogger;
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
 
@@ -48,9 +48,30 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private string? _installmentDraftFingerprint;
     private Guid? _installmentDraftPaymentGuid;
     private string? _installmentDraftCardIdempotencyKey;
-    private bool _externalCardRecoveryBlocked;
+    private bool _requiresAlternativeRefundMethod;
+    private long? _alternativeRefundCartRevision;
+    private long _cartTransactionEpoch;
+    private long? _unknownCardResultCartEpoch;
+    private bool _cartWasEmpty;
     private int _shutdownStarted;
     private bool _disposed;
+
+    private sealed record RecoveredPaymentProjectionSnapshot(
+        bool RequiresAlternativeRefundMethod,
+        long? AlternativeRefundCartRevision,
+        IReadOnlyList<PaymentTender> Tenders,
+        string StatusKey,
+        string? StatusTextOverride,
+        string TenderAmountText,
+        string VoucherCodeText,
+        string VoucherEntryText,
+        bool IsVoucherEntryDialogOpen,
+        PaymentMethodKind SelectedPaymentMethod,
+        PaymentEntryMode PaymentMode,
+        decimal TotalTendered,
+        decimal RemainingAmount,
+        decimal ChangeDue,
+        decimal WorkflowRemainingAmount);
 
     [ObservableProperty]
     private PosSessionState _session;
@@ -135,7 +156,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null,
         Func<Task<bool>>? confirmInstallmentFullFirstPaymentAsync = null,
         IOperationAuditLogger? operationAuditLogger = null,
-        IOperationAuthorizationService? operationAuthorizationService = null)
+        IOperationAuthorizationService? operationAuthorizationService = null,
+        Func<CardPaymentHandoffRequest, Task<CardPaymentHandoffCandidate?>>? prepareCardPaymentHandoffAsync = null,
+        Func<CardPaymentHandoffCandidate, CardPaymentHandoffRequest, Task<bool>>? handoffCardPaymentAsync = null,
+        Action? openCardRecoveryCenter = null)
         : this(
             cart,
             new CashPaymentWorkflowService(checkout, orderRepository, syncQueueRepository),
@@ -151,7 +175,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             onInstallmentOrderCreatedAsync,
             confirmInstallmentFullFirstPaymentAsync,
             operationAuditLogger,
-            operationAuthorizationService)
+            operationAuthorizationService,
+            prepareCardPaymentHandoffAsync,
+            handoffCardPaymentAsync,
+            openCardRecoveryCenter)
     {
     }
 
@@ -170,9 +197,14 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         Func<InstallmentOrderSummary, Task>? onInstallmentOrderCreatedAsync = null,
         Func<Task<bool>>? confirmInstallmentFullFirstPaymentAsync = null,
         IOperationAuditLogger? operationAuditLogger = null,
-        IOperationAuthorizationService? operationAuthorizationService = null)
+        IOperationAuthorizationService? operationAuthorizationService = null,
+        Func<CardPaymentHandoffRequest, Task<CardPaymentHandoffCandidate?>>? prepareCardPaymentHandoffAsync = null,
+        Func<CardPaymentHandoffCandidate, CardPaymentHandoffRequest, Task<bool>>? handoffCardPaymentAsync = null,
+        Action? openCardRecoveryCenter = null)
     {
         _cart = cart;
+        _cartWasEmpty = cart.IsEmpty;
+        _cart.CartChanged += OnCartTransactionChanged;
         _workflowService = workflowService;
         _installmentOrderService = installmentOrderService ?? NoopInstallmentOrderService.Instance;
         _session = session;
@@ -191,7 +223,10 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             onShowInstallmentCenter,
             recoverPreviousCardTransactionAsync,
             onInstallmentOrderCreatedAsync,
-            confirmInstallmentFullFirstPaymentAsync);
+            confirmInstallmentFullFirstPaymentAsync,
+            prepareCardPaymentHandoffAsync,
+            handoffCardPaymentAsync,
+            openCardRecoveryCenter);
         _linklyFallbackPromptCoordinator = linklyFallbackPromptCoordinator;
         _cardSession = new CardPaymentSession(this);
         _linklyFallbackPromptCoordinator?.SetPromptHandler(_cardSession.ConfirmLinklyFallbackAsync);
@@ -221,6 +256,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         CancelCommand = new RelayCommand(CancelPayment, CanCancelPayment);
         BackToPosCommand = new RelayCommand(BackToPos, CanBackToPos);
         ShowInstallmentCenterCommand = new AsyncRelayCommand(ShowInstallmentCenterAsync, CanShowInstallmentCenter);
+        OpenCardRecoveryCenterCommand = new RelayCommand(
+            () => _navigationActions.OpenCardRecoveryCenter?.Invoke(),
+            () => !IsShuttingDown && _navigationActions.OpenCardRecoveryCenter is not null);
         CloseCardPaymentErrorOverlayCommand = new RelayCommand(CloseCardPaymentErrorOverlay);
         CardPaymentErrorPrimaryActionCommand = new AsyncRelayCommand(
             ExecuteCardPaymentErrorPrimaryActionAsync,
@@ -243,20 +281,34 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             _localization.CultureChanged -= OnCultureChanged;
         }
 
+        _cart.CartChanged -= OnCartTransactionChanged;
         _cardSession.Dispose();
     }
 
-    public void BeginShutdown()
+    public Task BeginShutdown()
     {
         if (Interlocked.Exchange(ref _shutdownStarted, 1) != 0)
         {
-            return;
+            return _cardSession.CancelForShutdownAsync();
         }
 
         // 关闭窗口期间只取消仍在等待的终端调用，保留 attempt 与恢复锁给下次启动核对。
         IsPaymentInteractionLocked = true;
-        _ = _cardSession.CancelForShutdownAsync();
-        NotifyPaymentCommandStates();
+        var cancellationTask = _cardSession.CancelForShutdownAsync();
+        try
+        {
+            NotifyPaymentCommandStates();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 中文注释：关机命令通知是 best-effort，不能阻止主 shutdown step 观察终端取消任务。
+            ConsoleLog.WriteError(
+                "Shutdown",
+                $"payment shutdown command notification failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
+
+        return cancellationTask;
     }
 
     internal bool IsShuttingDown => Volatile.Read(ref _shutdownStarted) == 1;
@@ -304,6 +356,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     public IRelayCommand BackToPosCommand { get; }
 
     public IRelayCommand ShowInstallmentCenterCommand { get; }
+
+    public IRelayCommand OpenCardRecoveryCenterCommand { get; }
 
     public IRelayCommand CloseCardPaymentErrorOverlayCommand { get; }
 
@@ -559,11 +613,28 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _pendingVoucherChangeAmount = 0m;
         _paymentEntryVersion++;
         _cardSession.ResetManualCancellationState();
-        _cardSession.SetResultUnknownRecoveryRequired(_externalCardRecoveryBlocked);
+        if (_cardSession.HasUnknownResult &&
+            _unknownCardResultCartEpoch is long protectedEpoch &&
+            protectedEpoch != _cartTransactionEpoch)
+        {
+            // 只有购物车确实经过清空边界进入下一笔交易，才允许释放上一单的未知结果锁。
+            _cardSession.SetResultUnknownRecoveryRequired(false);
+        }
+
         _cardSession.Cancel();
         _cardSession.DetachCanceledActiveCardPayment();
         IsCardPaymentInProgress = false;
-        IsPaymentInteractionLocked = _externalCardRecoveryBlocked;
+        IsPaymentInteractionLocked = IsShuttingDown || _cardSession.HasUnknownResult;
+        if (_requiresAlternativeRefundMethod &&
+            _cart.RecoveryOwnerAttemptGuid is null &&
+            _alternativeRefundCartRevision is long protectedRevision &&
+            protectedRevision != _cart.Revision)
+        {
+            // 上一笔替代退款策略只绑定当时的恢复购物车；清空后装入的新订单不得继承禁卡状态。
+            _requiresAlternativeRefundMethod = false;
+            _alternativeRefundCartRevision = null;
+        }
+
         _installmentRepaymentOrder = null;
         IsInstallmentSwitchLocked = false;
         IsInstallmentPaymentEnabled = false;
@@ -577,16 +648,46 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         VoucherEntryText = string.Empty;
         IsVoucherEntryDialogOpen = false;
         TenderAmountText = string.Empty;
-        _statusKey = GetReadyStatusKey();
-        _statusTextOverride = null;
+        if (!_cardSession.HasUnknownResult)
+        {
+            _statusKey = _requiresAlternativeRefundMethod
+                ? "payment.refund.status.alternativeMethodRequired"
+                : GetReadyStatusKey();
+            _statusTextOverride = null;
+        }
+
         SelectedPaymentMethod = PaymentMethodKind.Cash;
         RefreshCart();
-        if (!HasBlockingCartIssue())
+        if (!_cardSession.HasUnknownResult && !HasBlockingCartIssue())
         {
-            SetStatus(GetReadyStatusKey());
+            SetStatus(_requiresAlternativeRefundMethod
+                ? "payment.refund.status.alternativeMethodRequired"
+                : GetReadyStatusKey());
         }
 
         OnPropertyChanged(nameof(StatusMessage));
+    }
+
+    private void OnCartTransactionChanged(object? sender, EventArgs e)
+    {
+        var isEmpty = _cart.IsEmpty;
+        if (isEmpty && !_cartWasEmpty)
+        {
+            _cartTransactionEpoch++;
+        }
+
+        _cartWasEmpty = isEmpty;
+    }
+
+    internal void OnCardResultUnknownRecoveryChanged(bool required)
+    {
+        if (required)
+        {
+            _unknownCardResultCartEpoch ??= _cartTransactionEpoch;
+            return;
+        }
+
+        _unknownCardResultCartEpoch = null;
     }
 
     public void PrepareForInstallmentRepayment(PosSessionState session, InstallmentOrderSummary order)
@@ -609,6 +710,13 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     public void RefreshCart()
     {
+        if (_cart.IsEmpty)
+        {
+            // 非卡退款限制属于当前恢复购物车；只有购物车真正清空后才可释放，页面往返不能绕过。
+            _requiresAlternativeRefundMethod = false;
+            _alternativeRefundCartRevision = null;
+        }
+
         PaymentMode = CalculatePaymentMode();
         CartLines.ReplaceWith(_cart.Lines);
         OnPropertyChanged(nameof(TotalAmount));
@@ -619,22 +727,237 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         NotifyPaymentCommandStates();
     }
 
+    /// <summary>
+    /// 原子投影恢复草稿的退款策略、完整 tender 快照和状态消息。
+    /// </summary>
+    /// <remarks>
+    /// 先物化并校验外部快照，再开始改变付款页。普通通知失败时尽力恢复旧投影并把原异常继续抛给 Presenter，
+    /// 由 Presenter 负责保持恢复锁；OOM/StackOverflowException 不在这里拦截。
+    /// </remarks>
+    internal bool TryApplyRecoveredPaymentProjection(
+        bool requiresAlternativeRefundMethod,
+        IReadOnlyList<PaymentTender>? tenders,
+        string? statusMessage)
+    {
+        var materializedTenders = MaterializeRecoveredPaymentTenders(tenders);
+        var previous = new RecoveredPaymentProjectionSnapshot(
+            _requiresAlternativeRefundMethod,
+            _alternativeRefundCartRevision,
+            PaymentTenders.ToArray(),
+            _statusKey,
+            _statusTextOverride,
+            TenderAmountText,
+            VoucherCodeText,
+            VoucherEntryText,
+            IsVoucherEntryDialogOpen,
+            SelectedPaymentMethod,
+            PaymentMode,
+            TotalTendered,
+            RemainingAmount,
+            ChangeDue,
+            _workflowRemainingAmount);
+
+        try
+        {
+            _requiresAlternativeRefundMethod = requiresAlternativeRefundMethod;
+            PaymentTenders.Clear();
+            foreach (var tender in materializedTenders)
+            {
+                PaymentTenders.Add(tender);
+            }
+
+            TenderAmountText = string.Empty;
+            VoucherCodeText = string.Empty;
+            VoucherEntryText = string.Empty;
+            IsVoucherEntryDialogOpen = false;
+
+            // 中文注释：恢复已批准 tender 只回填付款页状态，剩余金额仍由收银员补齐后走现有完成订单流程。
+            RefreshCart();
+            // 空购物车刷新会释放旧的退款限制；恢复结果本身仍必须保留服务端要求的策略。
+            _requiresAlternativeRefundMethod = requiresAlternativeRefundMethod;
+            _alternativeRefundCartRevision = requiresAlternativeRefundMethod
+                ? _cart.Revision
+                : null;
+            SetStatus(
+                materializedTenders.Count > 0
+                    ? "payment.status.cardTenderAdded"
+                    : requiresAlternativeRefundMethod
+                        ? "payment.refund.status.alternativeMethodRequired"
+                        : GetReadyStatusKey(),
+                statusMessage);
+            NotifyPaymentCommandStates();
+            return true;
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            RestoreRecoveredPaymentProjectionBestEffort(previous);
+            throw;
+        }
+    }
+
     internal void RestoreRecoveredPaymentTenders(IReadOnlyList<PaymentTender> tenders, string? statusMessage)
     {
-        PaymentTenders.Clear();
-        foreach (var tender in tenders)
+        _ = TryApplyRecoveredPaymentProjection(
+            _requiresAlternativeRefundMethod,
+            tenders,
+            statusMessage);
+    }
+
+    private static IReadOnlyList<PaymentTender> MaterializeRecoveredPaymentTenders(
+        IReadOnlyList<PaymentTender>? tenders)
+    {
+        if (tenders is null || tenders.Count == 0)
         {
-            PaymentTenders.Add(tender);
+            return [];
         }
 
-        TenderAmountText = string.Empty;
-        VoucherCodeText = string.Empty;
-        VoucherEntryText = string.Empty;
-        IsVoucherEntryDialogOpen = false;
+        var materialized = new List<PaymentTender>(tenders.Count);
+        for (var index = 0; index < tenders.Count; index++)
+        {
+            var tender = tenders[index];
+            ArgumentNullException.ThrowIfNull(tender, nameof(tenders));
+            if (!Enum.IsDefined(tender.Method))
+            {
+                throw new ArgumentOutOfRangeException(nameof(tenders), tender.Method, "The recovered tender method is invalid.");
+            }
 
-        // 中文注释：恢复已批准卡 tender 只回填付款页状态，剩余金额仍由收银员补齐后走现有完成订单流程。
-        RefreshCart();
-        SetStatus("payment.status.cardTenderAdded", statusMessage);
+            materialized.Add(tender);
+        }
+
+        return materialized;
+    }
+
+    private void RestoreRecoveredPaymentProjectionBestEffort(RecoveredPaymentProjectionSnapshot snapshot)
+    {
+        _requiresAlternativeRefundMethod = snapshot.RequiresAlternativeRefundMethod;
+        _alternativeRefundCartRevision = snapshot.AlternativeRefundCartRevision;
+
+        TryBestEffortProjectionAction(() => PaymentTenders.Clear());
+        foreach (var tender in snapshot.Tenders)
+        {
+            TryBestEffortProjectionAction(() => PaymentTenders.Add(tender));
+        }
+
+        // 中文注释：回滚直接恢复 backing field，避免失败订阅者再次覆盖原异常；通知本身仍逐项尽力发送。
+#pragma warning disable MVVMTK0034 // 原子投影失败后的 best-effort 回滚必须绕过可能再次抛错的生成 setter。
+        _tenderAmountText = snapshot.TenderAmountText;
+        _voucherCodeText = snapshot.VoucherCodeText;
+        _voucherEntryText = snapshot.VoucherEntryText;
+        _isVoucherEntryDialogOpen = snapshot.IsVoucherEntryDialogOpen;
+        _selectedPaymentMethod = snapshot.SelectedPaymentMethod;
+        _paymentMode = snapshot.PaymentMode;
+        _totalTendered = snapshot.TotalTendered;
+        _remainingAmount = snapshot.RemainingAmount;
+        _changeDue = snapshot.ChangeDue;
+#pragma warning restore MVVMTK0034
+        _workflowRemainingAmount = snapshot.WorkflowRemainingAmount;
+        _statusKey = snapshot.StatusKey;
+        _statusTextOverride = snapshot.StatusTextOverride;
+
+        TryNotifyRecoveredProjectionProperty(nameof(TenderAmountText));
+        TryNotifyRecoveredProjectionProperty(nameof(VoucherCodeText));
+        TryNotifyRecoveredProjectionProperty(nameof(VoucherEntryText));
+        TryNotifyRecoveredProjectionProperty(nameof(IsVoucherEntryDialogOpen));
+        TryNotifyRecoveredProjectionProperty(nameof(SelectedPaymentMethod));
+        TryNotifyRecoveredProjectionProperty(nameof(PaymentMode));
+        TryNotifyRecoveredProjectionProperty(nameof(IsRefundMode));
+        TryNotifyRecoveredProjectionProperty(nameof(IsZeroSettlementMode));
+        TryNotifyRecoveredProjectionProperty(nameof(IsPaymentMode));
+        TryNotifyRecoveredProjectionProperty(nameof(TotalTendered));
+        TryNotifyRecoveredProjectionProperty(nameof(RemainingAmount));
+        TryNotifyRecoveredProjectionProperty(nameof(ChangeDue));
+        TryNotifyRecoveredProjectionProperty(nameof(StatusMessage));
+        TryBestEffortProjectionAction(NotifyPaymentCommandStates);
+    }
+
+    private void TryNotifyRecoveredProjectionProperty(string propertyName)
+    {
+        TryBestEffortProjectionAction(() => OnPropertyChanged(propertyName));
+    }
+
+    private static void TryBestEffortProjectionAction(Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 回滚通知是 best-effort；OOM/StackOverflowException 仍由过滤器外传播。
+        }
+    }
+
+    internal bool CompleteCardPaymentHandoff()
+    {
+        // 安全移交只清理当前活动订单和付款页投影；持久化 attempt、草稿、tender 与终端证据由恢复中心继续持有。
+        void RunPostHandoffAction(string stage, Action action)
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                // 中文注释：集合和 WPF 通知可能在 backing state 已更新后抛错；继续完成可验证的核心 handoff。
+                ConsoleLog.WriteError(
+                    "CardPayment",
+                    $"card payment handoff UI action failed stage={stage} error={ex.GetType().Name}",
+                    exception: ex);
+            }
+        }
+
+        _paymentEntryVersion++;
+        _pendingVoucherUploadOrderGuid = null;
+        _pendingVoucherTenderedAmount = 0m;
+        _pendingVoucherChangeAmount = 0m;
+        _requiresAlternativeRefundMethod = false;
+        _alternativeRefundCartRevision = null;
+        RunPostHandoffAction("clear-tenders", PaymentTenders.Clear);
+        RunPostHandoffAction("clear-voucher-code", () => VoucherCodeText = string.Empty);
+        RunPostHandoffAction("clear-voucher-entry", () => VoucherEntryText = string.Empty);
+        RunPostHandoffAction("close-voucher-dialog", () => IsVoucherEntryDialogOpen = false);
+        RunPostHandoffAction("clear-tender-amount", () => TenderAmountText = string.Empty);
+        RunPostHandoffAction("select-cash", () => SelectedPaymentMethod = PaymentMethodKind.Cash);
+        RunPostHandoffAction("close-error-overlay", () => CardPaymentErrorOverlay = null);
+        RunPostHandoffAction("clear-cart", _cart.Clear);
+
+        if (PaymentTenders.Count != 0 || !_cart.IsEmpty)
+        {
+            // 核心集合未清空时 handoff 尚未完成，保留原 recovery identity 与交互锁供重试。
+            RunPostHandoffAction("retain-lock", () => IsPaymentInteractionLocked = true);
+            return false;
+        }
+
+        // 只有核心购物车与 tender 均已确认清空后，才释放当前页的未知结果身份。
+        _cardSession.SetResultUnknownRecoveryRequired(false);
+        RunPostHandoffAction("refresh-cart", RefreshCart);
+        RunPostHandoffAction("unlock-payment", () => IsPaymentInteractionLocked = IsShuttingDown);
+        RunPostHandoffAction("ready-status", () => SetStatus(GetReadyStatusKey()));
+        RunPostHandoffAction("notify-commands", NotifyPaymentCommandStates);
+        RunPostHandoffAction("navigate-pos", () => _navigationActions.BackToPos?.Invoke());
+        return true;
+    }
+
+    internal CardPaymentHandoffRequest CreateCardPaymentHandoffRequest() =>
+        new(
+            Session,
+            _cart.CreateSnapshot(),
+            PaymentTenders.ToArray(),
+            ActualAmount,
+            _cardSession.RecoveryAttemptKey,
+            _cardSession.RecoveryOrderGuid);
+
+    internal void ConfigureCardPaymentHandoff(
+        Func<CardPaymentHandoffRequest, Task<CardPaymentHandoffCandidate?>> prepareAsync,
+        Func<CardPaymentHandoffCandidate, CardPaymentHandoffRequest, Task<bool>> handoffAsync,
+        Action? openRecoveryCenter = null)
+    {
+        _navigationActions = _navigationActions with
+        {
+            PrepareCardPaymentHandoffAsync = prepareAsync,
+            HandoffCardPaymentAsync = handoffAsync,
+            OpenCardRecoveryCenter = openRecoveryCenter
+        };
         NotifyPaymentCommandStates();
     }
 
@@ -867,6 +1190,14 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private async Task AddTenderByMethodAsync(PaymentMethodKind method)
     {
+        if (method == PaymentMethodKind.Card && _requiresAlternativeRefundMethod)
+        {
+            // Square 恢复退款只能改用其他退款方式；即使命令被程序化调用也不能再次进入卡工作流。
+            SetStatus("payment.refund.status.alternativeMethodRequired");
+            NotifyPaymentCommandStates();
+            return;
+        }
+
         if (IsInstallmentPaymentEnabled && PaymentTenders.Count > 0)
         {
             SetStatus("payment.installment.status.singleTenderOnly");
@@ -998,7 +1329,12 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             await ReleaseVoucherTendersAfterCardFailureAsync();
             return;
         }
-        catch (Exception ex) when (isCard && ex is not OperationCanceledException)
+        // 中文注释：卡终端致命异常绕过普通失败处理，确保原异常实例继续向上传播。
+        catch (Exception ex) when (
+            isCard &&
+            ex is not OperationCanceledException &&
+            ex is not OutOfMemoryException &&
+            ex is not StackOverflowException)
         {
             if (!IsCurrentPaymentEntry(paymentEntryVersion))
             {
@@ -1051,7 +1387,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             NotifyPaymentCommandStates();
             return;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             var correlation = OperationAuditEvents.CreateCorrelation();
             OperationAuditEvents.RecordAction(
@@ -1092,7 +1428,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             cardPaymentCts?.IsCancellationRequested == true &&
             (!result.Succeeded || result.Tender is null))
         {
-            _cardSession.TryHandleCancelledResult(result, cardPaymentCts, cardPaymentWasManuallyCancelled);
+            await _cardSession.TryHandleCancelledResultAsync(result, cardPaymentCts, cardPaymentWasManuallyCancelled);
             if (result.CardResult?.RequiresRecovery != true)
             {
                 await ReleaseVoucherTendersAfterCardFailureAsync();
@@ -1131,7 +1467,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             if (isCard)
             {
                 var resultUnknown = result.CardResult?.RequiresRecovery == true;
-                _cardSession.TryHandleFailedResult(result);
+                await _cardSession.TryHandleFailedResultAsync(result);
                 if (!resultUnknown)
                 {
                     await ReleaseVoucherTendersAfterCardFailureAsync();
@@ -1258,7 +1594,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             {
                 released = await _workflowService.ReleaseVoucherTenderAsync(tender, Session);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
             {
                 var correlation = OperationAuditEvents.CreateCorrelation();
                 OperationAuditEvents.RecordAction(
@@ -1356,7 +1692,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             {
                 released = await _workflowService.ReleaseVoucherTenderAsync(tender, Session);
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
             {
                 var correlation = OperationAuditEvents.CreateCorrelation();
                 OperationAuditEvents.RecordAction(
@@ -1502,30 +1838,46 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
         // 中文注释：自动完成和人工确认共用此入口，首次等待前同步上锁，防止同一订单并发结算。
         IsPaymentInteractionLocked = true;
+        var preservePaymentInteractionLock = false;
         try
         {
             await CompletePaymentFromTendersCoreAsync();
+        }
+        catch (Exception ex) when (ex is OutOfMemoryException or StackOverflowException)
+        {
+            // 中文注释：致命异常必须原样传播，同时保留页面锁，避免异常后继续操作当前付款。
+            preservePaymentInteractionLock = true;
+            throw;
         }
         finally
         {
             // 结算期间若发现已批准卡款无法安全落盘，finally 不能覆盖待恢复锁。
             IsPaymentInteractionLocked =
+                preservePaymentInteractionLock ||
                 IsShuttingDown ||
-                _cardSession.HasUnknownResult ||
-                IsCardRecoveryBlocked;
+                _cardSession.HasUnknownResult;
         }
     }
 
-    internal bool IsCardRecoveryBlocked => _externalCardRecoveryBlocked;
-
-    internal void SetCardRecoveryBlocked(bool blocked, string? statusMessage = null)
+    internal void SetCurrentCardRecoveryRequired(bool required, string? statusMessage = null)
     {
-        _externalCardRecoveryBlocked = blocked;
-        _cardSession.SetResultUnknownRecoveryRequired(blocked);
-        IsPaymentInteractionLocked = blocked || IsShuttingDown || _cardSession.IsActive;
+        _cardSession.SetResultUnknownRecoveryRequired(required);
+        IsPaymentInteractionLocked = required || IsShuttingDown || _cardSession.IsActive;
         if (!string.IsNullOrWhiteSpace(statusMessage))
         {
-            SetStatus(blocked ? "payment.card.resultUnknown" : GetReadyStatusKey(), statusMessage);
+            SetStatus(required ? "payment.card.resultUnknown" : GetReadyStatusKey(), statusMessage);
+        }
+
+        NotifyPaymentCommandStates();
+    }
+
+    internal void SetAlternativeRefundMethodRequired(bool required)
+    {
+        _requiresAlternativeRefundMethod = required;
+        _alternativeRefundCartRevision = required ? _cart.Revision : null;
+        if (required)
+        {
+            SetStatus("payment.refund.status.alternativeMethodRequired");
         }
 
         NotifyPaymentCommandStates();
@@ -1577,7 +1929,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                 $"approved card order persistence unknown operation={operationType} error={ex.InnerException?.GetType().Name ?? ex.GetType().Name}",
                 new ApplicationLogContext(TraceId: correlation.TraceId),
                 ex);
-            SetCardRecoveryBlocked(true, ex.Message);
+            SetCurrentCardRecoveryRequired(true, ex.Message);
             return;
         }
         catch (PaymentUploadFailedException ex)
@@ -1609,7 +1961,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             NotifyPaymentCommandStates();
             return;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             var correlation = OperationAuditEvents.CreateCorrelation();
             OperationAuditEvents.RecordAction(
@@ -1656,6 +2008,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
 
         IsPaymentInteractionLocked = true;
+        var preservePaymentInteractionLock = false;
         var auditCart = OperationAuditEvents.CaptureCart(_cart.Lines);
         try
         {
@@ -1671,7 +2024,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                             Session,
                             CreateInstallmentPaymentDraft(appliedTender)));
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                 {
                     var correlation = OperationAuditEvents.CreateCorrelation();
                     OperationAuditEvents.RecordAction(
@@ -1783,7 +2136,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
                         CreateInstallmentPaymentDraft(appliedTender),
                         string.Empty));
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
             {
                 var correlation = OperationAuditEvents.CreateCorrelation();
                 OperationAuditEvents.RecordAction(
@@ -1873,10 +2226,19 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             SetStatus("payment.installment.status.created", createResult.Message);
             OnPropertyChanged(nameof(InstallmentOrderInfoText));
         }
+        catch (Exception ex) when (ex is OutOfMemoryException or StackOverflowException)
+        {
+            // 中文注释：分期提交的致命异常必须原样传播，并保持付款页锁定，避免继续操作金融状态未确认的订单。
+            preservePaymentInteractionLock = true;
+            throw;
+        }
         finally
         {
-            IsPaymentInteractionLocked = false;
-            NotifyPaymentCommandStates();
+            if (!preservePaymentInteractionLock)
+            {
+                IsPaymentInteractionLocked = false;
+                NotifyPaymentCommandStates();
+            }
         }
     }
 
@@ -2027,7 +2389,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             _pendingVoucherChangeAmount = ex.ChangeAmount;
             SetStatus("payment.status.uploadFailed", ex.Message);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
             var correlation = OperationAuditEvents.CreateCorrelation();
             OperationAuditEvents.RecordAction(
@@ -2059,6 +2421,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _pendingVoucherUploadOrderGuid = null;
         _pendingVoucherTenderedAmount = 0m;
         _pendingVoucherChangeAmount = 0m;
+        _requiresAlternativeRefundMethod = false;
+        _alternativeRefundCartRevision = null;
         PaymentTenders.Clear();
         PendingSyncCount = result.PendingSyncCount;
         Session = result.UpdatedSession;
@@ -2081,6 +2445,11 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     private bool CanAddTender(PaymentMethodKind method, bool allowDefaultAmount)
     {
+        if (method == PaymentMethodKind.Card && _requiresAlternativeRefundMethod)
+        {
+            return false;
+        }
+
         if (IsPaymentInteractionLocked ||
             _cardSession.IsActive ||
             _cardSession.HasUnknownResult ||
@@ -2887,6 +3256,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         CancelCommand.NotifyCanExecuteChanged();
         BackToPosCommand.NotifyCanExecuteChanged();
         ShowInstallmentCenterCommand.NotifyCanExecuteChanged();
+        OpenCardRecoveryCenterCommand.NotifyCanExecuteChanged();
+        CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(IsCancelPaymentVisible));
         OnPropertyChanged(nameof(IsConfirmPaymentVisible));
     }

@@ -18,6 +18,8 @@ internal sealed class ScreenNavigator
     private readonly IConfirmationDialogService _confirmationDialogService;
     private readonly ICustomerDisplayOrchestrator _customerDisplayOrchestrator;
     private readonly ILinklyFallbackPromptCoordinator? _linklyFallbackPromptCoordinator;
+    private readonly ICardPaymentRecoveryService? _cardPaymentRecoveryService;
+    private readonly Func<CardPaymentRecoveryResult, Task> _onCardRecoveryCenterResultAsync;
     private readonly Func<CancellationToken, Task> _syncCatalogAndReloadAsync;
     private readonly Func<CancellationToken, Task> _resetCatalogAndReloadAsync;
     private readonly Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? _checkForAppUpdateAsync;
@@ -61,6 +63,8 @@ internal sealed class ScreenNavigator
         IConfirmationDialogService confirmationDialogService,
         ICustomerDisplayOrchestrator customerDisplayOrchestrator,
         ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator,
+        ICardPaymentRecoveryService? cardPaymentRecoveryService,
+        Func<CardPaymentRecoveryResult, Task> onCardRecoveryCenterResultAsync,
         Func<CancellationToken, Task> syncCatalogAndReloadAsync,
         Func<CancellationToken, Task> resetCatalogAndReloadAsync,
         Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync,
@@ -84,6 +88,8 @@ internal sealed class ScreenNavigator
         _confirmationDialogService = confirmationDialogService;
         _customerDisplayOrchestrator = customerDisplayOrchestrator;
         _linklyFallbackPromptCoordinator = linklyFallbackPromptCoordinator;
+        _cardPaymentRecoveryService = cardPaymentRecoveryService;
+        _onCardRecoveryCenterResultAsync = onCardRecoveryCenterResultAsync;
         _syncCatalogAndReloadAsync = syncCatalogAndReloadAsync;
         _resetCatalogAndReloadAsync = resetCatalogAndReloadAsync;
         _checkForAppUpdateAsync = checkForAppUpdateAsync;
@@ -147,6 +153,7 @@ internal sealed class ScreenNavigator
     public TransactionHistoryViewModel? TransactionHistory { get; set; }
     public DailyCloseViewModel? DailyClose { get; set; }
     public SettingsViewModel? Settings { get; set; }
+    public CardRecoveryCenterViewModel? CardRecoveryCenter { get; set; }
 
     private CustomerDisplayViewModel? _customerDisplay;
     public CustomerDisplayViewModel CustomerDisplay => _customerDisplay ??= _factory.CreateCustomerDisplayViewModel();
@@ -169,6 +176,31 @@ internal sealed class ScreenNavigator
         }
 
         SetCurrentScreen(PosTerminal);
+    }
+
+    public async Task ShowCardRecoveryCenterAsync()
+    {
+        if (_cardPaymentRecoveryService is null)
+        {
+            _setStatusMessage(_localization.T("cardRecovery.center.status.unavailable"));
+            return;
+        }
+
+        CardRecoveryCenter?.Dispose();
+        CardRecoveryCenter = _factory.CreateCardRecoveryCenterViewModel(
+            _cardPaymentRecoveryService,
+            Session,
+            ShowPos,
+            count =>
+            {
+                if (PosTerminal is not null)
+                {
+                    PosTerminal.CardRecoveryOpenCount = count;
+                }
+            },
+            _onCardRecoveryCenterResultAsync);
+        SetCurrentScreen(CardRecoveryCenter);
+        await CardRecoveryCenter.LoadAsync();
     }
 
     public Task ShowSpecialProductsAsync()
@@ -487,6 +519,8 @@ internal sealed class ScreenNavigator
         ReceiptReturns = null;
         Settings?.Dispose();
         Settings = null;
+        CardRecoveryCenter?.Dispose();
+        CardRecoveryCenter = null;
         (DailyClose as IDisposable)?.Dispose();
         DailyClose = null;
         (InstallmentCenter as IDisposable)?.Dispose();
@@ -606,6 +640,11 @@ internal sealed class ScreenNavigator
         if (ReferenceEquals(_currentScreen, Settings))
         {
             return "shell.page.settings";
+        }
+
+        if (ReferenceEquals(_currentScreen, CardRecoveryCenter))
+        {
+            return "shell.page.cardRecovery";
         }
 
         if (ReferenceEquals(_currentScreen, CustomerDisplay))

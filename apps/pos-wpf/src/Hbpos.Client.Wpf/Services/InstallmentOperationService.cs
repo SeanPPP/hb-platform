@@ -1273,6 +1273,26 @@ public sealed class InstallmentOperationService(
         try
         {
             terminalAttempt = await CreateTerminalAttemptScopeAsync(operation, amount, session, cancellationToken);
+            if (terminalAttempt.RequiresReview)
+            {
+                var reviewMessage = terminalAttempt.ReviewMessage ?? "银行卡 attempt 无法按当前终端模式安全复用，保持锁定等待主管恢复。";
+                var expectedReviewStates = beginRepaymentClaim
+                    ? new[] { LocalInstallmentOperationState.Prepared }
+                    : new[] { LocalInstallmentOperationState.TerminalSubmitting };
+                var locked = await repository.TryTransitionAsync(
+                    operation.OperationGuid,
+                    expectedReviewStates,
+                    LocalInstallmentOperationState.ResultUnknown,
+                    DateTimeOffset.UtcNow,
+                    failureMessage: reviewMessage,
+                    cancellationToken: CancellationToken.None);
+                if (beginRepaymentClaim && locked)
+                {
+                    await TryResolveRepaymentClaimAsync(operation, InstallmentRepaymentClaimResolveOutcome.Unknown, CancellationToken.None);
+                }
+                return TerminalReady.Unknown(reviewMessage);
+            }
+
             var providerAttemptId = terminalAttempt.AttemptGuid?.ToString("D") ?? operation.OperationGuid.ToString("D");
             var provider = NormalizeRepaymentCardProvider(terminalAttempt.Processor);
             if (beginRepaymentClaim)
@@ -1431,7 +1451,9 @@ public sealed class InstallmentOperationService(
                 attempt = new LocalCardPaymentAttempt(
                     attemptGuid,
                     null,
-                    mode == LinklyConnectionMode.LocalIp ? LinklyTerminalClient.BuildTxnRef(session) : null,
+                    mode == LinklyConnectionMode.LocalIp
+                        ? LinklyLocalTxnRef.Create('P', attemptGuid.ToString("D"))
+                        : null,
                     CardProcessorKind.Linkly.ToString(),
                     settings.Environment.ToString(),
                     CardTerminalSettings.FormatLinklyConnectionMode(mode),
@@ -1453,13 +1475,24 @@ public sealed class InstallmentOperationService(
                     operation.OperationGuid);
                 await cardPaymentAttemptRepository.CreateAsync(attempt, cancellationToken);
             }
+            else if (RequiresLinklyPurchaseRecoveryForCurrentMode(attempt, mode))
+            {
+                // 中文注释：重启复用必须信任同一 settings 快照；模式或 LocalIp 引用不安全时，不得让适配器临时补号。
+                return TerminalAttemptScope.ForReview(
+                    attempt.AttemptGuid,
+                    attempt.Processor,
+                    "持久化的银行卡 attempt 与当前 Linkly 连接模式或 Local IP 引用不一致，保持锁定等待主管恢复。");
+            }
 
             var attemptContext = new LinklyPaymentAttemptContext(
                 attempt.AttemptGuid,
                 // 中文注释：终端已返回 session 后，UI 取消不能丢失恢复所需的绑定证据。
                 (sessionId, txnRef, updatedAt, _) =>
                     cardPaymentAttemptRepository.UpdateSessionAsync(attempt.AttemptGuid, sessionId, txnRef, updatedAt, CancellationToken.None),
-                attempt.TxnRef);
+                attempt.TxnRef)
+            {
+                SettingsSnapshot = settings
+            };
             return new TerminalAttemptScope(
                 attempt.AttemptGuid,
                 attempt.Processor,
@@ -1471,7 +1504,23 @@ public sealed class InstallmentOperationService(
                 {
                     if (authorization.ResultUnknown)
                     {
-                        await cardPaymentAttemptRepository.MarkRecoveringAsync(attempt.AttemptGuid, DateTimeOffset.UtcNow, CancellationToken.None);
+                        var currentAttempt = await cardPaymentAttemptRepository.GetAttemptAsync(
+                            attempt.AttemptGuid,
+                            CancellationToken.None);
+                        var recoveringAt = DateTimeOffset.UtcNow;
+                        if (currentAttempt is null ||
+                            !await cardPaymentAttemptRepository.TryMarkRecoveringAsync(
+                                currentAttempt.AttemptGuid,
+                                currentAttempt.Status,
+                                currentAttempt.UpdatedAt,
+                                recoveringAt > currentAttempt.UpdatedAt
+                                    ? recoveringAt
+                                    : currentAttempt.UpdatedAt.AddTicks(1),
+                                CancellationToken.None))
+                        {
+                            throw new InvalidOperationException("分期付款 attempt 已被其他任务推进、终态化或主管结案。");
+                        }
+
                         return;
                     }
 
@@ -1557,6 +1606,21 @@ public sealed class InstallmentOperationService(
         }
 
         return TerminalAttemptScope.Empty;
+    }
+
+    private static bool RequiresLinklyPurchaseRecoveryForCurrentMode(
+        LocalCardPaymentAttempt attempt,
+        LinklyConnectionMode mode)
+    {
+        var expectedMode = CardTerminalSettings.FormatLinklyConnectionMode(mode);
+        if (!string.Equals(attempt.ConnectionMode?.Trim(), expectedMode, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return mode == LinklyConnectionMode.LocalIp &&
+            (!string.Equals(attempt.TxnType, "P", StringComparison.Ordinal) ||
+             !LinklyLocalTxnRef.TryNormalizeHistoricalReference(attempt.TxnRef, out _));
     }
 
     private async Task<TerminalReady> MarkTerminalApprovedAsync(LocalInstallmentOperation operation, string requestJson, CancellationToken cancellationToken)
@@ -1724,7 +1788,7 @@ public sealed class InstallmentOperationService(
             // 中文注释：Linkly 被主管确认“银行明确未退款”后必须先保存新 TxnRef，断电恢复才能继续查询同一笔重试。
             // LocalIp 退款不得复用原销售 TxnRef；唯一退款号需在调用终端前已落盘，避免 GetLast 命中原扣款。
             var retryReference = await ShouldGenerateLocalLinklyRetryReferenceAsync(step) && string.IsNullOrWhiteSpace(step.RefundReference)
-                ? LinklyTerminalClient.BuildTxnRef(session)
+                ? LinklyLocalTxnRef.Create('R', step.IdempotencyKey)
                 : null;
             if (!await repository.TryTransitionRefundStepAsync(
                     step.RefundStepGuid,
@@ -2980,11 +3044,18 @@ public sealed class InstallmentOperationService(
         string? processor,
         Func<IDisposable?>? beginContext,
         Func<PaymentAuthorizationResult, bool>? hasVerifiedApprovalEvidence,
-        Func<PaymentAuthorizationResult, CancellationToken, Task>? recordOutcomeAsync) : IDisposable
+        Func<PaymentAuthorizationResult, CancellationToken, Task>? recordOutcomeAsync,
+        bool requiresReview = false,
+        string? reviewMessage = null) : IDisposable
     {
         public static TerminalAttemptScope Empty { get; } = new(null, null, null, null, null);
         public Guid? AttemptGuid { get; } = attemptGuid;
         public string? Processor { get; } = processor;
+        public bool RequiresReview { get; } = requiresReview;
+        public string? ReviewMessage { get; } = reviewMessage;
+
+        public static TerminalAttemptScope ForReview(Guid attemptGuid, string? processor, string message) =>
+            new(attemptGuid, processor, null, null, null, true, message);
 
         public IDisposable? BeginContext() => beginContext?.Invoke();
 

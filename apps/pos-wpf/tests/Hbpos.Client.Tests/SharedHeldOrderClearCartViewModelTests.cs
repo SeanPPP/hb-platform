@@ -82,7 +82,7 @@ public sealed class SharedHeldOrderClearCartViewModelTests
     }
 
     [Fact]
-    public async Task Decrease_last_restored_shared_line_releases_claim_before_removing()
+    public async Task Decrease_last_restored_shared_line_keeps_claim_without_releasing()
     {
         var claimId = Guid.NewGuid();
         var cart = BoundCart(claimId);
@@ -100,12 +100,15 @@ public sealed class SharedHeldOrderClearCartViewModelTests
                 return Task.CompletedTask;
             });
 
+        Assert.False(viewModel.DecreaseLineCommand.CanExecute(line));
+
         await Assert.IsAssignableFrom<IAsyncRelayCommand>(viewModel.DecreaseLineCommand)
             .ExecuteAsync(line);
 
-        Assert.Equal([claimId], calls);
-        Assert.True(cart.IsEmpty);
-        Assert.Equal("pos.status.ready", viewModel.StatusMessage);
+        Assert.Empty(calls);
+        Assert.Same(line, Assert.Single(cart.Lines));
+        Assert.Equal(1m, line.Quantity);
+        Assert.Equal(claimId, cart.CreateSnapshot().SharedHeldOrderClaimId);
     }
 
     private static PosCartService BoundCart(Guid claimId)

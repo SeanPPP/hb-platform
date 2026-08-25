@@ -640,7 +640,7 @@ async function main() {
     for (const [name, source, startMarker, endMarker] of [
       ['商品编辑', warehouseProductsSource, 'const handleSave = async () =>', 'const handleBatchToggleActive = async'],
       ['商品批量状态', warehouseProductsSource, 'const handleBatchToggleActive = async', 'const openBatchEdit ='],
-      ['商品批量编辑', warehouseProductsSource, 'const handleBatchEditSave = async', 'const handleToggleSingleActive = async'],
+      ['商品批量编辑后台任务', warehouseProductsSource, 'const refreshBatchUpdateListWithSelection = useCallback', 'const clearSubmittedBatchUpdateSelection = useCallback'],
       ['商品套装保存', warehouseProductsSource, 'const handleSaveSetItems = async', 'const handleExport = async'],
       ['进货单未匹配分店修复', storeOrdersSource, 'const handleSaveUnmatchedStoreMappings = async', 'const updateColumnFilters ='],
       ['进货单 HQ 同步', storeOrdersSource, 'const runStoreOrderHqSync = async', 'const handleFullHqSync ='],

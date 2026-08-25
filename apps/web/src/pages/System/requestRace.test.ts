@@ -347,7 +347,7 @@ assert(!wpfInitialEffect.includes('[page,') && !wpfInitialEffect.includes('pageS
 const wpfRefreshLatestQuery = extractSourceBlock(
   sources.wpf,
   'const refreshLatestReleaseQuery = useCallback',
-  '\n\n  const activeVersionOptions',
+  '\n\n  const policySummary',
   'WPF mutation 最新查询刷新函数块',
 )
 assert(wpfRefreshLatestQuery.includes('if (!mountedRef.current)'), 'WPF mutation 刷新前应确认页面仍挂载')

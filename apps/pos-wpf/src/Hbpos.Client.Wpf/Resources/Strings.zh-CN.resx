@@ -400,10 +400,10 @@
     <value>整单操作</value>
   </data>
   <data name="pos.terminal.quickHalf" xml:space="preserve">
-    <value>0.5</value>
+    <value>$0.50</value>
   </data>
   <data name="pos.terminal.quickNinetyNine" xml:space="preserve">
-    <value>0.99</value>
+    <value>$0.99</value>
   </data>
   <data name="pos.status.ready" xml:space="preserve">
     <value>离线收银已就绪。</value>
@@ -708,6 +708,9 @@
   <data name="payment.card.squareRefundMissingReference" xml:space="preserve">
     <value>Square 退款必须提供原始 Square 付款参考号。</value>
   </data>
+  <data name="payment.card.squareRefundPending" xml:space="preserve">
+    <value>Square 退款仍在处理中。请勿再次退款，稍后重新运行恢复。</value>
+  </data>
   <data name="payment.card.squareRefundStatus" xml:space="preserve">
     <value>Square 退款状态为 {0}。</value>
   </data>
@@ -764,6 +767,15 @@
   </data>
   <data name="payment.card.error.overlay.activeSession.recovering" xml:space="preserve">
     <value>正在恢复上一笔 Linkly 交易...</value>
+  </data>
+  <data name="payment.card.error.overlay.activeSession.handoff" xml:space="preserve">
+    <value>移至异常中心并开始新单</value>
+  </data>
+  <data name="payment.card.error.overlay.activeSession.openCenter" xml:space="preserve">
+    <value>打开卡交易异常中心</value>
+  </data>
+  <data name="payment.card.error.overlay.activeSession.handingOff" xml:space="preserve">
+    <value>正在将银行卡交易移至异常中心...</value>
   </data>
   <data name="payment.card.error.overlay.fallback.title" xml:space="preserve">
     <value>是否使用备用刷卡方式？</value>
@@ -860,6 +872,15 @@
   </data>
   <data name="history.moreActions" xml:space="preserve">
     <value>更多操作</value>
+  </data>
+  <data name="history.viewReceipt" xml:space="preserve">
+    <value>查看小票</value>
+  </data>
+  <data name="history.closeReceiptPreview" xml:space="preserve">
+    <value>关闭</value>
+  </data>
+  <data name="history.receiptLoading" xml:space="preserve">
+    <value>正在加载小票...</value>
   </data>
   <data name="history.reprint" xml:space="preserve">
     <value>重打</value>
@@ -1526,6 +1547,9 @@
   <data name="payment.refund.status.voucherOfflineUnavailable" xml:space="preserve">
     <value>离线状态下不可使用退款代金券。请恢复联网后再使用。</value>
   </data>
+  <data name="payment.refund.status.alternativeMethodRequired" xml:space="preserve">
+    <value>此 Square 恢复退款必须使用现金或代金券完成，银行卡退款不可用。</value>
+  </data>
   <data name="payment.status.duplicateVoucher" xml:space="preserve">
     <value>该代金券已经添加。</value>
   </data>
@@ -1584,7 +1608,7 @@
     <value>加载中</value>
   </data>
   <data name="shell.page.pos" xml:space="preserve">
-    <value>收银</value>
+    <value>收银主页</value>
   </data>
   <data name="shell.page.payment" xml:space="preserve">
     <value>支付</value>
@@ -1776,7 +1800,7 @@
     <value>日结盘点</value>
   </data>
   <data name="dailyClose.tab.history" xml:space="preserve">
-    <value>历史查询</value>
+    <value>日结历史</value>
   </data>
   <data name="dailyClose.history.title" xml:space="preserve">
     <value>日结历史</value>
@@ -2019,7 +2043,7 @@
     <value>Linkly Cloud 刷卡机已配对。</value>
   </data>
   <data name="dailyClose.status.ready" xml:space="preserve">
-    <value>可以开始检查日结汇总。</value>
+    <value>查看日结历史，或创建新日结。</value>
   </data>
   <data name="dailyClose.status.refreshing" xml:space="preserve">
     <value>正在刷新日结汇总...</value>
@@ -2200,6 +2224,15 @@
   <data name="linkly.local.test.exception" xml:space="preserve">
     <value>Linkly 连接失败：{0}</value>
   </data>
+  <data name="linkly.local.logon.connectionFailed" xml:space="preserve"><value>Linkly EFT-Client 连接失败。</value></data>
+  <data name="linkly.local.logon.requestFailed" xml:space="preserve"><value>无法发送 Linkly 银行网络登录请求。</value></data>
+  <data name="linkly.local.logon.success" xml:space="preserve"><value>Linkly 刷卡机已登录银行网络。</value></data>
+  <data name="linkly.local.logon.failed" xml:space="preserve"><value>Linkly 银行网络登录失败：{0}（{1}）。</value></data>
+  <data name="linkly.local.logon.timeout" xml:space="preserve"><value>Linkly 银行网络登录超时。</value></data>
+  <data name="linkly.local.logon.exception" xml:space="preserve"><value>Linkly 银行网络登录失败：{0}</value></data>
+  <data name="linkly.local.logon.cancelled" xml:space="preserve"><value>Linkly 银行网络登录已取消。</value></data>
+  <data name="linkly.local.logon.cancelledUnknown" xml:space="preserve"><value>Linkly 银行网络登录已取消，结果未知。</value></data>
+  <data name="linkly.local.logon.outcomeUnknown" xml:space="preserve"><value>Linkly 银行网络登录结果未知，请先检查刷卡机再重试。</value></data>
   <data name="linkly.local.amountMustBePositive" xml:space="preserve">
     <value>刷卡金额必须大于零。</value>
   </data>
@@ -2585,6 +2618,7 @@
   <data name="cardRecovery.linkly.requiresReview" xml:space="preserve"><value>上一笔刷卡金额与订单金额不一致。请主管确认 Linkly 后台状态后处理。</value></data>
   <data name="cardRecovery.linkly.checking" xml:space="preserve"><value>检测到上次程序关闭前有一笔 {0:C2} 刷卡交易正在处理，正在查询刷卡机状态。</value></data>
   <data name="cardRecovery.linkly.unknown" xml:space="preserve"><value>无法确认上一笔刷卡结果。请联系主管确认 Linkly 后台状态后再继续。</value></data>
+  <data name="cardRecovery.linkly.legacyTxnRefRequiresReview" xml:space="preserve"><value>已保存的 Linkly 引用是不符合 16 字符协议的旧值。无法安全自动匹配。不得重复收款或退款。主管必须结合终端票据、金额、时间、设备、RRN、STAN 和授权码进行核对。</value></data>
   <data name="cardRecovery.linkly.currentCartNotEmpty" xml:space="preserve"><value>检测到上一笔刷卡结果需要处理，但当前购物车已有商品。请先完成或清空当前购物车后再恢复上一笔订单。</value></data>
   <data name="cardRecovery.linkly.approved" xml:space="preserve"><value>上一笔刷卡已成功，订单已自动恢复并保存。</value></data>
   <data name="cardRecovery.linkly.failed" xml:space="preserve"><value>上一笔刷卡失败：{0}。订单已恢复，请重新选择付款方式。</value></data>
@@ -2602,6 +2636,17 @@
   <data name="cardRecovery.linkly.activeSessionManuallyCleared" xml:space="preserve"><value>上一笔 Linkly 交易已人工检查并清理。请继续当前订单。</value></data>
   <data name="cardRecovery.linkly.activeSessionManualClearFailed" xml:space="preserve"><value>POS 未能清理上一笔 Linkly 交易。请再次恢复，或检查 Linkly 后再收款。</value></data>
   <data name="cardRecovery.linkly.activeSessionManualClearMissing" xml:space="preserve"><value>缺少 session id，无法清理上一笔 Linkly 交易。</value></data>
+  <data name="cardRecovery.linkly.localCancelUnknown" xml:space="preserve"><value>POS 已停止等待上一笔卡交易，Linkly 后台最终结果仍未知。请主管确认 Linkly 后再继续。</value></data>
+  <data name="cardRecovery.linkly.activeSessionLocalCancelUnknown" xml:space="preserve"><value>POS 已停止等待上一笔 Linkly 会话，最终结果仍未知。请主管确认 Linkly 后再收款。</value></data>
+  <data name="cardRecovery.linkly.failedReasonFallback" xml:space="preserve"><value>未获批准</value></data>
+  <data name="cardRecovery.linkly.supervisorWaiting" xml:space="preserve"><value>付款仍处于锁定状态。银行结果可用后请再次恢复。</value></data>
+  <data name="cardRecovery.linkly.paymentAlreadyFinalized" xml:space="preserve"><value>所选付款已经终态化，不能再次修改。</value></data>
+  <data name="cardRecovery.linkly.paymentEvidenceExists" xml:space="preserve"><value>已存在银行付款证据，请改为执行恢复。</value></data>
+  <data name="cardRecovery.linkly.notPaidPaymentReferenceNotAllowed" xml:space="preserve"><value>确认未付款时，请勿填写付款参考号。</value></data>
+  <data name="cardRecovery.linkly.supervisorNotPaidRestored" xml:space="preserve"><value>银行确认未发生付款，原订单已恢复，可以再次付款。</value></data>
+  <data name="cardRecovery.linkly.supervisorPaidNoDraft" xml:space="preserve"><value>主管确认上一笔已付款。会话已清理，但本地没有可用订单草稿；请核对订单后再继续。</value></data>
+  <data name="cardRecovery.linkly.approvedRecoveryRequiresReview" xml:space="preserve"><value>上一笔卡付款已批准，但 POS 无法安全重建订单。请主管确认付款后再继续。</value></data>
+  <data name="cardRecovery.linkly.approvedTenderRestored" xml:space="preserve"><value>上一笔卡付款已批准并恢复为付款方式。完成剩余付款后再完成订单。</value></data>
   <data name="cardRecovery.square.currentCartNotEmpty" xml:space="preserve"><value>检测到上一笔 Square 刷卡结果需要处理，但当前购物车已有商品。请先完成或清空当前购物车后再恢复上一笔订单。</value></data>
   <data name="cardRecovery.square.unknown" xml:space="preserve"><value>无法确认上一笔 Square 刷卡结果。请联系主管确认 Square 后台状态后再继续。</value></data>
   <data name="cardRecovery.square.checking" xml:space="preserve"><value>检测到上次程序关闭前有一笔 {0:C2} Square 刷卡交易正在处理，正在查询刷卡机状态。</value></data>
@@ -2609,6 +2654,12 @@
   <data name="cardRecovery.square.cancelled" xml:space="preserve"><value>上一笔 Square 刷卡未完成：{0}。订单已恢复，请重新选择付款方式。</value></data>
   <data name="cardRecovery.square.amountMismatch" xml:space="preserve"><value>Square 返回的付款金额与订单金额不一致。订单未自动保存，请联系主管确认。</value></data>
   <data name="cardRecovery.square.approved" xml:space="preserve"><value>上一笔 Square 刷卡已成功，订单已自动恢复并保存。</value></data>
+  <data name="cardRecovery.square.supervisorWaiting" xml:space="preserve"><value>Square 付款仍处于锁定状态。银行结果可用后请再次恢复。</value></data>
+  <data name="cardRecovery.square.notPaidCartNotEmpty" xml:space="preserve"><value>主管确认上一笔 Square 未付款，但当前购物车不为空。请先清空当前购物车，再恢复原订单。</value></data>
+  <data name="cardRecovery.square.notPaidDraftInvalid" xml:space="preserve"><value>Square 付款草稿无效，无法恢复。</value></data>
+  <data name="cardRecovery.square.notPaidRestoreFailed" xml:space="preserve"><value>上一笔 Square 付款无法恢复，请再次尝试恢复。</value></data>
+  <data name="cardRecovery.square.notPaidTerminalizeFailed" xml:space="preserve"><value>上一笔 Square 付款无法完成结案，请再次尝试恢复。</value></data>
+  <data name="cardRecovery.square.notPaidRetryAllowed" xml:space="preserve"><value>银行确认未发生付款，原订单已准备好按相同操作再次付款。</value></data>
   <data name="settings.section.appUpdate.title" xml:space="preserve"><value>软件更新</value></data>
   <data name="settings.section.appUpdate.description" xml:space="preserve"><value>检查 WPF 收银端安装包更新，不中断当前收银主流程。</value></data>
   <data name="settings.section.appUpdate.channel" xml:space="preserve"><value>通道</value></data>
@@ -2680,11 +2731,17 @@
   <data name="cardRecovery.refund.field.refundReference" xml:space="preserve"><value>退款参考号（如有）</value></data>
   <data name="cardRecovery.refund.field.evidence" xml:space="preserve"><value>银行证据（确认未退款时必填）</value></data>
   <data name="cardRecovery.refund.field.note" xml:space="preserve"><value>主管备注（继续等待时必填；确认已退款需参考号或备注）</value></data>
+  <data name="cardRecovery.refund.section.squareInstructions" xml:space="preserve"><value>选择结果前，请先核对 Square 退款记录。确认已退款必须填写真实的 Square 退款参考号；确认未退款必须填写银行证据；继续等待必须填写主管备注。</value></data>
+  <data name="cardRecovery.refund.field.squareRefundReference" xml:space="preserve"><value>Square 退款参考号（确认已退款时必填）</value></data>
+  <data name="cardRecovery.refund.field.squareNote" xml:space="preserve"><value>主管备注（继续等待时必填）</value></data>
   <data name="cardRecovery.refund.action.confirmRefunded" xml:space="preserve"><value>确认已退款</value></data>
   <data name="cardRecovery.refund.action.confirmNotRefunded" xml:space="preserve"><value>确认未退款</value></data>
   <data name="cardRecovery.refund.action.continueWaiting" xml:space="preserve"><value>继续等待</value></data>
   <data name="cardRecovery.refund.authorizationRequired" xml:space="preserve"><value>处理该退款需要主管授权。</value></data>
   <data name="cardRecovery.refund.resolveFailed" xml:space="preserve"><value>退款决定保存失败。再次退款前请重新运行恢复。</value></data>
+  <data name="cardRecovery.refund.squareReferenceRequired" xml:space="preserve"><value>主管确认 Square 已退款时必须提供真实退款参考号。</value></data>
+  <data name="cardRecovery.refund.squarePending" xml:space="preserve"><value>Square 仍在处理退款。请勿再次退款，稍后重新运行恢复。</value></data>
+  <data name="cardRecovery.refund.squareAlternativeMethodRequired" xml:space="preserve"><value>Square 已确认未发生退款。原退货已恢复，但本次恢复禁止再次使用银行卡退款，请改用现金或代金券。</value></data>
   <data name="cardRecovery.refund.waitingSaved" xml:space="preserve"><value>退款仍保持锁定。取得银行结果后请再次运行恢复。</value></data>
   <data name="cardRecovery.refund.retryAllowed" xml:space="preserve"><value>银行已确认未发生退款。原退货已恢复，可使用同一操作重试。</value></data>
   <data name="cardRecovery.refund.confirmedSaved" xml:space="preserve"><value>已记录确认退款，并恢复原退货。</value></data>
@@ -2700,4 +2757,109 @@
   <data name="cardRecovery.payment.action.confirmNotPaid" xml:space="preserve"><value>确认未付款</value></data>
   <data name="cardRecovery.payment.authorizationRequired" xml:space="preserve"><value>处理该付款需要主管授权。</value></data>
   <data name="cardRecovery.payment.resolveFailed" xml:space="preserve"><value>付款结案保存失败。请保持锁定并重试。</value></data>
+  <data name="shell.page.cardRecovery" xml:space="preserve"><value>卡交易异常中心</value></data>
+  <data name="cardRecovery.center.title" xml:space="preserve"><value>卡交易异常中心</value></data>
+  <data name="cardRecovery.center.subtitle" xml:space="preserve"><value>重试或结案前，请逐笔核对结果不确定的卡交易。</value></data>
+  <data name="cardRecovery.center.openCount" xml:space="preserve"><value>{0} 笔卡交易待处理</value></data>
+  <data name="cardRecovery.operation.sale" xml:space="preserve"><value>销售</value></data>
+  <data name="cardRecovery.operation.refund" xml:space="preserve"><value>退款</value></data>
+  <data name="cardRecovery.operation.activeSession" xml:space="preserve"><value>活动会话</value></data>
+  <data name="cardRecovery.operation.unknown" xml:space="preserve"><value>未知操作</value></data>
+  <data name="cardRecovery.channel.linkly" xml:space="preserve"><value>Linkly</value></data>
+  <data name="cardRecovery.channel.square" xml:space="preserve"><value>Square</value></data>
+  <data name="cardRecovery.channel.unknown" xml:space="preserve"><value>未知渠道</value></data>
+  <data name="cardRecovery.status.none" xml:space="preserve"><value>无</value></data>
+  <data name="cardRecovery.status.pending" xml:space="preserve"><value>待处理</value></data>
+  <data name="cardRecovery.status.sessionStarted" xml:space="preserve"><value>会话已开始</value></data>
+  <data name="cardRecovery.status.recovering" xml:space="preserve"><value>恢复中</value></data>
+  <data name="cardRecovery.status.approved" xml:space="preserve"><value>已批准</value></data>
+  <data name="cardRecovery.status.requiresReview" xml:space="preserve"><value>需要复核</value></data>
+  <data name="cardRecovery.status.declined" xml:space="preserve"><value>已拒绝</value></data>
+  <data name="cardRecovery.status.timedOut" xml:space="preserve"><value>已超时</value></data>
+  <data name="cardRecovery.status.cancelled" xml:space="preserve"><value>已取消</value></data>
+  <data name="cardRecovery.status.canceled" xml:space="preserve"><value>已取消</value></data>
+  <data name="cardRecovery.status.failed" xml:space="preserve"><value>失败</value></data>
+  <data name="cardRecovery.status.orderCompleted" xml:space="preserve"><value>订单已完成</value></data>
+  <data name="cardRecovery.status.abandoned" xml:space="preserve"><value>已放弃</value></data>
+  <data name="cardRecovery.status.checkoutCreated" xml:space="preserve"><value>Checkout 已创建</value></data>
+  <data name="cardRecovery.status.checkoutCompleted" xml:space="preserve"><value>Checkout 已完成</value></data>
+  <data name="cardRecovery.status.paymentVerified" xml:space="preserve"><value>付款已验证</value></data>
+  <data name="cardRecovery.status.finalizePending" xml:space="preserve"><value>等待完成</value></data>
+  <data name="cardRecovery.status.unknown" xml:space="preserve"><value>未知状态</value></data>
+  <data name="cardRecovery.center.list.title" xml:space="preserve"><value>待处理卡交易</value></data>
+  <data name="cardRecovery.center.list.empty" xml:space="preserve"><value>当前没有待处理的卡交易。</value></data>
+  <data name="cardRecovery.center.detail.title" xml:space="preserve"><value>交易证据</value></data>
+  <data name="cardRecovery.center.detail.empty" xml:space="preserve"><value>请选择一笔卡交易查看证据。</value></data>
+  <data name="cardRecovery.center.field.type" xml:space="preserve"><value>类型</value></data>
+  <data name="cardRecovery.center.field.channel" xml:space="preserve"><value>渠道</value></data>
+  <data name="cardRecovery.center.field.amount" xml:space="preserve"><value>金额</value></data>
+  <data name="cardRecovery.center.field.cashier" xml:space="preserve"><value>原收银员</value></data>
+  <data name="cardRecovery.center.field.products" xml:space="preserve"><value>原商品快照</value></data>
+  <data name="cardRecovery.center.field.time" xml:space="preserve"><value>最后更新时间</value></data>
+  <data name="cardRecovery.center.field.session" xml:space="preserve"><value>会话</value></data>
+  <data name="cardRecovery.center.field.txn" xml:space="preserve"><value>交易号</value></data>
+  <data name="cardRecovery.center.field.responseCode" xml:space="preserve"><value>响应码</value></data>
+  <data name="cardRecovery.center.field.responseText" xml:space="preserve"><value>响应内容</value></data>
+  <data name="cardRecovery.center.field.status" xml:space="preserve"><value>状态</value></data>
+  <data name="cardRecovery.center.field.attempt" xml:space="preserve"><value>尝试标识</value></data>
+  <data name="cardRecovery.center.field.environment" xml:space="preserve"><value>环境</value></data>
+  <data name="cardRecovery.center.field.reference" xml:space="preserve"><value>参考号</value></data>
+  <data name="cardRecovery.center.product.name" xml:space="preserve"><value>商品</value></data>
+  <data name="cardRecovery.center.product.code" xml:space="preserve"><value>编码</value></data>
+  <data name="cardRecovery.center.product.quantity" xml:space="preserve"><value>数量</value></data>
+  <data name="cardRecovery.center.product.unitPrice" xml:space="preserve"><value>单价</value></data>
+  <data name="cardRecovery.center.product.unavailable" xml:space="preserve"><value>原商品快照不可用，请依据上方交易证据核对。</value></data>
+  <data name="cardRecovery.center.resolution.title" xml:space="preserve"><value>主管结案</value></data>
+  <data name="cardRecovery.center.resolution.instructions" xml:space="preserve"><value>请核对当前所选交易的银行或终端证据。每次人工决定均需要一次性主管授权。</value></data>
+  <data name="cardRecovery.center.squareRefund.processing" xml:space="preserve"><value>Square 退款已在处理中。请使用“查询所选交易”获取最新状态，不要再次提交退款。</value></data>
+  <data name="cardRecovery.center.input.reason" xml:space="preserve"><value>主管原因或备注</value></data>
+  <data name="cardRecovery.center.input.evidence" xml:space="preserve"><value>银行或终端证据</value></data>
+  <data name="cardRecovery.center.input.reference" xml:space="preserve"><value>付款或结算参考号</value></data>
+  <data name="cardRecovery.center.action.back" xml:space="preserve"><value>返回</value></data>
+  <data name="cardRecovery.center.action.refresh" xml:space="preserve"><value>刷新</value></data>
+  <data name="cardRecovery.center.action.recover" xml:space="preserve"><value>查询所选交易</value></data>
+  <data name="cardRecovery.center.action.confirmPaid" xml:space="preserve"><value>确认已付款</value></data>
+  <data name="cardRecovery.center.action.confirmNotPaid" xml:space="preserve"><value>确认未付款</value></data>
+  <data name="cardRecovery.center.action.continueWaiting" xml:space="preserve"><value>继续等待</value></data>
+  <data name="cardRecovery.center.status.ready" xml:space="preserve"><value>请选择一笔待处理卡交易进行核对。</value></data>
+  <data name="cardRecovery.center.status.loaded" xml:space="preserve"><value>已加载 {0} 笔待处理卡交易。</value></data>
+  <data name="cardRecovery.center.status.empty" xml:space="preserve"><value>当前没有待处理的卡交易。</value></data>
+  <data name="cardRecovery.center.status.unavailable" xml:space="preserve"><value>卡交易异常中心暂不可用。</value></data>
+  <data name="cardRecovery.center.status.authorizationRequired" xml:space="preserve"><value>执行此操作需要授权。</value></data>
+  <data name="cardRecovery.center.status.selectionChanged" xml:space="preserve"><value>所选交易已变化，请重新选择后再继续。</value></data>
+  <data name="cardRecovery.center.status.recoverNoResult" xml:space="preserve"><value>所选交易已不在待处理列表中。</value></data>
+  <data name="cardRecovery.center.status.resolveNoResult" xml:space="preserve"><value>结案操作没有返回消息。</value></data>
+  <data name="cardRecovery.center.status.refreshFailed" xml:space="preserve"><value>刷新卡交易失败。{0}</value></data>
+  <data name="cardRecovery.center.status.recoverFailed" xml:space="preserve"><value>查询所选交易失败。{0}</value></data>
+  <data name="cardRecovery.center.status.resolveFailed" xml:space="preserve"><value>保存主管决定失败。{0}</value></data>
+  <data name="cardRecovery.center.status.draftHandoffFailed" xml:space="preserve"><value>恢复结果已保存，但付款草稿未能安全交接。再次收款或退款前，请重新运行恢复。{0}</value></data>
+  <data name="cardRecovery.center.status.unexpected" xml:space="preserve"><value>卡交易异常中心发生意外错误。{0}</value></data>
+  <data name="cardRecovery.resolutionSavedPending" xml:space="preserve"><value>主管决定已保存，但恢复尚未完成。再次收款或退款前请重新运行恢复。</value></data>
+  <data name="cardRecovery.draftHandoff.unlockWarning" xml:space="preserve"><value>恢复已提交，但付款页未能安全解锁。页面将保持锁定，请先检查异常中心再继续。</value></data>
+  <data name="cardRecovery.center.value.none" xml:space="preserve"><value>-</value></data>
+  <data name="dailyClose.cashCountHint" xml:space="preserve"><value>选择面额后输入现金数量。</value></data>
+  <data name="dailyClose.quantityShort" xml:space="preserve"><value>数量</value></data>
+  <data name="dailyClose.cashCountDialog.automationName" xml:space="preserve"><value>现金数量输入</value></data>
+  <data name="dailyClose.cashCountDialog.titlePrefix" xml:space="preserve"><value>清点</value></data>
+  <data name="dailyClose.cashCountDialog.helperPrefix" xml:space="preserve"><value>请输入钱箱中</value></data>
+  <data name="dailyClose.cashCountDialog.helperSuffix" xml:space="preserve"><value>的数量。</value></data>
+  <data name="dailyClose.cashCountDialog.clear" xml:space="preserve"><value>清空</value></data>
+  <data name="dailyClose.cashCountDialog.backspace" xml:space="preserve"><value>退格</value></data>
+  <data name="dailyClose.cashCountDialog.apply" xml:space="preserve"><value>应用数量</value></data>
+  <data name="dailyClose.refreshHistory" xml:space="preserve"><value>刷新历史</value></data>
+  <data name="dailyClose.createNew" xml:space="preserve"><value>创建新日结</value></data>
+  <data name="dailyClose.continueDraft" xml:space="preserve"><value>继续日结</value></data>
+  <data name="dailyClose.cashWorkspace.title" xml:space="preserve"><value>新建日结</value></data>
+  <data name="dailyClose.cashWorkspace.automationName" xml:space="preserve"><value>日结现金统计工作区</value></data>
+  <data name="dailyClose.cashWorkspace.returnHistory" xml:space="preserve"><value>返回历史</value></data>
+  <data name="dailyClose.cashWorkspace.discard" xml:space="preserve"><value>放弃草稿</value></data>
+  <data name="dailyClose.cashWorkspace.discardConfirm.title" xml:space="preserve"><value>放弃日结草稿？</value></data>
+  <data name="dailyClose.cashWorkspace.discardConfirm.message" xml:space="preserve"><value>已输入的现金数量和当前汇总快照将被清空，此操作无法撤销。</value></data>
+  <data name="dailyClose.cashWorkspace.discardConfirm.action" xml:space="preserve"><value>确认放弃</value></data>
+  <data name="dailyClose.status.draftPreparing" xml:space="preserve"><value>正在准备新日结……</value></data>
+  <data name="dailyClose.status.draftReady" xml:space="preserve"><value>新日结已准备好，可以开始现金统计。</value></data>
+  <data name="dailyClose.status.draftResumed" xml:space="preserve"><value>已继续未完成的日结草稿。</value></data>
+  <data name="dailyClose.status.draftPreserved" xml:space="preserve"><value>日结草稿已保留，准备好后请选择“继续日结”。</value></data>
+  <data name="dailyClose.status.draftDiscarded" xml:space="preserve"><value>日结草稿已放弃。</value></data>
+  <data name="dailyClose.status.draftIdentityChanged" xml:space="preserve"><value>门店、终端或收银员已变化，原日结草稿已清除。</value></data>
 </root>

@@ -90,6 +90,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     [ObservableProperty]
     private int _statusPulseToken;
 
+    [ObservableProperty]
+    private int _cardRecoveryOpenCount;
+
     public PosTerminalViewModel(
         LocalSellableItemIndex priceIndex,
         PosCartService cart,
@@ -124,7 +127,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         Func<Task>? onLockCashierAsync = null,
         IOperationAuthorizationService? operationAuthorizationService = null,
         Func<string?, string, CancellationToken, IReadOnlyList<SellableItemDto>>? searchCatalogMatches = null,
-        Func<Guid, PosSessionState, CancellationToken, Task>? releaseSharedHeldOrderAsync = null)
+        Func<Guid, PosSessionState, CancellationToken, Task>? releaseSharedHeldOrderAsync = null,
+        Func<Task>? onOpenCardRecoveryCenterAsync = null)
     {
         _priceIndex = priceIndex;
         _searchCatalogMatches = searchCatalogMatches ?? ((storeCode, query, cancellationToken) =>
@@ -149,7 +153,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
             onOpenCashDrawerAsync,
             onExitApplicationAsync,
             onReregisterDeviceAsync,
-            onLockCashierAsync);
+            onLockCashierAsync,
+            onOpenCardRecoveryCenterAsync);
         _scanController = new PosTerminalScanController(cart);
         _session = session;
         _localization = localization;
@@ -184,7 +189,12 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         SelectMatchCommand = new AsyncRelayCommand<SellableItemDto>(SelectMatchAsync);
         RemoveLineCommand = new AsyncRelayCommand<CartLine>(RemoveLineAsync);
         IncreaseLineCommand = new AsyncRelayCommand<CartLine>(IncreaseLineAsync, line => line is not null && !line.IsLocked && _cart.Lines.Contains(line));
-        DecreaseLineCommand = new AsyncRelayCommand<CartLine>(DecreaseLineAsync, line => line is not null && !line.IsLocked && _cart.Lines.Contains(line));
+        DecreaseLineCommand = new AsyncRelayCommand<CartLine>(
+            DecreaseLineAsync,
+            line => line is not null &&
+                    !line.IsLocked &&
+                    line.Quantity > 1m &&
+                    _cart.Lines.Contains(line));
         ModifySelectedLineQuantityCommand = new AsyncRelayCommand(ModifySelectedLineQuantityAsync);
         ModifySelectedLinePriceCommand = new AsyncRelayCommand(ModifySelectedLinePriceAsync);
         ApplySelectedLineDiscountAmountCommand = new AsyncRelayCommand(ApplySelectedLineDiscountAmountAsync);
@@ -201,6 +211,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         OpenDailyCloseCommand = new AsyncRelayCommand(OpenDailyCloseAsync);
         OpenSettingsCommand = new AsyncRelayCommand(OpenSettingsAsync);
         OpenCustomerDisplayCommand = new AsyncRelayCommand(OpenCustomerDisplayAsync);
+        OpenCardRecoveryCenterCommand = new AsyncRelayCommand(
+            OpenCardRecoveryCenterAsync,
+            () => _actions.OpenCardRecoveryCenterAsync is not null);
         PrintLastReceiptCommand = new AsyncRelayCommand(PrintLastReceiptAsync, () => _actions.CanPrintLastReceipt);
         OpenCashDrawerCommand = new AsyncRelayCommand(OpenCashDrawerAsync, () => _actions.CanOpenCashDrawer);
         LockCashierCommand = new AsyncRelayCommand(LockCashierAsync);
@@ -267,6 +280,8 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     public IRelayCommand OpenCustomerDisplayCommand { get; }
 
+    public IAsyncRelayCommand OpenCardRecoveryCenterCommand { get; }
+
     public IAsyncRelayCommand PrintLastReceiptCommand { get; }
 
     public IAsyncRelayCommand OpenCashDrawerCommand { get; }
@@ -330,6 +345,10 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     public string OnlineText => T(Session.IsOnline ? "pos.status.online" : "pos.status.offline");
 
     public string PendingSyncText => Format("pos.status.pendingSync", Session.PendingSyncCount);
+
+    public bool HasOpenCardRecoveryAttempts => CardRecoveryOpenCount > 0;
+
+    public string CardRecoveryOpenText => Format("cardRecovery.center.openCount", CardRecoveryOpenCount);
 
     public string StatusMessage => _statusText ?? Format(_statusKey, _statusArgs);
 
@@ -411,6 +430,12 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
         OnPropertyChanged(nameof(OnlineText));
         OnPropertyChanged(nameof(PendingSyncText));
+    }
+
+    partial void OnCardRecoveryOpenCountChanged(int value)
+    {
+        OnPropertyChanged(nameof(HasOpenCardRecoveryAttempts));
+        OnPropertyChanged(nameof(CardRecoveryOpenText));
     }
 
     public void LoadMatches(IEnumerable<SellableItemDto> items)
@@ -936,6 +961,14 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     private async Task DecreaseLineAsync(CartLine? line)
     {
         var lineSnapshot = line;
+        if (lineSnapshot is null ||
+            lineSnapshot.IsLocked ||
+            lineSnapshot.Quantity <= 1m ||
+            !_cart.Lines.Contains(lineSnapshot))
+        {
+            return;
+        }
+
         using var permissionGrant = await AuthorizeAsync(Permissions.PosTerminal.Sales.ChangeQuantity, "decrease-line");
         if (permissionGrant is null)
         {
@@ -943,16 +976,11 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         }
 
         using var authorizationActivation = permissionGrant.Activate();
-        if (lineSnapshot?.Quantity == 1m &&
-            IsLastBoundSharedHeldOrderLine(lineSnapshot) &&
-            !await TryReleaseSharedHeldOrderAsync())
+        // 权限等待期间数量可能变化；到达下限后必须保留商品行且不能释放恢复挂单 claim。
+        if (lineSnapshot.IsLocked ||
+            lineSnapshot.Quantity <= 1m ||
+            !_cart.Lines.Contains(lineSnapshot))
         {
-            return;
-        }
-
-        if (lineSnapshot is not null && !_cart.Lines.Contains(lineSnapshot))
-        {
-            SetStatus("pos.status.ready");
             return;
         }
 
@@ -1361,6 +1389,23 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         if (_actions.OpenHistoryAsync is not null)
         {
             await _actions.OpenHistoryAsync();
+        }
+    }
+
+    private async Task OpenCardRecoveryCenterAsync()
+    {
+        using var permissionGrant = await AuthorizeAsync(
+            Permissions.PosTerminal.Payment.View,
+            "open-card-recovery-center");
+        if (permissionGrant is null)
+        {
+            return;
+        }
+
+        using var authorizationActivation = permissionGrant.Activate();
+        if (_actions.OpenCardRecoveryCenterAsync is not null)
+        {
+            await _actions.OpenCardRecoveryCenterAsync();
         }
     }
 
@@ -2192,6 +2237,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         OnPropertyChanged(nameof(ReregisterDeviceText));
         OnPropertyChanged(nameof(OnlineText));
         OnPropertyChanged(nameof(PendingSyncText));
+        OnPropertyChanged(nameof(CardRecoveryOpenText));
         OnPropertyChanged(nameof(StatusMessage));
     }
 }
