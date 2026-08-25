@@ -113,6 +113,29 @@ public sealed class OrderHistoryServiceTests
         Assert.DoesNotContain("`Remark` like", select, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData("jmq02")]
+    [InlineData("-")]
+    public void Sql_server_keyword_filter_does_not_emit_boolean_predicate_parameter(string keyword)
+    {
+        using var db = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = "Server=(localdb)\\MSSQLLocalDB;Database=hbpos-sql-preview;Trusted_Connection=True;",
+            DbType = DbType.SqlServer,
+            InitKeyType = InitKeyType.Attribute,
+            IsAutoCloseConnection = true
+        });
+        var sql = SqlSugarOrderHistoryRepository.ApplyKeywordFilter(
+                db.Queryable<SalesOrder>(),
+                keyword)
+            .ToSql();
+
+        Assert.Contains("CHARINDEX", sql.Key, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("EXISTS", sql.Key, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(sql.Value, parameter => parameter.Value is bool);
+        Assert.DoesNotContain(sql.Value, parameter => Equals(parameter.Value, string.Empty));
+    }
+
     [Fact]
     public void Sql_server_item_number_suffix_uses_parameterized_charindex_instead_of_like()
     {
