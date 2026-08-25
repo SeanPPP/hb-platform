@@ -96,6 +96,8 @@ public sealed class CustomerDisplayOrchestrator : ICustomerDisplayOrchestrator
             line.UnitPrice,
             line.ActualAmount)
         {
+            ItemNumber = line.ItemNumber,
+            ProductImage = line.ProductImage,
             GrossAmount = line.GrossAmount,
             HasDiscount = line.HasDiscount,
             DiscountRateText = line.DiscountRateText

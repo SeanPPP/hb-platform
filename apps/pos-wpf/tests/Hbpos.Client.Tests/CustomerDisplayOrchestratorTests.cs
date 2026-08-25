@@ -145,6 +145,66 @@ public sealed class CustomerDisplayOrchestratorTests
     }
 
     [Fact]
+    public void LoadFromCart_projects_sale_line_item_number_image_and_lookup_code()
+    {
+        var orchestrator = new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService());
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem(
+            "SKU-IMAGE",
+            "Image Item",
+            "930000000003",
+            12m,
+            itemNumber: "ITEM-001",
+            productImage: "/uploads/products/item-001.png"));
+        var customerDisplay = new CustomerDisplayViewModel();
+
+        orchestrator.LoadFromCart(
+            customerDisplay,
+            CreateSession(),
+            cart,
+            refreshAdvertisements: false);
+
+        var line = Assert.Single(customerDisplay.Lines);
+        Assert.Equal("ITEM-001", line.ItemNumber);
+        Assert.Equal("/uploads/products/item-001.png", line.ProductImage);
+        Assert.Equal("930000000003", line.LookupCode);
+    }
+
+    [Fact]
+    public void LoadFromCart_projects_return_line_item_number_image_and_lookup_code()
+    {
+        var orchestrator = new CustomerDisplayOrchestrator(new FakeCustomerDisplayWindowService());
+        var cart = new PosCartService();
+        cart.AddReturnLine(new ReturnCartLineRequest(
+            StoreCode: "S001",
+            ProductCode: "SKU-RETURN",
+            ReferenceCode: "REF-RETURN",
+            DisplayName: "Returned Item",
+            LookupCode: "930000000004",
+            ItemNumber: "ITEM-RETURN-001",
+            ProductImage: "https://cdn.example.com/products/return-item.png",
+            Quantity: 1m,
+            UnitPrice: 8m,
+            PriceSource: PriceSourceKind.StoreRetailPrice,
+            PriceSourceLabel: "StoreRetailPrice",
+            ReturnSourceKey: "return-line-001",
+            OriginalOrderGuid: Guid.NewGuid(),
+            OriginalOrderLineGuid: Guid.NewGuid()));
+        var customerDisplay = new CustomerDisplayViewModel();
+
+        orchestrator.LoadFromCart(
+            customerDisplay,
+            CreateSession(),
+            cart,
+            refreshAdvertisements: false);
+
+        var line = Assert.Single(customerDisplay.Lines);
+        Assert.Equal("ITEM-RETURN-001", line.ItemNumber);
+        Assert.Equal("https://cdn.example.com/products/return-item.png", line.ProductImage);
+        Assert.Equal("930000000004", line.LookupCode);
+    }
+
+    [Fact]
     public async Task LoadFromCart_starts_periodic_advertisement_refresh()
     {
         var callCount = 0;
@@ -304,7 +364,9 @@ public sealed class CustomerDisplayOrchestratorTests
         string productCode,
         string displayName,
         string lookupCode,
-        decimal price)
+        decimal price,
+        string? itemNumber = null,
+        string? productImage = null)
     {
         return new SellableItemDto(
             StoreCode: "S001",
@@ -312,14 +374,14 @@ public sealed class CustomerDisplayOrchestratorTests
             ReferenceCode: null,
             DisplayName: displayName,
             LookupCode: lookupCode,
-            ItemNumber: productCode,
+            ItemNumber: itemNumber ?? productCode,
             Barcode: lookupCode,
             RetailPrice: price,
             PriceSource: PriceSourceKind.StoreRetailPrice,
             PriceSourceLabel: "StoreRetailPrice",
             QuantityFactor: 1m,
             UpdatedAt: DateTimeOffset.UtcNow,
-            ProductImage: null);
+            ProductImage: productImage);
     }
 
     private static AdvertisementPlaybackItemDto CreateImageAdvertisement(string id)

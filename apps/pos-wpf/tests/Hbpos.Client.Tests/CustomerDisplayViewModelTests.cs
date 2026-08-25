@@ -28,6 +28,24 @@ public sealed class CustomerDisplayViewModelTests
     }
 
     [Fact]
+    public void CustomerDisplayLine_exposes_item_number_presence()
+    {
+        var populated = new CustomerDisplayLine("Milk", "SKU-001", 1m, 3m, 3m)
+        {
+            ItemNumber = "ITEM-001"
+        };
+        var missing = new CustomerDisplayLine("Bread", "SKU-002", 1m, 4m, 4m);
+        var whitespace = new CustomerDisplayLine("Eggs", "SKU-003", 1m, 5m, 5m)
+        {
+            ItemNumber = "   "
+        };
+
+        Assert.True(populated.HasItemNumber);
+        Assert.False(missing.HasItemNumber);
+        Assert.False(whitespace.HasItemNumber);
+    }
+
+    [Fact]
     public void CustomerDisplayView_keeps_promotion_on_right_when_cart_has_lines()
     {
         var (_, codeBehind) = ReadCustomerDisplayViewFiles();
@@ -63,6 +81,68 @@ public sealed class CustomerDisplayViewModelTests
         Assert.Contains("Text=\"{Binding GrossAmount, StringFormat={}{0:C2}}\"", xaml);
         Assert.Contains("TextDecorations=\"Strikethrough\"", xaml);
         Assert.Contains("<DataTrigger Binding=\"{Binding HasDiscount}\" Value=\"True\">", xaml);
+    }
+
+    [Fact]
+    public void CustomerDisplayView_shows_product_thumbnail_item_number_and_lookup_code()
+    {
+        var (xaml, _) = ReadCustomerDisplayViewFiles();
+        var document = XDocument.Parse(xaml);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        XNamespace converters = "clr-namespace:Hbpos.Client.Wpf.Converters";
+        XNamespace materialDesign = "http://materialdesigninxaml.net/winfx/xaml/themes";
+
+        var lineDataGrid = Assert.Single(document
+            .Descendants(presentation + "DataGrid")
+            .Where(element => element.Attribute(x + "Name")?.Value == "LineDataGrid"));
+        Assert.Equal("72", lineDataGrid.Attribute("RowHeight")?.Value);
+
+        var productImageBrush = Assert.Single(document
+            .Descendants(presentation + "ImageBrush")
+            .Where(element => element.Attribute(
+                converters + "ProductThumbnailImageSourceConverter.AsyncSourceText")?.Value ==
+                "{Binding ProductImage}"));
+        Assert.Equal(
+            "72",
+            productImageBrush.Attribute(
+                converters + "ProductThumbnailImageSourceConverter.AsyncDecodePixelWidth")?.Value);
+        Assert.Equal("Uniform", productImageBrush.Attribute("Stretch")?.Value);
+
+        var thumbnailBorder = Assert.Single(productImageBrush
+            .Ancestors(presentation + "Border")
+            .Where(element =>
+                element.Attribute("Width")?.Value == "52" &&
+                element.Attribute("Height")?.Value == "52"));
+        Assert.Contains(thumbnailBorder
+            .Descendants(materialDesign + "PackIcon"),
+            element => element.Attribute("Kind")?.Value == "Shopping");
+        Assert.Contains(thumbnailBorder
+            .Ancestors(presentation + "Grid"),
+            grid => grid
+                .Element(presentation + "Grid.ColumnDefinitions")?
+                .Elements(presentation + "ColumnDefinition")
+                .Select(column => column.Attribute("Width")?.Value)
+                .SequenceEqual(["64", "*"]) == true);
+
+        Assert.Contains(document.Descendants(presentation + "Run"),
+            element => element.Attribute("Text")?.Value == "{loc:Loc ItemNumber}");
+        Assert.Contains(document.Descendants(presentation + "Run"),
+            element => element.Attribute("Text")?.Value == "{Binding ItemNumber}");
+        Assert.Contains(document.Descendants(presentation + "TextBlock"),
+            element => element.Attribute("Text")?.Value == "{Binding LookupCode}");
+
+        var itemNumberTrigger = Assert.Single(document
+            .Descendants(presentation + "DataTrigger")
+            .Where(element =>
+                element.Attribute("Binding")?.Value == "{Binding HasItemNumber}" &&
+                element.Attribute("Value")?.Value == "True"));
+        Assert.Contains(itemNumberTrigger
+            .Ancestors(presentation + "Style")
+            .SelectMany(style => style.Elements(presentation + "Setter")),
+            setter =>
+                setter.Attribute("Property")?.Value == "Visibility" &&
+                setter.Attribute("Value")?.Value == "Collapsed");
     }
 
     [Fact]

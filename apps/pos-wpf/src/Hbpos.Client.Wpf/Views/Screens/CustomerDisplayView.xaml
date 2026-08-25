@@ -1,6 +1,7 @@
 <UserControl x:Class="Hbpos.Client.Wpf.Views.Screens.CustomerDisplayView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:converters="clr-namespace:Hbpos.Client.Wpf.Converters"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:loc="clr-namespace:Hbpos.Client.Wpf.Localization"
               xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
@@ -112,10 +113,92 @@
                         <DataGridTemplateColumn Header="{loc:Loc ItemDescription}" Width="*" HeaderStyle="{StaticResource CustomerDisplayHeaderLeftStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
-                                    <StackPanel Margin="12,6,8,6" VerticalAlignment="Center">
-                                        <TextBlock Text="{Binding DisplayName}" Foreground="{StaticResource PosCustomerDisplayTextBrush}" FontSize="19" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                                        <TextBlock Text="{Binding LookupCode}" Foreground="{StaticResource PosCustomerDisplayMutedTextBrush}" FontSize="12" Margin="0,4,0,0" TextTrimming="CharacterEllipsis" />
-                                    </StackPanel>
+                                    <Grid Margin="12,6,8,6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="64" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <Border Width="52"
+                                                Height="52"
+                                                Margin="0,0,12,0"
+                                                Background="{StaticResource PosCustomerDisplayAccentSurfaceBrush}"
+                                                BorderBrush="{StaticResource PosCustomerDisplayDividerBrush}"
+                                                BorderThickness="1"
+                                                CornerRadius="6"
+                                                SnapsToDevicePixels="True"
+                                                UseLayoutRounding="True"
+                                                ClipToBounds="True">
+                                            <Grid>
+                                                <Rectangle RadiusX="5"
+                                                           RadiusY="5"
+                                                           Margin="2"
+                                                           SnapsToDevicePixels="True"
+                                                           RenderOptions.BitmapScalingMode="HighQuality"
+                                                           Panel.ZIndex="1">
+                                                    <Rectangle.Fill>
+                                                        <ImageBrush converters:ProductThumbnailImageSourceConverter.AsyncSourceText="{Binding ProductImage}"
+                                                                    converters:ProductThumbnailImageSourceConverter.AsyncDecodePixelWidth="72"
+                                                                    Stretch="Uniform" />
+                                                    </Rectangle.Fill>
+                                                </Rectangle>
+                                                <materialDesign:PackIcon Kind="Shopping"
+                                                                         Width="22"
+                                                                         Height="22"
+                                                                         Foreground="{StaticResource PosCustomerDisplayAccentBrush}"
+                                                                         HorizontalAlignment="Center"
+                                                                         VerticalAlignment="Center"
+                                                                         Panel.ZIndex="0" />
+                                            </Grid>
+                                        </Border>
+
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <TextBlock Text="{Binding DisplayName}"
+                                                       Foreground="{StaticResource PosCustomerDisplayTextBrush}"
+                                                       FontSize="19"
+                                                       FontWeight="SemiBold"
+                                                       TextTrimming="CharacterEllipsis" />
+                                            <Grid Margin="0,4,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center" MaxWidth="210">
+                                                    <StackPanel.Style>
+                                                        <Style TargetType="StackPanel">
+                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding HasItemNumber}" Value="True">
+                                                                    <Setter Property="Visibility" Value="Visible" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </StackPanel.Style>
+                                                    <TextBlock Foreground="{StaticResource PosCustomerDisplayMutedTextBrush}"
+                                                               FontSize="12"
+                                                               MaxWidth="185"
+                                                               ToolTip="{Binding ItemNumber}"
+                                                               TextTrimming="CharacterEllipsis">
+                                                        <Run Text="{loc:Loc ItemNumber}" />
+                                                        <Run Text=" " />
+                                                        <Run Text="{Binding ItemNumber}" />
+                                                    </TextBlock>
+                                                    <Border Width="1"
+                                                            Height="12"
+                                                            Margin="10,0"
+                                                            VerticalAlignment="Center"
+                                                            Background="{StaticResource PosCustomerDisplayDividerBrush}" />
+                                                </StackPanel>
+
+                                                <TextBlock Grid.Column="1"
+                                                           Text="{Binding LookupCode}"
+                                                           Foreground="{StaticResource PosCustomerDisplayMutedTextBrush}"
+                                                           FontSize="12"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </Grid>
+                                        </StackPanel>
+                                    </Grid>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
