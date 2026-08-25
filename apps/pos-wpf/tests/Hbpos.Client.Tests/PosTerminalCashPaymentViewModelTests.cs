@@ -1966,6 +1966,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
 
         Assert.Equal(1m, viewModel.CartItemQuantity);
         Assert.Equal(1, viewModel.CartSkuCount);
+        Assert.False(viewModel.DecreaseLineCommand.CanExecute(line));
 
         viewModel.IncreaseLineCommand.Execute(line);
 
@@ -1974,6 +1975,7 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.Equal(2m, viewModel.CartItemQuantity);
         Assert.Equal(1, viewModel.CartSkuCount);
         Assert.Equal(4m, viewModel.ActualAmount);
+        Assert.True(viewModel.DecreaseLineCommand.CanExecute(line));
 
         viewModel.DecreaseLineCommand.Execute(line);
 
@@ -1982,8 +1984,19 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.Equal(1m, viewModel.CartItemQuantity);
         Assert.Equal(1, viewModel.CartSkuCount);
         Assert.Equal(2m, viewModel.ActualAmount);
+        Assert.False(viewModel.DecreaseLineCommand.CanExecute(line));
 
-        viewModel.DecreaseLineCommand.Execute(line);
+        await Assert.IsAssignableFrom<IAsyncRelayCommand>(viewModel.DecreaseLineCommand)
+            .ExecuteAsync(line);
+
+        Assert.Same(line, Assert.Single(viewModel.CartLines));
+        Assert.Same(line, viewModel.SelectedCartLine);
+        Assert.Equal(1m, viewModel.CartItemQuantity);
+        Assert.Equal(1, viewModel.CartSkuCount);
+        Assert.Equal(2m, viewModel.ActualAmount);
+
+        await Assert.IsAssignableFrom<IAsyncRelayCommand>(viewModel.RemoveLineCommand)
+            .ExecuteAsync(line);
 
         Assert.Empty(viewModel.CartLines);
         Assert.Null(viewModel.SelectedCartLine);

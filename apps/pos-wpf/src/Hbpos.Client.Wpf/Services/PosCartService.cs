@@ -380,21 +380,10 @@ public sealed class PosCartService
             return false;
         }
 
+        // 加减号只负责调整数量，数量下限为 1；删除整行必须走 RemoveLine。
         if (!line.Decrease(1m))
         {
-            // 绑定共享 claim 的购物车不能通过同步编辑清空：保持行+binding 并阻止操作。
-            if (_sharedHeldOrderClaimId is not null && _lines.Count == 1)
-            {
-                return false;
-            }
-
-            _lines.Remove(line);
-            if (line.IsReturnLine && !_lines.Any(existing => existing.IsReturnLine))
-            {
-                _returnPaymentCapacities.Clear();
-            }
-
-            ClearSharedHeldOrderBindingIfCartEmpty();
+            return false;
         }
 
         RefreshDiscountsAndNotify();
