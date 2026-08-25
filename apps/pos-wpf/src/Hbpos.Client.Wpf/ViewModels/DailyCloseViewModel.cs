@@ -13,6 +13,8 @@ namespace Hbpos.Client.Wpf.ViewModels;
 public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 {
     private const int MaxCashCountDigits = 9;
+    private const int HistoryTabIndex = 0;
+    private const int LinklySettlementTabIndex = 1;
 
     private readonly IDailyCloseService _dailyCloseService;
     private readonly IDailyClosePrintService _dailyClosePrintService;
@@ -25,6 +27,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private readonly Func<DateTime, Task<bool>>? _confirmLinklySettlementAsync;
     private DailyCloseReport? _currentReport;
+    private DailyCloseDraftScope? _dailyCloseDraftScope;
     private int _archivePreviewVersion;
     private bool _replaceKeypadOnNextInput;
 
@@ -48,6 +51,15 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     private int _selectedTabIndex;
+
+    [ObservableProperty]
+    private bool _hasDailyCloseDraft;
+
+    [ObservableProperty]
+    private bool _isCashCountWorkspaceOpen;
+
+    [ObservableProperty]
+    private bool _isDiscardDailyCloseDraftConfirmationOpen;
 
     [ObservableProperty]
     private decimal _expectedCashAmount;
@@ -111,6 +123,19 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         RefreshSummaryCommand = new AsyncRelayCommand(RefreshSummaryAsync, () => !IsBusy);
         SaveAndPrintCommand = new AsyncRelayCommand(SaveAndPrintAsync, CanSaveAndPrint);
         LoadHistoryCommand = new AsyncRelayCommand(LoadHistoryAsync, () => !IsBusy);
+        CreateOrResumeDailyCloseCommand = new AsyncRelayCommand(CreateOrResumeDailyCloseAsync, () => !IsBusy);
+        CloseCashCountWorkspaceCommand = new RelayCommand(
+            CloseCashCountWorkspace,
+            () => !IsBusy && IsCashCountWorkspaceOpen);
+        RequestDiscardDailyCloseDraftCommand = new RelayCommand(
+            RequestDiscardDailyCloseDraft,
+            () => !IsBusy && HasDailyCloseDraft && IsCashCountWorkspaceOpen && !IsDiscardDailyCloseDraftConfirmationOpen);
+        ConfirmDiscardDailyCloseDraftCommand = new RelayCommand(
+            ConfirmDiscardDailyCloseDraft,
+            () => !IsBusy && HasDailyCloseDraft && IsDiscardDailyCloseDraftConfirmationOpen);
+        CancelDiscardDailyCloseDraftCommand = new RelayCommand(
+            CancelDiscardDailyCloseDraft,
+            () => !IsBusy && IsDiscardDailyCloseDraftConfirmationOpen);
         ReprintSelectedArchiveCommand = new AsyncRelayCommand(ReprintSelectedArchiveAsync, CanReprintSelectedArchive);
         SettleAndPrintCommand = new AsyncRelayCommand(SettleAndPrintAsync, CanSettleAndPrint);
         LoadSettlementHistoryCommand = new AsyncRelayCommand(LoadSettlementHistoryAsync, () => !IsBusy && _linklySettlementService is not null);
@@ -135,7 +160,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         KeypadClearCommand = new RelayCommand(ClearKeypad, () => !IsBusy && IsCashCountDialogOpen && KeypadBuffer.Length > 0);
         ApplyDenominationCommand = new RelayCommand<CashDenominationEntryViewModel>(ApplyDenominationCount, CanApplyDenominationCount);
         ReturnToPosCommand = new RelayCommand(() => _returnToPos?.Invoke(), () => _returnToPos is not null);
-        StatusMessage = T("dailyClose.status.ready", "Select a business date and refresh the summary.");
+        StatusMessage = T("dailyClose.status.ready", "Review daily close history or create a new daily close.");
     }
 
     public ObservableCollection<CashDenominationEntryViewModel> Denominations { get; } = [];
@@ -159,6 +184,16 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
     public IAsyncRelayCommand SaveAndPrintCommand { get; }
 
     public IAsyncRelayCommand LoadHistoryCommand { get; }
+
+    public IAsyncRelayCommand CreateOrResumeDailyCloseCommand { get; }
+
+    public IRelayCommand CloseCashCountWorkspaceCommand { get; }
+
+    public IRelayCommand RequestDiscardDailyCloseDraftCommand { get; }
+
+    public IRelayCommand ConfirmDiscardDailyCloseDraftCommand { get; }
+
+    public IRelayCommand CancelDiscardDailyCloseDraftCommand { get; }
 
     public IAsyncRelayCommand ReprintSelectedArchiveCommand { get; }
 
@@ -199,6 +234,12 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
     public decimal CountedCashAmount => NoteSubtotal + CoinSubtotal;
 
     public bool IsCashCountDialogOpen => SelectedCashDenomination is not null;
+
+    public bool CanChangeBusinessDate => !IsBusy && !HasDailyCloseDraft;
+
+    public bool IsHistoryTabSelected => SelectedTabIndex == HistoryTabIndex;
+
+    public bool IsLinklySettlementTabSelected => SelectedTabIndex == LinklySettlementTabIndex;
 
     public int CashCountDialogQuantity =>
         int.TryParse(KeypadBuffer, NumberStyles.None, CultureInfo.InvariantCulture, out var quantity)
@@ -266,19 +307,217 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
     private DateTime BusinessDate => (SelectedDate ?? DateTime.Today).Date;
 
-    partial void OnSessionChanged(PosSessionState value)
+    partial void OnSessionChanged(PosSessionState? oldValue, PosSessionState newValue)
     {
-        if (value.CashierSession is not null)
+        if (newValue.CashierSession is not null)
         {
-            _cashierSessionContext.SetCurrent(value.CashierSession);
+            _cashierSessionContext.SetCurrent(newValue.CashierSession);
+        }
+
+        if (HasDailyCloseDraft && (oldValue is null || !HasSameDraftIdentity(oldValue, newValue)))
+        {
+            ClearDailyCloseDraft(clearReportSnapshot: true);
+            SelectedTabIndex = HistoryTabIndex;
+            StatusMessage = T(
+                "dailyClose.status.draftIdentityChanged",
+                "The daily close draft was discarded because the store, terminal, or cashier changed.");
         }
     }
 
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
-        SelectedTabIndex = 0;
-        await RefreshSummaryAsync(cancellationToken);
-        await RefreshSettlementsAsync(cancellationToken);
+        SelectedTabIndex = HistoryTabIndex;
+        CloseCashCountDialog();
+        IsDiscardDailyCloseDraftConfirmationOpen = false;
+        IsCashCountWorkspaceOpen = false;
+
+        if (HasDailyCloseDraft && !IsCurrentDraftScope())
+        {
+            ClearDailyCloseDraft(clearReportSnapshot: true);
+        }
+
+        await LoadHistoryAsync(cancellationToken);
+        try
+        {
+            await RefreshSettlementsAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            StatusMessage = ex.Message;
+        }
+    }
+
+    public async Task CreateOrResumeDailyCloseAsync(CancellationToken cancellationToken = default)
+    {
+        if (IsBusy)
+        {
+            return;
+        }
+
+        if (HasDailyCloseDraft && IsCurrentDraftScope())
+        {
+            IsDiscardDailyCloseDraftConfirmationOpen = false;
+            IsCashCountWorkspaceOpen = true;
+            StatusMessage = T("dailyClose.status.draftResumed", "Daily close draft resumed.");
+            return;
+        }
+
+        if (HasDailyCloseDraft)
+        {
+            ClearDailyCloseDraft(clearReportSnapshot: true);
+        }
+
+        SelectedTabIndex = HistoryTabIndex;
+        IsCashCountWorkspaceOpen = false;
+        IsDiscardDailyCloseDraftConfirmationOpen = false;
+        ClearCashCountWorkspaceSnapshot();
+        IsBusy = true;
+        StatusMessage = T("dailyClose.status.draftPreparing", "Preparing a new daily close...");
+        var draftPrepared = false;
+
+        try
+        {
+            var report = await _dailyCloseService.LoadReportAsync(Session, BusinessDate, cancellationToken);
+            ApplyReport(report);
+            await RefreshArchivesAsync(cancellationToken);
+
+            _dailyCloseDraftScope = CreateDraftScope(Session, BusinessDate);
+            HasDailyCloseDraft = true;
+            draftPrepared = true;
+            StatusMessage = T("dailyClose.status.draftReady", "New daily close ready for cash counting.");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            ClearDailyCloseDraft(clearReportSnapshot: true);
+            SelectedTabIndex = HistoryTabIndex;
+            StatusMessage = ex.Message;
+        }
+        catch (OperationCanceledException)
+        {
+            ClearDailyCloseDraft(clearReportSnapshot: true);
+            SelectedTabIndex = HistoryTabIndex;
+            throw;
+        }
+        finally
+        {
+            IsBusy = false;
+            if (draftPrepared)
+            {
+                IsCashCountWorkspaceOpen = true;
+            }
+        }
+    }
+
+    private void CloseCashCountWorkspace()
+    {
+        if (IsBusy || !IsCashCountWorkspaceOpen)
+        {
+            return;
+        }
+
+        CloseCashCountDialog();
+        IsDiscardDailyCloseDraftConfirmationOpen = false;
+        IsCashCountWorkspaceOpen = false;
+        SelectedTabIndex = HistoryTabIndex;
+        StatusMessage = T(
+            "dailyClose.status.draftPreserved",
+            "Daily close draft preserved. Select Continue Daily Close when you are ready.");
+    }
+
+    private void RequestDiscardDailyCloseDraft()
+    {
+        if (IsBusy || !HasDailyCloseDraft || !IsCashCountWorkspaceOpen)
+        {
+            return;
+        }
+
+        CloseCashCountDialog();
+        IsDiscardDailyCloseDraftConfirmationOpen = true;
+    }
+
+    private void ConfirmDiscardDailyCloseDraft()
+    {
+        if (IsBusy || !HasDailyCloseDraft || !IsDiscardDailyCloseDraftConfirmationOpen)
+        {
+            return;
+        }
+
+        ClearDailyCloseDraft(clearReportSnapshot: true);
+        SelectedTabIndex = HistoryTabIndex;
+        StatusMessage = T("dailyClose.status.draftDiscarded", "Daily close draft discarded.");
+    }
+
+    private void CancelDiscardDailyCloseDraft()
+    {
+        if (IsBusy || !IsDiscardDailyCloseDraftConfirmationOpen)
+        {
+            return;
+        }
+
+        IsDiscardDailyCloseDraftConfirmationOpen = false;
+    }
+
+    private bool IsCurrentDraftScope()
+    {
+        return _dailyCloseDraftScope is not null &&
+               HasSameDraftIdentity(_dailyCloseDraftScope, Session) &&
+               _dailyCloseDraftScope.BusinessDate == BusinessDate;
+    }
+
+    private static bool HasSameDraftIdentity(PosSessionState oldValue, PosSessionState newValue)
+    {
+        return string.Equals(oldValue.StoreCode, newValue.StoreCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(oldValue.DeviceCode, newValue.DeviceCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(oldValue.CashierId, newValue.CashierId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasSameDraftIdentity(DailyCloseDraftScope scope, PosSessionState session)
+    {
+        return string.Equals(scope.StoreCode, session.StoreCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(scope.DeviceCode, session.DeviceCode, StringComparison.OrdinalIgnoreCase) &&
+               string.Equals(scope.CashierId, session.CashierId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static DailyCloseDraftScope CreateDraftScope(PosSessionState session, DateTime businessDate)
+    {
+        return new DailyCloseDraftScope(
+            session.StoreCode,
+            session.DeviceCode,
+            session.CashierId,
+            businessDate.Date);
+    }
+
+    private void ClearDailyCloseDraft(bool clearReportSnapshot)
+    {
+        _dailyCloseDraftScope = null;
+        IsDiscardDailyCloseDraftConfirmationOpen = false;
+        IsCashCountWorkspaceOpen = false;
+        HasDailyCloseDraft = false;
+        ClearCashCounts();
+
+        if (clearReportSnapshot)
+        {
+            ClearReportSnapshot();
+        }
+    }
+
+    private void ClearCashCountWorkspaceSnapshot()
+    {
+        ClearCashCounts();
+        ClearReportSnapshot();
+    }
+
+    private void ClearReportSnapshot()
+    {
+        _currentReport = null;
+        PaymentSummaries.Clear();
+        ExpectedCashAmount = 0m;
+        GrossAmount = 0m;
+        NetAmount = 0m;
+        RefundAmount = 0m;
+        ReturnQuantity = 0m;
+        TransactionCount = 0;
+        SaveAndPrintCommand.NotifyCanExecuteChanged();
     }
 
     public async Task RefreshSummaryAsync(CancellationToken cancellationToken = default)
@@ -347,8 +586,8 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
                 correlationId: correlation.CorrelationId,
                 traceId: correlation.TraceId);
             auditRecorded = true;
-            _currentReport = archive.Report;
-            ClearCashCounts();
+            ClearDailyCloseDraft(clearReportSnapshot: true);
+            SelectedTabIndex = HistoryTabIndex;
 
             ReceiptPrintResult printResult;
             try
@@ -380,7 +619,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
                 return;
             }
 
-            SelectedTabIndex = 1;
+            SelectedTabIndex = HistoryTabIndex;
             await RefreshArchivesAsync(cancellationToken, archive.DailyCloseGuid);
             StatusMessage = Format(
                 "dailyClose.status.savedPrintFailed",
@@ -849,8 +1088,7 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
     partial void OnSelectedDateChanged(DateTime? value)
     {
-        _currentReport = null;
-        PaymentSummaries.Clear();
+        ClearDailyCloseDraft(clearReportSnapshot: true);
         Archives.Clear();
         SelectedArchive = null;
         ArchivePreviewRows.Clear();
@@ -860,20 +1098,19 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         SelectedSettlement = null;
         ClearPendingSettlementManualResolution();
         SettlementReceiptPreviewLines.Clear();
-        ClearCashCounts();
-        ExpectedCashAmount = 0m;
-        GrossAmount = 0m;
-        NetAmount = 0m;
-        RefundAmount = 0m;
-        ReturnQuantity = 0m;
-        TransactionCount = 0;
         OnPropertyChanged(nameof(BusinessDateText));
         StatusMessage = Format(
             "dailyClose.status.dateChanged",
-            "Switched to {0:yyyy-MM-dd}. Refresh the summary.",
+            "Switched to {0:yyyy-MM-dd}. Refresh history or create a new daily close.",
             BusinessDate);
         SaveAndPrintCommand.NotifyCanExecuteChanged();
         SettleAndPrintCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnSelectedTabIndexChanged(int value)
+    {
+        OnPropertyChanged(nameof(IsHistoryTabSelected));
+        OnPropertyChanged(nameof(IsLinklySettlementTabSelected));
     }
 
     partial void OnKeypadBufferChanged(string value)
@@ -912,9 +1149,15 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
     partial void OnIsBusyChanged(bool value)
     {
+        OnPropertyChanged(nameof(CanChangeBusinessDate));
         RefreshSummaryCommand.NotifyCanExecuteChanged();
         SaveAndPrintCommand.NotifyCanExecuteChanged();
         LoadHistoryCommand.NotifyCanExecuteChanged();
+        CreateOrResumeDailyCloseCommand.NotifyCanExecuteChanged();
+        CloseCashCountWorkspaceCommand.NotifyCanExecuteChanged();
+        RequestDiscardDailyCloseDraftCommand.NotifyCanExecuteChanged();
+        ConfirmDiscardDailyCloseDraftCommand.NotifyCanExecuteChanged();
+        CancelDiscardDailyCloseDraftCommand.NotifyCanExecuteChanged();
         ReprintSelectedArchiveCommand.NotifyCanExecuteChanged();
         SettleAndPrintCommand.NotifyCanExecuteChanged();
         LoadSettlementHistoryCommand.NotifyCanExecuteChanged();
@@ -928,6 +1171,35 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
         KeypadBackspaceCommand.NotifyCanExecuteChanged();
         KeypadClearCommand.NotifyCanExecuteChanged();
         ApplyDenominationCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnHasDailyCloseDraftChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanChangeBusinessDate));
+        SaveAndPrintCommand.NotifyCanExecuteChanged();
+        RequestDiscardDailyCloseDraftCommand.NotifyCanExecuteChanged();
+        ConfirmDiscardDailyCloseDraftCommand.NotifyCanExecuteChanged();
+        OpenCashCountDialogCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnIsCashCountWorkspaceOpenChanged(bool value)
+    {
+        if (!value)
+        {
+            CloseCashCountDialog();
+            IsDiscardDailyCloseDraftConfirmationOpen = false;
+        }
+
+        CloseCashCountWorkspaceCommand.NotifyCanExecuteChanged();
+        RequestDiscardDailyCloseDraftCommand.NotifyCanExecuteChanged();
+        OpenCashCountDialogCommand.NotifyCanExecuteChanged();
+    }
+
+    partial void OnIsDiscardDailyCloseDraftConfirmationOpenChanged(bool value)
+    {
+        RequestDiscardDailyCloseDraftCommand.NotifyCanExecuteChanged();
+        ConfirmDiscardDailyCloseDraftCommand.NotifyCanExecuteChanged();
+        CancelDiscardDailyCloseDraftCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnExpectedCashAmountChanged(decimal value)
@@ -987,7 +1259,10 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
     private bool CanSaveAndPrint()
     {
-        return !IsBusy && _currentReport is not null;
+        return !IsBusy &&
+               HasDailyCloseDraft &&
+               IsCurrentDraftScope() &&
+               _currentReport is not null;
     }
 
     private bool CanReprintSelectedArchive()
@@ -1094,7 +1369,11 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
     private bool CanOpenCashCountDialog(CashDenominationEntryViewModel? denomination)
     {
-        return !IsBusy && !IsCashCountDialogOpen && denomination is not null;
+        return !IsBusy &&
+               HasDailyCloseDraft &&
+               IsCashCountWorkspaceOpen &&
+               !IsCashCountDialogOpen &&
+               denomination is not null;
     }
 
     private void OpenCashCountDialog(CashDenominationEntryViewModel? denomination)
@@ -1297,6 +1576,12 @@ public sealed partial class DailyCloseViewModel : ObservableObject, IDisposable
 
         Denominations.Clear();
     }
+
+    private sealed record DailyCloseDraftScope(
+        string StoreCode,
+        string DeviceCode,
+        string CashierId,
+        DateTime BusinessDate);
 }
 
 public sealed partial class CashDenominationEntryViewModel : ObservableObject

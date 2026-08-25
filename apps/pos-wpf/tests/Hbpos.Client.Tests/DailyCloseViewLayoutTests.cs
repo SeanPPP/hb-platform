@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Xml.Linq;
 
 namespace Hbpos.Client.Tests;
@@ -8,11 +9,86 @@ public sealed class DailyCloseViewLayoutTests
     private static readonly XNamespace Xaml = "http://schemas.microsoft.com/winfx/2006/xaml";
 
     [Fact]
+    public void History_and_linkly_are_the_only_tabs_and_history_toolbar_creates_or_resumes_drafts()
+    {
+        var view = LoadView();
+        var tabControl = Assert.Single(view.Descendants(Presentation + "TabControl"));
+        var tabs = tabControl.Elements(Presentation + "TabItem").ToArray();
+
+        Assert.Equal(2, tabs.Length);
+        Assert.Equal("{loc:Loc dailyClose.tab.history}", (string?)tabs[0].Attribute("Header"));
+        Assert.Equal("{loc:Loc dailyClose.linklySettlement.tab}", (string?)tabs[1].Attribute("Header"));
+        Assert.Empty(tabControl.Descendants().Where(element =>
+            (string?)element.Attribute(Xaml + "Name") == "CashCountPanel"));
+
+        var datePicker = Assert.Single(view.Descendants(Presentation + "DatePicker"));
+        Assert.Equal("{Binding CanChangeBusinessDate}", (string?)datePicker.Attribute("IsEnabled"));
+
+        var toolbarTemplate = Assert.Single(view.Descendants(Presentation + "ControlTemplate").Where(template =>
+            template.Descendants(Presentation + "ContentPresenter").Any(presenter =>
+                (string?)presenter.Attribute(Xaml + "Name") == "PART_SelectedContentHost")));
+        var historyRefresh = Assert.Single(toolbarTemplate.Descendants(Presentation + "Button").Where(button =>
+            ((string?)button.Attribute("Command"))?.Contains("LoadHistoryCommand", StringComparison.Ordinal) == true));
+        Assert.Contains("dailyClose.refreshHistory", historyRefresh.ToString(SaveOptions.DisableFormatting));
+
+        var createOrResumeButtons = toolbarTemplate.Descendants(Presentation + "Button").Where(button =>
+            ((string?)button.Attribute("Command"))?.Contains("CreateOrResumeDailyCloseCommand", StringComparison.Ordinal) == true).ToArray();
+        Assert.Equal(2, createOrResumeButtons.Length);
+        Assert.Contains(createOrResumeButtons, button =>
+            button.ToString(SaveOptions.DisableFormatting).Contains("dailyClose.createNew", StringComparison.Ordinal) &&
+            button.Descendants(Presentation + "Condition").Any(condition =>
+                (string?)condition.Attribute("Binding") == "{Binding HasDailyCloseDraft}" &&
+                (string?)condition.Attribute("Value") == "False"));
+        Assert.Contains(createOrResumeButtons, button =>
+            button.ToString(SaveOptions.DisableFormatting).Contains("dailyClose.continueDraft", StringComparison.Ordinal) &&
+            button.Descendants(Presentation + "Condition").Any(condition =>
+                (string?)condition.Attribute("Binding") == "{Binding HasDailyCloseDraft}" &&
+                (string?)condition.Attribute("Value") == "True"));
+        Assert.All(createOrResumeButtons, button => Assert.Contains(
+            button.Descendants(Presentation + "Condition"),
+            condition => (string?)condition.Attribute("Binding") == "{Binding IsHistoryTabSelected}"));
+        Assert.Empty(toolbarTemplate.Descendants(Presentation + "Button").Where(button =>
+            ((string?)button.Attribute("Command"))?.Contains("SaveAndPrintCommand", StringComparison.Ordinal) == true));
+
+        Assert.Contains(tabs[1].Descendants(Presentation + "Button"), button =>
+            ((string?)button.Attribute("Command"))?.Contains("LoadSettlementHistoryCommand", StringComparison.Ordinal) == true);
+        Assert.Contains(tabs[1].Descendants(Presentation + "Button"), button =>
+            ((string?)button.Attribute("Command"))?.Contains("SettleAndPrintCommand", StringComparison.Ordinal) == true);
+    }
+
+    [Fact]
+    public void Daily_close_toolbar_removes_text_above_tabs_and_keeps_remaining_controls_on_one_row()
+    {
+        var view = LoadView();
+        var toolbar = FindNamedElement(view, "DailyCloseToolbar");
+        var toolbarLayout = FindNamedElement(view, "DailyCloseToolbarLayout");
+
+        Assert.Contains(toolbarLayout, toolbar.Descendants());
+        Assert.Empty(toolbarLayout.Elements(Presentation + "Grid.RowDefinitions"));
+        Assert.DoesNotContain("dailyClose.title", toolbar.ToString(SaveOptions.DisableFormatting), StringComparison.Ordinal);
+        Assert.DoesNotContain("{Binding StatusMessage}", toolbar.ToString(SaveOptions.DisableFormatting), StringComparison.Ordinal);
+
+        foreach (var elementName in new[]
+                 {
+                     "DailyCloseNavigationTabsBorder",
+                     "DailyCloseRefreshHistoryButton",
+                     "DailyCloseCreateDraftButton",
+                     "DailyCloseContinueDraftButton"
+                 })
+        {
+            var element = FindNamedElement(view, elementName);
+            Assert.Null(element.Attribute("Grid.Row"));
+        }
+    }
+
+    [Fact]
     public void Cash_count_panel_uses_denomination_buttons_without_inline_keypad_or_apply_buttons()
     {
         var view = LoadView();
         var cashPanel = FindNamedElement(view, "CashCountPanel");
+        var workspace = FindNamedElement(view, "DailyCloseCashWorkspaceOverlay");
 
+        Assert.Contains(cashPanel, workspace.Descendants());
         Assert.NotNull(FindNamedElement(view, "NoteDenominationList"));
         Assert.NotNull(FindNamedElement(view, "CoinDenominationList"));
         Assert.Empty(cashPanel.Descendants(Presentation + "DataGrid"));
@@ -24,6 +100,44 @@ public sealed class DailyCloseViewLayoutTests
         Assert.Contains("OpenCashCountDialogCommand", (string?)denominationButton.Attribute("Command"));
         Assert.Equal("{Binding}", (string?)denominationButton.Attribute("CommandParameter"));
         Assert.DoesNotContain("ApplyDenominationCommand", itemTemplate.ToString(SaveOptions.DisableFormatting));
+    }
+
+    [Fact]
+    public void Cash_workspace_keypad_and_discard_confirmation_use_ordered_modal_layers_and_focus_scopes()
+    {
+        var view = LoadView();
+        var workspace = FindNamedElement(view, "DailyCloseCashWorkspaceOverlay");
+        var keypad = FindNamedElement(view, "CashCountDialogOverlay");
+        var discard = FindNamedElement(view, "DailyCloseDiscardDraftOverlay");
+
+        AssertOverlayContract(
+            workspace,
+            zIndex: "100",
+            visibility: "{Binding IsCashCountWorkspaceOpen, Converter={StaticResource BoolToVis}}",
+            visibleChanged: "DailyCloseCashWorkspaceOverlayIsVisibleChanged",
+            previewKeyDown: "DailyCloseCashWorkspaceOverlayPreviewKeyDown");
+        var workspaceSurface = Assert.Single(workspace.Elements(Presentation + "Border"));
+        Assert.Equal("16", (string?)workspaceSurface.Attribute("Margin"));
+        Assert.Equal("1600", (string?)workspaceSurface.Attribute("MaxWidth"));
+        Assert.NotNull(FindNamedElement(view, "DailyCloseCashWorkspaceReturnButton"));
+        Assert.Single(workspace.Descendants(Presentation + "Button").Where(button =>
+            ((string?)button.Attribute("Command"))?.Contains("SaveAndPrintCommand", StringComparison.Ordinal) == true));
+
+        AssertOverlayContract(
+            keypad,
+            zIndex: "200",
+            visibility: "{Binding IsCashCountDialogOpen, Converter={StaticResource BoolToVis}}",
+            visibleChanged: "CashCountDialogOverlayIsVisibleChanged",
+            previewKeyDown: "CashCountDialogOverlayPreviewKeyDown");
+        Assert.NotNull(FindNamedElement(view, "CashCountDialogCancelButton"));
+
+        AssertOverlayContract(
+            discard,
+            zIndex: "300",
+            visibility: "{Binding IsDiscardDailyCloseDraftConfirmationOpen, Converter={StaticResource BoolToVis}}",
+            visibleChanged: "DailyCloseDiscardDraftOverlayIsVisibleChanged",
+            previewKeyDown: "DailyCloseDiscardDraftOverlayPreviewKeyDown");
+        Assert.NotNull(FindNamedElement(view, "DailyCloseDiscardDraftCancelButton"));
     }
 
     [Fact]
@@ -83,10 +197,15 @@ public sealed class DailyCloseViewLayoutTests
                 "{Binding SelectedCashDenomination.Label, Mode=OneWay}",
             ],
             runBindings);
+
+        var workspace = FindNamedElement(view, "DailyCloseCashWorkspaceOverlay");
+        Assert.Contains(
+            "{Binding BusinessDateText, Mode=OneWay}",
+            workspace.Descendants(Presentation + "Run").Select(run => (string?)run.Attribute("Text")));
     }
 
     [Fact]
-    public void Cash_count_dialog_text_is_available_in_english_and_chinese_resources()
+    public void Daily_close_workspace_and_cash_dialog_text_is_available_in_english_and_chinese_resources()
     {
         var repoRoot = FindRepoRoot();
         var keys = new[]
@@ -99,7 +218,23 @@ public sealed class DailyCloseViewLayoutTests
             "dailyClose.cashCountDialog.helperSuffix",
             "dailyClose.cashCountDialog.clear",
             "dailyClose.cashCountDialog.backspace",
-            "dailyClose.cashCountDialog.apply"
+            "dailyClose.cashCountDialog.apply",
+            "dailyClose.refreshHistory",
+            "dailyClose.createNew",
+            "dailyClose.continueDraft",
+            "dailyClose.cashWorkspace.title",
+            "dailyClose.cashWorkspace.automationName",
+            "dailyClose.cashWorkspace.returnHistory",
+            "dailyClose.cashWorkspace.discard",
+            "dailyClose.cashWorkspace.discardConfirm.title",
+            "dailyClose.cashWorkspace.discardConfirm.message",
+            "dailyClose.cashWorkspace.discardConfirm.action",
+            "dailyClose.status.draftPreparing",
+            "dailyClose.status.draftReady",
+            "dailyClose.status.draftResumed",
+            "dailyClose.status.draftPreserved",
+            "dailyClose.status.draftDiscarded",
+            "dailyClose.status.draftIdentityChanged"
         };
 
         foreach (var resourceName in new[] { "Strings.resx", "Strings.zh-CN.resx" })
@@ -135,10 +270,36 @@ public sealed class DailyCloseViewLayoutTests
         Assert.Single(document.Descendants().Where(element =>
             (string?)element.Attribute(Xaml + "Name") == name));
 
-    private static string FindRepoRoot()
+    private static void AssertOverlayContract(
+        XElement overlay,
+        string zIndex,
+        string visibility,
+        string visibleChanged,
+        string previewKeyDown)
     {
-        foreach (var start in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+        Assert.Equal(zIndex, (string?)overlay.Attribute("Panel.ZIndex"));
+        Assert.Equal(visibility, (string?)overlay.Attribute("Visibility"));
+        Assert.Equal(visibleChanged, (string?)overlay.Attribute("IsVisibleChanged"));
+        Assert.Equal(previewKeyDown, (string?)overlay.Attribute("PreviewKeyDown"));
+        Assert.Equal("True", (string?)overlay.Attribute("FocusManager.IsFocusScope"));
+        Assert.Equal("Cycle", (string?)overlay.Attribute("KeyboardNavigation.TabNavigation"));
+        Assert.Equal("None", (string?)overlay.Attribute("KeyboardNavigation.ControlTabNavigation"));
+    }
+
+    private static string FindRepoRoot([CallerFilePath] string sourceFilePath = "")
+    {
+        foreach (var start in new[]
+                 {
+                     Path.GetDirectoryName(sourceFilePath),
+                     AppContext.BaseDirectory,
+                     Directory.GetCurrentDirectory()
+                 })
         {
+            if (string.IsNullOrWhiteSpace(start))
+            {
+                continue;
+            }
+
             var current = new DirectoryInfo(start);
             while (current is not null)
             {

@@ -1,4 +1,6 @@
+using System.ComponentModel;
 using BlazorApp.Shared.DTOs;
+using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
@@ -18,13 +20,19 @@ public sealed class DailyCloseViewModelTests
         Assert.Equal(11, viewModel.Denominations.Count);
         Assert.Equal("$100", viewModel.Denominations.First().Label);
         Assert.Equal("5c", viewModel.Denominations.Last().Label);
+        Assert.Equal(0, viewModel.SelectedTabIndex);
+        Assert.False(viewModel.HasDailyCloseDraft);
+        Assert.False(viewModel.IsCashCountWorkspaceOpen);
+        Assert.True(viewModel.CanChangeBusinessDate);
+        Assert.False(viewModel.SaveAndPrintCommand.CanExecute(null));
     }
 
     [Fact]
-    public void ApplyDenominationCommand_replaces_count_and_clears_keypad_buffer()
+    public async Task ApplyDenominationCommand_replaces_count_and_clears_keypad_buffer()
     {
         var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession());
         var denomination = viewModel.Denominations.Single(item => item.Label == "$50");
+        await OpenNewDailyCloseDraftAsync(viewModel);
 
         viewModel.OpenCashCountDialogCommand.Execute(denomination);
         viewModel.KeypadInputCommand.Execute("1");
@@ -39,10 +47,11 @@ public sealed class DailyCloseViewModelTests
     }
 
     [Fact]
-    public void OpenCashCountDialogCommand_prefills_current_count_and_first_digit_replaces_it()
+    public async Task OpenCashCountDialogCommand_prefills_current_count_and_first_digit_replaces_it()
     {
         var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession());
         var denomination = viewModel.Denominations.Single(item => item.Label == "$50");
+        await OpenNewDailyCloseDraftAsync(viewModel);
         denomination.Count = 24;
 
         viewModel.OpenCashCountDialogCommand.Execute(denomination);
@@ -64,10 +73,11 @@ public sealed class DailyCloseViewModelTests
     }
 
     [Fact]
-    public void CancelCashCountDialogCommand_discards_pending_input_and_preserves_count()
+    public async Task CancelCashCountDialogCommand_discards_pending_input_and_preserves_count()
     {
         var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession());
         var denomination = viewModel.Denominations.Single(item => item.Label == "$20");
+        await OpenNewDailyCloseDraftAsync(viewModel);
         denomination.Count = 2;
 
         viewModel.OpenCashCountDialogCommand.Execute(denomination);
@@ -83,10 +93,11 @@ public sealed class DailyCloseViewModelTests
     }
 
     [Fact]
-    public void ApplyDenominationCommand_from_dialog_updates_count_totals_and_closes_dialog()
+    public async Task ApplyDenominationCommand_from_dialog_updates_count_totals_and_closes_dialog()
     {
         var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession());
         var denomination = viewModel.Denominations.Single(item => item.Label == "$10");
+        await OpenNewDailyCloseDraftAsync(viewModel);
 
         viewModel.OpenCashCountDialogCommand.Execute(denomination);
         viewModel.KeypadInputCommand.Execute("1");
@@ -104,7 +115,7 @@ public sealed class DailyCloseViewModelTests
     }
 
     [Fact]
-    public void Cash_count_commands_reject_closed_dialog_wrong_target_and_more_than_nine_digits()
+    public async Task Cash_count_commands_reject_closed_dialog_wrong_target_and_more_than_nine_digits()
     {
         var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession());
         var selected = viewModel.Denominations.Single(item => item.Label == "$20");
@@ -116,6 +127,7 @@ public sealed class DailyCloseViewModelTests
         Assert.Equal(string.Empty, viewModel.KeypadBuffer);
         Assert.Equal(0, selected.Count);
 
+        await OpenNewDailyCloseDraftAsync(viewModel);
         viewModel.OpenCashCountDialogCommand.Execute(selected);
         foreach (var digit in "1234567890")
         {
@@ -182,7 +194,7 @@ public sealed class DailyCloseViewModelTests
             returnToPos: () => returnedToPos = true);
         var note = viewModel.Denominations.Single(item => item.Label == "$20");
 
-        await viewModel.RefreshSummaryCommand.ExecuteAsync(null);
+        await OpenNewDailyCloseDraftAsync(viewModel);
         viewModel.OpenCashCountDialogCommand.Execute(note);
         viewModel.KeypadInputCommand.Execute("3");
         viewModel.ApplyDenominationCommand.Execute(viewModel.SelectedCashDenomination);
@@ -197,6 +209,9 @@ public sealed class DailyCloseViewModelTests
         Assert.All(viewModel.Denominations, item => Assert.Equal(0, item.Count));
         Assert.Equal(string.Empty, viewModel.KeypadBuffer);
         Assert.False(viewModel.IsCashCountDialogOpen);
+        Assert.False(viewModel.HasDailyCloseDraft);
+        Assert.False(viewModel.IsCashCountWorkspaceOpen);
+        Assert.True(viewModel.CanChangeBusinessDate);
         Assert.Equal(0m, viewModel.CountedCashAmount);
         Assert.Equal("Daily close saved and sent to printer.", viewModel.StatusMessage);
     }
@@ -217,7 +232,7 @@ public sealed class DailyCloseViewModelTests
             returnToPos: () => returnedToPos = true);
         var note = viewModel.Denominations.Single(item => item.Label == "$50");
 
-        await viewModel.RefreshSummaryCommand.ExecuteAsync(null);
+        await OpenNewDailyCloseDraftAsync(viewModel);
         viewModel.OpenCashCountDialogCommand.Execute(note);
         viewModel.KeypadInputCommand.Execute("2");
         viewModel.ApplyDenominationCommand.Execute(viewModel.SelectedCashDenomination);
@@ -225,10 +240,13 @@ public sealed class DailyCloseViewModelTests
         await viewModel.SaveAndPrintCommand.ExecuteAsync(null);
 
         Assert.False(returnedToPos);
-        Assert.Equal(1, viewModel.SelectedTabIndex);
+        Assert.Equal(0, viewModel.SelectedTabIndex);
         Assert.Equal(service.LastSavedArchive?.DailyCloseGuid, viewModel.SelectedArchive?.DailyCloseGuid);
         Assert.All(viewModel.Denominations, item => Assert.Equal(0, item.Count));
         Assert.Equal(string.Empty, viewModel.KeypadBuffer);
+        Assert.False(viewModel.HasDailyCloseDraft);
+        Assert.False(viewModel.IsCashCountWorkspaceOpen);
+        Assert.True(viewModel.CanChangeBusinessDate);
         Assert.Equal("Daily close saved, but printing failed: paper out", viewModel.StatusMessage);
     }
 
@@ -247,7 +265,7 @@ public sealed class DailyCloseViewModelTests
             CreateSession(),
             returnToPos: () => returnedToPos = true);
 
-        await viewModel.RefreshSummaryCommand.ExecuteAsync(null);
+        await OpenNewDailyCloseDraftAsync(viewModel);
         viewModel.OpenCashCountDialogCommand.Execute(viewModel.Denominations.First());
         viewModel.KeypadInputCommand.Execute("4");
         viewModel.ApplyDenominationCommand.Execute(viewModel.SelectedCashDenomination);
@@ -255,14 +273,16 @@ public sealed class DailyCloseViewModelTests
         await viewModel.SaveAndPrintCommand.ExecuteAsync(null);
 
         Assert.False(returnedToPos);
-        Assert.Equal(1, viewModel.SelectedTabIndex);
+        Assert.Equal(0, viewModel.SelectedTabIndex);
         Assert.Equal(service.LastSavedArchive?.DailyCloseGuid, viewModel.SelectedArchive?.DailyCloseGuid);
         Assert.All(viewModel.Denominations, item => Assert.Equal(0, item.Count));
+        Assert.False(viewModel.HasDailyCloseDraft);
+        Assert.False(viewModel.IsCashCountWorkspaceOpen);
         Assert.Equal("Daily close saved, but printing failed: printer offline", viewModel.StatusMessage);
     }
 
     [Fact]
-    public async Task SaveAndPrintCommand_save_failure_preserves_cash_and_stays_on_count_tab()
+    public async Task SaveAndPrintCommand_save_failure_preserves_cash_workspace_and_draft()
     {
         var service = new FakeDailyCloseService
         {
@@ -277,7 +297,7 @@ public sealed class DailyCloseViewModelTests
             returnToPos: () => returnedToPos = true);
         var note = viewModel.Denominations.Single(item => item.Label == "$10");
 
-        await viewModel.RefreshSummaryCommand.ExecuteAsync(null);
+        await OpenNewDailyCloseDraftAsync(viewModel);
         viewModel.OpenCashCountDialogCommand.Execute(note);
         viewModel.KeypadInputCommand.Execute("2");
         viewModel.ApplyDenominationCommand.Execute(viewModel.SelectedCashDenomination);
@@ -289,13 +309,18 @@ public sealed class DailyCloseViewModelTests
         Assert.Equal(0, viewModel.SelectedTabIndex);
         Assert.Equal(2, note.Count);
         Assert.Equal(20m, viewModel.CountedCashAmount);
+        Assert.True(viewModel.HasDailyCloseDraft);
+        Assert.True(viewModel.IsCashCountWorkspaceOpen);
+        Assert.False(viewModel.CanChangeBusinessDate);
+        Assert.True(viewModel.SaveAndPrintCommand.CanExecute(null));
         Assert.Equal("save failed", viewModel.StatusMessage);
     }
 
     [Fact]
-    public async Task LoadAsync_resets_history_tab_to_cash_count_tab()
+    public async Task LoadAsync_defaults_to_history_without_loading_a_cash_summary()
     {
-        var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession())
+        var service = new FakeDailyCloseService();
+        var viewModel = new DailyCloseViewModel(service, new FakeDailyClosePrintService(), CreateSession())
         {
             SelectedTabIndex = 1
         };
@@ -303,6 +328,252 @@ public sealed class DailyCloseViewModelTests
         await viewModel.LoadAsync();
 
         Assert.Equal(0, viewModel.SelectedTabIndex);
+        Assert.Equal(0, service.LoadReportCallCount);
+        Assert.Equal(1, service.GetArchivesCallCount);
+        Assert.False(viewModel.HasDailyCloseDraft);
+        Assert.False(viewModel.IsCashCountWorkspaceOpen);
+        Assert.True(viewModel.CanChangeBusinessDate);
+    }
+
+    [Fact]
+    public async Task Create_new_daily_close_refreshes_latest_summary_then_opens_an_unsaved_draft()
+    {
+        var service = new FakeDailyCloseService();
+        var viewModel = new DailyCloseViewModel(service, new FakeDailyClosePrintService(), CreateSession());
+        var staleCount = viewModel.Denominations.Single(item => item.Label == "$100");
+        staleCount.Count = 7;
+
+        await viewModel.CreateOrResumeDailyCloseCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, service.LoadReportCallCount);
+        Assert.Equal(1, service.GetArchivesCallCount);
+        Assert.Equal(0, service.SaveCallCount);
+        Assert.Equal(0, staleCount.Count);
+        Assert.Equal(145.35m, viewModel.ExpectedCashAmount);
+        Assert.True(viewModel.HasDailyCloseDraft);
+        Assert.True(viewModel.IsCashCountWorkspaceOpen);
+        Assert.False(viewModel.CanChangeBusinessDate);
+        Assert.True(viewModel.SaveAndPrintCommand.CanExecute(null));
+        Assert.Equal(0, viewModel.SelectedTabIndex);
+    }
+
+    [Fact]
+    public async Task Create_new_daily_close_failure_stays_on_history_without_a_draft()
+    {
+        var service = new FakeDailyCloseService
+        {
+            LoadReportException = new InvalidOperationException("summary unavailable")
+        };
+        var viewModel = new DailyCloseViewModel(service, new FakeDailyClosePrintService(), CreateSession());
+        viewModel.Denominations.First().Count = 4;
+
+        await viewModel.CreateOrResumeDailyCloseCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, service.LoadReportCallCount);
+        Assert.Equal(0, service.GetArchivesCallCount);
+        Assert.Equal(0, service.SaveCallCount);
+        Assert.Equal(0, viewModel.SelectedTabIndex);
+        Assert.False(viewModel.HasDailyCloseDraft);
+        Assert.False(viewModel.IsCashCountWorkspaceOpen);
+        Assert.True(viewModel.CanChangeBusinessDate);
+        Assert.All(viewModel.Denominations, item => Assert.Equal(0, item.Count));
+        Assert.Equal(0m, viewModel.ExpectedCashAmount);
+        Assert.Equal("summary unavailable", viewModel.StatusMessage);
+    }
+
+    [Fact]
+    public async Task Close_and_continue_daily_close_preserve_counts_without_refreshing_summary()
+    {
+        var service = new FakeDailyCloseService();
+        var viewModel = new DailyCloseViewModel(service, new FakeDailyClosePrintService(), CreateSession());
+        await OpenNewDailyCloseDraftAsync(viewModel);
+        var note = viewModel.Denominations.Single(item => item.Label == "$20");
+        note.Count = 3;
+        viewModel.OpenCashCountDialogCommand.Execute(note);
+        viewModel.KeypadInputCommand.Execute("9");
+        var reportLoads = service.LoadReportCallCount;
+
+        viewModel.CloseCashCountWorkspaceCommand.Execute(null);
+
+        Assert.True(viewModel.HasDailyCloseDraft);
+        Assert.False(viewModel.IsCashCountWorkspaceOpen);
+        Assert.False(viewModel.IsCashCountDialogOpen);
+        Assert.Equal(3, note.Count);
+        Assert.False(viewModel.CanChangeBusinessDate);
+
+        await viewModel.CreateOrResumeDailyCloseCommand.ExecuteAsync(null);
+
+        Assert.Equal(reportLoads, service.LoadReportCallCount);
+        Assert.True(viewModel.HasDailyCloseDraft);
+        Assert.True(viewModel.IsCashCountWorkspaceOpen);
+        Assert.Equal(3, note.Count);
+    }
+
+    [Fact]
+    public async Task LoadAsync_preserves_same_session_draft_across_return_to_pos()
+    {
+        var service = new FakeDailyCloseService();
+        var viewModel = new DailyCloseViewModel(service, new FakeDailyClosePrintService(), CreateSession());
+        await OpenNewDailyCloseDraftAsync(viewModel);
+        var coin = viewModel.Denominations.Single(item => item.Label == "50c");
+        coin.Count = 5;
+        viewModel.CloseCashCountWorkspaceCommand.Execute(null);
+        var reportLoads = service.LoadReportCallCount;
+
+        await viewModel.LoadAsync();
+
+        Assert.Equal(0, viewModel.SelectedTabIndex);
+        Assert.True(viewModel.HasDailyCloseDraft);
+        Assert.False(viewModel.IsCashCountWorkspaceOpen);
+        Assert.Equal(5, coin.Count);
+        Assert.Equal(reportLoads, service.LoadReportCallCount);
+
+        await viewModel.CreateOrResumeDailyCloseCommand.ExecuteAsync(null);
+
+        Assert.True(viewModel.IsCashCountWorkspaceOpen);
+        Assert.Equal(5, coin.Count);
+        Assert.Equal(reportLoads, service.LoadReportCallCount);
+    }
+
+    [Fact]
+    public async Task Online_and_pending_sync_changes_do_not_discard_daily_close_draft()
+    {
+        var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession());
+        await OpenNewDailyCloseDraftAsync(viewModel);
+        var note = viewModel.Denominations.Single(item => item.Label == "$10");
+        note.Count = 2;
+
+        viewModel.Session = viewModel.Session with
+        {
+            IsOnline = false,
+            PendingSyncCount = 12
+        };
+
+        Assert.True(viewModel.HasDailyCloseDraft);
+        Assert.True(viewModel.IsCashCountWorkspaceOpen);
+        Assert.Equal(2, note.Count);
+        Assert.False(viewModel.CanChangeBusinessDate);
+    }
+
+    [Theory]
+    [InlineData("store")]
+    [InlineData("terminal")]
+    [InlineData("cashier")]
+    public async Task Store_terminal_or_cashier_change_discards_daily_close_draft(string identityPart)
+    {
+        var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession());
+        await OpenNewDailyCloseDraftAsync(viewModel);
+        viewModel.Denominations.First().Count = 2;
+
+        viewModel.Session = identityPart switch
+        {
+            "store" => viewModel.Session with { StoreCode = "S002" },
+            "terminal" => viewModel.Session with { DeviceCode = "POS-02" },
+            "cashier" => viewModel.Session with { CashierId = "C002" },
+            _ => throw new ArgumentOutOfRangeException(nameof(identityPart))
+        };
+
+        Assert.False(viewModel.HasDailyCloseDraft);
+        Assert.False(viewModel.IsCashCountWorkspaceOpen);
+        Assert.True(viewModel.CanChangeBusinessDate);
+        Assert.All(viewModel.Denominations, item => Assert.Equal(0, item.Count));
+        Assert.Equal(0m, viewModel.ExpectedCashAmount);
+        Assert.False(viewModel.SaveAndPrintCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Changing_business_date_discards_draft_and_unlocks_date_selection()
+    {
+        var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession());
+        await OpenNewDailyCloseDraftAsync(viewModel);
+        viewModel.Denominations.First().Count = 2;
+        Assert.False(viewModel.CanChangeBusinessDate);
+
+        viewModel.SelectedDate = DateTime.Today.AddDays(-1);
+
+        Assert.False(viewModel.HasDailyCloseDraft);
+        Assert.False(viewModel.IsCashCountWorkspaceOpen);
+        Assert.True(viewModel.CanChangeBusinessDate);
+        Assert.All(viewModel.Denominations, item => Assert.Equal(0, item.Count));
+        Assert.Equal(0m, viewModel.ExpectedCashAmount);
+    }
+
+    [Fact]
+    public async Task Discard_confirmation_cancel_preserves_then_confirm_clears_draft()
+    {
+        var viewModel = new DailyCloseViewModel(new FakeDailyCloseService(), new FakeDailyClosePrintService(), CreateSession());
+        await OpenNewDailyCloseDraftAsync(viewModel);
+        var note = viewModel.Denominations.Single(item => item.Label == "$50");
+        note.Count = 2;
+        viewModel.OpenCashCountDialogCommand.Execute(note);
+
+        viewModel.RequestDiscardDailyCloseDraftCommand.Execute(null);
+
+        Assert.False(viewModel.IsCashCountDialogOpen);
+        Assert.True(viewModel.IsDiscardDailyCloseDraftConfirmationOpen);
+        Assert.True(viewModel.HasDailyCloseDraft);
+        Assert.True(viewModel.IsCashCountWorkspaceOpen);
+
+        viewModel.CancelDiscardDailyCloseDraftCommand.Execute(null);
+
+        Assert.False(viewModel.IsDiscardDailyCloseDraftConfirmationOpen);
+        Assert.True(viewModel.HasDailyCloseDraft);
+        Assert.Equal(2, note.Count);
+
+        viewModel.RequestDiscardDailyCloseDraftCommand.Execute(null);
+        viewModel.ConfirmDiscardDailyCloseDraftCommand.Execute(null);
+
+        Assert.False(viewModel.IsDiscardDailyCloseDraftConfirmationOpen);
+        Assert.False(viewModel.HasDailyCloseDraft);
+        Assert.False(viewModel.IsCashCountWorkspaceOpen);
+        Assert.True(viewModel.CanChangeBusinessDate);
+        Assert.All(viewModel.Denominations, item => Assert.Equal(0, item.Count));
+        Assert.Equal(0m, viewModel.ExpectedCashAmount);
+        Assert.False(viewModel.SaveAndPrintCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Save_authorization_denial_preserves_workspace_draft_and_counts()
+    {
+        var service = new FakeDailyCloseService();
+        var viewModel = new DailyCloseViewModel(
+            service,
+            new FakeDailyClosePrintService(),
+            CreateSession(),
+            operationAuthorizationService: new DenyingOperationAuthorizationService());
+        await OpenNewDailyCloseDraftAsync(viewModel);
+        var note = viewModel.Denominations.Single(item => item.Label == "$20");
+        note.Count = 3;
+
+        await viewModel.SaveAndPrintCommand.ExecuteAsync(null);
+
+        Assert.Equal(0, service.SaveCallCount);
+        Assert.True(viewModel.HasDailyCloseDraft);
+        Assert.True(viewModel.IsCashCountWorkspaceOpen);
+        Assert.Equal(3, note.Count);
+        Assert.False(viewModel.CanChangeBusinessDate);
+    }
+
+    [Fact]
+    public async Task Save_caller_cancellation_preserves_workspace_draft_and_counts()
+    {
+        var service = new FakeDailyCloseService();
+        var viewModel = new DailyCloseViewModel(service, new FakeDailyClosePrintService(), CreateSession());
+        await OpenNewDailyCloseDraftAsync(viewModel);
+        var note = viewModel.Denominations.Single(item => item.Label == "$20");
+        note.Count = 3;
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => viewModel.SaveAndPrintAsync(cancellation.Token));
+
+        Assert.Equal(1, service.SaveCallCount);
+        Assert.True(viewModel.HasDailyCloseDraft);
+        Assert.True(viewModel.IsCashCountWorkspaceOpen);
+        Assert.Equal(3, note.Count);
+        Assert.False(viewModel.IsBusy);
+        Assert.False(viewModel.CanChangeBusinessDate);
     }
 
     [Fact]
@@ -348,7 +619,7 @@ public sealed class DailyCloseViewModelTests
             CreateSession(),
             operationAuditLogger: logger);
 
-        await viewModel.RefreshSummaryCommand.ExecuteAsync(null);
+        await OpenNewDailyCloseDraftAsync(viewModel);
         await viewModel.SaveAndPrintCommand.ExecuteAsync(null);
         await viewModel.LoadHistoryCommand.ExecuteAsync(null);
         await viewModel.ReprintSelectedArchiveCommand.ExecuteAsync(null);
@@ -544,6 +815,13 @@ public sealed class DailyCloseViewModelTests
         Assert.Equal("ConfirmedSucceeded", auditEvent.ReasonCode);
     }
 
+    private static async Task OpenNewDailyCloseDraftAsync(DailyCloseViewModel viewModel)
+    {
+        await viewModel.CreateOrResumeDailyCloseCommand.ExecuteAsync(null);
+        Assert.True(viewModel.HasDailyCloseDraft);
+        Assert.True(viewModel.IsCashCountWorkspaceOpen);
+    }
+
     private static PosSessionState CreateSession()
     {
         return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
@@ -568,6 +846,14 @@ public sealed class DailyCloseViewModelTests
 
         public DailyCloseArchive? LastSavedArchive { get; private set; }
 
+        public int LoadReportCallCount { get; private set; }
+
+        public int GetArchivesCallCount { get; private set; }
+
+        public int SaveCallCount { get; private set; }
+
+        public Exception? LoadReportException { get; init; }
+
         public Exception? SaveException { get; init; }
 
         public Task<DailyCloseReport> LoadReportAsync(
@@ -575,7 +861,14 @@ public sealed class DailyCloseViewModelTests
             DateTime businessDate,
             CancellationToken cancellationToken = default)
         {
+            LoadReportCallCount++;
             LastRequestedDate = businessDate;
+            cancellationToken.ThrowIfCancellationRequested();
+            if (LoadReportException is not null)
+            {
+                throw LoadReportException;
+            }
+
             return Task.FromResult(CreateReport());
         }
 
@@ -585,6 +878,8 @@ public sealed class DailyCloseViewModelTests
             IReadOnlyList<CashDenominationCount> cashCounts,
             CancellationToken cancellationToken = default)
         {
+            SaveCallCount++;
+            cancellationToken.ThrowIfCancellationRequested();
             if (SaveException is not null)
             {
                 throw SaveException;
@@ -604,6 +899,8 @@ public sealed class DailyCloseViewModelTests
             DateTime businessDate,
             CancellationToken cancellationToken = default)
         {
+            GetArchivesCallCount++;
+            cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult<IReadOnlyList<DailyCloseArchive>>(_archives.ToArray());
         }
 
@@ -817,6 +1114,51 @@ public sealed class DailyCloseViewModelTests
         public void Record(OperationAuditEventDto auditEvent)
         {
             Events.Add(auditEvent);
+        }
+    }
+
+    private sealed class DenyingOperationAuthorizationService : IOperationAuthorizationService
+    {
+        public event PropertyChangedEventHandler? PropertyChanged { add { } remove { } }
+
+        public event EventHandler? StatusChanged { add { } remove { } }
+
+        public string ScannerPageId => "daily-close-test";
+
+        public bool IsPromptOpen => false;
+
+        public bool IsBusy => false;
+
+        public string PromptMessage => string.Empty;
+
+        public string StatusMessage => string.Empty;
+
+        public string PermissionCode => string.Empty;
+
+        public string Screen => string.Empty;
+
+        public string Action => string.Empty;
+
+        public IRelayCommand CancelCommand { get; } = new RelayCommand(() => { });
+
+        public Task<OperationAuthorizationScope?> AuthorizeAsync(
+            string permissionCode,
+            string screen,
+            string action,
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<OperationAuthorizationScope?>(null);
+        }
+
+        public bool ProcessScannerBarcode(string barcode) => false;
+
+        public void Cancel()
+        {
+        }
+
+        public void RevokeAll()
+        {
         }
     }
 }

@@ -143,8 +143,8 @@
   <data name="pos.terminal.actions.switchUser" xml:space="preserve"><value>Switch User</value></data>
   <data name="pos.terminal.actions.reregisterDevice" xml:space="preserve"><value>Change Store Registration</value></data>
   <data name="pos.terminal.inputBuffer" xml:space="preserve"><value>Input Buffer</value></data>
-  <data name="pos.terminal.quickHalf" xml:space="preserve"><value>0.5</value></data>
-  <data name="pos.terminal.quickNinetyNine" xml:space="preserve"><value>0.99</value></data>
+  <data name="pos.terminal.quickHalf" xml:space="preserve"><value>$0.50</value></data>
+  <data name="pos.terminal.quickNinetyNine" xml:space="preserve"><value>$0.99</value></data>
   <data name="pos.status.ready" xml:space="preserve"><value>Ready for offline checkout.</value></data>
   <data name="pos.status.online" xml:space="preserve"><value>Online</value></data>
   <data name="pos.status.offline" xml:space="preserve"><value>Offline</value></data>
@@ -630,7 +630,7 @@
   <data name="history.status.pendingRecall" xml:space="preserve"><value>Pending recall</value></data>
   <data name="suspended.recall" xml:space="preserve"><value>Recall Suspended</value></data>
   <data name="dailyClose.tab.count" xml:space="preserve"><value>Daily Close Count</value></data>
-  <data name="dailyClose.tab.history" xml:space="preserve"><value>History Query</value></data>
+  <data name="dailyClose.tab.history" xml:space="preserve"><value>Daily Close History</value></data>
   <data name="dailyClose.history.title" xml:space="preserve"><value>Daily Close History</value></data>
   <data name="dailyClose.history.load" xml:space="preserve"><value>Load History</value></data>
   <data name="dailyClose.cashCounted" xml:space="preserve"><value>Cash Counted</value></data>
@@ -711,7 +711,7 @@
   <data name="settings.linklyCloud.vendorIdMissing" xml:space="preserve"><value>Linkly POS vendor id is not configured.</value></data>
   <data name="settings.linklyCloud.vendorIdInvalid" xml:space="preserve"><value>Linkly POS vendor id must be a UUID v4.</value></data>
   <data name="settings.linklyCloud.paired" xml:space="preserve"><value>Linkly Cloud terminal paired.</value></data>
-  <data name="dailyClose.status.ready" xml:space="preserve"><value>Ready to review daily close totals.</value></data>
+  <data name="dailyClose.status.ready" xml:space="preserve"><value>Review daily close history or create a new daily close.</value></data>
   <data name="dailyClose.status.refreshing" xml:space="preserve"><value>Refreshing daily close summary...</value></data>
   <data name="dailyClose.status.refreshed" xml:space="preserve"><value>Daily close summary refreshed.</value></data>
   <data name="dailyClose.status.saving" xml:space="preserve"><value>Saving and printing daily close...</value></data>
@@ -1186,4 +1186,20 @@
   <data name="dailyClose.cashCountDialog.clear" xml:space="preserve"><value>Clear</value></data>
   <data name="dailyClose.cashCountDialog.backspace" xml:space="preserve"><value>Backspace</value></data>
   <data name="dailyClose.cashCountDialog.apply" xml:space="preserve"><value>Apply Count</value></data>
+  <data name="dailyClose.refreshHistory" xml:space="preserve"><value>Refresh History</value></data>
+  <data name="dailyClose.createNew" xml:space="preserve"><value>New Daily Close</value></data>
+  <data name="dailyClose.continueDraft" xml:space="preserve"><value>Continue Daily Close</value></data>
+  <data name="dailyClose.cashWorkspace.title" xml:space="preserve"><value>New Daily Close</value></data>
+  <data name="dailyClose.cashWorkspace.automationName" xml:space="preserve"><value>Daily close cash count workspace</value></data>
+  <data name="dailyClose.cashWorkspace.returnHistory" xml:space="preserve"><value>Return to History</value></data>
+  <data name="dailyClose.cashWorkspace.discard" xml:space="preserve"><value>Discard Draft</value></data>
+  <data name="dailyClose.cashWorkspace.discardConfirm.title" xml:space="preserve"><value>Discard daily close draft?</value></data>
+  <data name="dailyClose.cashWorkspace.discardConfirm.message" xml:space="preserve"><value>All entered cash quantities and the current report snapshot will be cleared. This cannot be undone.</value></data>
+  <data name="dailyClose.cashWorkspace.discardConfirm.action" xml:space="preserve"><value>Discard Draft</value></data>
+  <data name="dailyClose.status.draftPreparing" xml:space="preserve"><value>Preparing a new daily close...</value></data>
+  <data name="dailyClose.status.draftReady" xml:space="preserve"><value>New daily close ready for cash counting.</value></data>
+  <data name="dailyClose.status.draftResumed" xml:space="preserve"><value>Daily close draft resumed.</value></data>
+  <data name="dailyClose.status.draftPreserved" xml:space="preserve"><value>Daily close draft preserved. Select Continue Daily Close when you are ready.</value></data>
+  <data name="dailyClose.status.draftDiscarded" xml:space="preserve"><value>Daily close draft discarded.</value></data>
+  <data name="dailyClose.status.draftIdentityChanged" xml:space="preserve"><value>The daily close draft was discarded because the store, terminal, or cashier changed.</value></data>
 </root>

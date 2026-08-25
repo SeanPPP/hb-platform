@@ -215,7 +215,7 @@
 
         <Style x:Key="DailyCloseTabItemStyle" TargetType="{x:Type TabItem}">
             <Setter Property="Height" Value="38" />
-            <Setter Property="MinWidth" Value="132" />
+            <Setter Property="MinWidth" Value="148" />
             <Setter Property="Margin" Value="2,0" />
             <Setter Property="Padding" Value="12,0" />
             <Setter Property="Foreground" Value="#FF424654" />
@@ -266,25 +266,24 @@
                                 <RowDefinition Height="*" />
                             </Grid.RowDefinitions>
 
-                            <Border Grid.Row="0"
+                            <Border x:Name="DailyCloseToolbar"
+                                    Grid.Row="0"
                                     Background="#FFEDEEF1"
                                     BorderBrush="#FFE2E2E6"
                                     BorderThickness="1"
                                     CornerRadius="8"
                                     Padding="14,10">
-                                <Grid>
+                                <Grid x:Name="DailyCloseToolbarLayout">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="Auto" />
                                         <ColumnDefinition Width="*" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="Auto" />
                                     </Grid.ColumnDefinitions>
 
                                     <Button Grid.Column="0"
                                             Command="{Binding ReturnToPosCommand}"
                                             Height="36"
+                                            VerticalAlignment="Center"
                                             Padding="11,0"
                                             Margin="0,0,12,0"
                                             Style="{StaticResource PosSecondaryButtonStyle}">
@@ -294,60 +293,111 @@
                                         </StackPanel>
                                     </Button>
 
-                                    <StackPanel Grid.Column="1" Margin="0,0,16,0">
+                                    <StackPanel Grid.Column="1"
+                                                VerticalAlignment="Center"
+                                                Margin="0,0,16,0">
                                         <TextBlock Text="{loc:Loc dailyClose.businessDate}" Style="{StaticResource SettlementLabelStyle}" />
                                         <DatePicker SelectedDate="{Binding SelectedDate, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                    IsEnabled="{Binding CanChangeBusinessDate}"
                                                     Height="34"
-                                                    MinWidth="184"
+                                                    MinWidth="160"
                                                     FontSize="14" />
                                     </StackPanel>
 
-                                    <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="0,0,14,0">
-                                        <TextBlock Text="{loc:Loc dailyClose.title}"
-                                                   FontSize="18"
-                                                   FontWeight="Black"
-                                                   Foreground="#FF0040A1" />
-                                        <TextBlock Text="{Binding StatusMessage}"
-                                                   Margin="0,2,0,0"
-                                                   FontSize="12"
-                                                   Foreground="#FF424654"
-                                                   TextTrimming="CharacterEllipsis" />
-                                    </StackPanel>
+                                    <Grid Grid.Column="2"
+                                          VerticalAlignment="Center">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
 
-                                    <Border Grid.Column="3"
-                                            Background="#FFFFFFFF"
-                                            BorderBrush="#FFC3C6D6"
-                                            BorderThickness="1"
-                                            CornerRadius="7"
-                                            Padding="2"
-                                            Margin="0,0,10,0">
-                                        <TabPanel IsItemsHost="True"
-                                                  KeyboardNavigation.TabIndex="1"
-                                                  Background="Transparent" />
-                                    </Border>
+                                        <Border x:Name="DailyCloseNavigationTabsBorder"
+                                                Grid.Column="0"
+                                                MinWidth="308"
+                                                Background="#FFFFFFFF"
+                                                BorderBrush="#FFC3C6D6"
+                                                BorderThickness="1"
+                                                CornerRadius="7"
+                                                Padding="2">
+                                            <TabPanel IsItemsHost="True"
+                                                      KeyboardNavigation.TabIndex="1"
+                                                      Background="Transparent" />
+                                        </Border>
 
-                                    <Button Grid.Column="4"
-                                            Command="{Binding RefreshSummaryCommand}"
-                                            Height="36"
-                                            MinWidth="118"
-                                            Margin="0,0,10,0"
-                                            Style="{StaticResource PosPrimaryButtonStyle}">
-                                        <StackPanel Orientation="Horizontal">
-                                            <materialDesign:PackIcon Kind="Sync" Width="16" Height="16" Margin="0,0,6,0" Foreground="White" />
-                                            <TextBlock Text="{loc:Loc dailyClose.refresh}" Foreground="White" FontWeight="Bold" />
-                                        </StackPanel>
-                                    </Button>
+                                        <Button x:Name="DailyCloseRefreshHistoryButton"
+                                                Grid.Column="2"
+                                                Command="{Binding LoadHistoryCommand}"
+                                                Height="36"
+                                                MinWidth="118"
+                                                Margin="12,0,10,0">
+                                            <Button.Style>
+                                                <Style TargetType="Button" BasedOn="{StaticResource PosPrimaryButtonStyle}">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsHistoryTabSelected}" Value="True">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Button.Style>
+                                            <StackPanel Orientation="Horizontal">
+                                                <materialDesign:PackIcon Kind="Sync" Width="16" Height="16" Margin="0,0,6,0" Foreground="White" />
+                                                <TextBlock Text="{loc:Loc dailyClose.refreshHistory}" Foreground="White" FontWeight="Bold" />
+                                            </StackPanel>
+                                        </Button>
 
-                                    <Button Grid.Column="5"
-                                            Command="{Binding SaveAndPrintCommand}"
-                                            Height="36"
-                                            MinWidth="150"
-                                            Style="{StaticResource PosPrimaryButtonStyle}">
-                                        <StackPanel Orientation="Horizontal">
-                                            <materialDesign:PackIcon Kind="ContentSaveCheck" Width="16" Height="16" Margin="0,0,6,0" Foreground="White" />
-                                            <TextBlock Text="{loc:Loc dailyClose.saveFinalize}" Foreground="White" FontWeight="Bold" />
-                                        </StackPanel>
-                                    </Button>
+                                        <Button x:Name="DailyCloseCreateDraftButton"
+                                                Grid.Column="3"
+                                                Command="{Binding CreateOrResumeDailyCloseCommand}"
+                                                Height="36"
+                                                MinWidth="170">
+                                            <Button.Style>
+                                                <Style TargetType="Button" BasedOn="{StaticResource PosPrimaryButtonStyle}">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                    <Style.Triggers>
+                                                        <MultiDataTrigger>
+                                                            <MultiDataTrigger.Conditions>
+                                                                <Condition Binding="{Binding IsHistoryTabSelected}" Value="True" />
+                                                                <Condition Binding="{Binding HasDailyCloseDraft}" Value="False" />
+                                                            </MultiDataTrigger.Conditions>
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                        </MultiDataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Button.Style>
+                                            <StackPanel Orientation="Horizontal">
+                                                <materialDesign:PackIcon Kind="PlusCircleOutline" Width="16" Height="16" Margin="0,0,6,0" Foreground="White" />
+                                                <TextBlock Text="{loc:Loc dailyClose.createNew}" Foreground="White" FontWeight="Bold" />
+                                            </StackPanel>
+                                        </Button>
+
+                                        <Button x:Name="DailyCloseContinueDraftButton"
+                                                Grid.Column="3"
+                                                Command="{Binding CreateOrResumeDailyCloseCommand}"
+                                                Height="36"
+                                                MinWidth="170">
+                                            <Button.Style>
+                                                <Style TargetType="Button" BasedOn="{StaticResource PosPrimaryButtonStyle}">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                    <Style.Triggers>
+                                                        <MultiDataTrigger>
+                                                            <MultiDataTrigger.Conditions>
+                                                                <Condition Binding="{Binding IsHistoryTabSelected}" Value="True" />
+                                                                <Condition Binding="{Binding HasDailyCloseDraft}" Value="True" />
+                                                            </MultiDataTrigger.Conditions>
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                        </MultiDataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Button.Style>
+                                            <StackPanel Orientation="Horizontal">
+                                                <materialDesign:PackIcon Kind="PlayCircleOutline" Width="16" Height="16" Margin="0,0,6,0" Foreground="White" />
+                                                <TextBlock Text="{loc:Loc dailyClose.continueDraft}" Foreground="White" FontWeight="Bold" />
+                                            </StackPanel>
+                                        </Button>
+                                    </Grid>
                                 </Grid>
                             </Border>
 
@@ -374,246 +424,10 @@
     </UserControl.Resources>
 
     <Grid>
-        <TabControl Margin="20"
+        <TabControl x:Name="DailyCloseTabControl"
+                    Margin="20"
                     SelectedIndex="{Binding SelectedTabIndex, Mode=TwoWay}"
                     Style="{StaticResource DailyCloseTabControlStyle}">
-            <TabItem Header="{loc:Loc dailyClose.tab.count}">
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="2.1*" MinWidth="720" />
-                        <ColumnDefinition Width="16" />
-                        <ColumnDefinition Width="0.9*" MinWidth="300" />
-                    </Grid.ColumnDefinitions>
-
-                    <Grid Grid.Column="0">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="*" />
-                        </Grid.RowDefinitions>
-
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="1.6*" />
-                                <ColumnDefinition Width="14" />
-                                <ColumnDefinition Width="0.58*" />
-                            </Grid.ColumnDefinitions>
-
-                            <Border x:Name="CashCountPanel"
-                                    Grid.Column="0"
-                                    Grid.ColumnSpan="3"
-                                    Style="{StaticResource SettlementCardStyle}"
-                                    Padding="18,14">
-                                <Grid>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="*" />
-                                        <RowDefinition Height="Auto" />
-                                    </Grid.RowDefinitions>
-
-                                    <StackPanel>
-                                        <TextBlock Text="{loc:Loc dailyClose.cashCounter}" Style="{StaticResource SettlementTitleStyle}" />
-                                        <TextBlock Text="{loc:Loc dailyClose.cashCountHint}"
-                                                   Margin="0,3,0,0"
-                                                   FontSize="11"
-                                                   Foreground="#FF737785" />
-                                    </StackPanel>
-
-                                    <Grid Grid.Row="1" Margin="0,12,0,10">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="14" />
-                                            <ColumnDefinition Width="*" />
-                                        </Grid.ColumnDefinitions>
-
-                                        <Grid Grid.Column="0">
-                                            <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="*" />
-                                            </Grid.RowDefinitions>
-                                            <TextBlock Text="{loc:Loc dailyClose.notes}"
-                                                       Style="{StaticResource SettlementLabelStyle}"
-                                                       FontSize="12" />
-                                            <ScrollViewer Grid.Row="1"
-                                                          Margin="0,7,0,0"
-                                                          VerticalScrollBarVisibility="Auto"
-                                                          HorizontalScrollBarVisibility="Disabled">
-                                                <ItemsControl x:Name="NoteDenominationList"
-                                                              ItemsSource="{Binding NoteDenominations}"
-                                                              ItemTemplate="{StaticResource CashDenominationItemTemplate}" />
-                                            </ScrollViewer>
-                                        </Grid>
-
-                                        <Grid Grid.Column="2">
-                                            <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto" />
-                                                <RowDefinition Height="*" />
-                                            </Grid.RowDefinitions>
-                                            <TextBlock Text="{loc:Loc dailyClose.coins}"
-                                                       Style="{StaticResource SettlementLabelStyle}"
-                                                       FontSize="12" />
-                                            <ScrollViewer Grid.Row="1"
-                                                          Margin="0,7,0,0"
-                                                          VerticalScrollBarVisibility="Auto"
-                                                          HorizontalScrollBarVisibility="Disabled">
-                                                <ItemsControl x:Name="CoinDenominationList"
-                                                              ItemsSource="{Binding CoinDenominations}"
-                                                              ItemTemplate="{StaticResource CashDenominationItemTemplate}" />
-                                            </ScrollViewer>
-                                        </Grid>
-                                    </Grid>
-
-                                    <Grid Grid.Row="2">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="10" />
-                                            <ColumnDefinition Width="*" />
-                                            <ColumnDefinition Width="10" />
-                                            <ColumnDefinition Width="*" />
-                                        </Grid.ColumnDefinitions>
-                                        <Border Grid.Column="0"
-                                                Background="#FFF3F3F7"
-                                                CornerRadius="8"
-                                                Padding="12,8">
-                                            <StackPanel>
-                                                <TextBlock Text="{loc:Loc dailyClose.noteTotal}" Style="{StaticResource SettlementLabelStyle}" />
-                                                <TextBlock Text="{Binding NoteSubtotal, StringFormat={}{0:C2}}" Style="{StaticResource SettlementValueStyle}" />
-                                            </StackPanel>
-                                        </Border>
-                                        <Border Grid.Column="2"
-                                                Background="#FFF3F3F7"
-                                                CornerRadius="8"
-                                                Padding="12,8">
-                                            <StackPanel>
-                                                <TextBlock Text="{loc:Loc dailyClose.coinTotal}" Style="{StaticResource SettlementLabelStyle}" />
-                                                <TextBlock Text="{Binding CoinSubtotal, StringFormat={}{0:C2}}" Style="{StaticResource SettlementValueStyle}" />
-                                            </StackPanel>
-                                        </Border>
-                                        <Border Grid.Column="4"
-                                                Background="#FFEAF2FF"
-                                                BorderBrush="#FF80A9E8"
-                                                BorderThickness="1"
-                                                CornerRadius="8"
-                                                Padding="12,8">
-                                            <StackPanel>
-                                                <TextBlock Text="{loc:Loc dailyClose.cashCounted}" Style="{StaticResource SettlementLabelStyle}" Foreground="#FF0040A1" />
-                                                <TextBlock Text="{Binding CountedCashAmount, StringFormat={}{0:C2}}" Style="{StaticResource SettlementValueStyle}" Foreground="#FF0040A1" />
-                                            </StackPanel>
-                                        </Border>
-                                    </Grid>
-                                </Grid>
-                            </Border>
-                        </Grid>
-                    </Grid>
-
-                    <Grid Grid.Column="2">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="*" />
-                        </Grid.RowDefinitions>
-
-                        <Border Grid.Row="0" Style="{StaticResource SettlementCardStyle}" Padding="0">
-                            <Grid>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="*" />
-                                </Grid.RowDefinitions>
-
-                                <Border Grid.Row="0"
-                                        BorderBrush="#FFC3C6D6"
-                                        BorderThickness="0,0,0,1"
-                                        Padding="18"
-                                        Background="White">
-                                    <StackPanel HorizontalAlignment="Center">
-                                        <TextBlock Text="{loc:Loc dailyClose.reportTitle}"
-                                                   FontSize="20"
-                                                   FontWeight="Black"
-                                                   Foreground="#FF191C1E"
-                                                   HorizontalAlignment="Center" />
-                                        <TextBlock Text="{Binding BusinessDateText}"
-                                                   Margin="0,4,0,0"
-                                           FontSize="10"
-                                           Foreground="#FF737785"
-                                           HorizontalAlignment="Center" />
-                                    </StackPanel>
-                                </Border>
-
-                                <Grid Grid.Row="1" Margin="16,12,16,14">
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="8" />
-                                        <RowDefinition Height="132" />
-                                        <RowDefinition Height="10" />
-                                        <RowDefinition Height="Auto" />
-                                        <RowDefinition Height="*" />
-                                    </Grid.RowDefinitions>
-
-                                    <TextBlock Text="{loc:Loc dailyClose.systemTotals}"
-                                               Style="{StaticResource SettlementTitleStyle}"
-                                               FontSize="15" />
-
-                                    <DataGrid Grid.Row="2"
-                                              ItemsSource="{Binding PaymentSummaries}"
-                                              Style="{StaticResource SettlementDataGridStyle}"
-                                              RowHeight="28"
-                                              FontSize="11"
-                                              ScrollViewer.VerticalScrollBarVisibility="Disabled"
-                                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                                        <DataGrid.Columns>
-                                            <DataGridTextColumn Header="{loc:Loc dailyClose.method}" Binding="{Binding Label}" Width="*" />
-                                            <DataGridTextColumn Header="{loc:Loc dailyClose.sales}" Binding="{Binding SalesAmount, StringFormat={}{0:C2}}" Width="74" />
-                                            <DataGridTextColumn Header="{loc:Loc dailyClose.refund}" Binding="{Binding RefundAmount, StringFormat={}{0:C2}}" Width="74" />
-                                            <DataGridTextColumn Header="{loc:Loc dailyClose.net}" Binding="{Binding NetAmount, StringFormat={}{0:C2}}" Width="74" />
-                                        </DataGrid.Columns>
-                                    </DataGrid>
-
-                                    <Separator Grid.Row="4" Margin="0,0,0,10" />
-
-                                    <Grid Grid.Row="5">
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="Auto" />
-                                        </Grid.RowDefinitions>
-
-                                        <Grid Margin="0,0,0,8">
-                                            <TextBlock Text="{loc:Loc dailyClose.totalNetSales}" Foreground="#FF424654" />
-                                            <TextBlock Text="{Binding NetAmount, StringFormat={}{0:C2}}" HorizontalAlignment="Right" FontWeight="SemiBold" />
-                                        </Grid>
-                                        <Grid Grid.Row="1" Margin="0,0,0,8">
-                                            <TextBlock Text="{loc:Loc dailyClose.expectedCash}" Foreground="#FF424654" />
-                                            <TextBlock Text="{Binding ExpectedCashAmount, StringFormat={}{0:C2}}" HorizontalAlignment="Right" FontWeight="SemiBold" />
-                                        </Grid>
-                                        <Grid Grid.Row="2" Margin="0,0,0,8">
-                                            <TextBlock Text="{loc:Loc dailyClose.cashCounted}" FontWeight="Bold" />
-                                            <TextBlock Text="{Binding CountedCashAmount, StringFormat={}{0:C2}}" HorizontalAlignment="Right" FontWeight="Black" />
-                                        </Grid>
-                                        <Grid Grid.Row="3" Margin="0,2,0,10">
-                                            <TextBlock Text="{loc:Loc dailyClose.overShort}" FontWeight="Bold" />
-                                            <TextBlock Text="{Binding CashDifference, StringFormat={}{0:C2}}" HorizontalAlignment="Right" FontWeight="Black" Foreground="#FFBA1A1A" />
-                                        </Grid>
-                                        <Grid Grid.Row="4" Margin="0,0,0,8">
-                                            <TextBlock Text="{loc:Loc dailyClose.refundAmount}" Foreground="#FF424654" />
-                                            <TextBlock Text="{Binding RefundAmount, StringFormat={}{0:C2}}" HorizontalAlignment="Right" />
-                                        </Grid>
-                                        <Grid Grid.Row="5" Margin="0,0,0,8">
-                                            <TextBlock Text="{loc:Loc dailyClose.returnQty}" Foreground="#FF424654" />
-                                            <TextBlock Text="{Binding ReturnQuantity}" HorizontalAlignment="Right" />
-                                        </Grid>
-                                        <Grid Grid.Row="6">
-                                            <TextBlock Text="{loc:Loc dailyClose.orders}" Foreground="#FF424654" />
-                                            <TextBlock Text="{Binding TransactionCount}" HorizontalAlignment="Right" />
-                                        </Grid>
-                                    </Grid>
-                                </Grid>
-                            </Grid>
-                        </Border>
-
-                    </Grid>
-                </Grid>
-            </TabItem>
-
             <TabItem Header="{loc:Loc dailyClose.tab.history}">
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -972,8 +786,371 @@
             </TabItem>
         </TabControl>
 
-        <Grid x:Name="CashCountDialogOverlay"
+        <Grid x:Name="DailyCloseCashWorkspaceOverlay"
               Panel.ZIndex="100"
+              Background="#660F172A"
+              Visibility="{Binding IsCashCountWorkspaceOpen, Converter={StaticResource BoolToVis}}"
+              IsVisibleChanged="DailyCloseCashWorkspaceOverlayIsVisibleChanged"
+              PreviewKeyDown="DailyCloseCashWorkspaceOverlayPreviewKeyDown"
+              FocusManager.IsFocusScope="True"
+              KeyboardNavigation.TabNavigation="Cycle"
+              KeyboardNavigation.ControlTabNavigation="None"
+              AutomationProperties.AutomationId="DailyCloseCashWorkspace"
+              AutomationProperties.Name="{loc:Loc dailyClose.cashWorkspace.automationName}">
+            <Border Margin="16"
+                    MaxWidth="1600"
+                    HorizontalAlignment="Stretch"
+                    VerticalAlignment="Stretch"
+                    Background="White"
+                    BorderBrush="#FFD8DAE4"
+                    BorderThickness="1"
+                    CornerRadius="16">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="32"
+                                      ShadowDepth="6"
+                                      Opacity="0.24"
+                                      Color="#FF101828" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="1" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="1" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Grid Grid.Row="0" Margin="20,14">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="{loc:Loc dailyClose.cashWorkspace.title}"
+                                       FontSize="21"
+                                       FontWeight="Black"
+                                       Foreground="#FF191C1E" />
+                            <TextBlock Margin="0,3,0,0"
+                                       FontSize="12"
+                                       Foreground="#FF5F636E">
+                                <Run Text="{loc:Loc dailyClose.businessDate}" />
+                                <Run Text=": " />
+                                <Run Text="{Binding BusinessDateText, Mode=OneWay}" />
+                            </TextBlock>
+                        </StackPanel>
+                        <Button Grid.Column="1"
+                                Command="{Binding CloseCashCountWorkspaceCommand}"
+                                Width="42"
+                                Height="42"
+                                MinWidth="42"
+                                MinHeight="42"
+                                Padding="0"
+                                ToolTip="{loc:Loc dailyClose.cashWorkspace.returnHistory}"
+                                AutomationProperties.Name="{loc:Loc dailyClose.cashWorkspace.returnHistory}"
+                                Style="{StaticResource PosSecondaryButtonStyle}">
+                            <materialDesign:PackIcon Kind="Close" Width="20" Height="20" />
+                        </Button>
+                    </Grid>
+
+                    <Border Grid.Row="1" Background="#FFE2E2E6" />
+
+                <Grid x:Name="DailyCloseCashWorkspaceBody"
+                      Grid.Row="2"
+                      Margin="18,14,18,12">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.65*" MinWidth="620" />
+                        <ColumnDefinition Width="14" />
+                        <ColumnDefinition Width="0.85*" MinWidth="280" />
+                    </Grid.ColumnDefinitions>
+
+                    <Grid Grid.Column="0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.6*" />
+                                <ColumnDefinition Width="14" />
+                                <ColumnDefinition Width="0.58*" />
+                            </Grid.ColumnDefinitions>
+
+                            <Border x:Name="CashCountPanel"
+                                    Grid.Column="0"
+                                    Grid.ColumnSpan="3"
+                                    Style="{StaticResource SettlementCardStyle}"
+                                    Padding="18,14">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                    <StackPanel>
+                                        <TextBlock Text="{loc:Loc dailyClose.cashCounter}" Style="{StaticResource SettlementTitleStyle}" />
+                                        <TextBlock Text="{loc:Loc dailyClose.cashCountHint}"
+                                                   Margin="0,3,0,0"
+                                                   FontSize="11"
+                                                   Foreground="#FF737785" />
+                                    </StackPanel>
+
+                                    <Grid Grid.Row="1" Margin="0,12,0,10">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="14" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <Grid Grid.Column="0">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="*" />
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Text="{loc:Loc dailyClose.notes}"
+                                                       Style="{StaticResource SettlementLabelStyle}"
+                                                       FontSize="12" />
+                                            <ScrollViewer Grid.Row="1"
+                                                          Margin="0,7,0,0"
+                                                          VerticalScrollBarVisibility="Auto"
+                                                          HorizontalScrollBarVisibility="Disabled">
+                                                <ItemsControl x:Name="NoteDenominationList"
+                                                              ItemsSource="{Binding NoteDenominations}"
+                                                              ItemTemplate="{StaticResource CashDenominationItemTemplate}" />
+                                            </ScrollViewer>
+                                        </Grid>
+
+                                        <Grid Grid.Column="2">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="*" />
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Text="{loc:Loc dailyClose.coins}"
+                                                       Style="{StaticResource SettlementLabelStyle}"
+                                                       FontSize="12" />
+                                            <ScrollViewer Grid.Row="1"
+                                                          Margin="0,7,0,0"
+                                                          VerticalScrollBarVisibility="Auto"
+                                                          HorizontalScrollBarVisibility="Disabled">
+                                                <ItemsControl x:Name="CoinDenominationList"
+                                                              ItemsSource="{Binding CoinDenominations}"
+                                                              ItemTemplate="{StaticResource CashDenominationItemTemplate}" />
+                                            </ScrollViewer>
+                                        </Grid>
+                                    </Grid>
+
+                                    <Grid Grid.Row="2">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="10" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="10" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Grid.Column="0"
+                                                Background="#FFF3F3F7"
+                                                CornerRadius="8"
+                                                Padding="12,8">
+                                            <StackPanel>
+                                                <TextBlock Text="{loc:Loc dailyClose.noteTotal}" Style="{StaticResource SettlementLabelStyle}" />
+                                                <TextBlock Text="{Binding NoteSubtotal, StringFormat={}{0:C2}}" Style="{StaticResource SettlementValueStyle}" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Grid.Column="2"
+                                                Background="#FFF3F3F7"
+                                                CornerRadius="8"
+                                                Padding="12,8">
+                                            <StackPanel>
+                                                <TextBlock Text="{loc:Loc dailyClose.coinTotal}" Style="{StaticResource SettlementLabelStyle}" />
+                                                <TextBlock Text="{Binding CoinSubtotal, StringFormat={}{0:C2}}" Style="{StaticResource SettlementValueStyle}" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Grid.Column="4"
+                                                Background="#FFEAF2FF"
+                                                BorderBrush="#FF80A9E8"
+                                                BorderThickness="1"
+                                                CornerRadius="8"
+                                                Padding="12,8">
+                                            <StackPanel>
+                                                <TextBlock Text="{loc:Loc dailyClose.cashCounted}" Style="{StaticResource SettlementLabelStyle}" Foreground="#FF0040A1" />
+                                                <TextBlock Text="{Binding CountedCashAmount, StringFormat={}{0:C2}}" Style="{StaticResource SettlementValueStyle}" Foreground="#FF0040A1" />
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </Grid>
+
+                    <Grid Grid.Column="2">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <Border x:Name="DailyCloseZReportPanel"
+                                Grid.Row="0"
+                                Style="{StaticResource SettlementCardStyle}"
+                                Padding="0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+
+                                <Border Grid.Row="0"
+                                        BorderBrush="#FFC3C6D6"
+                                        BorderThickness="0,0,0,1"
+                                        Padding="18"
+                                        Background="White">
+                                    <StackPanel HorizontalAlignment="Center">
+                                        <TextBlock Text="{loc:Loc dailyClose.reportTitle}"
+                                                   FontSize="20"
+                                                   FontWeight="Black"
+                                                   Foreground="#FF191C1E"
+                                                   HorizontalAlignment="Center" />
+                                        <TextBlock Text="{Binding BusinessDateText}"
+                                                   Margin="0,4,0,0"
+                                           FontSize="10"
+                                           Foreground="#FF737785"
+                                           HorizontalAlignment="Center" />
+                                    </StackPanel>
+                                </Border>
+
+                                <Grid Grid.Row="1" Margin="16,12,16,14">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="8" />
+                                        <RowDefinition Height="132" />
+                                        <RowDefinition Height="10" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+
+                                    <TextBlock Text="{loc:Loc dailyClose.systemTotals}"
+                                               Style="{StaticResource SettlementTitleStyle}"
+                                               FontSize="15" />
+
+                                    <DataGrid Grid.Row="2"
+                                              ItemsSource="{Binding PaymentSummaries}"
+                                              Style="{StaticResource SettlementDataGridStyle}"
+                                              RowHeight="28"
+                                              FontSize="11"
+                                              ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                        <DataGrid.Columns>
+                                            <DataGridTextColumn Header="{loc:Loc dailyClose.method}" Binding="{Binding Label}" Width="*" />
+                                            <DataGridTextColumn Header="{loc:Loc dailyClose.sales}" Binding="{Binding SalesAmount, StringFormat={}{0:C2}}" Width="74" />
+                                            <DataGridTextColumn Header="{loc:Loc dailyClose.refund}" Binding="{Binding RefundAmount, StringFormat={}{0:C2}}" Width="74" />
+                                            <DataGridTextColumn Header="{loc:Loc dailyClose.net}" Binding="{Binding NetAmount, StringFormat={}{0:C2}}" Width="74" />
+                                        </DataGrid.Columns>
+                                    </DataGrid>
+
+                                    <Separator Grid.Row="4" Margin="0,0,0,10" />
+
+                                    <Grid Grid.Row="5">
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+
+                                        <Grid Margin="0,0,0,8">
+                                            <TextBlock Text="{loc:Loc dailyClose.totalNetSales}" Foreground="#FF424654" />
+                                            <TextBlock Text="{Binding NetAmount, StringFormat={}{0:C2}}" HorizontalAlignment="Right" FontWeight="SemiBold" />
+                                        </Grid>
+                                        <Grid Grid.Row="1" Margin="0,0,0,8">
+                                            <TextBlock Text="{loc:Loc dailyClose.expectedCash}" Foreground="#FF424654" />
+                                            <TextBlock Text="{Binding ExpectedCashAmount, StringFormat={}{0:C2}}" HorizontalAlignment="Right" FontWeight="SemiBold" />
+                                        </Grid>
+                                        <Grid Grid.Row="2" Margin="0,0,0,8">
+                                            <TextBlock Text="{loc:Loc dailyClose.cashCounted}" FontWeight="Bold" />
+                                            <TextBlock Text="{Binding CountedCashAmount, StringFormat={}{0:C2}}" HorizontalAlignment="Right" FontWeight="Black" />
+                                        </Grid>
+                                        <Grid Grid.Row="3" Margin="0,2,0,10">
+                                            <TextBlock Text="{loc:Loc dailyClose.overShort}" FontWeight="Bold" />
+                                            <TextBlock Text="{Binding CashDifference, StringFormat={}{0:C2}}" HorizontalAlignment="Right" FontWeight="Black" Foreground="#FFBA1A1A" />
+                                        </Grid>
+                                        <Grid Grid.Row="4" Margin="0,0,0,8">
+                                            <TextBlock Text="{loc:Loc dailyClose.refundAmount}" Foreground="#FF424654" />
+                                            <TextBlock Text="{Binding RefundAmount, StringFormat={}{0:C2}}" HorizontalAlignment="Right" />
+                                        </Grid>
+                                        <Grid Grid.Row="5" Margin="0,0,0,8">
+                                            <TextBlock Text="{loc:Loc dailyClose.returnQty}" Foreground="#FF424654" />
+                                            <TextBlock Text="{Binding ReturnQuantity}" HorizontalAlignment="Right" />
+                                        </Grid>
+                                        <Grid Grid.Row="6">
+                                            <TextBlock Text="{loc:Loc dailyClose.orders}" Foreground="#FF424654" />
+                                            <TextBlock Text="{Binding TransactionCount}" HorizontalAlignment="Right" />
+                                        </Grid>
+                                    </Grid>
+                                </Grid>
+                            </Grid>
+                        </Border>
+
+                    </Grid>
+                </Grid>
+
+                    <Border Grid.Row="3" Background="#FFE2E2E6" />
+
+                    <Grid Grid.Row="4" Margin="18,12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <Button x:Name="DailyCloseDiscardDraftButton"
+                                Grid.Column="0"
+                                Command="{Binding RequestDiscardDailyCloseDraftCommand}"
+                                Height="44"
+                                MinWidth="138"
+                                Padding="14,0"
+                                AutomationProperties.Name="{loc:Loc dailyClose.cashWorkspace.discard}"
+                                Style="{StaticResource PosSecondaryButtonStyle}">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="DeleteOutline" Width="17" Height="17" Margin="0,0,7,0" />
+                                <TextBlock Text="{loc:Loc dailyClose.cashWorkspace.discard}" FontWeight="Bold" />
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="DailyCloseCashWorkspaceReturnButton"
+                                Grid.Column="2"
+                                Command="{Binding CloseCashCountWorkspaceCommand}"
+                                Height="44"
+                                MinWidth="138"
+                                Padding="14,0"
+                                AutomationProperties.Name="{loc:Loc dailyClose.cashWorkspace.returnHistory}"
+                                Style="{StaticResource PosSecondaryButtonStyle}">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="ArrowLeft" Width="17" Height="17" Margin="0,0,7,0" />
+                                <TextBlock Text="{loc:Loc dailyClose.cashWorkspace.returnHistory}" FontWeight="Bold" />
+                            </StackPanel>
+                        </Button>
+                        <Button x:Name="DailyCloseSaveAndFinalizeButton"
+                                Grid.Column="4"
+                                Command="{Binding SaveAndPrintCommand}"
+                                Height="44"
+                                MinWidth="160"
+                                Padding="16,0"
+                                AutomationProperties.Name="{loc:Loc dailyClose.saveFinalize}"
+                                Style="{StaticResource PosPrimaryButtonStyle}">
+                            <StackPanel Orientation="Horizontal">
+                                <materialDesign:PackIcon Kind="ContentSaveCheck" Width="17" Height="17" Margin="0,0,7,0" Foreground="White" />
+                                <TextBlock Text="{loc:Loc dailyClose.saveFinalize}" Foreground="White" FontWeight="Bold" />
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+
+        <Grid x:Name="CashCountDialogOverlay"
+              Panel.ZIndex="200"
               Background="#660F172A"
               Visibility="{Binding IsCashCountDialogOpen, Converter={StaticResource BoolToVis}}"
               IsVisibleChanged="CashCountDialogOverlayIsVisibleChanged"
@@ -1164,5 +1341,94 @@
                 </Grid>
             </Border>
         </Grid>
+        <Grid x:Name="DailyCloseDiscardDraftOverlay"
+              Panel.ZIndex="300"
+              Background="#660F172A"
+              Visibility="{Binding IsDiscardDailyCloseDraftConfirmationOpen, Converter={StaticResource BoolToVis}}"
+              IsVisibleChanged="DailyCloseDiscardDraftOverlayIsVisibleChanged"
+              PreviewKeyDown="DailyCloseDiscardDraftOverlayPreviewKeyDown"
+              FocusManager.IsFocusScope="True"
+              KeyboardNavigation.TabNavigation="Cycle"
+              KeyboardNavigation.ControlTabNavigation="None"
+              AutomationProperties.AutomationId="DailyCloseDiscardDraftConfirmation"
+              AutomationProperties.Name="{loc:Loc dailyClose.cashWorkspace.discardConfirm.title}">
+            <Border Width="500"
+                    MaxWidth="500"
+                    Margin="16"
+                    Padding="24,22"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    Background="White"
+                    BorderBrush="#FFE2E2E6"
+                    BorderThickness="1"
+                    CornerRadius="16">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="30"
+                                      ShadowDepth="6"
+                                      Opacity="0.24"
+                                      Color="#FF101828" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <StackPanel Orientation="Horizontal">
+                        <Border Width="38"
+                                Height="38"
+                                Margin="0,0,12,0"
+                                Background="#FFFFEDEA"
+                                CornerRadius="19">
+                            <materialDesign:PackIcon Kind="AlertOutline"
+                                                     Width="20"
+                                                     Height="20"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center"
+                                                     Foreground="#FFBA1A1A" />
+                        </Border>
+                        <TextBlock Text="{loc:Loc dailyClose.cashWorkspace.discardConfirm.title}"
+                                   VerticalAlignment="Center"
+                                   FontSize="19"
+                                   FontWeight="Black"
+                                   Foreground="#FF191C1E" />
+                    </StackPanel>
+                    <TextBlock Grid.Row="1"
+                               Margin="0,16,0,20"
+                               Text="{loc:Loc dailyClose.cashWorkspace.discardConfirm.message}"
+                               FontSize="13"
+                               Foreground="#FF424654"
+                               TextWrapping="Wrap" />
+                    <Grid Grid.Row="2">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Button x:Name="DailyCloseDiscardDraftCancelButton"
+                                Grid.Column="0"
+                                Command="{Binding CancelDiscardDailyCloseDraftCommand}"
+                                Height="46"
+                                AutomationProperties.Name="{loc:Loc common.cancel}"
+                                Style="{StaticResource PosSecondaryButtonStyle}">
+                            <TextBlock Text="{loc:Loc common.cancel}" FontWeight="Bold" />
+                        </Button>
+                        <Button Grid.Column="2"
+                                Command="{Binding ConfirmDiscardDailyCloseDraftCommand}"
+                                Height="46"
+                                Background="#FFBA1A1A"
+                                BorderBrush="#FFBA1A1A"
+                                AutomationProperties.Name="{loc:Loc dailyClose.cashWorkspace.discardConfirm.action}"
+                                Style="{StaticResource PosPrimaryButtonStyle}">
+                            <TextBlock Text="{loc:Loc dailyClose.cashWorkspace.discardConfirm.action}"
+                                       Foreground="White"
+                                       FontWeight="Bold" />
+                        </Button>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+
     </Grid>
 </UserControl>

@@ -17,90 +17,78 @@ public sealed class PosTerminalViewLayoutTests
             "Views",
             "Screens",
             "PosTerminalView.xaml"));
-        var theme = XDocument.Load(Path.Combine(
-            repoRoot,
-            "apps",
-            "pos-wpf",
-            "src",
-            "Hbpos.Client.Wpf",
-            "Themes",
-            "PosTheme.xaml"));
         XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
         XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
 
         var backspaceButton = Assert.Single(view.Descendants(presentation + "Button").Where(button =>
             (string?)button.Attribute("CommandParameter") == "Back" &&
             ((string?)button.Attribute("Command"))?.Contains("KeypadInputCommand", StringComparison.Ordinal) == true));
-        Assert.Equal("48", (string?)backspaceButton.Attribute("Height"));
+        Assert.Equal("44", (string?)backspaceButton.Attribute("Height"));
 
         var inputBorder = Assert.Single(view.Descendants(presentation + "Border").Where(border =>
             border.Descendants(presentation + "TextBlock").Any(text =>
                 ((string?)text.Attribute("Text"))?.Contains("pos.terminal.inputBuffer", StringComparison.Ordinal) == true)));
-        Assert.Equal("10,4", (string?)inputBorder.Attribute("Padding"));
-        Assert.Equal("12,8,12,6", (string?)inputBorder.Attribute("Margin"));
+        Assert.Equal("78", (string?)inputBorder.Attribute("Height"));
+        Assert.Equal("12,6", (string?)inputBorder.Attribute("Padding"));
+        Assert.Equal("13,10,13,8", (string?)inputBorder.Attribute("Margin"));
+        Assert.Equal("6", (string?)inputBorder.Attribute("CornerRadius"));
+        var inputLabel = Assert.Single(inputBorder.Descendants(presentation + "TextBlock").Where(text =>
+            ((string?)text.Attribute("Text"))?.Contains("pos.terminal.inputBuffer", StringComparison.Ordinal) == true));
+        Assert.Equal("11", (string?)inputLabel.Attribute("FontSize"));
+        var inputValue = Assert.Single(inputBorder.Descendants(presentation + "TextBlock").Where(text =>
+            ((string?)text.Attribute("Text"))?.Contains("{Binding KeypadBuffer", StringComparison.Ordinal) == true));
+        Assert.Equal("34", (string?)inputValue.Attribute("FontSize"));
+        Assert.Equal("Black", (string?)inputValue.Attribute("FontWeight"));
 
         var keypad = Assert.Single(view.Descendants(presentation + "UniformGrid").Where(grid =>
             grid.Descendants(presentation + "Button").Any(button =>
                 (string?)button.Attribute("CommandParameter") == "QuickHalf")));
-        Assert.Equal("10,0,10,6", (string?)keypad.Attribute("Margin"));
-        AssertStyleSetter(theme, x, "PosMainNumberButtonStyle", "Margin", "2");
+        Assert.Equal("11,0,11,6", (string?)keypad.Attribute("Margin"));
+        Assert.Equal(14, keypad.Elements(presentation + "Button").Count());
+        Assert.Contains(keypad.Elements(presentation + "Button"), button =>
+            (string?)button.Attribute("Style") == "{StaticResource CashierNumberKeyStyle}");
+        Assert.Equal(
+            "{StaticResource CashierWholeOrderToggleStyle}",
+            (string?)Assert.Single(keypad.Elements(presentation + "ToggleButton")).Attribute("Style"));
+
+        var flatButtonBase = FindStyle(view, x, "CashierFlatButtonBaseStyle");
+        var flatButtonBorder = Assert.Single(flatButtonBase.Descendants(presentation + "Border"));
+        Assert.Equal("5", (string?)flatButtonBorder.Attribute("CornerRadius"));
+        Assert.Empty(flatButtonBase.Descendants(presentation + "DropShadowEffect"));
+        var numberStyle = FindStyle(view, x, "CashierNumberKeyStyle");
+        AssertSetter(numberStyle, "MinHeight", "44");
+        AssertSetter(numberStyle, "Margin", "2");
+        AssertSetter(numberStyle, "FontSize", "28");
+        AssertSetter(numberStyle, "FontWeight", "Black");
+        var clearStyle = FindStyle(view, x, "CashierClearKeyStyle");
+        AssertSetter(clearStyle, "FontSize", "14");
+        AssertSetter(clearStyle, "FontWeight", "Medium");
+        var quickStyle = FindStyle(view, x, "CashierQuickKeyStyle");
+        AssertSetter(quickStyle, "FontSize", "14");
+        AssertSetter(quickStyle, "FontWeight", "SemiBold");
 
         var middleActionGrid = Assert.Single(view.Descendants(presentation + "Grid").Where(
             element => (string?)element.Attribute("Grid.Row") == "3" &&
-                       element.Descendants(presentation + "Button").Any(button =>
-                           ((string?)button.Attribute("Command"))?.Contains("ModifySelectedLineQuantityCommand", StringComparison.Ordinal) == true)));
+                           element.Descendants(presentation + "Button").Any(button =>
+                               ((string?)button.Attribute("Command"))?.Contains("ModifySelectedLineQuantityCommand", StringComparison.Ordinal) == true)));
         Assert.Equal("9,0,9,0", (string?)middleActionGrid.Attribute("Margin"));
 
-        AssertStyleSetter(theme, x, "PosMainNumberButtonStyle", "MinHeight", "48");
-        AssertStyleSetter(theme, x, "PosMainQuickButtonStyle", "Background", "#FFE8F0FE");
-        AssertStyleSetter(theme, x, "PosMainQuickButtonStyle", "BorderBrush", "#FF8AB4F8");
-        AssertStyleSetter(theme, x, "PosMainQuickButtonStyle", "Foreground", "#FF003C9A");
-        AssertStyleSetter(theme, x, "PosMainSwitchButtonStyle", "MinHeight", "48");
-        AssertStyleSetter(theme, x, "PosMainSwitchButtonStyle", "Background", "White");
-        AssertStyleSetter(theme, x, "PosMainSwitchButtonStyle", "BorderBrush", "{StaticResource PosPrimaryBrush}");
-        AssertStyleSetter(theme, x, "PosMainSwitchButtonStyle", "Foreground", "{StaticResource PosPrimaryDarkBrush}");
-
-        var wholeOrderStyle = FindStyle(theme, x, "PosMainSwitchButtonStyle");
+        var wholeOrderStyle = FindStyle(view, x, "CashierWholeOrderToggleStyle");
         var checkedTrigger = Assert.Single(wholeOrderStyle.Descendants(presentation + "Trigger").Where(trigger =>
             (string?)trigger.Attribute("Property") == "IsChecked" && (string?)trigger.Attribute("Value") == "True"));
-        AssertTriggerSetter(checkedTrigger, "Background", "{StaticResource PosPrimaryBrush}");
+        AssertTriggerSetter(checkedTrigger, "Background", "#FFEAF2FF");
         AssertTriggerSetter(checkedTrigger, "BorderBrush", "{StaticResource PosPrimaryBrush}");
-        AssertTriggerSetter(checkedTrigger, "Foreground", "White");
+        AssertTriggerSetter(checkedTrigger, "Foreground", "{StaticResource PosPrimaryBrush}");
 
-        var functionStyle = FindStyle(theme, x, "PosStitchFunctionButtonStyle");
-        AssertSetter(functionStyle, "Background", "White");
-        AssertSetter(functionStyle, "BorderBrush", "{StaticResource PosBorderBrush}");
-        AssertSetter(functionStyle, "Foreground", "{StaticResource PosPrimaryDarkBrush}");
+        var functionStyle = FindStyle(view, x, "CashierFunctionButtonStyle");
+        AssertSetter(functionStyle, "Height", "54");
         AssertSetter(functionStyle, "Margin", "3");
-        var functionTemplateBorder = Assert.Single(functionStyle.Descendants(presentation + "Border"));
-        Assert.Equal("12", (string?)functionTemplateBorder.Attribute("CornerRadius"));
-        Assert.Equal("{TemplateBinding Background}", (string?)functionTemplateBorder.Attribute("Background"));
-        Assert.Equal("{TemplateBinding BorderBrush}", (string?)functionTemplateBorder.Attribute("BorderBrush"));
-        var functionPressedTrigger = Assert.Single(functionStyle.Descendants(presentation + "Trigger").Where(trigger =>
-            (string?)trigger.Attribute("Property") == "IsPressed" && (string?)trigger.Attribute("Value") == "True"));
-        AssertTriggerSetter(functionPressedTrigger, "Background", "#FFD6E4FA");
 
-        var discountStyle = FindStyle(theme, x, "PosQuickDiscountButtonStyle");
-        AssertSetter(discountStyle, "Height", "56");
+        var discountStyle = FindStyle(view, x, "CashierDiscountButtonStyle");
+        AssertSetter(discountStyle, "Height", "64");
         AssertSetter(discountStyle, "Margin", "0");
         AssertSetter(discountStyle, "Background", "Transparent");
-        AssertSetter(discountStyle, "BorderBrush", "{StaticResource PosBorderBrush}");
         AssertSetter(discountStyle, "BorderThickness", "0,0,1,0");
-        var discountTemplateBorder = Assert.Single(discountStyle.Descendants(presentation + "Border"));
-        Assert.Equal("0", (string?)discountTemplateBorder.Attribute("CornerRadius"));
-        Assert.Equal("{TemplateBinding BorderBrush}", (string?)discountTemplateBorder.Attribute("BorderBrush"));
-        var discountTemplateText = Assert.Single(discountStyle.Descendants(presentation + "TextBlock"));
-        Assert.Equal("{TemplateBinding Foreground}", (string?)discountTemplateText.Attribute("Foreground"));
-        Assert.Contains(discountStyle.Descendants(presentation + "Trigger"), trigger =>
-            (string?)trigger.Attribute("Property") == "IsMouseOver" &&
-            trigger.Descendants(presentation + "Setter").Any(setter =>
-                (string?)setter.Attribute("Property") == "BorderBrush" &&
-                (string?)setter.Attribute("Value") == "{StaticResource PosPrimaryBrush}"));
-        var discountPressedTrigger = Assert.Single(discountStyle.Descendants(presentation + "Trigger").Where(trigger =>
-            (string?)trigger.Attribute("Property") == "IsPressed" && (string?)trigger.Attribute("Value") == "True"));
-        AssertTriggerSetter(discountPressedTrigger, "Background", "{StaticResource PosPrimaryBrush}");
-        AssertTriggerSetter(discountPressedTrigger, "BorderBrush", "{StaticResource PosPrimaryBrush}");
-        AssertTriggerSetter(discountPressedTrigger, "Foreground", "White");
 
         var quickDiscountButtons = view.Descendants(presentation + "Button").Where(button =>
             ((string?)button.Attribute("Command"))?.Contains("ApplyQuickDiscountPercentCommand", StringComparison.Ordinal) == true).ToArray();
@@ -118,7 +106,7 @@ public sealed class PosTerminalViewLayoutTests
         var discountSegment = Assert.Single(view.Descendants(presentation + "Border").Where(border =>
             (string?)border.Attribute(x + "Name") == "QuickDiscountSegment"));
         Assert.Equal("3,4,3,0", (string?)discountSegment.Attribute("Margin"));
-        Assert.Equal("12", (string?)discountSegment.Attribute("CornerRadius"));
+        Assert.Equal("5", (string?)discountSegment.Attribute("CornerRadius"));
         Assert.Null(discountSegment.Attribute("ClipToBounds"));
         Assert.Equal("{StaticResource PosBorderBrush}", (string?)discountSegment.Attribute("BorderBrush"));
         Assert.Equal("1", (string?)discountSegment.Attribute("BorderThickness"));
@@ -126,24 +114,20 @@ public sealed class PosTerminalViewLayoutTests
         var visualBrush = Assert.Single(opacityMask.Elements(presentation + "VisualBrush"));
         var maskVisual = Assert.Single(visualBrush.Elements(presentation + "VisualBrush.Visual"));
         var maskBorder = Assert.Single(maskVisual.Elements(presentation + "Border"));
-        Assert.Equal("12", (string?)maskBorder.Attribute("CornerRadius"));
+        Assert.Equal("5", (string?)maskBorder.Attribute("CornerRadius"));
         Assert.Equal("Black", (string?)maskBorder.Attribute("Background"));
 
         var noBarcodeButton = Assert.Single(view.Descendants(presentation + "Button").Where(button =>
             ((string?)button.Attribute("Command"))?.Contains("AddOpenItemCommand", StringComparison.Ordinal) == true));
-        Assert.Equal("12,0,12,6", (string?)noBarcodeButton.Attribute("Margin"));
+        Assert.Equal("13,0,13,8", (string?)noBarcodeButton.Attribute("Margin"));
         const string ancestorForeground = "{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}";
-        Assert.All(noBarcodeButton.Descendants().Where(element =>
-            element.Name.LocalName is "PackIcon" or "TextBlock"), element =>
-            Assert.Equal(ancestorForeground, (string?)element.Attribute("Foreground")));
-
-        var noBarcodeStyle = FindStyle(theme, x, "PosNoBarcodeButtonStyle");
-        Assert.Equal("{StaticResource PosBlueGradientButtonStyle}", (string?)noBarcodeStyle.Attribute("BasedOn"));
-        var disabledTrigger = Assert.Single(noBarcodeStyle.Descendants(presentation + "Trigger").Where(trigger =>
-            (string?)trigger.Attribute("Property") == "IsEnabled" && (string?)trigger.Attribute("Value") == "False"));
-        AssertTriggerSetter(disabledTrigger, "Background", "#FF9CA3AF");
-        AssertTriggerSetter(disabledTrigger, "BorderBrush", "#FF6B7280");
-        AssertTriggerSetter(disabledTrigger, "Foreground", "White");
+        Assert.Empty(noBarcodeButton.Descendants().Where(element => element.Name.LocalName == "PackIcon"));
+        Assert.Equal(ancestorForeground, (string?)Assert.Single(noBarcodeButton.Descendants(presentation + "TextBlock")).Attribute("Foreground"));
+        Assert.Equal("{StaticResource CashierNoBarcodeButtonStyle}", (string?)noBarcodeButton.Attribute("Style"));
+        var noBarcodeStyle = FindStyle(view, x, "CashierNoBarcodeButtonStyle");
+        AssertSetter(noBarcodeStyle, "Background", "{StaticResource PosPrimaryBrush}");
+        AssertSetter(noBarcodeStyle, "BorderBrush", "{StaticResource PosPrimaryBrush}");
+        AssertSetter(noBarcodeStyle, "Foreground", "White");
 
         var functionCommands = new[]
         {
@@ -156,20 +140,9 @@ public sealed class PosTerminalViewLayoutTests
         {
             var button = Assert.Single(view.Descendants(presentation + "Button").Where(element =>
                 ((string?)element.Attribute("Command"))?.Contains(command, StringComparison.Ordinal) == true));
-            Assert.Equal("{StaticResource PosStitchFunctionButtonStyle}", (string?)button.Attribute("Style"));
-            var icon = Assert.Single(button.Descendants().Where(element => element.Name.LocalName == "PackIcon"));
-            Assert.Equal("{StaticResource PosPrimaryBrush}", (string?)icon.Attribute("Foreground"));
+            Assert.Equal("{StaticResource CashierFunctionButtonStyle}", (string?)button.Attribute("Style"));
+            Assert.Empty(button.Descendants().Where(element => element.Name.LocalName == "PackIcon"));
         });
-        var removedFunctionStyleKeys = new[]
-        {
-            "PosStitchQuantityButtonStyle",
-            "PosStitchPriceButtonStyle",
-            "PosStitchDiscountAmountButtonStyle",
-            "PosStitchDiscountPercentButtonStyle"
-        };
-        Assert.All(removedFunctionStyleKeys, key =>
-            Assert.DoesNotContain(theme.Descendants(), element =>
-                element.Name.LocalName == "Style" && (string?)element.Attribute(x + "Key") == key));
     }
 
     [Fact]
@@ -200,6 +173,170 @@ public sealed class PosTerminalViewLayoutTests
         AssertTriggerSetter(inactiveTrigger, "Opacity", "0");
     }
 
+    [Fact]
+    public void Pos_terminal_prioritizes_cart_and_preserves_compact_sidebar_actions()
+    {
+        var repoRoot = FindRepoRoot();
+        var view = XDocument.Load(Path.Combine(
+            repoRoot,
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "PosTerminalView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var rootColumns = Assert.Single(view.Root!.Elements(presentation + "Grid"))
+            .Element(presentation + "Grid.ColumnDefinitions")!
+            .Elements(presentation + "ColumnDefinition")
+            .ToArray();
+        Assert.Equal(["58*", "26*", "16*"], rootColumns.Select(column => (string?)column.Attribute("Width")));
+        Assert.Equal(["600", "280", "180"], rootColumns.Select(column => (string?)column.Attribute("MinWidth")));
+
+        var searchHost = Assert.Single(view.Descendants(presentation + "Border").Where(element =>
+            (string?)element.Attribute(x + "Name") == "SearchBoxHost"));
+        Assert.Equal("White", (string?)searchHost.Attribute("Background"));
+        Assert.Equal("{StaticResource PosBorderBrush}", (string?)searchHost.Attribute("BorderBrush"));
+        Assert.Equal("1", (string?)searchHost.Attribute("BorderThickness"));
+
+        var itemColumn = Assert.Single(view.Descendants(presentation + "DataGridTemplateColumn").Where(column =>
+            (string?)column.Attribute("Header") == "{loc:Loc Item}"));
+        Assert.Equal("2.6*", (string?)itemColumn.Attribute("Width"));
+        var itemImageBrush = Assert.Single(itemColumn.Descendants(presentation + "ImageBrush"));
+        Assert.Contains(itemImageBrush.Attributes(), attribute =>
+            attribute.Name.LocalName.EndsWith(".AsyncSourceText", StringComparison.Ordinal) &&
+            attribute.Value == "{Binding ProductImage}");
+        Assert.Contains(itemColumn.Descendants(presentation + "TextBlock"), text =>
+            (string?)text.Attribute("Text") == "{loc:Loc ItemNumber}");
+        Assert.DoesNotContain(itemColumn.Descendants(presentation + "TextBlock"), text =>
+            (string?)text.Attribute("Text") == "{loc:Loc Barcode}");
+        var itemNumberLine = Assert.Single(itemColumn.Descendants(presentation + "Grid").Where(grid =>
+            (string?)grid.Attribute(x + "Name") == "CartItemNumberLine"));
+        var barcodeLine = Assert.Single(itemColumn.Descendants(presentation + "Grid").Where(grid =>
+            (string?)grid.Attribute(x + "Name") == "CartBarcodeLine"));
+        Assert.Empty(barcodeLine.Descendants(presentation + "TextBlock").Where(text =>
+            ((string?)text.Attribute("Text"))?.StartsWith("{loc:Loc", StringComparison.Ordinal) == true));
+        var itemNumberValue = Assert.Single(itemColumn.Descendants(presentation + "TextBlock").Where(text =>
+            (string?)text.Attribute("Text") == "{Binding ItemNumber}" &&
+            (string?)text.Attribute("FontSize") == "11"));
+        Assert.Equal(
+            "{Binding ItemNumber, Converter={StaticResource StringHasValueToVis}}",
+            (string?)itemNumberValue.Attribute("Visibility"));
+        Assert.Equal("Wrap", (string?)itemNumberValue.Attribute("TextWrapping"));
+        Assert.Null(itemNumberValue.Attribute("TextTrimming"));
+        var barcodeValue = Assert.Single(itemColumn.Descendants(presentation + "TextBlock").Where(text =>
+            (string?)text.Attribute("Text") == "{Binding LookupCode}" &&
+            (string?)text.Attribute("FontSize") == "11"));
+        Assert.Equal(
+            "{Binding LookupCode, Converter={StaticResource StringHasValueToVis}}",
+            (string?)barcodeValue.Attribute("Visibility"));
+        Assert.Equal("Wrap", (string?)barcodeValue.Attribute("TextWrapping"));
+        Assert.Null(barcodeValue.Attribute("TextTrimming"));
+        Assert.Same(itemNumberLine, itemNumberValue.Ancestors(presentation + "Grid").First(grid =>
+            (string?)grid.Attribute(x + "Name") is not null));
+        Assert.Same(barcodeLine, barcodeValue.Ancestors(presentation + "Grid").First(grid =>
+            (string?)grid.Attribute(x + "Name") is not null));
+        var missingMetadataValues = itemColumn.Descendants(presentation + "TextBlock").Where(text =>
+            (string?)text.Attribute("Text") == "-" &&
+            (string?)text.Attribute("FontSize") == "11").ToArray();
+        Assert.Equal(2, missingMetadataValues.Length);
+        Assert.Contains(missingMetadataValues, text =>
+            (string?)text.Attribute("Visibility") ==
+            "{Binding ItemNumber, Converter={StaticResource StringIsEmptyToVis}}");
+        Assert.Contains(missingMetadataValues, text =>
+            (string?)text.Attribute("Visibility") ==
+            "{Binding LookupCode, Converter={StaticResource StringIsEmptyToVis}}");
+        var cartGrid = Assert.Single(view.Descendants(presentation + "DataGrid").Where(element =>
+            (string?)element.Attribute("AutomationProperties.AutomationId") == "CartItemsGrid"));
+        Assert.Null(cartGrid.Attribute("RowHeight"));
+        Assert.Equal("67", (string?)cartGrid.Attribute("MinRowHeight"));
+        Assert.Equal("36", (string?)cartGrid.Attribute("ColumnHeaderHeight"));
+        var finalAmount = Assert.Single(view.Descendants(presentation + "TextBlock").Where(text =>
+            ((string?)text.Attribute("Text"))?.Contains("{Binding ActualAmount", StringComparison.Ordinal) == true &&
+            (string?)text.Attribute("FontSize") == "24"));
+        Assert.Equal("{StaticResource PosAccentBrush}", (string?)finalAmount.Attribute("Foreground"));
+        var summaryPanel = Assert.Single(view.Descendants(presentation + "Border").Where(element =>
+            (string?)element.Attribute(x + "Name") == "CartSummaryPanel"));
+        var summaryRows = Assert.Single(summaryPanel.Elements(presentation + "Grid"))
+            .Element(presentation + "Grid.RowDefinitions")!
+            .Elements(presentation + "RowDefinition")
+            .ToArray();
+        Assert.Equal(["34", "58"], summaryRows.Select(row => (string?)row.Attribute("Height")));
+        var countSummaryRow = Assert.Single(view.Descendants(presentation + "Border").Where(element =>
+            (string?)element.Attribute(x + "Name") == "CartCountSummaryRow"));
+        Assert.Equal("0", (string?)countSummaryRow.Attribute("Grid.Row"));
+        var countSummaryTexts = countSummaryRow.Descendants(presentation + "TextBlock").ToArray();
+        Assert.Contains(countSummaryTexts, text =>
+            (string?)text.Attribute("Text") == "{Binding CartItemQuantity, StringFormat={}{0:0.##}}");
+        Assert.Contains(countSummaryTexts, text =>
+            (string?)text.Attribute("Text") == "{Binding CartSkuCount}");
+        var countSummaryGrid = Assert.Single(countSummaryRow.Elements(presentation + "Grid"));
+        var countSummaryColumns = countSummaryGrid.Element(presentation + "Grid.ColumnDefinitions")!
+            .Elements(presentation + "ColumnDefinition")
+            .ToArray();
+        Assert.Equal(["Auto", "Auto", "Auto", "Auto", "*"], countSummaryColumns.Select(column =>
+            (string?)column.Attribute("Width")));
+        var skuLabel = Assert.Single(countSummaryTexts.Where(text =>
+            (string?)text.Attribute("Text") == "{loc:Loc pos.terminal.cart.skuCount}"));
+        var skuValue = Assert.Single(countSummaryTexts.Where(text =>
+            (string?)text.Attribute("Text") == "{Binding CartSkuCount}"));
+        Assert.Equal("2", (string?)skuLabel.Attribute("Grid.Column"));
+        Assert.Equal("3", (string?)skuValue.Attribute("Grid.Column"));
+        var totalsSummaryRow = Assert.Single(view.Descendants(presentation + "Border").Where(element =>
+            (string?)element.Attribute(x + "Name") == "CartTotalsSummaryRow"));
+        Assert.Equal("1", (string?)totalsSummaryRow.Attribute("Grid.Row"));
+        var totalsGrid = Assert.Single(totalsSummaryRow.Elements(presentation + "Grid"));
+        var totalsColumns = totalsGrid.Element(presentation + "Grid.ColumnDefinitions")!
+            .Elements(presentation + "ColumnDefinition")
+            .ToArray();
+        Assert.Equal(["0.9*", "0.9*", "1.2*"], totalsColumns.Select(column => (string?)column.Attribute("Width")));
+        var totalsTexts = totalsSummaryRow.Descendants(presentation + "TextBlock").ToArray();
+        Assert.Contains(totalsTexts, text =>
+            ((string?)text.Attribute("Text"))?.Contains("{Binding TotalAmount", StringComparison.Ordinal) == true);
+        Assert.Contains(totalsTexts, text =>
+            ((string?)text.Attribute("Text"))?.Contains("{Binding DiscountAmount", StringComparison.Ordinal) == true);
+        Assert.Contains(totalsTexts, text =>
+            ((string?)text.Attribute("Text"))?.Contains("{Binding ActualAmount", StringComparison.Ordinal) == true);
+
+        var sidebar = Assert.Single(view.Descendants().Where(element =>
+            (string?)element.Attribute(x + "Name") == "AttendanceQrSidebar"));
+        var actionGrid = Assert.Single(sidebar.Elements(presentation + "UniformGrid"));
+        Assert.Equal("8,13,8,6", (string?)actionGrid.Attribute("Margin"));
+        var actionButtons = actionGrid.Elements(presentation + "Button").ToArray();
+        Assert.Equal(
+            [
+                "{Binding OpenSpecialProductsCommand}",
+                "{Binding OpenReturnsCommand}",
+                "{Binding HoldOrderCommand}",
+                "{Binding RecallOrderCommand}",
+                "{Binding OpenCashDrawerCommand}",
+                "{Binding PrintLastReceiptCommand}",
+                "{Binding LockCashierCommand}",
+                "{Binding OpenDailyCloseCommand}",
+                "{Binding OpenSettingsCommand}",
+                "{Binding ExitApplicationCommand}",
+            ],
+            actionButtons.Select(button => (string?)button.Attribute("Command")));
+        Assert.All(actionButtons[..^1], button =>
+            Assert.Equal("{StaticResource PosSidebarActionButtonStyle}", (string?)button.Attribute("Style")));
+        Assert.Equal("{StaticResource PosSidebarExitButtonStyle}", (string?)actionButtons[^1].Attribute("Style"));
+
+        var actionStyle = FindStyle(view, x, "PosSidebarActionButtonStyle");
+        AssertSetter(actionStyle, "MinHeight", "62");
+        AssertSetter(actionStyle, "Margin", "3");
+        AssertSetter(actionStyle, "BorderBrush", "{StaticResource PosBorderBrush}");
+        var labelStyle = FindStyle(view, x, "PosSidebarActionLabelStyle");
+        AssertSetter(labelStyle, "TextAlignment", "Center");
+        AssertSetter(labelStyle, "TextWrapping", "Wrap");
+        var iconHostStyle = FindStyle(view, x, "PosSidebarActionIconHostStyle");
+        AssertSetter(iconHostStyle, "Background", "Transparent");
+        Assert.Equal(10, actionGrid.Descendants(presentation + "TextBlock").Count(text =>
+            (string?)text.Attribute("Style") == "{StaticResource PosSidebarActionLabelStyle}"));
+    }
+
     [Theory]
     [InlineData(1080, 720)]
     [InlineData(1366, 768)]
@@ -221,9 +358,8 @@ public sealed class PosTerminalViewLayoutTests
         Assert.Equal(3, rootColumns.Length);
         Assert.True(rootColumns.Sum(column => (double)column.Attribute("MinWidth")!) <= (double)mainWindow.Root.Attribute("MinWidth")!);
 
-        var theme = XDocument.Load(Path.Combine(repoRoot, "apps", "pos-wpf", "src", "Hbpos.Client.Wpf", "Themes", "PosTheme.xaml"));
-        AssertStyleSetter(theme, x, "PosStitchActionButtonStyle", "MinHeight", "48");
-        var actionStyle = FindStyle(theme, x, "PosStitchActionButtonStyle");
+        var actionStyle = FindStyle(view, x, "PosSidebarActionButtonStyle");
+        AssertSetter(actionStyle, "MinHeight", "62");
         var actionButtonMargin = ParseVerticalMargin((string?)Assert.Single(actionStyle.Elements().Where(element =>
             element.Name.LocalName == "Setter" && (string?)element.Attribute("Property") == "Margin")).Attribute("Value"));
 
@@ -233,14 +369,14 @@ public sealed class PosTerminalViewLayoutTests
         var status = Assert.Single(sidebar.Elements(presentation + "ContentControl"));
         var launcher = Assert.Single(sidebar.Elements(presentation + "Button").Where(element =>
             (string?)element.Attribute(x + "Name") == "AttendanceQrLauncher"));
-        Assert.True((double)launcher.Attribute("Height")! <= 56);
-        var requiredHeight = (5 * (48 + actionButtonMargin))
+        Assert.True((double)launcher.Attribute("Height")! <= 62);
+        var requiredHeight = (5 * (62 + actionButtonMargin))
             + ParseVerticalMargin((string?)actionGrid.Attribute("Margin"))
             + (double)status.Attribute("MaxHeight")!
             + ParseVerticalMargin((string?)status.Attribute("Margin"))
             + (double)launcher.Attribute("Height")!
             + ParseVerticalMargin((string?)launcher.Attribute("Margin"));
-        Assert.True(requiredHeight <= 720 - 48 - 32);
+        Assert.True(requiredHeight <= 720 - 54 - 42);
     }
 
     private static double ParseVerticalMargin(string? value)
@@ -271,7 +407,7 @@ public sealed class PosTerminalViewLayoutTests
             (string?)element.Attribute(x + "Name") == "AttendanceQrCard");
         var launcher = Assert.Single(sidebar.Elements().Where(element =>
             (string?)element.Attribute(x + "Name") == "AttendanceQrLauncher"));
-        Assert.Equal("56", (string?)launcher.Attribute("Height"));
+        Assert.Equal("62", (string?)launcher.Attribute("Height"));
         Assert.Equal("AttendanceQrLauncher_Click", (string?)launcher.Attribute("Click"));
 
         var overlay = Assert.Single(view.Descendants().Where(element =>

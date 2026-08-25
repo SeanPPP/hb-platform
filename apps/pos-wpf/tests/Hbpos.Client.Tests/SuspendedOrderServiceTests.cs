@@ -362,7 +362,7 @@ public sealed class SuspendedOrderServiceTests
             const string returnReason = "Damaged packaging";
 
             await schema.InitializeAsync();
-            cart.AddReturnLine(new ReturnCartLineRequest(
+            var returnLine = cart.AddReturnLine(new ReturnCartLineRequest(
                 "S001",
                 "SKU-RETURN-01",
                 "REF-RETURN-01",
@@ -378,6 +378,8 @@ public sealed class SuspendedOrderServiceTests
                 originalOrderGuid,
                 originalLineGuid,
                 ReturnReason: returnReason));
+            Assert.Equal("ITEM-RETURN-01", returnLine.ItemNumber);
+            Assert.Equal("https://images.example/return-01.jpg", returnLine.ProductImage);
             cart.AddReturnPaymentCapacities(
             [
                 new OrderReturnPaymentCapacityDto(
@@ -399,6 +401,8 @@ public sealed class SuspendedOrderServiceTests
             Assert.Equal(originalOrderGuid, recalledLine.OriginalOrderGuid);
             Assert.Equal(originalLineGuid, recalledLine.OriginalOrderLineGuid);
             Assert.Equal(returnReason, recalledLine.ReturnReason);
+            Assert.Equal("ITEM-RETURN-01", recalledLine.ItemNumber);
+            Assert.Equal("https://images.example/return-01.jpg", recalledLine.ProductImage);
             Assert.Equal(-12m, cart.ActualAmount);
 
             var cardCapacity = Assert.Single(cart.ReturnPaymentCapacities);

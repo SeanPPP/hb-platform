@@ -400,10 +400,10 @@
     <value>整单操作</value>
   </data>
   <data name="pos.terminal.quickHalf" xml:space="preserve">
-    <value>0.5</value>
+    <value>$0.50</value>
   </data>
   <data name="pos.terminal.quickNinetyNine" xml:space="preserve">
-    <value>0.99</value>
+    <value>$0.99</value>
   </data>
   <data name="pos.status.ready" xml:space="preserve">
     <value>离线收银已就绪。</value>
@@ -1608,7 +1608,7 @@
     <value>加载中</value>
   </data>
   <data name="shell.page.pos" xml:space="preserve">
-    <value>收银</value>
+    <value>收银主页</value>
   </data>
   <data name="shell.page.payment" xml:space="preserve">
     <value>支付</value>
@@ -1800,7 +1800,7 @@
     <value>日结盘点</value>
   </data>
   <data name="dailyClose.tab.history" xml:space="preserve">
-    <value>历史查询</value>
+    <value>日结历史</value>
   </data>
   <data name="dailyClose.history.title" xml:space="preserve">
     <value>日结历史</value>
@@ -2043,7 +2043,7 @@
     <value>Linkly Cloud 刷卡机已配对。</value>
   </data>
   <data name="dailyClose.status.ready" xml:space="preserve">
-    <value>可以开始检查日结汇总。</value>
+    <value>查看日结历史，或创建新日结。</value>
   </data>
   <data name="dailyClose.status.refreshing" xml:space="preserve">
     <value>正在刷新日结汇总...</value>
@@ -2846,4 +2846,20 @@
   <data name="dailyClose.cashCountDialog.clear" xml:space="preserve"><value>清空</value></data>
   <data name="dailyClose.cashCountDialog.backspace" xml:space="preserve"><value>退格</value></data>
   <data name="dailyClose.cashCountDialog.apply" xml:space="preserve"><value>应用数量</value></data>
+  <data name="dailyClose.refreshHistory" xml:space="preserve"><value>刷新历史</value></data>
+  <data name="dailyClose.createNew" xml:space="preserve"><value>创建新日结</value></data>
+  <data name="dailyClose.continueDraft" xml:space="preserve"><value>继续日结</value></data>
+  <data name="dailyClose.cashWorkspace.title" xml:space="preserve"><value>新建日结</value></data>
+  <data name="dailyClose.cashWorkspace.automationName" xml:space="preserve"><value>日结现金统计工作区</value></data>
+  <data name="dailyClose.cashWorkspace.returnHistory" xml:space="preserve"><value>返回历史</value></data>
+  <data name="dailyClose.cashWorkspace.discard" xml:space="preserve"><value>放弃草稿</value></data>
+  <data name="dailyClose.cashWorkspace.discardConfirm.title" xml:space="preserve"><value>放弃日结草稿？</value></data>
+  <data name="dailyClose.cashWorkspace.discardConfirm.message" xml:space="preserve"><value>已输入的现金数量和当前汇总快照将被清空，此操作无法撤销。</value></data>
+  <data name="dailyClose.cashWorkspace.discardConfirm.action" xml:space="preserve"><value>确认放弃</value></data>
+  <data name="dailyClose.status.draftPreparing" xml:space="preserve"><value>正在准备新日结……</value></data>
+  <data name="dailyClose.status.draftReady" xml:space="preserve"><value>新日结已准备好，可以开始现金统计。</value></data>
+  <data name="dailyClose.status.draftResumed" xml:space="preserve"><value>已继续未完成的日结草稿。</value></data>
+  <data name="dailyClose.status.draftPreserved" xml:space="preserve"><value>日结草稿已保留，准备好后请选择“继续日结”。</value></data>
+  <data name="dailyClose.status.draftDiscarded" xml:space="preserve"><value>日结草稿已放弃。</value></data>
+  <data name="dailyClose.status.draftIdentityChanged" xml:space="preserve"><value>门店、终端或收银员已变化，原日结草稿已清除。</value></data>
 </root>

@@ -87,6 +87,48 @@ public sealed class PaymentViewLayoutTests
     }
 
     [Fact]
+    public void Payment_cart_supports_touch_panning_with_touch_sized_scrollbar()
+    {
+        var document = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "PaymentView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var cartGrid = Assert.Single(document.Descendants(presentation + "DataGrid").Where(element =>
+            (string?)element.Attribute("AutomationProperties.AutomationId") == "PaymentCartItemsGrid"));
+
+        Assert.Equal("Pixel", (string?)cartGrid.Attribute("VirtualizingPanel.ScrollUnit"));
+        Assert.Equal("True", (string?)cartGrid.Attribute("ScrollViewer.CanContentScroll"));
+        Assert.Equal("Disabled", (string?)cartGrid.Attribute("ScrollViewer.HorizontalScrollBarVisibility"));
+        Assert.Equal("Visible", (string?)cartGrid.Attribute("ScrollViewer.VerticalScrollBarVisibility"));
+        Assert.Equal("VerticalOnly", (string?)cartGrid.Attribute("ScrollViewer.PanningMode"));
+        Assert.Equal("0.0008", (string?)cartGrid.Attribute("ScrollViewer.PanningDeceleration"));
+        Assert.Equal("1.0", (string?)cartGrid.Attribute("ScrollViewer.PanningRatio"));
+
+        var touchScrollBarStyle = Assert.Single(document.Descendants(presentation + "Style").Where(style =>
+            (string?)style.Attribute(x + "Key") == "PaymentCartTouchScrollBarStyle"));
+        Assert.True(HasSetter(touchScrollBarStyle, "Width", "22"));
+        Assert.True(HasSetter(touchScrollBarStyle, "MinWidth", "22"));
+
+        var dataGridResources = Assert.Single(cartGrid.Elements(presentation + "DataGrid.Resources"));
+        var scrollBarStyle = Assert.Single(dataGridResources.Elements(presentation + "Style").Where(style =>
+            (string?)style.Attribute("TargetType") == "{x:Type ScrollBar}"));
+        Assert.Equal(
+            "{StaticResource PaymentCartTouchScrollBarStyle}",
+            (string?)scrollBarStyle.Attribute("BasedOn"));
+        var thumbStyle = Assert.Single(dataGridResources.Elements(presentation + "Style").Where(style =>
+            (string?)style.Attribute("TargetType") == "{x:Type Thumb}"));
+        Assert.True(HasSetter(thumbStyle, "MinHeight", "52"));
+    }
+
+    [Fact]
     public void Unknown_card_result_keeps_recovery_action_visible_after_dialog_closes()
     {
         var document = XDocument.Load(Path.Combine(

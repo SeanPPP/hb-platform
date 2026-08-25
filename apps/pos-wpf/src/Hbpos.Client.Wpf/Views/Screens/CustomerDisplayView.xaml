@@ -410,6 +410,16 @@
                             </Viewbox>
                         </StackPanel>
                         <StackPanel Grid.Column="2">
+                            <StackPanel.Style>
+                                <Style TargetType="{x:Type StackPanel}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasSavings}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </StackPanel.Style>
                             <TextBlock Text="{loc:Loc Savings}" Foreground="{StaticResource PosCustomerDisplayMutedTextBrush}" FontSize="14" FontWeight="Bold" TextTrimming="CharacterEllipsis" />
                             <Viewbox MaxHeight="38" StretchDirection="DownOnly">
                                 <TextBlock Text="{Binding SavingsAmount, StringFormat=-{0:C2}}" Foreground="{StaticResource PosCustomerDisplayTextBrush}" FontSize="28" FontWeight="Black" />
