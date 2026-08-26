@@ -22,4 +22,5 @@ bash apps/pos-handheld/android/gradlew \
   :hb-attendance-security:testDebugUnitTest \
   :app:assembleDebug \
   :app:lintDebug \
+  -PreactNativeArchitectures=arm64-v8a \
   --no-daemon

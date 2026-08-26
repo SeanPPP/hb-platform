@@ -22,6 +22,7 @@ const wpfWorkflowPath = new URL('../../.github/workflows/wpf-inno-smoke-build.ym
 const nodeRunnerPath = new URL('./run-node-component.sh', import.meta.url)
 const macosRunnerPath = new URL('./run-macos-component.sh', import.meta.url)
 const androidRunnerPath = new URL('./run-android-component.sh', import.meta.url)
+const windowsRunnerPath = new URL('./run-windows-component.ps1', import.meta.url)
 const testAllPath = new URL('../test-all.sh', import.meta.url)
 const mobilePackagePath = new URL('../../apps/mobile/package.json', import.meta.url)
 const wpfClientTestsProjectPath = new URL('../../apps/pos-wpf/tests/Hbpos.Client.Tests/Hbpos.Client.Tests.csproj', import.meta.url)
@@ -209,27 +210,46 @@ test('PR/weekly 使用 15/45 分钟端到端预算并为稳定 gate 预留时间
   assert.match(source, /weekly_required:[\s\S]*?needs:\s*\n\s*- plan\s*\n/)
 })
 
-test('托管 runner 限制 WPF 并行度，并避免原生多架构与 Android 内存争抢', () => {
+test('托管 runner 隔离 WPF 分片，并避免原生多架构与 Android 内存争抢', () => {
   const source = readFileSync(workflowPath, 'utf8')
+  const windows = workflowJobBlock(source, 'windows')
   const macos = workflowJobBlock(source, 'macos')
   const android = workflowJobBlock(source, 'android')
   const androidRunner = readFileSync(androidRunnerPath, 'utf8')
+  const macosRunner = readFileSync(macosRunnerPath, 'utf8')
+  const windowsRunner = readFileSync(windowsRunnerPath, 'utf8')
   const wpfProject = readFileSync(wpfClientTestsProjectPath, 'utf8')
   const xunitRunnerConfig = JSON.parse(readFileSync(xunitRunnerConfigPath, 'utf8'))
 
   assert.deepEqual(xunitRunnerConfig, {
     parallelizeAssembly: true,
     parallelizeTestCollections: true,
-    maxParallelThreads: 16,
+    maxParallelThreads: 4,
   })
   assert.match(wpfProject, /<None Update="xunit\.runner\.json" CopyToOutputDirectory="PreserveNewest" \/>/)
+  assert.match(windows, /\$\{\{ matrix\.shard \|\| 'noop' \}\}/)
+  assert.match(windows, /-Shard '\$\{\{ matrix\.shard \|\| 'noop' \}\}'/)
+  assert.match(windowsRunner, /client-a-b-d-h/)
+  assert.match(windowsRunner, /client-c-card/)
+  assert.match(windowsRunner, /client-c-other/)
+  assert.match(windowsRunner, /client-l-linkly/)
+  assert.match(windowsRunner, /client-l-other/)
+  assert.match(windowsRunner, /client-s-shared/)
+  assert.match(windowsRunner, /client-s-other/)
+  assert.match(windowsRunner, /client-t-z/)
+  assert.match(windowsRunner, /FullyQualifiedName~Hbpos\.Client\.Tests\./)
+  assert.match(windowsRunner, /WPF client tests \(\$Shard\)/)
+  assert.match(windowsRunner, /if \(\$Shard -eq 'all' -or \$Shard -eq 'ui'\)/)
 
-  // macOS runner 的列表和版本探测不应携带 build setting，实际 build 必须强制 arm64。
+  // macOS 版本探测不携带 build setting；实际 build 强制 arm64，并压缩托管日志。
   assert.match(macos, /xcodebuild\(\) \{[\s\S]*?command xcodebuild "\$@" ARCHS=arm64 ONLY_ACTIVE_ARCH=YES COMPILER_INDEX_STORE_ENABLE=NO/)
   assert.match(macos, /export -f xcodebuild/)
+  assert.doesNotMatch(macosRunner, /\.xcworkspace -list/)
+  assert.match(macosRunner, /-quiet[\s\\]*\n[\s]*-showBuildTimingSummary/)
 
-  // Android 保留既有四项 task，并仅在其 gradlew 调用追加并行、缓存和 JVM 上限。
+  // Android 保留既有四项 task，CI 构建只编译代表性的 arm64 ABI。
   assert.match(android, /bash\(\) \{[\s\S]*?command bash "\$@" --parallel --build-cache '-Dorg\.gradle\.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g'/)
+  assert.match(androidRunner, /-PreactNativeArchitectures=arm64-v8a/)
   for (const task of [
     ':hb-app-installer:testDebugUnitTest',
     ':hb-attendance-security:testDebugUnitTest',

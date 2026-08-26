@@ -148,7 +148,7 @@ jobs:
           retention-days: 7
 
   windows:
-    name: PR CI / Windows / ${{ matrix.component }}
+    name: PR CI / Windows / ${{ matrix.component }} / ${{ matrix.shard || 'noop' }}
     needs: plan
     strategy:
       fail-fast: false
@@ -165,12 +165,12 @@ jobs:
             9.0.314
       - name: 构建并测试 WPF
         shell: pwsh
-        run: ./scripts/ci/run-windows-component.ps1 -Component '${{ matrix.component }}' -Profile '${{ needs.plan.outputs.profile }}'
+        run: ./scripts/ci/run-windows-component.ps1 -Component '${{ matrix.component }}' -Profile '${{ needs.plan.outputs.profile }}' -Shard '${{ matrix.shard || 'noop' }}'
       - name: 上传 WPF 测试结果
         if: always() && matrix.component != 'noop'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: windows-${{ matrix.component }}-${{ github.run_attempt }}
+          name: windows-${{ matrix.component }}-${{ matrix.shard }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/pos-wpf
           if-no-files-found: ignore
           retention-days: 7

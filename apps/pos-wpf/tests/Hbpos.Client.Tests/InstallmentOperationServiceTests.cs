@@ -480,12 +480,27 @@ public sealed class InstallmentOperationServiceTests
         var path = CreateTempDatabasePath();
         try
         {
-            var repository = await CreateRepositoryAsync(path);
+            var store = new LocalSqliteStore(path);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalInstallmentOperationRepository(store);
+            var attempts = new LocalCardPaymentAttemptRepository(store);
             var request = CreateRepaymentRequest();
             var claimState = new RepaymentClaimTestState();
             var firstTerminal = new CountingTerminal(approve: true);
             var firstApi = new RecordingInstallmentApi { AppendException = new OperationCanceledException() };
-            var firstService = CreateService(repository, new ClaimAwareInstallmentApiTestAdapter(firstApi, request, claimState), firstTerminal);
+            var settings = CardTerminalSettings.FromEnvironment() with
+            {
+                Processor = CardProcessorKind.Linkly,
+                LinklyConnectionMode = LinklyConnectionMode.CloudDirectSync
+            };
+            var firstService = new InstallmentOperationService(
+                repository,
+                new ClaimAwareInstallmentApiTestAdapter(firstApi, request, claimState),
+                firstTerminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(settings),
+                cardPaymentAttemptRepository: attempts,
+                linklyPaymentAttemptContextAccessor: new LinklyPaymentAttemptContextAccessor());
 
             var initial = await firstService.ExecuteRepaymentAsync(Session, request, authorizeCard: true);
 
@@ -497,7 +512,14 @@ public sealed class InstallmentOperationServiceTests
 
             var restartedTerminal = new CountingTerminal(approve: true);
             var restartedApi = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
-            var restartedService = CreateService(repository, new ClaimAwareInstallmentApiTestAdapter(restartedApi, request, claimState), restartedTerminal);
+            var restartedService = new InstallmentOperationService(
+                repository,
+                new ClaimAwareInstallmentApiTestAdapter(restartedApi, request, claimState),
+                restartedTerminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(settings),
+                cardPaymentAttemptRepository: attempts,
+                linklyPaymentAttemptContextAccessor: new LinklyPaymentAttemptContextAccessor());
 
             var recovered = await restartedService.RecoverAsync(Session);
 
@@ -901,7 +923,10 @@ public sealed class InstallmentOperationServiceTests
         var path = CreateTempDatabasePath();
         try
         {
-            var repository = await CreateRepositoryAsync(path);
+            var store = new LocalSqliteStore(path);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalInstallmentOperationRepository(store);
+            var attempts = new LocalCardPaymentAttemptRepository(store);
             var request = CreateRepaymentRequest();
             var terminal = new MissingAuthorizedAmountTerminal();
             var api = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
@@ -916,7 +941,9 @@ public sealed class InstallmentOperationServiceTests
                 new ClaimAwareInstallmentApiTestAdapter(api, request, claimState),
                 terminal,
                 new NoopVoucherTenderClient(),
-                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(settings));
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(settings),
+                cardPaymentAttemptRepository: attempts,
+                linklyPaymentAttemptContextAccessor: new LinklyPaymentAttemptContextAccessor());
 
             var result = await service.ExecuteRepaymentAsync(Session, request, authorizeCard: true);
 
@@ -1013,7 +1040,7 @@ public sealed class InstallmentOperationServiceTests
         try
         {
             var repository = await CreateRepositoryAsync(path);
-            var order = CreateLocalOrder();
+            var order = CreateCardOnlyPaidOrder();
             var terminal = new DeclineThenApproveRefundTerminal();
             var api = new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) };
             var service = new InstallmentOperationService(repository, api, terminal, new NoopVoucherTenderClient());

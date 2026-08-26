@@ -276,11 +276,11 @@ public sealed class LocalSchemaServiceTests
                     "LocalOrderHeldOrderSources",
                     "SharedHeldOrderClaims",
                     "SharedHeldOrderPublications",
+                    "TRG_LocalOrderHeldOrderSources_Immutable",
                     "TRG_SharedHeldOrderClaims_ActiveBindingOnly",
                     "TRG_SharedHeldOrderClaims_StatusMachine",
                     "TRG_SharedHeldOrderPublications_ShareRequestGate_Insert",
                     "TRG_SharedHeldOrderPublications_ShareRequestGate_Update",
-                    "TRG_LocalOrderHeldOrderSources_Immutable",
                     "UX_SharedHeldOrderClaims_ActivateKey",
                     "UX_SharedHeldOrderClaims_OpenFence_PerDevice",
                     "UX_SharedHeldOrderClaims_ReleaseKey",
@@ -1311,7 +1311,7 @@ public sealed class LocalSchemaServiceTests
                             {
                                 "eeeeeeee-0000-0000-0000-000000000004", "eeeeeeee-0000-0000-0000-000000000014",
                                 "S001", "POS-04", "RemoteClaim", "Completed", "idem-prep-4",
-                                "idem-act-4", "idem-rel-4", "<NULL>", "0a0b", "9",
+                                "idem-act-4", "idem-rel-4", "<NULL>", "0A0B", "9",
                                 "2026-07-30T03:00:00.000Z", "eeeeeeee-0000-0000-0000-000000000098",
                                 "2026-07-28T00:00:00.000Z", "2026-07-28T01:00:00.000Z"
                             },
@@ -1320,7 +1320,7 @@ public sealed class LocalSchemaServiceTests
                                 "eeeeeeee-0000-0000-0000-000000000005", "eeeeeeee-0000-0000-0000-000000000015",
                                 "S001", "POS-05", "OfflineOrigin", "Superseded", "idem-prep-5",
                                 "<NULL>", "<NULL>", "migrated-supersede:eeeeeeee-0000-0000-0000-000000000005",
-                                "0c0d", "5", "2026-07-30T04:00:00.000Z", "<NULL>",
+                                "0C0D", "5", "2026-07-30T04:00:00.000Z", "<NULL>",
                                 "2026-07-28T00:00:00.000Z", "2026-07-28T01:00:00.000Z"
                             }
                         ]).OrderBy(value => value, StringComparer.Ordinal),

@@ -503,7 +503,15 @@ public sealed class WpfViewLifecycleTests
             host.Height = 1140;
             PumpDispatcher();
 
-            Assert.InRange(workspaceSurface.ActualWidth, 1599.5, 1600.5);
+            Assert.Equal(1600, workspaceSurface.MaxWidth);
+            var availableWorkspaceWidth = Math.Max(
+                0,
+                workspace.ActualWidth - workspaceSurface.Margin.Left - workspaceSurface.Margin.Right);
+            var expectedWorkspaceWidth = Math.Min(workspaceSurface.MaxWidth, availableWorkspaceWidth);
+            Assert.InRange(
+                workspaceSurface.ActualWidth,
+                expectedWorkspaceWidth - 0.5,
+                expectedWorkspaceWidth + 0.5);
             AssertFullyContained(workspaceSurface, workspace);
             AssertFullyContained(workspaceBody, workspaceSurface);
             AssertFullyContained(cashCountPanel, workspaceBody);

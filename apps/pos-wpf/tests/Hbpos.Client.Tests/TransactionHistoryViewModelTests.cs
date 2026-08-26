@@ -3067,7 +3067,10 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderApiClient: new StubSharedHeldOrderApiClient
             {
                 ListPending = _ => Task.FromResult<IReadOnlyList<SharedHeldOrderListItemDto>>
-                ([HeldItem(remoteOnlyHoldGuid, 3000, 0, 3000, 1)])
+                ([
+                    HeldItem(localHoldGuid, 1000, 0, 1000, 1),
+                    HeldItem(remoteOnlyHoldGuid, 3000, 0, 3000, 1)
+                ])
             },
             sharedHeldOrderRepository: repository);
 
@@ -3449,6 +3452,8 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderApiClient: api,
             sharedHeldOrderRepository: repository);
 
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
         var row = Assert.Single(viewModel.Orders);
@@ -3500,6 +3505,8 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderCoordinator: coordinator,
             sharedHeldOrderRepository: repository);
 
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
         var row = Assert.Single(viewModel.Orders);
@@ -3566,6 +3573,8 @@ public sealed class TransactionHistoryViewModelTests
             CreateSession());
 
         // 先在 Local 源加载出旧列表。
+        viewModel.DateFrom = localOrder.SoldAt.Date;
+        viewModel.DateTo = localOrder.SoldAt.Date;
         await viewModel.LoadAsync();
         Assert.Single(viewModel.Orders);
 
@@ -3842,6 +3851,8 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderRepository: repository,
             sharedHeldOrderPublicationWorker: worker);
 
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
         var row = Assert.Single(viewModel.Orders);
@@ -3971,6 +3982,8 @@ public sealed class TransactionHistoryViewModelTests
             },
             sharedHeldOrderRepository: repository);
 
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
 
@@ -4087,6 +4100,8 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderApiClient: api,
             sharedHeldOrderRepository: repository);
 
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
         var row = Assert.Single(viewModel.Orders);
@@ -4169,6 +4184,8 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderApiClient: new StubSharedHeldOrderApiClient(),
             sharedHeldOrderRepository: new CapturingSharedHeldOrderRepository());
 
+        viewModel.DateFrom = new DateTime(2026, 5, 10);
+        viewModel.DateTo = new DateTime(2026, 5, 10);
         await viewModel.LoadAsync();
 
         Assert.True(viewModel.IsLocalSourceSelected);

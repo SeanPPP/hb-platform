@@ -127,7 +127,7 @@ function matrix(entries, timeout, runner) {
   return {
     include: scheduledEntries.map((entry) => ({
       ...entry,
-      timeout,
+      timeout: entry.timeout ?? timeout,
     })),
   }
 }
@@ -151,7 +151,21 @@ export function buildMatrices(selected, { timeout = 15 } = {}) {
     }
     if (component === 'pos-wpf') {
       linuxDotnet.push({ component: 'pos-api' })
-      windows.push({ component: 'pos-wpf' })
+      for (const shard of [
+        'client-a-b-d-h',
+        'client-c-card',
+        'client-c-other',
+        'client-i-k-m-n',
+        'client-l-linkly',
+        'client-l-other',
+        'client-o-r',
+        'client-s-shared',
+        'client-s-other',
+        'client-t-z',
+        'ui',
+      ]) {
+        windows.push({ component: 'pos-wpf', shard })
+      }
     }
     if (component === 'pos-contract') {
       linuxDotnet.push({ component: 'pos-contract' })
@@ -160,7 +174,11 @@ export function buildMatrices(selected, { timeout = 15 } = {}) {
       macos.push({ component: 'pos-ipad-native' })
     }
     if (component === 'pos-handheld') {
-      macos.push({ component: 'pos-handheld-native' })
+      macos.push({
+        component: 'pos-handheld-native',
+        // PR 端到端仍由 required gate 限制为 15 分钟；给较大的手持端原生图留 2 分钟收尾。
+        timeout: timeout === PROFILE_BUDGETS.pr.matrixTimeoutMinutes ? 14 : timeout,
+      })
       android.push({ component: 'pos-handheld-android' })
     }
     if (component === 'supplier-safari') {

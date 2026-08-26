@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using static Hbpos.Client.Tests.SharedHeldOrderClientTestSupport;
@@ -45,7 +46,7 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
         Assert.Equal(SharedHeldOrderPublicationStatus.PendingPublish, publication!.Status);
         Assert.Equal(2, publication.Revision);
         Assert.NotNull(publication.PayloadCiphertext);
-        Assert.Equal(
+        AssertCanonicalEqual(
             payload,
             await scope.Repository.GetPublicationPayloadAsync(holdGuid));
 
@@ -131,7 +132,7 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
             1,
             payload,
             "2026-07-28T01:01:00.000Z"));
-        Assert.Equal(payload, await scope.Repository.GetPublicationPayloadAsync(holdGuid));
+        AssertCanonicalEqual(payload, await scope.Repository.GetPublicationPayloadAsync(holdGuid));
 
         Assert.True(await scope.Repository.TryAdvancePublicationAsync(
             holdGuid,
@@ -141,7 +142,7 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
             "2026-07-28T01:02:00.000Z",
             remoteRevision: 5L,
             remoteUpdatedAtIso: "2026-07-28T01:02:00.000Z"));
-        Assert.Equal(payload, await scope.Repository.GetPublicationPayloadAsync(holdGuid));
+        AssertCanonicalEqual(payload, await scope.Repository.GetPublicationPayloadAsync(holdGuid));
 
         var missing = await scope.Repository.GetPublicationPayloadAsync(Guid.NewGuid());
         Assert.Null(missing);
@@ -171,5 +172,15 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
         command.Parameters.AddWithValue("$HoldGuid", holdGuid.ToString("D"));
         command.Parameters.AddWithValue("$LineGuid", Guid.NewGuid().ToString("D"));
         await command.ExecuteNonQueryAsync();
+    }
+
+    private static void AssertCanonicalEqual(
+        SharedHeldOrderCanonicalPayload expected,
+        SharedHeldOrderCanonicalPayload? actual)
+    {
+        Assert.NotNull(actual);
+        // 使用独立于生产 canonical serializer 的结构序列化，既忽略集合实现类型，
+        // 又能发现生产序列化/反序列化遗漏字段或改变集合顺序。
+        Assert.Equal(JsonSerializer.Serialize(expected), JsonSerializer.Serialize(actual));
     }
 }

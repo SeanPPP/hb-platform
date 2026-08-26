@@ -1423,8 +1423,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, ISca
         var localFirst = MergeHeldRows(localRows, cachedRemoteRows, remoteAuthoritative: false);
         ReplaceHeldOrdersIfCurrent(localFirst, generation);
 
-        if (_sharedHeldOrderApiClient is null)
+        if (_sharedHeldOrderApiClient is null || !Session.IsOnline)
         {
+            // 离线列表只能以本地快照为准；发起远端刷新会把成功空响应误当成权威收敛。
             return localFirst;
         }
 

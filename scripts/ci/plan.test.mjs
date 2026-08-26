@@ -152,7 +152,19 @@ test('各 runner 矩阵始终非空，未选择时使用 noop sentinel', () => {
     ],
   })
   assert.deepEqual(selected.windows, {
-    include: [{ component: 'pos-wpf', runner: 'windows-2025', timeout: 15 }],
+    include: [
+      { component: 'pos-wpf', shard: 'client-a-b-d-h', runner: 'windows-2025', timeout: 15 },
+      { component: 'pos-wpf', shard: 'client-c-card', runner: 'windows-2025', timeout: 15 },
+      { component: 'pos-wpf', shard: 'client-c-other', runner: 'windows-2025', timeout: 15 },
+      { component: 'pos-wpf', shard: 'client-i-k-m-n', runner: 'windows-2025', timeout: 15 },
+      { component: 'pos-wpf', shard: 'client-l-linkly', runner: 'windows-2025', timeout: 15 },
+      { component: 'pos-wpf', shard: 'client-l-other', runner: 'windows-2025', timeout: 15 },
+      { component: 'pos-wpf', shard: 'client-o-r', runner: 'windows-2025', timeout: 15 },
+      { component: 'pos-wpf', shard: 'client-s-shared', runner: 'windows-2025', timeout: 15 },
+      { component: 'pos-wpf', shard: 'client-s-other', runner: 'windows-2025', timeout: 15 },
+      { component: 'pos-wpf', shard: 'client-t-z', runner: 'windows-2025', timeout: 15 },
+      { component: 'pos-wpf', shard: 'ui', runner: 'windows-2025', timeout: 15 },
+    ],
   })
   assert.deepEqual(selected.macos, {
     include: [{ component: 'supplier-safari', runner: 'macos-26', timeout: 15 }],
@@ -164,5 +176,18 @@ test('各 runner 矩阵始终非空，未选择时使用 noop sentinel', () => {
   const weekly = buildMatrices(new Set(['web']), { timeout: 45 })
   assert.deepEqual(weekly.linuxNode, {
     include: [{ component: 'web', runner: 'ubuntu-24.04', timeout: 45 }],
+  })
+
+  const handheld = buildMatrices(new Set(['pos-handheld']), { timeout: 12 })
+  assert.deepEqual(handheld.macos, {
+    include: [{ component: 'pos-handheld-native', runner: 'macos-26', timeout: 14 }],
+  })
+  assert.deepEqual(handheld.android, {
+    include: [{ component: 'pos-handheld-android', runner: 'ubuntu-24.04', timeout: 12 }],
+  })
+
+  const weeklyHandheld = buildMatrices(new Set(['pos-handheld']), { timeout: 40 })
+  assert.deepEqual(weeklyHandheld.macos, {
+    include: [{ component: 'pos-handheld-native', runner: 'macos-26', timeout: 40 }],
   })
 })

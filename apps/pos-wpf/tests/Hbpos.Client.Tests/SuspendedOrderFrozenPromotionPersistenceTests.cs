@@ -81,6 +81,7 @@ public sealed class SuspendedOrderFrozenPromotionPersistenceTests
                     """
                     ALTER TABLE SuspendedOrders DROP COLUMN FrozenPromotionRulesJson;
                     ALTER TABLE SuspendedOrderLines DROP COLUMN IsManualPrice;
+                    ALTER TABLE SuspendedOrderLines DROP COLUMN CatalogDiscountBasisPoints;
                     """;
                 await command.ExecuteNonQueryAsync();
             }

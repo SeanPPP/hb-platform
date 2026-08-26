@@ -762,6 +762,7 @@ public sealed class SharedHeldOrderCoordinatorTests
         var cart = new PosCartService();
         var holdGuid = Guid.NewGuid();
         var payload = SampleCanonical();
+        await InsertLegacyOrderAsync(scope, holdGuid);
         Assert.True(await scope.Repository.UpsertPublicationAsync(
             holdGuid,
             session.StoreCode,
@@ -771,6 +772,8 @@ public sealed class SharedHeldOrderCoordinatorTests
             "2026-07-28T00:59:00.000Z",
             "2026-07-28T00:59:00.000Z",
             "2026-07-28T00:59:00.000Z"));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            holdGuid, session.StoreCode, session.DeviceCode, "2026-07-28T01:00:00.000Z"));
         Assert.True(await scope.Repository.TryStagePendingPublishAsync(
             holdGuid,
             expectedRevision: 1,

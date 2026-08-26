@@ -65,13 +65,14 @@ case "$component" in
     npm --prefix apps/pos-ipad ci --no-audit --no-fund
     npm --prefix apps/pos-ipad run prebuild:ios -- --clean
     node scripts/ci/test-inventory.mjs --app pos-ipad --run native
-    xcodebuild -workspace apps/pos-ipad/ios/HBPOS.xcworkspace -list
     xcodebuild \
       -workspace apps/pos-ipad/ios/HBPOS.xcworkspace \
       -scheme HBPOS \
       -configuration Debug \
       -destination 'generic/platform=iOS Simulator' \
       -derivedDataPath "$derived_root" \
+      -quiet \
+      -showBuildTimingSummary \
       CODE_SIGNING_ALLOWED=NO \
       build
     ;;
@@ -79,13 +80,14 @@ case "$component" in
     npm --prefix apps/pos-handheld ci --no-audit --no-fund
     npm --prefix apps/pos-handheld run prebuild:ios -- --clean
     node scripts/ci/test-inventory.mjs --app pos-handheld --run native
-    xcodebuild -workspace apps/pos-handheld/ios/HBPOSMobile.xcworkspace -list
     xcodebuild \
       -workspace apps/pos-handheld/ios/HBPOSMobile.xcworkspace \
       -scheme HBPOSMobile \
       -configuration Debug \
       -destination 'generic/platform=iOS Simulator' \
       -derivedDataPath "$derived_root" \
+      -quiet \
+      -showBuildTimingSummary \
       CODE_SIGNING_ALLOWED=NO \
       build
     ;;
