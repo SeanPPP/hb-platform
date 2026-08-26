@@ -11,6 +11,7 @@
              mc:Ignorable="d"
              d:DesignHeight="688"
              d:DesignWidth="1366"
+             FontFamily="Segoe UI"
              Background="{StaticResource PosScreenBackgroundBrush}">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
@@ -49,18 +50,101 @@
         </Style>
 
         <Style x:Key="SettingsCategoryButtonStyle" TargetType="Button" BasedOn="{StaticResource PosSecondaryButtonStyle}">
-            <Setter Property="Height" Value="54" />
-            <Setter Property="Margin" Value="0,0,0,10" />
+            <Setter Property="Height" Value="64" />
+            <Setter Property="Margin" Value="0,0,0,12" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
-            <Setter Property="Padding" Value="12,0" />
+            <Setter Property="Padding" Value="18,0" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding RelativeSource={RelativeSource Self}, Path=Tag}" Value="True">
+                    <Setter Property="Background" Value="#FFEAF2FF" />
+                    <Setter Property="BorderBrush" Value="{StaticResource PosPrimaryBrush}" />
+                    <Setter Property="BorderThickness" Value="4,1,1,1" />
+                    <Setter Property="Foreground" Value="{StaticResource PosPrimaryBrush}" />
+                    <Setter Property="Padding" Value="15,0,18,0" />
+                </DataTrigger>
+            </Style.Triggers>
         </Style>
 
         <Style x:Key="SettingsActionCardStyle" TargetType="Border">
             <Setter Property="Background" Value="{StaticResource PosSurfaceBrush}" />
             <Setter Property="BorderBrush" Value="#FFE0E4EC" />
             <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="CornerRadius" Value="10" />
             <Setter Property="Padding" Value="20" />
+        </Style>
+
+        <Style x:Key="SettingsPageTitleStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="22" />
+            <Setter Property="FontWeight" Value="Black" />
+            <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
+        </Style>
+
+        <Style x:Key="SettingsPageDescriptionStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{StaticResource PosMutedForegroundBrush}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Margin" Value="0,4,0,0" />
+        </Style>
+
+        <Style x:Key="SettingsContextBadgeStyle" TargetType="Border">
+            <Setter Property="Background" Value="#FFFFFFFF" />
+            <Setter Property="BorderBrush" Value="{StaticResource PosBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="8" />
+            <Setter Property="Padding" Value="14,9" />
+        </Style>
+
+        <Style x:Key="SettingsProviderTabStyle" TargetType="TabItem">
+            <Setter Property="Foreground" Value="{StaticResource PosTextBrush}" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="FontWeight" Value="Bold" />
+            <Setter Property="Margin" Value="0,0,12,14" />
+            <Setter Property="MinHeight" Value="48" />
+            <Setter Property="MinWidth" Value="220" />
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="ProviderTabBorder"
+                                Background="#FFFFFFFF"
+                                BorderBrush="{StaticResource PosBorderBrush}"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Padding="18,12">
+                            <ContentPresenter ContentSource="Header"
+                                              HorizontalAlignment="Center"
+                                              VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="ProviderTabBorder" Property="Background" Value="#FFEAF2FF" />
+                                <Setter TargetName="ProviderTabBorder" Property="BorderBrush" Value="{StaticResource PosPrimaryBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource PosPrimaryBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ProviderTabBorder" Property="BorderBrush" Value="{StaticResource PosPrimaryBrush}" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="SettingsModeChoiceBorderStyle" TargetType="Border">
+            <Setter Property="Background" Value="#FFFFFFFF" />
+            <Setter Property="BorderBrush" Value="#FFE0E4EC" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Padding" Value="10,7" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=RadioButton}}"
+                             Value="True">
+                    <Setter Property="Background" Value="#FFEAF2FF" />
+                    <Setter Property="BorderBrush" Value="{StaticResource PosPrimaryBrush}" />
+                </DataTrigger>
+            </Style.Triggers>
         </Style>
     </UserControl.Resources>
 
@@ -75,33 +159,149 @@
                 Background="{StaticResource PosSurfaceBrush}"
                 BorderBrush="#FFE1E5EC"
                 BorderThickness="0,0,0,1"
-                Padding="24,18">
-            <DockPanel>
-                <Button DockPanel.Dock="Left"
+                Padding="24,14">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="24" />
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+                <Button Grid.Column="0"
                         Command="{Binding BackCommand}"
                         Style="{StaticResource PosSecondaryButtonStyle}"
-                        Margin="0,0,16,0">
+                        Height="44">
                     <StackPanel Orientation="Horizontal">
                         <materialDesign:PackIcon Kind="ArrowLeft" Width="18" Height="18" Margin="0,0,8,0" />
                         <TextBlock Text="{loc:Loc shell.backToPos}" />
                     </StackPanel>
                 </Button>
-                <TextBlock Text="{Binding SettingsSubtitleText}"
-                           FontSize="12"
-                           Foreground="{StaticResource PosMutedForegroundBrush}"
-                           VerticalAlignment="Center" />
-            </DockPanel>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding ScreenTitleText}"
+                               FontSize="12"
+                               Foreground="{StaticResource PosMutedForegroundBrush}" />
+                    <TextBlock Text="/" Margin="12,0" FontSize="12" Foreground="#FF9AA4B2" />
+                    <TextBlock Text="{Binding SettingsSubtitleText}"
+                               FontSize="12"
+                               Foreground="{StaticResource PosMutedForegroundBrush}" />
+                </StackPanel>
+                <Border Grid.Column="3"
+                        Style="{StaticResource SettingsContextBadgeStyle}">
+                    <Grid>
+                        <StackPanel Orientation="Horizontal"
+                                    Visibility="{Binding IsDataMaintenanceSelected, Converter={StaticResource BoolToVis}}">
+                            <materialDesign:PackIcon Kind="DatabaseSyncOutline" Width="18" Height="18" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding DataMaintenanceTitleText}" FontWeight="Bold" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal"
+                                    Visibility="{Binding IsPaymentTerminalSelected, Converter={StaticResource BoolToVis}}">
+                            <materialDesign:PackIcon Kind="ContactlessPayment" Width="18" Height="18" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding CardTerminalTitleText}" FontWeight="Bold" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal"
+                                    Visibility="{Binding IsReceiptPrinterSelected, Converter={StaticResource BoolToVis}}">
+                            <materialDesign:PackIcon Kind="Printer" Width="18" Height="18" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding ReceiptPrinterTitleText}" FontWeight="Bold" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal"
+                                    Visibility="{Binding IsDeviceRegistrationSelected, Converter={StaticResource BoolToVis}}">
+                            <materialDesign:PackIcon Kind="ServerNetwork" Width="18" Height="18" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding DeviceRegistrationTitleText}" FontWeight="Bold" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Grid>
         </Border>
 
-        <Grid Grid.Row="1" Margin="24">
+        <Grid Grid.Row="1" Margin="18">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="272" />
                 <ColumnDefinition Width="18" />
-                <ColumnDefinition Width="240" />
+                <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
+            <!-- 导航先于内容声明，使键盘 Tab 顺序与左到右的视觉顺序一致。 -->
+            <Border Grid.Column="0"
+                    Background="{StaticResource PosSurfaceBrush}"
+                    BorderBrush="#FFE0E4EC"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    Padding="16">
+                <StackPanel>
+                    <TextBlock Text="{loc:Loc settings.category.title}"
+                               FontSize="13"
+                               FontWeight="Black"
+                               Foreground="{StaticResource PosTextBrush}"
+                               Margin="2,0,0,12" />
+
+                    <Button Command="{Binding SelectDataMaintenanceCommand}"
+                            Tag="{Binding IsDataMaintenanceSelected}"
+                            Style="{StaticResource SettingsCategoryButtonStyle}">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="DatabaseSyncOutline"
+                                                     Width="21"
+                                                     Height="21"
+                                                     Margin="0,0,12,0"
+                                                     Foreground="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}" />
+                            <TextBlock Text="{Binding DataMaintenanceTitleText}"
+                                       FontWeight="Bold"
+                                       VerticalAlignment="Center"
+                                       Foreground="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}" />
+                        </StackPanel>
+                    </Button>
+
+                    <Button Command="{Binding SelectPaymentTerminalCommand}"
+                            Tag="{Binding IsPaymentTerminalSelected}"
+                            Style="{StaticResource SettingsCategoryButtonStyle}">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="ContactlessPayment"
+                                                     Width="21"
+                                                     Height="21"
+                                                     Margin="0,0,12,0"
+                                                     Foreground="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}" />
+                            <TextBlock Text="{loc:Loc settings.category.paymentTerminal}"
+                                       FontWeight="Bold"
+                                       VerticalAlignment="Center"
+                                       Foreground="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}" />
+                        </StackPanel>
+                    </Button>
+
+                    <Button Command="{Binding SelectReceiptPrinterCommand}"
+                            Tag="{Binding IsReceiptPrinterSelected}"
+                            Style="{StaticResource SettingsCategoryButtonStyle}">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="Printer"
+                                                     Width="21"
+                                                     Height="21"
+                                                     Margin="0,0,12,0"
+                                                     Foreground="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}" />
+                            <TextBlock Text="{loc:Loc settings.category.receiptPrinter}"
+                                       FontWeight="Bold"
+                                       VerticalAlignment="Center"
+                                       Foreground="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}" />
+                        </StackPanel>
+                    </Button>
+
+                    <Button Command="{Binding SelectDeviceRegistrationCommand}"
+                            Tag="{Binding IsDeviceRegistrationSelected}"
+                            Style="{StaticResource SettingsCategoryButtonStyle}">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="CashRegister"
+                                                     Width="21"
+                                                     Height="21"
+                                                     Margin="0,0,12,0"
+                                                     Foreground="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}" />
+                            <TextBlock Text="{loc:Loc settings.category.deviceRegistrationNav}"
+                                       FontWeight="Bold"
+                                       VerticalAlignment="Center"
+                                       Foreground="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </Border>
+
             <!-- 启用 WPF 原生垂直触摸平移和惯性，保留鼠标滚轮及子控件点击行为。 -->
-            <ScrollViewer Grid.Column="0"
+            <ScrollViewer Grid.Column="2"
                           VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled"
                           CanContentScroll="False"
@@ -109,99 +309,153 @@
                           PanningDeceleration="0.0008"
                           PanningRatio="1.0">
                 <Grid>
-                    <StackPanel Visibility="{Binding IsDataMaintenanceSelected, Converter={StaticResource BoolToVis}}">
-                        <Border Style="{StaticResource SettingsActionCardStyle}" Margin="0,0,0,16">
-                            <DockPanel>
-                                <Border DockPanel.Dock="Left"
-                                        Width="42"
-                                        Height="42"
-                                        Background="#FFE8F0FE"
-                                        CornerRadius="8"
-                                        Margin="0,0,14,0">
-                                    <materialDesign:PackIcon Kind="CloudDownloadOutline"
-                                                             Width="24"
-                                                             Height="24"
+                    <Grid Visibility="{Binding IsDataMaintenanceSelected, Converter={StaticResource BoolToVis}}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1.2*" />
+                            <ColumnDefinition Width="16" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Row="0" Grid.ColumnSpan="3" Margin="10,2,0,18">
+                            <TextBlock Text="{Binding DataMaintenanceTitleText}"
+                                       Style="{StaticResource SettingsPageTitleStyle}" />
+                            <TextBlock Text="{loc:Loc settings.page.dataMaintenance.description}"
+                                       Style="{StaticResource SettingsPageDescriptionStyle}" />
+                        </StackPanel>
+
+                        <Border Grid.Row="1"
+                                Grid.Column="0"
+                                Style="{StaticResource SettingsActionCardStyle}"
+                                MinHeight="208">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid Grid.Row="0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="72" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <materialDesign:PackIcon Grid.Column="0"
+                                                             Kind="CloudDownloadOutline"
+                                                             Width="48"
+                                                             Height="48"
                                                              Foreground="{StaticResource PosPrimaryBrush}"
                                                              HorizontalAlignment="Center"
-                                                             VerticalAlignment="Center" />
-                                </Border>
-                                 <Button DockPanel.Dock="Right"
-                                         Command="{Binding DownloadCatalogCommand}"
-                                         services:ButtonFeedback.Cue="Download"
-                                         Style="{StaticResource PosPrimaryButtonStyle}"
+                                                             VerticalAlignment="Top" />
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="{loc:Loc settings.section.dataDownload.title}"
+                                                   FontSize="18"
+                                                   FontWeight="Black"
+                                                   Foreground="{StaticResource PosTextBrush}" />
+                                        <TextBlock Text="{loc:Loc settings.section.dataDownload.description}"
+                                                   Style="{StaticResource SettingsPageDescriptionStyle}" />
+                                    </StackPanel>
+                                </Grid>
+                                <Button Grid.Row="1"
+                                        Command="{Binding DownloadCatalogCommand}"
+                                        services:ButtonFeedback.Cue="Download"
+                                        Style="{StaticResource PosPrimaryButtonStyle}"
                                         Height="42"
                                         MinWidth="138"
-                                        Margin="18,0,0,0">
+                                        HorizontalAlignment="Left"
+                                        Margin="72,14,0,0">
                                     <StackPanel Orientation="Horizontal">
                                         <materialDesign:PackIcon Kind="CloudDownloadOutline" Width="18" Height="18" Margin="0,0,8,0" Foreground="White" />
                                         <TextBlock Text="{loc:Loc settings.section.dataDownload.action}" Foreground="White" />
                                     </StackPanel>
                                 </Button>
-                                <StackPanel>
-                                    <TextBlock Text="{loc:Loc settings.section.dataDownload.title}"
-                                               FontSize="18"
-                                               FontWeight="Black"
-                                               Foreground="{StaticResource PosTextBrush}" />
-                                    <TextBlock Text="{loc:Loc settings.section.dataDownload.description}"
-                                               FontSize="12"
-                                               Foreground="{StaticResource PosMutedForegroundBrush}"
-                                               TextWrapping="Wrap"
-                                               Margin="0,5,0,0" />
-                                </StackPanel>
-                            </DockPanel>
+                                <Border Grid.Row="3"
+                                        Background="#FFF6F8FB"
+                                        BorderBrush="#FFE0E4EC"
+                                        BorderThickness="1"
+                                        CornerRadius="8"
+                                        Padding="12,10"
+                                        Margin="0,16,0,0">
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding StatusMessage}"
+                                                   FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                   TextTrimming="CharacterEllipsis" />
+                                        <ProgressBar Height="4"
+                                                     Margin="0,9,0,0"
+                                                     IsIndeterminate="True"
+                                                     Visibility="{Binding IsBusy, Converter={StaticResource BoolToVis}}" />
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
                         </Border>
 
-                        <Border Style="{StaticResource SettingsActionCardStyle}" Margin="0,0,0,16">
-                            <DockPanel>
-                                <Border DockPanel.Dock="Left"
-                                        Width="42"
-                                        Height="42"
-                                        Background="#FFFFF4DE"
-                                        CornerRadius="8"
-                                        Margin="0,0,14,0">
-                                    <materialDesign:PackIcon Kind="DatabaseRefreshOutline"
-                                                             Width="24"
-                                                             Height="24"
-                                                             Foreground="#FF8F4E00"
+                        <Border Grid.Row="1"
+                                Grid.Column="2"
+                                Style="{StaticResource SettingsActionCardStyle}"
+                                MinHeight="208">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid Grid.Row="0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="72" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <materialDesign:PackIcon Grid.Column="0"
+                                                             Kind="DatabaseRefreshOutline"
+                                                             Width="48"
+                                                             Height="48"
+                                                             Foreground="#FFEF8A00"
                                                              HorizontalAlignment="Center"
-                                                             VerticalAlignment="Center" />
-                                </Border>
-                                <Button DockPanel.Dock="Right"
+                                                             VerticalAlignment="Top" />
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="{loc:Loc settings.section.dataReset.title}"
+                                                   FontSize="18"
+                                                   FontWeight="Black"
+                                                   Foreground="{StaticResource PosTextBrush}" />
+                                        <TextBlock Text="{loc:Loc settings.section.dataReset.description}"
+                                                   Style="{StaticResource SettingsPageDescriptionStyle}" />
+                                    </StackPanel>
+                                </Grid>
+                                <Button Grid.Row="2"
                                         Command="{Binding ResetCatalogCommand}"
                                         Style="{StaticResource PosSecondaryButtonStyle}"
                                         Height="42"
-                                        MinWidth="138"
-                                        Margin="18,0,0,0">
+                                        MinWidth="154"
+                                        HorizontalAlignment="Center"
+                                        Margin="0,18,0,0">
                                     <StackPanel Orientation="Horizontal">
                                         <materialDesign:PackIcon Kind="DatabaseRefreshOutline" Width="18" Height="18" Margin="0,0,8,0" />
                                         <TextBlock Text="{loc:Loc settings.section.dataReset.action}" />
                                     </StackPanel>
                                 </Button>
-                                <StackPanel>
-                                    <TextBlock Text="{loc:Loc settings.section.dataReset.title}"
-                                               FontSize="18"
-                                               FontWeight="Black"
-                                               Foreground="{StaticResource PosTextBrush}" />
-                                    <TextBlock Text="{loc:Loc settings.section.dataReset.description}"
-                                               FontSize="12"
-                                               Foreground="{StaticResource PosMutedForegroundBrush}"
-                                               TextWrapping="Wrap"
-                                               Margin="0,5,0,0" />
-                                </StackPanel>
-                            </DockPanel>
+                            </Grid>
                         </Border>
 
-                        <Border Style="{StaticResource SettingsActionCardStyle}" Margin="0,0,0,16">
+                        <Border Grid.Row="2"
+                                Grid.ColumnSpan="3"
+                                Style="{StaticResource SettingsActionCardStyle}"
+                                Margin="0,16,0,0">
                             <DockPanel>
                                 <Border DockPanel.Dock="Left"
-                                        Width="42"
-                                        Height="42"
+                                        Width="52"
+                                        Height="52"
                                         Background="#FFE8F7F1"
-                                        CornerRadius="8"
-                                        Margin="0,0,14,0">
+                                        CornerRadius="10"
+                                        Margin="0,0,16,0">
                                     <materialDesign:PackIcon Kind="Update"
-                                                             Width="24"
-                                                             Height="24"
+                                                             Width="28"
+                                                             Height="28"
                                                              Foreground="#FF047857"
                                                              HorizontalAlignment="Center"
                                                              VerticalAlignment="Center" />
@@ -210,7 +464,7 @@
                                         Command="{Binding CheckForAppUpdateCommand}"
                                         Style="{StaticResource PosSecondaryButtonStyle}"
                                         Height="42"
-                                        MinWidth="138"
+                                        MinWidth="154"
                                         Margin="18,0,0,0">
                                     <StackPanel Orientation="Horizontal">
                                         <materialDesign:PackIcon Kind="Update" Width="18" Height="18" Margin="0,0,8,0" />
@@ -223,10 +477,7 @@
                                                FontWeight="Black"
                                                Foreground="{StaticResource PosTextBrush}" />
                                     <TextBlock Text="{loc:Loc settings.section.appUpdate.description}"
-                                               FontSize="12"
-                                               Foreground="{StaticResource PosMutedForegroundBrush}"
-                                               TextWrapping="Wrap"
-                                               Margin="0,5,0,0" />
+                                               Style="{StaticResource SettingsPageDescriptionStyle}" />
                                     <TextBlock FontSize="11"
                                                Foreground="{StaticResource PosMutedForegroundBrush}"
                                                Margin="0,5,0,0">
@@ -238,26 +489,31 @@
                             </DockPanel>
                         </Border>
 
-                        <Border Style="{StaticResource SettingsActionCardStyle}"
+                        <Border Grid.Row="3"
+                                Grid.ColumnSpan="3"
+                                Style="{StaticResource SettingsActionCardStyle}"
+                                Background="#FFFFF7F7"
+                                BorderBrush="#FFFFCCCC"
+                                Margin="0,16,0,0"
                                 Visibility="{Binding IsDebugTestSalesDataResetVisible, Converter={StaticResource BoolToVis}}">
                             <DockPanel>
                                 <Border DockPanel.Dock="Left"
-                                        Width="42"
-                                        Height="42"
+                                        Width="52"
+                                        Height="52"
                                         Background="#FFFFE5E5"
-                                        CornerRadius="8"
-                                        Margin="0,0,14,0">
+                                        CornerRadius="10"
+                                        Margin="0,0,16,0">
                                     <materialDesign:PackIcon Kind="DeleteOutline"
-                                                             Width="24"
-                                                             Height="24"
+                                                             Width="28"
+                                                             Height="28"
                                                              Foreground="#FFB42318"
                                                              HorizontalAlignment="Center"
                                                              VerticalAlignment="Center" />
                                 </Border>
-                                 <Button DockPanel.Dock="Right"
-                                         Command="{Binding ResetTestSalesDataCommand}"
-                                         services:ButtonFeedback.Cue="Delete"
-                                         Style="{StaticResource PosSecondaryButtonStyle}"
+                                <Button DockPanel.Dock="Right"
+                                        Command="{Binding ResetTestSalesDataCommand}"
+                                        services:ButtonFeedback.Cue="Delete"
+                                        Style="{StaticResource PosSecondaryButtonStyle}"
                                         Height="42"
                                         MinWidth="168"
                                         Margin="18,0,0,0">
@@ -272,17 +528,15 @@
                                                FontWeight="Black"
                                                Foreground="#FFB42318" />
                                     <TextBlock Text="{loc:Loc settings.section.testSalesDataReset.description}"
-                                               FontSize="12"
-                                               Foreground="{StaticResource PosMutedForegroundBrush}"
-                                               TextWrapping="Wrap"
-                                               Margin="0,5,0,0" />
+                                               Style="{StaticResource SettingsPageDescriptionStyle}" />
                                 </StackPanel>
                             </DockPanel>
                         </Border>
-                    </StackPanel>
+                    </Grid>
 
                     <Grid Visibility="{Binding IsPaymentTerminalSelected, Converter={StaticResource BoolToVis}}">
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                             <RowDefinition Height="Auto" />
                         </Grid.RowDefinitions>
@@ -292,25 +546,32 @@
                             <ColumnDefinition Width="*" />
                         </Grid.ColumnDefinitions>
 
-                        <Border Grid.Row="0"
+                        <StackPanel Grid.Row="0" Grid.ColumnSpan="3" Margin="10,2,0,18">
+                            <TextBlock Text="{Binding CardTerminalTitleText}"
+                                       Style="{StaticResource SettingsPageTitleStyle}" />
+                            <TextBlock Text="{loc:Loc settings.page.paymentTerminal.description}"
+                                       Style="{StaticResource SettingsPageDescriptionStyle}" />
+                        </StackPanel>
+
+                        <Border Grid.Row="1"
                                 Grid.Column="0"
                                 Grid.ColumnSpan="3"
-                                Background="#FFF6F8FB"
+                                Background="#FFFFFFFF"
                                 BorderBrush="{StaticResource PosBorderBrush}"
                                 BorderThickness="1"
-                                CornerRadius="8"
-                                Padding="16,14"
+                                CornerRadius="10"
+                                Padding="20,16"
                                 Margin="0,0,0,16">
                             <DockPanel>
                                 <Border DockPanel.Dock="Left"
-                                        Width="38"
-                                        Height="38"
+                                        Width="44"
+                                        Height="44"
                                         Background="#FFEAF2FF"
                                         CornerRadius="8"
-                                        Margin="0,0,12,0">
-                                    <materialDesign:PackIcon Kind="InformationOutline"
-                                                             Width="21"
-                                                             Height="21"
+                                        Margin="0,0,14,0">
+                                    <materialDesign:PackIcon Kind="ContactlessPayment"
+                                                             Width="24"
+                                                             Height="24"
                                                              Foreground="{StaticResource PosPrimaryBrush}"
                                                              HorizontalAlignment="Center"
                                                              VerticalAlignment="Center" />
@@ -333,9 +594,22 @@
                             </DockPanel>
                         </Border>
 
-                        <Border Grid.Row="1"
-                                Grid.Column="0"
-                                Style="{StaticResource SettingsActionCardStyle}">
+                        <TabControl Grid.Row="2"
+                                    Grid.ColumnSpan="3"
+                                    Background="Transparent"
+                                    BorderThickness="0"
+                                    Padding="0">
+                            <TabControl.Resources>
+                                <Style TargetType="TabItem" BasedOn="{StaticResource SettingsProviderTabStyle}" />
+                            </TabControl.Resources>
+                            <TabItem>
+                                <TabItem.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <materialDesign:PackIcon Kind="TabletCellphone" Width="20" Height="20" Margin="0,0,10,0" />
+                                        <TextBlock Text="{Binding SquareTitleText}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </TabItem.Header>
+                                <Border Style="{StaticResource SettingsActionCardStyle}">
                             <Grid>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -619,13 +893,32 @@
                                     </StackPanel>
                                 </Button>
                             </Grid>
-                        </Border>
+                                </Border>
+                            </TabItem>
 
-                        <Border Grid.Row="1"
-                                Grid.Column="2"
-                                Style="{StaticResource SettingsActionCardStyle}">
-                            <StackPanel>
-                                <DockPanel Margin="0,0,0,18">
+                            <TabItem>
+                                <TabItem.Header>
+                                    <StackPanel Orientation="Horizontal">
+                                        <materialDesign:PackIcon Kind="LanConnect" Width="20" Height="20" Margin="0,0,10,0" />
+                                        <TextBlock Text="{Binding LinklyTitleText}" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </TabItem.Header>
+                                <Border Style="{StaticResource SettingsActionCardStyle}">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="0.92*" />
+                                    <ColumnDefinition Width="18" />
+                                    <ColumnDefinition Width="1.08*" />
+                                </Grid.ColumnDefinitions>
+
+                                <DockPanel Grid.Row="0"
+                                           Grid.ColumnSpan="3"
+                                           Margin="0,0,0,16"
+                                           Visibility="Collapsed">
                                     <Border DockPanel.Dock="Left"
                                             Width="38"
                                             Height="38"
@@ -651,16 +944,27 @@
                                     </StackPanel>
                                 </DockPanel>
 
-                                <TextBlock Text="{loc:Loc settings.linkly.priority.title}"
+                                <Grid Grid.Row="1" Grid.Column="0">
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="8" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+
+                                <TextBlock Grid.Row="2"
+                                           Text="{loc:Loc settings.linkly.priority.title}"
                                            Style="{StaticResource SettingsLabelStyle}" />
-                                <ItemsControl ItemsSource="{Binding LinklyModePriorityItems}" Margin="0,0,0,16">
+                                <ItemsControl Grid.Row="3"
+                                              ItemsSource="{Binding LinklyModePriorityItems}"
+                                              Margin="0,0,0,16">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
                                             <Border BorderBrush="#FFE1E5EA"
                                                     BorderThickness="1"
                                                     CornerRadius="8"
-                                                    Padding="10"
-                                                    Margin="0,0,0,8"
+                                                    Padding="10,7"
+                                                    Margin="0,0,0,6"
                                                     Background="#FFFFFFFF">
                                                 <Grid>
                                                     <Grid.ColumnDefinitions>
@@ -692,7 +996,8 @@
                                                                    FontSize="11"
                                                                    Foreground="{StaticResource PosMutedForegroundBrush}"
                                                                    TextWrapping="Wrap"
-                                                                   Margin="0,4,0,0" />
+                                                                   Margin="0,4,0,0"
+                                                                   Visibility="Collapsed" />
                                                     </StackPanel>
                                                     <StackPanel Grid.Column="2"
                                                                 Orientation="Horizontal"
@@ -742,59 +1047,73 @@
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
-                                <StackPanel Margin="0,0,0,16" Visibility="Collapsed">
+                                <StackPanel Grid.Row="0" Margin="0,0,0,8">
+                                    <TextBlock Text="{loc:Loc settings.linkly.mode.title}"
+                                               Style="{StaticResource SettingsLabelStyle}"
+                                               Margin="0,0,0,8" />
                                     <!-- 三模式能力说明直接放在模式选择旁边，避免门店在保存前误选接入方式。 -->
                                     <RadioButton GroupName="LinklySettingsMode"
                                                  IsChecked="{Binding IsLinklyLocalIpMode, Mode=TwoWay}"
+                                                 HorizontalContentAlignment="Stretch"
                                                  Margin="0,0,0,8">
-                                        <StackPanel>
-                                            <TextBlock Text="{loc:Loc settings.linkly.mode.localIp}" FontWeight="Bold" />
-                                            <TextBlock Text="{loc:Loc settings.linkly.mode.localIp.help}"
-                                                       FontSize="11"
-                                                       Foreground="{StaticResource PosMutedForegroundBrush}"
-                                                       TextWrapping="Wrap"
-                                                       Margin="0,4,0,0" />
-                                        </StackPanel>
+                                        <Border Style="{StaticResource SettingsModeChoiceBorderStyle}">
+                                            <StackPanel>
+                                                <TextBlock Text="{loc:Loc settings.linkly.mode.localIp}" FontWeight="Bold" />
+                                                <TextBlock Text="{loc:Loc settings.linkly.mode.localIp.help}"
+                                                           FontSize="11"
+                                                           Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,4,0,0" />
+                                            </StackPanel>
+                                        </Border>
                                     </RadioButton>
                                     <RadioButton GroupName="LinklySettingsMode"
                                                  IsChecked="{Binding IsLinklyCloudDirectSyncMode, Mode=TwoWay}"
+                                                 HorizontalContentAlignment="Stretch"
                                                  Margin="0,0,0,8">
-                                        <StackPanel>
-                                            <TextBlock Text="{loc:Loc settings.linkly.mode.cloudDirectSync}" FontWeight="Bold" />
-                                            <TextBlock Text="{loc:Loc settings.linkly.mode.cloudDirectSync.help}"
-                                                       FontSize="11"
-                                                       Foreground="{StaticResource PosMutedForegroundBrush}"
-                                                       TextWrapping="Wrap"
-                                                       Margin="0,4,0,0" />
-                                        </StackPanel>
+                                        <Border Style="{StaticResource SettingsModeChoiceBorderStyle}">
+                                            <StackPanel>
+                                                <TextBlock Text="{loc:Loc settings.linkly.mode.cloudDirectSync}" FontWeight="Bold" />
+                                                <TextBlock Text="{loc:Loc settings.linkly.mode.cloudDirectSync.help}"
+                                                           FontSize="11"
+                                                           Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,4,0,0" />
+                                            </StackPanel>
+                                        </Border>
                                     </RadioButton>
-                                    <RadioButton GroupName="LinklySettingsMode"
-                                                 IsChecked="{Binding IsLinklyCloudBackendAsyncMode, Mode=TwoWay}">
-                                        <StackPanel>
-                                            <TextBlock Text="{loc:Loc settings.linkly.mode.cloudBackendAsync}" FontWeight="Bold" />
-                                            <TextBlock Text="{loc:Loc settings.linkly.mode.cloudBackendAsync.help}"
-                                                       FontSize="11"
-                                                       Foreground="{StaticResource PosMutedForegroundBrush}"
-                                                       TextWrapping="Wrap"
-                                                       Margin="0,4,0,0" />
-                                        </StackPanel>
-                                    </RadioButton>
-                                </StackPanel>
+                                     <RadioButton GroupName="LinklySettingsMode"
+                                                  IsChecked="{Binding IsLinklyCloudBackendAsyncMode, Mode=TwoWay}"
+                                                  HorizontalContentAlignment="Stretch">
+                                        <Border Style="{StaticResource SettingsModeChoiceBorderStyle}">
+                                            <StackPanel>
+                                                <TextBlock Text="{loc:Loc settings.linkly.mode.cloudBackendAsync}" FontWeight="Bold" />
+                                                <TextBlock Text="{loc:Loc settings.linkly.mode.cloudBackendAsync.help}"
+                                                           FontSize="11"
+                                                           Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                           TextWrapping="Wrap"
+                                                           Margin="0,4,0,0" />
+                                            </StackPanel>
+                                         </Border>
+                                     </RadioButton>
+                                     <Button Command="{Binding OpenLinklySetupInstructionsCommand}"
+                                             Style="{StaticResource PosSecondaryButtonStyle}"
+                                             Height="42"
+                                             HorizontalAlignment="Left"
+                                             MinWidth="168"
+                                             Margin="0,4,0,0">
+                                         <StackPanel Orientation="Horizontal">
+                                             <materialDesign:PackIcon Kind="BookOpenPageVariantOutline"
+                                                                      Width="18"
+                                                                      Height="18"
+                                                                      Margin="0,0,8,0" />
+                                             <TextBlock Text="{loc:Loc settings.linkly.sop.open}" />
+                                         </StackPanel>
+                                     </Button>
+                                 </StackPanel>
+                                </Grid>
 
-                                <Button Command="{Binding OpenLinklySetupInstructionsCommand}"
-                                        Style="{StaticResource PosSecondaryButtonStyle}"
-                                        Height="42"
-                                        HorizontalAlignment="Left"
-                                        MinWidth="168"
-                                        Margin="0,0,0,16">
-                                    <StackPanel Orientation="Horizontal">
-                                        <materialDesign:PackIcon Kind="BookOpenPageVariantOutline"
-                                                                 Width="18"
-                                                                 Height="18"
-                                                                 Margin="0,0,8,0" />
-                                        <TextBlock Text="{loc:Loc settings.linkly.sop.open}" />
-                                    </StackPanel>
-                                </Button>
+                                <StackPanel Grid.Row="1" Grid.Column="2">
 
                                 <Expander Visibility="Collapsed"
                                           Margin="0,0,0,16"
@@ -1022,15 +1341,53 @@
                                                    Foreground="{StaticResource PosMutedForegroundBrush}"
                                                    TextWrapping="Wrap" />
                                     </Border>
-                                    <TextBlock Text="{loc:Loc settings.linkly.localIp.ipAddress}" Style="{StaticResource SettingsLabelStyle}" />
-                                    <TextBox Text="{Binding LinklyHostText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                             Style="{StaticResource SettingsFieldTextBoxStyle}"
-                                             Margin="0,0,0,14" />
+                                    <Grid Margin="0,0,0,14">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="12" />
+                                            <ColumnDefinition Width="180" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="{loc:Loc settings.linkly.localIp.ipAddress}"
+                                                       Style="{StaticResource SettingsLabelStyle}" />
+                                            <TextBox Text="{Binding LinklyHostText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                     Style="{StaticResource SettingsFieldTextBoxStyle}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Text="{loc:Loc settings.linkly.port}"
+                                                       Style="{StaticResource SettingsLabelStyle}" />
+                                            <TextBox Text="{Binding LinklyPortText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                     Style="{StaticResource SettingsFieldTextBoxStyle}" />
+                                        </StackPanel>
+                                    </Grid>
 
-                                    <TextBlock Text="{loc:Loc settings.linkly.port}" Style="{StaticResource SettingsLabelStyle}" />
-                                    <TextBox Text="{Binding LinklyPortText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                    <TextBlock Text="{loc:Loc settings.square.timeoutSeconds}"
+                                               Style="{StaticResource SettingsLabelStyle}" />
+                                    <TextBox Text="{Binding TimeoutSecondsText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                              Style="{StaticResource SettingsFieldTextBoxStyle}"
-                                             Margin="0,0,0,18" />
+                                             Width="180"
+                                             HorizontalAlignment="Left"
+                                             Margin="0,0,0,12" />
+
+                                    <Border Background="#FFFFF8E8"
+                                            BorderBrush="#FFFFD597"
+                                            BorderThickness="1"
+                                            CornerRadius="6"
+                                            Padding="10,8"
+                                            Margin="0,0,0,14">
+                                        <DockPanel>
+                                            <materialDesign:PackIcon DockPanel.Dock="Left"
+                                                                     Kind="AlertOutline"
+                                                                     Width="18"
+                                                                     Height="18"
+                                                                     Foreground="#FFEF8A00"
+                                                                     Margin="0,0,8,0" />
+                                            <TextBlock Text="{loc:Loc settings.linkly.localIp.testSafetyShort}"
+                                                       FontSize="11"
+                                                       Foreground="#FF8F4E00"
+                                                       TextWrapping="Wrap" />
+                                        </DockPanel>
+                                    </Border>
                                 </StackPanel>
 
                                 <StackPanel Visibility="{Binding IsLinklyCloudDirectSyncMode, Converter={StaticResource BoolToVis}}">
@@ -1377,11 +1734,33 @@
                                                TextWrapping="Wrap" />
                                 </Border>
                             </StackPanel>
-                        </Border>
+                            </Grid>
+                                </Border>
+                            </TabItem>
+                        </TabControl>
                     </Grid>
 
-                    <StackPanel Visibility="{Binding IsReceiptPrinterSelected, Converter={StaticResource BoolToVis}}">
-                        <Border Style="{StaticResource SettingsActionCardStyle}">
+                    <Grid Visibility="{Binding IsReceiptPrinterSelected, Converter={StaticResource BoolToVis}}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="2.35*" />
+                            <ColumnDefinition Width="16" />
+                            <ColumnDefinition Width="0.85*" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Row="0" Grid.ColumnSpan="3" Margin="10,2,0,18">
+                            <TextBlock Text="{Binding ReceiptPrinterTitleText}"
+                                       Style="{StaticResource SettingsPageTitleStyle}" />
+                            <TextBlock Text="{loc:Loc settings.receiptPrinter.description}"
+                                       Style="{StaticResource SettingsPageDescriptionStyle}" />
+                        </StackPanel>
+
+                        <Border Grid.Row="1"
+                                Grid.Column="0"
+                                Style="{StaticResource SettingsActionCardStyle}">
                             <Grid>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto" />
@@ -1535,100 +1914,266 @@
                                 </DockPanel>
                             </Grid>
                         </Border>
-                    </StackPanel>
 
-                    <StackPanel Visibility="{Binding IsDeviceRegistrationSelected, Converter={StaticResource BoolToVis}}">
-                        <controls:ApiServerSettingsPanel DataContext="{Binding ApiServerSettings}"
-                                                         Margin="0,0,0,16" />
-                        <Border Style="{StaticResource SettingsActionCardStyle}">
-                            <DockPanel>
-                                <Border DockPanel.Dock="Left"
-                                        Width="42"
-                                        Height="42"
-                                        Background="#FFE8F0FE"
+                        <Border Grid.Row="1"
+                                Grid.Column="2"
+                                Style="{StaticResource SettingsActionCardStyle}"
+                                Padding="16">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,14">
+                                    <materialDesign:PackIcon Kind="ReceiptTextOutline"
+                                                             Width="22"
+                                                             Height="22"
+                                                             Foreground="{StaticResource PosPrimaryBrush}"
+                                                             Margin="0,0,9,0" />
+                                    <TextBlock Text="{loc:Loc settings.receiptPrinter.preview}"
+                                               FontSize="15"
+                                               FontWeight="Black"
+                                               VerticalAlignment="Center" />
+                                </StackPanel>
+
+                                <Border Grid.Row="1"
+                                        Background="#FFF4F6F9"
+                                        BorderBrush="#FFE0E4EC"
+                                        BorderThickness="1"
                                         CornerRadius="8"
-                                        Margin="0,0,14,0">
+                                        Padding="18">
+                                    <Border Width="220"
+                                            MinHeight="410"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Top"
+                                            Background="#FFFFFFFF"
+                                            Padding="18,24">
+                                        <Border.Effect>
+                                            <DropShadowEffect BlurRadius="12" ShadowDepth="3" Opacity="0.18" Color="#FF64748B" />
+                                        </Border.Effect>
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding ReceiptBrandNameText}"
+                                                       FontSize="19"
+                                                       FontWeight="Black"
+                                                       TextAlignment="Center"
+                                                       TextWrapping="Wrap" />
+                                            <TextBlock Text="{Binding ReceiptStoreNameText}"
+                                                       FontSize="13"
+                                                       FontWeight="SemiBold"
+                                                       TextAlignment="Center"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,10,0,0" />
+                                            <TextBlock Text="{Binding ReceiptStoreAddressText}"
+                                                       FontSize="10"
+                                                       Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                       TextAlignment="Center"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,6,0,0" />
+                                            <TextBlock Text="{Binding ReceiptStorePhoneText}"
+                                                       FontSize="10"
+                                                       Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                       TextAlignment="Center"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,4,0,0" />
+                                            <TextBlock Text="{Binding ReceiptAbnText}"
+                                                       FontSize="10"
+                                                       Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                       TextAlignment="Center"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,4,0,0" />
+                                            <Border BorderBrush="#FF9AA4B2"
+                                                    BorderThickness="0,1,0,0"
+                                                    Margin="0,20,0,18" />
+                                            <TextBlock Text="{loc:Loc settings.receiptPrinter.test}"
+                                                       FontSize="15"
+                                                       FontWeight="Black"
+                                                       TextAlignment="Center" />
+                                            <Border BorderBrush="#FF9AA4B2"
+                                                    BorderThickness="0,1,0,0"
+                                                    Margin="0,18,0,18" />
+                                            <TextBlock Text="{Binding ReceiptReturnPolicyText}"
+                                                       FontSize="10"
+                                                       Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                       TextAlignment="Center"
+                                                       TextWrapping="Wrap" />
+                                        </StackPanel>
+                                    </Border>
+                                </Border>
+                            </Grid>
+                        </Border>
+                    </Grid>
+
+                    <Grid Visibility="{Binding IsDeviceRegistrationSelected, Converter={StaticResource BoolToVis}}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1.05*" />
+                            <ColumnDefinition Width="16" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Row="0"
+                                Grid.ColumnSpan="3"
+                                Style="{StaticResource SettingsActionCardStyle}"
+                                Margin="0,0,0,16">
+                            <DockPanel>
+                                <Border DockPanel.Dock="Right"
+                                        Background="#FFE8F7F1"
+                                        CornerRadius="8"
+                                        Padding="12,8"
+                                        Margin="18,0,0,0">
+                                    <StackPanel Orientation="Horizontal">
+                                        <materialDesign:PackIcon Kind="CheckCircleOutline"
+                                                                 Width="19"
+                                                                 Height="19"
+                                                                 Foreground="#FF0A8F55"
+                                                                 Margin="0,0,7,0" />
+                                        <TextBlock Text="{loc:Loc settings.deviceRegistration.active}"
+                                                   FontSize="11"
+                                                   FontWeight="Bold"
+                                                   Foreground="#FF0A8F55"
+                                                   VerticalAlignment="Center" />
+                                    </StackPanel>
+                                </Border>
+                                <Border DockPanel.Dock="Left"
+                                        Width="58"
+                                        Height="58"
+                                        Background="#FFEAF2FF"
+                                        CornerRadius="10"
+                                        Margin="0,0,18,0">
                                     <materialDesign:PackIcon Kind="CashRegister"
-                                                             Width="24"
-                                                             Height="24"
+                                                             Width="34"
+                                                             Height="34"
                                                              Foreground="{StaticResource PosPrimaryBrush}"
                                                              HorizontalAlignment="Center"
                                                              VerticalAlignment="Center" />
                                 </Border>
-                                <Button DockPanel.Dock="Right"
-                                        Command="{Binding ReregisterDeviceCommand}"
-                                        Style="{StaticResource PosPrimaryButtonStyle}"
-                                        Height="42"
-                                        MinWidth="154"
-                                        Margin="18,0,0,0">
-                                    <StackPanel Orientation="Horizontal">
-                                        <materialDesign:PackIcon Kind="AccountSwitch" Width="18" Height="18" Margin="0,0,8,0" Foreground="White" />
-                                        <TextBlock Text="{loc:Loc settings.deviceRegistration.action}" Foreground="White" />
-                                    </StackPanel>
-                                </Button>
-                                <StackPanel>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="{loc:Loc settings.deviceRegistration.current}"
+                                               FontSize="11"
+                                               FontWeight="Bold"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}" />
+                                    <TextBlock FontSize="21"
+                                               FontWeight="Black"
+                                               Foreground="{StaticResource PosTextBrush}"
+                                               Margin="0,3,0,0">
+                                        <Run Text="{Binding Session.StoreName, Mode=OneWay}" />
+                                        <Run Text=" (" />
+                                        <Run Text="{Binding Session.StoreCode, Mode=OneWay}" />
+                                        <Run Text=")" />
+                                    </TextBlock>
+                                    <TextBlock FontSize="11"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                                               Margin="0,4,0,0">
+                                        <Run Text="{loc:Loc settings.deviceRegistration.thisDevice}" />
+                                        <Run Text=": " />
+                                        <Run Text="{Binding Session.DeviceCode, Mode=OneWay}" />
+                                    </TextBlock>
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+
+                        <controls:ApiServerSettingsPanel DataContext="{Binding ApiServerSettings}"
+                                                         Grid.Row="1"
+                                                         Grid.Column="0" />
+
+                        <Border Grid.Row="1"
+                                Grid.Column="2"
+                                Style="{StaticResource SettingsActionCardStyle}">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <StackPanel Grid.Row="0">
                                     <TextBlock Text="{Binding DeviceRegistrationTitleText}"
                                                FontSize="18"
                                                FontWeight="Black"
                                                Foreground="{StaticResource PosTextBrush}" />
                                     <TextBlock Text="{loc:Loc settings.deviceRegistration.description}"
-                                               FontSize="12"
+                                               Style="{StaticResource SettingsPageDescriptionStyle}" />
+                                </StackPanel>
+
+                                <Border Grid.Row="1"
+                                        Background="#FFFFF7E8"
+                                        BorderBrush="#FFFFD59B"
+                                        BorderThickness="1"
+                                        CornerRadius="8"
+                                        Padding="14,12"
+                                        Margin="0,18,0,18">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="30" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <materialDesign:PackIcon Grid.Column="0"
+                                                                 Kind="ShieldAccountOutline"
+                                                                 Width="20"
+                                                                 Height="20"
+                                                                 Foreground="#FFEF8A00"
+                                                                 VerticalAlignment="Top" />
+                                        <TextBlock Grid.Column="1"
+                                                   Text="{loc:Loc settings.deviceRegistration.supervisorRequired}"
+                                                   FontSize="11"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="#FF7A4A00"
+                                                   TextWrapping="Wrap" />
+                                    </Grid>
+                                </Border>
+
+                                <StackPanel Grid.Row="2" Margin="0,0,0,18">
+                                    <TextBlock Text="{loc:Loc settings.deviceRegistration.beforeContinue}"
+                                               FontSize="13"
+                                               FontWeight="Black"
+                                               Margin="0,0,0,12" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                        <materialDesign:PackIcon Kind="Cart" Width="20" Height="20" Foreground="{StaticResource PosPrimaryBrush}" Margin="0,0,10,0" />
+                                        <TextBlock Text="{loc:Loc settings.deviceRegistration.checkCart}"
+                                                   FontSize="11"
+                                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                        <materialDesign:PackIcon Kind="CreditCard" Width="20" Height="20" Foreground="{StaticResource PosPrimaryBrush}" Margin="0,0,10,0" />
+                                        <TextBlock Text="{loc:Loc settings.deviceRegistration.checkPayment}"
+                                                   FontSize="11"
+                                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <materialDesign:PackIcon Kind="Sync" Width="20" Height="20" Foreground="{StaticResource PosPrimaryBrush}" Margin="0,0,10,0" />
+                                        <TextBlock Text="{loc:Loc settings.deviceRegistration.checkSync}"
+                                                   FontSize="11"
+                                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <StackPanel Grid.Row="3">
+                                    <Button Command="{Binding ReregisterDeviceCommand}"
+                                            Style="{StaticResource PosPrimaryButtonStyle}"
+                                            Height="46"
+                                            HorizontalAlignment="Stretch">
+                                        <StackPanel Orientation="Horizontal">
+                                            <materialDesign:PackIcon Kind="AccountSwitch" Width="18" Height="18" Margin="0,0,8,0" Foreground="White" />
+                                            <TextBlock Text="{loc:Loc settings.deviceRegistration.action}" Foreground="White" />
+                                        </StackPanel>
+                                    </Button>
+                                    <TextBlock Text="{loc:Loc settings.deviceRegistration.deviceReuse}"
+                                               FontSize="10"
                                                Foreground="{StaticResource PosMutedForegroundBrush}"
                                                TextWrapping="Wrap"
-                                               Margin="0,5,0,0" />
+                                               Margin="0,10,0,0" />
                                 </StackPanel>
-                            </DockPanel>
+                            </Grid>
                         </Border>
-                    </StackPanel>
+                    </Grid>
                 </Grid>
             </ScrollViewer>
-
-            <Border Grid.Column="2"
-                    Background="{StaticResource PosSurfaceBrush}"
-                    BorderBrush="#FFE0E4EC"
-                    BorderThickness="1"
-                    CornerRadius="8"
-                    Padding="14">
-                <StackPanel>
-                    <TextBlock Text="{loc:Loc settings.category.title}"
-                               FontSize="13"
-                               FontWeight="Black"
-                               Foreground="{StaticResource PosTextBrush}"
-                               Margin="2,0,0,12" />
-
-                    <Button Command="{Binding SelectDataMaintenanceCommand}"
-                            Style="{StaticResource SettingsCategoryButtonStyle}">
-                        <StackPanel Orientation="Horizontal">
-                            <materialDesign:PackIcon Kind="DatabaseSyncOutline" Width="20" Height="20" Margin="0,0,10,0" />
-                            <TextBlock Text="{Binding DataMaintenanceTitleText}" FontWeight="Bold" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Button>
-
-                    <Button Command="{Binding SelectPaymentTerminalCommand}"
-                            Style="{StaticResource SettingsCategoryButtonStyle}">
-                        <StackPanel Orientation="Horizontal">
-                            <materialDesign:PackIcon Kind="ContactlessPayment" Width="20" Height="20" Margin="0,0,10,0" />
-                            <TextBlock Text="{loc:Loc settings.category.paymentTerminal}" FontWeight="Bold" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Button>
-
-                    <Button Command="{Binding SelectReceiptPrinterCommand}"
-                            Style="{StaticResource SettingsCategoryButtonStyle}">
-                        <StackPanel Orientation="Horizontal">
-                            <materialDesign:PackIcon Kind="Printer" Width="20" Height="20" Margin="0,0,10,0" />
-                            <TextBlock Text="{loc:Loc settings.category.receiptPrinter}" FontWeight="Bold" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Button>
-
-                    <Button Command="{Binding SelectDeviceRegistrationCommand}"
-                            Style="{StaticResource SettingsCategoryButtonStyle}">
-                        <StackPanel Orientation="Horizontal">
-                            <materialDesign:PackIcon Kind="CashRegister" Width="20" Height="20" Margin="0,0,10,0" />
-                            <TextBlock Text="{Binding DeviceRegistrationTitleText}" FontWeight="Bold" VerticalAlignment="Center" />
-                        </StackPanel>
-                    </Button>
-                </StackPanel>
-            </Border>
         </Grid>
 
         <Border Grid.Row="2"
