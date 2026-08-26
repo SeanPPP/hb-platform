@@ -7,6 +7,12 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { buildReleaseEvent, reportReleaseEvent } from "../../../scripts/performance/report-release-event.mjs";
+import {
+  resolveReleaseCommit,
+  selectReleaseEventCommit,
+} from "../../../scripts/performance/release-commit.mjs";
+
 const require = createRequire(import.meta.url);
 const { getConfig } = require("expo/config");
 
@@ -29,6 +35,15 @@ const EMPTY_EAS_RESULT = Object.freeze({
   dashboardUrl: "",
   publishedAtUtc: "",
 });
+
+function requireReleaseReporterConfig(environment) {
+  const baseUrl = environment.PERFORMANCE_SERVICE_URL?.trim();
+  const token = environment.PERFORMANCE_SERVICE_TOKEN?.trim();
+  if (!baseUrl || !token) {
+    throw new Error("发布 OTA 前必须配置 PERFORMANCE_SERVICE_URL 和 PERFORMANCE_SERVICE_TOKEN");
+  }
+  return { baseUrl, token };
+}
 
 const HELP_TEXT = `
 用法：
@@ -366,6 +381,8 @@ export async function runPublishPosIpadOtaRelease(
     readAccessTokenStdinFn = readAccessTokenFromStdin,
     readMockOutputFn = readMockOutput,
     registerOtaReleaseFn = registerOtaRelease,
+    reportReleaseEventFn,
+    resolveReleaseCommitFn = resolveReleaseCommit,
     runCommandFn = runCommand,
   } = {},
 ) {
@@ -415,6 +432,11 @@ export async function runPublishPosIpadOtaRelease(
     baseUrl: configuration.centerBaseUrl,
     accessToken: configuration.accessToken,
   };
+  const releaseReporterConfig = reportReleaseEventFn
+    ? requireReleaseReporterConfig(environment)
+    : null;
+  // 在 EAS 或 Center 写入前冻结 commit，避免本地运行到副作用后才发现无法登记验收。
+  const resolvedCommit = resolveReleaseCommitFn({ environment });
   await preflightOtaReleaseFn(options.releaseChannel, centerAccess);
   logger.log("Center release channel 预检通过。");
 
@@ -462,6 +484,33 @@ export async function runPublishPosIpadOtaRelease(
     throw error;
   }
   logger.log(`OTA release 已登记：${registration.url}`);
+  if (reportReleaseEventFn) {
+    // 只有 EAS 发布和 Center 登记均成功后，才允许记为 accepted deploy。
+    const event = buildReleaseEvent({
+      action: "deploy",
+      conclusion: "accepted",
+      component: "pos-ipad",
+      environment: "Production",
+      releaseId: payload.updateGroupId,
+      commitSha: selectReleaseEventCommit({
+        payloadCommit: payload.gitCommitHash,
+        resolvedCommit,
+      }),
+      startedAtUtc: payload.publishedAtUtc,
+      completedAtUtc: new Date().toISOString(),
+      healthChecked: true,
+      sourceProvider: "expo-ota",
+      sourceRunId: payload.updateGroupId,
+    });
+    try {
+      await reportReleaseEventFn({ event, config: releaseReporterConfig });
+    } catch (error) {
+      throw new Error(
+        `OTA 已发布并登记，不得重新发布，只重试 release event 上报：${error.message}`,
+      );
+    }
+    logger.log("OTA release 验收已上报。");
+  }
   logger.log("未创建或激活 rollout。");
   return Object.freeze({
     dryRun: false,
@@ -833,7 +882,14 @@ async function main() {
     console.log(HELP_TEXT.trim());
     return;
   }
-  await runPublishPosIpadOtaRelease(options);
+  await runPublishPosIpadOtaRelease(options, {
+    reportReleaseEventFn: ({ event, config }) =>
+      reportReleaseEvent({
+        event,
+        baseUrl: config.baseUrl,
+        token: config.token,
+      }),
+  });
 }
 
 if (

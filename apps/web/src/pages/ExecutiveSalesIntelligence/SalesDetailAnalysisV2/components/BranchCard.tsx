@@ -1,9 +1,10 @@
 import { LoadingOutlined, ShopOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { Spin, Table } from 'antd';
+import { Spin } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import React, { useMemo } from 'react';
 import styles from '../styles.module.css';
+import { MeasuredTable } from '../../../../components/MeasuredTable';
 
 export interface BranchDistributionData {
   rank: number;
@@ -388,7 +389,7 @@ const BranchCard: React.FC<BranchCardProps> = ({
             </span>
           </div>
         ) : (
-          <Table
+          <MeasuredTable metricId="executive-sales-intelligence.sales-detail-analysis-v2.branch-card.table-1"
             columns={columns}
             dataSource={data}
             rowKey="rank"

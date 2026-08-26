@@ -9,6 +9,7 @@ using BlazorApp.Shared;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 
@@ -121,6 +122,7 @@ namespace BlazorApp.Api.Controllers.React
 
         [HttpGet("copy-store-data/stream")]
         [Authorize(Roles = "Admin")]
+        [DisableHttpMetrics]
         public async Task CopyStoreDataStream(
             [FromQuery] string sourceStoreCode,
             [FromQuery] string[] targetStoreCodes,

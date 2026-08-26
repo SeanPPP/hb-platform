@@ -11,7 +11,6 @@ import {
   QRCode,
   Segmented,
   Space,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -57,6 +56,7 @@ import {
 import { formatAppDownloadLocalDateTime } from './time'
 import AppUpdatePolicyPanel from './AppUpdatePolicyPanel'
 import ServiceApiTokensPanel from './ServiceApiTokensPanel'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 function formatVersion(build?: MobileAppBuild | null) {
   if (!build) {
@@ -763,7 +763,7 @@ export default function AppDownloadsPage() {
       </Card>
 
       <Card title={t('system.appDownloads.historyTitle')}>
-        <Table<MobileAppBuild>
+        <MeasuredTable<MobileAppBuild> metricId="system.app-downloads.table-1"
           rowKey="id"
           loading={buildLoading}
           columns={columns}
@@ -800,7 +800,7 @@ export default function AppDownloadsPage() {
             description={t('system.appDownloads.ota.loadFailedDescription')}
           />
         ) : null}
-        <Table<MobileAppOtaUpdate>
+        <MeasuredTable<MobileAppOtaUpdate> metricId="system.app-downloads.table-2"
           rowKey="id"
           loading={otaLoading}
           columns={otaColumns}

@@ -31,7 +31,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -44,6 +43,7 @@ import {
 } from '../../../utils/latestRequestGuard'
 import ProductPicker from './ProductPicker'
 import { getPromotionEditorStoreCodes } from './promotionStoreScope'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 type DataType = PromotionListDto & { key: string }
 
@@ -267,7 +267,7 @@ export default function PromotionsPage() {
         <Form.Item><Space><Button type="primary" htmlType="submit">{t('common.query')}</Button><Button onClick={() => { form.resetFields(); loadData() }}>{t('common.reset')}</Button></Space></Form.Item>
       </Form>
 
-      <Table rowKey="key" loading={loading} dataSource={data} columns={columns} pagination={{ total, current: page, pageSize, showSizeChanger: true, pageSizeOptions: ['10', '20', '50', '100', '200'] }} onChange={onTableChange} />
+      <MeasuredTable metricId="pos-admin.promotions.table-1" rowKey="key" loading={loading} dataSource={data} columns={columns} pagination={{ total, current: page, pageSize, showSizeChanger: true, pageSizeOptions: ['10', '20', '50', '100', '200'] }} onChange={onTableChange} />
 
       <Modal open={editorOpen} title={editingId === null ? t('posAdmin.promotions.createPromotion', '新建促销') : t('posAdmin.promotions.editPromotion', '编辑促销')} onCancel={() => setEditorOpen(false)} onOk={saveEditor} width={900} forceRender>
         <Form form={editorForm} layout="vertical">
@@ -318,7 +318,7 @@ export default function PromotionsPage() {
               ]
               return (
                 <>
-                  <Table rowKey="key" dataSource={dataSource} columns={productColumns as any} pagination={false} />
+                  <MeasuredTable metricId="pos-admin.promotions.table-2" rowKey="key" dataSource={dataSource} columns={productColumns as any} pagination={false} />
                   <Form.Item style={{ marginTop: 8 }}>
                     <Button type="dashed" onClick={() => setPickerOpen(true)}>{t('posAdmin.promotions.addProduct')}</Button>
                   </Form.Item>

@@ -84,7 +84,7 @@ export type SalesFeedbackEvent = Readonly<{
   attemptId?: string;
   source?: "manual" | "hid" | "camera";
   lineId?: string;
-  /** 临时性能测量会话 id；业务和界面状态不得读取。 */
+  /** HID 时序会话 id；业务和界面状态不得读取。 */
   timingId?: string;
 }>;
 
@@ -178,7 +178,7 @@ export interface SalesWorkflowPort {
     lookupCode: string,
     options?: Readonly<{
       source?: "manual" | "hid" | "camera";
-      /** 临时性能测量会话 id，仅供 scan-timing 打点使用。 */
+      /** HID 时序会话 id，仅供 scan-timing 打点使用。 */
       timingId?: string;
     }>,
   ): Promise<string | null>;
@@ -499,31 +499,41 @@ export class SalesPresenter {
     lookupCode: string,
     source: "hid" | "camera",
   ): Promise<boolean> {
-    if (!this.dependencies.capabilities.catalog) {
-      this.patchState({ errorCode: "runtime-unavailable" });
-      this.publishBlockedAddAttempt(source);
-      return Promise.resolve(false);
-    }
-    if (!lookupCode.trim()) {
-      this.publishBlockedAddAttempt(source);
-      return Promise.resolve(false);
-    }
-    if (!this.canMutateNewTransaction()) {
-      this.publishBlockedAddAttempt(source);
-      return Promise.resolve(false);
-    }
     const timingId =
       source === "hid"
         ? `scan-${(this.nextScanTimingId += 1)}`
         : undefined;
     scanTiming.beginHid(timingId);
+    const completeRejectedHid = () => {
+      scanTiming.complete(timingId, "failure");
+    };
+    if (!this.dependencies.capabilities.catalog) {
+      this.patchState({ errorCode: "runtime-unavailable" });
+      this.publishBlockedAddAttempt(source);
+      completeRejectedHid();
+      return Promise.resolve(false);
+    }
+    if (!lookupCode.trim()) {
+      this.publishBlockedAddAttempt(source);
+      completeRejectedHid();
+      return Promise.resolve(false);
+    }
+    if (!this.canMutateNewTransaction()) {
+      this.publishBlockedAddAttempt(source);
+      completeRejectedHid();
+      return Promise.resolve(false);
+    }
     return this.dependencies.workflow
       .addByLookupCode(
         lookupCode,
         timingId === undefined ? { source } : { source, timingId },
       )
       .then(() => true)
-      .catch(() => false);
+      .catch(() => {
+        // runtime 会优先发布权威失败；这里只为失效会话等未发布分支兜底。
+        completeRejectedHid();
+        return false;
+      });
   }
 
   public addOpenItem(unitPriceCents: number): Promise<boolean> {

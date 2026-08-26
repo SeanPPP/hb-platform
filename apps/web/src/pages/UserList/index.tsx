@@ -1,10 +1,11 @@
 import { SearchOutlined } from '@ant-design/icons'
-import { Button, Card, Input, Space, Table, Tag, Typography } from 'antd'
+import { Button, Card, Input, Space, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { TFunction } from 'i18next'
 import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import PageContainer from '../../components/PageContainer'
+import { MeasuredTable } from '../../components/MeasuredTable'
 
 interface UserRow {
   key: string
@@ -88,7 +89,7 @@ export default function UserListPage() {
           <Typography.Text type="secondary">{t('userList.currentCount', '当前计数')}：{clickCount}</Typography.Text>
         </Space>
 
-        <Table
+        <MeasuredTable metricId="user-list.table-1"
           rowKey="key"
           columns={columns}
           dataSource={data}

@@ -1,5 +1,5 @@
 import { FilePdfOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, DatePicker, Empty, Image, Input, Select, Space, Table, Typography, message } from 'antd'
+import { Alert, Button, Card, DatePicker, Empty, Image, Input, Select, Space, Typography, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -22,6 +22,7 @@ import {
   collectRetailPriceChangesForPdf,
   mapRetailPriceChangesPdfRows,
 } from './pdfExport'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { RangePicker } = DatePicker
 const API_PATH = '/api/react/v1/warehouse-retail-price-changes'
@@ -244,7 +245,7 @@ export default function RetailPriceChangesPage() {
       </Space>
       <Alert showIcon type="info" style={{ marginBottom: 12 }} message={t('warehouse.retailPriceChanges.auditNotice')} />
       {error ? <Typography.Text type="danger" style={{ display: 'block', marginBottom: 8 }}>{getErrorMessage(error, t('warehouse.retailPriceChanges.loadFailed'))}</Typography.Text> : null}
-      <Table
+      <MeasuredTable metricId="warehouse.retail-price-changes.table-1"
         size="small"
         loading={loading}
         rowKey="productCode"

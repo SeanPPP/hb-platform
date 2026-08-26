@@ -10,7 +10,6 @@ import {
   Popconfirm,
   Select,
   Space,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -35,6 +34,7 @@ import {
   resolveServiceApiTokenApiBaseUrl,
   resolveServiceApiTokenStatusColor,
 } from './serviceApiTokenPanelLogic'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const DEFAULT_TOKEN_PURPOSE: ServiceApiTokenPurpose = 'mobile-ota-publisher'
 
@@ -245,7 +245,7 @@ export default function ServiceApiTokensPanel() {
             message={t('system.appDownloads.serviceTokens.loadFailed')}
           />
         ) : null}
-        <Table<ServiceApiToken>
+        <MeasuredTable<ServiceApiToken> metricId="system.app-downloads.service-api-tokens-panel.table-1"
           rowKey="id"
           loading={loading}
           columns={columns}
@@ -350,6 +350,18 @@ export default function ServiceApiTokensPanel() {
                   value: 'pos-ipad-update-decision-reader',
                   label: t(
                     'system.appDownloads.serviceTokens.purposes.pos-ipad-update-decision-reader.label',
+                  ),
+                },
+                {
+                  value: 'quality-ci-reporter',
+                  label: t(
+                    'system.appDownloads.serviceTokens.purposes.quality-ci-reporter.label',
+                  ),
+                },
+                {
+                  value: 'deployment-acceptance-reporter',
+                  label: t(
+                    'system.appDownloads.serviceTokens.purposes.deployment-acceptance-reporter.label',
                   ),
                 },
               ]}

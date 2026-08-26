@@ -24,6 +24,7 @@ type ScannerRouteContextValue = Readonly<{
 type RouteHidScannerCaptureProps = Readonly<{
   context: ScannerCaptureContext;
   enabled?: boolean;
+  onHidTextChange?: () => void;
   onScan(
     value: string,
     source?: RoutedScanEvent["source"],
@@ -88,6 +89,7 @@ export function RouteHidScannerCapture(props: RouteHidScannerCaptureProps) {
 function ActiveRouteHidScannerCapture({
   context,
   enabled = true,
+  onHidTextChange,
   onScan,
   path,
   scanner,
@@ -119,6 +121,7 @@ function ActiveRouteHidScannerCapture({
     <HidScannerCapture
       active={active}
       focusRequestKey={`${path}:${supervisorAwaiting ? "supervisor" : "route"}`}
+      {...(onHidTextChange ? { onHidTextChange } : {})}
       scanner={scanner}
     />
   );

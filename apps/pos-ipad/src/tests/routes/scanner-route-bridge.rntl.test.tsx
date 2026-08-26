@@ -90,6 +90,7 @@ test("路由切换和主管弹窗只把完整 HID 条码交给当前 context，�
   };
   const onScan =
     jest.fn<(value: string, source?: "hid" | "camera") => void>();
+  const onHidTextChange = jest.fn();
   mockRuntime = {
     services: {
       operationAuthorization: {
@@ -108,6 +109,7 @@ test("路由切换和主管弹窗只把完整 HID 条码交给当前 context，�
     <ScannerRouteProvider>
       <RouteHidScannerCapture
         context="product"
+        onHidTextChange={onHidTextChange}
         onScan={onScan}
         path="/sales"
       />
@@ -152,6 +154,7 @@ test("同一次 HID 回车同时触发 keyPress 和 submitEditing 时只提交�
   const scanner = new HidScannerRouter();
   const onScan =
     jest.fn<(value: string, source?: "hid" | "camera") => void>();
+  const onHidTextChange = jest.fn();
   mockRuntime = {
     services: {
       operationAuthorization: {
@@ -167,6 +170,7 @@ test("同一次 HID 回车同时触发 keyPress 和 submitEditing 时只提交�
     <ScannerRouteProvider>
       <RouteHidScannerCapture
         context="product"
+        onHidTextChange={onHidTextChange}
         onScan={onScan}
         path="/sales"
       />
@@ -185,6 +189,7 @@ test("同一次 HID 回车同时触发 keyPress 和 submitEditing 时只提交�
   await act(async () => {
     hidInput().props.onChangeText("930000000001");
   });
+  expect(onHidTextChange).toHaveBeenCalledTimes(1);
   await act(async () => {
     hidInput().props.onKeyPress({
       nativeEvent: { key: "Enter" },

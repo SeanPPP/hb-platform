@@ -7,11 +7,11 @@ import { Linking } from "react-native";
 
 import { AppUpdateCoordinator } from "../../features/app-updates/app-update-coordinator";
 import { AppUpdateOrchestrator } from "../../features/app-updates/app-update-orchestrator";
-import { createExpoAndroidNativeUpdatePort } from "../../features/app-updates/expo-android-native-update-port";
 import {
   type AppUpdateRecoveryRuntimePort,
   createAppUpdateRecoveryRuntimeSnapshot,
 } from "../../features/app-updates/app-update-recovery-contract";
+import { createExpoAndroidNativeUpdatePort } from "../../features/app-updates/expo-android-native-update-port";
 import { ExpoOtaUpdatePort } from "../../features/app-updates/expo-ota-update-port";
 import { HbposPosHandheldOtaUpdateApi } from "../../features/app-updates/hbpos-pos-handheld-ota-update-api";
 import { HbposPosHandheldUpdateApi } from "../../features/app-updates/hbpos-pos-handheld-update-api";
@@ -52,6 +52,12 @@ import {
   ApplicationLogUploader,
   resolveApplicationLogCenterConfig,
 } from "../logging/application-log";
+import { businessStartupClock } from "../performance/business-startup-clock";
+import {
+  ClientMetricRuntime,
+  clientMetrics,
+} from "../performance/client-metrics";
+import { createExpoClientMetricRuntime } from "../performance/expo-client-metric-runtime";
 import {
   createExpoAttendanceSecurityAdapter,
 } from "../peripherals/attendance-security/native";
@@ -397,6 +403,16 @@ class DeferredSecurityBridge
 }
 
 export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServices> {
+  try {
+    return await createExpoPosRuntimeServicesCore();
+  } catch (error) {
+    // 覆盖数据库打开等内部清理 try 之前的启动失败；计时器自身严格一次。
+    businessStartupClock.fail();
+    throw error;
+  }
+}
+
+async function createExpoPosRuntimeServicesCore(): Promise<ExpoPosRuntimeServices> {
   const deviceSystem = resolveHbposDeviceSystem();
   const publicExtra =
     Constants.expoConfig?.extra as HbposExtraConfig | undefined;
@@ -544,7 +560,15 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     Constants.nativeAppVersion ??
     Constants.expoConfig?.version ??
     "0.0.0";
+  const applicationLogCenterConfig = resolveApplicationLogCenterConfig({
+    enabled: publicExtra?.hbpos?.logCenter?.enabled,
+    ingestUrl: publicExtra?.hbpos?.logCenter?.ingestUrl,
+    writeKey: publicExtra?.hbpos?.logCenter?.writeKey,
+    environment: publicExtra?.hbpos?.logCenter?.environment,
+  });
   let applicationLog: ApplicationLogRuntime | null = null;
+  let clientMetricRuntime: ClientMetricRuntime | null = null;
+  let releaseClientMetricBinding: (() => void) | null = null;
   let shutdownComposition: (() => Promise<void>) | null = null;
 
   try {
@@ -568,12 +592,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       ),
       new ApplicationLogUploader(
         database.applicationLogOutbox(),
-        resolveApplicationLogCenterConfig({
-          enabled: publicExtra?.hbpos?.logCenter?.enabled,
-          ingestUrl: publicExtra?.hbpos?.logCenter?.ingestUrl,
-          writeKey: publicExtra?.hbpos?.logCenter?.writeKey,
-          environment: publicExtra?.hbpos?.logCenter?.environment,
-        }),
+        applicationLogCenterConfig,
         fetch,
         now,
       ),
@@ -668,6 +687,26 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     );
     const configuredUpdateChannel = Updates.channel?.trim() || null;
     const updateChannel = configuredUpdateChannel ?? "embedded";
+    try {
+      clientMetricRuntime = await createExpoClientMetricRuntime({
+        appVersion,
+        channel: updateChannel,
+        store: runtimeCredentials?.storeCode ?? null,
+        sessionId: createId(),
+        logCenter: applicationLogCenterConfig,
+        createId,
+        getRequestHeaders: () => deviceSession.getRequestHeaders(),
+      });
+      releaseClientMetricBinding = clientMetrics.bind(clientMetricRuntime);
+      clientMetricRuntime.start();
+    } catch (error) {
+      applicationLog.record({
+        level: "Warning",
+        message: "POS client metric runtime initialization failed.",
+        category: "runtime.performance",
+        error,
+      });
+    }
     const currentUpdateId = Updates.updateId;
     const currentUpdateGroupId = readCurrentUpdateGroupId(
       Updates.manifest,
@@ -1038,6 +1077,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     // 销售路由拿到 runtime 前必须先处理崩溃遗留的 HoldClear/RecallActive fence。
     // 初始化失败保持数据库可恢复并让启动 fail-closed，绝不开放普通收银。
     await composition.initialize();
+    businessStartupClock.markRuntimeReady();
     applicationLog.record({
       level: "Information",
       message: "POS runtime initialized.",
@@ -1089,6 +1129,8 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       applicationLog: activeApplicationLog,
       updateIdentity,
       shutdown: async () => {
+        releaseClientMetricBinding?.();
+        await clientMetricRuntime?.shutdown();
         await shutdownExpoPosRuntimeServices({
           beforeShutdown: [
             // 与 401/403/手动锁屏使用同一可信桥撤销可信会话。
@@ -1109,6 +1151,9 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
           : startupGate.device,
     };
   } catch (error) {
+    businessStartupClock.fail();
+    releaseClientMetricBinding?.();
+    await clientMetricRuntime?.shutdown();
     await recordRuntimeInitializationFailure(
       applicationLog,
       error,

@@ -28,6 +28,9 @@ const liveEnvironment = Object.freeze({
   HBPOS_OTA_CENTER_BASE_URL: "https://center.example",
   HBPOS_OTA_CENTER_ACCESS_TOKEN: administratorAccessToken,
   HBPOS_OTA_ADMIN_JWT: administratorAccessToken,
+  GITHUB_SHA: "a".repeat(40),
+  PERFORMANCE_SERVICE_URL: "https://metrics.example",
+  PERFORMANCE_SERVICE_TOKEN: "hbsvc_release_events",
 });
 
 function createJsonOutput(platform = "ios") {
@@ -306,7 +309,7 @@ test("live 只执行一次 EAS update，再用同一管理员 JWT 登记通用 O
       platform: "ios",
     },
     {
-      environment: liveEnvironment,
+      environment: { ...liveEnvironment, GITHUB_SHA: undefined },
       logger: { log() {} },
       preflightOtaReleaseFn: async () => {
         throw new Error("不得调用已删除的专用 preflight 路由");
@@ -324,14 +327,44 @@ test("live 只执行一次 EAS update，再用同一管理员 JWT 登记通用 O
         });
         return { url: buildRegistrationUrl("https://center.example") };
       },
+      reportReleaseEventFn: async ({ event, config }) => {
+        events.push("report");
+        assert.equal(event.action, "deploy");
+        assert.equal(event.status, "accepted");
+        assert.equal(event.component, "pos-handheld");
+        assert.equal(event.commit, "b".repeat(40));
+        assert.equal(config.baseUrl, "https://metrics.example");
+        assert.equal(config.token, "hbsvc_release_events");
+      },
+      resolveReleaseCommitFn: () => {
+        events.push("resolve-commit");
+        return "b".repeat(40);
+      },
     },
   );
 
-  assert.deepEqual(events, ["update", "register"]);
+  assert.deepEqual(events, ["resolve-commit", "update", "register", "report"]);
   assert.equal(payloads[0].projectName, projectName);
   assert.equal(payloads[0].channel, POS_HANDHELD_PRODUCTION_CHANNEL);
   assert.equal(payloads[0].platform, "ios");
   assert.equal(result.payload.updateId, iosUpdateId);
+
+  await assert.rejects(
+    () =>
+      runPublishPosHandheldOtaRelease(
+        { runtimeVersion: currentRuntimeVersion, message: "门店修复", platform: "ios" },
+        {
+          environment: liveEnvironment,
+          logger: { log() {} },
+          runCommandFn: async () => ({ stdout: createJsonOutput("ios"), stderr: "" }),
+          registerOtaReleaseFn: async () => ({ url: "https://center.example/registered" }),
+          reportReleaseEventFn: async () => {
+            throw new Error("release reporter unavailable");
+          },
+        },
+      ),
+    /OTA 已发布并登记，不得重新发布，只重试 release event 上报.*release reporter unavailable/,
+  );
 });
 
 test("EAS JSON channel/runtime/platform 不匹配或缺关键字段时不登记", async () => {

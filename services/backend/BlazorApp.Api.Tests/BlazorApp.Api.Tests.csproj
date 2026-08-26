@@ -166,6 +166,15 @@
     <Compile Include="ApplicationLogBackgroundServiceTests.cs" />
     <Compile Include="ServiceApiTokenAuthenticationHandlerTests.cs" />
     <Compile Include="ServiceApiTokenServiceTests.cs" />
+    <Compile Include="PerformanceBaselineCoreTests.cs" />
+    <Compile Include="PerformanceMetricServiceTests.cs" />
+    <Compile Include="PerformanceClientIngestRateLimiterTests.cs" />
+    <Compile Include="PerformanceCollectorCoordinatorTests.cs" />
+    <Compile Include="PerformanceOperationalRunServiceTests.cs" />
+    <Compile Include="PerformanceRetentionServiceTests.cs" />
+    <Compile Include="PerformanceControllerContractTests.cs" />
+    <Compile Include="SentryReleaseHealthClientTests.cs" />
+    <Compile Include="SqlPerformanceAttachmentContractTests.cs" />
     <Compile Include="TencentCloudUploadServiceTests.cs" />
     <Compile Include="TencentCosMobileAppBuildArtifactMirrorTests.cs" />
     <Compile Include="MobileAppBuildMirrorBackgroundServiceTests.cs" />

@@ -1,5 +1,5 @@
 import { ReloadOutlined, SearchOutlined } from '@ant-design/icons'
-import { Alert, Button, Checkbox, DatePicker, Empty, Input, Pagination, Select, Spin, Table, Tabs, Tag } from 'antd'
+import { Alert, Button, Checkbox, DatePicker, Empty, Input, Pagination, Select, Spin, Tabs, Tag } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
@@ -36,6 +36,7 @@ import FlowTrendChart from '../ProductFlowShared/FlowTrendChart'
 import { createAllFilteredSelection, createIncludedSelection, isProductSelected, resolveCurrentProductCode, selectFirstCandidate, toggleProductSelection } from '../ProductFlowShared/logic'
 import { buildWarehouseProductFlowCategoryOptions, buildWarehouseProductFlowDefaultPeriods, createWarehouseProductFlowFilter, filterWarehouseProductFlowCategoryOptions, filterWarehouseProductFlowSupplierOptions, isValidWarehouseProductFlowRange } from './logic'
 import styles from './index.module.css'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { RangePicker } = DatePicker
 const numberFormatter = new Intl.NumberFormat('en-AU')
@@ -446,7 +447,7 @@ export default function WarehouseProductFlowAnalysisPage() {
             <div className={styles.kpis}>{[['货柜进货量', currentMetrics.inboundQuantity], ['分店订货量', currentMetrics.orderedQuantity ?? 0], ['已发分店量', currentMetrics.shippedQuantity], ['分店净销量', currentMetrics.netSalesQuantity]].map(([label, value]) => <div key={String(label)}><span>{label}</span><strong>{numberFormatter.format(Number(value))}</strong></div>)}</div>
             <Tabs activeKey={activeTab} onChange={(key) => setActiveTab(key as 'container' | 'order' | 'shipment')} items={[{ key: 'container', label: '货柜明细' }, { key: 'order', label: '分店订货' }, { key: 'shipment', label: '发货明细' }]} />
             <div className={styles.periodControls}><RangePicker value={activeDetailRange} disabledDate={(date) => date.isAfter(yesterday, 'day')} onChange={setActiveDetailRange} allowClear={false} /><Button type="primary" size="small" onClick={queryActiveDetail}>查询</Button><Button size="small" onClick={restoreActiveDetail}>恢复默认</Button></div>
-            <LocalPanel loading={detailState.loading} error={detailState.error} retry={retryActiveDetail}><Table rowKey={(_, index) => `${activeTab}-${index}`} columns={detailColumns} dataSource={detailData} size="small" pagination={false} scroll={{ x: 520 }} /></LocalPanel>
+            <LocalPanel loading={detailState.loading} error={detailState.error} retry={retryActiveDetail}><MeasuredTable metricId="executive-sales-intelligence.warehouse-product-flow-analysis.table-1" rowKey={(_, index) => `${activeTab}-${index}`} columns={detailColumns} dataSource={detailData} size="small" pagination={false} scroll={{ x: 520 }} /></LocalPanel>
             <h3 className={styles.chartTitle}>货柜进货趋势 <small>{formatPeriodLabel(periods.containerPeriod)}</small></h3><LocalPanel loading={containerTrendState.loading} error={containerTrendState.error} retry={() => setContainerRefreshVersion((value) => value + 1)}><QuantityTrend data={containerDaily} firstKey="inboundQuantity" firstLabel="进货量" ariaLabel="当前商品每日货柜进货量趋势" /></LocalPanel>
             <h3 className={styles.chartTitle}>订货 / 发货日趋势 <small>{formatPeriodLabel(periods.orderShipmentPeriod)}</small></h3><LocalPanel loading={orderShipmentTrendState.loading} error={orderShipmentTrendState.error} retry={() => setOrderShipmentRefreshVersion((value) => value + 1)}><QuantityTrend data={orderShipmentDaily} firstKey="orderedQuantity" firstLabel="订货量" secondKey="shippedQuantity" secondLabel="发货量" ariaLabel="当前商品每日订货量与发货量趋势" /></LocalPanel>
           </div>
@@ -455,7 +456,7 @@ export default function WarehouseProductFlowAnalysisPage() {
         <aside className={`${styles.panel} ${styles.rightColumn}`}>
           <div className={styles.sectionHead}><h3>分店销售</h3></div>
           <div className={styles.periodControls}><RangePicker value={salesRange} disabledDate={(date) => date.isAfter(yesterday, 'day')} onChange={(value) => updateRange(setSalesRange, value)} allowClear={false} /><Button type="primary" size="small" onClick={() => applyPeriod('salesPeriod', salesRange, setSalesRefreshVersion)}>查询</Button><Button size="small" onClick={() => restorePeriod('salesPeriod', setSalesRange, setSalesRefreshVersion)}>恢复默认</Button></div>
-          <LocalPanel loading={branchState.loading} error={branchState.error} retry={() => setSalesRefreshVersion((value) => value + 1)}><Table rowKey="branchCode" columns={branchColumns} dataSource={branches} size="small" pagination={false} scroll={{ x: 420 }} onRow={(row) => ({ className: branchCode === row.branchCode ? styles.currentBranch : '' })} /></LocalPanel>
+          <LocalPanel loading={branchState.loading} error={branchState.error} retry={() => setSalesRefreshVersion((value) => value + 1)}><MeasuredTable metricId="executive-sales-intelligence.warehouse-product-flow-analysis.table-2" rowKey="branchCode" columns={branchColumns} dataSource={branches} size="small" pagination={false} scroll={{ x: 420 }} onRow={(row) => ({ className: branchCode === row.branchCode ? styles.currentBranch : '' })} /></LocalPanel>
           <h3 className={styles.chartTitle}>销售日趋势 <small>{formatPeriodLabel(periods.salesPeriod)}</small></h3><LocalPanel loading={salesTrendState.loading} error={salesTrendState.error} retry={() => setSalesRefreshVersion((value) => value + 1)}><FlowTrendChart data={salesDaily} ariaLabel="当前商品每日净销量与平均单价趋势" /></LocalPanel>
           <h3 className={styles.chartTitle}>分店销售趋势{branchCode ? <Tag color="blue">{branches.find((branch) => branch.branchCode === branchCode)?.branchName || branchCode}</Tag> : null}</h3>
           {branchCode ? <LocalPanel loading={branchDailyState.loading} error={branchDailyState.error} retry={() => setSalesRefreshVersion((value) => value + 1)}><FlowTrendChart data={branchDaily} ariaLabel="所选分店每日净销量与平均单价趋势" /></LocalPanel> : <div className={styles.muted}>点击分店查看每日趋势</div>}

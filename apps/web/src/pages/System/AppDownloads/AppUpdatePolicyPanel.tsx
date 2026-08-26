@@ -24,7 +24,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tabs,
   Tag,
   Typography,
@@ -72,6 +71,7 @@ import {
 } from './appUpdatePolicyRequestLogic'
 import { formatAppDownloadLocalDateTime } from './time'
 import PosHandheldUpdatePolicyTab from './PosHandheldUpdatePolicyTab'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface AppUpdatePolicyPanelProps {
   canManage: boolean
@@ -1276,7 +1276,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
             message={t('system.appDownloads.updatePolicy.appleVerificationHint')}
             description={t('system.appDownloads.updatePolicy.registrationNotActivation')}
           />
-          <Table<IosAppStoreRelease>
+          <MeasuredTable<IosAppStoreRelease> metricId="system.app-downloads.app-update-policy-panel.table-1"
             rowKey="id"
             size="small"
             columns={nativeReleaseColumns(policy)}
@@ -1359,7 +1359,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
               style={{ marginBottom: 12 }}
               message={t('system.appDownloads.updatePolicy.otaScriptHint')}
             />
-            <Table<PosIpadOtaRelease>
+            <MeasuredTable<PosIpadOtaRelease> metricId="system.app-downloads.app-update-policy-panel.table-2"
               rowKey="id"
               size="small"
               columns={otaReleaseColumns}

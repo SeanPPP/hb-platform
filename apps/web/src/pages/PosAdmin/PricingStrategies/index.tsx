@@ -11,7 +11,6 @@ import {
   Space,
   Spin,
   Switch,
-  Table,
   Tag,
   message,
 } from 'antd'
@@ -40,6 +39,7 @@ import {
   createLatestRequestGuard,
   runLatestGuardedRequest,
 } from '../../../utils/latestRequestGuard'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 type DataType = PricingStrategyListDto & { key: string }
 
@@ -154,7 +154,7 @@ export default function PricingStrategiesPage() {
     return (
       <div style={{ padding: '8px 0' }}>
         <Card title={t('posAdmin.pricing.priceRules', '定价规则（{{count}} 条）', { count: dto.details.length })} size="small" style={{ marginBottom: 12 }}>
-          <Table
+          <MeasuredTable metricId="pos-admin.pricing-strategies.table-1"
             rowKey={(r, i) => `${r.id ?? i}`}
             size="small"
             columns={ruleColumns}
@@ -163,7 +163,7 @@ export default function PricingStrategiesPage() {
           />
         </Card>
         <Card title={t('posAdmin.pricing.targetScope', '目标范围（{{count}} 条）', { count: dto.targets.length })} size="small">
-          <Table
+          <MeasuredTable metricId="pos-admin.pricing-strategies.table-2"
             rowKey={(r, i) => `${r.id ?? i}`}
             size="small"
             columns={targetColumns}
@@ -417,7 +417,7 @@ export default function PricingStrategiesPage() {
         )}
       </Card>
 
-      <Table
+      <MeasuredTable metricId="pos-admin.pricing-strategies.table-3"
         rowKey="key"
         loading={loading}
         dataSource={data}

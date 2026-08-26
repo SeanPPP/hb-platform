@@ -34,7 +34,6 @@ import {
   Row,
   Select,
   Space,
-  Table,
   Tag,
   Typography,
   message,
@@ -94,6 +93,7 @@ import {
   parseOperationLogColumnOrder,
   type OperationLogColumnKey,
 } from './operationLogColumnOrder'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface OperationAuditFormValues {
   timeRange: [Dayjs, Dayjs]
@@ -831,7 +831,7 @@ export default function PosAdminOperationLogsPage() {
             accessibility={dndAccessibility}
           >
             <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
-              <Table<OperationAuditListItem>
+              <MeasuredTable<OperationAuditListItem> metricId="pos-admin.operation-logs.table-1"
                 rowKey="eventId"
                 loading={loading}
                 components={{ header: { cell: DraggableHeaderCell } }}
@@ -959,7 +959,7 @@ export default function PosAdminOperationLogsPage() {
               </Descriptions.Item>
             </Descriptions>
 
-            <Table<OperationAuditDetailItem>
+            <MeasuredTable<OperationAuditDetailItem> metricId="pos-admin.operation-logs.table-2"
               rowKey={(item) => `${item.eventId}-${item.lineIndex}`}
               size="small"
               columns={itemColumns}

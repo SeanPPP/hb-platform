@@ -16,7 +16,6 @@ import {
   Space,
   Spin,
   Switch,
-  Table,
   Tabs,
   Tag,
   Transfer,
@@ -94,6 +93,7 @@ import {
   resolveSystemListPagination,
   runLatestGuardedRequest,
 } from '../listPagination'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 export default function SystemUsersPage() {
   const { t } = useTranslation()
@@ -1493,7 +1493,7 @@ export default function SystemUsersPage() {
           </HasPermission>
         </Space>
 
-        <Table
+        <MeasuredTable metricId="system.users.table-1"
           rowKey="userGUID"
           loading={loading}
           columns={columns}
@@ -1834,7 +1834,7 @@ export default function SystemUsersPage() {
         onCancel={closeLoginRecords}
         destroyOnHidden
       >
-        <Table<UserLoginRecordDto>
+        <MeasuredTable<UserLoginRecordDto> metricId="system.users.table-2"
           rowKey="sessionId"
           size="small"
           loading={loginRecordsLoading}

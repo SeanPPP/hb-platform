@@ -36,7 +36,16 @@ assert.equal(packageLock.packages[""].name, "@hb/pos-handheld");
 assert.equal(packageLock.packages[""].version, "0.1.0");
 assert.equal(packageJson.main, "index.js");
 assert.equal(packageJson.private, true);
-assert.equal(appEntrySource.trim(), 'import "expo-router/entry";');
+assert.equal(
+  appEntrySource.trim(),
+  [
+    'import "./src/core/performance/business-startup-origin";',
+    'import "./src/core/performance/business-startup-clock";',
+    'import "./src/core/observability/sentry";',
+    'import "expo-router/entry";',
+  ].join("\n"),
+  "手持入口必须先注册性能时钟与 Sentry，再交给 Expo Router。",
+);
 assert.equal(
   packageJson.scripts.android,
   "npm run test:react-native-scheduler && expo run:android",

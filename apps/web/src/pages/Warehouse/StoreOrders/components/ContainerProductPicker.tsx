@@ -1,5 +1,5 @@
 import { ArrowLeftOutlined } from '@ant-design/icons'
-import { Button, Image, Input, InputNumber, Modal, Space, Steps, Table, Tag, Typography, message } from 'antd'
+import { Button, Image, Input, InputNumber, Modal, Space, Steps, Tag, Typography, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import type { SortOrder } from 'antd/es/table/interface'
 import { useEffect, useMemo, useState } from 'react'
@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next'
 import { getContainerList, getContainerProducts } from '../../../../services/containerService'
 import type { ContainerDetail, ContainerMain } from '../../../../types/container'
 import { formatSydneyDate, getSydneyDateTagColor } from '../../../../utils/sydneyDate'
+import { MeasuredTable } from '../../../../components/MeasuredTable'
 
 interface ContainerProductPickerProps {
   open: boolean
@@ -334,7 +335,7 @@ export default function ContainerProductPicker({
             placeholder={t('storeOrders.containerPickerSearchContainer')}
             onChange={(event) => setContainerKeyword(event.target.value)}
           />
-          <Table<ContainerRow>
+          <MeasuredTable<ContainerRow> metricId="warehouse.store-orders.container-product-picker.table-1"
             rowKey="key"
             loading={fetching}
             dataSource={filteredContainers}
@@ -366,7 +367,7 @@ export default function ContainerProductPicker({
             onChange={(event) => setProductKeyword(event.target.value)}
           />
 
-          <Table<ProductRow>
+          <MeasuredTable<ProductRow> metricId="warehouse.store-orders.container-product-picker.table-2"
             rowKey="key"
             loading={fetching}
             dataSource={pagedProducts}

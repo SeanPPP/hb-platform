@@ -24,7 +24,6 @@ import {
   Segmented,
   Space,
   Switch,
-  Table,
   Tabs,
   Tag,
   Typography,
@@ -67,6 +66,7 @@ import {
 import type { CreateRoleDto, RoleDetailDto, RoleDto, RolePermissionStateDto, RoleQueryDto, UpdateRoleDto } from '../../../types/role'
 import RolePermissionManager from './RolePermissionManager'
 import RoleUserManagement from './RoleUserManagement'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 type DesiredRoleListQuery = RoleQueryDto & {
   page: number
@@ -683,7 +683,7 @@ export default function SystemRolesPage() {
           </HasPermission>
         </Space>
 
-        <Table
+        <MeasuredTable metricId="system.roles.table-1"
           rowKey="roleGUID"
           loading={loading}
           columns={columns}

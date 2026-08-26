@@ -190,6 +190,16 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     "expo-router",
     "expo-localization",
     [
+      "@sentry/react-native/expo",
+      {
+        ...(process.env.SENTRY_ORG?.trim()
+          ? { organization: process.env.SENTRY_ORG.trim() }
+          : {}),
+        project: process.env.SENTRY_PROJECT?.trim() || "hb-pos-ipad",
+        url: process.env.SENTRY_URL?.trim() || "https://sentry.io/",
+      },
+    ],
+    [
       "expo-audio",
       {
         // POS 仅播放短提示音，绝不申请麦克风或 Android 录音权限。

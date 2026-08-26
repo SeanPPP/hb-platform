@@ -7,6 +7,12 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { buildReleaseEvent, reportReleaseEvent } from "../../../scripts/performance/report-release-event.mjs";
+import {
+  resolveReleaseCommit,
+  selectReleaseEventCommit,
+} from "../../../scripts/performance/release-commit.mjs";
+
 const require = createRequire(import.meta.url);
 const { getConfig } = require("expo/config");
 
@@ -32,6 +38,15 @@ const EMPTY_EAS_RESULT = Object.freeze({
   dashboardUrl: "",
   publishedAt: "",
 });
+
+function requireReleaseReporterConfig(environment) {
+  const baseUrl = environment.PERFORMANCE_SERVICE_URL?.trim();
+  const token = environment.PERFORMANCE_SERVICE_TOKEN?.trim();
+  if (!baseUrl || !token) {
+    throw new Error("发布 OTA 前必须配置 PERFORMANCE_SERVICE_URL 和 PERFORMANCE_SERVICE_TOKEN");
+  }
+  return { baseUrl, token };
+}
 
 const HELP_TEXT = `
 用法：
@@ -299,6 +314,8 @@ export async function runPublishPosHandheldOtaRelease(
     readAccessTokenStdinFn = readAccessTokenFromStdin,
     readMockOutputFn = readMockOutput,
     registerOtaReleaseFn = registerOtaRelease,
+    reportReleaseEventFn,
+    resolveReleaseCommitFn = resolveReleaseCommit,
     runCommandFn = runCommand,
   } = {},
 ) {
@@ -337,6 +354,11 @@ export async function runPublishPosHandheldOtaRelease(
     baseUrl: configuration.centerBaseUrl,
     accessToken: configuration.accessToken,
   };
+  const releaseReporterConfig = reportReleaseEventFn
+    ? requireReleaseReporterConfig(environment)
+    : null;
+  // 在 EAS 发起远端发布前解析 commit，避免本地环境在登记完成后才因缺 SHA 失败。
+  const resolvedCommit = resolveReleaseCommitFn({ environment });
   const result = await runCommandFn(updateCommand);
   let parsed = parseEasUpdateOutput(result.stdout, platform);
   if (!parsed.updateGroupId && result.stderr) {
@@ -378,6 +400,33 @@ export async function runPublishPosHandheldOtaRelease(
     throw error;
   }
   logger.log(`OTA 数据库记录已登记：${registration.url}`);
+  if (reportReleaseEventFn) {
+    // accepted deploy 的前提是 EAS 发布和 MobileAppOtaUpdate 登记都已成功。
+    const event = buildReleaseEvent({
+      action: "deploy",
+      conclusion: "accepted",
+      component: "pos-handheld",
+      environment: "Production",
+      releaseId: payload.updateGroupId,
+      commitSha: selectReleaseEventCommit({
+        payloadCommit: payload.gitCommitHash,
+        resolvedCommit,
+      }),
+      startedAtUtc: payload.publishedAt,
+      completedAtUtc: new Date().toISOString(),
+      healthChecked: true,
+      sourceProvider: "expo-ota",
+      sourceRunId: payload.updateGroupId,
+    });
+    try {
+      await reportReleaseEventFn({ event, config: releaseReporterConfig });
+    } catch (error) {
+      throw new Error(
+        `OTA 已发布并登记，不得重新发布，只重试 release event 上报：${error.message}`,
+      );
+    }
+    logger.log("OTA release 验收已上报。");
+  }
   return Object.freeze({
     dryRun: false,
     payload,
@@ -763,7 +812,14 @@ async function main() {
     console.log(HELP_TEXT.trim());
     return;
   }
-  await runPublishPosHandheldOtaRelease(options);
+  await runPublishPosHandheldOtaRelease(options, {
+    reportReleaseEventFn: ({ event, config }) =>
+      reportReleaseEvent({
+        event,
+        baseUrl: config.baseUrl,
+        token: config.token,
+      }),
+  });
 }
 
 if (

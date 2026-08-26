@@ -12,6 +12,8 @@ let mockUpdatePolicy: any;
 let mockSalesRouteFocusEffect: (() => void) | null;
 let mockAuthorizationState: Readonly<{ kind: string }>;
 let mockAuthorizationListener: (() => void) | null;
+let mockPresenterState: any;
+let mockPresenterListener: (() => void) | null;
 type MockSalesFeedbackEvent = Readonly<{ kind: string }>;
 const mockSalesFeedbackSubscription: {
   listener?: (event: MockSalesFeedbackEvent) => void;
@@ -23,6 +25,11 @@ const mockUnsubscribeSalesFeedback = jest.fn();
 const mockSubscribeSalesFeedback = jest.fn<
   (listener: (event: MockSalesFeedbackEvent) => void) => () => void
 >();
+const mockUnsubscribePresenter = jest.fn();
+const mockSubscribePresenter = jest.fn<(listener: () => void) => () => void>();
+const mockMarkSalesFirstFrameCommitted = jest.fn();
+const mockMarkSalesInteractive = jest.fn();
+const mockBusinessStartupFail = jest.fn();
 const mockPlaySound = jest.fn();
 const mockRouterPush = jest.fn();
 const mockRouterReplace = jest.fn();
@@ -105,6 +112,14 @@ jest.mock("@/ui/feedback/pos-sound-context", () => ({
 
 jest.mock("@/core/runtime/pos-runtime-context", () => ({
   usePosRuntime: () => mockRuntime,
+}));
+
+jest.mock("@/core/performance/business-startup-clock", () => ({
+  businessStartupClock: {
+    markSalesFirstFrameCommitted: () => mockMarkSalesFirstFrameCommitted(),
+    markSalesInteractive: () => mockMarkSalesInteractive(),
+    fail: () => mockBusinessStartupFail(),
+  },
 }));
 
 jest.mock("@/features/cashier-login", () => {
@@ -206,6 +221,7 @@ beforeEach(() => {
   mockRouteCaptureProps = null;
   mockSalesRouteFocusEffect = null;
   mockAuthorizationListener = null;
+  mockPresenterListener = null;
   mockAuthorizationState = { kind: "idle" };
   mockSubscribeAuthorization.mockImplementation((listener) => {
     mockAuthorizationListener = listener;
@@ -215,6 +231,10 @@ beforeEach(() => {
   mockSubscribeSalesFeedback.mockImplementation((listener) => {
     mockSalesFeedbackSubscription.listener = listener;
     return mockUnsubscribeSalesFeedback;
+  });
+  mockSubscribePresenter.mockImplementation((listener) => {
+    mockPresenterListener = listener;
+    return mockUnsubscribePresenter;
   });
   mockHasRecoveryRequired.mockResolvedValue(false);
   mockInstallmentHasRecoveryRequired.mockResolvedValue(false);
@@ -263,21 +283,27 @@ beforeEach(() => {
     ],
     source: "online",
   };
+  mockPresenterState = {
+    phase: "selling",
+    cart: {
+      revision: 7,
+      lines: [{ lineId: "line-1" }],
+      actualAmount: { currency: "AUD", cents: 1_250 },
+    },
+    capabilities: {
+      catalog: true,
+      cartEditing: true,
+    },
+  };
   mockCreatePresenter.mockReturnValue({
     addLookupCode: mockAddLookupCode,
     addScannedLookupCode: mockAddScannedLookupCode,
     destroy: mockDestroyPresenter,
-    getState: () => ({
-      phase: "selling",
-      cart: {
-        revision: 7,
-        lines: [{ lineId: "line-1" }],
-        actualAmount: { currency: "AUD", cents: 1_250 },
-      },
-    }),
+    getState: () => mockPresenterState,
     prepareOnlineCheckout: mockPrepareOnlineCheckout,
     releasePreparedCheckout: mockReleasePreparedCheckout,
     setQuery: mockSetQuery,
+    subscribe: mockSubscribePresenter,
     subscribeFeedback: mockSubscribeSalesFeedback,
   });
   mockUpdateGate = {
@@ -349,6 +375,37 @@ test("销售路由零参数创建生产 presenter，并在卸载时销毁", asyn
 
   await screen.unmount();
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);
+});
+
+test("销售首帧提交后仍等待目录与销售录入实际可交互", async () => {
+  mockPresenterState = {
+    ...mockPresenterState,
+    capabilities: {
+      ...mockPresenterState.capabilities,
+      catalog: false,
+    },
+  };
+  const screen = await render(<SalesRoute />);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("sales-screen")).toBeTruthy();
+    expect(mockMarkSalesFirstFrameCommitted).toHaveBeenCalledTimes(1);
+  });
+  expect(mockMarkSalesInteractive).not.toHaveBeenCalled();
+
+  await act(async () => {
+    mockPresenterState = {
+      ...mockPresenterState,
+      capabilities: {
+        ...mockPresenterState.capabilities,
+        catalog: true,
+      },
+    };
+    mockPresenterListener?.();
+    await Promise.resolve();
+  });
+
+  expect(mockMarkSalesInteractive).toHaveBeenCalledTimes(1);
 });
 
 test("销售反馈逐项映射声音 cue，并在路由卸载时解除订阅", async () => {
@@ -819,6 +876,7 @@ test("presenter 初始化失败保留活动收银员，展示可重试诊断并�
   expect(screen.getByTestId("status-strip")).toBeTruthy();
   expect(screen.queryByTestId("redirect")).toBeNull();
   expect(mockCreatePresenter).toHaveBeenCalledWith();
+  expect(mockBusinessStartupFail).toHaveBeenCalledTimes(1);
 
   await act(async () => {
     fireEvent.press(screen.getByTestId("sales-bootstrap-retry"));

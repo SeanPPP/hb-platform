@@ -16,6 +16,7 @@ type WebPortalAccess = Pick<
   | 'canEditLocalPurchase'
   | 'canManageSystemSettings'
   | 'canViewAppDownloads'
+  | 'canViewPerformanceBaseline'
   | 'canViewOperationAudits'
   | 'hasPermission'
 >
@@ -105,6 +106,12 @@ const ADMIN_ENTRY_RULES: readonly AdminEntryRule[] = [
     defaultPath: '/pos-admin/operation-logs',
     targetPrefixes: ['/pos-admin/operation-logs'],
     canAccess: (access) => access.canViewOperationAudits,
+  },
+  {
+    // 放在既有入口之后，组合权限用户继续沿用原默认入口。
+    defaultPath: '/system/performance-baseline',
+    targetPrefixes: ['/system/performance-baseline'],
+    canAccess: (access) => access.canViewPerformanceBaseline,
   },
 ]
 

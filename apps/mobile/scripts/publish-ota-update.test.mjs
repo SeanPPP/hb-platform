@@ -195,6 +195,9 @@ assert.equal(
 const originalFetch = globalThis.fetch;
 const originalBaseUrl = process.env.HBWEB_API_BASE_URL;
 const originalToken = process.env.HBWEB_API_TOKEN;
+const originalGithubSha = process.env.GITHUB_SHA;
+const originalPerformanceServiceUrl = process.env.PERFORMANCE_SERVICE_URL;
+const originalPerformanceServiceToken = process.env.PERFORMANCE_SERVICE_TOKEN;
 const silentLogger = {
   log() {},
   warn() {},
@@ -230,8 +233,11 @@ const legacyPublishOptions = {
   nativeInstaller: "disabled",
 };
 
-process.env.HBWEB_API_BASE_URL = "https://hotbargain.vip";
-process.env.HBWEB_API_TOKEN = "test-token";
+  process.env.HBWEB_API_BASE_URL = "https://hotbargain.vip";
+  process.env.HBWEB_API_TOKEN = "test-token";
+  process.env.GITHUB_SHA = "a".repeat(40);
+  process.env.PERFORMANCE_SERVICE_URL = "https://metrics.example";
+  process.env.PERFORMANCE_SERVICE_TOKEN = "hbsvc_release_events";
 
 try {
   let easRunCount = 0;
@@ -402,6 +408,7 @@ try {
   assert.equal(preflightCalls[0].init.headers.Authorization, "Bearer test-token");
 
   const publishFetchCalls = [];
+  let releaseReportCalls = 0;
   globalThis.fetch = async (url, init) => {
     publishFetchCalls.push({ url, init });
     if (init.method === "GET") {
@@ -432,10 +439,24 @@ try {
   };
 
   await runPublishOtaUpdate(publishOptions, {
+    environment: { ...process.env, GITHUB_SHA: undefined },
     logger: silentLogger,
+    reportReleaseEventFn: async ({ event, config }) => {
+      releaseReportCalls += 1;
+      assert.equal(event.action, "deploy");
+      assert.equal(event.status, "accepted");
+      assert.equal(event.component, "mobile");
+      assert.equal(event.commit, "b".repeat(40));
+      assert.equal(config.baseUrl, "https://metrics.example");
+      assert.equal(config.token, "hbsvc_release_events");
+    },
     runCommandFn: async () => {
       easRunCount += 1;
       return { stdout: jsonOutput };
+    },
+    resolveReleaseCommitFn: () => {
+      assert.equal(easRunCount, 0, "解析 commit 时不得已经执行 EAS 发布");
+      return "b".repeat(40);
     },
   });
   assert.equal(easRunCount, 1);
@@ -443,6 +464,23 @@ try {
   assert.equal(publishFetchCalls[0].init.headers.Authorization, "Bearer test-token");
   assert.equal(publishFetchCalls[1].url, "https://hotbargain.vip/api/mobile-app-builds/ota-updates");
   assert.equal(publishFetchCalls[1].init.headers.Authorization, "Bearer test-token");
+  assert.equal(releaseReportCalls, 1);
+
+  await assert.rejects(
+    runPublishOtaUpdate(publishOptions, {
+      logger: silentLogger,
+      preflightOtaRegistrationFn: async () => {},
+      registerOtaUpdateFn: async () => ({
+        skipped: false,
+        url: "https://hotbargain.vip/api/mobile-app-builds/ota-updates",
+      }),
+      reportReleaseEventFn: async () => {
+        throw new Error("release reporter unavailable");
+      },
+      runCommandFn: async () => ({ stdout: jsonOutput }),
+    }),
+    /OTA 已发布并登记，不得重新发布，只重试 release event 上报.*release reporter unavailable/,
+  );
 
   const defaultPublishLogger = createCollectingLogger();
   let defaultEasCommand = null;
@@ -595,6 +633,21 @@ try {
     delete process.env.HBWEB_API_TOKEN;
   } else {
     process.env.HBWEB_API_TOKEN = originalToken;
+  }
+  if (originalGithubSha === undefined) {
+    delete process.env.GITHUB_SHA;
+  } else {
+    process.env.GITHUB_SHA = originalGithubSha;
+  }
+  if (originalPerformanceServiceUrl === undefined) {
+    delete process.env.PERFORMANCE_SERVICE_URL;
+  } else {
+    process.env.PERFORMANCE_SERVICE_URL = originalPerformanceServiceUrl;
+  }
+  if (originalPerformanceServiceToken === undefined) {
+    delete process.env.PERFORMANCE_SERVICE_TOKEN;
+  } else {
+    process.env.PERFORMANCE_SERVICE_TOKEN = originalPerformanceServiceToken;
   }
 }
 

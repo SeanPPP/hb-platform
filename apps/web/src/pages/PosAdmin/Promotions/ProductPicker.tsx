@@ -1,10 +1,11 @@
 import { getActiveLocalSuppliers } from '../../../services/localSupplierService'
 import { getPosProducts } from '../../../services/posProductService'
 import type { PosProductDto } from '../../../types/posProduct'
-import { Button, Form, Input, message, Modal, Select, Space, Table } from 'antd'
+import { Button, Form, Input, message, Modal, Select, Space } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 type RowType = PosProductDto & { key: string }
 
@@ -87,7 +88,7 @@ export default function ProductPicker({ open, onClose, onPick, alreadySelectedCo
         <Form.Item name="productName" label={t('column.productName')}><Input allowClear placeholder={t('posAdmin.productPicker.byName', '按名称')} style={{ width: 180 }} /></Form.Item>
         <Form.Item><Space><Button type="primary" htmlType="submit">{t('common.search')}</Button><Button onClick={() => { form.resetFields(); setPage(1); load(1, pageSize) }}>{t('common.reset')}</Button></Space></Form.Item>
       </Form>
-      <Table
+      <MeasuredTable metricId="pos-admin.promotions.product-picker.table-1"
         rowKey="key"
         rowSelection={{
           selectedRowKeys,

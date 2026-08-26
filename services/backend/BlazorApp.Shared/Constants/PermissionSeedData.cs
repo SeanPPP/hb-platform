@@ -320,6 +320,9 @@ namespace BlazorApp.Shared.Constants
                 // 仅注册权限，不写入角色模板，避免默认扩大 App 下载入口访问面。
                 new(Permissions.System.ViewAppDownloads, "查看 App 下载", "系统管理", "系统管理 - 查看 App 下载页"),
                 new(Permissions.System.ManageAppDownloads, "管理 App 下载", "系统管理", "系统管理 - 登记 OTA 更新和生成回撤命令"),
+                // 仅注册权限，不写入角色模板；由管理员显式授予查看或冻结基线能力。
+                new(Permissions.System.ViewPerformanceBaseline, "查看性能与质量基线", "系统管理", "页面 /system/performance-baseline - 查看性能与质量指标"),
+                new(Permissions.System.ManagePerformanceBaseline, "管理性能与质量基线", "系统管理", "页面 /system/performance-baseline - 冻结已满足观察期和覆盖率的基线"),
                 new(Permissions.Dashboard.View, "访问后台", "后台管理", "页面 /dashboard - 访问后台工作台"),
                 new(Permissions.OrderFront.View, "前台订货", "前台订货", "前台订货 - 前台订货"),
             };

@@ -5,6 +5,12 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { buildReleaseEvent, reportReleaseEvent } from "../../../scripts/performance/report-release-event.mjs";
+import {
+  resolveReleaseCommit,
+  selectReleaseEventCommit,
+} from "../../../scripts/performance/release-commit.mjs";
+
 const VALID_CHANNELS = new Set(["preview", "production"]);
 const VALID_PROFILES = new Set(["preview", "production"]);
 const VALID_NATIVE_INSTALLER_OPTIONS = new Set(["enabled", "disabled"]);
@@ -413,11 +419,20 @@ function extractRoleNames(data) {
     .filter((roleName) => typeof roleName === "string");
 }
 
-function readRegistrationConfig() {
+function readRegistrationConfig(environment = process.env) {
   return {
-    baseUrl: process.env.HBWEB_API_BASE_URL?.trim() || "",
-    token: process.env.HBWEB_API_TOKEN?.trim() || "",
+    baseUrl: environment.HBWEB_API_BASE_URL?.trim() || "",
+    token: environment.HBWEB_API_TOKEN?.trim() || "",
   };
+}
+
+function requireReleaseReporterConfig(environment) {
+  const baseUrl = environment.PERFORMANCE_SERVICE_URL?.trim();
+  const token = environment.PERFORMANCE_SERVICE_TOKEN?.trim();
+  if (!baseUrl || !token) {
+    throw new Error("发布 OTA 前必须配置 PERFORMANCE_SERVICE_URL 和 PERFORMANCE_SERVICE_TOKEN");
+  }
+  return { baseUrl, token };
 }
 
 function requireRegistrationConfig() {
@@ -549,20 +564,34 @@ async function main() {
     return;
   }
 
-  await runPublishOtaUpdate(options);
+  await runPublishOtaUpdate(options, {
+    reportReleaseEventFn: ({ event, config }) =>
+      reportReleaseEvent({
+        event,
+        baseUrl: config.baseUrl,
+        token: config.token,
+      }),
+  });
 }
 
 export async function runPublishOtaUpdate(
   options,
   {
     createDryRunOutputFn = createDryRunOutput,
+    environment = process.env,
     logger = console,
     preflightOtaRegistrationFn = preflightOtaRegistration,
     registerOtaUpdateFn = registerOtaUpdate,
+    reportReleaseEventFn,
+    resolveReleaseCommitFn = resolveReleaseCommit,
     runCommandFn = runCommand,
   } = {},
 ) {
   validateOptions(options);
+  const releaseReporterConfig =
+    reportReleaseEventFn && !options.dryRun
+      ? requireReleaseReporterConfig(environment)
+      : null;
 
   const easCommand = buildEasCommand(options);
   const printableCommand = [easCommand.command, ...easCommand.args].map(shellQuote).join(" ");
@@ -570,6 +599,10 @@ export async function runPublishOtaUpdate(
   if (!options.dryRun) {
     await preflightOtaRegistrationFn();
   }
+  // preflight 仅只读；在任何 EAS/登记远端写入前固定可审计的 commit。
+  const resolvedCommit = options.dryRun
+    ? null
+    : resolveReleaseCommitFn({ environment });
 
   logger.log(`OTA 平台固定为 ${PLATFORM}`);
   logger.log(`执行命令：${printableCommand}`);
@@ -598,18 +631,47 @@ export async function runPublishOtaUpdate(
     return;
   }
 
+  let result;
   try {
-    const result = await registerOtaUpdateFn(payload);
-    if (result.skipped) {
-      logger.warn(`\nWARNING: OTA 已发布，但${result.reason}；已跳过自动登记。`);
-      printManualRegistrationJson(payload, logger);
-      return;
-    }
-
-    logger.log(`\nOTA 数据库记录已登记：${result.url}`);
+    result = await registerOtaUpdateFn(payload);
   } catch (error) {
     logger.warn(`\nWARNING: OTA 已发布，但自动登记失败：${error.message}`);
     printManualRegistrationJson(payload, logger);
+    return;
+  }
+  if (result.skipped) {
+    logger.warn(`\nWARNING: OTA 已发布，但${result.reason}；已跳过自动登记。`);
+    printManualRegistrationJson(payload, logger);
+    return;
+  }
+
+  logger.log(`\nOTA 数据库记录已登记：${result.url}`);
+  if (reportReleaseEventFn) {
+    // 只有 Expo 发布和后台登记均通过，才把移动 OTA 记为 accepted deploy。
+    const event = buildReleaseEvent({
+      action: "deploy",
+      conclusion: "accepted",
+      component: "mobile",
+      environment: options.profile === "production" ? "Production" : "Preview",
+      releaseId: payload.updateGroupId,
+      commitSha: selectReleaseEventCommit({
+        payloadCommit: payload.gitCommitHash,
+        resolvedCommit,
+      }),
+      startedAtUtc: payload.publishedAt,
+      completedAtUtc: new Date().toISOString(),
+      healthChecked: true,
+      sourceProvider: "expo-ota",
+      sourceRunId: payload.updateGroupId,
+    });
+    try {
+      await reportReleaseEventFn({ event, config: releaseReporterConfig });
+    } catch (error) {
+      throw new Error(
+        `OTA 已发布并登记，不得重新发布，只重试 release event 上报：${error.message}`,
+      );
+    }
+    logger.log("OTA 发布验收已上报。");
   }
 }
 

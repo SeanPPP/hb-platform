@@ -18,7 +18,6 @@ import {
   Spin,
   Statistic,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -59,6 +58,7 @@ import {
   REGISTERED_DEVICE_SYSTEM_OPTIONS,
   supportsTransactionGate,
 } from './deviceSystemOptions'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const STATUS_COLOR_MAP: Record<number, string> = {
   [-1]: 'gold',
@@ -901,7 +901,7 @@ export default function DeviceRegistrationPage() {
                 <Statistic title={t('posAdmin.devices.appSummaryIos')} value={appSummary.ios} />
               </Col>
             </Row>
-            <Table<AppDeviceStatus>
+            <MeasuredTable<AppDeviceStatus> metricId="pos-admin.device-registration.table-1"
               rowKey={(record) => record.id || record.hardwareId}
               loading={appLoading}
               columns={appColumns}
@@ -915,7 +915,7 @@ export default function DeviceRegistrationPage() {
             <Typography.Text type="secondary">
               {t('posAdmin.devices.deviceNote')}
             </Typography.Text>
-            <Table<DeviceRegistrationItem>
+            <MeasuredTable<DeviceRegistrationItem> metricId="pos-admin.device-registration.table-2"
               rowKey="id"
               loading={loading}
               columns={columns}

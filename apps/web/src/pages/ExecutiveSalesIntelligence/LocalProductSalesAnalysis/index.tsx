@@ -1,5 +1,5 @@
 import { ClearOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Checkbox, DatePicker, Empty, Input, Pagination, Select, Skeleton, Space, Table, Typography } from 'antd'
+import { Alert, Button, Card, Checkbox, DatePicker, Empty, Input, Pagination, Select, Skeleton, Space, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs, { type Dayjs } from 'dayjs'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -51,6 +51,7 @@ import {
   type PageRequestTimeout,
 } from './logic'
 import styles from './index.module.css'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { RangePicker } = DatePicker
 const quantityFormatter = new Intl.NumberFormat('en-AU')
@@ -551,14 +552,14 @@ export default function LocalProductSalesAnalysisPage() {
         <PanelState loading={analysisLoading} error={undefined} empty={!analysis.currentProduct} retry={() => retrySection('summary')}>
           <div className={styles.productHeader}>{analysis.currentProduct ? <ProductImage src={analysis.currentProduct.imageUrl} alt={currentName || '商品'} size={64} /> : null}<div><Typography.Text type="secondary">当前商品</Typography.Text><Typography.Title level={4}>{currentName}</Typography.Title><span>{analysis.currentProduct?.productCode}</span></div></div>
           <Typography.Title level={5}>本地进货单明细</Typography.Title>
-          <PanelState loading={analysisLoading || !!sectionLoading.invoiceDetails} error={analysis.sectionErrors.invoiceDetails} empty={analysis.invoiceDetails !== null && !analysis.invoiceDetails.items.length} retry={() => retrySection('invoiceDetails')}><Table size="small" rowKey="detailGuid" columns={detailColumns} dataSource={analysis.invoiceDetails?.items} pagination={false} scroll={{ x: 'max-content' }} /></PanelState>
+          <PanelState loading={analysisLoading || !!sectionLoading.invoiceDetails} error={analysis.sectionErrors.invoiceDetails} empty={analysis.invoiceDetails !== null && !analysis.invoiceDetails.items.length} retry={() => retrySection('invoiceDetails')}><MeasuredTable metricId="executive-sales-intelligence.local-product-sales-analysis.table-1" size="small" rowKey="detailGuid" columns={detailColumns} dataSource={analysis.invoiceDetails?.items} pagination={false} scroll={{ x: 'max-content' }} /></PanelState>
           <Typography.Title level={5} className={styles.trendTitle}>进销日趋势</Typography.Title>
           <PanelState loading={analysisLoading || !!sectionLoading.productDaily} error={analysis.sectionErrors.productDaily} empty={!analysis.productDaily.length} retry={() => retrySection('productDaily')}><DailyTrend data={analysis.productDaily} label={`${currentName || '当前商品'}进销日趋势`} /></PanelState>
         </PanelState>
       </Card>
       <Card className={`${styles.panel} ${styles.rightColumn}`} title="授权分店销量排行" bordered={false}>
         <PanelState loading={analysisLoading || !!sectionLoading.branches} error={analysis.sectionErrors.branches} empty={!analysis.branches.length} retry={() => retrySection('branches')}>
-          <Table size="small" rowKey="branchCode" columns={branchColumns} dataSource={analysis.branches} pagination={false} onRow={(record) => ({ className: selectedBranchCode === record.branchCode ? styles.currentBranch : '' })} />
+          <MeasuredTable metricId="executive-sales-intelligence.local-product-sales-analysis.table-2" size="small" rowKey="branchCode" columns={branchColumns} dataSource={analysis.branches} pagination={false} onRow={(record) => ({ className: selectedBranchCode === record.branchCode ? styles.currentBranch : '' })} />
           {selectedBranchCode ? <><Typography.Title level={5} className={styles.trendTitle}>{analysis.branches.find((item) => item.branchCode === selectedBranchCode)?.branchName || selectedBranchCode}日净销量与均价</Typography.Title><PanelState loading={branchDailyLoading} error={branchDailyError} empty={!branchDaily.length} retry={() => loadBranchDaily(selectedBranchCode)}><DailyTrend data={branchDaily} label="分店日净销量与均价" /></PanelState></> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="点击分店查看日趋势" />}
         </PanelState>
       </Card>

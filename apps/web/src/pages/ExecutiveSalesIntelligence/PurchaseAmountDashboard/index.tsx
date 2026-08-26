@@ -16,7 +16,6 @@ import {
   Skeleton,
   Space,
   Statistic,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -54,6 +53,7 @@ import {
   type PurchaseMonthRow,
 } from './logic'
 import styles from './index.module.css'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? error.message : fallback
@@ -383,7 +383,7 @@ export default function PurchaseAmountDashboardPage() {
                 description={t('purchaseAmountDashboard.noStores')}
               />
             ) : dashboardViewState === 'ready' ? (
-              <Table<PurchaseMonthRow>
+              <MeasuredTable<PurchaseMonthRow> metricId="executive-sales-intelligence.purchase-amount-dashboard.table-1"
                 rowKey="month"
                 size="small"
                 loading={loading}
@@ -444,7 +444,7 @@ export default function PurchaseAmountDashboardPage() {
             description={t('purchaseAmountDashboard.noSupplierData')}
           />
         ) : supplierViewState === 'ready' ? (
-          <Table<LocalPurchaseSupplierSummary>
+          <MeasuredTable<LocalPurchaseSupplierSummary> metricId="executive-sales-intelligence.purchase-amount-dashboard.table-2"
             rowKey="rowKey"
             size="small"
             columns={supplierColumns}

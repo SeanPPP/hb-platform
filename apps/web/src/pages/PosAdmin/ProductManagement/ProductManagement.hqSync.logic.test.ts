@@ -1660,7 +1660,10 @@ async function main() {
     )
     const mainTableClassIndex = pageSource.indexOf('className="pos-products-compact-table"')
     const mainTableSource = pageSource.slice(
-      pageSource.lastIndexOf('<Table', mainTableClassIndex),
+      pageSource.lastIndexOf(
+        '<MeasuredTable metricId="pos-admin.product-management.table-1"',
+        mainTableClassIndex,
+      ),
       pageSource.indexOf('\n        </div>\n\n        <div\n          ref={pagerRef}', mainTableClassIndex),
     )
     assert(

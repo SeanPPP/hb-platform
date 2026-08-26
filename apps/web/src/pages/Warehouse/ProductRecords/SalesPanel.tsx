@@ -7,7 +7,6 @@ import {
   Modal,
   Space,
   Statistic,
-  Table,
   Tooltip,
   Typography,
   message,
@@ -42,6 +41,7 @@ import {
   getDateRangeError,
   isAbortError,
 } from './logic'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { RangePicker } = DatePicker
 
@@ -425,7 +425,7 @@ export default function SalesPanel({ productCode, enabled }: SalesPanelProps) {
           {branches.length === 0 && !loading ? (
             <Empty description={t('warehouseProductRecords.noData')} />
           ) : (
-            <Table
+            <MeasuredTable metricId="warehouse.product-records.sales-panel.table-1"
               rowKey="branchCode"
               size="small"
               loading={loading}
@@ -442,7 +442,7 @@ export default function SalesPanel({ productCode, enabled }: SalesPanelProps) {
           {productDaily.length === 0 && !loading ? (
             <Empty description={t('warehouseProductRecords.noData')} />
           ) : (
-            <Table
+            <MeasuredTable metricId="warehouse.product-records.sales-panel.table-2"
               rowKey="date"
               size="small"
               loading={loading}
@@ -515,7 +515,7 @@ export default function SalesPanel({ productCode, enabled }: SalesPanelProps) {
             {branchDaily.length === 0 && !branchLoading ? (
               <Empty description={t('warehouseProductRecords.noData')} />
             ) : (
-              <Table
+              <MeasuredTable metricId="warehouse.product-records.sales-panel.table-3"
                 rowKey="date"
                 size="small"
                 loading={branchLoading}

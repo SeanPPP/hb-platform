@@ -9,7 +9,6 @@ import {
   Select,
   Space,
   Statistic,
-  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -36,6 +35,7 @@ import {
   isAbortError,
   mapContainerTableChangeToQuery,
 } from './logic'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { RangePicker } = DatePicker
 
@@ -353,7 +353,7 @@ export default function ContainersPanel({ productCode, enabled }: ContainersPane
         {report && report.items.length === 0 && !loading ? (
           <Empty description={t('warehouseProductRecords.noData')} />
         ) : (
-          <Table
+          <MeasuredTable metricId="warehouse.product-records.containers-panel.table-1"
             rowKey="detailCode"
             size="small"
             loading={loading}

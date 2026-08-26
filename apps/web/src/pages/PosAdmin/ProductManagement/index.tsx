@@ -36,7 +36,6 @@ import {
   Space,
   Spin,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Tree,
@@ -45,6 +44,7 @@ import type { ColumnsType, TableRef } from 'antd/es/table'
 import type { FilterDropdownProps, FilterValue } from 'antd/es/table/interface'
 import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 import type { ReactNode, UIEvent } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -3412,7 +3412,7 @@ export default function ProductManagementPage() {
         </div>
 
         <div style={{ flex: 1, minHeight: 0 }}>
-          <Table
+          <MeasuredTable metricId="pos-admin.product-management.table-1"
             key={productTableRenderKey}
             ref={productTableRef}
             virtual
@@ -3745,7 +3745,7 @@ export default function ProductManagementPage() {
               <Button type="dashed" onClick={editAddSetCodeRow}>{t('posAdmin.products.addBarcodeBtn', '添加条码')}</Button>
               <span style={{ fontSize: 12, color: '#52c41a' }}>{t('posAdmin.products.setBarcodeTip', '套装条码采购价和零售价和主条码不一致')}</span>
             </Space>
-            <Table
+            <MeasuredTable metricId="pos-admin.product-management.table-2"
               rowKey={(r: any) => r.id || r._rowId}
               loading={editSetCodesLoading}
               dataSource={editSetCodes}
@@ -3768,7 +3768,7 @@ export default function ProductManagementPage() {
               <Button type="dashed" onClick={editAddSetCodeRow}>{t('posAdmin.products.addBarcodeBtn', '添加条码')}</Button>
               <span style={{ fontSize: 12, color: '#52c41a' }}>{t('posAdmin.products.multiBarcodeTip', '多条码零售价和采购价和主条码一致')}</span>
             </Space>
-            <Table
+            <MeasuredTable metricId="pos-admin.product-management.table-3"
               rowKey={(r: any) => r.id || r._rowId}
               loading={editSetCodesLoading}
               dataSource={editSetCodes}
@@ -4051,7 +4051,7 @@ export default function ProductManagementPage() {
         ]}
         width={1100}
       >
-        <Table
+        <MeasuredTable metricId="pos-admin.product-management.table-4"
           rowKey={(record) => `${record.storeCode || ''}-${record.storeProductCode || ''}`}
           loading={storeRecordsLoading}
           dataSource={storeRecordsData}
@@ -4253,7 +4253,7 @@ export default function ProductManagementPage() {
               {t('posAdmin.products.addSubCode', '添加子码')}
             </Button>
           </div>
-          <Table
+          <MeasuredTable metricId="pos-admin.product-management.table-5"
             rowKey={(r) => r.id || ''}
             dataSource={setCodeData}
             pagination={false}
@@ -4457,7 +4457,7 @@ export default function ProductManagementPage() {
                 </Descriptions.Item>
               </Descriptions>
               {integritySummary.issueRows.length > 0 ? (
-                <Table<ProductIntegrityIssueRow>
+                <MeasuredTable<ProductIntegrityIssueRow> metricId="pos-admin.product-management.table-6"
                   rowKey="key"
                   dataSource={integritySummary.issueRows}
                   pagination={false}

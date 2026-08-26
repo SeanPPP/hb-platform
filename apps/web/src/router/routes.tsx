@@ -69,6 +69,7 @@ import LocalSupplierPurchaseSalesAnalysisPage from '../pages/PosAdmin/LocalSuppl
 import InvoiceEditPage from '../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'
 import SystemAppDownloadsPage from '../pages/System/AppDownloads'
 import SystemCenterLogsPage from '../pages/System/CenterLogs'
+import SystemPerformanceBaselinePage from '../pages/System/PerformanceBaseline'
 import EmergencyLoginKeysPage from '../pages/System/EmergencyLoginKeys'
 import InvoiceEmailSettingsPage from '../pages/System/InvoiceEmailSettings'
 import PaymentTerminalSettingsPage from '../pages/System/PaymentTerminalSettings'
@@ -193,6 +194,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewSystemLogs',
         },
         element: <SystemCenterLogsPage />,
+      },
+      {
+        path: '/system/performance-baseline',
+        meta: {
+          title: 'menu.performanceBaseline',
+          icon: 'DashboardOutlined',
+          keepAlive: true,
+          accessKey: 'canViewPerformanceBaseline',
+        },
+        element: <SystemPerformanceBaselinePage />,
       },
       {
         path: '/system/scheduled-statistics',

@@ -1,4 +1,5 @@
 using BlazorApp.Shared.Models.HBSalesRecord;
+using BlazorApp.Api.Services.Performance;
 using Microsoft.Extensions.Configuration;
 using SqlSugar;
 
@@ -41,6 +42,8 @@ namespace BlazorApp.Api.Data
                     };
                 }
             );
+
+            SqlPerformanceAttachmentService.Attach(_db, nameof(HBSalesRecordSqlSugarContext));
         }
 
         /// <summary>
@@ -49,6 +52,7 @@ namespace BlazorApp.Api.Data
         public HBSalesRecordSqlSugarContext(SqlSugarScope db)
         {
             _db = db ?? throw new ArgumentNullException(nameof(db));
+            SqlPerformanceAttachmentService.Attach(_db, nameof(HBSalesRecordSqlSugarContext));
         }
 
         public SqlSugarScope Db => _db;

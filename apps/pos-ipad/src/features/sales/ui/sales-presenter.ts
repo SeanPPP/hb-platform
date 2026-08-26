@@ -1,14 +1,15 @@
+import { HbposApiError } from "@/core/api/hbpos-api";
 import {
   createAud,
   type CartSnapshot,
 } from "@/core/contracts";
-import { HbposApiError } from "@/core/api/hbpos-api";
 import type { CashDrawerDisposition } from "@/features/checkout/cash/cash-checkout-service";
 import {
   calculateCashSettlement,
   roundCashAmount,
   type MergeCompatibleCartLinesResult,
 } from "@/features/sales/domain";
+import { scanTiming } from "@/features/sales/runtime/scan-timing";
 
 export const MIN_TOUCH_TARGET = 44;
 
@@ -85,6 +86,8 @@ export type SalesFeedbackEvent = Readonly<{
   attemptId?: string;
   source?: "manual" | "hid" | "camera";
   lineId?: string;
+  /** HID 时序会话 id；业务和界面状态不得读取。 */
+  timingId?: string;
 }>;
 
 export type SalesCapabilities = Readonly<{
@@ -175,7 +178,11 @@ export interface SalesWorkflowPort {
   addProduct(product: SalesProductSearchItem): Promise<void>;
   addByLookupCode(
     lookupCode: string,
-    options?: Readonly<{ source?: "manual" | "hid" | "camera" }>,
+    options?: Readonly<{
+      source?: "manual" | "hid" | "camera";
+      /** HID 时序会话 id，仅供 scan-timing 打点使用。 */
+      timingId?: string;
+    }>,
   ): Promise<string | null>;
   subscribeLookupOutcome?(
     listener: (outcome: SalesFeedbackEvent) => void,
@@ -254,6 +261,7 @@ export class SalesPresenter {
   private mergeCompatibilityValue = false;
   private searchGeneration = 0;
   private nextPresenterAttemptId = 0;
+  private nextScanTimingId = 0;
   private mergeSelectionInProgress = false;
   private destroyed = false;
 
@@ -493,23 +501,41 @@ export class SalesPresenter {
     lookupCode: string,
     source: "hid" | "camera",
   ): Promise<boolean> {
+    const timingId =
+      source === "hid"
+        ? `scan-${(this.nextScanTimingId += 1)}`
+        : undefined;
+    scanTiming.beginHid(timingId);
+    const completeRejectedHid = () => {
+      scanTiming.complete(timingId, "failure");
+    };
     if (!this.dependencies.capabilities.catalog) {
       this.patchState({ errorCode: "runtime-unavailable" });
       this.publishBlockedAddAttempt(source);
+      completeRejectedHid();
       return Promise.resolve(false);
     }
     if (!lookupCode.trim()) {
       this.publishBlockedAddAttempt(source);
+      completeRejectedHid();
       return Promise.resolve(false);
     }
     if (!this.canMutateNewTransaction()) {
       this.publishBlockedAddAttempt(source);
+      completeRejectedHid();
       return Promise.resolve(false);
     }
     return this.dependencies.workflow
-      .addByLookupCode(lookupCode, { source })
+      .addByLookupCode(
+        lookupCode,
+        timingId === undefined ? { source } : { source, timingId },
+      )
       .then(() => true)
-      .catch(() => false);
+      .catch(() => {
+        // runtime 会优先发布权威失败；这里只为失效会话等未发布分支兜底。
+        completeRejectedHid();
+        return false;
+      });
   }
 
   public addOpenItem(unitPriceCents: number): Promise<boolean> {

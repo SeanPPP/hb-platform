@@ -38,7 +38,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -104,6 +103,7 @@ import {
 } from './columnOrder'
 import { formatStoreOrderVolume } from './volumeFormat'
 import './compact.css'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 type RangeValue = [Dayjs | null, Dayjs | null] | null
 type StoreOrderListTextFilterKey = 'orderNo' | 'remarks' | 'updatedBy'
@@ -684,7 +684,7 @@ function StorePickerModal({ open, title, loading, onCancel, onSelect }: StorePic
           </Form>
         ) : null}
 
-        <Table
+        <MeasuredTable metricId="warehouse.store-orders.table-1"
           rowKey="storeGUID"
           loading={fetching || loading || createSaving}
           size="small"
@@ -837,7 +837,7 @@ function CopyOrderModal({ open, loading, onCancel, onConfirm }: CopyOrderModalPr
             ? `${selectedStore.storeName} (${selectedStore.storeCode})`
             : t('storeOrders.noneSelected')}
         </Typography.Text>
-        <Table
+        <MeasuredTable metricId="warehouse.store-orders.table-2"
           rowKey="storeGUID"
           loading={fetching || loading}
           size="small"
@@ -2176,7 +2176,7 @@ export default function StoreOrdersPage() {
 
         <DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
           <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
-            <Table
+            <MeasuredTable metricId="warehouse.store-orders.table-3"
               className="store-order-list-table"
               rowKey="orderGUID"
               loading={loading}
@@ -2309,7 +2309,7 @@ export default function StoreOrdersPage() {
           <Typography.Text type="secondary">
             {t('storeOrders.fixStoreGuidHint', '按旧分店 GUID 聚合订单，为每个 GUID 选择对应本地分店后保存。')}
           </Typography.Text>
-          <Table
+          <MeasuredTable metricId="warehouse.store-orders.table-4"
             rowKey="sourceStoreCode"
             size="small"
             loading={unmatchedStoreLoading}

@@ -5,6 +5,7 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
 using SqlSugar;
+using BlazorApp.Api.Services.Performance;
 
 namespace BlazorApp.Api.Services.React
 {
@@ -431,6 +432,10 @@ namespace BlazorApp.Api.Services.React
                 IsAutoCloseConnection = false,
                 InitKeyType = InitKeyType.Attribute,
             });
+            SqlPerformanceAttachmentService.Attach(
+                lockClient,
+                "SqlSugarContext.LocalSupplierInvoiceHqSyncLock"
+            );
 
             var lockResult = await lockClient.Ado.SqlQuerySingleAsync<int>(
                 """

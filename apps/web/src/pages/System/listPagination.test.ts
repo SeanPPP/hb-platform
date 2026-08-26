@@ -125,7 +125,9 @@ for (const [name, source] of [['用户', usersSource], ['分店', storesSource]]
 }
 
 assertIncludes(usersSource, 'const [loginRecordsPageSize, setLoginRecordsPageSize] = useState(10)', '登录记录分页仍应保持每页 10 条')
-const usersTableStart = usersSource.indexOf('<Table\n          rowKey="userGUID"')
+const usersTableStart = usersSource.indexOf(
+  '<MeasuredTable metricId="system.users.table-1"\n          rowKey="userGUID"',
+)
 const usersTableEnd = usersSource.indexOf('\n        />', usersTableStart)
 const usersTableSource = usersSource.slice(usersTableStart, usersTableEnd)
 assertEqual((usersTableSource.match(/onChange=/g) ?? []).length, 1, '用户主表只能通过单一 onChange 发起请求')

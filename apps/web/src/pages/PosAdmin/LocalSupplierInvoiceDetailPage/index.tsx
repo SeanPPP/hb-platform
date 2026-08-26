@@ -19,7 +19,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   message,
 } from 'antd'
@@ -55,6 +54,7 @@ import {
   filterStoreOptionsByManagedCodes,
   isStoreCodeInManagedScope,
 } from '../../../utils/managedStoreScope'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 function formatAmount(value?: number) {
   if (value === undefined || value === null) return '--'
@@ -747,7 +747,7 @@ export default function LocalSupplierInvoiceDetailPage() {
           </Space>
         }
       >
-        <Table
+        <MeasuredTable metricId="pos-admin.local-supplier-invoice-detail-page.table-1"
           rowKey="detailGUID"
           loading={detailLoading}
           dataSource={filteredDetails}

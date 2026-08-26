@@ -18,6 +18,7 @@ using BlazorApp.Api.Services.Attendance;
 using BlazorApp.Api.Services.Background; // 后台定时服务
 using BlazorApp.Api.Services.Logging;
 using BlazorApp.Api.Services.OperationAudits;
+using BlazorApp.Api.Services.Performance;
 using BlazorApp.Api.Services.Pricing; // 自动定价服务
 using BlazorApp.Api.Services.React; // React 专用服务层
 using BlazorApp.Api.Utils; // Cookie 配置辅助类
@@ -206,12 +207,35 @@ builder.Services.Configure<TencentCloudSettings>(builder.Configuration.GetSectio
 builder.Services.Configure<ApplicationLoggingOptions>(
     builder.Configuration.GetSection("ApplicationLogging")
 );
+builder.Services.Configure<PerformanceMetricsOptions>(
+    builder.Configuration.GetSection("PerformanceMetrics")
+);
+builder.Services.Configure<SentryReleaseHealthOptions>(
+    builder.Configuration.GetSection(SentryReleaseHealthOptions.SectionName)
+);
 builder.Services.AddSingleton<IApplicationLogQueue, ApplicationLogQueue>();
 builder.Services.AddSingleton<ApplicationLogRateLimiter>();
 builder.Services.AddSingleton<ILoggerProvider, ApplicationLogLoggerProvider>();
 builder.Services.AddHostedService<ApplicationLogBackgroundService>();
 builder.Services.AddHostedService<ApplicationLogCleanupService>();
 builder.Services.AddHostedService<OperationAuditCleanupBackgroundService>();
+builder.Services.AddSingleton<PerformanceMetricBuffer>();
+builder.Services.AddSingleton<PerformanceMetricAggregateStore>();
+builder.Services.AddSingleton<PerformanceCollectorCoordinator>();
+builder.Services.AddSingleton<IPerformanceMetricRecorder>(provider =>
+    provider.GetRequiredService<PerformanceMetricBuffer>()
+);
+builder.Services.AddScoped<PerformanceMetricService>();
+builder.Services.AddScoped<PerformanceClientIngestRateLimiter>();
+builder.Services.AddHostedService<PerformanceMetricFlushService>();
+builder.Services.AddHostedService<AspNetCoreRequestMetricListener>();
+builder.Services.AddHostedService<SqlPerformanceAttachmentService>();
+builder.Services.AddSingleton<PerformanceOperationalRunQueue>();
+builder.Services.AddHostedService<PerformanceOperationalRunWriterService>();
+builder.Services.AddHostedService<PerformanceBacklogSamplerService>();
+builder.Services.AddHostedService<PerformanceRetentionService>();
+builder.Services.AddHttpClient<SentryReleaseHealthClient>();
+builder.Services.AddHostedService<SentryReleaseHealthSyncService>();
 builder.Services.AddScoped<SalesStatisticsJobService>();
 builder.Services.AddScoped<HBSalesRecordStatisticsService>();
 builder.Services.AddScoped<ScheduledTaskLogService>();
@@ -879,6 +903,9 @@ app.UseMiddleware<ApplicationExceptionLoggingMiddleware>();
 // 必须在认证/授权中间件之前，允许预检请求通过
 app.UseCors("AllowSpecific");
 
+// 路由已匹配后关闭显式排除或附件下载端点的内建请求指标。
+app.UseMiddleware<PerformanceMetricsEndpointExclusionMiddleware>();
+
 // 🔐 认证中间件：验证JWT令牌，设置HttpContext.User
 // 必须在授权中间件之前执行
 app.UseAuthentication();
@@ -921,6 +948,7 @@ try
         await EmergencyLoginKeySchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
         // 默认关闭已有表自动同步，中心日志新增列和过滤唯一索引在这里显式升级。
         await ApplicationLogSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);
+        await PerformanceBaselineSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);
         //await posmDbContext.InitializeTablesAsync();
         Console.WriteLine("✅ 主数据库表检查完成");
 

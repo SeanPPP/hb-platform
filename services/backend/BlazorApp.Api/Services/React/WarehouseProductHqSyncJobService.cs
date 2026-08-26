@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.Performance;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 
@@ -84,6 +85,25 @@ namespace BlazorApp.Api.Services.React
                 _activeJobId = jobState.JobId;
             }
 
+            PerformanceOperationalRunBridge.Publish(
+                PerformanceOperationalRunTransition.Queued(
+                    jobState.JobId,
+                    "hq",
+                    "warehouse-product-hq-sync",
+                    now,
+                    1
+                )
+            );
+            PerformanceOperationalRunBridge.Publish(
+                PerformanceOperationalRunTransition.Started(
+                    jobState.JobId,
+                    "hq",
+                    "warehouse-product-hq-sync",
+                    now,
+                    1
+                )
+            );
+
             // 关键位置：后台任务重新创建作用域，避免复用请求结束后的 scoped 服务。
             _ = Task.Run(() => ExecuteJobAsync(jobState), CancellationToken.None);
             return Task.FromResult(CreateSnapshot(jobState, false));
@@ -147,11 +167,12 @@ namespace BlazorApp.Api.Services.React
             SyncResult result
         )
         {
+            DateTime completedAt;
             lock (_jobStartSyncRoot)
             {
                 lock (jobState.SyncRoot)
                 {
-                    var completedAt = _timeProvider.GetUtcNow().UtcDateTime;
+                    completedAt = _timeProvider.GetUtcNow().UtcDateTime;
                     jobState.Status = status;
                     jobState.CompletedAt = completedAt;
                     jobState.ExpiresAt = completedAt.Add(_completedRetention);
@@ -164,6 +185,16 @@ namespace BlazorApp.Api.Services.React
                     _activeJobId = null;
                 }
             }
+
+            PerformanceOperationalRunBridge.Publish(
+                PerformanceOperationalRunTransition.Completed(
+                    jobState.JobId,
+                    "hq",
+                    "warehouse-product-hq-sync",
+                    status,
+                    completedAt
+                )
+            );
         }
 
         private void CleanupExpiredJobs()

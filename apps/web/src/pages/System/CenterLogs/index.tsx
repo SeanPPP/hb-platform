@@ -13,7 +13,6 @@ import {
   Select,
   Space,
   Statistic,
-  Table,
   Tag,
   Typography,
   message,
@@ -51,6 +50,7 @@ import {
   resolveCenterLogCredentialState,
   shouldHydrateCenterLogQueryFromLocation,
 } from './query'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 function getLevelColor(level: string) {
   switch (level.toLowerCase()) {
@@ -645,7 +645,7 @@ export default function SystemCenterLogsPage() {
                       </Descriptions.Item>
                     </Descriptions>
 
-                    <Table<ApplicationLogProjectStatus>
+                    <MeasuredTable<ApplicationLogProjectStatus> metricId="system.center-logs.table-1"
                       rowKey="projectCode"
                       size="small"
                       loading={loading}
@@ -709,7 +709,7 @@ export default function SystemCenterLogsPage() {
         </Card>
 
         <Card>
-          <Table<ApplicationLogItem>
+          <MeasuredTable<ApplicationLogItem> metricId="system.center-logs.table-2"
             rowKey="id"
             loading={loading}
             columns={columns}

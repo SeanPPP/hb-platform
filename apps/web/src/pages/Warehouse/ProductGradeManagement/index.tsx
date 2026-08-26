@@ -20,7 +20,6 @@ import {
   Progress,
   Select,
   Space,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -67,6 +66,7 @@ import CategoryTreePicker from '../Products/CategoryTreePicker'
 import { formatWarehouseCategoryNodeName } from '../Products/categoryPath'
 import BatchPriceModal from './BatchPriceModal'
 import PasteImportModal from './PasteImportModal'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const GRADE_TAG_COLOR: Record<string, string> = {
   A: 'purple',
@@ -1427,7 +1427,7 @@ export default function ProductGradeManagementPage() {
           </Card>
         )}
 
-        <Table<ProductGradeListItem>
+        <MeasuredTable<ProductGradeListItem> metricId="warehouse.product-grade-management.table-1"
           rowKey="productCode"
           virtual
           loading={loading}

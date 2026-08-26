@@ -20,6 +20,7 @@ import {
   SALES_PERMISSIONS,
   type SalesOperationSecurity,
 } from "./sales-operation-security";
+import { scanTiming } from "./scan-timing";
 
 import type { LocalCatalogMatch } from "@/core/db/catalog-repository";
 import type {
@@ -83,6 +84,59 @@ test("目录搜索和 HID 精确扫码只使用本地目录，并以稳定 produ
     () => dependencies.workflow.addProduct({ ...results[0]!, productCode: "forged" }),
     /identity/i,
   );
+});
+
+test("HID 扫码先发布权威购物车结果再结束 timing", async () => {
+  const dependencies = connected({ catalog: new Catalog([item()]) });
+  const order: string[] = [];
+  const originalComplete = scanTiming.complete;
+  scanTiming.complete = () => {
+    order.push("timing-complete");
+  };
+  const unsubscribe = dependencies.workflow.subscribeLookupOutcome?.(() => {
+    order.push("lookup-outcome-published");
+  });
+
+  try {
+    await dependencies.workflow.addByLookupCode("930000000001", {
+      source: "hid",
+      timingId: "scan-order",
+    });
+    assert.deepEqual(order, [
+      "lookup-outcome-published",
+      "timing-complete",
+    ]);
+  } finally {
+    unsubscribe?.();
+    scanTiming.complete = originalComplete;
+  }
+});
+
+test("扫码 timing 旁路异常不影响权威购物车发布", async () => {
+  const dependencies = connected({ catalog: new Catalog([item()]) });
+  const outcomes: SalesFeedbackEvent[] = [];
+  const originalComplete = scanTiming.complete;
+  scanTiming.complete = () => {
+    throw new Error("metric unavailable");
+  };
+  const unsubscribe = dependencies.workflow.subscribeLookupOutcome?.((outcome) => {
+    outcomes.push(outcome);
+  });
+
+  try {
+    assert.equal(
+      await dependencies.workflow.addByLookupCode("930000000001", {
+        source: "hid",
+        timingId: "scan-side-channel",
+      }),
+      "line-1",
+    );
+    assert.equal(dependencies.cart.getSnapshot().lines.length, 1);
+    assert.equal(outcomes.at(-1)?.kind, "added");
+  } finally {
+    unsubscribe?.();
+    scanTiming.complete = originalComplete;
+  }
 });
 
 test("目录搜索过滤同商品同价普通编码，并保留套装和不同价格结果", async () => {

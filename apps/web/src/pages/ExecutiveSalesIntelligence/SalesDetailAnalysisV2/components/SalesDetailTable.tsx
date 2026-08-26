@@ -1,9 +1,10 @@
 import { LoadingOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { Modal, Spin, Table } from 'antd';
+import { Modal, Spin } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import React, { useMemo, useState } from 'react';
 import styles from '../styles.module.css';
+import { MeasuredTable } from '../../../../components/MeasuredTable';
 
 export interface ProductSalesData {
   rank: number;
@@ -485,7 +486,7 @@ const SalesDetailTable: React.FC<SalesDetailTableProps> = ({
             </span>
           </div>
         ) : (
-          <Table
+          <MeasuredTable metricId="executive-sales-intelligence.sales-detail-analysis-v2.sales-detail-table.table-1"
             columns={columns}
             dataSource={data}
             rowKey="rank"

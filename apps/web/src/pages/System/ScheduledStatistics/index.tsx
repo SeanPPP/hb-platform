@@ -15,7 +15,6 @@ import {
   Space,
   Statistic,
   Switch,
-  Table,
   Tabs,
   Tag,
   Typography,
@@ -71,6 +70,7 @@ import {
   createLatestRequestGuard,
   runLatestGuardedRequest,
 } from '../../../utils/latestRequestGuard'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { RangePicker } = DatePicker
 
@@ -542,7 +542,7 @@ function DailyAlignmentPanel({
         </Col>
       </Row>
 
-      <Table<DailyStatisticsAlignmentRow>
+      <MeasuredTable<DailyStatisticsAlignmentRow> metricId="system.scheduled-statistics.table-1"
         rowKey={(row) => formatDateOnly(row.date)}
         loading={loading}
         columns={columns}
@@ -550,7 +550,7 @@ function DailyAlignmentPanel({
         scroll={{ x: 1700 }}
         expandable={{
           expandedRowRender: (row) => (
-            <Table<DailyStatisticsAlignmentTableDetail>
+            <MeasuredTable<DailyStatisticsAlignmentTableDetail> metricId="system.scheduled-statistics.table-2"
               rowKey="statisticType"
               size="small"
               columns={detailColumns}
@@ -1338,7 +1338,7 @@ export default function ScheduledStatisticsPage() {
               </Col>
             </Row>
           </Form>
-          <Table<ScheduledTaskLogItem>
+          <MeasuredTable<ScheduledTaskLogItem> metricId="system.scheduled-statistics.table-3"
             rowKey="id"
             loading={taskLogLoading}
             columns={taskColumns}

@@ -45,7 +45,6 @@ import {
   Space,
   Spin,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -244,6 +243,7 @@ import {
   renderReadonlyOemPriceCell,
 } from './ContainerDetailColumns'
 import './index.css'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 type TextColumnFilterKey = 'itemNumber' | 'barcode' | 'productName' | 'englishName' | 'remark'
 type NumberColumnFilterKey = 'containerPieces' | 'middlePackQuantity' | 'containerQuantity' | 'packingQuantity' | 'unitVolume' | 'domesticPrice' | 'floatRate' | 'transportCost' | 'unitTransportCost' | 'warehouseImportPrice' | 'lastOEMPrice' | 'importPrice' | 'oemPrice'
@@ -4716,7 +4716,7 @@ export default function ContainerDetailPage() {
               <div ref={setTableRegionElement} className="container-detail-table-region">
                 <DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
                   <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
-                    <Table
+                    <MeasuredTable metricId="warehouse.container-detail.table-1"
                       key={`${containerGuid}-${detailTableRenderKey}`}
                       ref={detailTableRef}
                       className="container-detail-table"
@@ -4775,7 +4775,7 @@ export default function ContainerDetailPage() {
               {getContainerDetailProductName(setCodeModalRow) ?? '--'}
             </Typography.Text>
           ) : null}
-          <Table
+          <MeasuredTable metricId="warehouse.container-detail.table-2"
             rowKey={getSetCodeRowKey}
             size="small"
             columns={setCodeColumns}

@@ -15,7 +15,6 @@ import {
   Space,
   Spin,
   Switch,
-  Table,
   TreeSelect,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -30,6 +29,7 @@ import {
 } from '../../../services/warehouseProductService'
 import { getActiveStores, type StoreOption } from '../../../services/storeService'
 import type { ProductType, SupplierOption } from '../../../types/domesticProduct'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface CreateProductModalProps {
   open: boolean
@@ -795,7 +795,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
                   ]}
                 />
               </Form.Item>
-              <Table rowKey="key" dataSource={setDetails} columns={setColumns} pagination={false} size="small" />
+              <MeasuredTable metricId="warehouse.products.create-product-modal.table-1" rowKey="key" dataSource={setDetails} columns={setColumns} pagination={false} size="small" />
               <Button
                 block
                 type="dashed"
@@ -819,7 +819,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
 
           {productType === 2 ? (
             <Card title={t('warehouse.multiCodeConfig')} size="small" style={{ marginBottom: 16 }}>
-              <Table rowKey="key" dataSource={multiCodeDetails} columns={multiCodeColumns} pagination={false} size="small" />
+              <MeasuredTable metricId="warehouse.products.create-product-modal.table-2" rowKey="key" dataSource={multiCodeDetails} columns={multiCodeColumns} pagination={false} size="small" />
               <Button
                 block
                 type="dashed"
@@ -841,7 +841,7 @@ export default function CreateProductModal({ open, suppliers, onCancel, onSucces
           ) : null}
 
           <Card title={t('warehouse.storeRetailPrice')} size="small">
-            <Table rowKey="key" dataSource={retailPrices} columns={retailPriceColumns} pagination={false} size="small" />
+            <MeasuredTable metricId="warehouse.products.create-product-modal.table-3" rowKey="key" dataSource={retailPrices} columns={retailPriceColumns} pagination={false} size="small" />
             <Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>
               <Button
                 block
