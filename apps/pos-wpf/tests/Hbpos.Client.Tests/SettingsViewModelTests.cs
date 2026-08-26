@@ -5,6 +5,7 @@ using Hbpos.Contracts.Stores;
 
 namespace Hbpos.Client.Tests;
 
+[Collection(ShutdownTimingTestCollection.Name)]
 public sealed class SettingsViewModelTests
 {
     private const string CachedToken = "opaque-settings-square-token";

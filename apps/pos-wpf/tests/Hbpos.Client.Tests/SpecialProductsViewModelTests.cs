@@ -8,6 +8,7 @@ using Hbpos.Contracts.Catalog;
 
 namespace Hbpos.Client.Tests;
 
+[Collection(ShutdownTimingTestCollection.Name)]
 public sealed class SpecialProductsViewModelTests
 {
     [Fact]
