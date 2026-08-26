@@ -590,6 +590,7 @@
                     </Border.Effect>
                     <!-- 使用 WPF 基础触屏惯性属性，兼容 Win7/10/11，避免引入系统版本专属特效。 -->
                     <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
                                   HorizontalScrollBarVisibility="Disabled"
                                   CanContentScroll="False"
                                   PanningMode="VerticalOnly"

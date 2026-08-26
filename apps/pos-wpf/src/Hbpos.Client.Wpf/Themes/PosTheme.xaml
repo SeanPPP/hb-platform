@@ -63,6 +63,27 @@
 
     <converters:ReceiptQrCodeImageSourceConverter x:Key="ReceiptQrCodeImageSourceConverter" />
 
+    <!-- 页面与弹窗的显式滚动区域统一使用像素级触屏惯性；纵向区域复用边界回弹反馈。 -->
+    <Style x:Key="PosVerticalTouchScrollViewerStyle"
+           TargetType="ScrollViewer"
+           BasedOn="{StaticResource {x:Type ScrollViewer}}">
+        <Setter Property="PanningMode" Value="VerticalOnly" />
+        <Setter Property="PanningDeceleration" Value="0.0008" />
+        <Setter Property="PanningRatio" Value="1.0" />
+        <Setter Property="CanContentScroll" Value="False" />
+        <Setter Property="services:TouchScrollFeedback.IsEnabled" Value="True" />
+    </Style>
+
+    <!-- 横向结果条只接管横向手势，避免纵向回弹干扰所在页面的手势方向。 -->
+    <Style x:Key="PosHorizontalTouchScrollViewerStyle"
+           TargetType="ScrollViewer"
+           BasedOn="{StaticResource {x:Type ScrollViewer}}">
+        <Setter Property="PanningMode" Value="HorizontalOnly" />
+        <Setter Property="PanningDeceleration" Value="0.0008" />
+        <Setter Property="PanningRatio" Value="1.0" />
+        <Setter Property="CanContentScroll" Value="False" />
+    </Style>
+
     <DataTemplate x:Key="ReceiptPreviewRowTemplate">
         <StackPanel>
             <Image Width="260"

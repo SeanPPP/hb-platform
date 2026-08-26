@@ -9,6 +9,7 @@
     </UserControl.Resources>
     <Grid Background="{StaticResource PosScreenBackgroundBrush}">
         <ScrollViewer x:Name="RegistrationScrollViewer"
+                      Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
                       VerticalScrollBarVisibility="Auto"
                       HorizontalScrollBarVisibility="Disabled">
             <Grid MinHeight="{Binding ElementName=RegistrationScrollViewer, Path=ViewportHeight}">

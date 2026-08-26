@@ -1201,6 +1201,7 @@
 
                     <Grid Grid.Row="1" Background="#FFF8FAFC">
                         <ScrollViewer Margin="24,18"
+                                      Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
                                       HorizontalScrollBarVisibility="Disabled"
                                       VerticalScrollBarVisibility="Auto">
                             <Border Width="430"
@@ -1214,7 +1215,15 @@
                                     <DropShadowEffect BlurRadius="10" ShadowDepth="2" Opacity="0.10" />
                                 </Border.Effect>
                                 <ItemsControl ItemsSource="{Binding ReceiptPreviewRows}"
-                                              ItemTemplate="{StaticResource ReceiptPreviewRowTemplate}" />
+                                              HorizontalAlignment="Stretch"
+                                              ItemTemplate="{StaticResource ReceiptPreviewRowTemplate}">
+                                    <!-- 让每一行占满小票宽度，使居中/右对齐相对票面生效。 -->
+                                    <ItemsControl.ItemContainerStyle>
+                                        <Style TargetType="{x:Type ContentPresenter}">
+                                            <Setter Property="HorizontalAlignment" Value="Stretch" />
+                                        </Style>
+                                    </ItemsControl.ItemContainerStyle>
+                                </ItemsControl>
                             </Border>
                         </ScrollViewer>
 
