@@ -111,6 +111,7 @@ public sealed class SpecialProductsViewModelTests
         };
         await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
+        Task navigationExecution = Task.CompletedTask;
         if (navigation == "back")
         {
             Assert.True(viewModel.BackCommand.CanExecute(null));
@@ -119,12 +120,13 @@ public sealed class SpecialProductsViewModelTests
         else
         {
             Assert.True(viewModel.AddToCartCommand.CanExecute(item));
-            await Assert.IsAssignableFrom<IAsyncRelayCommand<SellableItemDto>>(viewModel.AddToCartCommand)
+            navigationExecution = Assert.IsAssignableFrom<IAsyncRelayCommand<SellableItemDto>>(viewModel.AddToCartCommand)
                 .ExecuteAsync(item);
         }
+        await WaitUntilAsync(() => navigated);
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
         releaseOperation.TrySetResult();
-        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.WhenAll(execution, navigationExecution).WaitAsync(TimeSpan.FromSeconds(5));
 
         Assert.True(navigated);
         Assert.True(cancellationRequestedBeforeNavigation);

@@ -2735,8 +2735,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, ISca
                 reason,
                 Session,
                 CancellationToken.None);
-            StatusMessage = T("history.held.forceReleased");
             await LoadAsync();
+            // 刷新失败时保留具体错误；刷新成功后再显示强制释放结果，避免成功提示被 LoadAsync 清空。
+            if (string.IsNullOrWhiteSpace(StatusMessage))
+            {
+                StatusMessage = T("history.held.forceReleased");
+            }
         }
         catch (Exception ex)
         {

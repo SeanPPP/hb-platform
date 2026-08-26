@@ -352,20 +352,25 @@ public sealed class InstallmentOperationService(
             string.IsNullOrWhiteSpace(reason) ? "取消分期并退款" : reason.Trim(),
             operationGuid.ToString("D"));
         var now = DateTimeOffset.UtcNow;
+        // 同批退款步骤使用递增 tick 保留原付款顺序，避免数据库退化为哈希 GUID 排序。
         var steps = localOrder.Payments
             .Where(payment => payment.Status == InstallmentPaymentStatus.Recorded && payment.Amount > 0m)
-            .Select(payment => new LocalInstallmentRefundStep(
-                DeterministicGuid($"refund:{operationGuid:D}:{payment.PaymentGuid:D}"),
-                operationGuid,
-                payment.PaymentGuid,
-                payment.Method,
-                payment.Amount,
-                payment.Reference,
-                $"{operationGuid:D}:refund:{payment.PaymentGuid:D}",
-                LocalInstallmentRefundStepState.Prepared,
-                null,
-                payment.CardTransactions is null ? null : JsonSerializer.Serialize(payment.CardTransactions, JsonOptions),
-                null, null, null, null, null, null, now, now))
+            .Select((payment, index) =>
+            {
+                var stepCreatedAt = now.AddTicks(index);
+                return new LocalInstallmentRefundStep(
+                    DeterministicGuid($"refund:{operationGuid:D}:{payment.PaymentGuid:D}"),
+                    operationGuid,
+                    payment.PaymentGuid,
+                    payment.Method,
+                    payment.Amount,
+                    payment.Reference,
+                    $"{operationGuid:D}:refund:{payment.PaymentGuid:D}",
+                    LocalInstallmentRefundStepState.Prepared,
+                    null,
+                    payment.CardTransactions is null ? null : JsonSerializer.Serialize(payment.CardTransactions, JsonOptions),
+                    null, null, null, null, null, null, stepCreatedAt, stepCreatedAt);
+            })
             .ToList();
         var operation = await repository.CreateCancelOrGetAsync(CreateOperation(
             operationGuid,

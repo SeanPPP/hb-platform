@@ -597,34 +597,16 @@ public sealed class WpfViewLifecycleTests
                 IsReturnLine: false))
             .ToArray();
 
-        var host = new Window
-        {
-            Content = view,
-            Width = targetWidth,
-            Height = targetContentHeight,
-            WindowStyle = WindowStyle.None,
-            ResizeMode = ResizeMode.NoResize,
-            WindowStartupLocation = WindowStartupLocation.Manual,
-            Left = -10000,
-            Top = -10000,
-            ShowActivated = false,
-            ShowInTaskbar = false
-        };
-        host.Show();
-        host.UpdateLayout();
-        PumpDispatcher();
+        // 直接按客户区尺寸布局，避免托管 runner 将离屏顶层窗口限制到桌面工作区。
+        // Dispatcher 处理模板与容器生成后再布局一次，保证断言读取稳定的最终尺寸。
+        var layoutSize = new Size(targetWidth, targetContentHeight);
+        view.Measure(layoutSize);
+        view.Arrange(new Rect(layoutSize));
         view.UpdateLayout();
-
-        // Window.Width 是外框尺寸；托管 Windows runner 仍可能保留非客户区。
-        // 用独立的 UserControl 客户区校正，避免生产 root 自身缩水时被补偿掉。
-        var contentWidthAdjustment = targetWidth - view.ActualWidth;
-        if (Math.Abs(contentWidthAdjustment) > 0.5)
-        {
-            host.Width += contentWidthAdjustment;
-            host.UpdateLayout();
-            PumpDispatcher();
-            view.UpdateLayout();
-        }
+        PumpDispatcher();
+        view.Measure(layoutSize);
+        view.Arrange(new Rect(layoutSize));
+        view.UpdateLayout();
 
         Assert.Equal(3, root.ColumnDefinitions.Count);
         Assert.InRange(view.ActualWidth, targetWidth - 0.5, targetWidth + 0.5);
@@ -720,7 +702,6 @@ public sealed class WpfViewLifecycleTests
             Assert.True(button.ActualHeight >= 62, $"右侧按钮触控高度不足：{button.ActualHeight:0.##}。");
         });
 
-        host.Close();
     }
 
     private static IEnumerable<T> FindVisualDescendants<T>(DependencyObject parent)
