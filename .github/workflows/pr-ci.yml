@@ -251,7 +251,11 @@ jobs:
           ./scripts/ci/run-android-component.sh '${{ matrix.component }}'
 
   required:
-    name: PR CI / required
+    # 分支保护只接受 PR 事件的稳定检查名；手动/定时运行不得伪造同名成功检查。
+    name: >-
+      ${{ github.event_name == 'pull_request'
+          && 'PR CI / required'
+          || 'Non-PR CI / matrix required' }}
     if: ${{ always() }}
     needs:
       - plan

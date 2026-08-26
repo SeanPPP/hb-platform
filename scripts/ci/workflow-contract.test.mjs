@@ -26,6 +26,10 @@ const testAllPath = new URL('../test-all.sh', import.meta.url)
 const mobilePackagePath = new URL('../../apps/mobile/package.json', import.meta.url)
 const wpfClientTestsProjectPath = new URL('../../apps/pos-wpf/tests/Hbpos.Client.Tests/Hbpos.Client.Tests.csproj', import.meta.url)
 const xunitRunnerConfigPath = new URL('../../apps/pos-wpf/tests/Hbpos.Client.Tests/xunit.runner.json', import.meta.url)
+const transactionHistoryTestsPath = new URL(
+  '../../apps/pos-wpf/tests/Hbpos.Client.Tests/TransactionHistoryViewModelTests.cs',
+  import.meta.url,
+)
 const posPricingPerformanceTestPaths = [
   new URL('../../apps/pos-ipad/src/features/sales/domain/pricing-cart.test.ts', import.meta.url),
   new URL('../../apps/pos-handheld/src/features/sales/domain/pricing-cart.test.ts', import.meta.url),
@@ -163,6 +167,24 @@ test('PR workflow 每个 PR 都启动，并按 Brisbane 周日 02:23 周更全�
   assert.doesNotMatch(source, /nightly/i)
 })
 
+test('只有 pull_request 能产出分支保护使用的 required 检查名', () => {
+  const source = readFileSync(workflowPath, 'utf8')
+  const required = workflowJobBlock(source, 'required')
+  const requiredNameOccurrences = readdirSync(workflowDirectoryPath, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && /\.ya?ml$/i.test(entry.name))
+    .flatMap((entry) => {
+      const workflowSource = readFileSync(new URL(entry.name, workflowDirectoryPath), 'utf8')
+      return [...workflowSource.matchAll(/PR CI \/ required/g)].map(() => entry.name)
+    })
+
+  assert.deepEqual(requiredNameOccurrences, ['pr-ci.yml'])
+  assert.doesNotMatch(required, /^    name:\s*PR CI \/ required\s*$/m)
+  assert.match(
+    required,
+    /name:\s*>-\s*\n\s*\$\{\{\s*github\.event_name == 'pull_request'\s*\n\s*&& 'PR CI \/ required'\s*\n\s*\|\| 'Non-PR CI \/ matrix required'\s*\}\}/,
+  )
+})
+
 test('PR/weekly 使用 15/45 分钟端到端预算并为稳定 gate 预留时间', () => {
   const source = readFileSync(workflowPath, 'utf8')
   const required = workflowJobBlock(source, 'required')
@@ -181,7 +203,7 @@ test('PR/weekly 使用 15/45 分钟端到端预算并为稳定 gate 预留时间
   }
   assert.match(source, /timeout-minutes:\s*2/)
   assert.match(source, /timeout-minutes:\s*40/g)
-  assert.match(source, /name:\s*PR CI \/ required/)
+  assert.match(required, /&& 'PR CI \/ required'/)
   assert.match(source, /node scripts\/ci\/required-gate\.mjs/)
   assert.match(source, /name:\s*Weekly full \/ required/)
   assert.match(source, /weekly_required:[\s\S]*?needs:\s*\n\s*- plan\s*\n/)
@@ -216,6 +238,15 @@ test('托管 runner 限制 WPF 并行度，并避免原生多架构与 Android �
   ]) {
     assert.match(androidRunner, new RegExp(task.replaceAll(':', '\\:')))
   }
+})
+
+test('WPF 挂单夹具只捕获一次当前日期，避免跨午夜产生不一致', () => {
+  const source = readFileSync(transactionHistoryTestsPath, 'utf8')
+
+  assert.equal([...source.matchAll(/DateTime\.Today/g)].length, 1)
+  assert.match(source, /private static readonly DateTimeOffset HeldFixtureTime = new\(DateTime\.Today\.AddHours\(9\)\);/)
+  assert.match(source, /viewModel\.DateFrom = HeldFixtureDate;/)
+  assert.match(source, /viewModel\.DateTo = HeldFixtureDate;/)
 })
 
 test('所有 workflow yml/yaml 的第三方 uses（含条件步骤）全部固定 40 位提交 SHA', () => {
