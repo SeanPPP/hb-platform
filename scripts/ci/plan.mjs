@@ -20,7 +20,7 @@ export const ALL_COMPONENTS = Object.freeze([
 ])
 
 export const PROFILE_BUDGETS = Object.freeze({
-  // plan 最多 2 分钟、required 最多 1 分钟，矩阵保留 12 分钟。
+  // PR 仍由 required 严格执行 15 分钟端到端门禁；plan 的 4 分钟仅用于容纳 checkout 抖动。
   pr: Object.freeze({ budgetSeconds: 15 * 60, matrixTimeoutMinutes: 12 }),
   // weekly 还要经过最终聚合；40 分钟矩阵为两个聚合 job 留出余量。
   weekly: Object.freeze({ budgetSeconds: 45 * 60, matrixTimeoutMinutes: 40 }),

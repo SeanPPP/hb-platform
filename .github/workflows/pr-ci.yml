@@ -47,7 +47,7 @@ jobs:
   plan:
     name: PR CI / plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 4
     outputs:
       profile: ${{ steps.plan.outputs.profile }}
       budget_seconds: ${{ steps.plan.outputs.budget_seconds }}

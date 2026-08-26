@@ -233,6 +233,7 @@ test('只有 pull_request 能产出分支保护使用的 required 检查名', ()
 
 test('PR/weekly 使用 15/45 分钟端到端预算并为稳定 gate 预留时间', () => {
   const source = readFileSync(workflowPath, 'utf8')
+  const plan = workflowJobBlock(source, 'plan')
   const required = workflowJobBlock(source, 'required')
   const weeklyRequired = workflowJobBlock(source, 'weekly_required')
   assert.match(source, /timeout-minutes:\s*\$\{\{ matrix\.timeout \}\}/)
@@ -247,7 +248,8 @@ test('PR/weekly 使用 15/45 分钟端到端预算并为稳定 gate 预留时间
     assert.match(gate, /CI_RUN_ATTEMPT:\s*\$\{\{ github\.run_attempt \}\}/)
     assert.match(gate, /CI_RUN_BUDGET_SECONDS:\s*\$\{\{ needs\.plan\.outputs\.budget_seconds \}\}/)
   }
-  assert.match(source, /timeout-minutes:\s*2/)
+  assert.equal(plan.match(/^    timeout-minutes:/gm)?.length, 1)
+  assert.match(plan, /^    timeout-minutes:[ \t]*4[ \t]*$/m)
   assert.match(source, /timeout-minutes:\s*40/g)
   assert.match(required, /&& 'PR CI \/ required'/)
   assert.match(source, /node scripts\/ci\/required-gate\.mjs/)
