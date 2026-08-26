@@ -2726,6 +2726,17 @@
   <data name="settings.status.appUpdateInstalling" xml:space="preserve"><value>正在启动软件更新安装器...</value></data>
   <data name="appUpdate.prompt.title" xml:space="preserve"><value>软件更新</value></data>
   <data name="appUpdate.optional.prompt.message" xml:space="preserve"><value>发现版本 {0}，是否现在下载并安装？</value></data>
+  <data name="appUpdate.optional.prompt.description" xml:space="preserve"><value>新版本已准备好安装。</value></data>
+  <data name="appUpdate.optional.prompt.readyStatus" xml:space="preserve"><value>已准备安装</value></data>
+  <data name="appUpdate.optional.prompt.currentVersion" xml:space="preserve"><value>当前版本</value></data>
+  <data name="appUpdate.optional.prompt.newVersion" xml:space="preserve"><value>新版本</value></data>
+  <data name="appUpdate.optional.prompt.packageDownloaded" xml:space="preserve"><value>更新包已下载完成。</value></data>
+  <data name="appUpdate.optional.prompt.whatsNew" xml:space="preserve"><value>更新内容</value></data>
+  <data name="appUpdate.optional.prompt.noReleaseNotes" xml:space="preserve"><value>此更新未提供发布说明。</value></data>
+  <data name="appUpdate.optional.prompt.safety" xml:space="preserve"><value>安装期间 HB POS 将关闭。请先完成或清空当前交易。</value></data>
+  <data name="appUpdate.optional.prompt.installLater" xml:space="preserve"><value>稍后安装</value></data>
+  <data name="appUpdate.optional.prompt.restartAndInstall" xml:space="preserve"><value>重启并安装</value></data>
+  <data name="appUpdate.optional.prompt.settingsHint" xml:space="preserve"><value>终端空闲时可从设置页面安装。</value></data>
   <data name="appUpdate.optional.title" xml:space="preserve"><value>更新已准备好</value></data>
   <data name="appUpdate.optional.ready" xml:space="preserve"><value>新版本已下载完成，可在空闲时安装。</value></data>
   <data name="appUpdate.force.title" xml:space="preserve"><value>必须更新</value></data>
