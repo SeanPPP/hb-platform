@@ -46,6 +46,165 @@ public sealed class SettingsViewModelTests
     }
 
     [Fact]
+    public void Settings_redesign_keeps_all_categories_and_operational_bindings()
+    {
+        var xamlPath = Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "SettingsView.xaml");
+        var document = System.Xml.Linq.XDocument.Load(xamlPath);
+        var elements = document.Descendants().ToArray();
+
+        var categoryCommands = new[]
+        {
+            "SelectDataMaintenanceCommand",
+            "SelectPaymentTerminalCommand",
+            "SelectReceiptPrinterCommand",
+            "SelectDeviceRegistrationCommand"
+        };
+        var categoryButtons = categoryCommands.Select(command => Assert.Single(elements.Where(element =>
+            element.Name.LocalName == "Button" &&
+            element.Attribute("Command")?.Value.Contains(command, StringComparison.Ordinal) == true))).ToArray();
+        var navigationBorder = categoryButtons[0].Ancestors().First(element => element.Name.LocalName == "Border");
+
+        Assert.Equal("0", navigationBorder.Attribute("Grid.Column")?.Value);
+        Assert.All(categoryButtons, button => Assert.Same(navigationBorder, button.Ancestors().First(
+            element => element.Name.LocalName == "Border")));
+        Assert.All(categoryButtons, button => Assert.Contains("Selected", button.Attribute("Tag")?.Value, StringComparison.Ordinal));
+        var deviceRegistrationNavigationText = Assert.Single(categoryButtons[3].Descendants().Where(element =>
+            element.Name.LocalName == "TextBlock"));
+        Assert.Equal(
+            "{loc:Loc settings.category.deviceRegistrationNav}",
+            deviceRegistrationNavigationText.Attribute("Text")?.Value);
+
+        var paymentSection = Assert.Single(elements.Where(element =>
+            element.Name.LocalName == "Grid" &&
+            element.Attribute("Visibility")?.Value.Contains("IsPaymentTerminalSelected", StringComparison.Ordinal) == true));
+        var contentScrollViewer = paymentSection.Ancestors().First(element => element.Name.LocalName == "ScrollViewer");
+        var settingsBodyChildren = navigationBorder.Parent!.Elements().ToArray();
+        Assert.True(
+            Array.IndexOf(settingsBodyChildren, navigationBorder) < Array.IndexOf(settingsBodyChildren, contentScrollViewer),
+            "The category navigation must precede the content scroller so keyboard focus follows the visual order.");
+
+        var providerTabs = paymentSection.Descendants().Where(element => element.Name.LocalName == "TabItem").ToArray();
+        Assert.Equal(2, providerTabs.Length);
+        Assert.DoesNotContain(providerTabs, tab => tab.Attribute("IsSelected") is not null);
+        foreach (var command in new[]
+                 {
+                     "SaveSquareCommand",
+                     "OpenLinklySetupInstructionsCommand",
+                     "TestLinklyCommand",
+                     "LogonLinklyCommand",
+                     "SaveLinklyCommand"
+                 })
+        {
+            Assert.Contains(paymentSection.Descendants(), element =>
+                element.Name.LocalName == "Button" &&
+                element.Attribute("Command")?.Value.Contains(command, StringComparison.Ordinal) == true);
+        }
+        var setupInstructionsButton = Assert.Single(paymentSection.Descendants().Where(element =>
+            element.Name.LocalName == "Button" &&
+            element.Attribute("Command")?.Value.Contains("OpenLinklySetupInstructionsCommand", StringComparison.Ordinal) == true));
+        Assert.Same(providerTabs[1], setupInstructionsButton.Ancestors().First(element => element.Name.LocalName == "TabItem"));
+        Assert.Equal(3, paymentSection.Descendants().Count(element =>
+            element.Name.LocalName == "Border" &&
+            element.Attribute("Style")?.Value.Contains("SettingsModeChoiceBorderStyle", StringComparison.Ordinal) == true));
+        Assert.True(paymentSection.Descendants().Count(element =>
+            element.Name.LocalName == "TextBox" &&
+            element.Attribute("Text")?.Value.Contains("TimeoutSecondsText", StringComparison.Ordinal) == true) >= 2);
+
+        var receiptSection = Assert.Single(elements.Where(element =>
+            element.Name.LocalName == "Grid" &&
+            element.Attribute("Visibility")?.Value.Contains("IsReceiptPrinterSelected", StringComparison.Ordinal) == true));
+        Assert.Contains(receiptSection.Descendants(), element =>
+            element.Name.LocalName == "TextBlock" &&
+            element.Attribute("Text")?.Value == "{Binding ReceiptBrandNameText}");
+        Assert.Contains(receiptSection.Descendants(), element =>
+            element.Name.LocalName == "TextBlock" &&
+            element.Attribute("Text")?.Value == "{Binding ReceiptReturnPolicyText}");
+        Assert.Contains(receiptSection.Descendants(), element =>
+            element.Name.LocalName == "Button" &&
+            element.Attribute("Command")?.Value.Contains("SaveReceiptPrinterCommand", StringComparison.Ordinal) == true);
+
+        var registrationSection = Assert.Single(elements.Where(element =>
+            element.Name.LocalName == "Grid" &&
+            element.Attribute("Visibility")?.Value.Contains("IsDeviceRegistrationSelected", StringComparison.Ordinal) == true));
+        foreach (var binding in new[] { "Session.StoreName", "Session.StoreCode", "Session.DeviceCode" })
+        {
+            var run = Assert.Single(registrationSection.Descendants().Where(element =>
+                element.Name.LocalName == "Run" &&
+                element.Attribute("Text")?.Value.Contains(binding, StringComparison.Ordinal) == true));
+            Assert.Contains("Mode=OneWay", run.Attribute("Text")!.Value, StringComparison.Ordinal);
+        }
+        Assert.Contains(registrationSection.Descendants(), element =>
+            element.Name.LocalName == "ApiServerSettingsPanel" &&
+            element.Attribute("DataContext")?.Value == "{Binding ApiServerSettings}");
+        Assert.Contains(registrationSection.Descendants(), element =>
+            element.Name.LocalName == "Button" &&
+            element.Attribute("Command")?.Value.Contains("ReregisterDeviceCommand", StringComparison.Ordinal) == true);
+    }
+
+    [Fact]
+    public void Settings_redesign_copy_is_available_in_english_and_chinese()
+    {
+        var localization = new LocalizationService();
+        var keys = new[]
+        {
+            "settings.page.dataMaintenance.description",
+            "settings.page.paymentTerminal.description",
+            "settings.category.deviceRegistrationNav",
+            "settings.linkly.localIp.testSafetyShort",
+            "settings.receiptPrinter.preview",
+            "settings.deviceRegistration.current",
+            "settings.deviceRegistration.active",
+            "settings.deviceRegistration.thisDevice",
+            "settings.deviceRegistration.beforeContinue",
+            "settings.deviceRegistration.checkCart",
+            "settings.deviceRegistration.checkPayment",
+            "settings.deviceRegistration.checkSync",
+            "settings.deviceRegistration.supervisorRequired",
+            "settings.deviceRegistration.deviceReuse"
+        };
+
+        var repoRoot = FindRepoRoot();
+        foreach (var resourceFile in new[] { "SettingsStrings.resx", "SettingsStrings.zh-CN.resx" })
+        {
+            var resourcePath = Path.Combine(
+                repoRoot,
+                "apps",
+                "pos-wpf",
+                "src",
+                "Hbpos.Client.Wpf",
+                "Resources",
+                resourceFile);
+            var resourceKeys = System.Xml.Linq.XDocument.Load(resourcePath)
+                .Descendants("data")
+                .Select(element => element.Attribute("name")?.Value)
+                .Where(name => name is not null)
+                .ToHashSet(StringComparer.Ordinal);
+
+            Assert.All(keys, key => Assert.Contains(key, resourceKeys));
+        }
+
+        foreach (var culture in new[] { "en-US", "zh-CN" })
+        {
+            localization.SetCulture(culture);
+            Assert.All(keys, key => Assert.DoesNotContain("[[", localization.T(key), StringComparison.Ordinal));
+        }
+
+        localization.SetCulture("en-US");
+        Assert.Equal("Device registration", localization.T("settings.category.deviceRegistrationNav"));
+        localization.SetCulture("zh-CN");
+        Assert.Equal("设备注册", localization.T("settings.category.deviceRegistrationNav"));
+        localization.SetCulture("en-US");
+    }
+
+    [Fact]
     public void Payment_terminal_settings_content_supports_vertical_touch_panning()
     {
         var xamlPath = Path.Combine(
