@@ -1034,6 +1034,17 @@
   <data name="settings.status.appUpdateInstalling" xml:space="preserve"><value>Starting software update installer...</value></data>
   <data name="appUpdate.prompt.title" xml:space="preserve"><value>Software update</value></data>
   <data name="appUpdate.optional.prompt.message" xml:space="preserve"><value>Version {0} is available. Download and install now?</value></data>
+  <data name="appUpdate.optional.prompt.description" xml:space="preserve"><value>A newer version is ready to install.</value></data>
+  <data name="appUpdate.optional.prompt.readyStatus" xml:space="preserve"><value>Ready to install</value></data>
+  <data name="appUpdate.optional.prompt.currentVersion" xml:space="preserve"><value>Current version</value></data>
+  <data name="appUpdate.optional.prompt.newVersion" xml:space="preserve"><value>New version</value></data>
+  <data name="appUpdate.optional.prompt.packageDownloaded" xml:space="preserve"><value>The update package has been downloaded.</value></data>
+  <data name="appUpdate.optional.prompt.whatsNew" xml:space="preserve"><value>What's new</value></data>
+  <data name="appUpdate.optional.prompt.noReleaseNotes" xml:space="preserve"><value>No release notes were provided for this update.</value></data>
+  <data name="appUpdate.optional.prompt.safety" xml:space="preserve"><value>HB POS will close during installation. Complete any active transaction first.</value></data>
+  <data name="appUpdate.optional.prompt.installLater" xml:space="preserve"><value>Install later</value></data>
+  <data name="appUpdate.optional.prompt.restartAndInstall" xml:space="preserve"><value>Restart and install</value></data>
+  <data name="appUpdate.optional.prompt.settingsHint" xml:space="preserve"><value>You can install from Settings when the terminal is idle.</value></data>
   <data name="appUpdate.optional.title" xml:space="preserve"><value>Update ready</value></data>
   <data name="appUpdate.optional.ready" xml:space="preserve"><value>New version has been downloaded. Install when the terminal is idle.</value></data>
   <data name="appUpdate.force.title" xml:space="preserve"><value>Update required</value></data>

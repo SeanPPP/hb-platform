@@ -498,7 +498,10 @@
                                     <RowDefinition Height="*" />
                                 </Grid.RowDefinitions>
                                 <TextBlock Text="{loc:Loc dailyClose.receiptPreview}" Style="{StaticResource SettlementTitleStyle}" />
-                                <ScrollViewer Grid.Row="1" Margin="0,12,0,0" VerticalScrollBarVisibility="Auto">
+                                <ScrollViewer Grid.Row="1"
+                                              Margin="0,12,0,0"
+                                              Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
+                                              VerticalScrollBarVisibility="Auto">
                                     <ItemsControl ItemsSource="{Binding ArchivePreviewRows}">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
@@ -541,6 +544,7 @@
                                 <TextBlock Text="{loc:Loc dailyClose.cashDetail}" Style="{StaticResource SettlementTitleStyle}" />
                                 <ScrollViewer Grid.Row="1"
                                               Margin="0,12,0,0"
+                                              Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
                                               HorizontalScrollBarVisibility="Disabled"
                                               VerticalScrollBarVisibility="Auto"
                                               CanContentScroll="False"
@@ -677,7 +681,10 @@
                                     <RowDefinition Height="*" />
                                 </Grid.RowDefinitions>
                                 <TextBlock Text="{loc:Loc dailyClose.linklySettlement.preview}" Style="{StaticResource SettlementTitleStyle}" />
-                                <ScrollViewer Grid.Row="1" Margin="0,12,0,0" VerticalScrollBarVisibility="Auto">
+                                <ScrollViewer Grid.Row="1"
+                                              Margin="0,12,0,0"
+                                              Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
+                                              VerticalScrollBarVisibility="Auto">
                                     <ItemsControl ItemsSource="{Binding SettlementReceiptPreviewLines}">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
@@ -925,6 +932,7 @@
                                                        FontSize="12" />
                                             <ScrollViewer Grid.Row="1"
                                                           Margin="0,7,0,0"
+                                                          Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
                                                           VerticalScrollBarVisibility="Auto"
                                                           HorizontalScrollBarVisibility="Disabled">
                                                 <ItemsControl x:Name="NoteDenominationList"
@@ -943,6 +951,7 @@
                                                        FontSize="12" />
                                             <ScrollViewer Grid.Row="1"
                                                           Margin="0,7,0,0"
+                                                          Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
                                                           VerticalScrollBarVisibility="Auto"
                                                           HorizontalScrollBarVisibility="Disabled">
                                                 <ItemsControl x:Name="CoinDenominationList"

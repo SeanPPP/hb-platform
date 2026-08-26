@@ -257,6 +257,51 @@ public sealed class TransactionHistoryViewLayoutTests
     }
 
     [Fact]
+    public void History_receipt_preview_stretches_rows_without_overriding_receipt_alignment()
+    {
+        var wpfRoot = Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf");
+        var view = XDocument.Load(Path.Combine(
+            wpfRoot,
+            "Views",
+            "Screens",
+            "TransactionHistoryView.xaml"));
+        var theme = XDocument.Load(Path.Combine(wpfRoot, "Themes", "PosTheme.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var receiptRows = Assert.Single(view.Descendants(presentation + "ItemsControl").Where(element =>
+            (string?)element.Attribute("ItemsSource") == "{Binding ReceiptPreviewRows}"));
+        Assert.Equal("Stretch", (string?)receiptRows.Attribute("HorizontalAlignment"));
+
+        var itemContainerStyle = Assert.Single(
+            Assert.Single(receiptRows.Elements(presentation + "ItemsControl.ItemContainerStyle"))
+                .Elements(presentation + "Style"));
+        Assert.Equal("{x:Type ContentPresenter}", (string?)itemContainerStyle.Attribute("TargetType"));
+        AssertSetter(itemContainerStyle, "HorizontalAlignment", "Stretch");
+
+        var rowTemplate = Assert.Single(theme.Descendants(presentation + "DataTemplate").Where(element =>
+            (string?)element.Attribute(x + "Key") == "ReceiptPreviewRowTemplate"));
+        var textStyle = Assert.Single(rowTemplate.Descendants(presentation + "Style").Where(element =>
+            (string?)element.Attribute("TargetType") == "TextBlock"));
+        AssertSetter(textStyle, "TextAlignment", "Left");
+
+        var centeredTrigger = Assert.Single(textStyle.Descendants(presentation + "DataTrigger").Where(element =>
+            (string?)element.Attribute("Binding") == "{Binding IsCentered}" &&
+            (string?)element.Attribute("Value") == "True"));
+        AssertSetter(centeredTrigger, "TextAlignment", "Center");
+
+        var rightAlignedTrigger = Assert.Single(textStyle.Descendants(presentation + "DataTrigger").Where(element =>
+            (string?)element.Attribute("Binding") == "{Binding IsRightAligned}" &&
+            (string?)element.Attribute("Value") == "True"));
+        AssertSetter(rightAlignedTrigger, "TextAlignment", "Right");
+    }
+
+    [Fact]
     public void History_order_details_modal_keeps_touch_layout_and_product_identity_visible()
     {
         var repoRoot = FindRepoRoot();

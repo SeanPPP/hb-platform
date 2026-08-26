@@ -302,6 +302,7 @@
 
             <!-- 启用 WPF 原生垂直触摸平移和惯性，保留鼠标滚轮及子控件点击行为。 -->
             <ScrollViewer Grid.Column="2"
+                          Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
                           VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled"
                           CanContentScroll="False"
@@ -2245,7 +2246,9 @@
                             </StackPanel>
                         </DockPanel>
 
-                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+                        <ScrollViewer Grid.Row="1"
+                                      Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
+                                      VerticalScrollBarVisibility="Auto">
                             <StackPanel Margin="0,0,12,0">
                                 <TextBlock Text="{loc:Loc settings.linkly.sop.cloud.title}"
                                            Style="{StaticResource SettingsLabelStyle}" />
