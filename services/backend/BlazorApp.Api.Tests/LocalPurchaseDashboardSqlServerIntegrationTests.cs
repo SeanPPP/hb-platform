@@ -20,6 +20,7 @@ public sealed class LocalPurchaseDashboardSqlServerFactAttribute : FactAttribute
     }
 }
 
+[Trait("Category", "SQL")]
 public sealed class LocalPurchaseDashboardSqlServerIntegrationTests
 {
     private const string SqlServerTestConnectionEnvVar =

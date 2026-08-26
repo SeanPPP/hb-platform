@@ -945,6 +945,7 @@ public sealed class PosCoreTests
         Assert.NotEqual(metrics.DispatcherThreadId, metrics.WorkerThreadId);
     }
 
+    [Trait("Category", "Performance")]
     [ReleaseX64PerformanceFact]
     public async Task Local_price_index_search_async_340k_meets_release_performance_gate()
     {

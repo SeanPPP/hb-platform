@@ -1,7 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
+using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
@@ -20,17 +24,35 @@ namespace BlazorApp.Api.Tests
     /// </summary>
     public class ProductPriceFilterTests : IDisposable
     {
-        private readonly Mock<ISqlSugarClient> _dbMock;
+        private readonly string _dbPath;
+        private readonly SqlSugarClient _db;
         private readonly Mock<ILogger<ProductReactService>> _loggerMock;
         private readonly ProductReactService _service;
 
         public ProductPriceFilterTests()
         {
-            _dbMock = new Mock<ISqlSugarClient>();
+            _dbPath = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.db");
+            _db = new SqlSugarClient(
+                new ConnectionConfig
+                {
+                    ConnectionString = $"Data Source={_dbPath}",
+                    DbType = DbType.Sqlite,
+                    IsAutoCloseConnection = false,
+                    InitKeyType = InitKeyType.Attribute,
+                }
+            );
+            _db.CodeFirst.InitTables(
+                typeof(Product),
+                typeof(StoreRetailPrice),
+                typeof(Store),
+                typeof(HBLocalSupplier)
+            );
+            SeedPriceData();
+
             _loggerMock = new Mock<ILogger<ProductReactService>>();
             _service = new ProductReactService(
-                new Mock<SqlSugarContext>().Object,
-                new Mock<BlazorApp.Api.Data.HqSqlSugarContext>().Object,
+                CreateSqlSugarContext(_db),
+                CreateHqSqlSugarContext(_db),
                 new Mock<AutoMapper.IMapper>().Object,
                 _loggerMock.Object,
                 new Mock<Microsoft.AspNetCore.Http.IHttpContextAccessor>().Object,
@@ -39,8 +61,94 @@ namespace BlazorApp.Api.Tests
             );
         }
 
+        private void SeedPriceData()
+        {
+            var updatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            _db.Insertable(
+                    new Store
+                    {
+                        StoreGUID = "store-guid-001",
+                        StoreCode = "STORE001",
+                        StoreName = "测试分店",
+                        IsDeleted = false,
+                    }
+                )
+                .ExecuteCommand();
+            _db.Insertable(
+                    new Product
+                    {
+                        UUID = "product-guid-001",
+                        ProductCode = "P-IPHONE",
+                        ItemNumber = "ITEM-IPHONE",
+                        Barcode = "BARCODE-IPHONE",
+                        ProductName = "iPhone",
+                        EnglishName = "iPhone",
+                        LocalSupplierCode = "SUP001",
+                        ProductType = 1,
+                        PurchasePrice = 50m,
+                        RetailPrice = 100m,
+                        IsAutoPricing = false,
+                        IsSpecialProduct = false,
+                        IsActive = true,
+                        IsDeleted = false,
+                        CreatedAt = updatedAt.AddDays(-1),
+                        UpdatedAt = updatedAt,
+                        UpdatedBy = "seed",
+                    }
+                )
+                .ExecuteCommand();
+            _db.Insertable(
+                    new StoreRetailPrice
+                    {
+                        UUID = "price-guid-001",
+                        StoreCode = "STORE001",
+                        ProductCode = "P-IPHONE",
+                        StoreProductCode = "STORE001-P-IPHONE",
+                        SupplierCode = "SUP001",
+                        PurchasePrice = 50m,
+                        StoreRetailPriceValue = 100m,
+                        DiscountRate = 0.5m,
+                        IsAutoPricing = false,
+                        IsSpecialProduct = false,
+                        IsActive = true,
+                        IsDeleted = false,
+                        CreatedAt = updatedAt.AddDays(-1),
+                        UpdatedAt = updatedAt,
+                        UpdatedBy = "seed",
+                    }
+                )
+                .ExecuteCommand();
+        }
+
+        private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)
+        {
+            var context = (SqlSugarContext)RuntimeHelpers.GetUninitializedObject(
+                typeof(SqlSugarContext)
+            );
+            typeof(SqlSugarContext)
+                .GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(context, db);
+            return context;
+        }
+
+        private static HqSqlSugarContext CreateHqSqlSugarContext(ISqlSugarClient db)
+        {
+            var context = (HqSqlSugarContext)RuntimeHelpers.GetUninitializedObject(
+                typeof(HqSqlSugarContext)
+            );
+            typeof(HqSqlSugarContext)
+                .GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(context, db);
+            return context;
+        }
+
         public void Dispose()
         {
+            _db.Dispose();
+            if (File.Exists(_dbPath))
+            {
+                File.Delete(_dbPath);
+            }
             GC.SuppressFinalize(this);
         }
 
@@ -404,7 +512,7 @@ namespace BlazorApp.Api.Tests
 
             Assert.NotNull(result);
             Assert.NotNull(result.Items);
-            Assert.Equal(0, result.Items.Count);
+            Assert.Empty(result.Items);
         }
 
         #endregion
@@ -525,7 +633,7 @@ namespace BlazorApp.Api.Tests
         #region 参数验证测试
 
         [Fact]
-        public async Task 参数验证_分店代码为空_应该抛出异常()
+        public async Task 参数验证_分店代码为空_应该不应用分店过滤()
         {
             var filter = new ProductPriceFilterDto
             {
@@ -534,9 +642,10 @@ namespace BlazorApp.Api.Tests
                 PageSize = 20
             };
 
-            await Assert.ThrowsAsync<Exception>(() =>
-                _service.GetPriceFilteredPagedListAsync(filter)
-            );
+            var result = await _service.GetPriceFilteredPagedListAsync(filter);
+
+            var item = Assert.Single(result.Items);
+            Assert.Equal("P-IPHONE", item.ProductCode);
         }
 
         [Fact]

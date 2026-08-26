@@ -129,6 +129,7 @@
     <Compile Include="CashierBarcodeMutationLockTests.cs" />
     <Compile Include="CashierBarcodeSyncGuardTests.cs" />
     <Compile Include="PromotionReactServiceTests.cs" />
+    <Compile Include="ProductPriceFilterTests.cs" />
     <Compile Include="ProductReactServiceHqSyncTests.cs" />
     <Compile Include="ProductStoreRecordsTests.cs" />
     <Compile Include="ProductPushToHqServiceTests.cs" />
@@ -197,6 +198,11 @@
     <Compile Include="DataSyncReactControllerLocationSyncContractTests.cs" />
     <Compile Include="DataSyncReactControllerProductSyncContractTests.cs" />
     <Compile Include="DataSyncReactControllerSyncResultContractTests.cs" />
+    <Compile Include="DataSyncLegacyControllerProductSyncContractTests.cs" />
+    <Compile Include="LocalSupplierInvoiceShopFilterOptionsTests.cs" />
+    <Compile Include="LocalSupplierInvoiceShopGridTests.cs" />
+    <Compile Include="ReactLocalSupplierInvoiceShopContractTests.cs" />
+    <Compile Include="ReactStoreMultiCodePricesControllerTests.cs" />
     <Compile Include="WarehouseProductChangeHistoryServiceTests.cs" />
     <Compile Include="WarehouseProductChangeHistoryTestDouble.cs" />
     <Compile Include="SqliteTempFileCleanup.cs" />

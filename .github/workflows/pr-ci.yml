@@ -1,0 +1,331 @@
+name: PR CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  schedule:
+    # GitHub cron 使用 UTC；Brisbane 全年 UTC+10，即周日约 02:23。
+    - cron: '23 16 * * 6'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 检查范围与超时预算
+        type: choice
+        required: true
+        default: pr
+        options:
+          - pr
+          - weekly
+      component:
+        description: 手动运行的组件（weekly 始终全量）
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - backend
+          - web
+          - mobile
+          - pos-ipad
+          - pos-handheld
+          - pos-wpf
+          - pos-contract
+          - supplier-extension
+          - supplier-safari
+          - antpos-web
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    name: PR CI / plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    outputs:
+      started_at_epoch: ${{ steps.budget.outputs.started_at_epoch }}
+      profile: ${{ steps.plan.outputs.profile }}
+      budget_seconds: ${{ steps.plan.outputs.budget_seconds }}
+      components: ${{ steps.plan.outputs.components }}
+      linux_node_matrix: ${{ steps.plan.outputs.linux_node_matrix }}
+      linux_dotnet_matrix: ${{ steps.plan.outputs.linux_dotnet_matrix }}
+      windows_matrix: ${{ steps.plan.outputs.windows_matrix }}
+      macos_matrix: ${{ steps.plan.outputs.macos_matrix }}
+      android_matrix: ${{ steps.plan.outputs.android_matrix }}
+    steps:
+      - name: 记录端到端预算起点
+        id: budget
+        shell: bash
+        run: echo "started_at_epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: 验证 CI 编排器
+        run: node --test scripts/ci/*.test.mjs
+      - name: 生成按路径执行矩阵
+        id: plan
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MANUAL_PROFILE: ${{ inputs.profile || 'pr' }}
+          MANUAL_COMPONENT: ${{ inputs.component || 'all' }}
+        run: |
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            node scripts/ci/plan.mjs --base "$BASE_SHA" --head "$HEAD_SHA" --profile pr
+          elif [[ "$EVENT_NAME" == "schedule" || "$MANUAL_PROFILE" == "weekly" ]]; then
+            node scripts/ci/plan.mjs --full --profile weekly
+          elif [[ "$MANUAL_COMPONENT" == "all" ]]; then
+            node scripts/ci/plan.mjs --full --profile pr
+          else
+            node scripts/ci/plan.mjs --component "$MANUAL_COMPONENT" --profile pr
+          fi
+
+  linux_node:
+    name: PR CI / Node / ${{ matrix.component }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.linux_node_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    env:
+      HBPOS_RUN_PERF_TESTS: ${{ needs.plan.outputs.profile == 'weekly' && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - if: matrix.component != 'noop'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            apps/web/package-lock.json
+            apps/mobile/package-lock.json
+            apps/pos-ipad/package-lock.json
+            apps/pos-handheld/package-lock.json
+            apps/supplier-order-extension/package-lock.json
+      - name: 执行 Node 组件门禁
+        run: ./scripts/ci/run-node-component.sh '${{ matrix.component }}'
+
+  linux_dotnet:
+    name: PR CI / .NET / ${{ matrix.component }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.linux_dotnet_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - if: matrix.component != 'noop'
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: 9.0.314
+      - if: matrix.component == 'pos-contract'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            apps/pos-ipad/package-lock.json
+            apps/pos-handheld/package-lock.json
+      - name: 执行 .NET 组件门禁
+        run: ./scripts/ci/run-dotnet-component.sh '${{ matrix.component }}'
+      - name: 上传 .NET 测试结果
+        if: always() && matrix.component != 'noop'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: dotnet-${{ matrix.component }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ matrix.component }}
+          if-no-files-found: ignore
+          retention-days: 7
+
+  windows:
+    name: PR CI / Windows / ${{ matrix.component }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.windows_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - if: matrix.component != 'noop'
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.314
+      - name: 构建并测试 WPF
+        shell: pwsh
+        run: ./scripts/ci/run-windows-component.ps1 -Component '${{ matrix.component }}' -Profile '${{ needs.plan.outputs.profile }}'
+      - name: 上传 WPF 测试结果
+        if: always() && matrix.component != 'noop'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-${{ matrix.component }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/pos-wpf
+          if-no-files-found: ignore
+          retention-days: 7
+
+  macos:
+    name: PR CI / macOS / ${{ matrix.component }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.macos_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - if: matrix.component != 'noop'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            apps/pos-ipad/package-lock.json
+            apps/pos-handheld/package-lock.json
+            apps/supplier-order-extension/package-lock.json
+      - name: 构建并测试 Apple 原生组件
+        run: ./scripts/ci/run-macos-component.sh '${{ matrix.component }}'
+
+  android:
+    name: PR CI / Android / ${{ matrix.component }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.android_matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - if: matrix.component != 'noop'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/pos-handheld/package-lock.json
+      - if: matrix.component != 'noop'
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - name: 构建并测试 Android 原生模块
+        run: ./scripts/ci/run-android-component.sh '${{ matrix.component }}'
+
+  required:
+    name: PR CI / required
+    if: ${{ always() }}
+    needs:
+      - plan
+      - linux_node
+      - linux_dotnet
+      - windows
+      - macos
+      - android
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: 汇总必需检查
+        env:
+          CI_RUN_STARTED_AT_EPOCH: ${{ needs.plan.outputs.started_at_epoch }}
+          CI_RUN_BUDGET_SECONDS: ${{ needs.plan.outputs.budget_seconds }}
+          CI_JOB_RESULTS: >-
+            {"plan":"${{ needs.plan.result }}","linux_node":"${{ needs.linux_node.result }}","linux_dotnet":"${{ needs.linux_dotnet.result }}","windows":"${{ needs.windows.result }}","macos":"${{ needs.macos.result }}","android":"${{ needs.android.result }}"}
+        run: node scripts/ci/required-gate.mjs
+
+  weekly_sql:
+    name: Weekly full / Backend SQL
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.profile == 'weekly') }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server@sha256:7c29dfbac885ad7519e219c7fe4aee0e67283e21a10e9c252d13b0fbde1866f8
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: HbCi_2026!Safe_Only
+        ports:
+          - 1433:1433
+    env:
+      CI_SQL_PASSWORD: HbCi_2026!Safe_Only
+      LOCAL_PURCHASE_DASHBOARD_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
+      PREORDER_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
+      SET_CHILD_PURCHASE_PRICE_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
+      STORE_PRICE_TRANSFER_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: 9.0.314
+      - name: 运行独立 SQL Server 集成测试
+        run: ./scripts/ci/run-weekly-sql.sh
+      - name: 上传 Weekly SQL 结果
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: weekly-sql-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/weekly-sql
+          if-no-files-found: ignore
+          retention-days: 14
+
+  weekly_performance:
+    name: Weekly full / POS API performance
+    if: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.profile == 'weekly') }}
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: 9.0.314
+      - name: 采集性能测试结果
+        run: ./scripts/ci/run-weekly-performance.sh
+      - name: 上传 Weekly 性能结果
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: weekly-performance-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/weekly-performance
+          if-no-files-found: ignore
+          retention-days: 14
+
+  weekly_required:
+    name: Weekly full / required
+    if: ${{ always() && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.profile == 'weekly')) }}
+    needs:
+      - plan
+      - required
+      - weekly_sql
+      - weekly_performance
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+      - name: 汇总每周全量检查
+        env:
+          CI_RUN_STARTED_AT_EPOCH: ${{ needs.plan.outputs.started_at_epoch }}
+          CI_RUN_BUDGET_SECONDS: ${{ needs.plan.outputs.budget_seconds }}
+          CI_JOB_RESULTS: >-
+            {"required":"${{ needs.required.result }}","weekly_sql":"${{ needs.weekly_sql.result }}","weekly_performance":"${{ needs.weekly_performance.result }}"}
+        run: node scripts/ci/required-gate.mjs

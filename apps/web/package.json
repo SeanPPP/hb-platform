@@ -6,9 +6,13 @@
   "scripts": {
     "dev": "vite --config vite.config.ts --host 0.0.0.0",
     "build": "tsc -b && vite build --config vite.config.ts",
+    "build:ci": "vite build --config vite.config.ts",
+    "typecheck": "tsc -b --pretty false",
     "preview": "vite preview --config vite.config.ts --host 0.0.0.0",
-    "test:mobile-privacy-public-route": "npx --yes tsx src/pages/MobilePrivacy/publicPath.test.ts",
-    "test:hb-supplier-order-support": "npx --yes tsx src/pages/HbSupplierOrderSupport/supportPage.test.ts",
+    "test:inventory": "node ../../scripts/ci/test-inventory.mjs --app web --check",
+    "test:ci": "npm run test:inventory && node ../../scripts/ci/test-inventory.mjs --app web --run web-esbuild && node ../../scripts/ci/test-inventory.mjs --app web --run node",
+    "test:mobile-privacy-public-route": "tsx src/pages/MobilePrivacy/publicPath.test.ts",
+    "test:hb-supplier-order-support": "tsx src/pages/HbSupplierOrderSupport/supportPage.test.ts",
     "boomup:download-images": "node scripts/boomup-download-images.mjs",
     "boomup:download-images:smoke": "node scripts/boomup-download-images-smoke.mjs",
     "jemark:download-images": "node scripts/jemark-download-images.mjs",
@@ -93,10 +97,13 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
+    "@types/node": "^24.10.1",
     "@types/leaflet": "^1.9.21",
     "@types/react": "^18.2.66",
     "@types/react-dom": "^18.2.22",
     "@vitejs/plugin-react": "^4.3.1",
+    "esbuild": "^0.21.5",
+    "tsx": "^4.21.0",
     "typescript": "^5.4.5",
     "vite": "^5.2.10",
     "vite-plugin-pwa": "^0.20.5"
