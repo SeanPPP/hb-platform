@@ -109,7 +109,11 @@ public sealed class RemoteOrderHistoryService(IOrderHistoryApiClient apiClient) 
                 line.Quantity,
                 line.UnitPrice,
                 line.DiscountAmount,
-                line.ActualAmount)).ToList(),
+                line.ActualAmount)
+            {
+                ProductCode = line.ProductCode,
+                ItemNumber = line.ItemNumber
+            }).ToList(),
             payments,
             RefundVoucher: ReceiptRefundVoucherMapper.TryCreate(payments));
     }

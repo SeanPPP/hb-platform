@@ -84,7 +84,11 @@ public sealed class ReceiptQueryService(ILocalOrderRepository orderRepository) :
                 line.Quantity,
                 line.UnitPrice,
                 line.DiscountAmount,
-                line.ActualAmount)).ToList(),
+                line.ActualAmount)
+            {
+                ProductCode = line.ProductCode,
+                ItemNumber = line.ItemNumber
+            }).ToList(),
             payments,
             order.TenderedAmount,
             order.ChangeAmount,

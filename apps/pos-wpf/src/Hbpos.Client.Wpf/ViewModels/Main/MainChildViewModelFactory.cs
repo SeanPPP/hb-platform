@@ -178,7 +178,9 @@ internal sealed class MainChildViewModelFactory
             _sharedHeldOrderApiClient,
             _sharedHeldOrderRepository,
             timeProvider: null,
-            sharedHeldOrderPublicationWorker: _sharedHeldOrderPublicationWorker);
+            sharedHeldOrderPublicationWorker: _sharedHeldOrderPublicationWorker,
+            localSellableItemIndex: _priceIndex,
+            rawScannerService: _rawScannerService);
         viewModel.ReprintRequested += async (_, _) => await printSelectedHistoryReceiptAsync(viewModel);
         return viewModel;
     }

@@ -256,6 +256,11 @@ public sealed class LocalizationAndSettingsTests
             "installment.center.column.paid",
             "installment.center.column.outstanding",
             "installment.center.column.status",
+            "history.installment.status.paymentDue",
+            "history.installment.status.readyForPickup",
+            "history.installment.status.pickedUp",
+            "history.installment.status.voided",
+            "history.installment.status.cancelled",
             "installment.center.column.terminal",
             "installment.center.column.updated",
             "installment.center.selected.none",
@@ -309,6 +314,7 @@ public sealed class LocalizationAndSettingsTests
 
         Assert.Equal("Installment Center", localization.T("installment.center.title"));
         Assert.Equal("Create Installment", localization.T("installment.create.title"));
+        Assert.Equal("Payment due", localization.T("history.installment.status.paymentDue"));
 
         localization.SetCulture("zh-CN");
 
@@ -319,6 +325,7 @@ public sealed class LocalizationAndSettingsTests
 
         Assert.Equal("分期中心", localization.T("installment.center.title"));
         Assert.Equal("创建分期", localization.T("installment.create.title"));
+        Assert.Equal("待补款", localization.T("history.installment.status.paymentDue"));
     }
 
     [Fact]

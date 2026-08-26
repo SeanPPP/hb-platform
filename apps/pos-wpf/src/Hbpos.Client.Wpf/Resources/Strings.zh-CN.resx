@@ -882,6 +882,39 @@
   <data name="history.receiptLoading" xml:space="preserve">
     <value>正在加载小票...</value>
   </data>
+  <data name="history.viewOrderDetails" xml:space="preserve">
+    <value>订单明细</value>
+  </data>
+  <data name="history.closeOrderDetails" xml:space="preserve">
+    <value>关闭</value>
+  </data>
+  <data name="history.orderDetailsLoading" xml:space="preserve">
+    <value>正在加载订单明细...</value>
+  </data>
+  <data name="history.orderDetailsUnavailable" xml:space="preserve">
+    <value>暂时无法查看订单明细，请重试。</value>
+  </data>
+  <data name="history.orderDetailsEmpty" xml:space="preserve">
+    <value>此订单没有商品明细。</value>
+  </data>
+  <data name="history.remoteHeldDetailsUnavailable" xml:space="preserve">
+    <value>召回后可查看订单明细。</value>
+  </data>
+  <data name="history.retryOrderDetails" xml:space="preserve">
+    <value>重试</value>
+  </data>
+  <data name="history.orderDetailsNoPayment" xml:space="preserve">
+    <value>未完成付款</value>
+  </data>
+  <data name="history.finalTotal" xml:space="preserve">
+    <value>最终合计</value>
+  </data>
+  <data name="history.paidAmount" xml:space="preserve">
+    <value>已付</value>
+  </data>
+  <data name="history.outstandingAmount" xml:space="preserve">
+    <value>未付</value>
+  </data>
   <data name="history.reprint" xml:space="preserve">
     <value>重打</value>
   </data>
@@ -1786,6 +1819,21 @@
   </data>
   <data name="history.installment.continuePayment" xml:space="preserve">
     <value>继续支付</value>
+  </data>
+  <data name="history.installment.status.paymentDue" xml:space="preserve">
+    <value>待补款</value>
+  </data>
+  <data name="history.installment.status.readyForPickup" xml:space="preserve">
+    <value>待提货</value>
+  </data>
+  <data name="history.installment.status.pickedUp" xml:space="preserve">
+    <value>已提货</value>
+  </data>
+  <data name="history.installment.status.voided" xml:space="preserve">
+    <value>已作废</value>
+  </data>
+  <data name="history.installment.status.cancelled" xml:space="preserve">
+    <value>已取消</value>
   </data>
   <data name="history.payment.suspended" xml:space="preserve">
     <value>挂单</value>

@@ -2,14 +2,18 @@ using System.ComponentModel;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Automation.Peers;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Client.Wpf.Views.Screens;
+using Hbpos.Contracts.Orders;
 
 namespace Hbpos.Client.Tests;
 
@@ -32,6 +36,8 @@ public sealed class WpfViewLifecycleTests
             {
                 VerifySettingsViewLifecycle();
                 VerifyTransactionHistoryViewLifecycle();
+                VerifyTransactionHistoryOrderDetailsLayout();
+                VerifyTransactionHistoryDisabledDetailsReason();
                 VerifyPaymentViewLifecycle();
                 VerifyDailyCloseCashCountDialogBindings();
                 VerifyDailyCloseCashWorkspaceRuntime();
@@ -136,6 +142,214 @@ public sealed class WpfViewLifecycleTests
         Assert.Equal(string.Empty, searchTextBox.Text);
         Assert.Equal(string.Empty, viewModel.SearchText);
         Assert.Equal(Visibility.Collapsed, clearButton.Visibility);
+    }
+
+    private static void VerifyTransactionHistoryOrderDetailsLayout()
+    {
+        VerifyTransactionHistoryOrderDetailsLayoutAtSize(1080, 720);
+        VerifyTransactionHistoryOrderDetailsLayoutAtSize(1366, 768);
+    }
+
+    private static void VerifyTransactionHistoryDisabledDetailsReason()
+    {
+        var localization = new LocalizationService();
+        using var viewModel = new TransactionHistoryViewModel();
+        var remoteHeldOrder = new HistoryOrderListItem(
+            Guid.NewGuid(),
+            TransactionHistorySource.HeldOrders,
+            "S001",
+            "POS-02",
+            "Bob",
+            DateTimeOffset.UtcNow,
+            10m,
+            0m,
+            10m,
+            1,
+            "Suspended",
+            "Remote pending",
+            IsHeldOrder: true,
+            IsSuspendedOrder: false,
+            CanRemoteRecall: true);
+        viewModel.Orders.Add(remoteHeldOrder);
+        viewModel.SelectedOrder = remoteHeldOrder;
+        var view = new TransactionHistoryView { DataContext = viewModel };
+        var host = new Window
+        {
+            Content = view,
+            Width = 1080,
+            Height = 720,
+            WindowStyle = WindowStyle.None,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.Manual,
+            Left = -10000,
+            Top = -10000,
+            ShowInTaskbar = false
+        };
+
+        host.Show();
+        host.UpdateLayout();
+        try
+        {
+            var historyGrid = Assert.IsType<DataGrid>(view.FindName("HistoryOrdersGrid"));
+            var historyRow = Assert.IsType<DataGridRow>(historyGrid.ItemContainerGenerator.ContainerFromIndex(0));
+            var detailsButton = Assert.Single(FindVisualDescendants<Button>(historyRow).Where(button =>
+                AutomationProperties.GetAutomationId(button) == "TransactionHistoryOrderDetailsButton"));
+            var expectedReason = localization.T("history.remoteHeldDetailsUnavailable");
+
+            Assert.False(detailsButton.IsEnabled);
+            Assert.Equal(expectedReason, AutomationProperties.GetHelpText(detailsButton));
+
+            var toolTip = Assert.IsType<ToolTip>(detailsButton.ToolTip);
+            toolTip.PlacementTarget = detailsButton;
+            toolTip.IsOpen = true;
+            PumpDispatcher();
+            Assert.Equal(expectedReason, toolTip.Content);
+            toolTip.IsOpen = false;
+        }
+        finally
+        {
+            host.Close();
+            view.DataContext = null;
+        }
+    }
+
+    private static void VerifyTransactionHistoryOrderDetailsLayoutAtSize(
+        double targetWidth,
+        double targetHeight)
+    {
+        var orderGuid = Guid.NewGuid();
+        var soldAt = new DateTimeOffset(2026, 8, 26, 9, 30, 0, TimeSpan.Zero);
+        using var viewModel = new TransactionHistoryViewModel();
+        var order = new HistoryOrderListItem(
+            orderGuid,
+            TransactionHistorySource.LocalOrders,
+            "S001",
+            "POS-01",
+            "Alice",
+            soldAt,
+            28m,
+            2m,
+            26m,
+            4,
+            "Cash",
+            "Synced",
+            CanRecall: true,
+            CanShare: true);
+        viewModel.Orders.Add(order);
+        viewModel.SelectedOrder = order;
+        viewModel.SelectedReceipt = new ReceiptDetails(
+            orderGuid,
+            "S001",
+            "POS-01",
+            "Alice",
+            soldAt,
+            28m,
+            2m,
+            26m,
+            Enumerable.Range(1, 4)
+                .Select(index => new ReceiptPreviewLine(
+                    $"History product {index}",
+                    $"93000000000{index}",
+                    1m,
+                    7m,
+                    index == 4 ? 2m : 0m,
+                    index == 4 ? 5m : 7m)
+                {
+                    ProductCode = $"P-{index:000}",
+                    ItemNumber = $"ITEM-{index:000}"
+                })
+                .ToArray(),
+            [new ReceiptPaymentLine(PaymentMethodKind.Cash, 30m, null)],
+            TenderedAmount: 30m,
+            ChangeAmount: 4m,
+            OrderDisplay: "ORDER-LAYOUT-001");
+        viewModel.PreviewSubtotal = 28m;
+        viewModel.PreviewDiscount = 2m;
+        viewModel.PreviewTotal = 26m;
+
+        var view = new TransactionHistoryView { DataContext = viewModel };
+        var host = new Window
+        {
+            Content = view,
+            Width = targetWidth,
+            Height = targetHeight,
+            WindowStyle = WindowStyle.None,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.Manual,
+            Left = -10000,
+            Top = -10000,
+            ShowInTaskbar = false
+        };
+
+        host.Show();
+        host.Activate();
+        viewModel.OpenOrderDetailsCommand.Execute(order);
+        PumpDispatcher();
+        host.UpdateLayout();
+        view.UpdateLayout();
+
+        try
+        {
+            var overlay = Assert.IsType<UserControl>(view.FindName("OrderDetailsOverlay"));
+            var dialog = Assert.IsType<Border>(view.FindName("OrderDetailsDialog"));
+            var closeButton = Assert.IsType<Button>(view.FindName("OrderDetailsCloseButton"));
+            var itemsGrid = Assert.IsType<DataGrid>(view.FindName("OrderDetailsItemsGrid"));
+            Assert.Equal(Visibility.Visible, overlay.Visibility);
+            Assert.Equal(KeyboardNavigationMode.Cycle, KeyboardNavigation.GetTabNavigation(overlay));
+            Assert.True(AutomationProperties.GetIsDialog(overlay));
+            Assert.NotNull(UIElementAutomationPeer.CreatePeerForElement(overlay));
+            Assert.InRange(dialog.ActualWidth, 999.5, 1000.5);
+            Assert.InRange(dialog.ActualHeight, targetHeight - 48.5, targetHeight - 47.5);
+            AssertFullyContained(dialog, overlay);
+            AssertFullyContained(closeButton, dialog);
+            Assert.Same(closeButton, Keyboard.FocusedElement);
+
+            Assert.Equal(5, itemsGrid.Columns.Count);
+            Assert.True(
+                itemsGrid.Columns.Sum(column => column.ActualWidth) <= itemsGrid.ActualWidth + 0.5,
+                $"{targetWidth:0}×{targetHeight:0} 下订单明细列宽超出可视区域。");
+            var scrollViewer = Assert.Single(FindVisualDescendants<ScrollViewer>(itemsGrid));
+            Assert.Equal(Visibility.Collapsed, scrollViewer.ComputedHorizontalScrollBarVisibility);
+
+            var detailRow = Assert.IsType<DataGridRow>(itemsGrid.ItemContainerGenerator.ContainerFromIndex(0));
+            Assert.InRange(detailRow.ActualHeight, 75.5, 76.5);
+            var productImage = Assert.Single(FindVisualDescendants<Border>(detailRow).Where(border =>
+                border.Name == "OrderDetailProductImage"));
+            Assert.InRange(productImage.ActualWidth, 63.5, 64.5);
+            Assert.InRange(productImage.ActualHeight, 63.5, 64.5);
+            AssertFullyContained(productImage, detailRow);
+
+            var historyGrid = Assert.IsType<DataGrid>(view.FindName("HistoryOrdersGrid"));
+            var visibleHistoryColumns = historyGrid.Columns
+                .Where(column => column.Visibility == Visibility.Visible)
+                .ToArray();
+            Assert.True(
+                visibleHistoryColumns.Sum(column => column.ActualWidth) <= historyGrid.ActualWidth + 0.5,
+                $"{targetWidth:0}×{targetHeight:0} 下历史订单列宽超出可视区域：" +
+                $"列宽 [{string.Join(", ", visibleHistoryColumns.Select(column => column.ActualWidth.ToString("0.##")))}]，" +
+                $"表格 {historyGrid.ActualWidth:0.##}。");
+            var historyRow = Assert.IsType<DataGridRow>(historyGrid.ItemContainerGenerator.ContainerFromIndex(0));
+            var detailsButton = Assert.Single(FindVisualDescendants<Button>(historyRow).Where(button =>
+                System.Windows.Automation.AutomationProperties.GetAutomationId(button) ==
+                "TransactionHistoryOrderDetailsButton"));
+            Assert.InRange(detailsButton.ActualWidth, 43.5, 44.5);
+            Assert.InRange(detailsButton.ActualHeight, 43.5, 44.5);
+            AssertFullyContained(detailsButton, historyRow);
+
+            var closeButtons = FindVisualDescendants<Button>(dialog)
+                .Where(button => ReferenceEquals(button.Command, viewModel.CloseOrderDetailsCommand))
+                .ToArray();
+            Assert.Equal(2, closeButtons.Length);
+            Assert.All(closeButtons, button => AssertFullyContained(button, dialog));
+
+            RaiseEscapeFromFocusedElement();
+            Assert.False(viewModel.IsOrderDetailsOpen);
+        }
+        finally
+        {
+            host.Close();
+            view.DataContext = null;
+        }
     }
 
     private static void VerifyPaymentViewLifecycle()

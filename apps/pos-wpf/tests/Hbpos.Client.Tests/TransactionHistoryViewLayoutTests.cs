@@ -6,6 +6,43 @@ namespace Hbpos.Client.Tests;
 public sealed class TransactionHistoryViewLayoutTests
 {
     [Fact]
+    public void History_return_rows_use_danger_highlight()
+    {
+        var isReturnOrder = typeof(HistoryOrderListItem).GetProperty(nameof(HistoryOrderListItem.IsReturnOrder));
+        Assert.NotNull(isReturnOrder);
+        Assert.False(isReturnOrder!.CanWrite);
+
+        var view = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "TransactionHistoryView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var rowTrigger = Assert.Single(
+            FindStyle(view, x, "HistoryRowStyle")
+                .Descendants(presentation + "DataTrigger")
+                .Where(element =>
+                    (string?)element.Attribute("Binding") == "{Binding IsReturnOrder}" &&
+                    (string?)element.Attribute("Value") == "True"));
+        AssertSetter(rowTrigger, "Background", "#FFFEF2F2");
+        AssertSetter(rowTrigger, "BorderBrush", "{StaticResource PosDangerBrush}");
+
+        var primaryTextTrigger = Assert.Single(
+            FindStyle(view, x, "HistoryPrimaryTextStyle")
+                .Descendants(presentation + "DataTrigger")
+                .Where(element =>
+                    (string?)element.Attribute("Binding") == "{Binding IsReturnOrder}" &&
+                    (string?)element.Attribute("Value") == "True"));
+        AssertSetter(primaryTextTrigger, "Foreground", "{StaticResource PosDangerBrush}");
+    }
+
+    [Fact]
     public void History_order_id_run_uses_one_way_binding_for_read_only_property()
     {
         var displayOrderId = typeof(HistoryOrderListItem).GetProperty(nameof(HistoryOrderListItem.DisplayOrderId));
@@ -70,7 +107,7 @@ public sealed class TransactionHistoryViewLayoutTests
 
         var actionsColumn = Assert.Single(columns.Elements(presentation + "DataGridTemplateColumn").Where(element =>
             (string?)element.Attribute(x + "Name") == "HistoryActionsColumn"));
-        Assert.Equal("216", (string?)actionsColumn.Attribute("Width"));
+        Assert.Equal("268", (string?)actionsColumn.Attribute("Width"));
 
         var receiptButton = Assert.Single(actionsColumn.Descendants(presentation + "Button").Where(element =>
             ((string?)element.Attribute("Command"))?.Contains("OpenReceiptPreviewCommand", StringComparison.Ordinal) == true));
@@ -79,6 +116,30 @@ public sealed class TransactionHistoryViewLayoutTests
         Assert.Equal("{loc:Loc history.viewReceipt}", (string?)receiptButton.Attribute("AutomationProperties.Name"));
         Assert.Contains(receiptButton.Descendants(presentation + "TextBlock"), element =>
             (string?)element.Attribute("Text") == "{loc:Loc history.viewReceipt}");
+
+        var detailsButton = Assert.Single(actionsColumn.Descendants(presentation + "Button").Where(element =>
+            ((string?)element.Attribute("Command"))?.Contains("OpenOrderDetailsCommand", StringComparison.Ordinal) == true));
+        Assert.Equal("{Binding}", (string?)detailsButton.Attribute("CommandParameter"));
+        Assert.Equal("{Binding CanViewOrderDetails}", (string?)detailsButton.Attribute("IsEnabled"));
+        Assert.Equal("44", (string?)detailsButton.Attribute("Width"));
+        Assert.Equal("44", (string?)detailsButton.Attribute("Height"));
+        Assert.Equal("True", (string?)detailsButton.Attribute("ToolTipService.ShowOnDisabled"));
+        Assert.Equal("{loc:Loc history.viewOrderDetails}", (string?)detailsButton.Attribute("AutomationProperties.Name"));
+        Assert.Single(detailsButton.Descendants().Where(element =>
+            element.Name.LocalName == "PackIcon" &&
+            (string?)element.Attribute("Kind") == "FormatListBulleted"));
+        var detailsDisabledHelpTrigger = Assert.Single(detailsButton.Descendants(presentation + "DataTrigger").Where(trigger =>
+            (string?)trigger.Attribute("Binding") == "{Binding CanViewOrderDetails}" &&
+            (string?)trigger.Attribute("Value") == "False"));
+        AssertSetter(
+            detailsDisabledHelpTrigger,
+            "AutomationProperties.HelpText",
+            "{loc:Loc history.remoteHeldDetailsUnavailable}");
+        var detailsDisabledToolTipTrigger = Assert.Single(detailsButton.Descendants(presentation + "DataTrigger").Where(trigger =>
+            (string?)trigger.Attribute("Binding") ==
+                "{Binding PlacementTarget.DataContext.CanViewOrderDetails, RelativeSource={RelativeSource Self}}" &&
+            (string?)trigger.Attribute("Value") == "False"));
+        AssertSetter(detailsDisabledToolTipTrigger, "Content", "{loc:Loc history.remoteHeldDetailsUnavailable}");
 
         var recallButton = Assert.Single(actionsColumn.Descendants(presentation + "Button").Where(element =>
             ((string?)element.Attribute("Command"))?.Contains("RecallOrderCommand", StringComparison.Ordinal) == true));
@@ -122,6 +183,8 @@ public sealed class TransactionHistoryViewLayoutTests
                      "history.totalOutstanding",
                      "history.moreActions",
                      "history.viewReceipt",
+                     "history.viewOrderDetails",
+                     "history.remoteHeldDetailsUnavailable",
                  })
         {
             AssertLocalizationKey(repoRoot, "Strings.resx", key);
@@ -177,7 +240,7 @@ public sealed class TransactionHistoryViewLayoutTests
         Assert.Single(dialog.Descendants(presentation + "Button").Where(element =>
             (string?)element.Attribute("Command") == "{Binding ReprintCommand}"));
 
-        var escapeBinding = Assert.Single(view.Descendants(presentation + "KeyBinding").Where(element =>
+        var escapeBinding = Assert.Single(overlay.Descendants(presentation + "KeyBinding").Where(element =>
             (string?)element.Attribute("Key") == "Escape"));
         Assert.Equal("{Binding CloseReceiptPreviewCommand}", (string?)escapeBinding.Attribute("Command"));
 
@@ -186,6 +249,126 @@ public sealed class TransactionHistoryViewLayoutTests
                      "history.viewReceipt",
                      "history.closeReceiptPreview",
                      "history.receiptLoading",
+                 })
+        {
+            AssertLocalizationKey(repoRoot, "Strings.resx", key);
+            AssertLocalizationKey(repoRoot, "Strings.zh-CN.resx", key);
+        }
+    }
+
+    [Fact]
+    public void History_order_details_modal_keeps_touch_layout_and_product_identity_visible()
+    {
+        var repoRoot = FindRepoRoot();
+        var view = XDocument.Load(Path.Combine(
+            repoRoot,
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "TransactionHistoryView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var overlay = Assert.Single(view.Descendants(presentation + "UserControl").Where(element =>
+            (string?)element.Attribute(x + "Name") == "OrderDetailsOverlay"));
+        Assert.Equal("True", (string?)overlay.Attribute("FocusManager.IsFocusScope"));
+        Assert.Equal("Cycle", (string?)overlay.Attribute("KeyboardNavigation.TabNavigation"));
+        Assert.Equal("OrderDetailsOverlayPreviewKeyDown", (string?)overlay.Attribute("PreviewKeyDown"));
+        Assert.Equal("True", (string?)overlay.Attribute("AutomationProperties.IsDialog"));
+        Assert.Equal("{loc:Loc history.viewOrderDetails}", (string?)overlay.Attribute("AutomationProperties.Name"));
+        Assert.Equal(
+            "{Binding IsOrderDetailsOpen, Converter={StaticResource BoolToVis}}",
+            (string?)overlay.Attribute("Visibility"));
+
+        var dialog = Assert.Single(overlay.Elements(presentation + "Border").Where(element =>
+            (string?)element.Attribute(x + "Name") == "OrderDetailsDialog"));
+        Assert.Equal("1000", (string?)dialog.Attribute("Width"));
+        Assert.Equal("1000", (string?)dialog.Attribute("MaxWidth"));
+        Assert.Equal("24", (string?)dialog.Attribute("Margin"));
+        var statusText = Assert.Single(dialog.Descendants(presentation + "TextBlock").Where(element =>
+            (string?)element.Attribute("Text") == "{Binding OrderDetailsStatusLabel}"));
+        Assert.Equal("#FF475569", (string?)statusText.Attribute("Foreground"));
+        var statusBadge = Assert.IsType<XElement>(statusText.Parent);
+        Assert.Equal("#FFF1F5F9", (string?)statusBadge.Attribute("Background"));
+        Assert.Equal("#FFCBD5E1", (string?)statusBadge.Attribute("BorderBrush"));
+
+        var itemsGrid = Assert.Single(dialog.Descendants(presentation + "DataGrid").Where(element =>
+            (string?)element.Attribute(x + "Name") == "OrderDetailsItemsGrid"));
+        Assert.Equal("{Binding OrderDetailLines}", (string?)itemsGrid.Attribute("ItemsSource"));
+        Assert.Equal("76", (string?)itemsGrid.Attribute("RowHeight"));
+        Assert.Equal("76", (string?)itemsGrid.Attribute("MinRowHeight"));
+        Assert.Equal("Disabled", (string?)itemsGrid.Attribute("ScrollViewer.HorizontalScrollBarVisibility"));
+
+        var productImage = Assert.Single(itemsGrid.Descendants(presentation + "Border").Where(element =>
+            (string?)element.Attribute(x + "Name") == "OrderDetailProductImage"));
+        Assert.Equal("64", (string?)productImage.Attribute("Width"));
+        Assert.Equal("64", (string?)productImage.Attribute("Height"));
+        var imageBrush = Assert.Single(productImage.Descendants(presentation + "ImageBrush"));
+        Assert.Contains(imageBrush.Attributes(), attribute =>
+            attribute.Name.LocalName.EndsWith(".AsyncSourceText", StringComparison.Ordinal) &&
+            attribute.Value == "{Binding ProductImage}");
+        Assert.Single(productImage.Descendants().Where(element =>
+            element.Name.LocalName == "PackIcon" &&
+            (string?)element.Attribute("Kind") == "Shopping"));
+
+        var metadata = Assert.Single(itemsGrid.Descendants(presentation + "TextBlock").Where(element =>
+            (string?)element.Attribute(x + "Name") == "OrderDetailItemMetadata"));
+        Assert.Equal("NoWrap", (string?)metadata.Attribute("TextWrapping"));
+        Assert.Equal("CharacterEllipsis", (string?)metadata.Attribute("TextTrimming"));
+        Assert.Contains(metadata.Elements(presentation + "Run"), run =>
+            (string?)run.Attribute("Text") == "{loc:Loc ItemNumber}");
+        Assert.Contains(metadata.Elements(presentation + "Run"), run =>
+            (string?)run.Attribute("Text") == "{Binding ItemNumberDisplay, Mode=OneWay}");
+        Assert.Contains(metadata.Elements(presentation + "Run"), run =>
+            (string?)run.Attribute("Text") == "{Binding LookupCodeDisplay, Mode=OneWay}");
+        Assert.DoesNotContain(metadata.DescendantsAndSelf(), element =>
+            element.Attributes().Any(attribute =>
+                attribute.Value.Contains("Barcode", StringComparison.OrdinalIgnoreCase)));
+        Assert.Single(metadata.Descendants(presentation + "ToolTip"));
+
+        var detailTextBindings = dialog.Descendants(presentation + "TextBlock")
+            .Select(element => (string?)element.Attribute("Text"))
+            .Where(text => text is not null)
+            .ToArray();
+        Assert.Contains("{Binding DisplayReference}", detailTextBindings);
+        Assert.Contains("{Binding CardSummary}", detailTextBindings);
+        Assert.DoesNotContain("{Binding Reference}", detailTextBindings);
+        Assert.Contains("{Binding PreviewSubtotal, StringFormat={}{0:C2}}", detailTextBindings);
+        Assert.Contains("{Binding PreviewDiscount, StringFormat={}{0:C2}}", detailTextBindings);
+        Assert.Contains("{Binding PreviewTotal, StringFormat={}{0:C2}}", detailTextBindings);
+        Assert.Equal(3, dialog.Descendants().Count(element =>
+            (string?)element.Attribute("Visibility") ==
+                "{Binding IsOrderDetailsFinancialContentVisible, Converter={StaticResource BoolToVis}}"));
+        Assert.Contains(dialog.Descendants(presentation + "TextBlock"), element =>
+            (string?)element.Attribute("AutomationProperties.LiveSetting") == "Assertive" &&
+            (string?)element.Attribute("Text") == "{Binding OrderDetailsErrorMessage}");
+        Assert.Equal(2, dialog.Descendants(presentation + "TextBlock").Count(element =>
+            (string?)element.Attribute("AutomationProperties.LiveSetting") == "Polite"));
+
+        Assert.Equal(2, dialog.Descendants(presentation + "Button").Count(element =>
+            (string?)element.Attribute("Command") == "{Binding CloseOrderDetailsCommand}"));
+        Assert.Single(dialog.Descendants(presentation + "Button").Where(element =>
+            (string?)element.Attribute("Command") == "{Binding RetryOrderDetailsCommand}"));
+        var escapeBinding = Assert.Single(overlay.Descendants(presentation + "KeyBinding").Where(element =>
+            (string?)element.Attribute("Key") == "Escape"));
+        Assert.Equal("{Binding CloseOrderDetailsCommand}", (string?)escapeBinding.Attribute("Command"));
+
+        foreach (var key in new[]
+                 {
+                     "history.viewOrderDetails",
+                     "history.closeOrderDetails",
+                     "history.orderDetailsLoading",
+                     "history.orderDetailsUnavailable",
+                     "history.orderDetailsEmpty",
+                     "history.remoteHeldDetailsUnavailable",
+                     "history.retryOrderDetails",
+                     "history.orderDetailsNoPayment",
+                     "history.finalTotal",
+                     "history.paidAmount",
+                     "history.outstandingAmount",
                  })
         {
             AssertLocalizationKey(repoRoot, "Strings.resx", key);
@@ -291,6 +474,12 @@ public sealed class TransactionHistoryViewLayoutTests
             (string?)element.Attribute("Text") == "{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"));
         Assert.Equal("HistorySearchTextBox", (string?)searchTextBox.Attribute(x + "Name"));
         Assert.Equal("38,0,48,0", (string?)searchTextBox.Attribute("Padding"));
+        Assert.Equal("False", (string?)searchTextBox.Attribute("InputMethod.IsInputMethodEnabled"));
+        Assert.Equal("Off", (string?)searchTextBox.Attribute("InputMethod.PreferredImeState"));
+
+        var enterBinding = Assert.Single(searchTextBox.Descendants(presentation + "KeyBinding").Where(element =>
+            (string?)element.Attribute("Key") == "Enter"));
+        Assert.Equal("{Binding LoadCommand}", (string?)enterBinding.Attribute("Command"));
 
         var clearButton = Assert.Single(view.Descendants(presentation + "Button").Where(element =>
             (string?)element.Attribute("AutomationProperties.AutomationId") == "TransactionHistorySearchClearButton"));

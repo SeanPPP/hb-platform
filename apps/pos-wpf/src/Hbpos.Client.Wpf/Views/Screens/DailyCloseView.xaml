@@ -539,12 +539,22 @@
                                     <RowDefinition Height="*" />
                                 </Grid.RowDefinitions>
                                 <TextBlock Text="{loc:Loc dailyClose.cashDetail}" Style="{StaticResource SettlementTitleStyle}" />
-                                <ScrollViewer Grid.Row="1" Margin="0,12,0,0" VerticalScrollBarVisibility="Auto">
+                                <ScrollViewer Grid.Row="1"
+                                              Margin="0,12,0,0"
+                                              HorizontalScrollBarVisibility="Disabled"
+                                              VerticalScrollBarVisibility="Auto"
+                                              CanContentScroll="False"
+                                              PanningMode="VerticalOnly"
+                                              PanningDeceleration="0.0008"
+                                              PanningRatio="1.0"
+                                              services:TouchScrollFeedback.IsEnabled="True">
                                     <StackPanel>
                                         <TextBlock Text="{loc:Loc dailyClose.notes}" Style="{StaticResource SettlementLabelStyle}" />
                                         <DataGrid ItemsSource="{Binding SelectedArchiveNoteCounts}"
                                                   Margin="0,6,0,0"
                                                   Style="{StaticResource SettlementDataGridStyle}"
+                                                  ScrollViewer.PanningMode="None"
+                                                  services:TouchScrollFeedback.IsEnabled="False"
                                                   RowHeight="36">
                                             <DataGrid.Columns>
                                                 <DataGridTextColumn Header="{loc:Loc dailyClose.denomination}" Binding="{Binding Label}" Width="*" />
@@ -556,6 +566,8 @@
                                         <TextBlock Text="{loc:Loc dailyClose.coins}" Margin="0,14,0,6" Style="{StaticResource SettlementLabelStyle}" />
                                         <DataGrid ItemsSource="{Binding SelectedArchiveCoinCounts}"
                                                   Style="{StaticResource SettlementDataGridStyle}"
+                                                  ScrollViewer.PanningMode="None"
+                                                  services:TouchScrollFeedback.IsEnabled="False"
                                                   RowHeight="36">
                                             <DataGrid.Columns>
                                                 <DataGridTextColumn Header="{loc:Loc dailyClose.denomination}" Binding="{Binding Label}" Width="*" />
@@ -1036,7 +1048,7 @@
                                               Style="{StaticResource SettlementDataGridStyle}"
                                               RowHeight="28"
                                               FontSize="11"
-                                              ScrollViewer.VerticalScrollBarVisibility="Disabled"
+                                              ScrollViewer.VerticalScrollBarVisibility="Hidden"
                                               ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                                         <DataGrid.Columns>
                                             <DataGridTextColumn Header="{loc:Loc dailyClose.method}" Binding="{Binding Label}" Width="*" />
