@@ -437,18 +437,23 @@ public sealed class SettingsViewModelTests
     public async Task BackCommand_cancels_running_catalog_operation(bool resetCatalog)
     {
         var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseOperation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationTokenRegistration operationCancellationRegistration = default;
         var receivedToken = CancellationToken.None;
         var returnedToPos = false;
         var cancellationRequestedBeforeNavigation = false;
-        async Task RunCatalogOperationAsync(CancellationToken cancellationToken)
+        var cancellationApplied = false;
+        Task RunCatalogOperationAsync(CancellationToken cancellationToken)
         {
             receivedToken = cancellationToken;
-            using var registration = cancellationToken.Register(cancellationObserved.SetResult);
-            operationStarted.SetResult();
-            await Task.WhenAny(cancellationObserved.Task, releaseOperation.Task);
-            cancellationToken.ThrowIfCancellationRequested();
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            operationCancellationRegistration = cancellationToken.Register(() =>
+            {
+                cancellationApplied = completion.TrySetCanceled(cancellationToken);
+                cancellationObserved.TrySetResult();
+            });
+            operationStarted.TrySetResult();
+            return completion.Task;
         }
 
         var viewModel = new SettingsViewModel(
@@ -469,14 +474,16 @@ public sealed class SettingsViewModelTests
 
         Assert.True(viewModel.BackCommand.CanExecute(null));
         viewModel.BackCommand.Execute(null);
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
-        releaseOperation.TrySetResult();
         await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        operationCancellationRegistration.Dispose();
 
         Assert.True(returnedToPos);
         Assert.True(cancellationRequestedBeforeNavigation);
         Assert.True(receivedToken.CanBeCanceled);
         Assert.True(wasCancellationRequested);
+        Assert.True(cancellationApplied);
         Assert.Equal("Operation canceled.", viewModel.StatusMessage);
     }
 

@@ -57,31 +57,21 @@ public sealed class SpecialProductsViewModelTests
     public async Task Navigation_cancels_running_remote_operation_before_leaving(string operation, string navigation)
     {
         var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseOperation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationTokenRegistration operationCancellationRegistration = default;
         var receivedToken = CancellationToken.None;
         var navigated = false;
         var cancellationRequestedBeforeNavigation = false;
         var cancellationApplied = false;
-        Task<TResult> WaitForCancellationAsync<TResult>(CancellationToken cancellationToken, TResult result)
+        Task<TResult> WaitForCancellationAsync<TResult>(CancellationToken cancellationToken)
         {
             receivedToken = cancellationToken;
             var completion = new TaskCompletionSource<TResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-            var registration = cancellationToken.Register(() =>
+            operationCancellationRegistration = cancellationToken.Register(() =>
             {
                 cancellationApplied = completion.TrySetCanceled(cancellationToken);
                 cancellationObserved.TrySetResult();
             });
-            _ = releaseOperation.Task.ContinueWith(
-                _ => completion.TrySetResult(result),
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
-            _ = completion.Task.ContinueWith(
-                _ => registration.Dispose(),
-                CancellationToken.None,
-                TaskContinuationOptions.ExecuteSynchronously,
-                TaskScheduler.Default);
             operationStarted.TrySetResult();
             return completion.Task;
         }
@@ -89,19 +79,9 @@ public sealed class SpecialProductsViewModelTests
         var workflow = new FakeSpecialProductsWorkflowService
         {
             DownloadAsyncOverride = cancellationToken =>
-                WaitForCancellationAsync(
-                    cancellationToken,
-                    new SpecialProductsDownloadWorkflowResult(
-                        new SpecialProductDownloadResult("S001", 0, 0, 0, 0, 0),
-                        [])),
+                WaitForCancellationAsync<SpecialProductsDownloadWorkflowResult>(cancellationToken),
             MarkAsyncOverride = (isSpecialProduct, cancellationToken) =>
-                WaitForCancellationAsync(
-                    cancellationToken,
-                    new SpecialProductsMutationWorkflowResult(
-                        "S001",
-                        "SKU-001",
-                        isSpecialProduct,
-                        []))
+                WaitForCancellationAsync<SpecialProductsMutationWorkflowResult>(cancellationToken)
         };
         var viewModel = CreateViewModel(
             workflow: workflow,
@@ -139,8 +119,8 @@ public sealed class SpecialProductsViewModelTests
         await WaitUntilAsync(() => navigated);
         await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
-        releaseOperation.TrySetResult();
         await Task.WhenAll(execution, navigationExecution).WaitAsync(TimeSpan.FromSeconds(5));
+        operationCancellationRegistration.Dispose();
 
         Assert.True(navigated);
         Assert.True(cancellationRequestedBeforeNavigation);
