@@ -181,6 +181,7 @@ export type PushProductsToHqUpdateField =
   | 'barcode'
   | 'productName'
   | 'englishName'
+  | 'productType'
   | 'image'
   | 'purchasePrice'
   | 'retailPrice'
@@ -206,6 +207,7 @@ export const pushProductsToHqUpdateFieldOptions = [
   { value: 'barcode', labelKey: 'containers.updateFields.hqBarcode', fallbackLabel: '条码' },
   { value: 'productName', labelKey: 'containers.updateFields.hqProductName', fallbackLabel: '商品名称' },
   { value: 'englishName', labelKey: 'containers.updateFields.hqEnglishName', fallbackLabel: '英文名称' },
+  { value: 'productType', labelKey: 'containers.updateFields.hqProductType', fallbackLabel: '商品类型' },
   { value: 'image', labelKey: 'containers.updateFields.hqImage', fallbackLabel: '商品图片' },
   { value: 'purchasePrice', labelKey: 'containers.updateFields.hqPurchasePrice', fallbackLabel: '商品字典进货价' },
   { value: 'retailPrice', labelKey: 'containers.updateFields.hqRetailPrice', fallbackLabel: '商品字典零售价' },

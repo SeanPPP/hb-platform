@@ -227,6 +227,7 @@
       "hqBarcode": "Barcode",
       "hqProductName": "Product Name",
       "hqEnglishName": "English Name",
+      "hqProductType": "Product Type",
       "hqImage": "Product Image",
       "hqPurchasePrice": "HQ Product Purchase Price",
       "hqRetailPrice": "HQ Product Retail Price",

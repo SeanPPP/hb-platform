@@ -227,6 +227,7 @@
       "hqBarcode": "条码",
       "hqProductName": "商品名称",
       "hqEnglishName": "英文名称",
+      "hqProductType": "商品类型",
       "hqImage": "商品图片",
       "hqPurchasePrice": "商品字典进货价",
       "hqRetailPrice": "商品字典零售价",
