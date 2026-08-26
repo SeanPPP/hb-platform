@@ -62,33 +62,46 @@ public sealed class SpecialProductsViewModelTests
         var receivedToken = CancellationToken.None;
         var navigated = false;
         var cancellationRequestedBeforeNavigation = false;
-        async Task WaitForCancellationAsync(CancellationToken cancellationToken)
+        var cancellationApplied = false;
+        Task<TResult> WaitForCancellationAsync<TResult>(CancellationToken cancellationToken, TResult result)
         {
             receivedToken = cancellationToken;
-            using var registration = cancellationToken.Register(cancellationObserved.SetResult);
-            operationStarted.SetResult();
-            await Task.WhenAny(cancellationObserved.Task, releaseOperation.Task);
-            cancellationToken.ThrowIfCancellationRequested();
+            var completion = new TaskCompletionSource<TResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var registration = cancellationToken.Register(() =>
+            {
+                cancellationApplied = completion.TrySetCanceled(cancellationToken);
+                cancellationObserved.TrySetResult();
+            });
+            _ = releaseOperation.Task.ContinueWith(
+                _ => completion.TrySetResult(result),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            _ = completion.Task.ContinueWith(
+                _ => registration.Dispose(),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            operationStarted.TrySetResult();
+            return completion.Task;
         }
 
         var workflow = new FakeSpecialProductsWorkflowService
         {
-            DownloadAsyncOverride = async cancellationToken =>
-            {
-                await WaitForCancellationAsync(cancellationToken);
-                return new SpecialProductsDownloadWorkflowResult(
-                    new SpecialProductDownloadResult("S001", 0, 0, 0, 0, 0),
-                    []);
-            },
-            MarkAsyncOverride = async (isSpecialProduct, cancellationToken) =>
-            {
-                await WaitForCancellationAsync(cancellationToken);
-                return new SpecialProductsMutationWorkflowResult(
-                    "S001",
-                    "SKU-001",
-                    isSpecialProduct,
-                    []);
-            }
+            DownloadAsyncOverride = cancellationToken =>
+                WaitForCancellationAsync(
+                    cancellationToken,
+                    new SpecialProductsDownloadWorkflowResult(
+                        new SpecialProductDownloadResult("S001", 0, 0, 0, 0, 0),
+                        [])),
+            MarkAsyncOverride = (isSpecialProduct, cancellationToken) =>
+                WaitForCancellationAsync(
+                    cancellationToken,
+                    new SpecialProductsMutationWorkflowResult(
+                        "S001",
+                        "SKU-001",
+                        isSpecialProduct,
+                        []))
         };
         var viewModel = CreateViewModel(
             workflow: workflow,
@@ -124,6 +137,7 @@ public sealed class SpecialProductsViewModelTests
                 .ExecuteAsync(item);
         }
         await WaitUntilAsync(() => navigated);
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
         releaseOperation.TrySetResult();
         await Task.WhenAll(execution, navigationExecution).WaitAsync(TimeSpan.FromSeconds(5));
@@ -132,6 +146,7 @@ public sealed class SpecialProductsViewModelTests
         Assert.True(cancellationRequestedBeforeNavigation);
         Assert.True(receivedToken.CanBeCanceled);
         Assert.True(wasCancellationRequested);
+        Assert.True(cancellationApplied);
         Assert.False(viewModel.IsBusy);
     }
 
