@@ -183,6 +183,8 @@ jobs:
       matrix: ${{ fromJSON(needs.plan.outputs.macos_matrix) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
+    env:
+      CI_PROFILE: ${{ needs.plan.outputs.profile }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - if: matrix.component != 'noop'

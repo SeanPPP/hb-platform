@@ -3081,12 +3081,13 @@ public sealed class TransactionHistoryViewModelTests
 
         Assert.True(viewModel.Orders.Single(order => order.OrderGuid == localHoldGuid).CanDeleteHeldOrder);
         Assert.False(viewModel.Orders.Single(order => order.OrderGuid == remoteOnlyHoldGuid).CanDeleteHeldOrder);
-        Assert.False(viewModel.Orders.Single(order => order.OrderGuid == claimedHoldGuid).CanDeleteHeldOrder);
-        // 非本机挂单不在本机页签出现；切到非本机页签后仍不可删除。
+        Assert.DoesNotContain(viewModel.Orders, order => order.OrderGuid == claimedHoldGuid);
+        // 非本机挂单及 synthetic RemoteClaim 不在本机页签出现；切页后仍不可删除。
         Assert.DoesNotContain(viewModel.Orders, order => order.OrderGuid == otherDeviceHoldGuid);
         viewModel.IsHeldOtherScopeSelected = true;
         await viewModel.LoadAsync();
         Assert.False(viewModel.Orders.Single(order => order.OrderGuid == otherDeviceHoldGuid).CanDeleteHeldOrder);
+        Assert.False(viewModel.Orders.Single(order => order.OrderGuid == claimedHoldGuid).CanDeleteHeldOrder);
     }
 
     [Fact]
@@ -3455,6 +3456,7 @@ public sealed class TransactionHistoryViewModelTests
         viewModel.DateFrom = HeldFixtureDate;
         viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
+        viewModel.IsHeldOtherScopeSelected = true;
         await viewModel.LoadAsync();
         var row = Assert.Single(viewModel.Orders);
         Assert.True(row.CanForceRelease);
@@ -3508,6 +3510,7 @@ public sealed class TransactionHistoryViewModelTests
         viewModel.DateFrom = HeldFixtureDate;
         viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
+        viewModel.IsHeldOtherScopeSelected = true;
         await viewModel.LoadAsync();
         var row = Assert.Single(viewModel.Orders);
 
@@ -3562,10 +3565,7 @@ public sealed class TransactionHistoryViewModelTests
             "Synced",
             1,
             "Cash");
-        var suspendedOrders = new CapturingSuspendedOrderService
-        {
-            ThrowOnGetPendingOrders = true
-        };
+        var suspendedOrders = new CapturingSuspendedOrderService();
         var viewModel = new TransactionHistoryViewModel(
             new CapturingReceiptQueryService { Orders = [localOrder] },
             suspendedOrders,
@@ -3989,14 +3989,19 @@ public sealed class TransactionHistoryViewModelTests
 
         Assert.True(viewModel.Orders.Single(order => order.OrderGuid == canShare).CanShare);
         Assert.False(viewModel.Orders.Single(order => order.OrderGuid == requested).CanShare);
-        Assert.False(viewModel.Orders.Single(order => order.OrderGuid == claimed).CanShare);
+        Assert.DoesNotContain(viewModel.Orders, order => order.OrderGuid == claimed);
         Assert.False(viewModel.Orders.Single(order => order.OrderGuid == deletePending).CanShare);
         Assert.False(viewModel.Orders.Single(order => order.OrderGuid == blocked).CanShare);
         Assert.Equal(string.Empty, viewModel.Orders.Single(order => order.OrderGuid == canShare).ShareStatusLabel);
         Assert.Equal("Awaiting share", viewModel.Orders.Single(order => order.OrderGuid == requested).ShareStatusLabel);
-        Assert.Equal("Cannot share", viewModel.Orders.Single(order => order.OrderGuid == claimed).ShareStatusLabel);
         Assert.Equal("Cannot share", viewModel.Orders.Single(order => order.OrderGuid == blocked).ShareStatusLabel);
         Assert.Equal("Cannot share", viewModel.Orders.Single(order => order.OrderGuid == deletePending).ShareStatusLabel);
+
+        viewModel.IsHeldOtherScopeSelected = true;
+        await viewModel.LoadAsync();
+        var claimedRow = Assert.Single(viewModel.Orders, order => order.OrderGuid == claimed);
+        Assert.False(claimedRow.CanShare);
+        Assert.Equal("Cannot share", claimedRow.ShareStatusLabel);
     }
 
     [Fact]
@@ -4103,6 +4108,7 @@ public sealed class TransactionHistoryViewModelTests
         viewModel.DateFrom = HeldFixtureDate;
         viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
+        viewModel.IsHeldOtherScopeSelected = true;
         await viewModel.LoadAsync();
         var row = Assert.Single(viewModel.Orders);
         Assert.Equal(HeldOrderBadgeKind.LocalClaimActive, row.HeldBadgeKind);

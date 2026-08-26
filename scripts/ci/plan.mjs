@@ -179,7 +179,11 @@ export function buildMatrices(selected, { timeout = 15 } = {}) {
         // PR 端到端仍由 required gate 限制为 15 分钟；给较大的手持端原生图留 2 分钟收尾。
         timeout: timeout === PROFILE_BUDGETS.pr.matrixTimeoutMinutes ? 14 : timeout,
       })
-      android.push({ component: 'pos-handheld-android' })
+      android.push({
+        component: 'pos-handheld-android',
+        // 冷构建主体可在 12 分钟内完成；额外 2 分钟只留给 Gradle cache 的 post-job 收尾。
+        timeout: timeout === PROFILE_BUDGETS.pr.matrixTimeoutMinutes ? 14 : timeout,
+      })
     }
     if (component === 'supplier-safari') {
       macos.push({ component: 'supplier-safari' })

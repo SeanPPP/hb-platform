@@ -3,8 +3,14 @@ set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 component="${1:?缺少 macOS 组件名}"
+profile="${CI_PROFILE:-weekly}"
 derived_root="${RUNNER_TEMP:-$repository_root/.artifacts/ci}/$component-derived"
 cd "$repository_root"
+
+if [[ "$profile" != "pr" && "$profile" != "weekly" ]]; then
+  echo "未知 CI profile: $profile" >&2
+  exit 2
+fi
 
 if [[ "$component" == "noop" ]]; then
   echo "该 PR 没有需要 macOS runner 执行的组件。"
@@ -65,31 +71,39 @@ case "$component" in
     npm --prefix apps/pos-ipad ci --no-audit --no-fund
     npm --prefix apps/pos-ipad run prebuild:ios -- --clean
     node scripts/ci/test-inventory.mjs --app pos-ipad --run native
-    xcodebuild \
-      -workspace apps/pos-ipad/ios/HBPOS.xcworkspace \
-      -scheme HBPOS \
-      -configuration Debug \
-      -destination 'generic/platform=iOS Simulator' \
-      -derivedDataPath "$derived_root" \
-      -quiet \
-      -showBuildTimingSummary \
-      CODE_SIGNING_ALLOWED=NO \
-      build
+    if [[ "$profile" == "weekly" ]]; then
+      xcodebuild \
+        -workspace apps/pos-ipad/ios/HBPOS.xcworkspace \
+        -scheme HBPOS \
+        -configuration Debug \
+        -destination 'generic/platform=iOS Simulator' \
+        -derivedDataPath "$derived_root" \
+        -quiet \
+        -showBuildTimingSummary \
+        CODE_SIGNING_ALLOWED=NO \
+        build
+    else
+      echo "PR profile 已完成 Expo prebuild 与原生互操作测试；完整 iOS app 构建由 weekly 执行。"
+    fi
     ;;
   pos-handheld-native)
     npm --prefix apps/pos-handheld ci --no-audit --no-fund
     npm --prefix apps/pos-handheld run prebuild:ios -- --clean
     node scripts/ci/test-inventory.mjs --app pos-handheld --run native
-    xcodebuild \
-      -workspace apps/pos-handheld/ios/HBPOSMobile.xcworkspace \
-      -scheme HBPOSMobile \
-      -configuration Debug \
-      -destination 'generic/platform=iOS Simulator' \
-      -derivedDataPath "$derived_root" \
-      -quiet \
-      -showBuildTimingSummary \
-      CODE_SIGNING_ALLOWED=NO \
-      build
+    if [[ "$profile" == "weekly" ]]; then
+      xcodebuild \
+        -workspace apps/pos-handheld/ios/HBPOSMobile.xcworkspace \
+        -scheme HBPOSMobile \
+        -configuration Debug \
+        -destination 'generic/platform=iOS Simulator' \
+        -derivedDataPath "$derived_root" \
+        -quiet \
+        -showBuildTimingSummary \
+        CODE_SIGNING_ALLOWED=NO \
+        build
+    else
+      echo "PR profile 已完成 Expo prebuild 与原生互操作测试；完整 iOS app 构建由 weekly 执行。"
+    fi
     ;;
   supplier-safari)
     npm --prefix apps/supplier-order-extension ci --no-audit --no-fund

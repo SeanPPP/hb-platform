@@ -183,11 +183,22 @@ test('各 runner 矩阵始终非空，未选择时使用 noop sentinel', () => {
     include: [{ component: 'pos-handheld-native', runner: 'macos-26', timeout: 14 }],
   })
   assert.deepEqual(handheld.android, {
-    include: [{ component: 'pos-handheld-android', runner: 'ubuntu-24.04', timeout: 12 }],
+    include: [{ component: 'pos-handheld-android', runner: 'ubuntu-24.04', timeout: 14 }],
   })
 
   const weeklyHandheld = buildMatrices(new Set(['pos-handheld']), { timeout: 40 })
   assert.deepEqual(weeklyHandheld.macos, {
     include: [{ component: 'pos-handheld-native', runner: 'macos-26', timeout: 40 }],
+  })
+  assert.deepEqual(weeklyHandheld.android, {
+    include: [{ component: 'pos-handheld-android', runner: 'ubuntu-24.04', timeout: 40 }],
+  })
+
+  const prPosApps = buildMatrices(new Set(['pos-ipad', 'pos-handheld']), { timeout: 12 })
+  assert.deepEqual(prPosApps.macos, {
+    include: [
+      { component: 'pos-ipad-native', runner: 'macos-26', timeout: 12 },
+      { component: 'pos-handheld-native', runner: 'macos-26', timeout: 14 },
+    ],
   })
 })

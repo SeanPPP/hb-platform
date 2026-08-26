@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
@@ -118,7 +119,8 @@ public sealed class SpecialProductsViewModelTests
         else
         {
             Assert.True(viewModel.AddToCartCommand.CanExecute(item));
-            viewModel.AddToCartCommand.Execute(item);
+            await Assert.IsAssignableFrom<IAsyncRelayCommand<SellableItemDto>>(viewModel.AddToCartCommand)
+                .ExecuteAsync(item);
         }
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
         releaseOperation.TrySetResult();

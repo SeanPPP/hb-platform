@@ -180,11 +180,7 @@ public sealed class CashPaymentWorkflowServiceTests
 
         var cart = new PosCartService();
         cart.RestoreSharedSaleSnapshot(
-            new SharedHeldOrderReverseMapper().Map(SampleCanonical(), "S001") with
-            {
-                // 混合支付也必须保留已激活 claim，不能依赖 canonical 内容再次匹配。
-                SharedHeldOrderClaimId = claimId
-            });
+            new SharedHeldOrderReverseMapper().Map(SampleCanonical(), "S001"));
         var orders = new RecordingOrderRepository();
         var workflow = new CashPaymentWorkflowService(
             new CashCheckoutService(),
@@ -222,7 +218,11 @@ public sealed class CashPaymentWorkflowServiceTests
 
         var cart = new PosCartService();
         cart.RestoreSharedSaleSnapshot(
-            new SharedHeldOrderReverseMapper().Map(SampleCanonical(), "S001"));
+            new SharedHeldOrderReverseMapper().Map(SampleCanonical(), "S001") with
+            {
+                // 混合支付也必须保留已激活 claim，不能依赖 canonical 内容再次匹配。
+                SharedHeldOrderClaimId = claimId
+            });
         var attemptGuid = Guid.NewGuid();
         var attempts = new RecordingCardPaymentAttemptRepository();
         await attempts.CreateAsync(new LocalCardPaymentAttempt(

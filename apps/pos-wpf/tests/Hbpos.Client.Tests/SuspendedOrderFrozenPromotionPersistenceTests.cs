@@ -94,7 +94,8 @@ public sealed class SuspendedOrderFrozenPromotionPersistenceTests
             var saved = await repository.GetAsync(order.SuspendedOrderGuid);
             Assert.NotNull(saved);
             Assert.Null(saved!.FrozenPromotionRules);
-            Assert.False(Assert.Single(saved.Lines).IsManualPrice);
+            Assert.Equal(2, saved.Lines.Count);
+            Assert.All(saved.Lines, line => Assert.False(line.IsManualPrice));
 
             var result = new SharedHeldOrderMapper().Map(saved, saved.FrozenPromotionRules, revision: 1);
             Assert.True(result.IsBlocked);

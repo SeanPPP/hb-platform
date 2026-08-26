@@ -615,7 +615,20 @@ public sealed class WpfViewLifecycleTests
         PumpDispatcher();
         view.UpdateLayout();
 
+        // Window.Width 是外框尺寸；托管 Windows runner 仍可能保留非客户区。
+        // 用独立的 UserControl 客户区校正，避免生产 root 自身缩水时被补偿掉。
+        var contentWidthAdjustment = targetWidth - view.ActualWidth;
+        if (Math.Abs(contentWidthAdjustment) > 0.5)
+        {
+            host.Width += contentWidthAdjustment;
+            host.UpdateLayout();
+            PumpDispatcher();
+            view.UpdateLayout();
+        }
+
         Assert.Equal(3, root.ColumnDefinitions.Count);
+        Assert.InRange(view.ActualWidth, targetWidth - 0.5, targetWidth + 0.5);
+        Assert.InRange(root.ActualWidth, view.ActualWidth - 0.5, view.ActualWidth + 0.5);
         var cartWidth = root.ColumnDefinitions[0].ActualWidth;
         var keypadWidth = root.ColumnDefinitions[1].ActualWidth;
         var sidebarWidth = root.ColumnDefinitions[2].ActualWidth;

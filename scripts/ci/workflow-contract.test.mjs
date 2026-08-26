@@ -119,6 +119,51 @@ function runMacosRunner({ xcodeVersion = '26.5', useValidDeveloperDir = true } =
   return { environmentDeveloperDir, result, selectedDeveloperDir }
 }
 
+function runMacosProfile({ component, profile, includeProfile = true }) {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'hb-macos-profile-'))
+  const fakeBin = join(temporaryRoot, 'bin')
+  const selectedDeveloperDir = join(temporaryRoot, 'SelectedXcode.app/Contents/Developer')
+  const commandLogPath = join(temporaryRoot, 'commands.log')
+  const logCommand = '#!/usr/bin/env bash\nprintf \'%s %s\\n\' "$(basename "$0")" "$*" >> "$FAKE_COMMAND_LOG"\n'
+
+  writeExecutable(join(selectedDeveloperDir, 'usr/bin/xcodebuild'), '#!/usr/bin/env bash\nexit 0\n')
+  writeExecutable(join(fakeBin, 'npm'), `${logCommand}exit 0\n`)
+  writeExecutable(join(fakeBin, 'node'), `${logCommand}exit 0\n`)
+  writeExecutable(
+    join(fakeBin, 'xcodebuild'),
+    `${logCommand}if [[ "\${1:-}" == '-version' ]]; then\n  printf '%s\\n' 'Xcode 26.5' 'Build version TEST'\nfi\n`,
+  )
+  writeExecutable(join(fakeBin, 'xcode-select'), '#!/usr/bin/env bash\nprintf \'%s\\n\' "$FAKE_XCODE_SELECT_PATH"\n')
+
+  const environment = {
+    ...process.env,
+    DEVELOPER_DIR: selectedDeveloperDir,
+    FAKE_COMMAND_LOG: commandLogPath,
+    FAKE_XCODE_SELECT_PATH: selectedDeveloperDir,
+    PATH: `${fakeBin}:${process.env.PATH ?? '/usr/bin:/bin'}`,
+  }
+  if (includeProfile) {
+    environment.CI_PROFILE = profile
+  } else {
+    delete environment.CI_PROFILE
+  }
+
+  let result
+  let commands
+  try {
+    result = spawnSync('bash', [fileURLToPath(macosRunnerPath), component], {
+      encoding: 'utf8',
+      env: environment,
+      timeout: 10_000,
+    })
+    commands = existsSync(commandLogPath) ? readFileSync(commandLogPath, 'utf8') : ''
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true })
+  }
+
+  return { commands, result }
+}
+
 function runTestAll({ kernelName, osName = '' }) {
   const temporaryRoot = mkdtempSync(join(tmpdir(), 'hb-test-all-'))
   const fakeBin = join(temporaryRoot, 'bin')
@@ -241,7 +286,11 @@ test('托管 runner 隔离 WPF 分片，并避免原生多架构与 Android 内�
   assert.match(windowsRunner, /WPF client tests \(\$Shard\)/)
   assert.match(windowsRunner, /if \(\$Shard -eq 'all' -or \$Shard -eq 'ui'\)/)
 
-  // macOS 版本探测不携带 build setting；实际 build 强制 arm64，并压缩托管日志。
+  // PR 执行 prebuild 与原生互操作测试；完整 app 冷构建留给 weekly，并继续强制 arm64。
+  assert.match(macos, /CI_PROFILE:\s*\$\{\{ needs\.plan\.outputs\.profile \}\}/)
+  assert.match(macosRunner, /profile="\$\{CI_PROFILE:-weekly\}"/)
+  assert.match(macosRunner, /if \[\[ "\$profile" == "weekly" \]\]; then[\s\S]*?xcodebuild/)
+  assert.match(macosRunner, /PR profile 已完成 .*prebuild.*原生互操作测试/)
   assert.match(macos, /xcodebuild\(\) \{[\s\S]*?command xcodebuild "\$@" ARCHS=arm64 ONLY_ACTIVE_ARCH=YES COMPILER_INDEX_STORE_ENABLE=NO/)
   assert.match(macos, /export -f xcodebuild/)
   assert.doesNotMatch(macosRunner, /\.xcworkspace -list/)
@@ -338,6 +387,36 @@ test('macOS runner 拒绝非 Xcode 26.5', {
   assert.equal(result.error, undefined)
   assert.notEqual(result.status, 0)
   assert.match(`${result.stdout}\n${result.stderr}`, /要求 Xcode 26\.5/)
+})
+
+test('macOS runner 按 profile 执行原生 PR 快检与 weekly 完整构建', () => {
+  const components = [
+    ['pos-ipad-native', 'apps/pos-ipad/ios/HBPOS.xcworkspace', 'HBPOS'],
+    ['pos-handheld-native', 'apps/pos-handheld/ios/HBPOSMobile.xcworkspace', 'HBPOSMobile'],
+  ]
+
+  for (const [component, workspace, scheme] of components) {
+    const pr = runMacosProfile({ component, profile: 'pr' })
+    assert.equal(pr.result.status, 0, pr.result.stderr)
+    assert.match(pr.commands, /npm --prefix apps\/pos-(?:ipad|handheld) ci --no-audit --no-fund/)
+    assert.match(pr.commands, /npm --prefix apps\/pos-(?:ipad|handheld) run prebuild:ios -- --clean/)
+    assert.match(pr.commands, /node scripts\/ci\/test-inventory\.mjs --app pos-(?:ipad|handheld) --run native/)
+    assert.doesNotMatch(pr.commands, /xcodebuild -workspace/)
+
+    const weekly = runMacosProfile({ component, profile: 'weekly' })
+    assert.equal(weekly.result.status, 0, weekly.result.stderr)
+    assert.match(weekly.commands, new RegExp(`xcodebuild -workspace ${workspace} -scheme ${scheme}`))
+    assert.match(weekly.commands, /CODE_SIGNING_ALLOWED=NO build/)
+
+    const defaultProfile = runMacosProfile({ component, includeProfile: false })
+    assert.equal(defaultProfile.result.status, 0, defaultProfile.result.stderr)
+    assert.match(defaultProfile.commands, /xcodebuild -workspace/)
+  }
+
+  const invalid = runMacosProfile({ component: 'pos-ipad-native', profile: 'invalid' })
+  assert.notEqual(invalid.result.status, 0)
+  assert.equal(invalid.commands, '')
+  assert.match(invalid.result.stderr, /未知 CI profile/)
 })
 
 test('test-all 在 Linux、macOS、Windows 都逐 lane 打印 executed/skipped 与原因', () => {
