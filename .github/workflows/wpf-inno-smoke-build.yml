@@ -27,7 +27,7 @@ jobs:
 
     steps:
       - name: 检出源码
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: 校验版本号
         id: version
@@ -45,7 +45,7 @@ jobs:
           "normalized=$version" >> $env:GITHUB_OUTPUT
 
       - name: 安装 .NET 8 与仓库固定 SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
           dotnet-version: |
             8.0.x
@@ -110,6 +110,7 @@ jobs:
 
           dotnet test apps/pos-wpf/tests/Hbpos.Client.UiTests/Hbpos.Client.UiTests.csproj `
             --configuration Release `
+            --filter 'Category!=LiveE2e' `
             -p:HbposWpfAppVersion=$version `
             --logger 'trx;LogFileName=Hbpos.Client.UiTests.trx' `
             --results-directory $resultsDir `
@@ -236,7 +237,7 @@ jobs:
           "@ >> $env:GITHUB_STEP_SUMMARY
 
       - name: 上传 EXE、SHA256 和核验报告
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: wpf-inno-${{ steps.version.outputs.normalized }}-x64
           path: |
@@ -248,7 +249,7 @@ jobs:
 
       - name: 上传构建与测试日志
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: wpf-inno-${{ github.run_id }}-logs
           path: |

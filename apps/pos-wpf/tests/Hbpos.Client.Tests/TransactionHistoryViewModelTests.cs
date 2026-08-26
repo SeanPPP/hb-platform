@@ -18,6 +18,10 @@ namespace Hbpos.Client.Tests;
 
 public sealed class TransactionHistoryViewModelTests
 {
+    private static readonly DateTimeOffset HeldFixtureTime = new(DateTime.Today.AddHours(9));
+    private static readonly DateTime HeldFixtureDate = HeldFixtureTime.Date;
+    private static readonly string HeldFixtureTimeIso = HeldFixtureTime.ToUniversalTime().ToString("O");
+
     [Theory]
     [InlineData(TransactionHistorySource.LocalOrders)]
     [InlineData(TransactionHistorySource.RemoteOrders)]
@@ -3063,23 +3067,27 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderApiClient: new StubSharedHeldOrderApiClient
             {
                 ListPending = _ => Task.FromResult<IReadOnlyList<SharedHeldOrderListItemDto>>
-                ([HeldItem(remoteOnlyHoldGuid, 3000, 0, 3000, 1)])
+                ([
+                    HeldItem(localHoldGuid, 1000, 0, 1000, 1),
+                    HeldItem(remoteOnlyHoldGuid, 3000, 0, 3000, 1)
+                ])
             },
             sharedHeldOrderRepository: repository);
 
-        viewModel.DateFrom = new DateTime(2026, 7, 1);
-        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
 
         Assert.True(viewModel.Orders.Single(order => order.OrderGuid == localHoldGuid).CanDeleteHeldOrder);
         Assert.False(viewModel.Orders.Single(order => order.OrderGuid == remoteOnlyHoldGuid).CanDeleteHeldOrder);
-        Assert.False(viewModel.Orders.Single(order => order.OrderGuid == claimedHoldGuid).CanDeleteHeldOrder);
-        // 非本机挂单不在本机页签出现；切到非本机页签后仍不可删除。
+        Assert.DoesNotContain(viewModel.Orders, order => order.OrderGuid == claimedHoldGuid);
+        // 非本机挂单及 synthetic RemoteClaim 不在本机页签出现；切页后仍不可删除。
         Assert.DoesNotContain(viewModel.Orders, order => order.OrderGuid == otherDeviceHoldGuid);
         viewModel.IsHeldOtherScopeSelected = true;
         await viewModel.LoadAsync();
         Assert.False(viewModel.Orders.Single(order => order.OrderGuid == otherDeviceHoldGuid).CanDeleteHeldOrder);
+        Assert.False(viewModel.Orders.Single(order => order.OrderGuid == claimedHoldGuid).CanDeleteHeldOrder);
     }
 
     [Fact]
@@ -3110,8 +3118,8 @@ public sealed class TransactionHistoryViewModelTests
                 }
             });
 
-        viewModel.DateFrom = new DateTime(2026, 7, 1);
-        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
 
@@ -3172,8 +3180,8 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderApiClient: api,
             sharedHeldOrderRepository: repository);
 
-        viewModel.DateFrom = new DateTime(2026, 7, 1);
-        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
         var row = Assert.Single(viewModel.Orders);
@@ -3262,8 +3270,8 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderApiClient: api,
             sharedHeldOrderRepository: repository);
 
-        viewModel.DateFrom = new DateTime(2026, 7, 1);
-        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
         await viewModel.DeleteHeldOrderCommand.ExecuteAsync(Assert.Single(viewModel.Orders));
@@ -3315,8 +3323,8 @@ public sealed class TransactionHistoryViewModelTests
             },
             sharedHeldOrderRepository: repository);
 
-        viewModel.DateFrom = new DateTime(2026, 7, 1);
-        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
 
@@ -3396,8 +3404,8 @@ public sealed class TransactionHistoryViewModelTests
             },
             sharedHeldOrderRepository: repository);
 
-        viewModel.DateFrom = new DateTime(2026, 7, 1);
-        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
 
@@ -3445,7 +3453,10 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderApiClient: api,
             sharedHeldOrderRepository: repository);
 
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
+        viewModel.IsHeldOtherScopeSelected = true;
         await viewModel.LoadAsync();
         var row = Assert.Single(viewModel.Orders);
         Assert.True(row.CanForceRelease);
@@ -3496,7 +3507,10 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderCoordinator: coordinator,
             sharedHeldOrderRepository: repository);
 
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
+        viewModel.IsHeldOtherScopeSelected = true;
         await viewModel.LoadAsync();
         var row = Assert.Single(viewModel.Orders);
 
@@ -3551,10 +3565,7 @@ public sealed class TransactionHistoryViewModelTests
             "Synced",
             1,
             "Cash");
-        var suspendedOrders = new CapturingSuspendedOrderService
-        {
-            ThrowOnGetPendingOrders = true
-        };
+        var suspendedOrders = new CapturingSuspendedOrderService();
         var viewModel = new TransactionHistoryViewModel(
             new CapturingReceiptQueryService { Orders = [localOrder] },
             suspendedOrders,
@@ -3562,6 +3573,8 @@ public sealed class TransactionHistoryViewModelTests
             CreateSession());
 
         // 先在 Local 源加载出旧列表。
+        viewModel.DateFrom = localOrder.SoldAt.Date;
+        viewModel.DateTo = localOrder.SoldAt.Date;
         await viewModel.LoadAsync();
         Assert.Single(viewModel.Orders);
 
@@ -3838,6 +3851,8 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderRepository: repository,
             sharedHeldOrderPublicationWorker: worker);
 
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
         var row = Assert.Single(viewModel.Orders);
@@ -3967,19 +3982,26 @@ public sealed class TransactionHistoryViewModelTests
             },
             sharedHeldOrderRepository: repository);
 
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
 
         Assert.True(viewModel.Orders.Single(order => order.OrderGuid == canShare).CanShare);
         Assert.False(viewModel.Orders.Single(order => order.OrderGuid == requested).CanShare);
-        Assert.False(viewModel.Orders.Single(order => order.OrderGuid == claimed).CanShare);
+        Assert.DoesNotContain(viewModel.Orders, order => order.OrderGuid == claimed);
         Assert.False(viewModel.Orders.Single(order => order.OrderGuid == deletePending).CanShare);
         Assert.False(viewModel.Orders.Single(order => order.OrderGuid == blocked).CanShare);
         Assert.Equal(string.Empty, viewModel.Orders.Single(order => order.OrderGuid == canShare).ShareStatusLabel);
         Assert.Equal("Awaiting share", viewModel.Orders.Single(order => order.OrderGuid == requested).ShareStatusLabel);
-        Assert.Equal("Cannot share", viewModel.Orders.Single(order => order.OrderGuid == claimed).ShareStatusLabel);
         Assert.Equal("Cannot share", viewModel.Orders.Single(order => order.OrderGuid == blocked).ShareStatusLabel);
         Assert.Equal("Cannot share", viewModel.Orders.Single(order => order.OrderGuid == deletePending).ShareStatusLabel);
+
+        viewModel.IsHeldOtherScopeSelected = true;
+        await viewModel.LoadAsync();
+        var claimedRow = Assert.Single(viewModel.Orders, order => order.OrderGuid == claimed);
+        Assert.False(claimedRow.CanShare);
+        Assert.Equal("Cannot share", claimedRow.ShareStatusLabel);
     }
 
     [Fact]
@@ -4083,7 +4105,10 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderApiClient: api,
             sharedHeldOrderRepository: repository);
 
+        viewModel.DateFrom = HeldFixtureDate;
+        viewModel.DateTo = HeldFixtureDate;
         viewModel.IsHeldSourceSelected = true;
+        viewModel.IsHeldOtherScopeSelected = true;
         await viewModel.LoadAsync();
         var row = Assert.Single(viewModel.Orders);
         Assert.Equal(HeldOrderBadgeKind.LocalClaimActive, row.HeldBadgeKind);
@@ -4165,6 +4190,8 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderApiClient: new StubSharedHeldOrderApiClient(),
             sharedHeldOrderRepository: new CapturingSharedHeldOrderRepository());
 
+        viewModel.DateFrom = new DateTime(2026, 5, 10);
+        viewModel.DateTo = new DateTime(2026, 5, 10);
         await viewModel.LoadAsync();
 
         Assert.True(viewModel.IsLocalSourceSelected);
@@ -4806,12 +4833,13 @@ public sealed class TransactionHistoryViewModelTests
         decimal actual,
         int lineCount)
     {
+        var fixtureTime = HeldFixtureTime;
         return new SuspendedOrderSummary(
             guid,
             "S001",
             deviceCode,
             "Alice",
-            new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero),
+            fixtureTime,
             total,
             discount,
             actual,
@@ -4826,6 +4854,7 @@ public sealed class TransactionHistoryViewModelTests
         string? errorMessage = null,
         string? shareRequestedAtIso = null)
     {
+        var fixtureTimeIso = HeldFixtureTimeIso;
         return new SharedHeldOrderPublication(
             guid,
             "S001",
@@ -4836,9 +4865,9 @@ public sealed class TransactionHistoryViewModelTests
             errorCode,
             errorMessage,
             null,
-            "2026-07-01T09:00:00.000Z",
-            "2026-07-01T09:00:00.000Z",
-            "2026-07-01T09:00:00.000Z",
+            fixtureTimeIso,
+            fixtureTimeIso,
+            fixtureTimeIso,
             ShareRequestedAtIso: shareRequestedAtIso);
     }
 
@@ -4850,14 +4879,15 @@ public sealed class TransactionHistoryViewModelTests
         int lineCount,
         string deviceCode = "POS-01")
     {
+        var heldAt = HeldFixtureTime;
         return new SharedHeldOrderListItemDto(
             guid,
             "S001",
             deviceCode,
             "C001",
             "Alice",
-            new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero),
-            new DateTimeOffset(2026, 7, 1, 9, 5, 0, TimeSpan.Zero),
+            heldAt,
+            heldAt.AddMinutes(5),
             lineCount,
             totalCents,
             discountCents,
@@ -4870,6 +4900,7 @@ public sealed class TransactionHistoryViewModelTests
         Guid claimGuid,
         LocalClaimStatus status)
     {
+        var fixtureTimeIso = HeldFixtureTimeIso;
         return new SharedHeldOrderClaimRecovery(
             claimGuid,
             holdGuid,
@@ -4885,8 +4916,8 @@ public sealed class TransactionHistoryViewModelTests
             null,
             null,
             null,
-            "2026-07-01T09:00:00.000Z",
-            "2026-07-01T09:00:00.000Z");
+            fixtureTimeIso,
+            fixtureTimeIso);
     }
 
     private sealed class CapturingSharedHeldOrderCoordinator : ISharedHeldOrderCoordinator

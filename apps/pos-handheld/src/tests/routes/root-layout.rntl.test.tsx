@@ -24,8 +24,6 @@ jest.mock("@/app-providers", () => ({
   AppProviders: ({ children }: { children: React.ReactNode }) => children,
 }));
 
-jest.mock("@/core/peripherals/customer-display/native", () => ({}));
-
 jest.mock("@/ui/scanner/scanner-route-bridge", () => ({
   ScannerRouteProvider: ({ children }: { children: React.ReactNode }) =>
     children,

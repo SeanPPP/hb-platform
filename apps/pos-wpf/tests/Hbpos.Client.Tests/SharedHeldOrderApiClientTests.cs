@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.HeldOrders;
 using static Hbpos.Client.Tests.SharedHeldOrderClientTestSupport;
@@ -217,7 +218,8 @@ public sealed class SharedHeldOrderApiClientTests
                 request.RequestUri?.PathAndQuery);
 
             var body = await request.Content!.ReadAsStringAsync(cancellationToken);
-            Assert.Contains("\"reason\":\"主管确认客人仍在店内\"", body, StringComparison.Ordinal);
+            using var document = JsonDocument.Parse(body);
+            Assert.Equal("主管确认客人仍在店内", document.RootElement.GetProperty("reason").GetString());
             return JsonResponse(new
             {
                 success = true,

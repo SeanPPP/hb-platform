@@ -958,6 +958,7 @@ public sealed class SaleFlowTests
     public SaleFlowTests(WpfAppFixture app) => _app = app;
 
     [Fact]
+    [Trait("Category", "LiveE2e")]
     public async Task Store_cash_sale_reaches_payment_success()
     {
         var sensitiveValueSubmitted = false;

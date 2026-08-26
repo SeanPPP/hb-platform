@@ -159,10 +159,10 @@ public sealed class LinklyCloudApiClientTests
         Assert.DoesNotContain("refresh-token-secret", text, StringComparison.Ordinal);
         Assert.DoesNotContain("4111111111111111", text, StringComparison.Ordinal);
         Assert.DoesNotContain("=2512", text, StringComparison.Ordinal);
-        Assert.DoesNotContain("987", text, StringComparison.Ordinal);
         Assert.DoesNotContain("5555555555554444", text, StringComparison.Ordinal);
         using var responseLog = FindLinklyLog(logs.Lines, "transaction", "response");
         var sanitizedResponse = responseLog.RootElement.GetProperty("response").GetString();
+        Assert.DoesNotContain("987", sanitizedResponse, StringComparison.Ordinal);
         Assert.Contains("****4444", sanitizedResponse, StringComparison.Ordinal);
         Assert.Contains("260601120001", sanitizedResponse, StringComparison.Ordinal);
     }

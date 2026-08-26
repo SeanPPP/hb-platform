@@ -1951,6 +1951,30 @@
               "format": "int32",
               "default": 0
             }
+          },
+          {
+            "name": "updatedFrom",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "updatedTo",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "orderByUpdatedAt",
+            "in": "query",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
           }
         ],
         "responses": {
@@ -5072,6 +5096,52 @@
         }
       }
     },
+    "/api/v1/square/refunds/{refundId}": {
+      "get": {
+        "tags": [
+          "Square"
+        ],
+        "parameters": [
+          {
+            "name": "refundId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "environment",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/SquareRefundResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SquareRefundResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SquareRefundResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/square/webhooks": {
       "post": {
         "tags": [
@@ -7585,6 +7655,11 @@
           "note": {
             "type": "string",
             "nullable": true
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -8173,6 +8248,9 @@
           "updatedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "cancellationKind": {
+            "$ref": "#/components/schemas/InstallmentCancellationKind"
           }
         },
         "additionalProperties": false

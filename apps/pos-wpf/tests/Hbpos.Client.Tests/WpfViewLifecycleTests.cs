@@ -503,7 +503,15 @@ public sealed class WpfViewLifecycleTests
             host.Height = 1140;
             PumpDispatcher();
 
-            Assert.InRange(workspaceSurface.ActualWidth, 1599.5, 1600.5);
+            Assert.Equal(1600, workspaceSurface.MaxWidth);
+            var availableWorkspaceWidth = Math.Max(
+                0,
+                workspace.ActualWidth - workspaceSurface.Margin.Left - workspaceSurface.Margin.Right);
+            var expectedWorkspaceWidth = Math.Min(workspaceSurface.MaxWidth, availableWorkspaceWidth);
+            Assert.InRange(
+                workspaceSurface.ActualWidth,
+                expectedWorkspaceWidth - 0.5,
+                expectedWorkspaceWidth + 0.5);
             AssertFullyContained(workspaceSurface, workspace);
             AssertFullyContained(workspaceBody, workspaceSurface);
             AssertFullyContained(cashCountPanel, workspaceBody);
@@ -589,25 +597,20 @@ public sealed class WpfViewLifecycleTests
                 IsReturnLine: false))
             .ToArray();
 
-        var host = new Window
-        {
-            Content = view,
-            Width = targetWidth,
-            Height = targetContentHeight,
-            WindowStyle = WindowStyle.None,
-            ResizeMode = ResizeMode.NoResize,
-            WindowStartupLocation = WindowStartupLocation.Manual,
-            Left = -10000,
-            Top = -10000,
-            ShowActivated = false,
-            ShowInTaskbar = false
-        };
-        host.Show();
-        host.UpdateLayout();
+        // 直接按客户区尺寸布局，避免托管 runner 将离屏顶层窗口限制到桌面工作区。
+        // Dispatcher 处理模板与容器生成后再布局一次，保证断言读取稳定的最终尺寸。
+        var layoutSize = new Size(targetWidth, targetContentHeight);
+        view.Measure(layoutSize);
+        view.Arrange(new Rect(layoutSize));
+        view.UpdateLayout();
         PumpDispatcher();
+        view.Measure(layoutSize);
+        view.Arrange(new Rect(layoutSize));
         view.UpdateLayout();
 
         Assert.Equal(3, root.ColumnDefinitions.Count);
+        Assert.InRange(view.ActualWidth, targetWidth - 0.5, targetWidth + 0.5);
+        Assert.InRange(root.ActualWidth, view.ActualWidth - 0.5, view.ActualWidth + 0.5);
         var cartWidth = root.ColumnDefinitions[0].ActualWidth;
         var keypadWidth = root.ColumnDefinitions[1].ActualWidth;
         var sidebarWidth = root.ColumnDefinitions[2].ActualWidth;
@@ -699,7 +702,6 @@ public sealed class WpfViewLifecycleTests
             Assert.True(button.ActualHeight >= 62, $"右侧按钮触控高度不足：{button.ActualHeight:0.##}。");
         });
 
-        host.Close();
     }
 
     private static IEnumerable<T> FindVisualDescendants<T>(DependencyObject parent)

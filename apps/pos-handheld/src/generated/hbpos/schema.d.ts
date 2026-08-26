@@ -665,6 +665,49 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/devices/app-review-register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["DeviceRegisterRequest"];
+                    "text/json": components["schemas"]["DeviceRegisterRequest"];
+                    "application/*+json": components["schemas"]["DeviceRegisterRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["DeviceRegisterResponseApiResult"];
+                        "application/json": components["schemas"]["DeviceRegisterResponseApiResult"];
+                        "text/json": components["schemas"]["DeviceRegisterResponseApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/devices/verify": {
         parameters: {
             query?: never;
@@ -741,6 +784,49 @@ export interface paths {
                         "text/plain": components["schemas"]["DeviceReregisterResponseApiResult"];
                         "application/json": components["schemas"]["DeviceReregisterResponseApiResult"];
                         "text/json": components["schemas"]["DeviceReregisterResponseApiResult"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/reset-registration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["DeviceRegistrationResetRequest"];
+                    "text/json": components["schemas"]["DeviceRegistrationResetRequest"];
+                    "application/*+json": components["schemas"]["DeviceRegistrationResetRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["DeviceRegistrationResetResponseApiResult"];
+                        "application/json": components["schemas"]["DeviceRegistrationResetResponseApiResult"];
+                        "text/json": components["schemas"]["DeviceRegistrationResetResponseApiResult"];
                     };
                 };
             };
@@ -1543,6 +1629,9 @@ export interface paths {
                     status?: components["schemas"]["InstallmentStatus"];
                     take?: number;
                     skip?: number;
+                    updatedFrom?: string;
+                    updatedTo?: string;
+                    orderByUpdatedAt?: boolean;
                 };
                 header?: never;
                 path?: never;
@@ -4095,6 +4184,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/square/refunds/{refundId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    environment?: string;
+                };
+                header?: never;
+                path: {
+                    refundId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["SquareRefundResponseApiResult"];
+                        "application/json": components["schemas"]["SquareRefundResponseApiResult"];
+                        "text/json": components["schemas"]["SquareRefundResponseApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/square/webhooks": {
         parameters: {
             query?: never;
@@ -4717,6 +4847,7 @@ export interface components {
             hardwareId?: string | null;
             terminalName?: string | null;
             deviceSystem?: string | null;
+            provisioningCode?: string | null;
         };
         DeviceRegisterResponse: {
             deviceCode?: string | null;
@@ -4731,6 +4862,24 @@ export interface components {
         DeviceRegisterResponseApiResult: {
             success?: boolean;
             data?: components["schemas"]["DeviceRegisterResponse"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
+        DeviceRegistrationResetRequest: {
+            /** Format: uuid */
+            operationId?: string;
+        };
+        DeviceRegistrationResetResponse: {
+            /** Format: uuid */
+            operationId?: string;
+            deviceCode?: string | null;
+            storeCode?: string | null;
+            /** Format: date-time */
+            disabledAtUtc?: string;
+        };
+        DeviceRegistrationResetResponseApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["DeviceRegistrationResetResponse"];
             errorCode?: string | null;
             message?: string | null;
         };
@@ -4776,6 +4925,7 @@ export interface components {
             isAllowed?: boolean;
             message?: string | null;
             authorizationCode?: string | null;
+            exactIdentityMatched?: boolean;
         };
         DeviceVerifyResponseApiResult: {
             success?: boolean;
@@ -5061,6 +5211,8 @@ export interface components {
             pickupInfo?: components["schemas"]["InstallmentPickupInfoDto"];
             cancellationInfo?: components["schemas"]["InstallmentCancellationInfoDto"];
             note?: string | null;
+            /** Format: date-time */
+            updatedAt?: string | null;
         };
         InstallmentDetailsDtoApiResult: {
             success?: boolean;
@@ -5266,6 +5418,7 @@ export interface components {
             status?: components["schemas"]["InstallmentStatus"];
             /** Format: date-time */
             updatedAt?: string;
+            cancellationKind?: components["schemas"]["InstallmentCancellationKind"];
         };
         InstallmentVoidRequest: {
             /** Format: uuid */

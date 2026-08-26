@@ -27,6 +27,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- CI 使用固定的并行度，避免 hosted Windows runner 因过度并发而抖动。 -->
+    <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
     <!-- 跨端 frozen wire fixture：与 iPad shared-sale-cart-v1-fixture.test.ts 共用同一批 JSON。 -->
     <None Include="..\..\..\..\test-fixtures\shared-held-orders\**\*.json"
           Link="test-fixtures\shared-held-orders\%(RecursiveDir)%(Filename)%(Extension)"

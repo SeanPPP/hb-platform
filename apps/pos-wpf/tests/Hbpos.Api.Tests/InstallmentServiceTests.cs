@@ -1894,6 +1894,9 @@ public sealed class InstallmentServiceTests
                 InstallmentOrderEntity,
                 InstallmentOrderLineEntity,
                 InstallmentPaymentEntity>();
+            client.CodeFirst.InitTables<
+                InstallmentRepaymentClaimEntity,
+                InstallmentCancelClaimEntity>();
             DbContext = CreateDbContext(client);
         }
 

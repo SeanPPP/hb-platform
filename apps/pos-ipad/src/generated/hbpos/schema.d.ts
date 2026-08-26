@@ -1629,6 +1629,9 @@ export interface paths {
                     status?: components["schemas"]["InstallmentStatus"];
                     take?: number;
                     skip?: number;
+                    updatedFrom?: string;
+                    updatedTo?: string;
+                    orderByUpdatedAt?: boolean;
                 };
                 header?: never;
                 path?: never;
@@ -4181,6 +4184,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/square/refunds/{refundId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    environment?: string;
+                };
+                header?: never;
+                path: {
+                    refundId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["SquareRefundResponseApiResult"];
+                        "application/json": components["schemas"]["SquareRefundResponseApiResult"];
+                        "text/json": components["schemas"]["SquareRefundResponseApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/square/webhooks": {
         parameters: {
             query?: never;
@@ -5167,6 +5211,8 @@ export interface components {
             pickupInfo?: components["schemas"]["InstallmentPickupInfoDto"];
             cancellationInfo?: components["schemas"]["InstallmentCancellationInfoDto"];
             note?: string | null;
+            /** Format: date-time */
+            updatedAt?: string | null;
         };
         InstallmentDetailsDtoApiResult: {
             success?: boolean;
@@ -5372,6 +5418,7 @@ export interface components {
             status?: components["schemas"]["InstallmentStatus"];
             /** Format: date-time */
             updatedAt?: string;
+            cancellationKind?: components["schemas"]["InstallmentCancellationKind"];
         };
         InstallmentVoidRequest: {
             /** Format: uuid */

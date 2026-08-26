@@ -7,5 +7,6 @@
   <Folder Name="/tests/">
     <Project Path="tests/Hbpos.Api.Tests/Hbpos.Api.Tests.csproj" />
     <Project Path="tests/Hbpos.Client.Tests/Hbpos.Client.Tests.csproj" />
+    <Project Path="tests/Hbpos.Client.UiTests/Hbpos.Client.UiTests.csproj" />
   </Folder>
 </Solution>
