@@ -7,6 +7,7 @@ using Hbpos.Contracts.Installments;
 
 namespace Hbpos.Client.Tests;
 
+[Collection(ShutdownTimingTestCollection.Name)]
 public sealed class InstallmentHistoryApiClientTests
 {
     [Fact]
