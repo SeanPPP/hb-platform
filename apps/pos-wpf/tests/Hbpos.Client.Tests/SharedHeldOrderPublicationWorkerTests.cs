@@ -525,8 +525,17 @@ public sealed class SharedHeldOrderPublicationWorkerTests
                     TotalAmount, DiscountAmount, ActualAmount, Status)
                 VALUES ($HoldGuid, 'S001', 'POS-09', 'cashier-1', 'Cashier One',
                         '2026-07-28T00:00:00+00:00', '11.00', '0.00', '11.00', 0);
+
+                INSERT INTO SuspendedOrderLines (
+                    SuspendedOrderLineGuid, SuspendedOrderGuid, StoreCode, ProductCode, ReferenceCode,
+                    DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount,
+                    DiscountPercent, IsAutomaticPromotionDiscount, DiscountSource, ActualAmount, PriceSource,
+                    PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason)
+                VALUES ($LineGuid, $HoldGuid, 'S001', 'P-1', NULL, 'Product 1', 'CODE-1', NULL, NULL,
+                        '1', '11.00', '0.00', NULL, 0, 0, '11.00', 0, 'ProductBase', 0, '', NULL, NULL, NULL);
                 """;
             command.Parameters.AddWithValue("$HoldGuid", holdGuid.ToString("D"));
+            command.Parameters.AddWithValue("$LineGuid", Guid.NewGuid().ToString("D"));
             await command.ExecuteNonQueryAsync();
         }
 

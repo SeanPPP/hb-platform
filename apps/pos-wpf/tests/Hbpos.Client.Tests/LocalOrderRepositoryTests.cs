@@ -155,6 +155,8 @@ public sealed class LocalOrderRepositoryTests
                 "2026-07-28T00:00:00.000Z",
                 "2026-07-28T00:00:00.000Z",
                 "2026-07-28T00:00:00.000Z"));
+            Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await heldRepository.TryRequestShareAsync(
+                holdGuid, "S001", "POS-01", "2026-07-28T00:00:00.000Z"));
             var payload = SampleCanonical();
             Assert.True(await heldRepository.TryStagePendingPublishAsync(
                 holdGuid, 1, payload, "2026-07-28T00:00:01.000Z"));

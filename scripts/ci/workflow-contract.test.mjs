@@ -21,8 +21,11 @@ const workflowPath = new URL('../../.github/workflows/pr-ci.yml', import.meta.ur
 const wpfWorkflowPath = new URL('../../.github/workflows/wpf-inno-smoke-build.yml', import.meta.url)
 const nodeRunnerPath = new URL('./run-node-component.sh', import.meta.url)
 const macosRunnerPath = new URL('./run-macos-component.sh', import.meta.url)
+const androidRunnerPath = new URL('./run-android-component.sh', import.meta.url)
 const testAllPath = new URL('../test-all.sh', import.meta.url)
 const mobilePackagePath = new URL('../../apps/mobile/package.json', import.meta.url)
+const wpfClientTestsProjectPath = new URL('../../apps/pos-wpf/tests/Hbpos.Client.Tests/Hbpos.Client.Tests.csproj', import.meta.url)
+const xunitRunnerConfigPath = new URL('../../apps/pos-wpf/tests/Hbpos.Client.Tests/xunit.runner.json', import.meta.url)
 const posPricingPerformanceTestPaths = [
   new URL('../../apps/pos-ipad/src/features/sales/domain/pricing-cart.test.ts', import.meta.url),
   new URL('../../apps/pos-handheld/src/features/sales/domain/pricing-cart.test.ts', import.meta.url),
@@ -46,6 +49,12 @@ const expectedLanes = [
   'macos:supplier-safari',
   'android:pos-handheld-android',
 ]
+
+function workflowJobBlock(source, jobName) {
+  const match = source.match(new RegExp(`^  ${jobName}:\\n([\\s\\S]*?)(?=^  [a-zA-Z_][a-zA-Z0-9_]*:\\n|$(?![\\s\\S]))`, 'm'))
+  assert.ok(match, `缺少 workflow job: ${jobName}`)
+  return match[0]
+}
 
 function collectWorkflowUses() {
   return readdirSync(workflowDirectoryPath, { withFileTypes: true })
@@ -145,25 +154,68 @@ function runTestAll({ kernelName, osName = '' }) {
 
 test('PR workflow 每个 PR 都启动，并按 Brisbane 周日 02:23 周更全量', () => {
   const source = readFileSync(workflowPath, 'utf8')
+  const linuxNode = workflowJobBlock(source, 'linux_node')
   assert.match(source, /pull_request:/)
   assert.match(source, /cron:\s*['"]23 16 \* \* 6['"]/) // UTC Saturday 16:23
+  assert.doesNotMatch(source, /^env:\s*\n\s+TZ:\s*Australia\/Brisbane\s*$/m)
+  assert.match(linuxNode, /^\s{6}TZ:\s*Australia\/Brisbane\s*$/m)
   assert.doesNotMatch(source, /^\s{2}paths:/m)
   assert.doesNotMatch(source, /nightly/i)
 })
 
 test('PR/weekly 使用 15/45 分钟端到端预算并为稳定 gate 预留时间', () => {
   const source = readFileSync(workflowPath, 'utf8')
+  const required = workflowJobBlock(source, 'required')
+  const weeklyRequired = workflowJobBlock(source, 'weekly_required')
   assert.match(source, /timeout-minutes:\s*\$\{\{ matrix\.timeout \}\}/)
-  assert.match(source, /started_at_epoch:\s*\$\{\{ steps\.budget\.outputs\.started_at_epoch \}\}/)
   assert.match(source, /budget_seconds:\s*\$\{\{ steps\.plan\.outputs\.budget_seconds \}\}/)
-  assert.match(source, /CI_RUN_STARTED_AT_EPOCH:\s*\$\{\{ needs\.plan\.outputs\.started_at_epoch \}\}/g)
-  assert.match(source, /CI_RUN_BUDGET_SECONDS:\s*\$\{\{ needs\.plan\.outputs\.budget_seconds \}\}/g)
+  assert.equal([...source.matchAll(/CI_RUN_ATTEMPT:\s*\$\{\{ github\.run_attempt \}\}/g)].length, 2)
+  assert.equal([...source.matchAll(/CI_RUN_BUDGET_SECONDS:\s*\$\{\{ needs\.plan\.outputs\.budget_seconds \}\}/g)].length, 2)
+  for (const gate of [required, weeklyRequired]) {
+    assert.match(gate, /GITHUB_TOKEN:\s*\$\{\{ github\.token \}\}/)
+    assert.match(gate, /CI_API_URL:\s*\$\{\{ github\.api_url \}\}/)
+    assert.match(gate, /CI_REPOSITORY:\s*\$\{\{ github\.repository \}\}/)
+    assert.match(gate, /CI_RUN_ID:\s*\$\{\{ github\.run_id \}\}/)
+    assert.match(gate, /CI_RUN_ATTEMPT:\s*\$\{\{ github\.run_attempt \}\}/)
+    assert.match(gate, /CI_RUN_BUDGET_SECONDS:\s*\$\{\{ needs\.plan\.outputs\.budget_seconds \}\}/)
+  }
   assert.match(source, /timeout-minutes:\s*2/)
   assert.match(source, /timeout-minutes:\s*40/g)
   assert.match(source, /name:\s*PR CI \/ required/)
   assert.match(source, /node scripts\/ci\/required-gate\.mjs/)
   assert.match(source, /name:\s*Weekly full \/ required/)
   assert.match(source, /weekly_required:[\s\S]*?needs:\s*\n\s*- plan\s*\n/)
+})
+
+test('托管 runner 限制 WPF 并行度，并避免原生多架构与 Android 内存争抢', () => {
+  const source = readFileSync(workflowPath, 'utf8')
+  const macos = workflowJobBlock(source, 'macos')
+  const android = workflowJobBlock(source, 'android')
+  const androidRunner = readFileSync(androidRunnerPath, 'utf8')
+  const wpfProject = readFileSync(wpfClientTestsProjectPath, 'utf8')
+  const xunitRunnerConfig = JSON.parse(readFileSync(xunitRunnerConfigPath, 'utf8'))
+
+  assert.deepEqual(xunitRunnerConfig, {
+    parallelizeAssembly: true,
+    parallelizeTestCollections: true,
+    maxParallelThreads: 16,
+  })
+  assert.match(wpfProject, /<None Update="xunit\.runner\.json" CopyToOutputDirectory="PreserveNewest" \/>/)
+
+  // macOS runner 的列表和版本探测不应携带 build setting，实际 build 必须强制 arm64。
+  assert.match(macos, /xcodebuild\(\) \{[\s\S]*?command xcodebuild "\$@" ARCHS=arm64 ONLY_ACTIVE_ARCH=YES COMPILER_INDEX_STORE_ENABLE=NO/)
+  assert.match(macos, /export -f xcodebuild/)
+
+  // Android 保留既有四项 task，并仅在其 gradlew 调用追加并行、缓存和 JVM 上限。
+  assert.match(android, /bash\(\) \{[\s\S]*?command bash "\$@" --parallel --build-cache '-Dorg\.gradle\.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g'/)
+  for (const task of [
+    ':hb-app-installer:testDebugUnitTest',
+    ':hb-attendance-security:testDebugUnitTest',
+    ':app:assembleDebug',
+    ':app:lintDebug',
+  ]) {
+    assert.match(androidRunner, new RegExp(task.replaceAll(':', '\\:')))
+  }
 })
 
 test('所有 workflow yml/yaml 的第三方 uses（含条件步骤）全部固定 40 位提交 SHA', () => {

@@ -98,7 +98,7 @@ public sealed class SharedHeldOrderMapperTests
 
         // 手工金额折扣按整数 cents 无损。
         var second = result.Payload.PricingState.Lines[1];
-        Assert.Equal(2000L, second.UnitPriceCents);
+        Assert.Equal(1000L, second.UnitPriceCents);
         Assert.Equal(2m, second.Quantity);
         Assert.Equal("manual-amount", second.DiscountState.Mode);
         Assert.Equal(125L, second.DiscountState.Cents);

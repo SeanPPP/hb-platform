@@ -271,8 +271,8 @@ public sealed class LocalSchemaServiceTests
 
             Assert.Equal(
                 [
-                    "IX_SharedHeldOrderPublications_Due",
                     "IX_LocalOrderHeldOrderSources_Hold",
+                    "IX_SharedHeldOrderPublications_Due",
                     "LocalOrderHeldOrderSources",
                     "SharedHeldOrderClaims",
                     "SharedHeldOrderPublications",
@@ -1323,8 +1323,8 @@ public sealed class LocalSchemaServiceTests
                                 "0c0d", "5", "2026-07-30T04:00:00.000Z", "<NULL>",
                                 "2026-07-28T00:00:00.000Z", "2026-07-28T01:00:00.000Z"
                             }
-                        ]),
-                    ToKeyStrings(rows));
+                        ]).OrderBy(value => value, StringComparer.Ordinal),
+                    ToKeyStrings(rows).OrderBy(value => value, StringComparer.Ordinal));
 
                 // 旧 publication 表无损：ConsumedAtIso 后补列，行数据原样保留。
                 var publicationColumns = await ReadColumnNamesAsync(connection, "SharedHeldOrderPublications");

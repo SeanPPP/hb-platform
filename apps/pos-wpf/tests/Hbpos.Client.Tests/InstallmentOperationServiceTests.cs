@@ -906,7 +906,17 @@ public sealed class InstallmentOperationServiceTests
             var terminal = new MissingAuthorizedAmountTerminal();
             var api = new RecordingInstallmentApi { AppendResponse = CreateAppendResponse(request) };
             var claimState = new RepaymentClaimTestState();
-            var service = new InstallmentOperationService(repository, new ClaimAwareInstallmentApiTestAdapter(api, request, claimState), terminal, new NoopVoucherTenderClient());
+            var settings = CardTerminalSettings.FromEnvironment() with
+            {
+                Processor = CardProcessorKind.Linkly,
+                LinklyConnectionMode = LinklyConnectionMode.LocalIp
+            };
+            var service = new InstallmentOperationService(
+                repository,
+                new ClaimAwareInstallmentApiTestAdapter(api, request, claimState),
+                terminal,
+                new NoopVoucherTenderClient(),
+                cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(settings));
 
             var result = await service.ExecuteRepaymentAsync(Session, request, authorizeCard: true);
 
@@ -960,7 +970,9 @@ public sealed class InstallmentOperationServiceTests
             var repository = await CreateRepositoryAsync(path);
             var order = CreateLocalOrder();
             var firstTerminal = new CountingTerminal(approve: true);
-            var firstApi = new RecordingInstallmentApi
+            // 重启只更换本地服务，远端 claim 状态必须持续存在。
+            var remoteClaims = new Dictionary<Guid, InstallmentCancelClaimDto>();
+            var firstApi = new RecordingInstallmentApi(remoteClaims)
             {
                 CancelResponse = CreateCancelResponse(order),
                 CancelClaimCommitException = new OperationCanceledException()
@@ -977,7 +989,7 @@ public sealed class InstallmentOperationServiceTests
             Assert.All(await repository.GetRefundStepsAsync(operation.OperationGuid), step => Assert.Equal(LocalInstallmentRefundStepState.Approved, step.State));
 
             var restartedTerminal = new CountingTerminal(approve: true);
-            var restartedApi = new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) };
+            var restartedApi = new RecordingInstallmentApi(remoteClaims) { CancelResponse = CreateCancelResponse(order) };
             var restartedService = CreateService(repository, restartedApi, restartedTerminal);
 
             var recovered = await restartedService.RecoverAsync(Session);
@@ -1749,7 +1761,7 @@ public sealed class InstallmentOperationServiceTests
             var operationGuid = Assert.Single(api.CreatedCancelOperationGuids);
             Assert.Equal(LocalInstallmentOperationState.ResultUnknown, (await repository.GetAsync(operationGuid))!.State);
             Assert.Equal(InstallmentCancelClaimResolveOutcome.Released, Assert.Single(api.CancelResolveOutcomes));
-            Assert.Contains(operationGuid, await service.GetLockedInstallmentGuidsAsync(Session));
+            Assert.Contains(order.InstallmentGuid, await service.GetLockedInstallmentGuidsAsync(Session));
             Assert.Equal(0, terminal.RefundCalls);
             Assert.Equal(0, voucher.IssueRefundCalls);
             Assert.Equal(0, api.CommitCancelClaimCalls);
@@ -1832,7 +1844,7 @@ public sealed class InstallmentOperationServiceTests
             Assert.True(result.RequiresReview);
             var operationGuid = Assert.Single(api.CreatedCancelOperationGuids);
             Assert.Equal(LocalInstallmentOperationState.ResultUnknown, (await repository.GetAsync(operationGuid))!.State);
-            Assert.Contains(operationGuid, await service.GetLockedInstallmentGuidsAsync(Session));
+            Assert.Contains(order.InstallmentGuid, await service.GetLockedInstallmentGuidsAsync(Session));
             Assert.Equal(0, terminal.RefundCalls);
             Assert.Equal(0, voucher.IssueRefundCalls);
             Assert.Equal(0, api.CommitCancelClaimCalls);
@@ -1909,10 +1921,7 @@ public sealed class InstallmentOperationServiceTests
         try
         {
             var repository = await CreateRepositoryAsync(path);
-            var order = CreateLocalOrder() with
-            {
-                Payments = [CreateLocalOrder().Payments.Single(payment => payment.Method == PaymentMethodKind.Card)]
-            };
+            var order = CreateCardOnlyPaidOrder();
             var terminal = new CountingTerminal(approve: false);
             var api = new RecordingInstallmentApi { CancelResponse = CreateCancelResponse(order) };
             var service = CreateService(repository, api, terminal);
@@ -2078,8 +2087,17 @@ public sealed class InstallmentOperationServiceTests
     private static InstallmentOperationService CreateService(
         LocalInstallmentOperationRepository repository,
         IInstallmentApiClient api,
-        CountingTerminal terminal) =>
-        new(repository, api, terminal, new NoopVoucherTenderClient());
+        CountingTerminal terminal)
+    {
+        // 固定 Linkly 路由，避免环境变量让卡支付夹具漂移到其他终端实现。
+        var settings = CardTerminalSettings.FromEnvironment() with
+        {
+            Processor = CardProcessorKind.Linkly,
+            LinklyConnectionMode = LinklyConnectionMode.LocalIp
+        };
+        return new(repository, api, terminal, new NoopVoucherTenderClient(),
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(settings));
+    }
 
     private static InstallmentAppendPaymentRequest CreateRepaymentRequest() => new(
         Guid.Parse("11111111-2222-3333-4444-555555555555"),
@@ -2205,6 +2223,20 @@ public sealed class InstallmentOperationServiceTests
             BalanceAmount = 50m
         };
         return new LocalInstallmentOrder(details.InstallmentGuid, details.InstallmentGuid, details.InstallmentNumber, details.StoreCode, details.DeviceCode, details.CashierId, details.CashierName, details.CustomerName, details.CustomerPhone, details.CreatedAt, DateTimeOffset.UtcNow, details.TotalAmount, details.MinimumDownPayment, details.DownPaymentAmount, details.PaidAmount, details.BalanceAmount, details.Status, details.Lines, details.Payments, details.PickupInfo, details.Note, details.CancellationInfo);
+    }
+
+    private static LocalInstallmentOrder CreateCardOnlyPaidOrder()
+    {
+        var order = CreateLocalOrder();
+        var cardPayment = order.Payments.Single(payment => payment.Method == PaymentMethodKind.Card);
+
+        // 拒绝退款只覆盖实际已付的卡款，避免夹具遗留现金付款导致退款计划失真。
+        return order with
+        {
+            Payments = [cardPayment],
+            PaidAmount = cardPayment.Amount,
+            BalanceAmount = order.TotalAmount - cardPayment.Amount
+        };
     }
 
     private static LocalInstallmentOrder CreateSquareCancelOrder()
@@ -2930,7 +2962,7 @@ public sealed class InstallmentOperationServiceTests
         public Task<bool> ReleaseAsync(PosSessionState session, string voucherCode, string reservationToken, CancellationToken cancellationToken = default) => Task.FromResult(false);
     }
 
-    private sealed class RecordingInstallmentApi : IInstallmentApiClient
+    private sealed class RecordingInstallmentApi(Dictionary<Guid, InstallmentCancelClaimDto>? cancelClaims = null) : IInstallmentApiClient
     {
         public Exception? AppendException { get; init; }
         public InstallmentAppendPaymentResponse? AppendResponse { get; init; }
@@ -2962,7 +2994,7 @@ public sealed class InstallmentOperationServiceTests
         public InstallmentCancelClaimCommitRequest? LastCancelClaimCommitRequest { get; private set; }
         public InstallmentAppendPaymentRequest? LastAppendRequest { get; private set; }
         public InstallmentConfirmPickupRequest? LastPickupRequest { get; private set; }
-        private readonly Dictionary<Guid, InstallmentCancelClaimDto> _cancelClaims = [];
+        private readonly Dictionary<Guid, InstallmentCancelClaimDto> _cancelClaims = cancelClaims ?? [];
 
         public Task<InstallmentCreateResponse> CreateAsync(InstallmentCreateRequest request, CancellationToken cancellationToken = default) => throw new NotSupportedException();
 

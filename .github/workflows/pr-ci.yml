@@ -36,6 +36,7 @@ on:
           - antpos-web
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -48,7 +49,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     outputs:
-      started_at_epoch: ${{ steps.budget.outputs.started_at_epoch }}
       profile: ${{ steps.plan.outputs.profile }}
       budget_seconds: ${{ steps.plan.outputs.budget_seconds }}
       components: ${{ steps.plan.outputs.components }}
@@ -58,10 +58,6 @@ jobs:
       macos_matrix: ${{ steps.plan.outputs.macos_matrix }}
       android_matrix: ${{ steps.plan.outputs.android_matrix }}
     steps:
-      - name: 记录端到端预算起点
-        id: budget
-        shell: bash
-        run: echo "started_at_epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
@@ -100,6 +96,8 @@ jobs:
     timeout-minutes: ${{ matrix.timeout }}
     env:
       HBPOS_RUN_PERF_TESTS: ${{ needs.plan.outputs.profile == 'weekly' && '1' || '0' }}
+      # 现有 Node 测试把“本地日”定义为 Brisbane；限制在 Node lane，避免改变原生/.NET runner。
+      TZ: Australia/Brisbane
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - if: matrix.component != 'noop'
@@ -197,7 +195,24 @@ jobs:
             apps/pos-handheld/package-lock.json
             apps/supplier-order-extension/package-lock.json
       - name: 构建并测试 Apple 原生组件
-        run: ./scripts/ci/run-macos-component.sh '${{ matrix.component }}'
+        shell: bash
+        run: |
+          xcodebuild() {
+            local argument
+            for argument in "$@"; do
+              case "$argument" in
+                -list|-version)
+                  command xcodebuild "$@"
+                  return
+                  ;;
+              esac
+            done
+
+            # ARM hosted runner 只构建原生架构，避免无用的 x86_64 编译与索引开销。
+            command xcodebuild "$@" ARCHS=arm64 ONLY_ACTIVE_ARCH=YES COMPILER_INDEX_STORE_ENABLE=NO
+          }
+          export -f xcodebuild
+          ./scripts/ci/run-macos-component.sh '${{ matrix.component }}'
 
   android:
     name: PR CI / Android / ${{ matrix.component }}
@@ -222,7 +237,18 @@ jobs:
           java-version: 17
           cache: gradle
       - name: 构建并测试 Android 原生模块
-        run: ./scripts/ci/run-android-component.sh '${{ matrix.component }}'
+        shell: bash
+        run: |
+          bash() {
+            if [[ "${1:-}" == 'apps/pos-handheld/android/gradlew' ]]; then
+              # 仅为 CI 的 Gradle 调用分配更高 JVM 上限，并开启可并行的缓存构建。
+              command bash "$@" --parallel --build-cache '-Dorg.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g'
+              return
+            fi
+            command bash "$@"
+          }
+          export -f bash
+          ./scripts/ci/run-android-component.sh '${{ matrix.component }}'
 
   required:
     name: PR CI / required
@@ -243,7 +269,11 @@ jobs:
           node-version: 24
       - name: 汇总必需检查
         env:
-          CI_RUN_STARTED_AT_EPOCH: ${{ needs.plan.outputs.started_at_epoch }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_API_URL: ${{ github.api_url }}
+          CI_REPOSITORY: ${{ github.repository }}
+          CI_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
           CI_RUN_BUDGET_SECONDS: ${{ needs.plan.outputs.budget_seconds }}
           CI_JOB_RESULTS: >-
             {"plan":"${{ needs.plan.result }}","linux_node":"${{ needs.linux_node.result }}","linux_dotnet":"${{ needs.linux_dotnet.result }}","windows":"${{ needs.windows.result }}","macos":"${{ needs.macos.result }}","android":"${{ needs.android.result }}"}
@@ -324,7 +354,11 @@ jobs:
           node-version: 24
       - name: 汇总每周全量检查
         env:
-          CI_RUN_STARTED_AT_EPOCH: ${{ needs.plan.outputs.started_at_epoch }}
+          GITHUB_TOKEN: ${{ github.token }}
+          CI_API_URL: ${{ github.api_url }}
+          CI_REPOSITORY: ${{ github.repository }}
+          CI_RUN_ID: ${{ github.run_id }}
+          CI_RUN_ATTEMPT: ${{ github.run_attempt }}
           CI_RUN_BUDGET_SECONDS: ${{ needs.plan.outputs.budget_seconds }}
           CI_JOB_RESULTS: >-
             {"required":"${{ needs.required.result }}","weekly_sql":"${{ needs.weekly_sql.result }}","weekly_performance":"${{ needs.weekly_performance.result }}"}

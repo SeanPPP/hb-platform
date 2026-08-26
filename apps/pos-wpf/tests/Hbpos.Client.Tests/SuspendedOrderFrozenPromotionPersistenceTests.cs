@@ -74,6 +74,17 @@ public sealed class SuspendedOrderFrozenPromotionPersistenceTests
         {
             var store = new LocalSqliteStore(databasePath);
             await new LocalSchemaService(store).InitializeAsync();
+            await using (var connection = await store.OpenConnectionAsync())
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    ALTER TABLE SuspendedOrders DROP COLUMN FrozenPromotionRulesJson;
+                    ALTER TABLE SuspendedOrderLines DROP COLUMN IsManualPrice;
+                    """;
+                await command.ExecuteNonQueryAsync();
+            }
+
             var repository = new SuspendedOrderRepository(store);
             var order = PromotionOrder();
 

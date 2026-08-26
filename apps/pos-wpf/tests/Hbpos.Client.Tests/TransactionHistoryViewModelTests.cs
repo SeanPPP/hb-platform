@@ -2255,8 +2255,8 @@ public sealed class TransactionHistoryViewModelTests
             },
             sharedHeldOrderRepository: repository);
 
-        viewModel.DateFrom = new DateTime(2026, 7, 1);
-        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.DateFrom = DateTime.Today;
+        viewModel.DateTo = DateTime.Today;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
 
@@ -2298,8 +2298,8 @@ public sealed class TransactionHistoryViewModelTests
                 }
             });
 
-        viewModel.DateFrom = new DateTime(2026, 7, 1);
-        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.DateFrom = DateTime.Today;
+        viewModel.DateTo = DateTime.Today;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
 
@@ -2360,8 +2360,8 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderApiClient: api,
             sharedHeldOrderRepository: repository);
 
-        viewModel.DateFrom = new DateTime(2026, 7, 1);
-        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.DateFrom = DateTime.Today;
+        viewModel.DateTo = DateTime.Today;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
         var row = Assert.Single(viewModel.Orders);
@@ -2450,8 +2450,8 @@ public sealed class TransactionHistoryViewModelTests
             sharedHeldOrderApiClient: api,
             sharedHeldOrderRepository: repository);
 
-        viewModel.DateFrom = new DateTime(2026, 7, 1);
-        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.DateFrom = DateTime.Today;
+        viewModel.DateTo = DateTime.Today;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
         await viewModel.DeleteHeldOrderCommand.ExecuteAsync(Assert.Single(viewModel.Orders));
@@ -2503,8 +2503,8 @@ public sealed class TransactionHistoryViewModelTests
             },
             sharedHeldOrderRepository: repository);
 
-        viewModel.DateFrom = new DateTime(2026, 7, 1);
-        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.DateFrom = DateTime.Today;
+        viewModel.DateTo = DateTime.Today;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
 
@@ -2584,8 +2584,8 @@ public sealed class TransactionHistoryViewModelTests
             },
             sharedHeldOrderRepository: repository);
 
-        viewModel.DateFrom = new DateTime(2026, 7, 1);
-        viewModel.DateTo = new DateTime(2026, 7, 1);
+        viewModel.DateFrom = DateTime.Today;
+        viewModel.DateTo = DateTime.Today;
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
 
@@ -3867,12 +3867,13 @@ public sealed class TransactionHistoryViewModelTests
         decimal actual,
         int lineCount)
     {
+        var fixtureTime = new DateTimeOffset(DateTime.Today.AddHours(9));
         return new SuspendedOrderSummary(
             guid,
             "S001",
             deviceCode,
             "Alice",
-            new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero),
+            fixtureTime,
             total,
             discount,
             actual,
@@ -3887,6 +3888,9 @@ public sealed class TransactionHistoryViewModelTests
         string? errorMessage = null,
         string? shareRequestedAtIso = null)
     {
+        var fixtureTimeIso = new DateTimeOffset(DateTime.Today.AddHours(9))
+            .ToUniversalTime()
+            .ToString("O");
         return new SharedHeldOrderPublication(
             guid,
             "S001",
@@ -3897,9 +3901,9 @@ public sealed class TransactionHistoryViewModelTests
             errorCode,
             errorMessage,
             null,
-            "2026-07-01T09:00:00.000Z",
-            "2026-07-01T09:00:00.000Z",
-            "2026-07-01T09:00:00.000Z",
+            fixtureTimeIso,
+            fixtureTimeIso,
+            fixtureTimeIso,
             ShareRequestedAtIso: shareRequestedAtIso);
     }
 
@@ -3911,14 +3915,15 @@ public sealed class TransactionHistoryViewModelTests
         int lineCount,
         string deviceCode = "POS-01")
     {
+        var heldAt = new DateTimeOffset(DateTime.Today.AddHours(9));
         return new SharedHeldOrderListItemDto(
             guid,
             "S001",
             deviceCode,
             "C001",
             "Alice",
-            new DateTimeOffset(2026, 7, 1, 9, 0, 0, TimeSpan.Zero),
-            new DateTimeOffset(2026, 7, 1, 9, 5, 0, TimeSpan.Zero),
+            heldAt,
+            heldAt.AddMinutes(5),
             lineCount,
             totalCents,
             discountCents,
@@ -3931,6 +3936,9 @@ public sealed class TransactionHistoryViewModelTests
         Guid claimGuid,
         LocalClaimStatus status)
     {
+        var fixtureTimeIso = new DateTimeOffset(DateTime.Today.AddHours(9))
+            .ToUniversalTime()
+            .ToString("O");
         return new SharedHeldOrderClaimRecovery(
             claimGuid,
             holdGuid,
@@ -3946,8 +3954,8 @@ public sealed class TransactionHistoryViewModelTests
             null,
             null,
             null,
-            "2026-07-01T09:00:00.000Z",
-            "2026-07-01T09:00:00.000Z");
+            fixtureTimeIso,
+            fixtureTimeIso);
     }
 
     private sealed class CapturingSharedHeldOrderCoordinator : ISharedHeldOrderCoordinator

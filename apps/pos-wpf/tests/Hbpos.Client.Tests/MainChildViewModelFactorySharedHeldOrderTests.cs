@@ -92,6 +92,8 @@ public sealed class MainChildViewModelFactorySharedHeldOrderTests
             showPos: () => { },
             printSelectedHistoryReceiptAsync: _ => Task.CompletedTask);
 
+        viewModel.DateFrom = new DateTime(2026, 7, 1);
+        viewModel.DateTo = new DateTime(2026, 7, 1);
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
 
@@ -221,6 +223,8 @@ public sealed class MainChildViewModelFactorySharedHeldOrderTests
             showPos: () => { },
             printSelectedHistoryReceiptAsync: _ => Task.CompletedTask);
 
+        viewModel.DateFrom = new DateTime(2026, 7, 1);
+        viewModel.DateTo = new DateTime(2026, 7, 1);
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
         var row = Assert.Single(viewModel.Orders);

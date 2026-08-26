@@ -15,6 +15,7 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
     {
         await using var scope = await CreateRepositoryScopeAsync();
         var holdGuid = Guid.NewGuid();
+        await InsertLegacyOrderAsync(scope, holdGuid);
         Assert.True(await scope.Repository.UpsertPublicationAsync(
             holdGuid,
             "S001",
@@ -61,6 +62,7 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
     {
         await using var scope = await CreateRepositoryScopeAsync();
         var holdGuid = Guid.NewGuid();
+        await InsertLegacyOrderAsync(scope, holdGuid);
         Assert.True(await scope.Repository.UpsertPublicationAsync(
             holdGuid,
             "S001",
@@ -109,6 +111,7 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
     {
         await using var scope = await CreateRepositoryScopeAsync();
         var holdGuid = Guid.NewGuid();
+        await InsertLegacyOrderAsync(scope, holdGuid);
         var payload = SampleCanonical();
         Assert.True(await scope.Repository.UpsertPublicationAsync(
             holdGuid,
@@ -142,5 +145,31 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
 
         var missing = await scope.Repository.GetPublicationPayloadAsync(Guid.NewGuid());
         Assert.Null(missing);
+    }
+
+    private static async Task InsertLegacyOrderAsync(RepositoryScope scope, Guid holdGuid)
+    {
+        // 显式构造没有 publication 行的旧挂单；share 请求必须绑定真实 Pending 挂单。
+        await using var connection = await scope.Store.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO SuspendedOrders (
+                SuspendedOrderGuid, StoreCode, DeviceCode, CashierId, CashierName, SuspendedAt,
+                TotalAmount, DiscountAmount, ActualAmount, Status)
+            VALUES ($HoldGuid, 'S001', 'POS-01', 'cashier-1', 'Cashier One',
+                    '2026-07-28T00:00:00+00:00', '11.00', '0.00', '11.00', 0);
+
+            INSERT INTO SuspendedOrderLines (
+                SuspendedOrderLineGuid, SuspendedOrderGuid, StoreCode, ProductCode, ReferenceCode,
+                DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount,
+                DiscountPercent, IsAutomaticPromotionDiscount, DiscountSource, ActualAmount, PriceSource,
+                PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason)
+            VALUES ($LineGuid, $HoldGuid, 'S001', 'P-1', NULL, 'Product 1', 'CODE-1', NULL, NULL,
+                    '1', '11.00', '0.00', NULL, 0, 0, '11.00', 0, 'ProductBase', 0, '', NULL, NULL, NULL);
+            """;
+        command.Parameters.AddWithValue("$HoldGuid", holdGuid.ToString("D"));
+        command.Parameters.AddWithValue("$LineGuid", Guid.NewGuid().ToString("D"));
+        await command.ExecuteNonQueryAsync();
     }
 }
