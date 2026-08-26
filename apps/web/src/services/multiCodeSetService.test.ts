@@ -81,7 +81,7 @@ try {
   assertDeepEqual(
     result,
     {
-      total: 1,
+      total: 3,
       items: [
         {
           setCodeId: 'set-current-1',
@@ -94,7 +94,7 @@ try {
         },
       ],
     },
-    '多码 grid 响应必须归一化 setCodeId 并过滤其他商品数据',
+    '多码 grid 响应必须归一化 setCodeId、过滤其他商品数据并保留后端权威总数',
   )
 } finally {
   globalThis.fetch = originalFetch
