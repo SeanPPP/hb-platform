@@ -3,11 +3,13 @@ using System.Globalization;
 using System.Net;
 using System.Windows.Markup;
 using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.Security;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.HeldOrders;
 using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
@@ -107,6 +109,11 @@ public sealed record HistoryOrderListItem(
          SyncStatus.Equals("Pending", StringComparison.OrdinalIgnoreCase) ||
          SyncStatus.Equals("Failed", StringComparison.OrdinalIgnoreCase));
 
+    // 历史摘要没有独立的退货类型；本地与在线的已完成退货均以负实收金额持久化。
+    public bool IsReturnOrder => ActualAmount < 0m;
+
+    public bool CanViewOrderDetails => !IsHeldOrder || IsSuspendedOrder;
+
     public string ShortOrderId => OrderGuid.ToString("N")[..8].ToUpperInvariant();
 
     public string DisplayOrderId => InstallmentOrder?.OrderNumber ?? ShortOrderId;
@@ -116,8 +123,30 @@ public sealed record HistoryOrderListItem(
         DisplayCulture ?? CultureInfo.GetCultureInfo(LocalizationService.DefaultCultureName));
 }
 
-public sealed partial class TransactionHistoryViewModel : ObservableObject, IDisposable
+internal sealed record HistoryOrderDetailLine(
+    string DisplayName,
+    string? ProductCode,
+    string? ItemNumber,
+    string LookupCode,
+    string? ProductImage,
+    decimal Quantity,
+    decimal UnitPrice,
+    decimal DiscountAmount,
+    decimal ActualAmount)
 {
+    public string ItemNumberDisplay => string.IsNullOrWhiteSpace(ItemNumber) ? "-" : ItemNumber.Trim();
+
+    public string LookupCodeDisplay => string.IsNullOrWhiteSpace(LookupCode) ? "-" : LookupCode.Trim();
+
+    public string MetadataDisplay => $"{ItemNumberDisplay}  {LookupCodeDisplay}";
+
+    public string QuantityDisplay => Quantity.ToString("0.##");
+}
+
+public sealed partial class TransactionHistoryViewModel : ObservableObject, IScannerInputTarget, IDisposable
+{
+    public const string PageId = "TransactionHistory";
+
     private const int ReuploadBatchSize = 500;
     private static readonly TimeSpan HeldAutoRefreshInterval = TimeSpan.FromSeconds(10);
 
@@ -141,15 +170,23 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private readonly IOrderUploadExecutionService _orderUploadExecutionService;
     private readonly IConfirmationDialogService? _confirmationDialogService;
+    private readonly LocalSellableItemIndex? _localSellableItemIndex;
+    private readonly IRawScannerService? _rawScannerService;
     private readonly TimeProvider _timeProvider;
+    private readonly ObservableCollection<HistoryOrderDetailLine> _orderDetailLines = [];
+    private LocalInstallmentOrder? _selectedInstallmentDetails;
     private bool _suppressSelectedOrderLoad;
     private bool _suppressSourceAutoLoad;
     private bool _disposed;
+    private int _activeQueryCount;
+    private int _activeConfirmationDialogCount;
+    private int _scannerLoadCommandInvocationCount;
     private bool _isScreenVisible;
     private CancellationTokenSource? _heldLoadCancellation;
     private CancellationTokenSource? _heldRemoteLoadCancellation;
     private Task<IReadOnlyList<SharedHeldOrderListItemDto>>? _heldRemoteRequestTask;
     private long _heldLoadGeneration;
+    private long _selectedReceiptLoadGeneration;
     private readonly Dictionary<HeldOrderViewScope, IReadOnlyDictionary<Guid, LocalHeldRow>> _heldLocalRowsCache = [];
     private IReadOnlyList<SharedHeldOrderListItemDto> _heldRemoteRowsCache = [];
     private IReadOnlySet<Guid> _heldSyntheticRemoteClaimGuids = new HashSet<Guid>();
@@ -195,6 +232,18 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private bool _isReceiptPreviewLoading;
 
     [ObservableProperty]
+    private bool _isOrderDetailsOpen;
+
+    [ObservableProperty]
+    private string _orderDetailsErrorMessage = string.Empty;
+
+    [ObservableProperty]
+    private bool _isOrderDetailsEmpty;
+
+    [ObservableProperty]
+    private bool _hasOrderDetailsPayments;
+
+    [ObservableProperty]
     private decimal _previewSubtotal;
 
     [ObservableProperty]
@@ -234,17 +283,17 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     private PosSessionState _session = new("HB POS", "1002", "Main Branch", "Terminal 04", "C001", "Alice", false, 0);
 
     public TransactionHistoryViewModel()
-        : this(null, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, null, null, null, null, null, initialize: true)
+        : this(null, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, null, null, null, null, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(ILocalOrderRepository orderRepository)
-        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, null, null, null, null, null, initialize: true)
+        : this(new ReceiptQueryService(orderRepository), null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, null, null, null, null, null, null, null, initialize: true)
     {
     }
 
     public TransactionHistoryViewModel(IReceiptQueryService receiptQueryService)
-        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, null, null, null, null, null, initialize: true)
+        : this(receiptQueryService, null, null, null, null, null, null, null, null, null, false, null, null, null, null, null, null, null, null, null, null, null, null, null, initialize: true)
     {
     }
 
@@ -270,8 +319,10 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         ISharedHeldOrderApiClient? sharedHeldOrderApiClient = null,
         ISharedHeldOrderRepository? sharedHeldOrderRepository = null,
         TimeProvider? timeProvider = null,
-        ISharedHeldOrderPublicationWorker? sharedHeldOrderPublicationWorker = null)
-        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, installmentOrderService, continueInstallmentPaymentAsync, operationAuditLogger, operationAuthorizationService, orderUploadExecutionService, confirmationDialogService, sharedHeldOrderCoordinator, sharedHeldOrderApiClient, sharedHeldOrderRepository, timeProvider, sharedHeldOrderPublicationWorker, initialize: true)
+        ISharedHeldOrderPublicationWorker? sharedHeldOrderPublicationWorker = null,
+        LocalSellableItemIndex? localSellableItemIndex = null,
+        IRawScannerService? rawScannerService = null)
+        : this(receiptQueryService, suspendedOrderService, remoteOrderHistoryService, session, onSuspendedOrderRecalledAsync, returnToPos, localization, receiptTextFormatter, receiptPrinterSettingsStore, cashierSessionContext, enforcePermissionsWhenNoCashier, installmentOrderService, continueInstallmentPaymentAsync, operationAuditLogger, operationAuthorizationService, orderUploadExecutionService, confirmationDialogService, sharedHeldOrderCoordinator, sharedHeldOrderApiClient, sharedHeldOrderRepository, timeProvider, sharedHeldOrderPublicationWorker, localSellableItemIndex, rawScannerService, initialize: true)
     {
     }
 
@@ -298,6 +349,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         ISharedHeldOrderRepository? sharedHeldOrderRepository,
         TimeProvider? timeProvider,
         ISharedHeldOrderPublicationWorker? sharedHeldOrderPublicationWorker,
+        LocalSellableItemIndex? localSellableItemIndex,
+        IRawScannerService? rawScannerService,
         bool initialize)
     {
         _receiptQueryService = receiptQueryService;
@@ -320,6 +373,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         _operationAuthorizationService = operationAuthorizationService;
         _orderUploadExecutionService = orderUploadExecutionService ?? NoopOrderUploadExecutionService.Instance;
         _confirmationDialogService = confirmationDialogService;
+        _localSellableItemIndex = localSellableItemIndex;
+        _rawScannerService = rawScannerService;
         _timeProvider = timeProvider ?? TimeProvider.System;
         if (_localization is not null)
         {
@@ -342,7 +397,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
         RefreshSourceOptions(TransactionHistorySource.LocalOrders);
 
-        LoadCommand = new AsyncRelayCommand(() => LoadAsync());
+        LoadCommand = new AsyncRelayCommand(ExecuteLoadCommandAsync);
         ReturnToPosCommand = new RelayCommand(ReturnToPos, CanReturnToPos);
         RecallSelectedCommand = new AsyncRelayCommand(RecallSelectedAsync, CanRecallSelected);
         RecallOrderCommand = new AsyncRelayCommand<HistoryOrderListItem>(RecallOrderAsync, CanRecallOrder);
@@ -358,9 +413,122 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         ForceReleaseHeldOrderCommand = new RelayCommand<HistoryOrderListItem>(RequestForceRelease, CanForceReleaseOrder);
         ConfirmForceReleaseCommand = new AsyncRelayCommand(ConfirmForceReleaseAsync, CanConfirmForceRelease);
         CancelForceReleaseCommand = new RelayCommand(CancelForceRelease, CanCancelForceRelease);
+
+        _rawScannerService?.Subscribe(PageId, OnRawBarcodeScanned);
     }
 
     public event EventHandler? ReprintRequested;
+
+    public string ScannerPageId => PageId;
+
+    public bool ProcessScannerBarcode(string barcode, string devicePath, string source)
+    {
+        var normalizedBarcode = barcode?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalizedBarcode))
+        {
+            ConsoleLog.Write(
+                "TransactionHistory",
+                $"scanner consumed source={source} device={devicePath} searched=false reason=empty-barcode");
+            return true;
+        }
+
+        if (EmergencyLoginTokenCodec.HasSupportedPrefix(normalizedBarcode))
+        {
+            // 关键逻辑：历史页只消费紧急登录令牌，禁止写入查询条件或触发订单查询。
+            ConsoleLog.Write(
+                "TransactionHistory",
+                $"scanner consumed source={source} device={devicePath} barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(normalizedBarcode)} searched=false reason=emergency-token");
+            return true;
+        }
+
+        if (_disposed)
+        {
+            ConsoleLog.Write(
+                "TransactionHistory",
+                $"scanner consumed source={source} device={devicePath} barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(normalizedBarcode)} searched=false reason=disposed");
+            return true;
+        }
+
+        if (IsReceiptPreviewOpen || IsOrderDetailsOpen || IsForceReleaseReasonPromptOpen)
+        {
+            // 关键逻辑：模态内容打开时吞掉扫码，避免在后台替换当前结果和选择状态。
+            ConsoleLog.Write(
+                "TransactionHistory",
+                $"scanner consumed source={source} device={devicePath} barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(normalizedBarcode)} searched=false reason=modal-open");
+            return true;
+        }
+
+        if (Volatile.Read(ref _activeConfirmationDialogCount) > 0)
+        {
+            ConsoleLog.Write(
+                "TransactionHistory",
+                $"scanner consumed source={source} device={devicePath} barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(normalizedBarcode)} searched=false reason=confirmation-dialog-open");
+            return true;
+        }
+
+        if (Volatile.Read(ref _activeQueryCount) > 0)
+        {
+            ConsoleLog.Write(
+                "TransactionHistory",
+                $"scanner consumed source={source} device={devicePath} barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(normalizedBarcode)} searched=false reason=query-busy");
+            return true;
+        }
+
+        SearchText = normalizedBarcode;
+        Interlocked.Increment(ref _scannerLoadCommandInvocationCount);
+        try
+        {
+            LoadCommand.Execute(null);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _scannerLoadCommandInvocationCount);
+        }
+
+        ConsoleLog.Write(
+            "TransactionHistory",
+            $"scanner consumed source={source} device={devicePath} barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(normalizedBarcode)} searched=true");
+        return true;
+    }
+
+    private void OnRawBarcodeScanned(RawBarcodeScannedEventArgs args)
+    {
+        ProcessScannerBarcode(args.Barcode, args.DevicePath, "raw");
+    }
+
+    private async Task<bool> ShowConfirmationDialogAsync(Func<Task<bool>> showDialogAsync)
+    {
+        Interlocked.Increment(ref _activeConfirmationDialogCount);
+        try
+        {
+            // 关键逻辑：确认框等待期间 Raw Input 仍可能到达，必须与键盘扫码使用相同的后台查询门禁。
+            return await showDialogAsync();
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _activeConfirmationDialogCount);
+        }
+    }
+
+    private Task ExecuteLoadCommandAsync()
+    {
+        var searchText = SearchText ?? string.Empty;
+        if (Volatile.Read(ref _scannerLoadCommandInvocationCount) == 0 &&
+            _rawScannerService is IScannerInputDeduplicator deduplicator &&
+            !deduplicator.TryAcceptScanDelivery(
+                searchText,
+                "history-load-command",
+                _timeProvider.GetUtcNow()))
+        {
+            // 关键逻辑：查询框有焦点时键盘缓冲会让位给文本输入，Enter 绑定仍要消除同一次 Raw 扫码的重复提交。
+            ConsoleLog.Write(
+                "TransactionHistory",
+                $"load command duplicate suppressed barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(searchText)}");
+            return Task.CompletedTask;
+        }
+
+        return LoadAsync();
+    }
 
     public ObservableCollection<HistorySourceOption> SourceOptions { get; } = [];
 
@@ -373,6 +541,10 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     public ObservableCollection<ReceiptPaymentLine> Payments { get; } = [];
 
     public ObservableCollection<ReceiptPreviewRow> ReceiptPreviewRows { get; } = [];
+
+    public System.Collections.IEnumerable OrderDetailLines => _orderDetailLines;
+
+    internal IReadOnlyList<HistoryOrderDetailLine> OrderDetailLinesForTests => _orderDetailLines;
 
     public IAsyncRelayCommand LoadCommand { get; }
 
@@ -415,6 +587,81 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     public bool IsContinueInstallmentPaymentVisible => CanContinueInstallmentPayment(SelectedOrder);
 
     public bool IsConfirmInstallmentPickupVisible => CanConfirmInstallmentPickup(SelectedOrder);
+
+    public string OrderDetailsOrderId => ValueOrDash(
+        SelectedReceipt?.OrderDisplay,
+        SelectedOrder?.DisplayOrderId);
+
+    public string OrderDetailsSourceLabel => SelectedOrder is { } order
+        ? SourceOptions.FirstOrDefault(option => option.Source == order.Source)?.Label ?? order.Source.ToString()
+        : "-";
+
+    public string OrderDetailsStatusLabel => CurrentOrderInstallmentDetails is { } details
+        ? LocalizeInstallmentStatus(details.Status.ToString())
+        : ValueOrDash(SelectedOrder?.StatusLabel);
+
+    public string OrderDetailsSoldAt => SelectedReceipt is { } receipt
+        ? receipt.SoldAt.ToLocalTime().ToString("MMM dd, yyyy HH:mm", CurrentDisplayCulture)
+        : SelectedOrder?.SoldAtDisplay ?? "-";
+
+    public string OrderDetailsStoreCode => ValueOrDash(SelectedReceipt?.StoreCode, SelectedOrder?.StoreCode);
+
+    public string OrderDetailsDeviceCode => ValueOrDash(SelectedReceipt?.DeviceCode, SelectedOrder?.DeviceCode);
+
+    public string OrderDetailsCashierName => ValueOrDash(
+        SelectedReceipt?.CashierName,
+        SelectedOrder?.IsInstallmentOrder == true ? null : SelectedOrder?.CashierName);
+
+    public bool HasOrderDetailsCustomer => CurrentOrderInstallmentDetails is { } details
+        ? !string.IsNullOrWhiteSpace(details.CustomerName) || !string.IsNullOrWhiteSpace(details.CustomerPhone)
+        : SelectedOrder?.InstallmentOrder is { } summary &&
+            (!string.IsNullOrWhiteSpace(summary.CustomerName) || !string.IsNullOrWhiteSpace(summary.CustomerPhone));
+
+    public string OrderDetailsCustomerName => CurrentOrderInstallmentDetails is { } details
+        ? ValueOrDash(details.CustomerName)
+        : ValueOrDash(SelectedOrder?.InstallmentOrder?.CustomerName);
+
+    public string OrderDetailsCustomerPhone => CurrentOrderInstallmentDetails is { } details
+        ? ValueOrDash(details.CustomerPhone)
+        : ValueOrDash(SelectedOrder?.InstallmentOrder?.CustomerPhone);
+
+    public bool HasOrderDetailsTenderedAmount => SelectedReceipt?.TenderedAmount is not null;
+
+    public decimal OrderDetailsTenderedAmount => SelectedReceipt?.TenderedAmount ?? 0m;
+
+    public bool HasOrderDetailsChangeAmount => SelectedReceipt?.ChangeAmount is not null;
+
+    public decimal OrderDetailsChangeAmount => SelectedReceipt?.ChangeAmount ?? 0m;
+
+    public bool HasOrderDetailsInstallmentAmounts =>
+        CurrentOrderInstallmentDetails is not null || SelectedOrder?.InstallmentOrder is not null;
+
+    public decimal OrderDetailsPaidAmount =>
+        CurrentOrderInstallmentDetails?.PaidAmount ?? SelectedOrder?.InstallmentOrder?.PaidAmount ?? 0m;
+
+    public decimal OrderDetailsOutstandingAmount =>
+        CurrentOrderInstallmentDetails?.BalanceAmount ?? SelectedOrder?.InstallmentOrder?.OutstandingAmount ?? 0m;
+
+    public bool IsOrderDetailsFinancialContentVisible =>
+        SelectedReceipt is not null &&
+        !IsReceiptPreviewLoading &&
+        string.IsNullOrWhiteSpace(OrderDetailsErrorMessage);
+
+    private LocalInstallmentOrder? CurrentOrderInstallmentDetails
+    {
+        get
+        {
+            if (SelectedOrder is not { IsInstallmentOrder: true } order ||
+                _selectedInstallmentDetails is not { } details)
+            {
+                return null;
+            }
+
+            return details.InstallmentGuid == order.OrderGuid || details.OrderGuid == order.OrderGuid
+                ? details
+                : null;
+        }
+    }
 
     public bool IsLocalSourceSelected
     {
@@ -583,9 +830,10 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     public async Task LoadAsync(CancellationToken cancellationToken = default)
     {
-        StatusMessage = string.Empty;
+        Interlocked.Increment(ref _activeQueryCount);
         try
         {
+            StatusMessage = string.Empty;
             if (SelectedSource == TransactionHistorySource.HeldOrders)
             {
                 // 挂单列表由本地/远端分阶段更新，不能在远端完成后再用旧返回值整表覆盖。
@@ -597,11 +845,13 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
                 if (SelectedOrder is null)
                 {
+                    InvalidateSelectedReceiptLoad();
                     ClearReceiptPreview();
+                    IsReceiptPreviewLoading = false;
                     return;
                 }
 
-                await LoadSelectedReceiptAsync(cancellationToken);
+                await LoadSelectedReceiptSafelyAsync(SelectedOrder, cancellationToken);
                 return;
             }
 
@@ -619,7 +869,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
             if (SelectedOrder is null)
             {
+                InvalidateSelectedReceiptLoad();
                 ClearReceiptPreview();
+                IsReceiptPreviewLoading = false;
                 return;
             }
 
@@ -632,8 +884,14 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         {
             // HttpClient 超时也会表现为取消异常；仅让调用方主动取消继续向上传播。
             Orders.Clear();
+            InvalidateSelectedReceiptLoad();
             ClearReceiptPreview();
+            IsReceiptPreviewLoading = false;
             StatusMessage = ex.Message;
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _activeQueryCount);
         }
     }
 
@@ -693,6 +951,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
     partial void OnSelectedOrderChanged(HistoryOrderListItem? value)
     {
         ReprintCommand?.NotifyCanExecuteChanged();
+        OpenOrderDetailsCommand.NotifyCanExecuteChanged();
+        RetryOrderDetailsCommand.NotifyCanExecuteChanged();
         RecallSelectedCommand?.NotifyCanExecuteChanged();
         RecallOrderCommand?.NotifyCanExecuteChanged();
         ContinueInstallmentPaymentCommand?.NotifyCanExecuteChanged();
@@ -705,6 +965,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         OnPropertyChanged(nameof(IsForceReleaseVisible));
         OnPropertyChanged(nameof(IsContinueInstallmentPaymentVisible));
         OnPropertyChanged(nameof(IsConfirmInstallmentPickupVisible));
+        NotifyOrderDetailsProperties();
 
         if (_suppressSelectedOrderLoad)
         {
@@ -714,39 +975,99 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         _ = LoadSelectedReceiptSafelyAsync(value);
     }
 
-    private async Task LoadSelectedReceiptSafelyAsync(HistoryOrderListItem? expectedOrder)
+    private async Task LoadSelectedReceiptSafelyAsync(
+        HistoryOrderListItem? expectedOrder,
+        CancellationToken cancellationToken = default)
     {
+        var generation = BeginSelectedReceiptLoad();
+        if (!string.IsNullOrWhiteSpace(OrderDetailsErrorMessage) &&
+            string.Equals(StatusMessage, OrderDetailsErrorMessage, StringComparison.Ordinal))
+        {
+            StatusMessage = string.Empty;
+        }
+
+        OrderDetailsErrorMessage = string.Empty;
+        IsOrderDetailsEmpty = false;
         IsReceiptPreviewLoading = true;
         try
         {
-            await LoadSelectedReceiptAsync(CancellationToken.None);
+            await LoadSelectedReceiptAsync(expectedOrder, generation, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            if (!ReferenceEquals(SelectedOrder, expectedOrder))
+            if (!IsCurrentSelectedReceiptLoad(expectedOrder, generation))
             {
                 return;
             }
 
             // 属性变更回调不能把故障 Task 留在后台；HttpClient 超时在这里统一转为可见状态。
             ClearReceiptPreview();
-            StatusMessage = ex is OperationCanceledException
+            OrderDetailsErrorMessage = ex is OperationCanceledException
                 ? T("history.detailsLoadTimeout")
                 : ex.Message;
+            StatusMessage = OrderDetailsErrorMessage;
         }
         finally
         {
-            if (ReferenceEquals(SelectedOrder, expectedOrder))
+            if (IsCurrentSelectedReceiptLoad(expectedOrder, generation))
             {
                 IsReceiptPreviewLoading = false;
             }
         }
     }
 
+    private long BeginSelectedReceiptLoad() =>
+        Interlocked.Increment(ref _selectedReceiptLoadGeneration);
+
+    private void InvalidateSelectedReceiptLoad() =>
+        Interlocked.Increment(ref _selectedReceiptLoadGeneration);
+
+    private bool IsCurrentSelectedReceiptLoad(HistoryOrderListItem? expectedOrder, long generation)
+    {
+        if (generation != Volatile.Read(ref _selectedReceiptLoadGeneration))
+        {
+            return false;
+        }
+
+        var selectedOrder = SelectedOrder;
+        if (selectedOrder is null || expectedOrder is null)
+        {
+            return selectedOrder is null && expectedOrder is null;
+        }
+
+        // 挂单后台刷新会替换同一订单的行对象；代次负责阻止 A→B→A 的旧请求，
+        // 逻辑身份校验则允许同一订单刷新后的新行继续接收当前请求结果。
+        return selectedOrder.OrderGuid == expectedOrder.OrderGuid &&
+            selectedOrder.Source == expectedOrder.Source &&
+            selectedOrder.IsSuspendedOrder == expectedOrder.IsSuspendedOrder &&
+            selectedOrder.IsInstallmentOrder == expectedOrder.IsInstallmentOrder &&
+            selectedOrder.IsHeldOrder == expectedOrder.IsHeldOrder;
+    }
+
     partial void OnSelectedReceiptChanged(ReceiptDetails? value)
     {
+        RefreshOrderDetailLines(value);
         ReprintCommand?.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(IsReprintVisible));
+        NotifyOrderDetailsProperties();
+    }
+
+    partial void OnIsReceiptPreviewLoadingChanged(bool value)
+    {
+        RetryOrderDetailsCommand.NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(IsOrderDetailsFinancialContentVisible));
+    }
+
+    partial void OnOrderDetailsErrorMessageChanged(string value) =>
+        OnPropertyChanged(nameof(IsOrderDetailsFinancialContentVisible));
+
+    partial void OnIsOrderDetailsOpenChanged(bool value)
+    {
+        RetryOrderDetailsCommand.NotifyCanExecuteChanged();
     }
 
     partial void OnSessionChanged(PosSessionState value)
@@ -902,12 +1223,13 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             }
 
             var batchCount = (orderGuids.Count + ReuploadBatchSize - 1) / ReuploadBatchSize;
-            if (_confirmationDialogService is null ||
-                !await _confirmationDialogService.ConfirmOrderDateRangeReuploadAsync(
+            var confirmationDialogService = _confirmationDialogService;
+            if (confirmationDialogService is null ||
+                !await ShowConfirmationDialogAsync(() => confirmationDialogService.ConfirmOrderDateRangeReuploadAsync(
                     orderGuids.Count,
                     batchCount,
                     dateFrom.Value,
-                    dateTo.Value))
+                    dateTo.Value)))
             {
                 StatusMessage = T("history.reuploadRangeCancelled");
                 return;
@@ -1638,12 +1960,8 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 0m,
                 order.OutstandingAmount,
                 0,
-                string.Format(
-                    CurrentDisplayCulture,
-                    "{0}: {1:C2}",
-                    T("history.installment.paid"),
-                    order.PaidAmount),
-                order.Status,
+                FormatMoney(order.PaidAmount),
+                LocalizeInstallmentStatus(order.Status),
                 InstallmentOrder: order,
                 IsInstallmentOrder: true,
                 CanContinueInstallmentPayment: order.CanAddRepayment,
@@ -1672,10 +1990,24 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
     }
 
-    private async Task LoadSelectedReceiptAsync(CancellationToken cancellationToken)
+    private async Task LoadSelectedReceiptAsync(
+        HistoryOrderListItem? selectedOrder,
+        long generation,
+        CancellationToken cancellationToken)
     {
-        var selectedOrder = SelectedOrder;
+        if (!IsCurrentSelectedReceiptLoad(selectedOrder, generation))
+        {
+            return;
+        }
+
         if (selectedOrder is null)
+        {
+            ClearReceiptPreview();
+            return;
+        }
+
+        // 远程独有挂单没有本地明细快照；仅选中行也不得触发本地小票读取或远程 Claim。
+        if (selectedOrder.IsHeldOrder && !selectedOrder.IsSuspendedOrder)
         {
             ClearReceiptPreview();
             return;
@@ -1689,7 +2021,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         {
             // 分期历史使用本地快照映射正式小票；详情完整时同一对象同时供预览和补打使用。
             var installmentDetails = await LoadInstallmentPreviewDetailsAsync(selectedOrder.OrderGuid, cancellationToken);
-            if (!ReferenceEquals(SelectedOrder, selectedOrder))
+            if (!IsCurrentSelectedReceiptLoad(selectedOrder, generation))
             {
                 return;
             }
@@ -1699,11 +2031,13 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 // 中文注释：有本地分期快照时复用正式小票映射，小票弹窗才能显示正常抬头和提货信息。
                 var installmentReceipt = InstallmentReceiptMapper.CreateReceipt(installmentDetails);
                 var previewSettings = await LoadPreviewSettingsAsync(cancellationToken);
-                if (!ReferenceEquals(SelectedOrder, selectedOrder))
+                if (!IsCurrentSelectedReceiptLoad(selectedOrder, generation))
                 {
                     return;
                 }
 
+                // 权威分期详情的商品、付款、状态和金额必须作为同一快照发布，不能混用列表摘要。
+                _selectedInstallmentDetails = installmentDetails;
                 SelectedReceipt = installmentReceipt;
                 ReceiptLines.ReplaceWith(installmentReceipt.Lines);
                 Payments.ReplaceWith(installmentReceipt.Payments);
@@ -1724,6 +2058,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             {
                 // 在线详情失败或不存在时必须 fail closed，禁止用本地旧快照或 summary 金融字段补打。
                 ClearReceiptPreview();
+                SetOrderDetailsUnavailable();
                 return;
             }
 
@@ -1735,6 +2070,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             PreviewTotal = selectedOrder.ActualAmount;
             PreviewOrderId = selectedOrder.DisplayOrderId;
             PreviewSoldAt = selectedOrder.SoldAtDisplay;
+            SetOrderDetailsUnavailable();
             return;
         }
 
@@ -1748,7 +2084,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 _ => _receiptQueryService is null ? null : await _receiptQueryService.GetReceiptAsync(selectedOrder.OrderGuid, cancellationToken)
             };
 
-        if (!ReferenceEquals(SelectedOrder, selectedOrder))
+        if (!IsCurrentSelectedReceiptLoad(selectedOrder, generation))
         {
             return;
         }
@@ -1756,11 +2092,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         if (receipt is null)
         {
             ClearReceiptPreview();
+            SetOrderDetailsUnavailable();
             return;
         }
 
         var receiptPreviewSettings = await LoadPreviewSettingsAsync(cancellationToken);
-        if (!ReferenceEquals(SelectedOrder, selectedOrder))
+        if (!IsCurrentSelectedReceiptLoad(selectedOrder, generation))
         {
             return;
         }
@@ -2019,8 +2356,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         }
         using var authorizationActivation = authorization.Activate();
 
-        if (_confirmationDialogService is null ||
-            !await _confirmationDialogService.ConfirmHeldOrderCancellationAsync())
+        var confirmationDialogService = _confirmationDialogService;
+        if (confirmationDialogService is null ||
+            !await ShowConfirmationDialogAsync(confirmationDialogService.ConfirmHeldOrderCancellationAsync))
         {
             return;
         }
@@ -2634,7 +2972,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
                 line.Quantity,
                 line.UnitPrice,
                 line.DiscountAmount,
-                line.ActualAmount)).ToList(),
+                line.ActualAmount)
+            {
+                ProductCode = line.ProductCode,
+                ItemNumber = line.ItemNumber,
+                ProductImage = line.ProductImage
+            }).ToList(),
             [],
             // 挂单尚未完成付款，必须显式覆盖通用收据默认的 Paid 状态。
             StatusText: $"*** {T("history.payment.suspended")} ***");
@@ -2663,7 +3006,59 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             _ = LoadSelectedReceiptSafelyAsync(order);
         }
 
+        IsOrderDetailsOpen = false;
         IsReceiptPreviewOpen = true;
+    }
+
+    [RelayCommand(CanExecute = nameof(CanOpenOrderDetails))]
+    private void OpenOrderDetails(HistoryOrderListItem? order)
+    {
+        if (!CanOpenOrderDetails(order))
+        {
+            return;
+        }
+
+        IsReceiptPreviewOpen = false;
+        if (!ReferenceEquals(SelectedOrder, order))
+        {
+            IsReceiptPreviewLoading = true;
+            SelectedOrder = order;
+        }
+        else if (SelectedReceipt is null && !IsReceiptPreviewLoading)
+        {
+            _ = LoadSelectedReceiptSafelyAsync(order);
+        }
+
+        IsOrderDetailsOpen = true;
+    }
+
+    private static bool CanOpenOrderDetails(HistoryOrderListItem? order)
+    {
+        return order?.CanViewOrderDetails == true;
+    }
+
+    [RelayCommand]
+    private void CloseOrderDetails()
+    {
+        IsOrderDetailsOpen = false;
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRetryOrderDetails))]
+    private void RetryOrderDetails()
+    {
+        if (SelectedOrder is not { CanViewOrderDetails: true } order || IsReceiptPreviewLoading)
+        {
+            return;
+        }
+
+        _ = LoadSelectedReceiptSafelyAsync(order);
+    }
+
+    private bool CanRetryOrderDetails()
+    {
+        return IsOrderDetailsOpen &&
+            SelectedOrder?.CanViewOrderDetails == true &&
+            !IsReceiptPreviewLoading;
     }
 
     [RelayCommand]
@@ -2679,15 +3074,155 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
 
     private void ClearReceiptPreview()
     {
+        _selectedInstallmentDetails = null;
         SelectedReceipt = null;
         ReceiptLines.Clear();
         Payments.Clear();
         ReceiptPreviewRows.Clear();
+        _orderDetailLines.Clear();
+        HasOrderDetailsPayments = false;
+        IsOrderDetailsEmpty = false;
+        OrderDetailsErrorMessage = string.Empty;
         PreviewSubtotal = 0m;
         PreviewDiscount = 0m;
         PreviewTotal = 0m;
         PreviewOrderId = "-";
         PreviewSoldAt = "-";
+    }
+
+    private void SetOrderDetailsUnavailable()
+    {
+        IsOrderDetailsEmpty = false;
+        OrderDetailsErrorMessage = TOrFallback(
+            "history.orderDetailsUnavailable",
+            "Order details are unavailable. Please try again.");
+    }
+
+    private void RefreshOrderDetailLines(ReceiptDetails? receipt)
+    {
+        _orderDetailLines.Clear();
+        HasOrderDetailsPayments = receipt?.Payments.Count > 0;
+        IsOrderDetailsEmpty = receipt is not null && receipt.Lines.Count == 0;
+        if (receipt is null)
+        {
+            return;
+        }
+
+        OrderDetailsErrorMessage = string.Empty;
+        foreach (var line in receipt.Lines)
+        {
+            _orderDetailLines.Add(new HistoryOrderDetailLine(
+                line.DisplayName,
+                line.ProductCode,
+                line.ItemNumber,
+                line.LookupCode,
+                ResolveProductImage(receipt.StoreCode, line),
+                line.Quantity,
+                line.UnitPrice,
+                line.DiscountAmount,
+                line.ActualAmount));
+        }
+    }
+
+    private string? ResolveProductImage(string storeCode, ReceiptPreviewLine line)
+    {
+        if (!string.IsNullOrWhiteSpace(line.ProductImage))
+        {
+            return line.ProductImage.Trim();
+        }
+
+        if (_localSellableItemIndex is null || string.IsNullOrWhiteSpace(storeCode))
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrWhiteSpace(line.LookupCode))
+        {
+            var exactImage = SelectCatalogImage(
+                _localSellableItemIndex.FindExactMatches(storeCode, line.LookupCode)
+                    .Concat(_localSellableItemIndex.FindMetadataExactMatches(storeCode, line.LookupCode))
+                    .Distinct(),
+                line);
+            if (exactImage is not null)
+            {
+                return exactImage;
+            }
+        }
+
+        foreach (var metadata in new[] { line.ProductCode, line.ItemNumber }
+                     .Where(value => !string.IsNullOrWhiteSpace(value))
+                     .Select(value => value!.Trim())
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var metadataImage = SelectCatalogImage(
+                _localSellableItemIndex.FindMetadataExactMatches(storeCode, metadata),
+                line);
+            if (metadataImage is not null)
+            {
+                return metadataImage;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? SelectCatalogImage(
+        IEnumerable<SellableItemDto> candidates,
+        ReceiptPreviewLine line)
+    {
+        return candidates
+            .Where(candidate => !string.IsNullOrWhiteSpace(candidate.ProductImage))
+            .FirstOrDefault(candidate => CatalogIdentityMatches(candidate, line))
+            ?.ProductImage
+            ?.Trim();
+    }
+
+    private static bool CatalogIdentityMatches(SellableItemDto candidate, ReceiptPreviewLine line)
+    {
+        var hasProductCode = !string.IsNullOrWhiteSpace(line.ProductCode);
+        var hasItemNumber = !string.IsNullOrWhiteSpace(line.ItemNumber);
+        if (hasProductCode || hasItemNumber)
+        {
+            return (hasProductCode && CodesEqual(candidate.ProductCode, line.ProductCode)) ||
+                (hasItemNumber && CodesEqual(candidate.ItemNumber, line.ItemNumber));
+        }
+
+        return CodesEqual(candidate.LookupCode, line.LookupCode) ||
+            CodesEqual(candidate.Barcode, line.LookupCode);
+    }
+
+    private static bool CodesEqual(string? left, string? right)
+    {
+        return !string.IsNullOrWhiteSpace(left) &&
+            !string.IsNullOrWhiteSpace(right) &&
+            string.Equals(left.Trim(), right.Trim(), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void NotifyOrderDetailsProperties()
+    {
+        OnPropertyChanged(nameof(OrderDetailsOrderId));
+        OnPropertyChanged(nameof(OrderDetailsSourceLabel));
+        OnPropertyChanged(nameof(OrderDetailsStatusLabel));
+        OnPropertyChanged(nameof(OrderDetailsSoldAt));
+        OnPropertyChanged(nameof(OrderDetailsStoreCode));
+        OnPropertyChanged(nameof(OrderDetailsDeviceCode));
+        OnPropertyChanged(nameof(OrderDetailsCashierName));
+        OnPropertyChanged(nameof(HasOrderDetailsCustomer));
+        OnPropertyChanged(nameof(OrderDetailsCustomerName));
+        OnPropertyChanged(nameof(OrderDetailsCustomerPhone));
+        OnPropertyChanged(nameof(HasOrderDetailsTenderedAmount));
+        OnPropertyChanged(nameof(OrderDetailsTenderedAmount));
+        OnPropertyChanged(nameof(HasOrderDetailsChangeAmount));
+        OnPropertyChanged(nameof(OrderDetailsChangeAmount));
+        OnPropertyChanged(nameof(HasOrderDetailsInstallmentAmounts));
+        OnPropertyChanged(nameof(OrderDetailsPaidAmount));
+        OnPropertyChanged(nameof(OrderDetailsOutstandingAmount));
+        OnPropertyChanged(nameof(IsOrderDetailsFinancialContentVisible));
+    }
+
+    private static string ValueOrDash(params string?[] values)
+    {
+        return values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim() ?? "-";
     }
 
     private static string? NormalizeKeyword(string? value)
@@ -2765,6 +3300,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         OnPropertyChanged(nameof(ForceReleaseReasonLabel));
         OnPropertyChanged(nameof(ForceReleaseConfirmLabel));
         OnPropertyChanged(nameof(ForceReleaseCancelLabel));
+        NotifyOrderDetailsProperties();
     }
 
     private void LocalizeSuspendedRows()
@@ -2779,16 +3315,49 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
         Orders.ReplaceWith(Orders.Select(order => order with
         {
             DisplayCulture = displayCulture,
-            PaymentSummary = order.IsSuspendedOrder || order.IsHeldOrder
-                ? T("history.payment.suspended")
-                : order.PaymentSummary,
-            StatusLabel = order.IsHeldOrder
-                ? BuildHeldStatusLabel(order.HeldBadgeKind, order.HeldStatusDetail)
-                : order.IsSuspendedOrder ? T("history.status.pendingRecall") : order.StatusLabel
+            PaymentSummary = order.InstallmentOrder is { } installmentOrder
+                ? FormatMoney(installmentOrder.PaidAmount)
+                : order.IsSuspendedOrder || order.IsHeldOrder
+                    ? T("history.payment.suspended")
+                    : order.PaymentSummary,
+            StatusLabel = order.InstallmentOrder is { } installmentStatus
+                ? LocalizeInstallmentStatus(installmentStatus.Status)
+                : order.IsHeldOrder
+                    ? BuildHeldStatusLabel(order.HeldBadgeKind, order.HeldStatusDetail)
+                    : order.IsSuspendedOrder ? T("history.status.pendingRecall") : order.StatusLabel
         }).ToList());
         SelectedOrder = selectedOrderGuid is null
             ? Orders.FirstOrDefault()
             : Orders.FirstOrDefault(order => order.OrderGuid == selectedOrderGuid.Value);
+    }
+
+    private string LocalizeInstallmentStatus(string status)
+    {
+        if (string.IsNullOrWhiteSpace(status))
+        {
+            return string.Empty;
+        }
+
+        var normalized = status.Trim();
+        return normalized switch
+        {
+            "待补款" or nameof(InstallmentStatus.Active) =>
+                TOrFallback("history.installment.status.paymentDue", "Payment due"),
+            "待提货" or nameof(InstallmentStatus.PaidOff) =>
+                TOrFallback("history.installment.status.readyForPickup", "Ready for pickup"),
+            "已提货" or nameof(InstallmentStatus.PickedUp) =>
+                TOrFallback("history.installment.status.pickedUp", "Picked up"),
+            "已作废" => TOrFallback("history.installment.status.voided", "Voided"),
+            "已取消" or nameof(InstallmentStatus.Cancelled) =>
+                TOrFallback("history.installment.status.cancelled", "Cancelled"),
+            _ => normalized
+        };
+    }
+
+    private string TOrFallback(string key, string fallback)
+    {
+        var localized = T(key);
+        return string.Equals(localized, key, StringComparison.Ordinal) ? fallback : localized;
     }
 
     private string T(string key)
@@ -3049,6 +3618,7 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, IDis
             _localization.CultureChanged -= OnCultureChanged;
         }
 
+        _rawScannerService?.Unsubscribe(PageId);
         ReprintRequested = null;
     }
 }

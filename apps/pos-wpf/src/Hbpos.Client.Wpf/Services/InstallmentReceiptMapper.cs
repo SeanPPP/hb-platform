@@ -53,7 +53,11 @@ internal static class InstallmentReceiptMapper
                 line.Quantity,
                 line.UnitPrice,
                 line.DiscountAmount,
-                line.ActualAmount)).ToList(),
+                line.ActualAmount)
+            {
+                ProductCode = line.ProductCode,
+                ItemNumber = line.ItemNumber
+            }).ToList(),
             payments,
             StatusText: GetStatusText(order),
             OrderDisplay: order.InstallmentNumber,

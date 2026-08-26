@@ -2,6 +2,7 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:converters="clr-namespace:Hbpos.Client.Wpf.Converters"
              xmlns:loc="clr-namespace:Hbpos.Client.Wpf.Localization"
              xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -13,6 +14,7 @@
              Background="#FFF5F7FA">
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <converters:StringNullOrWhiteSpaceToVisibilityConverter x:Key="StringHasValueToVis" />
 
         <Style x:Key="HistoryPanelStyle" TargetType="Border">
             <Setter Property="Background" Value="White" />
@@ -76,6 +78,11 @@
             <Setter Property="TextWrapping" Value="NoWrap" />
             <Setter Property="TextTrimming" Value="CharacterEllipsis" />
             <Setter Property="VerticalAlignment" Value="Center" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsReturnOrder}" Value="True">
+                    <Setter Property="Foreground" Value="{StaticResource PosDangerBrush}" />
+                </DataTrigger>
+            </Style.Triggers>
         </Style>
 
         <Style x:Key="HistorySecondaryTextStyle" TargetType="TextBlock">
@@ -98,6 +105,10 @@
                 <Trigger Property="IsMouseOver" Value="True">
                     <Setter Property="Background" Value="#FFF8FBFF" />
                 </Trigger>
+                <DataTrigger Binding="{Binding IsReturnOrder}" Value="True">
+                    <Setter Property="Background" Value="#FFFEF2F2" />
+                    <Setter Property="BorderBrush" Value="{StaticResource PosDangerBrush}" />
+                </DataTrigger>
             </Style.Triggers>
         </Style>
 
@@ -502,10 +513,18 @@
                                 <TextBox x:Name="HistorySearchTextBox"
                                          Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
                                          materialDesign:HintAssist.Hint="{Binding SearchHintText}"
+                                         InputMethod.IsInputMethodEnabled="False"
+                                         InputMethod.PreferredImeState="Off"
                                          Height="44"
                                          FontSize="13"
                                          Padding="38,0,48,0"
-                                         Style="{StaticResource PosSearchTextBoxStyle}" />
+                                         Style="{StaticResource PosSearchTextBoxStyle}">
+                                    <!-- 查询框获得焦点后仍隔离中文输入法，Enter 与扫码统一走当前筛选的 LoadCommand。 -->
+                                    <TextBox.InputBindings>
+                                        <KeyBinding Key="Enter"
+                                                    Command="{Binding LoadCommand}" />
+                                    </TextBox.InputBindings>
+                                </TextBox>
                                 <materialDesign:PackIcon Kind="Magnify"
                                                          Width="18"
                                                          Height="18"
@@ -784,7 +803,7 @@
 
                         <DataGridTemplateColumn x:Name="HistoryActionsColumn"
                                                 Header=""
-                                                Width="216"
+                                                Width="268"
                                                 CellStyle="{StaticResource HistoryActionCellStyle}">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
@@ -801,6 +820,45 @@
                                                 <materialDesign:PackIcon Kind="Receipt" Width="16" Height="16" Margin="0,0,6,0" />
                                                 <TextBlock Text="{loc:Loc history.viewReceipt}" VerticalAlignment="Center" />
                                             </StackPanel>
+                                        </Button>
+
+                                        <Button Command="{Binding DataContext.OpenOrderDetailsCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                                CommandParameter="{Binding}"
+                                                IsEnabled="{Binding CanViewOrderDetails}"
+                                                Width="44"
+                                                Height="44"
+                                                Margin="0,0,6,0"
+                                                ToolTipService.ShowOnDisabled="True"
+                                                AutomationProperties.AutomationId="TransactionHistoryOrderDetailsButton"
+                                                AutomationProperties.Name="{loc:Loc history.viewOrderDetails}">
+                                            <Button.Style>
+                                                <Style TargetType="Button" BasedOn="{StaticResource HistoryPrimaryIconButtonStyle}">
+                                                    <Setter Property="AutomationProperties.HelpText"
+                                                            Value="{loc:Loc history.viewOrderDetails}" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding CanViewOrderDetails}" Value="False">
+                                                            <Setter Property="AutomationProperties.HelpText"
+                                                                    Value="{loc:Loc history.remoteHeldDetailsUnavailable}" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Button.Style>
+                                            <Button.ToolTip>
+                                                <ToolTip>
+                                                    <ToolTip.Style>
+                                                        <Style TargetType="ToolTip">
+                                                            <Setter Property="Content" Value="{loc:Loc history.viewOrderDetails}" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding PlacementTarget.DataContext.CanViewOrderDetails, RelativeSource={RelativeSource Self}}"
+                                                                             Value="False">
+                                                                    <Setter Property="Content" Value="{loc:Loc history.remoteHeldDetailsUnavailable}" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </ToolTip.Style>
+                                                </ToolTip>
+                                            </Button.ToolTip>
+                                            <materialDesign:PackIcon Kind="FormatListBulleted" Width="18" Height="18" />
                                         </Button>
 
                                         <Button Command="{Binding DataContext.RecallOrderCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
@@ -1202,6 +1260,526 @@
                 </Grid>
             </Border>
         </Grid>
+
+        <!-- 订单明细与小票预览共用同一详情加载结果，仅提供更适合触屏扫读的结构化呈现。 -->
+        <UserControl x:Name="OrderDetailsOverlay"
+                     Panel.ZIndex="110"
+                     Background="#660F172A"
+                     FocusManager.IsFocusScope="True"
+                     FocusManager.FocusedElement="{Binding ElementName=OrderDetailsCloseButton}"
+                     KeyboardNavigation.TabNavigation="Cycle"
+                     PreviewKeyDown="OrderDetailsOverlayPreviewKeyDown"
+                     AutomationProperties.AutomationId="TransactionHistoryOrderDetailsOverlay"
+                     AutomationProperties.Name="{loc:Loc history.viewOrderDetails}"
+                     AutomationProperties.IsDialog="True"
+                     Visibility="{Binding IsOrderDetailsOpen, Converter={StaticResource BoolToVis}}">
+            <UserControl.InputBindings>
+                <KeyBinding Key="Escape" Command="{Binding CloseOrderDetailsCommand}" />
+            </UserControl.InputBindings>
+
+            <Border x:Name="OrderDetailsDialog"
+                    Width="1000"
+                    MaxWidth="1000"
+                    Margin="24"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Stretch"
+                    Background="White"
+                    BorderBrush="#FFE2E8F0"
+                    BorderThickness="1"
+                    CornerRadius="12"
+                    AutomationProperties.AutomationId="TransactionHistoryOrderDetailsDialog">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="24" ShadowDepth="4" Opacity="0.24" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+
+                    <Border Grid.Row="0"
+                            Padding="20,14"
+                            Background="White"
+                            BorderBrush="#FFE2E8F0"
+                            BorderThickness="0,0,0,1">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                <materialDesign:PackIcon Kind="FormatListBulleted"
+                                                         Width="22"
+                                                         Height="22"
+                                                         Margin="0,0,10,0"
+                                                         Foreground="{StaticResource PosPrimaryBrush}" />
+                                <TextBlock Text="{loc:Loc history.viewOrderDetails}"
+                                           FontSize="20"
+                                           FontWeight="Black"
+                                           Foreground="{StaticResource PosTextBrush}"
+                                           VerticalAlignment="Center" />
+                                <Border Margin="12,0,0,0"
+                                        Padding="8,3"
+                                        CornerRadius="6"
+                                        Background="#FFEFF6FF"
+                                        BorderBrush="#FFBFDBFE"
+                                        BorderThickness="1">
+                                    <TextBlock Text="{Binding OrderDetailsSourceLabel}"
+                                               Foreground="{StaticResource PosPrimaryBrush}"
+                                               FontSize="12"
+                                               FontWeight="SemiBold" />
+                                </Border>
+                                 <Border Margin="8,0,0,0"
+                                         Padding="8,3"
+                                         CornerRadius="6"
+                                         Background="#FFF1F5F9"
+                                         BorderBrush="#FFCBD5E1"
+                                         BorderThickness="1">
+                                     <TextBlock Text="{Binding OrderDetailsStatusLabel}"
+                                                Foreground="#FF475569"
+                                                FontSize="12"
+                                                FontWeight="SemiBold" />
+                                </Border>
+                            </StackPanel>
+
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                <TextBlock Text="{Binding PreviewTotal, StringFormat={}{0:C2}}"
+                                           Margin="20,0"
+                                           FontSize="26"
+                                           FontWeight="Black"
+                                           Foreground="#FFF57C00"
+                                           Visibility="{Binding IsOrderDetailsFinancialContentVisible, Converter={StaticResource BoolToVis}}"
+                                           VerticalAlignment="Center" />
+                                <Button x:Name="OrderDetailsCloseButton"
+                                        Command="{Binding CloseOrderDetailsCommand}"
+                                        Width="44"
+                                        Height="44"
+                                        MinWidth="44"
+                                        Padding="0"
+                                        ToolTip="{loc:Loc history.closeOrderDetails}"
+                                        AutomationProperties.AutomationId="TransactionHistoryOrderDetailsCloseButton"
+                                        AutomationProperties.Name="{loc:Loc history.closeOrderDetails}"
+                                        Style="{StaticResource HistoryIconButtonStyle}">
+                                    <materialDesign:PackIcon Kind="Close" Width="19" Height="19" />
+                                </Button>
+                            </StackPanel>
+
+                            <Grid Grid.Row="1" Grid.ColumnSpan="2" Margin="32,12,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="1.25*" />
+                                    <ColumnDefinition Width="1.35*" />
+                                    <ColumnDefinition Width="0.8*" />
+                                    <ColumnDefinition Width="0.8*" />
+                                    <ColumnDefinition Width="1.1*" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="{loc:Loc OrderNumber}" Style="{StaticResource HistoryPreviewLabelStyle}" />
+                                    <TextBlock Text="{Binding OrderDetailsOrderId}" Style="{StaticResource HistoryPreviewValueStyle}" ToolTip="{Binding OrderDetailsOrderId}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1">
+                                    <TextBlock Text="{loc:Loc Time}" Style="{StaticResource HistoryPreviewLabelStyle}" />
+                                    <TextBlock Text="{Binding OrderDetailsSoldAt}" Style="{StaticResource HistoryPreviewValueStyle}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="2">
+                                    <TextBlock Text="{loc:Loc Store}" Style="{StaticResource HistoryPreviewLabelStyle}" />
+                                    <TextBlock Text="{Binding OrderDetailsStoreCode}" Style="{StaticResource HistoryPreviewValueStyle}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="3">
+                                    <TextBlock Text="{loc:Loc Terminal}" Style="{StaticResource HistoryPreviewLabelStyle}" />
+                                    <TextBlock Text="{Binding OrderDetailsDeviceCode}" Style="{StaticResource HistoryPreviewValueStyle}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="4">
+                                    <TextBlock Text="{loc:Loc Cashier}" Style="{StaticResource HistoryPreviewLabelStyle}" />
+                                    <TextBlock Text="{Binding OrderDetailsCashierName}" Style="{StaticResource HistoryPreviewValueStyle}" ToolTip="{Binding OrderDetailsCashierName}" />
+                                </StackPanel>
+                            </Grid>
+
+                            <StackPanel Grid.Row="2"
+                                        Grid.ColumnSpan="2"
+                                        Margin="32,10,0,0"
+                                        Orientation="Horizontal"
+                                        Visibility="{Binding HasOrderDetailsCustomer, Converter={StaticResource BoolToVis}}">
+                                <StackPanel Width="230">
+                                    <TextBlock Text="{loc:Loc Customer}" Style="{StaticResource HistoryPreviewLabelStyle}" />
+                                    <TextBlock Text="{Binding OrderDetailsCustomerName}" Style="{StaticResource HistoryPreviewValueStyle}" ToolTip="{Binding OrderDetailsCustomerName}" />
+                                </StackPanel>
+                                <StackPanel Width="230">
+                                    <TextBlock Text="{loc:Loc Phone}" Style="{StaticResource HistoryPreviewLabelStyle}" />
+                                    <TextBlock Text="{Binding OrderDetailsCustomerPhone}" Style="{StaticResource HistoryPreviewValueStyle}" ToolTip="{Binding OrderDetailsCustomerPhone}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <Grid Grid.Row="1" Background="#FFF8FAFC">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <Grid Grid.Row="0" Margin="20,14,20,8">
+                            <DataGrid x:Name="OrderDetailsItemsGrid"
+                                      ItemsSource="{Binding OrderDetailLines}"
+                                      AutoGenerateColumns="False"
+                                      IsReadOnly="True"
+                                      CanUserAddRows="False"
+                                      CanUserDeleteRows="False"
+                                      CanUserReorderColumns="False"
+                                      CanUserResizeColumns="False"
+                                      CanUserSortColumns="False"
+                                      HeadersVisibility="Column"
+                                      RowHeaderWidth="0"
+                                      RowHeight="76"
+                                      MinRowHeight="76"
+                                      GridLinesVisibility="Horizontal"
+                                      HorizontalGridLinesBrush="#FFE2E8F0"
+                                      VerticalGridLinesBrush="Transparent"
+                                      Background="White"
+                                      BorderBrush="#FFE2E8F0"
+                                      BorderThickness="1"
+                                      ColumnHeaderStyle="{StaticResource HistoryColumnHeaderStyle}"
+                                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                       ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                       EnableRowVirtualization="True"
+                                       AutomationProperties.AutomationId="TransactionHistoryOrderDetailsItemsGrid"
+                                       Style="{StaticResource PosCartDataGridStyle}">
+                                <DataGrid.CellStyle>
+                                    <Style TargetType="DataGridCell" BasedOn="{StaticResource HistoryGridCellStyle}">
+                                        <Setter Property="Padding" Value="8,0" />
+                                    </Style>
+                                </DataGrid.CellStyle>
+                                <DataGrid.RowStyle>
+                                    <Style TargetType="DataGridRow">
+                                        <Setter Property="Height" Value="76" />
+                                        <Setter Property="MinHeight" Value="76" />
+                                        <Setter Property="Background" Value="White" />
+                                    </Style>
+                                </DataGrid.RowStyle>
+                                <DataGrid.Columns>
+                                    <DataGridTemplateColumn Header="{loc:Loc Item}" Width="*">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="64" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Border x:Name="OrderDetailProductImage"
+                                                            Width="64"
+                                                            Height="64"
+                                                            Background="#FFE8F0FE"
+                                                            CornerRadius="7"
+                                                            ClipToBounds="True"
+                                                            SnapsToDevicePixels="True">
+                                                        <Grid>
+                                                            <materialDesign:PackIcon Kind="Shopping"
+                                                                                     Width="24"
+                                                                                     Height="24"
+                                                                                     Foreground="{StaticResource PosPrimaryBrush}"
+                                                                                     HorizontalAlignment="Center"
+                                                                                     VerticalAlignment="Center"
+                                                                                     Panel.ZIndex="0" />
+                                                            <Rectangle Margin="2"
+                                                                       RadiusX="6"
+                                                                       RadiusY="6"
+                                                                       SnapsToDevicePixels="True"
+                                                                       RenderOptions.BitmapScalingMode="HighQuality"
+                                                                       Panel.ZIndex="1">
+                                                                <Rectangle.Fill>
+                                                                    <ImageBrush converters:ProductThumbnailImageSourceConverter.AsyncSourceText="{Binding ProductImage}"
+                                                                                converters:ProductThumbnailImageSourceConverter.AsyncDecodePixelWidth="96"
+                                                                                Stretch="Uniform" />
+                                                                </Rectangle.Fill>
+                                                            </Rectangle>
+                                                        </Grid>
+                                                    </Border>
+                                                    <StackPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding DisplayName}"
+                                                                   FontSize="14"
+                                                                   FontWeight="SemiBold"
+                                                                   Foreground="{StaticResource PosTextBrush}"
+                                                                   TextWrapping="NoWrap"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   ToolTip="{Binding DisplayName}" />
+                                                        <TextBlock x:Name="OrderDetailItemMetadata"
+                                                                   Margin="0,5,0,0"
+                                                                   FontSize="12"
+                                                                   Foreground="#FF64748B"
+                                                                   TextWrapping="NoWrap"
+                                                                   TextTrimming="CharacterEllipsis">
+                                                            <TextBlock.ToolTip>
+                                                                <ToolTip>
+                                                                    <TextBlock TextWrapping="NoWrap">
+                                                                        <Run Text="{loc:Loc ItemNumber}" />
+                                                                        <Run Text=": " />
+                                                                        <Run Text="{Binding ItemNumberDisplay, Mode=OneWay}" />
+                                                                        <Run Text="  " />
+                                                                        <Run Text="{Binding LookupCodeDisplay, Mode=OneWay}" />
+                                                                    </TextBlock>
+                                                                </ToolTip>
+                                                            </TextBlock.ToolTip>
+                                                            <Run Text="{loc:Loc ItemNumber}" />
+                                                            <Run Text=": " />
+                                                            <Run Text="{Binding ItemNumberDisplay, Mode=OneWay}" />
+                                                            <Run Text="  " />
+                                                            <Run Text="{Binding LookupCodeDisplay, Mode=OneWay}" />
+                                                        </TextBlock>
+                                                    </StackPanel>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="{loc:Loc Quantity}"
+                                                        Width="72"
+                                                        Binding="{Binding QuantityDisplay}"
+                                                        ElementStyle="{StaticResource HistoryPrimaryTextStyle}" />
+                                    <DataGridTextColumn Header="{loc:Loc UnitPrice}"
+                                                        Width="98"
+                                                        Binding="{Binding UnitPrice, StringFormat={}{0:C2}}"
+                                                        ElementStyle="{StaticResource HistoryPrimaryTextStyle}" />
+                                    <DataGridTextColumn Header="{loc:Loc Discount}"
+                                                        Width="98"
+                                                        Binding="{Binding DiscountAmount, StringFormat={}{0:C2}}"
+                                                        ElementStyle="{StaticResource HistoryPrimaryTextStyle}" />
+                                    <DataGridTextColumn Header="{loc:Loc LineTotal}"
+                                                        Width="106"
+                                                        Binding="{Binding ActualAmount, StringFormat={}{0:C2}}"
+                                                        ElementStyle="{StaticResource HistoryPrimaryTextStyle}" />
+                                </DataGrid.Columns>
+                            </DataGrid>
+
+                            <Border Panel.ZIndex="10"
+                                    Background="#F7FFFFFF"
+                                    Visibility="{Binding IsReceiptPreviewLoading, Converter={StaticResource BoolToVis}}">
+                                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <ProgressBar Width="180" Height="5" IsIndeterminate="True" />
+                                    <TextBlock x:Name="OrderDetailsLoadingStatusText"
+                                               Text="{loc:Loc history.orderDetailsLoading}"
+                                                Margin="0,14,0,0"
+                                                Foreground="#FF64748B"
+                                                FontSize="13"
+                                                FontWeight="SemiBold"
+                                                AutomationProperties.LiveSetting="Polite" />
+                                </StackPanel>
+                            </Border>
+
+                            <Border Panel.ZIndex="11"
+                                    Background="#F7FFFFFF"
+                                    Visibility="{Binding OrderDetailsErrorMessage, Converter={StaticResource StringHasValueToVis}}">
+                                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <materialDesign:PackIcon Kind="AlertCircleOutline"
+                                                             Width="30"
+                                                             Height="30"
+                                                             Foreground="{StaticResource PosDangerBrush}" />
+                                    <TextBlock x:Name="OrderDetailsErrorStatusText"
+                                               Text="{Binding OrderDetailsErrorMessage}"
+                                                MaxWidth="520"
+                                                Margin="0,10,0,14"
+                                                Foreground="#FF475569"
+                                                FontSize="13"
+                                                TextAlignment="Center"
+                                                TextWrapping="Wrap"
+                                                AutomationProperties.LiveSetting="Assertive" />
+                                    <Button Command="{Binding RetryOrderDetailsCommand}"
+                                            Content="{loc:Loc history.retryOrderDetails}"
+                                            Height="44"
+                                            MinWidth="108"
+                                            AutomationProperties.Name="{loc:Loc history.retryOrderDetails}"
+                                            Style="{StaticResource PosPrimaryButtonStyle}" />
+                                </StackPanel>
+                            </Border>
+
+                            <Border Panel.ZIndex="9"
+                                    Background="#F7FFFFFF"
+                                    Visibility="{Binding IsOrderDetailsEmpty, Converter={StaticResource BoolToVis}}">
+                                <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                                    <materialDesign:PackIcon Kind="BasketOffOutline"
+                                                             Width="30"
+                                                             Height="30"
+                                                             Foreground="#FF94A3B8" />
+                                    <TextBlock x:Name="OrderDetailsEmptyStatusText"
+                                               Text="{loc:Loc history.orderDetailsEmpty}"
+                                                Margin="0,10,0,0"
+                                                Foreground="#FF64748B"
+                                                FontSize="13"
+                                                FontWeight="SemiBold"
+                                                AutomationProperties.LiveSetting="Polite" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+
+                        <Border Grid.Row="1"
+                                Margin="20,0,20,8"
+                                Padding="14,10"
+                                Background="White"
+                                BorderBrush="#FFE2E8F0"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Visibility="{Binding IsOrderDetailsFinancialContentVisible, Converter={StaticResource BoolToVis}}">
+                            <Grid>
+                                <StackPanel>
+                                    <TextBlock Text="{loc:Loc Payment}"
+                                               Margin="0,0,0,8"
+                                               FontSize="12"
+                                               FontWeight="SemiBold"
+                                               Foreground="#FF64748B" />
+                                    <ItemsControl ItemsSource="{Binding Payments}"
+                                                  Visibility="{Binding HasOrderDetailsPayments, Converter={StaticResource BoolToVis}}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border MinWidth="205"
+                                                        MaxWidth="285"
+                                                        Margin="0,0,12,4"
+                                                        Padding="10,7"
+                                                        Background="#FFF8FAFC"
+                                                        BorderBrush="#FFE2E8F0"
+                                                        BorderThickness="1"
+                                                        CornerRadius="6">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel>
+                                                            <TextBlock Text="{Binding MethodLabel}"
+                                                                       FontWeight="SemiBold"
+                                                                       Foreground="{StaticResource PosTextBrush}" />
+                                                            <TextBlock Text="{Binding DisplayReference}"
+                                                                       Margin="0,2,0,0"
+                                                                       FontSize="11"
+                                                                       Foreground="#FF64748B"
+                                                                       TextWrapping="NoWrap"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       ToolTip="{Binding DisplayReference}"
+                                                                       Visibility="{Binding DisplayReference, Converter={StaticResource StringHasValueToVis}}" />
+                                                            <TextBlock Text="{Binding CardSummary}"
+                                                                       Margin="0,2,0,0"
+                                                                       FontSize="11"
+                                                                       Foreground="#FF64748B"
+                                                                       TextWrapping="NoWrap"
+                                                                       TextTrimming="CharacterEllipsis"
+                                                                       ToolTip="{Binding CardSummary}"
+                                                                       Visibility="{Binding CardSummary, Converter={StaticResource StringHasValueToVis}}" />
+                                                        </StackPanel>
+                                                        <TextBlock Grid.Column="1"
+                                                                   Text="{Binding Amount, StringFormat={}{0:C2}}"
+                                                                   Margin="14,0,0,0"
+                                                                   FontSize="14"
+                                                                   FontWeight="Bold"
+                                                                   Foreground="{StaticResource PosTextBrush}"
+                                                                   VerticalAlignment="Center" />
+                                                    </Grid>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+
+                                <TextBlock Text="{loc:Loc history.orderDetailsNoPayment}"
+                                           Foreground="#FF64748B"
+                                           FontSize="13"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Bottom">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding HasOrderDetailsPayments}" Value="False">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+                        </Border>
+
+                        <Border Grid.Row="2"
+                                Margin="20,0,20,14"
+                                Padding="14,10"
+                                Background="White"
+                                BorderBrush="#FFE2E8F0"
+                                BorderThickness="1"
+                                CornerRadius="8"
+                                Visibility="{Binding IsOrderDetailsFinancialContentVisible, Converter={StaticResource BoolToVis}}">
+                            <WrapPanel HorizontalAlignment="Right" VerticalAlignment="Center">
+                                <StackPanel Width="118" Margin="0,0,10,0">
+                                    <TextBlock Text="{loc:Loc Subtotal}" Style="{StaticResource HistoryPreviewLabelStyle}" TextAlignment="Right" />
+                                    <TextBlock Text="{Binding PreviewSubtotal, StringFormat={}{0:C2}}" Style="{StaticResource HistoryPreviewValueStyle}" TextAlignment="Right" />
+                                </StackPanel>
+                                <StackPanel Width="118" Margin="0,0,10,0">
+                                    <TextBlock Text="{loc:Loc Discount}" Style="{StaticResource HistoryPreviewLabelStyle}" TextAlignment="Right" />
+                                    <TextBlock Text="{Binding PreviewDiscount, StringFormat={}{0:C2}}" Style="{StaticResource HistoryPreviewValueStyle}" TextAlignment="Right" />
+                                </StackPanel>
+                                <StackPanel Width="118"
+                                            Margin="0,0,10,0"
+                                            Visibility="{Binding HasOrderDetailsTenderedAmount, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="{loc:Loc Tendered}" Style="{StaticResource HistoryPreviewLabelStyle}" TextAlignment="Right" />
+                                    <TextBlock Text="{Binding OrderDetailsTenderedAmount, StringFormat={}{0:C2}}" Style="{StaticResource HistoryPreviewValueStyle}" TextAlignment="Right" />
+                                </StackPanel>
+                                <StackPanel Width="118"
+                                            Margin="0,0,10,0"
+                                            Visibility="{Binding HasOrderDetailsChangeAmount, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="{loc:Loc Change}" Style="{StaticResource HistoryPreviewLabelStyle}" TextAlignment="Right" />
+                                    <TextBlock Text="{Binding OrderDetailsChangeAmount, StringFormat={}{0:C2}}" Style="{StaticResource HistoryPreviewValueStyle}" TextAlignment="Right" />
+                                </StackPanel>
+                                <StackPanel Width="118"
+                                            Margin="0,0,10,0"
+                                            Visibility="{Binding HasOrderDetailsInstallmentAmounts, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="{loc:Loc history.paidAmount}" Style="{StaticResource HistoryPreviewLabelStyle}" TextAlignment="Right" />
+                                    <TextBlock Text="{Binding OrderDetailsPaidAmount, StringFormat={}{0:C2}}" Style="{StaticResource HistoryPreviewValueStyle}" TextAlignment="Right" />
+                                </StackPanel>
+                                <StackPanel Width="118"
+                                            Margin="0,0,10,0"
+                                            Visibility="{Binding HasOrderDetailsInstallmentAmounts, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="{loc:Loc history.outstandingAmount}" Style="{StaticResource HistoryPreviewLabelStyle}" TextAlignment="Right" />
+                                    <TextBlock Text="{Binding OrderDetailsOutstandingAmount, StringFormat={}{0:C2}}" Style="{StaticResource HistoryPreviewValueStyle}" TextAlignment="Right" />
+                                </StackPanel>
+                                <StackPanel Width="142">
+                                    <TextBlock Text="{loc:Loc history.finalTotal}"
+                                               FontSize="12"
+                                               FontWeight="SemiBold"
+                                               Foreground="#FF64748B"
+                                               TextAlignment="Right" />
+                                    <TextBlock Text="{Binding PreviewTotal, StringFormat={}{0:C2}}"
+                                               FontSize="22"
+                                               FontWeight="Black"
+                                               Foreground="#FFF57C00"
+                                               TextAlignment="Right" />
+                                </StackPanel>
+                            </WrapPanel>
+                        </Border>
+                    </Grid>
+
+                    <Border Grid.Row="2"
+                            Padding="16"
+                            Background="White"
+                            BorderBrush="#FFE2E8F0"
+                            BorderThickness="0,1,0,0">
+                        <Button Command="{Binding CloseOrderDetailsCommand}"
+                                Content="{loc:Loc history.closeOrderDetails}"
+                                Height="44"
+                                MinWidth="108"
+                                HorizontalAlignment="Right"
+                                AutomationProperties.Name="{loc:Loc history.closeOrderDetails}"
+                                Style="{StaticResource PosSecondaryButtonStyle}" />
+                    </Border>
+                </Grid>
+            </Border>
+        </UserControl>
 
         <Grid Panel.ZIndex="200"
               Background="#66000000"

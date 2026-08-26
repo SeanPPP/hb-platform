@@ -6,6 +6,7 @@ using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
+using Hbpos.Contracts.Catalog;
 using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
 using InstallmentPaymentDto = Hbpos.Contracts.Installments.InstallmentPaymentDto;
@@ -17,6 +18,20 @@ namespace Hbpos.Client.Tests;
 
 public sealed class TransactionHistoryViewModelTests
 {
+    [Theory]
+    [InlineData(TransactionHistorySource.LocalOrders)]
+    [InlineData(TransactionHistorySource.RemoteOrders)]
+    public void Return_order_highlight_follows_negative_actual_amount(TransactionHistorySource source)
+    {
+        var item = new HistoryOrderListItem(
+            Guid.NewGuid(), source, "S001", "POS-01", "Alice",
+            DateTimeOffset.UtcNow, -1m, 0m, -1m, 0, "Card", "Completed");
+
+        Assert.True(item.IsReturnOrder);
+        Assert.False((item with { ActualAmount = 0m }).IsReturnOrder);
+        Assert.False((item with { ActualAmount = 1m }).IsReturnOrder);
+    }
+
     [Theory]
     [InlineData("Synced", true)]
     [InlineData("Pending", true)]
@@ -32,6 +47,622 @@ public sealed class TransactionHistoryViewModelTests
         Assert.False((item with { Source = TransactionHistorySource.RemoteOrders }).CanReupload);
         Assert.False((item with { IsSuspendedOrder = true }).CanReupload);
         Assert.False((item with { IsInstallmentOrder = true }).CanReupload);
+    }
+
+    [Fact]
+    public async Task Scanner_barcode_is_trimmed_and_loads_current_source_and_filters()
+    {
+        var receiptQuery = new CapturingReceiptQueryService();
+        var remoteOrders = new CapturingRemoteOrderHistoryService();
+        using var viewModel = new TransactionHistoryViewModel(
+            receiptQuery,
+            new CapturingSuspendedOrderService(),
+            remoteOrders,
+            CreateSession(deviceCode: "POS-04"))
+        {
+            DateFrom = new DateTime(2026, 8, 20),
+            DateTo = new DateTime(2026, 8, 22)
+        };
+        viewModel.IsOnlineSourceSelected = true;
+
+        Assert.True(viewModel.ProcessScannerBarcode("  ITEM-42  ", "scanner-device", "keyboard-fallback"));
+        var loadTask = viewModel.LoadCommand.ExecutionTask;
+        Assert.NotNull(loadTask);
+        await loadTask!;
+
+        Assert.Equal(TransactionHistorySource.RemoteOrders, viewModel.SelectedSource);
+        Assert.Equal("ITEM-42", viewModel.SearchText);
+        Assert.Null(receiptQuery.LastQuery);
+        Assert.Equal("ITEM-42", remoteOrders.LastQuery?.Keyword);
+        Assert.Equal("POS-04", remoteOrders.LastQuery?.DeviceCode);
+        Assert.Equal(new DateTime(2026, 8, 20), remoteOrders.LastQuery?.SoldFrom?.Date);
+        Assert.Equal(new DateTime(2026, 8, 22), remoteOrders.LastQuery?.SoldTo?.Date);
+    }
+
+    [Fact]
+    public async Task Scanner_consumes_barcode_while_direct_query_is_running_without_replacing_current_query()
+    {
+        var queryStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var queryGate = new TaskCompletionSource<IReadOnlyList<LocalOrderSummary>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var receiptQuery = new CapturingReceiptQueryService
+        {
+            QueryHandler = (_, _) =>
+            {
+                queryStarted.TrySetResult();
+                return queryGate.Task;
+            }
+        };
+        using var viewModel = new TransactionHistoryViewModel(
+            receiptQuery,
+            new CapturingSuspendedOrderService(),
+            null,
+            CreateSession());
+        viewModel.SearchText = "FIRST-001";
+
+        var loadTask = viewModel.LoadAsync();
+        await queryStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var secondScanConsumed = viewModel.ProcessScannerBarcode("SECOND-002", "scanner-device", "raw");
+        queryGate.SetResult([]);
+        await loadTask;
+
+        Assert.True(secondScanConsumed);
+        Assert.Equal("FIRST-001", viewModel.SearchText);
+        Assert.Equal("FIRST-001", receiptQuery.LastQuery?.Keyword);
+        Assert.Equal(1, receiptQuery.QueryCallCount);
+    }
+
+    [Fact]
+    public void Scanner_consumes_emergency_tokens_and_modal_scans_without_querying_or_replacing_search()
+    {
+        var receiptQuery = new CapturingReceiptQueryService();
+        using var viewModel = new TransactionHistoryViewModel(
+            receiptQuery,
+            new CapturingSuspendedOrderService(),
+            null,
+            CreateSession())
+        {
+            SearchText = "CURRENT-RESULT"
+        };
+
+        Assert.True(viewModel.ProcessScannerBarcode("   ", "scanner-device", "raw"));
+        Assert.True(viewModel.ProcessScannerBarcode(" HBPOSE1-K1-AA-BB ", "scanner-device", "raw"));
+
+        viewModel.IsReceiptPreviewOpen = true;
+        Assert.True(viewModel.ProcessScannerBarcode("RECEIPT-MODAL", "scanner-device", "raw"));
+        viewModel.IsReceiptPreviewOpen = false;
+
+        viewModel.IsOrderDetailsOpen = true;
+        Assert.True(viewModel.ProcessScannerBarcode("DETAIL-MODAL", "scanner-device", "raw"));
+        viewModel.IsOrderDetailsOpen = false;
+
+        viewModel.IsForceReleaseReasonPromptOpen = true;
+        Assert.True(viewModel.ProcessScannerBarcode("FORCE-RELEASE-MODAL", "scanner-device", "raw"));
+
+        Assert.Equal("CURRENT-RESULT", viewModel.SearchText);
+        Assert.Equal(0, receiptQuery.QueryCallCount);
+        Assert.Null(receiptQuery.LastQuery);
+    }
+
+    [Fact]
+    public async Task Scanner_consumes_raw_input_while_confirmation_dialog_is_open()
+    {
+        var receiptQuery = new CapturingReceiptQueryService();
+        var confirmationResult = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var confirmationDialog = new CapturingConfirmationDialogService
+        {
+            OrderDateRangeResultTask = confirmationResult.Task
+        };
+        var uploadService = new CallbackOrderExecutor(
+            ids => new OrderUploadExecutionResult(ids.Count, ids.Count, 0),
+            [Guid.NewGuid()]);
+        using var viewModel = new TransactionHistoryViewModel(
+            receiptQuery,
+            new CapturingSuspendedOrderService(),
+            null,
+            CreateSession(),
+            orderUploadExecutionService: uploadService,
+            confirmationDialogService: confirmationDialog)
+        {
+            SearchText = "CURRENT-RESULT"
+        };
+
+        var reuploadTask = viewModel.ReuploadDateRangeCommand.ExecuteAsync(null);
+        await WaitUntilAsync(() => confirmationDialog.CallCount == 1);
+
+        Assert.True(viewModel.ProcessScannerBarcode("BACKGROUND-QUERY", "scanner-device", "raw"));
+        Assert.Equal("CURRENT-RESULT", viewModel.SearchText);
+        Assert.Equal(0, receiptQuery.QueryCallCount);
+
+        confirmationResult.SetResult(false);
+        await reuploadTask;
+    }
+
+    [Fact]
+    public async Task Raw_scanner_subscription_routes_barcode_and_dispose_unsubscribes_once()
+    {
+        var receiptQuery = new CapturingReceiptQueryService();
+        var scanner = new TrackingRawScannerService();
+        var viewModel = new TransactionHistoryViewModel(
+            receiptQuery,
+            new CapturingSuspendedOrderService(),
+            null,
+            CreateSession(),
+            rawScannerService: scanner);
+
+        Assert.Equal(TransactionHistoryViewModel.PageId, viewModel.ScannerPageId);
+        Assert.Equal(1, scanner.SubscribeCount);
+        Assert.True(scanner.HasSubscription(TransactionHistoryViewModel.PageId));
+
+        scanner.Emit(TransactionHistoryViewModel.PageId, "  RAW-9001  ");
+        var loadTask = viewModel.LoadCommand.ExecutionTask;
+        Assert.NotNull(loadTask);
+        await loadTask!;
+
+        Assert.Equal("RAW-9001", viewModel.SearchText);
+        Assert.Equal("RAW-9001", receiptQuery.LastQuery?.Keyword);
+
+        viewModel.Dispose();
+        viewModel.Dispose();
+
+        Assert.Equal(1, scanner.UnsubscribeCount);
+        Assert.False(scanner.HasSubscription(TransactionHistoryViewModel.PageId));
+    }
+
+    [Fact]
+    public async Task Focused_search_enter_does_not_repeat_raw_scanner_query()
+    {
+        var receiptQuery = new CapturingReceiptQueryService();
+        var scanner = new TrackingRawScannerService();
+        using var viewModel = new TransactionHistoryViewModel(
+            receiptQuery,
+            new CapturingSuspendedOrderService(),
+            null,
+            CreateSession(),
+            rawScannerService: scanner)
+        {
+            SearchText = "PREVIOUS-QUERY"
+        };
+
+        scanner.Emit(TransactionHistoryViewModel.PageId, "RAW-FOCUSED-9001");
+        var rawLoadTask = viewModel.LoadCommand.ExecutionTask;
+        Assert.NotNull(rawLoadTask);
+        await rawLoadTask!;
+
+        await viewModel.LoadCommand.ExecuteAsync(null);
+
+        Assert.Equal("RAW-FOCUSED-9001", viewModel.SearchText);
+        Assert.Equal(1, receiptQuery.QueryCallCount);
+        Assert.Equal("RAW-FOCUSED-9001", receiptQuery.LastQuery?.Keyword);
+    }
+
+    [Fact]
+    public async Task Manual_enter_and_repeated_load_command_still_query_with_scanner_deduplicator()
+    {
+        var receiptQuery = new CapturingReceiptQueryService();
+        var scanner = new TrackingRawScannerService();
+        using var viewModel = new TransactionHistoryViewModel(
+            receiptQuery,
+            new CapturingSuspendedOrderService(),
+            null,
+            CreateSession(),
+            rawScannerService: scanner)
+        {
+            SearchText = "MANUAL-ENTER-1001"
+        };
+
+        await viewModel.LoadCommand.ExecuteAsync(null);
+        await viewModel.LoadCommand.ExecuteAsync(null);
+
+        Assert.Equal(2, receiptQuery.QueryCallCount);
+        Assert.Equal("MANUAL-ENTER-1001", receiptQuery.LastQuery?.Keyword);
+    }
+
+    [Fact]
+    public async Task Order_details_reuses_loaded_receipt_and_resolves_product_images_by_priority()
+    {
+        var orderGuid = Guid.NewGuid();
+        var soldAt = new DateTimeOffset(2026, 8, 26, 9, 30, 0, TimeSpan.Zero);
+        var receipt = new ReceiptDetails(
+            orderGuid,
+            "S001",
+            "POS-01",
+            "Alice",
+            soldAt,
+            50m,
+            2m,
+            48m,
+            [
+                new ReceiptPreviewLine("Snapshot item", "BAR-1", 1m, 10m, 0m, 10m)
+                {
+                    ProductCode = "P-1",
+                    ItemNumber = "ITEM-1",
+                    ProductImage = "snapshot://image-1"
+                },
+                new ReceiptPreviewLine("Exact lookup item", "BAR-2", 1m, 10m, 0m, 10m)
+                {
+                    ProductCode = "P-2",
+                    ItemNumber = "ITEM-2"
+                },
+                new ReceiptPreviewLine("Barcode item", "BAR-3", 1m, 10m, 0m, 10m)
+                {
+                    ProductCode = "P-3",
+                    ItemNumber = "ITEM-3"
+                },
+                new ReceiptPreviewLine("Metadata item", "HISTORY-4", 1m, 10m, 0m, 10m)
+                {
+                    ProductCode = "P-4",
+                    ItemNumber = "ITEM-4"
+                },
+                new ReceiptPreviewLine("Identity mismatch", "BAR-5", 1m, 10m, 2m, 8m)
+                {
+                    ProductCode = "P-HISTORY-5",
+                    ItemNumber = "ITEM-HISTORY-5"
+                }
+            ],
+            [new ReceiptPaymentLine(PaymentMethodKind.Cash, 50m, null)],
+            TenderedAmount: 55m,
+            ChangeAmount: 5m,
+            OrderDisplay: "ORDER-DETAIL-001");
+        var receiptQuery = new CapturingReceiptQueryService
+        {
+            Orders =
+            [
+                new LocalOrderSummary(
+                    orderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    soldAt,
+                    50m,
+                    2m,
+                    48m,
+                    "Synced",
+                    5,
+                    "Cash")
+            ],
+            Receipts = { [orderGuid] = receipt }
+        };
+        var catalog = new LocalSellableItemIndex();
+        catalog.ReplaceAll(
+        [
+            CatalogItem("P-1", "BAR-1", "ITEM-1", "BAR-1", "catalog://image-1"),
+            CatalogItem("P-2", "BAR-2", "ITEM-2", "BAR-2", "catalog://image-2"),
+            CatalogItem("P-3", "ALT-3", "ITEM-3", "BAR-3", "catalog://image-3"),
+            CatalogItem("P-4", "ALT-4", "ITEM-4", "BAR-4", "catalog://image-4"),
+            CatalogItem("P-CATALOG-5", "BAR-5", "ITEM-CATALOG-5", "BAR-5", "catalog://wrong-image")
+        ]);
+        var viewModel = new TransactionHistoryViewModel(
+            receiptQuery,
+            null,
+            null,
+            CreateSession(),
+            localSellableItemIndex: catalog);
+
+        await viewModel.LoadAsync();
+
+        var row = Assert.Single(viewModel.Orders);
+        Assert.Collection(
+            viewModel.OrderDetailLinesForTests,
+            line => Assert.Equal("snapshot://image-1", line.ProductImage),
+            line => Assert.Equal("catalog://image-2", line.ProductImage),
+            line => Assert.Equal("catalog://image-3", line.ProductImage),
+            line => Assert.Equal("catalog://image-4", line.ProductImage),
+            line => Assert.Null(line.ProductImage));
+        var firstLine = viewModel.OrderDetailLinesForTests[0];
+        Assert.Equal("ITEM-1", firstLine.ItemNumberDisplay);
+        Assert.Equal("BAR-1", firstLine.LookupCodeDisplay);
+        Assert.True(viewModel.HasOrderDetailsPayments);
+        Assert.True(viewModel.HasOrderDetailsTenderedAmount);
+        Assert.True(viewModel.HasOrderDetailsChangeAmount);
+        Assert.True(viewModel.IsOrderDetailsFinancialContentVisible);
+        Assert.Equal("ORDER-DETAIL-001", viewModel.OrderDetailsOrderId);
+        Assert.Equal(1, receiptQuery.GetReceiptCallCount);
+
+        viewModel.OpenReceiptPreviewCommand.Execute(row);
+        Assert.True(viewModel.IsReceiptPreviewOpen);
+        viewModel.OpenOrderDetailsCommand.Execute(row);
+
+        Assert.True(viewModel.IsOrderDetailsOpen);
+        Assert.False(viewModel.IsReceiptPreviewOpen);
+        Assert.Equal(1, receiptQuery.GetReceiptCallCount);
+
+        viewModel.OpenReceiptPreviewCommand.Execute(row);
+        Assert.True(viewModel.IsReceiptPreviewOpen);
+        Assert.False(viewModel.IsOrderDetailsOpen);
+    }
+
+    [Fact]
+    public async Task Remote_only_held_order_cannot_open_details_or_read_receipt_when_selected()
+    {
+        var remoteOnlyHeldOrder = new HistoryOrderListItem(
+            Guid.NewGuid(),
+            TransactionHistorySource.HeldOrders,
+            "S001",
+            "POS-02",
+            "Bob",
+            DateTimeOffset.UtcNow,
+            10m,
+            0m,
+            10m,
+            1,
+            "Suspended",
+            "Remote pending",
+            IsSuspendedOrder: false,
+            CanRecall: true,
+            IsHeldOrder: true,
+            CanRemoteRecall: true);
+        var receiptQuery = new CapturingReceiptQueryService();
+        var viewModel = new TransactionHistoryViewModel(receiptQuery);
+
+        Assert.False(remoteOnlyHeldOrder.CanViewOrderDetails);
+        Assert.False(viewModel.OpenOrderDetailsCommand.CanExecute(remoteOnlyHeldOrder));
+
+        viewModel.OpenOrderDetailsCommand.Execute(remoteOnlyHeldOrder);
+
+        Assert.False(viewModel.IsOrderDetailsOpen);
+        Assert.Null(viewModel.SelectedOrder);
+        Assert.Null(viewModel.SelectedReceipt);
+
+        viewModel.SelectedOrder = remoteOnlyHeldOrder;
+        await WaitUntilAsync(() => !viewModel.IsReceiptPreviewLoading);
+
+        Assert.Same(remoteOnlyHeldOrder, viewModel.SelectedOrder);
+        Assert.Null(viewModel.SelectedReceipt);
+        Assert.Equal(0, receiptQuery.GetReceiptCallCount);
+    }
+
+    [Fact]
+    public async Task Held_order_detail_failure_keeps_loaded_rows_and_exposes_retryable_error()
+    {
+        var orderGuid = Guid.NewGuid();
+        var suspendedOrders = new CapturingSuspendedOrderService
+        {
+            PendingOrders =
+            [
+                new SuspendedOrderSummary(
+                    orderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    DateTimeOffset.Now,
+                    10m,
+                    0m,
+                    10m,
+                    1,
+                    SuspendedOrderStatus.Pending)
+            ],
+            GetOrderException = new InvalidOperationException("simulated held detail failure")
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            suspendedOrders,
+            null,
+            CreateSession());
+
+        viewModel.IsHeldSourceSelected = true;
+        await WaitUntilAsync(() =>
+            !viewModel.IsReceiptPreviewLoading &&
+            viewModel.OrderDetailsErrorMessage == "simulated held detail failure");
+
+        var row = Assert.Single(viewModel.Orders);
+        Assert.Equal(orderGuid, row.OrderGuid);
+        Assert.Null(viewModel.SelectedReceipt);
+        Assert.Equal("simulated held detail failure", viewModel.StatusMessage);
+
+        viewModel.OpenOrderDetailsCommand.Execute(row);
+        await WaitUntilAsync(() =>
+            !viewModel.IsReceiptPreviewLoading &&
+            viewModel.OrderDetailsErrorMessage == "simulated held detail failure");
+
+        Assert.True(viewModel.IsOrderDetailsOpen);
+        Assert.True(viewModel.RetryOrderDetailsCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Held_history_ignores_older_detail_failure_after_new_selection_succeeds()
+    {
+        var firstOrderGuid = Guid.NewGuid();
+        var secondOrderGuid = Guid.NewGuid();
+        var now = DateTimeOffset.Now;
+        var firstRequestStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstRequestGate = new TaskCompletionSource<SuspendedOrder?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondOrder = new SuspendedOrder(
+            secondOrderGuid,
+            "S001",
+            "POS-01",
+            "C001",
+            "Bob",
+            now.AddMinutes(-1),
+            20m,
+            0m,
+            20m,
+            SuspendedOrderStatus.Pending,
+            []);
+        var suspendedOrders = new CapturingSuspendedOrderService
+        {
+            PendingOrders =
+            [
+                new SuspendedOrderSummary(
+                    firstOrderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    now,
+                    10m,
+                    0m,
+                    10m,
+                    1,
+                    SuspendedOrderStatus.Pending),
+                new SuspendedOrderSummary(
+                    secondOrderGuid,
+                    "S001",
+                    "POS-01",
+                    "Bob",
+                    now.AddMinutes(-1),
+                    20m,
+                    0m,
+                    20m,
+                    0,
+                    SuspendedOrderStatus.Pending)
+            ],
+            GetOrderHandler = (orderGuid, _) =>
+            {
+                if (orderGuid == firstOrderGuid)
+                {
+                    firstRequestStarted.TrySetResult();
+                    return firstRequestGate.Task;
+                }
+
+                return Task.FromResult<SuspendedOrder?>(
+                    orderGuid == secondOrderGuid ? secondOrder : null);
+            }
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            suspendedOrders,
+            null,
+            CreateSession());
+        var suppressAutoLoadField = typeof(TransactionHistoryViewModel).GetField(
+            "_suppressSourceAutoLoad",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(suppressAutoLoadField);
+        suppressAutoLoadField!.SetValue(viewModel, true);
+        try
+        {
+            viewModel.IsHeldSourceSelected = true;
+        }
+        finally
+        {
+            suppressAutoLoadField.SetValue(viewModel, false);
+        }
+
+        var initialLoad = viewModel.LoadAsync();
+        await firstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var secondRow = Assert.Single(viewModel.Orders, order => order.OrderGuid == secondOrderGuid);
+        viewModel.SelectedOrder = secondRow;
+        await WaitUntilAsync(() =>
+            viewModel.SelectedReceipt?.OrderGuid == secondOrderGuid &&
+            !viewModel.IsReceiptPreviewLoading);
+
+        firstRequestGate.SetException(new InvalidOperationException("stale held detail failure"));
+        await initialLoad;
+
+        Assert.Equal(secondOrderGuid, viewModel.SelectedOrder?.OrderGuid);
+        Assert.Equal(secondOrderGuid, viewModel.SelectedReceipt?.OrderGuid);
+        Assert.Equal(string.Empty, viewModel.OrderDetailsErrorMessage);
+        Assert.Equal(string.Empty, viewModel.StatusMessage);
+        Assert.False(viewModel.IsReceiptPreviewLoading);
+        Assert.Equal(2, viewModel.Orders.Count);
+    }
+
+    [Fact]
+    public void Order_details_exposes_empty_state_for_loaded_order_without_lines()
+    {
+        var orderGuid = Guid.NewGuid();
+        var order = new HistoryOrderListItem(
+            orderGuid,
+            TransactionHistorySource.LocalOrders,
+            "S001",
+            "POS-01",
+            "Alice",
+            DateTimeOffset.UtcNow,
+            0m,
+            0m,
+            0m,
+            0,
+            string.Empty,
+            "Synced");
+        var viewModel = new TransactionHistoryViewModel();
+        viewModel.Orders.Add(order);
+        viewModel.SelectedOrder = order;
+        viewModel.SelectedReceipt = new ReceiptDetails(
+            orderGuid,
+            "S001",
+            "POS-01",
+            "Alice",
+            DateTimeOffset.UtcNow,
+            0m,
+            0m,
+            0m,
+            [],
+            []);
+
+        viewModel.OpenOrderDetailsCommand.Execute(order);
+
+        Assert.True(viewModel.IsOrderDetailsOpen);
+        Assert.True(viewModel.IsOrderDetailsEmpty);
+        Assert.Empty(viewModel.OrderDetailLinesForTests);
+        Assert.False(viewModel.HasOrderDetailsPayments);
+        Assert.True(viewModel.IsOrderDetailsFinancialContentVisible);
+        Assert.Equal(string.Empty, viewModel.OrderDetailsErrorMessage);
+    }
+
+    [Fact]
+    public async Task Order_details_failure_can_retry_without_reopening_or_using_stale_data()
+    {
+        var orderGuid = Guid.NewGuid();
+        var receipt = new ReceiptDetails(
+            orderGuid,
+            "S001",
+            "POS-01",
+            "Alice",
+            DateTimeOffset.UtcNow,
+            6m,
+            0m,
+            6m,
+            [new ReceiptPreviewLine("Retry item", "BAR-RETRY", 1m, 6m, 0m, 6m)],
+            [new ReceiptPaymentLine(PaymentMethodKind.Cash, 6m, null)]);
+        var receiptQuery = new CapturingReceiptQueryService
+        {
+            Orders =
+            [
+                new LocalOrderSummary(
+                    orderGuid,
+                    "S001",
+                    "POS-01",
+                    "Alice",
+                    DateTimeOffset.UtcNow,
+                    6m,
+                    0m,
+                    6m,
+                    "Synced",
+                    1,
+                    "Cash")
+            ]
+        };
+        receiptQuery.ReceiptHandler = (_, _) => receiptQuery.GetReceiptCallCount switch
+        {
+            1 => Task.FromResult<ReceiptDetails?>(null),
+            2 => Task.FromException<ReceiptDetails?>(new InvalidOperationException("simulated detail failure")),
+            _ => Task.FromResult<ReceiptDetails?>(receipt)
+        };
+        var viewModel = new TransactionHistoryViewModel(receiptQuery, null, null, CreateSession());
+
+        await viewModel.LoadAsync();
+        var row = Assert.Single(viewModel.Orders);
+        viewModel.OpenOrderDetailsCommand.Execute(row);
+        await WaitUntilAsync(() =>
+            !viewModel.IsReceiptPreviewLoading &&
+            viewModel.OrderDetailsErrorMessage == "simulated detail failure");
+
+        Assert.True(viewModel.IsOrderDetailsOpen);
+        Assert.Empty(viewModel.OrderDetailLinesForTests);
+        Assert.False(viewModel.IsOrderDetailsFinancialContentVisible);
+        Assert.True(viewModel.RetryOrderDetailsCommand.CanExecute(null));
+
+        viewModel.RetryOrderDetailsCommand.Execute(null);
+        await WaitUntilAsync(() => ReferenceEquals(viewModel.SelectedReceipt, receipt));
+
+        Assert.True(viewModel.IsOrderDetailsOpen);
+        Assert.Equal(string.Empty, viewModel.OrderDetailsErrorMessage);
+        Assert.Equal("Retry item", Assert.Single(viewModel.OrderDetailLinesForTests).DisplayName);
+        Assert.Equal(3, receiptQuery.GetReceiptCallCount);
     }
 
     [Fact]
@@ -629,7 +1260,25 @@ public sealed class TransactionHistoryViewModelTests
                     0m,
                     10m,
                     SuspendedOrderStatus.Pending,
-                    [])
+                    [
+                        new SuspendedOrderLine(
+                            Guid.NewGuid(),
+                            suspendedOrderGuid,
+                            "S001",
+                            "SKU-HOLD",
+                            null,
+                            "Held Tea",
+                            "BAR-HOLD",
+                            "ITEM-HOLD",
+                            "snapshot://held-image",
+                            1m,
+                            10m,
+                            0m,
+                            null,
+                            10m,
+                            PriceSourceKind.ProductBase,
+                            "Product")
+                    ])
             }
         };
         var viewModel = new TransactionHistoryViewModel(
@@ -654,6 +1303,13 @@ public sealed class TransactionHistoryViewModelTests
         Assert.Equal(
             suspendedOrderGuid.ToString("D"),
             Assert.Single(viewModel.ReceiptPreviewRows, row => row.IsQrCode).QrCodeValue);
+        Assert.True(viewModel.SelectedOrder?.CanViewOrderDetails);
+        var detailLine = Assert.Single(viewModel.OrderDetailLinesForTests);
+        Assert.Equal("SKU-HOLD", detailLine.ProductCode);
+        Assert.Equal("ITEM-HOLD", detailLine.ItemNumber);
+        Assert.Equal("BAR-HOLD", detailLine.LookupCode);
+        Assert.Equal("snapshot://held-image", detailLine.ProductImage);
+        Assert.False(viewModel.HasOrderDetailsPayments);
     }
 
     [Fact]
@@ -940,6 +1596,114 @@ public sealed class TransactionHistoryViewModelTests
         Assert.Equal(
             secondOrderGuid.ToString("D"),
             Assert.Single(viewModel.ReceiptPreviewRows, row => row.IsQrCode).QrCodeValue);
+        Assert.Equal("Second Item", Assert.Single(viewModel.OrderDetailLinesForTests).DisplayName);
+    }
+
+    [Fact]
+    public async Task Remote_history_ignores_older_request_when_selection_returns_to_same_order()
+    {
+        var firstOrderGuid = Guid.NewGuid();
+        var secondOrderGuid = Guid.NewGuid();
+        var soldAt = DateTimeOffset.Now;
+        var firstOrder = new HistoryOrderListItem(
+            firstOrderGuid,
+            TransactionHistorySource.RemoteOrders,
+            "S001",
+            "POS-01",
+            "Alice",
+            soldAt,
+            12m,
+            0m,
+            12m,
+            1,
+            "Cash",
+            "Synced");
+        var secondOrder = new HistoryOrderListItem(
+            secondOrderGuid,
+            TransactionHistorySource.RemoteOrders,
+            "S001",
+            "POS-02",
+            "Bob",
+            soldAt.AddMinutes(-1),
+            8m,
+            0m,
+            8m,
+            1,
+            "Cash",
+            "Synced");
+        var staleFirstReceipt = new ReceiptDetails(
+            firstOrderGuid,
+            "S001",
+            "POS-01",
+            "Alice",
+            soldAt,
+            12m,
+            0m,
+            12m,
+            [new ReceiptPreviewLine("Stale first item", "930002", 1m, 12m, 0m, 12m)],
+            [new ReceiptPaymentLine(PaymentMethodKind.Cash, 12m, null)]);
+        var currentFirstReceipt = staleFirstReceipt with
+        {
+            Lines = [new ReceiptPreviewLine("Current first item", "930004", 1m, 12m, 0m, 12m)]
+        };
+        var firstRequestGate = new TaskCompletionSource<ReceiptDetails?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondRequestGate = new TaskCompletionSource<ReceiptDetails?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var currentRequestGate = new TaskCompletionSource<ReceiptDetails?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstRequestStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondRequestStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var currentRequestStarted = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var firstOrderRequestCount = 0;
+        var remoteOrders = new CapturingRemoteOrderHistoryService();
+        remoteOrders.DetailsHandler = (orderGuid, _) =>
+        {
+            if (orderGuid == secondOrderGuid)
+            {
+                secondRequestStarted.TrySetResult();
+                return secondRequestGate.Task;
+            }
+
+            if (Interlocked.Increment(ref firstOrderRequestCount) == 1)
+            {
+                firstRequestStarted.TrySetResult();
+                return firstRequestGate.Task;
+            }
+
+            currentRequestStarted.TrySetResult();
+            return currentRequestGate.Task;
+        };
+        var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            remoteOrders,
+            CreateSession());
+
+        viewModel.SelectedOrder = firstOrder;
+        await firstRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        viewModel.SelectedOrder = secondOrder;
+        await secondRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        viewModel.SelectedOrder = firstOrder;
+        await currentRequestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        firstRequestGate.SetResult(staleFirstReceipt);
+        await Task.Delay(100);
+
+        Assert.Null(viewModel.SelectedReceipt);
+        Assert.True(viewModel.IsReceiptPreviewLoading);
+
+        secondRequestGate.SetResult(null);
+        currentRequestGate.SetResult(currentFirstReceipt);
+        await WaitUntilAsync(() =>
+            ReferenceEquals(viewModel.SelectedReceipt, currentFirstReceipt) &&
+            !viewModel.IsReceiptPreviewLoading);
+
+        Assert.False(viewModel.IsReceiptPreviewLoading);
+        Assert.Equal("Current first item", Assert.Single(viewModel.OrderDetailLinesForTests).DisplayName);
     }
 
     [Fact]
@@ -1387,6 +2151,43 @@ public sealed class TransactionHistoryViewModelTests
     }
 
     [Fact]
+    public async Task Installment_history_labels_follow_localization_culture_without_duplicate_paid_label()
+    {
+        var localization = new LocalizationService();
+        localization.SetCulture(LocalizationService.DefaultCultureName);
+        var order = CreateInstallmentOrder(
+            "IO-20260826-I18N",
+            "Customer",
+            "0400111222",
+            paidAmount: 50m,
+            outstandingAmount: 38m);
+        using var viewModel = new TransactionHistoryViewModel(
+            new CapturingReceiptQueryService(),
+            new CapturingSuspendedOrderService(),
+            new CapturingRemoteOrderHistoryService(),
+            CreateSession(),
+            installmentOrderService: new CapturingInstallmentOrderService { Orders = [order] },
+            localization: localization);
+        viewModel.IsInstallmentSourceSelected = true;
+
+        await viewModel.LoadAsync();
+
+        var row = Assert.Single(viewModel.Orders);
+        Assert.Equal("$50.00", row.PaymentSummary);
+        Assert.Equal("Payment due", row.StatusLabel);
+
+        localization.SetCulture(LocalizationService.ChineseCultureName);
+
+        row = Assert.Single(viewModel.Orders);
+        Assert.Equal("$50.00", row.PaymentSummary);
+        Assert.Equal("\u5F85\u8865\u6B3E", row.StatusLabel);
+
+        localization.SetCulture(LocalizationService.DefaultCultureName);
+
+        Assert.Equal("Payment due", Assert.Single(viewModel.Orders).StatusLabel);
+    }
+
+    [Fact]
     public async Task Installment_history_source_loads_orders_and_continues_payment()
     {
         var order = CreateInstallmentOrder("IO-20260703-0001", "张三", "0400111222", paidAmount: 30m, outstandingAmount: 90m);
@@ -1426,6 +2227,10 @@ public sealed class TransactionHistoryViewModelTests
         Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("Receipt Tea", StringComparison.Ordinal));
         Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("Cash", StringComparison.Ordinal) && preview.Text.Contains("$30.00", StringComparison.Ordinal));
         Assert.Contains(viewModel.ReceiptPreviewRows, preview => preview.Text.Contains("Balance due", StringComparison.Ordinal) && preview.Text.Contains("$90.00", StringComparison.Ordinal));
+        var detailLine = Assert.Single(viewModel.OrderDetailLinesForTests);
+        Assert.Equal("P001", detailLine.ProductCode);
+        Assert.Equal("ITEM-INSTALLMENT", detailLine.ItemNumber);
+        Assert.Equal("930001", detailLine.LookupCode);
         Assert.Equal(
             order.OrderId.ToString("D"),
             Assert.Single(viewModel.ReceiptPreviewRows, preview => preview.IsQrCode).QrCodeValue);
@@ -1444,6 +2249,8 @@ public sealed class TransactionHistoryViewModelTests
         {
             PaidAmount = 80m,
             BalanceAmount = 40m,
+            CustomerName = string.Empty,
+            CustomerPhone = "0499999999",
             Lines =
             [
                 new InstallmentLineDto(
@@ -1493,6 +2300,11 @@ public sealed class TransactionHistoryViewModelTests
         Assert.Contains(viewModel.ReceiptLines, line => line.DisplayName == "Authoritative Item");
         Assert.DoesNotContain(viewModel.ReceiptLines, line => line.DisplayName == "Receipt Tea");
         Assert.Equal(80m, Assert.Single(viewModel.Payments).Amount);
+        Assert.Equal(80m, viewModel.OrderDetailsPaidAmount);
+        Assert.Equal(40m, viewModel.OrderDetailsOutstandingAmount);
+        Assert.True(viewModel.HasOrderDetailsCustomer);
+        Assert.Equal("-", viewModel.OrderDetailsCustomerName);
+        Assert.Equal("0499999999", viewModel.OrderDetailsCustomerPhone);
         Assert.True(viewModel.ReprintCommand.CanExecute(null));
     }
 
@@ -3441,9 +4253,32 @@ public sealed class TransactionHistoryViewModelTests
             order.PaidAmount,
             order.OutstandingAmount,
             order.OutstandingAmount > 0m ? InstallmentStatus.Active : InstallmentStatus.PaidOff,
-            [new InstallmentLineDto(Guid.NewGuid(), "P001", null, "Receipt Tea", "930001", 1m, order.TotalAmount, 0m, order.TotalAmount)],
+            [new InstallmentLineDto(Guid.NewGuid(), "P001", null, "Receipt Tea", "930001", 1m, order.TotalAmount, 0m, order.TotalAmount, "ITEM-INSTALLMENT")],
             [new InstallmentPaymentDto(Guid.NewGuid(), PaymentMethodKind.Cash, order.PaidAmount, null, InstallmentPaymentStatus.Recorded, DateTimeOffset.Now, "C001", order.DeviceCode)],
             null);
+    }
+
+    private static SellableItemDto CatalogItem(
+        string productCode,
+        string lookupCode,
+        string? itemNumber,
+        string? barcode,
+        string? productImage)
+    {
+        return new SellableItemDto(
+            "S001",
+            productCode,
+            null,
+            productCode,
+            lookupCode,
+            itemNumber,
+            barcode,
+            10m,
+            PriceSourceKind.ProductBase,
+            "Product",
+            1m,
+            DateTimeOffset.UtcNow,
+            productImage);
     }
 
     private sealed class CapturingReceiptQueryService : IReceiptQueryService
@@ -3451,6 +4286,14 @@ public sealed class TransactionHistoryViewModelTests
         public IReadOnlyList<LocalOrderSummary> Orders { get; set; } = [];
 
         public Dictionary<Guid, ReceiptDetails> Receipts { get; } = [];
+
+        public Func<LocalOrderHistoryQuery, CancellationToken, Task<IReadOnlyList<LocalOrderSummary>>>? QueryHandler { get; set; }
+
+        public Func<Guid, CancellationToken, Task<ReceiptDetails?>>? ReceiptHandler { get; set; }
+
+        public int QueryCallCount { get; private set; }
+
+        public int GetReceiptCallCount { get; private set; }
 
         public LocalOrderHistoryQuery? LastQuery { get; private set; }
 
@@ -3464,18 +4307,98 @@ public sealed class TransactionHistoryViewModelTests
             int take = 50,
             CancellationToken cancellationToken = default)
         {
+            QueryCallCount++;
             LastQuery = query;
+            if (QueryHandler is not null)
+            {
+                return QueryHandler(query, cancellationToken);
+            }
+
             return Task.FromResult(Orders);
         }
 
         public Task<ReceiptDetails?> GetReceiptAsync(Guid orderGuid, CancellationToken cancellationToken = default)
         {
+            GetReceiptCallCount++;
+            if (ReceiptHandler is not null)
+            {
+                return ReceiptHandler(orderGuid, cancellationToken);
+            }
+
             return Task.FromResult(Receipts.TryGetValue(orderGuid, out var receipt) ? receipt : null);
         }
 
         public Task<ReceiptDetails?> GetLatestReceiptAsync(CancellationToken cancellationToken = default)
         {
             return Task.FromResult(Receipts.Values.FirstOrDefault());
+        }
+    }
+
+    private sealed class TrackingRawScannerService : IRawScannerService, IScannerInputDeduplicator
+    {
+        private readonly Dictionary<string, Action<RawBarcodeScannedEventArgs>> _handlers = [];
+        private readonly ScannerInputDuplicateGuard _duplicateGuard = new();
+
+        public bool IsActive { get; private set; }
+
+        public int SubscribeCount { get; private set; }
+
+        public int UnsubscribeCount { get; private set; }
+
+        public Task InitializeAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public void Subscribe(string pageId, Action<RawBarcodeScannedEventArgs> handler)
+        {
+            SubscribeCount++;
+            _handlers[pageId] = handler;
+        }
+
+        public void Unsubscribe(string pageId)
+        {
+            UnsubscribeCount++;
+            _handlers.Remove(pageId);
+        }
+
+        public bool HasSubscription(string pageId) => _handlers.ContainsKey(pageId);
+
+        public void Emit(string pageId, string barcode)
+        {
+            Assert.True(_handlers.TryGetValue(pageId, out var handler));
+            var scannedAt = DateTimeOffset.UtcNow;
+            Assert.True(_duplicateGuard.TryAccept(barcode, "raw", scannedAt));
+            handler!(new RawBarcodeScannedEventArgs(barcode, "scanner-device", scannedAt));
+        }
+
+        bool IScannerInputDeduplicator.TryAcceptScanDelivery(
+            string barcode,
+            string source,
+            DateTimeOffset timestamp) => _duplicateGuard.TryAccept(barcode, source, timestamp);
+
+        public void SetActivePage(string? pageId)
+        {
+        }
+
+        public void Start(IntPtr hwnd)
+        {
+            IsActive = true;
+        }
+
+        public void Stop()
+        {
+            IsActive = false;
+        }
+
+        public void ClearPendingInput()
+        {
+        }
+
+        public Task ResetBindingAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public IntPtr ProcessWindowMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) =>
+            IntPtr.Zero;
+
+        public void Dispose()
+        {
         }
     }
 
@@ -3490,6 +4413,10 @@ public sealed class TransactionHistoryViewModelTests
         public Guid? RecalledOrderGuid { get; private set; }
 
         public bool ThrowOnGetPendingOrders { get; set; }
+
+        public Exception? GetOrderException { get; set; }
+
+        public Func<Guid, CancellationToken, Task<SuspendedOrder?>>? GetOrderHandler { get; set; }
 
         public Task<SuspendedOrder> SuspendCurrentOrderAsync(PosSessionState session, CancellationToken cancellationToken = default)
         {
@@ -3514,6 +4441,16 @@ public sealed class TransactionHistoryViewModelTests
 
         public Task<SuspendedOrder?> GetOrderAsync(Guid suspendedOrderGuid, CancellationToken cancellationToken = default)
         {
+            if (GetOrderHandler is not null)
+            {
+                return GetOrderHandler(suspendedOrderGuid, cancellationToken);
+            }
+
+            if (GetOrderException is not null)
+            {
+                return Task.FromException<SuspendedOrder?>(GetOrderException);
+            }
+
             return Task.FromResult(Orders.TryGetValue(suspendedOrderGuid, out var order) ? order : null);
         }
 
@@ -3644,6 +4581,8 @@ public sealed class TransactionHistoryViewModelTests
     {
         public bool Result { get; set; }
 
+        public Task<bool>? OrderDateRangeResultTask { get; set; }
+
         public bool HeldOrderCancellationResult { get; set; }
 
         public int CallCount { get; private set; }
@@ -3679,7 +4618,7 @@ public sealed class TransactionHistoryViewModelTests
             CallCount++;
             OrderCount = orderCount;
             BatchCount = batchCount;
-            return Task.FromResult(Result);
+            return OrderDateRangeResultTask ?? Task.FromResult(Result);
         }
     }
 

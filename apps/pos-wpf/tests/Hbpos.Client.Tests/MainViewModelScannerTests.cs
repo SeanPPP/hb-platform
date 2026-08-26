@@ -3381,7 +3381,7 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
-    public async Task ScannerActivePage_IsClearedForScreensWithoutScannerInputTarget()
+    public async Task ScannerActivePage_IsClearedForScreensWithoutTarget_and_activates_history_target()
     {
         var scanner = new FakeRawScannerService();
         var index = new LocalSellableItemIndex();
@@ -3441,7 +3441,19 @@ public sealed class MainViewModelScannerTests
         await viewModel.ShowHistoryCommand.ExecuteAsync(null);
 
         Assert.Same(viewModel.TransactionHistory, viewModel.CurrentScreen);
-        Assert.Null(scanner.ActivePageId);
+        Assert.Equal(TransactionHistoryViewModel.PageId, scanner.ActivePageId);
+
+        var history = Assert.IsType<TransactionHistoryViewModel>(viewModel.TransactionHistory);
+        var queryCountBeforeScan = orderRepository.FilteredQueryCallCount;
+        var handled = viewModel.TryProcessKeyboardScannerInput("  HISTORY-930110  ");
+        var scanLoadTask = history.LoadCommand.ExecutionTask;
+        Assert.NotNull(scanLoadTask);
+        await scanLoadTask!;
+
+        Assert.True(handled);
+        Assert.Equal("HISTORY-930110", history.SearchText);
+        Assert.Equal("HISTORY-930110", orderRepository.LastFilteredQuery?.Keyword);
+        Assert.Equal(queryCountBeforeScan + 1, orderRepository.FilteredQueryCallCount);
     }
 
     [Fact]
@@ -7016,6 +7028,10 @@ public sealed class MainViewModelScannerTests
 
     private sealed class FakeLocalOrderRepository : ILocalOrderRepository
     {
+        public int FilteredQueryCallCount { get; private set; }
+
+        public LocalOrderHistoryQuery? LastFilteredQuery { get; private set; }
+
         public Task SavePendingOrderAsync(LocalOrder order, CancellationToken cancellationToken = default)
         {
             return Task.CompletedTask;
@@ -7031,7 +7047,9 @@ public sealed class MainViewModelScannerTests
             int take = 50,
             CancellationToken cancellationToken = default)
         {
-            return GetRecentOrdersAsync(take, cancellationToken);
+            FilteredQueryCallCount++;
+            LastFilteredQuery = query;
+            return Task.FromResult<IReadOnlyList<LocalOrderSummary>>([]);
         }
 
         public Task<LocalOrder?> GetOrderAsync(Guid orderGuid, CancellationToken cancellationToken = default)
