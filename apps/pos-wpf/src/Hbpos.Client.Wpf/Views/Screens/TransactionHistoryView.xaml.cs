@@ -158,4 +158,13 @@ public partial class TransactionHistoryView : UserControl
         menu.IsOpen = true;
         e.Handled = true;
     }
+
+    private void ClearSearchButtonClick(object sender, RoutedEventArgs e)
+    {
+        HistorySearchTextBox.Clear();
+
+        // 清空后把焦点还给查询框，便于继续扫描或输入关键字。
+        HistorySearchTextBox.Focus();
+        e.Handled = true;
+    }
 }

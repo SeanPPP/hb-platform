@@ -499,11 +499,12 @@
                             <TextBlock Text="{loc:Loc history.searchLabel}"
                                        Style="{StaticResource HistoryFilterLabelStyle}" />
                             <Grid>
-                                <TextBox Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
+                                <TextBox x:Name="HistorySearchTextBox"
+                                         Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
                                          materialDesign:HintAssist.Hint="{Binding SearchHintText}"
                                          Height="44"
                                          FontSize="13"
-                                         Padding="38,0,10,0"
+                                         Padding="38,0,48,0"
                                          Style="{StaticResource PosSearchTextBoxStyle}" />
                                 <materialDesign:PackIcon Kind="Magnify"
                                                          Width="18"
@@ -513,6 +514,46 @@
                                                          HorizontalAlignment="Left"
                                                          VerticalAlignment="Center"
                                                          IsHitTestVisible="False" />
+                                <Button x:Name="HistorySearchClearButton"
+                                        Click="ClearSearchButtonClick"
+                                        ToolTip="{loc:Loc Clear}"
+                                        AutomationProperties.AutomationId="TransactionHistorySearchClearButton"
+                                        AutomationProperties.Name="{loc:Loc Clear}"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Center"
+                                        Margin="0,0,2,0">
+                                    <Button.Style>
+                                        <Style TargetType="Button" BasedOn="{StaticResource PosButtonBaseStyle}">
+                                            <Setter Property="Width" Value="40" />
+                                            <Setter Property="Height" Value="40" />
+                                            <Setter Property="MinWidth" Value="40" />
+                                            <Setter Property="MinHeight" Value="40" />
+                                            <Setter Property="Padding" Value="0" />
+                                            <Setter Property="Background" Value="Transparent" />
+                                            <Setter Property="BorderBrush" Value="Transparent" />
+                                            <Setter Property="Foreground" Value="#FF64748B" />
+                                            <Setter Property="Visibility" Value="Visible" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Text, ElementName=HistorySearchTextBox}" Value="">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                                <DataTrigger Binding="{Binding Text, ElementName=HistorySearchTextBox}" Value="{x:Null}">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                                <Trigger Property="IsMouseOver" Value="True">
+                                                    <Setter Property="Background" Value="#FFF1F5F9" />
+                                                </Trigger>
+                                                <Trigger Property="IsKeyboardFocused" Value="True">
+                                                    <Setter Property="Background" Value="#FFE8EEF6" />
+                                                </Trigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </Button.Style>
+                                    <materialDesign:PackIcon Kind="CloseCircle"
+                                                             Width="17"
+                                                             Height="17"
+                                                             IsHitTestVisible="False" />
+                                </Button>
                             </Grid>
                         </StackPanel>
 

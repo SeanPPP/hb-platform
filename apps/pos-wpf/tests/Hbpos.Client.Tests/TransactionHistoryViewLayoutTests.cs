@@ -271,6 +271,59 @@ public sealed class TransactionHistoryViewLayoutTests
         Assert.Equal("{StaticResource PosPrimaryButtonStyle}", (string?)loadButton.Attribute("Style"));
     }
 
+    [Fact]
+    public void History_search_box_uses_content_aware_clear_button()
+    {
+        var repoRoot = FindRepoRoot();
+        var view = XDocument.Load(Path.Combine(
+            repoRoot,
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "TransactionHistoryView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var searchTextBox = Assert.Single(view.Descendants(presentation + "TextBox").Where(element =>
+            (string?)element.Attribute("Text") == "{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"));
+        Assert.Equal("HistorySearchTextBox", (string?)searchTextBox.Attribute(x + "Name"));
+        Assert.Equal("38,0,48,0", (string?)searchTextBox.Attribute("Padding"));
+
+        var clearButton = Assert.Single(view.Descendants(presentation + "Button").Where(element =>
+            (string?)element.Attribute("AutomationProperties.AutomationId") == "TransactionHistorySearchClearButton"));
+        Assert.Equal("HistorySearchClearButton", (string?)clearButton.Attribute(x + "Name"));
+        Assert.Equal("ClearSearchButtonClick", (string?)clearButton.Attribute("Click"));
+        Assert.Equal("{loc:Loc Clear}", (string?)clearButton.Attribute("ToolTip"));
+        Assert.Equal("{loc:Loc Clear}", (string?)clearButton.Attribute("AutomationProperties.Name"));
+        Assert.Single(clearButton.Descendants().Where(element =>
+            element.Name.LocalName == "PackIcon" &&
+            (string?)element.Attribute("Kind") == "CloseCircle"));
+
+        var clearButtonStyle = Assert.Single(clearButton.Descendants(presentation + "Style"));
+        var visibilityTriggers = clearButtonStyle.Descendants(presentation + "DataTrigger").ToArray();
+        Assert.Contains(visibilityTriggers, trigger =>
+            (string?)trigger.Attribute("Binding") == "{Binding Text, ElementName=HistorySearchTextBox}" &&
+            (string?)trigger.Attribute("Value") == string.Empty);
+        Assert.Contains(visibilityTriggers, trigger =>
+            (string?)trigger.Attribute("Binding") == "{Binding Text, ElementName=HistorySearchTextBox}" &&
+            (string?)trigger.Attribute("Value") == "{x:Null}");
+
+        var codeBehind = File.ReadAllText(Path.Combine(
+            repoRoot,
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "TransactionHistoryView.xaml.cs"));
+        Assert.Contains("HistorySearchTextBox.Clear();", codeBehind, StringComparison.Ordinal);
+        Assert.Contains("HistorySearchTextBox.Focus();", codeBehind, StringComparison.Ordinal);
+    }
+
     private static void AssertTextStyleDoesNotWrap(
         XDocument document,
         XNamespace presentation,

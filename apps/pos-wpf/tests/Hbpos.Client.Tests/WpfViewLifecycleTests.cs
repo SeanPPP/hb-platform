@@ -78,6 +78,7 @@ public sealed class WpfViewLifecycleTests
         using var first = new TransactionHistoryViewModel();
         using var second = new TransactionHistoryViewModel();
         var view = new TransactionHistoryView { DataContext = first };
+        VerifyTransactionHistorySearchClearButton(view, first);
 
         AssertDirectHandlerCount(first, view, "ViewModelPropertyChanged", 0);
         RaiseLoaded(view);
@@ -113,6 +114,28 @@ public sealed class WpfViewLifecycleTests
         AssertDirectHandlerCount(second, view, "ViewModelPropertyChanged", 1);
         RaiseUnloaded(view);
         view.DataContext = null;
+    }
+
+    private static void VerifyTransactionHistorySearchClearButton(
+        TransactionHistoryView view,
+        TransactionHistoryViewModel viewModel)
+    {
+        var searchTextBox = Assert.IsType<TextBox>(view.FindName("HistorySearchTextBox"));
+        var clearButton = Assert.IsType<Button>(view.FindName("HistorySearchClearButton"));
+
+        PumpDispatcher();
+        Assert.Equal(Visibility.Collapsed, clearButton.Visibility);
+
+        viewModel.SearchText = "order-123";
+        PumpDispatcher();
+        Assert.Equal("order-123", searchTextBox.Text);
+        Assert.Equal(Visibility.Visible, clearButton.Visibility);
+
+        clearButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        PumpDispatcher();
+        Assert.Equal(string.Empty, searchTextBox.Text);
+        Assert.Equal(string.Empty, viewModel.SearchText);
+        Assert.Equal(Visibility.Collapsed, clearButton.Visibility);
     }
 
     private static void VerifyPaymentViewLifecycle()
