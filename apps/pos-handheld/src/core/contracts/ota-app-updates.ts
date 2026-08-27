@@ -1,5 +1,7 @@
 export type PosHandheldOtaUpdateState = "none" | "optional" | "required";
 
+export const POS_HANDHELD_PRODUCTION_CHANNEL = "pos-handheld-production";
+
 export type PosHandheldOtaUpdatePolicy =
   | Readonly<{
       state: "none";
@@ -100,6 +102,26 @@ const OTA_POLICY_FIELDS = [
   "releaseMessage",
 ] as const;
 const RUNTIME_VERSION_MAX_LENGTH = 120;
+
+/**
+ * 策略只能选择签名 production 构建的 legacy channel，或由该 channel、真机平台
+ * 派生的不可变 release channel；后台返回任意 channel 时必须失败关闭。
+ */
+export function isTrustedPosHandheldOtaChannel(
+  channel: string | null,
+  configuredChannel: string | null,
+  platform: "iOS" | "Android",
+): boolean {
+  if (configuredChannel !== POS_HANDHELD_PRODUCTION_CHANNEL) return false;
+  if (channel === configuredChannel) return true;
+  if (channel === null) return false;
+  const platformSegment = platform === "iOS" ? "ios" : "android";
+  const prefix = `${configuredChannel}-${platformSegment}-release-`;
+  const suffix = channel.startsWith(prefix)
+    ? channel.slice(prefix.length)
+    : "";
+  return /^[a-z0-9][a-z0-9-]{0,63}$/u.test(suffix);
+}
 
 /**
  * OTA 协议与原生更新协议完全分离；所有服务端字段都必须显式出现，

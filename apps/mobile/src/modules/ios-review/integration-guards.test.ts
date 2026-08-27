@@ -88,9 +88,14 @@ async function run() {
     "登录页不得再拥有独立自动 OTA、restart-ready 或直接 reload 路径",
   );
   assert.equal(
-    rootLayout.match(/useAutomaticAppUpdate\(\{/g)?.length,
+    rootLayout.match(/useMobileOtaUpdate\(\{/g)?.length,
     1,
-    "Root 必须是自动 OTA 的唯一 owner",
+    "Root 必须是受控 Mobile OTA 的唯一 owner",
+  );
+  assert.doesNotMatch(
+    rootLayout,
+    /useAutomaticAppUpdate\(\{/,
+    "Root 不得回退到无后台策略的 channel-head 自动 OTA",
   );
 
   const authLoginSource = authStore.slice(

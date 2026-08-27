@@ -52,6 +52,7 @@ export interface MobileAppBuildPagedResult {
 export interface MobileAppOtaUpdate {
   id: string
   updateGroupId?: string | null
+  updateId?: string | null
   androidUpdateId?: string | null
   channel?: string | null
   branch?: string | null

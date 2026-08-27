@@ -553,6 +553,29 @@ public sealed class PosHandheldUpdatePolicyService(
             return null;
         }
 
+        var release = await db.Queryable<AppOtaRelease>()
+            .FirstAsync(row =>
+                row.Id == candidateId
+                && !row.IsDeleted
+                && row.AppKey == MobileAppKeys.PosHandheld
+                && row.Environment == "production"
+                && row.ClientChannel == channel
+                && row.ProjectName == projectName
+                && row.Platform == platform
+            );
+        if (release is not null)
+        {
+            if (!IsValidOtaIdentity(release))
+            {
+                return null;
+            }
+
+            var releaseIsCurrentHead = !release.Legacy
+                || await IsLegacyReleaseHeadAsync(release);
+            return MapOtaCandidate(release, lane, releaseIsCurrentHead);
+        }
+
+        // 迁移期双读：尚未回填的 fixed-channel 记录继续按旧表只读解析。
         var item = await db.Queryable<MobileAppOtaUpdate>()
             .FirstAsync(row =>
                 row.Id == candidateId
@@ -585,6 +608,25 @@ public sealed class PosHandheldUpdatePolicyService(
             && IsValidOtaIdentity(head)
             && head.Id == item.Id;
         return MapOtaCandidate(item, lane, isCurrentHead);
+    }
+
+    private async Task<bool> IsLegacyReleaseHeadAsync(AppOtaRelease item)
+    {
+        var head = await db.Queryable<AppOtaRelease>()
+            .Where(row =>
+                !row.IsDeleted
+                && row.Legacy
+                && row.AppKey == item.AppKey
+                && row.Environment == item.Environment
+                && row.ProjectName == item.ProjectName
+                && row.Platform == item.Platform
+                && row.ReleaseChannel == item.ReleaseChannel
+                && row.RuntimeVersion == item.RuntimeVersion
+            )
+            .OrderByDescending(row => row.PublishedAtUtc)
+            .OrderByDescending(row => row.CreatedAt)
+            .FirstAsync();
+        return head?.Id == item.Id;
     }
 
     private async Task<List<PosHandheldUpdateCandidateDto>> GetAndroidCandidatesAsync()
@@ -685,6 +727,40 @@ public sealed class PosHandheldUpdatePolicyService(
             return [];
         }
 
+        var releases = await db.Queryable<AppOtaRelease>()
+            .Where(item =>
+                !item.IsDeleted
+                && item.AppKey == MobileAppKeys.PosHandheld
+                && item.Environment == "production"
+                && item.ClientChannel == channel
+                && item.ProjectName == projectName
+                && item.Platform == platform
+            )
+            .OrderByDescending(item => item.PublishedAtUtc)
+            .OrderByDescending(item => item.CreatedAt)
+            .Take(500)
+            .ToListAsync();
+        var legacyHeadIds = releases
+            .Where(item => item.Legacy && IsValidOtaIdentity(item))
+            .GroupBy(
+                item => (item.ReleaseChannel, item.RuntimeVersion),
+                EqualityComparer<(string, string)>.Default
+            )
+            .Select(group => group.First().Id)
+            .ToHashSet();
+        var candidates = releases
+            .Select(item =>
+                MapOtaCandidate(
+                    item,
+                    lane,
+                    !item.Legacy || legacyHeadIds.Contains(item.Id)
+                )
+            )
+            .Where(item => item is not null)
+            .Cast<PosHandheldUpdateCandidateDto>()
+            .ToList();
+
+        var releaseIds = releases.Select(item => item.Id).ToHashSet();
         var rows = await db.Queryable<MobileAppOtaUpdate>()
             .Where(item =>
                 !item.IsDeleted
@@ -702,10 +778,14 @@ public sealed class PosHandheldUpdatePolicyService(
             .GroupBy(item => item.RuntimeVersion!, StringComparer.Ordinal)
             .Select(group => group.First().Id)
             .ToHashSet();
-        return rows
+        candidates.AddRange(rows
+            .Where(item => !releaseIds.Contains(item.Id))
             .Select(item => MapOtaCandidate(item, lane, headIds.Contains(item.Id)))
             .Where(item => item is not null)
             .Cast<PosHandheldUpdateCandidateDto>()
+        );
+        return candidates
+            .OrderByDescending(item => item.PublishedAtUtc)
             .ToList();
     }
 
@@ -734,7 +814,7 @@ public sealed class PosHandheldUpdatePolicyService(
             );
         }
 
-        return CandidateValidation.Ok(candidate, Fingerprint(candidate));
+        return CandidateValidation.Ok(candidate, ComputeCandidateFingerprint(candidate));
     }
 
     private PosHandheldUpdateCandidateDto? MapAndroidCandidate(
@@ -817,7 +897,7 @@ public sealed class PosHandheldUpdatePolicyService(
         };
     }
 
-    private static PosHandheldUpdateCandidateDto? MapOtaCandidate(
+    internal static PosHandheldUpdateCandidateDto? MapOtaCandidate(
         MobileAppOtaUpdate item,
         string lane,
         bool isCurrentHead
@@ -849,12 +929,74 @@ public sealed class PosHandheldUpdatePolicyService(
         };
     }
 
+    internal static PosHandheldUpdateCandidateDto? MapOtaCandidate(
+        AppOtaRelease item,
+        string lane,
+        bool isCurrentHead
+    )
+    {
+        if (!IsValidOtaIdentity(item))
+        {
+            return null;
+        }
+
+        return new PosHandheldUpdateCandidateDto
+        {
+            Id = item.Id,
+            Lane = lane,
+            Kind = "ota",
+            Platform = item.Platform == "ios" ? "iOS" : "Android",
+            ProjectName = Normalize(item.ProjectName),
+            RuntimeVersion = Normalize(item.RuntimeVersion),
+            Channel = Normalize(item.ReleaseChannel),
+            UpdateId = Normalize(item.UpdateId),
+            UpdateGroupId = Normalize(item.UpdateGroupId),
+            ReleaseMessage = NormalizeOptional(item.Message),
+            ReleaseBatchId = item.ReleaseBatchId,
+            Legacy = item.Legacy,
+            FactFingerprint = NormalizeOptional(item.FactFingerprint),
+            GitCommitHash = NormalizeOptional(item.GitCommitHash),
+            DashboardUrl = NormalizeOptional(item.DashboardUrl),
+            IsRollback = item.IsRollback,
+            RollbackOfReleaseId = item.RollbackOfReleaseId,
+            RegistrationSource = NormalizeOptional(item.RegistrationSource),
+            RegisteredBy = NormalizeOptional(item.CreatedBy),
+            PublishedAtUtc = item.PublishedAtUtc,
+            IsCurrentHead = isCurrentHead,
+            Activatable = isCurrentHead,
+            BlockedReason = isCurrentHead
+                ? null
+                : PosHandheldUpdatePolicyErrorCodes.OtaCandidateNotChannelHead,
+        };
+    }
+
     private static bool IsValidOtaIdentity(MobileAppOtaUpdate item) =>
         Normalize(item.ProjectName).Length > 0
         && Normalize(item.Channel).Length > 0
         && Normalize(item.RuntimeVersion).Length > 0
         && Normalize(item.UpdateId ?? item.AndroidUpdateId).Length > 0
         && Guid.TryParse(Normalize(item.UpdateGroupId), out _);
+
+    private static bool IsValidOtaIdentity(AppOtaRelease item)
+    {
+        var channel = Normalize(item.ReleaseChannel).ToLowerInvariant();
+        var expectedReleasePrefix =
+            $"pos-handheld-production-{Normalize(item.Platform).ToLowerInvariant()}-release-";
+        var channelValid = item.Legacy
+            ? channel == "pos-handheld-production"
+            : channel.StartsWith(expectedReleasePrefix, StringComparison.Ordinal)
+                && channel.Length > expectedReleasePrefix.Length;
+        return item.AppKey == MobileAppKeys.PosHandheld
+            && item.Environment == "production"
+            && item.ClientChannel == "pos-handheld-production"
+            && item.Platform is "android" or "ios"
+            && channelValid
+            && Normalize(item.ProjectName).Length > 0
+            && Normalize(item.RuntimeVersion).Length > 0
+            && Guid.TryParse(Normalize(item.UpdateId), out _)
+            && Guid.TryParse(Normalize(item.UpdateGroupId), out _)
+            && Normalize(item.FactFingerprint).Length == 64;
+    }
 
     private bool IsConfiguredProject(string projectName) =>
         easOptions.Value.ProjectAppKeys.Any(mapping =>
@@ -979,7 +1121,9 @@ public sealed class PosHandheldUpdatePolicyService(
             StringComparison.Ordinal
         );
 
-    private static string Fingerprint(PosHandheldUpdateCandidateDto candidate)
+    internal static string ComputeCandidateFingerprint(
+        PosHandheldUpdateCandidateDto candidate
+    )
     {
         var identity = string.Join(
             "\n",

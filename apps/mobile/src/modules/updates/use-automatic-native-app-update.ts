@@ -2,6 +2,10 @@ import { useEffect, useRef } from "react";
 import { Alert, AppState, Linking, Platform, type AppStateStatus } from "react-native";
 import { i18n } from "@/shared/i18n/i18n";
 import {
+  appUpdateMutualExclusion,
+  createUpdateLaneRetryGate,
+} from "./app-update-mutual-exclusion";
+import {
   checkAndDownloadNativeAppUpdate,
   checkLegacyNativeAppUpdate,
   getBuildBoundNativeAppDownloadUrl,
@@ -42,6 +46,7 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   const inFlightRef = useRef(false);
   const promptedBuildIdRef = useRef<string | null>(null);
+  const operationRetryGateRef = useRef(createUpdateLaneRetryGate());
 
   useEffect(() => {
     optionsRef.current = options;
@@ -59,8 +64,12 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
         flags: FLAG_GRANT_READ_URI_PERMISSION,
       });
     } catch (error) {
+      appUpdateMutualExclusion.clearNativeInstaller();
       promptedBuildIdRef.current = null;
       console.warn("[updates] open APK installer failed", error);
+      if (!appUpdateMutualExclusion.tryOwnPrompt("native")) {
+        return;
+      }
       Alert.alert(
         i18n.t("settings:dialogs.nativeUpdateInstallFailedTitle"),
         i18n.t("settings:dialogs.nativeUpdateInstallFailedMessage"),
@@ -68,16 +77,24 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
           {
             text: i18n.t("settings:dialogs.nativeUpdateLaterAction"),
             style: "cancel",
+            onPress: () => appUpdateMutualExclusion.releasePrompt("native"),
           },
           {
             text: i18n.t("settings:dialogs.nativeUpdateOpenSettingsAction"),
             onPress: () => {
+              if (appUpdateMutualExclusion.isOtaRequiredGateActive()) {
+                appUpdateMutualExclusion.releasePrompt("native");
+                return;
+              }
+              appUpdateMutualExclusion.activateNativeInstaller();
               void openUnknownSourceSettings().catch((settingsError) => {
+                appUpdateMutualExclusion.clearNativeInstaller();
                 console.warn("[updates] open unknown app source settings failed", settingsError);
               });
             },
           },
-        ]
+        ],
+        { cancelable: false },
       );
     }
   }
@@ -94,6 +111,9 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
   }
 
   function promptInstall(build: NativeAppBuildInfo, fileUri: string) {
+    if (!appUpdateMutualExclusion.tryOwnPrompt("native")) {
+      return false;
+    }
     const versionText = [build.appVersion, build.appBuildVersion ? `(${build.appBuildVersion})` : null]
       .filter(Boolean)
       .join(" ");
@@ -105,18 +125,29 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
         {
           text: i18n.t("settings:dialogs.nativeUpdateLaterAction"),
           style: "cancel",
+          onPress: () => appUpdateMutualExclusion.releasePrompt("native"),
         },
         {
           text: i18n.t("settings:dialogs.nativeUpdateInstallAction"),
           onPress: () => {
+            if (appUpdateMutualExclusion.isOtaRequiredGateActive()) {
+              appUpdateMutualExclusion.releasePrompt("native");
+              return;
+            }
+            appUpdateMutualExclusion.activateNativeInstaller();
             void openDownloadedApk(fileUri);
           },
         },
-      ]
+      ],
+      { cancelable: false },
     );
+    return true;
   }
 
   function promptLegacyDownload(build: NativeAppBuildInfo, url: string) {
+    if (!appUpdateMutualExclusion.tryOwnPrompt("native")) {
+      return false;
+    }
     const versionText = [build.appVersion, build.appBuildVersion ? `(${build.appBuildVersion})` : null]
       .filter(Boolean)
       .join(" ");
@@ -128,24 +159,40 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
         {
           text: i18n.t("settings:dialogs.nativeUpdateLaterAction"),
           style: "cancel",
+          onPress: () => appUpdateMutualExclusion.releasePrompt("native"),
         },
         {
           text: i18n.t("settings:dialogs.legacyNativeUpdateDownloadAction"),
           onPress: () => {
+            if (appUpdateMutualExclusion.isOtaRequiredGateActive()) {
+              appUpdateMutualExclusion.releasePrompt("native");
+              return;
+            }
+            appUpdateMutualExclusion.activateNativeInstaller();
             void Linking.openURL(url).catch((error) => {
+              appUpdateMutualExclusion.clearNativeInstaller();
               promptedBuildIdRef.current = null;
               console.warn("[updates] open APK download link failed", error);
             });
           },
         },
-      ]
+      ],
+      { cancelable: false },
     );
+    return true;
   }
 
   async function check(options: { enabled: boolean }) {
     if (!options.enabled || inFlightRef.current) {
       return;
     }
+
+    const updateLease = appUpdateMutualExclusion.tryStartOperation("native");
+    if (!updateLease) {
+      operationRetryGateRef.current.markBlocked();
+      return;
+    }
+    operationRetryGateRef.current.clear();
 
     inFlightRef.current = true;
     try {
@@ -168,8 +215,9 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
         }
 
         // 旧 runtime 没有新原生模块，只提示用户跳转浏览器下载最新 APK。
-        promptedBuildIdRef.current = result.build.easBuildId;
-        promptLegacyDownload(result.build, result.url);
+        if (promptLegacyDownload(result.build, result.url)) {
+          promptedBuildIdRef.current = result.build.easBuildId;
+        }
         return;
       }
 
@@ -195,12 +243,14 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
       }
 
       // 同一个安装包一次运行只提示一次；下次打开 App 仍会继续提醒未安装的新包。
-      promptedBuildIdRef.current = result.build.easBuildId;
-      promptInstall(result.build, result.fileUri);
+      if (promptInstall(result.build, result.fileUri)) {
+        promptedBuildIdRef.current = result.build.easBuildId;
+      }
     } catch (error) {
       console.warn("[updates] automatic APK update check failed", error);
     } finally {
       inFlightRef.current = false;
+      updateLease.finish();
     }
   }
 
@@ -214,9 +264,21 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
   }, [options.enabled]);
 
   useEffect(() => {
+    const unsubscribe = appUpdateMutualExclusion.subscribe(() => {
+      if (
+        optionsRef.current.enabled
+        && operationRetryGateRef.current.consumeRetry()
+      ) {
+        void check(optionsRef.current);
+      }
+    });
     const subscription = AppState.addEventListener("change", (nextState) => {
       const previousState = appStateRef.current;
       appStateRef.current = nextState;
+      if (nextState === "active") {
+        // 从系统安装器/浏览器返回后才允许 OTA 下载或 reload。
+        appUpdateMutualExclusion.clearNativeInstaller();
+      }
       if (previousState === "active" || nextState !== "active") {
         return;
       }
@@ -225,7 +287,11 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
     });
 
     return () => {
+      unsubscribe();
       subscription.remove();
+      operationRetryGateRef.current.clear();
+      appUpdateMutualExclusion.releasePrompt("native");
+      appUpdateMutualExclusion.clearNativeInstaller();
     };
   }, []);
 }

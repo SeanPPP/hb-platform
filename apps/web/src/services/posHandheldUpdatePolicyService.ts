@@ -118,6 +118,7 @@ export function normalizePosHandheldReleaseCandidate(
   const normalizedPlatform = platform(raw.platform)
   const normalizedKind = kind(raw.kind)
   const artifactUrl = firstNullableText(raw, 'downloadUrl', 'artifactUrl')
+  const releaseChannel = firstNullableText(raw, 'releaseChannel', 'channel')
   return {
     id: text(raw, 'id'),
     lane: lane(raw.lane, normalizedPlatform, normalizedKind),
@@ -126,9 +127,20 @@ export function normalizePosHandheldReleaseCandidate(
     version: nullableText(raw, 'version'),
     buildNumber: nullableText(raw, 'buildNumber'),
     runtimeVersion: nullableText(raw, 'runtimeVersion'),
-    channel: nullableText(raw, 'channel'),
+    channel: releaseChannel,
+    clientChannel: firstNullableText(raw, 'clientChannel'),
+    releaseChannel,
+    releaseBatchId: nullableText(raw, 'releaseBatchId'),
     updateId: nullableText(raw, 'updateId'),
     updateGroupId: nullableText(raw, 'updateGroupId'),
+    message: firstNullableText(raw, 'message', 'releaseMessage'),
+    gitCommitHash: nullableText(raw, 'gitCommitHash'),
+    dashboardUrl: nullableText(raw, 'dashboardUrl'),
+    factFingerprint: nullableText(raw, 'factFingerprint'),
+    legacy: boolean(raw, 'legacy'),
+    isRollback: boolean(raw, 'isRollback'),
+    rollbackOfReleaseId: nullableText(raw, 'rollbackOfReleaseId'),
+    registrationSource: nullableText(raw, 'registrationSource'),
     downloadUrl: artifactUrl,
     appStoreUrl: nullableText(raw, 'appStoreUrl')
       ?? (normalizedPlatform === 'ios' && normalizedKind === 'native'
@@ -136,7 +148,7 @@ export function normalizePosHandheldReleaseCandidate(
         : null),
     artifactSha256: firstNullableText(raw, 'artifactSha256', 'sha256'),
     createdAt: firstNullableText(raw, 'createdAt', 'publishedAtUtc') ?? '',
-    createdBy: nullableText(raw, 'createdBy'),
+    createdBy: firstNullableText(raw, 'createdBy', 'registeredBy'),
     activatable: boolean(raw, 'activatable') || boolean(raw, 'isActivatable'),
     blockedReason: nullableText(raw, 'blockedReason'),
   }

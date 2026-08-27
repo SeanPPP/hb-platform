@@ -216,8 +216,8 @@ async function run() {
           shouldPromptOptional: true,
         },
       }),
-      { allowed: false, epoch: 12 },
-      "需要展示的原生 optional 必须先于 OTA",
+      { allowed: true, epoch: 12 },
+      "原生 optional 必须先让 OTA 完成 required 判定，再竞争 optional 提示",
     );
     assert.deepEqual(
       deriveIosNativeOtaBarrier({

@@ -607,6 +607,25 @@ builder.Services.AddScoped<INativeAppUpdatePolicyService>(sp =>
         sp.GetRequiredService<ILogger<NativeAppUpdatePolicyService>>()
     );
 });
+builder.Services.AddScoped<IAppOtaReleaseService>(sp =>
+{
+    var context = sp.GetRequiredService<SqlSugarContext>();
+    return new AppOtaReleaseService(
+        context.Db,
+        sp.GetRequiredService<
+            Microsoft.Extensions.Options.IOptions<EasWebhookOptions>
+        >(),
+        sp.GetRequiredService<ILogger<AppOtaReleaseService>>()
+    );
+});
+builder.Services.AddScoped<IMobileOtaPolicyService>(sp =>
+{
+    var context = sp.GetRequiredService<SqlSugarContext>();
+    return new MobileOtaPolicyService(
+        context.Db,
+        sp.GetRequiredService<ILogger<MobileOtaPolicyService>>()
+    );
+});
 builder.Services.AddScoped<IPosIpadOtaPolicyService>(sp =>
 {
     var context = sp.GetRequiredService<SqlSugarContext>();
@@ -627,6 +646,17 @@ builder.Services.AddScoped<IPosHandheldUpdatePolicyService>(sp =>
             Microsoft.Extensions.Options.IOptions<EasWebhookOptions>
         >(),
         sp.GetRequiredService<ILogger<PosHandheldUpdatePolicyService>>()
+    );
+});
+builder.Services.AddScoped<IPosHandheldOtaLegacyBackfillService>(sp =>
+{
+    var context = sp.GetRequiredService<SqlSugarContext>();
+    return new PosHandheldOtaLegacyBackfillService(
+        context.Db,
+        sp.GetRequiredService<
+            Microsoft.Extensions.Options.IOptions<PosHandheldUpdatePolicyOptions>
+        >(),
+        sp.GetRequiredService<ILogger<PosHandheldOtaLegacyBackfillService>>()
     );
 });
 builder.Services.AddScoped<MobileAppBuildService>(sp =>

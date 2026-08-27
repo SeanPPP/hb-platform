@@ -38,6 +38,7 @@ public sealed partial class HttpPosHandheldUpdateDecisionGateway(
     : IPosHandheldUpdateDecisionGateway
 {
     private const string PosHandheldIosBundleIdentifier = "com.hbweb.poshandheld";
+    private const string PosHandheldProductionChannel = "pos-handheld-production";
     private const long JavaScriptSafeIntegerMax = 9007199254740991;
 
     internal const string DecisionReadTokenEnvironmentVariable =
@@ -247,7 +248,7 @@ public sealed partial class HttpPosHandheldUpdateDecisionGateway(
             ? decision.PolicyVersion == "none" && !decision.Required
             : decision.PolicyVersion != "none"
                 && !string.IsNullOrWhiteSpace(decision.ProjectName)
-                && !string.IsNullOrWhiteSpace(decision.Channel)
+                && IsTrustedOtaChannel(decision.Channel, request.Platform)
                 && !string.IsNullOrWhiteSpace(decision.RuntimeVersion)
                 && string.Equals(
                     decision.RuntimeVersion.Trim(),
@@ -256,6 +257,33 @@ public sealed partial class HttpPosHandheldUpdateDecisionGateway(
                 )
                 && !string.IsNullOrWhiteSpace(decision.UpdateId)
                 && Guid.TryParse(decision.UpdateGroupId, out _);
+    }
+
+    private static bool IsTrustedOtaChannel(string? channel, string platform)
+    {
+        if (string.Equals(
+                channel,
+                PosHandheldProductionChannel,
+                StringComparison.Ordinal
+            ))
+        {
+            return true;
+        }
+
+        var platformSegment = platform switch
+        {
+            "iOS" => "ios",
+            "Android" => "android",
+            _ => null,
+        };
+        if (platformSegment is null || channel is null)
+        {
+            return false;
+        }
+
+        var prefix = $"{PosHandheldProductionChannel}-{platformSegment}-release-";
+        return channel.StartsWith(prefix, StringComparison.Ordinal)
+            && ReleaseChannelSuffixPattern().IsMatch(channel[prefix.Length..]);
     }
 
     private static bool HasExactProperties(JsonElement value, IReadOnlySet<string> fields)
@@ -405,5 +433,8 @@ public sealed partial class HttpPosHandheldUpdateDecisionGateway(
 
     [GeneratedRegex("^[a-zA-Z][a-zA-Z0-9_]*(?:\\.[a-zA-Z][a-zA-Z0-9_]*)+$", RegexOptions.CultureInvariant)]
     private static partial Regex PackagePattern();
+
+    [GeneratedRegex("^[a-z0-9][a-z0-9-]{0,63}$", RegexOptions.CultureInvariant)]
+    private static partial Regex ReleaseChannelSuffixPattern();
 
 }

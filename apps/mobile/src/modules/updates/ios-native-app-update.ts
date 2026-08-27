@@ -195,14 +195,10 @@ export function deriveIosNativeOtaBarrier(
       epoch: currentEpoch,
     };
   }
-  const { decision, shouldPromptOptional } = receipt.outcome;
+  const { decision } = receipt.outcome;
   return {
-    allowed:
-      decision?.state !== "required" &&
-      !shouldActivateIosNativeOptionalPrompt({
-        decision,
-        shouldPromptOptional,
-      }),
+    // optional 先允许 Mobile 判定是否 required；真正弹窗由共享互斥在 OTA 判定后取得优先权。
+    allowed: decision?.state !== "required",
     epoch: receipt.epoch,
   };
 }

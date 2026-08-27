@@ -177,6 +177,55 @@ test("OTA response 必须匹配本机平台、请求 runtime 与配置 channel",
   }
 });
 
+test("production 客户端仅接受本平台 legacy 或唯一 release channel", async () => {
+  for (const [platform, channel] of [
+    ["iOS", "pos-handheld-production"],
+    ["iOS", "pos-handheld-production-ios-release-20260827t101500z-a1b2c3"],
+    ["Android", "pos-handheld-production-android-release-20260827t101500z-d4e5f6"],
+  ] as const) {
+    const fixture = platform === "iOS"
+      ? expectedPolicy
+      : {
+          ...expectedPolicy,
+          platform: "Android",
+          updateId: "android-update-10",
+        };
+    const { api } = createApi(
+      { success: true, data: { ...fixture, channel } },
+      platform,
+    );
+    assert.equal((await api.getPolicy(metadata)).channel, channel);
+  }
+});
+
+test("release channel 必须由 production 原生 channel 与真机平台派生", async (t) => {
+  const rejected = [
+    "pos-handheld-production-android-release-20260827t101500z-a1b2c3",
+    "pos-handheld-preview-ios-release-20260827t101500z-a1b2c3",
+    "pos-handheld-production-ios-release-",
+    "attacker-production-ios-release-20260827t101500z-a1b2c3",
+  ];
+
+  for (const channel of rejected) {
+    await t.test(channel, async () => {
+      const { api } = createApi({
+        success: true,
+        data: { ...expectedPolicy, channel },
+      });
+      await assert.rejects(() => api.getPolicy(metadata), /channel/i);
+    });
+  }
+
+  const transport = new RecordingTransport(apiResponseFixture);
+  const previewApi = new HbposPosHandheldOtaUpdateApi(
+    transport,
+    "iOS",
+    "pos-handheld-preview",
+  );
+  await assert.rejects(() => previewApi.getPolicy(metadata), /production.*channel/i);
+  assert.equal(transport.requests.length, 0);
+});
+
 test("OTA response 对 appKey、required/state、更新身份与额外字段 fail closed", async (t) => {
   const malformed = [
     { ...expectedPolicy, appKey: "pos-ipad" },

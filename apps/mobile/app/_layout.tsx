@@ -12,14 +12,15 @@ import { usePrinterAutoConnect } from "@/modules/printer/use-printer-auto-connec
 import { waitForStartupReadiness } from "@/modules/startup/startup-readiness";
 import { shouldRunAutomaticAppUpdatesForProfile } from "@/modules/updates/app-build-profile";
 import { IosNativeUpdateBoundary } from "@/modules/updates/IosNativeUpdateBoundary";
+import { MobileOtaUpdateBoundary } from "@/modules/updates/MobileOtaUpdateBoundary";
 import {
   deriveIosNativeOtaBarrier,
   shouldEnableIosNativeUpdate,
   shouldPauseAutomaticOtaForIosNativeUpdate,
 } from "@/modules/updates/ios-native-app-update";
-import { useAutomaticAppUpdate } from "@/modules/updates/use-automatic-app-update";
 import { useAutomaticNativeAppUpdate } from "@/modules/updates/use-automatic-native-app-update";
 import { useIosNativeAppUpdate } from "@/modules/updates/use-ios-native-app-update";
+import { useMobileOtaUpdate } from "@/modules/updates/use-mobile-ota-update";
 import { i18n, initI18n } from "@/shared/i18n/i18n";
 import { queryClient } from "@/shared/api/query-client";
 import { installGlobalErrorLogging, reportApplicationLog } from "@/shared/logging/log-center-runtime";
@@ -89,7 +90,9 @@ export default function RootLayout() {
   });
 
   usePrinterAutoConnect({ enabled: sideEffectsEnabled });
-  useAutomaticAppUpdate({
+  // Android 原生包检查先注册 effect；共享互斥会让 APK 提示优先于 OTA optional。
+  useAutomaticNativeAppUpdate({ enabled: automaticUpdatesEnabled });
+  const mobileOtaUpdate = useMobileOtaUpdate({
     enabled: automaticUpdatesEnabled && !pauseAutomaticOta,
     beforeCheck: iosNativeUpdateEnabled
       ? async () => {
@@ -105,7 +108,6 @@ export default function RootLayout() {
       ? iosNativeUpdate.getCheckEpoch
       : undefined,
   });
-  useAutomaticNativeAppUpdate({ enabled: automaticUpdatesEnabled });
 
   useEffect(() => {
     if (!sideEffectsEnabled) {
@@ -222,16 +224,36 @@ export default function RootLayout() {
                   void iosNativeUpdate.recheck();
                 }}
               >
-                <View style={styles.appContent}>
-                  <Stack screenOptions={{ headerShown: false }}>
-                    <Stack.Screen name="index" />
-                    <Stack.Screen name="(auth)" />
-                    <Stack.Screen name="(tabs)" />
-                    <Stack.Screen name="preorders" />
-                    <Stack.Screen name="employee-profile-review" />
-                  </Stack>
-                  {isIosReviewSession ? <IosReviewBanner /> : null}
-                </View>
+                <MobileOtaUpdateBoundary
+                  enabled={mobileOtaUpdate.enabled}
+                  initialized={mobileOtaUpdate.initialized}
+                  checking={mobileOtaUpdate.checking}
+                  downloading={mobileOtaUpdate.downloading}
+                  applying={mobileOtaUpdate.applying}
+                  downloaded={mobileOtaUpdate.downloaded}
+                  decision={mobileOtaUpdate.decision}
+                  lastError={mobileOtaUpdate.lastError}
+                  onDownload={() => {
+                    void mobileOtaUpdate.downloadRequired();
+                  }}
+                  onRestart={() => {
+                    void mobileOtaUpdate.restartRequired();
+                  }}
+                  onRetry={() => {
+                    void mobileOtaUpdate.recheck();
+                  }}
+                >
+                  <View style={styles.appContent}>
+                    <Stack screenOptions={{ headerShown: false }}>
+                      <Stack.Screen name="index" />
+                      <Stack.Screen name="(auth)" />
+                      <Stack.Screen name="(tabs)" />
+                      <Stack.Screen name="preorders" />
+                      <Stack.Screen name="employee-profile-review" />
+                    </Stack>
+                    {isIosReviewSession ? <IosReviewBanner /> : null}
+                  </View>
+                </MobileOtaUpdateBoundary>
               </IosNativeUpdateBoundary>
             </NetworkRecoveryProvider>
           </PaperProvider>

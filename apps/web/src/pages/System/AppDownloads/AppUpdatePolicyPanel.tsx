@@ -73,6 +73,7 @@ import {
 } from './appUpdatePolicyRequestLogic'
 import { formatAppDownloadLocalDateTime } from './time'
 import PosHandheldUpdatePolicyTab from './PosHandheldUpdatePolicyTab'
+import MobileOtaPolicyTab from './MobileOtaPolicyTab'
 
 interface AppUpdatePolicyPanelProps {
   canManage: boolean
@@ -211,6 +212,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
   const [registerApp, setRegisterApp] = useState<AppUpdateApp | null>(null)
   const [registerSaving, setRegisterSaving] = useState(false)
   const [handheldRefreshVersion, setHandheldRefreshVersion] = useState(0)
+  const [mobileOtaRefreshVersion, setMobileOtaRefreshVersion] = useState(0)
   const laneRequestsRef = useRef<Record<LoadLaneKey, LatestRequestLane>>({
     mobileNative: new LatestRequestLane(),
     ipadNative: new LatestRequestLane(),
@@ -329,6 +331,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
 
   const refreshAll = useCallback(async () => {
     setHandheldRefreshVersion((version) => version + 1)
+    setMobileOtaRefreshVersion((version) => version + 1)
     await Promise.allSettled([
       loadMobileNativeLane(),
       loadIpadNativeLane(),
@@ -1352,6 +1355,16 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
         mobileSaving,
         mobileLoadState,
         loadMobileNativeLane,
+      ),
+    },
+    {
+      key: 'mobile-ota',
+      label: t('system.appDownloads.updatePolicy.tabs.mobileOta'),
+      children: (
+        <MobileOtaPolicyTab
+          canManage={canManage}
+          refreshVersion={mobileOtaRefreshVersion}
+        />
       ),
     },
     {
