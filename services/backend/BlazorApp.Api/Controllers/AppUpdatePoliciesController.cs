@@ -24,7 +24,9 @@ public sealed class AppUpdatePoliciesController(
 
     [HttpPut("mobile-ios")]
     [Authorize(Policy = Permissions.System.ManageAppDownloads)]
-    public async Task<IActionResult> PutMobileIos([FromBody] NativeUpdatePolicyRequest request)
+    public async Task<IActionResult> PutMobileIos(
+        [FromBody] MobileIosNativeUpdatePolicyRequest request
+    )
     {
         var response = await service.SetMobileIosPolicyAsync(
             request,

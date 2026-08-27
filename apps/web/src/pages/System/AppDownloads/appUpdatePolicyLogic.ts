@@ -1,5 +1,6 @@
 import type {
   AppUpdateTargetScope,
+  MobileIosNativeUpdatePolicyRequest,
   NativeUpdatePolicyRequest,
   PosIpadNativeUpdatePolicyRequest,
   PosIpadOtaRolloutRequest,
@@ -99,6 +100,10 @@ export function isValidPosIpadBuildNumber(value?: string | null) {
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= INT32_MAX_VALUE
 }
 
+export function isValidMobileIosBuildNumber(value?: string | null) {
+  return isValidPosIpadBuildNumber(value)
+}
+
 export function isValidPosHandheldBuildNumber(value?: string | null) {
   const normalized = value?.trim() ?? ''
   if (!/^[1-9]\d*$/.test(normalized)) {
@@ -154,7 +159,7 @@ export function buildNativeUpdatePolicyRequest(
   value: NativeUpdatePolicyFormValue,
   targeted: false,
   expectedPolicyVersion: number,
-): NativeUpdatePolicyRequest
+): MobileIosNativeUpdatePolicyRequest
 export function buildNativeUpdatePolicyRequest(
   value: NativeUpdatePolicyFormValue,
   targeted: true,
@@ -164,7 +169,7 @@ export function buildNativeUpdatePolicyRequest(
   value: NativeUpdatePolicyFormValue,
   targeted: boolean,
   expectedPolicyVersion: number,
-): NativeUpdatePolicyRequest | PosIpadNativeUpdatePolicyRequest {
+): MobileIosNativeUpdatePolicyRequest | PosIpadNativeUpdatePolicyRequest {
   if (!value.enabled) {
     return targeted
       ? {
@@ -182,6 +187,7 @@ export function buildNativeUpdatePolicyRequest(
           enabled: false,
           releaseId: null,
           minimumSupportedVersion: null,
+          minimumSupportedBuildNumber: null,
           releaseMessage: null,
         }
   }
@@ -194,7 +200,12 @@ export function buildNativeUpdatePolicyRequest(
     releaseMessage: normalizeText(value.releaseMessage),
   }
   if (!targeted) {
-    return base
+    return {
+      ...base,
+      minimumSupportedBuildNumber: base.minimumSupportedVersion
+        ? normalizeMinimumSupportedBuildNumber(value.minimumSupportedBuildNumber)
+        : null,
+    }
   }
 
   const targetScope = value.targetScope === 'stores' ? 'stores' : 'all'
@@ -263,7 +274,7 @@ export function buildNativePolicyConfirmationSummary(
     targetStoreGuids: [],
     updateMode: request.minimumSupportedVersion ? 'required' : 'optional',
     minimumSupportedVersion: request.minimumSupportedVersion,
-    minimumSupportedBuildNumber: null,
+    minimumSupportedBuildNumber: request.minimumSupportedBuildNumber,
   }
 }
 

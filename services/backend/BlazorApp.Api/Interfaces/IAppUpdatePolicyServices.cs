@@ -35,7 +35,7 @@ public interface INativeAppUpdatePolicyService
     Task<ApiResponse<NativeUpdatePolicyDto>> GetMobileIosPolicyAsync();
 
     Task<ApiResponse<NativeUpdatePolicyDto>> SetMobileIosPolicyAsync(
-        NativeUpdatePolicyRequest request,
+        MobileIosNativeUpdatePolicyRequest request,
         string currentUser
     );
 

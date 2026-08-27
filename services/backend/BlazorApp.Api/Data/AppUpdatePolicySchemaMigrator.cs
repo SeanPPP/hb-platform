@@ -60,6 +60,7 @@ BEGIN TRY
             [PolicyKey] nvarchar(40) NOT NULL,
             [ReleaseId] uniqueidentifier NULL,
             [MinimumSupportedVersion] nvarchar(64) NULL,
+            [MinimumSupportedBuildNumber] int NULL,
             [ReleaseMessage] nvarchar(1000) NULL,
             [Enabled] bit NOT NULL,
             [PolicyVersion] bigint NOT NULL,
@@ -70,6 +71,10 @@ BEGIN TRY
             [IsDeleted] bit NOT NULL CONSTRAINT [DF_MobileIosNativeUpdatePolicy_IsDeleted] DEFAULT(0)
         );
     END;
+
+    IF COL_LENGTH(N'[dbo].[MobileIosNativeUpdatePolicy]', N'MinimumSupportedBuildNumber') IS NULL
+        ALTER TABLE [dbo].[MobileIosNativeUpdatePolicy]
+            ADD [MinimumSupportedBuildNumber] int NULL;
 
     IF NOT EXISTS (
         SELECT 1 FROM sys.indexes

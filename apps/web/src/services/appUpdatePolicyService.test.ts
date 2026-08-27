@@ -226,6 +226,7 @@ async function run() {
     enabled: true,
     releaseId: 'release-mobile',
     minimumSupportedVersion: '1.1.0',
+    minimumSupportedBuildNumber: 31,
     releaseMessage: '请升级',
   })
   assertDeepEqual(
@@ -238,10 +239,11 @@ async function run() {
         enabled: true,
         releaseId: 'release-mobile',
         minimumSupportedVersion: '1.1.0',
+        minimumSupportedBuildNumber: 31,
         releaseMessage: '请升级',
       },
     },
-    'Mobile 策略 PUT 必须保持后台 DTO 字段',
+    'Mobile 策略 PUT 必须透传最低支持构建号及后台 DTO 字段',
   )
 
   await service.getPosIpadNativePolicy()
