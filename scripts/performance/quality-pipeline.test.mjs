@@ -100,13 +100,25 @@ test("lane 命令使用现有 build/typecheck/test 且不通过 shell 拼接", (
   });
 
   for (const lane of ["pos-ipad", "pos-handheld"]) {
-    const commands = getLaneCommands(lane).map((item) => [item.command, ...item.args]);
+    const laneCommands = getLaneCommands(lane);
+    const commands = laneCommands.map((item) => [item.command, ...item.args]);
     assert.deepEqual(commands, [
       ["npm", "ci"],
       ["npm", "run", "typecheck"],
       ["npm", "run", "verify:metro-bundle"],
       ["npm", "run", "test:ci"],
     ]);
+    assert.deepEqual(laneCommands[3].environment, {
+      TZ: "Australia/Brisbane",
+    });
+    assert.deepEqual(
+      buildLaneProcessEnvironment(laneCommands[3], { PATH: "/usr/bin" }),
+      {
+        PATH: "/usr/bin",
+        TZ: "Australia/Brisbane",
+        CI: "true",
+      },
+    );
   }
 });
 

@@ -96,6 +96,7 @@ const LANE_COMMANDS = Object.freeze({
       command: "npm",
       args: ["run", "test:ci"],
       cwd: "apps/pos-ipad",
+      environment: { TZ: "Australia/Brisbane" },
     },
   ],
   "pos-handheld": [
@@ -117,6 +118,7 @@ const LANE_COMMANDS = Object.freeze({
       command: "npm",
       args: ["run", "test:ci"],
       cwd: "apps/pos-handheld",
+      environment: { TZ: "Australia/Brisbane" },
     },
   ],
 });
