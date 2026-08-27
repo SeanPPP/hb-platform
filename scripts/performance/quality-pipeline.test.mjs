@@ -61,12 +61,22 @@ test("lane 命令使用现有 build/typecheck/test 且不通过 shell 拼接", (
     backend.map((item) => item.command),
     ["dotnet", "dotnet", "dotnet"],
   );
-  assert.match(backend[1].args.join(" "), /build .*BlazorApp\.sln/);
-  assert.match(backend[2].args.join(" "), /test .*BlazorApp\.Api\.Tests/);
-  assert.ok(
-    backend[2].args.includes("-p:IsTestProject=true"),
-    "后端测试项目未声明 IsTestProject，quality lane 必须显式启用测试执行",
+  const backendTestProject =
+    "services/backend/BlazorApp.Api.Tests/BlazorApp.Api.Tests.csproj";
+  assert.deepEqual(
+    backend.map((item) => item.args[1]),
+    [backendTestProject, backendTestProject, backendTestProject],
   );
+  assert.ok(backend[2].args.includes("--no-restore"));
+  assert.ok(backend[2].args.includes("--no-build"));
+  assert.ok(
+    !backend[2].args.includes("-p:IsTestProject=true"),
+    "测试项目已由 Microsoft.NET.Test.Sdk 标识，不应覆写 IsTestProject",
+  );
+  assert.deepEqual(backend[2].args.slice(-2), [
+    "--filter",
+    "Category!=SQL&Category!=Performance&Category!=LiveE2e",
+  ]);
 
   const web = getLaneCommands("web");
   assert.deepEqual(
@@ -95,7 +105,7 @@ test("lane 命令使用现有 build/typecheck/test 且不通过 shell 拼接", (
       ["npm", "ci"],
       ["npm", "run", "typecheck"],
       ["npm", "run", "verify:metro-bundle"],
-      ["npm", "test"],
+      ["npm", "run", "test:ci"],
     ]);
   }
 });

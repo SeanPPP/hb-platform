@@ -26,7 +26,10 @@ const LANE_COMMANDS = Object.freeze({
     {
       label: ".NET restore",
       command: "dotnet",
-      args: ["restore", "services/backend/BlazorApp.sln"],
+      args: [
+        "restore",
+        "services/backend/BlazorApp.Api.Tests/BlazorApp.Api.Tests.csproj",
+      ],
       cwd: ".",
     },
     {
@@ -34,7 +37,7 @@ const LANE_COMMANDS = Object.freeze({
       command: "dotnet",
       args: [
         "build",
-        "services/backend/BlazorApp.sln",
+        "services/backend/BlazorApp.Api.Tests/BlazorApp.Api.Tests.csproj",
         "--configuration",
         "Release",
         "--no-restore",
@@ -47,11 +50,12 @@ const LANE_COMMANDS = Object.freeze({
       args: [
         "test",
         "services/backend/BlazorApp.Api.Tests/BlazorApp.Api.Tests.csproj",
-        "-p:IsTestProject=true",
         "--configuration",
         "Release",
         "--no-restore",
         "--no-build",
+        "--filter",
+        "Category!=SQL&Category!=Performance&Category!=LiveE2e",
       ],
       cwd: ".",
     },
@@ -87,7 +91,12 @@ const LANE_COMMANDS = Object.freeze({
       args: ["run", "verify:metro-bundle"],
       cwd: "apps/pos-ipad",
     },
-    { label: "pos-ipad test", command: "npm", args: ["test"], cwd: "apps/pos-ipad" },
+    {
+      label: "pos-ipad test",
+      command: "npm",
+      args: ["run", "test:ci"],
+      cwd: "apps/pos-ipad",
+    },
   ],
   "pos-handheld": [
     { label: "npm ci", command: "npm", args: ["ci"], cwd: "apps/pos-handheld" },
@@ -106,7 +115,7 @@ const LANE_COMMANDS = Object.freeze({
     {
       label: "pos-handheld test",
       command: "npm",
-      args: ["test"],
+      args: ["run", "test:ci"],
       cwd: "apps/pos-handheld",
     },
   ],

@@ -16,8 +16,9 @@ fi
 
 npm --prefix apps/pos-handheld ci --no-audit --no-fund
 npm --prefix apps/pos-handheld run prebuild:android -- --clean
-bash apps/pos-handheld/android/gradlew \
-  -p apps/pos-handheld/android \
+cd apps/pos-handheld/android
+node --print "require.resolve('@sentry/react-native/package.json')" >/dev/null
+bash ./gradlew \
   :hb-app-installer:testDebugUnitTest \
   :hb-attendance-security:testDebugUnitTest \
   :app:assembleDebug \
