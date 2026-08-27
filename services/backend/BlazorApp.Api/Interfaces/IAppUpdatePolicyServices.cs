@@ -119,3 +119,49 @@ public interface IPosHandheldUpdatePolicyService
 
     Task<PosHandheldManagedLane?> ResolveManagedLaneAsync(string lane);
 }
+
+public interface IAppOtaReleaseService
+{
+    Task<ApiResponse<List<AppOtaReleaseDto>>> ListAsync(AppOtaReleaseQuery query);
+
+    Task<ApiResponse<AppOtaReleasePreflightDto>> PreflightAsync(
+        AppOtaReleasePreflightRequest request
+    );
+
+    Task<ApiResponse<AppOtaReleaseRegistrationResultDto>> RegisterAsync(
+        AppOtaReleaseRegisterRequest request,
+        string currentUser
+    );
+}
+
+public interface IMobileOtaPolicyService
+{
+    Task<ApiResponse<MobileOtaPolicyDto>> GetAsync(
+        string environment,
+        string platform
+    );
+
+    Task<ApiResponse<MobileOtaPolicyDto>> SetAsync(
+        string environment,
+        string platform,
+        MobileOtaPolicyRequest request,
+        string currentUser
+    );
+
+    Task<ApiResponse<List<MobileOtaPolicyRevisionDto>>> GetRevisionsAsync(
+        string environment,
+        string platform
+    );
+
+    Task<MobileOtaDecisionDto?> GetDecisionAsync(MobileOtaDecisionRequest request);
+}
+
+public interface IPosHandheldOtaLegacyBackfillService
+{
+    Task<ApiResponse<PosHandheldOtaLegacyBackfillPreviewDto>> PrepareAsync();
+
+    Task<ApiResponse<PosHandheldOtaLegacyBackfillApplyDto>> ApplyAsync(
+        string expectedPreparationFingerprint,
+        string currentUser
+    );
+}

@@ -179,6 +179,8 @@
     <Compile Include="AppUpdatePolicySchemaMigratorSqlServerIntegrationTests.cs" />
     <Compile Include="PosHandheldUpdateDecisionServiceTests.cs" />
     <Compile Include="PosHandheldUpdatePolicyServiceTests.cs" />
+    <Compile Include="MobileOtaPolicyServiceTests.cs" />
+    <Compile Include="PosHandheldOtaLegacyBackfillServiceTests.cs" />
     <Compile Include="WpfAppReleaseServiceTests.cs" />
     <Compile Include="WpfAppReleaseTargetingServiceTests.cs" />
     <Compile Include="WpfAppReleasesControllerTests.cs" />

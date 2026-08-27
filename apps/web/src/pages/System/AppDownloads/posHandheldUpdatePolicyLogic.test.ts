@@ -380,6 +380,21 @@ assertEqual(
   '手持页面必须允许通过后台 Apple Lookup 登记已存在的 iOS App Store 事实',
 )
 assertEqual(
+  handheldPanelSource.includes('getRevisions(lane, signal)'),
+  true,
+  '手持四条 lane 必须加载既有 revisions API',
+)
+assertEqual(
+  handheldPanelSource.includes('revision.snapshotJson'),
+  true,
+  '手持策略必须展示完整 revision 快照时间线',
+)
+assertEqual(
+  handheldPanelSource.includes('productionOnlyDescription'),
+  true,
+  '手持页面必须明确 OTA 仅 production 受管',
+)
+assertEqual(
   /EAS_TOKEN|EXPO_TOKEN|eas\s+update/i.test(handheldPanelSource),
   false,
   '浏览器组件不得包含 EAS 凭据或直接发布命令',
@@ -396,6 +411,11 @@ for (const localePath of ['src/i18n/locales/zh.json', 'src/i18n/locales/en.json'
     typeof locale.system.appDownloads.updatePolicy.posHandheld.boundaryDescription,
     'string',
     '中英文必须明确 Web 与 CI/EAS 发布边界',
+  )
+  assertEqual(
+    typeof locale.system.appDownloads.updatePolicy.posHandheld.productionOnlyDescription,
+    'string',
+    '中英文必须明确手持 preview 不受后台 OTA 策略管理',
   )
 }
 

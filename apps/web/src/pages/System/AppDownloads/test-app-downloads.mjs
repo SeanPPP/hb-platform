@@ -28,6 +28,15 @@ const tests = [
     entryPoint: 'src/pages/System/AppDownloads/appUpdatePolicyRequestLogic.test.ts',
   },
   {
+    name: 'mobile-ota-policy-logic',
+    entryPoint: 'src/pages/System/AppDownloads/mobileOtaPolicyLogic.test.ts',
+  },
+  {
+    name: 'mobile-ota-policy-service',
+    entryPoint: 'src/services/mobileOtaPolicyService.test.ts',
+    define: { 'import.meta.env': '{}' },
+  },
+  {
     name: 'pos-handheld-update-policy-logic',
     entryPoint: 'src/pages/System/AppDownloads/posHandheldUpdatePolicyLogic.test.ts',
   },

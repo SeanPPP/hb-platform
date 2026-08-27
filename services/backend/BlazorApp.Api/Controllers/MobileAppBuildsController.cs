@@ -310,7 +310,7 @@ namespace BlazorApp.Api.Controllers
         public async Task<IActionResult> UpsertOtaUpdate([FromBody] MobileAppOtaUpdateUpsertDto dto)
         {
             var result = await _service.UpsertOtaUpdateAsync(dto);
-            return Ok(result);
+            return ToLegacyOtaMutationResult(result);
         }
 
         [HttpPost("ota-updates/{updateGroupId}/rollback-command")]
@@ -324,6 +324,22 @@ namespace BlazorApp.Api.Controllers
                 updateGroupId,
                 dto ?? new MobileAppOtaRollbackCommandDto()
             );
+            return ToLegacyOtaMutationResult(result);
+        }
+
+        private IActionResult ToLegacyOtaMutationResult<T>(ApiResponse<T> result)
+        {
+            if (
+                !result.Success
+                && result.ErrorCode
+                    is AppOtaReleaseErrorCodes.FactConflict
+                        or AppOtaReleaseErrorCodes.LegacyEndpointMigrated
+            )
+            {
+                return Conflict(result);
+            }
+
+            // 保留旧端点其他校验错误的历史 200 + ApiResponse 合同。
             return Ok(result);
         }
 

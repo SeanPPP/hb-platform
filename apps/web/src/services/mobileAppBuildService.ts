@@ -93,6 +93,7 @@ export function normalizeMobileAppOtaUpdate(raw: Record<string, unknown>): Mobil
   return {
     id: getString(raw, 'id') ?? '',
     updateGroupId: getString(raw, 'updateGroupId'),
+    updateId: getString(raw, 'updateId'),
     androidUpdateId: getString(raw, 'androidUpdateId'),
     channel: getString(raw, 'channel'),
     branch: getString(raw, 'branch'),
@@ -191,7 +192,7 @@ export async function getMobileAppOtaUpdates(params?: {
   page?: number
   pageSize?: number
   appKey?: MobileAppKey | string
-}): Promise<MobileAppOtaUpdatePagedResult> {
+}, signal?: AbortSignal): Promise<MobileAppOtaUpdatePagedResult> {
   const page = params?.page ?? 1
   const pageSize = params?.pageSize ?? 10
   const runtimeVersion = params?.runtimeVersion?.trim()
@@ -208,6 +209,7 @@ export async function getMobileAppOtaUpdates(params?: {
         pageSize?: number
       }
   >(`${MOBILE_APP_BUILDS_API}/ota-updates`, {
+    signal,
     params: {
       channel: params?.channel ?? 'production',
       appKey: normalizeMobileAppKey(params?.appKey),

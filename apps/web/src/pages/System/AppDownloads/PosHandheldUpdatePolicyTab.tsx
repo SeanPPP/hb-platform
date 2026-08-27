@@ -26,18 +26,25 @@ import {
   Table,
   Tabs,
   Tag,
+  Timeline,
   Typography,
   message,
 } from 'antd'
 import type { FormInstance } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { AppstoreAddOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons'
+import {
+  AppstoreAddOutlined,
+  LinkOutlined,
+  ReloadOutlined,
+  SaveOutlined,
+} from '@ant-design/icons'
 import { posHandheldUpdatePolicyService } from '../../../services/posHandheldUpdatePolicyService'
 import type {
   PosHandheldPlatform,
   PosHandheldPolicyLane,
   PosHandheldReleaseCandidate,
   PosHandheldUpdatePolicy,
+  PosHandheldUpdatePolicyRevision,
 } from '../../../types/posHandheldUpdatePolicy'
 import {
   buildPosHandheldPolicyConfirmationSummary,
@@ -143,6 +150,27 @@ function createSavingRecord(): Record<PosHandheldPolicyLane, boolean> {
   }
 }
 
+function createRevisionRecord(): Record<PosHandheldPolicyLane, PosHandheldUpdatePolicyRevision[]> {
+  return {
+    'android-native': [],
+    'ios-native': [],
+    'android-ota': [],
+    'ios-ota': [],
+  }
+}
+
+function safeExternalUrl(value?: string | null) {
+  if (!value) {
+    return null
+  }
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' ? url.toString() : null
+  } catch {
+    return null
+  }
+}
+
 function toFormValue(policy: PosHandheldUpdatePolicy): PosHandheldPolicyFormValue {
   return {
     enabled: policy.enabled,
@@ -179,6 +207,7 @@ export default function PosHandheldUpdatePolicyTab({
   )
   const [candidateLoadStatus, setCandidateLoadStatus] = useState(createLoadStatusRecord)
   const [saving, setSaving] = useState(createSavingRecord)
+  const [revisions, setRevisions] = useState(createRevisionRecord)
   const [activePlatform, setActivePlatform] = useState<PosHandheldPlatform>('android')
   const [filters, setFilters] = useState<PosHandheldCandidateFilters>({
     platform: 'all',
@@ -252,15 +281,28 @@ export default function PosHandheldUpdatePolicyTab({
     () => runLoad(
       'policies',
       setPolicyLoadStatus,
-      (signal) => posHandheldUpdatePolicyService.getPolicies(signal),
-      (items) => {
+      async (signal) => {
+        const [items, revisionLists] = await Promise.all([
+          posHandheldUpdatePolicyService.getPolicies(signal),
+          Promise.all(POLICY_LANES.map(
+            (lane) => posHandheldUpdatePolicyService.getRevisions(lane, signal),
+          )),
+        ])
+        return { items, revisionLists }
+      },
+      ({ items, revisionLists }) => {
         const next = createPolicyRecord()
+        const nextRevisions = createRevisionRecord()
         for (const policy of items) {
           if (POLICY_LANES.includes(policy.lane)) {
             next[policy.lane] = policy
           }
         }
+        POLICY_LANES.forEach((lane, index) => {
+          nextRevisions[lane] = revisionLists[index] ?? []
+        })
         setPolicies(next)
+        setRevisions(nextRevisions)
         for (const lane of POLICY_LANES) {
           getForm(lane).setFieldsValue(toFormValue(next[lane]))
         }
@@ -404,8 +446,17 @@ export default function PosHandheldUpdatePolicyTab({
       title: t('system.appDownloads.updatePolicy.posHandheld.releaseType'),
       dataIndex: 'kind',
       width: 100,
-      render: (value: PosHandheldReleaseCandidate['kind']) => (
-        <Tag>{value === 'native' ? t('system.appDownloads.updatePolicy.posHandheld.native') : 'OTA'}</Tag>
+      render: (value: PosHandheldReleaseCandidate['kind'], candidate) => (
+        <Space size={4} wrap>
+          <Tag>{value === 'native' ? t('system.appDownloads.updatePolicy.posHandheld.native') : 'OTA'}</Tag>
+          {value === 'ota' ? (
+            <Tag color={candidate.legacy ? 'default' : 'cyan'}>
+              {candidate.legacy
+                ? t('system.appDownloads.updatePolicy.posHandheld.legacyFixedChannel')
+                : t('system.appDownloads.updatePolicy.posHandheld.releaseChannel')}
+            </Tag>
+          ) : null}
+        </Space>
       ),
     },
     {
@@ -417,19 +468,50 @@ export default function PosHandheldUpdatePolicyTab({
     },
     {
       title: t('system.appDownloads.updatePolicy.posHandheld.runtimeChannel'),
-      width: 230,
-      render: (_, candidate) => candidate.kind === 'ota'
-        ? `${candidate.runtimeVersion || '--'} · ${candidate.channel || '--'}`
-        : '--',
+      width: 330,
+      render: (_, candidate) => candidate.kind === 'ota' ? (
+        <Space direction="vertical" size={0}>
+          <Typography.Text>{candidate.runtimeVersion || '--'}</Typography.Text>
+          <Typography.Text copyable type="secondary">
+            {candidate.releaseChannel || candidate.channel || '--'}
+          </Typography.Text>
+        </Space>
+      ) : '--',
     },
     {
       title: t('system.appDownloads.updatePolicy.posHandheld.identity'),
-      width: 220,
+      width: 300,
       render: (_, candidate) => (
-        <Typography.Text copyable={{ text: candidate.updateId || candidate.id }}>
-          {candidate.updateId || candidate.id}
-        </Typography.Text>
+        <Space direction="vertical" size={0}>
+          <Typography.Text copyable={{ text: candidate.updateId || candidate.id }}>
+            {candidate.updateId || candidate.id}
+          </Typography.Text>
+          {candidate.updateGroupId ? (
+            <Typography.Text type="secondary" copyable={{ text: candidate.updateGroupId }}>
+              Group: {candidate.updateGroupId}
+            </Typography.Text>
+          ) : null}
+        </Space>
       ),
+    },
+    {
+      title: t('system.appDownloads.updatePolicy.posHandheld.releaseAudit'),
+      width: 330,
+      render: (_, candidate) => candidate.kind === 'ota' ? (
+        <Space direction="vertical" size={0} style={{ width: '100%' }}>
+          <Typography.Text ellipsis={{ tooltip: candidate.message || undefined }}>
+            {candidate.message || '--'}
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            Commit: {candidate.gitCommitHash?.slice(0, 8) || '--'} · {candidate.createdBy || '--'}
+          </Typography.Text>
+          {candidate.isRollback ? (
+            <Typography.Text copyable={{ text: candidate.rollbackOfReleaseId || '' }} type="warning">
+              {t('system.appDownloads.updatePolicy.posHandheld.rollbackSource')}: {candidate.rollbackOfReleaseId?.slice(0, 8) || '--'}
+            </Typography.Text>
+          ) : null}
+        </Space>
+      ) : '--',
     },
     {
       title: t('system.appDownloads.updatePolicy.status'),
@@ -480,17 +562,32 @@ export default function PosHandheldUpdatePolicyTab({
     {
       title: t('common.action'),
       fixed: 'right',
-      width: 110,
-      render: (_, candidate) => (
-        <Button
-          type="link"
-          size="small"
-          disabled={!canManage || !candidate.activatable}
-          onClick={() => selectCandidate(candidate)}
-        >
-          {t('system.appDownloads.updatePolicy.posHandheld.selectForRelease')}
-        </Button>
-      ),
+      width: 210,
+      render: (_, candidate) => {
+        const dashboardUrl = safeExternalUrl(candidate.dashboardUrl)
+        return (
+          <Space size={4} wrap>
+            {dashboardUrl ? (
+              <Button
+                type="link"
+                size="small"
+                icon={<LinkOutlined />}
+                onClick={() => window.open(dashboardUrl, '_blank', 'noopener,noreferrer')}
+              >
+                Dashboard
+              </Button>
+            ) : null}
+            <Button
+              type="link"
+              size="small"
+              disabled={!canManage || !candidate.activatable}
+              onClick={() => selectCandidate(candidate)}
+            >
+              {t('system.appDownloads.updatePolicy.posHandheld.selectForRelease')}
+            </Button>
+          </Space>
+        )
+      },
     },
   ], [
     activeCandidateIds,
@@ -535,6 +632,10 @@ export default function PosHandheldUpdatePolicyTab({
         loadPolicies,
         isAppUpdatePolicyVersionConflict,
       )
+      if (result === 'saved') {
+        // 保存成功后读取权威策略与 append-only revisions，避免时间线停留在旧快照。
+        await loadPolicies()
+      }
       handleSaveResult(result)
     } catch {
       message.error(t('system.appDownloads.updatePolicy.posHandheld.saveFailed'))
@@ -635,6 +736,7 @@ export default function PosHandheldUpdatePolicyTab({
       && !candidateLoadStatus[lane].loading
       && !candidateLoadStatus[lane].failed
     const native = isNativeLane(lane)
+    const laneRevisions = revisions[lane]
     const selectableCandidates = laneCandidates.map((candidate) => ({
       value: candidate.id,
       label: getPosHandheldCandidateLabel(candidate),
@@ -697,6 +799,17 @@ export default function PosHandheldUpdatePolicyTab({
               {policy.updatedBy || '--'}
             </Descriptions.Item>
           </Descriptions>
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={native
+              ? t('system.appDownloads.updatePolicy.posHandheld.nativeAuditChain')
+              : t('system.appDownloads.updatePolicy.posHandheld.otaAuditChain')}
+            description={!native
+              ? t('system.appDownloads.updatePolicy.posHandheld.productionOnlyDescription')
+              : undefined}
+          />
           <Form<PosHandheldPolicyFormValue>
             form={form}
             layout="vertical"
@@ -820,6 +933,43 @@ export default function PosHandheldUpdatePolicyTab({
               </Button>
             ) : null}
           </Form>
+          <Card
+            size="small"
+            type="inner"
+            title={t('system.appDownloads.updatePolicy.posHandheld.revisionTitle')}
+            style={{ marginTop: 16 }}
+          >
+            {laneRevisions.length > 0 ? (
+              <Timeline
+                items={laneRevisions.map((revision) => ({
+                  color: revision.policyVersion === policy.policyVersion ? 'blue' : 'gray',
+                  children: (
+                    <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                      <Space size={6} wrap>
+                        <Tag>{t('system.appDownloads.updatePolicy.policyVersion')}: {revision.policyVersion}</Tag>
+                        <Tag>{revision.operation || '--'}</Tag>
+                      </Space>
+                      <Typography.Text type="secondary">
+                        {formatAppDownloadLocalDateTime(revision.createdAt)} · {revision.createdBy || '--'}
+                      </Typography.Text>
+                      <Typography.Paragraph
+                        copyable={{ text: revision.snapshotJson }}
+                        ellipsis={{ rows: 2, expandable: true, symbol: t('common.more') }}
+                        style={{ marginBottom: 0, overflowWrap: 'anywhere' }}
+                      >
+                        {revision.snapshotJson}
+                      </Typography.Paragraph>
+                    </Space>
+                  ),
+                }))}
+              />
+            ) : (
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={t('system.appDownloads.updatePolicy.posHandheld.noRevisions')}
+              />
+            )}
+          </Card>
         </Card>
       </Space>
     )
@@ -843,6 +993,12 @@ export default function PosHandheldUpdatePolicyTab({
         showIcon
         message={t('system.appDownloads.updatePolicy.posHandheld.boundaryTitle')}
         description={t('system.appDownloads.updatePolicy.posHandheld.boundaryDescription')}
+      />
+      <Alert
+        type="warning"
+        showIcon
+        message={t('system.appDownloads.updatePolicy.posHandheld.productionOnly')}
+        description={t('system.appDownloads.updatePolicy.posHandheld.productionOnlyDescription')}
       />
       {policyLoadStatus.failed ? (
         <Alert
@@ -928,7 +1084,7 @@ export default function PosHandheldUpdatePolicyTab({
           columns={catalogColumns}
           dataSource={filteredCandidates}
           loading={POLICY_LANES.some((lane) => candidateLoadStatus[lane].loading)}
-          scroll={{ x: 1260 }}
+          scroll={{ x: 2020 }}
           locale={{
             emptyText: <Empty description={t('system.appDownloads.updatePolicy.posHandheld.noCandidates')} />,
           }}

@@ -17,6 +17,7 @@ import {
 } from "./ios-native-app-update";
 import { fetchIosNativeUpdateDecision } from "./ios-native-app-update-api";
 import { resolveIosNativeUpdateCenterBaseUrl } from "./ios-native-update-center";
+import { appUpdateMutualExclusion } from "./app-update-mutual-exclusion";
 
 type IosNativeUpdateSnapshot = {
   initialized: boolean;
@@ -79,6 +80,12 @@ export function useIosNativeAppUpdate(options: { enabled: boolean }) {
     createIosNativeOptionalReminderSession(),
   );
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const pendingOptionalPromptRef = useRef<{
+    generation: number;
+    context: IosNativeUpdateContext;
+    decision: IosNativeUpdateDecision;
+  } | null>(null);
+  const optionalPromptInFlightRef = useRef(false);
   const inFlightRef = useRef<{
     generation: number;
     controller: AbortController;
@@ -87,9 +94,103 @@ export function useIosNativeAppUpdate(options: { enabled: boolean }) {
   const runServerCheckRef = useRef<
     () => Promise<IosNativeUpdateCheckReceipt | null>
   >(async () => null);
+  const tryShowOptionalPromptRef = useRef<() => void>(() => undefined);
 
   enabledRef.current = options.enabled;
   snapshotRef.current = snapshot;
+
+  tryShowOptionalPromptRef.current = () => {
+    const pending = pendingOptionalPromptRef.current;
+    if (
+      !pending
+      || optionalPromptInFlightRef.current
+      || !enabledRef.current
+      || generationRef.current !== pending.generation
+    ) {
+      return;
+    }
+
+    // 先置 in-flight 再获取 prompt；tryOwnPrompt 会同步通知订阅者，必须避免递归重入。
+    optionalPromptInFlightRef.current = true;
+    if (!appUpdateMutualExclusion.tryOwnPrompt("native")) {
+      optionalPromptInFlightRef.current = false;
+      return;
+    }
+
+    pendingOptionalPromptRef.current = null;
+    optionalReminderSessionRef.current.markSeen(
+      pending.context,
+      pending.decision,
+    );
+    const activeSnapshot = {
+      ...snapshotRef.current,
+      optionalPromptActive: true,
+    };
+    snapshotRef.current = activeSnapshot;
+    setSnapshot(activeSnapshot);
+
+    // 提示已由会话内去重保护；持久化失败不得吞掉当前可选更新提示。
+    void markIosNativeOptionalReminder(
+      AppAsyncStorage,
+      pending.context,
+      pending.decision,
+      Date.now(),
+    ).catch((error) => {
+      if (
+        enabledRef.current
+        && generationRef.current === pending.generation
+      ) {
+        console.warn("[updates] persist iOS App Store reminder failed", error);
+      }
+    });
+
+    const resolveOptionalPrompt = () => {
+      appUpdateMutualExclusion.releasePrompt("native");
+      if (
+        !enabledRef.current
+        || generationRef.current !== pending.generation
+      ) {
+        return false;
+      }
+      const resolvedSnapshot = {
+        ...snapshotRef.current,
+        optionalPromptActive: false,
+      };
+      snapshotRef.current = resolvedSnapshot;
+      setSnapshot(resolvedSnapshot);
+      return true;
+    };
+    Alert.alert(
+      i18n.t("settings:dialogs.iosNativeUpdateAvailableTitle"),
+      pending.decision.releaseMessage
+        || i18n.t("settings:dialogs.iosNativeUpdateAvailableMessage", {
+          version: pending.decision.latestVersion,
+        }),
+      [
+        {
+          text: i18n.t("settings:dialogs.iosNativeUpdateLaterAction"),
+          style: "cancel",
+          onPress: resolveOptionalPrompt,
+        },
+        {
+          text: i18n.t("settings:dialogs.iosNativeUpdateOpenStoreAction"),
+          onPress: () => {
+            if (
+              appUpdateMutualExclusion.isOtaRequiredGateActive()
+            ) {
+              resolveOptionalPrompt();
+              return;
+            }
+            if (resolveOptionalPrompt()) {
+              void openAppStore(pending.decision.appStoreUrl!);
+            }
+          },
+        },
+      ],
+      { cancelable: false },
+    );
+    optionalPromptInFlightRef.current = false;
+  };
 
   runServerCheckRef.current = async () => {
     const context = contextRef.current;
@@ -132,15 +233,23 @@ export function useIosNativeAppUpdate(options: { enabled: boolean }) {
           return null;
         }
 
-        const optionalPromptActive = shouldActivateIosNativeOptionalPrompt({
+        const shouldQueueOptionalPrompt = shouldActivateIosNativeOptionalPrompt({
           decision: outcome.decision,
           shouldPromptOptional: outcome.shouldPromptOptional,
         });
+        pendingOptionalPromptRef.current = shouldQueueOptionalPrompt
+          && outcome.decision?.state === "optional"
+          && outcome.decision.appStoreUrl
+          ? {
+              generation,
+              context,
+              decision: outcome.decision,
+            }
+          : null;
         const nextSnapshot = {
           initialized: true,
           decision: outcome.decision,
-          // 决策与弹窗占用状态必须同一批提交，不能在持久化提醒期间提前恢复 OTA。
-          optionalPromptActive,
+          optionalPromptActive: snapshotRef.current.optionalPromptActive,
         };
         snapshotRef.current = nextSnapshot;
         setSnapshot(nextSnapshot);
@@ -152,68 +261,7 @@ export function useIosNativeAppUpdate(options: { enabled: boolean }) {
           console.warn("[updates] persist iOS App Store update state failed", outcome.storageError);
         }
 
-        if (
-          optionalPromptActive
-          && outcome.decision?.state === "optional"
-          && outcome.decision.appStoreUrl
-        ) {
-          // 先记录提醒时间，避免 AppState 短时间抖动造成重复弹窗。
-          try {
-            await markIosNativeOptionalReminder(
-              AppAsyncStorage,
-              context,
-              outcome.decision,
-              Date.now(),
-            );
-          } catch (error) {
-            if (isCurrent()) {
-              console.warn("[updates] persist iOS App Store reminder failed", error);
-            }
-          }
-          if (!isCurrent()) {
-            return null;
-          }
-
-          const decision = outcome.decision;
-          // Alert 即将展示时先记入进程内会话；即使持久化失败，用户处理后也不会立刻再弹。
-          optionalReminderSessionRef.current.markSeen(context, decision);
-          const resolveOptionalPrompt = () => {
-            if (!isCurrent()) {
-              return false;
-            }
-            setSnapshot((current) => ({
-              ...current,
-              optionalPromptActive: false,
-            }));
-            snapshotRef.current = {
-              ...snapshotRef.current,
-              optionalPromptActive: false,
-            };
-            return true;
-          };
-          Alert.alert(
-            i18n.t("settings:dialogs.iosNativeUpdateAvailableTitle"),
-            decision.releaseMessage
-              || i18n.t("settings:dialogs.iosNativeUpdateAvailableMessage", {
-                version: decision.latestVersion,
-              }),
-            [
-              {
-                text: i18n.t("settings:dialogs.iosNativeUpdateLaterAction"),
-                style: "cancel",
-                onPress: resolveOptionalPrompt,
-              },
-              {
-                text: i18n.t("settings:dialogs.iosNativeUpdateOpenStoreAction"),
-                onPress: () => {
-                  if (resolveOptionalPrompt()) {
-                    void openAppStore(decision.appStoreUrl!);
-                  }
-                },
-              },
-            ],
-          );
-        }
+        tryShowOptionalPromptRef.current();
         return { epoch, outcome };
       } catch (error) {
         if (!isCurrent()) {
@@ -244,6 +292,9 @@ export function useIosNativeAppUpdate(options: { enabled: boolean }) {
     // 构建资格切换也会使既有 OTA 检查凭据失效。
     updateEpochRef.current += 1;
     contextRef.current = null;
+    pendingOptionalPromptRef.current = null;
+    optionalPromptInFlightRef.current = false;
+    appUpdateMutualExclusion.releasePrompt("native");
     setSnapshot(EMPTY_SNAPSHOT);
     setChecking(false);
 
@@ -301,10 +352,16 @@ export function useIosNativeAppUpdate(options: { enabled: boolean }) {
       }
       inFlightRef.current?.controller.abort();
       inFlightRef.current = null;
+      pendingOptionalPromptRef.current = null;
+      optionalPromptInFlightRef.current = false;
+      appUpdateMutualExclusion.releasePrompt("native");
     };
   }, [options.enabled]);
 
   useEffect(() => {
+    const unsubscribe = appUpdateMutualExclusion.subscribe(() => {
+      tryShowOptionalPromptRef.current();
+    });
     const subscription = AppState.addEventListener("change", (nextState) => {
       const previousState = appStateRef.current;
       appStateRef.current = nextState;
@@ -318,7 +375,11 @@ export function useIosNativeAppUpdate(options: { enabled: boolean }) {
     });
 
     return () => {
+      unsubscribe();
       subscription.remove();
+      pendingOptionalPromptRef.current = null;
+      optionalPromptInFlightRef.current = false;
+      appUpdateMutualExclusion.releasePrompt("native");
     };
   }, []);
 

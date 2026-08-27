@@ -10,6 +10,21 @@ namespace BlazorApp.Shared.DTOs
 
         public Dictionary<string, string> ProjectAppKeys { get; set; } = [];
 
+        /// <summary>
+        /// 可选的 EAS project name 到 project UUID 权威映射；配置后发布预检必须精确匹配。
+        /// </summary>
+        public Dictionary<string, string> ProjectIds { get; set; } = [];
+
+        /// <summary>
+        /// 迁移窗口内临时允许最后一次 fixed-channel bootstrap；默认关闭，完成后无需改代码即可封口。
+        /// </summary>
+        public bool AllowLegacyOtaBootstrapRegistration { get; set; }
+
+        /// <summary>
+        /// 手持 POS 完成 legacy 回填后才可临时开启新 release-channel 发布预检；默认关闭。
+        /// </summary>
+        public bool PosHandheldReleaseChannelPublishingEnabled { get; set; }
+
         public string[] AcceptedProfiles { get; set; } =
             ["preview", "production", "android-internal"];
     }
@@ -201,6 +216,11 @@ namespace BlazorApp.Shared.DTOs
         public bool IsRollback { get; set; }
 
         public string? RollbackOfGroupId { get; set; }
+
+        /// <summary>
+        /// 仅供切换期最后一次 fixed-channel bootstrap；普通旧登记请求默认拒绝。
+        /// </summary>
+        public bool BootstrapLegacyFixedChannel { get; set; }
     }
 
     public class MobileAppOtaRollbackCommandDto

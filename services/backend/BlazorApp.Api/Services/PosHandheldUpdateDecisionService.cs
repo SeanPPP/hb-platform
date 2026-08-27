@@ -443,7 +443,7 @@ public sealed partial class PosHandheldUpdateDecisionService(
                 projectName,
                 StringComparison.Ordinal
             )
-            || !string.Equals(candidate.Channel, channel, StringComparison.Ordinal)
+            || !IsAllowedManagedOtaChannel(candidate.Channel, platform, channel)
             || !string.Equals(
                 candidate.RuntimeVersion,
                 runtimeVersion,
@@ -494,6 +494,25 @@ public sealed partial class PosHandheldUpdateDecisionService(
             UpdateGroupId = candidate.UpdateGroupId,
             ReleaseMessage = policy.ReleaseMessage,
         };
+    }
+
+    private static bool IsAllowedManagedOtaChannel(
+        string? candidateChannel,
+        string platform,
+        string legacyChannel
+    )
+    {
+        var normalizedCandidate = Normalize(candidateChannel).ToLowerInvariant();
+        var normalizedLegacy = Normalize(legacyChannel).ToLowerInvariant();
+        if (string.Equals(normalizedCandidate, normalizedLegacy, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var platformSegment = platform == "iOS" ? "ios" : "android";
+        var trustedPrefix = $"{normalizedLegacy}-{platformSegment}-release-";
+        return normalizedCandidate.StartsWith(trustedPrefix, StringComparison.Ordinal)
+            && normalizedCandidate.Length > trustedPrefix.Length;
     }
 
     private async Task<PosHandheldNativeDecisionDto?> GetAndroidDecisionAsync(
