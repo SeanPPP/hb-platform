@@ -13,7 +13,7 @@
     "test:inventory": "node ../../scripts/ci/test-inventory.mjs --app mobile --check",
     "test:ci": "npm run test:inventory && node ../../scripts/ci/test-inventory.mjs --app mobile --run node && node ../../scripts/ci/test-inventory.mjs --app mobile --run tsx && npm run test:ota-config && npm run test:ios-app-config && npm run test:i18n-locales",
     "ota:legacy-apk-notice:preview": "node scripts/publish-ota-update.mjs --channel preview --profile preview --runtime-version 1.0.1 --message \"提示测试机下载安装新版 APK\" --native-installer disabled",
-    "ota:legacy-apk-notice:production": "node scripts/publish-ota-update.mjs --channel production --profile production --runtime-version 1.0.1 --message \"提示门店下载安装新版 APK\" --native-installer disabled",
+    "ota:legacy-apk-notice:production": "node scripts/publish-ota-update.mjs --channel production --profile production --platform android --runtime-version 1.0.1 --message \"提示门店下载安装新版 APK\" --native-installer disabled",
     "test:ota-publish-script": "node scripts/publish-ota-update.test.mjs",
     "test:ota-config": "node scripts/check-ota-config.js",
     "eas-build-pre-install": "node scripts/check-ios-review-build-config.mjs",

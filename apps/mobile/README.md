@@ -54,6 +54,16 @@ HBWEB_API_TOKEN=<hbsvc-service-token-or-backend-bearer-token>
 
 `HBWEB_API_BASE_URL` 可以是站点根地址，也可以是带 `/api` 的 API base URL。非 `--dry-run` 发布时，脚本会先用 `Authorization: Bearer <token>` 验证 token 和权限：`hbsvc_` token 调用 `GET /api/service-api-tokens/current`，普通后台登录 token 调用 `GET /api/Auth/current`。缺少 base URL/token 或验证失败时会直接退出，不会先发布 OTA。验证通过后，脚本会继续发布 EAS Update，并 POST 到 `/api/mobile-app-builds/ota-updates` 登记，登记请求仍使用同一个 Bearer token。`--dry-run` 只打印命令和补录 JSON，不要求配置 token。
 
+同一脚本也用于 Android 与 iOS 的常规 OTA。`--platform` 支持 `android` / `ios`；preview 为兼容旧调用可省略并默认 Android，production 必须显式指定平台：
+
+```bash
+node scripts/publish-ota-update.mjs --channel preview --profile preview --platform android --runtime-version 1.0.2 --message "<preview-message>"
+node scripts/publish-ota-update.mjs --channel production --profile production --platform android --runtime-version 1.0.2 --message "<android-production-message>"
+node scripts/publish-ota-update.mjs --channel production --profile production --platform ios --runtime-version 1.0.2 --message "<ios-production-message>"
+```
+
+iOS 发布会强制设置 `EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED=false`，并沿用 `eas.json` production profile 中的审核模式公开变量。日志不会输出审核密码哈希原值，只显示 `SET` / `UNSET`。Android 与 iOS 都登记通用 `updateId`，Android 另外登记 `androidUpdateId`。如果 EAS 发布输出缺少 group，脚本会用本次平台 `updateId` 执行只读 `eas update:view <updateId> --json`，核对返回的 update ID 和平台后恢复同一 group 并继续登记。回查或后台登记仍失败时，脚本会返回非零，打印当前发布标识、恢复 JSON 和可精确重试的 `update:view` 命令；不得把该次运行报告为完成，也不得直接裸跑第二次 `eas update`。
+
 发布前需确认后端已通过 EAS Webhook 收到对应 profile 的最新 APK 记录，否则旧 APK 不会弹出下载提示。
 
 ### 后端配置项

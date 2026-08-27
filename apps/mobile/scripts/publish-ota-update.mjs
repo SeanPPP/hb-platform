@@ -7,8 +7,9 @@ import { fileURLToPath } from "node:url";
 
 const VALID_CHANNELS = new Set(["preview", "production"]);
 const VALID_PROFILES = new Set(["preview", "production"]);
+const VALID_PLATFORMS = new Set(["android", "ios"]);
 const VALID_NATIVE_INSTALLER_OPTIONS = new Set(["enabled", "disabled"]);
-const PLATFORM = "android";
+const DEFAULT_PLATFORM = "android";
 const REGISTRATION_PATH = "/api/mobile-app-builds/ota-updates";
 const CURRENT_USER_PATH = "/api/Auth/current";
 const SERVICE_TOKEN_CURRENT_PATH = "/api/service-api-tokens/current";
@@ -18,14 +19,15 @@ const SUPER_ADMIN_ROLE_NAMES = new Set(["Admin", "管理员"]);
 
 const HELP_TEXT = `
 用法：
-  node scripts/publish-ota-update.mjs --channel preview|production --profile preview|production --runtime-version <version> --message <message>
+  node scripts/publish-ota-update.mjs --channel preview|production --profile preview|production --platform android|ios --runtime-version <version> --message <message>
 
 参数：
   --channel <preview|production>       EAS Update channel。
   --profile <preview|production>       写入 OTA 包的 App build profile。
+  --platform <android|ios>             OTA 平台，默认 android；production 发布必须显式指定。
   --runtime-version <version>          OTA 目标 runtimeVersion。
   --message <message>                  EAS Update 发布说明。
-  --native-installer <enabled|disabled> 是否启用原生 APK 安装器环境变量，默认 enabled；1.0.1 旧包 OTA 必须 disabled。
+  --native-installer <enabled|disabled> Android 原生 APK 安装器开关，默认 enabled；1.0.1 必须 disabled；iOS 始终强制 disabled。
   --dry-run                            只打印命令和补录 JSON，不发布 OTA，也不登记后台。
   --mock-output-file <path>            配合 --dry-run，解析已保存的 EAS 输出用于验证。
   --help, -h                           显示帮助。
@@ -40,6 +42,8 @@ function parseArgs(argv) {
     dryRun: false,
     help: false,
     nativeInstaller: "enabled",
+    platform: DEFAULT_PLATFORM,
+    platformExplicit: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -67,6 +71,10 @@ function parseArgs(argv) {
           break;
         case "--profile":
           options.profile = next;
+          break;
+        case "--platform":
+          options.platform = next;
+          options.platformExplicit = true;
           break;
         case "--runtime-version":
           options.runtimeVersion = next;
@@ -96,6 +104,9 @@ function parseArgs(argv) {
 
 function validateOptions(options) {
   const nativeInstaller = options.nativeInstaller ?? "enabled";
+  const platform = options.platform ?? DEFAULT_PLATFORM;
+  const platformExplicit = options.platformExplicit
+    ?? Object.prototype.hasOwnProperty.call(options, "platform");
 
   if (!VALID_CHANNELS.has(options.channel)) {
     throw new Error("--channel 必须是 preview 或 production");
@@ -103,6 +114,14 @@ function validateOptions(options) {
 
   if (!VALID_PROFILES.has(options.profile)) {
     throw new Error("--profile 必须是 preview 或 production");
+  }
+
+  if (!VALID_PLATFORMS.has(platform)) {
+    throw new Error("--platform 必须是 android 或 ios");
+  }
+
+  if ((options.channel === "production" || options.profile === "production") && !platformExplicit) {
+    throw new Error("production OTA 必须显式设置 --platform android 或 ios");
   }
 
   if (!options.runtimeVersion?.trim()) {
@@ -117,7 +136,11 @@ function validateOptions(options) {
     throw new Error("--native-installer 必须是 enabled 或 disabled");
   }
 
-  if (options.runtimeVersion.trim() === "1.0.1" && nativeInstaller !== "disabled") {
+  if (
+    platform === "android"
+    && options.runtimeVersion.trim() === "1.0.1"
+    && nativeInstaller !== "disabled"
+  ) {
     throw new Error("--runtime-version 1.0.1 是旧 APK 过渡 OTA，必须设置 --native-installer disabled");
   }
 }
@@ -208,44 +231,53 @@ function parseJsonSafely(output) {
   }
 }
 
-function parseEasUpdateJsonOutput(output) {
+function parseEasUpdateJsonOutput(output, platform = DEFAULT_PLATFORM) {
   const parsedJson = parseJsonSafely(output);
   if (!parsedJson) {
     return null;
   }
 
   const objects = collectObjects(parsedJson);
-  const androidUpdate = objects.find(
-    (objectValue) => stringField(objectValue, ["platform"]).toLowerCase() === PLATFORM,
+  const platformUpdate = objects.find(
+    (objectValue) => stringField(objectValue, ["platform"]).toLowerCase() === platform,
   );
   const groupObject = objects.find((objectValue) => asObject(objectValue.group));
   const groupId =
-    firstStringFromObjects(objects, ["updateGroupId", "groupId"])
+    stringField(platformUpdate, ["updateGroupId", "groupId", "group"])
+    || firstStringFromObjects(objects, ["updateGroupId", "groupId"])
     || firstStringFromObjects(objects, ["group"])
     || stringField(groupObject?.group, ["id"])
     || stringField(objects.find((objectValue) => Array.isArray(objectValue.updates)), ["id"]);
 
   // JSON 输出是自动补录的主路径；字段兼容不同 EAS CLI 版本和 update/list 形态。
+  const updateId =
+    stringField(platformUpdate, ["id", "updateId"])
+    || firstStringFromObjects(objects, ["updateId"]);
+
   return {
+    platform: stringField(platformUpdate, ["platform"]).toLowerCase(),
     branch: firstStringFromObjects(objects, ["branch", "branchName", "channel"]),
     runtimeVersion:
-      stringField(androidUpdate, ["runtimeVersion"]) || firstStringFromObjects(objects, ["runtimeVersion"]),
+      stringField(platformUpdate, ["runtimeVersion"]) || firstStringFromObjects(objects, ["runtimeVersion"]),
     updateGroupId: groupId,
-    androidUpdateId:
-      firstStringFromObjects(objects, ["androidUpdateId"])
-      || stringField(androidUpdate, ["id", "updateId"]),
+    updateId,
+    androidUpdateId: platform === "android"
+      ? firstStringFromObjects(objects, ["androidUpdateId"]) || updateId
+      : "",
     message: firstStringFromObjects(objects, ["message", "commitMessage"]),
     gitCommitHash: firstStringFromObjects(objects, ["gitCommitHash", "gitCommit", "commit"]),
     dashboardUrl: firstStringFromObjects(objects, ["dashboardUrl", "dashboardURL", "url"]),
   };
 }
 
-export function parseEasUpdateOutput(output) {
+export function parseEasUpdateOutput(output, platform = DEFAULT_PLATFORM) {
   // 自动登记只信任 eas update --json；文本输出只用于人工排查，不能参与入库。
-  return parseEasUpdateJsonOutput(output) ?? {
+  return parseEasUpdateJsonOutput(output, platform) ?? {
+    platform: "",
     branch: "",
     runtimeVersion: "",
     updateGroupId: "",
+    updateId: "",
     androidUpdateId: "",
     message: "",
     gitCommitHash: "",
@@ -254,13 +286,17 @@ export function parseEasUpdateOutput(output) {
 }
 
 export function buildOtaRegistrationPayload(parsed, options, publishedAt = new Date().toISOString()) {
+  const platform = options.platform ?? DEFAULT_PLATFORM;
   // channel/profile/runtime 以脚本入参为准；EAS 输出缺省时使用入参兜底，避免影响手动补录。
   return {
     updateGroupId: parsed.updateGroupId || null,
-    androidUpdateId: parsed.androidUpdateId || null,
+    updateId: parsed.updateId || parsed.androidUpdateId || null,
+    androidUpdateId: platform === "android"
+      ? parsed.androidUpdateId || parsed.updateId || null
+      : null,
     channel: options.channel,
     branch: parsed.branch || options.channel,
-    platform: PLATFORM,
+    platform,
     runtimeVersion: parsed.runtimeVersion || options.runtimeVersion,
     message: parsed.message || options.message,
     gitCommitHash: parsed.gitCommitHash || null,
@@ -300,10 +336,39 @@ export function buildTokenPreflightUrl(baseUrl, token = "") {
   return buildBackendApiUrl(baseUrl, path);
 }
 
-function buildEasCommand(options) {
-  const nativeInstallerEnabled = (options.nativeInstaller ?? "enabled") !== "disabled";
+async function readIosProductionReviewEnv(options) {
+  const platform = options.platform ?? DEFAULT_PLATFORM;
+  if (platform !== "ios" || options.profile !== "production") {
+    return {};
+  }
+
+  const easJsonPath = fileURLToPath(new URL("../eas.json", import.meta.url));
+  const easJson = JSON.parse(await readFile(easJsonPath, "utf8"));
+  const profileEnv = asObject(easJson?.build?.production?.env) ?? {};
+
+  // iOS production OTA 必须沿用已审核原生包的审核账号隔离配置。
+  return Object.fromEntries(
+    [
+      "EXPO_PUBLIC_IOS_REVIEW_MODE_ENABLED",
+      "EXPO_PUBLIC_IOS_REVIEW_PASSWORD_SHA256",
+    ]
+      .map((key) => [key, profileEnv[key]])
+      .filter(([, value]) => typeof value === "string" && value.trim()),
+  );
+}
+
+async function buildEasCommand(options) {
+  const platform = options.platform ?? DEFAULT_PLATFORM;
+  const nativeInstallerEnabled = platform === "android"
+    && (options.nativeInstaller ?? "enabled") !== "disabled";
+  const iosProductionReviewEnv = await readIosProductionReviewEnv(options);
   // 后台登记 token 只留在父进程，避免传给 EAS CLI 子进程。
-  const { HBWEB_API_TOKEN: _hbwebApiToken, ...publishEnv } = process.env;
+  const {
+    HBWEB_API_TOKEN: _hbwebApiToken,
+    EXPO_PUBLIC_IOS_REVIEW_MODE_ENABLED: _iosReviewMode,
+    EXPO_PUBLIC_IOS_REVIEW_PASSWORD_SHA256: _iosReviewPasswordHash,
+    ...publishEnv
+  } = process.env;
 
   return {
     command: "npx",
@@ -313,13 +378,14 @@ function buildEasCommand(options) {
       "--channel",
       options.channel,
       "--platform",
-      PLATFORM,
+      platform,
       "--message",
       options.message,
       "--json",
     ],
     env: {
       ...publishEnv,
+      ...iosProductionReviewEnv,
       EXPO_PUBLIC_APP_BUILD_PROFILE: options.profile,
       EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED: String(nativeInstallerEnabled),
       EXPO_PUBLIC_RUNTIME_VERSION: options.runtimeVersion,
@@ -333,6 +399,24 @@ function shellQuote(value) {
   }
 
   return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function buildEasUpdateViewCommand(updateId, env) {
+  return {
+    command: "npx",
+    args: ["eas-cli@latest", "update:view", updateId, "--json"],
+    env,
+  };
+}
+
+function formatCommand({ command, args }) {
+  return [command, ...args].map(shellQuote).join(" ");
+}
+
+function mergeParsedUpdate(initial, recovered) {
+  return Object.fromEntries(
+    Object.keys(initial).map((key) => [key, recovered[key] || initial[key]]),
+  );
 }
 
 function printManualRegistrationJson(payload, logger = console) {
@@ -370,7 +454,8 @@ function runCommand({ command, args, env }) {
         return;
       }
 
-      const error = new Error(`EAS OTA 发布失败，退出码 ${code}`);
+      const operation = args[1] === "update:view" ? "EAS OTA 回查" : "EAS OTA 发布";
+      const error = new Error(`${operation}失败，退出码 ${code}`);
       error.code = code;
       error.stdout = stdout;
       error.stderr = stderr;
@@ -564,26 +649,31 @@ export async function runPublishOtaUpdate(
 ) {
   validateOptions(options);
 
-  const easCommand = buildEasCommand(options);
-  const printableCommand = [easCommand.command, ...easCommand.args].map(shellQuote).join(" ");
+  const platform = options.platform ?? DEFAULT_PLATFORM;
+  const easCommand = await buildEasCommand(options);
+  const printableCommand = formatCommand(easCommand);
 
   if (!options.dryRun) {
     await preflightOtaRegistrationFn();
   }
 
-  logger.log(`OTA 平台固定为 ${PLATFORM}`);
+  logger.log(`OTA 平台：${platform}`);
   logger.log(`执行命令：${printableCommand}`);
   logger.log("本次 OTA 环境变量：");
   logger.log(`- EXPO_PUBLIC_APP_BUILD_PROFILE=${options.profile}`);
   logger.log(`- EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED=${easCommand.env.EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED}`);
   logger.log(`- EXPO_PUBLIC_RUNTIME_VERSION=${options.runtimeVersion}`);
+  if (platform === "ios") {
+    logger.log(`- EXPO_PUBLIC_IOS_REVIEW_MODE_ENABLED=${easCommand.env.EXPO_PUBLIC_IOS_REVIEW_MODE_ENABLED ?? "UNSET"}`);
+    logger.log(`- EXPO_PUBLIC_IOS_REVIEW_PASSWORD_SHA256=${easCommand.env.EXPO_PUBLIC_IOS_REVIEW_PASSWORD_SHA256 ? "SET" : "UNSET"}`);
+  }
 
   const stdout = options.dryRun
     ? await createDryRunOutputFn(options)
     : (await runCommandFn(easCommand)).stdout;
 
-  const parsed = parseEasUpdateOutput(stdout);
-  const payload = buildOtaRegistrationPayload(parsed, options);
+  let parsed = parseEasUpdateOutput(stdout, platform);
+  let payload = buildOtaRegistrationPayload(parsed, options);
 
   if (options.dryRun) {
     logger.log("\n--dry-run 已启用：未发布 OTA，也不会登记后台。");
@@ -591,26 +681,68 @@ export async function runPublishOtaUpdate(
     return;
   }
 
-  const gaps = getRequiredRegistrationGaps(payload);
-  if (gaps.length) {
-    logger.warn(`\nWARNING: OTA 已发布，但 EAS 输出缺少字段：${gaps.join(", ")}；已跳过自动登记。`);
-    printManualRegistrationJson(payload, logger);
-    return;
-  }
+  let gaps = getRequiredRegistrationGaps(payload);
+  let updateViewCommand = null;
+  if (gaps.includes("updateGroupId") && payload.updateId) {
+    updateViewCommand = buildEasUpdateViewCommand(payload.updateId, easCommand.env);
+    const printableViewCommand = formatCommand(updateViewCommand);
+    logger.warn(`\nEAS 发布输出缺少 update group，正在按平台 update ID 只读回查：${payload.updateId}`);
 
-  try {
-    const result = await registerOtaUpdateFn(payload);
-    if (result.skipped) {
-      logger.warn(`\nWARNING: OTA 已发布，但${result.reason}；已跳过自动登记。`);
+    let recoveredStdout;
+    try {
+      recoveredStdout = (await runCommandFn(updateViewCommand)).stdout;
+    } catch (error) {
+      const message = `OTA 已发布，但无法回查 update group：${error.message}`;
+      logger.warn(`\nWARNING: ${message}`);
       printManualRegistrationJson(payload, logger);
-      return;
+      logger.log(`精确回查命令：${printableViewCommand}`);
+      throw new Error(message, { cause: error });
     }
 
-    logger.log(`\nOTA 数据库记录已登记：${result.url}`);
-  } catch (error) {
-    logger.warn(`\nWARNING: OTA 已发布，但自动登记失败：${error.message}`);
-    printManualRegistrationJson(payload, logger);
+    const recovered = parseEasUpdateOutput(recoveredStdout, platform);
+    const identityMatches = recovered.updateId === payload.updateId
+      && recovered.platform === platform;
+    if (!identityMatches) {
+      const message = "OTA 已发布，但 update:view 返回的 update ID 或平台与本次发布不一致";
+      logger.warn(`\nWARNING: ${message}`);
+      printManualRegistrationJson(payload, logger);
+      logger.log(`精确回查命令：${printableViewCommand}`);
+      throw new Error(message);
+    }
+
+    parsed = mergeParsedUpdate(parsed, recovered);
+    payload = buildOtaRegistrationPayload(parsed, options, payload.publishedAt);
+    gaps = getRequiredRegistrationGaps(payload);
   }
+
+  if (gaps.length) {
+    const message = `OTA 已发布，但 EAS 输出缺少后台登记字段：${gaps.join(", ")}`;
+    logger.warn(`\nWARNING: ${message}。`);
+    printManualRegistrationJson(payload, logger);
+    if (updateViewCommand) {
+      logger.log(`精确回查命令：${formatCommand(updateViewCommand)}`);
+    }
+    throw new Error(message);
+  }
+
+  let result;
+  try {
+    result = await registerOtaUpdateFn(payload);
+  } catch (error) {
+    const message = `OTA 已发布，但自动登记失败：${error.message}`;
+    logger.warn(`\nWARNING: ${message}`);
+    printManualRegistrationJson(payload, logger);
+    throw new Error(message, { cause: error });
+  }
+
+  if (result.skipped) {
+    const message = `OTA 已发布，但${result.reason}`;
+    logger.warn(`\nWARNING: ${message}。`);
+    printManualRegistrationJson(payload, logger);
+    throw new Error(message);
+  }
+
+  logger.log(`\nOTA 数据库记录已登记：${result.url}`);
 }
 
 function isCliEntry() {
