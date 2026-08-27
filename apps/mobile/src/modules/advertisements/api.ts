@@ -175,6 +175,7 @@ export function normalizeAdvertisement(raw: unknown): AdvertisementItem {
       const storeRecord = asRecord(store) ?? {};
       return {
         storeCode: asString(pick(storeRecord, "storeCode", "StoreCode")),
+        storeName: trimText(pick(storeRecord, "storeName", "StoreName")),
       };
     }),
   };
