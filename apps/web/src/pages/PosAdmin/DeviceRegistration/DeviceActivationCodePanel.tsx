@@ -10,12 +10,12 @@ import {
   QRCode,
   Select,
   Space,
-  Table,
   Tag,
   Typography,
   message,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 import {
   createDeviceActivationCode,
   getDeviceActivationCodes,
@@ -318,7 +318,7 @@ export default function DeviceActivationCodePanel({ canManage }: DeviceActivatio
         ) : null}
       </Space>
 
-      <Table<DeviceActivationCodeSummary>
+      <MeasuredTable<DeviceActivationCodeSummary> metricId="pos-admin.device-registration.table-3"
         rowKey="grantId"
         loading={loading}
         columns={columns}

@@ -14,7 +14,6 @@ import {
   Row,
   Select,
   Space,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -53,6 +52,7 @@ import {
   getProviderSubmissionColor,
   getSettlementStatusColor,
 } from './logic'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { RangePicker } = DatePicker
 
@@ -478,7 +478,7 @@ export default function LinklySettlementsPage() {
           </Form>
         </Card>
         <Card size="small">
-          <Table<LinklySettlementListItem>
+          <MeasuredTable<LinklySettlementListItem> metricId="pos-admin.linkly-settlements.table-1"
             rowKey={(record) => record.id}
             size="small"
             loading={loading}

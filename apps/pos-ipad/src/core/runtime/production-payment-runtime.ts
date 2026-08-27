@@ -37,6 +37,7 @@ import type {
   VoucherTenderReversalRecoveryStorePort,
   VoucherTenderReversalStorePort,
 } from "@/core/db/sqlite-voucher-tender-reversal-store";
+import { instrumentPaymentPresenter } from "@/core/performance/payment-performance";
 import type { HbposAuditMetadata } from "@/core/sync/hbpos-sync-adapters";
 import {
   ApprovedPaymentOrderCompletionService,
@@ -383,14 +384,14 @@ export function createProductionPaymentRuntime(
       status: "available",
       createPresenter(entry) {
         const context = createContext();
-        return new PaymentPresenter({
+        return instrumentPaymentPresenter(new PaymentPresenter({
           runtime: context.runtime,
           ...(context.linkly
             ? { linklyOperator: context.linkly }
             : {}),
           entry: normalizeEntry(entry, input.activeCart.getSnapshot()),
           createActionId: input.createId,
-        });
+        }));
       },
       async hasRecoveryRequired() {
         const context = createContext();

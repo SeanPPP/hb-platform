@@ -1,4 +1,5 @@
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.Performance;
 using BlazorApp.Service.Models.HBPOSM_POSM;
 using BlazorApp.Shared.Models.POSM;
 using SqlSugar;
@@ -94,6 +95,8 @@ namespace BlazorApp.Api.Data
                         break;
                 }
             };
+
+            SqlPerformanceAttachmentService.Attach(_db, nameof(POSMSqlSugarContext));
         }
 
         /// <summary>

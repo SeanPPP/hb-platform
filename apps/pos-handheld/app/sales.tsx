@@ -12,6 +12,7 @@ import { StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import type { NewTransactionGate } from "@/core/contracts/app-updates";
+import { businessStartupClock } from "@/core/performance/business-startup-clock";
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
 import type { PosAuthorizedFulfilmentActionResult } from "@/core/runtime/production-pos-service-composition";
 import {
@@ -186,6 +187,7 @@ export default function SalesRoute() {
       error: unknown,
     ): void => {
       if (cancelled) return;
+      businessStartupClock.fail();
       // 初始化故障不等同于 401/403；会话失效只能由全局 invalidation bridge 处理。
       (
         services as typeof services & {
@@ -298,6 +300,10 @@ export default function SalesRoute() {
         onHidTextChange={noteHidTextChange}
         onScan={addScannedProduct}
         path="/sales"
+      />
+      <SalesStartupMilestones
+        newTransactionGate={updateGate}
+        presenter={presenter}
       />
       <SalesSoundBridge presenter={presenter} />
       <SalesScreen
@@ -460,6 +466,40 @@ function bootstrapFailureCode(stage: SalesBootstrapFailureStage): string {
     case "presenter":
       return "SALES_PRESENTER_INITIALIZATION_FAILED";
   }
+}
+
+function SalesStartupMilestones({
+  newTransactionGate,
+  presenter,
+}: Readonly<{
+  newTransactionGate: NewTransactionGate;
+  presenter: SalesPresenter;
+}>) {
+  useEffect(() => {
+    // effect 仅在完整 SalesScreen 树提交后运行，代表销售页首帧已提交。
+    businessStartupClock.markSalesFirstFrameCommitted();
+  }, []);
+
+  useEffect(() => {
+    const markWhenInteractive = (): void => {
+      const state = presenter.getState();
+      const canEditCurrentTransaction =
+        state.cart.lines.length > 0 ||
+        newTransactionGate.canStartNewTransaction;
+      if (
+        state.phase === "selling" &&
+        state.capabilities.catalog &&
+        state.capabilities.cartEditing &&
+        canEditCurrentTransaction
+      ) {
+        businessStartupClock.markSalesInteractive();
+      }
+    };
+    markWhenInteractive();
+    return presenter.subscribe(markWhenInteractive);
+  }, [newTransactionGate.canStartNewTransaction, presenter]);
+
+  return null;
 }
 
 function SalesSoundBridge({

@@ -1,5 +1,6 @@
 using BlazorApp.Shared.Models.HqEntities;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.Performance;
 using Microsoft.Extensions.Configuration;
 using SqlSugar;
 
@@ -93,6 +94,7 @@ namespace BlazorApp.Api.Data
 
             // 配置索引
             // ConfigureIndexes();
+            SqlPerformanceAttachmentService.Attach(_db, nameof(HqSqlSugarContext));
         }
 
         public ISqlSugarClient Db => _db;
@@ -252,6 +254,11 @@ namespace BlazorApp.Api.Data
 
             // 设置命令超时时间（5分钟）
             client.Ado.CommandTimeOut = 300;
+
+            SqlPerformanceAttachmentService.Attach(
+                client,
+                $"{nameof(HqSqlSugarContext)}.Concurrent"
+            );
 
             return client;
         }

@@ -1,5 +1,5 @@
 import { ArrowLeftOutlined, CopyOutlined, ReloadOutlined } from '@ant-design/icons'
-import { Alert, Button, Card, Descriptions, Empty, Image, Space, Table, Tag, Tooltip, Typography, message } from 'antd'
+import { Alert, Button, Card, Descriptions, Empty, Image, Space, Tag, Tooltip, Typography, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
@@ -12,6 +12,7 @@ import type {
   LocalSupplierInvoiceSalesAnalysisItemDto,
   LocalSupplierInvoiceSalesAnalysisResponseDto,
 } from '../../../types/localSupplierInvoice'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { Text } = Typography
 const DEFAULT_PRODUCT_IMAGE_BASE_URL = 'https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200'
@@ -438,7 +439,7 @@ export default function LocalSupplierInvoiceSalesAnalysisPage() {
         })}
         styles={{ body: { padding: 0 } }}
       >
-        <Table
+        <MeasuredTable metricId="pos-admin.local-supplier-invoice-sales-analysis.table-1"
           rowKey="detailGUID"
           loading={loading}
           dataSource={result?.items ?? []}

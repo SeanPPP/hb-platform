@@ -81,6 +81,8 @@ export const P = {
   },
   System: {
     ViewLogs: 'System.ViewLogs',
+    ViewPerformanceBaseline: 'System.ViewPerformanceBaseline',
+    ManagePerformanceBaseline: 'System.ManagePerformanceBaseline',
     ManageScheduledTasks: 'System.ManageScheduledTasks',
     ManageSettings: 'System.ManageSettings',
     ViewAppDownloads: 'System.ViewAppDownloads',

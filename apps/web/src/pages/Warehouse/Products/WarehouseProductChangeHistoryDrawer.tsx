@@ -8,7 +8,6 @@ import {
   Pagination,
   Space,
   Spin,
-  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -27,6 +26,7 @@ import {
   getWarehouseProductChangeHistoryActionKey,
   isWarehouseProductChangeHistoryAbortError,
 } from './WarehouseProductChangeHistoryDrawer.logic'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const CHANGE_HISTORY_PAGE_SIZE = 20
 
@@ -114,7 +114,7 @@ function ChangeTable({
     },
   ]
 
-  return <Table size="small" bordered pagination={false} rowKey={(item) => item.fieldKey} columns={columns} dataSource={changes} />
+  return <MeasuredTable metricId="warehouse.products.warehouse-product-change-history-drawer.table-1" size="small" bordered pagination={false} rowKey={(item) => item.fieldKey} columns={columns} dataSource={changes} />
 }
 
 function HistoryEventCard({

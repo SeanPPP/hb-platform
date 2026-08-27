@@ -64,6 +64,7 @@
     "systemStores": "Stores",
     "systemEmployeeProfiles": "Employee Profiles",
     "systemCenterLogs": "Center Logs",
+    "performanceBaseline": "Performance Baseline",
     "scheduledStatistics": "Scheduled Statistics",
     "invoiceEmailSettings": "Invoice Email Settings",
     "paymentTerminalSettings": "Payment Terminal Settings",
@@ -3934,6 +3935,118 @@
       "cardPaymentSupervisorResolution": "Card Payment Supervisor Resolution"
     }
   },
+  "performanceBaseline": {
+    "title": "Performance Quality Baseline",
+    "subtitle": "Observe API, SQL, sync jobs, Web/POS, and delivery quality before freezing budgets.",
+    "loadFailed": "Failed to load the performance overview",
+    "environment": "Environment",
+    "timeRange": "Time range",
+    "baselineStatus": "Baseline status",
+    "lastReported": "Last reported",
+    "qualifiedMetrics": "Qualified metrics",
+    "insufficientMetrics": "Insufficient samples",
+    "acceptedDeployments": "Accepted deployments",
+    "acceptedRollbacks": "Accepted rollbacks",
+    "acceptedRollbacks30d": "Accepted rollbacks in 30 days",
+    "freeze": "Freeze baseline",
+    "freezeConfirm": "Freeze the performance baseline for this environment?",
+    "freezeSuccess": "Baseline frozen",
+    "supplementFreeze": "Freeze eligible metrics",
+    "supplementFreezeConfirm": "Freeze newly eligible metrics while preserving existing frozen values?",
+    "supplementFreezeSuccess": "Insufficient metric candidates updated",
+    "exportBudget": "Export budget candidate",
+    "budgetExportSuccess": "Budget candidate exported; review it in a separate PR before replacing the repository budget.",
+    "budgetExportFailed": "Failed to export budget candidate",
+    "productionBudgetOnly": "Hard-gate budgets can only be exported from frozen Production values",
+    "freezeFailed": "Failed to freeze baseline",
+    "warning": "Warning",
+    "breachWindows": "{{count}} windows",
+    "noData": "No metrics in this range",
+    "states": {
+      "not_started": "Not started",
+      "observing": "Observing",
+      "frozen": "Frozen"
+    },
+    "groups": {
+      "apiAndSql": "API / SQL",
+      "hqAndJobs": "HQ Sync & Background Jobs",
+      "webAndPos": "Web / POS",
+      "delivery": "CI / Release"
+    },
+    "columns": {
+      "metric": "Metric",
+      "selector": "Selector",
+      "samples": "Samples",
+      "p50": "P50",
+      "p95": "P95",
+      "p99": "P99",
+      "maximum": "Maximum",
+      "baselineP95": "Baseline P95",
+      "warningThreshold": "Warning threshold",
+      "lastReported": "Last reported",
+      "status": "Coverage"
+    },
+    "coverage": {
+      "qualified": "Qualified",
+      "insufficient": "Insufficient",
+      "unknown": "Unknown"
+    },
+    "slowSql": {
+      "title": "Slow SQL Top 20",
+      "loadFailed": "Failed to load slow SQL",
+      "empty": "No slow SQL in this window",
+      "window": "Slow SQL window",
+      "sortBy": "Slow SQL sort",
+      "databaseContext": "Database",
+      "template": "SQL template",
+      "executionCount": "Executions",
+      "total": "Total",
+      "average": "Average",
+      "maximum": "Maximum",
+      "lastObserved": "Last execution"
+    },
+    "releaseEvents": {
+      "title": "Deployment and rollback events",
+      "empty": "No release events in this range",
+      "completedAt": "Accepted at",
+      "action": "Action",
+      "status": "Result",
+      "component": "Component",
+      "version": "Version",
+      "commit": "Commit",
+      "source": "Source",
+      "actions": {
+        "deploy": "Deploy",
+        "rollback": "Rollback"
+      },
+      "statuses": {
+        "accepted": "Accepted",
+        "failed": "Failed"
+      }
+    },
+    "runs": {
+      "title": "Recent HQ / background runs",
+      "loadFailed": "Failed to load recent runs",
+      "empty": "No runs in this range",
+      "category": "Category",
+      "operation": "Operation",
+      "status": "Status",
+      "retryCount": "Retry count",
+      "backlog": "Backlog",
+      "duration": "Duration",
+      "lastRun": "Last run",
+      "statuses": {
+        "success": "Success",
+        "failure": "Failure",
+        "cancelled": "Cancelled",
+        "canceled": "Canceled",
+        "interrupted": "Interrupted",
+        "queued": "Queued",
+        "running": "Running",
+        "retry_wait": "Waiting to retry"
+      }
+    }
+  },
   "system": {
     "wpfVersions": {
       "title": "WPF Version Management",
@@ -4891,6 +5004,14 @@
           "pos-ipad-update-decision-reader": {
             "label": "iPad Update Decision Reader",
             "description": "For POS API iPad update-decision reads only. Use HBPOS_APP_UPDATE_DECISION_READ_TOKEN."
+          },
+          "quality-ci-reporter": {
+            "label": "Quality CI Reporter",
+            "description": "For performance quality metric reporting only. Use QUALITY_BASELINE_SERVICE_URL / QUALITY_BASELINE_SERVICE_TOKEN."
+          },
+          "deployment-acceptance-reporter": {
+            "label": "Deployment Acceptance Reporter",
+            "description": "For accepted deployment and rollback event reporting only. Use PERFORMANCE_SERVICE_URL / PERFORMANCE_SERVICE_TOKEN."
           }
         },
         "tokenPrefix": "Token Prefix",

@@ -1,6 +1,8 @@
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.Performance;
 using BlazorApp.Shared.Models.HBweb;
+using System.Text.Json;
 
 namespace BlazorApp.Api.Services.Background
 {
@@ -47,6 +49,14 @@ namespace BlazorApp.Api.Services.Background
             }
 
             var parameters = taskLog.GetParameters();
+            var performanceRunId = ReadCustomString(parameters, "_performanceRunId")
+                ?? taskLog.Id.ToString("N");
+            var currentAttempt = ReadCustomInt(parameters, "_performanceAttempt")
+                ?? Math.Max(1, taskLog.RetryCount);
+            var nextAttempt = currentAttempt + 1;
+            parameters.CustomParameters ??= new Dictionary<string, object>();
+            parameters.CustomParameters["_performanceRunId"] = performanceRunId;
+            parameters.CustomParameters["_performanceAttempt"] = nextAttempt;
 
             _logger.LogInformation(
                 "开始重试任务: {TaskType}, TaskId: {TaskId}, 重试次数: {RetryCount}",
@@ -57,7 +67,22 @@ namespace BlazorApp.Api.Services.Background
 
             try
             {
-                await ExecuteTaskByType(taskLog.TaskType, parameters, TaskTrigger.Retry);
+                PerformanceOperationalRunBridge.Publish(
+                    PerformanceOperationalRunTransition.Retry(
+                        performanceRunId,
+                        "background",
+                        taskLog.TaskType,
+                        DateTime.UtcNow,
+                        attempt: nextAttempt
+                    )
+                );
+                await ExecuteTaskByType(
+                    taskLog.TaskType,
+                    parameters,
+                    TaskTrigger.Retry,
+                    performanceRunId,
+                    nextAttempt
+                );
                 return true;
             }
             catch (Exception ex)
@@ -91,9 +116,23 @@ namespace BlazorApp.Api.Services.Background
         /// <param name="taskType">任务类型</param>
         /// <param name="parameters">任务参数</param>
         /// <param name="triggeredBy">触发方式</param>
-        private async Task ExecuteTaskByType(string taskType, TaskParameters parameters, string triggeredBy)
+        /// <param name="performanceRunId">跨重试关联的性能运行标识</param>
+        /// <param name="performanceAttempt">当前执行尝试序号</param>
+        private async Task ExecuteTaskByType(
+            string taskType,
+            TaskParameters parameters,
+            string triggeredBy,
+            string performanceRunId,
+            int performanceAttempt
+        )
         {
-            var newTaskLog = await _taskLogService.LogTaskStartAsync(taskType, parameters, triggeredBy);
+            var newTaskLog = await _taskLogService.LogTaskStartAsync(
+                taskType,
+                parameters,
+                triggeredBy,
+                performanceExternalRunId: performanceRunId,
+                performanceAttempt: performanceAttempt
+            );
 
             try
             {
@@ -264,6 +303,35 @@ namespace BlazorApp.Api.Services.Background
                 );
                 throw;
             }
+        }
+
+        private static string? ReadCustomString(TaskParameters parameters, string key)
+        {
+            if (parameters.CustomParameters?.TryGetValue(key, out var value) != true)
+            {
+                return null;
+            }
+            return value switch
+            {
+                string text when !string.IsNullOrWhiteSpace(text) => text,
+                JsonElement { ValueKind: JsonValueKind.String } json => json.GetString(),
+                _ => null,
+            };
+        }
+
+        private static int? ReadCustomInt(TaskParameters parameters, string key)
+        {
+            if (parameters.CustomParameters?.TryGetValue(key, out var value) != true)
+            {
+                return null;
+            }
+            return value switch
+            {
+                int number => number,
+                long number when number is >= int.MinValue and <= int.MaxValue => (int)number,
+                JsonElement { ValueKind: JsonValueKind.Number } json when json.TryGetInt32(out var number) => number,
+                _ => null,
+            };
         }
 
         /// <summary>

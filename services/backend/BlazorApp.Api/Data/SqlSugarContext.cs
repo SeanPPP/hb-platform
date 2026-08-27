@@ -1,5 +1,6 @@
 using System.Threading.Tasks;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.Performance;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.HqEntities;
@@ -202,6 +203,8 @@ namespace BlazorApp.Api.Data
                     }
                 });
             }
+
+            SqlPerformanceAttachmentService.Attach(_db, nameof(SqlSugarContext));
         }
 
         private static bool IsAuditField(string? propertyName)
@@ -2307,6 +2310,10 @@ namespace BlazorApp.Api.Data
             );
 
             concurrentDb.Ado.CommandTimeOut = _db.Ado.CommandTimeOut;
+            SqlPerformanceAttachmentService.Attach(
+                concurrentDb,
+                $"{nameof(SqlSugarContext)}.ConcurrentQuery"
+            );
 
             return concurrentDb;
         }
@@ -2452,6 +2459,10 @@ namespace BlazorApp.Api.Data
                 30
             );
             client.Ado.CommandTimeOut = concurrentCommandTimeout;
+            SqlPerformanceAttachmentService.Attach(
+                client,
+                $"{nameof(SqlSugarContext)}.Concurrent"
+            );
 
             return client;
         }

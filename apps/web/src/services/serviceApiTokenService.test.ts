@@ -74,4 +74,18 @@ assertEqual(
   'Service Token 创建请求严禁提交 scopes',
 )
 
+for (const purpose of ['quality-ci-reporter', 'deployment-acceptance-reporter'] as const) {
+  const reporterRequest = buildServiceApiTokenCreateRequest(` ${purpose} `, purpose)
+  assertDeepEqual(
+    reporterRequest,
+    { name: purpose, purpose },
+    `${purpose} 必须通过现有创建请求按 purpose 签发，且不由浏览器提交 scope`,
+  )
+  assertEqual(
+    Object.prototype.hasOwnProperty.call(reporterRequest, 'scopes'),
+    false,
+    `${purpose} 创建请求不得扩展为前端可控 scopes`,
+  )
+}
+
 console.log('serviceApiTokenService.test.ts: ok')

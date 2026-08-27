@@ -401,6 +401,8 @@ namespace BlazorApp.Shared.Constants
             public const string ManageSettings = "System.ManageSettings";
             public const string ViewAppDownloads = "System.ViewAppDownloads";
             public const string ManageAppDownloads = "System.ManageAppDownloads";
+            public const string ViewPerformanceBaseline = "System.ViewPerformanceBaseline";
+            public const string ManagePerformanceBaseline = "System.ManagePerformanceBaseline";
         }
 
         public static class Dashboard

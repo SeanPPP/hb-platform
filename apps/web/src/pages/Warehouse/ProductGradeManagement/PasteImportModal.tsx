@@ -1,4 +1,4 @@
-import { Button, Form, Input, Modal, Select, Table, Tag, message } from 'antd'
+import { Button, Form, Input, Modal, Select, Tag, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -9,6 +9,7 @@ import {
   type PasteImportPreviewItem,
   type PasteImportResult,
 } from '../../../types/productGrade'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface Props {
   open: boolean
@@ -194,7 +195,7 @@ export default function PasteImportModal({ open, onClose, onSuccess }: Props) {
               </Tag>
             )}
           </div>
-          <Table<PasteImportPreviewItem>
+          <MeasuredTable<PasteImportPreviewItem> metricId="warehouse.product-grade-management.paste-import-modal.table-1"
             rowKey="productNumber"
             size="small"
             columns={previewColumns}

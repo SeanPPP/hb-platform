@@ -21,7 +21,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -56,6 +55,7 @@ import {
   createLatestRequestGuard,
   runLatestGuardedRequest,
 } from '../../../utils/latestRequestGuard'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 import { getAdvertisementStoreTagLabels } from './storeTagDisplay'
 
 type AdvertisementRow = AdvertisementListDto & { key: string }
@@ -635,7 +635,7 @@ export default function AdvertisementsPage() {
       </Card>
 
       <Card style={{ marginTop: 16 }}>
-        <Table<AdvertisementRow>
+        <MeasuredTable<AdvertisementRow> metricId="pos-admin.advertisements.table-1"
           rowKey="key"
           loading={loading}
           dataSource={data}

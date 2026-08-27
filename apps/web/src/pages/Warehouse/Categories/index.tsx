@@ -19,7 +19,6 @@ import {
   Space,
   Spin,
   Switch,
-  Table,
   Tag,
   Tree,
   Typography,
@@ -58,6 +57,7 @@ import {
   resolveCategoryProductFilterMode,
   hasExecutedCategoryProductQuery,
 } from './categoryProductFilters'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 type FormMode = 'idle' | 'create' | 'edit'
 
@@ -785,7 +785,7 @@ export default function WarehouseCategoriesPage() {
                   </Form.Item>
                 </Form>
 
-                <Table
+                <MeasuredTable metricId="warehouse.categories.table-1"
                   rowKey="productCode"
                   loading={productLoading}
                   columns={productColumns}

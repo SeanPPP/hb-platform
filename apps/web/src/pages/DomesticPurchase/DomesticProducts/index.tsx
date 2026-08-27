@@ -21,7 +21,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -64,6 +63,7 @@ import {
   calculateSetItemPriceTotals,
   type PasteableSetItemField,
 } from './setItemsBulkPaste'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface ProductFormValues {
   supplierCode?: string
@@ -448,7 +448,7 @@ function SetItemsModal({
           </Button>
         ) : null}
       </Space>
-      <Table
+      <MeasuredTable metricId="domestic-purchase.domestic-products.table-1"
         rowKey="id"
         loading={loading}
         columns={columns}
@@ -1059,7 +1059,7 @@ export default function DomesticProductsPage() {
           ) : null}
         </Space>
 
-        <Table
+        <MeasuredTable metricId="domestic-purchase.domestic-products.table-2"
           rowKey="id"
           virtual
           loading={loading}

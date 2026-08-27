@@ -1,8 +1,9 @@
 import { useTranslation } from 'react-i18next';
-import { Spin, Table } from 'antd';
+import { Spin } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import React, { useMemo } from 'react';
 import styles from '../styles.module.css';
+import { MeasuredTable } from '../../../../components/MeasuredTable';
 
 export interface SupplierSalesData {
   rank: number;
@@ -489,7 +490,7 @@ const SupplierCard: React.FC<SupplierCardProps> = ({
             </span>
           </div>
         ) : (
-          <Table
+          <MeasuredTable metricId="executive-sales-intelligence.sales-detail-analysis-v2.supplier-card.table-1"
             columns={columns}
             dataSource={data}
             rowKey="rank"

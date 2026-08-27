@@ -10,7 +10,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -41,6 +40,7 @@ import {
   createLatestRequestGuard,
   runLatestGuardedRequest,
 } from '../../../utils/latestRequestGuard'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 function getColorFromString(str: string): string {
   if (!str) return '#8c8c8c'
@@ -334,7 +334,7 @@ export default function CashRegisterUsersPage() {
       styles={{ body: { padding: 0 } }}
     >
       <div style={{ padding: 16 }}>
-        <Table
+        <MeasuredTable metricId="pos-admin.cash-register-users.table-1"
           rowKey="hGuid"
           loading={loading}
           dataSource={data}

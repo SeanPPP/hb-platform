@@ -9,7 +9,6 @@ import {
   Modal,
   Popconfirm,
   Space,
-  Table,
   Tag,
   Typography,
   Tree,
@@ -34,6 +33,7 @@ import {
 import type { CreateSysPermissionDto, PermissionCategoryDto, RoleOptionDto, SysPermissionDto } from '../../../types/role'
 import { useAuthStore } from '../../../store/auth'
 import { canManageSystemPermissions } from './permissionsAccess'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const CATEGORY_COLORS: Record<string, string> = {
   Users: 'blue',
@@ -368,7 +368,7 @@ export default function SystemPermissionsPage() {
             </Button>
           </Space>
 
-          <Table
+          <MeasuredTable metricId="system.permissions.table-1"
             rowKey="id"
             loading={loading}
             columns={columns}

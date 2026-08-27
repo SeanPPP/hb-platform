@@ -1,4 +1,4 @@
-import { Button, Empty, Modal, Radio, Spin, Table, Tag, Typography } from 'antd'
+import { Button, Empty, Modal, Radio, Spin, Tag, Typography } from 'antd'
 import type { TableColumnsType } from 'antd'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -22,6 +22,7 @@ import {
   buildProductActivityTableRows,
   type ProductActivityTableRow,
 } from '../productActivityHistoryRows'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { Text } = Typography
 
@@ -444,7 +445,7 @@ export default function ProductActivityHistoryModal({
                 </Button>
               </div>
             ) : (
-              <Table
+              <MeasuredTable metricId="shop-home.product-activity-history-modal.table-1"
                 size="small"
                 className="shop-product-activity-table"
                 columns={columns}

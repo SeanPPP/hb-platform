@@ -27,10 +27,16 @@ assert.equal(packageJson.version, "0.2.0");
 assert.equal(packageLock.version, "0.2.0");
 assert.equal(packageLock.packages[""].version, "0.2.0");
 assert.equal(packageJson.main, "index.js");
-assert.match(
-  appEntrySource,
-  /^import "\.\/src\/core\/peripherals\/customer-display\/native\/external-display-native-module";\s*import "expo-router\/entry";\s*$/u,
-  "自定义入口必须先注册客显原生模块，再交给 Expo Router。",
+assert.equal(
+  appEntrySource.trim(),
+  [
+    'import "./src/core/performance/business-startup-origin";',
+    'import "./src/core/performance/business-startup-clock";',
+    'import "./src/core/peripherals/customer-display/native/external-display-native-module";',
+    'import "./src/core/observability/sentry";',
+    'import "expo-router/entry";',
+  ].join("\n"),
+  "自定义入口必须先捕获无依赖性能原点，再注册计时器、客显与 Sentry，最后交给 Expo Router。",
 );
 assert.equal(packageJson.private, true);
 assert.equal(packageJson.scripts.android, undefined);

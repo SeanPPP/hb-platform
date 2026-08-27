@@ -15,7 +15,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tabs,
   Tag,
   Timeline,
@@ -30,6 +29,7 @@ import {
 } from '@ant-design/icons'
 import { mobileOtaPolicyService } from '../../../services/mobileOtaPolicyService'
 import { getMobileAppOtaUpdates } from '../../../services/mobileAppBuildService'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 import type { MobileAppOtaUpdate } from '../../../types/mobileAppBuild'
 import type {
   AppOtaRelease,
@@ -403,7 +403,8 @@ function MobileOtaLane({
           message={t('system.appDownloads.updatePolicy.mobileOta.registrationBoundary')}
           description={t('system.appDownloads.updatePolicy.mobileOta.registrationDescription')}
         />
-        <Table<AppOtaRelease>
+        <MeasuredTable<AppOtaRelease>
+          metricId="system.app-downloads.mobile-ota-policy.table-1"
           rowKey="id"
           size="small"
           columns={releaseColumns}
@@ -664,7 +665,8 @@ function MobileOtaLegacyHistory({
           message={t('system.appDownloads.ota.loadFailed')}
         />
       ) : null}
-      <Table<MobileAppOtaUpdate>
+      <MeasuredTable<MobileAppOtaUpdate>
+        metricId="system.app-downloads.mobile-ota-policy.table-2"
         rowKey="id"
         size="small"
         columns={columns}

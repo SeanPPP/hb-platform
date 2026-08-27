@@ -51,6 +51,8 @@ const androidReleaseChannel =
 const liveEnvironment = Object.freeze({
   EXPO_PUBLIC_HBPOS_EAS_PROJECT_ID: projectId,
   HBPOS_OTA_CENTER_BASE_URL: "https://center.example",
+  PERFORMANCE_SERVICE_URL: "https://metrics.example",
+  PERFORMANCE_SERVICE_TOKEN: "hbsvc_release_events",
   EXPO_TOKEN: "expo-auth-must-remain",
 });
 const easEnvironment = Object.freeze({
@@ -315,6 +317,8 @@ test("EAS 命令固定 CLI、runtime 和唯一平台 channel，并剔除 Center 
     assert.equal(command.env.HBPOS_OTA_ADMIN_JWT, undefined);
     assert.equal(command.env.HBPOS_OTA_SERVICE_TOKEN, undefined);
     assert.equal(command.env.HBPOS_OTA_RELEASE_SERVICE_TOKEN, undefined);
+    assert.equal(command.env.PERFORMANCE_SERVICE_URL, undefined);
+    assert.equal(command.env.PERFORMANCE_SERVICE_TOKEN, undefined);
     assert.equal(command.env.POS_CENTER_ADMIN_JWT, undefined);
     assert.equal(command.env.POS_CENTER_SERVICE_TOKEN, undefined);
     assert.equal(command.env.APP_OTA_RELEASE_ACCESS_TOKEN, undefined);
@@ -356,6 +360,8 @@ test("EAS channel:list 使用固定 CLI、limit/offset 分页并严格解析权�
   assert.equal(command.env.HBPOS_APP_UPDATE_DECISION_READ_TOKEN, undefined);
   assert.equal(command.env.HBPOS_MANAGEMENT_TOKEN, undefined);
   assert.equal(command.env.HBWEB_API_TOKEN, undefined);
+  assert.equal(command.env.PERFORMANCE_SERVICE_URL, undefined);
+  assert.equal(command.env.PERFORMANCE_SERVICE_TOKEN, undefined);
   assert.equal(command.env.expo_token, undefined);
   assert.equal(command.env.EXPO_TOKEN, "expo-auth-must-remain");
   assert.deepEqual(
@@ -917,6 +923,7 @@ test("live 发布默认在 register 前执行同版本 channel:view 二次回读
 
 test("live all 在任何 EAS 前逐 lane preflight，两平台共享 batch 但独立发布登记", async () => {
   const events = [];
+  const releaseEvents = [];
   const preflights = [];
   const payloads = [];
   const result = await runPublishPosHandheldOtaRelease(
@@ -956,6 +963,12 @@ test("live all 在任何 EAS 前逐 lane preflight，两平台共享 batch 但�
         payloads.push(payload);
         return { release: { id: `${payload.platform}-id` }, idempotent: false };
       },
+      completedAtUtcFn: () => "2026-08-27T10:17:00.000Z",
+      reportReleaseEventFn: async ({ event }) => {
+        events.push(`report:${event.version}`);
+        releaseEvents.push(event);
+      },
+      resolveReleaseCommitFn: () => "a".repeat(40),
     }),
   );
 
@@ -966,9 +979,11 @@ test("live all 在任何 EAS 前逐 lane preflight，两平台共享 batch 但�
     "eas:ios",
     "readback:ios",
     "register:ios",
+    `report:${iosGroupId}`,
     "eas:android",
     "readback:android",
     "register:android",
+    `report:${androidGroupId}`,
   ]);
   assert.equal(new Set(payloads.map((payload) => payload.releaseBatchId)).size, 1);
   assert.equal(payloads[0].releaseBatchId, batchId);
@@ -987,6 +1002,8 @@ test("live all 在任何 EAS 前逐 lane preflight，两平台共享 batch 但�
   );
   assert.equal(result.status, "complete");
   assert.equal(result.results.length, 2);
+  assert.deepEqual(releaseEvents.map((event) => event.version), [iosGroupId, androidGroupId]);
+  assert.notEqual(releaseEvents[0].eventId, releaseEvents[1].eventId);
 });
 
 test("所有新 release lane 必须穷尽 channel:list 分页并证明从未使用", async (t) => {
@@ -1125,6 +1142,7 @@ test("rollback 来源 release ID 在 EAS 写入前进入 preflight 同 lane 验�
 test("all 一端失败仍完成另一端，整体 non-zero 且登记失败生成无凭据 recovery manifest", async () => {
   const writes = [];
   const registrations = [];
+  const reported = [];
   await assert.rejects(
     () =>
       runPublishPosHandheldOtaRelease(
@@ -1135,6 +1153,10 @@ test("all 一端失败仍完成另一端，整体 non-zero 且登记失败生成
             if (payload.platform === "ios") throw new Error("Center 暂不可用");
             return { release: { id: "android-id" }, idempotent: false };
           },
+          reportReleaseEventFn: async ({ event }) => {
+            reported.push(event.version);
+          },
+          resolveReleaseCommitFn: () => "a".repeat(40),
           writeRecoveryManifestFn: async (file, manifest) => {
             writes.push({ file, manifest });
           },
@@ -1149,6 +1171,7 @@ test("all 一端失败仍完成另一端，整体 non-zero 且登记失败生成
     },
   );
   assert.deepEqual(registrations, ["ios", "android"]);
+  assert.deepEqual(reported, [androidGroupId]);
   assert.equal(writes.length, 1);
   assert.equal(writes[0].file, "recovery.json");
   assert.equal(writes[0].manifest.releases.length, 1);
@@ -1236,6 +1259,7 @@ test("register-only 不做 backend preflight 或 EAS 发布，但必须重跑 ch
     ],
   };
   const events = [];
+  const releaseEvents = [];
   const result = await runPublishPosHandheldOtaRelease(
     {
       registerOnlyFile: "recovery.json",
@@ -1261,6 +1285,11 @@ test("register-only 不做 backend preflight 或 EAS 发布，但必须重跑 ch
         events.push("register");
         return { release: { id: "ios-id" }, idempotent: true };
       },
+      reportReleaseEventFn: async ({ event }) => {
+        events.push("report");
+        releaseEvents.push(event);
+      },
+      resolveReleaseCommitFn: () => "a".repeat(40),
       runCommandFn: async (command) => {
         assert.equal(command.args[1], "channel:view");
         assert.equal(command.args.includes("update"), false);
@@ -1269,8 +1298,9 @@ test("register-only 不做 backend preflight 或 EAS 发布，但必须重跑 ch
       },
     }),
   );
-  assert.deepEqual(events, ["channel-readback", "register"]);
+  assert.deepEqual(events, ["channel-readback", "register", "report"]);
   assert.equal(result.results[0].registration.idempotent, true);
+  assert.equal(releaseEvents[0].version, iosGroupId);
 });
 
 test("bootstrap register-only 只做 fixed channel 权威回读与受限旧登记", async () => {
@@ -1915,4 +1945,100 @@ test("URL builder 对 /api 基址去重，且默认登记路由不再指向旧�
   assert.equal(buildRegistrationUrl("https://center.example").includes(LEGACY_OTA_REGISTER_PATH), false);
   assert.throws(() => buildRegistrationUrl("http://center.example"), /HTTPS|loopback/);
   assert.equal(APP_OTA_REGISTER_PATH, "/api/app-ota-releases/register");
+});
+
+test("手持 OTA 只在登记成功后上报 deploy 或 rollback 验收", async () => {
+  for (const scenario of [
+    { action: "deploy", rollbackOfReleaseId: undefined },
+    { action: "rollback", rollbackOfReleaseId },
+  ]) {
+    const trace = [];
+    await runPublishPosHandheldOtaRelease(
+      createOptions({ rollbackOfReleaseId: scenario.rollbackOfReleaseId }),
+      createDependencies({
+        completedAtUtcFn: () => "2026-08-27T10:17:00.000Z",
+        registerOtaReleaseFn: async (payload) => {
+          trace.push("register");
+          return {
+            release: { id: registeredReleaseId },
+            idempotent: false,
+            payload,
+          };
+        },
+        reportReleaseEventFn: async ({ event, config }) => {
+          trace.push("report");
+          assert.equal(event.action, scenario.action);
+          assert.equal(event.status, "accepted");
+          assert.equal(event.component, "pos-handheld");
+          assert.equal(event.environment, "Production");
+          assert.equal(event.version, iosGroupId);
+          assert.equal(event.commit, "a".repeat(40));
+          assert.equal(config.baseUrl, "https://metrics.example");
+          assert.equal(config.token, "hbsvc_release_events");
+        },
+        resolveReleaseCommitFn: () => "a".repeat(40),
+      }),
+    );
+    assert.deepEqual(trace, ["register", "report"]);
+  }
+});
+
+test("手持 OTA 验收上报失败写 recovery 且明确禁止重发", async () => {
+  let recoveryManifest;
+  await assert.rejects(
+    () =>
+      runPublishPosHandheldOtaRelease(
+        createOptions({ recoveryManifestFile: "release-report-recovery.json" }),
+        createDependencies({
+          completedAtUtcFn: () => "2026-08-27T10:17:00.000Z",
+          reportReleaseEventFn: async () => {
+            throw new Error("release reporter unavailable");
+          },
+          resolveReleaseCommitFn: () => "b".repeat(40),
+          writeRecoveryManifestFn: async (file, manifest) => {
+            assert.equal(file, "release-report-recovery.json");
+            recoveryManifest = manifest;
+          },
+        }),
+      ),
+    (error) => {
+      assert.ok(error instanceof OtaPublishBatchError);
+      assert.match(error.message, /release event|禁止重发/i);
+      assert.equal(error.results[0].status, "registered");
+      assert.equal(error.results[0].releaseEventStatus, "failed");
+      return true;
+    },
+  );
+  assert.equal(recoveryManifest.releases[0].updateGroupId, iosGroupId);
+});
+
+test("手持 OTA 缺少性能上报配置时在任何凭据读取或 EAS 写入前失败", async () => {
+  const {
+    PERFORMANCE_SERVICE_URL: _url,
+    PERFORMANCE_SERVICE_TOKEN: _token,
+    ...environmentWithoutReporter
+  } = liveEnvironment;
+  let credentialReads = 0;
+  let commandCalls = 0;
+  await assert.rejects(
+    () =>
+      runPublishPosHandheldOtaRelease(
+        createOptions(),
+        createDependencies({
+          environment: environmentWithoutReporter,
+          readAccessTokenStdinFn: async () => {
+            credentialReads += 1;
+            return administratorAccessToken;
+          },
+          reportReleaseEventFn: async () => undefined,
+          runCommandFn: async () => {
+            commandCalls += 1;
+            throw new Error("must not execute EAS");
+          },
+        }),
+      ),
+    /PERFORMANCE_SERVICE_URL.*PERFORMANCE_SERVICE_TOKEN/i,
+  );
+  assert.equal(credentialReads, 0);
+  assert.equal(commandCalls, 0);
 });

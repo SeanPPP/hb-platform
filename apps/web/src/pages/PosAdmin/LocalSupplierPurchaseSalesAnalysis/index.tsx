@@ -21,7 +21,6 @@ import {
   Input,
   Select,
   Space,
-  Table,
   Tag,
   Typography,
   message,
@@ -76,6 +75,7 @@ import {
   moveLocalSupplierPurchaseSalesAnalysisColumnOrder,
   type LocalSupplierPurchaseSalesAnalysisColumnKey,
 } from './columnOrder'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { RangePicker } = DatePicker
 const { Text, Title } = Typography
@@ -928,7 +928,7 @@ export default function LocalSupplierPurchaseSalesAnalysisPage() {
                 items={columnOrder.length ? columnOrder : draggableColumnKeys}
                 strategy={horizontalListSortingStrategy}
               >
-                <Table<LocalSupplierPurchaseSalesAnalysisRowDto>
+                <MeasuredTable<LocalSupplierPurchaseSalesAnalysisRowDto> metricId="pos-admin.local-supplier-purchase-sales-analysis.table-1"
                   size="small"
                   rowKey={(record) =>
                     `${record.storeCode}-${record.supplierCode}-${record.productCode}-${record.itemNumber || ''}`

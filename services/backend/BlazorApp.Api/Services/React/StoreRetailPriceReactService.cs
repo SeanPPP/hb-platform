@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Repositories.Interfaces;
+using BlazorApp.Api.Services.Performance;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
@@ -61,7 +62,7 @@ namespace BlazorApp.Api.Services.React
                     _logger.LogInformation($"[{reqId}] 执行完成");
                 };
                 db.Aop.OnLogExecuting = logExec;
-                db.Aop.OnLogExecuted = logExecuted;
+                SqlPerformanceAttachmentService.SetOnLogExecuted(db, logExecuted);
                 var swTotal = Stopwatch.StartNew();
                 var sw = Stopwatch.StartNew();
                 var pageIndex = (request.StartRow / request.PageSize) + 1;
@@ -549,7 +550,7 @@ namespace BlazorApp.Api.Services.React
                     );
                     _logger.LogInformation($"[{reqId}] 总耗时(ms): {swTotal.ElapsedMilliseconds}");
                     db.Aop.OnLogExecuting = null;
-                    db.Aop.OnLogExecuted = null;
+                    SqlPerformanceAttachmentService.SetOnLogExecuted(db, null);
                     return GridResponseDto<StoreRetailPriceListDto>.OK(items, totalRef.Value);
                 }
                 else
@@ -595,7 +596,7 @@ namespace BlazorApp.Api.Services.React
                     );
                     _logger.LogInformation($"[{reqId}] 总耗时(ms): {swTotal.ElapsedMilliseconds}");
                     db.Aop.OnLogExecuting = null;
-                    db.Aop.OnLogExecuted = null;
+                    SqlPerformanceAttachmentService.SetOnLogExecuted(db, null);
                     return GridResponseDto<StoreRetailPriceListDto>.OK(items, total);
                 }
             }
@@ -627,12 +628,12 @@ namespace BlazorApp.Api.Services.React
                     _logger.LogInformation($"[{reqId}] 执行完成");
                 };
                 db.Aop.OnLogExecuting = logExec;
-                db.Aop.OnLogExecuted = logExecuted;
+                SqlPerformanceAttachmentService.SetOnLogExecuted(db, logExecuted);
                 var sw = Stopwatch.StartNew();
                 var item = await _storeRetailPriceRepository.GetDetailByUuidAsync(uuid);
                 _logger.LogInformation($"[{reqId}] 详情查询耗时(ms): {sw.ElapsedMilliseconds}");
                 db.Aop.OnLogExecuting = null;
-                db.Aop.OnLogExecuted = null;
+                SqlPerformanceAttachmentService.SetOnLogExecuted(db, null);
 
                 if (item == null)
                     return ApiResponse<StoreRetailPriceDetailDto>.Error("数据不存在", "NOT_FOUND");

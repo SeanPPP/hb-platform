@@ -46,6 +46,8 @@ const liveEnvironment = Object.freeze({
   HBWEB_OTA_ADMIN_JWT: "must-not-leak",
   HBWEB_APP_UPDATE_DECISION_READ_TOKEN: "must-not-leak",
   HBPOS_OTA_CENTER_ACCESS_TOKEN: "must-not-leak",
+  PERFORMANCE_SERVICE_URL: "https://metrics.example",
+  PERFORMANCE_SERVICE_TOKEN: "hbsvc_release_events",
   THIRD_PARTY_SECRET: "must-not-leak",
   EXPO_TOKEN: "expo-auth-remains",
   expo_token: "lowercase-must-not-leak",
@@ -295,6 +297,8 @@ test("EAS 命令固定 CLI/平台/channel/runtime 并剔除所有后台凭据", 
   assert.equal(command.env.HBWEB_OTA_ADMIN_JWT, undefined);
   assert.equal(command.env.HBWEB_APP_UPDATE_DECISION_READ_TOKEN, undefined);
   assert.equal(command.env.HBPOS_OTA_CENTER_ACCESS_TOKEN, undefined);
+  assert.equal(command.env.PERFORMANCE_SERVICE_URL, undefined);
+  assert.equal(command.env.PERFORMANCE_SERVICE_TOKEN, undefined);
   assert.equal(command.env.THIRD_PARTY_SECRET, undefined);
   assert.equal(command.env.EXPO_TOKEN, "expo-auth-remains");
   assert.equal(command.env.expo_token, undefined);
@@ -313,6 +317,8 @@ test("EAS 命令固定 CLI/平台/channel/runtime 并剔除所有后台凭据", 
     "--non-interactive",
   ]);
   assert.equal(channelViewCommand.env.HBWEB_API_TOKEN, undefined);
+  assert.equal(channelViewCommand.env.PERFORMANCE_SERVICE_URL, undefined);
+  assert.equal(channelViewCommand.env.PERFORMANCE_SERVICE_TOKEN, undefined);
   assert.equal(channelViewCommand.env.EXPO_TOKEN, "expo-auth-remains");
   assert.equal(channelViewCommand.env.expo_token, undefined);
   assert.equal(channelViewCommand.env.ExPo_ToKeN, undefined);
@@ -334,6 +340,8 @@ test("EAS 命令固定 CLI/平台/channel/runtime 并剔除所有后台凭据", 
     "25",
   ]);
   assert.equal(channelListCommand.env.EXPO_TOKEN, "expo-auth-remains");
+  assert.equal(channelListCommand.env.PERFORMANCE_SERVICE_URL, undefined);
+  assert.equal(channelListCommand.env.PERFORMANCE_SERVICE_TOKEN, undefined);
   assert.equal(channelListCommand.env.expo_token, undefined);
   assert.equal(channelListCommand.env.ExPo_ToKeN, undefined);
   assert.equal(channelListCommand.env.VENDOR_ACCESS_TOKEN, undefined);
@@ -760,6 +768,7 @@ test("bootstrap register-only 在权威身份漂移或 recovery 越权时 fail-c
 
 test("all 会先完成两个 preflight，再以同 batch 分平台发布和登记", async () => {
   const trace = [];
+  const releaseEvents = [];
   const result = await runPublishMobileOtaRelease(
     createOptions({ platform: "all" }),
     createDependencies({
@@ -785,6 +794,12 @@ test("all 会先完成两个 preflight，再以同 batch 分平台发布和登�
         trace.push(`register:${payload.platform}`);
         return { release: { id: `${payload.platform}-release-id` }, idempotent: false };
       },
+      completedAtUtcFn: () => "2026-08-27T10:17:00.000Z",
+      reportReleaseEventFn: async ({ event }) => {
+        trace.push(`report:${event.version}`);
+        releaseEvents.push(event);
+      },
+      resolveReleaseCommitFn: () => "a".repeat(40),
     }),
   );
   assert.deepEqual(trace, [
@@ -794,12 +809,16 @@ test("all 会先完成两个 preflight，再以同 batch 分平台发布和登�
     "eas:android",
     "verify:android",
     "register:android",
+    `report:${androidGroupId}`,
     "eas:ios",
     "verify:ios",
     "register:ios",
+    `report:${iosGroupId}`,
   ]);
   assert.equal(result.releaseBatchId, batchId);
   assert.deepEqual(result.results.map((item) => item.status), ["registered", "registered"]);
+  assert.deepEqual(releaseEvents.map((event) => event.version), [androidGroupId, iosGroupId]);
+  assert.notEqual(releaseEvents[0].eventId, releaseEvents[1].eventId);
 });
 
 test("所有 lane 必须在首次 EAS update 前取得完整 channel list 的 unused 证明", async () => {
@@ -879,6 +898,7 @@ test("rollback 来源 UUID 会随单平台 preflight 在任何 EAS 写入前校�
 
 test("all 单平台失败保留成功平台并整体 non-zero", async () => {
   const registered = [];
+  const reported = [];
   await assert.rejects(
     () => runPublishMobileOtaRelease(
       createOptions({ platform: "all" }),
@@ -897,6 +917,10 @@ test("all 单平台失败保留成功平台并整体 non-zero", async () => {
           registered.push(payload.platform);
           return { release: { id: `${payload.platform}-release-id` }, idempotent: false };
         },
+        reportReleaseEventFn: async ({ event }) => {
+          reported.push(event.version);
+        },
+        resolveReleaseCommitFn: () => "a".repeat(40),
       }),
     ),
     (error) => {
@@ -907,6 +931,7 @@ test("all 单平台失败保留成功平台并整体 non-zero", async () => {
     },
   );
   assert.deepEqual(registered, ["ios"]);
+  assert.deepEqual(reported, [iosGroupId]);
 });
 
 test("EAS 发布成功但 channel 权威回读失形时写可恢复事实并标记 published-unverified", async () => {
@@ -1045,6 +1070,7 @@ test("register-only 重做只读 channel 权威回读和完整 fingerprint 幂�
   let updateCalls = 0;
   let channelViewCalls = 0;
   let preflightCalls = 0;
+  const releaseEvents = [];
   const payload = buildOtaReleasePayload(
     parseEasUpdateOutput(createJsonOutput("ios"), "ios"),
     {
@@ -1081,6 +1107,10 @@ test("register-only 重做只读 channel 权威回读和完整 fingerprint 幂�
         throw new Error("register-only must not preflight an already-used channel");
       },
       registerOtaReleaseFn: async () => ({ release: { id: "release-id" }, idempotent: true }),
+      reportReleaseEventFn: async ({ event }) => {
+        releaseEvents.push(event);
+      },
+      resolveReleaseCommitFn: () => "a".repeat(40),
     }),
   );
   assert.equal(updateCalls, 0);
@@ -1088,6 +1118,8 @@ test("register-only 重做只读 channel 权威回读和完整 fingerprint 幂�
   assert.equal(preflightCalls, 0);
   assert.equal(result.results[0].status, "registered");
   assert.equal(result.results[0].idempotent, true);
+  assert.equal(releaseEvents.length, 1);
+  assert.equal(releaseEvents[0].version, iosGroupId);
 });
 
 test("register-only 的 channel 权威回读不匹配时 fail-closed，禁止盲补登记", async () => {
@@ -1592,4 +1624,136 @@ test("bootstrap 旧登记只发送显式迁移 DTO，并严格核对后台回显
       /response is invalid/i,
     );
   }
+});
+
+test("Mobile OTA 只在登记成功后上报 deploy 或 rollback 验收", async () => {
+  for (const scenario of [
+    { action: "deploy", rollbackOfReleaseId: undefined },
+    { action: "rollback", rollbackOfReleaseId: rollbackSourceId },
+  ]) {
+    const trace = [];
+    await runPublishMobileOtaRelease(
+      createOptions({ rollbackOfReleaseId: scenario.rollbackOfReleaseId }),
+      createDependencies({
+        completedAtUtcFn: () => "2026-08-27T10:17:00.000Z",
+        registerOtaReleaseFn: async (payload) => {
+          trace.push("register");
+          return {
+            release: { id: "723e4567-e89b-42d3-a456-426614174000" },
+            idempotent: false,
+            payload,
+          };
+        },
+        reportReleaseEventFn: async ({ event, config }) => {
+          trace.push("report");
+          assert.equal(event.action, scenario.action);
+          assert.equal(event.status, "accepted");
+          assert.equal(event.component, "mobile");
+          assert.equal(event.environment, "Production");
+          assert.equal(event.version, iosGroupId);
+          assert.equal(event.commit, "a".repeat(40));
+          assert.equal(config.baseUrl, "https://metrics.example");
+          assert.equal(config.token, "hbsvc_release_events");
+        },
+        resolveReleaseCommitFn: () => "a".repeat(40),
+      }),
+    );
+    assert.deepEqual(trace, ["register", "report"]);
+  }
+});
+
+test("Mobile OTA register-only 重试复用同一 release event 幂等键", async () => {
+  const releaseEvents = [];
+  let publishedPayload;
+  const reporter = async ({ event }) => {
+    releaseEvents.push(event);
+  };
+  await runPublishMobileOtaRelease(
+    createOptions(),
+    createDependencies({
+      registerOtaReleaseFn: async (payload) => {
+        publishedPayload = payload;
+        return { release: { id: "release-id" }, idempotent: false };
+      },
+      reportReleaseEventFn: reporter,
+      resolveReleaseCommitFn: () => "c".repeat(40),
+    }),
+  );
+
+  await runPublishMobileOtaRelease(
+    { registerOnlyFile: "recovery.json", accessTokenStdin: true },
+    createDependencies({
+      readRecoveryManifestFn: async () => ({
+        schemaVersion: 1,
+        releaseBatchId: batchId,
+        appKey: "mobile",
+        environment: "production",
+        createdAtUtc: "2026-08-27T10:15:00.000Z",
+        releases: [publishedPayload],
+      }),
+      registerOtaReleaseFn: async () => ({
+        release: { id: "release-id" },
+        idempotent: true,
+      }),
+      reportReleaseEventFn: reporter,
+      resolveReleaseCommitFn: () => "c".repeat(40),
+    }),
+  );
+
+  assert.equal(releaseEvents.length, 2);
+  assert.equal(releaseEvents[0].eventId, releaseEvents[1].eventId);
+});
+
+test("Mobile OTA 验收上报失败写 recovery 且明确禁止重发", async () => {
+  let recoveryManifest;
+  await assert.rejects(
+    () =>
+      runPublishMobileOtaRelease(
+        createOptions(),
+        createDependencies({
+          completedAtUtcFn: () => "2026-08-27T10:17:00.000Z",
+          reportReleaseEventFn: async () => {
+            throw new Error("release reporter unavailable");
+          },
+          resolveReleaseCommitFn: () => "b".repeat(40),
+          writeRecoveryManifestFn: async (manifest) => {
+            recoveryManifest = manifest;
+            return "/tmp/mobile-release-report-recovery.json";
+          },
+        }),
+      ),
+    (error) => {
+      assert.ok(error instanceof OtaPublishBatchError);
+      assert.match(error.message, /release event|禁止重发/i);
+      assert.equal(error.results[0].status, "registered");
+      assert.equal(error.results[0].releaseEventStatus, "failed");
+      return true;
+    },
+  );
+  assert.equal(recoveryManifest.releases[0].updateGroupId, iosGroupId);
+});
+
+test("Mobile OTA 缺少性能上报配置时在任何 EAS 写入前失败", async () => {
+  const {
+    PERFORMANCE_SERVICE_URL: _url,
+    PERFORMANCE_SERVICE_TOKEN: _token,
+    ...environmentWithoutReporter
+  } = liveEnvironment;
+  let commandCalls = 0;
+  await assert.rejects(
+    () =>
+      runPublishMobileOtaRelease(
+        createOptions(),
+        createDependencies({
+          environment: environmentWithoutReporter,
+          reportReleaseEventFn: async () => undefined,
+          runCommandFn: async () => {
+            commandCalls += 1;
+            throw new Error("must not execute EAS");
+          },
+        }),
+      ),
+    /PERFORMANCE_SERVICE_URL.*PERFORMANCE_SERVICE_TOKEN/i,
+  );
+  assert.equal(commandCalls, 0);
 });

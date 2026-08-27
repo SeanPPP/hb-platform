@@ -36,7 +36,6 @@ import {
   Space,
   Spin,
   Switch,
-  Table,
   Tag,
   theme,
   Tooltip,
@@ -46,6 +45,7 @@ import type { ColumnsType, TableRef } from 'antd/es/table'
 import type { FilterDropdownProps, FilterValue } from 'antd/es/table/interface'
 import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 import type { ClipboardEvent, ReactNode, UIEvent } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -3636,7 +3636,7 @@ export default function ProductManagementPage() {
         </div>
 
         <div style={{ flex: 1, minHeight: 0 }}>
-          <Table
+          <MeasuredTable metricId="pos-admin.product-management.table-1"
             key={productTableRenderKey}
             ref={productTableRef}
             virtual
@@ -3985,7 +3985,7 @@ export default function ProductManagementPage() {
                 {t('posAdmin.products.setCodePasteNavigationHint', '点击“套装条码”或“零售价”列头后，可粘贴 Excel 单列；也可从任意单元格开始')}
               </span>
             </Space>
-            <Table<SetCodeDraftRow>
+            <MeasuredTable<SetCodeDraftRow> metricId="pos-admin.product-management.table-2"
               rowKey={(row) => row.id || row._rowId || ''}
               loading={editSetCodesLoading}
               dataSource={editSetCodes}
@@ -4072,7 +4072,7 @@ export default function ProductManagementPage() {
                 {t('posAdmin.products.multiCodePasteNavigationHint', '点击“多码条码”列头后，可粘贴 Excel 单列；也可从任意条码单元格开始')}
               </span>
             </Space>
-            <Table<SetCodeDraftRow>
+            <MeasuredTable<SetCodeDraftRow> metricId="pos-admin.product-management.table-3"
               rowKey={(row) => row.id || row._rowId || ''}
               loading={editSetCodesLoading}
               dataSource={editSetCodes}
@@ -4393,7 +4393,7 @@ export default function ProductManagementPage() {
         ]}
         width={1100}
       >
-        <Table
+        <MeasuredTable metricId="pos-admin.product-management.table-4"
           rowKey={(record) => `${record.storeCode || ''}-${record.storeProductCode || ''}`}
           loading={storeRecordsLoading}
           dataSource={storeRecordsData}
@@ -4595,7 +4595,7 @@ export default function ProductManagementPage() {
               {t('posAdmin.products.addSubCode', '添加子码')}
             </Button>
           </div>
-          <Table
+          <MeasuredTable metricId="pos-admin.product-management.table-5"
             rowKey={(r) => r.id || ''}
             dataSource={setCodeData}
             pagination={false}
@@ -4799,7 +4799,7 @@ export default function ProductManagementPage() {
                 </Descriptions.Item>
               </Descriptions>
               {integritySummary.issueRows.length > 0 ? (
-                <Table<ProductIntegrityIssueRow>
+                <MeasuredTable<ProductIntegrityIssueRow> metricId="pos-admin.product-management.table-6"
                   rowKey="key"
                   dataSource={integritySummary.issueRows}
                   pagination={false}

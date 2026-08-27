@@ -32,7 +32,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   Tooltip,
   message,
@@ -191,6 +190,7 @@ import type {
   ProductStatusFilter,
   StatusFilterValue,
 } from './statusFilters'
+import { MeasuredTable } from '../../../../components/MeasuredTable'
 
 
 /* ------------------------------------------------------------------ */
@@ -2348,7 +2348,7 @@ export default function InvoiceEditPage() {
       matchedProducts: BarcodeAbnormalMatchedProductDto[],
       matchedProductColumns: ColumnsType<BarcodeAbnormalMatchedProductDto>,
     ) => matchedProducts.length ? (
-      <Table<BarcodeAbnormalMatchedProductDto>
+      <MeasuredTable<BarcodeAbnormalMatchedProductDto> metricId="pos-admin.local-supplier-invoices.invoice-edit.table-1"
         size="small"
         rowKey={(item, index) => `${item.productCode || 'product'}-${item.barcode || barcode}-${index ?? 0}`}
         columns={matchedProductColumns}
@@ -3249,7 +3249,7 @@ export default function InvoiceEditPage() {
         </div>
 
         {/* 明细表格 */}
-        <Table
+        <MeasuredTable metricId="pos-admin.local-supplier-invoices.invoice-edit.table-2"
           rowKey="detailGUID"
           loading={detailLoading}
           dataSource={filteredDetails}

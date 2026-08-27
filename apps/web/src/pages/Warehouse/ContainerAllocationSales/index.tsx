@@ -11,7 +11,6 @@ import {
   Result,
   Skeleton,
   Space,
-  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -53,6 +52,7 @@ import {
   shouldLoadContainerAllocationSales,
 } from './logic'
 import { createLatestRequestGuard } from './requestGuard'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const WEEK_OPTIONS = [1, 2, 4, 8, 12]
 const PRODUCT_IMAGE_FALLBACK = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(
@@ -468,7 +468,7 @@ export default function ContainerAllocationSalesPage() {
           {viewState?.emptyDescription ? (
             <Empty description={viewState.emptyDescription} />
           ) : viewState?.showTable ? (
-            <Table
+            <MeasuredTable metricId="warehouse.container-allocation-sales.table-1"
               rowKey="productCode"
               size="small"
               loading={loading}
@@ -485,17 +485,17 @@ export default function ContainerAllocationSalesPage() {
                 },
               })}
               summary={() => totals ? (
-                <Table.Summary.Row>
-                  <Table.Summary.Cell index={0}><Typography.Text strong>全表合计（{totals.productCount}）</Typography.Text></Table.Summary.Cell>
-                  <Table.Summary.Cell index={1}>-</Table.Summary.Cell>
-                  <Table.Summary.Cell index={2} align="right">{formatQuantity(totals.loadingQuantity)}</Table.Summary.Cell>
-                  <Table.Summary.Cell index={3} align="right">{formatQuantity(totals.allocationQuantity)}</Table.Summary.Cell>
-                  <Table.Summary.Cell index={4} align="right">{formatAustralianCurrency(totals.allocationImportAmount)}</Table.Summary.Cell>
-                  <Table.Summary.Cell index={5} align="right">{salesValue(totals.salesQuantity)}</Table.Summary.Cell>
-                  <Table.Summary.Cell index={6} align="right">{formatAustralianCurrency(totals.salesAmount)}</Table.Summary.Cell>
-                  <Table.Summary.Cell index={7} align="right">{formatAustralianCurrency(totals.averageSalesPrice)}</Table.Summary.Cell>
-                  <Table.Summary.Cell index={8} align="right">{getGrossMarginDisplay(totals)}</Table.Summary.Cell>
-                </Table.Summary.Row>
+                <MeasuredTable.Summary.Row>
+                  <MeasuredTable.Summary.Cell index={0}><Typography.Text strong>全表合计（{totals.productCount}）</Typography.Text></MeasuredTable.Summary.Cell>
+                  <MeasuredTable.Summary.Cell index={1}>-</MeasuredTable.Summary.Cell>
+                  <MeasuredTable.Summary.Cell index={2} align="right">{formatQuantity(totals.loadingQuantity)}</MeasuredTable.Summary.Cell>
+                  <MeasuredTable.Summary.Cell index={3} align="right">{formatQuantity(totals.allocationQuantity)}</MeasuredTable.Summary.Cell>
+                  <MeasuredTable.Summary.Cell index={4} align="right">{formatAustralianCurrency(totals.allocationImportAmount)}</MeasuredTable.Summary.Cell>
+                  <MeasuredTable.Summary.Cell index={5} align="right">{salesValue(totals.salesQuantity)}</MeasuredTable.Summary.Cell>
+                  <MeasuredTable.Summary.Cell index={6} align="right">{formatAustralianCurrency(totals.salesAmount)}</MeasuredTable.Summary.Cell>
+                  <MeasuredTable.Summary.Cell index={7} align="right">{formatAustralianCurrency(totals.averageSalesPrice)}</MeasuredTable.Summary.Cell>
+                  <MeasuredTable.Summary.Cell index={8} align="right">{getGrossMarginDisplay(totals)}</MeasuredTable.Summary.Cell>
+                </MeasuredTable.Summary.Row>
               ) : null}
             />
           ) : null}
@@ -524,7 +524,7 @@ export default function ContainerAllocationSalesPage() {
           />
         ) : null}
         {branchError ? <Alert type="error" showIcon message="分店明细加载失败" description={branchError} style={{ marginBottom: 12 }} /> : null}
-        <Table
+        <MeasuredTable metricId="warehouse.container-allocation-sales.table-2"
           rowKey="branchCode"
           size="small"
           loading={branchLoading}

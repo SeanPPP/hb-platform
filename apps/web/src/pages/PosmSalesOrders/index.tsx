@@ -16,7 +16,6 @@ import {
   Pagination,
   Select,
   Space,
-  Table,
   Tag,
   TimePicker,
   Typography,
@@ -57,6 +56,7 @@ import type {
 } from '../../types/posmSalesOrder'
 import { OrderType } from '../../types/posmSalesOrder'
 import { formatPosmSalesOrderLocalTime } from './time'
+import { MeasuredTable } from '../../components/MeasuredTable'
 
 const { Text } = Typography
 
@@ -865,7 +865,7 @@ export default function PosmSalesOrdersPage() {
         }}
       >
         <div style={{ flex: 1, minHeight: 0 }}>
-          <Table
+          <MeasuredTable metricId="posm-sales-orders.table-1"
             rowKey="orderGuid"
             loading={loading}
             dataSource={data}

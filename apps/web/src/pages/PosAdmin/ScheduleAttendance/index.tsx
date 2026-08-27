@@ -25,7 +25,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tabs,
   Tag,
   Timeline,
@@ -121,6 +120,7 @@ import {
   isStoreCodeInManagedScope,
   shouldSkipStoreQueryForScope,
 } from '../../../utils/managedStoreScope'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 dayjs.extend(isoWeek)
 
@@ -1918,7 +1918,7 @@ export default function ScheduleAttendancePage() {
     key: 'records',
     label: t('posAdmin.scheduleAttendance.tabs.records'),
     children: (
-      <Table
+      <MeasuredTable metricId="pos-admin.schedule-attendance.table-1"
         rowKey="scheduleGuid"
         loading={records.loading}
         columns={recordColumns}
@@ -1935,7 +1935,7 @@ export default function ScheduleAttendancePage() {
       key: 'schedules',
       label: t('posAdmin.scheduleAttendance.tabs.schedules'),
       children: (
-        <Table
+        <MeasuredTable metricId="pos-admin.schedule-attendance.table-2"
           rowKey="rowKey"
           loading={schedules.loading || storeUsersLoading || scheduleHolidaysLoading}
           columns={scheduleColumns}
@@ -1951,7 +1951,7 @@ export default function ScheduleAttendancePage() {
       key: 'availability',
       label: t('posAdmin.scheduleAttendance.tabs.availability'),
       children: (
-        <Table
+        <MeasuredTable metricId="pos-admin.schedule-attendance.table-3"
           rowKey="availabilityGuid"
           loading={availability.loading}
           columns={availabilityColumns}
@@ -1965,7 +1965,7 @@ export default function ScheduleAttendancePage() {
       key: 'punches',
       label: t('posAdmin.scheduleAttendance.tabs.punches'),
       children: (
-        <Table
+        <MeasuredTable metricId="pos-admin.schedule-attendance.table-4"
           rowKey="punchGuid"
           loading={punches.loading}
           columns={punchColumns}
@@ -1979,7 +1979,7 @@ export default function ScheduleAttendancePage() {
       key: 'approvals',
       label: t('posAdmin.scheduleAttendance.tabs.approvals'),
       children: (
-        <Table
+        <MeasuredTable metricId="pos-admin.schedule-attendance.table-5"
           rowKey="approvalGuid"
           loading={approvals.loading}
           columns={approvalColumns}
@@ -1993,7 +1993,7 @@ export default function ScheduleAttendancePage() {
       key: 'holidays',
       label: t('posAdmin.scheduleAttendance.tabs.holidays'),
       children: (
-        <Table
+        <MeasuredTable metricId="pos-admin.schedule-attendance.table-6"
           rowKey="holidayGuid"
           loading={holidays.loading}
           columns={holidayColumns}

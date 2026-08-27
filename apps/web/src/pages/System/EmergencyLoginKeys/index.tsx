@@ -10,7 +10,6 @@ import {
   Modal,
   Skeleton,
   Space,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -41,6 +40,7 @@ import {
   isEmergencyLoginKeyVersionConflict,
   resolveEmergencyLoginKeyErrorMessage,
 } from './logic'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 type MutationOperation =
   | { type: 'generate' }
@@ -462,7 +462,7 @@ export default function EmergencyLoginKeysPage() {
             <Typography.Title level={5} style={{ margin: '4px 0 0' }}>
               {t('emergencyLoginKeys.listTitle')}
             </Typography.Title>
-            <Table<EmergencyLoginKey>
+            <MeasuredTable<EmergencyLoginKey> metricId="system.emergency-login-keys.table-1"
               rowKey="keyId"
               size="small"
               loading={loading}
@@ -483,7 +483,7 @@ export default function EmergencyLoginKeysPage() {
         onClose={() => setMissingDevicesOpen(false)}
         destroyOnHidden
       >
-        <Table<EmergencyLoginKeyMissingDevice>
+        <MeasuredTable<EmergencyLoginKeyMissingDevice> metricId="system.emergency-login-keys.table-2"
           rowKey="deviceRegistrationId"
           size="small"
           dataSource={keyset?.missingDevices ?? []}

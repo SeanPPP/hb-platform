@@ -17,7 +17,6 @@ import {
   Popconfirm,
   Select,
   Space,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -66,6 +65,7 @@ import {
   coordinateBatchUnbindLocationProducts,
   hasUnbindableProducts,
 } from './bulkUnbindSelection'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface LocationFormValues {
   locationCode: string
@@ -995,7 +995,7 @@ export default function WarehouseLocationsPage() {
           </Space>
         ) : null}
 
-        <Table
+        <MeasuredTable metricId="warehouse.locations.table-1"
           rowKey="locationGuid"
           rowSelection={access.canManageWarehouseLocations ? rowSelection : undefined}
           className="warehouse-locations-compact-table"

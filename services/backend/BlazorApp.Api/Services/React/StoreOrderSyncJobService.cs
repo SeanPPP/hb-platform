@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.Performance;
 using BlazorApp.Shared.DTOs;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -94,6 +95,8 @@ namespace BlazorApp.Api.Services.React
                 _activeWriteJobId = jobState.JobId;
             }
 
+            PublishStarted(jobState, now);
+
             // 关键位置：后台任务必须重新创建作用域，避免复用请求结束后的 scoped 服务。
             _ = Task.Run(() => ExecuteJobAsync(jobState), CancellationToken.None);
             return Task.FromResult(CreateSnapshot(jobState, false));
@@ -158,6 +161,8 @@ namespace BlazorApp.Api.Services.React
                 _runningJobKeys[dedupeKey] = jobState.JobId;
                 _activeWriteJobId = jobState.JobId;
             }
+
+            PublishStarted(jobState, now);
 
             _ = Task.Run(() => ExecuteJobAsync(jobState), CancellationToken.None);
             return Task.FromResult(CreateSnapshot(jobState, false));
@@ -227,11 +232,12 @@ namespace BlazorApp.Api.Services.React
             SyncMissingOrdersResultDto result
         )
         {
+            DateTime completedAt;
             lock (_jobStartSyncRoot)
             {
                 lock (jobState.SyncRoot)
                 {
-                    var completedAt = _timeProvider.GetUtcNow().UtcDateTime;
+                    completedAt = _timeProvider.GetUtcNow().UtcDateTime;
                     jobState.Status = status;
                     jobState.CompletedAt = completedAt;
                     jobState.ExpiresAt = completedAt.Add(_completedRetention);
@@ -251,7 +257,49 @@ namespace BlazorApp.Api.Services.React
                     _activeWriteJobId = null;
                 }
             }
+
+            PerformanceOperationalRunBridge.Publish(
+                PerformanceOperationalRunTransition.Completed(
+                    jobState.JobId,
+                    "hq",
+                    GetPerformanceOperation(jobState),
+                    status,
+                    completedAt
+                )
+            );
         }
+
+        private void PublishStarted(StoreOrderSyncJobState jobState, DateTime occurredAtUtc)
+        {
+            var operation = GetPerformanceOperation(jobState);
+            var backlog = _runningJobKeys.Count;
+            PerformanceOperationalRunBridge.Publish(
+                PerformanceOperationalRunTransition.Queued(
+                    jobState.JobId,
+                    "hq",
+                    operation,
+                    occurredAtUtc,
+                    backlog
+                )
+            );
+            PerformanceOperationalRunBridge.Publish(
+                PerformanceOperationalRunTransition.Started(
+                    jobState.JobId,
+                    "hq",
+                    operation,
+                    occurredAtUtc,
+                    backlog
+                )
+            );
+        }
+
+        private static string GetPerformanceOperation(StoreOrderSyncJobState jobState) =>
+            jobState.HqMode switch
+            {
+                StoreOrderHqSyncMode.Full => "store-order-hq-full-sync",
+                StoreOrderHqSyncMode.Incremental => "store-order-hq-incremental-sync",
+                _ => "store-order-missing-from-hq-sync",
+            };
 
         private void CleanupExpiredJobs()
         {

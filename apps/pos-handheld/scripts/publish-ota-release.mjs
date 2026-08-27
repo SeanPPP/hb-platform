@@ -8,6 +8,15 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  buildReleaseEvent,
+  reportReleaseEvent,
+} from "../../../scripts/performance/report-release-event.mjs";
+import {
+  resolveReleaseCommit,
+  selectReleaseEventCommit,
+} from "../../../scripts/performance/release-commit.mjs";
+
 const require = createRequire(import.meta.url);
 const { getConfig } = require("expo/config");
 
@@ -74,6 +83,56 @@ export class OtaPublishBatchError extends Error {
     this.results = Object.freeze([...results]);
     this.recoveryManifest = recoveryManifest;
   }
+}
+
+function requireReleaseReporterConfig(environment) {
+  const baseUrl = environment.PERFORMANCE_SERVICE_URL?.trim();
+  const token = environment.PERFORMANCE_SERVICE_TOKEN?.trim();
+  if (!baseUrl || !token) {
+    throw new Error(
+      "发布 OTA 前必须配置 PERFORMANCE_SERVICE_URL 和 PERFORMANCE_SERVICE_TOKEN",
+    );
+  }
+  return { baseUrl, token };
+}
+
+async function reportAcceptedOtaRelease(
+  payload,
+  {
+    completedAtUtcFn = () => new Date().toISOString(),
+    config,
+    logger,
+    reportReleaseEventFn,
+    resolvedCommit,
+  },
+) {
+  if (!reportReleaseEventFn) return;
+  const sourceRunId = payload.updateGroupId;
+  const event = buildReleaseEvent({
+    action: payload.isRollback ? "rollback" : "deploy",
+    conclusion: "accepted",
+    component: POS_HANDHELD_APP_KEY,
+    environment: "Production",
+    releaseId: sourceRunId,
+    commitSha: selectReleaseEventCommit({
+      payloadCommit: payload.gitCommitHash,
+      resolvedCommit,
+    }),
+    startedAtUtc: payload.publishedAtUtc ?? payload.publishedAt,
+    completedAtUtc: completedAtUtcFn(),
+    healthChecked: true,
+    sourceProvider: "expo-ota",
+    sourceRunId,
+  });
+  try {
+    await reportReleaseEventFn({ event, config });
+  } catch (error) {
+    throw new Error(
+      `OTA 已发布并登记，不得重新发布，只重试 release event 上报：${safeErrorMessage(error)}`,
+      { cause: error },
+    );
+  }
+  logger.log(`${payload.platform}: OTA release 验收已上报。`);
 }
 
 export function createReleaseChannel(platform, nowIso, entropy) {
@@ -476,9 +535,10 @@ function buildEasReadbackEnvironment(options, environment) {
     const normalizedKey = key.toUpperCase();
     if (
       key !== "EXPO_TOKEN" &&
-      /(?:TOKEN|JWT|SECRET|PASSWORD|CREDENTIAL|ACCESS_KEY|PRIVATE_KEY)/u.test(
-        normalizedKey,
-      )
+      (normalizedKey.startsWith("PERFORMANCE_") ||
+        /(?:TOKEN|JWT|SECRET|PASSWORD|CREDENTIAL|ACCESS_KEY|PRIVATE_KEY)/u.test(
+          normalizedKey,
+        ))
     ) {
       delete childEnvironment[key];
     }
@@ -793,11 +853,23 @@ export async function runPublishPosHandheldOtaRelease(
     readRecoveryManifestFn = readRecoveryManifest,
     registerLegacyOtaReleaseFn = registerLegacyOtaRelease,
     registerOtaReleaseFn = registerOtaRelease,
+    reportReleaseEventFn,
+    resolveReleaseCommitFn = resolveReleaseCommit,
     runCommandFn = runCommand,
+    completedAtUtcFn,
     writeRecoveryManifestFn = writeRecoveryManifest,
   } = {},
 ) {
   validateOptions(options);
+  const releaseReporterConfig =
+    reportReleaseEventFn && options.dryRun !== true
+      ? requireReleaseReporterConfig(environment)
+      : null;
+  // 在任何 EAS 写入前解析 commit，避免发布成功后才因本地 SHA 缺失而失败。
+  const resolvedCommit =
+    reportReleaseEventFn && options.dryRun !== true
+      ? resolveReleaseCommitFn({ environment })
+      : null;
   const requireCenter = options.dryRun !== true;
   const configuration = await resolveConfiguration(
     options,
@@ -821,7 +893,11 @@ export async function runPublishPosHandheldOtaRelease(
       readRecoveryManifestFn,
       registerLegacyOtaReleaseFn,
       registerOtaReleaseFn,
+      reportReleaseEventFn,
+      releaseReporterConfig,
+      resolvedCommit,
       runCommandFn,
+      completedAtUtcFn,
     });
   }
 
@@ -965,16 +1041,33 @@ export async function runPublishPosHandheldOtaRelease(
           legacyPayload,
           centerAccess,
         );
-        results.push(
-          Object.freeze({
-            platform: lane.platform,
-            releaseChannel: lane.releaseChannel,
-            mode: "bootstrap-legacy",
-            status: "registered",
-            payload: legacyPayload,
-            registration,
-          }),
-        );
+        const registeredResult = {
+          platform: lane.platform,
+          releaseChannel: lane.releaseChannel,
+          mode: "bootstrap-legacy",
+          status: "registered",
+          payload: legacyPayload,
+          registration,
+        };
+        try {
+          await reportAcceptedOtaRelease(legacyPayload, {
+            completedAtUtcFn,
+            config: releaseReporterConfig,
+            logger,
+            reportReleaseEventFn,
+            resolvedCommit,
+          });
+          results.push(Object.freeze(registeredResult));
+        } catch (error) {
+          recoveryReleases.push(legacyPayload);
+          results.push(
+            Object.freeze({
+              ...registeredResult,
+              releaseEventStatus: "failed",
+              error: safeErrorMessage(error),
+            }),
+          );
+        }
         continue;
       }
 
@@ -989,16 +1082,33 @@ export async function runPublishPosHandheldOtaRelease(
         releasePayload,
         centerAccess,
       );
-      results.push(
-        Object.freeze({
-          platform: lane.platform,
-          releaseChannel: lane.releaseChannel,
-          mode: "immutable-release",
-          status: "registered",
-          payload: releasePayload,
-          registration,
-        }),
-      );
+      const registeredResult = {
+        platform: lane.platform,
+        releaseChannel: lane.releaseChannel,
+        mode: "immutable-release",
+        status: "registered",
+        payload: releasePayload,
+        registration,
+      };
+      try {
+        await reportAcceptedOtaRelease(releasePayload, {
+          completedAtUtcFn,
+          config: releaseReporterConfig,
+          logger,
+          reportReleaseEventFn,
+          resolvedCommit,
+        });
+        results.push(Object.freeze(registeredResult));
+      } catch (error) {
+        recoveryReleases.push(releasePayload);
+        results.push(
+          Object.freeze({
+            ...registeredResult,
+            releaseEventStatus: "failed",
+            error: safeErrorMessage(error),
+          }),
+        );
+      }
     } catch (error) {
       if (
         !results.some(
@@ -1061,12 +1171,20 @@ export async function runPublishPosHandheldOtaRelease(
         recoveryManifest,
       );
     }
+    const hasReleaseReportFailure = results.some(
+      (result) => result.releaseEventStatus === "failed",
+    );
     logger.log(
-      `EAS 已发布但登记失败；不得重新发布。请用 --register-only ${shellQuote(recoveryFile)} 补登记。`,
+      hasReleaseReportFailure
+        ? `EAS 已发布并登记但验收上报失败；不得重新发布。请用 --register-only ${shellQuote(recoveryFile)} 幂等重试上报。`
+        : `EAS 已发布但登记失败；不得重新发布。请用 --register-only ${shellQuote(recoveryFile)} 补登记。`,
     );
   }
 
-  const failures = results.filter((result) => result.status !== "registered");
+  const failures = results.filter(
+    (result) =>
+      result.status !== "registered" || result.releaseEventStatus === "failed",
+  );
   if (failures.length > 0) {
     const hasUnverifiedPublish = failures.some(
       (result) => result.status === "published-unverified",
@@ -1076,10 +1194,15 @@ export async function runPublishPosHandheldOtaRelease(
         result.mode === "bootstrap-legacy" &&
         result.status === "registration-failed",
     );
+    const hasReleaseReportFailure = failures.some(
+      (result) => result.releaseEventStatus === "failed",
+    );
     throw new OtaPublishBatchError(
       hasUnverifiedPublish
         ? "EAS 已返回成功，但发布事实未通过严格回读验证；不得重新发布。请核对 EAS Dashboard 和原始输出后恢复登记。"
-        : hasBootstrapRegistrationFailure
+        : hasReleaseReportFailure
+          ? "OTA 已发布并登记，但 release event 上报失败；禁止重发，只能用 recovery manifest 幂等重试验收上报。"
+          : hasBootstrapRegistrationFailure
           ? "legacy bootstrap EAS 已发布但登记失败；不得重新发布。请使用 recovery manifest 执行 --register-only 受限补登记。"
           : results.some((result) => result.status === "registered")
             ? "OTA 发布部分完成；命令以 non-zero 结束。"
@@ -1102,12 +1225,16 @@ async function runRegisterOnly(
   {
     configuration,
     centerAccess,
+    completedAtUtcFn,
     environment,
     logger,
     readbackEasReleaseFn,
     readRecoveryManifestFn,
     registerLegacyOtaReleaseFn,
     registerOtaReleaseFn,
+    releaseReporterConfig,
+    reportReleaseEventFn,
+    resolvedCommit,
     runCommandFn,
   },
 ) {
@@ -1118,8 +1245,12 @@ async function runRegisterOnly(
     return runBootstrapRegisterOnly(manifest, selection, {
       configuration,
       centerAccess,
+      completedAtUtcFn,
       environment,
       logger,
+      releaseReporterConfig,
+      reportReleaseEventFn,
+      resolvedCommit,
       registerLegacyOtaReleaseFn,
       runCommandFn,
     });
@@ -1183,15 +1314,31 @@ async function runRegisterOnly(
     }
     try {
       const registration = await registerOtaReleaseFn(release, centerAccess);
-      results.push(
-        Object.freeze({
-          platform: release.platform,
-          releaseChannel: release.releaseChannel,
-          status: "registered",
-          payload: release,
-          registration,
-        }),
-      );
+      const registeredResult = {
+        platform: release.platform,
+        releaseChannel: release.releaseChannel,
+        status: "registered",
+        payload: release,
+        registration,
+      };
+      try {
+        await reportAcceptedOtaRelease(release, {
+          completedAtUtcFn,
+          config: releaseReporterConfig,
+          logger,
+          reportReleaseEventFn,
+          resolvedCommit,
+        });
+        results.push(Object.freeze(registeredResult));
+      } catch (error) {
+        results.push(
+          Object.freeze({
+            ...registeredResult,
+            releaseEventStatus: "failed",
+            error: safeErrorMessage(error),
+          }),
+        );
+      }
     } catch (error) {
       results.push(
         Object.freeze({
@@ -1204,9 +1351,19 @@ async function runRegisterOnly(
       );
     }
   }
-  if (results.some((result) => result.status !== "registered")) {
+  if (
+    results.some(
+      (result) =>
+        result.status !== "registered" || result.releaseEventStatus === "failed",
+    )
+  ) {
+    const hasReleaseReportFailure = results.some(
+      (result) => result.releaseEventStatus === "failed",
+    );
     throw new OtaPublishBatchError(
-      "register-only 未全部成功；未执行 EAS 发布，也未自动重放写入。",
+      hasReleaseReportFailure
+        ? "register-only 已完成幂等登记，但 release event 上报失败；未执行 EAS 发布，可安全重试同一 recovery manifest。"
+        : "register-only 未全部成功；未执行 EAS 发布，也未自动重放写入。",
       results,
       manifest,
     );
@@ -1226,8 +1383,12 @@ async function runBootstrapRegisterOnly(
   {
     configuration,
     centerAccess,
+    completedAtUtcFn,
     environment,
     logger,
+    releaseReporterConfig,
+    reportReleaseEventFn,
+    resolvedCommit,
     registerLegacyOtaReleaseFn,
     runCommandFn,
   },
@@ -1295,16 +1456,32 @@ async function runBootstrapRegisterOnly(
         release,
         centerAccess,
       );
-      results.push(
-        Object.freeze({
-          platform: release.platform,
-          releaseChannel: POS_HANDHELD_PRODUCTION_CHANNEL,
-          mode: "bootstrap-legacy",
-          status: "registered",
-          payload: release,
-          registration,
-        }),
-      );
+      const registeredResult = {
+        platform: release.platform,
+        releaseChannel: POS_HANDHELD_PRODUCTION_CHANNEL,
+        mode: "bootstrap-legacy",
+        status: "registered",
+        payload: release,
+        registration,
+      };
+      try {
+        await reportAcceptedOtaRelease(release, {
+          completedAtUtcFn,
+          config: releaseReporterConfig,
+          logger,
+          reportReleaseEventFn,
+          resolvedCommit,
+        });
+        results.push(Object.freeze(registeredResult));
+      } catch (error) {
+        results.push(
+          Object.freeze({
+            ...registeredResult,
+            releaseEventStatus: "failed",
+            error: safeErrorMessage(error),
+          }),
+        );
+      }
     } catch (error) {
       results.push(
         Object.freeze({
@@ -1319,9 +1496,15 @@ async function runBootstrapRegisterOnly(
     }
   }
 
-  if (results[0].status !== "registered") {
+  if (
+    results[0].status !== "registered" ||
+    results[0].releaseEventStatus === "failed"
+  ) {
+    const releaseReportFailed = results[0].releaseEventStatus === "failed";
     throw new OtaPublishBatchError(
-      "bootstrap register-only 未成功；未执行 EAS 发布，也未写入 AppOtaRelease。",
+      releaseReportFailed
+        ? "bootstrap register-only 已完成幂等登记，但 release event 上报失败；未执行 EAS 发布，可安全重试。"
+        : "bootstrap register-only 未成功；未执行 EAS 发布，也未写入 AppOtaRelease。",
       results,
       manifest,
     );
@@ -2245,7 +2428,14 @@ async function main() {
     console.log(HELP_TEXT.trim());
     return;
   }
-  await runPublishPosHandheldOtaRelease(options);
+  await runPublishPosHandheldOtaRelease(options, {
+    reportReleaseEventFn: ({ event, config }) =>
+      reportReleaseEvent({
+        event,
+        baseUrl: config.baseUrl,
+        token: config.token,
+      }),
+  });
 }
 
 if (

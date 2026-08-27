@@ -14,7 +14,6 @@ import {
   Input,
   Space,
   Spin,
-  Table,
   Tag,
   Typography,
   message,
@@ -48,6 +47,7 @@ import {
   isSensitiveRequestReviewable,
   type SensitiveProfileField,
 } from './logic'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface SensitiveChangeReviewPanelProps {
   refreshPendingCount: () => Promise<void>
@@ -356,7 +356,7 @@ export default function SensitiveChangeReviewPanel({
         />
       ) : null}
 
-      <Table
+      <MeasuredTable metricId="system.employee-profiles.sensitive-change-review-panel.table-1"
         rowKey="requestId"
         loading={loading}
         columns={columns}
@@ -411,7 +411,7 @@ export default function SensitiveChangeReviewPanel({
               showIcon
               message={t('system.employeeProfiles.review.authorizedDetailNotice')}
             />
-            <Table
+            <MeasuredTable metricId="system.employee-profiles.sensitive-change-review-panel.table-2"
               rowKey="key"
               size="small"
               bordered

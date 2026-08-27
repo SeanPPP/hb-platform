@@ -9,7 +9,6 @@ import {
   Row,
   Select,
   Space,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -37,6 +36,7 @@ import {
   getCredibilityTagColor,
   getSuggestionTagColor,
 } from './logic'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { Text, Title } = Typography
 
@@ -444,7 +444,7 @@ export default function ProductMovementReportPage() {
                 </Tooltip>
               ))}
             </Space>
-            <Table<ProductMovementReportRow>
+            <MeasuredTable<ProductMovementReportRow> metricId="executive-sales-intelligence.product-movement-report.table-1"
               size="small"
               rowKey={(record) => `${record.storeCode}-${record.productCode}`}
               loading={loading}

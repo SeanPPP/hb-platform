@@ -64,6 +64,7 @@
     "systemStores": "分店管理",
     "systemEmployeeProfiles": "员工个人信息维护",
     "systemCenterLogs": "中心日志",
+    "performanceBaseline": "性能质量基线",
     "scheduledStatistics": "定时统计任务",
     "invoiceEmailSettings": "发票邮箱配置",
     "paymentTerminalSettings": "支付终端配置",
@@ -3934,6 +3935,118 @@
       "cardPaymentSupervisorResolution": "主管付款结案"
     }
   },
+  "performanceBaseline": {
+    "title": "性能质量基线",
+    "subtitle": "集中观察 API、SQL、同步任务、Web/POS 与交付质量，样本达标后再冻结预算。",
+    "loadFailed": "性能概览加载失败",
+    "environment": "环境",
+    "timeRange": "时间范围",
+    "baselineStatus": "基线状态",
+    "lastReported": "最后上报",
+    "qualifiedMetrics": "达标指标",
+    "insufficientMetrics": "样本不足",
+    "acceptedDeployments": "已接受部署",
+    "acceptedRollbacks": "已接受回滚",
+    "acceptedRollbacks30d": "最近 30 天已接受回滚",
+    "freeze": "冻结基线",
+    "freezeConfirm": "确认冻结当前环境的性能基线？",
+    "freezeSuccess": "基线已冻结",
+    "supplementFreeze": "补冻基线",
+    "supplementFreezeConfirm": "确认补冻当前环境中仍然数据不足的指标？既有冻结值不会改变。",
+    "supplementFreezeSuccess": "数据不足指标候选已更新",
+    "exportBudget": "导出候选预算",
+    "budgetExportSuccess": "候选预算已导出；评审后再以独立 PR 替换仓库预算文件。",
+    "budgetExportFailed": "候选预算导出失败",
+    "productionBudgetOnly": "硬门禁预算只能从 Production 冻结值导出",
+    "freezeFailed": "冻结基线失败",
+    "warning": "预警",
+    "breachWindows": "{{count}} 个窗口",
+    "noData": "当前范围暂无指标数据",
+    "states": {
+      "not_started": "未开始",
+      "observing": "观察中",
+      "frozen": "已冻结"
+    },
+    "groups": {
+      "apiAndSql": "API / SQL",
+      "hqAndJobs": "HQ 同步与后台任务",
+      "webAndPos": "Web / POS",
+      "delivery": "CI / 发布"
+    },
+    "columns": {
+      "metric": "指标",
+      "selector": "对象",
+      "samples": "样本",
+      "p50": "P50",
+      "p95": "P95",
+      "p99": "P99",
+      "maximum": "最大值",
+      "baselineP95": "基线 P95",
+      "warningThreshold": "预警线",
+      "lastReported": "最后上报",
+      "status": "覆盖状态"
+    },
+    "coverage": {
+      "qualified": "已达标",
+      "insufficient": "样本不足",
+      "unknown": "未知"
+    },
+    "slowSql": {
+      "title": "慢 SQL Top 20",
+      "loadFailed": "慢 SQL 加载失败",
+      "empty": "当前窗口暂无慢 SQL",
+      "window": "慢 SQL 时间窗口",
+      "sortBy": "慢 SQL 排序",
+      "databaseContext": "数据库",
+      "template": "SQL 模板",
+      "executionCount": "次数",
+      "total": "总耗时",
+      "average": "平均",
+      "maximum": "最大",
+      "lastObserved": "最后执行"
+    },
+    "releaseEvents": {
+      "title": "部署与回滚事件",
+      "empty": "当前范围暂无发布事件",
+      "completedAt": "验收时间",
+      "action": "动作",
+      "status": "结果",
+      "component": "组件",
+      "version": "版本",
+      "commit": "提交",
+      "source": "来源",
+      "actions": {
+        "deploy": "部署",
+        "rollback": "回滚"
+      },
+      "statuses": {
+        "accepted": "已验收",
+        "failed": "失败"
+      }
+    },
+    "runs": {
+      "title": "HQ / 后台最近运行",
+      "loadFailed": "最近运行加载失败",
+      "empty": "当前范围暂无运行记录",
+      "category": "类别",
+      "operation": "运行项",
+      "status": "状态",
+      "retryCount": "重试次数",
+      "backlog": "积压",
+      "duration": "耗时",
+      "lastRun": "最近运行",
+      "statuses": {
+        "success": "成功",
+        "failure": "失败",
+        "cancelled": "已取消",
+        "canceled": "已取消",
+        "interrupted": "已中断",
+        "queued": "排队中",
+        "running": "运行中",
+        "retry_wait": "等待重试"
+      }
+    }
+  },
   "system": {
     "wpfVersions": {
       "title": "WPF 版本管理",
@@ -4891,6 +5004,14 @@
           "pos-ipad-update-decision-reader": {
             "label": "iPad 更新决策读取器",
             "description": "仅用于 POS API 读取 iPad 更新决策；环境变量为 HBPOS_APP_UPDATE_DECISION_READ_TOKEN。"
+          },
+          "quality-ci-reporter": {
+            "label": "质量 CI 上报器",
+            "description": "仅用于上报性能质量指标；环境变量为 QUALITY_BASELINE_SERVICE_URL / QUALITY_BASELINE_SERVICE_TOKEN。"
+          },
+          "deployment-acceptance-reporter": {
+            "label": "部署验收上报器",
+            "description": "仅用于上报部署与回滚验收事件；环境变量为 PERFORMANCE_SERVICE_URL / PERFORMANCE_SERVICE_TOKEN。"
           }
         },
         "tokenPrefix": "Token 前缀",

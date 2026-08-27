@@ -9,7 +9,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   message,
 } from 'antd'
@@ -27,6 +26,7 @@ import {
   createLatestRequestGuard,
   runLatestGuardedRequest,
 } from '../../../utils/latestRequestGuard'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const SORT_FIELD_MAP: Record<string, string> = {
   localSupplierCode: 'localsuppliercode',
@@ -358,7 +358,7 @@ export default function SupplierManagementPage() {
       >
         <div ref={toolbarRef} style={{ padding: 16 }} />
         <div ref={tableRegionRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-          <Table
+          <MeasuredTable metricId="pos-admin.supplier-management.table-1"
             rowKey="localSupplierCode"
             loading={loading}
             dataSource={data}

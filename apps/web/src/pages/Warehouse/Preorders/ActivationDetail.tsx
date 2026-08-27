@@ -1,5 +1,5 @@
 import { ArrowLeftOutlined, DownloadOutlined, StopOutlined } from '@ant-design/icons'
-import { Alert, App, Button, Card, Col, ConfigProvider, DatePicker, Descriptions, Empty, Image, Input, Modal, Popconfirm, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd'
+import { Alert, App, Button, Card, Col, ConfigProvider, DatePicker, Descriptions, Empty, Image, Input, Modal, Popconfirm, Row, Select, Space, Statistic, Tabs, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import enUS from 'antd/locale/en_US'
 import zhCN from 'antd/locale/zh_CN'
@@ -37,6 +37,7 @@ import { getActivationStoreChanges, mergeActivationStoreOptions } from './activa
 import { beginModalRequest, createModalRequestGuard, invalidateModalRequest, isCurrentModalRequest } from './modalRequestGuard'
 import { getPreorderDateDisplay } from '../../ShopPreorder/preorderDate'
 import './styles.css'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { Text } = Typography
 
@@ -572,7 +573,7 @@ export default function PreorderActivationDetailPage() {
       </Row>
       <Card className="preorder-admin-card">
         <Tabs items={[
-          { key: 'products', label: t('warehouse.preorders.activationDetail.productSummary'), children: <Table size="small" rowKey="productCode" pagination={false} scroll={{ x: 900 }} dataSource={productRows} columns={[
+          { key: 'products', label: t('warehouse.preorders.activationDetail.productSummary'), children: <MeasuredTable metricId="warehouse.preorders.activation-detail.table-1" size="small" rowKey="productCode" pagination={false} scroll={{ x: 900 }} dataSource={productRows} columns={[
             { title: t('warehouse.preorders.image'), dataIndex: 'productImage', width: 60, render: (src) => <Image src={src} width={36} height={36} style={{ objectFit: 'contain' }} /> },
             { title: t('warehouse.preorders.itemNumber'), dataIndex: 'itemNumber', width: 140 },
             { title: t('warehouse.preorders.name'), dataIndex: 'productName', ellipsis: true },
@@ -590,9 +591,9 @@ export default function PreorderActivationDetailPage() {
             { title: t('warehouse.preorders.activationDetail.totalQuantity'), dataIndex: 'totalQuantity', width: 90, align: 'right' },
             { title: t('warehouse.preorders.activationDetail.importAmount'), dataIndex: 'totalImportAmount', width: 110, align: 'right', render: (value) => `$${(value ?? 0).toFixed(2)}` },
           ]} /> },
-          { key: 'orders', label: t('warehouse.preorders.activationDetail.storeOrders', { count: statistics?.orders.length ?? 0 }), children: <Table size="small" rowKey="orderGuid" dataSource={statistics?.orders ?? []} columns={orderColumns} scroll={{ x: 1100 }} pagination={{ pageSize: 50, showSizeChanger: true }} /> },
-          { key: 'matrix', label: t('warehouse.preorders.activationDetail.matrix'), children: matrixRows.length ? <Table size="small" rowKey="activationItemGuid" dataSource={matrixRows} columns={matrixColumns} pagination={false} scroll={{ x: 420 + matrixStores.length * 120 }} /> : <Empty description={t('warehouse.preorders.activationDetail.noMatrixData')} /> },
-          { key: 'pending', label: t('warehouse.preorders.activationDetail.pendingStores', { count: statistics?.pendingStores.length ?? 0 }), children: <Table size="small" rowKey="storeGuid" pagination={false} dataSource={statistics?.pendingStores ?? []} columns={[{ title: t('warehouse.preorders.activationDetail.storeCode'), dataIndex: 'storeCode', width: 160 }, { title: t('warehouse.preorders.activationDetail.storeName'), dataIndex: 'storeName' }]} /> },
+          { key: 'orders', label: t('warehouse.preorders.activationDetail.storeOrders', { count: statistics?.orders.length ?? 0 }), children: <MeasuredTable metricId="warehouse.preorders.activation-detail.table-2" size="small" rowKey="orderGuid" dataSource={statistics?.orders ?? []} columns={orderColumns} scroll={{ x: 1100 }} pagination={{ pageSize: 50, showSizeChanger: true }} /> },
+          { key: 'matrix', label: t('warehouse.preorders.activationDetail.matrix'), children: matrixRows.length ? <MeasuredTable metricId="warehouse.preorders.activation-detail.table-3" size="small" rowKey="activationItemGuid" dataSource={matrixRows} columns={matrixColumns} pagination={false} scroll={{ x: 420 + matrixStores.length * 120 }} /> : <Empty description={t('warehouse.preorders.activationDetail.noMatrixData')} /> },
+          { key: 'pending', label: t('warehouse.preorders.activationDetail.pendingStores', { count: statistics?.pendingStores.length ?? 0 }), children: <MeasuredTable metricId="warehouse.preorders.activation-detail.table-4" size="small" rowKey="storeGuid" pagination={false} dataSource={statistics?.pendingStores ?? []} columns={[{ title: t('warehouse.preorders.activationDetail.storeCode'), dataIndex: 'storeCode', width: 160 }, { title: t('warehouse.preorders.activationDetail.storeName'), dataIndex: 'storeName' }]} /> },
         ]} />
       </Card>
       <Modal
@@ -602,7 +603,7 @@ export default function PreorderActivationDetailPage() {
         footer={null}
         width={680}
       >
-        <Table
+        <MeasuredTable metricId="warehouse.preorders.activation-detail.table-5"
           size="small"
           rowKey="storeGuid"
           pagination={false}

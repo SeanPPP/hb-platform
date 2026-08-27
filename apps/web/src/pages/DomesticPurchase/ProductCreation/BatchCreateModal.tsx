@@ -21,7 +21,6 @@ import {
   Steps,
   Switch,
   Tag,
-  Table,
   theme,
   Typography,
 } from 'antd'
@@ -61,6 +60,7 @@ import type {
 } from './batchCreateGridRules'
 import PrefixCodeManageModal from './PrefixCodeManageModal'
 import { applySetTemplateDraft, buildSetProductTemplatePayload, createSetDraftFromTemplate, validateSetTemplateProduct } from './setTemplateRules'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 type ProductItem = DraftProductItem
 type SetSubItem = DraftSetSubItem
@@ -1186,7 +1186,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
                 '点击“商品名称”或“零售价”列头后，可粘贴 Excel 单列；方向键可切换输入框',
               )}
             </Typography.Text>
-            <Table
+            <MeasuredTable metricId="domestic-purchase.product-creation.batch-create-modal.table-1"
               columns={productColumns}
               dataSource={products}
               rowKey="key"
@@ -1207,7 +1207,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
                 },
                 rowExpandable: (record) => record.productType === ProductCreationType.SET,
                 expandedRowRender: (record) => (
-                  <Table
+                  <MeasuredTable metricId="domestic-purchase.product-creation.batch-create-modal.table-2"
                     columns={createSubItemColumns(record.key)}
                     dataSource={record.subItems || []}
                     rowKey="key"
@@ -1231,7 +1231,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
                 setTemplateForm.resetFields()
               }}
             >
-              <Table<SetProductTemplateSummary>
+              <MeasuredTable<SetProductTemplateSummary> metricId="domestic-purchase.product-creation.batch-create-modal.table-3"
                 rowKey="templateId"
                 size="small"
                 loading={setTemplateLoading}
@@ -1348,7 +1348,7 @@ export default function BatchCreateModal({ visible, onClose, onSuccess }: BatchC
                 <span><strong>{t('productCreation.productCount', '商品数量')}:</strong> {previewData.length}</span>
               </Space>
             </div>
-            <Table columns={previewColumns} dataSource={previewData} rowKey="key" pagination={false} size="small" scroll={{ x: PREVIEW_TABLE_SCROLL_X, y: 340 }} />
+            <MeasuredTable metricId="domestic-purchase.product-creation.batch-create-modal.table-4" columns={previewColumns} dataSource={previewData} rowKey="key" pagination={false} size="small" scroll={{ x: PREVIEW_TABLE_SCROLL_X, y: 340 }} />
           </div>
         )}
 

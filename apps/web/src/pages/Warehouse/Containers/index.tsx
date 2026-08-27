@@ -20,7 +20,6 @@ import {
   Select,
   Space,
   Statistic,
-  Table,
   Tag,
   message,
 } from 'antd'
@@ -45,6 +44,7 @@ import {
 import { useAuthStore } from '../../../store/auth'
 import type { ContainerMain, CreateContainerRequest, DateFilterOption } from '../../../types/container'
 import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 type RangeValue = [Dayjs | null, Dayjs | null] | null
 type ContainerColumnTextFilterKey = 'containerNumberFilter'
@@ -920,7 +920,7 @@ export default function ContainersPage() {
         </Row>
 
         <Card>
-          <Table
+          <MeasuredTable metricId="warehouse.containers.table-1"
             rowKey={itemKeyOf}
             loading={loading}
             columns={columns}

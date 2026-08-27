@@ -3,6 +3,7 @@ using System;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
+using BlazorApp.Api.Services.Performance;
 
 namespace BlazorApp.Api.Services
 {
@@ -70,6 +71,8 @@ namespace BlazorApp.Api.Services
             {
                 _logger.LogError(exp, "SQL执行错误: {Message}", exp.Message);
             };
+
+            SqlPerformanceAttachmentService.Attach(_sqlSugarClient, nameof(PostgreSqlService));
         }
 
         public ISqlSugarClient GetClient()

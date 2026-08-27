@@ -2,7 +2,7 @@ import { AppstoreOutlined, CloudSyncOutlined, CloudUploadOutlined, CopyOutlined,
 import { DndContext, PointerSensor, closestCenter, type DragEndEvent, useSensor, useSensors, } from '@dnd-kit/core';
 import { SortableContext, horizontalListSortingStrategy, useSortable, } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { Button, Card, Checkbox, Form, Image, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Table, Tag, Tooltip, TreeSelect, Typography, message, notification, } from 'antd';
+import { Button, Card, Checkbox, Form, Image, Input, InputNumber, Modal, Popconfirm, Select, Space, Switch, Tag, Tooltip, TreeSelect, Typography, message, notification, } from 'antd';
 import type { DefaultOptionType } from 'antd/es/select';
 import type { ColumnsType, TablePaginationConfig } from 'antd/es/table';
 import type { FilterDropdownProps, FilterValue, SorterResult } from 'antd/es/table/interface';
@@ -42,6 +42,7 @@ import PosHqPushModal from '../../../components/posHqPush/PosHqPushModal';
 import { createPushToHqStoreOptionsGuard } from '../../../components/posHqPush/storeSelection';
 import WarehouseProductStorePriceSyncModal from './WarehouseProductStorePriceSyncModal';
 import WarehouseProductChangeHistoryDrawer from './WarehouseProductChangeHistoryDrawer';
+import { MeasuredTable } from '../../../components/MeasuredTable';
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
@@ -745,7 +746,7 @@ function SetItemsModal({ open, loading, saving, product, items, canEdit, onCance
             {product?.productType === ProductType.MULTICODE ? t('warehouse.addMultiCodeDetail', '新增多码') : t('warehouse.addSubItem')}
           </Button>) : null}
       </Space>
-      <Table rowKey="id" loading={loading} columns={columns} dataSource={items} pagination={false} scroll={{ x: 980, y: 420 }}/>
+      <MeasuredTable metricId="warehouse.products.table-1" rowKey="id" loading={loading} columns={columns} dataSource={items} pagination={false} scroll={{ x: 980, y: 420 }}/>
     </Modal>);
 }
 export default function WarehouseProductsPage() {
@@ -2679,7 +2680,7 @@ export default function WarehouseProductsPage() {
 
           <DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
             <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
-              <Table className="warehouse-products-table" rowKey="productCode" virtual loading={loading} components={{ header: { cell: DraggableHeaderCell } }} columns={orderedColumns} dataSource={data} rowSelection={{
+              <MeasuredTable metricId="warehouse.products.table-2" className="warehouse-products-table" rowKey="productCode" virtual loading={loading} components={{ header: { cell: DraggableHeaderCell } }} columns={orderedColumns} dataSource={data} rowSelection={{
                 fixed: true,
                 columnWidth: 56,
                 selectedRowKeys,
@@ -2914,7 +2915,7 @@ export default function WarehouseProductsPage() {
         <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
           {t('warehouse.imageDownloadFailedMsg')}
         </Typography.Paragraph>
-        <Table size="small" pagination={false} scroll={{ y: 360 }} dataSource={exportFailDetail} rowKey="itemNumber" columns={[
+        <MeasuredTable metricId="warehouse.products.table-3" size="small" pagination={false} scroll={{ y: 360 }} dataSource={exportFailDetail} rowKey="itemNumber" columns={[
             { title: t('productImport.hbProductNoCol'), dataIndex: 'itemNumber', width: 120 },
             { title: t('warehouse.failureReason'), dataIndex: 'reason', width: 200 },
             {

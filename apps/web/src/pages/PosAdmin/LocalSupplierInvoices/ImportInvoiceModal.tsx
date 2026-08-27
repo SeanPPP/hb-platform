@@ -9,7 +9,6 @@ import {
   Select,
   Space,
   Steps,
-  Table,
   Typography,
   message,
 } from 'antd'
@@ -36,6 +35,7 @@ import {
   REQUIRED_IMPORT_FIELDS,
   resolveSourceColumnSampleValue,
 } from './importPreview'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface SelectOption {
   label: string
@@ -351,7 +351,7 @@ export default function ImportInvoiceModal({
             </Space>
           </Form>
 
-          <Table
+          <MeasuredTable metricId="pos-admin.local-supplier-invoices.import-invoice-modal.table-1"
             rowKey="key"
             pagination={false}
             size="small"
@@ -511,7 +511,7 @@ export default function ImportInvoiceModal({
             </Space>
           </Form>
 
-          <Table
+          <MeasuredTable metricId="pos-admin.local-supplier-invoices.import-invoice-modal.table-2"
             rowKey="key"
             size="small"
             pagination={{ pageSize: 8, showSizeChanger: false }}

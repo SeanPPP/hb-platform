@@ -1,5 +1,5 @@
 import { DeleteOutlined, StarFilled, StarOutlined, UserAddOutlined } from '@ant-design/icons'
-import { Button, Drawer, Modal, Popconfirm, Select, Space, Switch, Table, Tag, message } from 'antd'
+import { Button, Drawer, Modal, Popconfirm, Select, Space, Switch, Tag, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -12,6 +12,7 @@ import {
 } from '../../../services/storeService'
 import type { StoreDto, StoreUserDto } from '../../../types/store'
 import type { UserDto } from '../../../types/user'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface StoreUserManagementProps {
   open: boolean
@@ -214,7 +215,7 @@ export default function StoreUserManagement({ open, store, onClose, onChanged }:
           </Button>
         }
       >
-        <Table
+        <MeasuredTable metricId="system.stores.store-user-management.table-1"
           rowKey="userGUID"
           loading={loading}
           dataSource={users}

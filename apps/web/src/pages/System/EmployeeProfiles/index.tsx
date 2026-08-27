@@ -13,7 +13,6 @@ import {
   Row,
   Select,
   Space,
-  Table,
   Tabs,
   Tag,
   Typography,
@@ -48,6 +47,7 @@ import {
   maskSensitiveSummary,
   saveAdminProfileWithPendingConfirmation,
 } from './logic'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface EmployeeProfileFormValues {
   userGUID?: string
@@ -431,7 +431,7 @@ export default function SystemEmployeeProfilesPage() {
                     </Button>
                   </Space>
 
-                  <Table
+                  <MeasuredTable metricId="system.employee-profiles.table-1"
                     rowKey={(record) => getProfileKey(record)}
                     loading={loading}
                     columns={columns}

@@ -45,13 +45,13 @@ export type LookupOutcome = Readonly<{
   source: LookupSource;
   kind: "added" | "incremented" | "not-found" | "failed-blocked";
   lineId?: string;
-  /** 临时性能测量会话 id；仅供 UI 声音桥关联原生播放时刻。 */
+  /** HID 时序会话 id；业务逻辑不得读取。 */
   timingId?: string;
 }>;
 
 export type LookupAttemptOptions = Readonly<{
   source?: LookupSource;
-  /** 临时性能测量会话 id，仅供 scan-timing 打点使用；业务逻辑不得读取。 */
+  /** HID 时序会话 id，仅供 scan-timing 打点使用；业务逻辑不得读取。 */
   timingId?: string;
 }>;
 
@@ -1337,9 +1337,6 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
   ): boolean {
     if (attempt.terminalPublished) return false;
     attempt.terminalPublished = true;
-    if (terminal.kind === "added" || terminal.kind === "incremented") {
-      scanTiming.mark(attempt.timingId, "cart-published");
-    }
     this.notifyLookupOutcome({
       attemptId: attempt.attemptId,
       source: attempt.source,
@@ -1348,6 +1345,16 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
         : { timingId: attempt.timingId }),
       ...terminal,
     });
+    try {
+      scanTiming.complete(
+        attempt.timingId,
+        terminal.kind === "added" || terminal.kind === "incremented"
+          ? "success"
+          : "failure",
+      );
+    } catch {
+      // timing 是旁路；权威购物车结果已发布，指标异常不得反转业务结果。
+    }
     return true;
   }
 

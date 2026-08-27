@@ -16,7 +16,6 @@ import {
   Select,
   Space,
   Spin,
-  Table,
   Typography,
   message,
 } from 'antd'
@@ -64,6 +63,7 @@ import {
   shouldTriggerTableRowClick,
   type DailyChartInputPoint,
 } from './logic'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { RangePicker } = DatePicker
 
@@ -160,7 +160,7 @@ function DailyTable({ data }: { data: ProductSalesDaily[] }) {
 
   return (
     <div className={styles.tableWrap}>
-      <Table
+      <MeasuredTable metricId="executive-sales-intelligence.product-sales-analysis.table-1"
         size="small"
         rowKey="date"
         columns={columns}
@@ -983,7 +983,7 @@ export default function ProductSalesAnalysisPage() {
                 onRetry={refreshPage}
               >
                 <div className={`${styles.tableWrap} ${styles.candidateTableWrap}`}>
-                  <Table
+                  <MeasuredTable metricId="executive-sales-intelligence.product-sales-analysis.table-2"
                     size="small"
                     rowKey="productCode"
                     columns={candidateColumns}
@@ -1039,7 +1039,7 @@ export default function ProductSalesAnalysisPage() {
                   onRetry={refreshPage}
                 >
                   <div className={styles.tableWrap}>
-                    <Table
+                    <MeasuredTable metricId="executive-sales-intelligence.product-sales-analysis.table-3"
                       size="small"
                       rowKey="productCode"
                       columns={summaryColumns}
@@ -1166,7 +1166,7 @@ export default function ProductSalesAnalysisPage() {
                   onRetry={refreshPage}
                 >
                   <div className={styles.tableWrap}>
-                    <Table
+                    <MeasuredTable metricId="executive-sales-intelligence.product-sales-analysis.table-4"
                       size="small"
                       rowKey="branchCode"
                       columns={branchColumns}

@@ -123,7 +123,9 @@ assertEqual(beginsAfterUnmount, 0, 'layout cleanup 后 mutation 不得重新 beg
 
 const source = readFileSync(resolve('src/pages/DomesticPurchase/ChinaSuppliers/index.tsx'), 'utf8')
 const domesticSource = readFileSync(resolve('src/pages/DomesticPurchase/DomesticProducts/index.tsx'), 'utf8')
-const tableStart = source.indexOf('<Table\n          rowKey="guid"')
+const tableStart = source.indexOf(
+  '<MeasuredTable metricId="domestic-purchase.china-suppliers.table-1"\n          rowKey="guid"',
+)
 const tableEnd = source.indexOf('\n        />', tableStart)
 const tableSource = source.slice(tableStart, tableEnd)
 const paginationStart = tableSource.indexOf('pagination={{')

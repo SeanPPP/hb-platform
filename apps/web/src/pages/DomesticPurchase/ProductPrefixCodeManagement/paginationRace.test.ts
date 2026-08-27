@@ -146,7 +146,9 @@ await unmountMutationRun
 assertEqual(beginsAfterUnmount, 0, '前缀 layout cleanup 后 mutation 不得重新 begin 列表请求')
 
 const source = readFileSync(resolve('src/pages/DomesticPurchase/ProductPrefixCodeManagement/index.tsx'), 'utf8')
-const tableStart = source.lastIndexOf('<Table\n            rowKey="prefixCode"')
+const tableStart = source.lastIndexOf(
+  '<MeasuredTable metricId="domestic-purchase.product-prefix-code-management.table-2"\n            rowKey="prefixCode"',
+)
 const tableEnd = source.indexOf('\n          />', tableStart)
 const tableSource = source.slice(tableStart, tableEnd)
 const paginationStart = tableSource.indexOf('pagination={{')

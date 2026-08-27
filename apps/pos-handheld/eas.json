@@ -9,6 +9,7 @@
       "developmentClient": true,
       "distribution": "internal",
       "channel": "pos-handheld-development",
+      "environment": "development",
       "env": {
         "EXPO_PUBLIC_HBPOS_BUILD_PROFILE": "development"
       }
@@ -22,6 +23,7 @@
     "preview": {
       "distribution": "internal",
       "channel": "pos-handheld-preview",
+      "environment": "preview",
       "android": {
         "buildType": "apk"
       },
@@ -47,6 +49,7 @@
     "android-internal": {
       "distribution": "internal",
       "channel": "pos-handheld-production",
+      "environment": "production",
       "autoIncrement": true,
       "android": {
         "buildType": "apk"

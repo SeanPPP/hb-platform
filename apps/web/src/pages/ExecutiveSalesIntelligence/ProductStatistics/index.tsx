@@ -9,7 +9,6 @@ import {
   Modal,
   Select,
   Space,
-  Table,
   Tag,
   Typography,
   message,
@@ -33,6 +32,7 @@ import type {
 } from '../../../services/salesStatisticsManagementService'
 import { BEST_SELLERS_DEFAULT_DAYS, buildBestSellerDateRange } from '../../../utils/bestSellerDateRange'
 import { RequestError } from '../../../utils/request'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { RangePicker } = DatePicker
 export const MAX_PRODUCT_STATISTIC_RANGE_DAYS = 31
@@ -567,7 +567,7 @@ export default function ProductStatisticsPage() {
           message="POSM 水位只表示原始销售上传进度，今天的数据可能因门店延迟上传而暂未完整。"
         />
 
-        <Table
+        <MeasuredTable metricId="executive-sales-intelligence.product-statistics.table-1"
           rowKey={(record) => `${record.statisticType}-${record.date}`}
           columns={columns}
           dataSource={rows}

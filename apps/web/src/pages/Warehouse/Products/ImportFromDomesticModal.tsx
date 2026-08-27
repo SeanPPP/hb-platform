@@ -1,5 +1,5 @@
 import { CheckCircleOutlined } from '@ant-design/icons'
-import { Button, Checkbox, Image, Input, InputNumber, Modal, Result, Space, Table, Tag, message } from 'antd'
+import { Button, Checkbox, Image, Input, InputNumber, Modal, Result, Space, Tag, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -12,6 +12,7 @@ import {
 import { ProductTypeLabels } from '../../../types/domesticProduct'
 import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard'
 import './compact.css'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 function formatPrice(value?: number) {
   if (value === undefined || value === null) {
@@ -484,7 +485,7 @@ export default function ImportFromDomesticModal({
           ) : null}
         </Space>
 
-        <Table
+        <MeasuredTable metricId="warehouse.products.import-from-domestic-modal.table-1"
           className="warehouse-import-domestic-compact-table"
           rowKey="productCode"
           size="small"

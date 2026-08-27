@@ -31,6 +31,9 @@ const liveEnvironment = Object.freeze({
   HBPOS_OTA_CENTER_BASE_URL: "https://center.example",
   HBPOS_OTA_CENTER_ACCESS_TOKEN: administratorAccessToken,
   HBPOS_OTA_ADMIN_JWT: administratorAccessToken,
+  GITHUB_SHA: "a".repeat(40),
+  PERFORMANCE_SERVICE_URL: "https://metrics.example",
+  PERFORMANCE_SERVICE_TOKEN: "hbsvc_release_events",
 });
 const jsonOutput = JSON.stringify([
   {
@@ -570,7 +573,7 @@ test("live 严格按 Center 预检、创建 channel、发布 update、登记 rel
   await runPublishPosIpadOtaRelease(
     { runtimeVersion: currentRuntimeVersion, message: "门店修复", releaseChannel },
     {
-      environment: liveEnvironment,
+      environment: { ...liveEnvironment, GITHUB_SHA: undefined },
       logger: { log() {} },
       preflightOtaReleaseFn: async (channel, config) => {
         events.push("preflight");
@@ -593,6 +596,19 @@ test("live 严格按 Center 预检、创建 channel、发布 update、登记 rel
         registrationConfigs.push(config);
         return { url: buildRegistrationUrl("https://center.example") };
       },
+      reportReleaseEventFn: async ({ event, config }) => {
+        events.push("report");
+        assert.equal(event.action, "deploy");
+        assert.equal(event.status, "accepted");
+        assert.equal(event.component, "pos-ipad");
+        assert.equal(event.commit, "b".repeat(40));
+        assert.equal(config.baseUrl, "https://metrics.example");
+        assert.equal(config.token, "hbsvc_release_events");
+      },
+      resolveReleaseCommitFn: () => {
+        events.push("resolve-commit");
+        return "b".repeat(40);
+      },
     },
   );
   assert.equal(payloads.length, 1);
@@ -604,11 +620,34 @@ test("live 严格按 Center 预检、创建 channel、发布 update、登记 rel
     },
   ]);
   assert.deepEqual(events, [
+    "resolve-commit",
     "preflight",
     "channel:create",
     "update",
     "register",
+    "report",
   ]);
+
+  await assert.rejects(
+    () =>
+      runPublishPosIpadOtaRelease(
+        { runtimeVersion: currentRuntimeVersion, message: "门店修复", releaseChannel },
+        {
+          environment: liveEnvironment,
+          logger: { log() {} },
+          preflightOtaReleaseFn: async () => {},
+          runCommandFn: async (command) =>
+            command.args[1] === "channel:create"
+              ? { stdout: "{}", stderr: "" }
+              : { stdout: jsonOutput, stderr: "" },
+          registerOtaReleaseFn: async () => ({ url: "https://center.example/registered" }),
+          reportReleaseEventFn: async () => {
+            throw new Error("release reporter unavailable");
+          },
+        },
+      ),
+    /OTA 已发布并登记，不得重新发布，只重试 release event 上报.*release reporter unavailable/,
+  );
 
   await assert.rejects(
     () =>

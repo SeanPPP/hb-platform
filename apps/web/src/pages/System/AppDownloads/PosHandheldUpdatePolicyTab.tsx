@@ -23,7 +23,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tabs,
   Tag,
   Timeline,
@@ -66,6 +65,7 @@ import {
   savePolicyWithConflictReload,
 } from './appUpdatePolicyRequestLogic'
 import { formatAppDownloadLocalDateTime } from './time'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface PosHandheldUpdatePolicyTabProps {
   canManage: boolean
@@ -1078,7 +1078,7 @@ export default function PosHandheldUpdatePolicyTab({
             />
           </Col>
         </Row>
-        <Table<PosHandheldReleaseCandidate>
+        <MeasuredTable<PosHandheldReleaseCandidate> metricId="system.app-downloads.pos-handheld-update-policy-tab.table-1"
           rowKey={getPosHandheldCandidateKey}
           size="small"
           columns={catalogColumns}

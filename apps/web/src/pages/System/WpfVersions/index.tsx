@@ -23,7 +23,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   Typography,
   Upload,
@@ -76,6 +75,7 @@ import {
   normalizeWpfReleaseChannel,
 } from './logic'
 import WpfDownloadQrCode from './WpfDownloadQrCode'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { Text, Paragraph } = Typography
 const { Dragger } = Upload
@@ -1295,7 +1295,7 @@ export default function WpfVersionsPage() {
       </Card>
 
       <Card title={t('system.wpfVersions.listTitle', '版本列表')}>
-        <Table<WpfAppRelease>
+        <MeasuredTable<WpfAppRelease> metricId="system.wpf-versions.table-1"
           rowKey={getReleaseRowKey}
           loading={loading}
           columns={columns}

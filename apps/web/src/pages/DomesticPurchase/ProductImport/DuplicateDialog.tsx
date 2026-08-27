@@ -1,7 +1,8 @@
-import { Alert, Button, Modal, Table, Tag } from 'antd'
+import { Alert, Button, Modal, Tag } from 'antd'
 import { useTranslation } from 'react-i18next'
 import type { ColumnsType } from 'antd/es/table'
 import type { DuplicateGroup } from './types'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface DuplicateDialogProps {
   open: boolean
@@ -55,7 +56,7 @@ export function DuplicateDialog({ open, duplicateGroups, onClose, onConfirm }: D
           message={t('productImport.mergeBlockedSummary', '{{count}} 组数据不完整，请返回表格修正后重新检测。', { count: invalidGroupCount })}
         />
       )}
-      <Table columns={columns} dataSource={duplicateGroups} rowKey="productCode" size="small" pagination={false} scroll={{ x: 820 }} />
+      <MeasuredTable metricId="domestic-purchase.product-import.duplicate-dialog.table-1" columns={columns} dataSource={duplicateGroups} rowKey="productCode" size="small" pagination={false} scroll={{ x: 820 }} />
     </Modal>
   )
 }

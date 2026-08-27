@@ -15,7 +15,6 @@ import {
   Select,
   Space,
   Statistic,
-  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -44,6 +43,7 @@ import type {
   StoreOrderImportPriceVarianceSummary,
   StoreOrderImportPriceVarianceSupplierSummary,
 } from '../../../types/storeOrder'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { RangePicker } = DatePicker
 
@@ -1381,7 +1381,7 @@ export default function StoreOrderImportPriceVariancePage() {
         }}
       >
         <div ref={supplierSummaryRegionRef} style={{ height: '100%', minHeight: 0, overflow: 'hidden' }}>
-          <Table<StoreOrderImportPriceVarianceSupplierSummary>
+          <MeasuredTable<StoreOrderImportPriceVarianceSupplierSummary> metricId="warehouse.store-order-import-price-variance.table-1"
             rowKey={getSupplierSummaryRowKey}
             loading={loading}
             columns={supplierSummaryColumns}
@@ -1451,7 +1451,7 @@ export default function StoreOrderImportPriceVariancePage() {
           </div>
         )}
         <div ref={tableRegionRef} style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-          <Table<StoreOrderImportPriceVarianceItem>
+          <MeasuredTable<StoreOrderImportPriceVarianceItem> metricId="warehouse.store-order-import-price-variance.table-2"
             rowKey={getRowKey}
             loading={loading}
             columns={productColumns}
@@ -1561,7 +1561,7 @@ export default function StoreOrderImportPriceVariancePage() {
             />
           </Col>
         </Row>
-        <Table<StoreOrderImportPriceVarianceDetailItem>
+        <MeasuredTable<StoreOrderImportPriceVarianceDetailItem> metricId="warehouse.store-order-import-price-variance.table-3"
           rowKey={getDetailRowKey}
           loading={detailLoading}
           columns={detailColumns}
