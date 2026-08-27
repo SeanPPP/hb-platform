@@ -178,30 +178,6 @@ namespace BlazorApp.Api.Data
                 }
             };
 
-            // 数据库初始化 - 基于配置开关决定是否在启动时执行
-            var initOnStartup = configuration.GetValue<bool>("Database:InitializeOnStartup", false);
-            if (initOnStartup)
-            {
-                Task.Run(() =>
-                {
-                    try
-                    {
-                        // 确保数据库存在（仅PostgreSQL需要手动创建）
-                        if (dbType == DbType.PostgreSQL)
-                        {
-                            _db.DbMaintenance.CreateDatabase();
-                        }
-
-                        // 执行表结构检查和索引创建
-                        CreateTable();
-                        CreateIndexes();
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "后台数据库初始化失败");
-                    }
-                });
-            }
         }
 
         private static bool IsAuditField(string? propertyName)

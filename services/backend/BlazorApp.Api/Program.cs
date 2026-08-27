@@ -5,6 +5,7 @@ using System.Text; // 字符串编码
 using AutoMapper; // AutoMapper映射服务
 using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Data; // 数据访问层
+using BlazorApp.Api.Data.SchemaMigrations;
 using BlazorApp.Api.Filters;
 using BlazorApp.Api.Interfaces; // 数据模型
 using BlazorApp.Api.Interfaces.React; // React 接口命名空间
@@ -31,9 +32,80 @@ using Microsoft.IdentityModel.Tokens; // JWT令牌验证
 // ===================== 应用程序入口点 =====================
 // 创建WebApplicationBuilder实例，读取命令行参数和配置文件
 // 这是ASP.NET Core 6+的新式启动方式，替代了传统的Startup.cs
+// 显式数据库模式仅支持 --schema=migrate 与 --schema=check。
+var schemaCommand = SchemaCommand.Parse(args);
+if (schemaCommand.Mode == SchemaCommandMode.Invalid)
+{
+    Console.Error.WriteLine($"SCHEMA_COMMAND_INVALID: {schemaCommand.Error}");
+    Environment.ExitCode = SchemaExitCodes.ConfigurationError;
+    return;
+}
+
 var builder = WebApplication.CreateBuilder(args);
 
 MapTencentCloudEnvironmentVariables(builder.Configuration);
+
+if (
+    schemaCommand.Mode == SchemaCommandMode.Server
+    && builder.Configuration.GetValue<bool>("Database:InitializeOnStartup", false)
+)
+{
+    Console.Error.WriteLine(
+        "SCHEMA_LEGACY_AUTO_INIT_ENABLED: 请关闭 Database:InitializeOnStartup，并改用 --schema=migrate。"
+    );
+    Environment.ExitCode = SchemaExitCodes.ConfigurationError;
+    return;
+}
+
+if (schemaCommand.Mode != SchemaCommandMode.Server)
+{
+    // 显式 schema 命令只构建迁移所需服务，不注册 HTTP、Swagger、HostedService 或后台任务。
+    builder.Services.AddHttpContextAccessor();
+    builder.Services.AddScoped<
+        BlazorApp.Api.Services.ICurrentUserService,
+        BlazorApp.Api.Services.CurrentUserService
+    >();
+    builder.Services.AddScoped<SqlSugarContext>();
+    builder.Services.AddScoped<POSMSqlSugarContext>();
+    builder.Services.AddScoped<SchemaMigrationCoordinator>();
+
+    WebApplication schemaApp;
+    try
+    {
+        schemaApp = builder.Build();
+    }
+    catch (Exception)
+    {
+        Console.Error.WriteLine("SCHEMA_HOST_BUILD_FAILED");
+        Environment.ExitCode = SchemaExitCodes.ConfigurationError;
+        return;
+    }
+
+    var explicitSchemaResult = await ExecuteSchemaOperationAsync(
+        schemaApp.Services,
+        schemaCommand.Mode
+    );
+    if (!explicitSchemaResult.Success)
+    {
+        schemaApp.Logger.LogError(
+            "数据库 schema 操作失败。模式={Mode}，诊断码={DiagnosticCode}，退出码={ExitCode}",
+            schemaCommand.Mode,
+            explicitSchemaResult.DiagnosticCode,
+            explicitSchemaResult.ExitCode
+        );
+    }
+    else
+    {
+        schemaApp.Logger.LogInformation(
+            "数据库 schema 操作完成。模式={Mode}，诊断码={DiagnosticCode}",
+            schemaCommand.Mode,
+            explicitSchemaResult.DiagnosticCode
+        );
+    }
+
+    Environment.ExitCode = explicitSchemaResult.ExitCode;
+    return;
+}
 
 // ===================== 服务注册区域 =====================
 
@@ -455,6 +527,7 @@ builder.Services.AddScoped<SqlSugarContext>(); // 主数据库上下文（每请
 builder.Services.AddScoped<HqSqlSugarContext>(); // HQ总部数据库上下文（每请求一个实例）
 builder.Services.AddScoped<HBSalesSqlSugarContext>(); // HBSales数据库上下文（每请求一个实例）
 builder.Services.AddScoped<POSMSqlSugarContext>(); // POSM数据库上下文（每请求一个实例）
+builder.Services.AddScoped<SchemaMigrationCoordinator>();
 builder.Services.Configure<BlazorApp.Shared.Options.DeviceActivationOptions>(
     builder.Configuration.GetSection(BlazorApp.Shared.Options.DeviceActivationOptions.SectionName));
 builder.Services.AddScoped<HBSalesRecordSqlSugarContext>(); // HBSalesRecord数据库上下文（每请求一个实例）
@@ -842,6 +915,28 @@ builder.Services.AddSingleton<
 // 此时所有服务配置完成，开始构建实际的Web应用程序
 var app = builder.Build();
 
+var startupSchemaResult = await ExecuteSchemaOperationAsync(
+    app.Services,
+    SchemaCommandMode.Check
+);
+if (!startupSchemaResult.Success)
+{
+    app.Logger.LogError(
+        "数据库 schema 操作失败。模式={Mode}，诊断码={DiagnosticCode}，退出码={ExitCode}",
+        schemaCommand.Mode,
+        startupSchemaResult.DiagnosticCode,
+        startupSchemaResult.ExitCode
+    );
+    Environment.ExitCode = startupSchemaResult.ExitCode;
+    return;
+}
+
+app.Logger.LogInformation(
+    "数据库 schema 操作完成。模式={Mode}，诊断码={DiagnosticCode}",
+    schemaCommand.Mode,
+    startupSchemaResult.DiagnosticCode
+);
+
 // 📋 在应用构建完成后记录实际启用的 CORS 域名，避免在服务注册阶段提前创建容器。
 app.Logger.LogInformation("CORS 允许的域名: {Origins}", string.Join(", ", corsOrigins));
 
@@ -893,94 +988,15 @@ app.UseAuthorization();
 // 映射控制器路由（启用API端点）
 app.MapControllers();
 
-// ===================== 数据库初始化与种子数据 =====================
-// 🗄️ 应用启动时自动初始化数据库结构和基础数据
-// 这个过程在Web服务器启动之前完成，确保数据库就绪
-try
-{
-    // 🔧 创建服务作用域
-    // 由于数据库服务是Scoped生命周期，需要创建作用域来获取实例
-    using (var scope = app.Services.CreateScope())
-    {
-        // 📁 获取数据库上下文服务
-        var dbContext = scope.ServiceProvider.GetRequiredService<SqlSugarContext>(); // 主业务数据库
-        var hqDbContext = scope.ServiceProvider.GetRequiredService<HqSqlSugarContext>(); // HQ总部数据库
-        var posmDbContext = scope.ServiceProvider.GetRequiredService<POSMSqlSugarContext>(); // POSM数据库
-        var services = scope.ServiceProvider;
-
-        Console.WriteLine("🚀 开始初始化数据库...");
-
-        // 🔄 智能模式：增量更新数据库结构
-        // 只创建不存在的表，更新表结构，保留现有数据
-        Console.WriteLine("🧠 使用智能初始化模式（保留现有数据）");
-        dbContext.EnsureLoginSessionSchema();
-        // 关键逻辑：空库先由 CodeFirst 创建 AttendancePunch 等基础表，再执行补列与索引迁移。
-        dbContext.CreateTable();
-        await StartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);
-        await StartupSchemaMigrator.EnsurePosmAsync(posmDbContext.Db, app.Logger);
-        await PaymentTerminalSettingsSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
-        await DeviceRuntimeStatusSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
-        await EmergencyLoginGrantSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
-        await EmergencyLoginKeySchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);
-        // 默认关闭已有表自动同步，中心日志新增列和过滤唯一索引在这里显式升级。
-        await ApplicationLogSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);
-        //await posmDbContext.InitializeTablesAsync();
-        Console.WriteLine("✅ 主数据库表检查完成");
-
-        /*   // 🔄 检查数据库初始化模式
-          // 支持两种启动模式：智能更新 vs 强制重建
-          var forceRecreate = Environment.GetEnvironmentVariable("FORCE_RECREATE_DB")?.ToLower() == "true" ||
-                             args.Contains("--force-recreate-db");
-  
-          if (forceRecreate)
-          {
-              // ⚠️ 危险模式：完全重建数据库
-              // 删除所有现有表和数据，适用于开发环境或数据重置
-              Console.WriteLine("⚠️ 检测到强制重建标志，将删除所有现有数据！");
-              Console.WriteLine("💡 启动参数: --force-recreate-db 或环境变量 FORCE_RECREATE_DB=true");
-              dbContext.ForceRecreateAllTables();
-              Console.WriteLine("✅ 数据库强制重建完成");
-          }
-          else
-          {
-              // 🔄 智能模式：增量更新数据库结构
-              // 只创建不存在的表，更新表结构，保留现有数据
-              Console.WriteLine("🧠 使用智能初始化模式（保留现有数据）");
-              dbContext.CreateTable();
-              Console.WriteLine("✅ 主数据库表检查完成");
-          } */
-
-        // 🔗 验证HQ总部数据库连接
-        Console.WriteLine("🔍 检查HQ数据库连接...");
-        // hqDbContext.CheckConnection();      // 测试连接是否正常
-        hqDbContext.CheckTables();          // 检查必要的表是否存在
-        Console.WriteLine("✅ HQ数据库连接检查完成");
-
-        // 权限定义和角色权限由后台维护；Web 后端重启时不得再次按代码种子覆盖。
-        // 如需初始化或迁移权限，必须通过明确的一次性维护流程手工取消以下注释。
-        // Console.WriteLine("🌱 开始初始化种子数据...");
-        // var seedDataService = services.GetRequiredService<SeedDataService>();
-        // await seedDataService.InitializePermissionSeedsAsync();
-        // await seedDataService.InitializeAsync();
-
-        // 角色和用户角色关联同样只允许通过明确的一次性维护流程初始化。
-        // Console.WriteLine("🔍 检查角色数据...");
-        // var dataInitService = services.GetRequiredService<IDataInitializationService>();
-        // await dataInitService.CheckAndInitializeDataAsync();
-
-        Console.WriteLine("⏭️ 角色、权限及用户角色自动初始化已禁用，保留数据库现有配置");
-
-        Console.WriteLine("🎉 数据库初始化完成！");
-        Console.WriteLine("📊 后台定时任务服务已启动");
-    }
-}
-catch (Exception ex)
-{
-    Console.WriteLine($"❌ 数据库初始化失败: {ex.Message}");
-    Console.WriteLine($"🔍 详细错误信息: {ex}");
-    Console.WriteLine("💡 请检查数据库连接字符串和权限设置");
-    throw;
-}
+// 角色、权限和用户角色只允许通过明确的一次性维护流程初始化；常规启动保持禁用。
+// Console.WriteLine("🌱 开始初始化种子数据...");
+// var seedDataService = services.GetRequiredService<SeedDataService>();
+// await seedDataService.InitializePermissionSeedsAsync();
+// await seedDataService.InitializeAsync();
+// Console.WriteLine("🔍 检查角色数据...");
+// var dataInitService = services.GetRequiredService<IDataInitializationService>();
+// await dataInitService.CheckAndInitializeDataAsync();
+// 角色、权限及用户角色自动初始化已禁用，保留数据库现有配置。
 
 // ===================== 缓存预热 =====================
 var enableStoreOrderWarmUp = builder.Configuration.GetValue<bool>(
@@ -1038,6 +1054,54 @@ catch (Exception ex)
  */
 // 启动Web应用
 app.Run();
+
+static async Task<SchemaOperationResult> ExecuteSchemaOperationAsync(
+    IServiceProvider services,
+    SchemaCommandMode mode
+)
+{
+    using var schemaCancellation = new CancellationTokenSource();
+    ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        schemaCancellation.Cancel();
+    };
+    Console.CancelKeyPress += cancelHandler;
+
+    try
+    {
+        using var scope = services.CreateScope();
+        var coordinator = scope.ServiceProvider.GetRequiredService<SchemaMigrationCoordinator>();
+        var result = mode == SchemaCommandMode.Migrate
+            ? await coordinator.MigrateAsync(schemaCancellation.Token)
+            : await coordinator.CheckAsync(schemaCancellation.Token);
+
+        return schemaCancellation.IsCancellationRequested && result.Success
+            ? SchemaOperationResult.Failure(
+                SchemaExitCodes.Cancelled,
+                SchemaDiagnosticCodes.Cancelled
+            )
+            : result;
+    }
+    catch (OperationCanceledException)
+    {
+        return SchemaOperationResult.Failure(
+            SchemaExitCodes.Cancelled,
+            SchemaDiagnosticCodes.Cancelled
+        );
+    }
+    catch (Exception)
+    {
+        return SchemaOperationResult.Failure(
+            SchemaExitCodes.DatabaseFailure,
+            SchemaDiagnosticCodes.DatabaseFailure
+        );
+    }
+    finally
+    {
+        Console.CancelKeyPress -= cancelHandler;
+    }
+}
 
 static void ConfigureServiceApiTokenAuthentication(AuthenticationSchemeOptions options)
 {

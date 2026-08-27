@@ -69,6 +69,337 @@ public sealed class DeviceActivationCodeGrant
 /// </summary>
 public static class DeviceActivationCodeSchema
 {
+    /// <summary>
+    /// HBWeb 常规启动使用的只读结构门禁；只查询系统目录，不获取锁，也不写入探针数据。
+    /// </summary>
+    public const string VerifySql = """
+        SET NOCOUNT ON;
+
+        DECLARE @DeviceActivationTableId int =
+            OBJECT_ID(N'[dbo].[POSM_DeviceActivationGrant]', N'U');
+        IF @DeviceActivationTableId IS NULL
+            THROW 51100, 'Device activation grant table is missing.', 1;
+
+        IF COL_LENGTH(N'dbo.POSM_DeviceActivationGrant', N'ActivationCode') IS NOT NULL
+            THROW 51101, 'Device activation grant table must not store plaintext activation codes.', 1;
+
+        -- 用完整期望集合与系统目录双向比对，新增、缺失或形状漂移的列都会失败关闭。
+        IF EXISTS (
+            SELECT 1
+            FROM (VALUES
+                (N'GrantId', N'uniqueidentifier', CAST(16 AS smallint), CAST(0 AS bit), CAST(NULL AS tinyint)),
+                (N'SecretHash', N'binary', CAST(32 AS smallint), CAST(0 AS bit), CAST(NULL AS tinyint)),
+                (N'StoreCode', N'varchar', CAST(50 AS smallint), CAST(0 AS bit), CAST(NULL AS tinyint)),
+                (N'DeviceSystem', N'varchar', CAST(20 AS smallint), CAST(0 AS bit), CAST(NULL AS tinyint)),
+                (N'CreatedAtUtc', N'datetime2', CAST(8 AS smallint), CAST(0 AS bit), CAST(7 AS tinyint)),
+                (N'CreatedBy', N'nvarchar', CAST(256 AS smallint), CAST(0 AS bit), CAST(NULL AS tinyint)),
+                (N'Reason', N'nvarchar', CAST(400 AS smallint), CAST(0 AS bit), CAST(NULL AS tinyint)),
+                (N'ExpiresAtUtc', N'datetime2', CAST(8 AS smallint), CAST(0 AS bit), CAST(7 AS tinyint)),
+                (N'RevokedAtUtc', N'datetime2', CAST(8 AS smallint), CAST(1 AS bit), CAST(7 AS tinyint)),
+                (N'RevokedBy', N'nvarchar', CAST(256 AS smallint), CAST(1 AS bit), CAST(NULL AS tinyint)),
+                (N'RevokeReason', N'nvarchar', CAST(400 AS smallint), CAST(1 AS bit), CAST(NULL AS tinyint)),
+                (N'ConsumedAtUtc', N'datetime2', CAST(8 AS smallint), CAST(1 AS bit), CAST(7 AS tinyint)),
+                (N'ConsumedHardwareId', N'varchar', CAST(100 AS smallint), CAST(1 AS bit), CAST(NULL AS tinyint)),
+                (N'ConsumedDeviceCode', N'varchar', CAST(50 AS smallint), CAST(1 AS bit), CAST(NULL AS tinyint)),
+                (N'ConsumedDeviceRegistrationId', N'int', CAST(4 AS smallint), CAST(1 AS bit), CAST(NULL AS tinyint)),
+                (N'ConsumedAuthorizationHash', N'binary', CAST(32 AS smallint), CAST(1 AS bit), CAST(NULL AS tinyint)),
+                (N'ConsumedDeviceSystem', N'varchar', CAST(20 AS smallint), CAST(1 AS bit), CAST(NULL AS tinyint)),
+                (N'ConsumptionKind', N'varchar', CAST(10 AS smallint), CAST(1 AS bit), CAST(NULL AS tinyint)),
+                (N'PreviousStoreCode', N'varchar', CAST(50 AS smallint), CAST(1 AS bit), CAST(NULL AS tinyint)),
+                (N'PreviousDeviceCode', N'varchar', CAST(50 AS smallint), CAST(1 AS bit), CAST(NULL AS tinyint)),
+                (N'RowVersion', N'timestamp', CAST(8 AS smallint), CAST(0 AS bit), CAST(NULL AS tinyint)))
+                AS expected([ColumnName], [TypeName], [MaxLength], [IsNullable], [Scale])
+            FULL OUTER JOIN (
+                SELECT
+                    columnInfo.[name] AS [ColumnName],
+                    typeInfo.[name] AS [TypeName],
+                    columnInfo.[max_length] AS [MaxLength],
+                    columnInfo.[is_nullable] AS [IsNullable],
+                    columnInfo.[scale] AS [Scale]
+                FROM sys.columns AS columnInfo
+                INNER JOIN sys.types AS typeInfo
+                    ON typeInfo.[user_type_id] = columnInfo.[user_type_id]
+                WHERE columnInfo.[object_id] = @DeviceActivationTableId)
+                AS actual
+                ON actual.[ColumnName] = expected.[ColumnName]
+            WHERE expected.[ColumnName] IS NULL
+               OR actual.[ColumnName] IS NULL
+               OR actual.[TypeName] <> expected.[TypeName]
+               OR actual.[MaxLength] <> expected.[MaxLength]
+               OR actual.[IsNullable] <> expected.[IsNullable]
+               OR (expected.[Scale] IS NOT NULL AND actual.[Scale] <> expected.[Scale]))
+            THROW 51102, 'Device activation grant columns are missing, unexpected, or incompatible.', 1;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.key_constraints AS keyConstraint
+            INNER JOIN sys.indexes AS indexInfo
+                ON indexInfo.[object_id] = keyConstraint.[parent_object_id]
+               AND indexInfo.[index_id] = keyConstraint.[unique_index_id]
+            INNER JOIN sys.index_columns AS keyColumn
+                ON keyColumn.[object_id] = indexInfo.[object_id]
+               AND keyColumn.[index_id] = indexInfo.[index_id]
+               AND keyColumn.[key_ordinal] = 1
+            INNER JOIN sys.columns AS columnInfo
+                ON columnInfo.[object_id] = keyColumn.[object_id]
+               AND columnInfo.[column_id] = keyColumn.[column_id]
+            WHERE keyConstraint.[parent_object_id] = @DeviceActivationTableId
+              AND keyConstraint.[type] = N'PK'
+              AND indexInfo.[is_primary_key] = 1
+              AND indexInfo.[is_unique] = 1
+              AND indexInfo.[is_disabled] = 0
+              AND indexInfo.[is_hypothetical] = 0
+              AND indexInfo.[has_filter] = 0
+              AND indexInfo.[filter_definition] IS NULL
+              AND keyColumn.[is_descending_key] = 0
+              AND columnInfo.[name] = N'GrantId'
+              AND (SELECT COUNT(1)
+                   FROM sys.index_columns AS allKeyColumns
+                   WHERE allKeyColumns.[object_id] = indexInfo.[object_id]
+                     AND allKeyColumns.[index_id] = indexInfo.[index_id]
+                     AND allKeyColumns.[key_ordinal] > 0) = 1
+              AND (SELECT COUNT(1)
+                   FROM sys.index_columns AS includedColumn
+                   WHERE includedColumn.[object_id] = indexInfo.[object_id]
+                     AND includedColumn.[index_id] = indexInfo.[index_id]
+                     AND includedColumn.[is_included_column] = 1) = 0)
+            THROW 51103, 'Device activation primary key is missing or incompatible.', 1;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes AS indexInfo
+            INNER JOIN sys.index_columns AS keyColumn
+                ON keyColumn.[object_id] = indexInfo.[object_id]
+               AND keyColumn.[index_id] = indexInfo.[index_id]
+               AND keyColumn.[key_ordinal] = 1
+            INNER JOIN sys.columns AS columnInfo
+                ON columnInfo.[object_id] = keyColumn.[object_id]
+               AND columnInfo.[column_id] = keyColumn.[column_id]
+            WHERE indexInfo.[object_id] = @DeviceActivationTableId
+              AND indexInfo.[name] = N'UX_POSM_DeviceActivationGrant_SecretHash'
+              AND indexInfo.[type] = 2
+              AND indexInfo.[is_unique] = 1
+              AND indexInfo.[is_primary_key] = 0
+              AND indexInfo.[is_unique_constraint] = 0
+              AND indexInfo.[is_disabled] = 0
+              AND indexInfo.[is_hypothetical] = 0
+              AND indexInfo.[has_filter] = 0
+              AND indexInfo.[filter_definition] IS NULL
+              AND keyColumn.[is_descending_key] = 0
+              AND columnInfo.[name] = N'SecretHash'
+              AND (SELECT COUNT(1)
+                   FROM sys.index_columns AS allKeyColumns
+                   WHERE allKeyColumns.[object_id] = indexInfo.[object_id]
+                     AND allKeyColumns.[index_id] = indexInfo.[index_id]
+                     AND allKeyColumns.[key_ordinal] > 0) = 1
+              AND (SELECT COUNT(1)
+                   FROM sys.index_columns AS includedColumn
+                   WHERE includedColumn.[object_id] = indexInfo.[object_id]
+                     AND includedColumn.[index_id] = indexInfo.[index_id]
+                     AND includedColumn.[is_included_column] = 1) = 0)
+            THROW 51104, 'Device activation secret hash unique index is missing or incompatible.', 1;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes AS indexInfo
+            WHERE indexInfo.[object_id] = @DeviceActivationTableId
+              AND indexInfo.[name] = N'IX_POSM_DeviceActivationGrant_StoreCreated'
+              AND indexInfo.[type] = 2
+              AND indexInfo.[is_unique] = 0
+              AND indexInfo.[is_primary_key] = 0
+              AND indexInfo.[is_unique_constraint] = 0
+              AND indexInfo.[is_disabled] = 0
+              AND indexInfo.[is_hypothetical] = 0
+              AND indexInfo.[has_filter] = 0
+              AND indexInfo.[filter_definition] IS NULL
+              AND (SELECT COUNT(1)
+                   FROM sys.index_columns AS keyColumn
+                   WHERE keyColumn.[object_id] = indexInfo.[object_id]
+                     AND keyColumn.[index_id] = indexInfo.[index_id]
+                     AND keyColumn.[key_ordinal] > 0) = 2
+              AND NOT EXISTS (
+                  SELECT expected.[Ordinal], expected.[ColumnName], expected.[IsDescending]
+                  FROM (VALUES
+                      (1, N'StoreCode', CAST(0 AS bit)),
+                      (2, N'CreatedAtUtc', CAST(1 AS bit)))
+                      AS expected([Ordinal], [ColumnName], [IsDescending])
+                  LEFT JOIN sys.index_columns AS keyColumn
+                      ON keyColumn.[object_id] = indexInfo.[object_id]
+                     AND keyColumn.[index_id] = indexInfo.[index_id]
+                     AND keyColumn.[key_ordinal] = expected.[Ordinal]
+                     AND keyColumn.[is_descending_key] = expected.[IsDescending]
+                  LEFT JOIN sys.columns AS columnInfo
+                      ON columnInfo.[object_id] = keyColumn.[object_id]
+                     AND columnInfo.[column_id] = keyColumn.[column_id]
+                     AND columnInfo.[name] = expected.[ColumnName]
+                  WHERE columnInfo.[column_id] IS NULL)
+              AND (SELECT COUNT(1)
+                   FROM sys.index_columns AS includedColumn
+                   WHERE includedColumn.[object_id] = indexInfo.[object_id]
+                     AND includedColumn.[index_id] = indexInfo.[index_id]
+                     AND includedColumn.[is_included_column] = 1) = 4
+              AND NOT EXISTS (
+                  SELECT expected.[ColumnName]
+                  FROM (VALUES
+                      (N'DeviceSystem'),
+                      (N'ExpiresAtUtc'),
+                      (N'RevokedAtUtc'),
+                      (N'ConsumedAtUtc')) AS expected([ColumnName])
+                  WHERE NOT EXISTS (
+                      SELECT 1
+                      FROM sys.index_columns AS includedColumn
+                      INNER JOIN sys.columns AS columnInfo
+                          ON columnInfo.[object_id] = includedColumn.[object_id]
+                         AND columnInfo.[column_id] = includedColumn.[column_id]
+                      WHERE includedColumn.[object_id] = indexInfo.[object_id]
+                        AND includedColumn.[index_id] = indexInfo.[index_id]
+                        AND includedColumn.[is_included_column] = 1
+                        AND columnInfo.[name] = expected.[ColumnName])))
+            THROW 51105, 'Device activation store-created index is missing or incompatible.', 1;
+
+        IF NOT EXISTS (
+            SELECT 1
+            FROM sys.indexes AS indexInfo
+            WHERE indexInfo.[object_id] = @DeviceActivationTableId
+              AND indexInfo.[name] = N'IX_POSM_DeviceActivationGrant_Usable'
+              AND indexInfo.[type] = 2
+              AND indexInfo.[is_unique] = 0
+              AND indexInfo.[is_primary_key] = 0
+              AND indexInfo.[is_unique_constraint] = 0
+              AND indexInfo.[is_disabled] = 0
+              AND indexInfo.[is_hypothetical] = 0
+              AND indexInfo.[has_filter] = 1
+              AND UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                    indexInfo.[filter_definition],
+                    N' ', N''), N'[', N''), N']', N''), N'(', N''), N')', N''),
+                    CHAR(9), N''), CHAR(10), N''), CHAR(13), N''))
+                  = N'REVOKEDATUTCISNULLANDCONSUMEDATUTCISNULL'
+              AND (SELECT COUNT(1)
+                   FROM sys.index_columns AS keyColumn
+                   WHERE keyColumn.[object_id] = indexInfo.[object_id]
+                     AND keyColumn.[index_id] = indexInfo.[index_id]
+                     AND keyColumn.[key_ordinal] > 0) = 3
+              AND NOT EXISTS (
+                  SELECT expected.[Ordinal], expected.[ColumnName]
+                  FROM (VALUES
+                      (1, N'StoreCode'),
+                      (2, N'DeviceSystem'),
+                      (3, N'ExpiresAtUtc')) AS expected([Ordinal], [ColumnName])
+                  LEFT JOIN sys.index_columns AS keyColumn
+                      ON keyColumn.[object_id] = indexInfo.[object_id]
+                     AND keyColumn.[index_id] = indexInfo.[index_id]
+                     AND keyColumn.[key_ordinal] = expected.[Ordinal]
+                     AND keyColumn.[is_descending_key] = 0
+                  LEFT JOIN sys.columns AS columnInfo
+                      ON columnInfo.[object_id] = keyColumn.[object_id]
+                     AND columnInfo.[column_id] = keyColumn.[column_id]
+                     AND columnInfo.[name] = expected.[ColumnName]
+                  WHERE columnInfo.[column_id] IS NULL)
+              AND (SELECT COUNT(1)
+                   FROM sys.index_columns AS includedColumn
+                   WHERE includedColumn.[object_id] = indexInfo.[object_id]
+                     AND includedColumn.[index_id] = indexInfo.[index_id]
+                     AND includedColumn.[is_included_column] = 1) = 2
+              AND NOT EXISTS (
+                  SELECT expected.[ColumnName]
+                  FROM (VALUES
+                      (N'GrantId'),
+                      (N'SecretHash')) AS expected([ColumnName])
+                  WHERE NOT EXISTS (
+                      SELECT 1
+                      FROM sys.index_columns AS includedColumn
+                      INNER JOIN sys.columns AS columnInfo
+                          ON columnInfo.[object_id] = includedColumn.[object_id]
+                         AND columnInfo.[column_id] = includedColumn.[column_id]
+                      WHERE includedColumn.[object_id] = indexInfo.[object_id]
+                        AND includedColumn.[index_id] = indexInfo.[index_id]
+                        AND includedColumn.[is_included_column] = 1
+                        AND columnInfo.[name] = expected.[ColumnName])))
+            THROW 51106, 'Device activation usable index is missing or incompatible.', 1;
+
+        IF (SELECT COUNT(1)
+            FROM sys.check_constraints AS checkInfo
+            WHERE checkInfo.[parent_object_id] = @DeviceActivationTableId) <> 4
+            THROW 51107, 'Device activation check constraint set is incompatible.', 1;
+
+        DECLARE @ExpectedExpiryDefinition nvarchar(max) =
+            N'(EXPIRESATUTC>CREATEDATUTC)';
+        DECLARE @ExpectedRevocationDefinition nvarchar(max) =
+            N'(REVOKEDATUTCISNULLANDREVOKEDBYISNULLANDREVOKEREASONISNULLORREVOKEDATUTCISNOTNULLANDREVOKEDBYISNOTNULLANDREVOKEREASONISNOTNULL)';
+        DECLARE @ExpectedConsumptionPrefix nvarchar(max) = CONCAT(
+            N'(CONSUMEDATUTCISNULLANDCONSUMEDHARDWAREIDISNULLANDCONSUMEDDEVICECODEISNULL',
+            N'ANDCONSUMEDDEVICEREGISTRATIONIDISNULLANDCONSUMEDAUTHORIZATIONHASHISNULL',
+            N'ANDCONSUMEDDEVICESYSTEMISNULLANDCONSUMPTIONKINDISNULL',
+            N'ANDPREVIOUSSTORECODEISNULLANDPREVIOUSDEVICECODEISNULL',
+            N'ORCONSUMEDATUTCISNOTNULLANDCONSUMEDHARDWAREIDISNOTNULL',
+            N'ANDCONSUMEDDEVICECODEISNOTNULLANDCONSUMEDDEVICEREGISTRATIONIDISNOTNULL',
+            N'ANDCONSUMEDAUTHORIZATIONHASHISNOTNULLANDCONSUMEDDEVICESYSTEMISNOTNULL',
+            N'ANDCONSUMPTIONKINDISNOTNULLAND');
+        DECLARE @ExpectedConsumptionSuffix nvarchar(max) = CONCAT(
+            N'AND(CONSUMPTIONKIND=''INITIAL''ANDPREVIOUSSTORECODEISNULLANDPREVIOUSDEVICECODEISNULL',
+            N'ORCONSUMPTIONKIND=''REBIND''ANDPREVIOUSSTORECODEISNOTNULLANDPREVIOUSDEVICECODEISNOTNULL))');
+        DECLARE @ExpectedConsumedDefinitionRebindFirst nvarchar(max) = CONCAT(
+            @ExpectedConsumptionPrefix,
+            N'(CONSUMPTIONKIND=''REBIND''ORCONSUMPTIONKIND=''INITIAL'')',
+            @ExpectedConsumptionSuffix);
+        DECLARE @ExpectedConsumedDefinitionInitialFirst nvarchar(max) = CONCAT(
+            @ExpectedConsumptionPrefix,
+            N'(CONSUMPTIONKIND=''INITIAL''ORCONSUMPTIONKIND=''REBIND'')',
+            @ExpectedConsumptionSuffix);
+        DECLARE @ExpectedConsumedDefinitionInInitialFirst nvarchar(max) = CONCAT(
+            @ExpectedConsumptionPrefix,
+            N'CONSUMPTIONKINDIN(''INITIAL'',''REBIND'')',
+            @ExpectedConsumptionSuffix);
+        DECLARE @ExpectedConsumedDefinitionInRebindFirst nvarchar(max) = CONCAT(
+            @ExpectedConsumptionPrefix,
+            N'CONSUMPTIONKINDIN(''REBIND'',''INITIAL'')',
+            @ExpectedConsumptionSuffix);
+        DECLARE @ExpectedExclusiveDefinition nvarchar(max) =
+            N'(REVOKEDATUTCISNULLORCONSUMEDATUTCISNULL)';
+
+        IF EXISTS (
+            SELECT required.[ConstraintName]
+            FROM (VALUES
+                (N'CK_POSM_DeviceActivationGrant_Expiry'),
+                (N'CK_POSM_DeviceActivationGrant_Revocation'),
+                (N'CK_POSM_DeviceActivationGrant_Consumption'),
+                (N'CK_POSM_DeviceActivationGrant_RevokedConsumedExclusive'))
+                AS required([ConstraintName])
+            LEFT JOIN sys.check_constraints AS checkInfo
+                ON checkInfo.[parent_object_id] = @DeviceActivationTableId
+               AND checkInfo.[name] = required.[ConstraintName]
+               AND checkInfo.[is_disabled] = 0
+               AND checkInfo.[is_not_trusted] = 0
+            OUTER APPLY (
+                SELECT REPLACE(REPLACE(REPLACE(REPLACE(
+                    UPPER(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
+                        checkInfo.[definition],
+                        N' ', N''), N'[', N''), N']', N''), CHAR(9), N''), CHAR(10), N'')),
+                    CHAR(13), N''),
+                    N'N''INITIAL''', N'''INITIAL'''),
+                    N'N''REBIND''', N'''REBIND'''),
+                    N'(''INITIAL'')', N'''INITIAL''')
+                    AS [WithoutRebindLiteralParentheses]) AS firstNormalization
+            OUTER APPLY (
+                SELECT REPLACE(
+                    firstNormalization.[WithoutRebindLiteralParentheses],
+                    N'(''REBIND'')', N'''REBIND''') AS [NormalizedDefinition]) AS normalized
+            LEFT JOIN (VALUES
+                (N'CK_POSM_DeviceActivationGrant_Expiry', @ExpectedExpiryDefinition),
+                (N'CK_POSM_DeviceActivationGrant_Revocation', @ExpectedRevocationDefinition),
+                (N'CK_POSM_DeviceActivationGrant_Consumption', @ExpectedConsumedDefinitionRebindFirst),
+                (N'CK_POSM_DeviceActivationGrant_Consumption', @ExpectedConsumedDefinitionInitialFirst),
+                (N'CK_POSM_DeviceActivationGrant_Consumption', @ExpectedConsumedDefinitionInInitialFirst),
+                (N'CK_POSM_DeviceActivationGrant_Consumption', @ExpectedConsumedDefinitionInRebindFirst),
+                (N'CK_POSM_DeviceActivationGrant_RevokedConsumedExclusive', @ExpectedExclusiveDefinition))
+                AS expectedDefinition([ConstraintName], [NormalizedDefinition])
+                ON expectedDefinition.[ConstraintName] = required.[ConstraintName]
+               AND expectedDefinition.[NormalizedDefinition] = normalized.[NormalizedDefinition]
+            WHERE checkInfo.[object_id] IS NULL
+               OR expectedDefinition.[ConstraintName] IS NULL)
+            THROW 51107, 'Device activation check constraints are missing, untrusted, or incompatible.', 1;
+        """;
+
     public const string EnsureSql = """
         SET XACT_ABORT ON;
         BEGIN TRY
