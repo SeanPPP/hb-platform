@@ -11,6 +11,11 @@ const budgetPath = resolve(repositoryRoot, "quality-baseline-budget.json");
 test("quality-baseline workflow 覆盖 PR/main/nightly、路径 lane 与 always 上报", () => {
   assert.ok(existsSync(workflowPath), "必须新增 quality-baseline workflow");
   const workflow = readFileSync(workflowPath, "utf8");
+  assert.deepEqual(
+    [...workflow.matchAll(/node-version:\s*(\d+)/g)].map((match) => match[1]),
+    ["24", "24"],
+    "性能脚本与客户端 lane 必须统一使用支持 node:sqlite 的 Node 24",
+  );
 
   assert.match(workflow, /pull_request:/);
   assert.match(workflow, /push:[\s\S]*branches:\s*\[main\]/);
