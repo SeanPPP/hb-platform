@@ -88,6 +88,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly IOperationAuditLogger? _operationAuditLogger;
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private readonly IPosRuntimeStatusApiClient? _runtimeStatusApiClient;
+    private readonly CashierSessionRefreshService? _cashierSessionRefreshService;
+    private readonly Dispatcher? _uiDispatcher;
     private readonly ISharedHeldOrderCoordinator? _sharedHeldOrderCoordinator;
     private readonly ISharedHeldOrderApiClient? _sharedHeldOrderApiClient;
     private readonly ISharedHeldOrderRepository? _sharedHeldOrderRepository;
@@ -425,7 +427,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ISharedHeldOrderApiClient? sharedHeldOrderApiClient = null,
         ISharedHeldOrderRepository? sharedHeldOrderRepository = null,
         ISharedHeldOrderPublicationWorker? sharedHeldOrderPublicationWorker = null,
-        IStoreReceiptProfileApiClient? storeReceiptProfileApiClient = null)
+        IStoreReceiptProfileApiClient? storeReceiptProfileApiClient = null,
+        CashierSessionRefreshService? cashierSessionRefreshService = null)
     {
         _core = core;
         _infra = infra;
@@ -499,6 +502,12 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 () => runtimeEndpointState.CurrentAddress);
         }
         _runtimeStatusApiClient = runtimeStatusApiClient;
+        _cashierSessionRefreshService = cashierSessionRefreshService;
+        var applicationDispatcher = Application.Current?.Dispatcher;
+        // 主界面只绑定到构造它的 WPF Dispatcher，避免之后误用其他测试或退出流程遗留的全局 Application。
+        _uiDispatcher = applicationDispatcher?.CheckAccess() == true
+            ? applicationDispatcher
+            : null;
         _enforceCashierPermissions = enforceCashierPermissions;
         _windowOwnerProvider = windowOwnerProvider;
         AppUpdate = appUpdateState ?? new AppUpdateState();
@@ -594,6 +603,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _clockTimer.Tick += OnClockTimerTick;
         _connectivityTimer.Tick += OnConnectivityTimerTick;
         _catalogDownloadHideTimer.Tick += OnCatalogDownloadHideTimerTick;
+        if (_cashierSessionRefreshService is not null)
+        {
+            _cashierSessionRefreshService.SessionRejected += OnCashierSessionRejected;
+        }
         RefreshLocalizedShell(resetStatus: true);
     }
 
@@ -993,6 +1006,10 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _clockTimer.Tick -= OnClockTimerTick;
         _connectivityTimer.Tick -= OnConnectivityTimerTick;
         _catalogDownloadHideTimer.Tick -= OnCatalogDownloadHideTimerTick;
+        if (_cashierSessionRefreshService is not null)
+        {
+            _cashierSessionRefreshService.SessionRejected -= OnCashierSessionRejected;
+        }
 
         _cart.CartChanged -= OnCartChanged;
         _localization.CultureChanged -= OnCultureChanged;
@@ -2380,6 +2397,77 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         // pending 只消费一次；这里只刷新提示数量，不查询终端、不恢复订单，也不弹阻断对话框。
         _startupCardRecoveryPendingAfterCashierLogin = false;
         await RefreshCardRecoveryCountAsync();
+    }
+
+    private void OnCashierSessionRejected(object? sender, CashierSessionRejectedEventArgs eventArgs)
+    {
+        var dispatcher = _uiDispatcher;
+        if (dispatcher is not null && !dispatcher.CheckAccess())
+        {
+            _ = dispatcher.InvokeAsync(
+                () => ApplyRejectedCashierSessionSafe(eventArgs.RejectedSession),
+                DispatcherPriority.DataBind);
+            return;
+        }
+
+        ApplyRejectedCashierSessionSafe(eventArgs.RejectedSession);
+    }
+
+    private void ApplyRejectedCashierSessionSafe(CashierSessionDto rejectedSession)
+    {
+        try
+        {
+            ApplyRejectedCashierSession(rejectedSession);
+        }
+        catch (Exception ex)
+        {
+            // 后台刷新事件不得把异常逃逸到 WPF Dispatcher，否则会导致整个 POS 退出。
+            ConsoleLog.WriteError(
+                "CashierSession",
+                "同步收银员会话失效状态失败。",
+                exception: ex);
+        }
+    }
+
+    private void ApplyRejectedCashierSession(CashierSessionDto rejectedSession)
+    {
+        var shellCashier = Session.CashierSession;
+        if (IsLifetimeEnding ||
+            _cashierSessionContext.CurrentSession is not null ||
+            shellCashier is null ||
+            !HasSameCashierScope(shellCashier, rejectedSession))
+        {
+            return;
+        }
+
+        RevokeOperationAuthorizationsForSessionChange();
+        OperationAuditEvents.RecordAction(
+            _operationAuditLogger,
+            OperationAuditTypes.CashierLogout,
+            "Succeeded",
+            CreateCashierLoginAuditSession(shellCashier),
+            reasonCode: "SESSION_REJECTED");
+
+        // 服务端已明确拒绝会话时，界面与鉴权上下文必须一起退回扫码登录；购物车和设备授权保持不变。
+        _cashierSessionContext.Clear();
+        Session = Session with
+        {
+            CashierId = string.Empty,
+            CashierName = string.Empty,
+            CashierSession = null
+        };
+        CashierBarcodeInput = string.Empty;
+        StatusMessage = _localization.T("shell.cashierLogin.status.sessionExpired");
+        _ = ReportRuntimeStatusSafeAsync(Session.IsOnline, CancellationToken.None, clearCashier: true);
+    }
+
+    private static bool HasSameCashierScope(
+        CashierSessionDto left,
+        CashierSessionDto right)
+    {
+        return string.Equals(left.UserGuid, right.UserGuid, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(left.StoreCode, right.StoreCode, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(left.DeviceCode, right.DeviceCode, StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task RefreshCardRecoveryCountAsync()

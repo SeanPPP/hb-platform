@@ -20,6 +20,7 @@ using Hbpos.Contracts.Cashiers;
 using Hbpos.Contracts.Devices;
 using Hbpos.Contracts.Installments;
 using Hbpos.Contracts.Orders;
+using Microsoft.Extensions.DependencyInjection;
 using InstallmentPaymentDto = Hbpos.Contracts.Installments.InstallmentPaymentDto;
 using InstallmentPickupInfoDto = Hbpos.Contracts.Installments.InstallmentPickupInfoDto;
 
@@ -284,6 +285,187 @@ public sealed class MainViewModelScannerTests
         Assert.False(report.IsOnline);
         Assert.Equal("CASHIER-1", report.CashierId);
         Assert.Equal("Alice", report.CashierName);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Cashier_refresh_rejection_clears_shell_session_and_opens_login_overlay(
+        bool cacheRemovalFails)
+    {
+        var authorization = new FakeOperationAuthorizationService();
+        var runtimeStatus = new RecordingRuntimeStatusApiClient();
+        var auditLogger = new RecordingOperationAuditLogger();
+        ICashierSessionCacheUpdater cacheUpdater = cacheRemovalFails
+            ? new ThrowingCashierSessionCacheUpdater(new InvalidOperationException("cache unavailable"))
+            : new NoopCashierSessionCacheUpdater();
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(new AppStartupOptions([], true, null, null));
+        services.AddSingleton<ICashierSessionRefreshApiClient>(
+            new FixedCashierSessionRefreshApiClient(CashierSessionRefreshAttempt.OnlineRejected()));
+        services.AddSingleton(cacheUpdater);
+        services.AddSingleton<IOperationAuthorizationService>(authorization);
+        services.AddSingleton<IPosRuntimeStatusApiClient>(runtimeStatus);
+        services.AddSingleton<IOperationAuditLogger>(auditLogger);
+        using var provider = services.BuildServiceProvider();
+        var context = provider.GetRequiredService<ICashierSessionContext>();
+        var viewModel = provider.GetRequiredService<MainViewModel>();
+        var refreshService = provider.GetRequiredService<CashierSessionRefreshService>();
+        var cart = provider.GetRequiredService<IPosCoreServices>().Cart;
+        var deviceAuthorization = provider.GetRequiredService<DeviceAuthorizationState>();
+        var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
+        var authorizedDevice = new DeviceAuthorizationContext("POS-01", "1042", "HW-01", "AUTH-01");
+        var currentScreen = new object();
+        context.SetCurrent(cashierSession);
+        deviceAuthorization.Set(authorizedDevice);
+        viewModel.Session = CashierSessionContext.ApplyToSession(viewModel.Session, cashierSession);
+        viewModel.CurrentScreen = currentScreen;
+        viewModel.CashierBarcodeInput = "SHOULD-BE-CLEARED";
+        cart.AddItem(CreateItem("1042", "SKU-SESSION", "930SESSION"));
+        authorization.Open();
+
+        if (cacheRemovalFails)
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => refreshService.RefreshOnceAsync());
+        }
+        else
+        {
+            await refreshService.RefreshOnceAsync();
+        }
+        await WaitUntilAsync(() => viewModel.Session.CashierSession is null);
+
+        Assert.Null(context.CurrentSession);
+        Assert.Null(viewModel.Session.CashierSession);
+        Assert.Empty(viewModel.Session.CashierId);
+        Assert.Empty(viewModel.Session.CashierName);
+        Assert.Empty(viewModel.CashierBarcodeInput);
+        Assert.True(viewModel.IsCashierLoginOverlayOpen);
+        Assert.False(authorization.IsPromptOpen);
+        Assert.Equal("Cashier session expired. Sign in again.", viewModel.StatusMessage);
+        Assert.Single(cart.Lines);
+        Assert.Same(currentScreen, viewModel.CurrentScreen);
+        Assert.Same(authorizedDevice, deviceAuthorization.Current);
+        Assert.Equal("1042", viewModel.Session.StoreCode);
+        Assert.Equal("POS-01", viewModel.Session.DeviceCode);
+        var logout = Assert.Single(auditLogger.Events.Where(auditEvent =>
+            auditEvent.OperationType == OperationAuditTypes.CashierLogout));
+        Assert.Equal("SESSION_REJECTED", logout.ReasonCode);
+        var report = Assert.Single(runtimeStatus.Reports);
+        Assert.Null(report.CashierId);
+        Assert.Null(report.CashierName);
+    }
+
+    [Fact]
+    public async Task Cashier_refresh_api_unavailable_keeps_shell_and_authorization_sessions()
+    {
+        var authorization = new FakeOperationAuthorizationService();
+        var runtimeStatus = new RecordingRuntimeStatusApiClient();
+        var auditLogger = new RecordingOperationAuditLogger();
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(new AppStartupOptions([], true, null, null));
+        services.AddSingleton<ICashierSessionRefreshApiClient>(
+            new FixedCashierSessionRefreshApiClient(CashierSessionRefreshAttempt.ApiUnavailable()));
+        services.AddSingleton<ICashierSessionCacheUpdater, NoopCashierSessionCacheUpdater>();
+        services.AddSingleton<IOperationAuthorizationService>(authorization);
+        services.AddSingleton<IPosRuntimeStatusApiClient>(runtimeStatus);
+        services.AddSingleton<IOperationAuditLogger>(auditLogger);
+        using var provider = services.BuildServiceProvider();
+        var context = provider.GetRequiredService<ICashierSessionContext>();
+        var viewModel = provider.GetRequiredService<MainViewModel>();
+        var refreshService = provider.GetRequiredService<CashierSessionRefreshService>();
+        var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
+        context.SetCurrent(cashierSession);
+        viewModel.Session = CashierSessionContext.ApplyToSession(viewModel.Session, cashierSession);
+        viewModel.CurrentScreen = new object();
+        authorization.Open();
+
+        await refreshService.RefreshOnceAsync();
+
+        Assert.Same(cashierSession, context.CurrentSession);
+        Assert.Same(cashierSession, viewModel.Session.CashierSession);
+        Assert.False(viewModel.IsCashierLoginOverlayOpen);
+        Assert.True(authorization.IsPromptOpen);
+        Assert.Empty(runtimeStatus.Reports);
+        Assert.Empty(auditLogger.Events);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Queued_cashier_rejection_does_not_clear_a_new_login(bool sameIdentity)
+    {
+        var auditLogger = new RecordingOperationAuditLogger();
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(new AppStartupOptions([], true, null, null));
+        services.AddSingleton<ICashierSessionRefreshApiClient>(
+            new FixedCashierSessionRefreshApiClient(CashierSessionRefreshAttempt.OnlineRejected()));
+        services.AddSingleton<ICashierSessionCacheUpdater, NoopCashierSessionCacheUpdater>();
+        services.AddSingleton<IOperationAuditLogger>(auditLogger);
+        using var provider = services.BuildServiceProvider();
+        var context = provider.GetRequiredService<ICashierSessionContext>();
+        var refreshService = provider.GetRequiredService<CashierSessionRefreshService>();
+        var original = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem) with
+        {
+            AuthorizationToken = "ticket-a"
+        };
+        var newer = sameIdentity
+            ? original with
+            {
+                PermissionCodes = [Permissions.PosTerminal.Settings.View],
+                AuthorizationToken = "ticket-b"
+            }
+            : original with
+            {
+                CashierId = "CASHIER-2",
+                UserGuid = "user-2",
+                CashierName = "Bob",
+                AuthorizationToken = "ticket-b"
+            };
+        MainViewModel? viewModel = null;
+        refreshService.SessionRejected += (_, _) =>
+        {
+            context.SetCurrent(newer);
+            viewModel!.Session = CashierSessionContext.ApplyToSession(viewModel.Session, newer);
+        };
+        viewModel = provider.GetRequiredService<MainViewModel>();
+        context.SetCurrent(original);
+        viewModel.Session = CashierSessionContext.ApplyToSession(viewModel.Session, original);
+        viewModel.CurrentScreen = new object();
+
+        await refreshService.RefreshOnceAsync();
+
+        Assert.Same(newer, context.CurrentSession);
+        Assert.Same(newer, viewModel.Session.CashierSession);
+        Assert.False(viewModel.IsCashierLoginOverlayOpen);
+        Assert.Empty(auditLogger.Events.Where(auditEvent =>
+            auditEvent.OperationType == OperationAuditTypes.CashierLogout));
+    }
+
+    [Fact]
+    public async Task Disposed_shell_unsubscribes_from_cashier_rejection_notifications()
+    {
+        var auditLogger = new RecordingOperationAuditLogger();
+        var services = new ServiceCollection();
+        services.AddHbposClientServices(new AppStartupOptions([], true, null, null));
+        services.AddSingleton<ICashierSessionRefreshApiClient>(
+            new FixedCashierSessionRefreshApiClient(CashierSessionRefreshAttempt.OnlineRejected()));
+        services.AddSingleton<ICashierSessionCacheUpdater, NoopCashierSessionCacheUpdater>();
+        services.AddSingleton<IOperationAuditLogger>(auditLogger);
+        using var provider = services.BuildServiceProvider();
+        var context = provider.GetRequiredService<ICashierSessionContext>();
+        var viewModel = provider.GetRequiredService<MainViewModel>();
+        var refreshService = provider.GetRequiredService<CashierSessionRefreshService>();
+        var cashierSession = CreateCashierSession(Permissions.PosTerminal.Sales.AddItem);
+        context.SetCurrent(cashierSession);
+        viewModel.Session = CashierSessionContext.ApplyToSession(viewModel.Session, cashierSession);
+        viewModel.Dispose();
+
+        await refreshService.RefreshOnceAsync();
+
+        Assert.Null(context.CurrentSession);
+        Assert.Same(cashierSession, viewModel.Session.CashierSession);
+        Assert.Empty(auditLogger.Events.Where(auditEvent =>
+            auditEvent.OperationType == OperationAuditTypes.CashierLogout));
     }
 
     [Fact]
@@ -6365,6 +6547,36 @@ public sealed class MainViewModelScannerTests
         {
             return Task.FromResult(CashierLoginResult.Success(session));
         }
+    }
+
+    private sealed class FixedCashierSessionRefreshApiClient(CashierSessionRefreshAttempt attempt)
+        : ICashierSessionRefreshApiClient
+    {
+        public Task<CashierSessionRefreshAttempt> RefreshAsync(
+            CancellationToken cancellationToken = default) => Task.FromResult(attempt);
+    }
+
+    private sealed class NoopCashierSessionCacheUpdater : ICashierSessionCacheUpdater
+    {
+        public Task UpdateCachedSessionAsync(
+            CashierSessionDto session,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task RemoveCachedSessionAsync(
+            CashierSessionDto session,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    private sealed class ThrowingCashierSessionCacheUpdater(Exception exception)
+        : ICashierSessionCacheUpdater
+    {
+        public Task UpdateCachedSessionAsync(
+            CashierSessionDto session,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task RemoveCachedSessionAsync(
+            CashierSessionDto session,
+            CancellationToken cancellationToken = default) => Task.FromException(exception);
     }
 
     private sealed class RecordingAttemptCashierLoginService(CashierLoginResult result) : ICashierLoginService

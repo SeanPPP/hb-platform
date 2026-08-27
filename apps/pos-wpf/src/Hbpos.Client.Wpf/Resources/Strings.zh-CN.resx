@@ -1077,6 +1077,9 @@
   <data name="shell.cashierLogin.status.locked" xml:space="preserve">
     <value>已登出，请重新登录。</value>
   </data>
+  <data name="shell.cashierLogin.status.sessionExpired" xml:space="preserve">
+    <value>收银员会话已失效，请重新登录。</value>
+  </data>
   <data name="shell.cashierLogin.status.offlineSuccess" xml:space="preserve">
     <value>已使用离线收银员缓存登录。</value>
   </data>

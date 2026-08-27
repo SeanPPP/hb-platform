@@ -32,6 +32,22 @@ public sealed class LocalizationAndSettingsTests
     }
 
     [Fact]
+    public void Cashier_session_expired_message_is_localized()
+    {
+        var localization = new LocalizationService();
+
+        Assert.Equal(
+            "Cashier session expired. Sign in again.",
+            localization.T("shell.cashierLogin.status.sessionExpired"));
+
+        localization.SetCulture("zh-CN");
+
+        Assert.Equal(
+            "收银员会话已失效，请重新登录。",
+            localization.T("shell.cashierLogin.status.sessionExpired"));
+    }
+
+    [Fact]
     public void Localization_has_startup_and_shell_control_text()
     {
         var localization = new LocalizationService();

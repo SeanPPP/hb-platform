@@ -568,7 +568,8 @@ public static class ServiceRegistration
                 sharedHeldOrderApiClient: sp.GetRequiredService<ISharedHeldOrderApiClient>(),
                 sharedHeldOrderRepository: sp.GetRequiredService<ISharedHeldOrderRepository>(),
                 sharedHeldOrderPublicationWorker: sp.GetRequiredService<ISharedHeldOrderPublicationWorker>(),
-                storeReceiptProfileApiClient: sp.GetRequiredService<IStoreReceiptProfileApiClient>());
+                storeReceiptProfileApiClient: sp.GetRequiredService<IStoreReceiptProfileApiClient>(),
+                cashierSessionRefreshService: sp.GetRequiredService<CashierSessionRefreshService>());
             viewModel.ConfigureAuditSyncCenter(
                 sp.GetRequiredService<ClientLogOutboxStore>(),
                 sp.GetRequiredService<OperationAuditUploadService>(),
