@@ -145,6 +145,93 @@ test("API 切换先探测候选 health；失败不保存，成功只保存规范
   ]);
 });
 
+test("API 切换缺少分区门闩或恢复风险读取能力时 fail closed 且零写入", async () => {
+  const events: string[] = [];
+  const base = deps({
+    pendingData: {
+      read: async () => {
+        events.push("pending");
+        return CLEAR;
+      },
+    },
+    runtimeReload: {
+      reload: async () => {
+        events.push("reload");
+      },
+    },
+  });
+  const apiConfiguration = {
+    probe: async () => {
+      events.push("probe");
+      return true;
+    },
+    save: async () => {
+      events.push("save");
+    },
+  };
+  const action = {
+    kind: "change-api-address" as const,
+    apiBaseUrl: "https://next.example.test/pos",
+  };
+
+  const withoutSwitchGuard = new ProductionSettingsControl({
+    ...base,
+    apiConfiguration,
+  });
+  assert.deepEqual(
+    await withoutSwitchGuard.executeDangerousAction(
+      action,
+      new AbortController().signal,
+    ),
+    { status: "blocked", reason: "safety-check-failed" },
+  );
+
+  const withoutRecoveryReader = new ProductionSettingsControl({
+    ...base,
+    apiConfiguration: {
+      ...apiConfiguration,
+      runSwitchGuarded: async (operation) => ({
+        blocked: false as const,
+        value: await operation(),
+      }),
+    },
+    device: {
+      reregister: async () => undefined,
+      resetRegistration: async () => "completed" as const,
+    },
+  });
+  assert.deepEqual(
+    await withoutRecoveryReader.executeDangerousAction(
+      action,
+      new AbortController().signal,
+    ),
+    { status: "blocked", reason: "safety-check-failed" },
+  );
+
+  const unreadableRecoveryState = new ProductionSettingsControl(
+    deps({
+      apiConfiguration: {
+        ...apiConfiguration,
+      },
+      device: {
+        reregister: async () => undefined,
+        resetRegistration: async () => "completed" as const,
+        hasRegistrationRecoveryRisk: async () => {
+          throw new Error("secure store unavailable");
+        },
+      },
+    }),
+  );
+  assert.deepEqual(
+    await unreadableRecoveryState.executeDangerousAction(
+      action,
+      new AbortController().signal,
+    ),
+    { status: "blocked", reason: "safety-check-failed" },
+  );
+  assert.deepEqual(events, []);
+});
+
 test("目录刷新中 API 切换与目录重置均 fail closed，控制面透传共享状态订阅", async () => {
   const events: string[] = [];
   let refreshState: ReturnType<
@@ -379,6 +466,7 @@ test("任一活动购物车、未决支付或耐久队列都会原子阻断危�
         reregister: async () => {
           executed = true;
         },
+        resetRegistration: async () => "completed",
       },
     }),
   );
@@ -386,7 +474,15 @@ test("任一活动购物车、未决支付或耐久队列都会原子阻断危�
   const result = await subject.executeDangerousAction(
     {
       kind: "reregister-device",
-      targetStoreCode: "S2",
+      activationCode: "S2",
+      currentStoreCode: "S1",
+      preview: {
+        activationCode: "S2",
+        storeCode: "S2",
+        storeName: "Target store",
+        deviceSystem: "Android",
+        expiresAtUtc: "2026-08-28T00:00:00.000Z",
+      },
     },
     new AbortController().signal,
   );
@@ -505,6 +601,7 @@ test("普通危险动作持有目录独占门，支付配置单独进入全局 t
       },
       device: {
         reregister: async () => undefined,
+        resetRegistration: async () => "completed",
       },
       appUpdate: {
         check: async () => {
@@ -535,7 +632,18 @@ test("普通危险动作持有目录独占门，支付配置单独进入全局 t
     signal,
   );
   await subject.executeDangerousAction(
-    { kind: "reregister-device", targetStoreCode: "S2" },
+    {
+      kind: "reregister-device",
+      activationCode: "S2",
+      currentStoreCode: "S1",
+      preview: {
+        activationCode: "S2",
+        storeCode: "S2",
+        storeName: "Target store",
+        deviceSystem: "Android",
+        expiresAtUtc: "2026-08-28T00:00:00.000Z",
+      },
+    },
     signal,
   );
   await subject.executeDangerousAction({ kind: "restart-app" }, signal);
@@ -903,6 +1011,7 @@ test("支付配置之外的危险动作仍由完整待处理数据门禁阻断",
         reregister: async () => {
           events.push("device:reregister");
         },
+        resetRegistration: async () => "completed",
       },
       appUpdate: {
         check: async () => {
@@ -922,7 +1031,18 @@ test("支付配置之外的危险动作仍由完整待处理数据门禁阻断",
       apiBaseUrl: "https://next.example.test/pos",
     },
     { kind: "reset-catalog" },
-    { kind: "reregister-device", targetStoreCode: "S2" },
+    {
+      kind: "reregister-device",
+      activationCode: "S2",
+      currentStoreCode: "S1",
+      preview: {
+        activationCode: "S2",
+        storeCode: "S2",
+        storeName: "Target store",
+        deviceSystem: "Android",
+        expiresAtUtc: "2026-08-28T00:00:00.000Z",
+      },
+    },
     { kind: "restart-app" },
   ] satisfies readonly SettingsDangerousConfirmation[];
 
@@ -1147,6 +1267,65 @@ test("重启安全决策失败时映射 safety-check-failed", async () => {
   );
 });
 
+test("清除设备注册必须通过全量待处理门禁且不会调用重置服务", async () => {
+  let resetCalls = 0;
+  const subject = new ProductionSettingsControl(
+    deps({
+      pendingData: {
+        read: async () => ({ ...CLEAR, pendingSaleCount: 1 }),
+      },
+      device: {
+        reregister: async () => undefined,
+        resetRegistration: async () => {
+          resetCalls += 1;
+          return "completed" as const;
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(
+    await subject.executeDangerousAction(
+      { kind: "reset-device-registration" },
+      new AbortController().signal,
+      "EMPLOYEE-BARCODE",
+    ),
+    { status: "blocked", reason: "pending-local-data" },
+  );
+  assert.equal(resetCalls, 0);
+});
+
+test("清除设备注册仅把瞬时员工条码交给重置协调器，成功后重载运行时", async () => {
+  const events: string[] = [];
+  const subject = new ProductionSettingsControl(
+    deps({
+      pendingData: { read: async () => CLEAR },
+      device: {
+        reregister: async () => undefined,
+        resetRegistration: async (barcode) => {
+          events.push(`reset:${barcode}`);
+          return "completed" as const;
+        },
+      },
+      runtimeReload: {
+        reload: async () => {
+          events.push("reload");
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(
+    await subject.executeDangerousAction(
+      { kind: "reset-device-registration" },
+      new AbortController().signal,
+      "EMPLOYEE-BARCODE",
+    ),
+    { status: "completed", kind: "reset-device-registration" },
+  );
+  assert.deepEqual(events, ["reset:EMPLOYEE-BARCODE", "reload"]);
+});
+
 type DependencyOverrides = Partial<ProductionSettingsControlDependencies>;
 
 function deps(
@@ -1155,6 +1334,7 @@ function deps(
   const unavailable = async (): Promise<never> => {
     throw new Error("not implemented");
   };
+  const { apiConfiguration, device, ...otherOverrides } = overrides;
   return {
     readSnapshot: unavailable,
     catalog: {
@@ -1198,11 +1378,19 @@ function deps(
     apiConfiguration: {
       probe: unavailable,
       save: unavailable,
+      runSwitchGuarded: async (operation) => ({
+        blocked: false as const,
+        value: await operation(),
+      }),
+      ...apiConfiguration,
     },
     device: {
       reregister: unavailable,
+      resetRegistration: unavailable,
+      hasRegistrationRecoveryRisk: async () => false,
+      ...device,
     },
-    ...overrides,
+    ...otherOverrides,
   };
 }
 

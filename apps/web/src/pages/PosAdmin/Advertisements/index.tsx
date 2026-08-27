@@ -56,6 +56,7 @@ import {
   runLatestGuardedRequest,
 } from '../../../utils/latestRequestGuard'
 import { MeasuredTable } from '../../../components/MeasuredTable'
+import { getAdvertisementStoreTagLabels } from './storeTagDisplay'
 
 type AdvertisementRow = AdvertisementListDto & { key: string }
 
@@ -98,18 +99,16 @@ function formatFileSize(fileSize?: number) {
   return `${(fileSize / 1024 / 1024).toFixed(1)} MB`
 }
 
-function renderStoreTags(stores: { storeCode: string }[]) {
-  if (!stores?.length) {
-    return '--'
-  }
-
-  const visibleStores = stores.slice(0, 3)
+function renderStoreTags(
+  stores: AdvertisementListDto['stores'],
+  storeOptions: readonly StoreOption[],
+) {
+  const labels = getAdvertisementStoreTagLabels(stores, storeOptions)
   return (
     <Space size={[4, 4]} wrap>
-      {visibleStores.map((store) => (
-        <Tag key={store.storeCode}>{store.storeCode}</Tag>
+      {labels.map((label, index) => (
+        <Tag key={`${label}-${index}`}>{label}</Tag>
       ))}
-      {stores.length > visibleStores.length ? <Tag>+{stores.length - visibleStores.length}</Tag> : null}
     </Space>
   )
 }
@@ -505,7 +504,7 @@ export default function AdvertisementsPage() {
       dataIndex: 'stores',
       key: 'stores',
       width: 240,
-      render: (stores: { storeCode: string }[]) => renderStoreTags(stores),
+      render: (stores: AdvertisementListDto['stores']) => renderStoreTags(stores, storeOptions),
     },
     {
       title: t('posAdmin.advertisements.effectiveRange'),

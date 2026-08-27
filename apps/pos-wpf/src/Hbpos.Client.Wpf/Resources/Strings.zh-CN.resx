@@ -844,7 +844,7 @@
     <value>全部终端</value>
   </data>
   <data name="history.search" xml:space="preserve">
-    <value>搜索订单、收银员或终端...</value>
+    <value>搜索订单、商品货号或条码...</value>
   </data>
   <data name="history.showing" xml:space="preserve">
     <value>显示 {0} 笔交易</value>
@@ -881,6 +881,39 @@
   </data>
   <data name="history.receiptLoading" xml:space="preserve">
     <value>正在加载小票...</value>
+  </data>
+  <data name="history.viewOrderDetails" xml:space="preserve">
+    <value>订单明细</value>
+  </data>
+  <data name="history.closeOrderDetails" xml:space="preserve">
+    <value>关闭</value>
+  </data>
+  <data name="history.orderDetailsLoading" xml:space="preserve">
+    <value>正在加载订单明细...</value>
+  </data>
+  <data name="history.orderDetailsUnavailable" xml:space="preserve">
+    <value>暂时无法查看订单明细，请重试。</value>
+  </data>
+  <data name="history.orderDetailsEmpty" xml:space="preserve">
+    <value>此订单没有商品明细。</value>
+  </data>
+  <data name="history.remoteHeldDetailsUnavailable" xml:space="preserve">
+    <value>召回后可查看订单明细。</value>
+  </data>
+  <data name="history.retryOrderDetails" xml:space="preserve">
+    <value>重试</value>
+  </data>
+  <data name="history.orderDetailsNoPayment" xml:space="preserve">
+    <value>未完成付款</value>
+  </data>
+  <data name="history.finalTotal" xml:space="preserve">
+    <value>最终合计</value>
+  </data>
+  <data name="history.paidAmount" xml:space="preserve">
+    <value>已付</value>
+  </data>
+  <data name="history.outstandingAmount" xml:space="preserve">
+    <value>未付</value>
   </data>
   <data name="history.reprint" xml:space="preserve">
     <value>重打</value>
@@ -1787,6 +1820,21 @@
   <data name="history.installment.continuePayment" xml:space="preserve">
     <value>继续支付</value>
   </data>
+  <data name="history.installment.status.paymentDue" xml:space="preserve">
+    <value>待补款</value>
+  </data>
+  <data name="history.installment.status.readyForPickup" xml:space="preserve">
+    <value>待提货</value>
+  </data>
+  <data name="history.installment.status.pickedUp" xml:space="preserve">
+    <value>已提货</value>
+  </data>
+  <data name="history.installment.status.voided" xml:space="preserve">
+    <value>已作废</value>
+  </data>
+  <data name="history.installment.status.cancelled" xml:space="preserve">
+    <value>已取消</value>
+  </data>
   <data name="history.payment.suspended" xml:space="preserve">
     <value>挂单</value>
   </data>
@@ -1839,10 +1887,10 @@
     <value>重打印日结单</value>
   </data>
   <data name="deviceRegistration.title" xml:space="preserve">
-    <value>设备注册</value>
+    <value>设备开通</value>
   </data>
   <data name="deviceRegistration.title.reregister" xml:space="preserve">
-    <value>更换分店重新注册</value>
+    <value>更换设备分店</value>
   </data>
   <data name="deviceRegistration.submit" xml:space="preserve">
     <value>提交注册</value>
@@ -1866,7 +1914,7 @@
     <value>重新检查</value>
   </data>
   <data name="deviceRegistration.reregister.subtitle" xml:space="preserve">
-    <value>请选择要切换注册的分店</value>
+    <value>使用为目标分店创建的一次性设备开通码。</value>
   </data>
   <data name="deviceRegistration.status.loadingStores" xml:space="preserve">
     <value>正在加载分店...</value>
@@ -1903,6 +1951,75 @@
   </data>
   <data name="deviceRegistration.status.switchStore" xml:space="preserve">
     <value>请选择新分店以切换当前待审批注册。</value>
+  </data>
+  <data name="deviceActivation.description" xml:space="preserve">
+    <value>扫描 Web 端生成的二维码，或输入完整的一次性设备开通码；分店由开通码自动确定。</value>
+  </data>
+  <data name="deviceActivation.rebindDescription" xml:space="preserve">
+    <value>扫描或输入目标分店开通码，核对分店、平台和有效期后再确认更换。</value>
+  </data>
+  <data name="deviceActivation.code" xml:space="preserve">
+    <value>设备开通码</value>
+  </data>
+  <data name="deviceActivation.targetStore" xml:space="preserve">
+    <value>目标分店</value>
+  </data>
+  <data name="deviceActivation.platform" xml:space="preserve">
+    <value>平台</value>
+  </data>
+  <data name="deviceActivation.expiresAt" xml:space="preserve">
+    <value>有效期至</value>
+  </data>
+  <data name="deviceActivation.preview" xml:space="preserve">
+    <value>检查开通码</value>
+  </data>
+  <data name="deviceActivation.confirm.redeem" xml:space="preserve">
+    <value>开通设备</value>
+  </data>
+  <data name="deviceActivation.confirm.rebind" xml:space="preserve">
+    <value>确认更换分店</value>
+  </data>
+  <data name="deviceActivation.status.scanOrEnter" xml:space="preserve">
+    <value>请扫描或输入一次性设备开通码。</value>
+  </data>
+  <data name="deviceActivation.status.scanOrEnterRebind" xml:space="preserve">
+    <value>请扫描或输入目标分店的设备开通码。</value>
+  </data>
+  <data name="deviceActivation.status.invalidFormat" xml:space="preserve">
+    <value>请扫描或输入完整的 HBDEV1 设备开通码。</value>
+  </data>
+  <data name="deviceActivation.status.previewing" xml:space="preserve">
+    <value>正在检查设备开通码...</value>
+  </data>
+  <data name="deviceActivation.status.confirmRedeem" xml:space="preserve">
+    <value>请核对分店、平台和有效期，然后开通此设备。</value>
+  </data>
+  <data name="deviceActivation.status.confirmRebind" xml:space="preserve">
+    <value>请核对目标分店、平台和有效期，然后确认更换分店。</value>
+  </data>
+  <data name="deviceActivation.status.redeeming" xml:space="preserve">
+    <value>正在开通此设备...</value>
+  </data>
+  <data name="deviceActivation.status.rebinding" xml:space="preserve">
+    <value>正在更换此设备的分店...</value>
+  </data>
+  <data name="deviceActivation.status.recovering" xml:space="preserve">
+    <value>正在恢复中断的设备开通...</value>
+  </data>
+  <data name="deviceActivation.status.recoveryUnreadable" xml:space="preserve">
+    <value>无法读取设备开通恢复记录。请修复本地应用数据权限后重启，或联系管理员。</value>
+  </data>
+  <data name="deviceActivation.error.invalid" xml:space="preserve">
+    <value>设备开通码格式无效。</value>
+  </data>
+  <data name="deviceActivation.error.notAvailable" xml:space="preserve">
+    <value>此设备开通码无效、已过期、已撤销或已使用。</value>
+  </data>
+  <data name="deviceActivation.error.platformMismatch" xml:space="preserve">
+    <value>此设备开通码不适用于 Windows POS。</value>
+  </data>
+  <data name="deviceActivation.error.failed" xml:space="preserve">
+    <value>设备开通失败，请检查开通码和网络连接后重试。</value>
   </data>
   <data name="returns.status.default" xml:space="preserve">
     <value>请扫描订单号开始小票退货。</value>
@@ -2678,6 +2795,17 @@
   <data name="settings.status.appUpdateInstalling" xml:space="preserve"><value>正在启动软件更新安装器...</value></data>
   <data name="appUpdate.prompt.title" xml:space="preserve"><value>软件更新</value></data>
   <data name="appUpdate.optional.prompt.message" xml:space="preserve"><value>发现版本 {0}，是否现在下载并安装？</value></data>
+  <data name="appUpdate.optional.prompt.description" xml:space="preserve"><value>新版本已准备好安装。</value></data>
+  <data name="appUpdate.optional.prompt.readyStatus" xml:space="preserve"><value>已准备安装</value></data>
+  <data name="appUpdate.optional.prompt.currentVersion" xml:space="preserve"><value>当前版本</value></data>
+  <data name="appUpdate.optional.prompt.newVersion" xml:space="preserve"><value>新版本</value></data>
+  <data name="appUpdate.optional.prompt.packageDownloaded" xml:space="preserve"><value>更新包已下载完成。</value></data>
+  <data name="appUpdate.optional.prompt.whatsNew" xml:space="preserve"><value>更新内容</value></data>
+  <data name="appUpdate.optional.prompt.noReleaseNotes" xml:space="preserve"><value>此更新未提供发布说明。</value></data>
+  <data name="appUpdate.optional.prompt.safety" xml:space="preserve"><value>安装期间 HB POS 将关闭。请先完成或清空当前交易。</value></data>
+  <data name="appUpdate.optional.prompt.installLater" xml:space="preserve"><value>稍后安装</value></data>
+  <data name="appUpdate.optional.prompt.restartAndInstall" xml:space="preserve"><value>重启并安装</value></data>
+  <data name="appUpdate.optional.prompt.settingsHint" xml:space="preserve"><value>终端空闲时可从设置页面安装。</value></data>
   <data name="appUpdate.optional.title" xml:space="preserve"><value>更新已准备好</value></data>
   <data name="appUpdate.optional.ready" xml:space="preserve"><value>新版本已下载完成，可在空闲时安装。</value></data>
   <data name="appUpdate.force.title" xml:space="preserve"><value>必须更新</value></data>

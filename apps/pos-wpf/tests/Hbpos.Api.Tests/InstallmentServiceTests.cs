@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using BlazorApp.Shared.Models.POSM;
@@ -135,6 +136,7 @@ public sealed class InstallmentServiceTests
         Assert.Null(stored!.PickupInfo);
         Assert.Null(stored.CancellationInfo);
         Assert.Equal(InstallmentStatus.Active, stored.Status);
+        Assert.Equal(DateTimeOffset.Parse("2026-05-21T10:00:00Z"), stored.UpdatedAt);
     }
 
     [Fact]
@@ -491,6 +493,408 @@ public sealed class InstallmentServiceTests
         Assert.Equal(alice.InstallmentGuid, Assert.Single(byNumber.Orders).InstallmentGuid);
     }
 
+    [Theory]
+    [InlineData("SKU-TARGET")]
+    [InlineData("ITEM-TARGET")]
+    [InlineData("930000000001")]
+    public async Task Sql_repository_history_matches_item_number_and_barcode(string keyword)
+    {
+        await using var fixture = await InstallmentSqliteFixture.CreateAsync();
+        var repository = new SqlSugarInstallmentRepository(fixture.DbContext);
+        var service = new InstallmentService(repository, new FakeReservationService());
+        var targetRequest = CreateRequest() with
+        {
+            InstallmentGuid = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+            Lines =
+            [
+                new InstallmentLineDto(
+                    Guid.NewGuid(),
+                    "SKU-TARGET",
+                    null,
+                    "Tea",
+                    "930000000001",
+                    1m,
+                    100m,
+                    0m,
+                    100m,
+                    "ITEM-TARGET")
+            ]
+        };
+        var otherRequest = CreateRequest() with
+        {
+            InstallmentGuid = Guid.Parse("ffffffff-1111-2222-3333-444444444444"),
+            Lines =
+            [
+                new InstallmentLineDto(
+                    Guid.NewGuid(),
+                    "SKU-OTHER",
+                    null,
+                    "Coffee",
+                    "930000000002",
+                    1m,
+                    100m,
+                    0m,
+                    100m,
+                    "ITEM-OTHER")
+            ]
+        };
+
+        var target = await service.CreateAsync(targetRequest, CancellationToken.None);
+        await service.CreateAsync(otherRequest, CancellationToken.None);
+
+        var response = await service.QueryAsync(
+            new InstallmentHistoryQueryRequest("S01", Keyword: keyword),
+            CancellationToken.None);
+
+        Assert.Equal(target.InstallmentGuid, Assert.Single(response.Orders).InstallmentGuid);
+    }
+
+    [Fact]
+    public async Task Sql_repository_history_does_not_partially_match_product_identifiers()
+    {
+        await using var fixture = await InstallmentSqliteFixture.CreateAsync();
+        var repository = new SqlSugarInstallmentRepository(fixture.DbContext);
+        var service = new InstallmentService(repository, new FakeReservationService());
+        await service.CreateAsync(
+            CreateRequest() with
+            {
+                InstallmentGuid = Guid.NewGuid(),
+                CustomerName = "Exact identifier customer",
+                Lines =
+                [
+                    new InstallmentLineDto(
+                        Guid.NewGuid(),
+                        "SKU-TARGET-10",
+                        null,
+                        "Tea",
+                        "930000000010",
+                        1m,
+                        100m,
+                        0m,
+                        100m,
+                        "ITEM-TARGET-10")
+                ]
+            },
+            CancellationToken.None);
+
+        var response = await service.QueryAsync(
+            new InstallmentHistoryQueryRequest("S01", Keyword: "ITEM-TARGET"),
+            CancellationToken.None);
+
+        Assert.Empty(response.Orders);
+    }
+
+    [Theory]
+    [InlineData("_")]
+    [InlineData("%")]
+    [InlineData("[")]
+    public async Task Sql_repository_history_treats_special_identifier_characters_as_literals(string keyword)
+    {
+        await using var fixture = await InstallmentSqliteFixture.CreateAsync();
+        var repository = new SqlSugarInstallmentRepository(fixture.DbContext);
+        var service = new InstallmentService(repository, new FakeReservationService());
+        var targetGuid = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        await service.CreateAsync(
+            CreateRequest() with
+            {
+                InstallmentGuid = targetGuid,
+                Lines =
+                [
+                    new InstallmentLineDto(
+                        Guid.NewGuid(),
+                        "SKU-SPECIAL",
+                        null,
+                        "Special Tea",
+                        "BAR-SPECIAL",
+                        1m,
+                        100m,
+                        0m,
+                        100m,
+                        keyword)
+                ]
+            },
+            CancellationToken.None);
+        await service.CreateAsync(
+            CreateRequest() with
+            {
+                InstallmentGuid = Guid.Parse("ffffffff-1111-2222-3333-444444444444"),
+                Lines =
+                [
+                    new InstallmentLineDto(
+                        Guid.NewGuid(),
+                        "SKU-OTHER",
+                        null,
+                        "Other Tea",
+                        "BAR-OTHER",
+                        1m,
+                        100m,
+                        0m,
+                        100m,
+                        "X")
+                ]
+            },
+            CancellationToken.None);
+
+        var response = await service.QueryAsync(
+            new InstallmentHistoryQueryRequest("S01", Keyword: keyword),
+            CancellationToken.None);
+
+        Assert.Equal(targetGuid, Assert.Single(response.Orders).InstallmentGuid);
+    }
+
+    [Fact]
+    public async Task Sql_repository_keyword_pagination_filters_and_pages_in_the_database()
+    {
+        await using var fixture = await InstallmentSqliteFixture.CreateAsync();
+        var db = fixture.DbContext.PosmDb;
+        const int orderCount = 1_205;
+        var createdAt = DateTime.Parse("2026-08-25T10:00:00Z").ToUniversalTime();
+        var orders = Enumerable.Range(0, orderCount)
+            .Select(index => new InstallmentOrderEntity
+            {
+                InstallmentGuid = Guid.Parse($"00000000-0000-0000-0000-{index:D12}").ToString("D"),
+                InstallmentNumber = $"IO-DEEP-{index:D4}",
+                StoreCode = "S01",
+                DeviceCode = "POS01",
+                CashierId = "C01",
+                CashierName = "Cashier",
+                CustomerName = "Customer",
+                CustomerPhone = "0400000000",
+                TotalAmount = 100m,
+                DownPaymentAmount = 20m,
+                PaidAmount = 20m,
+                BalanceAmount = 80m,
+                Status = (int)InstallmentStatus.Active,
+                CreatedAt = createdAt.AddSeconds(-index),
+                UpdatedAt = createdAt.AddSeconds(-index)
+            })
+            .ToList();
+        var lines = orders.Select(order => new InstallmentOrderLineEntity
+        {
+            InstallmentLineGuid = Guid.NewGuid().ToString("D"),
+            InstallmentGuid = order.InstallmentGuid,
+            ProductCode = "SKU-DEEP",
+            DisplayName = "Tea",
+            LookupCode = "930000000001",
+            ItemNumber = "ITEM-DEEP",
+            Quantity = 1m,
+            UnitPrice = 100m,
+            ActualAmount = 100m
+        }).ToList();
+        foreach (var batch in orders.Chunk(500))
+        {
+            await db.Insertable(batch).ExecuteCommandAsync();
+        }
+
+        foreach (var batch in lines.Chunk(500))
+        {
+            await db.Insertable(batch).ExecuteCommandAsync();
+        }
+
+        var statements = fixture.CaptureSql();
+        var repository = new SqlSugarInstallmentRepository(fixture.DbContext);
+
+        var response = await repository.QueryAsync(
+            new InstallmentHistoryQueryRequest("S01", Keyword: "ITEM-DEEP", Take: 5, Skip: 1_000),
+            CancellationToken.None);
+
+        var selects = statements
+            .Where(statement => statement.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        Assert.Single(selects);
+        Assert.Contains("EXISTS", selects[0], StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(" IN (", selects[0], StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(5, response.Orders.Count);
+        Assert.Equal("IO-DEEP-1000", response.Orders[0].InstallmentNumber);
+    }
+
+    [Fact]
+    public void Sql_server_keyword_pagination_translates_to_exists_without_guid_in_list()
+    {
+        using var db = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = "Server=(localdb)\\MSSQLLocalDB;Database=hbpos-sql-preview;Trusted_Connection=True;",
+            DbType = DbType.SqlServer,
+            InitKeyType = InitKeyType.Attribute,
+            IsAutoCloseConnection = true
+        });
+        const string keyword = "ITEM-DEEP";
+
+        var sql = db.Queryable<InstallmentOrderEntity>()
+            .Where(order => order.StoreCode == "S01")
+            .Where(order =>
+                SqlFunc.CharIndexNew(order.InstallmentNumber, keyword) > 0 ||
+                SqlFunc.Subqueryable<InstallmentOrderLineEntity>()
+                    .Where(line => line.InstallmentGuid == order.InstallmentGuid &&
+                        (line.ItemNumber == keyword ||
+                         line.LookupCode == keyword ||
+                         line.ProductCode == keyword))
+                    .Any())
+            .OrderByDescending(order => order.UpdatedAt)
+            .OrderByDescending(order => order.InstallmentGuid)
+            .Skip(2_200)
+            .Take(100)
+            .ToSql();
+
+        Assert.Contains("EXISTS", sql.Key, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(" IN (", sql.Key, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(" LIKE ", sql.Key, StringComparison.OrdinalIgnoreCase);
+        Assert.True(sql.Key.Length < 5_000, $"SQL Server 查询文本异常膨胀到 {sql.Key.Length} 个字符。");
+    }
+
+    [Fact]
+    public async Task Sql_repository_history_summary_preserves_cancellation_kind()
+    {
+        await using var fixture = await InstallmentSqliteFixture.CreateAsync();
+        var repository = new SqlSugarInstallmentRepository(fixture.DbContext);
+        var service = new InstallmentService(repository, new FakeReservationService());
+        var created = await service.CreateAsync(CreateRequest(), CancellationToken.None);
+
+        await service.VoidAsync(CreateVoid(created.InstallmentGuid), CancellationToken.None);
+
+        var response = await service.QueryAsync(
+            new InstallmentHistoryQueryRequest("S01", Keyword: created.InstallmentNumber),
+            CancellationToken.None);
+
+        var summary = Assert.Single(response.Orders);
+        Assert.Equal(InstallmentCancellationKind.VoidCancel, summary.CancellationKind);
+    }
+
+    [Fact]
+    [Trait("Category", "Performance")]
+    public async Task Sql_repository_history_finds_item_number_within_two_seconds_at_scale()
+    {
+        await using var fixture = await InstallmentSqliteFixture.CreateAsync();
+        var repository = new SqlSugarInstallmentRepository(fixture.DbContext);
+        var db = fixture.DbContext.PosmDb;
+        var updatedAt = DateTime.Parse("2026-08-25T10:00:00Z").ToUniversalTime();
+        const int orderCount = 10_000;
+        var targetGuid = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee").ToString("D");
+        var orders = Enumerable.Range(1, orderCount)
+            .Select(index => new InstallmentOrderEntity
+            {
+                InstallmentGuid = Guid.Parse($"00000000-0000-0000-0000-{index:D12}").ToString("D"),
+                InstallmentNumber = $"IO-PERF-{index:D6}",
+                StoreCode = "S01",
+                DeviceCode = "POS01",
+                CashierId = "C01",
+                CashierName = "Cashier",
+                CustomerName = "Customer",
+                CustomerPhone = "0400000000",
+                TotalAmount = 100m,
+                DownPaymentAmount = 20m,
+                PaidAmount = 20m,
+                BalanceAmount = 80m,
+                Status = (int)InstallmentStatus.Active,
+                CreatedAt = updatedAt.AddSeconds(-index),
+                UpdatedAt = updatedAt.AddSeconds(-index)
+            })
+            .Append(new InstallmentOrderEntity
+            {
+                InstallmentGuid = targetGuid,
+                InstallmentNumber = "IO-PERF-TARGET",
+                StoreCode = "S01",
+                DeviceCode = "POS01",
+                CashierId = "C01",
+                CashierName = "Cashier",
+                CustomerName = "Target Customer",
+                CustomerPhone = "0499999999",
+                TotalAmount = 100m,
+                DownPaymentAmount = 20m,
+                PaidAmount = 20m,
+                BalanceAmount = 80m,
+                Status = (int)InstallmentStatus.Active,
+                CreatedAt = updatedAt,
+                UpdatedAt = updatedAt
+            })
+            .ToList();
+        var lines = orders.Select((order, index) => new InstallmentOrderLineEntity
+        {
+            InstallmentLineGuid = Guid.NewGuid().ToString("D"),
+            InstallmentGuid = order.InstallmentGuid,
+            ProductCode = $"SKU-{index:D6}",
+            DisplayName = "Tea",
+            LookupCode = $"9301{index:D8}",
+            ItemNumber = order.InstallmentGuid == targetGuid ? "ITEM-TARGET" : $"ITEM-{index:D6}",
+            Quantity = 1m,
+            UnitPrice = 100m,
+            ActualAmount = 100m
+        }).ToList();
+        foreach (var batch in orders.Chunk(500))
+        {
+            await db.Insertable(batch).ExecuteCommandAsync();
+        }
+
+        foreach (var batch in lines.Chunk(500))
+        {
+            await db.Insertable(batch).ExecuteCommandAsync();
+        }
+
+        await db.Ado.ExecuteCommandAsync(
+            "CREATE INDEX IX_Test_InstallmentOrder_UpdatedScope ON InstallmentOrder(StoreCode, UpdatedAt DESC, InstallmentGuid DESC);");
+        await db.Ado.ExecuteCommandAsync(
+            "CREATE INDEX IX_Test_InstallmentOrderLine_ItemNumber ON InstallmentOrderLine(ItemNumber, InstallmentGuid);");
+        await db.Ado.ExecuteCommandAsync(
+            "CREATE INDEX IX_Test_InstallmentOrderLine_Barcode ON InstallmentOrderLine(LookupCode, InstallmentGuid);");
+        await db.Ado.ExecuteCommandAsync(
+            "CREATE INDEX IX_Test_InstallmentOrderLine_ProductCode ON InstallmentOrderLine(ProductCode, InstallmentGuid);");
+        var stopwatch = Stopwatch.StartNew();
+
+        var response = await repository.QueryAsync(
+            new InstallmentHistoryQueryRequest(
+                "S01",
+                Keyword: "ITEM-TARGET",
+                Take: 100,
+                UpdatedFrom: new DateTimeOffset(updatedAt.AddDays(-1), TimeSpan.Zero),
+                UpdatedTo: new DateTimeOffset(updatedAt.AddDays(1), TimeSpan.Zero),
+                OrderByUpdatedAt: true),
+            CancellationToken.None);
+
+        stopwatch.Stop();
+        Assert.Equal(targetGuid, Assert.Single(response.Orders).InstallmentGuid.ToString("D"));
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(2),
+            $"分期按货号查询耗时 {stopwatch.Elapsed.TotalMilliseconds:F1} ms，超过 2 秒预算。");
+    }
+
+    [Fact]
+    public async Task Sql_repository_history_filters_and_orders_by_updated_at_when_requested()
+    {
+        await using var fixture = await InstallmentSqliteFixture.CreateAsync();
+        var repository = new SqlSugarInstallmentRepository(fixture.DbContext);
+        var service = new InstallmentService(repository, new FakeReservationService());
+        var recentGuid = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        var oldGuid = Guid.Parse("ffffffff-1111-2222-3333-444444444444");
+        var recentGuidText = recentGuid.ToString("D");
+        var oldGuidText = oldGuid.ToString("D");
+        var now = DateTimeOffset.Parse("2026-08-25T10:00:00Z");
+
+        await service.CreateAsync(CreateRequest() with { InstallmentGuid = recentGuid }, CancellationToken.None);
+        await service.CreateAsync(CreateRequest() with { InstallmentGuid = oldGuid }, CancellationToken.None);
+        await fixture.DbContext.PosmDb.Updateable<InstallmentOrderEntity>()
+            .SetColumns(entity => entity.UpdatedAt == now.UtcDateTime)
+            .Where(entity => entity.InstallmentGuid == recentGuidText)
+            .ExecuteCommandAsync();
+        await fixture.DbContext.PosmDb.Updateable<InstallmentOrderEntity>()
+            .SetColumns(entity => entity.UpdatedAt == now.AddDays(-2).UtcDateTime)
+            .Where(entity => entity.InstallmentGuid == oldGuidText)
+            .ExecuteCommandAsync();
+        var persistedRecent = await fixture.DbContext.PosmDb.Queryable<InstallmentOrderEntity>()
+            .FirstAsync(entity => entity.InstallmentGuid == recentGuidText);
+        Assert.NotNull(persistedRecent);
+        Assert.Equal(now.UtcDateTime, persistedRecent!.UpdatedAt);
+
+        var response = await service.QueryAsync(
+            new InstallmentHistoryQueryRequest(
+                "S01",
+                UpdatedFrom: now.AddHours(-1),
+                UpdatedTo: now.AddHours(1),
+                OrderByUpdatedAt: true),
+            CancellationToken.None);
+
+        Assert.Equal(recentGuid, Assert.Single(response.Orders).InstallmentGuid);
+    }
+
     [Fact]
     public void History_query_request_defaults_skip_to_zero()
     {
@@ -518,6 +922,33 @@ public sealed class InstallmentServiceTests
         Assert.NotNull(historyService.LastQuery);
         Assert.Equal(0, historyService.LastQuery!.Skip);
         Assert.Equal(100, historyService.LastQuery.Take);
+    }
+
+    [Fact]
+    public async Task History_forwards_updated_range_and_sort_mode()
+    {
+        var historyService = new CapturingInstallmentHistoryService();
+        var controller = new InstallmentsController(null!, historyService);
+        var updatedFrom = DateTimeOffset.Parse("2026-08-25T00:00:00Z");
+        var updatedTo = DateTimeOffset.Parse("2026-08-25T23:59:59Z");
+
+        await controller.History(
+            "S01",
+            "POS-02",
+            null,
+            null,
+            "ITEM-TARGET",
+            null,
+            100,
+            CancellationToken.None,
+            updatedFrom: updatedFrom,
+            updatedTo: updatedTo,
+            orderByUpdatedAt: true);
+
+        Assert.NotNull(historyService.LastQuery);
+        Assert.Equal(updatedFrom, historyService.LastQuery!.UpdatedFrom);
+        Assert.Equal(updatedTo, historyService.LastQuery.UpdatedTo);
+        Assert.True(historyService.LastQuery.OrderByUpdatedAt);
     }
 
     [Fact]
@@ -1463,6 +1894,9 @@ public sealed class InstallmentServiceTests
                 InstallmentOrderEntity,
                 InstallmentOrderLineEntity,
                 InstallmentPaymentEntity>();
+            client.CodeFirst.InitTables<
+                InstallmentRepaymentClaimEntity,
+                InstallmentCancelClaimEntity>();
             DbContext = CreateDbContext(client);
         }
 

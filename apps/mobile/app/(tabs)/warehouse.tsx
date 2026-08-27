@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Image, Keyboard, Platform, Pressable, ScrollView, StyleSheet, TextInput as NativeTextInput, useWindowDimensions, View } from "react-native";
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useRouter } from "expo-router";
 import { ActivityIndicator, Button, Card, IconButton, Menu, Modal, Portal, Searchbar, SegmentedButtons, Snackbar, Switch, Text, TextInput } from "react-native-paper";
@@ -311,6 +311,7 @@ function LocationPartMenu({
 }
 
 export default function WarehouseScreen() {
+  const isFocused = useIsFocused();
   const router = useRouter();
   const { t, language } = useAppTranslation(["warehouse", "common"]);
   const { width: windowWidth } = useWindowDimensions();
@@ -1114,6 +1115,7 @@ export default function WarehouseScreen() {
   }, [handleLookupLocationsByKeyword]);
 
   const hidScanner = useHidBarcodeScanner({
+    enabled: isFocused,
     onScan: async (barcode) => {
       if (unbindLocationConfirmVisible || pendingProductLocationUnbind) {
         return;

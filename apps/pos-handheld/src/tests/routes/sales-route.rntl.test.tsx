@@ -59,6 +59,11 @@ const mockReconcileSalesToolbarOrder =
 
 const DEFAULT_TOOLBAR_ORDER = ["held-orders", "hold", "language", "lock"];
 
+// Settings 设备换店也引用独立相机入口；本路由测试只验证销售扫码，避免加载原生模块。
+jest.mock("@/features/scanner-camera/camera-scanner-modal", () => ({
+  CameraScannerModal: () => null,
+}));
+
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
   const { Text } =

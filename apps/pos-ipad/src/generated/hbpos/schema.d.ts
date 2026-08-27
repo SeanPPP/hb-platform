@@ -622,6 +622,210 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/devices/activation-code/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["DeviceActivationCodePreviewRequest"];
+                    "text/json": components["schemas"]["DeviceActivationCodePreviewRequest"];
+                    "application/*+json": components["schemas"]["DeviceActivationCodePreviewRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["DeviceActivationCodePreviewResponseApiResult"];
+                        "application/json": components["schemas"]["DeviceActivationCodePreviewResponseApiResult"];
+                        "text/json": components["schemas"]["DeviceActivationCodePreviewResponseApiResult"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Too Many Requests */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/activation-code/redeem": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: {
+                    "X-HBPOS-Activation-Recovery-Only"?: boolean;
+                };
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["DeviceActivationCodeRedeemRequest"];
+                    "text/json": components["schemas"]["DeviceActivationCodeRedeemRequest"];
+                    "application/*+json": components["schemas"]["DeviceActivationCodeRedeemRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["DeviceActivationCodeRedeemResponseApiResult"];
+                        "application/json": components["schemas"]["DeviceActivationCodeRedeemResponseApiResult"];
+                        "text/json": components["schemas"]["DeviceActivationCodeRedeemResponseApiResult"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Too Many Requests */
+                429: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/activation-code/rebind": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["DeviceActivationCodeRebindRequest"];
+                    "text/json": components["schemas"]["DeviceActivationCodeRebindRequest"];
+                    "application/*+json": components["schemas"]["DeviceActivationCodeRebindRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["DeviceActivationCodeRedeemResponseApiResult"];
+                        "application/json": components["schemas"]["DeviceActivationCodeRedeemResponseApiResult"];
+                        "text/json": components["schemas"]["DeviceActivationCodeRedeemResponseApiResult"];
+                    };
+                };
+                /** @description Bad Request */
+                400: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["ProblemDetails"];
+                        "application/json": components["schemas"]["ProblemDetails"];
+                        "text/json": components["schemas"]["ProblemDetails"];
+                    };
+                };
+                /** @description Unauthorized */
+                401: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["ObjectApiResult"];
+                        "application/json": components["schemas"]["ObjectApiResult"];
+                        "text/json": components["schemas"]["ObjectApiResult"];
+                    };
+                };
+                /** @description Forbidden */
+                403: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/devices/register": {
         parameters: {
             query?: never;
@@ -1629,6 +1833,9 @@ export interface paths {
                     status?: components["schemas"]["InstallmentStatus"];
                     take?: number;
                     skip?: number;
+                    updatedFrom?: string;
+                    updatedTo?: string;
+                    orderByUpdatedAt?: boolean;
                 };
                 header?: never;
                 path?: never;
@@ -4181,6 +4388,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/square/refunds/{refundId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: {
+                    environment?: string;
+                };
+                header?: never;
+                path: {
+                    refundId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/plain": components["schemas"]["SquareRefundResponseApiResult"];
+                        "application/json": components["schemas"]["SquareRefundResponseApiResult"];
+                        "text/json": components["schemas"]["SquareRefundResponseApiResult"];
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/square/webhooks": {
         parameters: {
             query?: never;
@@ -4798,6 +5046,53 @@ export interface components {
             /** Format: date-time */
             deletedAt?: string | null;
         };
+        DeviceActivationCodePreviewRequest: {
+            activationCode: string;
+            deviceSystem: string;
+        };
+        DeviceActivationCodePreviewResponse: {
+            isAllowed?: boolean;
+            reasonCode?: string | null;
+            storeCode?: string | null;
+            storeName?: string | null;
+            deviceSystem?: string | null;
+            /** Format: date-time */
+            expiresAtUtc?: string | null;
+            message?: string | null;
+        };
+        DeviceActivationCodePreviewResponseApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["DeviceActivationCodePreviewResponse"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
+        DeviceActivationCodeRebindRequest: {
+            activationCode: string;
+            terminalName?: string | null;
+        };
+        DeviceActivationCodeRedeemRequest: {
+            activationCode: string;
+            hardwareId: string;
+            terminalName?: string | null;
+            deviceSystem: string;
+        };
+        DeviceActivationCodeRedeemResponse: {
+            deviceCode?: string | null;
+            storeCode?: string | null;
+            storeName?: string | null;
+            /** Format: int32 */
+            deviceStatus?: number;
+            isAllowed?: boolean;
+            message?: string | null;
+            authorizationCode?: string | null;
+            reasonCode?: string | null;
+        };
+        DeviceActivationCodeRedeemResponseApiResult: {
+            success?: boolean;
+            data?: components["schemas"]["DeviceActivationCodeRedeemResponse"];
+            errorCode?: string | null;
+            message?: string | null;
+        };
         DeviceRegisterRequest: {
             storeCode?: string | null;
             hardwareId?: string | null;
@@ -4814,6 +5109,7 @@ export interface components {
             isAllowed?: boolean;
             message?: string | null;
             authorizationCode?: string | null;
+            reasonCode?: string | null;
         };
         DeviceRegisterResponseApiResult: {
             success?: boolean;
@@ -5167,6 +5463,8 @@ export interface components {
             pickupInfo?: components["schemas"]["InstallmentPickupInfoDto"];
             cancellationInfo?: components["schemas"]["InstallmentCancellationInfoDto"];
             note?: string | null;
+            /** Format: date-time */
+            updatedAt?: string | null;
         };
         InstallmentDetailsDtoApiResult: {
             success?: boolean;
@@ -5372,6 +5670,7 @@ export interface components {
             status?: components["schemas"]["InstallmentStatus"];
             /** Format: date-time */
             updatedAt?: string;
+            cancellationKind?: components["schemas"]["InstallmentCancellationKind"];
         };
         InstallmentVoidRequest: {
             /** Format: uuid */
@@ -6118,6 +6417,16 @@ export interface components {
          * @enum {integer}
          */
         PriceSourceKind: 0 | 1 | 2 | 3 | 4;
+        ProblemDetails: {
+            type?: string | null;
+            title?: string | null;
+            /** Format: int32 */
+            status?: number | null;
+            detail?: string | null;
+            instance?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
         PromotionRuleDto: {
             id?: string | null;
             name?: string | null;

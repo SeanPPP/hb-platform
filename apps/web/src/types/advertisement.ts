@@ -2,6 +2,7 @@ export type AdvertisementMediaType = 'Image' | 'Video'
 
 export interface AdvertisementStoreItemDto {
   storeCode: string
+  storeName?: string
 }
 
 export interface AdvertisementListDto {

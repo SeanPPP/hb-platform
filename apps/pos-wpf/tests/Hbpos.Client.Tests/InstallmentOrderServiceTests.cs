@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
@@ -9,6 +10,330 @@ namespace Hbpos.Client.Tests;
 
 public sealed class InstallmentOrderServiceTests
 {
+    [Fact]
+    [Trait("Category", "Performance")]
+    public async Task SearchAsync_matches_item_number_and_barcode_within_two_seconds_for_bounded_history()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalInstallmentOrderRepository(store);
+            var service = new InstallmentOrderService(repository, new StubInstallmentApiClient());
+
+            await schema.InitializeAsync();
+            for (var index = 0; index < 200; index++)
+            {
+                await repository.UpsertAsync(CreateSearchableOrder(index, isTarget: index == 199));
+            }
+
+            foreach (var keyword in new[] { "ITEM-TARGET", "930000000001" })
+            {
+                var stopwatch = Stopwatch.StartNew();
+
+                var result = await service.SearchAsync(CreateOnlineSession(), keyword);
+
+                stopwatch.Stop();
+                Assert.Equal("IO-SEARCH-0199", Assert.Single(result).OrderNumber);
+                Assert.True(
+                    stopwatch.Elapsed < TimeSpan.FromSeconds(2),
+                    $"分期按 {keyword} 查询耗时 {stopwatch.Elapsed.TotalMilliseconds:F1} ms，超过 2 秒预算。");
+            }
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task SearchAsync_matches_each_product_identifier_exactly_and_case_insensitively()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalInstallmentOrderRepository(store);
+            var service = new InstallmentOrderService(repository, new StubInstallmentApiClient());
+            var targetGuid = Guid.Parse("00000000-0000-0000-0001-000000000101");
+            var decoyGuid = Guid.Parse("00000000-0000-0000-0001-000000000102");
+
+            LocalInstallmentOrder CreateOrder(Guid guid, string productCode, string itemNumber, string lookupCode) =>
+                CreateSearchableOrder(101, isTarget: false) with
+                {
+                    OrderGuid = guid,
+                    InstallmentGuid = guid,
+                    InstallmentNumber = guid == targetGuid ? "IO-IDENTIFIER-TARGET" : "IO-IDENTIFIER-DECOY",
+                    Lines =
+                    [
+                        new InstallmentLineDto(
+                            Guid.NewGuid(),
+                            productCode,
+                            null,
+                            "Tea",
+                            lookupCode,
+                            1m,
+                            120m,
+                            0m,
+                            120m,
+                            itemNumber)
+                    ]
+                };
+
+            await schema.InitializeAsync();
+            await repository.UpsertAsync(CreateOrder(targetGuid, "SKU-EXACT", "ITEM-EXACT", "BAR-EXACT"));
+            await repository.UpsertAsync(CreateOrder(decoyGuid, "SKU-EXACT-SUFFIX", "ITEM-EXACT-SUFFIX", "BAR-EXACT-SUFFIX"));
+
+            foreach (var keyword in new[] { "sku-exact", "item-exact", "bar-exact" })
+            {
+                var result = await service.SearchAsync(CreateOfflineSession(), keyword);
+
+                Assert.Equal(targetGuid, Assert.Single(result).OrderId);
+            }
+
+            Assert.Empty(await service.SearchAsync(CreateOfflineSession(), "exact"));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task GetOrderDetailsAsync_online_reads_authoritative_detail_and_refreshes_local_cache()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalInstallmentOrderRepository(store);
+            var authoritativeUpdatedAt = DateTimeOffset.Parse("2026-08-20T04:30:00Z");
+            var authoritative = CreateActiveDetails() with
+            {
+                PaidAmount = 80m,
+                BalanceAmount = 40m,
+                UpdatedAt = authoritativeUpdatedAt,
+                Lines =
+                [
+                    new InstallmentLineDto(
+                        Guid.NewGuid(),
+                        "SKU-AUTHORITATIVE",
+                        null,
+                        "Authoritative Item",
+                        "BAR-AUTHORITATIVE",
+                        1m,
+                        120m,
+                        0m,
+                        120m,
+                        "ITEM-AUTHORITATIVE")
+                ]
+            };
+            var apiClient = new StubInstallmentApiClient { DetailsResponse = authoritative };
+            var service = new InstallmentOrderService(repository, apiClient);
+
+            await schema.InitializeAsync();
+            await repository.UpsertAsync(CreateLocalOrderWithPayments([]));
+
+            var result = await service.GetOrderDetailsAsync(CreateOnlineSession(), authoritative.InstallmentGuid);
+            var cached = await repository.GetAsync(authoritative.InstallmentGuid);
+
+            Assert.NotNull(result);
+            Assert.Equal(80m, result!.PaidAmount);
+            Assert.Contains(result.Lines, line => line.DisplayName == "Authoritative Item");
+            Assert.Equal(80m, cached?.PaidAmount);
+            Assert.Equal(authoritativeUpdatedAt, result.UpdatedAt);
+            Assert.Equal(authoritativeUpdatedAt, cached?.UpdatedAt);
+            Assert.Equal(1, apiClient.DetailsCallCount);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task GetOrderDetailsAsync_online_does_not_fall_back_to_stale_snapshot_when_authority_fails()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalInstallmentOrderRepository(store);
+            var apiClient = new StubInstallmentApiClient
+            {
+                DetailsException = new InvalidOperationException("authoritative detail failed")
+            };
+            var service = new InstallmentOrderService(repository, apiClient);
+
+            await schema.InitializeAsync();
+            var stale = CreateLocalOrderWithPayments([]);
+            await repository.UpsertAsync(stale);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                service.GetOrderDetailsAsync(CreateOnlineSession(), stale.InstallmentGuid));
+
+            var cached = await repository.GetAsync(stale.InstallmentGuid);
+            Assert.Equal(stale.PaidAmount, cached?.PaidAmount);
+            Assert.Equal(1, apiClient.DetailsCallCount);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task GetOrderDetailsAsync_offline_uses_complete_local_snapshot_without_api_call()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalInstallmentOrderRepository(store);
+            var apiClient = new StubInstallmentApiClient { DetailsResponse = CreateActiveDetails() };
+            var service = new InstallmentOrderService(repository, apiClient);
+
+            await schema.InitializeAsync();
+            var local = CreateLocalOrderWithPayments([]);
+            await repository.UpsertAsync(local);
+
+            var result = await service.GetOrderDetailsAsync(CreateOfflineSession(), local.InstallmentGuid);
+
+            Assert.NotNull(result);
+            Assert.Equal(local.InstallmentGuid, result!.InstallmentGuid);
+            Assert.Equal(local.PaidAmount, result.PaidAmount);
+            Assert.Equal(local.Lines, result.Lines);
+            Assert.Equal(0, apiClient.DetailsCallCount);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task QueryHistoryAsync_uses_authoritative_api_when_online_and_forwards_history_filters()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalInstallmentOrderRepository(store);
+            var updatedAt = DateTimeOffset.Parse("2026-08-25T05:30:00Z");
+            var apiClient = new StubInstallmentApiClient
+            {
+                HistoryResponse = new InstallmentHistoryQueryResponse(
+                [
+                    new InstallmentSummaryDto(
+                        Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+                        "IO-REMOTE-0001",
+                        "S001",
+                        "POS-02",
+                        "Alice",
+                        "Customer",
+                        "0400111222",
+                        DateTimeOffset.Parse("2026-08-20T00:00:00Z"),
+                        120m,
+                        20m,
+                        40m,
+                        80m,
+                        InstallmentStatus.Active,
+                        updatedAt),
+                    new InstallmentSummaryDto(
+                        Guid.Parse("bbbbbbbb-cccc-dddd-eeee-ffffffffffff"),
+                        "IO-REMOTE-VOID",
+                        "S001",
+                        "POS-02",
+                        "Alice",
+                        "Customer",
+                        "0400111222",
+                        DateTimeOffset.Parse("2026-08-19T00:00:00Z"),
+                        120m,
+                        20m,
+                        20m,
+                        100m,
+                        InstallmentStatus.Cancelled,
+                        updatedAt.AddMinutes(-1),
+                        InstallmentCancellationKind.VoidCancel)
+                ])
+            };
+            var service = new InstallmentOrderService(repository, apiClient);
+            var updatedFrom = DateTimeOffset.Parse("2026-08-25T00:00:00Z");
+            var updatedTo = DateTimeOffset.Parse("2026-08-25T23:59:59Z");
+
+            await schema.InitializeAsync();
+            var result = await service.QueryHistoryAsync(
+                CreateOnlineSession(),
+                new InstallmentHistorySearchQuery(
+                    UpdatedFrom: updatedFrom,
+                    UpdatedTo: updatedTo,
+                    DeviceCode: "POS-02",
+                    Keyword: "ITEM-TARGET",
+                    Take: 100));
+
+            var order = Assert.Single(result, candidate => candidate.OrderNumber == "IO-REMOTE-0001");
+            Assert.Equal("IO-REMOTE-0001", order.OrderNumber);
+            Assert.Equal(updatedAt, order.UpdatedAt);
+            Assert.True(order.CanAddRepayment);
+            Assert.Equal("待补款", order.Status);
+            Assert.Equal(
+                "已作废",
+                Assert.Single(result, candidate => candidate.OrderNumber == "IO-REMOTE-VOID").Status);
+            Assert.NotNull(apiClient.LastHistoryRequest);
+            Assert.Equal("S001", apiClient.LastHistoryRequest!.StoreCode);
+            Assert.Equal("POS-02", apiClient.LastHistoryRequest.DeviceCode);
+            Assert.Equal(updatedFrom, apiClient.LastHistoryRequest.UpdatedFrom);
+            Assert.Equal(updatedTo, apiClient.LastHistoryRequest.UpdatedTo);
+            Assert.Equal("ITEM-TARGET", apiClient.LastHistoryRequest.Keyword);
+            Assert.True(apiClient.LastHistoryRequest.OrderByUpdatedAt);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task QueryHistoryAsync_uses_local_snapshot_search_when_offline()
+    {
+        var databasePath = CreateTempDatabasePath();
+
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            var schema = new LocalSchemaService(store);
+            var repository = new LocalInstallmentOrderRepository(store);
+            var apiClient = new StubInstallmentApiClient();
+            var service = new InstallmentOrderService(repository, apiClient);
+
+            await schema.InitializeAsync();
+            await repository.UpsertAsync(CreateSearchableOrder(1, isTarget: true));
+
+            var result = await service.QueryHistoryAsync(
+                CreateOfflineSession(),
+                new InstallmentHistorySearchQuery(Keyword: "930000000001"));
+
+            Assert.Equal("IO-SEARCH-0001", Assert.Single(result).OrderNumber);
+            Assert.Equal(0, apiClient.HistoryCallCount);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     [Fact]
     public async Task CreateAsync_returns_online_required_when_session_is_offline()
     {
@@ -634,6 +959,45 @@ public sealed class InstallmentOrderServiceTests
         }
     }
 
+    private static LocalInstallmentOrder CreateSearchableOrder(int index, bool isTarget)
+    {
+        var installmentGuid = Guid.Parse($"00000000-0000-0000-0001-{index:D12}");
+        var createdAt = DateTimeOffset.Parse("2026-08-25T10:00:00+10:00").AddSeconds(-index);
+        return new LocalInstallmentOrder(
+            installmentGuid,
+            installmentGuid,
+            $"IO-SEARCH-{index:D4}",
+            "S001",
+            "POS-01",
+            "C001",
+            "Alice",
+            $"Customer {index}",
+            $"0400{index:D6}",
+            createdAt,
+            createdAt,
+            120m,
+            20m,
+            30m,
+            30m,
+            90m,
+            InstallmentStatus.Active,
+            [
+                new InstallmentLineDto(
+                    Guid.NewGuid(),
+                    $"SKU-{index:D4}",
+                    null,
+                    "Tea",
+                    isTarget ? "930000000001" : $"9301{index:D8}",
+                    1m,
+                    120m,
+                    0m,
+                    120m,
+                    isTarget ? "ITEM-TARGET" : $"ITEM-{index:D4}")
+            ],
+            [],
+            null);
+    }
+
     private static PosSessionState CreateOfflineSession()
     {
         return new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", false, 0);
@@ -931,6 +1295,18 @@ public sealed class InstallmentOrderServiceTests
 
     private sealed class StubInstallmentApiClient : IInstallmentApiClient
     {
+        public InstallmentHistoryQueryResponse? HistoryResponse { get; set; }
+
+        public InstallmentHistoryQueryRequest? LastHistoryRequest { get; private set; }
+
+        public int HistoryCallCount { get; private set; }
+
+        public InstallmentDetailsDto? DetailsResponse { get; set; }
+
+        public Exception? DetailsException { get; set; }
+
+        public int DetailsCallCount { get; private set; }
+
         public InstallmentCreateResponse? CreateResponse { get; set; }
 
         public InstallmentAppendPaymentResponse? AppendPaymentResponse { get; set; }
@@ -965,12 +1341,33 @@ public sealed class InstallmentOrderServiceTests
 
         public int VoidCallCount { get; private set; }
 
+        public Task<InstallmentHistoryQueryResponse> QueryHistoryAsync(
+            InstallmentHistoryQueryRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            HistoryCallCount++;
+            LastHistoryRequest = request;
+            return Task.FromResult(HistoryResponse ?? throw new InvalidOperationException("HistoryResponse was not configured."));
+        }
+
         public Task<InstallmentCreateResponse> CreateAsync(InstallmentCreateRequest request, CancellationToken cancellationToken = default)
         {
             OnCreate?.Invoke(request);
             CreateCallCount++;
             LastCreateRequest = request;
             return Task.FromResult(CreateResponse ?? throw new InvalidOperationException("CreateResponse was not configured."));
+        }
+
+        public Task<InstallmentDetailsDto> GetDetailsAsync(Guid installmentGuid, CancellationToken cancellationToken = default)
+        {
+            DetailsCallCount++;
+            if (DetailsException is not null)
+            {
+                return Task.FromException<InstallmentDetailsDto>(DetailsException);
+            }
+
+            return Task.FromResult(DetailsResponse ?? throw new InvalidOperationException("DetailsResponse was not configured."));
         }
 
         public Task<InstallmentAppendPaymentResponse> AppendPaymentAsync(InstallmentAppendPaymentRequest request, CancellationToken cancellationToken = default)

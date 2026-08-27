@@ -21,7 +21,8 @@
         </Grid.ColumnDefinitions>
 
         <Grid Grid.Column="0" Background="{StaticResource PosSurfaceAltBrush}">
-            <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <ScrollViewer Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
+                          VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="48,40,48,24">
                     <StackPanel HorizontalAlignment="Center">
                         <Border Width="100" Height="100" Background="{StaticResource PosAccentBrush}" CornerRadius="50">
@@ -175,7 +176,8 @@
             </Grid.RowDefinitions>
 
             <Border Grid.Row="0" Margin="16,16,16,8" Padding="20" Background="White" CornerRadius="12">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <ScrollViewer Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
+                              VerticalScrollBarVisibility="Auto">
                     <StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
                             <materialDesign:PackIcon Kind="Receipt" Width="18" Height="18" Foreground="{StaticResource PosPrimaryBrush}" Margin="0,0,6,0" />

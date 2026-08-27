@@ -119,6 +119,69 @@ public sealed class SqlSugarInstallmentSchemaInitializer(
                 ALTER TABLE [dbo].[InstallmentOrder] ADD [CancellationExecutingDeviceCode] NVARCHAR(50) NULL;
             IF COL_LENGTH(N'[dbo].[InstallmentOrder]', N'CancellationCashierId') IS NULL
                 ALTER TABLE [dbo].[InstallmentOrder] ADD [CancellationCashierId] NVARCHAR(50) NULL;
+
+            IF NOT EXISTS (
+                SELECT 1
+                FROM sys.indexes
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[InstallmentOrder]', N'U')
+                  AND [name] = N'IX_InstallmentOrder_HistoryScope')
+            BEGIN
+                CREATE INDEX [IX_InstallmentOrder_HistoryScope]
+                    ON [dbo].[InstallmentOrder] ([StoreCode], [CreatedAt] DESC, [InstallmentGuid] DESC);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1
+                FROM sys.indexes
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[InstallmentOrder]', N'U')
+                  AND [name] = N'IX_InstallmentOrder_HistoryUpdatedScope')
+            BEGIN
+                CREATE INDEX [IX_InstallmentOrder_HistoryUpdatedScope]
+                    ON [dbo].[InstallmentOrder] ([StoreCode], [UpdatedAt] DESC, [InstallmentGuid] DESC);
+            END;
+        END;
+
+        IF OBJECT_ID(N'[dbo].[InstallmentOrderLine]', N'U') IS NOT NULL
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM sys.indexes
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[InstallmentOrderLine]', N'U')
+                  AND [name] = N'IX_InstallmentOrderLine_HistoryLookup')
+            BEGIN
+                CREATE INDEX [IX_InstallmentOrderLine_HistoryLookup]
+                    ON [dbo].[InstallmentOrderLine] ([InstallmentGuid], [ItemNumber], [LookupCode]);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1
+                FROM sys.indexes
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[InstallmentOrderLine]', N'U')
+                  AND [name] = N'IX_InstallmentOrderLine_ItemNumberLookup')
+            BEGIN
+                CREATE INDEX [IX_InstallmentOrderLine_ItemNumberLookup]
+                    ON [dbo].[InstallmentOrderLine] ([ItemNumber], [InstallmentGuid]);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1
+                FROM sys.indexes
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[InstallmentOrderLine]', N'U')
+                  AND [name] = N'IX_InstallmentOrderLine_BarcodeLookup')
+            BEGIN
+                CREATE INDEX [IX_InstallmentOrderLine_BarcodeLookup]
+                    ON [dbo].[InstallmentOrderLine] ([LookupCode], [InstallmentGuid]);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1
+                FROM sys.indexes
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[InstallmentOrderLine]', N'U')
+                  AND [name] = N'IX_InstallmentOrderLine_ProductCodeLookup')
+            BEGIN
+                CREATE INDEX [IX_InstallmentOrderLine_ProductCodeLookup]
+                    ON [dbo].[InstallmentOrderLine] ([ProductCode], [InstallmentGuid]);
+            END;
         END;
 
         IF OBJECT_ID(N'[dbo].[InstallmentPayment]', N'U') IS NOT NULL

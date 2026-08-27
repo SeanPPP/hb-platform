@@ -3,6 +3,7 @@ import { StatusBar } from "expo-status-bar";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  Alert,
   Image,
   StyleSheet,
   Text,
@@ -30,17 +31,17 @@ type ReadinessCardProps = {
   statusText?: string;
 };
 
-function ReadinessCard({
-  icon,
-  label,
-  ready,
-  statusText,
-}: ReadinessCardProps) {
+function ReadinessCard({ icon, label, ready, statusText }: ReadinessCardProps) {
   const { t } = useTranslation();
 
   return (
     <View style={styles.card}>
-      <View style={[styles.iconFrame, ready ? styles.iconReady : styles.iconPending]}>
+      <View
+        style={[
+          styles.iconFrame,
+          ready ? styles.iconReady : styles.iconPending,
+        ]}
+      >
         <MaterialCommunityIcons
           color={ready ? posColors.green : posColors.blue}
           name={icon}
@@ -49,8 +50,14 @@ function ReadinessCard({
       </View>
       <View style={styles.cardCopy}>
         <Text style={styles.cardLabel}>{label}</Text>
-        <Text style={[styles.cardState, ready ? styles.stateReady : styles.statePending]}>
-          {statusText ?? (ready ? t("bootstrap.ready") : t("bootstrap.pending"))}
+        <Text
+          style={[
+            styles.cardState,
+            ready ? styles.stateReady : styles.statePending,
+          ]}
+        >
+          {statusText ??
+            (ready ? t("bootstrap.ready") : t("bootstrap.pending"))}
         </Text>
       </View>
     </View>
@@ -63,7 +70,16 @@ export function BootstrapScreen() {
   const { retry, state: runtime } = usePosRuntime();
   const [serverDiagnostics, setServerDiagnostics] =
     useState<BootstrapServerDiagnostics | null>(null);
+  const [abandoningPendingActivation, setAbandoningPendingActivation] =
+    useState(false);
+  const [retryingStartup, setRetryingStartup] = useState(false);
+  const [pendingActivationAbandoned, setPendingActivationAbandoned] =
+    useState(false);
+  const [pendingActivationError, setPendingActivationError] = useState<
+    string | null
+  >(null);
   const serverProbe = useRef<AbortController | null>(null);
+  const startupActionInFlight = useRef(false);
   const display = usePosShellStore((state) => state.display);
   const compact = width < 900;
   const backendReady = runtime.backend === "reachable";
@@ -71,6 +87,66 @@ export function BootstrapScreen() {
   const deviceReady =
     runtime.device === "authorized-local" ||
     runtime.device === "authorized-online";
+  const canAbandonPendingActivation =
+    runtime.phase === "failed" &&
+    serverDiagnostics?.canAbandonPendingDeviceActivation === true &&
+    !pendingActivationAbandoned;
+  const startupActionBusy = abandoningPendingActivation || retryingStartup;
+
+  const retryStartup = async () => {
+    if (startupActionInFlight.current) return;
+    startupActionInFlight.current = true;
+    setRetryingStartup(true);
+    try {
+      await retry();
+    } catch {
+      // runtime controller 已保存新的失败原因，启动页继续显示该状态。
+    } finally {
+      startupActionInFlight.current = false;
+      setRetryingStartup(false);
+    }
+  };
+
+  const confirmAbandonPendingActivation = () => {
+    if (startupActionInFlight.current) return;
+    Alert.alert(
+      t("bootstrap.abandonPendingTitle"),
+      t("bootstrap.abandonPendingMessage"),
+      [
+        {
+          style: "cancel",
+          text: t("bootstrap.abandonPendingCancel"),
+        },
+        {
+          onPress: () => {
+            void (async () => {
+              if (
+                startupActionInFlight.current ||
+                !serverDiagnostics?.canAbandonPendingDeviceActivation
+              ) {
+                return;
+              }
+              startupActionInFlight.current = true;
+              setAbandoningPendingActivation(true);
+              setPendingActivationError(null);
+              try {
+                await serverDiagnostics.abandonPendingDeviceActivation();
+                setPendingActivationAbandoned(true);
+                await retry().catch(() => undefined);
+              } catch {
+                setPendingActivationError(t("bootstrap.abandonPendingFailed"));
+              } finally {
+                startupActionInFlight.current = false;
+                setAbandoningPendingActivation(false);
+              }
+            })();
+          },
+          style: "destructive",
+          text: t("bootstrap.abandonPendingConfirm"),
+        },
+      ],
+    );
+  };
 
   useEffect(() => {
     let active = true;
@@ -164,22 +240,48 @@ export function BootstrapScreen() {
           <View style={styles.footerDot} />
           <View style={styles.footerCopy}>
             <Text style={styles.footerText}>
-              {runtime.error ?? t("bootstrap.footer")}
+              {pendingActivationError ?? runtime.error ?? t("bootstrap.footer")}
             </Text>
             {runtime.phase === "failed" ? (
-              <PosPressable
-                accessibilityRole="button"
-                onPress={() => {
-                  void retry().catch(() => undefined);
-                }}
-                sound="tap"
-                style={({ pressed }) => [
-                  styles.retryButton,
-                  pressed && styles.retryButtonPressed,
-                ]}
-              >
-                <Text style={styles.retryLabel}>{t("bootstrap.retry")}</Text>
-              </PosPressable>
+              <View style={styles.footerActions}>
+                {canAbandonPendingActivation ? (
+                  <PosPressable
+                    accessibilityRole="button"
+                    accessibilityState={{
+                      disabled: startupActionBusy,
+                    }}
+                    disabled={startupActionBusy}
+                    onPress={confirmAbandonPendingActivation}
+                    sound="tap"
+                    style={({ pressed }) => [
+                      styles.abandonPendingButton,
+                      pressed && styles.retryButtonPressed,
+                    ]}
+                    testID="bootstrap-abandon-pending-activation"
+                  >
+                    <Text style={styles.abandonPendingLabel}>
+                      {abandoningPendingActivation
+                        ? t("bootstrap.abandoningPending")
+                        : t("bootstrap.abandonPending")}
+                    </Text>
+                  </PosPressable>
+                ) : null}
+                <PosPressable
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: startupActionBusy }}
+                  disabled={startupActionBusy}
+                  onPress={() => {
+                    void retryStartup();
+                  }}
+                  sound="tap"
+                  style={({ pressed }) => [
+                    styles.retryButton,
+                    pressed && styles.retryButtonPressed,
+                  ]}
+                >
+                  <Text style={styles.retryLabel}>{t("bootstrap.retry")}</Text>
+                </PosPressable>
+              </View>
             ) : null}
           </View>
         </View>
@@ -314,6 +416,7 @@ const styles = StyleSheet.create({
   footerCopy: {
     flex: 1,
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     justifyContent: "space-between",
     gap: 16,
@@ -325,10 +428,32 @@ const styles = StyleSheet.create({
     backgroundColor: posColors.orange,
   },
   footerText: {
+    flex: 1,
+    minWidth: 240,
     color: posColors.mutedInk,
     fontSize: 12,
     fontWeight: "600",
     letterSpacing: 0.4,
+  },
+  footerActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+    gap: 10,
+  },
+  abandonPendingButton: {
+    minHeight: 40,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 16,
+    borderWidth: 1,
+    borderColor: posColors.red,
+    backgroundColor: posColors.surface,
+  },
+  abandonPendingLabel: {
+    color: posColors.red,
+    fontSize: 13,
+    fontWeight: "800",
   },
   retryButton: {
     minHeight: 40,

@@ -44,6 +44,10 @@ jest.mock("react-i18next", () => ({
   }),
 }));
 
+jest.mock("@/features/scanner-camera/camera-scanner-modal", () => ({
+  CameraScannerModal: () => null,
+}));
+
 jest.mock("@/ui/feedback/pos-sound-context", () => ({ usePosSound: jest.fn() }));
 
 const mockUsePosSound = jest.mocked(usePosSound);
@@ -52,6 +56,7 @@ const setButtonSoundEnabled = jest.fn();
 const setSpecialNodeSoundEnabled = jest.fn();
 
 const presenters: SettingsPresenter[] = [];
+const DEVICE_ACTIVATION_CODE = `HBDEV1-${"A".repeat(26)}-${"B".repeat(26)}`;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -466,9 +471,10 @@ describe("SettingsScreen", () => {
     await fireEvent.press(screen.getByTestId("settings-nav-device"));
     await screen.findByTestId("settings-pane-content-device");
     expect(
-      screen.getByTestId("settings-reregister-request").props
+      screen.getByTestId("settings-reregister-preview").props
         .accessibilityState.disabled,
     ).toBe(true);
+    expect(screen.queryByTestId("settings-reregister-request")).toBeNull();
 
     await fireEvent.press(screen.getByTestId("settings-back"));
     expect(onBack).toHaveBeenCalledTimes(1);
@@ -1481,7 +1487,7 @@ describe("SettingsScreen", () => {
 
     await fireEvent.press(screen.getByTestId("settings-nav-device"));
     await screen.findByTestId("settings-pane-content-device");
-    expect(screen.getByLabelText("目标门店代码")).toBeTruthy();
+    expect(screen.getByLabelText("一次性设备开通码")).toBeTruthy();
     expect(screen.getByLabelText("终端名称")).toBeTruthy();
 
     await fireEvent.press(screen.getByTestId("settings-nav-hardware"));
@@ -1494,6 +1500,34 @@ describe("SettingsScreen", () => {
     expect(StyleSheet.flatten(scannerStatus.props.style).color).not.toBe(
       posColors.green,
     );
+  });
+
+  it("换店必须先预览当前到目标、平台和到期，再开放安全确认", async () => {
+    const port = new ScreenSettingsPort();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+
+    await fireEvent.press(screen.getByTestId("settings-nav-device"));
+    await fireEvent.changeText(
+      screen.getByTestId("settings-reregister-store"),
+      DEVICE_ACTIVATION_CODE,
+    );
+    expect(screen.queryByTestId("settings-reregister-request")).toBeNull();
+
+    await fireEvent.press(screen.getByTestId("settings-reregister-preview"));
+    await screen.findByTestId("settings-reregister-preview-card");
+    expect(screen.getByText("BNE-01 → Sunnybank · BNE-02")).toBeTruthy();
+    expect(screen.getByText("iPadOS")).toBeTruthy();
+    expect(screen.getByText("到期时间")).toBeTruthy();
+    expect(screen.getByText(/2026/)).toBeTruthy();
+
+    await fireEvent.press(screen.getByTestId("settings-reregister-request"));
+    await screen.findByTestId("settings-confirmation");
+    expect(screen.getByText(/BNE-01 → Sunnybank（BNE-02）/)).toBeTruthy();
+    expect(screen.getByText(/iPadOS.*2026/s)).toBeTruthy();
   });
 
   it("清除设备注册显示精确设备影响说明，员工条码不预填且只在最终确认时提交", async () => {
@@ -1835,6 +1869,16 @@ class ScreenSettingsPort implements SettingsControlPort {
   public async testApiAddress(apiBaseUrl: string): Promise<boolean> {
     this.apiAddressTests.push(apiBaseUrl);
     return true;
+  }
+
+  public async previewDeviceActivationCode() {
+    return {
+      deviceSystem: "iPadOS",
+      expiresAtUtc: "2026-08-28T00:00:00.000Z",
+      isAllowed: true,
+      storeCode: "BNE-02",
+      storeName: "Sunnybank",
+    };
   }
 
   public async executeDangerousAction(

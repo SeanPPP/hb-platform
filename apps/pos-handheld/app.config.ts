@@ -332,6 +332,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
         backgroundBle: false,
       },
     ],
+    "./plugins/with-android-platform-contract",
   ],
   experiments: {
     typedRoutes: true,

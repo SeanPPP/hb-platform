@@ -18,6 +18,7 @@ type WebPortalAccess = Pick<
   | 'canViewAppDownloads'
   | 'canViewPerformanceBaseline'
   | 'canViewOperationAudits'
+  | 'canViewDeviceRegistration'
   | 'hasPermission'
 >
 
@@ -101,6 +102,11 @@ const ADMIN_ENTRY_RULES: readonly AdminEntryRule[] = [
     defaultPath: '/system/app-downloads',
     targetPrefixes: ['/system/app-downloads', '/system/wpf-versions'],
     canAccess: (access) => access.canViewAppDownloads,
+  },
+  {
+    defaultPath: '/system/device-registration',
+    targetPrefixes: ['/system/device-registration'],
+    canAccess: (access) => access.canViewDeviceRegistration,
   },
   {
     defaultPath: '/pos-admin/operation-logs',

@@ -295,6 +295,11 @@ namespace BlazorApp.Shared.Constants
         {
             public const string View = "DeviceRegistration.View";
             public const string Manage = "DeviceRegistration.Manage";
+
+            public static class ActivationCodes
+            {
+                public const string Manage = "DeviceRegistration.ActivationCodes.Manage";
+            }
         }
 
         public static class LocalPurchase

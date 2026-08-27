@@ -1,13 +1,17 @@
 import type { ScanEvent, ScannerContext } from "../../contracts/scanner";
 
-export type ScannerCaptureContext = ScannerContext | "emergency-qr";
+export type ScannerCaptureContext =
+  | ScannerContext
+  | "emergency-qr"
+  | "device-activation";
 
 export type ScannerScanCategory =
   | "cashier-code"
   | "product-code"
   | "supervisor-code"
   | "dialog-code"
-  | "emergency-qr";
+  | "emergency-qr"
+  | "device-activation";
 
 export type ScannerCaptureStatus = "inactive" | "capturing" | "camera";
 

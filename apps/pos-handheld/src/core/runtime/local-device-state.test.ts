@@ -53,6 +53,16 @@ test("设备锁优先于凭据，合法待审批记录只进入 pending 而不�
   assert.equal(
     resolveLocalDeviceState({
       locked: false,
+      registrationResetPending: true,
+      installationId: "INSTALL-1",
+      credentials,
+      pending: null,
+    }),
+    "locked",
+  );
+  assert.equal(
+    resolveLocalDeviceState({
+      locked: false,
       installationId: "INSTALL-1",
       credentials: null,
       pending: { deviceCode: "POS-PENDING", storeCode: "S1" },

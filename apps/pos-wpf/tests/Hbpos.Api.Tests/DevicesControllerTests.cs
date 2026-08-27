@@ -9,6 +9,8 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using BlazorApp.Shared.Options;
 
 namespace Hbpos.Api.Tests;
 
@@ -73,6 +75,47 @@ public sealed class DevicesControllerTests
         Assert.Same(expected, apiResult.Data);
         Assert.Equal(request, service.LastRegisterRequest);
         Assert.Null(Assert.IsType<DeviceRegisterRequest>(service.LastRegisterRequest).ProvisioningCode);
+    }
+
+    [Fact]
+    public async Task Register_WhenWindowsLegacyDisabled_ReturnsActivationRequiredWithoutServiceWrite()
+    {
+        var service = new FakeDeviceService();
+        var controller = new DevicesController(
+            service,
+            Options.Create(new DeviceActivationOptions
+            {
+                LegacyRegistrationEnabled = new LegacyRegistrationOptions { Windows = false },
+            }));
+
+        var result = await controller.Register(
+            new DeviceRegisterRequest("S001", "HW-1", DeviceSystem: DeviceSystems.Windows),
+            CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(result.Result);
+        var response = Assert.IsType<ApiResult<DeviceRegisterResponse>>(ok.Value).Data!;
+        Assert.False(response.IsAllowed);
+        Assert.Equal(DeviceActivationReasonCodes.ActivationCodeRequired, response.ReasonCode);
+        Assert.Null(service.LastRegisterRequest);
+    }
+
+    [Fact]
+    public async Task AppReviewRegister_BypassesLegacyRegistrationFlag()
+    {
+        var expected = new DeviceRegisterResponse("POS-1", "S001", "Store", 1, true);
+        var service = new FakeDeviceService { RegisterResponse = expected };
+        var controller = new DevicesController(
+            service,
+            Options.Create(new DeviceActivationOptions
+            {
+                LegacyRegistrationEnabled = new LegacyRegistrationOptions { IpadOS = false },
+            }));
+        var request = new DeviceRegisterRequest(
+            "S001", "HW-1", "Review", DeviceSystems.IpadOs, "REVIEW-CODE-123456");
+
+        await controller.AppReviewRegister(request, CancellationToken.None);
+
+        Assert.Same(request, service.LastAppReviewRegisterRequest);
     }
 
     [Fact]

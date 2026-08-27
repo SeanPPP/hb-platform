@@ -48,6 +48,75 @@ public sealed class ReceiptReturnsWorkflowServiceTests
         Assert.Equal(10m, line.ReturnUnitAmount);
         Assert.Equal(0, remote.QueryCallCount);
         Assert.Equal(1, remote.ReturnContextCallCount);
+        Assert.True(remote.LastReturnContextCancellationToken.CanBeCanceled);
+    }
+
+    [Fact]
+    public void RemoteLookupTimeout_IsTwoSeconds()
+    {
+        Assert.Equal(TimeSpan.FromSeconds(2), ReceiptReturnsWorkflowService.RemoteLookupTimeout);
+    }
+
+    [Fact]
+    public async Task LookupOrderAsync_CancelsSlowRemoteAtDedicatedDeadline()
+    {
+        var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var remote = new FakeRemoteOrderHistoryService
+        {
+            ReturnContextAsync = async (_, cancellationToken) =>
+            {
+                using var registration = cancellationToken.Register(() => cancellationObserved.TrySetResult());
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+                return null;
+            }
+        };
+        var service = CreateService(remote);
+
+        var result = await service
+            .LookupOrderAsync(CreateOnlineSession(), Guid.NewGuid().ToString("D"))
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Null(result.Order);
+        Assert.Equal("Online order lookup timed out. Please retry.", result.StatusMessage);
+    }
+
+    [Fact]
+    public async Task LookupOrderAsync_HoldsUiPriorityUntilRemoteLookupCompletes()
+    {
+        var orderGuid = Guid.NewGuid();
+        var lineGuid = Guid.NewGuid();
+        var lookupStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseLookup = new TaskCompletionSource<OrderReturnContextDto?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var remote = new FakeRemoteOrderHistoryService
+        {
+            ReturnContextAsync = async (_, cancellationToken) =>
+            {
+                lookupStarted.TrySetResult();
+                return await releaseLookup.Task.WaitAsync(cancellationToken);
+            }
+        };
+        var uiPriority = new UiPriorityCoordinator(
+            TimeSpan.FromMilliseconds(1),
+            TimeSpan.FromMilliseconds(1));
+        var service = CreateService(remote, uiPriorityCoordinator: uiPriority);
+
+        var lookupTask = service.LookupOrderAsync(CreateOnlineSession(), orderGuid.ToString("D"));
+        await lookupStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.True(uiPriority.IsUiActive);
+        var waitForIdleTask = uiPriority.WaitForUiIdleAsync();
+        await Task.Delay(20);
+        Assert.False(waitForIdleTask.IsCompleted);
+
+        releaseLookup.SetResult(new OrderReturnContextDto(
+            CreateRemoteOrder(orderGuid, lineGuid, quantity: 1m, actualAmount: 10m),
+            []));
+        var result = await lookupTask.WaitAsync(TimeSpan.FromSeconds(1));
+        await waitForIdleTask.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.NotNull(result.Order);
+        Assert.False(uiPriority.IsUiActive);
     }
 
     [Fact]
@@ -295,7 +364,8 @@ public sealed class ReceiptReturnsWorkflowServiceTests
         IRemoteOrderHistoryService? remote = null,
         FakeLocalOrderRepository? localRepository = null,
         LocalSellableItemIndex? priceIndex = null,
-        ILocalizationService? localization = null)
+        ILocalizationService? localization = null,
+        IUiPriorityCoordinator? uiPriorityCoordinator = null)
     {
         localRepository ??= new FakeLocalOrderRepository([]);
         return new ReceiptReturnsWorkflowService(
@@ -304,7 +374,8 @@ public sealed class ReceiptReturnsWorkflowServiceTests
             remote,
             priceIndex ?? new LocalSellableItemIndex(),
             new PosCartService(),
-            localization);
+            localization,
+            uiPriorityCoordinator);
     }
 
     private static PosSessionState CreateOnlineSession()
@@ -447,9 +518,13 @@ public sealed class ReceiptReturnsWorkflowServiceTests
 
         public Exception? ReturnContextException { get; init; }
 
+        public Func<Guid, CancellationToken, Task<OrderReturnContextDto?>>? ReturnContextAsync { get; init; }
+
         public int QueryCallCount { get; private set; }
 
         public int ReturnContextCallCount { get; private set; }
+
+        public CancellationToken LastReturnContextCancellationToken { get; private set; }
 
         public Task<RemoteOrderHistoryResult> QueryAsync(RemoteOrderHistoryQuery query, CancellationToken cancellationToken = default)
         {
@@ -465,9 +540,15 @@ public sealed class ReceiptReturnsWorkflowServiceTests
         public Task<OrderReturnContextDto?> GetReturnContextAsync(Guid orderGuid, CancellationToken cancellationToken = default)
         {
             ReturnContextCallCount++;
+            LastReturnContextCancellationToken = cancellationToken;
             if (ReturnContextException is not null)
             {
                 return Task.FromException<OrderReturnContextDto?>(ReturnContextException);
+            }
+
+            if (ReturnContextAsync is not null)
+            {
+                return ReturnContextAsync(orderGuid, cancellationToken);
             }
 
             return Task.FromResult(ReturnContext);

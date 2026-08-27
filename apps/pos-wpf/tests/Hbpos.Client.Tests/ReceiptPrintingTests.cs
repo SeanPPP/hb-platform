@@ -42,7 +42,8 @@ public sealed class ReceiptPrintingTests
                     1m,
                     80m,
                     0m,
-                    80m)
+                    80m,
+                    "ITEM-INST")
             ],
             [
                 new InstallmentPaymentDto(
@@ -70,6 +71,10 @@ public sealed class ReceiptPrintingTests
 
         var receipt = InstallmentReceiptMapper.CreateReceipt(order);
         var document = formatter.Build(receipt, settings, order.CreatedAt);
+
+        var detailLine = Assert.Single(receipt.Lines);
+        Assert.Equal("SKU-INST", detailLine.ProductCode);
+        Assert.Equal("ITEM-INST", detailLine.ItemNumber);
 
         Assert.DoesNotContain("INSTALLMENT ORDER", document.PlainText, StringComparison.Ordinal);
         Assert.Contains("TAX INVOICE", document.PlainText, StringComparison.Ordinal);

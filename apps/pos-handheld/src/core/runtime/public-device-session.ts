@@ -1,4 +1,7 @@
-import type { DeviceRegistrationStore } from "../api/hbpos-api";
+import type {
+  DeviceActivationPreviewResponse,
+  DeviceRegistrationStore,
+} from "../api/hbpos-api";
 import type {
   DevicePresentation,
   DeviceSessionCoordinator,
@@ -10,6 +13,17 @@ export type PosDeviceSessionRuntimeService = Readonly<{
   register(input: Readonly<{
     storeCode: string;
   }>): Promise<DeviceSessionState>;
+  previewActivationCode(
+    activationCode: string,
+  ): Promise<DeviceActivationPreviewResponse>;
+  redeemActivationCode(input: Readonly<{
+    activationCode: string;
+  }>): Promise<DeviceSessionState>;
+  rebindActivationCode(input: Readonly<{
+    activationCode: string;
+    terminalName?: string;
+  }>): Promise<DeviceSessionState>;
+  restorePendingActivationCode(): Promise<string | null>;
   poll(): Promise<DeviceSessionState>;
   reregister(input: Readonly<{
     targetStoreCode: string;
@@ -35,6 +49,14 @@ export function createPublicDeviceSession(
   return Object.freeze({
     listRegistrationStores,
     register: (input) => coordinator.register(input),
+    previewActivationCode: (activationCode) =>
+      coordinator.previewActivationCode(activationCode),
+    redeemActivationCode: (input) =>
+      coordinator.redeemActivationCode(input),
+    rebindActivationCode: (input) =>
+      coordinator.rebindActivationCode(input),
+    restorePendingActivationCode: () =>
+      coordinator.restorePendingActivationCode(),
     poll: () => coordinator.poll(),
     reregister: (input) => coordinator.reregister(input),
     getDeviceIdentity: () => coordinator.getDeviceIdentity(),

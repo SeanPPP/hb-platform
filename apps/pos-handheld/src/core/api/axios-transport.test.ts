@@ -3,7 +3,11 @@ import test from "node:test";
 
 import { AxiosError, create, type AxiosRequestConfig } from "axios";
 
-import { createAxiosHbposTransport, type HbposRequestCredentials } from "./axios-transport";
+import {
+  createAxiosHbposTransport,
+  createFreshCashierAxiosHbposTransport,
+  type HbposRequestCredentials,
+} from "./axios-transport";
 import { HbposApiError, HbposCashierApi } from "./hbpos-api";
 
 function createDeferred<T>(): {
@@ -78,6 +82,73 @@ test("Axios middleware 仅从安全凭据提供者附加设备和收银员认证
   assert.equal(request?.headers?.["X-HBPOS-Store-Code"], "1003");
   assert.equal(request?.headers?.["X-HBPOS-Hardware-Id"], "INSTALL-001");
   assert.equal(request?.headers?.["X-HBPOS-Cashier-Authorization"], "cashier-secret");
+});
+
+test("普通请求显式提供的员工票据必须被安全提供者当前票据覆盖", async () => {
+  let request: AxiosRequestConfig | undefined;
+  const instance = create({
+    adapter: async (config) => {
+      request = config;
+      return { config, status: 200, statusText: "OK", headers: {}, data: { success: true } };
+    },
+  });
+  const transport = createAxiosHbposTransport(
+    "https://hbpos.example",
+    {
+      async getCredentials() {
+        return {
+          device: {
+            authorizationCode: "device-secret",
+            deviceCode: "ANDROID-1042-01",
+            storeCode: "1042",
+            hardwareId: "INSTALL-001",
+          },
+          cashierAuthorization: "current-cashier-ticket",
+        };
+      },
+    },
+    instance,
+  );
+
+  await transport.request({
+    method: "POST",
+    url: "/api/v1/devices/reset-registration",
+    headers: {
+      "X-HBPOS-Cashier-Authorization": "fresh-online-ticket",
+    },
+  });
+
+  assert.equal(
+    request?.headers?.["X-HBPOS-Cashier-Authorization"],
+    "current-cashier-ticket",
+  );
+});
+
+test("设备重置专用 transport 保留刚在线登录的新鲜员工票据", async () => {
+  let request: AxiosRequestConfig | undefined;
+  const instance = create({
+    adapter: async (config) => {
+      request = config;
+      return { config, status: 200, statusText: "OK", headers: {}, data: { success: true } };
+    },
+  });
+  const transport = createFreshCashierAxiosHbposTransport(
+    "https://hbpos.example",
+    {
+      async getCredentials() {
+        return { cashierAuthorization: "current-cashier-ticket" };
+      },
+    },
+    instance,
+  );
+
+  await transport.request({
+    method: "POST",
+    url: "/api/v1/devices/reset-registration",
+    headers: { "X-HBPOS-Cashier-Authorization": "fresh-online-ticket" },
+  });
+
+  assert.equal(request?.headers?.["X-HBPOS-Cashier-Authorization"], "fresh-online-ticket");
 });
 
 test("Axios transport 向领域适配器暴露规范化响应头", async () => {

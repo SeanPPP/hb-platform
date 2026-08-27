@@ -3088,9 +3088,9 @@ namespace BlazorApp.Api.Tests
             var clockIn = CreateStoredPunch(
                 "location-open-in",
                 "ClockIn",
-                capturedAt.AddHours(10).AddMinutes(-20)
+                capturedAt.AddHours(10)
             );
-            clockIn.PunchTimeUtc = capturedAt.AddMinutes(-20);
+            clockIn.PunchTimeUtc = capturedAt;
             await _db.Insertable(clockIn).ExecuteCommandAsync();
 
             var result = await service.CreateLocationSampleAsync(
@@ -3124,9 +3124,9 @@ namespace BlazorApp.Api.Tests
             var clockIn = CreateStoredPunch(
                 "location-delayed-in",
                 "ClockIn",
-                capturedAt.AddHours(8)
+                capturedAt.AddHours(10)
             );
-            clockIn.PunchTimeUtc = capturedAt.AddHours(-2);
+            clockIn.PunchTimeUtc = capturedAt;
             var clockOut = CreateStoredPunch(
                 "location-delayed-out",
                 "ClockOut",

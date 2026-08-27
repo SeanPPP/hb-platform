@@ -556,6 +556,7 @@ public sealed class PosCoreTests
 
             var viewModel = new TransactionHistoryViewModel(orders);
             await viewModel.LoadAsync();
+            await WaitUntilAsync(() => !viewModel.IsReceiptPreviewLoading);
 
             Assert.NotEmpty(viewModel.Orders);
             Assert.Equal(order.OrderGuid, viewModel.SelectedOrder?.OrderGuid);
@@ -945,6 +946,7 @@ public sealed class PosCoreTests
         Assert.NotEqual(metrics.DispatcherThreadId, metrics.WorkerThreadId);
     }
 
+    [Trait("Category", "Performance")]
     [ReleaseX64PerformanceFact]
     public async Task Local_price_index_search_async_340k_meets_release_performance_gate()
     {
@@ -1142,6 +1144,18 @@ public sealed class PosCoreTests
         var field = typeof(CartLine).GetField("_quantity", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
         Assert.NotNull(field);
         field.SetValue(line, quantity);
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, int timeoutMilliseconds = 5000)
+    {
+        var deadline = Environment.TickCount64 + timeoutMilliseconds;
+        while (!condition())
+        {
+            Assert.True(
+                Environment.TickCount64 <= deadline,
+                "异步回单预览未在超时前完成。");
+            await Task.Delay(10);
+        }
     }
 
     private static LocalOrder CreateLocalOrder(

@@ -53,6 +53,7 @@ import {
   buildOtaPolicyConfirmationSummary,
   buildOtaRolloutRequest,
   isAppUpdatePolicyVersionConflict,
+  isValidMobileIosBuildNumber,
   isValidPosHandheldBuildNumber,
   isValidPosIpadBuildNumber,
   resolveNativeReleaseStatus,
@@ -419,6 +420,13 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
               message={t('system.appDownloads.updatePolicy.ipadBuildNotVerifiedWarning')}
             />
           ) : null}
+          {app === 'mobile-ios' ? (
+            <Alert
+              type="warning"
+              showIcon
+              message={t('system.appDownloads.updatePolicy.mobileBuildNotVerifiedWarning')}
+            />
+          ) : null}
           {app === 'pos-handheld' ? (
             <Alert
               type="warning"
@@ -577,6 +585,18 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                   )}
                 />
               ) : null}
+              {kind === 'native' && nativeApp === 'mobile-ios' ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message={t(
+                    'system.appDownloads.updatePolicy.mobileBuildNotVerifiedWarning',
+                  )}
+                  description={t(
+                    'system.appDownloads.updatePolicy.mobilePolicyBuildConfirmDescription',
+                  )}
+                />
+              ) : null}
               <Descriptions size="small" bordered column={1}>
                 <Descriptions.Item
                   label={t('system.appDownloads.updatePolicy.confirmRelease')}
@@ -595,12 +615,19 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                 >
                   {updateMode}
                 </Descriptions.Item>
-                {kind === 'native' && summary.minimumSupportedBuildNumber !== null ? (
-                  <Descriptions.Item
-                    label={t('system.appDownloads.updatePolicy.confirmMinimumBuild')}
-                  >
-                    {summary.minimumSupportedBuildNumber}
-                  </Descriptions.Item>
+                {kind === 'native' ? (
+                  <>
+                    <Descriptions.Item
+                      label={t('system.appDownloads.updatePolicy.confirmMinimumVersion')}
+                    >
+                      {summary.minimumSupportedVersion ?? '--'}
+                    </Descriptions.Item>
+                    <Descriptions.Item
+                      label={t('system.appDownloads.updatePolicy.confirmMinimumBuild')}
+                    >
+                      {summary.minimumSupportedBuildNumber ?? '--'}
+                    </Descriptions.Item>
+                  </>
                 ) : null}
               </Descriptions>
             </Space>
@@ -1071,7 +1098,8 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
     loadState: LoadLaneStatus,
   ) {
     const isIpad = app === 'pos-ipad'
-    const fieldColumn = isIpad ? 6 : 8
+    const supportsMinimumBuild = app === 'mobile-ios' || app === 'pos-ipad'
+    const fieldColumn = 6
     const domainReady = loadState.loaded && !loadState.loading && !loadState.failed
     const storeScopeBlocked = isIpad
       && enabled
@@ -1094,7 +1122,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
           <Descriptions.Item label={t('system.appDownloads.updatePolicy.updatedBy')}>
             {policy.updatedBy || '--'}
           </Descriptions.Item>
-          {isIpad ? (
+          {supportsMinimumBuild ? (
             <Descriptions.Item
               label={t('system.appDownloads.updatePolicy.minimumBuild')}
             >
@@ -1161,7 +1189,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                 />
               </Form.Item>
             </Col>
-            {isIpad ? (
+            {supportsMinimumBuild ? (
               <Col xs={24} md={fieldColumn}>
                 <Form.Item
                   name="minimumSupportedBuildNumber"
@@ -1564,6 +1592,17 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
             )}
           />
         ) : null}
+        {registerApp === 'mobile-ios' ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={t('system.appDownloads.updatePolicy.mobileBuildNotVerifiedWarning')}
+            description={t(
+              'system.appDownloads.updatePolicy.mobileBuildDoubleConfirmDescription',
+            )}
+          />
+        ) : null}
         {registerApp === 'pos-handheld' ? (
           <Alert
             type="warning"
@@ -1618,6 +1657,14 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                     )
                   }
                   if (
+                    registerApp === 'mobile-ios'
+                    && !isValidMobileIosBuildNumber(normalized)
+                  ) {
+                    throw new Error(
+                      t('system.appDownloads.updatePolicy.mobileBuildNumberInvalid'),
+                    )
+                  }
+                  if (
                     registerApp === 'pos-handheld'
                     && !isValidPosHandheldBuildNumber(normalized)
                   ) {
@@ -1628,6 +1675,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                   if (
                     registerApp !== 'pos-ipad'
                     && registerApp !== 'pos-handheld'
+                    && registerApp !== 'mobile-ios'
                     && !/^[0-9A-Za-z._-]{1,64}$/.test(normalized)
                   ) {
                     throw new Error(
@@ -1641,7 +1689,9 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
             <Input
               autoComplete="off"
               inputMode={
-                registerApp === 'pos-ipad' || registerApp === 'pos-handheld'
+                registerApp === 'mobile-ios'
+                || registerApp === 'pos-ipad'
+                || registerApp === 'pos-handheld'
                   ? 'numeric'
                   : undefined
               }

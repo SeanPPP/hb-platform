@@ -33,6 +33,12 @@ public sealed record ReceiptPreviewLine(
     decimal ActualAmount)
 {
     public string QuantityDisplay => Quantity.ToString("0.##");
+
+    public string? ProductCode { get; init; }
+
+    public string? ItemNumber { get; init; }
+
+    public string? ProductImage { get; init; }
 }
 
 public sealed record ReceiptPaymentLine(

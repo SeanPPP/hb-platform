@@ -1,0 +1,311 @@
+<Window x:Class="Hbpos.Client.Wpf.Views.Windows.AppUpdatePromptWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
+        xmlns:loc="clr-namespace:Hbpos.Client.Wpf.Localization"
+        Title="{loc:Loc appUpdate.prompt.title}"
+        Width="1200"
+        Height="760"
+        MinWidth="720"
+        MinHeight="560"
+        WindowStartupLocation="CenterOwner"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        AllowsTransparency="True"
+        Background="Transparent"
+        FontFamily="{StaticResource PosFontFamily}"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        Loaded="AppUpdatePromptWindow_Loaded"
+        AutomationProperties.Name="{loc:Loc appUpdate.prompt.title}">
+    <Window.Resources>
+        <DataTemplate x:Key="AppUpdateReleaseNoteTemplate">
+            <Grid Margin="0,0,0,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <materialDesign:PackIcon Kind="CheckCircle"
+                                         Width="18"
+                                         Height="18"
+                                         Margin="0,1,10,0"
+                                         Foreground="{StaticResource PosPrimaryBrush}" />
+                <TextBlock Grid.Column="1"
+                           Text="{Binding}"
+                           FontSize="14"
+                           Foreground="{StaticResource PosTextBrush}"
+                           TextWrapping="Wrap" />
+            </Grid>
+        </DataTemplate>
+    </Window.Resources>
+
+    <Grid x:Name="ModalOverlay"
+          Background="#6B0F172A">
+        <Border x:Name="AppUpdateDialogCard"
+                MaxWidth="900"
+                MinWidth="700"
+                MaxHeight="640"
+                Margin="32,24"
+                Padding="28"
+                HorizontalAlignment="Stretch"
+                VerticalAlignment="Center"
+                Background="{StaticResource PosSurfaceBrush}"
+                BorderBrush="#FFD7DEEA"
+                BorderThickness="1"
+                CornerRadius="12"
+                KeyboardNavigation.TabNavigation="Cycle"
+                AutomationProperties.AutomationId="AppUpdatePromptCard">
+            <Border.Effect>
+                <DropShadowEffect Color="#FF1E3A5F"
+                                  BlurRadius="28"
+                                  ShadowDepth="4"
+                                  Opacity="0.24" />
+            </Border.Effect>
+
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Width="52"
+                            Height="52"
+                            Margin="0,0,16,0"
+                            Background="#FFEAF2FF"
+                            CornerRadius="10">
+                        <materialDesign:PackIcon Kind="Update"
+                                                 Width="30"
+                                                 Height="30"
+                                                 HorizontalAlignment="Center"
+                                                 VerticalAlignment="Center"
+                                                 Foreground="{StaticResource PosPrimaryBrush}" />
+                    </Border>
+
+                    <StackPanel Grid.Column="1"
+                                VerticalAlignment="Center">
+                        <TextBlock Text="{loc:Loc appUpdate.prompt.title}"
+                                   FontSize="24"
+                                   FontWeight="Black"
+                                   Foreground="{StaticResource PosTextBrush}" />
+                        <TextBlock Text="{loc:Loc appUpdate.optional.prompt.description}"
+                                   Margin="0,4,0,0"
+                                   FontSize="15"
+                                   Foreground="{StaticResource PosMutedForegroundBrush}" />
+                    </StackPanel>
+
+                    <Border Grid.Column="2"
+                            Padding="12,6"
+                            VerticalAlignment="Center"
+                            Background="#FFE7F7EF"
+                            BorderBrush="#FF9ADBB8"
+                            BorderThickness="1"
+                            CornerRadius="8">
+                        <TextBlock Text="{loc:Loc appUpdate.optional.prompt.readyStatus}"
+                                   FontSize="13"
+                                   FontWeight="SemiBold"
+                                   Foreground="{StaticResource PosSuccessBrush}" />
+                    </Border>
+                </Grid>
+
+                <Border Grid.Row="1"
+                        Margin="0,22,0,0"
+                        Padding="20,14"
+                        Background="#FFF8FAFD"
+                        BorderBrush="#FFD7DEEA"
+                        BorderThickness="1"
+                        CornerRadius="8">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel HorizontalAlignment="Center">
+                            <TextBlock Text="{loc:Loc appUpdate.optional.prompt.currentVersion}"
+                                       FontSize="13"
+                                       Foreground="{StaticResource PosMutedForegroundBrush}" />
+                            <TextBlock Text="{Binding CurrentVersion}"
+                                       Margin="0,5,0,0"
+                                       HorizontalAlignment="Center"
+                                       FontSize="26"
+                                       FontWeight="Black"
+                                       Foreground="{StaticResource PosTextBrush}" />
+                        </StackPanel>
+
+                        <materialDesign:PackIcon Grid.Column="1"
+                                                 Kind="ArrowRight"
+                                                 Width="30"
+                                                 Height="30"
+                                                 Margin="30,0"
+                                                 VerticalAlignment="Center"
+                                                 Foreground="{StaticResource PosMutedForegroundBrush}" />
+
+                        <StackPanel Grid.Column="2"
+                                    HorizontalAlignment="Center">
+                            <TextBlock Text="{loc:Loc appUpdate.optional.prompt.newVersion}"
+                                       FontSize="13"
+                                       Foreground="{StaticResource PosPrimaryBrush}" />
+                            <TextBlock Text="{Binding TargetVersion}"
+                                       Margin="0,5,0,0"
+                                       HorizontalAlignment="Center"
+                                       FontSize="26"
+                                       FontWeight="Black"
+                                       Foreground="{StaticResource PosPrimaryBrush}" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <StackPanel Grid.Row="2"
+                            Margin="0,12,0,0"
+                            Orientation="Horizontal">
+                    <materialDesign:PackIcon Kind="CheckCircleOutline"
+                                             Width="18"
+                                             Height="18"
+                                             Margin="0,0,8,0"
+                                             Foreground="{StaticResource PosSuccessBrush}" />
+                    <TextBlock Text="{loc:Loc appUpdate.optional.prompt.packageDownloaded}"
+                               FontSize="13"
+                               Foreground="{StaticResource PosMutedForegroundBrush}" />
+                </StackPanel>
+
+                <TextBlock Grid.Row="3"
+                           Margin="0,18,0,10"
+                           Text="{loc:Loc appUpdate.optional.prompt.whatsNew}"
+                           FontSize="16"
+                           FontWeight="Black"
+                           Foreground="{StaticResource PosTextBrush}" />
+
+                <Grid Grid.Row="4"
+                      MinHeight="72">
+                    <ScrollViewer MaxHeight="150"
+                                  Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
+                                  VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled">
+                        <ItemsControl ItemsSource="{Binding ReleaseNotes}"
+                                      ItemTemplate="{StaticResource AppUpdateReleaseNoteTemplate}">
+                            <ItemsControl.Style>
+                                <Style TargetType="ItemsControl">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasReleaseNotes}" Value="False">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ItemsControl.Style>
+                        </ItemsControl>
+                    </ScrollViewer>
+
+                    <TextBlock Text="{loc:Loc appUpdate.optional.prompt.noReleaseNotes}"
+                               FontSize="14"
+                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                               TextWrapping="Wrap">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasReleaseNotes}" Value="False">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
+
+                <Border Grid.Row="5"
+                        Margin="0,14,0,0"
+                        Padding="14,12"
+                        Background="#FFEAF2FF"
+                        BorderBrush="#FFB7D2FA"
+                        BorderThickness="1"
+                        CornerRadius="8">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <materialDesign:PackIcon Kind="InformationOutline"
+                                                 Width="20"
+                                                 Height="20"
+                                                 Margin="0,0,10,0"
+                                                 Foreground="{StaticResource PosPrimaryBrush}" />
+                        <TextBlock Grid.Column="1"
+                                   Text="{loc:Loc appUpdate.optional.prompt.safety}"
+                                   FontSize="13"
+                                   Foreground="{StaticResource PosPrimaryBrush}"
+                                   TextWrapping="Wrap" />
+                    </Grid>
+                </Border>
+
+                <Border Grid.Row="6"
+                        Margin="0,16,0,0"
+                        Padding="0,18,0,0"
+                        BorderBrush="#FFE2E8F0"
+                        BorderThickness="0,1,0,0">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+
+                        <TextBlock MaxWidth="360"
+                                   VerticalAlignment="Center"
+                                   Text="{loc:Loc appUpdate.optional.prompt.settingsHint}"
+                                   FontSize="12"
+                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                   TextWrapping="Wrap" />
+
+                        <StackPanel Grid.Column="1"
+                                    Orientation="Horizontal">
+                            <Button x:Name="InstallLaterButton"
+                                    MinWidth="132"
+                                    Height="48"
+                                    IsDefault="True"
+                                    IsCancel="True"
+                                    Click="InstallLaterButton_Click"
+                                    Style="{StaticResource PosSecondaryButtonStyle}"
+                                    AutomationProperties.Name="{loc:Loc appUpdate.optional.prompt.installLater}">
+                                <TextBlock Text="{loc:Loc appUpdate.optional.prompt.installLater}"
+                                           FontWeight="Bold" />
+                            </Button>
+
+                            <Button x:Name="RestartAndInstallButton"
+                                    MinWidth="196"
+                                    Height="48"
+                                    Margin="12,0,0,0"
+                                    Click="RestartAndInstallButton_Click"
+                                    Style="{StaticResource PosPrimaryButtonStyle}"
+                                    AutomationProperties.Name="{loc:Loc appUpdate.optional.prompt.restartAndInstall}">
+                                <StackPanel Orientation="Horizontal">
+                                    <materialDesign:PackIcon Kind="Update"
+                                                             Width="18"
+                                                             Height="18"
+                                                             Margin="0,0,8,0"
+                                                             Foreground="White" />
+                                    <TextBlock Text="{loc:Loc appUpdate.optional.prompt.restartAndInstall}"
+                                               FontWeight="Bold"
+                                               Foreground="White" />
+                                </StackPanel>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

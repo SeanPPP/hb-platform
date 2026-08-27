@@ -1,14 +1,15 @@
 import { beforeEach, describe, expect, it, jest } from "@jest/globals";
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
+import { Alert } from "react-native";
 
 import { BootstrapScreen } from "./bootstrap-screen";
 
 import { PosSoundContext } from "@/ui/feedback/pos-sound-context";
 
 const mockRetry = jest.fn<() => Promise<void>>();
-const mockServerTest = jest.fn<
-  (address: string, signal: AbortSignal) => Promise<boolean>
->();
+const mockAbandonPendingDeviceActivation = jest.fn<() => Promise<void>>();
+const mockServerTest =
+  jest.fn<(address: string, signal: AbortSignal) => Promise<boolean>>();
 
 jest.mock("@expo/vector-icons", () => ({
   MaterialCommunityIcons: () => null,
@@ -36,6 +37,8 @@ jest.mock("@/core/runtime/pos-runtime-context", () => ({
 jest.mock("@/core/runtime/expo-bootstrap-server-diagnostics", () => ({
   loadExpoBootstrapServerDiagnostics: () =>
     Promise.resolve({
+      abandonPendingDeviceActivation: mockAbandonPendingDeviceActivation,
+      canAbandonPendingDeviceActivation: true,
       currentApiBaseUrl: "https://hotbargain.vip/pos-api",
       test: mockServerTest,
     }),
@@ -54,6 +57,8 @@ describe("BootstrapScreen", () => {
   beforeEach(() => {
     mockRetry.mockReset();
     mockRetry.mockResolvedValue(undefined);
+    mockAbandonPendingDeviceActivation.mockReset();
+    mockAbandonPendingDeviceActivation.mockResolvedValue(undefined);
     mockServerTest.mockReset();
     mockServerTest.mockResolvedValue(true);
   });
@@ -78,6 +83,79 @@ describe("BootstrapScreen", () => {
 
     expect(mockRetry).toHaveBeenCalledTimes(1);
     expect(play).toHaveBeenCalledWith("tap");
+    await screen.unmount();
+  });
+
+  it("重试启动进行中禁止重复重试或放弃 pending", async () => {
+    let finishRetry: (() => void) | undefined;
+    mockRetry.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishRetry = resolve;
+        }),
+    );
+    const alert = jest.spyOn(Alert, "alert");
+    const screen = await render(<BootstrapScreen />);
+
+    const retry = screen.getByRole("button", { name: "bootstrap.retry" });
+    await fireEvent.press(retry);
+    await fireEvent.press(retry);
+
+    expect(mockRetry).toHaveBeenCalledTimes(1);
+    const abandon = screen.getByTestId("bootstrap-abandon-pending-activation");
+    expect(abandon.props.accessibilityState.disabled).toBe(true);
+    await fireEvent.press(abandon);
+    expect(alert).not.toHaveBeenCalled();
+
+    finishRetry?.();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "bootstrap.retry" }).props
+          .accessibilityState.disabled,
+      ).toBe(false),
+    );
+
+    alert.mockRestore();
+    await screen.unmount();
+  });
+
+  it("确认放弃旧开通后先清理单一 pending，再重试启动", async () => {
+    let finishAbandon: (() => void) | undefined;
+    mockAbandonPendingDeviceActivation.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          finishAbandon = resolve;
+        }),
+    );
+    const alert = jest
+      .spyOn(Alert, "alert")
+      .mockImplementation((_title, _message, buttons) => {
+        buttons?.find((button) => button.style === "destructive")?.onPress?.();
+      });
+    const screen = await render(<BootstrapScreen />);
+
+    await fireEvent.press(
+      screen.getByTestId("bootstrap-abandon-pending-activation"),
+    );
+
+    expect(alert).toHaveBeenCalledWith(
+      "bootstrap.abandonPendingTitle",
+      "bootstrap.abandonPendingMessage",
+      expect.any(Array),
+    );
+    await waitFor(() =>
+      expect(mockAbandonPendingDeviceActivation).toHaveBeenCalledTimes(1),
+    );
+    expect(mockRetry).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: "bootstrap.retry" }).props
+        .accessibilityState.disabled,
+    ).toBe(true);
+
+    finishAbandon?.();
+    await waitFor(() => expect(mockRetry).toHaveBeenCalledTimes(1));
+
+    alert.mockRestore();
     await screen.unmount();
   });
 

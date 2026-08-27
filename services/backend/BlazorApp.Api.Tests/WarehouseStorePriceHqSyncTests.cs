@@ -325,6 +325,60 @@ public sealed class WarehouseStorePriceHqSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task 专用HQ同步_缺主商品建档时普通供应商统一使用本地商品供应商()
+    {
+        await SeedBranchesAsync();
+        await SeedLocalProductGraphAsync("P04", includeSetCode: true);
+        await _localDb.Updateable<Product>()
+            .SetColumns(row => new Product { LocalSupplierCode = "WAREHOUSE-SUP" })
+            .Where(row => row.ProductCode == "P04")
+            .ExecuteCommandAsync();
+
+        var response = await CreateService().SyncWarehouseStorePricesAsync(
+            new WarehouseStorePriceHqSyncRequestDto
+            {
+                TargetStoreCodes = ["S01"],
+                UpdatedBy = "price-admin",
+                Products =
+                [
+                    new WarehouseStorePriceHqProductDto
+                    {
+                        ProductCode = "P04",
+                        ImportPrice = 12m,
+                        OemPrice = 24m,
+                    },
+                ],
+            }
+        );
+
+        Assert.True(response.Success, response.Message);
+        var product = await _hqDb.Queryable<DIC_商品信息字典表>()
+            .SingleAsync(row => row.H商品编码 == "P04");
+        Assert.Equal("WAREHOUSE-SUP", product.H供货商编码);
+        Assert.Equal("CN-SUP", product.CBP供应商编码);
+
+        var prices = await _hqDb.Queryable<DIC_商品零售价表>()
+            .Where(row => row.H商品编码 == "P04")
+            .ToListAsync();
+        Assert.All(prices, row =>
+        {
+            Assert.Equal("WAREHOUSE-SUP", row.H供应商编码);
+            Assert.Equal(row.H分店代码 + "WAREHOUSE-SUP", row.H分店供应商编码);
+        });
+        Assert.Equal(
+            "WAREHOUSE-SUP",
+            (await _hqDb.Queryable<DIC_一品多码表>()
+                .SingleAsync(row => row.H商品编码 == "P04")).H供应商编码
+        );
+        Assert.All(
+            await _hqDb.Queryable<DIC_分店一品多码表>()
+                .Where(row => row.H商品编码 == "P04")
+                .ToListAsync(),
+            row => Assert.Equal("WAREHOUSE-SUP", row.H供应商编码)
+        );
+    }
+
+    [Fact]
     public async Task 专用HQ预校验_目标分店大小写去重且任一缺失时整体失败()
     {
         await SeedBranchesAsync();

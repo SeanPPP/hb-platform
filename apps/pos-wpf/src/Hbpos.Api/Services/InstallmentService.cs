@@ -131,7 +131,8 @@ public sealed class InstallmentService(
             [MapPayment(normalized.DownPayment, normalized.CashierId, normalized.CashierName, normalized.DeviceCode, createdAt)],
             PickupInfo: null,
             CancellationInfo: null,
-            normalized.Note);
+            Note: normalized.Note,
+            UpdatedAt: createdAt);
 
         await repository.CreateAsync(details, cancellationToken);
         if (normalized.DownPayment.Method == PaymentMethodKind.Voucher)
@@ -1466,6 +1467,16 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
             query = query.Where(x => x.CreatedAt <= request.CreatedTo.Value.UtcDateTime);
         }
 
+        if (request.UpdatedFrom is not null)
+        {
+            query = query.Where(x => x.UpdatedAt >= request.UpdatedFrom.Value.UtcDateTime);
+        }
+
+        if (request.UpdatedTo is not null)
+        {
+            query = query.Where(x => x.UpdatedAt <= request.UpdatedTo.Value.UtcDateTime);
+        }
+
         if (request.Status is not null)
         {
             query = query.Where(x => x.Status == (int)request.Status.Value);
@@ -1474,15 +1485,26 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
         if (!string.IsNullOrWhiteSpace(request.Keyword))
         {
             var keyword = request.Keyword.Trim();
+            // 商品条件保持在订单查询内，让数据库先筛选再排序分页，避免 Skip 越大就物化越多 GUID 并拼接超长 IN。
             query = query.Where(x =>
-                x.InstallmentGuid.Contains(keyword) ||
-                x.InstallmentNumber.Contains(keyword) ||
-                x.CustomerName.Contains(keyword) ||
-                x.CustomerPhone.Contains(keyword));
+                // 模糊文本搜索也必须按字面量处理，避免 %, _ 等字符扩大成 LIKE 通配符。
+                SqlFunc.CharIndexNew(x.InstallmentGuid, keyword) > 0 ||
+                SqlFunc.CharIndexNew(x.InstallmentNumber, keyword) > 0 ||
+                SqlFunc.CharIndexNew(x.CustomerName, keyword) > 0 ||
+                SqlFunc.CharIndexNew(x.CustomerPhone, keyword) > 0 ||
+                SqlFunc.Subqueryable<InstallmentOrderLineEntity>()
+                    .Where(line => line.InstallmentGuid == x.InstallmentGuid &&
+                        (line.ItemNumber == keyword ||
+                         line.LookupCode == keyword ||
+                         line.ProductCode == keyword))
+                    .Any());
         }
 
+        // 历史页按“最近更新”展示；保留默认按创建时间排序，避免改变现有 API 调用方语义。
+        query = request.OrderByUpdatedAt
+            ? query.OrderByDescending(x => x.UpdatedAt)
+            : query.OrderByDescending(x => x.CreatedAt);
         var rows = await query
-            .OrderByDescending(x => x.CreatedAt)
             .OrderByDescending(x => x.InstallmentGuid)
             .Skip(request.Skip)
             .Take(Math.Clamp(request.Take, 1, 200))
@@ -1540,7 +1562,7 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
             BalanceAmount = details.BalanceAmount,
             Status = (int)details.Status,
             CreatedAt = details.CreatedAt.UtcDateTime,
-            UpdatedAt = DateTime.UtcNow,
+            UpdatedAt = details.UpdatedAt?.UtcDateTime ?? DateTime.UtcNow,
             Note = details.Note,
             CancellationKind = details.CancellationInfo is null ? null : (int)details.CancellationInfo.Kind,
             CancelledAt = details.CancellationInfo?.CancelledAt.UtcDateTime,
@@ -1603,7 +1625,10 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
             order.PaidAmount,
             order.BalanceAmount,
             (InstallmentStatus)order.Status,
-            ToDateTimeOffset(order.UpdatedAt));
+            ToDateTimeOffset(order.UpdatedAt),
+            order.CancellationKind is null
+                ? null
+                : (InstallmentCancellationKind)order.CancellationKind.Value);
     }
 
     private static InstallmentDetailsDto MapDetails(
@@ -1645,7 +1670,8 @@ public sealed class SqlSugarInstallmentRepository(HbposSqlSugarContext dbContext
             payments.Select(MapPayment).ToList(),
             pickupInfo,
             cancellationInfo,
-            order.Note);
+            order.Note,
+            UpdatedAt: ToDateTimeOffset(order.UpdatedAt));
     }
 
     private static InstallmentLineDto MapLine(InstallmentOrderLineEntity line)

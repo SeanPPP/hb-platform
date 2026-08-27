@@ -1,5 +1,9 @@
-export const IOS_NATIVE_REQUIRED_CACHE_KEY = "mobile-ios-native-update:required:v1";
-export const IOS_NATIVE_OPTIONAL_REMINDER_KEY = "mobile-ios-native-update:optional-reminder:v1";
+export const IOS_NATIVE_REQUIRED_CACHE_KEY = "mobile-ios-native-update:required:v2";
+export const IOS_NATIVE_OPTIONAL_REMINDER_KEY = "mobile-ios-native-update:optional-reminder:v2";
+
+const LEGACY_IOS_NATIVE_REQUIRED_CACHE_KEY = "mobile-ios-native-update:required:v1";
+const LEGACY_IOS_NATIVE_OPTIONAL_REMINDER_KEY =
+  "mobile-ios-native-update:optional-reminder:v1";
 
 const OPTIONAL_REMINDER_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 
@@ -56,13 +60,13 @@ export type IosNativeOtaBarrier = {
 };
 
 type RequiredCacheRecord = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   scope: string;
   decision: IosNativeUpdateDecision;
 };
 
 type OptionalReminderRecord = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   scope: string;
   targetVersion: string;
   promptedAt: number;
@@ -236,8 +240,25 @@ export function getIosNativeUpdateBoundaryMode(input: {
 
 function buildContextScope(context: IosNativeUpdateContext) {
   const apiBaseUrl = context.apiBaseUrl.trim().replace(/\/+$/, "");
-  // build number 仅随服务端请求用于审计；required 门禁按营销版本延续，不能因同版本换 build 失效。
-  return `${apiBaseUrl}|${context.installedVersion.trim()}`;
+  // 原生更新策略按营销版本和 build 共同生效；换 build 后必须重新建立门禁与提醒状态。
+  return JSON.stringify([
+    apiBaseUrl,
+    context.installedVersion.trim(),
+    context.installedBuild.trim(),
+  ]);
+}
+
+async function clearLegacyIosNativeUpdateState(storage: IosNativeUpdateStorage) {
+  for (const key of [
+    LEGACY_IOS_NATIVE_REQUIRED_CACHE_KEY,
+    LEGACY_IOS_NATIVE_OPTIONAL_REMINDER_KEY,
+  ]) {
+    try {
+      await storage.removeItem(key);
+    } catch {
+      // v1 不再具备决策效力；清理失败不应阻止读取或写入独立的 v2 状态。
+    }
+  }
 }
 
 function buildOptionalReminderSessionKey(
@@ -274,10 +295,11 @@ export async function readCachedIosNativeRequiredDecision(
   context: IosNativeUpdateContext,
 ) {
   try {
+    await clearLegacyIosNativeUpdateState(storage);
     const cached = await storage.getObject<RequiredCacheRecord>(IOS_NATIVE_REQUIRED_CACHE_KEY);
     if (
       !cached
-      || cached.schemaVersion !== 1
+      || cached.schemaVersion !== 2
       || cached.scope !== buildContextScope(context)
     ) {
       return null;
@@ -302,7 +324,7 @@ async function saveRequiredDecision(
   decision: IosNativeUpdateDecision,
 ) {
   const record: RequiredCacheRecord = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     scope: buildContextScope(context),
     decision,
   };
@@ -324,7 +346,7 @@ async function shouldPromptOptionalDecision(
   );
   if (
     !reminder
-    || reminder.schemaVersion !== 1
+    || reminder.schemaVersion !== 2
     || reminder.scope !== buildContextScope(context)
     || reminder.targetVersion !== decision.latestVersion
     || !Number.isFinite(reminder.promptedAt)
@@ -345,8 +367,9 @@ export async function markIosNativeOptionalReminder(
     return;
   }
 
+  await clearLegacyIosNativeUpdateState(storage);
   const record: OptionalReminderRecord = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     scope: buildContextScope(context),
     targetVersion: decision.latestVersion,
     promptedAt: now,
@@ -396,6 +419,8 @@ export async function checkIosNativeAppUpdate(input: {
 
   let storageError: unknown;
   try {
+    throwIfIosNativeCheckAborted(input.signal);
+    await clearLegacyIosNativeUpdateState(input.storage);
     throwIfIosNativeCheckAborted(input.signal);
     if (decision.state === "required") {
       await saveRequiredDecision(input.storage, input.context, decision);

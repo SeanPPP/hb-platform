@@ -15,6 +15,8 @@
     "sentry:upload-sourcemaps": "sentry-expo-upload-sourcemaps dist",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
+    "test:inventory": "node ../../scripts/ci/test-inventory.mjs --app pos-ipad --check",
+    "test:ci": "npm run test:inventory && node ../../scripts/ci/test-inventory.mjs --app pos-ipad --run node && node ../../scripts/ci/test-inventory.mjs --app pos-ipad --run tsx && node ../../scripts/ci/test-inventory.mjs --app pos-ipad --run jest",
     "generate:hbpos-client": "node scripts/generate-hbpos-client.mjs",
     "check:hbpos-client": "node scripts/generate-hbpos-client.mjs --check",
     "test:contracts": "tsx --test src/core/contracts/*.test.ts",

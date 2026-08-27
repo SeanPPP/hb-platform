@@ -289,7 +289,10 @@ public sealed record InstallmentHistoryQueryRequest(
     string? Keyword = null,
     InstallmentStatus? Status = null,
     int Take = 100,
-    int Skip = 0);
+    int Skip = 0,
+    DateTimeOffset? UpdatedFrom = null,
+    DateTimeOffset? UpdatedTo = null,
+    bool OrderByUpdatedAt = false);
 
 public sealed record InstallmentHistoryQueryResponse(
     IReadOnlyList<InstallmentSummaryDto> Orders);
@@ -308,7 +311,8 @@ public sealed record InstallmentSummaryDto(
     decimal PaidAmount,
     decimal BalanceAmount,
     InstallmentStatus Status,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    InstallmentCancellationKind? CancellationKind = null);
 
 public sealed record InstallmentDetailsDto(
     Guid InstallmentGuid,
@@ -330,7 +334,8 @@ public sealed record InstallmentDetailsDto(
     IReadOnlyList<InstallmentPaymentDto> Payments,
     InstallmentPickupInfoDto? PickupInfo,
     InstallmentCancellationInfoDto? CancellationInfo = null,
-    string? Note = null);
+    string? Note = null,
+    DateTimeOffset? UpdatedAt = null);
 
 public sealed record InstallmentPaymentDto(
     Guid PaymentGuid,

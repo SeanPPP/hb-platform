@@ -14,6 +14,7 @@
   <data name="settings.category.paymentTerminal" xml:space="preserve"><value>Payment terminal</value></data>
   <data name="settings.category.receiptPrinter" xml:space="preserve"><value>Receipt printer</value></data>
   <data name="settings.category.deviceRegistration" xml:space="preserve"><value>Change store registration</value></data>
+  <data name="settings.category.deviceRegistrationNav" xml:space="preserve"><value>Device registration</value></data>
   <data name="settings.section.dataDownload.title" xml:space="preserve"><value>Data Download</value></data>
   <data name="settings.section.dataDownload.description" xml:space="preserve"><value>Sync the current store catalog from the server and refresh the local checkout item index.</value></data>
   <data name="settings.section.dataDownload.action" xml:space="preserve"><value>Data Download</value></data>
@@ -76,6 +77,7 @@
   <data name="settings.linkly.localIp.description" xml:space="preserve"><value>Connect this POS to the Windows Linkly EFT-Client on the same PC or LAN by IP address and port.</value></data>
   <data name="settings.linkly.localIp.ipAddress" xml:space="preserve"><value>IP Address</value></data>
   <data name="settings.linkly.localIp.sandboxSafety" xml:space="preserve"><value>Sandbox does not change the Local IP TCP target. Confirm that the Linkly EFT-Client is actually connected to a VPP. This test only checks connection and PIN pad readiness; it does not start a purchase, refund, or other financial transaction.</value></data>
+  <data name="settings.linkly.localIp.testSafetyShort" xml:space="preserve"><value>Connection test does not start a payment.</value></data>
   <data name="settings.linkly.localIp.testVirtualTerminal" xml:space="preserve"><value>Test virtual PIN pad</value></data>
   <data name="settings.linkly.localIp.hostRequired" xml:space="preserve"><value>Enter the Linkly Local IP host.</value></data>
   <data name="settings.linkly.localIp.portInvalid" xml:space="preserve"><value>Enter a Linkly port from 1 to 65535.</value></data>
@@ -168,6 +170,18 @@
   <data name="settings.receiptPrinter.save" xml:space="preserve"><value>Save Receipt Printer</value></data>
   <data name="settings.receiptPrinter.test" xml:space="preserve"><value>Test Print</value></data>
   <data name="settings.receiptPrinter.loadFromStore" xml:space="preserve"><value>Load from Store Profile</value></data>
+  <data name="settings.page.dataMaintenance.description" xml:space="preserve"><value>Keep products, prices and POS software ready for checkout.</value></data>
+  <data name="settings.page.paymentTerminal.description" xml:space="preserve"><value>Choose and configure the card provider used for checkout.</value></data>
+  <data name="settings.receiptPrinter.preview" xml:space="preserve"><value>Receipt preview</value></data>
+  <data name="settings.deviceRegistration.current" xml:space="preserve"><value>Current registration</value></data>
+  <data name="settings.deviceRegistration.active" xml:space="preserve"><value>Active</value></data>
+  <data name="settings.deviceRegistration.thisDevice" xml:space="preserve"><value>This checkout device</value></data>
+  <data name="settings.deviceRegistration.beforeContinue" xml:space="preserve"><value>Before you continue</value></data>
+  <data name="settings.deviceRegistration.checkCart" xml:space="preserve"><value>Clear the cart.</value></data>
+  <data name="settings.deviceRegistration.checkPayment" xml:space="preserve"><value>Finish or cancel the current payment.</value></data>
+  <data name="settings.deviceRegistration.checkSync" xml:space="preserve"><value>Resolve pending, failed, or syncing orders.</value></data>
+  <data name="settings.deviceRegistration.supervisorRequired" xml:space="preserve"><value>Supervisor authorization is required.</value></data>
+  <data name="settings.deviceRegistration.deviceReuse" xml:space="preserve"><value>The target store reuses an existing device number when available.</value></data>
   <data name="settings.status.receiptProfileLoaded" xml:space="preserve"><value>Loaded — save to apply</value></data>
   <data name="settings.deviceRegistration.description" xml:space="preserve"><value>Choose another store and submit an authorized reregistration request for this checkout device. Pending, failed, or syncing orders must be cleared first.</value></data>
   <data name="settings.deviceRegistration.action" xml:space="preserve"><value>Change Store Registration</value></data>
@@ -234,6 +248,7 @@
   <data name="settings.serverAddress.status.postCommitFailed" xml:space="preserve"><value>The endpoint switched, but the shell could not be reloaded. Restart HBPOS and sign in again.</value></data>
   <data name="settings.serverAddress.blocked.cart" xml:space="preserve"><value>Clear the cart before switching servers.</value></data>
   <data name="settings.serverAddress.blocked.payment" xml:space="preserve"><value>Finish or cancel the current payment before switching servers.</value></data>
+  <data name="settings.serverAddress.blocked.deviceActivation" xml:space="preserve"><value>Finish recovering the pending device activation before switching servers.</value></data>
   <data name="settings.serverAddress.blocked.sync" xml:space="preserve"><value>Resolve all pending, failed, or syncing orders before switching servers.</value></data>
   <data name="settings.serverAddress.blocked.audit" xml:space="preserve"><value>Wait for pending operation audit events to upload before switching servers.</value></data>
 </root>

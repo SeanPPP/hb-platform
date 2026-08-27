@@ -287,6 +287,7 @@
                                    FontWeight="Black"
                                    Foreground="{StaticResource PosMutedForegroundBrush}" />
                         <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                                      Style="{StaticResource PosHorizontalTouchScrollViewerStyle}"
                                       VerticalScrollBarVisibility="Disabled"
                                       MaxHeight="78">
                             <ListBox ItemsSource="{Binding SearchResults}"
@@ -294,6 +295,7 @@
                                      Background="Transparent"
                                      BorderThickness="0"
                                      Padding="0"
+                                     ScrollViewer.PanningMode="None"
                                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                      ScrollViewer.VerticalScrollBarVisibility="Disabled">
                                 <ListBox.ItemsPanel>

@@ -24,12 +24,18 @@ public sealed record ApiServerSwitchSafetySnapshot(
     int PendingSyncCount,
     int FailedSyncCount,
     int SyncingCount,
-    int PendingOperationAuditCount)
+    int PendingOperationAuditCount,
+    bool HasPendingActivationRecovery)
 {
-    public static ApiServerSwitchSafetySnapshot Safe { get; } = new(0, false, false, 0, 0, 0, 0, 0);
+    public static ApiServerSwitchSafetySnapshot Safe { get; } = new(0, false, false, 0, 0, 0, 0, 0, false);
 
     public string? GetBlockReason()
     {
+        if (HasPendingActivationRecovery)
+        {
+            return "settings.serverAddress.blocked.deviceActivation";
+        }
+
         if (CartCount > 0)
         {
             return "settings.serverAddress.blocked.cart";

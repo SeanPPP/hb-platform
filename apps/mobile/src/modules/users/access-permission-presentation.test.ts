@@ -168,7 +168,7 @@ const seededPermissionCodes = Array.from(
     return code;
   },
 );
-assert.equal(new Set(seededPermissionCodes).size, 156);
+assert.equal(new Set(seededPermissionCodes).size, 157);
 seededPermissionCodes.forEach((code) => {
   assert.ok(en.permissions[code], `英文资源缺少权限 ${code}`);
   assert.ok(zh.permissions[code], `中文资源缺少权限 ${code}`);

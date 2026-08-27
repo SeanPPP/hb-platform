@@ -141,7 +141,8 @@ internal sealed class MainChildViewModelFactory
         var viewModel = new DeviceRegistrationViewModel(
             _deviceRegistrationWorkflowService,
             _localization,
-            apiServerSettings: _apiServerSettings);
+            apiServerSettings: _apiServerSettings,
+            rawScannerService: _rawScannerService);
         viewModel.DeviceActivatedAsync += (_, args) => activateDeviceAsync(args);
         viewModel.DeviceReregistered += (_, _) => applyDeviceReregistered();
         viewModel.CancelRequested += (_, _) => cancelDeviceReregistration();
@@ -178,7 +179,9 @@ internal sealed class MainChildViewModelFactory
             _sharedHeldOrderApiClient,
             _sharedHeldOrderRepository,
             timeProvider: null,
-            sharedHeldOrderPublicationWorker: _sharedHeldOrderPublicationWorker);
+            sharedHeldOrderPublicationWorker: _sharedHeldOrderPublicationWorker,
+            localSellableItemIndex: _priceIndex,
+            rawScannerService: _rawScannerService);
         viewModel.ReprintRequested += async (_, _) => await printSelectedHistoryReceiptAsync(viewModel);
         return viewModel;
     }

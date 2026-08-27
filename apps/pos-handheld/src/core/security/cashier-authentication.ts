@@ -99,6 +99,41 @@ export class CashierAuthenticationService {
     }
   }
 
+  /**
+   * 设备注册重置专用验票：只接受实时在线返回，不读取离线缓存、不接受紧急票据，
+   * 也不替换当前营业收银员的授权。调用方必须立即消费返回票据，不得持久化条码。
+   */
+  public async loginOnlineOnly(input: Readonly<{
+    storeCode: string;
+    deviceCode: string;
+    userBarcode: string;
+  }>): Promise<CashierLoginResult> {
+    const scope = verifiedLoginScope(input);
+    if (await this.deviceLock.isLocked()) {
+      throw new HbposApiError("Device is disabled and must be re-authorized online.", {
+        kind: "http",
+        status: 403,
+        code: "DEVICE_LOCKED",
+      });
+    }
+    if (hasEmergencyPrefix(input.userBarcode)) {
+      throw new HbposApiError("A real employee barcode is required.", {
+        kind: "envelope",
+        code: "REAL_EMPLOYEE_BARCODE_REQUIRED",
+      });
+    }
+    if (!(await this.network.isOnline())) {
+      throw new HbposApiError("An online employee login is required.", {
+        kind: "transport",
+        code: "ONLINE_LOGIN_REQUIRED",
+      });
+    }
+
+    const session = await this.api.barcodeLogin({ ...input, ...scope });
+    assertCashierSessionScope(session, scope);
+    return { source: "online", session };
+  }
+
   private async loginEmergency(input: Readonly<{
     storeCode: string;
     deviceCode: string;

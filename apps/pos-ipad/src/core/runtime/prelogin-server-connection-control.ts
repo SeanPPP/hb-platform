@@ -21,6 +21,11 @@ export type PreloginServerConnectionDependencies = Readonly<{
   ): Promise<SettingsPendingDataSnapshot>;
   probe(healthUrl: string, signal: AbortSignal): Promise<boolean>;
   save(apiBaseUrl: string): Promise<void>;
+  runSwitchGuarded?<T>(operation: () => Promise<T>): Promise<
+    | Readonly<{ blocked: true }>
+    | Readonly<{ blocked: false; value: T }>
+  >;
+  hasRegistrationRecoveryRisk?(): Promise<boolean>;
 }>;
 
 /**
@@ -49,13 +54,23 @@ export class PreloginServerConnectionControl {
     return this.input.probe(`${apiBaseUrl}/api/v1/health`, signal);
   }
 
-  public change(
+  public async change(
     candidate: string,
     signal: AbortSignal,
   ): Promise<PreloginServerConnectionChangeResult> {
     const apiBaseUrl = this.normalize(candidate);
-    return this.input.runExclusive(async () => {
+    if (
+      !this.input.runSwitchGuarded ||
+      !this.input.hasRegistrationRecoveryRisk
+    ) {
+      return registrationRecoveryBlocked();
+    }
+    const guarded = await this.input.runSwitchGuarded(() =>
+      this.input.runExclusive(async () => {
       throwIfAborted(signal);
+      if (await this.registrationRecoveryBlocks(signal)) {
+        return registrationRecoveryBlocked();
+      }
       const pending = await this.input.readPendingData(signal);
       throwIfAborted(signal);
       if (
@@ -78,10 +93,31 @@ export class PreloginServerConnectionControl {
           reason: "candidate-unreachable" as const,
         });
       }
+      if (await this.registrationRecoveryBlocks(signal)) {
+        return registrationRecoveryBlocked();
+      }
       await this.input.save(apiBaseUrl);
       // Keychain 写入是切换的提交点；提交后即使界面卸载，也必须如实返回成功。
       return Object.freeze({ status: "completed" as const, apiBaseUrl });
-    });
+      }),
+    );
+    return guarded.blocked ? registrationRecoveryBlocked() : guarded.value;
+  }
+
+  private async registrationRecoveryBlocks(
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const read = this.input.hasRegistrationRecoveryRisk;
+    if (!read) return true;
+    try {
+      throwIfAborted(signal);
+      const blocked = await read.call(this.input);
+      throwIfAborted(signal);
+      return blocked;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return true;
+    }
   }
 
   private normalize(candidate: string): string {
@@ -90,6 +126,13 @@ export class PreloginServerConnectionControl {
       this.trustedOrigins,
     );
   }
+}
+
+function registrationRecoveryBlocked(): PreloginServerConnectionChangeResult {
+  return Object.freeze({
+    status: "blocked",
+    reason: "pending-local-data",
+  });
 }
 
 function throwIfAborted(signal: AbortSignal): void {

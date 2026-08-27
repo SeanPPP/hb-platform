@@ -39,6 +39,7 @@
     <Compile Include="ReactProductWarehouseControllerTests.cs" />
     <Compile Include="DeviceRegistrationControllerTests.cs" />
     <Compile Include="DeviceRegistrationReactServiceTests.cs" />
+    <Compile Include="DeviceActivationCodeManagementTests.cs" />
     <Compile Include="DomesticProductCreationControllerTests.cs" />
     <Compile Include="DomesticSetProductSchemaTests.cs" />
     <Compile Include="DomesticSetTemplateServiceTests.cs" />
@@ -129,6 +130,7 @@
     <Compile Include="CashierBarcodeMutationLockTests.cs" />
     <Compile Include="CashierBarcodeSyncGuardTests.cs" />
     <Compile Include="PromotionReactServiceTests.cs" />
+    <Compile Include="ProductPriceFilterTests.cs" />
     <Compile Include="ProductReactServiceHqSyncTests.cs" />
     <Compile Include="ProductStoreRecordsTests.cs" />
     <Compile Include="ProductPushToHqServiceTests.cs" />
@@ -145,6 +147,7 @@
     <Compile Include="StoreManagerProductReactServiceTests.cs" />
     <Compile Include="SyncProductsToStoresRequestTests.cs" />
     <Compile Include="ProductHqSyncSplitTests.cs" />
+    <Compile Include="ProductSetCodeTypeRepairRunnerTests.cs" />
     <Compile Include="ProductSetCodeHqIncrementalSyncTests.cs" />
     <Compile Include="ProductSetCodeReactServiceTests.cs" />
     <Compile Include="PosmSalesOrderReactServiceTests.cs" />
@@ -182,6 +185,7 @@
     <Compile Include="MobileAppBuildAppKeyIsolationTests.cs" />
     <Compile Include="MobileAppDeviceStatusServiceTests.cs" />
     <Compile Include="AppUpdatePolicyServiceTests.cs" />
+    <Compile Include="AppUpdatePolicySchemaMigratorSqlServerIntegrationTests.cs" />
     <Compile Include="PosHandheldUpdateDecisionServiceTests.cs" />
     <Compile Include="PosHandheldUpdatePolicyServiceTests.cs" />
     <Compile Include="WpfAppReleaseServiceTests.cs" />
@@ -206,6 +210,11 @@
     <Compile Include="DataSyncReactControllerLocationSyncContractTests.cs" />
     <Compile Include="DataSyncReactControllerProductSyncContractTests.cs" />
     <Compile Include="DataSyncReactControllerSyncResultContractTests.cs" />
+    <Compile Include="DataSyncLegacyControllerProductSyncContractTests.cs" />
+    <Compile Include="LocalSupplierInvoiceShopFilterOptionsTests.cs" />
+    <Compile Include="LocalSupplierInvoiceShopGridTests.cs" />
+    <Compile Include="ReactLocalSupplierInvoiceShopContractTests.cs" />
+    <Compile Include="ReactStoreMultiCodePricesControllerTests.cs" />
     <Compile Include="WarehouseProductChangeHistoryServiceTests.cs" />
     <Compile Include="WarehouseProductChangeHistoryTestDouble.cs" />
     <Compile Include="SqliteTempFileCleanup.cs" />

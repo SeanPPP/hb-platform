@@ -17,7 +17,8 @@ public sealed class DeviceRuntimeStatusSchemaInitializerTests
 
         await initializer.InitializeAsync();
 
-        var sql = Assert.Single(executor.SqlStatements);
+        Assert.Equal(2, executor.SqlStatements.Count);
+        var sql = executor.SqlStatements[0];
         Assert.Contains("IF OBJECT_ID(N'[dbo].[POSM_设备注册信息表]', N'U') IS NOT NULL", sql);
         Assert.Contains("COL_LENGTH(N'dbo.POSM_设备注册信息表', N'是否允许交易') IS NULL", sql);
         Assert.Contains("ADD [是否允许交易] BIT NOT NULL", sql);
@@ -42,6 +43,9 @@ public sealed class DeviceRuntimeStatusSchemaInitializerTests
         Assert.Contains("[GrantId] UNIQUEIDENTIFIER NOT NULL", sql);
         Assert.Contains("CONSTRAINT [PK_POSM_AppReviewGrantConsumptions] PRIMARY KEY", sql);
         Assert.Contains("IX_POSM_AppReviewGrantConsumptions_StoreDevice", sql);
+        Assert.Equal(
+            BlazorApp.Shared.Models.POSM.DeviceActivationCodeSchema.EnsureSql,
+            executor.SqlStatements[1]);
     }
 
     [Fact]

@@ -57,6 +57,7 @@ public sealed class SetChildPurchasePriceSqlServerIntegrationTests
     }
 
     [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
     public async Task AcquireProductsAsync_SqlServer同商品锁跨连接互斥()
     {
         var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
@@ -96,6 +97,7 @@ public sealed class SetChildPurchasePriceSqlServerIntegrationTests
     }
 
     [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
     public async Task AcquireAllAsync_SqlServer全量锁阻止普通共享总闸()
     {
         var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
@@ -125,6 +127,7 @@ public sealed class SetChildPurchasePriceSqlServerIntegrationTests
     }
 
     [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
     public async Task AcquireProductsAsync_SqlServer反向输入按稳定顺序获取且不死锁()
     {
         var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
@@ -162,6 +165,7 @@ public sealed class SetChildPurchasePriceSqlServerIntegrationTests
     }
 
     [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
     public async Task AcquireProductsAsync_SqlServer锁内重读保证最终成本来自最后提交的源价格()
     {
         var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);

@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Interfaces;
@@ -57,7 +58,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         var release = await SeedIosReleaseAsync(AppUpdateApps.MobileIos, "2.0.0");
         var service = CreateNativeService();
         var saved = await service.SetMobileIosPolicyAsync(
-            new NativeUpdatePolicyRequest
+            new MobileIosNativeUpdatePolicyRequest
             {
                 ExpectedPolicyVersion = 0,
                 Enabled = true,
@@ -84,6 +85,156 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Mobile原生决策_同营销版本按Build区分可选与强制阶段()
+    {
+        var release = await SeedIosReleaseAsync(AppUpdateApps.MobileIos, "1.0.2");
+        release.BuildNumber = "31";
+        await _db.Updateable(release).ExecuteCommandAsync();
+        var service = CreateNativeService();
+
+        var optionalPolicy = await service.SetMobileIosPolicyAsync(
+            new MobileIosNativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = release.Id,
+            },
+            "admin"
+        );
+        Assert.True(optionalPolicy.Success);
+
+        (string? Version, string? Build, string Expected)[] optionalCases =
+        {
+            ("1.0.2", "31", AppUpdateStates.None),
+            ("1.0.2", "30", AppUpdateStates.Optional),
+            ("1.0.1", "999", AppUpdateStates.Optional),
+            ("1.0.2", null, AppUpdateStates.Optional),
+            ("1.0.2", "bad", AppUpdateStates.Optional),
+            ("bad", "31", AppUpdateStates.Optional),
+            ("1.0.2", "32", AppUpdateStates.None),
+            ("1.0.3", null, AppUpdateStates.None),
+        };
+        foreach (var item in optionalCases)
+        {
+            var decision = await service.GetMobileIosDecisionAsync(item.Version, item.Build);
+            Assert.Equal(item.Expected, decision.State);
+        }
+
+        var requiredPolicy = await service.SetMobileIosPolicyAsync(
+            new MobileIosNativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 1,
+                Enabled = true,
+                ReleaseId = release.Id,
+                MinimumSupportedVersion = "1.0.2",
+                MinimumSupportedBuildNumber = 31,
+            },
+            "admin"
+        );
+        Assert.True(requiredPolicy.Success);
+
+        (string? Version, string? Build, string Expected)[] requiredCases =
+        {
+            ("1.0.2", "31", AppUpdateStates.None),
+            ("1.0.2", "30", AppUpdateStates.Required),
+            ("1.0.1", "999", AppUpdateStates.Required),
+            ("1.0.2", null, AppUpdateStates.Required),
+            ("1.0.2", "bad", AppUpdateStates.Required),
+            ("bad", "31", AppUpdateStates.Required),
+            ("1.0.2", "32", AppUpdateStates.None),
+            ("1.0.3", null, AppUpdateStates.Required),
+            ("1.0.3", "bad", AppUpdateStates.Required),
+            ("1.0.3", "0", AppUpdateStates.None),
+        };
+        foreach (var item in requiredCases)
+        {
+            var decision = await service.GetMobileIosDecisionAsync(item.Version, item.Build);
+            Assert.Equal(item.Expected, decision.State);
+        }
+    }
+
+    [Fact]
+    public async Task Mobile原生策略_校验ReleaseBuild与MinimumBuild关系并保留版本级兼容()
+    {
+        var invalidBuildRelease = await SeedIosReleaseAsync(AppUpdateApps.MobileIos, "1.0.1");
+        invalidBuildRelease.BuildNumber = "2147483648";
+        await _db.Updateable(invalidBuildRelease).ExecuteCommandAsync();
+        var validRelease = await SeedIosReleaseAsync(AppUpdateApps.MobileIos, "1.0.2");
+        validRelease.BuildNumber = "31";
+        await _db.Updateable(validRelease).ExecuteCommandAsync();
+        var service = CreateNativeService();
+
+        var invalidReleaseBuild = await service.SetMobileIosPolicyAsync(
+            new MobileIosNativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = invalidBuildRelease.Id,
+            },
+            "admin"
+        );
+        var buildWithoutVersion = await service.SetMobileIosPolicyAsync(
+            new MobileIosNativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = validRelease.Id,
+                MinimumSupportedBuildNumber = 31,
+            },
+            "admin"
+        );
+        var negativeMinimumBuild = await service.SetMobileIosPolicyAsync(
+            new MobileIosNativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = validRelease.Id,
+                MinimumSupportedVersion = "1.0.2",
+                MinimumSupportedBuildNumber = -1,
+            },
+            "admin"
+        );
+        var minimumAboveRelease = await service.SetMobileIosPolicyAsync(
+            new MobileIosNativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = validRelease.Id,
+                MinimumSupportedVersion = "1.0.2",
+                MinimumSupportedBuildNumber = 32,
+            },
+            "admin"
+        );
+
+        Assert.Equal("LATEST_BUILD_NUMBER_INVALID", invalidReleaseBuild.ErrorCode);
+        Assert.Equal("MINIMUM_BUILD_REQUIRES_VERSION", buildWithoutVersion.ErrorCode);
+        Assert.Equal("MINIMUM_BUILD_INVALID", negativeMinimumBuild.ErrorCode);
+        Assert.Equal("MINIMUM_BUILD_ABOVE_LATEST", minimumAboveRelease.ErrorCode);
+        Assert.Equal(0, await _db.Queryable<MobileIosNativeUpdatePolicy>().CountAsync());
+
+        var compatible = await service.SetMobileIosPolicyAsync(
+            new MobileIosNativeUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                ReleaseId = validRelease.Id,
+                MinimumSupportedVersion = "1.0.2",
+            },
+            "admin"
+        );
+        Assert.True(compatible.Success);
+        Assert.Null(compatible.Data!.MinimumSupportedBuildNumber);
+        Assert.Equal(
+            AppUpdateStates.Optional,
+            (await service.GetMobileIosDecisionAsync("1.0.2", "0")).State
+        );
+        Assert.Equal(
+            AppUpdateStates.Required,
+            (await service.GetMobileIosDecisionAsync("1.0.1", "999")).State
+        );
+    }
+
+    [Fact]
     public async Task 原生策略_归一化后相同请求幂等且真实变化才升版()
     {
         var firstStore = await SeedStoreAsync("BRI", "Brisbane");
@@ -93,7 +244,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         var service = CreateNativeService();
 
         var mobileFirst = await service.SetMobileIosPolicyAsync(
-            new NativeUpdatePolicyRequest
+            new MobileIosNativeUpdatePolicyRequest
             {
                 ExpectedPolicyVersion = 0,
                 Enabled = true,
@@ -104,7 +255,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
             "admin"
         );
         var mobileRepeated = await service.SetMobileIosPolicyAsync(
-            new NativeUpdatePolicyRequest
+            new MobileIosNativeUpdatePolicyRequest
             {
                 ExpectedPolicyVersion = 0,
                 Enabled = true,
@@ -115,7 +266,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
             "publisher"
         );
         var mobileChanged = await service.SetMobileIosPolicyAsync(
-            new NativeUpdatePolicyRequest
+            new MobileIosNativeUpdatePolicyRequest
             {
                 ExpectedPolicyVersion = 1,
                 Enabled = true,
@@ -407,7 +558,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         var release = await SeedIosReleaseAsync(AppUpdateApps.MobileIos, "2.0.0");
         var service = CreateNativeService();
         var missing = await service.SetMobileIosPolicyAsync(
-            new NativeUpdatePolicyRequest
+            new MobileIosNativeUpdatePolicyRequest
             {
                 Enabled = true,
                 ReleaseId = release.Id,
@@ -424,7 +575,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         Assert.Equal(0, await _db.Queryable<MobileIosNativeUpdatePolicy>().CountAsync());
 
         var first = await service.SetMobileIosPolicyAsync(
-            new NativeUpdatePolicyRequest
+            new MobileIosNativeUpdatePolicyRequest
             {
                 ExpectedPolicyVersion = 0,
                 Enabled = true,
@@ -434,7 +585,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
             "admin"
         );
         var staleSame = await service.SetMobileIosPolicyAsync(
-            new NativeUpdatePolicyRequest
+            new MobileIosNativeUpdatePolicyRequest
             {
                 ExpectedPolicyVersion = 0,
                 Enabled = true,
@@ -444,7 +595,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
             "publisher"
         );
         var staleChanged = await service.SetMobileIosPolicyAsync(
-            new NativeUpdatePolicyRequest
+            new MobileIosNativeUpdatePolicyRequest
             {
                 ExpectedPolicyVersion = 0,
                 Enabled = true,
@@ -606,7 +757,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         nativeService
             .Setup(service =>
                 service.SetMobileIosPolicyAsync(
-                    It.IsAny<NativeUpdatePolicyRequest>(),
+                    It.IsAny<MobileIosNativeUpdatePolicyRequest>(),
                     It.IsAny<string>()
                 )
             )
@@ -620,7 +771,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         };
 
         var nativeResult = await nativeController.PutMobileIos(
-            new NativeUpdatePolicyRequest()
+            new MobileIosNativeUpdatePolicyRequest()
         );
 
         Assert.Same(
@@ -1013,6 +1164,39 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         Assert.NotEqual(default, first.Data.AppleVerifiedAtUtc);
     }
 
+    [Theory]
+    [InlineData("-1")]
+    [InlineData("31a")]
+    [InlineData("2147483648")]
+    public async Task AppStore登记_Mobile拒绝Int32范围外或非数字Build(string buildNumber)
+    {
+        var service = CreateReleaseService(
+            new StubAppleLookupClient(
+                new AppleAppStoreLookupResult(
+                    "123456789",
+                    "com.hbweb.expo",
+                    "1.0.2",
+                    "https://apps.apple.com/au/app/id123456789"
+                )
+            )
+        );
+
+        var result = await service.CreateAsync(
+            new IosAppStoreReleaseCreateRequest
+            {
+                App = AppUpdateApps.MobileIos,
+                AppStoreId = "123456789",
+                BuildNumber = buildNumber,
+                Storefront = "au",
+            },
+            "release-bot"
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal("APP_STORE_BUILD_INVALID", result.ErrorCode);
+        Assert.Equal(0, await _db.Queryable<IosAppStoreRelease>().CountAsync());
+    }
+
     [Fact]
     public async Task AppStore登记_手持Pos只接受冻结Bundle并保存独立App事实()
     {
@@ -1387,7 +1571,7 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
     }
 
     [Fact]
-    public void 更新策略管理合同_包含冻结的乐观并发与IpadBuild字段()
+    public void 更新策略管理合同_包含冻结的乐观并发与Mobile及IpadBuild字段()
     {
         Assert.Equal(
             typeof(long?),
@@ -1403,6 +1587,12 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         );
         Assert.Equal(
             typeof(int?),
+            typeof(MobileIosNativeUpdatePolicyRequest)
+                .GetProperty("MinimumSupportedBuildNumber")
+                ?.PropertyType
+        );
+        Assert.Equal(
+            typeof(int?),
             typeof(PosIpadNativeUpdatePolicyRequest)
                 .GetProperty("MinimumSupportedBuildNumber")
                 ?.PropertyType
@@ -1412,6 +1602,20 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
             typeof(NativeUpdatePolicyDto)
                 .GetProperty("MinimumSupportedBuildNumber")
                 ?.PropertyType
+        );
+        Assert.Equal(
+            typeof(int?),
+            typeof(MobileIosNativeUpdatePolicy)
+                .GetProperty("MinimumSupportedBuildNumber")
+                ?.PropertyType
+        );
+        Assert.Equal(
+            typeof(MobileIosNativeUpdatePolicyRequest),
+            GetMethod<AppUpdatePoliciesController>(
+                    nameof(AppUpdatePoliciesController.PutMobileIos)
+                )
+                .GetParameters()[0]
+                .ParameterType
         );
         Assert.Equal(
             typeof(int?),
@@ -1437,6 +1641,14 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         Assert.Contains("sp_getapplock", migrator);
         Assert.Contains("IF OBJECT_ID(N'[dbo].[IosAppStoreRelease]', N'U') IS NULL", migrator);
         Assert.Contains("IF OBJECT_ID(N'[dbo].[MobileIosNativeUpdatePolicy]', N'U') IS NULL", migrator);
+        Assert.Contains("[MinimumSupportedBuildNumber] int NULL", migrator);
+        Assert.Contains(
+            "COL_LENGTH(N'[dbo].[MobileIosNativeUpdatePolicy]', N'MinimumSupportedBuildNumber') IS NULL",
+            migrator
+        );
+        Assert.Contains("ALTER TABLE [dbo].[MobileIosNativeUpdatePolicy]", migrator);
+        Assert.DoesNotContain("UPDATE [dbo].[MobileIosNativeUpdatePolicy]", migrator);
+        Assert.DoesNotContain("INSERT INTO [dbo].[MobileIosNativeUpdatePolicy]", migrator);
         Assert.Contains("IF OBJECT_ID(N'[dbo].[PosIpadNativeUpdatePolicy]', N'U') IS NULL", migrator);
         Assert.Contains(
             "COL_LENGTH(N'[dbo].[PosIpadNativeUpdatePolicy]', N'MinimumSupportedBuildNumber') IS NULL",
@@ -1477,6 +1689,45 @@ public sealed class AppUpdatePolicyServiceTests : IDisposable
         Assert.DoesNotContain("ALTER TABLE [MobileAppBuild]", migrator);
         Assert.DoesNotContain("ALTER TABLE [MobileAppOtaUpdate]", migrator);
         Assert.DoesNotContain("WpfAppRelease", migrator);
+    }
+
+    [Fact]
+    public void MobileBuild迁移_新表直接含列_旧表幂等追加且不改写已有策略行()
+    {
+        var migrator = File.ReadAllText(
+            Path.Combine(
+                FindBackendRoot(),
+                "BlazorApp.Api",
+                "Data",
+                "AppUpdatePolicySchemaMigrator.cs"
+            )
+        );
+        var mobileTableStart = migrator.IndexOf(
+            "CREATE TABLE [dbo].[MobileIosNativeUpdatePolicy]",
+            StringComparison.Ordinal
+        );
+        var mobileTableEnd = migrator.IndexOf("    END;", mobileTableStart, StringComparison.Ordinal);
+        var additiveGuard =
+            "IF COL_LENGTH(N'[dbo].[MobileIosNativeUpdatePolicy]', N'MinimumSupportedBuildNumber') IS NULL";
+        var additiveGuardStart = migrator.IndexOf(additiveGuard, StringComparison.Ordinal);
+
+        Assert.True(mobileTableStart >= 0);
+        Assert.True(mobileTableEnd > mobileTableStart);
+        Assert.Contains(
+            "[MinimumSupportedBuildNumber] int NULL",
+            migrator[mobileTableStart..mobileTableEnd]
+        );
+        Assert.True(additiveGuardStart > mobileTableEnd);
+        Assert.Single(
+            Regex.Matches(migrator, Regex.Escape(additiveGuard))
+                .Cast<System.Text.RegularExpressions.Match>()
+        );
+        Assert.Contains(
+            "ALTER TABLE [dbo].[MobileIosNativeUpdatePolicy]\n            ADD [MinimumSupportedBuildNumber] int NULL;",
+            migrator
+        );
+        Assert.DoesNotContain("UPDATE [dbo].[MobileIosNativeUpdatePolicy]", migrator);
+        Assert.DoesNotContain("INSERT INTO [dbo].[MobileIosNativeUpdatePolicy]", migrator);
     }
 
     [Fact]

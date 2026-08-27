@@ -2,6 +2,7 @@ using BlazorApp.Shared.Models.POSM;
 using Hbpos.Api.Data;
 using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Orders;
+using SqlSugar;
 
 namespace Hbpos.Api.Services;
 
@@ -78,17 +79,7 @@ public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContex
 
         if (!string.IsNullOrWhiteSpace(request.Keyword))
         {
-            var keyword = request.Keyword.Trim();
-            var normalizedGuidKeyword = keyword.Replace("-", string.Empty, StringComparison.Ordinal);
-            var lineOrderGuids = await dbContext.PosmDb.Queryable<SalesOrderDetail>()
-            .Where(x => x.Barcode == keyword || (x.Remark != null && x.Remark.Contains($"itemNo={keyword}")))
-                .Select(x => x.OrderGuid)
-                .ToListAsync(cancellationToken);
-
-            query = query.Where(x =>
-                (x.OrderGuid != null && x.OrderGuid.Contains(keyword))
-                || (x.OrderGuid != null && x.OrderGuid.Contains(normalizedGuidKeyword))
-                || (x.OrderGuid != null && lineOrderGuids.Contains(x.OrderGuid)));
+            query = ApplyKeywordFilter(query, request.Keyword);
         }
 
         var take = Math.Clamp(request.Take, 1, 200);
@@ -122,6 +113,48 @@ public sealed class SqlSugarOrderHistoryRepository(HbposSqlSugarContext dbContex
             Count(order.ItemCount),
             order.OrderGuid is not null && paymentLabels.TryGetValue(order.OrderGuid, out var paymentSummary) ? paymentSummary : string.Empty,
             FormatStatus(order.Status ?? 0))).ToList());
+    }
+
+    internal static ISugarQueryable<SalesOrder> ApplyKeywordFilter(
+        ISugarQueryable<SalesOrder> query,
+        string rawKeyword)
+    {
+        var keyword = rawKeyword.Trim();
+        var normalizedGuidKeyword = keyword.Replace("-", string.Empty, StringComparison.Ordinal);
+        var itemNumberMarker = $"itemNo={keyword}";
+        var itemNumberSuffix = $";{itemNumberMarker}";
+
+        if (normalizedGuidKeyword.Length > 0)
+        {
+            // 在 C# 中决定是否搜索订单号，避免 SqlSugar 把布尔变量翻译成 SQL Server 的裸 bit 谓词。
+            return query.Where(x =>
+                // 订单号子串搜索按字面量执行，避免 %, _ 等字符把 LIKE 扩大为全表命中。
+                (x.OrderGuid != null && SqlFunc.CharIndexNew(x.OrderGuid, keyword) > 0)
+                || (x.OrderGuid != null && SqlFunc.CharIndexNew(x.OrderGuid, normalizedGuidKeyword) > 0)
+                // 明细条件关联到已按门店、终端和日期收窄的订单，避免先扫描并物化全库明细 GUID。
+                || SqlFunc.Subqueryable<SalesOrderDetail>()
+                    .Where(line => line.OrderGuid == x.OrderGuid
+                        && (line.Barcode == keyword
+                            || line.ProductCode == keyword
+                            || (line.Remark != null
+                                // 用参数化的末尾位置等值比较，避免 EndsWith 翻译成未转义 LIKE。
+                                && (line.Remark == itemNumberMarker
+                                    || SqlFunc.CharIndexNew(line.Remark, itemNumberSuffix)
+                                        == SqlFunc.Length(line.Remark) - itemNumberSuffix.Length + 1))))
+                    .Any());
+        }
+
+        // 仅由连字符组成的输入不能参与 GUID 搜索，但仍保留条码、商品编码和 itemNo 的精确查询。
+        return query.Where(x =>
+            SqlFunc.Subqueryable<SalesOrderDetail>()
+                .Where(line => line.OrderGuid == x.OrderGuid
+                    && (line.Barcode == keyword
+                        || line.ProductCode == keyword
+                        || (line.Remark != null
+                            && (line.Remark == itemNumberMarker
+                                || SqlFunc.CharIndexNew(line.Remark, itemNumberSuffix)
+                                    == SqlFunc.Length(line.Remark) - itemNumberSuffix.Length + 1))))
+                .Any());
     }
 
     public async Task<OrderHistoryDetailsDto?> GetDetailsAsync(

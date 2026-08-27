@@ -1,15 +1,24 @@
 import type {
+  DeviceActivationRebindResponse,
+  DeviceActivationPreviewResponse,
+  DeviceActivationRedeemResponse,
   DeviceRegisterResponse,
   DeviceReregisterResponse,
   DeviceVerifyResponse
 } from "../api/hbpos-api";
+import { HbposApiError } from "../api/hbpos-api";
 
+import { parseDeviceActivationCode } from "./device-activation-code";
+import type { DeviceRegistrationApiPartitionGuard } from "./device-registration-api-partition-guard";
 import {
   DeviceCredentialStore,
   DeviceLockStore,
   DevicePresentationStore,
   InstallationIdentityStore,
+  PendingDeviceActivationCodeStore,
+  PendingDeviceActivationConflictError,
   PendingDeviceRegistrationStore,
+  normalizePendingDeviceActivationApiPartition,
 } from "./secure-storage";
 
 export type DeviceSessionStatus =
@@ -40,6 +49,11 @@ export type DeviceScopeChange = Readonly<{
   current: Readonly<{ deviceCode: string; storeCode: string }>;
 }>;
 
+type PendingActivationRecovery = Readonly<{
+  generation: number;
+  state: DeviceSessionState | null;
+}>;
+
 const deviceScopeChangeListeners = new Set<
   (change: DeviceScopeChange) => void
 >();
@@ -55,7 +69,14 @@ export function subscribeDeviceScopeChange(
 }
 
 export interface DeviceSessionApi {
-  register(input: Readonly<{ storeCode: string; hardwareId: string; terminalName?: string; provisioningCode?: string }>): Promise<DeviceRegisterResponse>;
+  register(input: Readonly<{ storeCode: string; hardwareId: string; terminalName?: string }>): Promise<DeviceRegisterResponse>;
+  registerAppReview?(input: Readonly<{ storeCode: string; hardwareId: string; terminalName?: string; provisioningCode: string }>): Promise<DeviceRegisterResponse>;
+  previewActivationCode?(input: Readonly<{ activationCode: string }>): Promise<DeviceActivationPreviewResponse>;
+  redeemActivationCode?(
+    input: Readonly<{ activationCode: string; hardwareId: string; terminalName?: string }>,
+    options?: Readonly<{ recoveryOnly?: boolean }>,
+  ): Promise<DeviceActivationRedeemResponse>;
+  rebindActivationCode?(input: Readonly<{ activationCode: string; terminalName?: string }>): Promise<DeviceActivationRebindResponse>;
   verify(input: Readonly<{ deviceCode: string; storeCode: string; hardwareId: string; terminalName?: string }>): Promise<DeviceVerifyResponse>;
   reregister(input: Readonly<{ targetStoreCode: string; hardwareId: string; terminalName?: string }>): Promise<DeviceReregisterResponse>;
 }
@@ -64,10 +85,16 @@ export class DeviceSessionCoordinator {
   private readonly lockStore: DeviceLockStore;
   private readonly pendingRegistration: PendingDeviceRegistrationStore;
   private readonly presentationStore: DevicePresentationStore;
+  private readonly pendingActivation: PendingDeviceActivationCodeStore;
+  private readonly activationApiPartition: string | null;
   // 每次发起会改变设备授权的操作均递增；迟到响应只能返回当前结果，不能回写持久化状态。
   private operationGeneration = 0;
   // 安全存储写入不可取消；同一队列确保已启动旧写入先结束，由新操作在队尾完成最终覆盖。
   private mutationQueue: Promise<void> = Promise.resolve();
+  // 开通恢复与新码兑换必须覆盖同一完整临界区，避免双击并发恢复同一个一次性码。
+  private activationMutationInFlight = false;
+  private pendingActivationRecoveryInFlight: Promise<PendingActivationRecovery> | null =
+    null;
   private state: DeviceSessionState = { status: "unregistered" };
 
   public constructor(
@@ -77,15 +104,25 @@ export class DeviceSessionCoordinator {
     lockStore?: DeviceLockStore,
     pendingRegistration?: PendingDeviceRegistrationStore,
     presentationStore?: DevicePresentationStore,
+    pendingActivation?: PendingDeviceActivationCodeStore,
+    activationApiPartition?: string,
+    private readonly apiPartitionGuard?: DeviceRegistrationApiPartitionGuard,
   ) {
     this.lockStore = lockStore ?? new DeviceLockStore(credentials.secureStore);
     this.pendingRegistration = pendingRegistration ?? new PendingDeviceRegistrationStore(credentials.secureStore);
     this.presentationStore =
       presentationStore ??
       new DevicePresentationStore(credentials.secureStore);
+    this.pendingActivation =
+      pendingActivation ??
+      new PendingDeviceActivationCodeStore(credentials.secureStore);
+    // 兼容既有组合/测试构造：省略时只允许默认生产分区；运行时切换地址必须显式注入。
+    this.activationApiPartition = normalizePendingDeviceActivationApiPartition(
+      activationApiPartition ?? "https://hotbargain.vip/pos-api",
+    );
   }
 
-  public async register(input: Readonly<{ storeCode: string; terminalName?: string; provisioningCode?: string }>): Promise<DeviceSessionState> {
+  public async register(input: Readonly<{ storeCode: string; terminalName?: string }>): Promise<DeviceSessionState> {
     const generation = this.beginOperation();
     this.state = { status: "registering", storeCode: input.storeCode };
     const hardwareId = await this.installation.getOrCreate();
@@ -93,6 +130,151 @@ export class DeviceSessionCoordinator {
       return this.state;
     }
     return this.updateState(this.resolve(this.api.register({ ...input, hardwareId }), "register", generation), generation);
+  }
+
+  public async registerAppReview(input: Readonly<{
+    storeCode: string;
+    provisioningCode: string;
+    terminalName?: string;
+  }>): Promise<DeviceSessionState> {
+    const registerAppReview = this.api.registerAppReview;
+    if (!registerAppReview) {
+      throw new Error("App Review device registration is unavailable.");
+    }
+    const generation = this.beginOperation();
+    this.state = { status: "registering", storeCode: input.storeCode };
+    const hardwareId = await this.installation.getOrCreate();
+    if (!this.isCurrentOperation(generation)) return this.state;
+    return this.updateState(
+      this.resolve(
+        registerAppReview.call(this.api, { ...input, hardwareId }),
+        "register",
+        generation,
+      ),
+      generation,
+    );
+  }
+
+  public async previewActivationCode(
+    activationCode: string,
+  ): Promise<DeviceActivationPreviewResponse> {
+    await this.assertActivationPreviewAllowed();
+    const previewActivationCode = this.api.previewActivationCode;
+    if (!previewActivationCode) {
+      throw new Error("Device activation preview is unavailable.");
+    }
+    const parsed = parseDeviceActivationCode(activationCode);
+    if (!parsed) throw new TypeError("Device activation code is invalid.");
+    return previewActivationCode.call(this.api, {
+      activationCode: parsed,
+    });
+  }
+
+  public redeemActivationCode(input: Readonly<{
+    activationCode: string;
+    terminalName?: string;
+  }>): Promise<DeviceSessionState> {
+    return this.runActivationMutation(() => this.redeemActivationCodeCore(input));
+  }
+
+  private async redeemActivationCodeCore(input: Readonly<{
+    activationCode: string;
+    terminalName?: string;
+  }>): Promise<DeviceSessionState> {
+    const recoveredBeforeValidation =
+      await this.recoverPendingActivationBeforeNewCode();
+    if (recoveredBeforeValidation) return recoveredBeforeValidation;
+    await this.assertActivationAllowed();
+    const redeemActivationCode = this.api.redeemActivationCode;
+    if (!redeemActivationCode) {
+      throw new Error("Device activation redemption is unavailable.");
+    }
+    const hardwareId = await this.installation.getOrCreate();
+    const redeemWithPendingActivation = () =>
+      this.withPendingActivationCode(
+        input.activationCode,
+        "redeem",
+        hardwareId,
+        async (normalized) => {
+          const generation = this.beginOperation();
+          this.state = { status: "registering" };
+          if (!this.isCurrentOperation(generation)) return this.state;
+          return this.updateState(
+            this.resolve(
+              redeemActivationCode.call(this.api, {
+                activationCode: normalized,
+                hardwareId,
+                ...(input.terminalName ? { terminalName: input.terminalName } : {}),
+              }),
+              "activate",
+              generation,
+            ),
+            generation,
+          );
+        },
+      );
+    try {
+      return await redeemWithPendingActivation();
+    } catch (error: unknown) {
+      if (!(error instanceof PendingDeviceActivationConflictError)) throw error;
+
+      // 极窄的持久化竞态仍按同一恢复规则处理，不能覆盖后来出现的 pending。
+      const recovered = await this.recoverPendingActivationBeforeNewCode();
+      if (recovered) return recovered;
+      await this.assertActivationAllowed();
+      return redeemWithPendingActivation();
+    }
+  }
+
+  public rebindActivationCode(input: Readonly<{
+    activationCode: string;
+    terminalName?: string;
+  }>): Promise<DeviceSessionState> {
+    return this.runActivationMutation(() => this.rebindActivationCodeCore(input));
+  }
+
+  private async rebindActivationCodeCore(input: Readonly<{
+    activationCode: string;
+    terminalName?: string;
+  }>): Promise<DeviceSessionState> {
+    await this.assertRebindAllowed();
+    const rebindActivationCode = this.api.rebindActivationCode;
+    if (!rebindActivationCode) {
+      throw new Error("Device activation rebind is unavailable.");
+    }
+    const hardwareId = await this.installation.getOrCreate();
+    return this.withPendingActivationCode(
+      input.activationCode,
+      "rebind",
+      hardwareId,
+      (normalized) => {
+        const generation = this.beginOperation();
+        this.state = { status: "reregistering" };
+        return this.updateState(
+          this.resolve(
+            rebindActivationCode.call(this.api, {
+              activationCode: normalized,
+              ...(input.terminalName ? { terminalName: input.terminalName } : {}),
+            }),
+            "rebind",
+            generation,
+          ),
+          generation,
+        );
+      },
+    );
+  }
+
+  public restorePendingActivationCode(): Promise<string | null> {
+    return this.pendingActivation.load();
+  }
+
+  public async hasActivationRecoveryRisk(): Promise<boolean> {
+    try {
+      return (await this.pendingActivation.loadPending()) !== null;
+    } catch {
+      return true;
+    }
   }
 
   public async verify(input: Readonly<{ deviceCode: string; storeCode: string; terminalName?: string }>): Promise<DeviceSessionState> {
@@ -106,7 +288,18 @@ export class DeviceSessionCoordinator {
   }
 
   public async poll(): Promise<DeviceSessionState> {
-    const generation = this.beginOperation();
+    // 正在提交新码但尚未进入恢复时，poll 不得并发重放刚保存的一次性码。
+    if (
+      this.activationMutationInFlight &&
+      !this.pendingActivationRecoveryInFlight
+    ) {
+      return this.state;
+    }
+    const { generation, state: recovered } =
+      await this.getOrStartPendingActivationRecovery();
+    if (recovered) return recovered;
+    // 若恢复由当前页提交链路共同等待，后续检查归提交链路所有，poll 不再抢 generation。
+    if (this.activationMutationInFlight) return this.state;
     const current = await this.credentials.load();
     if (!this.isCurrentOperation(generation)) {
       return this.state;
@@ -213,7 +406,7 @@ export class DeviceSessionCoordinator {
 
   private async resolve(
     responsePromise: Promise<DeviceRegisterResponse | DeviceVerifyResponse | DeviceReregisterResponse>,
-    operation: "register" | "verify" | "reregister",
+    operation: "register" | "verify" | "reregister" | "activate" | "rebind",
     generation: number,
   ): Promise<DeviceSessionState> {
     const response = await responsePromise;
@@ -221,25 +414,65 @@ export class DeviceSessionCoordinator {
       return this.state;
     }
     return (await this.mutateCurrentOperation(generation, async () => {
+      const activationOperation = operation === "activate" || operation === "rebind";
+      if (activationOperation && (typeof response !== "object" || response === null)) {
+        throw new DeviceActivationOutcomeUnknownError(
+          "Device activation response is missing.",
+        );
+      }
       const deviceCode = response.deviceCode?.trim() ?? "";
       const storeCode = response.storeCode?.trim() ?? "";
+      if (activationOperation) {
+        if (response.isAllowed === false) {
+          if (!activationRejectionReasonCode(response)) {
+            throw new DeviceActivationOutcomeUnknownError(
+              "Device activation rejection has no approved public reason code.",
+            );
+          }
+          // 只有带稳定 reasonCode 的业务拒绝才证明本次码可安全清除。
+          await this.pendingActivation.clear();
+          if (!this.isCurrentOperation(generation)) return this.state;
+        } else if (
+          response.isAllowed !== true ||
+          !activationSuccessReasonCode(response) ||
+          !response.authorizationCode ||
+          !deviceCode ||
+          !storeCode
+        ) {
+          throw new DeviceActivationOutcomeUnknownError(
+            "Device activation response is incomplete.",
+          );
+        }
+      }
       if (response.isAllowed && response.authorizationCode && deviceCode && storeCode) {
         const hardwareId = await this.installation.getOrCreate();
         if (!this.isCurrentOperation(generation)) {
           return this.state;
         }
         const previousCredentials =
-          operation === "reregister" ? await this.credentials.load() : null;
+          operation === "reregister" || operation === "rebind"
+            ? await this.credentials.load()
+            : null;
         if (!this.isCurrentOperation(generation)) {
           return this.state;
         }
-        await this.credentials.save({
-          deviceCode,
-          storeCode,
-          hardwareId,
-          authorizationCode: response.authorizationCode
-        });
-        if (operation === "reregister" && previousCredentials) {
+        try {
+          await this.credentials.save({
+            deviceCode,
+            storeCode,
+            hardwareId,
+            authorizationCode: response.authorizationCode
+          });
+        } catch (error: unknown) {
+          if (activationOperation) {
+            // 服务端可能已原子消费开通码；本机凭据未确认落盘时必须保留临时码以便幂等恢复。
+            throw new DeviceActivationOutcomeUnknownError(
+              "Device activation credential save failed.",
+            );
+          }
+          throw error;
+        }
+        if ((operation === "reregister" || operation === "rebind") && previousCredentials) {
           // 中文注释：save 已不可逆成功，即使本操作此刻变 stale 也必须广播实际 previous/current，generation 只阻止后续 UI 状态写入。
           publishDeviceScopeChange({
             previous: {
@@ -264,6 +497,11 @@ export class DeviceSessionCoordinator {
         await this.pendingRegistration.clear();
         if (!this.isCurrentOperation(generation)) {
           return this.state;
+        }
+        if (operation === "activate" || operation === "rebind") {
+          // 设备凭据已耐久化后才删除临时开通码，响应丢失时仍可对同硬件幂等重试。
+          await this.pendingActivation.clear();
+          if (!this.isCurrentOperation(generation)) return this.state;
         }
         await this.lockStore.unlock();
         return { status: "authorized", deviceCode, storeCode };
@@ -337,6 +575,281 @@ export class DeviceSessionCoordinator {
     }
   }
 
+  private async assertActivationAllowed(): Promise<void> {
+    if (await this.lockStore.isLocked()) {
+      throw new Error("Device registration is locked.");
+    }
+    if (await this.credentials.load()) {
+      throw new Error("This installation is already registered.");
+    }
+  }
+
+  private async assertActivationPreviewAllowed(): Promise<void> {
+    if (await this.lockStore.isLocked()) {
+      throw new Error("Device registration is locked.");
+    }
+  }
+
+  private async assertRebindAllowed(): Promise<void> {
+    if (!(await this.getTransportCredentials())) {
+      throw new Error("Registered device credentials are required for rebind.");
+    }
+  }
+
+  private async withPendingActivationCode<T>(
+    activationCode: string,
+    mode: "redeem" | "rebind",
+    hardwareId: string,
+    operation: (normalized: string) => Promise<T>,
+  ): Promise<T> {
+    const apiPartition = this.requireActivationApiPartition();
+    // staging 尚未触达服务端；任何本地保存、读取或确认失败都必须原样保留
+    // 既有 pending，不能误套用“确定性远端拒绝可清理”的规则。
+    await this.pendingActivation.save(activationCode, mode, {
+      apiPartition,
+      hardwareId,
+    });
+    const pending = await this.pendingActivation.loadPending();
+    if (
+      !pending ||
+      pending.apiPartition !== apiPartition ||
+      pending.hardwareId !== hardwareId
+    ) {
+      throw new DeviceActivationOutcomeUnknownError(
+        "Device activation intent could not be confirmed.",
+      );
+    }
+    try {
+      return await operation(pending.activationCode);
+    } catch (error: unknown) {
+      if (!isActivationOutcomeUncertain(error)) {
+        await this.clearPendingActivationBestEffort();
+      }
+      throw error;
+    }
+  }
+
+  private async recoverPendingActivationBeforeNewCode(): Promise<DeviceSessionState | null> {
+    // 先恢复再检查“是否已注册”，这样凭据已落盘但 pending 清理失败时无需重启。
+    const { generation, state: recovered } =
+      await this.getOrStartPendingActivationRecovery();
+    if (!this.isCurrentOperation(generation)) {
+      throw new DeviceActivationOutcomeUnknownError(
+        "Device activation recovery was superseded.",
+      );
+    }
+    if (recovered !== null) {
+      if (recovered.status !== "authorized") {
+        throw new DeviceActivationOutcomeUnknownError(
+          "Device activation recovery did not authorize this installation.",
+        );
+      }
+      return recovered;
+    }
+
+    const remaining = await this.pendingActivation.loadPending();
+    if (!this.isCurrentOperation(generation)) {
+      throw new DeviceActivationOutcomeUnknownError(
+        "Device activation recovery was superseded.",
+      );
+    }
+    if (remaining) {
+      throw new DeviceActivationOutcomeUnknownError(
+        "Previous device activation intent could not be cleared.",
+      );
+    }
+    return null;
+  }
+
+  private getOrStartPendingActivationRecovery(): Promise<PendingActivationRecovery> {
+    if (this.pendingActivationRecoveryInFlight) {
+      return this.pendingActivationRecoveryInFlight;
+    }
+
+    const generation = this.beginOperation();
+    const recovery = this.tryRecoverPendingActivation(generation).then(
+      (state) => ({
+        generation,
+        state,
+      }),
+    );
+    this.pendingActivationRecoveryInFlight = recovery;
+    const clearInFlight = () => {
+      if (this.pendingActivationRecoveryInFlight === recovery) {
+        this.pendingActivationRecoveryInFlight = null;
+      }
+    };
+    void recovery.then(clearInFlight, clearInFlight);
+    return recovery;
+  }
+
+  private async tryRecoverPendingActivation(
+    generation: number,
+  ): Promise<DeviceSessionState | null> {
+    const pending = await this.pendingActivation.loadPending();
+    if (!pending) return null;
+    const hardwareId = await this.installation.getOrCreate();
+    const apiPartition = this.requireActivationApiPartition();
+    if (
+      pending.apiPartition !== apiPartition ||
+      pending.hardwareId !== hardwareId
+    ) {
+      throw new DeviceActivationOutcomeUnknownError(
+        "Device activation recovery intent does not match this API partition or hardware.",
+      );
+    }
+    const { activationCode, mode } = pending;
+    if (mode === "rebind") {
+      const rebindActivationCode = this.api.rebindActivationCode;
+      if (rebindActivationCode && !(await this.lockStore.isLocked())) {
+        try {
+          const response = await rebindActivationCode.call(this.api, {
+            activationCode,
+          });
+          if (!this.isCurrentOperation(generation)) return this.state;
+          if (!shouldRecoverRebindAnonymously(response)) {
+            if (
+              response.isAllowed === false &&
+              activationRejectionReasonCode(response)
+            ) {
+              await this.clearPendingActivationBestEffort();
+              return null;
+            }
+            if (
+              !response.isAllowed ||
+              !response.authorizationCode ||
+              !response.deviceCode?.trim() ||
+              !response.storeCode?.trim()
+            ) {
+              throw new DeviceActivationOutcomeUnknownError(
+                "Device activation rebind recovery response is incomplete.",
+              );
+            }
+            this.state = { status: "reregistering" };
+            return this.updateState(
+              this.resolve(Promise.resolve(response), "rebind", generation),
+              generation,
+            );
+          }
+        } catch (error: unknown) {
+          if (!shouldRecoverRebindAnonymously(error)) {
+            if (isActivationOutcomeUncertain(error)) throw error;
+            await this.clearPendingActivationBestEffort();
+            if (isDefinitiveRemoteActivationRejection(error)) return null;
+            throw error;
+          }
+        }
+      }
+    }
+    const redeemActivationCode = this.api.redeemActivationCode;
+    if (!redeemActivationCode) {
+      throw new DeviceActivationOutcomeUnknownError(
+        "Device activation recovery is unavailable.",
+      );
+    }
+
+    let response: DeviceActivationRedeemResponse;
+    try {
+      if (!this.isCurrentOperation(generation)) return this.state;
+      response = await redeemActivationCode.call(
+        this.api,
+        { activationCode, hardwareId },
+        mode === "rebind" ? { recoveryOnly: true } : undefined,
+      );
+    } catch (error: unknown) {
+      if (mode === "rebind") {
+        if (isActivationOutcomeUncertain(error)) throw error;
+        throw new DeviceActivationOutcomeUnknownError(
+          "Device activation rebind recovery was not confirmed.",
+        );
+      }
+      if (isActivationOutcomeUncertain(error)) throw error;
+      await this.clearPendingActivationBestEffort();
+      if (isDefinitiveRemoteActivationRejection(error)) return null;
+      throw error;
+    }
+
+    if (typeof response !== "object" || response === null) {
+      throw new DeviceActivationOutcomeUnknownError(
+        "Device activation recovery response is missing.",
+      );
+    }
+    if (
+      mode === "rebind" &&
+      (response.isAllowed !== true ||
+        !hasExactActivationReasonCode(response, "ACTIVATION_RECOVERED"))
+    ) {
+      throw new DeviceActivationOutcomeUnknownError(
+        "Device activation recovery response must be ACTIVATION_RECOVERED.",
+      );
+    }
+    if (
+      response.isAllowed === false &&
+      activationRejectionReasonCode(response)
+    ) {
+      await this.clearPendingActivationBestEffort();
+      return null;
+    }
+    if (
+      !response.isAllowed ||
+      !response.authorizationCode ||
+      !response.deviceCode?.trim() ||
+      !response.storeCode?.trim()
+    ) {
+      // 服务端声称允许但未返回完整新凭据，结果不可安全判定，保留码等待恢复。
+      throw new DeviceActivationOutcomeUnknownError(
+        "Device activation recovery response is incomplete.",
+      );
+    }
+    this.state = {
+      status: mode === "rebind" ? "reregistering" : "registering",
+    };
+    return this.updateState(
+      this.resolve(
+        Promise.resolve(response),
+        mode === "rebind" ? "rebind" : "activate",
+        generation,
+      ),
+      generation,
+    );
+  }
+
+  private async clearPendingActivationBestEffort(): Promise<void> {
+    try {
+      await this.pendingActivation.clear();
+    } catch {
+      // 原始确定性失败优先返回；损坏或残留值下次 load 仍会严格校验并失败关闭。
+    }
+  }
+
+  private requireActivationApiPartition(): string {
+    if (!this.activationApiPartition) {
+      throw new DeviceActivationOutcomeUnknownError(
+        "Device activation API partition is unavailable.",
+      );
+    }
+    return this.activationApiPartition;
+  }
+
+  private async runActivationMutation<T>(
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    if (this.activationMutationInFlight) {
+      throw new Error("Device activation is already in progress.");
+    }
+    this.activationMutationInFlight = true;
+    try {
+      const lease = this.apiPartitionGuard?.beginMutation();
+      try {
+        return await operation();
+      } finally {
+        lease?.release();
+      }
+    } finally {
+      this.activationMutationInFlight = false;
+    }
+  }
+
   private beginOperation(): number {
     this.operationGeneration += 1;
     return this.operationGeneration;
@@ -373,6 +886,93 @@ export class DeviceSessionCoordinator {
     }
     return this.state;
   }
+}
+
+function isActivationOutcomeUncertain(error: unknown): boolean {
+  if (error instanceof PendingDeviceActivationConflictError) return true;
+  if (error instanceof DeviceActivationOutcomeUnknownError) return true;
+  if (!(error instanceof HbposApiError)) return false;
+  if (error.kind === "http") {
+    return error.status !== 400;
+  }
+  // Envelope 与任何 transport 分类都不能证明服务端未消费一次性码。
+  return true;
+}
+
+function isDefinitiveRemoteActivationRejection(error: unknown): boolean {
+  return (
+    error instanceof HbposApiError &&
+    error.kind === "http" &&
+    error.status === 400
+  );
+}
+
+class DeviceActivationOutcomeUnknownError extends Error {
+  public constructor(message: string) {
+    super(message);
+    this.name = "DeviceActivationOutcomeUnknownError";
+  }
+}
+
+const activationSuccessReasonCodes: ReadonlySet<string> = new Set([
+  "ACTIVATED",
+  "ACTIVATION_RECOVERED",
+]);
+
+const activationRejectionReasonCodes: ReadonlySet<string> = new Set([
+  "ACTIVATION_CODE_REQUIRED",
+  "ACTIVATION_CODE_NOT_AVAILABLE",
+  "ACTIVATION_PLATFORM_MISMATCH",
+  "STORE_UNAVAILABLE",
+  "DEVICE_ALREADY_REGISTERED",
+  "TARGET_STORE_UNCHANGED",
+  "DEVICE_STATE_CONFLICT",
+]);
+
+function activationSuccessReasonCode(value: unknown): string | null {
+  return approvedActivationReasonCode(value, activationSuccessReasonCodes);
+}
+
+function activationRejectionReasonCode(value: unknown): string | null {
+  return approvedActivationReasonCode(value, activationRejectionReasonCodes);
+}
+
+function approvedActivationReasonCode(
+  value: unknown,
+  approved: ReadonlySet<string>,
+): string | null {
+  if (typeof value !== "object" || value === null) return null;
+  const reasonCode = (value as Readonly<{ reasonCode?: unknown }>).reasonCode;
+  if (typeof reasonCode !== "string") return null;
+  return approved.has(reasonCode) ? reasonCode : null;
+}
+
+function hasExactActivationReasonCode(value: unknown, expected: string): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as Readonly<{ reasonCode?: unknown }>).reasonCode === expected
+  );
+}
+
+function shouldRecoverRebindAnonymously(
+  value: DeviceActivationRebindResponse | unknown,
+): boolean {
+  if (value instanceof HbposApiError) {
+    return (
+      (value.kind === "http" &&
+        (value.status === 401 || value.status === 403)) ||
+      (value.kind === "envelope" && value.code === "DEVICE_DISABLED")
+    );
+  }
+  if (typeof value !== "object" || value === null) return false;
+  const response = value as Readonly<{
+    isAllowed?: unknown;
+    reasonCode?: unknown;
+  }>;
+  return (
+    response.isAllowed === false && response.reasonCode === "DEVICE_DISABLED"
+  );
 }
 
 function publishDeviceScopeChange(change: DeviceScopeChange): void {

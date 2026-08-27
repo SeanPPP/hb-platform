@@ -807,7 +807,8 @@
                                 </Style>
                             </TextBlock.Style>
                         </TextBlock>
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <ScrollViewer Style="{StaticResource PosVerticalTouchScrollViewerStyle}"
+                                      VerticalScrollBarVisibility="Auto">
                             <ItemsControl ItemsSource="{Binding PaymentTenders}" AutomationProperties.AutomationId="AppliedTendersList">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>

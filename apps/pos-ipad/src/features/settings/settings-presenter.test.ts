@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+const deviceActivationCode =
+  "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+
 import {
   SETTINGS_APP_UPDATE_PERMISSION,
   SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
@@ -1710,13 +1713,21 @@ test("API 切换、目录重置、设备重注册与应用重启必须先确认"
   await presenter.confirmDangerousAction();
   assert.equal(port.catalogResetCalls, 1);
 
-  presenter.setReregisterStoreCode(" BNE-02 ");
+  presenter.setDeviceActivationCode(` \t${deviceActivationCode.toLowerCase()}\n`);
   presenter.setTerminalName(" iPad Front ");
+  await presenter.previewDeviceReregistration();
+  assert.deepEqual(presenter.getState().deviceActivationPreview, {
+    activationCode: deviceActivationCode,
+    storeCode: "BNE-02",
+    storeName: "Sunnybank",
+    deviceSystem: "iPadOS",
+    expiresAtUtc: "2026-08-28T00:00:00.000Z",
+  });
   assert.equal(presenter.requestDeviceReregistration(), true);
   assert.equal(port.reregistrations.length, 0);
   await presenter.confirmDangerousAction();
   assert.deepEqual(port.reregistrations, [
-    { targetStoreCode: "BNE-02", terminalName: "iPad Front" },
+    { activationCode: deviceActivationCode, terminalName: "iPad Front" },
   ]);
 
   assert.equal(presenter.requestAppRestart(), true);
@@ -1803,7 +1814,8 @@ test("安全检查失败时 fail closed，异常详情不会进入 UI 状态", a
   port.failSafety = true;
   const presenter = createPresenter(port);
   await presenter.load();
-  presenter.setReregisterStoreCode("BNE-02");
+  presenter.setDeviceActivationCode(deviceActivationCode);
+  await presenter.previewDeviceReregistration();
   presenter.requestDeviceReregistration();
 
   await presenter.confirmDangerousAction();
@@ -2106,7 +2118,7 @@ test("目录刷新中阻断所有会重绑运行时的危险操作，但不锁�
   assert.equal(presenter.requestApiAddressChange(), false);
   assert.equal(presenter.requestCatalogReset(), false);
   await presenter.savePaymentSettings();
-  presenter.setReregisterStoreCode("BNE-02");
+  presenter.setDeviceActivationCode(deviceActivationCode);
   assert.equal(presenter.requestDeviceReregistration(), false);
   assert.equal(presenter.requestAppRestart(), false);
   assert.equal(presenter.getState().statusCode, "safety-check-failed");
@@ -2148,7 +2160,7 @@ test("缺少细分权限时写操作 fail closed", async () => {
   await presenter.savePrinterSettings();
   await presenter.setExternalDisplayEnabled(true);
   presenter.requestCatalogReset();
-  presenter.setReregisterStoreCode("BNE-02");
+  presenter.setDeviceActivationCode(deviceActivationCode);
   presenter.requestDeviceReregistration();
 
   assert.deepEqual(port.savedPayments, []);
@@ -2237,9 +2249,10 @@ class FakeSettingsPort implements SettingsControlPort {
   }>[] = [];
   public readonly displayEnabledValues: boolean[] = [];
   public readonly reregistrations: {
-    targetStoreCode: string;
+    activationCode: string;
     terminalName?: string;
   }[] = [];
+  public readonly activationPreviewRequests: string[] = [];
   public readonly deviceResetBarcodes: string[] = [];
 
   public async loadSnapshot(): Promise<SettingsSnapshot> {
@@ -2270,6 +2283,17 @@ class FakeSettingsPort implements SettingsControlPort {
   public async testApiAddress(apiBaseUrl: string): Promise<boolean> {
     this.apiAddressTests.push(apiBaseUrl);
     return !this.failApiHealth;
+  }
+
+  public async previewDeviceActivationCode(activationCode: string) {
+    this.activationPreviewRequests.push(activationCode);
+    return {
+      isAllowed: true,
+      storeCode: "BNE-02",
+      storeName: "Sunnybank",
+      deviceSystem: "iPadOS",
+      expiresAtUtc: "2026-08-28T00:00:00.000Z",
+    };
   }
 
   public async executeDangerousAction(
@@ -2332,7 +2356,7 @@ class FakeSettingsPort implements SettingsControlPort {
     }
     if (action.kind === "reregister-device") {
       this.reregistrations.push({
-        targetStoreCode: action.targetStoreCode,
+        activationCode: action.activationCode,
         ...(action.terminalName ? { terminalName: action.terminalName } : {}),
       });
       return { status: "completed" as const, kind: action.kind };

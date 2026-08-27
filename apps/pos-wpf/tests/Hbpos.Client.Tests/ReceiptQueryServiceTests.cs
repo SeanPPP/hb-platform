@@ -34,7 +34,44 @@ public sealed class ReceiptQueryServiceTests
         Assert.Equal("#" + order.OrderGuid.ToString("N")[..10].ToUpperInvariant(), receipt.TransactionIdDisplay);
         Assert.Equal(order.SoldAt.ToLocalTime().ToString("MMM dd, yyyy HH:mm"), receipt.SoldAtDisplay);
         Assert.Equal(2, receipt.Lines.Count);
+        Assert.Equal("SKU-401", receipt.Lines[0].ProductCode);
+        Assert.Equal("ITEM-401", receipt.Lines[0].ItemNumber);
+        Assert.Equal("SKU-402", receipt.Lines[1].ProductCode);
+        Assert.Equal("ITEM-402", receipt.Lines[1].ItemNumber);
         Assert.Equal(PaymentMethodKind.Cash, Assert.Single(receipt.Payments).Method);
+    }
+
+    [Fact]
+    public async Task Remote_order_history_preserves_product_identity_for_order_details()
+    {
+        var orderGuid = Guid.NewGuid();
+        var details = CreateRemoteDetails(
+            orderGuid,
+            12m,
+            [new OrderHistoryPaymentDto(Guid.NewGuid(), PaymentMethodKind.Card, 12m, "MASKED-REF")],
+            [
+                new OrderHistoryLineDto(
+                    Guid.NewGuid(),
+                    "SKU-REMOTE",
+                    null,
+                    "Remote Tea",
+                    "9300001234567",
+                    "ITEM-REMOTE",
+                    1m,
+                    12m,
+                    0m,
+                    12m)
+            ]);
+        var service = new RemoteOrderHistoryService(new StubOrderHistoryApiClient(details));
+
+        var receipt = await service.GetDetailsAsync(orderGuid);
+
+        Assert.NotNull(receipt);
+        var line = Assert.Single(receipt.Lines);
+        Assert.Equal("SKU-REMOTE", line.ProductCode);
+        Assert.Equal("ITEM-REMOTE", line.ItemNumber);
+        Assert.Equal("9300001234567", line.LookupCode);
+        Assert.Null(line.ProductImage);
     }
 
     [Fact]
@@ -166,7 +203,8 @@ public sealed class ReceiptQueryServiceTests
     private static OrderHistoryDetailsDto CreateRemoteDetails(
         Guid orderGuid,
         decimal actualAmount,
-        IReadOnlyList<OrderHistoryPaymentDto> payments)
+        IReadOnlyList<OrderHistoryPaymentDto> payments,
+        IReadOnlyList<OrderHistoryLineDto>? lines = null)
     {
         return new OrderHistoryDetailsDto(
             orderGuid,
@@ -177,7 +215,7 @@ public sealed class ReceiptQueryServiceTests
             actualAmount,
             0m,
             actualAmount,
-            [],
+            lines ?? [],
             payments);
     }
 

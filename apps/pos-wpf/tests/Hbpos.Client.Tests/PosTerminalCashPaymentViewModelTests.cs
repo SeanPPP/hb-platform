@@ -2779,12 +2779,13 @@ public sealed class PosTerminalCashPaymentViewModelTests
         viewModel.PrepareForEntry(Session);
         await viewModel.SelectVoucherCommand.ExecuteAsync(null);
         viewModel.Session = OfflineSession;
+        var addTenderCallsBeforeConfirm = workflow.AddTenderCallCount;
 
         Assert.True(viewModel.ConfirmPaymentCommand.CanExecute(null));
 
         await viewModel.ConfirmPaymentCommand.ExecuteAsync(null);
 
-        Assert.Equal(0, workflow.AddTenderCallCount);
+        Assert.Equal(addTenderCallsBeforeConfirm, workflow.AddTenderCallCount);
         Assert.Equal(0, workflow.CompletePaymentCallCount);
         Assert.Single(viewModel.PaymentTenders);
         Assert.Equal("payment.refund.status.voucherOfflineUnavailable", viewModel.StatusMessage);

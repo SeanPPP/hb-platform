@@ -21,13 +21,22 @@ public sealed class InstallmentRepaymentClaimOperationServiceTests
             var repository = new LocalInstallmentOperationRepository(store);
             var attempts = new LocalCardPaymentAttemptRepository(store);
             var request = CreateRequest(PaymentMethodKind.Card);
+            var context = new LinklyPaymentAttemptContextAccessor();
             var api = new ClaimApi(request, events);
-            var terminal = new RecordingTerminal(events, new PaymentAuthorizationResult(
-                true,
-                "ANZ:CARD-1",
-                AuthorizedAmount: request.Amount,
-                CardTransactions: [CreateCardTransaction(request.Amount)],
-                Processor: "Linkly"));
+            var terminal = new RecordingTerminal(
+                events,
+                new PaymentAuthorizationResult(false),
+                amount =>
+                {
+                    // 终端回执与卡交易必须引用同一次 Linkly 尝试生成的交易号。
+                    var txnRef = context.Current?.TxnRef ?? throw new InvalidOperationException("Linkly 尝试上下文未提供交易号。");
+                    return new PaymentAuthorizationResult(
+                        true,
+                        $"ANZ:{txnRef}",
+                        AuthorizedAmount: amount,
+                        CardTransactions: [CreateCardTransaction(amount, txnRef)],
+                        Processor: "Linkly");
+                });
             var settings = CardTerminalSettings.FromEnvironment() with
             {
                 Processor = CardProcessorKind.Linkly,
@@ -40,7 +49,7 @@ public sealed class InstallmentRepaymentClaimOperationServiceTests
                 new NoopVoucherTenderClient(),
                 cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(settings),
                 cardPaymentAttemptRepository: attempts,
-                linklyPaymentAttemptContextAccessor: new LinklyPaymentAttemptContextAccessor());
+                linklyPaymentAttemptContextAccessor: context);
 
             var result = await service.ExecuteRepaymentAsync(Session, request, authorizeCard: true);
 
@@ -731,8 +740,8 @@ public sealed class InstallmentRepaymentClaimOperationServiceTests
         return new InstallmentAppendPaymentResponse(request.InstallmentGuid, request.PaymentGuid, 60m, 40m, InstallmentStatus.Active, details);
     }
 
-    private static CardTransactionDto CreateCardTransaction(decimal amount) =>
-        new("Linkly", "CARD-1", "AUTH-1", "VISA", 4, "1234", "MID-1", "00", "APPROVED", "RRN-1", DateTimeOffset.UtcNow, amount, "receipt");
+    private static CardTransactionDto CreateCardTransaction(decimal amount, string txnRef = "CARD-1") =>
+        new("Linkly", txnRef, "AUTH-1", "VISA", 4, "1234", "MID-1", "00", "APPROVED", "RRN-1", DateTimeOffset.UtcNow, amount, "receipt");
 
     private static async Task<LocalInstallmentOperationRepository> CreateRepositoryAsync(string path)
     {
@@ -867,14 +876,17 @@ public sealed class InstallmentRepaymentClaimOperationServiceTests
                 status, provider, providerAttemptId, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow, null, _commit);
     }
 
-    private sealed class RecordingTerminal(List<string> events, PaymentAuthorizationResult result) : ICardTerminalClient
+    private sealed class RecordingTerminal(
+        List<string> events,
+        PaymentAuthorizationResult result,
+        Func<decimal, PaymentAuthorizationResult>? resultFactory = null) : ICardTerminalClient
     {
         public int AuthorizeCalls { get; private set; }
         public Task<PaymentAuthorizationResult> AuthorizeAsync(decimal amount, PosSessionState session, CancellationToken cancellationToken = default)
         {
             AuthorizeCalls++;
             events.Add("provider:card");
-            return Task.FromResult(result);
+            return Task.FromResult(resultFactory?.Invoke(amount) ?? result);
         }
 
         public Task<PaymentAuthorizationResult> RefundAsync(decimal amount, PosSessionState session, string? originalReference, CancellationToken cancellationToken = default) =>

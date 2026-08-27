@@ -48,6 +48,31 @@ public sealed class RawScannerServiceTests
     }
 
     [Fact]
+    public void DispatchResultForDiagnostics_global_interceptor_suppresses_before_page_delivery_or_binding()
+    {
+        using var logs = new ConsoleLogCapture();
+        var binding = new FakeScannerBindingService();
+        var service = new RawScannerService(binding, new RawScannerInputProcessor());
+        var deliveryCount = 0;
+        service.Subscribe("pos", _ => deliveryCount++);
+        service.SetActivePage("pos");
+        service.SetGlobalBarcodeInterceptor(args =>
+            args.Barcode.StartsWith("HBDEV1-", StringComparison.OrdinalIgnoreCase));
+
+        service.DispatchResultForDiagnostics(new RawScannerInputResult(
+            "hBdEv1-product-like-barcode",
+            "scanner-device",
+            RawScannerCompletionKind.Enter));
+
+        Assert.Equal(0, deliveryCount);
+        Assert.Null(binding.BoundDevicePath);
+        Assert.Contains(logs.Lines, line =>
+            line.Contains("reserved scan suppressed before active handler", StringComparison.Ordinal));
+        Assert.DoesNotContain(logs.Lines, line =>
+            line.Contains("hBdEv1-product-like-barcode", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void DispatchResultForDiagnostics_LogsWhenNoActiveHandler()
     {
         using var logs = new ConsoleLogCapture();

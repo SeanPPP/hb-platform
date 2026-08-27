@@ -1,14 +1,68 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 
 import { HbposApiError } from "../api/hbpos-api";
 
 import { resolveStartupDeviceGate } from "./startup-device-gate";
 
+const readNoPendingDeviceActivation = async () => null;
+
+test("iPad 组合根必须把启动时的重置恢复判定传给启动门禁", () => {
+  const source = readFileSync(
+    resolve(process.cwd(), "src/core/runtime/expo-pos-runtime.ts"),
+    "utf8",
+  );
+
+  assert.match(
+    source,
+    /resolveStartupDeviceGate\(\{\s*internetReachable: online,\s*registrationResetPending: resetPending,/u,
+  );
+});
+
+test("设备注册重置恢复待处理时在线与离线启动都直接锁定且不执行其他启动动作", async () => {
+  for (const internetReachable of [true, false]) {
+    let pendingActivationReads = 0;
+    let verifies = 0;
+    let localReads = 0;
+    let locks = 0;
+    const result = await resolveStartupDeviceGate({
+      internetReachable,
+      registrationResetPending: true,
+      readPendingDeviceActivation: async () => {
+        pendingActivationReads += 1;
+        return null;
+      },
+      verifyCurrentDevice: async () => {
+        verifies += 1;
+        return { status: "authorized" as const };
+      },
+      readLocalDevice: async () => {
+        localReads += 1;
+        return "registration-required" as const;
+      },
+      lockDevice: async () => {
+        locks += 1;
+      },
+    });
+
+    assert.deepEqual(result, {
+      backend: internetReachable ? "unverified" : "offline",
+      device: "locked",
+    });
+    assert.deepEqual(
+      { pendingActivationReads, verifies, localReads, locks },
+      { pendingActivationReads: 0, verifies: 0, localReads: 0, locks: 0 },
+    );
+  }
+});
+
 test("在线已授权设备必须以 verify 结果进入 authorized-online", async () => {
   let verifies = 0;
   const result = await resolveStartupDeviceGate({
     internetReachable: true,
+    readPendingDeviceActivation: readNoPendingDeviceActivation,
     async verifyCurrentDevice() {
       verifies += 1;
       return { status: "authorized", deviceCode: "IPAD1", storeCode: "S1" };
@@ -27,12 +81,14 @@ test("在线已授权设备必须以 verify 结果进入 authorized-online", asy
 test("待审批和业务禁用使用在线明确状态，不回退旧本地授权", async () => {
   const pending = await resolveStartupDeviceGate({
     internetReachable: true,
+    readPendingDeviceActivation: readNoPendingDeviceActivation,
     verifyCurrentDevice: async () => ({ status: "pending-approval" }),
     readLocalDevice: async () => "authorized-local",
     async lockDevice() {},
   });
   const disabled = await resolveStartupDeviceGate({
     internetReachable: true,
+    readPendingDeviceActivation: readNoPendingDeviceActivation,
     verifyCurrentDevice: async () => ({ status: "disabled" }),
     readLocalDevice: async () => "authorized-local",
     async lockDevice() {},
@@ -49,6 +105,7 @@ test("已知离线和传输/5xx 失败才允许使用本地授权现金收银", 
   let offlineVerifyCalls = 0;
   const knownOffline = await resolveStartupDeviceGate({
     internetReachable: false,
+    readPendingDeviceActivation: readNoPendingDeviceActivation,
     async verifyCurrentDevice() {
       offlineVerifyCalls += 1;
       return { status: "authorized" };
@@ -58,6 +115,7 @@ test("已知离线和传输/5xx 失败才允许使用本地授权现金收银", 
   });
   const transportFailure = await resolveStartupDeviceGate({
     internetReachable: true,
+    readPendingDeviceActivation: readNoPendingDeviceActivation,
     async verifyCurrentDevice() {
       throw new HbposApiError("network", { kind: "transport" });
     },
@@ -66,6 +124,7 @@ test("已知离线和传输/5xx 失败才允许使用本地授权现金收银", 
   });
   const serverFailure = await resolveStartupDeviceGate({
     internetReachable: true,
+    readPendingDeviceActivation: readNoPendingDeviceActivation,
     async verifyCurrentDevice() {
       throw new HbposApiError("server", { kind: "http", status: 503 });
     },
@@ -86,6 +145,7 @@ test("在线 403 明确拒绝锁机，旧本地凭据不得兜底", async () => 
   const locks: string[] = [];
   const result = await resolveStartupDeviceGate({
     internetReachable: true,
+    readPendingDeviceActivation: readNoPendingDeviceActivation,
     async verifyCurrentDevice() {
       throw new HbposApiError("device rejected", {
         kind: "http",
@@ -123,6 +183,7 @@ test("envelope、401、429、其他 4xx 和编程错误保持不可交易，不�
     await assert.rejects(
       resolveStartupDeviceGate({
         internetReachable: true,
+        readPendingDeviceActivation: readNoPendingDeviceActivation,
         async verifyCurrentDevice() {
           throw failure;
         },
@@ -139,4 +200,50 @@ test("envelope、401、429、其他 4xx 和编程错误保持不可交易，不�
     assert.equal(localReads, 0);
     assert.equal(locks, 0);
   }
+});
+
+test("待开通码存在或安全存储读取失败时离线启动必须失败关闭且不读取旧授权", async () => {
+  let localReads = 0;
+  const shared = {
+    internetReachable: false,
+    verifyCurrentDevice: async () => ({ status: "authorized" as const }),
+    readLocalDevice: async () => {
+      localReads += 1;
+      return "authorized-local" as const;
+    },
+    async lockDevice() {},
+  };
+
+  await assert.rejects(
+    resolveStartupDeviceGate({
+      ...shared,
+      readPendingDeviceActivation: async () => "HBDEV1-REDACTED",
+    }),
+    /activation recovery/i,
+  );
+  assert.equal(localReads, 0);
+
+  await assert.rejects(
+    resolveStartupDeviceGate({
+      ...shared,
+      internetReachable: true,
+      readPendingDeviceActivation: async () => "HBDEV1-REDACTED",
+      verifyCurrentDevice: async () => {
+        throw new HbposApiError("network", { kind: "transport" });
+      },
+    }),
+    /activation recovery/i,
+  );
+  assert.equal(localReads, 0);
+
+  await assert.rejects(
+    resolveStartupDeviceGate({
+      ...shared,
+      readPendingDeviceActivation: async () => {
+        throw new Error("keychain decrypt failed");
+      },
+    }),
+    /activation recovery/i,
+  );
+  assert.equal(localReads, 0);
 });

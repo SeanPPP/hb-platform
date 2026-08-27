@@ -63,7 +63,7 @@ public sealed class AdvertisementReactServiceTests : IDisposable
                 Stores = new List<AdvertisementStoreItemDto>
                 {
                     new() { StoreCode = "S01" },
-                    new() { StoreCode = "S02" },
+                    new() { StoreCode = "S02", StoreName = "客户端名称不得写入" },
                 },
             }
         );
@@ -76,6 +76,7 @@ public sealed class AdvertisementReactServiceTests : IDisposable
             result.Data.MediaUrl
         );
         Assert.Equal(2, result.Data.Stores.Count);
+        Assert.Equal(new[] { "Store 1", "Store 2" }, result.Data.Stores.Select(GetStoreName).ToArray());
 
         var stores = await _db.Queryable<AdvertisementStore>().OrderBy(x => x.StoreCode).ToListAsync();
         Assert.Equal(new[] { "S01", "S02" }, stores.Select(item => item.StoreCode).ToArray());
@@ -121,6 +122,7 @@ public sealed class AdvertisementReactServiceTests : IDisposable
         );
         Assert.Single(result.Data.Stores);
         Assert.Equal("S03", result.Data.Stores[0].StoreCode);
+        Assert.Equal("Store 3", GetStoreName(result.Data.Stores[0]));
 
         var stores = await _db.Queryable<AdvertisementStore>().Where(x => x.AdvertisementId == "ad-1").ToListAsync();
         Assert.Single(stores);
@@ -151,6 +153,26 @@ public sealed class AdvertisementReactServiceTests : IDisposable
         Assert.Equal("ad-1", item.Id);
         Assert.Single(item.Stores);
         Assert.Equal("S01", item.Stores[0].StoreCode);
+        Assert.Equal("Store 1", GetStoreName(item.Stores[0]));
+    }
+
+    [Fact]
+    public async Task GetByIdAsync_ReturnsNamesForInactiveStoresAndSafelyFallsBackForUnknownCodes()
+    {
+        await SeedAdvertisementAsync("ad-store-names", "Store names", true, "Image", "s04", "S05", "S99");
+        var service = CreateService();
+
+        var result = await service.GetByIdAsync("ad-store-names");
+
+        Assert.True(result.Success);
+        Assert.NotNull(result.Data);
+        var storesByCode = result.Data!.Stores.ToDictionary(
+            store => store.StoreCode,
+            StringComparer.OrdinalIgnoreCase
+        );
+        Assert.Equal("Store 4", GetStoreName(storesByCode["S04"]));
+        Assert.Null(GetStoreName(storesByCode["S05"]));
+        Assert.Null(GetStoreName(storesByCode["S99"]));
     }
 
     [Fact]
@@ -418,6 +440,14 @@ public sealed class AdvertisementReactServiceTests : IDisposable
                     IsActive = false,
                     IsDeleted = false,
                 },
+                new()
+                {
+                    StoreGUID = "store-guid-5",
+                    StoreCode = "S05",
+                    StoreName = "Deleted store",
+                    IsActive = true,
+                    IsDeleted = true,
+                },
             }
         ).ExecuteCommand();
     }
@@ -496,5 +526,10 @@ public sealed class AdvertisementReactServiceTests : IDisposable
         var dbField = typeof(SqlSugarContext).GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic);
         dbField!.SetValue(context, db);
         return context;
+    }
+
+    private static string? GetStoreName(AdvertisementStoreItemDto store)
+    {
+        return store.StoreName;
     }
 }

@@ -141,6 +141,10 @@
       "name": "Dashboard",
       "description": "Allows access to Dashboard."
     },
+    "DeviceRegistration.ActivationCodes.Manage": {
+      "name": "Manage device activation codes",
+      "description": "Create and revoke one-time POS device activation codes for manageable stores."
+    },
     "DeviceRegistration.Manage": {
       "name": "Device Registration Manage",
       "description": "Allows access to Device Registration Manage."

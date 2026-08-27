@@ -5,15 +5,20 @@ import {
   normalizeTrustedApiOrigins,
   PosPublicRuntimeConfigurationStore,
 } from "../security/pos-public-runtime-configuration";
+import { PendingDeviceActivationCodeStore } from "../security/secure-storage";
 
 import {
   createBootstrapServerDiagnostics,
-  type BootstrapServerDiagnostics,
+  type BootstrapServerDiagnostics as BaseBootstrapServerDiagnostics,
 } from "./bootstrap-server-diagnostics";
 import { createSettingsApiHealthProbe } from "./expo-settings-configuration";
 import { resolveHbposApiUrl } from "./runtime-config";
 
-export type { BootstrapServerDiagnostics } from "./bootstrap-server-diagnostics";
+export type BootstrapServerDiagnostics = BaseBootstrapServerDiagnostics &
+  Readonly<{
+    abandonPendingDeviceActivation(): Promise<void>;
+    canAbandonPendingDeviceActivation: boolean;
+  }>;
 
 type BootstrapExtra = Readonly<{
   hbpos?: Readonly<{
@@ -28,6 +33,7 @@ type BootstrapExtra = Readonly<{
  */
 export async function loadExpoBootstrapServerDiagnostics(): Promise<BootstrapServerDiagnostics> {
   const extra = Constants.expoConfig?.extra as BootstrapExtra | undefined;
+  const secureStore = new ExpoSecureStoreAdapter();
   const trustedApiOrigins = normalizeTrustedApiOrigins([
     ...(extra?.hbpos?.trustedApiOrigins ?? []),
     ...(extra?.hbpos?.apiBaseUrl
@@ -35,20 +41,36 @@ export async function loadExpoBootstrapServerDiagnostics(): Promise<BootstrapSer
       : [resolveHbposApiUrl(undefined)]),
   ]);
   const store = new PosPublicRuntimeConfigurationStore(
-    new ExpoSecureStoreAdapter(),
+    secureStore,
     trustedApiOrigins,
   );
-  const persisted = await store.load();
+  const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
+  const [persisted, pendingActivationCode] = await Promise.all([
+    store.load(),
+    // 只允许 Development Build 暴露主动放弃；正式包继续失败关闭并等待服务端确定结果。
+    __DEV__ ? pendingActivation.load() : Promise.resolve(null),
+  ]);
   const currentApiBaseUrl = resolveHbposApiUrl(
     persisted.apiBaseUrl ?? extra?.hbpos?.apiBaseUrl,
   );
-  const probe = createSettingsApiHealthProbe((url, init) =>
-    fetch(url, init),
-  );
+  const probe = createSettingsApiHealthProbe((url, init) => fetch(url, init));
 
-  return createBootstrapServerDiagnostics({
+  const serverDiagnostics = createBootstrapServerDiagnostics({
     currentApiBaseUrl,
     trustedApiOrigins,
     probe,
+  });
+
+  return Object.freeze({
+    ...serverDiagnostics,
+    canAbandonPendingDeviceActivation:
+      __DEV__ && pendingActivationCode !== null,
+    abandonPendingDeviceActivation: async () => {
+      if (!__DEV__) {
+        throw new Error("BOOTSTRAP_PENDING_ACTIVATION_ABANDON_DISABLED");
+      }
+      // 精确删除一次性码 staging；不得触碰设备凭据、安装 ID 或离线账本密钥。
+      await pendingActivation.clear();
+    },
   });
 }

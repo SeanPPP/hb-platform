@@ -544,7 +544,8 @@ namespace BlazorApp.Api.Services
                 Permissions.System.ManageSettings,
                 Permissions.System.ViewAppDownloads,
                 Permissions.System.ManageAppDownloads,
-                Permissions.PosTerminal.Audit.View
+                Permissions.PosTerminal.Audit.View,
+                Permissions.DeviceRegistration.ActivationCodes.Manage
             );
         }
 
@@ -759,6 +760,12 @@ namespace BlazorApp.Api.Services
             if (string.Equals(permission, Permissions.System.ViewAppDownloads, StringComparison.OrdinalIgnoreCase))
             {
                 codes.Add(Permissions.System.ManageAppDownloads);
+            }
+
+            // 设备开通码权限只扩展页面可见性，不等价于旧设备审核/维护权限。
+            if (string.Equals(permission, Permissions.DeviceRegistration.View, StringComparison.OrdinalIgnoreCase))
+            {
+                codes.Add(Permissions.DeviceRegistration.ActivationCodes.Manage);
             }
 
             return codes;

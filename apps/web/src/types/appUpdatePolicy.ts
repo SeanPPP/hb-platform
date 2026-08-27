@@ -30,6 +30,10 @@ export interface NativeUpdatePolicyRequest {
   releaseMessage: string | null
 }
 
+export interface MobileIosNativeUpdatePolicyRequest extends NativeUpdatePolicyRequest {
+  minimumSupportedBuildNumber: number | null
+}
+
 export interface PosIpadNativeUpdatePolicyRequest extends NativeUpdatePolicyRequest {
   minimumSupportedBuildNumber: number | null
   targetScope: AppUpdateTargetScope
