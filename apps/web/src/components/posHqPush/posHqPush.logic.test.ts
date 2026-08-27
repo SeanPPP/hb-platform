@@ -155,6 +155,12 @@ async function main() {
     assertEqual(isPushToHqTargetStoreRequired(['supplierCode']), true, '供应商编码应要求目标分店')
     assertEqual(isPushToHqTargetStoreRequired(['storePurchasePrice']), true, '分店进货价应要求目标分店')
     assertEqual(isPushToHqTargetStoreRequired(['storeMultiCodes']), true, '分店一品多码应要求目标分店')
+    assertEqual(
+      PUSH_TO_HQ_STORE_DIMENSION_FIELDS.includes('productType'),
+      false,
+      '商品类型不应加入分店维度字段清单',
+    )
+    assertEqual(isPushToHqTargetStoreRequired(['productType']), false, '仅商品类型不应要求目标分店')
     assertEqual(isPushToHqTargetStoreRequired(['productName']), false, '仅全局字段不应要求目标分店')
     assertEqual(isPushToHqTargetStoreRequired([]), false, '空字段选择不应要求目标分店')
 
@@ -172,6 +178,11 @@ async function main() {
       hasPushToHqTargetStoreError(['productName'], []),
       false,
       '仅全局字段且未选目标分店时应通过',
+    )
+    assertEqual(
+      hasPushToHqTargetStoreError(['productType'], []),
+      false,
+      '仅商品类型且未选目标分店时应通过',
     )
   })
   if (targetStoreValidationFailure) failures.push(targetStoreValidationFailure)
@@ -201,8 +212,29 @@ async function main() {
   })
   if (optionsFetchGuardFailure) failures.push(optionsFetchGuardFailure)
 
+  const productTypeFieldFailure = await runTest('共享发送 HQ 字段应在英文名称后包含商品类型', () => {
+    const englishNameIndex = pushProductsToHqUpdateFieldOptions.findIndex(
+      (field) => field.value === 'englishName',
+    )
+    assertEqual(
+      pushProductsToHqUpdateFieldOptions[englishNameIndex + 1]?.value,
+      'productType',
+      '商品类型应紧跟英文名称',
+    )
+    assertDeepEqual(
+      pushProductsToHqUpdateFieldOptions.find((field) => field.value === 'productType'),
+      {
+        value: 'productType',
+        labelKey: 'containers.updateFields.hqProductType',
+        fallbackLabel: '商品类型',
+      },
+      '商品类型选项应使用共享中英文文案键',
+    )
+  })
+  if (productTypeFieldFailure) failures.push(productTypeFieldFailure)
+
   const modalUiFailure = await runTest('共享发送 HQ 弹窗应复用分店选择控件并保持 640px 管理后台视觉', () => {
-    assertEqual(defaultPushProductsToHqUpdateFields.length, 16, '发送弹窗应默认勾选现有 16 个 HQ 字段')
+    assertEqual(defaultPushProductsToHqUpdateFields.length, 17, '发送弹窗应默认勾选 17 个 HQ 字段')
     assertDeepEqual(
       defaultPushProductsToHqUpdateFields,
       pushProductsToHqUpdateFieldOptions.map((field) => field.value),
@@ -250,7 +282,7 @@ async function main() {
 
     assert(
       modalSource.indexOf('<Select') < modalSource.indexOf('<Checkbox.Group'),
-      '分店选择应位于现有 16 个字段上方',
+      '分店选择应位于 17 个字段上方',
     )
     assert(
       modalSource.includes('setTargetStoreCodes(storeOptions.map((option) => option.storeCode))'),
@@ -259,7 +291,7 @@ async function main() {
     assert(
       modalSource.includes('defaultPushProductsToHqUpdateFields') &&
         modalSource.includes('pushProductsToHqUpdateFieldOptions.map'),
-      '字段清单应复用共享 16 字段定义',
+      '字段清单应复用共享 17 字段定义',
     )
     assert(
       modalSource.includes("t('containers.updateFields.selectAtLeastOne'") &&
@@ -291,20 +323,22 @@ async function main() {
   })
   if (modalUiFailure) failures.push(modalUiFailure)
 
-  const localeFailure = await runTest('目标分店相关文案应同时提供中英文翻译', () => {
+  const localeFailure = await runTest('目标分店与商品类型文案应同时提供中英文翻译', () => {
     assert(
       zhLocaleSource.includes('"pushToHqTargetStoresLabel"') &&
         zhLocaleSource.includes('"pushToHqTargetStoresRequired"') &&
         zhLocaleSource.includes('"pushToHqTargetStoresHint"') &&
-        zhLocaleSource.includes('"pushToHqStoreOptionsLoadFailed"'),
-      '中文 locale 应包含目标分店标签、必填、说明和加载失败文案',
+        zhLocaleSource.includes('"pushToHqStoreOptionsLoadFailed"') &&
+        zhLocaleSource.includes('"hqProductType": "商品类型"'),
+      '中文 locale 应包含目标分店文案和商品类型文案',
     )
     assert(
       enLocaleSource.includes('"pushToHqTargetStoresLabel"') &&
         enLocaleSource.includes('"pushToHqTargetStoresRequired"') &&
         enLocaleSource.includes('"pushToHqTargetStoresHint"') &&
-        enLocaleSource.includes('"pushToHqStoreOptionsLoadFailed"'),
-      '英文 locale 应包含目标分店标签、必填、说明和加载失败文案',
+        enLocaleSource.includes('"pushToHqStoreOptionsLoadFailed"') &&
+        enLocaleSource.includes('"hqProductType": "Product Type"'),
+      '英文 locale 应包含目标分店文案和商品类型文案',
     )
   })
   if (localeFailure) failures.push(localeFailure)
