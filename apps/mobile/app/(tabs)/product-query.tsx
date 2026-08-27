@@ -319,6 +319,7 @@ const DEFAULT_LOOKUP_FLOW_RESULT: LookupFlowResult = {
 };
 
 function ProductQueryContent() {
+  const isFocused = useIsFocused();
   const { t, language } = useAppTranslation(["productQuery", "common"]);
   const router = useRouter();
   const queryParams = useLocalSearchParams<{
@@ -1424,11 +1425,12 @@ function ProductQueryContent() {
   ]);
 
   const scannerInputBlocked = isProductQueryBusy();
-  const cameraScanDisabled = scannerInputBlocked;
+  const cameraScanDisabled = !isFocused || scannerInputBlocked;
   const cameraScan = useCameraScan({
     disabled: cameraScanDisabled,
     ignoreWhileProcessing: cameraScanMode === "continuous",
     resetKey: [
+      isFocused ? "focused" : "blurred",
       cameraScanMode,
       selectedStoreCode ?? "",
       lookupVisible ? "lookup" : "idle",
@@ -1436,7 +1438,7 @@ function ProductQueryContent() {
     ].join(":"),
     suppressRepeatsUntilChange: cameraScanMode === "continuous",
     onBarcode: async (barcode) => {
-      if (isProductQueryBusy()) {
+      if (!isFocused || isProductQueryBusy()) {
         return;
       }
       setKeyword(barcode);
@@ -1450,15 +1452,21 @@ function ProductQueryContent() {
     },
   });
   const hidScanner = useHidBarcodeScanner({
-    enabled: !scannerInputBlocked,
+    enabled: isFocused && !scannerInputBlocked,
     onScan: async (barcode) => {
-      if (isProductQueryBusy()) {
+      if (!isFocused || isProductQueryBusy()) {
         return;
       }
       setKeyword(barcode);
       await handleLookup(barcode, "scan", "hid");
     },
   });
+  useEffect(() => {
+    if (!isFocused) {
+      setCameraVisible(false);
+    }
+  }, [isFocused]);
+
   const pauseHiddenScannerFocus = useCallback(() => {
     searchInputFocusedRef.current = true;
     if (resumeHiddenScannerFocusTimerRef.current) {
@@ -2432,30 +2440,36 @@ function ProductQueryContent() {
   );
   const retailGp = calcGpPercent(storePrice?.retailPrice, storePrice?.purchasePrice);
   const discountedRetailGp = calcGpPercent(discountedRetailPrice, storePrice?.purchasePrice);
-  const renderCameraScanner = () => (
-    <>
-      {cameraScan.permission?.granted ? (
-        <View style={styles.cameraFrame}>
-          <CameraView style={styles.cameraView} {...cameraScan.cameraProps} />
-        </View>
-      ) : (
-        <Card style={styles.permissionCard}>
-          <Card.Content style={styles.permissionCardContent}>
-            <Text variant="titleMedium">{t("camera.needPermissionTitle")}</Text>
-            <Text variant="bodySmall" style={styles.cameraTip}>
-              {t("camera.needPermissionDescription")}
-            </Text>
-            <Button mode="contained" onPress={() => void cameraScan.requestPermission()}>
-              {t("camera.grantPermission")}
-            </Button>
-          </Card.Content>
-        </Card>
-      )}
-      <Text variant="bodySmall" style={styles.cameraTip}>
-        {t("messages.cameraTip")}
-      </Text>
-    </>
-  );
+  const renderCameraScanner = () => {
+    if (!isFocused) {
+      return null;
+    }
+
+    return (
+      <>
+        {cameraScan.permission?.granted ? (
+          <View style={styles.cameraFrame}>
+            <CameraView style={styles.cameraView} {...cameraScan.cameraProps} />
+          </View>
+        ) : (
+          <Card style={styles.permissionCard}>
+            <Card.Content style={styles.permissionCardContent}>
+              <Text variant="titleMedium">{t("camera.needPermissionTitle")}</Text>
+              <Text variant="bodySmall" style={styles.cameraTip}>
+                {t("camera.needPermissionDescription")}
+              </Text>
+              <Button mode="contained" onPress={() => void cameraScan.requestPermission()}>
+                {t("camera.grantPermission")}
+              </Button>
+            </Card.Content>
+          </Card>
+        )}
+        <Text variant="bodySmall" style={styles.cameraTip}>
+          {t("messages.cameraTip")}
+        </Text>
+      </>
+    );
+  };
 
   return (
     <SafeAreaView
@@ -2693,7 +2707,7 @@ function ProductQueryContent() {
       />
 
       <LookupResultSheet
-        visible={lookupVisible}
+        visible={isFocused && lookupVisible}
         queryText={keyword}
         items={lookupItems}
         selectedValue={selectedLookupProductCode}
@@ -2706,7 +2720,11 @@ function ProductQueryContent() {
       />
 
       <WarehousePriceSyncModal
-        visible={warehousePriceSyncState.phase === "confirmation" || warehousePriceSyncState.phase === "confirming"}
+        visible={
+          isFocused &&
+          (warehousePriceSyncState.phase === "confirmation" ||
+            warehousePriceSyncState.phase === "confirming")
+        }
         productName={warehousePriceSyncContext?.detail.productName}
         productCode={
           warehousePriceSyncContext?.detail.itemNumber ||
@@ -2720,6 +2738,8 @@ function ProductQueryContent() {
       />
 
       <Portal>
+        {isFocused ? (
+          <>
         <Modal
           visible={createProductVisible}
           onDismiss={createProductSaving ? undefined : closeCreateProductModal}
@@ -3183,6 +3203,8 @@ function ProductQueryContent() {
           </View>
           {renderCameraScanner()}
         </Modal>
+          </>
+        ) : null}
       </Portal>
 
       <Snackbar visible={Boolean(snackbarMessage)} onDismiss={() => setSnackbarMessage("")} duration={2500}>
@@ -3197,12 +3219,6 @@ function ProductQueryContent() {
 }
 
 export default function ProductQueryScreen() {
-  const isFocused = useIsFocused();
-
-  if (!isFocused) {
-    return <SafeAreaView style={styles.safeArea} edges={["top", "left", "right"]} />;
-  }
-
   return <ProductQueryContent />;
 }
 
