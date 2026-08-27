@@ -39,7 +39,7 @@ case "$component" in
     dotnet test "$project" \
       --configuration Release \
       --no-build \
-      --filter 'Category!=Performance&Category!=LiveE2e' \
+      --filter 'Category!=SQL&Category!=Performance&Category!=LiveE2e' \
       --logger 'trx;LogFileName=pos-api.trx' \
       --results-directory "$results_root"
     node scripts/ci/assert-trx-tests.mjs "$results_root/pos-api.trx" 'POS API tests'

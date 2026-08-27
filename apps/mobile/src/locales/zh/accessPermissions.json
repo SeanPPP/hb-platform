@@ -141,6 +141,10 @@
       "name": "访问后台",
       "description": "页面 /dashboard - 访问后台工作台"
     },
+    "DeviceRegistration.ActivationCodes.Manage": {
+      "name": "管理设备开通码",
+      "description": "页面 /system/device-registration - 为可管理分店创建和撤销一次性 POS 设备开通码"
+    },
     "DeviceRegistration.Manage": {
       "name": "管理设备注册",
       "description": "页面 /system/device-registration - 审核、维护或管理设备注册"

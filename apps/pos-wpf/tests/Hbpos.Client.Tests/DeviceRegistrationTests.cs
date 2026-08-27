@@ -707,7 +707,7 @@ public sealed class DeviceRegistrationTests
     }
 
     [Fact]
-    public async Task DeviceRegistrationViewModel_RejectedCachedDevice_DoesNotBecomePendingRegistration()
+    public async Task DeviceRegistrationViewModel_RejectedCachedDevice_UsesActivationCodeRegistration()
     {
         var workflow = new FakeDeviceRegistrationWorkflowService
         {
@@ -726,8 +726,10 @@ public sealed class DeviceRegistrationTests
 
         Assert.False(viewModel.HasPendingRegistration);
         Assert.Equal("POS-OLD", viewModel.DeviceCode);
-        Assert.True(viewModel.RegisterCommand.CanExecute(null));
-        Assert.True(viewModel.VerifyCommand.CanExecute(null));
+        Assert.True(viewModel.IsActivationCodeMode);
+        Assert.Empty(viewModel.Stores);
+        Assert.False(viewModel.RegisterCommand.CanExecute(null));
+        Assert.False(viewModel.VerifyCommand.CanExecute(null));
     }
 
     [Fact]

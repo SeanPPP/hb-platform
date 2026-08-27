@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { reconcileDeviceSessionRuntime } from "./device-registration-state";
@@ -27,7 +27,10 @@ import { parseDeviceActivationCode } from "@/core/security/device-activation-cod
 import type { DeviceSessionState } from "@/core/security/device-session";
 import { CameraScannerModal } from "@/features/scanner-camera/camera-scanner-modal";
 import { toggleAppLanguage } from "@/i18n";
-import { PosKeyboardAwareTextInput } from "@/ui/controls/pos-keyboard-aware-scroll-view";
+import {
+  PosKeyboardAwareScrollView,
+  PosKeyboardAwareTextInput,
+} from "@/ui/controls/pos-keyboard-aware-scroll-view";
 import { PosPressable } from "@/ui/controls/pos-pressable";
 import { HandheldStateSurface } from "@/ui/handheld";
 import { PosStatusStrip } from "@/ui/shell/status-strip";
@@ -225,7 +228,7 @@ export function DeviceRegistrationScreen() {
       </View>
 
       <HandheldStateSurface slug="device-registration" style={styles.stateSurface}>
-        <ScrollView
+        <PosKeyboardAwareScrollView
           contentContainerStyle={styles.page}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
@@ -486,7 +489,7 @@ export function DeviceRegistrationScreen() {
               </View>
             ) : null}
           </View>
-        </ScrollView>
+        </PosKeyboardAwareScrollView>
       </HandheldStateSurface>
 
       {scannerRouter ? (
