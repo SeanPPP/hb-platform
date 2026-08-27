@@ -75,6 +75,19 @@ public sealed class IosAppStoreReleaseService(
             return Error("APP_STORE_BUILD_INVALID", "Build number 无效");
         }
 
+        // Mobile 原生策略按 Int32 build 比较；Apple Lookup 不提供 CFBundleVersion，
+        // 因此这里只校验管理员登记值的整数范围，不把它误当成 Apple 核验结果。
+        if (
+            app == AppUpdateApps.MobileIos
+            && !PosIpadEffectiveVersion.TryParseBuild(buildNumber, out _)
+        )
+        {
+            return Error(
+                "APP_STORE_BUILD_INVALID",
+                "Mobile iOS Build number 必须是 0 到 Int32.MaxValue 的整数"
+            );
+        }
+
         // 手持客户端会把 build 作为 JavaScript 安全整数比较；登记入口必须使用同一规范，
         // 避免写入成功后又被候选目录静默过滤。
         if (

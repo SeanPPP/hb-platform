@@ -91,6 +91,11 @@ public class NativeUpdatePolicyRequest
     public string? ReleaseMessage { get; set; }
 }
 
+public sealed class MobileIosNativeUpdatePolicyRequest : NativeUpdatePolicyRequest
+{
+    public int? MinimumSupportedBuildNumber { get; set; }
+}
+
 public sealed class PosIpadNativeUpdatePolicyRequest : NativeUpdatePolicyRequest
 {
     public int? MinimumSupportedBuildNumber { get; set; }

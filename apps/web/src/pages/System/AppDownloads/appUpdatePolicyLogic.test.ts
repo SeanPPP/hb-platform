@@ -6,6 +6,7 @@ import {
   buildOtaPolicyConfirmationSummary,
   buildOtaRolloutRequest,
   isAppUpdatePolicyVersionConflict,
+  isValidMobileIosBuildNumber,
   isValidPosIpadBuildNumber,
   resolveNativeReleaseStatus,
   resolveOtaReleaseStatus,
@@ -69,6 +70,7 @@ assertDeepEqual(
     enabled: true,
     releaseId: 'release-mobile',
     minimumSupportedVersion: '1.0.0',
+    minimumSupportedBuildNumber: 31,
     releaseMessage: '',
     targetScope: 'stores',
     targetStoreGuids: ['store-1'],
@@ -79,6 +81,7 @@ assertDeepEqual(
     releaseId: 'release-mobile',
     minimumSupportedVersion: '1.0.0',
     releaseMessage: null,
+    minimumSupportedBuildNumber: 31,
   },
   'Mobile 策略必须保持全局，不得泄漏 iPad 分店字段',
 )
@@ -95,6 +98,7 @@ assertDeepEqual(
     releaseId: 'release-mobile',
     minimumSupportedVersion: null,
     releaseMessage: null,
+    minimumSupportedBuildNumber: null,
   },
   '原生策略最低版本留空时应仅提供可选更新，不得误启用强制门禁',
 )
@@ -177,7 +181,8 @@ assertDeepEqual(
   buildNativePolicyConfirmationSummary({
     enabled: true,
     releaseId: 'release-mobile',
-    minimumSupportedVersion: ' ',
+    minimumSupportedVersion: ' 1.0.2 ',
+    minimumSupportedBuildNumber: 31,
     targetScope: 'stores',
     targetStoreGuids: ['store-1'],
   }, false),
@@ -185,11 +190,11 @@ assertDeepEqual(
     releaseId: 'release-mobile',
     targetScope: 'all',
     targetStoreGuids: [],
-    updateMode: 'optional',
-    minimumSupportedVersion: null,
-    minimumSupportedBuildNumber: null,
+    updateMode: 'required',
+    minimumSupportedVersion: '1.0.2',
+    minimumSupportedBuildNumber: 31,
   },
-  'Mobile 原生二次确认必须固定为全局范围，并明确可选更新',
+  'Mobile 原生二次确认必须固定为全局范围，并展示最低支持版本和构建号',
 )
 
 assertDeepEqual(
@@ -228,6 +233,19 @@ assertEqual(
   'iPad 构建号不得超过 Int32 最大值',
 )
 assertEqual(isValidPosIpadBuildNumber('build-28'), false, 'iPad 构建号只允许整数')
+assertEqual(isValidMobileIosBuildNumber('0'), true, 'Mobile iOS 构建号允许 Int32 最小值 0')
+assertEqual(
+  isValidMobileIosBuildNumber('2147483647'),
+  true,
+  'Mobile iOS 构建号允许 Int32 最大值',
+)
+assertEqual(isValidMobileIosBuildNumber('-1'), false, 'Mobile iOS 构建号不允许负数')
+assertEqual(isValidMobileIosBuildNumber('1.5'), false, 'Mobile iOS 构建号不允许小数')
+assertEqual(
+  isValidMobileIosBuildNumber('2147483648'),
+  false,
+  'Mobile iOS 构建号不得超过 Int32 最大值',
+)
 assertEqual(
   validateMinimumSupportedBuildNumber('1.2.0', 28),
   true,
@@ -323,7 +341,38 @@ for (const locale of [zhLocale, enLocale]) {
     false,
     'OTA 确认不得宣称已经 Apple Lookup 验证',
   )
+  assertEqual(
+    copy.registrationNotActivation.includes('仅用于审计')
+      || copy.registrationNotActivation.includes('audit only'),
+    false,
+    'Mobile/iPad build-aware 策略不得把构建号描述成仅用于审计',
+  )
+  assertEqual(
+    copy.registrationNotActivation.includes('Apple Lookup'),
+    true,
+    '登记说明必须明确 Apple Lookup 的构建号验证边界',
+  )
+  assertEqual(
+    copy.registrationNotActivation.includes('App Store Connect'),
+    true,
+    '登记说明必须要求管理员在 App Store Connect 人工确认构建号',
+  )
 }
+
+assertEqual(
+  zhLocale.system.appDownloads.updatePolicy.registrationNotActivation.includes(
+    '可选、强制或无需更新',
+  ),
+  true,
+  '中文登记说明必须解释构建号会参与原生更新资格判断',
+)
+assertEqual(
+  enLocale.system.appDownloads.updatePolicy.registrationNotActivation.includes(
+    'optional, required, or not needed',
+  ),
+  true,
+  '英文登记说明必须解释构建号会参与原生更新资格判断',
+)
 
 assertEqual(
   panelSource.includes("kind === 'native'"),
@@ -337,6 +386,23 @@ for (const key of ['confirmRelease', 'confirmScope', 'confirmUpdateMode']) {
     `二次确认必须渲染 ${key} 摘要`,
   )
 }
+for (const key of ['confirmMinimumVersion', 'confirmMinimumBuild']) {
+  assertEqual(
+    panelSource.includes(`updatePolicy.${key}`),
+    true,
+    `原生二次确认必须明确渲染 ${key}`,
+  )
+}
+assertEqual(
+  panelSource.includes("app === 'mobile-ios' || app === 'pos-ipad'"),
+  true,
+  'Mobile 和 iPad 原生策略必须共同启用最低构建号编辑能力',
+)
+assertEqual(
+  panelSource.includes('mobileBuildNotVerifiedWarning'),
+  true,
+  'Mobile 登记和策略确认必须警告 Apple Lookup 不验证构建号',
+)
 assertEqual(
   panelSource.includes('onFinish={handleRegisterRelease}'),
   true,
