@@ -3,7 +3,7 @@ import { FlatList, ScrollView, StyleSheet, TextInput, useWindowDimensions, View 
 import { useQuery } from "@tanstack/react-query";
 import { CameraView } from "expo-camera";
 import { type Href, useRouter } from "expo-router";
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import {
   Badge,
   Button,
@@ -73,6 +73,7 @@ function normalizeStoreCode(value: string | null | undefined) {
 }
 
 export default function Home() {
+  const isFocused = useIsFocused();
   const { t, language } = useAppTranslation(["home", "common"]);
   const { height: windowHeight } = useWindowDimensions();
   const router = useRouter();
@@ -255,6 +256,7 @@ export default function Home() {
     },
   });
   const hidScanner = useHidBarcodeScanner({
+    enabled: isFocused,
     onScan: async (barcode) => {
       await scanResult.handleBarcode(barcode, "hid");
     },
