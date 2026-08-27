@@ -39,6 +39,23 @@ public sealed class DeviceAuthenticationHandler(
             hardwareId,
             Context.RequestAborted);
 
+        if (result.Device is null
+            && result.FailureCode == DeviceAuthorizationFailureCodes.DeviceDisabled
+            && Request.Path.Equals(
+                "/api/v1/devices/activation-code/rebind",
+                StringComparison.OrdinalIgnoreCase))
+        {
+            // 仅 rebind 响应丢失窗口允许旧设备身份继续进入原 cashier policy；service 仍校验同一已消费 code。
+            var activationRecoveryAuthorizationService = Context.RequestServices
+                .GetRequiredService<IDeviceActivationRecoveryAuthorizationService>();
+            result = await activationRecoveryAuthorizationService.TryAuthorizePreviousDeviceAsync(
+                authorizationCode,
+                deviceCode,
+                storeCode,
+                hardwareId,
+                Context.RequestAborted);
+        }
+
         if (result.Device is null)
         {
             Context.Items[AuthenticationFailureCodeItem] =

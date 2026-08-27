@@ -27,6 +27,13 @@ export type ProductionSettingsRuntimeDependencies = Readonly<{
    * 组合根负责在 operation 内复核所有耐久队列并执行动作。
    */
   runDangerousExclusive<T>(operation: () => Promise<T>): Promise<T>;
+  /**
+   * 设备重置会废弃当前 cashier 和注册凭据，必须走全局 transition 的目录→购物车锁序。
+   * 缺失时拒绝执行，避免回退到普通购物车锁而与 barrier 自锁。
+   */
+  runDeviceRegistrationResetTransition?<T>(
+    operation: () => Promise<T>,
+  ): Promise<T>;
 }>;
 
 type LeaseAwareSettingsControlPort = SettingsControlPort &
@@ -34,6 +41,7 @@ type LeaseAwareSettingsControlPort = SettingsControlPort &
     executeDangerousAction(
       action: SettingsDangerousConfirmation,
       signal: AbortSignal,
+      employeeBarcode?: string,
       assertActive?: () => void,
     ): Promise<SettingsDangerousActionResult>;
     clearSavedPrinter?:
@@ -92,6 +100,7 @@ function securedSettingsPort(
   const runDangerous = async (
     action: SettingsDangerousConfirmation,
     signal: AbortSignal,
+    employeeBarcode?: string,
   ): Promise<SettingsDangerousActionResult> => {
     assertSameSession(lease.get(), identity);
     const execute = async () => {
@@ -99,15 +108,31 @@ function securedSettingsPort(
         await leaseAwareControl.executeDangerousAction(
           action,
           signal,
+          employeeBarcode,
           () => assertSameSession(lease.get(), identity),
         );
-      if (action.kind !== "pair-linkly") {
+      if (
+        action.kind !== "pair-linkly" &&
+        action.kind !== "reset-device-registration"
+      ) {
         assertSameSession(lease.get(), identity);
       }
       return result;
     };
     // restart/payment/pair 的最终互斥由 transition 按目录→购物车顺序取得；
     // 若这里先持有普通购物车 lease，transition 会等待当前动作自身而永久自锁。
+    if (action.kind === "reset-device-registration") {
+      const transition = input.runDeviceRegistrationResetTransition;
+      if (!transition) {
+        return Promise.reject(
+          Object.assign(
+            new Error("Device registration reset transition is unavailable."),
+            { code: "DEVICE_REGISTRATION_RESET_TRANSITION_UNAVAILABLE" },
+          ),
+        );
+      }
+      return transition(execute);
+    }
     return action.kind === "restart-app" ||
       action.kind === "change-payment-settings" ||
       action.kind === "pair-linkly"
@@ -206,6 +231,17 @@ function securedSettingsPort(
       run(() => input.control.downloadCatalog(signal)),
     testApiAddress: (apiBaseUrl, signal) =>
       run(() => input.control.testApiAddress(apiBaseUrl, signal)),
+    ...(input.control.previewDeviceActivationCode
+      ? {
+          previewDeviceActivationCode: (activationCode, signal) =>
+            run(() =>
+              input.control.previewDeviceActivationCode!(
+                activationCode,
+                signal,
+              ),
+            ),
+        }
+      : {}),
     testPaymentProvider: (provider, settings, signal) =>
       run(() =>
         input.control.testPaymentProvider(

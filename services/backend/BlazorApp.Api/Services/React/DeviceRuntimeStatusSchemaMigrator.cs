@@ -60,6 +60,7 @@ public static class DeviceRuntimeStatusSchemaMigrator
     internal static IReadOnlyList<string> SqlScriptsForTests { get; } =
     [
         EnsureDeviceRuntimeStatusColumnsSql,
+        BlazorApp.Shared.Models.POSM.DeviceActivationCodeSchema.EnsureSql,
     ];
 
     public static async Task EnsureAsync(ISqlSugarClient db, ILogger logger)

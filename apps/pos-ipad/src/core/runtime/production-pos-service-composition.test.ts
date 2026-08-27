@@ -3911,6 +3911,8 @@ test("日结只使用可信收银员作用域，先耐久归档再通过同一�
 });
 
 test("换店凭据提交后无论 reload 成功、失败或中止都废弃旧 cashier/cart，提交前失败不误杀", async (context) => {
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
   const cases = [
     { name: "正常 reload", afterCommit: "success" },
     { name: "reload 失败", afterCommit: "reload-failed" },
@@ -3966,6 +3968,13 @@ test("换店凭据提交后无论 reload 成功、失败或中止都废弃旧 ca
         settings: {
           ...settings,
           device: {
+            previewActivationCode: async () => ({
+              isAllowed: true,
+              storeCode: "S002",
+              storeName: "Target store",
+              deviceSystem: "iPadOS",
+              expiresAtUtc: "2026-08-28T00:00:00.000Z",
+            }),
             reregister: async () => {
               await coordinator.reregister({ targetStoreCode: "S002" });
               if (scenario.afterCommit === "aborted") {
@@ -3992,7 +4001,8 @@ test("换店凭据提交后无论 reload 成功、失败或中止都废弃旧 ca
       if (!("createPresenter" in services.settings)) return;
       const presenter = services.settings.createPresenter();
       await presenter.load();
-      presenter.setReregisterStoreCode("S002");
+      presenter.setDeviceActivationCode(activationCode);
+      await presenter.previewDeviceReregistration();
       assert.equal(presenter.requestDeviceReregistration(), true);
       await presenter.confirmDangerousAction();
 
@@ -4415,11 +4425,16 @@ function settingsRuntimeConfiguration(): ProductionSettingsRuntimeConfiguration 
     apiConfiguration: {
       probe: async () => true,
       save: async () => undefined,
+      runSwitchGuarded: async (operation) => ({
+        blocked: false as const,
+        value: await operation(),
+      }),
     },
     runtimeReload: { reload: async () => undefined },
     device: {
       reregister: async () => undefined,
       resetRegistration: async () => "completed",
+      hasRegistrationRecoveryRisk: async () => false,
     },
     printer: {
       getStatus: async () => "ready",

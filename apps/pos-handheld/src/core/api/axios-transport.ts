@@ -24,11 +24,14 @@ export interface HbposAuthenticationFailureHandler {
   onForbidden(): Promise<void>;
 }
 
+type CashierHeaderPolicy = "override-explicit" | "preserve-explicit";
+
 export function createAxiosHbposTransport(
   baseUrl: string,
   credentialProvider: HbposRequestCredentialProvider,
   instance: AxiosInstance = create({ baseURL: baseUrl, timeout: 15_000 }),
   authenticationFailureHandler?: HbposAuthenticationFailureHandler,
+  cashierHeaderPolicy: CashierHeaderPolicy = "override-explicit",
 ): HbposTransport {
   const trustedOrigin = new URL(baseUrl).origin;
   instance.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
@@ -61,7 +64,13 @@ export function createAxiosHbposTransport(
       config.headers.set("X-HBPOS-Hardware-Id", credentials.device.hardwareId);
     }
     if (credentials.cashierAuthorization) {
-      config.headers.set("X-HBPOS-Cashier-Authorization", credentials.cashierAuthorization);
+      // 常规请求覆盖陈旧显式 header；设备重置可保留本次在线登录的新鲜票据。
+      if (
+        cashierHeaderPolicy === "override-explicit" ||
+        !config.headers.has("X-HBPOS-Cashier-Authorization")
+      ) {
+        config.headers.set("X-HBPOS-Cashier-Authorization", credentials.cashierAuthorization);
+      }
     }
     return config;
   });
@@ -124,6 +133,22 @@ export function createAxiosHbposTransport(
       }
     }
   };
+}
+
+/** 设备注册重置专用 transport，避免持久收银员票据覆盖本次在线登录票据。 */
+export function createFreshCashierAxiosHbposTransport(
+  baseUrl: string,
+  credentialProvider: HbposRequestCredentialProvider,
+  instance: AxiosInstance = create({ baseURL: baseUrl, timeout: 15_000 }),
+  authenticationFailureHandler?: HbposAuthenticationFailureHandler,
+): HbposTransport {
+  return createAxiosHbposTransport(
+    baseUrl,
+    credentialProvider,
+    instance,
+    authenticationFailureHandler,
+    "preserve-explicit",
+  );
 }
 
 function normalizeResponseHeaders(

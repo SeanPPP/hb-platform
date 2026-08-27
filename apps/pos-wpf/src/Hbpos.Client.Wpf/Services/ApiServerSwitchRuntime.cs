@@ -14,7 +14,8 @@ internal sealed class ApiServerSwitchRuntime(
     OperationAuditUploadService operationAuditUploadService,
     ApiRuntimeEndpointState endpointState,
     IOperationAuthorizationService operationAuthorizationService,
-    ICashierSessionContext cashierSessionContext) : IApiServerSwitchRuntime
+    ICashierSessionContext cashierSessionContext,
+    IDeviceActivationRecoveryStore activationRecoveryStore) : IApiServerSwitchRuntime
 {
     private Func<ApiServerPaymentSafetyState> _getPaymentState = () => ApiServerPaymentSafetyState.Safe;
     private Func<CancellationToken, Task> _postCommitAsync = _ => Task.CompletedTask;
@@ -30,11 +31,11 @@ internal sealed class ApiServerSwitchRuntime(
         _setSwitching = setSwitching ?? throw new ArgumentNullException(nameof(setSwitching));
     }
 
-    public Task<ApiServerSwitchSafetySnapshot> GetSafetySnapshotAsync(CancellationToken cancellationToken)
+    public async Task<ApiServerSwitchSafetySnapshot> GetSafetySnapshotAsync(CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var payment = _getPaymentState();
-        return Task.FromResult(CreateSnapshot(payment));
+        return await CreateSnapshot(payment, cancellationToken);
     }
 
     public Task<object> PrepareAsync(string targetAddress, CancellationToken cancellationToken)
@@ -70,14 +71,14 @@ internal sealed class ApiServerSwitchRuntime(
         }
     }
 
-    public Task<ApiServerSwitchSafetySnapshot> GetFinalSafetySnapshotAsync(
+    public async Task<ApiServerSwitchSafetySnapshot> GetFinalSafetySnapshotAsync(
         object transition,
         CancellationToken cancellationToken)
     {
         _ = GetTransition(transition);
         cancellationToken.ThrowIfCancellationRequested();
         var payment = _getPaymentState();
-        return Task.FromResult(CreateSnapshot(payment));
+        return await CreateSnapshot(payment, cancellationToken);
     }
 
     public bool Commit(object transition)
@@ -114,8 +115,11 @@ internal sealed class ApiServerSwitchRuntime(
         }
     }
 
-    private ApiServerSwitchSafetySnapshot CreateSnapshot(ApiServerPaymentSafetyState payment)
+    private async Task<ApiServerSwitchSafetySnapshot> CreateSnapshot(
+        ApiServerPaymentSafetyState payment,
+        CancellationToken cancellationToken)
     {
+        var hasPendingActivationRecovery = await HasPendingActivationRecoveryAsync(cancellationToken);
         return new ApiServerSwitchSafetySnapshot(
             cart.Lines.Count,
             payment.IsCardPaymentInProgress,
@@ -124,7 +128,25 @@ internal sealed class ApiServerSwitchRuntime(
             PendingSyncCount: 0,
             FailedSyncCount: 0,
             SyncingCount: 0,
-            PendingOperationAuditCount: 0);
+            PendingOperationAuditCount: 0,
+            HasPendingActivationRecovery: hasPendingActivationRecovery);
+    }
+
+    private async Task<bool> HasPendingActivationRecoveryAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await activationRecoveryStore.GetAsync(cancellationToken) is not null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // 记录不可读或状态无法证明安全时阻断切换，且绝不在服务器边界上清理恢复文件。
+            return true;
+        }
     }
 
     private static ApiServerRuntimeTransition GetTransition(object transition)

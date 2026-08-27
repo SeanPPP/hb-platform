@@ -248,6 +248,7 @@
   <data name="settings.serverAddress.status.postCommitFailed" xml:space="preserve"><value>The endpoint switched, but the shell could not be reloaded. Restart HBPOS and sign in again.</value></data>
   <data name="settings.serverAddress.blocked.cart" xml:space="preserve"><value>Clear the cart before switching servers.</value></data>
   <data name="settings.serverAddress.blocked.payment" xml:space="preserve"><value>Finish or cancel the current payment before switching servers.</value></data>
+  <data name="settings.serverAddress.blocked.deviceActivation" xml:space="preserve"><value>Finish recovering the pending device activation before switching servers.</value></data>
   <data name="settings.serverAddress.blocked.sync" xml:space="preserve"><value>Resolve all pending, failed, or syncing orders before switching servers.</value></data>
   <data name="settings.serverAddress.blocked.audit" xml:space="preserve"><value>Wait for pending operation audit events to upload before switching servers.</value></data>
 </root>

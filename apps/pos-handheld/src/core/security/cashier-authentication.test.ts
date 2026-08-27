@@ -169,6 +169,94 @@ test("在线明确拒绝绝不回退缓存", async () => {
   );
 });
 
+test("设备注册重置验票必须在线且不允许回退离线缓存", async () => {
+  const secureStore = new InMemorySecureStore();
+  const cache = new CashierSessionCache(secureStore, cacheKeyHasher);
+  await cache.save("1003", "POS_1003_1011", "CASHIER-BARCODE", session);
+  let apiCalls = 0;
+  const service = new CashierAuthenticationService(
+    {
+      async barcodeLogin() {
+        apiCalls += 1;
+        throw new HbposApiError("network unavailable", { kind: "transport" });
+      },
+    },
+    cache,
+    { isOnline: async () => true },
+  );
+
+  await assert.rejects(
+    () =>
+      service.loginOnlineOnly({
+        storeCode: "1003",
+        deviceCode: "POS_1003_1011",
+        userBarcode: "CASHIER-BARCODE",
+      }),
+    (error: unknown) =>
+      error instanceof HbposApiError && error.kind === "transport",
+  );
+  assert.equal(apiCalls, 1);
+});
+
+test("设备注册重置验票拒绝断网、紧急二维码且不激活当前收银员授权", async () => {
+  const secureStore = new InMemorySecureStore();
+  const cache = new CashierSessionCache(secureStore, cacheKeyHasher);
+  const authorization = new CashierAuthorizationStore(secureStore);
+  let online = false;
+  let apiCalls = 0;
+  const service = new CashierAuthenticationService(
+    {
+      async barcodeLogin() {
+        apiCalls += 1;
+        return session;
+      },
+    },
+    cache,
+    { isOnline: async () => online },
+    authorization,
+  );
+
+  await assert.rejects(
+    () =>
+      service.loginOnlineOnly({
+        storeCode: "1003",
+        deviceCode: "POS_1003_1011",
+        userBarcode: "CASHIER-BARCODE",
+      }),
+    (error: unknown) =>
+      error instanceof HbposApiError && error.code === "ONLINE_LOGIN_REQUIRED",
+  );
+  online = true;
+  await assert.rejects(
+    () =>
+      service.loginOnlineOnly({
+        storeCode: "1003",
+        deviceCode: "POS_1003_1011",
+        userBarcode: "HBPOSE2-signed-token",
+      }),
+    (error: unknown) =>
+      error instanceof HbposApiError &&
+      error.code === "REAL_EMPLOYEE_BARCODE_REQUIRED",
+  );
+
+  const result = await service.loginOnlineOnly({
+    storeCode: "1003",
+    deviceCode: "POS_1003_1011",
+    userBarcode: "CASHIER-BARCODE",
+  });
+
+  assert.equal(result.source, "online");
+  assert.equal(apiCalls, 1);
+  assert.equal(
+    await cache.load("1003", "POS_1003_1011", "CASHIER-BARCODE"),
+    null,
+  );
+  assert.equal(
+    await authorization.get({ storeCode: "1003", deviceCode: "POS_1003_1011" }),
+    null,
+  );
+});
+
 test("已知设备禁用后，离线收银员缓存不得绕过锁定", async () => {
   const secureStore = new InMemorySecureStore();
   const cache = new CashierSessionCache(secureStore, cacheKeyHasher);

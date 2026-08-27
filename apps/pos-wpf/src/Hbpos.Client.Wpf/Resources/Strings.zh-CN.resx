@@ -1887,10 +1887,10 @@
     <value>重打印日结单</value>
   </data>
   <data name="deviceRegistration.title" xml:space="preserve">
-    <value>设备注册</value>
+    <value>设备开通</value>
   </data>
   <data name="deviceRegistration.title.reregister" xml:space="preserve">
-    <value>更换分店重新注册</value>
+    <value>更换设备分店</value>
   </data>
   <data name="deviceRegistration.submit" xml:space="preserve">
     <value>提交注册</value>
@@ -1914,7 +1914,7 @@
     <value>重新检查</value>
   </data>
   <data name="deviceRegistration.reregister.subtitle" xml:space="preserve">
-    <value>请选择要切换注册的分店</value>
+    <value>使用为目标分店创建的一次性设备开通码。</value>
   </data>
   <data name="deviceRegistration.status.loadingStores" xml:space="preserve">
     <value>正在加载分店...</value>
@@ -1951,6 +1951,75 @@
   </data>
   <data name="deviceRegistration.status.switchStore" xml:space="preserve">
     <value>请选择新分店以切换当前待审批注册。</value>
+  </data>
+  <data name="deviceActivation.description" xml:space="preserve">
+    <value>扫描 Web 端生成的二维码，或输入完整的一次性设备开通码；分店由开通码自动确定。</value>
+  </data>
+  <data name="deviceActivation.rebindDescription" xml:space="preserve">
+    <value>扫描或输入目标分店开通码，核对分店、平台和有效期后再确认更换。</value>
+  </data>
+  <data name="deviceActivation.code" xml:space="preserve">
+    <value>设备开通码</value>
+  </data>
+  <data name="deviceActivation.targetStore" xml:space="preserve">
+    <value>目标分店</value>
+  </data>
+  <data name="deviceActivation.platform" xml:space="preserve">
+    <value>平台</value>
+  </data>
+  <data name="deviceActivation.expiresAt" xml:space="preserve">
+    <value>有效期至</value>
+  </data>
+  <data name="deviceActivation.preview" xml:space="preserve">
+    <value>检查开通码</value>
+  </data>
+  <data name="deviceActivation.confirm.redeem" xml:space="preserve">
+    <value>开通设备</value>
+  </data>
+  <data name="deviceActivation.confirm.rebind" xml:space="preserve">
+    <value>确认更换分店</value>
+  </data>
+  <data name="deviceActivation.status.scanOrEnter" xml:space="preserve">
+    <value>请扫描或输入一次性设备开通码。</value>
+  </data>
+  <data name="deviceActivation.status.scanOrEnterRebind" xml:space="preserve">
+    <value>请扫描或输入目标分店的设备开通码。</value>
+  </data>
+  <data name="deviceActivation.status.invalidFormat" xml:space="preserve">
+    <value>请扫描或输入完整的 HBDEV1 设备开通码。</value>
+  </data>
+  <data name="deviceActivation.status.previewing" xml:space="preserve">
+    <value>正在检查设备开通码...</value>
+  </data>
+  <data name="deviceActivation.status.confirmRedeem" xml:space="preserve">
+    <value>请核对分店、平台和有效期，然后开通此设备。</value>
+  </data>
+  <data name="deviceActivation.status.confirmRebind" xml:space="preserve">
+    <value>请核对目标分店、平台和有效期，然后确认更换分店。</value>
+  </data>
+  <data name="deviceActivation.status.redeeming" xml:space="preserve">
+    <value>正在开通此设备...</value>
+  </data>
+  <data name="deviceActivation.status.rebinding" xml:space="preserve">
+    <value>正在更换此设备的分店...</value>
+  </data>
+  <data name="deviceActivation.status.recovering" xml:space="preserve">
+    <value>正在恢复中断的设备开通...</value>
+  </data>
+  <data name="deviceActivation.status.recoveryUnreadable" xml:space="preserve">
+    <value>无法读取设备开通恢复记录。请修复本地应用数据权限后重启，或联系管理员。</value>
+  </data>
+  <data name="deviceActivation.error.invalid" xml:space="preserve">
+    <value>设备开通码格式无效。</value>
+  </data>
+  <data name="deviceActivation.error.notAvailable" xml:space="preserve">
+    <value>此设备开通码无效、已过期、已撤销或已使用。</value>
+  </data>
+  <data name="deviceActivation.error.platformMismatch" xml:space="preserve">
+    <value>此设备开通码不适用于 Windows POS。</value>
+  </data>
+  <data name="deviceActivation.error.failed" xml:space="preserve">
+    <value>设备开通失败，请检查开通码和网络连接后重试。</value>
   </data>
   <data name="returns.status.default" xml:space="preserve">
     <value>请扫描订单号开始小票退货。</value>

@@ -66,3 +66,12 @@ test('Windows 组件测试按 profile 筛选性能测试并在 weekly 启用性�
   assert.match(source, /'Category!=Performance&Category!=LiveE2e'/)
   assert.match(source, /'Category!=LiveE2e'/)
 })
+
+test('POS API 常规组件排除由 weekly lane 执行的 SQL 集成测试', () => {
+  const source = readFileSync(new URL('./run-dotnet-component.sh', import.meta.url), 'utf8')
+
+  assert.match(
+    source,
+    /pos-api\)[\s\S]*--filter 'Category!=SQL&Category!=Performance&Category!=LiveE2e'/,
+  )
+})

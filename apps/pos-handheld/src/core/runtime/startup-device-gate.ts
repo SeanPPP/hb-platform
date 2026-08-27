@@ -13,6 +13,8 @@ export type StartupDeviceGateResult = Readonly<{
 
 export type StartupDeviceGateOptions = Readonly<{
   internetReachable: boolean;
+  registrationResetPending?: boolean;
+  readPendingDeviceActivation(): Promise<string | null>;
   verifyCurrentDevice(): Promise<DeviceSessionState>;
   readLocalDevice(): Promise<Exclude<RuntimeDeviceState, "unknown">>;
   lockDevice(reason: string): Promise<void>;
@@ -26,7 +28,17 @@ export type StartupDeviceGateOptions = Readonly<{
 export async function resolveStartupDeviceGate(
   options: StartupDeviceGateOptions,
 ): Promise<StartupDeviceGateResult> {
+  if (options.registrationResetPending === true) {
+    return {
+      backend: options.internetReachable ? "unverified" : "offline",
+      device: "locked",
+    };
+  }
+  const pendingActivation = await readPendingDeviceActivation(options);
   if (!options.internetReachable) {
+    if (pendingActivation) {
+      throw new DeviceActivationRecoveryRequiredError();
+    }
     return {
       backend: "offline",
       device: await options.readLocalDevice(),
@@ -41,12 +53,33 @@ export async function resolveStartupDeviceGate(
       return { backend: "rejected", device: "locked" };
     }
     if (isOfflineCompatibleFailure(error)) {
+      if (await readPendingDeviceActivation(options)) {
+        throw new DeviceActivationRecoveryRequiredError();
+      }
       return {
         backend: "offline",
         device: await options.readLocalDevice(),
       };
     }
     throw error;
+  }
+}
+
+class DeviceActivationRecoveryRequiredError extends Error {
+  public constructor() {
+    super("Device activation recovery is pending; reconnect to finish recovery.");
+    this.name = "DeviceActivationRecoveryRequiredError";
+  }
+}
+
+async function readPendingDeviceActivation(
+  options: StartupDeviceGateOptions,
+): Promise<string | null> {
+  try {
+    return await options.readPendingDeviceActivation();
+  } catch {
+    // Keychain/JSON 状态无法判定时不得读取旧 Enabled cache 继续交易。
+    throw new DeviceActivationRecoveryRequiredError();
   }
 }
 

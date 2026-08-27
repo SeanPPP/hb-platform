@@ -455,6 +455,8 @@ builder.Services.AddScoped<SqlSugarContext>(); // 主数据库上下文（每请
 builder.Services.AddScoped<HqSqlSugarContext>(); // HQ总部数据库上下文（每请求一个实例）
 builder.Services.AddScoped<HBSalesSqlSugarContext>(); // HBSales数据库上下文（每请求一个实例）
 builder.Services.AddScoped<POSMSqlSugarContext>(); // POSM数据库上下文（每请求一个实例）
+builder.Services.Configure<BlazorApp.Shared.Options.DeviceActivationOptions>(
+    builder.Configuration.GetSection(BlazorApp.Shared.Options.DeviceActivationOptions.SectionName));
 builder.Services.AddScoped<HBSalesRecordSqlSugarContext>(); // HBSalesRecord数据库上下文（每请求一个实例）
 builder.Services.AddScoped<OperationAuditQueryService>(sp =>
     new OperationAuditQueryService(
@@ -799,6 +801,7 @@ builder.Services.AddScoped<IPosmSalesOrderReactService, PosmSalesOrderReactServi
 builder.Services.AddScoped<IInstallmentOrderReactService, InstallmentOrderReactService>();
 builder.Services.AddScoped<IStoreVoucherReactService, StoreVoucherReactService>();
 builder.Services.AddScoped<IDeviceRegistrationReactService, DeviceRegistrationReactService>();
+builder.Services.AddScoped<DeviceActivationCodeManagementService>();
 builder.Services.AddScoped<IAttendancePosDeviceStatusProvider, AttendancePosDeviceStatusProvider>();
 builder.Services.AddScoped<ITaxInvoiceService, TaxInvoiceService>();
 builder.Services.AddScoped<ISalesDashboardReactService, SalesDashboardReactService>();

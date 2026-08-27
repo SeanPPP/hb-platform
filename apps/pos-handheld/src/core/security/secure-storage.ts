@@ -1,4 +1,5 @@
 import type { CashierSessionDto } from "../api/hbpos-api";
+import { parseDeviceActivationCode } from "./device-activation-code";
 
 export type SecureStoreWriteOptions = Readonly<{
   requireThisDeviceOnly: boolean;
@@ -19,9 +20,12 @@ const installationIdKey = "hbpos.handheld.installation-id.v1";
 const deviceCredentialsKey = "hbpos.handheld.device-credentials.v1";
 const devicePresentationKey = "hbpos.handheld.device-presentation.v1";
 const pendingDeviceRegistrationKey = "hbpos.handheld.pending-device-registration.v1";
+const pendingDeviceActivationCodeKey = "hbpos.handheld.pending-device-activation-code.v1";
+const deviceRegistrationResetMarkerKey = "hbpos.handheld.device-registration-reset.v1";
 const deviceLockKey = "hbpos.handheld.device-lock.v1";
 const activeCashierAuthorizationKey = "hbpos.handheld.active-cashier-authorization.v1";
 const secureThisDeviceOnly: SecureStoreWriteOptions = { requireThisDeviceOnly: true };
+const pendingActivationSaveQueues = new WeakMap<SecureStorePort, Promise<void>>();
 
 export type StoredDeviceCredentials = Readonly<{
   deviceCode: string;
@@ -44,6 +48,16 @@ type StoredDevicePresentation = DevicePresentationCache &
 export type PendingDeviceRegistration = Readonly<{
   deviceCode: string;
   storeCode: string;
+}>;
+
+export type DeviceRegistrationResetMarker = Readonly<{
+  version: 1;
+  operationId: string;
+  phase: "prepared" | "server-disabled";
+  deviceCode: string;
+  storeCode: string;
+  hardwareId: string;
+  createdAtUtc: string;
 }>;
 
 export class InstallationIdentityStore {
@@ -162,10 +176,196 @@ export class PendingDeviceRegistrationStore {
   }
 }
 
+export type PendingDeviceActivation = Readonly<{
+  activationCode: string;
+  mode: "redeem" | "rebind";
+  apiPartition: string;
+  hardwareId: string;
+}>;
+
+export type PendingDeviceActivationIntent = Pick<
+  PendingDeviceActivation,
+  "apiPartition" | "hardwareId"
+>;
+
+export class PendingDeviceActivationConflictError extends Error {
+  public constructor() {
+    super("Pending device activation intent conflict.");
+    this.name = "PendingDeviceActivationConflictError";
+  }
+}
+
+/** 只在最终 redeem/rebind 请求窗口保存，成功落盘设备凭据后立即清除。 */
+export class PendingDeviceActivationCodeStore {
+  public constructor(private readonly secureStore: SecureStorePort) {}
+
+  public async load(): Promise<string | null> {
+    return (await this.loadPending())?.activationCode ?? null;
+  }
+
+  public async loadPending(): Promise<PendingDeviceActivation | null> {
+    const raw = await this.secureStore.get(pendingDeviceActivationCodeKey);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw) as Readonly<{
+        activationCode?: unknown;
+        apiPartition?: unknown;
+        hardwareId?: unknown;
+        mode?: unknown;
+        version?: unknown;
+      }>;
+      const activationCode =
+        typeof parsed.activationCode === "string"
+          ? parseDeviceActivationCode(parsed.activationCode)
+          : null;
+      if (
+        parsed.version === 3 &&
+        activationCode &&
+        typeof parsed.apiPartition === "string" &&
+        typeof parsed.hardwareId === "string" &&
+        (parsed.mode === "redeem" || parsed.mode === "rebind")
+      ) {
+        return Object.freeze({
+          activationCode,
+          mode: parsed.mode,
+          apiPartition: normalizePendingDeviceActivationApiPartition(parsed.apiPartition),
+          hardwareId: normalizeActivationHardwareId(parsed.hardwareId),
+        });
+      }
+    } catch {
+      // 损坏 JSON 与字段非法走同一失败关闭清理路径。
+    }
+    // 状态可能对应一次服务端已消费请求；损坏记录不得当作“无 pending”并删除。
+    throw new Error(`Stored ${pendingDeviceActivationCodeKey} is invalid.`);
+  }
+
+  public async save(
+    value: string,
+    mode: PendingDeviceActivation["mode"],
+    intent: PendingDeviceActivationIntent,
+  ): Promise<void> {
+    const activationCode = parseDeviceActivationCode(value);
+    if (!activationCode) {
+      throw new TypeError("Device activation code is invalid.");
+    }
+    const apiPartition = normalizePendingDeviceActivationApiPartition(intent.apiPartition);
+    const hardwareId = normalizeActivationHardwareId(intent.hardwareId);
+    await serializePendingActivationSave(this.secureStore, async () => {
+      const existing = await this.loadPending();
+      if (existing) {
+        if (
+          existing.activationCode === activationCode &&
+          existing.mode === mode &&
+          existing.apiPartition === apiPartition &&
+          existing.hardwareId === hardwareId
+        ) {
+          return;
+        }
+        // 已发起的最终消费可能已在服务端成功，第二个意图不得覆盖恢复凭据。
+        throw new PendingDeviceActivationConflictError();
+      }
+      await this.secureStore.set(
+        pendingDeviceActivationCodeKey,
+        JSON.stringify({
+          version: 3,
+          activationCode,
+          mode,
+          apiPartition,
+          hardwareId,
+        }),
+        secureThisDeviceOnly,
+      );
+    });
+  }
+
+  public clear(): Promise<void> {
+    return this.secureStore.remove(pendingDeviceActivationCodeKey);
+  }
+}
+
+export function normalizePendingDeviceActivationApiPartition(value: string): string {
+  const input = value.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(input);
+  } catch {
+    throw new TypeError("Device activation API partition is invalid.");
+  }
+  if (
+    (parsed.protocol !== "https:" && parsed.protocol !== "http:") ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new TypeError("Device activation API partition is invalid.");
+  }
+  const path = parsed.pathname.replace(/\/+$/u, "");
+  return `${parsed.origin}${path}`;
+}
+
+function normalizeActivationHardwareId(value: string): string {
+  const hardwareId = value.trim();
+  if (
+    !hardwareId ||
+    hardwareId.length > 256 ||
+    /[\u0000-\u001f\u007f]/u.test(hardwareId)
+  ) {
+    throw new TypeError("Device activation hardware identifier is invalid.");
+  }
+  return hardwareId;
+}
+
+async function serializePendingActivationSave<T>(
+  secureStore: SecureStorePort,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = pendingActivationSaveQueues.get(secureStore) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  pendingActivationSaveQueues.set(secureStore, current);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (pendingActivationSaveQueues.get(secureStore) === current) {
+      pendingActivationSaveQueues.delete(secureStore);
+    }
+  }
+}
+
+/** 服务端重置与本机 Keychain 清理之间的崩溃恢复标记；损坏时必须失败关闭。 */
+export class DeviceRegistrationResetMarkerStore {
+  public constructor(private readonly secureStore: SecureStorePort) {}
+
+  public async load(): Promise<DeviceRegistrationResetMarker | null> {
+    const raw = await this.secureStore.get(deviceRegistrationResetMarkerKey);
+    return raw ? parseDeviceRegistrationResetMarker(raw) : null;
+  }
+
+  public save(marker: DeviceRegistrationResetMarker): Promise<void> {
+    return this.secureStore.set(
+      deviceRegistrationResetMarkerKey,
+      JSON.stringify(validateDeviceRegistrationResetMarker(marker)),
+      secureThisDeviceOnly,
+    );
+  }
+
+  public clear(): Promise<void> {
+    return this.secureStore.remove(deviceRegistrationResetMarkerKey);
+  }
+}
+
 export class DeviceLockStore {
+  private recoveryProcessLocked = false;
+
   public constructor(private readonly secureStore: SecureStorePort) {}
 
   public async isLocked(): Promise<boolean> {
+    if (this.recoveryProcessLocked) return true;
     return (await this.secureStore.get(deviceLockKey)) !== null;
   }
 
@@ -175,6 +375,17 @@ export class DeviceLockStore {
 
   public async unlock(): Promise<void> {
     await this.secureStore.remove(deviceLockKey);
+  }
+
+  /** 持久锁写入失败时，进程闩锁仍必须先同步阻止登录及设备会话。 */
+  public async lockForRecovery(reason: string): Promise<void> {
+    this.recoveryProcessLocked = true;
+    await this.lock(reason);
+  }
+
+  /** 仅在精确恢复及本机清理全部完成后释放。 */
+  public releaseRecoveryProcessLock(): void {
+    this.recoveryProcessLocked = false;
   }
 }
 
@@ -658,6 +869,67 @@ function validatePendingDeviceRegistration(
   return {
     deviceCode: storedText(record.deviceCode, pendingDeviceRegistrationKey),
     storeCode: storedText(record.storeCode, pendingDeviceRegistrationKey),
+  };
+}
+
+function parseDeviceRegistrationResetMarker(
+  raw: string,
+): DeviceRegistrationResetMarker {
+  return validateDeviceRegistrationResetMarker(
+    parseStored<unknown>(raw, deviceRegistrationResetMarkerKey),
+  );
+}
+
+function validateDeviceRegistrationResetMarker(
+  value: unknown,
+): DeviceRegistrationResetMarker {
+  const record = storedRecord(value, deviceRegistrationResetMarkerKey);
+  const expectedKeys = [
+    "version",
+    "operationId",
+    "phase",
+    "deviceCode",
+    "storeCode",
+    "hardwareId",
+    "createdAtUtc",
+  ];
+  const operationId = storedText(
+    record.operationId,
+    deviceRegistrationResetMarkerKey,
+  ).trim();
+  const createdAtUtc = storedText(
+    record.createdAtUtc,
+    deviceRegistrationResetMarkerKey,
+  ).trim();
+  if (
+    Object.keys(record).length !== expectedKeys.length ||
+    expectedKeys.some((key) => !(key in record)) ||
+    record.version !== 1 ||
+    (record.phase !== "prepared" && record.phase !== "server-disabled") ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+      operationId,
+    ) ||
+    !Number.isFinite(Date.parse(createdAtUtc))
+  ) {
+    throw new Error(`Stored ${deviceRegistrationResetMarkerKey} is invalid.`);
+  }
+  return {
+    version: 1,
+    operationId,
+    phase: record.phase,
+    deviceCode: storedText(
+      record.deviceCode,
+      deviceRegistrationResetMarkerKey,
+    ).trim(),
+    storeCode: storedText(
+      record.storeCode,
+      deviceRegistrationResetMarkerKey,
+    ).trim(),
+    hardwareId: storedText(
+      record.hardwareId,
+      deviceRegistrationResetMarkerKey,
+    ).trim(),
+    createdAtUtc,
   };
 }
 

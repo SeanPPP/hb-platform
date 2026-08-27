@@ -333,7 +333,10 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     isAdmin || canManageAppDownloads || hasPermission(P.System.ViewAppDownloads)
   const canManageDeviceRegistration = isAdmin || hasPermission(P.DeviceRegistration.Manage)
   const canViewDeviceRegistration =
-    canManageDeviceRegistration || isAdmin || hasPermission(P.DeviceRegistration.View)
+    canManageDeviceRegistration ||
+    isAdmin ||
+    hasPermission(P.DeviceRegistration.View) ||
+    hasPermission(P.DeviceRegistration.ActivationCodesManage)
   const canViewPosProducts =
     isAdmin || hasPermission(P.PosProducts.View) || hasPermission(P.PosProducts.Manage)
   const canManagePosProducts = isAdmin || hasPermission(P.PosProducts.Manage)
@@ -354,6 +357,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
       canManageSystemSettings,
       canViewAppDownloads,
       canViewOperationAudits,
+      canViewDeviceRegistration,
       hasPermission,
     })
   const canAccessOrderFront =

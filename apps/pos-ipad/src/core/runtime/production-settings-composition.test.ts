@@ -942,14 +942,15 @@ function activeCashier(): CurrentCashierSession {
 function dependencies(
   overrides: Partial<ProductionSettingsCompositionInput> = {},
 ): ProductionSettingsCompositionInput {
+  const { apiConfiguration, device, ...otherOverrides } = overrides;
   const activeCart =
-    overrides.activeCart ??
+    otherOverrides.activeCart ??
     new ActivePricingCartSession(
       new PricingCart(),
       () => new PricingCart(),
     );
   return {
-    currentCashier: overrides.currentCashier ?? activeCashier(),
+    currentCashier: otherOverrides.currentCashier ?? activeCashier(),
     terminal: { storeCode: "S1", deviceCode: "IPAD-1" },
     activeCart,
     apiBaseUrl: "https://pos.example.test",
@@ -1037,6 +1038,11 @@ function dependencies(
     apiConfiguration: {
       probe: async () => true,
       save: async () => undefined,
+      runSwitchGuarded: async (operation) => ({
+        blocked: false as const,
+        value: await operation(),
+      }),
+      ...apiConfiguration,
     },
     runtimeReload: {
       reload: async () => undefined,
@@ -1044,6 +1050,8 @@ function dependencies(
     device: {
       reregister: async () => undefined,
       resetRegistration: async () => "completed",
+      hasRegistrationRecoveryRisk: async () => false,
+      ...device,
     },
     printer: {
       getStatus: async () => "ready",
@@ -1084,6 +1092,6 @@ function dependencies(
       }),
       restart: async () => true,
     },
-    ...overrides,
+    ...otherOverrides,
   };
 }

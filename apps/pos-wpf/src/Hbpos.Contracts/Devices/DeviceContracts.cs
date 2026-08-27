@@ -83,7 +83,8 @@ public sealed record DeviceRegisterResponse(
     int DeviceStatus,
     bool IsAllowed,
     string? Message = null,
-    string? AuthorizationCode = null);
+    string? AuthorizationCode = null,
+    string? ReasonCode = null);
 
 public sealed record DeviceReregisterRequest(
     string TargetStoreCode,

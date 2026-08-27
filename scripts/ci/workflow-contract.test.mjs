@@ -23,6 +23,7 @@ const nodeRunnerPath = new URL('./run-node-component.sh', import.meta.url)
 const macosRunnerPath = new URL('./run-macos-component.sh', import.meta.url)
 const androidRunnerPath = new URL('./run-android-component.sh', import.meta.url)
 const windowsRunnerPath = new URL('./run-windows-component.ps1', import.meta.url)
+const weeklySqlRunnerPath = new URL('./run-weekly-sql.sh', import.meta.url)
 const testAllPath = new URL('../test-all.sh', import.meta.url)
 const mobilePackagePath = new URL('../../apps/mobile/package.json', import.meta.url)
 const wpfClientTestsProjectPath = new URL('../../apps/pos-wpf/tests/Hbpos.Client.Tests/Hbpos.Client.Tests.csproj', import.meta.url)
@@ -486,8 +487,13 @@ test('test-all 在 Linux、macOS、Windows 都逐 lane 打印 executed/skipped �
 
 test('Weekly SQL 使用独立容器且不会接入 LiveE2e', () => {
   const source = readFileSync(workflowPath, 'utf8')
+  const runner = readFileSync(weeklySqlRunnerPath, 'utf8')
   assert.match(source, /mcr\.microsoft\.com\/mssql\/server@sha256:[0-9a-f]{64}/)
   assert.match(source, /run-weekly-sql\.sh/)
+  assert.match(source, /DEVICE_ACTIVATION_SQLSERVER_TEST_CONNECTION:/)
+  assert.match(runner, /DEVICE_ACTIVATION_SQLSERVER_TEST_CONNECTION/)
+  assert.match(runner, /apps\/pos-wpf\/tests\/Hbpos\.Api\.Tests\/Hbpos\.Api\.Tests\.csproj/)
+  assert.match(runner, /weekly-device-activation-sql\.trx/)
   assert.doesNotMatch(source, /Category=LiveE2e/)
 })
 

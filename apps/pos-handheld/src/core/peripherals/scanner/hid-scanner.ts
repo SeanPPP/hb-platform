@@ -177,8 +177,7 @@ export class HidScannerRouter implements ScannerPort {
     if (!normalized) {
       return false;
     }
-    this.emit(normalized, "camera", receivedAt);
-    return true;
+    return this.emit(normalized, "camera", receivedAt);
   }
 
   subscribe(listener: (event: ScanEvent) => void): () => void {
@@ -233,8 +232,7 @@ export class HidScannerRouter implements ScannerPort {
     if (!value) {
       return false;
     }
-    this.emit(value, source, receivedAt);
-    return true;
+    return this.emit(value, source, receivedAt);
   }
 
   private resetIfStale(receivedAt: number): void {
@@ -247,8 +245,16 @@ export class HidScannerRouter implements ScannerPort {
     this.lastInputAt = null;
   }
 
-  private emit(value: string, source: "hid" | "camera", receivedAt: number): void {
+  private emit(value: string, source: "hid" | "camera", receivedAt: number): boolean {
     const context = this.currentContext();
+    if (context === "device-activation") {
+      // 开通码只交给相机弹窗的直接回调或当前输入框，禁止进入任何共享扫码订阅。
+      return true;
+    }
+    if (hasDeviceActivationPrefix(value)) {
+      // 即使未进入专用上下文，也绝不能把疑似设备秘密当商品或员工码广播。
+      return false;
+    }
     const event: RoutedScanEvent = {
       value,
       source,
@@ -266,6 +272,7 @@ export class HidScannerRouter implements ScannerPort {
       };
       this.scannerListeners.forEach((listener) => listener(scannerEvent));
     }
+    return true;
   }
 
   private currentContext(): ScannerCaptureContext {
@@ -275,6 +282,26 @@ export class HidScannerRouter implements ScannerPort {
 
 export function normalizeScanValue(value: string): string {
   return value.replace(/[\r\n]/g, "").trim();
+}
+
+function hasDeviceActivationPrefix(value: string): boolean {
+  const expected = "HBDEV1-";
+  let matched = 0;
+  for (const character of value) {
+    const code = character.charCodeAt(0);
+    if (code > 0x7f) return false;
+    if (code === 0x20 || (code >= 0x09 && code <= 0x0d)) {
+      continue;
+    }
+    const normalized =
+      code >= 0x61 && code <= 0x7a
+        ? String.fromCharCode(code - 0x20)
+        : character;
+    if (normalized !== expected[matched]) return false;
+    matched += 1;
+    if (matched === expected.length) return true;
+  }
+  return false;
 }
 
 function isTerminator(character: string): boolean {
@@ -295,6 +322,8 @@ function categoryForContext(context: ScannerCaptureContext): ScannerScanCategory
       return "dialog-code";
     case "emergency-qr":
       return "emergency-qr";
+    case "device-activation":
+      return "device-activation";
     case "product":
     case "product-search":
       return "product-code";

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { HbposApiError } from "../api/hbpos-api";
 
 import {
   DeviceSessionCoordinator,
   subscribeDeviceScopeChange,
+  type DeviceScopeChange,
   type DeviceSessionApi,
 } from "./device-session";
 import {
@@ -12,6 +14,7 @@ import {
   DevicePresentationStore,
   InMemorySecureStore,
   InstallationIdentityStore,
+  PendingDeviceActivationCodeStore,
 } from "./secure-storage";
 
 test("设备验证成功后保存不可同步授权，并生成 iPad 认证头", async () => {
@@ -855,4 +858,927 @@ test("展示名称仅精确匹配有效凭据，锁机或硬件不匹配时不�
     await invalidCoordinator.getDevicePresentation(),
     null,
   );
+});
+
+test("预览不落盘，兑换仅在网络不确定时保留开通码并在确定结果后清除", async () => {
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(
+    secureStore,
+    () => "INSTALL-ANDROID-001",
+  );
+  const credentials = new DeviceCredentialStore(secureStore);
+  const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  let redeemOutcome:
+    | "network"
+    | "rate-limited"
+    | "http"
+    | "http-auth"
+    | "http-forbidden"
+    | "http-not-found"
+    | "http-conflict"
+    | "transport-other"
+    | "envelope"
+    | "rejected-without-reason"
+    | "rejected-private-reason"
+    | "allowed-without-reason"
+    | "allowed-private-reason"
+    | "incomplete"
+    | "empty"
+    | "rejected"
+    | "allowed" = "network";
+  let receivedRedeem: unknown;
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async verify() { throw new Error("not used"); },
+      async reregister() { throw new Error("not used"); },
+      async previewActivationCode(input) {
+        return {
+          isAllowed: true,
+          storeCode: "1042",
+          storeName: "Sunnybank",
+          deviceSystem: "Android",
+          expiresAtUtc: "2026-08-27T12:00:00.000Z",
+          message: null,
+          ...input,
+        };
+      },
+      async redeemActivationCode(input) {
+        receivedRedeem = input;
+        if (redeemOutcome === "network") {
+          throw new HbposApiError("network timeout", {
+            kind: "transport",
+            code: "NO_HTTP_RESPONSE",
+          });
+        }
+        if (redeemOutcome === "http") {
+          throw new HbposApiError("invalid request", { kind: "http", status: 400 });
+        }
+        if (redeemOutcome === "http-auth") {
+          throw new HbposApiError("authentication state unknown", {
+            kind: "http",
+            status: 401,
+          });
+        }
+        if (redeemOutcome === "http-forbidden") {
+          throw new HbposApiError("authorization state unknown", {
+            kind: "http",
+            status: 403,
+          });
+        }
+        if (redeemOutcome === "http-not-found") {
+          throw new HbposApiError("route or grant state unknown", {
+            kind: "http",
+            status: 404,
+          });
+        }
+        if (redeemOutcome === "http-conflict") {
+          throw new HbposApiError("concurrent grant state unknown", {
+            kind: "http",
+            status: 409,
+          });
+        }
+        if (redeemOutcome === "transport-other") {
+          throw new HbposApiError("unclassified transport failure", {
+            kind: "transport",
+          });
+        }
+        if (redeemOutcome === "rate-limited") {
+          throw new HbposApiError("retry later", { kind: "http", status: 429 });
+        }
+        if (redeemOutcome === "envelope") {
+          throw new HbposApiError("response data missing", { kind: "envelope" });
+        }
+        if (redeemOutcome === "rejected-without-reason") {
+          return { isAllowed: false, deviceStatus: 1, message: "rejected" };
+        }
+        if (redeemOutcome === "rejected-private-reason") {
+          return {
+            isAllowed: false,
+            reasonCode: "USED",
+            deviceStatus: 1,
+            message: "rejected",
+          };
+        }
+        if (redeemOutcome === "incomplete") {
+          return { isAllowed: true, deviceStatus: 1 };
+        }
+        if (redeemOutcome === "empty") {
+          return undefined as never;
+        }
+        if (
+          redeemOutcome === "allowed-without-reason" ||
+          redeemOutcome === "allowed-private-reason"
+        ) {
+          return {
+            isAllowed: true,
+            ...(redeemOutcome === "allowed-private-reason"
+              ? { reasonCode: "USED" }
+              : {}),
+            deviceCode: "HANDHELD-1042-01",
+            storeCode: "1042",
+            storeName: "Sunnybank",
+            deviceStatus: 1,
+            authorizationCode: "device-secret",
+          };
+        }
+        if (redeemOutcome === "rejected") {
+          return {
+            isAllowed: false,
+            reasonCode: "ACTIVATION_CODE_NOT_AVAILABLE",
+            deviceStatus: 1,
+            message: "Activation code was already used.",
+          };
+        }
+        return {
+          isAllowed: true,
+          reasonCode: "ACTIVATED",
+          deviceCode: "ANDROID-1042-01",
+          storeCode: "1042",
+          storeName: "Sunnybank",
+          deviceStatus: 1,
+          authorizationCode: "device-secret",
+        };
+      },
+    },
+    installation,
+    credentials,
+    undefined,
+    undefined,
+    undefined,
+    pendingActivation,
+  );
+
+  const preview = await coordinator.previewActivationCode(activationCode);
+  assert.equal(preview.storeCode, "1042");
+  assert.equal(await coordinator.restorePendingActivationCode(), null);
+  await assert.rejects(
+    () => coordinator.redeemActivationCode({ activationCode }),
+    /network timeout/,
+  );
+  assert.equal(await pendingActivation.load(), activationCode);
+
+  redeemOutcome = "rate-limited";
+  await assert.rejects(
+    () => coordinator.redeemActivationCode({ activationCode }),
+    /retry later/,
+  );
+  assert.equal(await pendingActivation.load(), activationCode);
+
+  for (const uncertainOutcome of [
+    "envelope",
+    "http-auth",
+    "http-forbidden",
+    "http-not-found",
+    "http-conflict",
+    "transport-other",
+    "rejected-without-reason",
+    "rejected-private-reason",
+    "allowed-without-reason",
+    "allowed-private-reason",
+    "incomplete",
+    "empty",
+  ] as const) {
+    redeemOutcome = uncertainOutcome;
+    await assert.rejects(() =>
+      coordinator.redeemActivationCode({ activationCode }),
+    );
+    assert.equal(
+      await pendingActivation.load(),
+      activationCode,
+      `${uncertainOutcome} 不能误清状态不确定的开通码`,
+    );
+  }
+
+  redeemOutcome = "http";
+  await assert.rejects(
+    () => coordinator.redeemActivationCode({ activationCode }),
+    /invalid request/,
+  );
+  assert.equal(await pendingActivation.load(), null);
+
+  redeemOutcome = "rejected";
+  const rejected = await coordinator.redeemActivationCode({ activationCode });
+  assert.equal(rejected.status, "denied");
+  assert.equal(await pendingActivation.load(), null);
+
+  redeemOutcome = "allowed";
+  const state = await coordinator.redeemActivationCode({ activationCode });
+
+  assert.equal(state.status, "authorized");
+  assert.deepEqual(receivedRedeem, {
+    activationCode,
+    hardwareId: "INSTALL-ANDROID-001",
+  });
+  assert.equal((await credentials.load())?.storeCode, "1042");
+  assert.equal(await pendingActivation.load(), null);
+});
+
+test("兑换成功但设备凭据落盘失败时保留开通码用于启动恢复", async () => {
+  const secureStore = new InMemorySecureStore();
+  const originalSet = secureStore.set.bind(secureStore);
+  secureStore.set = async (key, value, options) => {
+    if (key === "hbpos.handheld.device-credentials.v1") {
+      throw new Error("credential save failed");
+    }
+    await originalSet(key, value, options);
+  };
+  const installation = new InstallationIdentityStore(
+    secureStore,
+    () => "INSTALL-ANDROID-001",
+  );
+  const credentials = new DeviceCredentialStore(secureStore);
+  const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async verify() { throw new Error("not used"); },
+      async reregister() { throw new Error("not used"); },
+      async redeemActivationCode() {
+        return {
+          isAllowed: true,
+          reasonCode: "ACTIVATED",
+          deviceCode: "ANDROID-1042-01",
+          storeCode: "1042",
+          storeName: "Sunnybank",
+          deviceStatus: 1,
+          authorizationCode: "device-secret",
+        };
+      },
+    },
+    installation,
+    credentials,
+    undefined,
+    undefined,
+    undefined,
+    pendingActivation,
+  );
+
+  await assert.rejects(
+    () => coordinator.redeemActivationCode({ activationCode }),
+    /credential save failed/,
+  );
+
+  assert.equal(await pendingActivation.load(), activationCode);
+  assert.equal(await credentials.load(), null);
+});
+
+test("已有待恢复开通意图时不同码或模式不得覆盖原记录", async () => {
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(secureStore, () => "INSTALL-001");
+  const credentials = new DeviceCredentialStore(secureStore);
+  const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  const otherActivationCode =
+    "HBDEV1-1123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  let rebindCalls = 0;
+  await credentials.save({
+    deviceCode: "HANDHELD-OLD",
+    storeCode: "1003",
+    hardwareId: "INSTALL-001",
+    authorizationCode: "old-secret",
+  });
+  await pendingActivation.save(activationCode, "redeem", {
+    apiPartition: "https://hotbargain.vip/pos-api",
+    hardwareId: "INSTALL-001",
+  });
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async verify() { throw new Error("not used"); },
+      async reregister() { throw new Error("not used"); },
+      async rebindActivationCode() {
+        rebindCalls += 1;
+        throw new Error("rebind must not start");
+      },
+    },
+    installation,
+    credentials,
+    undefined,
+    undefined,
+    undefined,
+    pendingActivation,
+  );
+
+  await assert.rejects(
+    () => coordinator.rebindActivationCode({ activationCode: otherActivationCode }),
+    /pending.*conflict/i,
+  );
+  assert.equal(rebindCalls, 0);
+  assert.deepEqual(await pendingActivation.loadPending(), {
+    activationCode,
+    mode: "redeem",
+    apiPartition: "https://hotbargain.vip/pos-api",
+    hardwareId: "INSTALL-001",
+  });
+});
+
+test("开通意图本地 staging 失败必须保留原 pending、零 API 且零 clear", async (t) => {
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  const pendingKey = "hbpos.handheld.pending-device-activation-code.v1";
+  const cases = [
+    { kind: "legacy" as const, seed: activationCode },
+    { kind: "corrupt" as const, seed: "{not-json" },
+    { kind: "load-error" as const, seed: null },
+    { kind: "save-error" as const, seed: null },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.kind, async () => {
+      const secureStore = new InMemorySecureStore();
+      const originalGet = secureStore.get.bind(secureStore);
+      const originalSet = secureStore.set.bind(secureStore);
+      const originalRemove = secureStore.remove.bind(secureStore);
+      if (scenario.seed !== null) {
+        await originalSet(pendingKey, scenario.seed, {
+          requireThisDeviceOnly: true,
+        });
+      }
+      let pendingReads = 0;
+      if (scenario.kind === "load-error") {
+        secureStore.get = async (key) => {
+          if (key === pendingKey && ++pendingReads === 2) {
+            throw new Error("pending load failed");
+          }
+          return originalGet(key);
+        };
+      }
+      if (scenario.kind === "save-error") {
+        secureStore.set = async (key, value, options) => {
+          await originalSet(key, value, options);
+          if (key === pendingKey) throw new Error("pending save failed");
+        };
+      }
+      let clearCalls = 0;
+      secureStore.remove = async (key) => {
+        if (key === pendingKey) clearCalls += 1;
+        await originalRemove(key);
+      };
+      let apiCalls = 0;
+      const pendingActivation = new PendingDeviceActivationCodeStore(
+        secureStore,
+      );
+      const coordinator = new DeviceSessionCoordinator(
+        {
+          async register() { throw new Error("not used"); },
+          async verify() { throw new Error("not used"); },
+          async reregister() { throw new Error("not used"); },
+          async redeemActivationCode() {
+            apiCalls += 1;
+            throw new Error("API must not start");
+          },
+        },
+        new InstallationIdentityStore(secureStore, () => "INSTALL-001"),
+        new DeviceCredentialStore(secureStore),
+        undefined,
+        undefined,
+        undefined,
+        pendingActivation,
+      );
+
+      await assert.rejects(() =>
+        coordinator.redeemActivationCode({ activationCode }),
+      );
+      secureStore.get = originalGet;
+      secureStore.set = originalSet;
+
+      assert.equal(apiCalls, 0);
+      assert.equal(clearCalls, 0);
+      if (scenario.seed !== null) {
+        assert.equal(await originalGet(pendingKey), scenario.seed);
+      } else {
+        assert.equal(await pendingActivation.load(), activationCode);
+      }
+    });
+  }
+});
+
+test("重绑成功响应后的设备凭据落盘失败时保留重绑开通码和旧凭据", async () => {
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(secureStore, () => "INSTALL-001");
+  const credentials = new DeviceCredentialStore(secureStore);
+  const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  const oldCredentials = {
+    deviceCode: "HANDHELD-OLD",
+    storeCode: "1003",
+    hardwareId: "INSTALL-001",
+    authorizationCode: "old-secret",
+  };
+  await credentials.save(oldCredentials);
+  credentials.save = async () => {
+    throw new Error("credential save failed");
+  };
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async verify() { throw new Error("not used"); },
+      async reregister() { throw new Error("not used"); },
+      async rebindActivationCode() {
+        return {
+          isAllowed: true,
+          reasonCode: "ACTIVATED",
+          deviceCode: "HANDHELD-NEW",
+          storeCode: "1042",
+          deviceStatus: 1,
+          authorizationCode: "new-secret",
+        };
+      },
+    },
+    installation,
+    credentials,
+    undefined,
+    undefined,
+    undefined,
+    pendingActivation,
+  );
+
+  await assert.rejects(
+    () => coordinator.rebindActivationCode({ activationCode }),
+    /credential save failed/i,
+  );
+  assert.deepEqual(await pendingActivation.loadPending(), {
+    activationCode,
+    mode: "rebind",
+    apiPartition: "https://hotbargain.vip/pos-api",
+    hardwareId: "INSTALL-001",
+  });
+  assert.deepEqual(await credentials.load(), oldCredentials);
+});
+
+test("已注册设备用开通码换店：网络不确定保留、业务拒绝清除、成功提交新 scope", async () => {
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(secureStore, () => "INSTALL-ANDROID-001");
+  const credentials = new DeviceCredentialStore(secureStore);
+  const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
+  await credentials.save({
+    deviceCode: "ANDROID-OLD",
+    storeCode: "1003",
+    hardwareId: "INSTALL-ANDROID-001",
+    authorizationCode: "old-secret",
+  });
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  let outcome:
+    | "network"
+    | "http"
+    | "rejected"
+    | "allowed-without-reason"
+    | "allowed-private-reason"
+    | "allowed" = "network";
+  const changes: DeviceScopeChange[] = [];
+  const unsubscribe = subscribeDeviceScopeChange((change) => changes.push(change));
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async verify() { throw new Error("not used"); },
+      async reregister() { throw new Error("legacy route must not be used"); },
+      async previewActivationCode() {
+        return { isAllowed: true, storeCode: "1042", storeName: "Sunnybank", deviceSystem: "Android" };
+      },
+      async rebindActivationCode(input) {
+        assert.deepEqual(input, { activationCode, terminalName: "Front handheld" });
+        if (outcome === "network") {
+          throw new HbposApiError("network timeout", {
+            kind: "transport",
+            code: "NO_HTTP_RESPONSE",
+          });
+        }
+        if (outcome === "http") {
+          throw new HbposApiError("invalid request", { kind: "http", status: 400 });
+        }
+        if (outcome === "rejected") {
+          return {
+            isAllowed: false,
+            reasonCode: "ACTIVATION_CODE_NOT_AVAILABLE",
+            deviceStatus: 1,
+            message: "used",
+          };
+        }
+        if (
+          outcome === "allowed-without-reason" ||
+          outcome === "allowed-private-reason"
+        ) {
+          return {
+            isAllowed: true,
+            ...(outcome === "allowed-private-reason"
+              ? { reasonCode: "USED" }
+              : {}),
+            deviceCode: "HANDHELD-NEW",
+            storeCode: "1042",
+            storeName: "Sunnybank",
+            deviceStatus: 1,
+            authorizationCode: "new-secret",
+          };
+        }
+        return {
+          isAllowed: true,
+          reasonCode: "ACTIVATED",
+          deviceCode: "ANDROID-NEW",
+          storeCode: "1042",
+          storeName: "Sunnybank",
+          deviceStatus: 1,
+          authorizationCode: "new-secret",
+        };
+      },
+    },
+    installation,
+    credentials,
+    undefined,
+    undefined,
+    undefined,
+    pendingActivation,
+  );
+
+  try {
+    const preview = await coordinator.previewActivationCode(activationCode);
+    assert.equal(preview.storeCode, "1042");
+    assert.equal(await pendingActivation.load(), null);
+
+    await assert.rejects(
+      () => coordinator.rebindActivationCode({ activationCode, terminalName: "Front handheld" }),
+      /network timeout/,
+    );
+    assert.equal(await pendingActivation.load(), activationCode);
+
+    outcome = "http";
+    await assert.rejects(
+      () => coordinator.rebindActivationCode({ activationCode, terminalName: "Front handheld" }),
+      /invalid request/,
+    );
+    assert.equal(await pendingActivation.load(), null);
+
+    outcome = "rejected";
+    const rejected = await coordinator.rebindActivationCode({ activationCode, terminalName: "Front handheld" });
+    assert.equal(rejected.status, "denied");
+    assert.equal(await pendingActivation.load(), null);
+    assert.equal((await credentials.load())?.storeCode, "1003");
+
+    for (const uncertainSuccess of [
+      "allowed-without-reason",
+      "allowed-private-reason",
+    ] as const) {
+      outcome = uncertainSuccess;
+      await assert.rejects(() =>
+        coordinator.rebindActivationCode({
+          activationCode,
+          terminalName: "Front handheld",
+        }),
+      );
+      assert.equal(await pendingActivation.load(), activationCode);
+      assert.equal((await credentials.load())?.storeCode, "1003");
+    }
+
+    outcome = "allowed";
+    const rebound = await coordinator.rebindActivationCode({ activationCode, terminalName: "Front handheld" });
+    assert.equal(rebound.status, "authorized");
+    assert.equal((await credentials.load())?.storeCode, "1042");
+    assert.equal(await pendingActivation.load(), null);
+    assert.deepEqual(changes, [{
+      previous: { deviceCode: "ANDROID-OLD", storeCode: "1003" },
+      current: { deviceCode: "ANDROID-NEW", storeCode: "1042" },
+    }]);
+  } finally {
+    unsubscribe();
+  }
+});
+
+test("恢复意图的 API 分区或 HardwareId 漂移时零请求且保留待开通记录", async () => {
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  const CoordinatorWithPartition = DeviceSessionCoordinator as unknown as new (
+    ...args: readonly unknown[]
+  ) => DeviceSessionCoordinator;
+
+  for (const drift of [
+    {
+      currentPartition: "https://staging.hotbargain.vip/pos-api",
+      currentHardwareId: "INSTALL-ANDROID-001",
+    },
+    {
+      currentPartition: "https://hotbargain.vip/pos-api",
+      currentHardwareId: "INSTALL-ANDROID-002",
+    },
+  ]) {
+    const secureStore = new InMemorySecureStore();
+    const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
+    await pendingActivation.save(activationCode, "redeem", {
+      apiPartition: "https://hotbargain.vip/pos-api",
+      hardwareId: "INSTALL-ANDROID-001",
+    });
+    let redeemCalls = 0;
+    const coordinator = new CoordinatorWithPartition(
+      {
+        async register() { throw new Error("not used"); },
+        async verify() { throw new Error("verify must not start"); },
+        async reregister() { throw new Error("not used"); },
+        async redeemActivationCode() {
+          redeemCalls += 1;
+          throw new Error("recovery API must not start");
+        },
+      },
+      new InstallationIdentityStore(secureStore, () => drift.currentHardwareId),
+      new DeviceCredentialStore(secureStore),
+      undefined,
+      undefined,
+      undefined,
+      pendingActivation,
+      drift.currentPartition,
+    );
+
+    await assert.rejects(() => coordinator.poll(), /intent|partition|hardware/i);
+    assert.equal(redeemCalls, 0);
+    assert.equal(await pendingActivation.load(), activationCode);
+  }
+});
+
+test("本地 installation ID 失败不会留下可恢复开通码", async () => {
+  const secureStore = new InMemorySecureStore();
+  const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  await pendingActivation.save(activationCode, "redeem", {
+    apiPartition: "https://hotbargain.vip/pos-api",
+    hardwareId: "INSTALL-001",
+  });
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async verify() { throw new Error("not used"); },
+      async reregister() { throw new Error("not used"); },
+      async redeemActivationCode() { throw new Error("request must not start"); },
+    },
+    new InstallationIdentityStore(secureStore, () => {
+      throw new Error("installation ID failed");
+    }),
+    new DeviceCredentialStore(secureStore),
+    undefined,
+    undefined,
+    undefined,
+    pendingActivation,
+  );
+
+  await assert.rejects(
+    () => coordinator.redeemActivationCode({ activationCode }),
+    /installation ID failed/,
+  );
+  assert.equal(await pendingActivation.load(), activationCode);
+});
+
+test("重绑未到服务端时启动使用旧凭据重试 rebind，不误走匿名 redeem", async () => {
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(secureStore, () => "INSTALL-001");
+  const credentials = new DeviceCredentialStore(secureStore);
+  const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  let rebindCalls = 0;
+  let redeemCalls = 0;
+  await credentials.save({
+    deviceCode: "IPAD-OLD",
+    storeCode: "1003",
+    hardwareId: "INSTALL-001",
+    authorizationCode: "old-secret",
+  });
+  await pendingActivation.save(activationCode, "rebind", {
+    apiPartition: "https://hotbargain.vip/pos-api",
+    hardwareId: "INSTALL-001",
+  });
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async reregister() { throw new Error("not used"); },
+      async verify() { throw new Error("verify must not start"); },
+      async rebindActivationCode(input) {
+        rebindCalls += 1;
+        assert.deepEqual(input, { activationCode });
+        return {
+          isAllowed: true,
+          reasonCode: "ACTIVATED",
+          deviceCode: "HANDHELD-NEW",
+          storeCode: "1042",
+          storeName: "Sunnybank",
+          deviceStatus: 1,
+          authorizationCode: "new-secret",
+        };
+      },
+      async redeemActivationCode() {
+        redeemCalls += 1;
+        throw new Error("anonymous redeem must not start");
+      },
+    },
+    installation,
+    credentials,
+    undefined,
+    undefined,
+    undefined,
+    pendingActivation,
+  );
+
+  const recovered = await coordinator.poll();
+  assert.equal(recovered.status, "authorized");
+  assert.equal((await credentials.load())?.storeCode, "1042");
+  assert.equal(rebindCalls, 1);
+  assert.equal(redeemCalls, 0);
+  assert.equal(await pendingActivation.load(), null);
+});
+
+test("重绑已提交但丢响应时，启动在旧凭据 403 后才匿名恢复新凭据", async () => {
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(secureStore, () => "INSTALL-001");
+  const credentials = new DeviceCredentialStore(secureStore);
+  const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  let rebindCalls = 0;
+  let redeemCalls = 0;
+  let recoveryReason: string | undefined = "ACTIVATED";
+  let recoveryAllowed = true;
+  let recoveryCredentialsComplete = true;
+  let oldBindingFailure: "http" | "envelope" = "http";
+  await credentials.save({
+    deviceCode: "HANDHELD-OLD",
+    storeCode: "1003",
+    hardwareId: "INSTALL-001",
+    authorizationCode: "old-secret",
+  });
+  await pendingActivation.save(activationCode, "rebind", {
+    apiPartition: "https://hotbargain.vip/pos-api",
+    hardwareId: "INSTALL-001",
+  });
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async reregister() { throw new Error("not used"); },
+      async verify() { throw new Error("verify must not start"); },
+      async rebindActivationCode() {
+        rebindCalls += 1;
+        if (oldBindingFailure === "envelope") {
+          throw new HbposApiError("old binding disabled", {
+            kind: "envelope",
+            code: "DEVICE_DISABLED",
+          });
+        }
+        throw new HbposApiError("old binding disabled", {
+          kind: "http",
+          status: 403,
+        });
+      },
+      async redeemActivationCode(input, options) {
+        redeemCalls += 1;
+        assert.deepEqual(input, { activationCode, hardwareId: "INSTALL-001" });
+        assert.deepEqual(options, { recoveryOnly: true });
+        return {
+          isAllowed: recoveryAllowed,
+          ...(recoveryReason ? { reasonCode: recoveryReason } : {}),
+          deviceCode: "HANDHELD-NEW",
+          storeCode: "1042",
+          storeName: "Sunnybank",
+          deviceStatus: 1,
+          ...(recoveryCredentialsComplete
+            ? { authorizationCode: "new-secret" }
+            : {}),
+        };
+      },
+    },
+    installation,
+    credentials,
+    undefined,
+    undefined,
+    undefined,
+    pendingActivation,
+  );
+
+  for (const invalidReason of ["ACTIVATED", undefined] as const) {
+    recoveryReason = invalidReason;
+    await assert.rejects(() => coordinator.poll(), /ACTIVATION_RECOVERED|recovery/i);
+    assert.equal((await credentials.load())?.deviceCode, "HANDHELD-OLD");
+    assert.equal(await pendingActivation.load(), activationCode);
+  }
+  recoveryAllowed = false;
+  recoveryReason = "ACTIVATION_CODE_NOT_AVAILABLE";
+  await assert.rejects(() => coordinator.poll(), /ACTIVATION_RECOVERED|recovery/i);
+  assert.equal((await credentials.load())?.deviceCode, "HANDHELD-OLD");
+  assert.equal(await pendingActivation.load(), activationCode);
+
+  recoveryAllowed = true;
+  oldBindingFailure = "envelope";
+  recoveryReason = "ACTIVATION_RECOVERED";
+  recoveryCredentialsComplete = false;
+  await assert.rejects(() => coordinator.poll(), /incomplete/i);
+  assert.equal((await credentials.load())?.deviceCode, "HANDHELD-OLD");
+  assert.equal(await pendingActivation.load(), activationCode);
+
+  recoveryCredentialsComplete = true;
+  const recovered = await coordinator.poll();
+  assert.equal(recovered.status, "authorized");
+  assert.equal((await credentials.load())?.deviceCode, "HANDHELD-NEW");
+  assert.equal(rebindCalls, 5);
+  assert.equal(redeemCalls, 5);
+  assert.equal(await pendingActivation.load(), null);
+});
+
+test("启动先用 pending 开通码恢复首次兑换；确定拒绝后才回到旧设备锁机，断网则保留", async () => {
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(secureStore, () => "INSTALL-ANDROID-001");
+  const credentials = new DeviceCredentialStore(secureStore);
+  const lock = new DeviceLockStore(secureStore);
+  const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  let outcome: "recovered" | "rejected" | "network" = "recovered";
+  let verifyCalls = 0;
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async reregister() { throw new Error("not used"); },
+      async redeemActivationCode(input) {
+        assert.deepEqual(input, { activationCode, hardwareId: "INSTALL-ANDROID-001" });
+        if (outcome === "network") {
+          throw new HbposApiError("offline", {
+            kind: "transport",
+            code: "NO_HTTP_RESPONSE",
+          });
+        }
+        if (outcome === "rejected") {
+          return {
+            isAllowed: false,
+            reasonCode: "ACTIVATION_CODE_NOT_AVAILABLE",
+            deviceStatus: 1,
+            message: "used",
+          };
+        }
+        return {
+          isAllowed: true,
+          reasonCode: "ACTIVATION_RECOVERED",
+          deviceCode: "ANDROID-NEW",
+          storeCode: "1042",
+          storeName: "Sunnybank",
+          deviceStatus: 1,
+          authorizationCode: "new-secret",
+        };
+      },
+      async verify() {
+        verifyCalls += 1;
+        return {
+          isAllowed: false,
+          deviceCode: "ANDROID-OLD",
+          storeCode: "1003",
+          deviceStatus: 0,
+          message: "disabled",
+        };
+      },
+    },
+    installation,
+    credentials,
+    lock,
+    undefined,
+    undefined,
+    pendingActivation,
+  );
+  const seedOldLockedDevice = async () => {
+    await credentials.save({
+      deviceCode: "ANDROID-OLD",
+      storeCode: "1003",
+      hardwareId: "INSTALL-ANDROID-001",
+      authorizationCode: "old-secret",
+    });
+    await lock.lock("old binding disabled");
+    await pendingActivation.save(activationCode, "redeem", {
+      apiPartition: "https://hotbargain.vip/pos-api",
+      hardwareId: "INSTALL-ANDROID-001",
+    });
+  };
+
+  await seedOldLockedDevice();
+  const recovered = await coordinator.poll();
+  assert.equal(recovered.status, "authorized");
+  assert.equal((await credentials.load())?.deviceCode, "ANDROID-NEW");
+  assert.equal(await lock.isLocked(), false);
+  assert.equal(await pendingActivation.load(), null);
+  assert.equal(verifyCalls, 0);
+
+  outcome = "rejected";
+  await seedOldLockedDevice();
+  const rejected = await coordinator.poll();
+  assert.equal(rejected.status, "disabled");
+  assert.equal(await pendingActivation.load(), null);
+  assert.equal(await lock.isLocked(), true);
+  assert.equal(verifyCalls, 1);
+
+  outcome = "network";
+  await pendingActivation.save(activationCode, "redeem", {
+    apiPartition: "https://hotbargain.vip/pos-api",
+    hardwareId: "INSTALL-ANDROID-001",
+  });
+  await assert.rejects(() => coordinator.poll(), /offline/);
+  assert.equal(await pendingActivation.load(), activationCode);
+  assert.equal(verifyCalls, 1);
 });

@@ -11,6 +11,7 @@ required_variables=(
   PREORDER_SQLSERVER_TEST_CONNECTION
   SET_CHILD_PURCHASE_PRICE_SQLSERVER_TEST_CONNECTION
   STORE_PRICE_TRANSFER_SQLSERVER_TEST_CONNECTION
+  DEVICE_ACTIVATION_SQLSERVER_TEST_CONNECTION
   CI_SQL_PASSWORD
 )
 for variable in "${required_variables[@]}"; do
@@ -64,3 +65,16 @@ dotnet test "$project" \
   --logger 'trx;LogFileName=weekly-sql.trx' \
   --results-directory "$results_root"
 node scripts/ci/assert-trx-tests.mjs "$results_root/weekly-sql.trx" 'Weekly SQL tests'
+
+activation_project="apps/pos-wpf/tests/Hbpos.Api.Tests/Hbpos.Api.Tests.csproj"
+dotnet restore "$activation_project"
+dotnet build "$activation_project" --configuration Release --no-restore
+dotnet test "$activation_project" \
+  --configuration Release \
+  --no-build \
+  --filter 'Category=SQL' \
+  --logger 'trx;LogFileName=weekly-device-activation-sql.trx' \
+  --results-directory "$results_root"
+node scripts/ci/assert-trx-tests.mjs \
+  "$results_root/weekly-device-activation-sql.trx" \
+  'Weekly device activation SQL tests'

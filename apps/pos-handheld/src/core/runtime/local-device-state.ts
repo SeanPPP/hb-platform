@@ -7,6 +7,7 @@ import type { RuntimeDeviceState } from "./pos-runtime";
 
 export type LocalDeviceEvidence = Readonly<{
   locked: boolean;
+  registrationResetPending?: boolean;
   installationId: string;
   credentials: StoredDeviceCredentials | null;
   pending: PendingDeviceRegistration | null;
@@ -19,7 +20,7 @@ export type LocalDeviceEvidence = Readonly<{
 export function resolveLocalDeviceState(
   input: LocalDeviceEvidence,
 ): Exclude<RuntimeDeviceState, "unknown"> {
-  if (input.locked) {
+  if (input.locked || input.registrationResetPending === true) {
     return "locked";
   }
   if (isCurrentInstallationCredential(input.credentials, input.installationId)) {

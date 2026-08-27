@@ -127,14 +127,24 @@ export type ProductionSettingsCompositionInput = Readonly<{
     allowSwitchWithPendingLocalData?: boolean;
     probe(healthUrl: string, signal: AbortSignal): Promise<boolean>;
     save(apiBaseUrl: string): Promise<void>;
+    runSwitchGuarded?<T>(operation: () => Promise<T>): Promise<
+      | Readonly<{ blocked: true }>
+      | Readonly<{ blocked: false; value: T }>
+    >;
   }>;
   runtimeReload: Readonly<{
     reload(signal: AbortSignal): Promise<void>;
   }>;
   device: Readonly<{
+    previewActivationCode?:
+      | ((
+          activationCode: string,
+          signal: AbortSignal,
+        ) => Promise<import("../../features/settings/settings-presenter").SettingsDeviceActivationPreviewResponse>)
+      | undefined;
     reregister(
       input: Readonly<{
-        targetStoreCode: string;
+        activationCode: string;
         terminalName?: string;
       }>,
       signal: AbortSignal,
@@ -143,6 +153,7 @@ export type ProductionSettingsCompositionInput = Readonly<{
       employeeBarcode: string,
       signal: AbortSignal,
     ): Promise<"completed" | "pending-recovery">;
+    hasRegistrationRecoveryRisk?(): Promise<boolean>;
   }>;
   printer: RuntimePrinterAdapter;
   /**

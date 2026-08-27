@@ -1282,6 +1282,34 @@ assertEqual(
   'WarehouseStaff desktop preview should not show cashier records navigation',
 )
 
+const activationCodeOnlyAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.DeviceRegistration.ActivationCodesManage],
+  }),
+)
+const activationCodeOnlyPreview = buildWebRoleMenuPreview(activationCodeOnlyAccess, translate)
+
+assertEqual(
+  activationCodeOnlyAccess.canViewDeviceRegistration,
+  true,
+  'Activation-code managers should be able to enter the device registration page',
+)
+assertEqual(
+  activationCodeOnlyAccess.canManageDeviceRegistration,
+  false,
+  'Activation-code permission must not grant legacy device management',
+)
+assertEqual(
+  activationCodeOnlyAccess.canAccessAdminShell,
+  true,
+  'Activation-code managers should be allowed into the backend shell',
+)
+assertEqual(
+  Boolean(findWebMenuNode(activationCodeOnlyPreview, '/system/device-registration')),
+  true,
+  'Activation-code managers should see the protected device registration menu',
+)
+
 const superAdminWebPreview = buildWebRoleMenuPreview(superAdminPreviewAccess, translate)
 const superAdminDeviceMenu = superAdminWebPreview
   .find((node) => node.path === '/system')
@@ -1289,7 +1317,7 @@ const superAdminDeviceMenu = superAdminWebPreview
 
 assertEqual(
   superAdminDeviceMenu?.permissionCodes.join(','),
-  `${P.DeviceRegistration.View},${P.DeviceRegistration.Manage}`,
+  `${P.DeviceRegistration.View},${P.DeviceRegistration.Manage},${P.DeviceRegistration.ActivationCodesManage}`,
   'Super admin Web preview should show protected menus with their normal permission codes',
 )
 

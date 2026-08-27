@@ -95,7 +95,12 @@ export function CameraScannerModal({
       ) {
         return;
       }
-      const value = normalizeScanValue(result.data ?? "");
+      const rawValue = result.data ?? "";
+      // 开通码 parser 必须看见未经 Unicode trim 的原文，才能先拒绝所有非 ASCII 字符。
+      const value =
+        context === "device-activation"
+          ? rawValue
+          : normalizeScanValue(rawValue);
       if (!value || !scanner.acceptCameraText(value)) {
         return;
       }
@@ -107,7 +112,7 @@ export function CameraScannerModal({
       }
       close();
     },
-    [cameraStartedRef, close, onScan, scanner],
+    [cameraStartedRef, close, context, onScan, scanner],
   );
 
   return (

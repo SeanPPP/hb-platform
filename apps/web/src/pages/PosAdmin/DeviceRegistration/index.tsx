@@ -51,6 +51,8 @@ import type {
   UpdateDeviceRegistrationPayload,
 } from '../../../types/deviceRegistration'
 import { useAuthStore } from '../../../store/auth'
+import { P } from '../../../types/permissions'
+import DeviceActivationCodePanel from './DeviceActivationCodePanel'
 import {
   APP_DEVICE_SYSTEM_OPTIONS,
   canEditRegisteredDeviceSystem,
@@ -73,7 +75,7 @@ const APP_ONLINE_STATE_OPTIONS: AppDeviceOnlineState[] = ['all', 'online', 'offl
 const APP_USAGE_PAGE_SIZE = 200
 const EMPTY_VALUE = '--'
 
-type DeviceRegistrationViewMode = 'registered' | 'appUsage'
+type DeviceRegistrationViewMode = 'registered' | 'appUsage' | 'activationCodes'
 
 const DEVICE_TYPE_COLOR_MAP: Record<string, string> = {
   mobile: 'blue',
@@ -224,6 +226,13 @@ type EmergencyGrantFormValues = { reason: string }
 export default function DeviceRegistrationPage() {
   const { t } = useTranslation()
   const access = useAuthStore((state) => state.access)
+  const canManageActivationCodes = access.hasPermission(
+    P.DeviceRegistration.ActivationCodesManage,
+  )
+  const canViewLegacyDeviceRegistration =
+    access.isAdmin ||
+    access.hasPermission(P.DeviceRegistration.View) ||
+    access.hasPermission(P.DeviceRegistration.Manage)
   const [editForm] = Form.useForm<DeviceEditFormValues>()
   const editingDeviceType = Form.useWatch('deviceType', editForm)
   const editingDeviceSystem = Form.useWatch('deviceSystem', editForm)
@@ -232,7 +241,9 @@ export default function DeviceRegistrationPage() {
     editingDeviceType
   )
   const [emergencyForm] = Form.useForm<EmergencyGrantFormValues>()
-  const [viewMode, setViewMode] = useState<DeviceRegistrationViewMode>('registered')
+  const [viewMode, setViewMode] = useState<DeviceRegistrationViewMode>(() =>
+    canViewLegacyDeviceRegistration ? 'registered' : 'activationCodes',
+  )
   const [items, setItems] = useState<DeviceRegistrationItem[]>([])
   const [appItems, setAppItems] = useState<AppDeviceStatus[]>([])
   const [appSummary, setAppSummary] = useState<AppDeviceStatusSummary>({
@@ -325,8 +336,16 @@ export default function DeviceRegistrationPage() {
   }
 
   useEffect(() => {
-    void loadStores()
-  }, [])
+    if (canViewLegacyDeviceRegistration) {
+      void loadStores()
+    }
+  }, [canViewLegacyDeviceRegistration])
+
+  useEffect(() => {
+    if (!canViewLegacyDeviceRegistration && viewMode !== 'activationCodes') {
+      setViewMode('activationCodes')
+    }
+  }, [canViewLegacyDeviceRegistration, viewMode])
 
   useEffect(() => {
     if (viewMode !== 'registered') {
@@ -777,13 +796,23 @@ export default function DeviceRegistrationPage() {
       return
     }
 
+    if (viewMode === 'activationCodes') {
+      return
+    }
+
     void loadDevices()
   }
+
+  const pageTitleKey = viewMode === 'appUsage'
+    ? 'posAdmin.devices.appUsageTitle'
+    : viewMode === 'activationCodes'
+      ? 'posAdmin.devices.activation.title'
+      : 'posAdmin.devices.title'
 
   return (
     <>
       <Card
-        title={t(viewMode === 'appUsage' ? 'posAdmin.devices.appUsageTitle' : 'posAdmin.devices.title')}
+        title={t(pageTitleKey)}
         extra={
           <Space wrap>
             <Segmented<DeviceRegistrationViewMode>
@@ -793,21 +822,33 @@ export default function DeviceRegistrationPage() {
                 setViewMode(nextViewMode)
               }}
               options={[
-                { label: t('posAdmin.devices.viewRegistered'), value: 'registered' },
-                { label: t('posAdmin.devices.viewAppUsage'), value: 'appUsage' },
+                ...(canViewLegacyDeviceRegistration
+                  ? [
+                      { label: t('posAdmin.devices.viewRegistered'), value: 'registered' as const },
+                      { label: t('posAdmin.devices.viewAppUsage'), value: 'appUsage' as const },
+                    ]
+                  : []),
+                ...(canManageActivationCodes
+                  ? [{
+                      label: t('posAdmin.devices.activation.view'),
+                      value: 'activationCodes' as const,
+                    }]
+                  : []),
               ]}
             />
-            <Select
-              allowClear
-              placeholder={t('posAdmin.devices.filterByStore')}
-              style={{ width: 240 }}
-              value={selectedStoreCode}
-              onChange={(value) => setSelectedStoreCode(value)}
-              options={stores.map((store) => ({
-                label: `${store.storeCode} / ${store.storeName}`,
-                value: store.storeCode,
-              }))}
-            />
+            {viewMode !== 'activationCodes' ? (
+              <Select
+                allowClear
+                placeholder={t('posAdmin.devices.filterByStore')}
+                style={{ width: 240 }}
+                value={selectedStoreCode}
+                onChange={(value) => setSelectedStoreCode(value)}
+                options={stores.map((store) => ({
+                  label: `${store.storeCode} / ${store.storeName}`,
+                  value: store.storeCode,
+                }))}
+              />
+            ) : null}
             {viewMode === 'registered' ? (
               <Select
                 allowClear
@@ -821,23 +862,25 @@ export default function DeviceRegistrationPage() {
                 }))}
               />
             ) : null}
-            <Select
-              allowClear
-              placeholder={t('posAdmin.devices.filterByDeviceSystem')}
-              style={{ width: 160 }}
-              value={selectedDeviceSystem}
-              onChange={(value) => setSelectedDeviceSystem(value)}
-              options={(viewMode === 'registered'
-                ? REGISTERED_DEVICE_SYSTEM_OPTIONS
-                : APP_DEVICE_SYSTEM_OPTIONS
-              ).map((deviceSystem) => ({
-                label:
-                  deviceSystem === 'Other'
-                    ? <Tag>{t('posAdmin.devices.deviceSystemOther')}</Tag>
-                    : renderDeviceSystemTag(deviceSystem),
-                value: deviceSystem,
-              }))}
-            />
+            {viewMode !== 'activationCodes' ? (
+              <Select
+                allowClear
+                placeholder={t('posAdmin.devices.filterByDeviceSystem')}
+                style={{ width: 160 }}
+                value={selectedDeviceSystem}
+                onChange={(value) => setSelectedDeviceSystem(value)}
+                options={(viewMode === 'registered'
+                  ? REGISTERED_DEVICE_SYSTEM_OPTIONS
+                  : APP_DEVICE_SYSTEM_OPTIONS
+                ).map((deviceSystem) => ({
+                  label:
+                    deviceSystem === 'Other'
+                      ? <Tag>{t('posAdmin.devices.deviceSystemOther')}</Tag>
+                      : renderDeviceSystemTag(deviceSystem),
+                  value: deviceSystem,
+                }))}
+              />
+            ) : null}
             {viewMode === 'appUsage' ? (
               <>
                 <Select<AppDeviceOnlineState>
@@ -878,11 +921,15 @@ export default function DeviceRegistrationPage() {
                 </Button>
               </Tooltip>
             ) : null}
-            <Button onClick={refreshCurrentView}>{t('common.refresh')}</Button>
+            {viewMode !== 'activationCodes' ? (
+              <Button onClick={refreshCurrentView}>{t('common.refresh')}</Button>
+            ) : null}
           </Space>
         }
       >
-        {viewMode === 'appUsage' ? (
+        {viewMode === 'activationCodes' ? (
+          <DeviceActivationCodePanel canManage={canManageActivationCodes} />
+        ) : viewMode === 'appUsage' ? (
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             <Typography.Text type="secondary">
               {t('posAdmin.devices.appUsageNote')}
