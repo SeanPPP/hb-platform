@@ -17,6 +17,10 @@ public interface IRawScannerService : IDisposable
 
     void SetActivePage(string? pageId);
 
+    void SetGlobalBarcodeInterceptor(Func<RawBarcodeScannedEventArgs, bool>? interceptor)
+    {
+    }
+
     void Start(IntPtr hwnd);
 
     void Stop();
@@ -94,6 +98,7 @@ public sealed class RawScannerService(
     private readonly DispatcherTimer _flushTimer = new() { Interval = TimeSpan.FromMilliseconds(40) };
     private readonly ScannerInputDuplicateGuard _duplicateGuard = new();
     private string? _activePageId;
+    private Func<RawBarcodeScannedEventArgs, bool>? _globalBarcodeInterceptor;
     private string? _boundDevicePath;
     private string? _lastRejectedDevicePath;
     private Key? _lastUnmappedKey;
@@ -138,6 +143,11 @@ public sealed class RawScannerService(
     {
         _activePageId = pageId;
         ConsoleLog.Write("RawScanner", $"active page set page={pageId ?? "<none>"}");
+    }
+
+    public void SetGlobalBarcodeInterceptor(Func<RawBarcodeScannedEventArgs, bool>? interceptor)
+    {
+        _globalBarcodeInterceptor = interceptor;
     }
 
     public void Start(IntPtr hwnd)
@@ -316,14 +326,23 @@ public sealed class RawScannerService(
             return;
         }
 
+        var dispatchAt = DateTimeOffset.Now;
+        var completedAt = result.CompletedAt == default ? dispatchAt : result.CompletedAt;
+        var scannedEvent = new RawBarcodeScannedEventArgs(result.Barcode, result.DevicePath, completedAt);
+        if (_globalBarcodeInterceptor?.Invoke(scannedEvent) == true)
+        {
+            ConsoleLog.Write(
+                "RawScanner",
+                $"reserved scan suppressed before active handler barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(result.Barcode)} activePage={_activePageId}");
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(_boundDevicePath))
         {
             _boundDevicePath = result.DevicePath;
             _ = PersistBoundDevicePathAsync(result.DevicePath);
         }
 
-        var dispatchAt = DateTimeOffset.Now;
-        var completedAt = result.CompletedAt == default ? dispatchAt : result.CompletedAt;
         if (!_duplicateGuard.TryAccept(result.Barcode, "raw", completedAt))
         {
             ConsoleLog.Write(
@@ -336,7 +355,7 @@ public sealed class RawScannerService(
         ConsoleLog.Write(
             "RawScanner",
             $"scan accepted barcodeInfo={BarcodeLogFormatter.FormatBarcodeInfo(result.Barcode)} completion={result.CompletionKind} activePage={_activePageId} dispatchDelayMs={dispatchDelayMs:0.###}");
-        handler(new RawBarcodeScannedEventArgs(result.Barcode, result.DevicePath, completedAt));
+        handler(scannedEvent);
     }
 
     private void LogEmptyDevicePath()

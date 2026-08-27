@@ -88,6 +88,22 @@ export function unwrapHbposEnvelope<T>(envelope: HbposEnvelope<T>): T {
 
 export type DeviceRegisterRequest = components["schemas"]["DeviceRegisterRequest"];
 export type DeviceRegisterResponse = components["schemas"]["DeviceRegisterResponse"];
+export type DeviceActivationPreviewResponse = Readonly<{
+  isAllowed: boolean;
+  reasonCode?: string | null;
+  storeCode?: string | null;
+  storeName?: string | null;
+  deviceSystem?: string | null;
+  expiresAtUtc?: string | null;
+  message?: string | null;
+}>;
+export type DeviceActivationRedeemResponse = DeviceRegisterResponse &
+  Readonly<{ reasonCode?: string | null }>;
+export type DeviceActivationRedeemOptions = Readonly<{
+  recoveryOnly?: boolean;
+}>;
+export type DeviceActivationRebindResponse = DeviceReregisterResponse &
+  Readonly<{ reasonCode?: string | null }>;
 export type DeviceVerifyRequest = components["schemas"]["DeviceVerifyRequest"];
 export type DeviceVerifyResponse = components["schemas"]["DeviceVerifyResponse"];
 export type DeviceReregisterRequest = components["schemas"]["DeviceReregisterRequest"];
@@ -111,12 +127,15 @@ export type DeviceRegistrationStore = Readonly<{
 }>;
 
 export class HbposDeviceApi {
-  public constructor(private readonly transport: HbposTransport) {}
+  public constructor(
+    private readonly transport: HbposTransport,
+    private readonly anonymousTransport: HbposTransport = transport,
+  ) {}
 
   public async listRegistrationStores(): Promise<
     readonly DeviceRegistrationStore[]
   > {
-    const response = await this.transport.request<
+    const response = await this.anonymousTransport.request<
       HbposEnvelope<readonly StoreDto[]>
     >({
       method: "GET",
@@ -140,15 +159,72 @@ export class HbposDeviceApi {
   }
 
   public async register(
-    input: Omit<DeviceRegisterRequest, "deviceSystem">
+    input: Omit<DeviceRegisterRequest, "deviceSystem" | "provisioningCode">
   ): Promise<DeviceRegisterResponse> {
-    const registrationPath = input.provisioningCode?.trim()
-      ? "/api/v1/devices/app-review-register"
-      : "/api/v1/devices/register";
-    const response = await this.transport.request<HbposEnvelope<DeviceRegisterResponse>>({
+    const response = await this.anonymousTransport.request<HbposEnvelope<DeviceRegisterResponse>>({
       method: "POST",
-      url: registrationPath,
+      url: "/api/v1/devices/register",
       data: { ...input, deviceSystem: HBPOS_DEVICE_SYSTEM }
+    });
+    return unwrapHbposEnvelope(response.data);
+  }
+
+  public async registerAppReview(
+    input: Omit<DeviceRegisterRequest, "deviceSystem"> &
+      Readonly<{ provisioningCode: string }>,
+  ): Promise<DeviceRegisterResponse> {
+    const response = await this.anonymousTransport.request<
+      HbposEnvelope<DeviceRegisterResponse>
+    >({
+      method: "POST",
+      url: "/api/v1/devices/app-review-register",
+      data: { ...input, deviceSystem: HBPOS_DEVICE_SYSTEM },
+    });
+    return unwrapHbposEnvelope(response.data);
+  }
+
+  public async previewActivationCode(input: Readonly<{
+    activationCode: string;
+  }>): Promise<DeviceActivationPreviewResponse> {
+    const response = await this.anonymousTransport.request<
+      HbposEnvelope<DeviceActivationPreviewResponse>
+    >({
+      method: "POST",
+      url: "/api/v1/devices/activation-code/preview",
+      data: { ...input, deviceSystem: HBPOS_DEVICE_SYSTEM },
+    });
+    return unwrapHbposEnvelope(response.data);
+  }
+
+  public async redeemActivationCode(input: Readonly<{
+    activationCode: string;
+    hardwareId: string;
+    terminalName?: string;
+  }>, options: DeviceActivationRedeemOptions = {}): Promise<DeviceActivationRedeemResponse> {
+    const response = await this.anonymousTransport.request<
+      HbposEnvelope<DeviceActivationRedeemResponse>
+    >({
+      method: "POST",
+      url: "/api/v1/devices/activation-code/redeem",
+      ...(options.recoveryOnly === true
+        ? { headers: { "X-HBPOS-Activation-Recovery-Only": "true" } }
+        : {}),
+      data: { ...input, deviceSystem: HBPOS_DEVICE_SYSTEM },
+    });
+    return unwrapHbposEnvelope(response.data);
+  }
+
+  public async rebindActivationCode(input: Readonly<{
+    activationCode: string;
+    terminalName?: string;
+  }>): Promise<DeviceActivationRebindResponse> {
+    const response = await this.transport.request<
+      HbposEnvelope<DeviceActivationRebindResponse>
+    >({
+      method: "POST",
+      url: "/api/v1/devices/activation-code/rebind",
+      // 当前设备身份、硬件和平台由认证 transport 与服务端 claims 决定。
+      data: input,
     });
     return unwrapHbposEnvelope(response.data);
   }

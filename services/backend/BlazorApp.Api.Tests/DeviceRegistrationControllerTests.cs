@@ -5,11 +5,13 @@ using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.POSM;
+using BlazorApp.Shared.Options;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Moq;
 using SqlSugar;
 using System;
@@ -87,6 +89,78 @@ namespace BlazorApp.Api.Tests
             );
             Assert.Equal("AUTH-001", data.AuthCode);
             Assert.Equal(1, data.Status);
+        }
+
+        [Fact]
+        public async Task RegisterDevice_PosLegacyDisabled_ReturnsActivationRequiredWithoutWrites()
+        {
+            var service = new Mock<IDeviceRegistrationService>(MockBehavior.Strict);
+            var options = Options.Create(new DeviceActivationOptions
+            {
+                LegacyRegistrationEnabled = new LegacyRegistrationOptions
+                {
+                    Windows = false,
+                },
+            });
+            var controller = new DeviceRegistrationController(
+                service.Object,
+                Mock.Of<ILogger<DeviceRegistrationController>>(),
+                Mock.Of<IMapper>(),
+                Mock.Of<IStoreService>(),
+                deviceActivationOptions: options);
+
+            var result = await controller.RegisterDevice(new DeviceRegistrationRequestDto
+            {
+                HardwareId = "POS-HW-1",
+                DeviceType = "POS",
+                DeviceSystem = "Windows",
+                StoreCode = "S001",
+            });
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            Assert.False((bool)ok.Value!.GetType().GetProperty("success")!.GetValue(ok.Value)!);
+            Assert.Equal(
+                "ACTIVATION_CODE_REQUIRED",
+                ok.Value.GetType().GetProperty("reasonCode")!.GetValue(ok.Value));
+            service.VerifyNoOtherCalls();
+        }
+
+        [Fact]
+        public async Task RegisterDevice_NonPosDeviceIsNotAffectedByLegacyPosGate()
+        {
+            var service = new Mock<IDeviceRegistrationService>();
+            service.Setup(item => item.RegisterDeviceAsync("PDA-HW-1", "PDA", "Windows", "S001"))
+                .ReturnsAsync(new POSM_设备注册信息表
+                {
+                    设备硬件识别码 = "PDA-HW-1",
+                    设备类型 = "PDA",
+                    设备系统 = "Windows",
+                    分店代码 = "S001",
+                    系统设备编号 = "PDA_S001_1000",
+                    设备授权码 = "AUTH",
+                    设备状态 = -1,
+                });
+            var controller = new DeviceRegistrationController(
+                service.Object,
+                Mock.Of<ILogger<DeviceRegistrationController>>(),
+                Mock.Of<IMapper>(),
+                Mock.Of<IStoreService>(),
+                deviceActivationOptions: Options.Create(new DeviceActivationOptions
+                {
+                    LegacyRegistrationEnabled = new LegacyRegistrationOptions { Windows = false },
+                }));
+
+            await controller.RegisterDevice(new DeviceRegistrationRequestDto
+            {
+                HardwareId = "PDA-HW-1",
+                DeviceType = "PDA",
+                DeviceSystem = "Windows",
+                StoreCode = "S001",
+            });
+
+            service.Verify(
+                item => item.RegisterDeviceAsync("PDA-HW-1", "PDA", "Windows", "S001"),
+                Times.Once);
         }
 
         [Fact]

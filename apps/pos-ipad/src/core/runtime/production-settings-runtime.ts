@@ -232,6 +232,17 @@ function securedSettingsPort(
       run(() => input.control.downloadCatalog(signal)),
     testApiAddress: (apiBaseUrl, signal) =>
       run(() => input.control.testApiAddress(apiBaseUrl, signal)),
+    ...(input.control.previewDeviceActivationCode
+      ? {
+          previewDeviceActivationCode: (activationCode, signal) =>
+            run(() =>
+              input.control.previewDeviceActivationCode!(
+                activationCode,
+                signal,
+              ),
+            ),
+        }
+      : {}),
     testPaymentProvider: (provider, settings, signal) =>
       run(() =>
         input.control.testPaymentProvider(

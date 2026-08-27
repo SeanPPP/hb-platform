@@ -64,6 +64,10 @@ const mockGetAuthorizationState = jest.fn(() => mockAuthorizationState);
 
 const DEFAULT_TOOLBAR_ORDER = ["held-orders", "hold", "language", "lock"];
 
+jest.mock("@/features/scanner-camera/camera-scanner-modal", () => ({
+  CameraScannerModal: () => null,
+}));
+
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
   const { Text } =

@@ -166,9 +166,12 @@ public sealed class SqlSugarDeviceRuntimeStatusSchemaInitializer(
         END CATCH;
         """;
 
-    public Task InitializeAsync(CancellationToken cancellationToken = default)
+    public async Task InitializeAsync(CancellationToken cancellationToken = default)
     {
-        return sqlExecutor.ExecuteAsync(EnsureRuntimeStatusColumnsSql, cancellationToken);
+        await sqlExecutor.ExecuteAsync(EnsureRuntimeStatusColumnsSql, cancellationToken);
+        await sqlExecutor.ExecuteAsync(
+            BlazorApp.Shared.Models.POSM.DeviceActivationCodeSchema.EnsureSql,
+            cancellationToken);
     }
 }
 

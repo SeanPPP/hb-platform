@@ -39,6 +39,7 @@
     <Compile Include="ReactProductWarehouseControllerTests.cs" />
     <Compile Include="DeviceRegistrationControllerTests.cs" />
     <Compile Include="DeviceRegistrationReactServiceTests.cs" />
+    <Compile Include="DeviceActivationCodeManagementTests.cs" />
     <Compile Include="DomesticProductCreationControllerTests.cs" />
     <Compile Include="DomesticSetProductSchemaTests.cs" />
     <Compile Include="DomesticSetTemplateServiceTests.cs" />

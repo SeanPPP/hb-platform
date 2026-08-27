@@ -5,17 +5,22 @@ using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
+using Hbpos.Contracts.Devices;
 
 namespace Hbpos.Client.Wpf.ViewModels;
 
-public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDisposable
+public sealed partial class DeviceRegistrationViewModel : ObservableObject, IScannerInputTarget, IDisposable
 {
+    public const string PageId = "DeviceActivation";
+
     private const int PendingDeviceStatus = -1;
+    private const string InvalidActivationCodeError = "ACTIVATION_CODE_INVALID_FORMAT";
     private static readonly TimeSpan DefaultApprovalPollingInterval = TimeSpan.FromSeconds(5);
 
     private readonly IDeviceRegistrationWorkflowService _workflowService;
     private readonly ILocalizationService? _localization;
     private readonly ApiServerSettingsViewModel? _apiServerSettings;
+    private readonly IRawScannerService? _rawScannerService;
     private readonly TimeSpan _approvalPollingInterval;
     private readonly Func<TimeSpan, CancellationToken, Task> _delayAsync;
     private string? _excludedStoreCode;
@@ -27,6 +32,7 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
     private Task? _approvalPollingTask;
     private long _registrationSessionVersion;
     private bool _isReregisterCancelRequested;
+    private string? _previewedActivationCode;
     private bool _disposed;
 
     [ObservableProperty]
@@ -53,6 +59,33 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
     [ObservableProperty]
     private bool _canCancel;
 
+    [ObservableProperty]
+    private string _currentStoreCode = string.Empty;
+
+    [ObservableProperty]
+    private string _activationCode = string.Empty;
+
+    [ObservableProperty]
+    private bool _isActivationRecoveryPending;
+
+    [ObservableProperty]
+    private bool _hasActivationPreview;
+
+    [ObservableProperty]
+    private string _previewStoreCode = string.Empty;
+
+    [ObservableProperty]
+    private string _previewStoreName = string.Empty;
+
+    [ObservableProperty]
+    private string _previewDeviceSystem = string.Empty;
+
+    [ObservableProperty]
+    private DateTimeOffset? _previewExpiresAtUtc;
+
+    [ObservableProperty]
+    private bool _isLegacyPendingRegistration;
+
     public DeviceRegistrationViewModel(
         IDeviceApiClient deviceApiClient,
         ILocalDeviceRepository deviceRepository,
@@ -60,13 +93,15 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
         ILocalizationService? localization = null,
         TimeSpan? approvalPollingInterval = null,
         Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
-        ApiServerSettingsViewModel? apiServerSettings = null)
+        ApiServerSettingsViewModel? apiServerSettings = null,
+        IRawScannerService? rawScannerService = null)
         : this(
             new DeviceRegistrationWorkflowService(deviceApiClient, deviceRepository, fingerprintService, localization),
             localization,
             approvalPollingInterval,
             delayAsync,
-            apiServerSettings)
+            apiServerSettings,
+            rawScannerService)
     {
     }
 
@@ -75,11 +110,13 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
         ILocalizationService? localization = null,
         TimeSpan? approvalPollingInterval = null,
         Func<TimeSpan, CancellationToken, Task>? delayAsync = null,
-        ApiServerSettingsViewModel? apiServerSettings = null)
+        ApiServerSettingsViewModel? apiServerSettings = null,
+        IRawScannerService? rawScannerService = null)
     {
         _workflowService = workflowService;
         _localization = localization;
         _apiServerSettings = apiServerSettings;
+        _rawScannerService = rawScannerService;
         _approvalPollingInterval = approvalPollingInterval ?? DefaultApprovalPollingInterval;
         _delayAsync = delayAsync ?? Task.Delay;
         _apiServerSettings?.Load();
@@ -90,6 +127,8 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
 
         RegisterCommand = new AsyncRelayCommand(RegisterAsync, CanRegister);
         VerifyCommand = new AsyncRelayCommand(VerifyAsync, CanVerify);
+        PreviewActivationCommand = new AsyncRelayCommand(PreviewActivationAsync, CanPreviewActivation);
+        ConfirmActivationCommand = new AsyncRelayCommand(ConfirmActivationAsync, CanConfirmActivation);
         CancelCommand = new RelayCommand(Cancel, CanExecuteCancel);
         if (_apiServerSettings is not null)
         {
@@ -98,6 +137,8 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
                 OnApiServerSettingsPropertyChanged,
                 nameof(ApiServerSettingsViewModel.RestartRequired));
         }
+
+        _rawScannerService?.Subscribe(PageId, OnRawBarcodeScanned);
     }
 
     public ObservableCollection<StoreSelectionItem> Stores { get; } = [];
@@ -106,10 +147,32 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
 
     public IAsyncRelayCommand VerifyCommand { get; }
 
+    public IAsyncRelayCommand PreviewActivationCommand { get; }
+
+    public IAsyncRelayCommand ConfirmActivationCommand { get; }
+
     public IRelayCommand CancelCommand { get; }
 
     public ApiServerSettingsViewModel ApiServerSettings =>
         _apiServerSettings ?? throw new InvalidOperationException("API server settings are not configured.");
+
+    public string ScannerPageId => PageId;
+
+    public bool IsActivationCodeMode => !IsLegacyPendingRegistration;
+
+    public bool CanEditServerSettings => !IsActivationRecoveryPending;
+
+    public string PreviewStoreDisplay => string.IsNullOrWhiteSpace(PreviewStoreCode)
+        ? PreviewStoreName
+        : $"{PreviewStoreName} ({PreviewStoreCode})";
+
+    public string StoreTransitionDisplay => IsReregisterMode && !string.IsNullOrWhiteSpace(CurrentStoreCode)
+        ? $"{CurrentStoreCode} → {PreviewStoreDisplay}"
+        : PreviewStoreDisplay;
+
+    public string PreviewExpiryText => PreviewExpiresAtUtc is null
+        ? string.Empty
+        : PreviewExpiresAtUtc.Value.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
 
     internal Task? ApprovalPollingTask => _approvalPollingTask;
 
@@ -122,6 +185,14 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
         : IsPendingRegistrationStoreSwitch
             ? T("deviceRegistration.submit.switch", "Submit Store Switch Registration")
             : T("deviceRegistration.submit", "Submit Registration");
+
+    public string ActivationPreviewButtonText => T(
+        "deviceActivation.preview",
+        "Check activation code");
+
+    public string ActivationConfirmButtonText => IsReregisterMode
+        ? T("deviceActivation.confirm.rebind", "Confirm store change")
+        : T("deviceActivation.confirm.redeem", "Activate device");
 
     private bool IsPendingRegistrationStoreSwitch =>
         !IsReregisterMode &&
@@ -140,7 +211,7 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
     public async Task InitializeAsync(LocalDeviceCache? cachedDevice, CancellationToken cancellationToken = default)
     {
         Prepare(cachedDevice);
-        await LoadStoresAsync(cachedDevice, cancellationToken);
+        await ResumeActivationOrLoadLegacyAsync(cachedDevice, cancellationToken);
     }
 
     public void Prepare(LocalDeviceCache? cachedDevice)
@@ -151,10 +222,14 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
         CanCancel = false;
         _isReregisterCancelRequested = false;
         _excludedStoreCode = null;
+        CurrentStoreCode = string.Empty;
         HardwareId = _workflowService.GetHardwareId();
         Stores.Clear();
         SelectedStore = null;
         _pendingRegistration = null;
+        IsActivationRecoveryPending = false;
+        ClearActivationPreview(clearCode: true);
+        IsLegacyPendingRegistration = cachedDevice?.DeviceStatus == PendingDeviceStatus;
 
         if (cachedDevice is not null)
         {
@@ -174,7 +249,9 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
             HasPendingRegistration = false;
         }
 
-        StatusMessage = T("deviceRegistration.status.loadingStores", DeviceRegistrationWorkflowService.LoadingStoresMessage);
+        StatusMessage = IsLegacyPendingRegistration
+            ? T("deviceRegistration.status.loadingStores", DeviceRegistrationWorkflowService.LoadingStoresMessage)
+            : T("deviceActivation.status.scanOrEnter", "Scan or enter the one-time activation code.");
         NotifyCommandState();
     }
 
@@ -186,14 +263,90 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
         CanCancel = true;
         _isReregisterCancelRequested = false;
         _excludedStoreCode = currentStoreCode;
+        CurrentStoreCode = currentStoreCode.Trim();
         _pendingRegistration = null;
         HardwareId = _workflowService.GetHardwareId();
         Stores.Clear();
         SelectedStore = null;
         DeviceCode = string.Empty;
         HasPendingRegistration = false;
-        StatusMessage = T("deviceRegistration.status.loadingStores", DeviceRegistrationWorkflowService.LoadingStoresMessage);
+        IsLegacyPendingRegistration = false;
+        IsActivationRecoveryPending = false;
+        ClearActivationPreview(clearCode: true);
+        StatusMessage = T("deviceActivation.status.scanOrEnterRebind", "Scan or enter the target store activation code.");
         NotifyCommandState();
+    }
+
+    public async Task ResumeActivationOrLoadLegacyAsync(
+        LocalDeviceCache? cachedDevice,
+        CancellationToken cancellationToken = default)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        IsBusy = true;
+        var managesRecoveryLock = !IsActivationRecoveryPending;
+        try
+        {
+            if (managesRecoveryLock)
+            {
+                IsActivationRecoveryPending =
+                    await _workflowService.GetPendingActivationRecoveryModeAsync(cancellationToken) is not null;
+            }
+
+            var recovery = await _workflowService.RecoverActivationCodeAsync(HardwareId, cancellationToken);
+            if (recovery is not null)
+            {
+                IsActivationRecoveryPending = true;
+                IsReregisterMode = recovery.Mode == DeviceActivationRecoveryMode.Rebind;
+                CanCancel = false;
+                StatusMessage = T("deviceActivation.status.recovering", "Recovering an interrupted device activation...");
+                await PersistResultAsync(recovery.ActionResult, cancellationToken);
+                IsActivationRecoveryPending = false;
+                ActivationCode = string.Empty;
+                ClearActivationPreview(clearCode: false);
+                await ApplyActionResultAsync(recovery.ActionResult);
+                return;
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            if (managesRecoveryLock)
+            {
+                await RefreshActivationRecoveryLockAsync();
+            }
+
+            return;
+        }
+        catch (Exception ex)
+        {
+            if (managesRecoveryLock)
+            {
+                await RefreshActivationRecoveryLockAsync();
+            }
+
+            StatusMessage = ResolveActivationError(ex);
+            return;
+        }
+        finally
+        {
+            if (!_disposed)
+            {
+                IsBusy = false;
+            }
+        }
+
+        if (IsLegacyPendingRegistration)
+        {
+            await LoadStoresAsync(cachedDevice, cancellationToken);
+            return;
+        }
+
+        StatusMessage = IsReregisterMode
+            ? T("deviceActivation.status.scanOrEnterRebind", "Scan or enter the target store activation code.")
+            : T("deviceActivation.status.scanOrEnter", "Scan or enter the one-time activation code.");
     }
 
     public async Task LoadStoresAsync(LocalDeviceCache? cachedDevice, CancellationToken cancellationToken = default)
@@ -253,7 +406,53 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
     partial void OnIsReregisterModeChanged(bool value)
     {
         RaiseLocalizedProperties();
+        OnPropertyChanged(nameof(StoreTransitionDisplay));
     }
+
+    partial void OnCurrentStoreCodeChanged(string value) => OnPropertyChanged(nameof(StoreTransitionDisplay));
+
+    partial void OnIsLegacyPendingRegistrationChanged(bool value)
+    {
+        OnPropertyChanged(nameof(IsActivationCodeMode));
+        NotifyCommandState();
+    }
+
+    partial void OnActivationCodeChanged(string value)
+    {
+        if (_previewedActivationCode is not null
+            && (!DeviceActivationCodeNormalizer.TryNormalize(value, out var normalized)
+                || !string.Equals(normalized, _previewedActivationCode, StringComparison.Ordinal)))
+        {
+            ClearActivationPreview(clearCode: false);
+        }
+
+        NotifyCommandState();
+    }
+
+    partial void OnHasActivationPreviewChanged(bool value)
+    {
+        NotifyCommandState();
+    }
+
+    partial void OnIsActivationRecoveryPendingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanEditServerSettings));
+        NotifyCommandState();
+    }
+
+    partial void OnPreviewStoreCodeChanged(string value)
+    {
+        OnPropertyChanged(nameof(PreviewStoreDisplay));
+        OnPropertyChanged(nameof(StoreTransitionDisplay));
+    }
+
+    partial void OnPreviewStoreNameChanged(string value)
+    {
+        OnPropertyChanged(nameof(PreviewStoreDisplay));
+        OnPropertyChanged(nameof(StoreTransitionDisplay));
+    }
+
+    partial void OnPreviewExpiresAtUtcChanged(DateTimeOffset? value) => OnPropertyChanged(nameof(PreviewExpiryText));
 
     partial void OnSelectedStoreChanged(StoreSelectionItem? value)
     {
@@ -271,6 +470,131 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
     partial void OnCanCancelChanged(bool value)
     {
         NotifyCommandState();
+    }
+
+    private async Task PreviewActivationAsync()
+    {
+        if (!CanPreviewActivation()
+            || !DeviceActivationCodeNormalizer.TryNormalize(ActivationCode, out var normalizedCode))
+        {
+            StatusMessage = T(
+                "deviceActivation.status.invalidFormat",
+                "Scan or enter the complete HBDEV1 activation code.");
+            return;
+        }
+
+        ActivationCode = normalizedCode;
+        StopApprovalPolling();
+        var actionCancellation = new CancellationTokenSource();
+        var actionToken = actionCancellation.Token;
+        _registrationActionCancellation = actionCancellation;
+        var sessionVersion = _registrationSessionVersion;
+        IsBusy = true;
+        ClearActivationPreview(clearCode: false);
+        try
+        {
+            StatusMessage = T("deviceActivation.status.previewing", "Checking activation code...");
+            var preview = await _workflowService.PreviewActivationCodeAsync(normalizedCode, actionToken);
+            if (!IsCurrentActivationAction(sessionVersion, actionCancellation, normalizedCode))
+            {
+                return;
+            }
+
+            _previewedActivationCode = normalizedCode;
+            PreviewStoreCode = preview.StoreCode;
+            PreviewStoreName = preview.StoreName;
+            PreviewDeviceSystem = preview.DeviceSystem;
+            PreviewExpiresAtUtc = preview.ExpiresAtUtc;
+            HasActivationPreview = true;
+            StatusMessage = T(
+                IsReregisterMode
+                    ? "deviceActivation.status.confirmRebind"
+                    : "deviceActivation.status.confirmRedeem",
+                IsReregisterMode
+                    ? "Confirm the target store before changing this device."
+                    : "Confirm the store before activating this device.");
+        }
+        catch (OperationCanceledException) when (actionToken.IsCancellationRequested)
+        {
+            // 新扫码、服务器切换或页面关闭已经接管，不回写旧预览。
+        }
+        catch (Exception ex)
+        {
+            if (IsCurrentActivationAction(sessionVersion, actionCancellation, normalizedCode))
+            {
+                StatusMessage = ResolveActivationError(ex);
+            }
+        }
+        finally
+        {
+            CompleteRegistrationAction(actionCancellation);
+        }
+    }
+
+    private async Task ConfirmActivationAsync()
+    {
+        if (!CanConfirmActivation()
+            || _previewedActivationCode is null
+            || !DeviceActivationCodeNormalizer.TryNormalize(ActivationCode, out var normalizedCode)
+            || !string.Equals(normalizedCode, _previewedActivationCode, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        StopApprovalPolling();
+        var actionCancellation = new CancellationTokenSource();
+        var actionToken = actionCancellation.Token;
+        _registrationActionCancellation = actionCancellation;
+        var sessionVersion = _registrationSessionVersion;
+        IsBusy = true;
+        IsActivationRecoveryPending = true;
+        try
+        {
+            StatusMessage = T(
+                IsReregisterMode
+                    ? "deviceActivation.status.rebinding"
+                    : "deviceActivation.status.redeeming",
+                IsReregisterMode ? "Changing this device store..." : "Activating this device...");
+            var result = IsReregisterMode
+                ? await _workflowService.RebindActivationCodeAsync(normalizedCode, HardwareId, actionToken)
+                : await _workflowService.RedeemActivationCodeAsync(normalizedCode, HardwareId, actionToken);
+            if (_isReregisterCancelRequested
+                || !IsCurrentActivationAction(sessionVersion, actionCancellation, normalizedCode))
+            {
+                return;
+            }
+
+            await PersistResultAsync(result, actionToken);
+            if (_isReregisterCancelRequested
+                || !IsCurrentActivationAction(sessionVersion, actionCancellation, normalizedCode))
+            {
+                return;
+            }
+
+            // 完整设备凭据已经安全落盘，才从内存清除一次性开通码。
+            IsActivationRecoveryPending = false;
+            ActivationCode = string.Empty;
+            ClearActivationPreview(clearCode: false);
+            await ApplyActionResultAsync(result);
+        }
+        catch (OperationCanceledException) when (actionToken.IsCancellationRequested)
+        {
+            // 中断状态由加密恢复记录接管；不清码，避免服务端已消费但响应丢失时无法恢复。
+            await RefreshActivationRecoveryLockAsync();
+        }
+        catch (Exception ex)
+        {
+            await RefreshActivationRecoveryLockAsync();
+            if (!_isReregisterCancelRequested
+                && IsCurrentActivationAction(sessionVersion, actionCancellation, normalizedCode))
+            {
+                StatusMessage = ResolveActivationError(ex);
+            }
+        }
+        finally
+        {
+            CompleteRegistrationAction(actionCancellation);
+        }
     }
 
     private async Task RegisterAsync()
@@ -533,7 +857,13 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
 
         if (result.ShouldRaiseActivated)
         {
-            var args = new DeviceActivatedEventArgs(result.DeviceCode, result.StoreCode, result.StoreName, result.HardwareId, result.AuthorizationCode ?? string.Empty);
+            var args = new DeviceActivatedEventArgs(
+                result.DeviceCode,
+                result.StoreCode,
+                result.StoreName,
+                result.HardwareId,
+                result.AuthorizationCode ?? string.Empty,
+                result.IsActivationRebind);
             DeviceActivated?.Invoke(this, args);
             if (DeviceActivatedAsync is not null)
             {
@@ -546,6 +876,138 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
 
         OnPropertyChanged(nameof(RegisterButtonText));
         NotifyCommandState();
+    }
+
+    public bool ProcessScannerBarcode(string barcode, string devicePath, string source)
+    {
+        if (_disposed)
+        {
+            return false;
+        }
+
+        if (IsActivationRecoveryPending)
+        {
+            // 最终消费已开始后只能重试同一意图，所有新扫码均由当前页吞掉且不得改码。
+            return true;
+        }
+
+        if (!DeviceActivationCodeNormalizer.TryNormalize(barcode, out var normalizedCode))
+        {
+            StatusMessage = T(
+                "deviceActivation.status.invalidFormat",
+                "Scan or enter the complete HBDEV1 activation code.");
+            return true;
+        }
+
+        if (IsBusy || IsLegacyPendingRegistration)
+        {
+            return true;
+        }
+
+        ActivationCode = normalizedCode;
+        PreviewActivationCommand.Execute(null);
+        return true;
+    }
+
+    private void OnRawBarcodeScanned(RawBarcodeScannedEventArgs args)
+    {
+        ProcessScannerBarcode(args.Barcode, args.DevicePath, "raw");
+    }
+
+    private bool CanPreviewActivation()
+    {
+        return IsActivationCodeMode
+            && !IsBusy
+            && !IsActivationRecoveryPending
+            && !HasActivationPreview
+            && DeviceActivationCodeNormalizer.TryNormalize(ActivationCode, out _)
+            && _apiServerSettings?.RestartRequired != true;
+    }
+
+    private bool CanConfirmActivation()
+    {
+        return IsActivationCodeMode
+            && !IsBusy
+            && HasActivationPreview
+            && _previewedActivationCode is not null
+            && DeviceActivationCodeNormalizer.TryNormalize(ActivationCode, out var normalizedCode)
+            && string.Equals(normalizedCode, _previewedActivationCode, StringComparison.Ordinal)
+            && _apiServerSettings?.RestartRequired != true;
+    }
+
+    private bool IsCurrentActivationAction(
+        long sessionVersion,
+        CancellationTokenSource actionCancellation,
+        string activationCode)
+    {
+        return !_disposed
+            && sessionVersion == _registrationSessionVersion
+            && ReferenceEquals(_registrationActionCancellation, actionCancellation)
+            && DeviceActivationCodeNormalizer.TryNormalize(ActivationCode, out var currentCode)
+            && string.Equals(currentCode, activationCode, StringComparison.Ordinal);
+    }
+
+    private void CompleteRegistrationAction(CancellationTokenSource actionCancellation)
+    {
+        if (ReferenceEquals(_registrationActionCancellation, actionCancellation))
+        {
+            _registrationActionCancellation = null;
+            actionCancellation.Dispose();
+        }
+
+        if (!_disposed)
+        {
+            IsBusy = false;
+        }
+    }
+
+    private async Task RefreshActivationRecoveryLockAsync()
+    {
+        try
+        {
+            IsActivationRecoveryPending =
+                await _workflowService.GetPendingActivationRecoveryModeAsync(CancellationToken.None) is not null;
+        }
+        catch (DeviceActivationRecoveryUnreadableException)
+        {
+            IsActivationRecoveryPending = true;
+        }
+        catch (Exception)
+        {
+            // 无法证明恢复记录不存在时保持 fail-closed，避免回到旧分店离线营业。
+            IsActivationRecoveryPending = true;
+        }
+    }
+
+    private void ClearActivationPreview(bool clearCode)
+    {
+        _previewedActivationCode = null;
+        HasActivationPreview = false;
+        PreviewStoreCode = string.Empty;
+        PreviewStoreName = string.Empty;
+        PreviewDeviceSystem = string.Empty;
+        PreviewExpiresAtUtc = null;
+        if (clearCode)
+        {
+            ActivationCode = string.Empty;
+        }
+    }
+
+    private string ResolveActivationError(Exception exception)
+    {
+        if (exception is not CatalogApiException apiException)
+        {
+            return exception.Message;
+        }
+
+        var key = apiException.ErrorCode switch
+        {
+            InvalidActivationCodeError => "deviceActivation.error.invalid",
+            DeviceActivationReasonCodes.NotAvailable => "deviceActivation.error.notAvailable",
+            DeviceActivationReasonCodes.PlatformMismatch => "deviceActivation.error.platformMismatch",
+            _ => "deviceActivation.error.failed"
+        };
+        return T(key, apiException.Message);
     }
 
     private bool CanRegister()
@@ -583,8 +1045,10 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
 
     private bool CanExecuteCancel()
     {
-        // 重新注册是可放弃流程，即使正在加载或提交，也允许用户退出弹窗。
-        return CanCancel && (IsReregisterMode || !IsBusy);
+        // preview 前仍可放弃；一旦最终消费留下恢复记录，就只能重试同一意图直至确定终态。
+        return CanCancel
+            && !IsActivationRecoveryPending
+            && (IsReregisterMode || !IsBusy);
     }
 
     private void ApplyPendingRegistrationSelection(StoreSelectionItem? selectedStore)
@@ -615,6 +1079,8 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
     {
         RegisterCommand.NotifyCanExecuteChanged();
         VerifyCommand.NotifyCanExecuteChanged();
+        PreviewActivationCommand.NotifyCanExecuteChanged();
+        ConfirmActivationCommand.NotifyCanExecuteChanged();
         CancelCommand.NotifyCanExecuteChanged();
     }
 
@@ -622,6 +1088,8 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
     {
         OnPropertyChanged(nameof(TitleText));
         OnPropertyChanged(nameof(RegisterButtonText));
+        OnPropertyChanged(nameof(ActivationPreviewButtonText));
+        OnPropertyChanged(nameof(ActivationConfirmButtonText));
     }
 
     private string T(string key, string fallback)
@@ -849,6 +1317,7 @@ public sealed partial class DeviceRegistrationViewModel : ObservableObject, IDis
 
         CancelStoreLoad();
         StopApprovalPolling();
+        _rawScannerService?.Unsubscribe(PageId);
         _approvalPollingTask = null;
         DeviceActivated = null;
         DeviceActivatedAsync = null;
@@ -867,7 +1336,8 @@ public sealed record DeviceActivatedEventArgs(
     string StoreCode,
     string StoreName,
     string HardwareId,
-    string AuthorizationCode = "");
+    string AuthorizationCode = "",
+    bool IsReregistered = false);
 
 public sealed record DeviceReregisteredEventArgs(
     string DeviceCode,

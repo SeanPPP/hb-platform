@@ -306,6 +306,8 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.PricingStrategy.Edit, "编辑定价策略", "定价策略", "页面 /pos-admin/pricing-strategies - 编辑自动价格策略"),
                 new(Permissions.DeviceRegistration.View, "查看设备注册", "系统管理", "页面 /system/device-registration - 查看 POS 设备注册列表与状态"),
                 new(Permissions.DeviceRegistration.Manage, "管理设备注册", "系统管理", "页面 /system/device-registration - 审核、维护或管理设备注册"),
+                // 仅注册权限，不写入 StoreManager/WarehouseManager 角色模板；手工委派仍受可管理分店范围约束。
+                new(Permissions.DeviceRegistration.ActivationCodes.Manage, "管理设备开通码", "系统管理", "页面 /system/device-registration - 为可管理分店创建和撤销一次性 POS 设备开通码"),
                 new(Permissions.LocalPurchase.View, "查看本地进货", "本地进货管理", "页面 /pos-admin/local-supplier-invoices - 查看分店进货单列表与详情"),
                 new(Permissions.LocalPurchase.MobileView, "移动端查看澳洲进货", "本地进货管理", "移动端 - 查看已授权分店的澳洲进货单列表与详情"),
                 new(Permissions.LocalPurchase.Edit, "编辑本地进货", "本地进货管理", "页面 /pos-admin/local-supplier-invoices - 新增、编辑、提交和维护分店进货单"),

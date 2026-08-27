@@ -70,7 +70,7 @@ public sealed class DeviceRegistrationTests
         };
         var viewModel = new DeviceRegistrationViewModel(workflow);
 
-        await viewModel.InitializeAsync(cachedDevice: null);
+        await InitializeLegacyStoreWorkflowAsync(viewModel);
         await viewModel.RegisterCommand.ExecuteAsync(null);
 
         Assert.Equal("HW-001", viewModel.HardwareId);
@@ -142,7 +142,7 @@ public sealed class DeviceRegistrationTests
         DeviceActivatedEventArgs? activated = null;
         viewModel.DeviceActivated += (_, args) => activated = args;
 
-        await viewModel.InitializeAsync(cachedDevice: null);
+        await InitializeLegacyStoreWorkflowAsync(viewModel);
         var verifyTask = viewModel.VerifyCommand.ExecuteAsync(null);
         await workflow.WaitForVerifyStartedAsync();
         viewModel.SelectedStore = viewModel.Stores.Single(store => store.StoreCode == "1003");
@@ -212,7 +212,7 @@ public sealed class DeviceRegistrationTests
         DeviceActivatedEventArgs? activated = null;
         viewModel.DeviceActivated += (_, args) => activated = args;
 
-        await viewModel.InitializeAsync(cachedDevice: null);
+        await InitializeLegacyStoreWorkflowAsync(viewModel);
         await viewModel.RegisterCommand.ExecuteAsync(null);
         await workflow.WaitForVerifyStartedAsync();
 
@@ -293,7 +293,7 @@ public sealed class DeviceRegistrationTests
             approvalPollingInterval: TimeSpan.Zero,
             delayAsync: (_, _) => Task.CompletedTask);
 
-        await viewModel.InitializeAsync(cachedDevice: null);
+        await InitializeLegacyStoreWorkflowAsync(viewModel);
         await viewModel.RegisterCommand.ExecuteAsync(null);
 
         Assert.Equal(0, workflow.VerifyCallCount);
@@ -318,7 +318,7 @@ public sealed class DeviceRegistrationTests
         };
         var viewModel = new DeviceRegistrationViewModel(workflow);
 
-        await viewModel.InitializeAsync(cachedDevice: null);
+        await InitializeLegacyStoreWorkflowAsync(viewModel);
         var registerTask = viewModel.RegisterCommand.ExecuteAsync(null);
         await workflow.WaitForRegisterStartedAsync();
         viewModel.SelectedStore = viewModel.Stores.Single(store => store.StoreCode == "1003");
@@ -1012,6 +1012,13 @@ public sealed class DeviceRegistrationTests
         return Path.Combine(Path.GetTempPath(), $"hbpos-client-device-{Guid.NewGuid():N}.db");
     }
 
+    private static async Task InitializeLegacyStoreWorkflowAsync(DeviceRegistrationViewModel viewModel)
+    {
+        // 旧待审批/选店链仍保留兼容测试，但首次开通的生产入口不再加载分店列表。
+        viewModel.Prepare(cachedDevice: null);
+        await viewModel.LoadStoresAsync(cachedDevice: null);
+    }
+
     private static ApiServerSettingsViewModel CreateApiServerSettings()
     {
         var service = new ApiServerSettingsService(
@@ -1162,4 +1169,3 @@ public sealed class DeviceRegistrationTests
         }
     }
 }
-

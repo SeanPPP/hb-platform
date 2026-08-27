@@ -305,6 +305,7 @@ jobs:
       PREORDER_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
       SET_CHILD_PURCHASE_PRICE_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
       STORE_PRICE_TRANSFER_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
+      DEVICE_ACTIVATION_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9

@@ -24,11 +24,14 @@ export interface HbposAuthenticationFailureHandler {
   onForbidden(): Promise<void>;
 }
 
+type CashierHeaderPolicy = "override-explicit" | "preserve-explicit";
+
 export function createAxiosHbposTransport(
   baseUrl: string,
   credentialProvider: HbposRequestCredentialProvider,
   instance: AxiosInstance = create({ baseURL: baseUrl, timeout: 15_000 }),
   authenticationFailureHandler?: HbposAuthenticationFailureHandler,
+  cashierHeaderPolicy: CashierHeaderPolicy = "override-explicit",
 ): HbposTransport {
   const trustedOrigin = new URL(baseUrl).origin;
   instance.interceptors.request.use(async (config: InternalAxiosRequestConfig) => {
@@ -60,11 +63,14 @@ export function createAxiosHbposTransport(
       config.headers.set("X-HBPOS-Store-Code", credentials.device.storeCode);
       config.headers.set("X-HBPOS-Hardware-Id", credentials.device.hardwareId);
     }
-    if (
-      credentials.cashierAuthorization &&
-      !config.headers.has("X-HBPOS-Cashier-Authorization")
-    ) {
-      config.headers.set("X-HBPOS-Cashier-Authorization", credentials.cashierAuthorization);
+    if (credentials.cashierAuthorization) {
+      // 常规请求以持久安全票据覆盖旧 header；重置流程才允许携带刚在线登录的新票据。
+      if (
+        cashierHeaderPolicy === "override-explicit" ||
+        !config.headers.has("X-HBPOS-Cashier-Authorization")
+      ) {
+        config.headers.set("X-HBPOS-Cashier-Authorization", credentials.cashierAuthorization);
+      }
     }
     return config;
   });
@@ -123,6 +129,22 @@ export function createAxiosHbposTransport(
       }
     }
   };
+}
+
+/** 设备注册重置仅使用本次在线登录所得的短时票据，不能回退到持久缓存。 */
+export function createFreshCashierAxiosHbposTransport(
+  baseUrl: string,
+  credentialProvider: HbposRequestCredentialProvider,
+  instance: AxiosInstance = create({ baseURL: baseUrl, timeout: 15_000 }),
+  authenticationFailureHandler?: HbposAuthenticationFailureHandler,
+): HbposTransport {
+  return createAxiosHbposTransport(
+    baseUrl,
+    credentialProvider,
+    instance,
+    authenticationFailureHandler,
+    "preserve-explicit",
+  );
 }
 
 function getRequestCredentials(

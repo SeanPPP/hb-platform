@@ -5,13 +5,17 @@ using Hbpos.Contracts.Devices;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Options;
+using BlazorApp.Shared.Options;
 using System.Security.Claims;
 
 namespace Hbpos.Api.Controllers;
 
 [ApiController]
 [Route("api/v1/devices")]
-public sealed class DevicesController(IDeviceService deviceService) : ControllerBase
+public sealed class DevicesController(
+    IDeviceService deviceService,
+    IOptions<DeviceActivationOptions>? deviceActivationOptions = null) : ControllerBase
 {
     public sealed record DeviceRuntimeStatusRequest(
         bool IsOnline,
@@ -25,6 +29,23 @@ public sealed class DevicesController(IDeviceService deviceService) : Controller
         [FromBody] DeviceRegisterRequest request,
         CancellationToken cancellationToken)
     {
+        if (DeviceSystems.TryNormalize(request.DeviceSystem, out var deviceSystem)
+            && !(deviceActivationOptions?.Value ?? new DeviceActivationOptions())
+                .IsLegacyRegistrationEnabled(deviceSystem))
+        {
+            // 关闭某平台的旧注册时必须在调用 service 前拒绝，确保零数据库写入。
+            var denied = new DeviceRegisterResponse(
+                string.Empty,
+                request.StoreCode?.Trim() ?? string.Empty,
+                string.Empty,
+                3,
+                false,
+                "A one-time device activation code is required.",
+                null,
+                DeviceActivationReasonCodes.ActivationCodeRequired);
+            return Ok(ApiResult<DeviceRegisterResponse>.Ok(denied));
+        }
+
         // 普通注册端点永不接受审核开通码，避免绕过审核专用限流路径。
         var response = await deviceService.RegisterAsync(
             request with { ProvisioningCode = null },

@@ -6,6 +6,8 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.POSM;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
+using BlazorApp.Shared.Options;
 
 namespace BlazorApp.Api.Controllers
 {
@@ -24,13 +26,15 @@ namespace BlazorApp.Api.Controllers
         private readonly IMapper _mapper;
         private readonly IStoreService _storeService;
         private readonly UserLoginDeviceAuditService? _loginDeviceAuditService;
+        private readonly DeviceActivationOptions _deviceActivationOptions;
 
         public DeviceRegistrationController(
             IDeviceRegistrationService deviceService,
             ILogger<DeviceRegistrationController> logger,
             IMapper mapper,
             IStoreService storeService,
-            UserLoginDeviceAuditService? loginDeviceAuditService = null
+            UserLoginDeviceAuditService? loginDeviceAuditService = null,
+            IOptions<DeviceActivationOptions>? deviceActivationOptions = null
         )
         {
             _deviceService = deviceService;
@@ -38,6 +42,7 @@ namespace BlazorApp.Api.Controllers
             _mapper = mapper;
             _storeService = storeService;
             _loginDeviceAuditService = loginDeviceAuditService;
+            _deviceActivationOptions = deviceActivationOptions?.Value ?? new DeviceActivationOptions();
         }
 
         /// <summary>
@@ -387,6 +392,21 @@ namespace BlazorApp.Api.Controllers
                 )
                 {
                     return BadRequest(new { success = false, message = "必填字段不能为空" });
+                }
+
+                if (string.Equals(request.DeviceType.Trim(), "POS", StringComparison.OrdinalIgnoreCase)
+                    && DeviceActivationOptions.TryNormalizeDeviceSystem(
+                        request.DeviceSystem,
+                        out var deviceSystem)
+                    && !_deviceActivationOptions.IsLegacyRegistrationEnabled(deviceSystem))
+                {
+                    // 中央旧入口仅拦截 POS 首次注册；PDA/Mobile、验证审批与专用 App Review 流程均不受影响。
+                    return Ok(new
+                    {
+                        success = false,
+                        message = "需要一次性设备开通码",
+                        reasonCode = "ACTIVATION_CODE_REQUIRED",
+                    });
                 }
 
                 var device = await _deviceService.RegisterDeviceAsync(

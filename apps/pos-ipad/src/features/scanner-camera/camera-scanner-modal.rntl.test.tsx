@@ -75,6 +75,29 @@ test("只交付一次规范化条码，并立即关闭相机会话", async () =>
   await waitFor(() => expect(scanner.stopCalls).toBe(1));
 });
 
+test("设备注册码上下文使用通用标题并保留相机原文", async () => {
+  const scanner = new CameraScannerPortStub();
+  const onScan = jest.fn();
+  const raw = "\u00a0HBDEV1-INVALID\u00a0";
+  const rendered = await render(
+    <CameraScannerModal
+      context="device-activation"
+      onClose={jest.fn()}
+      onScan={onScan}
+      scanner={scanner}
+      visible
+    />,
+  );
+
+  expect(rendered.getByText("Device registration code")).toBeTruthy();
+  const preview = await rendered.findByTestId("camera-scanner-preview");
+  await waitFor(() => expect(scanner.startCalls).toBe(1));
+  await fireEvent(preview, "onBarcodeScanned", { data: raw });
+
+  expect(scanner.accepted).toEqual([raw]);
+  expect(onScan).toHaveBeenCalledWith(raw);
+});
+
 test("单次扫码回调同步失败时仍关闭相机会话", async () => {
   const scanner = new CameraScannerPortStub();
   const onClose = jest.fn();

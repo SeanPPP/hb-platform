@@ -11,7 +11,6 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.DependencyInjection;
 using System.Diagnostics;
 using System.Net;
-using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -40,22 +39,11 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
         options.KnownProxies.Add(proxyAddress);
     }
 });
-builder.Services.AddRateLimiter(options =>
-{
-    options.AddPolicy("app-review-device-registration", httpContext =>
-        RateLimitPartition.GetFixedWindowLimiter(
-            httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
-            static _ => new FixedWindowRateLimiterOptions
-            {
-                PermitLimit = 10,
-                Window = TimeSpan.FromMinutes(10),
-                QueueLimit = 0,
-                AutoReplenishment = true
-            }));
-});
+builder.Services.AddRateLimiter(DeviceActivationRateLimitOptions.Configure);
 builder.Services.AddSwaggerGen(options =>
 {
     options.SchemaFilter<SharedSaleCartPayloadSchemaFilter>();
+    options.SchemaFilter<DeviceActivationRequestSchemaFilter>();
 });
 // 中文注释：响应压缩仅由 CatalogV2ResponseCompressionProvider 放行（商品分页 + checksumVersion=2），
 // 其他端点与 v1/WPF 一律保持未压缩，行为与启用前一致。

@@ -1,6 +1,12 @@
 using System.Text;
 using System.Text.Json;
+using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
+using Hbpos.Api.Auth;
 using Hbpos.Api.Services;
+using Hbpos.Contracts.Devices;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
@@ -36,12 +42,190 @@ public sealed class OpenApiSnapshotExportTests
         Assert.Contains("heldOrderDisposition", document, StringComparison.Ordinal);
 
         AssertSharedSaleCartOpenApiContract(document);
+        AssertDeviceActivationRequestOpenApiContract(document);
 
         var outputPath = Environment.GetEnvironmentVariable("HBPOS_OPENAPI_SNAPSHOT_OUTPUT");
         if (!string.IsNullOrWhiteSpace(outputPath))
         {
             await File.WriteAllTextAsync(outputPath, document, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         }
+    }
+
+    [Theory]
+    [MemberData(nameof(InvalidDeviceActivationPayloads))]
+    public async Task Activation_request_structure_errors_return_400_before_business_service(
+        string path,
+        string json,
+        bool authenticated)
+    {
+        using var factory = new OpenApiExportFactory();
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Post, path)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+        if (authenticated)
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "TEST-AUTH");
+            request.Headers.Add(DeviceAuthConstants.DeviceCodeHeader, "POS-OLD");
+            request.Headers.Add(DeviceAuthConstants.StoreCodeHeader, "S001");
+            request.Headers.Add(DeviceAuthConstants.HardwareIdHeader, "HW-1");
+        }
+
+        using var response = await client.SendAsync(request);
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        Assert.True(
+            response.StatusCode == HttpStatusCode.BadRequest,
+            $"Expected 400 but received {(int)response.StatusCode}: {responseBody}");
+        Assert.Equal(0, factory.ActivationService.CallCount);
+    }
+
+    public static IEnumerable<object[]> InvalidDeviceActivationPayloads()
+    {
+        const string preview = "/api/v1/devices/activation-code/preview";
+        const string redeem = "/api/v1/devices/activation-code/redeem";
+        const string rebind = "/api/v1/devices/activation-code/rebind";
+        var overlongCode = new string('A', 129);
+        var overlongSystem = new string('W', 21);
+        var overlongHardware = new string('H', 101);
+        var overlongTerminal = new string('T', 201);
+
+        yield return [preview, "{\"deviceSystem\":\"Windows\"}", false];
+        yield return [preview, "{\"activationCode\":\"\",\"deviceSystem\":\"Windows\"}", false];
+        yield return [preview, JsonSerializer.Serialize(new { activationCode = overlongCode, deviceSystem = "Windows" }), false];
+        yield return [preview, "{\"activationCode\":\"HBDEV1-CODE\"}", false];
+        yield return [preview, "{\"activationCode\":\"HBDEV1-CODE\",\"deviceSystem\":\"\"}", false];
+        yield return [preview, JsonSerializer.Serialize(new { activationCode = "HBDEV1-CODE", deviceSystem = overlongSystem }), false];
+
+        yield return [redeem, "{\"hardwareId\":\"HW-1\",\"deviceSystem\":\"Windows\"}", false];
+        yield return [redeem, "{\"activationCode\":\"\",\"hardwareId\":\"HW-1\",\"deviceSystem\":\"Windows\"}", false];
+        yield return [redeem, JsonSerializer.Serialize(new { activationCode = overlongCode, hardwareId = "HW-1", deviceSystem = "Windows" }), false];
+        yield return [redeem, "{\"activationCode\":\"HBDEV1-CODE\",\"deviceSystem\":\"Windows\"}", false];
+        yield return [redeem, "{\"activationCode\":\"HBDEV1-CODE\",\"hardwareId\":\"\",\"deviceSystem\":\"Windows\"}", false];
+        yield return [redeem, JsonSerializer.Serialize(new { activationCode = "HBDEV1-CODE", hardwareId = overlongHardware, deviceSystem = "Windows" }), false];
+        yield return [redeem, "{\"activationCode\":\"HBDEV1-CODE\",\"hardwareId\":\"HW-1\"}", false];
+        yield return [redeem, "{\"activationCode\":\"HBDEV1-CODE\",\"hardwareId\":\"HW-1\",\"deviceSystem\":\"\"}", false];
+        yield return [redeem, JsonSerializer.Serialize(new { activationCode = "HBDEV1-CODE", hardwareId = "HW-1", deviceSystem = overlongSystem }), false];
+        yield return [redeem, JsonSerializer.Serialize(new { activationCode = "HBDEV1-CODE", hardwareId = "HW-1", terminalName = overlongTerminal, deviceSystem = "Windows" }), false];
+
+        yield return [rebind, "{}", true];
+        yield return [rebind, "{\"activationCode\":\"\"}", true];
+        yield return [rebind, JsonSerializer.Serialize(new { activationCode = overlongCode }), true];
+        yield return [rebind, JsonSerializer.Serialize(new { activationCode = "HBDEV1-CODE", terminalName = overlongTerminal }), true];
+    }
+
+    [Fact]
+    public async Task Activation_business_denial_with_valid_request_shape_remains_HTTP_200()
+    {
+        using var factory = new OpenApiExportFactory();
+        using var client = factory.CreateClient();
+
+        using var response = await client.PostAsJsonAsync(
+            "/api/v1/devices/activation-code/preview",
+            new DeviceActivationCodePreviewRequest("HBDEV1-CODE", DeviceSystems.Windows));
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(1, factory.ActivationService.CallCount);
+    }
+
+    [Fact]
+    public async Task Reserved_activation_code_in_metadata_returns_documented_400_problem_body()
+    {
+        const string activationCode =
+            "HBDEV1-00000000000000000000000000-00000000000000000000000000";
+        using var factory = new OpenApiExportFactory();
+        using var client = factory.CreateClient();
+
+        using var response = await client.PostAsJsonAsync(
+            "/api/v1/devices/activation-code/redeem",
+            new DeviceActivationCodeRedeemRequest(
+                activationCode,
+                "HW-1",
+                $"Counter {activationCode}",
+                DeviceSystems.Windows));
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(400, body.RootElement.GetProperty("status").GetInt32());
+        Assert.Equal(
+            "Invalid device metadata.",
+            body.RootElement.GetProperty("title").GetString());
+        Assert.Equal(0, factory.ActivationService.CallCount);
+    }
+
+    [Fact]
+    public async Task Redeem_recovery_only_header_is_forwarded_without_changing_body_contract()
+    {
+        using var factory = new OpenApiExportFactory();
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "/api/v1/devices/activation-code/redeem")
+        {
+            Content = JsonContent.Create(new DeviceActivationCodeRedeemRequest(
+                "HBDEV1-CODE",
+                "HW-1",
+                null,
+                DeviceSystems.Windows)),
+        };
+        request.Headers.Add("X-HBPOS-Activation-Recovery-Only", "true");
+
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(factory.ActivationService.LastRecoveryOnly);
+        Assert.Equal(1, factory.ActivationService.CallCount);
+    }
+
+    [Fact]
+    public async Task Anonymous_activation_rate_limit_returns_429_after_the_fixed_window_budget()
+    {
+        using var factory = new OpenApiExportFactory();
+        using var client = factory.CreateClient();
+        var payload = new DeviceActivationCodePreviewRequest(
+            "HBDEV1-CODE",
+            DeviceSystems.Windows);
+
+        for (var requestNumber = 1; requestNumber <= 10; requestNumber++)
+        {
+            using var allowed = await client.PostAsJsonAsync(
+                "/api/v1/devices/activation-code/preview",
+                payload);
+            Assert.Equal(HttpStatusCode.OK, allowed.StatusCode);
+        }
+
+        using var rejected = await client.PostAsJsonAsync(
+            "/api/v1/devices/activation-code/preview",
+            payload);
+
+        Assert.Equal(HttpStatusCode.TooManyRequests, rejected.StatusCode);
+        Assert.Equal("application/json", rejected.Content.Headers.ContentType?.MediaType);
+        using var problem = JsonDocument.Parse(await rejected.Content.ReadAsStringAsync());
+        Assert.Equal(429, problem.RootElement.GetProperty("status").GetInt32());
+        Assert.Equal(
+            "Too many device activation requests.",
+            problem.RootElement.GetProperty("title").GetString());
+        Assert.Equal(10, factory.ActivationService.CallCount);
+    }
+
+    [Fact]
+    public async Task Rebind_without_device_identity_returns_the_documented_401_json_body()
+    {
+        using var factory = new OpenApiExportFactory();
+        using var client = factory.CreateClient();
+
+        using var response = await client.PostAsJsonAsync(
+            "/api/v1/devices/activation-code/rebind",
+            new DeviceActivationCodeRebindRequest("HBDEV1-CODE", null));
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.False(body.RootElement.GetProperty("success").GetBoolean());
+        Assert.Equal(
+            "DEVICE_AUTH_REQUIRED",
+            body.RootElement.GetProperty("errorCode").GetString());
+        Assert.Equal(0, factory.ActivationService.CallCount);
     }
 
     private static void AssertSharedSaleCartOpenApiContract(string document)
@@ -64,6 +248,121 @@ public sealed class OpenApiSnapshotExportTests
         AssertPayloadPropertyIsV1OrV2OneOf(json.RootElement, "SharedHeldOrderRecoveryClaimDto", "payload");
     }
 
+    private static void AssertDeviceActivationRequestOpenApiContract(string document)
+    {
+        using var json = JsonDocument.Parse(document);
+        var schemas = json.RootElement.GetProperty("components").GetProperty("schemas");
+        var preview = schemas.GetProperty(nameof(DeviceActivationCodePreviewRequest));
+        AssertRequiredNonNullableString(preview, "activationCode", 128);
+        AssertRequiredNonNullableString(preview, "deviceSystem", 20);
+
+        var redeem = schemas.GetProperty(nameof(DeviceActivationCodeRedeemRequest));
+        AssertRequiredNonNullableString(redeem, "activationCode", 128);
+        AssertRequiredNonNullableString(redeem, "hardwareId", 100);
+        AssertRequiredNonNullableString(redeem, "deviceSystem", 20);
+        Assert.DoesNotContain(
+            "terminalName",
+            redeem.GetProperty("required").EnumerateArray().Select(item => item.GetString()));
+        Assert.Equal(
+            200,
+            redeem.GetProperty("properties").GetProperty("terminalName")
+                .GetProperty("maxLength").GetInt32());
+
+        var rebind = schemas.GetProperty(nameof(DeviceActivationCodeRebindRequest));
+        AssertRequiredNonNullableString(rebind, "activationCode", 128);
+        Assert.DoesNotContain(
+            "terminalName",
+            rebind.GetProperty("required").EnumerateArray().Select(item => item.GetString()));
+        Assert.Equal(
+            200,
+            rebind.GetProperty("properties").GetProperty("terminalName")
+                .GetProperty("maxLength").GetInt32());
+
+        foreach (var path in new[]
+                 {
+                     "/api/v1/devices/activation-code/preview",
+                     "/api/v1/devices/activation-code/redeem",
+                     "/api/v1/devices/activation-code/rebind",
+                 })
+        {
+            var operation = json.RootElement.GetProperty("paths").GetProperty(path).GetProperty("post");
+            var requestBody = operation.GetProperty("requestBody");
+            Assert.True(requestBody.GetProperty("required").GetBoolean(), $"{path} body 必须为 required");
+            var responses = operation.GetProperty("responses");
+            Assert.True(responses.TryGetProperty("200", out _), $"{path} 必须声明 200");
+            Assert.True(responses.TryGetProperty("400", out _), $"{path} 必须声明 400");
+            AssertJsonResponseSchema(responses, "400", "ProblemDetails");
+        }
+
+        foreach (var anonymousPath in new[]
+                 {
+                     "/api/v1/devices/activation-code/preview",
+                     "/api/v1/devices/activation-code/redeem",
+                 })
+        {
+            var responses = json.RootElement.GetProperty("paths")
+                .GetProperty(anonymousPath)
+                .GetProperty("post")
+                .GetProperty("responses");
+            Assert.True(responses.TryGetProperty("429", out _), $"{anonymousPath} 必须声明 429");
+            AssertJsonResponseSchema(responses, "429", "ProblemDetails");
+        }
+
+        var rebindResponses = json.RootElement.GetProperty("paths")
+            .GetProperty("/api/v1/devices/activation-code/rebind")
+            .GetProperty("post")
+            .GetProperty("responses");
+        Assert.True(rebindResponses.TryGetProperty("401", out _));
+        AssertJsonResponseSchema(rebindResponses, "401", "ObjectApiResult");
+        var forbidden = rebindResponses.GetProperty("403");
+        Assert.False(forbidden.TryGetProperty("content", out _));
+
+        var redeemOperation = json.RootElement
+            .GetProperty("paths")
+            .GetProperty("/api/v1/devices/activation-code/redeem")
+            .GetProperty("post");
+        var recoveryHeader = Assert.Single(
+            redeemOperation.GetProperty("parameters").EnumerateArray(),
+            parameter => parameter.GetProperty("in").GetString() == "header"
+                && parameter.GetProperty("name").GetString()
+                    == "X-HBPOS-Activation-Recovery-Only");
+        Assert.False(
+            recoveryHeader.TryGetProperty("required", out var headerRequired)
+            && headerRequired.GetBoolean());
+        Assert.Equal(
+            "boolean",
+            recoveryHeader.GetProperty("schema").GetProperty("type").GetString());
+    }
+
+    private static void AssertRequiredNonNullableString(
+        JsonElement schema,
+        string propertyName,
+        int maximumLength)
+    {
+        Assert.Contains(
+            propertyName,
+            schema.GetProperty("required").EnumerateArray().Select(item => item.GetString()));
+        var property = schema.GetProperty("properties").GetProperty(propertyName);
+        Assert.False(
+            property.TryGetProperty("nullable", out var nullable) && nullable.GetBoolean(),
+            $"{propertyName} 不得声明 nullable");
+        Assert.Equal(maximumLength, property.GetProperty("maxLength").GetInt32());
+    }
+
+    private static void AssertJsonResponseSchema(
+        JsonElement responses,
+        string statusCode,
+        string schemaName)
+    {
+        var schemaReference = responses.GetProperty(statusCode)
+            .GetProperty("content")
+            .GetProperty("application/json")
+            .GetProperty("schema")
+            .GetProperty("$ref")
+            .GetString();
+        Assert.Equal($"#/components/schemas/{schemaName}", schemaReference);
+    }
+
     private static void AssertPayloadPropertyIsV1OrV2OneOf(JsonElement documentRoot, string schemaName, string propertyName)
     {
         var schema = documentRoot.GetProperty("components").GetProperty("schemas").GetProperty(schemaName);
@@ -80,6 +379,8 @@ public sealed class OpenApiSnapshotExportTests
 
     private sealed class OpenApiExportFactory : WebApplicationFactory<Program>
     {
+        public RecordingDeviceActivationCodeService ActivationService { get; } = new();
+
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
@@ -121,7 +422,80 @@ public sealed class OpenApiSnapshotExportTests
                 services.AddSingleton<ISquareWebhookSchemaInitializer>(new NoOp());
                 services.RemoveAll<ISquareTokenSchemaInitializer>();
                 services.AddSingleton<ISquareTokenSchemaInitializer>(new NoOp());
+                services.RemoveAll<IDeviceActivationCodeService>();
+                services.AddSingleton<IDeviceActivationCodeService>(ActivationService);
+                services.RemoveAll<IDeviceAuthorizationService>();
+                services.AddSingleton<IDeviceAuthorizationService>(new TestDeviceAuthorizationService());
+                services.RemoveAll<IAuthorizationHandler>();
+                services.AddSingleton<IAuthorizationHandler>(new AllowAuthorizationHandler());
             });
+        }
+    }
+
+    private sealed class RecordingDeviceActivationCodeService : IDeviceActivationCodeService
+    {
+        public int CallCount { get; private set; }
+        public bool LastRecoveryOnly { get; private set; }
+
+        public Task<DeviceActivationCodePreviewResponse> PreviewAsync(
+            DeviceActivationCodePreviewRequest request,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            return Task.FromResult(new DeviceActivationCodePreviewResponse(
+                false, DeviceActivationReasonCodes.NotAvailable, null, null, null, null, "Denied"));
+        }
+
+        public Task<DeviceActivationCodeRedeemResponse> RedeemAsync(
+            DeviceActivationCodeRedeemRequest request,
+            bool recoveryOnly,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            LastRecoveryOnly = recoveryOnly;
+            return Task.FromResult(Denied());
+        }
+
+        public Task<DeviceActivationCodeRedeemResponse> RebindAsync(
+            DeviceActivationCodeRebindRequest request,
+            DeviceActivationRebindContext currentDevice,
+            CancellationToken cancellationToken)
+        {
+            CallCount++;
+            return Task.FromResult(Denied());
+        }
+
+        private static DeviceActivationCodeRedeemResponse Denied() =>
+            new(string.Empty, string.Empty, string.Empty, 3, false, "Denied", null,
+                DeviceActivationReasonCodes.NotAvailable);
+    }
+
+    private sealed class TestDeviceAuthorizationService : IDeviceAuthorizationService
+    {
+        public Task<DeviceAuthorizationValidationResult> ValidateAsync(
+            string authorizationCode,
+            string deviceCode,
+            string storeCode,
+            string? hardwareId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(DeviceAuthorizationValidationResult.Authorized(
+                new DeviceAuthorizationResult(
+                    deviceCode,
+                    storeCode,
+                    hardwareId ?? string.Empty,
+                    DeviceSystems.Windows,
+                    AllowTransactions: false)));
+    }
+
+    private sealed class AllowAuthorizationHandler : IAuthorizationHandler
+    {
+        public Task HandleAsync(AuthorizationHandlerContext context)
+        {
+            foreach (var requirement in context.PendingRequirements.ToArray())
+            {
+                context.Succeed(requirement);
+            }
+            return Task.CompletedTask;
         }
     }
 

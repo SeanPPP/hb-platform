@@ -49,7 +49,11 @@ const accessKeyPermissionMap: Partial<Record<keyof AccessControl, string[]>> = {
   canViewAppDownloads: [P.System.ViewAppDownloads, P.System.ManageAppDownloads],
   canReadUser: [P.Users.View],
   canReadRole: [P.Roles.View],
-  canViewDeviceRegistration: [P.DeviceRegistration.View, P.DeviceRegistration.Manage],
+  canViewDeviceRegistration: [
+    P.DeviceRegistration.View,
+    P.DeviceRegistration.Manage,
+    P.DeviceRegistration.ActivationCodesManage,
+  ],
   canManageDomesticSuppliers: [P.DomesticPurchase.ManageSuppliers],
   canReadProduct: [P.Products.View],
   canManageDomesticPrefixCodes: [P.DomesticPurchase.ManagePrefixCodes],

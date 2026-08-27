@@ -29,6 +29,7 @@ public sealed class ApiServerSwitchRuntimeTests
         var deviceAuthorization = new DeviceAuthorizationState();
         deviceAuthorization.Set(new DeviceAuthorizationContext("POS-01", "S001", "HW-01", "secret"));
         var cashierContext = new CashierSessionContext();
+        var activationRecoveryStore = new SwitchActivationRecoveryStore();
         var writer = new ClientLogOutboxWriter(
             logStore,
             deviceAuthorization,
@@ -53,7 +54,8 @@ public sealed class ApiServerSwitchRuntimeTests
             uploader,
             endpointState,
             new StubOperationAuthorizationService(),
-            cashierContext);
+            cashierContext,
+            activationRecoveryStore);
         runtime.ConfigureShell(
             () => ApiServerPaymentSafetyState.Safe,
             _ => Task.CompletedTask,
@@ -85,6 +87,21 @@ public sealed class ApiServerSwitchRuntimeTests
             Assert.Null(safety.GetBlockReason());
             Assert.Equal(0, safety.PendingSyncCount);
             Assert.Equal(0, safety.PendingOperationAuditCount);
+            activationRecoveryStore.Pending = new DeviceActivationRecovery(
+                "HBDEV1-0123456789ABCDEFGHJKMNPQRS-6789ABCDEFGHJKMNPQRSTVWXYZ",
+                DeviceActivationRecoveryMode.Rebind,
+                remoteAddress,
+                "HW-001",
+                DateTimeOffset.UtcNow);
+            Assert.Equal(
+                "settings.serverAddress.blocked.deviceActivation",
+                (await runtime.GetSafetySnapshotAsync(CancellationToken.None)).GetBlockReason());
+            activationRecoveryStore.Pending = null;
+            activationRecoveryStore.ReadException = new DeviceActivationRecoveryUnreadableException();
+            Assert.Equal(
+                "settings.serverAddress.blocked.deviceActivation",
+                (await runtime.GetSafetySnapshotAsync(CancellationToken.None)).GetBlockReason());
+            activationRecoveryStore.ReadException = null;
             await uploader.StartAsync(CancellationToken.None);
             // 中文说明：先观察首次清理和定时器创建，再验证 PostCommit 能从 60 秒等待中唤醒上传器。
             await WaitForNoRejectedOperationEventsAsync(logStore);
@@ -192,6 +209,28 @@ public sealed class ApiServerSwitchRuntimeTests
 
         public Task WaitUntilPeriodicDelayAsync() =>
             _periodicDelayStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    private sealed class SwitchActivationRecoveryStore : IDeviceActivationRecoveryStore
+    {
+        public DeviceActivationRecovery? Pending { get; set; }
+
+        public Exception? ReadException { get; set; }
+
+        public Task<DeviceActivationRecovery?> GetAsync(CancellationToken cancellationToken = default)
+        {
+            return ReadException is null
+                ? Task.FromResult(Pending)
+                : Task.FromException<DeviceActivationRecovery?>(ReadException);
+        }
+
+        public Task SaveAsync(
+            string activationCode,
+            DeviceActivationRecoveryMode mode,
+            string hardwareId,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task ClearAsync(CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 
     private static LocalOrder CreateOrder() => new(

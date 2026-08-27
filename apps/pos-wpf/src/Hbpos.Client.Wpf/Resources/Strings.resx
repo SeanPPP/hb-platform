@@ -659,8 +659,8 @@
   <data name="dailyClose.quantity" xml:space="preserve"><value>Quantity</value></data>
   <data name="dailyClose.subtotal" xml:space="preserve"><value>Subtotal</value></data>
   <data name="dailyClose.reprint" xml:space="preserve"><value>Reprint Daily Close</value></data>
-  <data name="deviceRegistration.title" xml:space="preserve"><value>Device Registration</value></data>
-  <data name="deviceRegistration.title.reregister" xml:space="preserve"><value>Reregister Device to Another Store</value></data>
+  <data name="deviceRegistration.title" xml:space="preserve"><value>Device Activation</value></data>
+  <data name="deviceRegistration.title.reregister" xml:space="preserve"><value>Change Device Store</value></data>
   <data name="deviceRegistration.submit" xml:space="preserve"><value>Submit Registration</value></data>
   <data name="deviceRegistration.submit.switch" xml:space="preserve"><value>Submit Store Switch Registration</value></data>
   <data name="deviceRegistration.submit.reregister" xml:space="preserve"><value>Submit Store Switch Reregistration</value></data>
@@ -668,7 +668,7 @@
   <data name="deviceRegistration.hardwareId" xml:space="preserve"><value>Hardware ID</value></data>
   <data name="deviceRegistration.deviceCode" xml:space="preserve"><value>Device Code</value></data>
   <data name="deviceRegistration.verify" xml:space="preserve"><value>Check Again</value></data>
-  <data name="deviceRegistration.reregister.subtitle" xml:space="preserve"><value>Select the store to switch this device registration to.</value></data>
+  <data name="deviceRegistration.reregister.subtitle" xml:space="preserve"><value>Use a one-time activation code created for the target store.</value></data>
   <data name="deviceRegistration.status.loadingStores" xml:space="preserve"><value>Loading stores...</value></data>
   <data name="deviceRegistration.status.pendingApproval" xml:space="preserve"><value>Pending approval</value></data>
   <data name="deviceRegistration.status.enabled" xml:space="preserve"><value>Device is enabled.</value></data>
@@ -681,6 +681,29 @@
   <data name="deviceRegistration.status.submittingReregister" xml:space="preserve"><value>Submitting device reregistration...</value></data>
   <data name="deviceRegistration.status.checkingApproval" xml:space="preserve"><value>Checking device approval...</value></data>
   <data name="deviceRegistration.status.switchStore" xml:space="preserve"><value>Select a new store to switch this pending registration.</value></data>
+  <data name="deviceActivation.description" xml:space="preserve"><value>Scan the QR code created on the Web, or enter the complete one-time device activation code. The code determines the store automatically.</value></data>
+  <data name="deviceActivation.rebindDescription" xml:space="preserve"><value>Scan or enter the target store activation code, then verify the store, platform, and expiry before confirming.</value></data>
+  <data name="deviceActivation.code" xml:space="preserve"><value>Device activation code</value></data>
+  <data name="deviceActivation.targetStore" xml:space="preserve"><value>Target store</value></data>
+  <data name="deviceActivation.platform" xml:space="preserve"><value>Platform</value></data>
+  <data name="deviceActivation.expiresAt" xml:space="preserve"><value>Expires</value></data>
+  <data name="deviceActivation.preview" xml:space="preserve"><value>Check code</value></data>
+  <data name="deviceActivation.confirm.redeem" xml:space="preserve"><value>Activate device</value></data>
+  <data name="deviceActivation.confirm.rebind" xml:space="preserve"><value>Confirm store change</value></data>
+  <data name="deviceActivation.status.scanOrEnter" xml:space="preserve"><value>Scan or enter the one-time activation code.</value></data>
+  <data name="deviceActivation.status.scanOrEnterRebind" xml:space="preserve"><value>Scan or enter the target store activation code.</value></data>
+  <data name="deviceActivation.status.invalidFormat" xml:space="preserve"><value>Scan or enter the complete HBDEV1 activation code.</value></data>
+  <data name="deviceActivation.status.previewing" xml:space="preserve"><value>Checking activation code...</value></data>
+  <data name="deviceActivation.status.confirmRedeem" xml:space="preserve"><value>Verify the store, platform, and expiry, then activate this device.</value></data>
+  <data name="deviceActivation.status.confirmRebind" xml:space="preserve"><value>Verify the target store, platform, and expiry, then confirm the store change.</value></data>
+  <data name="deviceActivation.status.redeeming" xml:space="preserve"><value>Activating this device...</value></data>
+  <data name="deviceActivation.status.rebinding" xml:space="preserve"><value>Changing this device store...</value></data>
+  <data name="deviceActivation.status.recovering" xml:space="preserve"><value>Recovering an interrupted device activation...</value></data>
+  <data name="deviceActivation.status.recoveryUnreadable" xml:space="preserve"><value>Device activation recovery cannot be read. Repair local app data permissions, then restart, or contact an administrator.</value></data>
+  <data name="deviceActivation.error.invalid" xml:space="preserve"><value>The activation code format is invalid.</value></data>
+  <data name="deviceActivation.error.notAvailable" xml:space="preserve"><value>This activation code is invalid, expired, revoked, or already used.</value></data>
+  <data name="deviceActivation.error.platformMismatch" xml:space="preserve"><value>This activation code is not valid for Windows POS.</value></data>
+  <data name="deviceActivation.error.failed" xml:space="preserve"><value>Device activation failed. Check the code and connection, then try again.</value></data>
   <data name="returns.status.default" xml:space="preserve"><value>Scan order number to start a receipt return.</value></data>
   <data name="returns.status.noReceiptMode" xml:space="preserve"><value>No-receipt return enabled. Scan a product to add it.</value></data>
   <data name="returns.status.receiptMode" xml:space="preserve"><value>Receipt return mode enabled. Scan an order number.</value></data>

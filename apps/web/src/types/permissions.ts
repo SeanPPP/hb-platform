@@ -89,6 +89,7 @@ export const P = {
   DeviceRegistration: {
     View: 'DeviceRegistration.View',
     Manage: 'DeviceRegistration.Manage',
+    ActivationCodesManage: 'DeviceRegistration.ActivationCodes.Manage',
   },
   EmployeeProfiles: {
     View: 'EmployeeProfiles.View',

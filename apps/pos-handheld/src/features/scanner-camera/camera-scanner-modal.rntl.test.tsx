@@ -120,6 +120,28 @@ test("只交付一次规范化条码，并立即关闭相机会话", async () =>
   await waitFor(() => expect(scanner.stopCalls).toBe(1));
 });
 
+test("设备开通上下文保留相机原文，让 parser 拒绝非 ASCII 空白", async () => {
+  const scanner = new CameraScannerPortStub();
+  const onScan = jest.fn();
+  const raw = "\u00a0HBDEV1-INVALID\u00a0";
+  const rendered = await render(
+    <CameraScannerModal
+      context="device-activation"
+      onClose={jest.fn()}
+      onScan={onScan}
+      scanner={scanner}
+      visible
+    />,
+  );
+
+  const preview = await rendered.findByTestId("camera-scanner-preview");
+  await waitFor(() => expect(scanner.startCalls).toBe(1));
+  await fireEvent(preview, "onBarcodeScanned", { data: raw });
+
+  expect(scanner.accepted).toEqual([raw]);
+  expect(onScan).toHaveBeenCalledWith(raw);
+});
+
 test("相机上下文和辅助文案只按当前语言显示", async () => {
   const scanner = new CameraScannerPortStub();
   mockLanguage = "zh";

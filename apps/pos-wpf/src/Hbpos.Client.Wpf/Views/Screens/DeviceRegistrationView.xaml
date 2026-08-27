@@ -45,106 +45,190 @@
                 </StackPanel>
 
                 <controls:ApiServerSettingsPanel DataContext="{Binding ApiServerSettings}"
+                                                 IsEnabled="{Binding CanEditServerSettings}"
                                                  Margin="0,0,0,18" />
 
-                <TextBlock Text="{loc:Loc deviceRegistration.store}"
-                           FontSize="12"
-                           FontWeight="Bold"
-                           Foreground="{StaticResource PosMutedForegroundBrush}"
-                           Margin="0,0,0,6" />
-                <ComboBox ItemsSource="{Binding Stores}"
-                          SelectedItem="{Binding SelectedStore, Mode=TwoWay}"
-                          DisplayMemberPath="DisplayName"
-                          Height="42"
-                          FontSize="15"
-                          Margin="0,0,0,16" />
-
-                <TextBlock Text="{loc:Loc deviceRegistration.hardwareId}"
-                           FontSize="12"
-                           FontWeight="Bold"
-                           Foreground="{StaticResource PosMutedForegroundBrush}"
-                           Margin="0,0,0,6" />
-                <TextBox Text="{Binding HardwareId}"
-                         IsReadOnly="True"
-                         Height="42"
-                         FontSize="12"
-                         TextWrapping="NoWrap"
-                         Margin="0,0,0,16" />
-
-                <Grid Margin="0,0,0,16">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-                    <StackPanel Grid.Column="0" Margin="0,0,8,0">
-                        <TextBlock Text="{loc:Loc deviceRegistration.deviceCode}"
-                                   FontSize="12"
-                                   FontWeight="Bold"
-                                   Foreground="{StaticResource PosMutedForegroundBrush}"
-                                   Margin="0,0,0,6" />
-                        <TextBox Text="{Binding DeviceCode}"
-                                 IsReadOnly="True"
-                                 Height="42"
-                                 FontSize="14" />
-                    </StackPanel>
-                    <StackPanel Grid.Column="1" Margin="8,0,0,0">
-                        <TextBlock Text="{loc:Loc common.status}"
-                                   FontSize="12"
-                                   FontWeight="Bold"
-                                   Foreground="{StaticResource PosMutedForegroundBrush}"
-                                   Margin="0,0,0,6" />
-                        <Border Height="42"
-                                Background="#FFFFF7E8"
-                                BorderBrush="#FFFFD59B"
-                                BorderThickness="1"
-                                CornerRadius="6"
-                                Padding="10,0">
-                            <TextBlock Text="{Binding StatusMessage}"
-                                       VerticalAlignment="Center"
+                <StackPanel Visibility="{Binding IsActivationCodeMode, Converter={StaticResource BoolToVis}}">
+                    <Border Background="#FFEAF2FF"
+                            BorderBrush="#FFC9DCF8"
+                            BorderThickness="1"
+                            CornerRadius="7"
+                            Padding="12,10"
+                            Margin="0,0,0,16">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="26" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <materialDesign:PackIcon Kind="BarcodeScan"
+                                                     Width="18"
+                                                     Height="18"
+                                                     Foreground="{StaticResource PosPrimaryBrush}"
+                                                     VerticalAlignment="Top" />
+                            <TextBlock Grid.Column="1"
+                                       Text="{loc:Loc deviceActivation.description}"
                                        FontSize="12"
-                                       Foreground="#FF8F4E00"
-                                       TextTrimming="CharacterEllipsis" />
-                        </Border>
-                    </StackPanel>
-                </Grid>
+                                       Foreground="{StaticResource PosTextBrush}"
+                                       TextWrapping="Wrap" />
+                        </Grid>
+                    </Border>
 
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="12" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="12" />
-                        <ColumnDefinition Width="*" />
-                    </Grid.ColumnDefinitions>
-                    <Button Grid.Column="0"
-                            Command="{Binding RegisterCommand}"
+                    <TextBlock Text="{loc:Loc deviceActivation.code}"
+                               FontSize="12"
+                               FontWeight="Bold"
+                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                               Margin="0,0,0,6" />
+                    <TextBox Text="{Binding ActivationCode, UpdateSourceTrigger=PropertyChanged}"
+                             AutomationProperties.AutomationId="DeviceActivationCodeInput"
+                             IsReadOnly="{Binding IsActivationRecoveryPending}"
+                             CharacterCasing="Upper"
+                             MaxLength="128"
+                             Height="46"
+                             FontSize="16"
+                             Padding="12,0"
+                             VerticalContentAlignment="Center"
+                             Margin="0,0,0,14">
+                        <TextBox.InputBindings>
+                            <KeyBinding Key="Enter" Command="{Binding PreviewActivationCommand}" />
+                        </TextBox.InputBindings>
+                    </TextBox>
+
+                    <Border Visibility="{Binding HasActivationPreview, Converter={StaticResource BoolToVis}}"
+                            Background="#FFE8F7F1"
+                            BorderBrush="#FFB9E4D2"
+                            BorderThickness="1"
+                            CornerRadius="7"
+                            Padding="14,12"
+                            Margin="0,0,0,14">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="30" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <materialDesign:PackIcon Kind="StoreCheck"
+                                                     Width="20"
+                                                     Height="20"
+                                                     Foreground="#FF0A8F55" />
+                            <StackPanel Grid.Column="1">
+                                <TextBlock Text="{loc:Loc deviceActivation.targetStore}"
+                                           FontSize="11"
+                                           FontWeight="Bold"
+                                           Foreground="#FF0A6D44" />
+                                <TextBlock Text="{Binding StoreTransitionDisplay}"
+                                           FontSize="17"
+                                           FontWeight="Black"
+                                           Foreground="{StaticResource PosTextBrush}"
+                                           Margin="0,3,0,0" />
+                                <TextBlock FontSize="11"
+                                           Foreground="{StaticResource PosMutedForegroundBrush}"
+                                           Margin="0,4,0,0">
+                                    <Run Text="{loc:Loc deviceActivation.platform}" />
+                                    <Run Text=": " />
+                                    <Run Text="{Binding PreviewDeviceSystem}" />
+                                    <Run Text="  ·  " />
+                                    <Run Text="{loc:Loc deviceActivation.expiresAt}" />
+                                    <Run Text=": " />
+                                    <Run Text="{Binding PreviewExpiryText}" />
+                                </TextBlock>
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <Border MinHeight="42"
+                            Background="#FFFFF7E8"
+                            BorderBrush="#FFFFD59B"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="10,8"
+                            Margin="0,0,0,16">
+                        <TextBlock Text="{Binding StatusMessage}"
+                                   FontSize="12"
+                                   Foreground="#FF8F4E00"
+                                   TextWrapping="Wrap" />
+                    </Border>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="12" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0"
+                                Command="{Binding PreviewActivationCommand}"
+                                Height="46"
+                                Style="{StaticResource PosSecondaryButtonStyle}">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <materialDesign:PackIcon Kind="MagnifyScan" Width="18" Height="18" Margin="0,0,8,0" />
+                                <TextBlock Text="{Binding ActivationPreviewButtonText}" />
+                            </StackPanel>
+                        </Button>
+                        <Button Grid.Column="2"
+                                Command="{Binding ConfirmActivationCommand}"
+                                Height="46"
+                                Style="{StaticResource PosPrimaryButtonStyle}">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <materialDesign:PackIcon Kind="CheckCircle" Width="18" Height="18" Foreground="White" Margin="0,0,8,0" />
+                                <TextBlock Text="{Binding ActivationConfirmButtonText}" />
+                            </StackPanel>
+                        </Button>
+                        <Button Grid.Column="4"
+                                Command="{Binding CancelCommand}"
+                                Visibility="{Binding CanCancel, Converter={StaticResource BoolToVis}}"
+                                Height="46"
+                                Style="{StaticResource PosSecondaryButtonStyle}">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <materialDesign:PackIcon Kind="ArrowLeft" Width="18" Height="18" Margin="0,0,8,0" />
+                                <TextBlock Text="{loc:Loc shell.backToPos}" />
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                </StackPanel>
+
+                <StackPanel Visibility="{Binding IsLegacyPendingRegistration, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="{loc:Loc deviceRegistration.store}"
+                               FontSize="12"
+                               FontWeight="Bold"
+                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                               Margin="0,0,0,6" />
+                    <ComboBox ItemsSource="{Binding Stores}"
+                              SelectedItem="{Binding SelectedStore, Mode=TwoWay}"
+                              DisplayMemberPath="DisplayName"
+                              Height="42"
+                              FontSize="15"
+                              Margin="0,0,0,16" />
+                    <TextBlock Text="{loc:Loc deviceRegistration.deviceCode}"
+                               FontSize="12"
+                               FontWeight="Bold"
+                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                               Margin="0,0,0,6" />
+                    <TextBox Text="{Binding DeviceCode}"
+                             IsReadOnly="True"
+                             Height="42"
+                             FontSize="14"
+                             Margin="0,0,0,12" />
+                    <Border MinHeight="42"
+                            Background="#FFFFF7E8"
+                            BorderBrush="#FFFFD59B"
+                            BorderThickness="1"
+                            CornerRadius="6"
+                            Padding="10,8"
+                            Margin="0,0,0,16">
+                        <TextBlock Text="{Binding StatusMessage}"
+                                   FontSize="12"
+                                   Foreground="#FF8F4E00"
+                                   TextWrapping="Wrap" />
+                    </Border>
+                    <Button Command="{Binding VerifyCommand}"
                             Height="46"
                             Style="{StaticResource PosPrimaryButtonStyle}">
                         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <materialDesign:PackIcon Kind="PlusCircle" Width="18" Height="18" Foreground="White" Margin="0,0,8,0" />
-                            <TextBlock Text="{Binding RegisterButtonText}" />
-                        </StackPanel>
-                    </Button>
-                    <Button Grid.Column="2"
-                            Command="{Binding VerifyCommand}"
-                            Height="46"
-                            Style="{StaticResource PosSecondaryButtonStyle}">
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <materialDesign:PackIcon Kind="Sync" Width="18" Height="18" Margin="0,0,8,0" />
+                            <materialDesign:PackIcon Kind="Sync" Width="18" Height="18" Foreground="White" Margin="0,0,8,0" />
                             <TextBlock Text="{loc:Loc deviceRegistration.verify}" />
                         </StackPanel>
                     </Button>
-                    <Button Grid.Column="4"
-                            Command="{Binding CancelCommand}"
-                            Visibility="{Binding CanCancel, Converter={StaticResource BoolToVis}}"
-                            Height="46"
-                            Style="{StaticResource PosSecondaryButtonStyle}">
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <materialDesign:PackIcon Kind="ArrowLeft" Width="18" Height="18" Margin="0,0,8,0" />
-                            <TextBlock Text="{loc:Loc shell.backToPos}" />
-                        </StackPanel>
-                    </Button>
-                </Grid>
+                </StackPanel>
             </StackPanel>
                 </Border>
             </Grid>
