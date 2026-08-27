@@ -82,7 +82,10 @@ test("quality-baseline workflow 覆盖 PR/main/nightly、路径 lane 与 always 
   assert.match(releaseStep, /RELEASE_ACTION:\s*\$\{\{\s*inputs\.action\s*\}\}/);
   assert.match(releaseStep, /--action\s+"\$RELEASE_ACTION"/);
   assert.match(releaseStep, /--conclusion\s+"\$RELEASE_CONCLUSION"/);
-  assert.match(workflow, /actions\/upload-artifact@v4/);
+  assert.match(
+    workflow,
+    /actions\/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02/,
+  );
   assert.match(workflow, /quality-web-bundle-/);
   assert.match(workflow, /collect-web-bundle\.mjs/);
   assert.match(workflow, /web-bundle\.json/);

@@ -215,7 +215,6 @@ export async function postServiceJson({
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), normalizedTimeout);
-  timer.unref?.();
   try {
     const response = await fetchImpl(url, {
       method: "POST",
