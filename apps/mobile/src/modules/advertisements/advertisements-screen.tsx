@@ -48,11 +48,18 @@ import {
   setAdvertisementEnabled,
   updateAdvertisement,
 } from "@/modules/advertisements/api";
+import {
+  buildAdvertisementStoreNameMap,
+  buildAdvertisementStoreSummary,
+  hasSameAdvertisementStoreCodes,
+  resolveAdvertisementDraftStoreScopes,
+} from "@/modules/advertisements/advertisement-store-presentation";
 import { uploadAdvertisementAssetToSignedUrl } from "@/modules/advertisements/upload";
 import type {
   AdvertisementDraft,
   AdvertisementItem,
   AdvertisementMediaType,
+  AdvertisementStoreScope,
   AdvertisementUpsertPayload,
 } from "@/modules/advertisements/types";
 import { getDeviceBoundStoreCode } from "@/modules/shop/device-bound-store-filter";
@@ -77,6 +84,41 @@ type FilterEnabledValue = "all" | "enabled" | "disabled";
 type AdvertisementUploadRequest =
   | { source: "library" | "cameraPhoto" }
   | { source: "cameraVideo"; asset: RecordedAdvertisementVideoAsset };
+
+function AdvertisementStoreChips({
+  advertisementId,
+  allStoresLabel,
+  storeNamesByCode,
+  stores,
+}: {
+  advertisementId: string;
+  allStoresLabel: string;
+  storeNamesByCode: ReadonlyMap<string, string>;
+  stores: AdvertisementStoreScope[];
+}) {
+  const summary = buildAdvertisementStoreSummary(stores, storeNamesByCode);
+
+  return (
+    <View style={styles.chipsRow}>
+      {summary.isAllStores ? (
+        <Chip compact>{allStoresLabel}</Chip>
+      ) : (
+        <>
+          {summary.items.map((store) => (
+            <Chip key={`${advertisementId}-${store.storeCode}`} compact>
+              {store.label}
+            </Chip>
+          ))}
+          {summary.remainingCount > 0 ? (
+            <Chip key={`${advertisementId}-remaining`} compact>
+              +{summary.remainingCount}
+            </Chip>
+          ) : null}
+        </>
+      )}
+    </View>
+  );
+}
 
 function createEmptyDraft(): AdvertisementDraft {
   return {
@@ -567,15 +609,23 @@ export function AdvertisementsScreen() {
   );
   const selectedFilterStore =
     stores.find((store) => store.storeCode === effectiveFilterStoreCode) ?? null;
+  const storeNamesByCode = useMemo(
+    () => buildAdvertisementStoreNameMap(stores),
+    [stores]
+  );
   const selectedDraftStores = useMemo(
-    () =>
-      draft.storeCodes
-        .map((storeCode) => stores.find((store) => store.storeCode === storeCode))
-        .filter((store): store is NonNullable<typeof store> => Boolean(store)),
-    [draft.storeCodes, stores]
+    () => resolveAdvertisementDraftStoreScopes(
+      draft.storeCodes,
+      detailQuery.data?.stores ?? [],
+      storeNamesByCode
+    ),
+    [detailQuery.data?.stores, draft.storeCodes, storeNamesByCode]
   );
   const allDraftStoresSelected =
-    stores.length > 0 && draft.storeCodes.length === stores.length;
+    stores.length > 0 && hasSameAdvertisementStoreCodes(
+      draft.storeCodes,
+      stores.map((store) => store.storeCode)
+    );
 
   const mediaTypeItems: SelectionListItem[] = useMemo(
     () => [
@@ -881,13 +931,12 @@ export function AdvertisementsScreen() {
                     {item.description || t("labels.noDescription")}
                   </Text>
 
-                  <View style={styles.chipsRow}>
-                    {(item.stores.length > 0 ? item.stores : [{ storeCode: t("labels.allStores") }]).map((store) => (
-                      <Chip key={`${item.id}-${store.storeCode}`} compact>
-                        {store.storeCode}
-                      </Chip>
-                    ))}
-                  </View>
+                  <AdvertisementStoreChips
+                    advertisementId={item.id}
+                    allStoresLabel={t("labels.allStores")}
+                    storeNamesByCode={storeNamesByCode}
+                    stores={item.stores}
+                  />
 
                   <View style={styles.metricsRow}>
                     <Text variant="bodySmall">{t("labels.sortOrder")}: {item.sortOrder ?? 0}</Text>

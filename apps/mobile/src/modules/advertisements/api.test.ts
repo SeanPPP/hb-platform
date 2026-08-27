@@ -67,7 +67,11 @@ assertDeepEqual(
     effectiveEnd: "2026-06-30T23:59:59Z",
     isEnabled: true,
     sortOrder: 7.6,
-    stores: [{ storeCode: " STO01 " }, { storeCode: " " }, { storeCode: "STO02" }],
+    stores: [
+      { storeCode: " STO01 ", storeName: "Brisbane" },
+      { storeCode: " " },
+      { storeCode: "STO02", storeName: "Sydney" },
+    ],
   }),
   {
     title: "Hero banner",
@@ -85,7 +89,7 @@ assertDeepEqual(
     sortOrder: 7,
     stores: [{ storeCode: "STO01" }, { storeCode: "STO02" }],
   },
-  "save payload trims fields and omits blank store scopes"
+  "save payload trims fields, omits names, and drops blank store scopes"
 );
 
 assertDeepEqual(
@@ -136,7 +140,10 @@ const list = normalizeAdvertisementsResponse({
         EffectiveEnd: "2026-05-27T00:00:00Z",
         IsEnabled: "1",
         SortOrder: "6",
-        Stores: [{ StoreCode: "BNE01" }, { StoreCode: "SYD02" }],
+        Stores: [
+          { StoreCode: "BNE01", StoreName: "Brisbane" },
+          { StoreCode: "SYD02", storeName: "Sydney" },
+        ],
       },
     ],
     TotalCount: "8",
@@ -151,6 +158,8 @@ assertEqual(list.items[0]?.mediaType, "video", "list normalization keeps media t
 assertEqual(list.items[0]?.fileSize, 4096, "list normalization coerces file size");
 assertEqual(list.items[0]?.isEnabled, true, "list normalization coerces enabled flag");
 assertEqual(list.items[0]?.stores[1]?.storeCode, "SYD02", "list normalization keeps store scopes");
+assertEqual(list.items[0]?.stores[0]?.storeName, "Brisbane", "list normalization keeps PascalCase store name");
+assertEqual(list.items[0]?.stores[1]?.storeName, "Sydney", "list normalization keeps camelCase store name");
 assertEqual(list.total, 8, "list normalization keeps total count");
 assertEqual(list.pageNumber, 3, "list normalization keeps page number");
 assertEqual(list.pageSize, 100, "list normalization keeps page size");
@@ -162,10 +171,11 @@ const detail = normalizeAdvertisementDetail({
     mediaType: "image",
     mediaUrl: "https://cdn.example.com/ad-2.jpg",
     isEnabled: 0,
-    stores: [{ storeCode: "MEL01" }],
+    stores: [{ storeCode: "MEL01", storeName: "Melbourne" }],
   },
 });
 
 assertEqual(detail?.id, "ad-2", "detail normalization unwraps item payload");
 assertEqual(detail?.isEnabled, false, "detail normalization coerces disabled flag");
 assertEqual(detail?.stores[0]?.storeCode, "MEL01", "detail normalization keeps nested stores");
+assertEqual(detail?.stores[0]?.storeName, "Melbourne", "detail normalization keeps nested store name");
