@@ -53,7 +53,7 @@ const otaScope: OtaAppUpdateCacheScope = Object.freeze({
   projectId: "123e4567-e89b-42d3-a456-426614174000",
   projectName: "hb-pos-handheld",
   platform: "iOS",
-  configuredChannel: "store-s001",
+  configuredChannel: "pos-handheld-production",
   runtimeVersion: "1.2.3",
   currentUpdateId: null,
   currentUpdateGroupId: null,
@@ -65,7 +65,7 @@ const otaPolicy: PosHandheldOtaUpdatePolicy = Object.freeze({
   projectName: "hb-pos-handheld",
   platform: "iOS",
   required: true,
-  channel: "store-s001",
+  channel: "pos-handheld-production",
   runtimeVersion: "1.2.3",
   updateId: "123e4567-e89b-42d3-a456-426614174000",
   updateGroupId: "223e4567-e89b-42d3-a456-426614174000",
@@ -344,7 +344,7 @@ test("OTA 缓存 record 再按 policyVersion 隔离，并用 scope pointer 找�
     assert.deepEqual(await repository.get(), otaPolicy);
 
     const records = await connection.getFirst<{ total: number }>(
-      "SELECT count(*) AS total FROM app_settings WHERE setting_key LIKE 'pos_handheld_ota_update_policy_v3:record:%'",
+      "SELECT count(*) AS total FROM app_settings WHERE setting_key LIKE 'pos_handheld_ota_update_policy_v4:record:%'",
     );
     assert.equal(Number(records?.total), 1);
 
@@ -356,7 +356,7 @@ test("OTA 缓存 record 再按 policyVersion 隔离，并用 scope pointer 找�
     await repository.save(newer);
     assert.deepEqual(await repository.get(), newer);
     const recordsAfter = await connection.getFirst<{ total: number }>(
-      "SELECT count(*) AS total FROM app_settings WHERE setting_key LIKE 'pos_handheld_ota_update_policy_v3:record:%'",
+      "SELECT count(*) AS total FROM app_settings WHERE setting_key LIKE 'pos_handheld_ota_update_policy_v4:record:%'",
     );
     assert.equal(Number(recordsAfter?.total), 2);
 
@@ -368,6 +368,47 @@ test("OTA 缓存 record 再按 policyVersion 隔离，并用 scope pointer 找�
       ).get(),
       null,
     );
+  });
+});
+
+test("OTA 缓存 record 额外按目标 release channel 与 update identity 隔离", async () => {
+  await withDatabase(async (connection) => {
+    const productionScope = Object.freeze({
+      ...otaScope,
+      configuredChannel: "pos-handheld-production",
+    });
+    const legacy = Object.freeze({
+      ...otaPolicy,
+      channel: "pos-handheld-production",
+    });
+    const release = Object.freeze({
+      ...legacy,
+      channel:
+        "pos-handheld-production-ios-release-20260827t101500z-a1b2c3",
+      updateId: "323e4567-e89b-42d3-a456-426614174000",
+      updateGroupId: "423e4567-e89b-42d3-a456-426614174000",
+    });
+    const repository = new PosHandheldOtaUpdatePolicyRepository(
+      connection,
+      () => "2026-08-27T10:15:00.000Z",
+      productionScope,
+    );
+
+    await repository.save(legacy);
+    await repository.save(release);
+    assert.deepEqual(await repository.get(), release);
+
+    const records = await connection.getFirst<{ total: number }>(
+      "SELECT count(*) AS total FROM app_settings WHERE setting_key LIKE 'pos_handheld_ota_update_policy_v4:record:%'",
+    );
+    assert.equal(Number(records?.total), 2);
+
+    await repository.save(legacy);
+    assert.deepEqual(await repository.get(), legacy);
+    const recordsAfterLegacyRestore = await connection.getFirst<{ total: number }>(
+      "SELECT count(*) AS total FROM app_settings WHERE setting_key LIKE 'pos_handheld_ota_update_policy_v4:record:%'",
+    );
+    assert.equal(Number(recordsAfterLegacyRestore?.total), 2);
   });
 });
 
@@ -395,7 +436,7 @@ test("OTA 当前 group 已等于缓存 target group 时拒绝 cached required", 
   });
 });
 
-test("preview→production 与不同 project 不复用同版本 OTA，scope 内错配也失败关闭", async () => {
+test("preview 永不恢复后台 OTA 缓存，且 production 与不同 project 不复用", async () => {
   await withDatabase(async (connection) => {
     const previewScope = Object.freeze({
       ...otaScope,
@@ -411,7 +452,7 @@ test("preview→production 与不同 project 不复用同版本 OTA，scope 内�
       previewScope,
     );
     await preview.save(previewPolicy);
-    assert.deepEqual(await preview.get(), previewPolicy);
+    assert.equal(await preview.get(), null);
 
     for (const mismatch of [
       { ...previewScope, configuredChannel: "production" },

@@ -307,6 +307,32 @@ namespace BlazorApp.Api.Services
                 );
             }
 
+            var channel = NormalizeChannel(dto.Channel);
+            if (!dto.BootstrapLegacyFixedChannel)
+            {
+                // 新的 Mobile/手持 POS release channel 只能进入不可变 AppOtaRelease，
+                // 旧 upsert 端点仅保留 bootstrap 所需的固定 legacy channel。
+                return ApiResponse<MobileAppOtaUpdateDto>.Error(
+                    "该 OTA 发布必须改用 /api/app-ota-releases/register 登记不可变事实",
+                    AppOtaReleaseErrorCodes.LegacyEndpointMigrated
+                );
+            }
+            if (!_options.AllowLegacyOtaBootstrapRegistration)
+            {
+                // 服务端开关默认关闭；请求字段本身不能绕过迁移后的旧表只读边界。
+                return ApiResponse<MobileAppOtaUpdateDto>.Error(
+                    "legacy bootstrap 登记窗口未开启，请使用不可变发布事实接口",
+                    AppOtaReleaseErrorCodes.LegacyEndpointMigrated
+                );
+            }
+            if (!IsLegacyOtaBootstrapIdentityValid(dto, appKey, channel, platform))
+            {
+                return ApiResponse<MobileAppOtaUpdateDto>.Error(
+                    "legacy bootstrap 必须使用完整且精确的 fixed channel、branch、Runtime 和 Update ID",
+                    AppOtaReleaseErrorCodes.LegacyBootstrapInvalid
+                );
+            }
+
             var existing = await _db
                 .Queryable<MobileAppOtaUpdate>()
                 .FirstAsync(x =>
@@ -314,44 +340,51 @@ namespace BlazorApp.Api.Services
                     && x.UpdateGroupId == updateGroupId
                     && x.Platform == platform
                 );
-            var entity = existing ?? new MobileAppOtaUpdate { Id = Guid.NewGuid() };
+            var entity = new MobileAppOtaUpdate { Id = Guid.NewGuid() };
 
-            // EAS update webhook 或人工登记可能重复提交同一 group；按 appKey+group+platform 幂等更新。
+            // legacy bootstrap 仅能追加 raw history；相同身份只能精确幂等，禁止覆盖。
             ApplyOtaUpdate(entity, dto, appKey, projectName, updateGroupId, platform);
-
-            if (existing == null)
+            if (existing != null)
             {
-                try
+                if (!dto.PublishedAt.HasValue)
                 {
-                    await _db.Insertable(entity).ExecuteCommandAsync();
+                    // 兼容旧请求未传发布时间：重试仍绑定首次生成的事实时间。
+                    entity.PublishedAt = existing.PublishedAt;
                 }
-                catch (Exception ex) when (IsUniqueOtaUpdateConflict(ex))
-                {
-                    _logger.LogInformation(
-                        ex,
-                        "EAS OTA 并发写入检测到重复 group/platform，转为更新。UpdateGroupId: {UpdateGroupId}, Platform: {Platform}",
-                        updateGroupId,
-                        platform
-                    );
-                    var concurrentExisting = await _db
-                        .Queryable<MobileAppOtaUpdate>()
-                        .FirstAsync(x =>
-                            x.AppKey == appKey
-                            && x.UpdateGroupId == updateGroupId
-                            && x.Platform == platform
-                        );
-                    if (concurrentExisting == null)
-                    {
-                        throw;
-                    }
 
-                    entity.Id = concurrentExisting.Id;
-                    await _db.Updateable(entity).ExecuteCommandAsync();
-                }
+                return CompareLegacyOtaFact(existing, entity);
             }
-            else
+
+            try
             {
-                await _db.Updateable(entity).ExecuteCommandAsync();
+                await _db.Insertable(entity).ExecuteCommandAsync();
+            }
+            catch (Exception ex) when (IsUniqueOtaUpdateConflict(ex))
+            {
+                _logger.LogInformation(
+                    ex,
+                    "EAS OTA 并发写入检测到重复 group/platform，转为不可变事实比较。UpdateGroupId: {UpdateGroupId}, Platform: {Platform}",
+                    updateGroupId,
+                    platform
+                );
+                var concurrentExisting = await _db
+                    .Queryable<MobileAppOtaUpdate>()
+                    .FirstAsync(x =>
+                        x.AppKey == appKey
+                        && x.UpdateGroupId == updateGroupId
+                        && x.Platform == platform
+                    );
+                if (concurrentExisting == null)
+                {
+                    throw;
+                }
+
+                if (!dto.PublishedAt.HasValue)
+                {
+                    entity.PublishedAt = concurrentExisting.PublishedAt;
+                }
+
+                return CompareLegacyOtaFact(concurrentExisting, entity);
             }
 
             return ApiResponse<MobileAppOtaUpdateDto>.OK(MapToDto(entity));
@@ -430,43 +463,10 @@ namespace BlazorApp.Api.Services
             MobileAppOtaRollbackCommandDto dto
         )
         {
-            var normalizedGroupId = NormalizeRequiredText(updateGroupId);
-            if (!IsValidUpdateGroupId(normalizedGroupId))
-            {
-                return Task.FromResult(
-                    ApiResponse<MobileAppOtaRollbackCommandDto>.Error(
-                        "UpdateGroupId 必须是 EAS update group UUID",
-                        "INVALID_UPDATE_GROUP_ID"
-                    )
-                );
-            }
-
-            var platform = NormalizePlatform(dto.Platform);
-            if (platform == null)
-            {
-                return Task.FromResult(
-                    ApiResponse<MobileAppOtaRollbackCommandDto>.Error(
-                        "Platform 必须是 ios 或 android",
-                        "INVALID_OTA_PLATFORM"
-                    )
-                );
-            }
-
-            var message = NormalizeOptionalText(dto.Message) ?? normalizedGroupId;
-            var rollbackMessage = $"回退 OTA：{message}";
-            // 这里只生成可审计命令，不在服务端执行 eas-cli，避免 API 请求触发外部发布动作。
-            var command =
-                $"npx eas-cli@latest update:rollback {ShellQuote(normalizedGroupId)} -p {ShellQuote(platform)} -m {ShellQuote(rollbackMessage)} --non-interactive";
-
             return Task.FromResult(
-                ApiResponse<MobileAppOtaRollbackCommandDto>.OK(
-                    new MobileAppOtaRollbackCommandDto
-                    {
-                        UpdateGroupId = normalizedGroupId,
-                        Platform = platform,
-                        Message = message,
-                        Command = command,
-                    }
+                ApiResponse<MobileAppOtaRollbackCommandDto>.Error(
+                    "旧 fixed-channel rollback-command 已停用；请发布新的 rollback release channel 并登记不可变事实",
+                    AppOtaReleaseErrorCodes.LegacyEndpointMigrated
                 )
             );
         }
@@ -954,6 +954,101 @@ namespace BlazorApp.Api.Services
             entity.PublishedAt = dto.PublishedAt ?? DateTime.UtcNow;
             entity.IsRollback = dto.IsRollback;
             entity.RollbackOfGroupId = NormalizeOptionalText(dto.RollbackOfGroupId);
+        }
+
+        private static ApiResponse<MobileAppOtaUpdateDto> CompareLegacyOtaFact(
+            MobileAppOtaUpdate existing,
+            MobileAppOtaUpdate proposed
+        )
+        {
+            if (IsSameLegacyOtaFact(existing, proposed))
+            {
+                return ApiResponse<MobileAppOtaUpdateDto>.OK(
+                    MapToDto(existing),
+                    "legacy bootstrap 事实已存在，幂等返回"
+                );
+            }
+
+            return ApiResponse<MobileAppOtaUpdateDto>.Error(
+                "相同 appKey、update group 与 platform 已有不同的 bootstrap 事实，禁止覆盖",
+                AppOtaReleaseErrorCodes.FactConflict
+            );
+        }
+
+        private static bool IsSameLegacyOtaFact(
+            MobileAppOtaUpdate existing,
+            MobileAppOtaUpdate proposed
+        ) =>
+            string.Equals(existing.AppKey, proposed.AppKey, StringComparison.Ordinal)
+            && string.Equals(
+                existing.ProjectName,
+                proposed.ProjectName,
+                StringComparison.Ordinal
+            )
+            && string.Equals(
+                existing.UpdateGroupId,
+                proposed.UpdateGroupId,
+                StringComparison.Ordinal
+            )
+            && string.Equals(existing.UpdateId, proposed.UpdateId, StringComparison.Ordinal)
+            && string.Equals(
+                existing.AndroidUpdateId,
+                proposed.AndroidUpdateId,
+                StringComparison.Ordinal
+            )
+            && string.Equals(existing.Channel, proposed.Channel, StringComparison.Ordinal)
+            && string.Equals(existing.Branch, proposed.Branch, StringComparison.Ordinal)
+            && string.Equals(existing.Platform, proposed.Platform, StringComparison.Ordinal)
+            && string.Equals(
+                existing.RuntimeVersion,
+                proposed.RuntimeVersion,
+                StringComparison.Ordinal
+            )
+            && string.Equals(existing.Message, proposed.Message, StringComparison.Ordinal)
+            && string.Equals(
+                existing.GitCommitHash,
+                proposed.GitCommitHash,
+                StringComparison.Ordinal
+            )
+            && string.Equals(
+                existing.DashboardUrl,
+                proposed.DashboardUrl,
+                StringComparison.Ordinal
+            )
+            && AppOtaReleaseService.NormalizeUtcTimestamp(existing.PublishedAt)
+                == AppOtaReleaseService.NormalizeUtcTimestamp(proposed.PublishedAt)
+            && existing.IsRollback == proposed.IsRollback
+            && string.Equals(
+                existing.RollbackOfGroupId,
+                proposed.RollbackOfGroupId,
+                StringComparison.Ordinal
+            );
+
+        private static bool IsLegacyOtaBootstrapIdentityValid(
+            MobileAppOtaUpdateUpsertDto dto,
+            string appKey,
+            string channel,
+            string platform
+        )
+        {
+            var expectedChannel = appKey switch
+            {
+                MobileAppKeys.Mobile when channel is "production" or "preview" => channel,
+                MobileAppKeys.PosHandheld when channel == "pos-handheld-production" =>
+                    channel,
+                _ => string.Empty,
+            };
+            var branch = NormalizeOptionalText(dto.Branch);
+            var runtimeVersion = NormalizeOptionalText(dto.RuntimeVersion);
+            var updateId = NormalizeOptionalText(dto.UpdateId)
+                ?? NormalizeOptionalText(dto.AndroidUpdateId);
+            return expectedChannel.Length > 0
+                && string.Equals(branch, expectedChannel, StringComparison.Ordinal)
+                && runtimeVersion is not null
+                && Guid.TryParse(updateId, out _)
+                && platform is "android" or "ios"
+                && !dto.IsRollback
+                && NormalizeOptionalText(dto.RollbackOfGroupId) is null;
         }
 
         private static MobileAppOtaUpdateDto MapToDto(MobileAppOtaUpdate entity)

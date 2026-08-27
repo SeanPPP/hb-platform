@@ -1,657 +1,1470 @@
 #!/usr/bin/env node
 
+import { Buffer } from "node:buffer";
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildReleaseEvent, reportReleaseEvent } from "../../../scripts/performance/report-release-event.mjs";
+import {
+  buildReleaseEvent,
+  reportReleaseEvent,
+} from "../../../scripts/performance/report-release-event.mjs";
 import {
   resolveReleaseCommit,
   selectReleaseEventCommit,
 } from "../../../scripts/performance/release-commit.mjs";
 
-const VALID_CHANNELS = new Set(["preview", "production"]);
-const VALID_PROFILES = new Set(["preview", "production"]);
-const VALID_PLATFORMS = new Set(["android", "ios"]);
-const VALID_NATIVE_INSTALLER_OPTIONS = new Set(["enabled", "disabled"]);
-const DEFAULT_PLATFORM = "android";
-const REGISTRATION_PATH = "/api/mobile-app-builds/ota-updates";
-const CURRENT_USER_PATH = "/api/Auth/current";
-const SERVICE_TOKEN_CURRENT_PATH = "/api/service-api-tokens/current";
-const SERVICE_API_TOKEN_PREFIX = "hbsvc_";
-const MANAGE_APP_DOWNLOADS_PERMISSION = "System.ManageAppDownloads";
-const SUPER_ADMIN_ROLE_NAMES = new Set(["Admin", "管理员"]);
+export const EAS_CLI_VERSION = "21.3.0";
+export const APP_OTA_PREFLIGHT_PATH = "/api/app-ota-releases/preflight";
+export const APP_OTA_REGISTER_PATH = "/api/app-ota-releases/register";
+export const LEGACY_MOBILE_OTA_REGISTER_PATH = "/api/mobile-app-builds/ota-updates";
+
+const APP_KEY = "mobile";
+const PROJECT_NAME = "hbweb-expo";
+const EAS_PROJECT_ID = "3b37541e-6191-460d-9a57-fe6691e206cf";
+const VALID_ENVIRONMENTS = new Set(["production", "preview"]);
+const VALID_PLATFORMS = new Set(["android", "ios", "all"]);
+const MAX_STDIN_TOKEN_BYTES = 4_096;
+const EAS_CHANNEL_PAGE_LIMIT = 25;
+const MAX_EAS_CHANNEL_PAGES = 100;
+const JWT_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+const SERVICE_TOKEN_PATTERN = /^hbsvc_[A-Za-z0-9_-]{8,}$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const RECOVERY_MANIFEST_FIELDS = Object.freeze([
+  "appKey",
+  "createdAtUtc",
+  "environment",
+  "releaseBatchId",
+  "releases",
+  "schemaVersion",
+]);
+const RECOVERY_RELEASE_FIELDS = Object.freeze([
+  "appKey",
+  "clientChannel",
+  "dashboardUrl",
+  "easBranch",
+  "easProjectId",
+  "environment",
+  "gitCommitHash",
+  "isRollback",
+  "message",
+  "platform",
+  "projectName",
+  "publishedAtUtc",
+  "releaseBatchId",
+  "releaseChannel",
+  "rollbackOfReleaseId",
+  "runtimeVersion",
+  "updateGroupId",
+  "updateId",
+]);
+const BOOTSTRAP_RECOVERY_MANIFEST_FIELDS = Object.freeze([
+  "appKey",
+  "bootstrapLegacyFixedChannel",
+  "createdAtUtc",
+  "environment",
+  "releaseBatchId",
+  "releases",
+  "schemaVersion",
+]);
+const BOOTSTRAP_RECOVERY_RELEASE_FIELDS = Object.freeze([
+  "androidUpdateId",
+  "bootstrapLegacyFixedChannel",
+  "branch",
+  "channel",
+  "dashboardUrl",
+  "gitCommitHash",
+  "isRollback",
+  "message",
+  "platform",
+  "projectName",
+  "publishedAt",
+  "rollbackOfGroupId",
+  "runtimeVersion",
+  "updateGroupId",
+  "updateId",
+]);
 
 const HELP_TEXT = `
 用法：
-  node scripts/publish-ota-update.mjs --channel preview|production --profile preview|production --platform android|ios --runtime-version <version> --message <message>
+  node scripts/publish-ota-update.mjs --environment production|preview --platform android|ios|all --runtime-version <runtime> --message <message> [--access-token-stdin]
+  node scripts/publish-ota-update.mjs --bootstrap-legacy-fixed-channel --environment production|preview --platform android|ios --runtime-version <runtime> --message <message> [--access-token-stdin]
+  node scripts/publish-ota-update.mjs --register-only <recovery.json> [--access-token-stdin]
 
-参数：
-  --channel <preview|production>       EAS Update channel。
-  --profile <preview|production>       写入 OTA 包的 App build profile。
-  --platform <android|ios>             OTA 平台，默认 android；production 发布必须显式指定。
-  --runtime-version <version>          OTA 目标 runtimeVersion。
-  --message <message>                  EAS Update 发布说明。
-  --native-installer <enabled|disabled> Android 原生 APK 安装器开关，默认 enabled；1.0.1 必须 disabled；iOS 始终强制 disabled。
-  --dry-run                            只打印命令和补录 JSON，不发布 OTA，也不登记后台。
-  --mock-output-file <path>            配合 --dry-run，解析已保存的 EAS 输出用于验证。
-  --help, -h                           显示帮助。
-
-后台登记环境变量：
-  HBWEB_API_BASE_URL                   后台站点根地址或 API base URL，例如 https://<backend-domain> 或 https://<backend-domain>/api。
-  HBWEB_API_TOKEN                      后台 Bearer token。
+安全行为：
+  - 每个平台发布到独立且不可复用的 release channel。
+  - 两个平台均在任何 EAS 写入前完成后台 preflight。
+  - 发布登记只写不可变事实，不会启用或修改投放策略。
+  - 管理员 JWT 只能通过 --access-token-stdin 读取；环境变量只接受 hbsvc_ 服务 token。
+  - EAS 已成功但登记失败时写入无凭据 recovery manifest，使用 --register-only 幂等补登记。
+  - --bootstrap-legacy-fixed-channel 仅用于迁移窗口中的单平台 fixed-channel bootstrap，绝不写入新策略。
 `;
 
-function parseArgs(argv) {
-  const options = {
-    dryRun: false,
-    help: false,
-    nativeInstaller: "enabled",
-    platform: DEFAULT_PLATFORM,
-    platformExplicit: false,
-  };
-
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-
-    if (arg === "--help" || arg === "-h") {
-      options.help = true;
-      continue;
-    }
-
-    if (arg === "--dry-run") {
-      options.dryRun = true;
-      continue;
-    }
-
-    if (arg.startsWith("--")) {
-      const next = argv[index + 1];
-      if (!next || next.startsWith("--")) {
-        throw new Error(`参数 ${arg} 缺少取值`);
-      }
-
-      switch (arg) {
-        case "--channel":
-          options.channel = next;
-          break;
-        case "--profile":
-          options.profile = next;
-          break;
-        case "--platform":
-          options.platform = next;
-          options.platformExplicit = true;
-          break;
-        case "--runtime-version":
-          options.runtimeVersion = next;
-          break;
-        case "--message":
-          options.message = next;
-          break;
-        case "--native-installer":
-          options.nativeInstaller = next;
-          break;
-        case "--mock-output-file":
-          options.mockOutputFile = next;
-          break;
-        default:
-          throw new Error(`未知参数：${arg}`);
-      }
-
-      index += 1;
-      continue;
-    }
-
-    throw new Error(`未知参数：${arg}`);
-  }
-
-  return options;
+function normalizedText(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
-function validateOptions(options) {
-  const nativeInstaller = options.nativeInstaller ?? "enabled";
-  const platform = options.platform ?? DEFAULT_PLATFORM;
-  const platformExplicit = options.platformExplicit
-    ?? Object.prototype.hasOwnProperty.call(options, "platform");
-
-  if (!VALID_CHANNELS.has(options.channel)) {
-    throw new Error("--channel 必须是 preview 或 production");
+function requireReleaseReporterConfig(environment) {
+  const baseUrl = normalizedText(environment.PERFORMANCE_SERVICE_URL);
+  const token = normalizedText(environment.PERFORMANCE_SERVICE_TOKEN);
+  if (!baseUrl || !token) {
+    throw new Error(
+      "发布 OTA 前必须配置 PERFORMANCE_SERVICE_URL 和 PERFORMANCE_SERVICE_TOKEN",
+    );
   }
-
-  if (!VALID_PROFILES.has(options.profile)) {
-    throw new Error("--profile 必须是 preview 或 production");
-  }
-
-  if (!VALID_PLATFORMS.has(platform)) {
-    throw new Error("--platform 必须是 android 或 ios");
-  }
-
-  if ((options.channel === "production" || options.profile === "production") && !platformExplicit) {
-    throw new Error("production OTA 必须显式设置 --platform android 或 ios");
-  }
-
-  if (!options.runtimeVersion?.trim()) {
-    throw new Error("--runtime-version 不能为空");
-  }
-
-  if (!options.message?.trim()) {
-    throw new Error("--message 不能为空");
-  }
-
-  if (!VALID_NATIVE_INSTALLER_OPTIONS.has(nativeInstaller)) {
-    throw new Error("--native-installer 必须是 enabled 或 disabled");
-  }
-
-  if (
-    platform === "android"
-    && options.runtimeVersion.trim() === "1.0.1"
-    && nativeInstaller !== "disabled"
-  ) {
-    throw new Error("--runtime-version 1.0.1 是旧 APK 过渡 OTA，必须设置 --native-installer disabled");
-  }
+  return { baseUrl, token };
 }
 
-function stripAnsi(input) {
-  return input.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
+async function reportAcceptedOtaRelease(
+  payload,
+  {
+    completedAtUtcFn = () => new Date().toISOString(),
+    config,
+    logger,
+    releaseEnvironment,
+    reportReleaseEventFn,
+    resolvedCommit,
+  },
+) {
+  if (!reportReleaseEventFn) return;
+  const sourceRunId = payload.updateGroupId;
+  const startedAtUtc = payload.publishedAtUtc ?? payload.publishedAt;
+  const event = buildReleaseEvent({
+    action: payload.isRollback ? "rollback" : "deploy",
+    conclusion: "accepted",
+    component: APP_KEY,
+    environment: releaseEnvironment === "production" ? "Production" : "Preview",
+    releaseId: sourceRunId,
+    commitSha: selectReleaseEventCommit({
+      payloadCommit: payload.gitCommitHash,
+      resolvedCommit,
+    }),
+    startedAtUtc,
+    completedAtUtc: completedAtUtcFn(),
+    healthChecked: true,
+    sourceProvider: "expo-ota",
+    sourceRunId,
+  });
+  try {
+    await reportReleaseEventFn({ event, config });
+  } catch (error) {
+    throw new Error(
+      `OTA 已发布并登记，不得重新发布，只重试 release event 上报：${redactedError(error)}`,
+      { cause: error },
+    );
+  }
+  logger.log(`${payload.platform}: OTA 发布验收已上报。`);
 }
 
-function asObject(value) {
+function isRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : null;
 }
 
-function collectObjects(value, objects = []) {
-  const objectValue = asObject(value);
-  if (objectValue) {
-    objects.push(objectValue);
-    for (const nestedValue of Object.values(objectValue)) {
-      collectObjects(nestedValue, objects);
-    }
-    return objects;
-  }
-
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      collectObjects(item, objects);
-    }
-  }
-
-  return objects;
-}
-
-function stringField(source, keys) {
-  const objectValue = asObject(source);
-  if (!objectValue) {
-    return "";
-  }
-
-  for (const key of keys) {
-    const value = objectValue[key];
-    if (typeof value === "string" && value.trim()) {
-      return value.trim();
-    }
-  }
-
-  return "";
-}
-
-function firstStringFromObjects(objects, keys) {
-  for (const objectValue of objects) {
-    const value = stringField(objectValue, keys);
-    if (value) {
-      return value;
-    }
-  }
-
-  return "";
-}
-
-function parseJsonSafely(output) {
-  const cleanOutput = stripAnsi(output).trim();
-  if (!cleanOutput) {
-    return null;
-  }
-
+function parseJson(output) {
+  const text = String(output ?? "").replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "").trim();
+  if (!text) return null;
   try {
-    return JSON.parse(cleanOutput);
+    return JSON.parse(text);
   } catch {
-    const objectStart = cleanOutput.indexOf("{");
-    const arrayStart = cleanOutput.indexOf("[");
-    const starts = [objectStart, arrayStart].filter((index) => index >= 0);
-    if (!starts.length) {
-      return null;
-    }
-
-    const start = Math.min(...starts);
-    const objectEnd = cleanOutput.lastIndexOf("}");
-    const arrayEnd = cleanOutput.lastIndexOf("]");
-    const end = Math.max(objectEnd, arrayEnd);
-    if (end <= start) {
-      return null;
-    }
-
+    const starts = [text.indexOf("["), text.indexOf("{")].filter((value) => value >= 0);
+    const end = Math.max(text.lastIndexOf("]"), text.lastIndexOf("}"));
+    if (!starts.length || end <= Math.min(...starts)) return null;
     try {
-      return JSON.parse(cleanOutput.slice(start, end + 1));
+      return JSON.parse(text.slice(Math.min(...starts), end + 1));
     } catch {
       return null;
     }
   }
 }
 
-function parseEasUpdateJsonOutput(output, platform = DEFAULT_PLATFORM) {
-  const parsedJson = parseJsonSafely(output);
-  if (!parsedJson) {
-    return null;
+function collectRecords(value, records = []) {
+  const record = isRecord(value);
+  if (record) {
+    records.push(record);
+    for (const nested of Object.values(record)) collectRecords(nested, records);
+  } else if (Array.isArray(value)) {
+    for (const nested of value) collectRecords(nested, records);
+  }
+  return records;
+}
+
+function field(record, keys) {
+  for (const key of keys) {
+    const value = record?.[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return "";
+}
+
+function groupId(record) {
+  const direct = field(record, ["updateGroupId", "groupId", "group"]);
+  if (direct) return direct;
+  const group = isRecord(record?.group);
+  return field(group, ["id"]);
+}
+
+export function parsePublishOtaArgs(argv) {
+  const options = {
+    environment: undefined,
+    platform: undefined,
+    runtimeVersion: undefined,
+    message: undefined,
+    accessTokenStdin: false,
+    dryRun: false,
+    help: false,
+    rollbackOfReleaseId: null,
+    registerOnlyFile: null,
+    bootstrapLegacyFixedChannel: false,
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--help" || arg === "-h") {
+      options.help = true;
+      continue;
+    }
+    if (arg === "--access-token-stdin") {
+      options.accessTokenStdin = true;
+      continue;
+    }
+    if (arg === "--dry-run") {
+      options.dryRun = true;
+      continue;
+    }
+    if (arg === "--bootstrap-legacy-fixed-channel") {
+      options.bootstrapLegacyFixedChannel = true;
+      continue;
+    }
+    const value = argv[index + 1];
+    if (!arg.startsWith("--") || !value || value.startsWith("--")) {
+      throw new Error(`参数 ${arg} 缺少取值`);
+    }
+    switch (arg) {
+      case "--environment": options.environment = value; break;
+      case "--platform": options.platform = value; break;
+      case "--runtime-version": options.runtimeVersion = value; break;
+      case "--message": options.message = value; break;
+      case "--rollback-of-release-id": options.rollbackOfReleaseId = value; break;
+      case "--register-only": options.registerOnlyFile = value; break;
+      default: throw new Error(`未知参数：${arg}`);
+    }
+    index += 1;
   }
 
-  const objects = collectObjects(parsedJson);
-  const platformUpdate = objects.find(
-    (objectValue) => stringField(objectValue, ["platform"]).toLowerCase() === platform,
-  );
-  const groupObject = objects.find((objectValue) => asObject(objectValue.group));
-  const groupId =
-    stringField(platformUpdate, ["updateGroupId", "groupId", "group"])
-    || firstStringFromObjects(objects, ["updateGroupId", "groupId"])
-    || firstStringFromObjects(objects, ["group"])
-    || stringField(groupObject?.group, ["id"])
-    || stringField(objects.find((objectValue) => Array.isArray(objectValue.updates)), ["id"]);
-
-  // JSON 输出是自动补录的主路径；字段兼容不同 EAS CLI 版本和 update/list 形态。
-  const updateId =
-    stringField(platformUpdate, ["id", "updateId"])
-    || firstStringFromObjects(objects, ["updateId"]);
-
-  return {
-    platform: stringField(platformUpdate, ["platform"]).toLowerCase(),
-    branch: firstStringFromObjects(objects, ["branch", "branchName", "channel"]),
-    runtimeVersion:
-      stringField(platformUpdate, ["runtimeVersion"]) || firstStringFromObjects(objects, ["runtimeVersion"]),
-    updateGroupId: groupId,
-    updateId,
-    androidUpdateId: platform === "android"
-      ? firstStringFromObjects(objects, ["androidUpdateId"]) || updateId
-      : "",
-    message: firstStringFromObjects(objects, ["message", "commitMessage"]),
-    gitCommitHash: firstStringFromObjects(objects, ["gitCommitHash", "gitCommit", "commit"]),
-    dashboardUrl: firstStringFromObjects(objects, ["dashboardUrl", "dashboardURL", "url"]),
-  };
+  if (!options.help) validatePublishOptions(options);
+  return options;
 }
 
-export function parseEasUpdateOutput(output, platform = DEFAULT_PLATFORM) {
-  // 自动登记只信任 eas update --json；文本输出只用于人工排查，不能参与入库。
-  return parseEasUpdateJsonOutput(output, platform) ?? {
-    platform: "",
-    branch: "",
-    runtimeVersion: "",
-    updateGroupId: "",
-    updateId: "",
-    androidUpdateId: "",
-    message: "",
-    gitCommitHash: "",
-    dashboardUrl: "",
-  };
-}
-
-export function buildOtaRegistrationPayload(parsed, options, publishedAt = new Date().toISOString()) {
-  const platform = options.platform ?? DEFAULT_PLATFORM;
-  // channel/profile/runtime 以脚本入参为准；EAS 输出缺省时使用入参兜底，避免影响手动补录。
-  return {
-    updateGroupId: parsed.updateGroupId || null,
-    updateId: parsed.updateId || parsed.androidUpdateId || null,
-    androidUpdateId: platform === "android"
-      ? parsed.androidUpdateId || parsed.updateId || null
-      : null,
-    channel: options.channel,
-    branch: parsed.branch || options.channel,
-    platform,
-    runtimeVersion: parsed.runtimeVersion || options.runtimeVersion,
-    message: parsed.message || options.message,
-    gitCommitHash: parsed.gitCommitHash || null,
-    dashboardUrl: parsed.dashboardUrl || null,
-    publishedAt,
-    isRollback: false,
-    rollbackOfGroupId: null,
-  };
-}
-
-function buildBackendApiUrl(baseUrl, apiPath) {
-  const url = new URL(baseUrl.trim());
-  const normalizedPath = url.pathname.replace(/\/+$/, "");
-  const requestPath = normalizedPath.endsWith("/api")
-    ? apiPath.replace(/^\/api/, "")
-    : apiPath;
-
-  url.pathname = `${normalizedPath}${requestPath}`;
-  url.search = "";
-  url.hash = "";
-  return url.toString();
-}
-
-export function buildRegistrationUrl(baseUrl) {
-  return buildBackendApiUrl(baseUrl, REGISTRATION_PATH);
-}
-
-function isServiceApiToken(token) {
-  return token.startsWith(SERVICE_API_TOKEN_PREFIX);
-}
-
-export function buildTokenPreflightUrl(baseUrl, token = "") {
-  // hbsvc_ 是后台自动化 token；普通后台登录 token 仍走用户 current 接口。
-  const path = isServiceApiToken(token.trim())
-    ? SERVICE_TOKEN_CURRENT_PATH
-    : CURRENT_USER_PATH;
-  return buildBackendApiUrl(baseUrl, path);
-}
-
-async function readIosProductionReviewEnv(options) {
-  const platform = options.platform ?? DEFAULT_PLATFORM;
-  if (platform !== "ios" || options.profile !== "production") {
-    return {};
+function validatePublishOptions(options) {
+  if (options.registerOnlyFile) {
+    if (
+      options.environment
+      || options.platform
+      || options.runtimeVersion
+      || options.message
+      || options.rollbackOfReleaseId
+      || options.dryRun
+      || options.bootstrapLegacyFixedChannel
+    ) {
+      throw new Error("--register-only 不能与发布参数组合");
+    }
+    return;
   }
+  if (!VALID_ENVIRONMENTS.has(options.environment)) {
+    throw new Error("--environment 必须是 production 或 preview");
+  }
+  if (!VALID_PLATFORMS.has(options.platform)) {
+    throw new Error("--platform 必须是 android、ios 或 all");
+  }
+  if (
+    !isNormalizedBoundedText(options.runtimeVersion, 120)
+  ) {
+    throw new Error("--runtime-version 必须去除首尾空白且不超过 120 个字符");
+  }
+  if (!isNormalizedBoundedText(options.message, 1_000)) {
+    throw new Error("--message 必须去除首尾空白且不超过 1000 个字符");
+  }
+  if (
+    options.rollbackOfReleaseId
+    && !UUID_PATTERN.test(options.rollbackOfReleaseId)
+  ) {
+    throw new Error("--rollback-of-release-id 必须是 UUID");
+  }
+  if (options.rollbackOfReleaseId && options.platform === "all") {
+    throw new Error("rollback 必须按平台分别指定来源，不能与 --platform all 组合");
+  }
+  if (options.bootstrapLegacyFixedChannel && options.platform === "all") {
+    throw new Error("bootstrap legacy fixed channel 必须按单个平台执行");
+  }
+  if (options.bootstrapLegacyFixedChannel && options.rollbackOfReleaseId) {
+    throw new Error("bootstrap legacy fixed channel 不能与 rollback 组合");
+  }
+}
 
-  const easJsonPath = fileURLToPath(new URL("../eas.json", import.meta.url));
-  const easJson = JSON.parse(await readFile(easJsonPath, "utf8"));
-  const profileEnv = asObject(easJson?.build?.production?.env) ?? {};
+export function createReleaseChannel(environment, platform, nowIso, entropy = randomUUID()) {
+  if (!VALID_ENVIRONMENTS.has(environment) || !["android", "ios"].includes(platform)) {
+    throw new Error("Mobile OTA release channel scope is invalid");
+  }
+  const timestamp = new Date(nowIso).toISOString().toLowerCase().replace(/[-:.]/g, "");
+  const suffix = entropy.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8);
+  if (suffix.length < 8) throw new Error("Mobile OTA release channel entropy is invalid");
+  return `mobile-${environment}-${platform}-release-${timestamp}-${suffix}`;
+}
 
-  // iOS production OTA 必须沿用已审核原生包的审核账号隔离配置。
+function assertReleaseChannel(options) {
+  if (options.bootstrapLegacyFixedChannel) {
+    if (
+      !["android", "ios"].includes(options.platform)
+      || options.releaseChannel !== options.environment
+    ) {
+      throw new Error("Mobile OTA bootstrap channel must exactly match environment");
+    }
+    return;
+  }
+  const prefix = `mobile-${options.environment}-${options.platform}-release-`;
+  if (!normalizedText(options.releaseChannel).startsWith(prefix)) {
+    throw new Error("Mobile OTA release channel does not match environment/platform");
+  }
+}
+
+function sanitizedEasEnvironment(environment) {
   return Object.fromEntries(
-    [
-      "EXPO_PUBLIC_IOS_REVIEW_MODE_ENABLED",
-      "EXPO_PUBLIC_IOS_REVIEW_PASSWORD_SHA256",
-    ]
-      .map((key) => [key, profileEnv[key]])
-      .filter(([, value]) => typeof value === "string" && value.trim()),
+    Object.entries(environment).filter(([key]) => {
+      const normalized = key.toUpperCase();
+      if (key === "EXPO_TOKEN") return true;
+      return !(
+        normalized.startsWith("HBWEB_")
+        || normalized.startsWith("PERFORMANCE_")
+        || normalized.includes("APP_OTA")
+        || normalized.includes("UPDATE_DECISION")
+        || normalized.includes("ADMIN_JWT")
+        || normalized.includes("SERVICE_TOKEN")
+        || /(?:TOKEN|JWT|SECRET|PASSWORD|CREDENTIAL|ACCESS_KEY|PRIVATE_KEY)/.test(normalized)
+      );
+    }),
   );
 }
 
-async function buildEasCommand(options) {
-  const platform = options.platform ?? DEFAULT_PLATFORM;
-  const nativeInstallerEnabled = platform === "android"
-    && (options.nativeInstaller ?? "enabled") !== "disabled";
-  const iosProductionReviewEnv = await readIosProductionReviewEnv(options);
-  // 后台登记与性能上报配置只留在父进程，避免传给 EAS CLI 子进程。
-  const {
-    HBWEB_API_TOKEN: _hbwebApiToken,
-    PERFORMANCE_SERVICE_URL: _performanceServiceUrl,
-    PERFORMANCE_SERVICE_TOKEN: _performanceServiceToken,
-    EXPO_PUBLIC_IOS_REVIEW_MODE_ENABLED: _iosReviewMode,
-    EXPO_PUBLIC_IOS_REVIEW_PASSWORD_SHA256: _iosReviewPasswordHash,
-    ...publishEnv
-  } = process.env;
-
+export function buildEasUpdateCommand(options, environment = process.env) {
+  assertReleaseChannel(options);
   return {
     command: "npx",
     args: [
-      "eas-cli@latest",
+      `eas-cli@${EAS_CLI_VERSION}`,
       "update",
       "--channel",
-      options.channel,
+      options.releaseChannel,
       "--platform",
-      platform,
+      options.platform,
       "--message",
       options.message,
       "--json",
+      "--non-interactive",
     ],
     env: {
-      ...publishEnv,
-      ...iosProductionReviewEnv,
-      EXPO_PUBLIC_APP_BUILD_PROFILE: options.profile,
-      EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED: String(nativeInstallerEnabled),
+      ...sanitizedEasEnvironment(environment),
+      EXPO_PUBLIC_APP_BUILD_PROFILE: options.environment,
+      EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED: "true",
       EXPO_PUBLIC_RUNTIME_VERSION: options.runtimeVersion,
     },
   };
 }
 
-function shellQuote(value) {
-  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) {
-    return value;
-  }
-
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-function buildEasUpdateViewCommand(updateId, env) {
+export function buildEasChannelViewCommand(options, environment = process.env) {
+  assertReleaseChannel(options);
   return {
     command: "npx",
-    args: ["eas-cli@latest", "update:view", updateId, "--json"],
-    env,
+    args: [
+      `eas-cli@${EAS_CLI_VERSION}`,
+      "channel:view",
+      options.releaseChannel,
+      "--json",
+      "--non-interactive",
+    ],
+    env: {
+      ...sanitizedEasEnvironment(environment),
+      EXPO_PUBLIC_APP_BUILD_PROFILE: options.environment,
+      EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED: "true",
+      EXPO_PUBLIC_RUNTIME_VERSION: options.runtimeVersion,
+    },
   };
 }
 
-function formatCommand({ command, args }) {
-  return [command, ...args].map(shellQuote).join(" ");
+export function buildEasChannelListCommand(
+  options,
+  offset = 0,
+  environment = process.env,
+) {
+  assertReleaseChannel(options);
+  if (!Number.isSafeInteger(offset) || offset < 0) {
+    throw new Error("EAS channel:list offset is invalid");
+  }
+  return {
+    command: "npx",
+    args: [
+      `eas-cli@${EAS_CLI_VERSION}`,
+      "channel:list",
+      "--json",
+      "--non-interactive",
+      "--limit",
+      String(EAS_CHANNEL_PAGE_LIMIT),
+      "--offset",
+      String(offset),
+    ],
+    env: {
+      ...sanitizedEasEnvironment(environment),
+      EXPO_PUBLIC_APP_BUILD_PROFILE: options.environment,
+      EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED: "true",
+      EXPO_PUBLIC_RUNTIME_VERSION: options.runtimeVersion,
+    },
+  };
 }
 
-function mergeParsedUpdate(initial, recovered) {
-  return Object.fromEntries(
-    Object.keys(initial).map((key) => [key, recovered[key] || initial[key]]),
+export function parseEasUpdateOutput(output, expectedPlatform) {
+  const parsed = parseJson(output);
+  if (!parsed) return emptyParsedRelease();
+  const candidates = collectRecords(parsed).filter(
+    (record) => field(record, ["platform"]).toLowerCase() === expectedPlatform,
   );
+  const release = candidates.find((record) => field(record, ["id", "updateId"])) ?? candidates[0];
+  if (!release) return emptyParsedRelease();
+  return {
+    updateGroupId: groupId(release),
+    updateId: field(release, ["id", "updateId"]),
+    channel: field(release, ["channel", "channelName"]),
+    branch: field(release, ["branch", "branchName"]),
+    platform: field(release, ["platform"]).toLowerCase(),
+    runtimeVersion: field(release, ["runtimeVersion"]),
+    message: field(release, ["message", "commitMessage"]),
+    gitCommitHash: field(release, ["gitCommitHash", "gitCommit", "commit"]),
+    dashboardUrl: field(release, ["dashboardUrl", "manifestPermalink", "url"]),
+    publishedAt: field(release, ["publishedAt", "createdAt"]),
+  };
 }
 
-function printManualRegistrationJson(payload, logger = console) {
-  logger.log("\n可手动补录的 OTA JSON：");
-  logger.log(JSON.stringify(payload, null, 2));
-}
+export function parseEasChannelViewOutput(output, expectedChannel, expectedRelease = null) {
+  const parsed = isRecord(parseJson(output));
+  const channel = isRecord(parsed?.currentPage);
+  if (!channel || field(channel, ["name"]) !== expectedChannel) {
+    throw new Error("EAS channel:view channel mismatch or missing");
+  }
+  if (channel.isPaused !== false) {
+    throw new Error("EAS channel:view channel must be active");
+  }
 
-function runCommand({ command, args, env }) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      cwd: process.cwd(),
-      env,
-      stdio: ["inherit", "pipe", "pipe"],
-    });
+  const mappingText = field(channel, ["branchMapping"]);
+  const mapping = isRecord(parseJson(mappingText));
+  const mappingRows = Array.isArray(mapping?.data) ? mapping.data : [];
+  if (mapping?.version !== 0 || mappingRows.length !== 1) {
+    throw new Error("EAS channel:view branch mapping is invalid");
+  }
+  const mappingRow = isRecord(mappingRows[0]);
+  const branchId = field(mappingRow, ["branchId"]);
+  if (!branchId || mappingRow?.branchMappingLogic !== "true") {
+    throw new Error("EAS channel:view branch mapping is not an exact fixed mapping");
+  }
 
-    let stdout = "";
-    let stderr = "";
+  const branches = Array.isArray(channel.updateBranches) ? channel.updateBranches : [];
+  const matchingBranches = branches.filter((candidate) => {
+    const branch = isRecord(candidate);
+    return field(branch, ["id"]) === branchId && field(branch, ["name"]) === expectedChannel;
+  });
+  if (branches.length !== 1 || matchingBranches.length !== 1) {
+    throw new Error("EAS channel:view branch identity does not match release channel");
+  }
 
-    child.stdout.on("data", (chunk) => {
-      const text = chunk.toString();
-      stdout += text;
-      process.stdout.write(text);
-    });
-
-    child.stderr.on("data", (chunk) => {
-      const text = chunk.toString();
-      stderr += text;
-      process.stderr.write(text);
-    });
-
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve({ stdout, stderr });
-        return;
+  if (expectedRelease) {
+    const branch = matchingBranches[0];
+    const groups = Array.isArray(branch.updateGroups) ? branch.updateGroups : [];
+    const updates = groups.length === 1 && Array.isArray(groups[0]) ? groups[0] : [];
+    if (groups.length !== 1 || updates.length !== 1) {
+      throw new Error("EAS channel:view latest update group is missing or ambiguous");
+    }
+    const update = isRecord(updates[0]);
+    const actual = {
+      updateId: field(update, ["id", "updateId"]),
+      updateGroupId: groupId(update),
+      runtimeVersion: field(update, ["runtimeVersion"]),
+      platform: field(update, ["platform"]).toLowerCase(),
+      message: field(update, ["message", "commitMessage"]),
+      gitCommitHash: field(update, ["gitCommitHash", "gitCommit", "commit"]),
+      dashboardUrl: field(update, ["dashboardUrl", "manifestPermalink", "url"]),
+      publishedAtUtc: field(update, ["publishedAt", "createdAt"]),
+    };
+    const expected = {
+      updateId: expectedRelease.updateId,
+      updateGroupId: expectedRelease.updateGroupId,
+      runtimeVersion: expectedRelease.runtimeVersion,
+      platform: expectedRelease.platform,
+      message: expectedRelease.message,
+      gitCommitHash: expectedRelease.gitCommitHash ?? "",
+      dashboardUrl: expectedRelease.dashboardUrl ?? "",
+      publishedAtUtc: expectedRelease.publishedAtUtc,
+    };
+    for (const [key, value] of Object.entries(expected)) {
+      const actualValue = actual[key];
+      const matches = key === "updateId" || key === "updateGroupId"
+        ? actualValue.toLowerCase() === String(value).toLowerCase()
+        : actualValue === value;
+      if (!matches) {
+        throw new Error(
+          `EAS channel:view update ${key} mismatch: expected ${value || "<empty>"}, received ${actualValue || "<empty>"}`,
+        );
       }
+    }
+  }
+  return Object.freeze({ channel: expectedChannel, branch: expectedChannel, branchId });
+}
 
-      const operation = args[1] === "update:view" ? "EAS OTA 回查" : "EAS OTA 发布";
-      const error = new Error(`${operation}失败，退出码 ${code}`);
-      error.code = code;
-      error.stdout = stdout;
-      error.stderr = stderr;
-      reject(error);
-    });
+export function parseEasChannelListOutput(output) {
+  const parsed = isRecord(parseJson(output));
+  const page = parsed?.currentPage;
+  if (!Array.isArray(page)) {
+    throw new Error("EAS channel:list JSON currentPage is invalid");
+  }
+  const names = page.map((candidate) => {
+    const channel = isRecord(candidate);
+    const name = field(channel, ["name"]);
+    if (!name || name !== name.trim()) {
+      throw new Error("EAS channel:list JSON contains an invalid channel");
+    }
+    return name;
+  });
+  if (new Set(names).size !== names.length) {
+    throw new Error("EAS channel:list JSON contains duplicate channels");
+  }
+  return Object.freeze(names);
+}
+
+export async function assertReleaseChannelsUnused(
+  plans,
+  environment = process.env,
+  runCommandFn = runCommand,
+) {
+  if (!Array.isArray(plans) || plans.length === 0) {
+    throw new Error("EAS channel:list has no release plans to verify");
+  }
+  const knownChannels = new Set();
+  let reachedLastPage = false;
+  for (let pageIndex = 0; pageIndex < MAX_EAS_CHANNEL_PAGES; pageIndex += 1) {
+    const offset = pageIndex * EAS_CHANNEL_PAGE_LIMIT;
+    const command = buildEasChannelListCommand(plans[0], offset, environment);
+    const execution = await runCommandFn(command);
+    const names = parseEasChannelListOutput(execution.stdout);
+    for (const name of names) {
+      if (knownChannels.has(name)) {
+        throw new Error("EAS channel:list pagination is unstable; cannot prove channel unused");
+      }
+      knownChannels.add(name);
+    }
+    if (names.length < EAS_CHANNEL_PAGE_LIMIT) {
+      reachedLastPage = true;
+      break;
+    }
+  }
+  if (!reachedLastPage) {
+    throw new Error("EAS channel:list exceeded the fail-closed pagination limit");
+  }
+  for (const plan of plans) {
+    if (knownChannels.has(plan.releaseChannel)) {
+      throw new Error(`EAS release channel already exists: ${plan.releaseChannel}`);
+    }
+  }
+}
+
+function emptyParsedRelease() {
+  return {
+    updateGroupId: "",
+    updateId: "",
+    channel: "",
+    branch: "",
+    platform: "",
+    runtimeVersion: "",
+    message: "",
+    gitCommitHash: "",
+    dashboardUrl: "",
+    publishedAt: "",
+  };
+}
+
+function assertPublishedRelease(parsed, options) {
+  const expected = {
+    platform: options.platform,
+    runtimeVersion: options.runtimeVersion,
+    branch: options.releaseChannel,
+    message: options.message,
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    if (parsed[key] !== value) {
+      throw new Error(`EAS JSON ${key} mismatch: expected ${value}, received ${parsed[key] || "<empty>"}`);
+    }
+  }
+  for (const key of ["updateGroupId", "updateId"]) {
+    if (!UUID_PATTERN.test(parsed[key])) {
+      throw new Error(`EAS JSON ${key} is not a UUID`);
+    }
+  }
+  if (!parsed.publishedAt || !Number.isFinite(Date.parse(parsed.publishedAt))) {
+    throw new Error("EAS JSON publishedAt is invalid");
+  }
+  normalizeDashboardUrlFact(parsed.dashboardUrl);
+}
+
+function normalizeDashboardUrlFact(value) {
+  const dashboardUrl = value == null || value === "" ? null : value;
+  if (!isNullableHttpsUrl(dashboardUrl)) {
+    throw new Error("EAS JSON dashboardUrl must be null or normalized HTTPS within 2048 characters");
+  }
+  return dashboardUrl;
+}
+
+export function buildOtaReleasePayload(parsed, options) {
+  const dashboardUrl = normalizeDashboardUrlFact(parsed.dashboardUrl);
+  return Object.freeze({
+    releaseBatchId: options.releaseBatchId,
+    appKey: APP_KEY,
+    environment: options.environment,
+    clientChannel: options.environment,
+    releaseChannel: options.releaseChannel,
+    easBranch: parsed.branch,
+    projectName: PROJECT_NAME,
+    easProjectId: EAS_PROJECT_ID,
+    platform: options.platform,
+    runtimeVersion: parsed.runtimeVersion,
+    updateGroupId: parsed.updateGroupId,
+    updateId: parsed.updateId,
+    message: parsed.message,
+    gitCommitHash: parsed.gitCommitHash || null,
+    dashboardUrl,
+    publishedAtUtc: parsed.publishedAt,
+    isRollback: Boolean(options.rollbackOfReleaseId),
+    rollbackOfReleaseId: options.rollbackOfReleaseId || null,
   });
 }
 
-function getResponseField(source, camelKey, pascalKey = camelKey[0].toUpperCase() + camelKey.slice(1)) {
-  const objectValue = asObject(source);
-  if (!objectValue) {
-    return undefined;
+export function buildLegacyBootstrapPayload(parsed, options) {
+  if (
+    !options.bootstrapLegacyFixedChannel
+    || options.releaseChannel !== options.environment
+    || !["android", "ios"].includes(options.platform)
+  ) {
+    throw new Error("Mobile OTA legacy bootstrap identity is invalid");
   }
-
-  return objectValue[camelKey] ?? objectValue[pascalKey];
+  const dashboardUrl = normalizeDashboardUrlFact(parsed.dashboardUrl);
+  return Object.freeze({
+    projectName: PROJECT_NAME,
+    updateGroupId: parsed.updateGroupId,
+    updateId: parsed.updateId,
+    androidUpdateId: options.platform === "android" ? parsed.updateId : null,
+    channel: options.environment,
+    branch: parsed.branch,
+    platform: options.platform,
+    runtimeVersion: parsed.runtimeVersion,
+    message: parsed.message,
+    gitCommitHash: parsed.gitCommitHash || null,
+    dashboardUrl,
+    publishedAt: parsed.publishedAt,
+    isRollback: false,
+    rollbackOfGroupId: null,
+    bootstrapLegacyFixedChannel: true,
+  });
 }
 
-function describeBackendFailure(payload) {
-  const message = getResponseField(payload, "message");
-  const errorCode = getResponseField(payload, "errorCode") ?? getResponseField(payload, "code");
-  const details = getResponseField(payload, "details");
-  return [message, errorCode, details ? JSON.stringify(details) : ""]
-    .filter(Boolean)
-    .join(" / ");
+function buildPreflightPayload(options) {
+  return Object.freeze({
+    releaseBatchId: options.releaseBatchId,
+    appKey: APP_KEY,
+    environment: options.environment,
+    clientChannel: options.environment,
+    releaseChannel: options.releaseChannel,
+    easBranch: options.releaseChannel,
+    projectName: PROJECT_NAME,
+    easProjectId: EAS_PROJECT_ID,
+    platform: options.platform,
+    runtimeVersion: options.runtimeVersion,
+    ...(options.rollbackOfReleaseId
+      ? { rollbackOfReleaseId: options.rollbackOfReleaseId }
+      : {}),
+    ...(options.bootstrapLegacyFixedChannel
+      ? { bootstrapLegacyFixedChannel: true }
+      : {}),
+  });
 }
 
-function extractRoleNames(data) {
-  const roleNames = getResponseField(data, "roleNames");
-  if (Array.isArray(roleNames)) {
-    return roleNames;
-  }
-
-  const roles = getResponseField(data, "roles");
-  if (!Array.isArray(roles)) {
-    return [];
-  }
-
-  return roles
-    .map((role) => getResponseField(role, "roleName"))
-    .filter((roleName) => typeof roleName === "string");
+function buildBackendUrl(baseUrl, endpointPath) {
+  const url = new URL(normalizedText(baseUrl));
+  const basePath = url.pathname.replace(/\/+$/, "");
+  const suffix = basePath.endsWith("/api")
+    ? endpointPath.replace(/^\/api/, "")
+    : endpointPath;
+  url.pathname = `${basePath}${suffix}`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
 }
 
-function readRegistrationConfig(environment = process.env) {
-  return {
-    baseUrl: environment.HBWEB_API_BASE_URL?.trim() || "",
-    token: environment.HBWEB_API_TOKEN?.trim() || "",
-  };
-}
+export const buildPreflightUrl = (baseUrl) => buildBackendUrl(baseUrl, APP_OTA_PREFLIGHT_PATH);
+export const buildRegistrationUrl = (baseUrl) => buildBackendUrl(baseUrl, APP_OTA_REGISTER_PATH);
+export const buildLegacyRegistrationUrl = (baseUrl) => (
+  buildBackendUrl(baseUrl, LEGACY_MOBILE_OTA_REGISTER_PATH)
+);
 
-function requireReleaseReporterConfig(environment) {
-  const baseUrl = environment.PERFORMANCE_SERVICE_URL?.trim();
-  const token = environment.PERFORMANCE_SERVICE_TOKEN?.trim();
-  if (!baseUrl || !token) {
-    throw new Error("发布 OTA 前必须配置 PERFORMANCE_SERVICE_URL 和 PERFORMANCE_SERVICE_TOKEN");
-  }
-  return { baseUrl, token };
-}
-
-function requireRegistrationConfig() {
-  const config = readRegistrationConfig();
-  if (!config.baseUrl || !config.token) {
-    throw new Error("发布 OTA 前必须配置 HBWEB_API_BASE_URL 和 HBWEB_API_TOKEN");
-  }
-
-  return config;
-}
-
-export async function preflightOtaRegistration(fetchFn = globalThis.fetch) {
-  const { baseUrl, token } = requireRegistrationConfig();
-  const url = buildTokenPreflightUrl(baseUrl, token);
-  const serviceToken = isServiceApiToken(token);
-  let response;
-
-  try {
-    // 非 dry-run 必须先验证后台 token 和权限，避免 OTA 已发布后才发现无权登记。
-    response = await fetchFn(url, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    });
-  } catch (error) {
-    throw new Error(`后台 token 验证失败：${error.message}`);
-  }
-
+async function responsePayload(response) {
+  const text = await response.text();
+  const payload = text ? parseJson(text) : null;
   if (!response.ok) {
-    const responseText = await response.text();
-    throw new Error(`后台 token 验证失败：HTTP ${response.status} ${response.statusText}${responseText ? ` - ${responseText}` : ""}`);
+    const message = normalizedText(payload?.message) || normalizedText(text) || response.statusText;
+    throw new Error(`HTTP ${response.status} ${response.statusText}${message ? ` - ${message}` : ""}`);
   }
-
-  const responseText = await response.text();
-  const responsePayload = responseText ? parseJsonSafely(responseText) : null;
-  const success = getResponseField(responsePayload, "success") ?? getResponseField(responsePayload, "isSuccess");
-  const data = getResponseField(responsePayload, "data");
-  if (success !== true) {
-    const failureReason = describeBackendFailure(responsePayload) || "响应 success=false";
-    throw new Error(`后台 token 验证失败：${failureReason}`);
+  if (payload?.success === false || payload?.isSuccess === false) {
+    throw new Error(normalizedText(payload.message) || "backend success=false");
   }
-
-  if (serviceToken) {
-    const scopes = getResponseField(data, "scopes");
-    if (!Array.isArray(scopes) || !scopes.includes(MANAGE_APP_DOWNLOADS_PERMISSION)) {
-      throw new Error(`后台 token 验证失败：缺少 ${MANAGE_APP_DOWNLOADS_PERMISSION} scope`);
-    }
-
-    return { url };
-  }
-
-  const permissions = getResponseField(data, "permissions");
-  const roleNames = extractRoleNames(data);
-  const hasManagePermission = Array.isArray(permissions)
-    && permissions.includes(MANAGE_APP_DOWNLOADS_PERMISSION);
-  const isSuperAdmin = roleNames.some((roleName) => SUPER_ADMIN_ROLE_NAMES.has(roleName));
-  if (!hasManagePermission && !isSuperAdmin) {
-    throw new Error(`后台 token 验证失败：缺少 ${MANAGE_APP_DOWNLOADS_PERMISSION} 权限`);
-  }
-
-  return { url };
+  return payload?.data ?? payload;
 }
 
-export async function registerOtaUpdate(payload) {
-  const { baseUrl, token } = readRegistrationConfig();
-
-  if (!baseUrl || !token) {
-    return {
-      skipped: true,
-      reason: "未配置 HBWEB_API_BASE_URL 或 HBWEB_API_TOKEN",
-    };
-  }
-
-  // 只有发布脚本持有后台 token；Expo 控制台或裸 eas update 不会触发这一步。
-  const url = buildRegistrationUrl(baseUrl);
-  const response = await fetch(url, {
+export async function preflightOtaRelease(payload, auth) {
+  const response = await (auth.fetchFn ?? globalThis.fetch)(buildPreflightUrl(auth.baseUrl), {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${auth.accessToken}`,
       "Content-Type": "application/json",
+      Accept: "application/json",
     },
     body: JSON.stringify(payload),
   });
+  const data = await responsePayload(response);
+  if (data?.valid !== true) throw new Error("Mobile OTA preflight did not return valid=true");
+  return data;
+}
 
-  if (!response.ok) {
-    const responseText = await response.text();
-    throw new Error(`后台登记失败：HTTP ${response.status} ${response.statusText}${responseText ? ` - ${responseText}` : ""}`);
+export async function registerOtaRelease(payload, auth) {
+  const response = await (auth.fetchFn ?? globalThis.fetch)(buildRegistrationUrl(auth.baseUrl), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${auth.accessToken}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await responsePayload(response);
+  if (!isRecord(data?.release) || typeof data.idempotent !== "boolean") {
+    throw new Error("Mobile OTA register response is invalid");
   }
+  assertRegisteredReleaseIdentity(data.release, payload);
+  return data;
+}
 
-  const responseText = await response.text();
-  const responsePayload = responseText ? parseJsonSafely(responseText) : null;
-  const success = getResponseField(responsePayload, "success") ?? getResponseField(responsePayload, "isSuccess");
-  const data = getResponseField(responsePayload, "data");
-  const savedGroupId = getResponseField(data, "updateGroupId");
-
-  // 后端业务校验失败也可能返回 HTTP 200；必须看 ApiResponse.Success 和回写数据。
-  if (success !== true || !savedGroupId) {
-    const failureReason = describeBackendFailure(responsePayload) || "响应缺少 success=true 或 data.updateGroupId";
-    throw new Error(`后台登记失败：${failureReason}`);
+function assertRegisteredReleaseIdentity(release, payload) {
+  const actualRollbackOfReleaseId = release.rollbackOfReleaseId ?? null;
+  const expectedRollbackOfReleaseId = payload.rollbackOfReleaseId ?? null;
+  const identityMatches = (
+    typeof release.id === "string"
+    && UUID_PATTERN.test(release.id)
+    && uuidMatches(release.releaseBatchId, payload.releaseBatchId)
+    && requiredTextMatches(release.appKey, payload.appKey)
+    && requiredTextMatches(release.environment, payload.environment)
+    && requiredTextMatches(release.clientChannel, payload.clientChannel)
+    && requiredTextMatches(release.releaseChannel, payload.releaseChannel)
+    && requiredTextMatches(release.easBranch, payload.easBranch)
+    && requiredTextMatches(release.projectName, payload.projectName)
+    && requiredTextMatches(release.platform, payload.platform)
+    && requiredTextMatches(release.runtimeVersion, payload.runtimeVersion)
+    && uuidMatches(release.updateGroupId, payload.updateGroupId)
+    && uuidMatches(release.updateId, payload.updateId)
+    && nullableTextMatches(release, "message", payload.message)
+    && nullableTextMatches(release, "gitCommitHash", payload.gitCommitHash)
+    && nullableTextMatches(release, "dashboardUrl", payload.dashboardUrl)
+    && utcTimestampMatches(release.publishedAtUtc, payload.publishedAtUtc)
+    && typeof release.isRollback === "boolean"
+    && release.isRollback === payload.isRollback
+    && release.isRollback === (actualRollbackOfReleaseId !== null)
+    && (
+      expectedRollbackOfReleaseId === null
+        ? actualRollbackOfReleaseId === null
+        : typeof actualRollbackOfReleaseId === "string"
+          && uuidMatches(actualRollbackOfReleaseId, expectedRollbackOfReleaseId)
+    )
+    && requiredTextMatches(
+      release.registrationSource,
+      "app-ota-release-api",
+    )
+  );
+  if (!identityMatches) {
+    throw new Error("Mobile OTA register response identity is invalid");
   }
+}
 
-  return {
-    skipped: false,
-    url,
+export async function registerLegacyBootstrapUpdate(payload, auth) {
+  const response = await (auth.fetchFn ?? globalThis.fetch)(buildLegacyRegistrationUrl(auth.baseUrl), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${auth.accessToken}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await responsePayload(response);
+  const registered = isRecord(data);
+  const expectedAndroidUpdateId = payload.androidUpdateId ?? null;
+  const actualAndroidUpdateId = registered?.androidUpdateId ?? null;
+  const actualRollbackOfGroupId = registered?.rollbackOfGroupId ?? null;
+  if (
+    !registered
+    || typeof registered.id !== "string"
+    || !UUID_PATTERN.test(registered.id)
+    || !requiredTextMatches(registered.appKey, APP_KEY)
+    || !requiredTextMatches(registered.projectName, payload.projectName)
+    || !uuidMatches(registered.updateGroupId, payload.updateGroupId)
+    || !uuidMatches(registered.updateId, payload.updateId)
+    || (
+      expectedAndroidUpdateId === null
+        ? actualAndroidUpdateId !== null && actualAndroidUpdateId !== ""
+        : typeof actualAndroidUpdateId !== "string"
+          || !uuidMatches(actualAndroidUpdateId, expectedAndroidUpdateId)
+    )
+    || !requiredTextMatches(registered.channel, payload.channel)
+    || !requiredTextMatches(registered.branch, payload.branch)
+    || !requiredTextMatches(registered.platform, payload.platform)
+    || !requiredTextMatches(registered.runtimeVersion, payload.runtimeVersion)
+    || !nullableTextMatches(registered, "message", payload.message)
+    || !nullableTextMatches(registered, "gitCommitHash", payload.gitCommitHash)
+    || !nullableTextMatches(registered, "dashboardUrl", payload.dashboardUrl)
+    || !utcTimestampMatches(registered.publishedAt, payload.publishedAt)
+    || registered.isRollback !== payload.isRollback
+    || (
+      payload.rollbackOfGroupId == null
+        ? actualRollbackOfGroupId !== null && actualRollbackOfGroupId !== ""
+        : typeof actualRollbackOfGroupId !== "string"
+          || !uuidMatches(actualRollbackOfGroupId, payload.rollbackOfGroupId)
+    )
+  ) {
+    throw new Error("Mobile OTA legacy bootstrap register response is invalid");
+  }
+  return registered;
+}
+
+function uuidMatches(actual, expected) {
+  return typeof actual === "string"
+    && typeof expected === "string"
+    && UUID_PATTERN.test(actual)
+    && UUID_PATTERN.test(expected)
+    && actual.toLowerCase() === expected.toLowerCase();
+}
+
+function requiredTextMatches(actual, expected) {
+  return typeof actual === "string"
+    && typeof expected === "string"
+    && actual === actual.trim()
+    && actual === expected;
+}
+
+function nullableTextMatches(record, key, expected) {
+  const expectedValue = expected == null || expected === "" ? null : expected;
+  if (!Object.hasOwn(record, key)) return expectedValue === null;
+  const actual = record[key];
+  const actualValue = actual == null || actual === ""
+    ? null
+    : typeof actual === "string" && actual === actual.trim()
+      ? actual
+      : Symbol.for("invalid-mobile-ota-fact");
+  return actualValue === expectedValue;
+}
+
+function utcTimestampMatches(actual, expected) {
+  const toUtcMilliseconds = (value) => {
+    if (
+      typeof value !== "string"
+      || value !== value.trim()
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})?$/i.test(value)
+    ) {
+      return null;
+    }
+    const zoned = /(?:Z|[+-]\d{2}:\d{2})$/i.test(value) ? value : `${value}Z`;
+    const milliseconds = Date.parse(zoned);
+    return Number.isFinite(milliseconds) ? milliseconds : null;
   };
+  const actualMilliseconds = toUtcMilliseconds(actual);
+  const expectedMilliseconds = toUtcMilliseconds(expected);
+  return actualMilliseconds !== null
+    && expectedMilliseconds !== null
+    && actualMilliseconds === expectedMilliseconds;
 }
 
-export function getRequiredRegistrationGaps(payload) {
-  // EAS 某些 JSON 形态只返回 update group；后端以 group+platform 幂等，Android update ID 允许为空。
-  const requiredFields = ["updateGroupId"];
-  return requiredFields.filter((field) => !payload[field]);
+export async function readAccessTokenFromStdin(stream = process.stdin) {
+  if (stream.isTTY === true) {
+    throw new Error("--access-token-stdin 需要非交互标准输入，不能等待 TTY");
+  }
+  let bytes = 0;
+  const chunks = [];
+  for await (const chunk of stream) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    bytes += buffer.byteLength;
+    if (bytes > MAX_STDIN_TOKEN_BYTES) throw new Error("stdin access token exceeds 4096 bytes");
+    chunks.push(buffer);
+  }
+  const token = Buffer.concat(chunks).toString("utf8").trim();
+  if (!token) throw new Error("stdin access token is empty");
+  return token;
 }
 
-async function createDryRunOutput(options) {
-  if (!options.mockOutputFile) {
-    return "";
+function isAllowedPublishToken(token) {
+  return SERVICE_TOKEN_PATTERN.test(token) || JWT_PATTERN.test(token);
+}
+
+export async function resolvePublishAccessToken(options, environment = process.env, stdin = process.stdin) {
+  if (options.accessTokenStdin) {
+    const token = await readAccessTokenFromStdin(stdin);
+    if (!isAllowedPublishToken(token)) throw new Error("stdin access token format is invalid");
+    return token;
+  }
+  const rawEnvironmentToken = environment.HBWEB_API_TOKEN;
+  const environmentToken = normalizedText(rawEnvironmentToken);
+  if (
+    environmentToken
+    && (
+      rawEnvironmentToken !== environmentToken
+      || !SERVICE_TOKEN_PATTERN.test(environmentToken)
+    )
+  ) {
+    throw new Error("管理员 JWT 只允许通过 --access-token-stdin 传入");
+  }
+  if (!environmentToken) {
+    throw new Error("缺少后台发布凭据；管理员 JWT 请使用 --access-token-stdin");
+  }
+  return environmentToken;
+}
+
+function runCommand(command) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command.command, command.args, {
+      cwd: process.cwd(),
+      env: command.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      process.stdout.write(chunk);
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      process.stderr.write(chunk);
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) return resolve({ stdout, stderr });
+      reject(Object.assign(new Error(`EAS OTA publish failed with exit code ${code}`), { code, stdout, stderr }));
+    });
+  });
+}
+
+async function readRecoveryManifest(filePath) {
+  return JSON.parse(await readFile(path.resolve(process.cwd(), filePath), "utf8"));
+}
+
+async function writeRecoveryManifest(manifest) {
+  const directory = path.resolve(process.cwd(), ".artifacts/mobile-ota-recovery");
+  await mkdir(directory, { recursive: true });
+  const target = path.join(directory, `${manifest.releaseBatchId}.json`);
+  await writeFile(target, `${JSON.stringify(manifest, null, 2)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600,
+  });
+  return target;
+}
+
+function redactedError(error) {
+  return String(error instanceof Error ? error.message : error)
+    .replace(/Bearer\s+[^\s]+/gi, "Bearer [REDACTED]")
+    .replace(/hbsvc_[A-Za-z0-9_-]+/g, "hbsvc_[REDACTED]")
+    .replace(/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[JWT REDACTED]");
+}
+
+function hasExactFields(value, expectedFields) {
+  const keys = Object.keys(value).sort();
+  return keys.length === expectedFields.length
+    && keys.every((key, index) => key === expectedFields[index]);
+}
+
+function isNormalizedBoundedText(value, maximum) {
+  return typeof value === "string" && value === value.trim() && value.length > 0 && value.length <= maximum;
+}
+
+function isNullableNormalizedText(value, maximum) {
+  return value === null || isNormalizedBoundedText(value, maximum);
+}
+
+function isNullableHttpsUrl(value) {
+  if (value === null) return true;
+  if (!isNormalizedBoundedText(value, 2_048)) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
+function validateRecoveryRelease(payload, manifest) {
+  const release = isRecord(payload);
+  const platform = release?.platform;
+  const expectedPrefix = `mobile-${manifest.environment}-${platform}-release-`;
+  if (
+    !release
+    || !hasExactFields(release, RECOVERY_RELEASE_FIELDS)
+    || release.releaseBatchId !== manifest.releaseBatchId
+    || release.appKey !== APP_KEY
+    || release.environment !== manifest.environment
+    || release.clientChannel !== manifest.environment
+    || !["android", "ios"].includes(platform)
+    || !isNormalizedBoundedText(release.releaseChannel, 160)
+    || !release.releaseChannel.startsWith(expectedPrefix)
+    || release.releaseChannel.length <= expectedPrefix.length
+    || release.easBranch !== release.releaseChannel
+    || release.projectName !== PROJECT_NAME
+    || release.easProjectId !== EAS_PROJECT_ID
+    || !isNormalizedBoundedText(release.runtimeVersion, 120)
+    || !UUID_PATTERN.test(release.updateGroupId)
+    || !UUID_PATTERN.test(release.updateId)
+    || !isNormalizedBoundedText(release.message, 1_000)
+    || !isNullableNormalizedText(release.gitCommitHash, 120)
+    || !isNullableHttpsUrl(release.dashboardUrl)
+    || !isNormalizedBoundedText(release.publishedAtUtc, 64)
+    || !Number.isFinite(Date.parse(release.publishedAtUtc))
+    || typeof release.isRollback !== "boolean"
+    || release.isRollback !== (release.rollbackOfReleaseId !== null)
+    || release.rollbackOfReleaseId !== null && !UUID_PATTERN.test(release.rollbackOfReleaseId)
+  ) {
+    throw new Error("Mobile OTA recovery manifest release fact is invalid");
+  }
+  return release;
+}
+
+function validateBootstrapRecoveryRelease(payload, manifest) {
+  const release = isRecord(payload);
+  const platform = release?.platform;
+  if (
+    !release
+    || !hasExactFields(release, BOOTSTRAP_RECOVERY_RELEASE_FIELDS)
+    || release.projectName !== PROJECT_NAME
+    || !["android", "ios"].includes(platform)
+    || release.channel !== manifest.environment
+    || release.branch !== manifest.environment
+    || !isNormalizedBoundedText(release.runtimeVersion, 120)
+    || !UUID_PATTERN.test(release.updateGroupId)
+    || !UUID_PATTERN.test(release.updateId)
+    || release.androidUpdateId !== (platform === "android" ? release.updateId : null)
+    || !isNormalizedBoundedText(release.message, 1_000)
+    || !isNullableNormalizedText(release.gitCommitHash, 120)
+    || !isNullableHttpsUrl(release.dashboardUrl)
+    || !isNormalizedBoundedText(release.publishedAt, 64)
+    || !Number.isFinite(Date.parse(release.publishedAt))
+    || release.isRollback !== false
+    || release.rollbackOfGroupId !== null
+    || release.bootstrapLegacyFixedChannel !== true
+  ) {
+    throw new Error("Mobile OTA bootstrap recovery manifest release fact is invalid");
+  }
+  return release;
+}
+
+function authorityReleaseFromLegacyBootstrap(payload) {
+  return Object.freeze({
+    updateId: payload.updateId,
+    updateGroupId: payload.updateGroupId,
+    runtimeVersion: payload.runtimeVersion,
+    platform: payload.platform,
+    message: payload.message,
+    gitCommitHash: payload.gitCommitHash,
+    dashboardUrl: payload.dashboardUrl,
+    publishedAtUtc: payload.publishedAt,
+  });
+}
+
+function validateRecoveryManifest(manifest) {
+  const bootstrapLegacyFixedChannel = manifest?.bootstrapLegacyFixedChannel === true;
+  const manifestFields = bootstrapLegacyFixedChannel
+    ? BOOTSTRAP_RECOVERY_MANIFEST_FIELDS
+    : RECOVERY_MANIFEST_FIELDS;
+  if (
+    !isRecord(manifest)
+    || !hasExactFields(manifest, manifestFields)
+    || manifest.schemaVersion !== 1
+    || manifest.appKey !== APP_KEY
+    || !VALID_ENVIRONMENTS.has(manifest.environment)
+    || !normalizedText(manifest.releaseBatchId)
+    || !UUID_PATTERN.test(manifest.releaseBatchId)
+    || !isNormalizedBoundedText(manifest.createdAtUtc, 64)
+    || !Number.isFinite(Date.parse(manifest.createdAtUtc))
+    || !Array.isArray(manifest.releases)
+    || manifest.releases.length === 0
+    || manifest.releases.length > (bootstrapLegacyFixedChannel ? 1 : 2)
+  ) {
+    throw new Error("Mobile OTA recovery manifest is invalid");
+  }
+  const releases = manifest.releases.map((release) => (
+    bootstrapLegacyFixedChannel
+      ? validateBootstrapRecoveryRelease(release, manifest)
+      : validateRecoveryRelease(release, manifest)
+  ));
+  if (new Set(releases.map((release) => release.platform)).size !== releases.length) {
+    throw new Error("Mobile OTA recovery manifest contains duplicate platform releases");
+  }
+  return { ...manifest, releases, bootstrapLegacyFixedChannel };
+}
+
+export class OtaPublishBatchError extends Error {
+  constructor(message, results, recoveryPath = null) {
+    super(message);
+    this.name = "OtaPublishBatchError";
+    this.results = results;
+    this.recoveryPath = recoveryPath;
+    this.exitCode = 2;
+  }
+}
+
+async function resolveAuth(options, dependencies) {
+  const environment = dependencies.environment ?? process.env;
+  const baseUrl = normalizedText(environment.HBWEB_API_BASE_URL);
+  if (!baseUrl) throw new Error("缺少 HBWEB_API_BASE_URL");
+  const accessToken = dependencies.accessToken
+    ?? await resolvePublishAccessToken(options, environment, dependencies.stdin ?? process.stdin);
+  return { baseUrl, accessToken, fetchFn: dependencies.fetchFn };
+}
+
+async function runRegisterOnly(options, dependencies, auth) {
+  const manifest = validateRecoveryManifest(
+    await (dependencies.readRecoveryManifestFn ?? readRecoveryManifest)(options.registerOnlyFile),
+  );
+  const results = [];
+  for (const payload of manifest.releases) {
+    // release channel 已被 EAS 使用；恢复只允许以完整 fingerprint 幂等 register，不能重跑“未使用”preflight。
+    // 但必须再次用固定 EAS CLI 做只读权威回读，不能把可编辑的本地 manifest 当作发布证明。
+    const authorityOptions = manifest.bootstrapLegacyFixedChannel
+      ? {
+        environment: manifest.environment,
+        platform: payload.platform,
+        runtimeVersion: payload.runtimeVersion,
+        message: payload.message,
+        releaseChannel: payload.channel,
+        bootstrapLegacyFixedChannel: true,
+      }
+      : payload;
+    const authorityRelease = manifest.bootstrapLegacyFixedChannel
+      ? authorityReleaseFromLegacyBootstrap(payload)
+      : payload;
+    const channelViewCommand = buildEasChannelViewCommand(
+      authorityOptions,
+      dependencies.environment ?? process.env,
+    );
+    const channelViewExecution = await (dependencies.runCommandFn ?? runCommand)(channelViewCommand);
+    parseEasChannelViewOutput(
+      channelViewExecution.stdout,
+      authorityOptions.releaseChannel,
+      authorityRelease,
+    );
+    let registeredResult;
+    if (manifest.bootstrapLegacyFixedChannel) {
+      const registered = await (
+        dependencies.registerLegacyBootstrapUpdateFn ?? registerLegacyBootstrapUpdate
+      )(payload, auth);
+      registeredResult = {
+        platform: payload.platform,
+        releaseChannel: payload.channel,
+        status: "registered",
+        releaseId: registered.id ?? null,
+      };
+    } else {
+      const registered = await (dependencies.registerOtaReleaseFn ?? registerOtaRelease)(payload, auth);
+      registeredResult = {
+        platform: payload.platform,
+        releaseChannel: payload.releaseChannel,
+        status: "registered",
+        idempotent: registered.idempotent,
+        releaseId: registered.release?.id ?? null,
+      };
+    }
+    try {
+      await reportAcceptedOtaRelease(payload, {
+        completedAtUtcFn: dependencies.completedAtUtcFn,
+        config: dependencies.releaseReporterConfig,
+        logger: dependencies.logger ?? console,
+        releaseEnvironment: manifest.environment,
+        reportReleaseEventFn: dependencies.reportReleaseEventFn,
+        resolvedCommit: dependencies.resolvedCommit,
+      });
+      results.push(registeredResult);
+    } catch (error) {
+      results.push({
+        ...registeredResult,
+        releaseEventStatus: "failed",
+        payload,
+        error: redactedError(error),
+      });
+    }
+  }
+  if (results.some((result) => result.releaseEventStatus === "failed")) {
+    throw new OtaPublishBatchError(
+      "register-only 已完成幂等登记，但 release event 上报失败；未执行 EAS 发布，可安全重试同一 recovery manifest。",
+      results,
+      options.registerOnlyFile,
+    );
+  }
+  return { releaseBatchId: manifest.releaseBatchId, results };
+}
+
+export async function runPublishMobileOtaRelease(options, dependencies = {}) {
+  validatePublishOptions(options);
+  const logger = dependencies.logger ?? console;
+  const environment = dependencies.environment ?? process.env;
+  const releaseReporterConfig =
+    dependencies.reportReleaseEventFn && !options.dryRun
+      ? requireReleaseReporterConfig(environment)
+      : null;
+  // 在任何 EAS 写入前解析 commit；发布成功后不能再因本地 SHA 缺失而失败。
+  const resolvedCommit =
+    dependencies.reportReleaseEventFn && !options.dryRun
+      ? (dependencies.resolveReleaseCommitFn ?? resolveReleaseCommit)({ environment })
+      : null;
+  const auth = options.dryRun ? null : await resolveAuth(options, dependencies);
+  if (options.registerOnlyFile) {
+    return runRegisterOnly(
+      options,
+      {
+        ...dependencies,
+        environment,
+        releaseReporterConfig,
+        resolvedCommit,
+      },
+      auth,
+    );
   }
 
-  const mockPath = path.resolve(process.cwd(), options.mockOutputFile);
-  return readFile(mockPath, "utf8");
+  const nowIso = (dependencies.nowIsoFn ?? (() => new Date().toISOString()))();
+  const releaseBatchId = (dependencies.createReleaseBatchIdFn ?? randomUUID)();
+  const platforms = options.platform === "all" ? ["android", "ios"] : [options.platform];
+  const plans = platforms.map((platform) => {
+    const releaseChannel = options.bootstrapLegacyFixedChannel
+      ? options.environment
+      : (dependencies.createReleaseChannelFn ?? createReleaseChannel)(
+        options.environment,
+        platform,
+        nowIso,
+        randomUUID(),
+      );
+    return {
+      ...options,
+      platform,
+      releaseBatchId,
+      releaseChannel,
+    };
+  });
+
+  if (options.dryRun) {
+    const results = plans.map((plan) => {
+      const command = buildEasUpdateCommand(plan, dependencies.environment ?? process.env);
+      logger.log(`${plan.platform}: ${command.command} ${command.args.join(" ")}`);
+      return { platform: plan.platform, releaseChannel: plan.releaseChannel, status: "dry-run" };
+    });
+    return { releaseBatchId, results };
+  }
+
+  // all 的两个平台必须全部 preflight 成功后，才允许第一次 EAS 写入。
+  for (const plan of plans) {
+    await (dependencies.preflightOtaReleaseFn ?? preflightOtaRelease)(
+      buildPreflightPayload(plan),
+      auth,
+    );
+  }
+
+  if (options.bootstrapLegacyFixedChannel) {
+    // fixed channel 已存在，不能做 unused 检查；但写入前必须先证明它仍精确映射同名 branch。
+    for (const plan of plans) {
+      const channelViewCommand = buildEasChannelViewCommand(
+        plan,
+        dependencies.environment ?? process.env,
+      );
+      const channelViewExecution = await (dependencies.runCommandFn ?? runCommand)(
+        channelViewCommand,
+      );
+      parseEasChannelViewOutput(
+        channelViewExecution.stdout,
+        plan.releaseChannel,
+      );
+    }
+  } else {
+    // 后端只证明数据库未登记；还必须在 Expo 权威侧穷尽 channel 分页并证明所有目标均未使用。
+    await (dependencies.assertReleaseChannelsUnusedFn ?? (
+      (releasePlans) => assertReleaseChannelsUnused(
+        releasePlans,
+        dependencies.environment ?? process.env,
+        dependencies.runCommandFn ?? runCommand,
+      )
+    ))(plans);
+  }
+
+  const results = [];
+  const recoveryReleases = [];
+  for (const plan of plans) {
+    let easCompleted = false;
+    let publishedPayload = null;
+    try {
+      const command = buildEasUpdateCommand(plan, dependencies.environment ?? process.env);
+      const execution = await (dependencies.runCommandFn ?? runCommand)(command);
+      easCompleted = true;
+      const parsed = parseEasUpdateOutput(execution.stdout, plan.platform);
+      assertPublishedRelease(parsed, plan);
+      const payload = options.bootstrapLegacyFixedChannel
+        ? buildLegacyBootstrapPayload(parsed, plan)
+        : buildOtaReleasePayload(parsed, plan);
+      publishedPayload = payload;
+      const channelViewCommand = buildEasChannelViewCommand(
+        plan,
+        dependencies.environment ?? process.env,
+      );
+      const channelViewExecution = await (dependencies.runCommandFn ?? runCommand)(channelViewCommand);
+      parseEasChannelViewOutput(
+        channelViewExecution.stdout,
+        plan.releaseChannel,
+        options.bootstrapLegacyFixedChannel
+          ? authorityReleaseFromLegacyBootstrap(payload)
+          : payload,
+      );
+      try {
+        let registeredResult;
+        if (options.bootstrapLegacyFixedChannel) {
+          const registered = await (
+            dependencies.registerLegacyBootstrapUpdateFn ?? registerLegacyBootstrapUpdate
+          )(payload, auth);
+          registeredResult = {
+            platform: plan.platform,
+            releaseChannel: plan.releaseChannel,
+            status: "registered",
+            releaseId: registered.id ?? null,
+          };
+        } else {
+          const registered = await (dependencies.registerOtaReleaseFn ?? registerOtaRelease)(payload, auth);
+          registeredResult = {
+            platform: plan.platform,
+            releaseChannel: plan.releaseChannel,
+            status: "registered",
+            idempotent: registered.idempotent,
+            releaseId: registered.release?.id ?? null,
+          };
+        }
+        try {
+          await reportAcceptedOtaRelease(payload, {
+            completedAtUtcFn: dependencies.completedAtUtcFn,
+            config: releaseReporterConfig,
+            logger,
+            releaseEnvironment: options.environment,
+            reportReleaseEventFn: dependencies.reportReleaseEventFn,
+            resolvedCommit,
+          });
+          results.push(registeredResult);
+        } catch (error) {
+          // 登记已成功；保留恢复 manifest 只供 --register-only 幂等回读并重试验收上报。
+          recoveryReleases.push(payload);
+          results.push({
+            ...registeredResult,
+            releaseEventStatus: "failed",
+            payload,
+            error: redactedError(error),
+          });
+        }
+      } catch (error) {
+        recoveryReleases.push(payload);
+        results.push({
+          platform: plan.platform,
+          releaseChannel: plan.releaseChannel,
+          status: "registration-failed",
+          payload,
+          error: redactedError(error),
+        });
+      }
+    } catch (error) {
+      if (easCompleted && publishedPayload) recoveryReleases.push(publishedPayload);
+      results.push({
+        platform: plan.platform,
+        releaseChannel: plan.releaseChannel,
+        status: easCompleted ? "published-unverified" : "publish-failed",
+        ...(publishedPayload ? { payload: publishedPayload } : {}),
+        error: redactedError(error),
+      });
+    }
+  }
+
+  let recoveryPath = null;
+  if (recoveryReleases.length) {
+    const recoveryManifest = {
+      schemaVersion: 1,
+      appKey: APP_KEY,
+      environment: options.environment,
+      releaseBatchId,
+      createdAtUtc: nowIso,
+      ...(options.bootstrapLegacyFixedChannel
+        ? { bootstrapLegacyFixedChannel: true }
+        : {}),
+      releases: recoveryReleases,
+    };
+    try {
+      recoveryPath = await (dependencies.writeRecoveryManifestFn ?? writeRecoveryManifest)(recoveryManifest);
+    } catch (error) {
+      logger.warn(`恢复 manifest 写入失败（${redactedError(error)}）；以下 JSON 不含凭据，请安全保存，禁止重发。`);
+      logger.log(JSON.stringify(recoveryManifest));
+      throw new OtaPublishBatchError(
+        "EAS 已发布但恢复 manifest 写入失败；请安全保存无凭据 JSON 后再做权威回读，禁止重发。",
+        results,
+        null,
+      );
+    }
+    const hasReleaseReportFailure = results.some(
+      (result) => result.releaseEventStatus === "failed",
+    );
+    logger.warn(
+      hasReleaseReportFailure
+        ? `EAS 已发布并登记但验收上报失败；禁止重新发布。仅使用 --register-only ${recoveryPath} 幂等重试上报。`
+        : `EAS 已发布但尚未完成可信登记；核对事实后仅使用 --register-only ${recoveryPath} 补登记，禁止重发。`,
+    );
+  }
+
+  for (const result of results) {
+    logger.log(`${result.platform}: ${result.status} (${result.releaseChannel})`);
+  }
+  const hasReleaseReportFailure = results.some(
+    (result) => result.releaseEventStatus === "failed",
+  );
+  if (
+    hasReleaseReportFailure ||
+    results.some((result) => result.status !== "registered")
+  ) {
+    const hasUnverifiedPublish = results.some((result) => result.status === "published-unverified");
+    throw new OtaPublishBatchError(
+      hasUnverifiedPublish
+        ? "EAS 已成功，但发布事实或 channel 映射未通过权威验证；禁止自动重发。"
+        : hasReleaseReportFailure
+          ? "OTA 已发布并登记，但 release event 上报失败；禁止重发，只能用 recovery manifest 幂等重试验收上报。"
+          : "Mobile OTA batch completed partially or failed",
+      results,
+      recoveryPath,
+    );
+  }
+  return { releaseBatchId, results };
 }
 
 async function main() {
-  const options = parseArgs(process.argv.slice(2));
-
+  const options = parsePublishOtaArgs(process.argv.slice(2));
   if (options.help) {
     console.log(HELP_TEXT.trim());
     return;
   }
-
-  await runPublishOtaUpdate(options, {
+  await runPublishMobileOtaRelease(options, {
     reportReleaseEventFn: ({ event, config }) =>
       reportReleaseEvent({
         event,
@@ -661,159 +1474,13 @@ async function main() {
   });
 }
 
-export async function runPublishOtaUpdate(
-  options,
-  {
-    createDryRunOutputFn = createDryRunOutput,
-    environment = process.env,
-    logger = console,
-    preflightOtaRegistrationFn = preflightOtaRegistration,
-    registerOtaUpdateFn = registerOtaUpdate,
-    reportReleaseEventFn,
-    resolveReleaseCommitFn = resolveReleaseCommit,
-    runCommandFn = runCommand,
-  } = {},
-) {
-  validateOptions(options);
-  const releaseReporterConfig =
-    reportReleaseEventFn && !options.dryRun
-      ? requireReleaseReporterConfig(environment)
-      : null;
-
-  const platform = options.platform ?? DEFAULT_PLATFORM;
-  const easCommand = await buildEasCommand(options);
-  const printableCommand = formatCommand(easCommand);
-
-  if (!options.dryRun) {
-    await preflightOtaRegistrationFn();
-  }
-  // preflight 仅只读；在任何 EAS/登记远端写入前固定可审计的 commit。
-  const resolvedCommit = options.dryRun
-    ? null
-    : resolveReleaseCommitFn({ environment });
-
-  logger.log(`OTA 平台：${platform}`);
-  logger.log(`执行命令：${printableCommand}`);
-  logger.log("本次 OTA 环境变量：");
-  logger.log(`- EXPO_PUBLIC_APP_BUILD_PROFILE=${options.profile}`);
-  logger.log(`- EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED=${easCommand.env.EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED}`);
-  logger.log(`- EXPO_PUBLIC_RUNTIME_VERSION=${options.runtimeVersion}`);
-  if (platform === "ios") {
-    logger.log(`- EXPO_PUBLIC_IOS_REVIEW_MODE_ENABLED=${easCommand.env.EXPO_PUBLIC_IOS_REVIEW_MODE_ENABLED ?? "UNSET"}`);
-    logger.log(`- EXPO_PUBLIC_IOS_REVIEW_PASSWORD_SHA256=${easCommand.env.EXPO_PUBLIC_IOS_REVIEW_PASSWORD_SHA256 ? "SET" : "UNSET"}`);
-  }
-
-  const stdout = options.dryRun
-    ? await createDryRunOutputFn(options)
-    : (await runCommandFn(easCommand)).stdout;
-
-  let parsed = parseEasUpdateOutput(stdout, platform);
-  let payload = buildOtaRegistrationPayload(parsed, options);
-
-  if (options.dryRun) {
-    logger.log("\n--dry-run 已启用：未发布 OTA，也不会登记后台。");
-    printManualRegistrationJson(payload, logger);
-    return;
-  }
-
-  let gaps = getRequiredRegistrationGaps(payload);
-  let updateViewCommand = null;
-  if (gaps.includes("updateGroupId") && payload.updateId) {
-    updateViewCommand = buildEasUpdateViewCommand(payload.updateId, easCommand.env);
-    const printableViewCommand = formatCommand(updateViewCommand);
-    logger.warn(`\nEAS 发布输出缺少 update group，正在按平台 update ID 只读回查：${payload.updateId}`);
-
-    let recoveredStdout;
-    try {
-      recoveredStdout = (await runCommandFn(updateViewCommand)).stdout;
-    } catch (error) {
-      const message = `OTA 已发布，但无法回查 update group：${error.message}`;
-      logger.warn(`\nWARNING: ${message}`);
-      printManualRegistrationJson(payload, logger);
-      logger.log(`精确回查命令：${printableViewCommand}`);
-      throw new Error(message, { cause: error });
-    }
-
-    const recovered = parseEasUpdateOutput(recoveredStdout, platform);
-    const identityMatches = recovered.updateId === payload.updateId
-      && recovered.platform === platform;
-    if (!identityMatches) {
-      const message = "OTA 已发布，但 update:view 返回的 update ID 或平台与本次发布不一致";
-      logger.warn(`\nWARNING: ${message}`);
-      printManualRegistrationJson(payload, logger);
-      logger.log(`精确回查命令：${printableViewCommand}`);
-      throw new Error(message);
-    }
-
-    parsed = mergeParsedUpdate(parsed, recovered);
-    payload = buildOtaRegistrationPayload(parsed, options, payload.publishedAt);
-    gaps = getRequiredRegistrationGaps(payload);
-  }
-
-  if (gaps.length) {
-    const message = `OTA 已发布，但 EAS 输出缺少后台登记字段：${gaps.join(", ")}`;
-    logger.warn(`\nWARNING: ${message}。`);
-    printManualRegistrationJson(payload, logger);
-    if (updateViewCommand) {
-      logger.log(`精确回查命令：${formatCommand(updateViewCommand)}`);
-    }
-    throw new Error(message);
-  }
-
-  let result;
-  try {
-    result = await registerOtaUpdateFn(payload);
-  } catch (error) {
-    const message = `OTA 已发布，但自动登记失败：${error.message}`;
-    logger.warn(`\nWARNING: ${message}`);
-    printManualRegistrationJson(payload, logger);
-    throw new Error(message, { cause: error });
-  }
-
-  if (result.skipped) {
-    const message = `OTA 已发布，但${result.reason}`;
-    logger.warn(`\nWARNING: ${message}。`);
-    printManualRegistrationJson(payload, logger);
-    throw new Error(message);
-  }
-
-  logger.log(`\nOTA 数据库记录已登记：${result.url}`);
-  if (reportReleaseEventFn) {
-    // 只有 Expo 发布和后台登记均通过，才把移动 OTA 记为 accepted deploy。
-    const event = buildReleaseEvent({
-      action: "deploy",
-      conclusion: "accepted",
-      component: "mobile",
-      environment: options.profile === "production" ? "Production" : "Preview",
-      releaseId: payload.updateGroupId,
-      commitSha: selectReleaseEventCommit({
-        payloadCommit: payload.gitCommitHash,
-        resolvedCommit,
-      }),
-      startedAtUtc: payload.publishedAt,
-      completedAtUtc: new Date().toISOString(),
-      healthChecked: true,
-      sourceProvider: "expo-ota",
-      sourceRunId: payload.updateGroupId,
-    });
-    try {
-      await reportReleaseEventFn({ event, config: releaseReporterConfig });
-    } catch (error) {
-      throw new Error(
-        `OTA 已发布并登记，不得重新发布，只重试 release event 上报：${error.message}`,
-      );
-    }
-    logger.log("OTA 发布验收已上报。");
-  }
-}
-
 function isCliEntry() {
-  return process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
+  return Boolean(process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]));
 }
 
 if (isCliEntry()) {
   main().catch((error) => {
-    console.error(error.message);
-    process.exitCode = typeof error.code === "number" ? error.code : 1;
+    console.error(redactedError(error));
+    process.exitCode = error instanceof OtaPublishBatchError ? error.exitCode : 1;
   });
 }

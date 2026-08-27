@@ -1,6 +1,8 @@
 import {
   getLatestMobileAppBuild,
+  getMobileAppOtaUpdates,
   normalizeMobileAppBuild,
+  normalizeMobileAppOtaUpdate,
 } from './mobileAppBuildService'
 
 function assertEqual<T>(actual: T, expected: T, message: string) {
@@ -33,9 +35,26 @@ assertEqual(build.cosMirrorStatus, 'failed', 'normalizer 应保留 COS 镜像状
 assertEqual(build.cosMirrorAttempts, 2, 'normalizer 应保留 COS 镜像尝试次数')
 assertEqual(build.cosMirrorLastAttemptAtUtc, '2026-06-23T01:01:00Z', 'normalizer 应保留 COS 上次尝试时间')
 
+const iosLegacyOta = normalizeMobileAppOtaUpdate({
+  id: 'ios-bootstrap-id',
+  platform: 'ios',
+  updateId: '019f36f8-5697-7228-95e0-ff5c0a17eee7',
+  androidUpdateId: null,
+})
+assertEqual(
+  iosLegacyOta.updateId,
+  '019f36f8-5697-7228-95e0-ff5c0a17eee7',
+  'legacy OTA normalizer 应保留 iOS 通用 Update ID',
+)
+
 const requestedUrls: string[] = []
-globalThis.fetch = (async (input) => {
+const requestedSignals: AbortSignal[] = []
+globalThis.fetch = (async (input, init) => {
   requestedUrls.push(String(input))
+  const signal = input instanceof Request ? input.signal : init?.signal
+  if (signal) {
+    requestedSignals.push(signal)
+  }
   return new Response(JSON.stringify({ success: true, data: null }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
@@ -68,6 +87,19 @@ assertEqual(
   new URL(requestedUrls[1], 'https://admin.example').searchParams.get('appKey'),
   'pos-handheld',
   '受控 AppKey 应规范化后请求对应应用',
+)
+
+const otaController = new AbortController()
+await getMobileAppOtaUpdates(
+  { appKey: 'mobile', channel: 'production', page: 1, pageSize: 5 },
+  otaController.signal,
+)
+assertEqual(requestedSignals.length > 0, true, 'legacy OTA 历史请求必须向 transport 传播取消信号')
+otaController.abort()
+assertEqual(
+  requestedSignals[requestedSignals.length - 1]?.aborted,
+  true,
+  '调用方取消后 transport 信号必须同步终止',
 )
 
 console.log('mobileAppBuildService.test.ts: ok')

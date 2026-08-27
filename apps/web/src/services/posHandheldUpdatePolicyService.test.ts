@@ -71,9 +71,20 @@ const transport: PosHandheldUpdatePolicyTransport = {
           platform: options?.params?.platform,
           kind: 'ota',
           runtimeVersion: '1.2.0',
-          channel: 'pos-handheld-production',
+          clientChannel: 'pos-handheld-production',
+          releaseChannel: `pos-handheld-production-${options?.params?.platform}-release-20260827`,
           updateId: `${options?.params?.platform}-update-42`,
           updateGroupId: '11111111-1111-1111-1111-111111111111',
+          releaseBatchId: 'batch-1',
+          releaseMessage: '手持 OTA',
+          gitCommitHash: 'abcdef12',
+          dashboardUrl: 'https://expo.dev/update/handheld-42',
+          factFingerprint: 'f'.repeat(64),
+          legacy: false,
+          isRollback: true,
+          rollbackOfReleaseId: '33333333-3333-3333-3333-333333333333',
+          registrationSource: 'pos-handheld-release-script',
+          registeredBy: 'release-bot',
           activatable: false,
           blockedReason: 'POS_HANDHELD_OTA_CANDIDATE_NOT_CHANNEL_HEAD',
           publishedAtUtc: '2026-08-14T00:00:00Z',
@@ -200,6 +211,24 @@ async function run() {
 
   const ota = await service.getOtaCandidates('android')
   assertEqual(ota[0]?.activatable, false, '非 channel head OTA 必须保留不可激活状态')
+  assertEqual(
+    ota[0]?.channel,
+    'pos-handheld-production-android-release-20260827',
+    '新候选必须优先展示不可变发布事实的 releaseChannel',
+  )
+  assertEqual(ota[0]?.clientChannel, 'pos-handheld-production', '候选必须保留原生 client channel')
+  assertEqual(ota[0]?.legacy, false, '候选必须区分 legacy fixed-channel 与新 release-channel')
+  assertEqual(ota[0]?.releaseBatchId, 'batch-1', '候选必须保留跨平台审计 batch')
+  assertEqual(ota[0]?.dashboardUrl, 'https://expo.dev/update/handheld-42', '候选必须保留可信 Dashboard 审计入口')
+  assertEqual(ota[0]?.message, '手持 OTA', '候选必须保留不可变发布说明')
+  assertEqual(ota[0]?.gitCommitHash, 'abcdef12', '候选必须保留发布 commit')
+  assertEqual(ota[0]?.isRollback, true, '候选必须标识 rollback 发布事实')
+  assertEqual(
+    ota[0]?.rollbackOfReleaseId,
+    '33333333-3333-3333-3333-333333333333',
+    '候选必须保留 rollback 来源',
+  )
+  assertEqual(ota[0]?.createdBy, 'release-bot', '候选必须保留登记人')
   assertDeepEqual(
     calls[calls.length - 1]?.params,
     { platform: 'android' },

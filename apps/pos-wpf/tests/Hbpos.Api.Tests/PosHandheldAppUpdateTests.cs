@@ -647,6 +647,57 @@ public sealed class PosHandheldAppUpdateTests
         Assert.Equal("handheld-update-12", decision.UpdateId);
     }
 
+    [Theory]
+    [InlineData("iOS", "pos-handheld-production")]
+    [InlineData("iOS", "pos-handheld-production-ios-release-20260827t101500z-a1b2c3")]
+    [InlineData("Android", "pos-handheld-production-android-release-20260827t101500z-d4e5f6")]
+    public async Task Ota_decision_accepts_only_legacy_or_platform_release_channel(
+        string platform,
+        string channel)
+    {
+        var gateway = CreateHttpGateway(CreateOtaDecisionJson(platform, channel));
+
+        var decision = await gateway.GetOtaDecisionAsync(
+            new PosHandheldOtaUpdateDecisionRequest(
+                "0247",
+                platform,
+                "1.0.0",
+                null,
+                null
+            ),
+            CancellationToken.None
+        );
+
+        Assert.NotNull(decision);
+        Assert.Equal(channel, decision.Channel);
+    }
+
+    [Theory]
+    [InlineData("iOS", "pos-handheld-production-android-release-20260827t101500z-a1b2c3")]
+    [InlineData("Android", "pos-handheld-production-ios-release-20260827t101500z-a1b2c3")]
+    [InlineData("iOS", "pos-handheld-preview-ios-release-20260827t101500z-a1b2c3")]
+    [InlineData("iOS", "pos-handheld-production-ios-release-")]
+    [InlineData("iOS", "arbitrary-channel")]
+    public async Task Ota_decision_rejects_untrusted_or_cross_platform_release_channel(
+        string platform,
+        string channel)
+    {
+        var gateway = CreateHttpGateway(CreateOtaDecisionJson(platform, channel));
+
+        var decision = await gateway.GetOtaDecisionAsync(
+            new PosHandheldOtaUpdateDecisionRequest(
+                "0247",
+                platform,
+                "1.0.0",
+                null,
+                null
+            ),
+            CancellationToken.None
+        );
+
+        Assert.Null(decision);
+    }
+
     private static HttpPosHandheldUpdateDecisionGateway CreateHttpGateway(string responseJson) =>
         new(
             new HttpClient(new RecordingHttpHandler(responseJson)),
@@ -659,6 +710,26 @@ public sealed class PosHandheldAppUpdateTests
             ),
             NullLogger<HttpPosHandheldUpdateDecisionGateway>.Instance
         );
+
+    private static string CreateOtaDecisionJson(string platform, string channel) =>
+        $$"""
+        {
+          "success": true,
+          "data": {
+            "state": "optional",
+            "policyVersion": "12",
+            "appKey": "pos-handheld",
+            "projectName": "hb-pos-handheld",
+            "platform": "{{platform}}",
+            "required": false,
+            "channel": "{{channel}}",
+            "runtimeVersion": "1.0.0",
+            "updateId": "handheld-update-12",
+            "updateGroupId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "releaseMessage": null
+          }
+        }
+        """;
 
     private static string CreateNativeDecisionJson(string platform, string latestBuild) =>
         platform == "Android"

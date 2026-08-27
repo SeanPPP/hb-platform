@@ -3,8 +3,11 @@ import {
   type HbposEnvelope,
   type HbposTransport,
 } from "@/core/api/hbpos-api";
+
 import {
+  isTrustedPosHandheldOtaChannel,
   normalizePosHandheldOtaUpdatePolicy,
+  POS_HANDHELD_PRODUCTION_CHANNEL,
   type PosHandheldOtaUpdatePolicy,
 } from "@/core/contracts/ota-app-updates";
 import type { DeviceSystem } from "@/core/contracts/security";
@@ -48,6 +51,11 @@ export class HbposPosHandheldOtaUpdateApi
       this.configuredChannel,
       "configuredChannel",
     );
+    if (expectedChannel !== POS_HANDHELD_PRODUCTION_CHANNEL) {
+      throw new TypeError(
+        "Handheld OTA requires the compiled production channel.",
+      );
+    }
     const requestMetadata = normalizeMetadata(metadata);
     const response = await this.transport.request<
       HbposEnvelope<PosHandheldOtaUpdatePolicy>
@@ -69,9 +77,15 @@ export class HbposPosHandheldOtaUpdateApi
         "Handheld OTA response runtimeVersion does not match the request.",
       );
     }
-    if (policy.channel !== expectedChannel) {
+    if (
+      !isTrustedPosHandheldOtaChannel(
+        policy.channel,
+        expectedChannel,
+        platform,
+      )
+    ) {
       throw new TypeError(
-        "Handheld OTA response channel does not match the configured channel.",
+        "Handheld OTA response channel is outside the trusted production channel scope.",
       );
     }
     return policy;

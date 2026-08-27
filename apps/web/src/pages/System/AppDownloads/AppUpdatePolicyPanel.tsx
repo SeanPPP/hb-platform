@@ -72,6 +72,7 @@ import {
 } from './appUpdatePolicyRequestLogic'
 import { formatAppDownloadLocalDateTime } from './time'
 import PosHandheldUpdatePolicyTab from './PosHandheldUpdatePolicyTab'
+import MobileOtaPolicyTab from './MobileOtaPolicyTab'
 import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface AppUpdatePolicyPanelProps {
@@ -211,6 +212,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
   const [registerApp, setRegisterApp] = useState<AppUpdateApp | null>(null)
   const [registerSaving, setRegisterSaving] = useState(false)
   const [handheldRefreshVersion, setHandheldRefreshVersion] = useState(0)
+  const [mobileOtaRefreshVersion, setMobileOtaRefreshVersion] = useState(0)
   const laneRequestsRef = useRef<Record<LoadLaneKey, LatestRequestLane>>({
     mobileNative: new LatestRequestLane(),
     ipadNative: new LatestRequestLane(),
@@ -329,6 +331,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
 
   const refreshAll = useCallback(async () => {
     setHandheldRefreshVersion((version) => version + 1)
+    setMobileOtaRefreshVersion((version) => version + 1)
     await Promise.allSettled([
       loadMobileNativeLane(),
       loadIpadNativeLane(),
@@ -1304,7 +1307,8 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
             message={t('system.appDownloads.updatePolicy.appleVerificationHint')}
             description={t('system.appDownloads.updatePolicy.registrationNotActivation')}
           />
-          <MeasuredTable<IosAppStoreRelease> metricId="system.app-downloads.app-update-policy-panel.table-1"
+          <MeasuredTable<IosAppStoreRelease>
+            metricId="system.app-downloads.app-update-policy-panel.table-1"
             rowKey="id"
             size="small"
             columns={nativeReleaseColumns(policy)}
@@ -1355,6 +1359,16 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
       ),
     },
     {
+      key: 'mobile-ota',
+      label: t('system.appDownloads.updatePolicy.tabs.mobileOta'),
+      children: (
+        <MobileOtaPolicyTab
+          canManage={canManage}
+          refreshVersion={mobileOtaRefreshVersion}
+        />
+      ),
+    },
+    {
       key: 'ipad-native',
       label: t('system.appDownloads.updatePolicy.tabs.ipadNative'),
       children: renderNativeTab(
@@ -1387,7 +1401,8 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
               style={{ marginBottom: 12 }}
               message={t('system.appDownloads.updatePolicy.otaScriptHint')}
             />
-            <MeasuredTable<PosIpadOtaRelease> metricId="system.app-downloads.app-update-policy-panel.table-2"
+            <MeasuredTable<PosIpadOtaRelease>
+              metricId="system.app-downloads.app-update-policy-panel.table-2"
               rowKey="id"
               size="small"
               columns={otaReleaseColumns}

@@ -210,7 +210,20 @@
     "iosNativeUpdateOpenStoreAction": "Open App Store",
     "iosNativeUpdateRetryAction": "Check Again",
     "iosNativeUpdateOpenFailedTitle": "Cannot open the App Store",
-    "iosNativeUpdateOpenFailedMessage": "Check your network connection, or search for Hot Bargain directly in the App Store."
+    "iosNativeUpdateOpenFailedMessage": "Check your network connection, or search for Hot Bargain directly in the App Store.",
+    "mobileOtaChecking": "Checking for app updates…",
+    "mobileOtaAvailableTitle": "App update ready",
+    "mobileOtaAvailableMessage": "The update was downloaded safely. Restart now or apply it later.",
+    "mobileOtaRequiredEyebrow": "UPDATE REQUIRED",
+    "mobileOtaRequiredTitle": "Update the app to continue",
+    "mobileOtaRuntime": "Runtime {{runtime}}",
+    "mobileOtaRequiredMessage": "This update cannot be skipped. It only covers compatible runtimes that already include the managed updater.",
+    "mobileOtaDownloadAction": "Download update",
+    "mobileOtaRestartAction": "Restart now",
+    "mobileOtaLaterAction": "Later",
+    "mobileOtaRetryAction": "Check again",
+    "mobileOtaRetryHelper": "The update is not ready yet. Check the network and retry.",
+    "mobileOtaRequiredHelper": "Business features resume after the download completes and the app restarts safely."
   },
   "messages": {
     "profileLoginRequired": "Sign in with an account before opening your profile."

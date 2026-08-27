@@ -20,6 +20,11 @@ namespace BlazorApp.Api.Tests;
 public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
 {
     private const string OtaGroup = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    private const string MobileUpdateId = "11111111-1111-4111-8111-111111111111";
+    private const string HandheldUpdateId = "22222222-2222-4222-8222-222222222222";
+    private const string HandheldIosUpdateId = "33333333-3333-4333-8333-333333333333";
+    private const string HandheldFirstUpdateId = "44444444-4444-4444-8444-444444444444";
+    private const string HandheldNextUpdateId = "55555555-5555-4555-8555-555555555555";
     private readonly string dbPath;
     private readonly ISqlSugarClient db;
     private readonly EasWebhookOptions easOptions;
@@ -44,6 +49,7 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
             PosHandheldUpdatePolicy,
             PosHandheldUpdatePolicyRevision
         >();
+        db.CodeFirst.InitTables(typeof(AppOtaRelease));
         easOptions = new EasWebhookOptions
         {
             AllowedAccountName = "hotbargain",
@@ -53,6 +59,7 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
                 ["hb-mobile"] = MobileAppKeys.Mobile,
                 ["hb-pos-handheld"] = MobileAppKeys.PosHandheld,
             },
+            AllowLegacyOtaBootstrapRegistration = true,
         };
         policyOptions = new PosHandheldUpdatePolicyOptions
         {
@@ -693,7 +700,7 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
     {
         var buildService = CreateBuildService();
         var first = await buildService.UpsertOtaUpdateAsync(
-            CreateOta("hb-pos-handheld", "handheld-first", "android")
+            CreateOta("hb-pos-handheld", HandheldFirstUpdateId, "android")
         );
         var policyService = CreatePolicyService();
         var saved = await policyService.SetLaneAsync(
@@ -707,7 +714,8 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
             },
             "admin"
         );
-        var next = CreateOta("hb-pos-handheld", "handheld-next", "android");
+        var next = CreateOta("hb-pos-handheld", HandheldNextUpdateId, "android");
+        next.UpdateGroupId = HandheldNextUpdateId;
         next.PublishedAt = new DateTime(2026, 8, 10, 5, 0, 0, DateTimeKind.Utc);
         await buildService.UpsertOtaUpdateAsync(next);
         var service = CreateDecisionService(buildService, policyService);
@@ -724,6 +732,60 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
 
         Assert.True(saved.Success);
         Assert.Null(decision);
+    }
+
+    [Fact]
+    public async Task Managed_ota_accepts_only_platform_scoped_release_channel()
+    {
+        var release = new AppOtaRelease
+        {
+            Id = Guid.NewGuid(),
+            ReleaseBatchId = Guid.NewGuid(),
+            AppKey = MobileAppKeys.PosHandheld,
+            Environment = "production",
+            ClientChannel = "pos-handheld-production",
+            ReleaseChannel = "pos-handheld-production-android-release-20260827-a",
+            EasBranch = "pos-handheld-production-android-release-20260827-a",
+            ProjectName = "hb-pos-handheld",
+            Platform = "android",
+            RuntimeVersion = "1.0.0",
+            UpdateGroupId = Guid.NewGuid().ToString(),
+            UpdateId = Guid.NewGuid().ToString(),
+            PublishedAtUtc = DateTime.UtcNow,
+            FactFingerprint = new string('a', 64),
+            CreatedAt = DateTime.UtcNow,
+            IsDeleted = false,
+        };
+        await db.Insertable(release).ExecuteCommandAsync();
+        var policyService = CreatePolicyService();
+        var saved = await policyService.SetLaneAsync(
+            PosHandheldUpdateLanes.AndroidOta,
+            new PosHandheldUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                Required = true,
+                CandidateId = release.Id,
+            },
+            "admin"
+        );
+        var service = CreateDecisionService(managedPolicyService: policyService);
+
+        var decision = await service.GetOtaDecisionAsync(
+            new PosHandheldOtaDecisionRequest
+            {
+                StoreCode = "0247",
+                Platform = "Android",
+                RuntimeVersion = "1.0.0",
+                CurrentUpdateId = "old",
+            }
+        );
+
+        Assert.True(saved.Success, saved.Message);
+        Assert.NotNull(decision);
+        Assert.Equal(AppUpdateStates.Required, decision!.State);
+        Assert.Equal(release.ReleaseChannel, decision.Channel);
+        Assert.Equal(release.UpdateId, decision.UpdateId);
     }
 
     [Fact]
@@ -1152,13 +1214,13 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
     {
         var buildService = CreateBuildService();
         await buildService.UpsertOtaUpdateAsync(
-            CreateOta("hb-mobile", "mobile-update", "android")
+            CreateOta("hb-mobile", MobileUpdateId, "android")
         );
         await buildService.UpsertOtaUpdateAsync(
-            CreateOta("hb-pos-handheld", "handheld-update", "android")
+            CreateOta("hb-pos-handheld", HandheldUpdateId, "android")
         );
         await buildService.UpsertOtaUpdateAsync(
-            CreateOta("hb-pos-handheld", "handheld-ios-update", "ios")
+            CreateOta("hb-pos-handheld", HandheldIosUpdateId, "ios")
         );
         var service = CreateDecisionService(buildService);
 
@@ -1180,7 +1242,7 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
         Assert.Equal("Android", decision.Platform);
         Assert.Equal("pos-handheld-production", decision.Channel);
         Assert.Equal("1.0.0", decision.RuntimeVersion);
-        Assert.Equal("handheld-update", decision.UpdateId);
+        Assert.Equal(HandheldUpdateId, decision.UpdateId);
         Assert.Equal(OtaGroup, decision.UpdateGroupId);
     }
 
@@ -1316,16 +1378,23 @@ public sealed class PosHandheldUpdateDecisionServiceTests : IDisposable
     private static MobileAppOtaUpdateUpsertDto CreateOta(
         string projectName,
         string updateId,
-        string platform) =>
-        new()
+        string platform)
+    {
+        var channel = projectName == "hb-pos-handheld"
+            ? "pos-handheld-production"
+            : "production";
+        return new MobileAppOtaUpdateUpsertDto
         {
             ProjectName = projectName,
             UpdateGroupId = OtaGroup,
             UpdateId = updateId,
             AndroidUpdateId = platform == "android" ? updateId : null,
-            Channel = "pos-handheld-production",
+            Channel = channel,
+            Branch = channel,
             Platform = platform,
             RuntimeVersion = "1.0.0",
             PublishedAt = new DateTime(2026, 8, 10, 4, 0, 0, DateTimeKind.Utc),
+            BootstrapLegacyFixedChannel = true,
         };
+    }
 }
