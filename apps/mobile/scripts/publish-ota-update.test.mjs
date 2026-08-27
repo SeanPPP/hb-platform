@@ -28,6 +28,7 @@ const parsed = parseEasUpdateOutput(sampleOutput);
 assert.equal(parsed.branch, "");
 assert.equal(parsed.runtimeVersion, "");
 assert.equal(parsed.updateGroupId, "");
+assert.equal(parsed.updateId, "");
 assert.equal(parsed.androidUpdateId, "");
 assert.equal(parsed.message, "");
 assert.equal(parsed.gitCommitHash, "");
@@ -57,12 +58,67 @@ assert.equal(parsedJson.branch, "preview");
 assert.equal(parsedJson.runtimeVersion, "1.0.1");
 assert.equal(parsedJson.updateGroupId, "22222222-3333-4444-5555-666666666666");
 assert.equal(parsedJson.androidUpdateId, "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb");
+assert.equal(parsedJson.updateId, "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb");
 assert.equal(parsedJson.message, "JSON OTA 发布");
 assert.equal(parsedJson.gitCommitHash, "fedcba9876543210");
 assert.equal(
   parsedJson.dashboardUrl,
   "https://expo.dev/accounts/example/projects/hbweb-expo/updates/22222222-3333-4444-5555-666666666666"
 );
+
+const iosJsonOutput = JSON.stringify({
+  branch: "production",
+  runtimeVersion: "1.0.2",
+  group: {
+    id: "33333333-4444-4555-8666-777777777777",
+  },
+  message: "iOS 正式版热更新",
+  gitCommitHash: "0123456789abcdef",
+  dashboardUrl:
+    "https://expo.dev/accounts/example/projects/hbweb-expo/updates/33333333-4444-4555-8666-777777777777",
+  updates: [
+    {
+      id: "11111111-2222-4333-8444-555555555555",
+      platform: "ios",
+      runtimeVersion: "1.0.2",
+    },
+  ],
+});
+const parsedIosJson = parseEasUpdateOutput(iosJsonOutput, "ios");
+
+assert.equal(parsedIosJson.branch, "production");
+assert.equal(parsedIosJson.runtimeVersion, "1.0.2");
+assert.equal(parsedIosJson.updateGroupId, "33333333-4444-4555-8666-777777777777");
+assert.equal(parsedIosJson.updateId, "11111111-2222-4333-8444-555555555555");
+assert.equal(parsedIosJson.androidUpdateId, "");
+
+const iosPayload = buildOtaRegistrationPayload(
+  parsedIosJson,
+  {
+    channel: "production",
+    profile: "production",
+    platform: "ios",
+    runtimeVersion: "1.0.2",
+    message: "fallback message",
+  },
+  "2026-08-27T00:00:00.000Z",
+);
+
+assert.deepEqual(iosPayload, {
+  updateGroupId: "33333333-4444-4555-8666-777777777777",
+  updateId: "11111111-2222-4333-8444-555555555555",
+  androidUpdateId: null,
+  channel: "production",
+  branch: "production",
+  platform: "ios",
+  runtimeVersion: "1.0.2",
+  message: "iOS 正式版热更新",
+  gitCommitHash: "0123456789abcdef",
+  dashboardUrl: "https://expo.dev/accounts/example/projects/hbweb-expo/updates/33333333-4444-4555-8666-777777777777",
+  publishedAt: "2026-08-27T00:00:00.000Z",
+  isRollback: false,
+  rollbackOfGroupId: null,
+});
 
 const updatesOnlyJsonOutput = JSON.stringify({
   branch: "preview",
@@ -98,6 +154,18 @@ assert.deepEqual(
   getRequiredRegistrationGaps(updatesOnlyPayload),
   ["updateGroupId"],
 );
+
+const updateViewJsonOutput = JSON.stringify([
+  {
+    id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+    group: "44444444-5555-4666-8777-888888888888",
+    platform: "android",
+    runtimeVersion: "1.0.1",
+    branch: "preview",
+    message: "恢复同一 Android OTA",
+    gitCommitHash: "1234567890abcdef",
+  },
+]);
 
 const updateListShapeJsonOutput = JSON.stringify({
   name: "preview",
@@ -146,6 +214,7 @@ const payload = buildOtaRegistrationPayload(
 
 assert.deepEqual(payload, {
   updateGroupId: "22222222-3333-4444-5555-666666666666",
+  updateId: "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb",
   androidUpdateId: "ffffffff-eeee-dddd-cccc-bbbbbbbbbbbb",
   channel: "preview",
   branch: "preview",
@@ -171,6 +240,7 @@ const manualTextPayload = buildOtaRegistrationPayload(
 );
 
 assert.equal(manualTextPayload.updateGroupId, null);
+assert.equal(manualTextPayload.updateId, null);
 assert.equal(manualTextPayload.androidUpdateId, null);
 assert.equal(manualTextPayload.runtimeVersion, "1.0.1");
 assert.equal(manualTextPayload.message, "fallback message");
@@ -272,6 +342,35 @@ try {
       },
     }),
     /--native-installer 必须是 enabled 或 disabled/,
+  );
+  assert.equal(easRunCount, 0);
+
+  await assert.rejects(
+    runPublishOtaUpdate({ ...publishOptions, platform: "windows" }, {
+      logger: silentLogger,
+      runCommandFn: async () => {
+        easRunCount += 1;
+        return { stdout: jsonOutput };
+      },
+    }),
+    /--platform 必须是 android 或 ios/,
+  );
+  assert.equal(easRunCount, 0);
+
+  await assert.rejects(
+    runPublishOtaUpdate({
+      ...publishOptions,
+      channel: "production",
+      profile: "production",
+      platformExplicit: false,
+    }, {
+      logger: silentLogger,
+      runCommandFn: async () => {
+        easRunCount += 1;
+        return { stdout: jsonOutput };
+      },
+    }),
+    /production OTA 必须显式设置 --platform android 或 ios/,
   );
   assert.equal(easRunCount, 0);
 
@@ -505,6 +604,181 @@ try {
     legacyPublishLogger.logs.includes("- EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED=false"),
   );
 
+  const easJson = JSON.parse(await readFile(path.resolve("eas.json"), "utf8"));
+  const productionReviewEnv = easJson.build.production.env;
+  const iosPublishLogger = createCollectingLogger();
+  let iosEasCommand = null;
+  let iosRegistrationPayload = null;
+  await runPublishOtaUpdate({
+    channel: "production",
+    profile: "production",
+    platform: "ios",
+    platformExplicit: true,
+    runtimeVersion: "1.0.2",
+    message: "iOS 正式版热更新",
+  }, {
+    logger: iosPublishLogger.logger,
+    preflightOtaRegistrationFn: async () => {},
+    registerOtaUpdateFn: async (registrationPayload) => {
+      iosRegistrationPayload = registrationPayload;
+      return {
+        skipped: false,
+        url: "https://hotbargain.vip/api/mobile-app-builds/ota-updates",
+      };
+    },
+    runCommandFn: async (command) => {
+      iosEasCommand = command;
+      return { stdout: iosJsonOutput };
+    },
+  });
+  assert.ok(iosEasCommand.args.includes("ios"));
+  assert.equal(iosEasCommand.env.EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED, "false");
+  assert.equal(
+    iosEasCommand.env.EXPO_PUBLIC_IOS_REVIEW_MODE_ENABLED,
+    productionReviewEnv.EXPO_PUBLIC_IOS_REVIEW_MODE_ENABLED,
+  );
+  assert.equal(
+    iosEasCommand.env.EXPO_PUBLIC_IOS_REVIEW_PASSWORD_SHA256,
+    productionReviewEnv.EXPO_PUBLIC_IOS_REVIEW_PASSWORD_SHA256,
+  );
+  assert.equal(iosRegistrationPayload.platform, "ios");
+  assert.equal(iosRegistrationPayload.updateId, "11111111-2222-4333-8444-555555555555");
+  assert.equal(iosRegistrationPayload.androidUpdateId, null);
+  assert.ok(
+    iosPublishLogger.logs.includes("- EXPO_PUBLIC_IOS_REVIEW_PASSWORD_SHA256=SET"),
+  );
+  assert.doesNotMatch(
+    iosPublishLogger.logs.join("\n"),
+    new RegExp(productionReviewEnv.EXPO_PUBLIC_IOS_REVIEW_PASSWORD_SHA256),
+  );
+
+  const recoveredGroupLogger = createCollectingLogger();
+  const recoveryCommands = [];
+  let recoveredRegistrationPayload = null;
+  await runPublishOtaUpdate(publishOptions, {
+    logger: recoveredGroupLogger.logger,
+    preflightOtaRegistrationFn: async () => {},
+    registerOtaUpdateFn: async (registrationPayload) => {
+      recoveredRegistrationPayload = registrationPayload;
+      return {
+        skipped: false,
+        url: "https://hotbargain.vip/api/mobile-app-builds/ota-updates",
+      };
+    },
+    runCommandFn: async (command) => {
+      recoveryCommands.push(command);
+      return {
+        stdout: command.args[1] === "update:view"
+          ? updateViewJsonOutput
+          : updatesOnlyJsonOutput,
+      };
+    },
+  });
+  assert.equal(recoveryCommands.length, 2);
+  assert.deepEqual(
+    recoveryCommands[1].args,
+    [
+      "eas-cli@latest",
+      "update:view",
+      "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      "--json",
+    ],
+  );
+  assert.equal(
+    recoveredRegistrationPayload.updateGroupId,
+    "44444444-5555-4666-8777-888888888888",
+  );
+  assert.equal(
+    recoveredRegistrationPayload.updateId,
+    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  );
+  assert.equal(recoveredRegistrationPayload.platform, "android");
+
+  let mismatchedRecoveryRegistrationCalled = false;
+  await assert.rejects(
+    runPublishOtaUpdate(publishOptions, {
+      logger: silentLogger,
+      preflightOtaRegistrationFn: async () => {},
+      registerOtaUpdateFn: async () => {
+        mismatchedRecoveryRegistrationCalled = true;
+        return { skipped: false, url: "unexpected" };
+      },
+      runCommandFn: async (command) => ({
+        stdout: command.args[1] === "update:view"
+          ? JSON.stringify([{
+              id: "99999999-8888-4777-8666-555555555555",
+              group: "44444444-5555-4666-8777-888888888888",
+              platform: "android",
+            }])
+          : updatesOnlyJsonOutput,
+      }),
+    }),
+    /update:view 返回的 update ID 或平台与本次发布不一致/,
+  );
+  assert.equal(mismatchedRecoveryRegistrationCalled, false);
+
+  const stillMissingGroupLogger = createCollectingLogger();
+  let stillMissingGroupRegistrationCalled = false;
+  await assert.rejects(
+    runPublishOtaUpdate(publishOptions, {
+      logger: stillMissingGroupLogger.logger,
+      preflightOtaRegistrationFn: async () => {},
+      registerOtaUpdateFn: async () => {
+        stillMissingGroupRegistrationCalled = true;
+        return { skipped: false, url: "unexpected" };
+      },
+      runCommandFn: async () => ({ stdout: updatesOnlyJsonOutput }),
+    }),
+    /OTA 已发布，但 EAS 输出缺少后台登记字段：updateGroupId/,
+  );
+  assert.equal(stillMissingGroupRegistrationCalled, false);
+  assert.match(
+    stillMissingGroupLogger.logs.join("\n"),
+    /npx eas-cli@latest update:view aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --json/,
+  );
+
+  const failedRecoveryLogger = createCollectingLogger();
+  let failedRecoveryRegistrationCalled = false;
+  await assert.rejects(
+    runPublishOtaUpdate(publishOptions, {
+      logger: failedRecoveryLogger.logger,
+      preflightOtaRegistrationFn: async () => {},
+      registerOtaUpdateFn: async () => {
+        failedRecoveryRegistrationCalled = true;
+        return { skipped: false, url: "unexpected" };
+      },
+      runCommandFn: async (command) => {
+        if (command.args[1] === "update:view") {
+          throw new Error("network unavailable");
+        }
+        return { stdout: updatesOnlyJsonOutput };
+      },
+    }),
+    /OTA 已发布，但无法回查 update group：network unavailable/,
+  );
+  assert.equal(failedRecoveryRegistrationCalled, false);
+  assert.match(
+    failedRecoveryLogger.logs.join("\n"),
+    /npx eas-cli@latest update:view aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee --json/,
+  );
+
+  const failedRegistrationLogger = createCollectingLogger();
+  await assert.rejects(
+    runPublishOtaUpdate({ ...publishOptions, platform: "android" }, {
+      logger: failedRegistrationLogger.logger,
+      preflightOtaRegistrationFn: async () => {},
+      registerOtaUpdateFn: async () => {
+        throw new Error("HTTP 503 Service Unavailable");
+      },
+      runCommandFn: async () => ({ stdout: jsonOutput }),
+    }),
+    /OTA 已发布，但自动登记失败：HTTP 503 Service Unavailable/,
+  );
+  assert.match(
+    failedRegistrationLogger.logs.join("\n"),
+    /"updateGroupId": "22222222-3333-4444-5555-666666666666"/,
+  );
+
   const serviceTokenPublishFetchCalls = [];
   process.env.HBWEB_API_TOKEN = "hbsvc_publish_token";
   globalThis.fetch = async (url, init) => {
@@ -616,6 +890,10 @@ assert.match(
 assert.match(
   packageJson.scripts["ota:legacy-apk-notice:production"],
   /--runtime-version 1\.0\.1/,
+);
+assert.match(
+  packageJson.scripts["ota:legacy-apk-notice:production"],
+  /--platform android/,
 );
 
 console.log("publish OTA update script tests passed.");
