@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+
 import { HbposApiError } from "../api/hbpos-api";
 
 import {
@@ -1178,6 +1179,356 @@ test("已有待恢复开通意图时不同码或模式不得覆盖原记录", as
   });
 });
 
+const OLD_ACTIVATION_CODE =
+  "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+const NEW_ACTIVATION_CODE =
+  "HBDEV1-1123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+const ACTIVATION_PENDING_METADATA = {
+  apiPartition: "https://hotbargain.vip/pos-api",
+  hardwareId: "INSTALL-001",
+};
+type RedeemActivationCode = NonNullable<
+  DeviceSessionApi["redeemActivationCode"]
+>;
+
+const allowedActivation = (
+  deviceCode = "IPAD-NEW",
+  authorizationCode = "new-secret",
+  reasonCode = "ACTIVATED",
+) => ({
+  isAllowed: true,
+  reasonCode,
+  deviceCode,
+  storeCode: "1042",
+  storeName: "TestStore",
+  deviceStatus: 1,
+  authorizationCode,
+});
+
+const rejectedActivation = () => ({
+  isAllowed: false,
+  reasonCode: "ACTIVATION_CODE_NOT_AVAILABLE",
+  deviceStatus: 1,
+  message: "not available",
+});
+
+const createActivationSubject = async (
+  redeemActivationCode: RedeemActivationCode,
+  pendingCode: string | null = OLD_ACTIVATION_CODE,
+) => {
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(
+    secureStore,
+    () => "INSTALL-001",
+  );
+  const credentials = new DeviceCredentialStore(secureStore);
+  const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
+  if (pendingCode) {
+    await pendingActivation.save(
+      pendingCode,
+      "redeem",
+      ACTIVATION_PENDING_METADATA,
+    );
+  }
+  return {
+    secureStore,
+    credentials,
+    pendingActivation,
+    coordinator: new DeviceSessionCoordinator(
+      {
+        async register() {
+          throw new Error("not used");
+        },
+        async verify() {
+          throw new Error("not used");
+        },
+        async reregister() {
+          throw new Error("not used");
+        },
+        redeemActivationCode,
+      },
+      installation,
+      credentials,
+      undefined,
+      undefined,
+      undefined,
+      pendingActivation,
+    ),
+  };
+};
+
+const createDeferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+};
+
+test("当前页提交新码时先确认旧 pending，明确失败才继续新码", async (t) => {
+  const createSubject = async (
+    oldOutcome:
+      | "http-400"
+      | "rejected"
+      | "recovered"
+      | "server-error"
+      | "transport-error",
+  ) => {
+    const calls: string[] = [];
+    const subject = await createActivationSubject(async (input) => {
+      calls.push(input.activationCode);
+      if (input.activationCode === NEW_ACTIVATION_CODE)
+        return allowedActivation();
+
+      assert.equal(input.activationCode, OLD_ACTIVATION_CODE);
+      switch (oldOutcome) {
+        case "server-error":
+          throw new HbposApiError("server failed", {
+            kind: "http",
+            status: 500,
+          });
+        case "transport-error":
+          throw new HbposApiError("network lost", { kind: "transport" });
+        case "http-400":
+          throw new HbposApiError("old activation rejected", {
+            kind: "http",
+            status: 400,
+          });
+        case "rejected":
+          return rejectedActivation();
+        case "recovered":
+          return allowedActivation(
+            "IPAD-RECOVERED",
+            "recovered-secret",
+            "ACTIVATION_RECOVERED",
+          );
+      }
+    });
+    return { ...subject, calls };
+  };
+
+  await t.test("旧码明确失败后在同一次操作继续新码", async () => {
+    const subject = await createSubject("rejected");
+
+    const state = await subject.coordinator.redeemActivationCode({
+      activationCode: NEW_ACTIVATION_CODE,
+    });
+
+    assert.equal(state.status, "authorized");
+    assert.deepEqual(subject.calls, [OLD_ACTIVATION_CODE, NEW_ACTIVATION_CODE]);
+    assert.equal((await subject.credentials.load())?.deviceCode, "IPAD-NEW");
+    assert.equal(await subject.pendingActivation.load(), null);
+  });
+
+  await t.test("旧码已经成功时只恢复旧凭据", async () => {
+    const subject = await createSubject("recovered");
+
+    const state = await subject.coordinator.redeemActivationCode({
+      activationCode: NEW_ACTIVATION_CODE,
+    });
+
+    assert.equal(state.status, "authorized");
+    assert.deepEqual(subject.calls, [OLD_ACTIVATION_CODE]);
+    assert.equal(
+      (await subject.credentials.load())?.deviceCode,
+      "IPAD-RECOVERED",
+    );
+    assert.equal(await subject.pendingActivation.load(), null);
+  });
+
+  await t.test("旧码凭据已落盘但 pending 残留时仍在当前页恢复", async () => {
+    const subject = await createSubject("recovered");
+    await subject.credentials.save({
+      deviceCode: "IPAD-PREVIOUS",
+      storeCode: "1042",
+      hardwareId: "INSTALL-001",
+      authorizationCode: "previous-secret",
+    });
+
+    const state = await subject.coordinator.redeemActivationCode({
+      activationCode: NEW_ACTIVATION_CODE,
+    });
+
+    assert.equal(state.status, "authorized");
+    assert.deepEqual(subject.calls, [OLD_ACTIVATION_CODE]);
+    assert.equal(
+      (await subject.credentials.load())?.deviceCode,
+      "IPAD-RECOVERED",
+    );
+    assert.equal(await subject.pendingActivation.load(), null);
+  });
+
+  await t.test("旧码 HTTP 400 后在同一次操作继续新码", async () => {
+    const subject = await createSubject("http-400");
+
+    const state = await subject.coordinator.redeemActivationCode({
+      activationCode: NEW_ACTIVATION_CODE,
+    });
+
+    assert.equal(state.status, "authorized");
+    assert.deepEqual(subject.calls, [OLD_ACTIVATION_CODE, NEW_ACTIVATION_CODE]);
+    assert.equal((await subject.credentials.load())?.deviceCode, "IPAD-NEW");
+    assert.equal(await subject.pendingActivation.load(), null);
+  });
+
+  await t.test("旧码仍返回 500 时保留旧意图且不发送新码", async () => {
+    const subject = await createSubject("server-error");
+
+    await assert.rejects(
+      () =>
+        subject.coordinator.redeemActivationCode({
+          activationCode: NEW_ACTIVATION_CODE,
+        }),
+      /server failed/,
+    );
+
+    assert.deepEqual(subject.calls, [OLD_ACTIVATION_CODE]);
+    assert.deepEqual(await subject.pendingActivation.loadPending(), {
+      activationCode: OLD_ACTIVATION_CODE,
+      mode: "redeem",
+      ...ACTIVATION_PENDING_METADATA,
+    });
+    assert.equal(await subject.credentials.load(), null);
+  });
+
+  await t.test("旧码仍无网络时保留旧意图且不发送新码", async () => {
+    const subject = await createSubject("transport-error");
+
+    await assert.rejects(
+      () =>
+        subject.coordinator.redeemActivationCode({
+          activationCode: NEW_ACTIVATION_CODE,
+        }),
+      /network lost/,
+    );
+
+    assert.deepEqual(subject.calls, [OLD_ACTIVATION_CODE]);
+    assert.deepEqual(await subject.pendingActivation.loadPending(), {
+      activationCode: OLD_ACTIVATION_CODE,
+      mode: "redeem",
+      ...ACTIVATION_PENDING_METADATA,
+    });
+    assert.equal(await subject.credentials.load(), null);
+  });
+
+  await t.test("旧码明确失败但 Keychain 清理失败时不发送新码", async () => {
+    const subject = await createSubject("rejected");
+    const originalRemove = subject.secureStore.remove.bind(subject.secureStore);
+    subject.secureStore.remove = async (key) => {
+      if (key === "hbpos.ipad.pending-device-activation-code.v1") {
+        throw new Error("pending remove failed");
+      }
+      await originalRemove(key);
+    };
+
+    await assert.rejects(
+      () =>
+        subject.coordinator.redeemActivationCode({
+          activationCode: NEW_ACTIVATION_CODE,
+        }),
+      /could not be cleared/,
+    );
+
+    assert.deepEqual(subject.calls, [OLD_ACTIVATION_CODE]);
+    assert.equal(await subject.pendingActivation.load(), OLD_ACTIVATION_CODE);
+    assert.equal(await subject.credentials.load(), null);
+  });
+});
+
+test("开通恢复进行中拒绝第二个新码，避免并发消费", async () => {
+  const concurrentActivationCode =
+    "HBDEV1-2123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  const calls: string[] = [];
+  const started = createDeferred();
+  const release = createDeferred();
+  const subject = await createActivationSubject(async (input) => {
+    calls.push(input.activationCode);
+    if (input.activationCode === OLD_ACTIVATION_CODE) {
+      started.resolve();
+      await release.promise;
+      return rejectedActivation();
+    }
+    assert.equal(input.activationCode, NEW_ACTIVATION_CODE);
+    return allowedActivation();
+  });
+
+  const first = subject.coordinator.redeemActivationCode({
+    activationCode: NEW_ACTIVATION_CODE,
+  });
+  await started.promise;
+  await assert.rejects(
+    () =>
+      subject.coordinator.redeemActivationCode({
+        activationCode: concurrentActivationCode,
+      }),
+    /already in progress/,
+  );
+  release.resolve();
+
+  const state = await first;
+  assert.equal(state.status, "authorized");
+  assert.deepEqual(calls, [OLD_ACTIVATION_CODE, NEW_ACTIVATION_CODE]);
+  assert.equal((await subject.credentials.load())?.deviceCode, "IPAD-NEW");
+  assert.equal(await subject.pendingActivation.load(), null);
+});
+
+test("当前页恢复与 poll 共享旧 pending 单飞", async () => {
+  const calls: string[] = [];
+  const started = createDeferred();
+  const release = createDeferred();
+  const subject = await createActivationSubject(async (input) => {
+    calls.push(input.activationCode);
+    if (input.activationCode === OLD_ACTIVATION_CODE) {
+      started.resolve();
+      await release.promise;
+      return rejectedActivation();
+    }
+    assert.equal(input.activationCode, NEW_ACTIVATION_CODE);
+    return allowedActivation();
+  });
+
+  const redeem = subject.coordinator.redeemActivationCode({
+    activationCode: NEW_ACTIVATION_CODE,
+  });
+  await started.promise;
+  const poll = subject.coordinator.poll();
+  release.resolve();
+
+  const [redeemed, polled] = await Promise.all([redeem, poll]);
+  assert.equal(redeemed.status, "authorized");
+  assert.notEqual(polled.status, "disabled");
+  assert.deepEqual(calls, [OLD_ACTIVATION_CODE, NEW_ACTIVATION_CODE]);
+  assert.equal((await subject.credentials.load())?.deviceCode, "IPAD-NEW");
+  assert.equal(await subject.pendingActivation.load(), null);
+});
+
+test("新码已 staging 时 poll 不得把它当旧 pending 并发重放", async () => {
+  const calls: string[] = [];
+  const started = createDeferred();
+  const release = createDeferred();
+  const subject = await createActivationSubject(async (input) => {
+    calls.push(input.activationCode);
+    started.resolve();
+    await release.promise;
+    return allowedActivation();
+  }, null);
+
+  const redeem = subject.coordinator.redeemActivationCode({
+    activationCode: NEW_ACTIVATION_CODE,
+  });
+  await started.promise;
+  assert.equal(await subject.pendingActivation.load(), NEW_ACTIVATION_CODE);
+  const poll = subject.coordinator.poll();
+  release.resolve();
+
+  const [redeemed, polled] = await Promise.all([redeem, poll]);
+  assert.equal(redeemed.status, "authorized");
+  assert.notEqual(polled.status, "disabled");
+  assert.deepEqual(calls, [NEW_ACTIVATION_CODE]);
+  assert.equal((await subject.credentials.load())?.deviceCode, "IPAD-NEW");
+  assert.equal(await subject.pendingActivation.load(), null);
+});
+
 test("开通意图本地 staging 失败必须保留原 pending、零 API 且零 clear", async (t) => {
   const activationCode =
     "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
@@ -1203,7 +1554,8 @@ test("开通意图本地 staging 失败必须保留原 pending、零 API 且零 
       let pendingReads = 0;
       if (scenario.kind === "load-error") {
         secureStore.get = async (key) => {
-          if (key === pendingKey && ++pendingReads === 2) {
+          // 前两次读取用于同页恢复与残留确认；第四次才是新码 staging 后的确认读取。
+          if (key === pendingKey && ++pendingReads === 4) {
             throw new Error("pending load failed");
           }
           return originalGet(key);
