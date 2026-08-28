@@ -27,6 +27,7 @@ import type {
   CatalogLookupRevalidationPort,
   CatalogLookupRevalidationResult,
 } from "@/features/catalog/catalog-lookup-revalidation";
+import { PAYMENT_PERMISSION } from "@/features/payments/runtime/payment-checkout-runtime";
 import { PricingCart } from "@/features/sales/domain";
 import type { SalesFeedbackEvent } from "@/features/sales/ui/sales-presenter";
 
@@ -940,7 +941,10 @@ test("PricingCart 适配器发布增减和折扣后的快照，并且只有明�
 
 test("现金确认透传同一 checkoutIntent，并强制使用安全注入的门店、设备和收银员身份", async () => {
   const checkout = new CashCheckout();
-  const dependencies = connected({ cashCheckout: checkout });
+  const dependencies = connected({
+    activeCartSession: activeCart(cartWithLine()),
+    cashCheckout: checkout,
+  });
   const confirmedCart = dependencies.cart.getSnapshot();
   await dependencies.workflow.completeCash({ checkoutIntentId: "intent-1", cart: confirmedCart, cashTenderedCents: 500 });
 
@@ -954,6 +958,95 @@ test("现金确认透传同一 checkoutIntent，并强制使用安全注入的�
     cashierName: "Alice",
     userGuid: "U1",
   });
+});
+
+test("普通现金结账依次要求 Payment.View、TakeCash 与 Confirm 后才耐久提交", async () => {
+  const requested: string[] = [];
+  const checkout = new CashCheckout();
+  const dependencies = connected({
+    activeCartSession: activeCart(cartWithLine()),
+    cashCheckout: checkout,
+    operationSecurity: paymentSecurity(requested),
+  });
+
+  await dependencies.workflow.completeCash({
+    checkoutIntentId: "intent-permissions",
+    cart: dependencies.cart.getSnapshot(),
+    cashTenderedCents: 500,
+  });
+
+  assert.deepEqual(requested, [
+    PAYMENT_PERMISSION.view,
+    PAYMENT_PERMISSION.takeCash,
+    PAYMENT_PERMISSION.confirm,
+  ]);
+  assert.equal(checkout.calls.length, 1);
+});
+
+test("普通现金任一支付权限被拒绝时都不执行耐久提交", async () => {
+  for (const deniedPermission of [
+    PAYMENT_PERMISSION.view,
+    PAYMENT_PERMISSION.takeCash,
+    PAYMENT_PERMISSION.confirm,
+  ]) {
+    const checkout = new CashCheckout();
+    const dependencies = connected({
+      activeCartSession: activeCart(cartWithLine()),
+      cashCheckout: checkout,
+      operationSecurity: paymentSecurity([], deniedPermission),
+    });
+
+    await assert.rejects(
+      () =>
+        dependencies.workflow.completeCash({
+          checkoutIntentId: `intent-denied-${deniedPermission}`,
+          cart: dependencies.cart.getSnapshot(),
+          cashTenderedCents: 500,
+        }),
+      hasCode("SALES_OPERATION_NOT_AUTHORIZED"),
+    );
+    assert.equal(checkout.calls.length, 0, deniedPermission);
+  }
+});
+
+test("零金额订单只要求 Payment.View 与 Confirm，不请求 TakeCash", async () => {
+  const requested: string[] = [];
+  const checkout = new CashCheckout();
+  const dependencies = connected({
+    cashCheckout: checkout,
+    operationSecurity: paymentSecurity(requested),
+  });
+
+  await dependencies.workflow.completeCash({
+    checkoutIntentId: "intent-zero-total",
+    cart: dependencies.cart.getSnapshot(),
+    cashTenderedCents: null,
+  });
+
+  assert.deepEqual(requested, [
+    PAYMENT_PERMISSION.view,
+    PAYMENT_PERMISSION.confirm,
+  ]);
+  assert.equal(checkout.calls.length, 1);
+});
+
+test("零金额订单缺少 Payment.Confirm 时不执行耐久提交", async () => {
+  const checkout = new CashCheckout();
+  const dependencies = connected({
+    cashCheckout: checkout,
+    operationSecurity: paymentSecurity([], PAYMENT_PERMISSION.confirm),
+  });
+
+  await assert.rejects(
+    () =>
+      dependencies.workflow.completeCash({
+        checkoutIntentId: "intent-zero-denied",
+        cart: dependencies.cart.getSnapshot(),
+        cashTenderedCents: null,
+      }),
+    hasCode("SALES_OPERATION_NOT_AUTHORIZED"),
+  );
+  assert.equal(checkout.calls.length, 0);
 });
 
 test("现金失败不清空购物车；Presenter 只在成功 result 后调用 adapter clear", async () => {
@@ -2097,6 +2190,36 @@ function security(): SalesOperationSecurity {
   return {
     authorization: {
       async authorizeAndRun(input, operation) {
+        return {
+          authorized: true,
+          value: await operation({
+            authorizationMode: "current-cashier",
+            requestingCashierId: "C1",
+            authorizingCashierId: null,
+            permissionCode: input.permissionCode,
+          }),
+        };
+      },
+    },
+    audit: { append: async () => undefined },
+    createActionId: () => uuid(++nextId),
+    createAuditEventId: () => uuid(++nextId),
+    nowIso: () => "2026-07-29T00:00:00.000Z",
+  };
+}
+
+function paymentSecurity(
+  requested: string[],
+  deniedPermission?: string,
+): SalesOperationSecurity {
+  let nextId = 0;
+  return {
+    authorization: {
+      async authorizeAndRun(input, operation) {
+        requested.push(input.permissionCode);
+        if (input.permissionCode === deniedPermission) {
+          return { authorized: false, reason: "permission-denied" };
+        }
         return {
           authorized: true,
           value: await operation({

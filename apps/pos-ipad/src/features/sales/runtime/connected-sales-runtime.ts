@@ -16,6 +16,7 @@ import type {
   CashCheckoutInput,
   CashCheckoutResult,
 } from "@/features/checkout/cash/cash-checkout-service";
+import { PAYMENT_PERMISSION } from "@/features/payments/runtime/payment-checkout-runtime";
 import type {
   CartAddDisposition,
   MergeCompatibleCartLinesResult,
@@ -1077,8 +1078,28 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
         );
       }
 
-      // 中文注释：身份只来自已认证组合根，UI 仅能传交易内容与 intent。
-      const result = await checkout.complete({ ...input, ...this.identity });
+      const trustedCart = lease.read().cart;
+      const completeAuthorizedCash = () =>
+        this.operations.runRead(
+          PAYMENT_PERMISSION.confirm,
+          "confirm-cash-checkout",
+          () => {
+            // 中文注释：身份只来自已认证组合根，UI 仅能传交易内容与 intent。
+            return checkout.complete({ ...input, ...this.identity });
+          },
+        );
+      const result = await this.operations.runRead(
+        PAYMENT_PERMISSION.view,
+        "view-payment-checkout",
+        () =>
+          trustedCart.actualAmount.cents === 0
+            ? completeAuthorizedCash()
+            : this.operations.runRead(
+                PAYMENT_PERMISSION.takeCash,
+                "take-cash-checkout",
+                completeAuthorizedCash,
+              ),
+      );
       try {
         // 先在同一 lease 内清车，阻止另一个 presenter 在 durable commit 后插入商品。
         lease.clearAfterCommittedOrder(result.orderGuid);
