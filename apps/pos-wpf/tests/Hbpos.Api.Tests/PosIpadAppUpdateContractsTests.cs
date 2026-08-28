@@ -131,6 +131,18 @@ public sealed class PosIpadAppUpdateContractsTests
     }
 
     [Fact]
+    public void Missing_configuration_uses_safe_first_testflight_defaults()
+    {
+        var controller = CreateController(new PosIpadOptions());
+
+        var response = GetResponse(controller.Check("0.2.0", "2", "0.2.0"));
+
+        Assert.Equal("0.0.0", response.MinimumSupportedVersion);
+        Assert.Equal("0.2.0", response.LatestVersion);
+        Assert.False(response.ForceUpdate);
+    }
+
+    [Fact]
     public void Controller_forces_update_when_marketing_version_and_build_are_below_minimum()
     {
         var controller = CreateController(new PosIpadOptions

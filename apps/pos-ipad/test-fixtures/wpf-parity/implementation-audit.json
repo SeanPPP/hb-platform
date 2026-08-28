@@ -219,13 +219,7 @@
         "apps/pos-ipad/src/features/sales/runtime/connected-sales-runtime.test.ts",
         "apps/pos-ipad/src/core/db/atomic-cash-order-committer.test.ts"
       ],
-      "blockers": [
-        {
-          "code": "CASH_SALE_PERMISSION_GUARD_NOT_WIRED",
-          "kind": "parity-gap",
-          "detail": "离线现金结账耐久事务已接线，但 sales cash 路径没有执行 Payment.View、TakeCash 与 Confirm 权限门禁。"
-        }
-      ]
+      "blockers": []
     },
     "zero-total-sale": {
       "ipad": [
@@ -236,13 +230,7 @@
         "apps/pos-ipad/src/features/checkout/cash/durable-cash-checkout-service.test.ts",
         "apps/pos-ipad/src/features/sales/runtime/connected-sales-runtime.test.ts"
       ],
-      "blockers": [
-        {
-          "code": "ZERO_TOTAL_CONFIRM_PERMISSION_NOT_WIRED",
-          "kind": "parity-gap",
-          "detail": "零金额耐久提交已实现，但生产 sales 路径没有执行 WPF 的 Payment.View 与 Payment.Confirm 权限门禁。"
-        }
-      ]
+      "blockers": []
     },
     "cash-rounding": {
       "ipad": [

@@ -185,7 +185,9 @@ test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutSe
       now: () => new Date("2026-07-28T00:00:00.000Z"),
       nowIso: () => "2026-07-28T00:00:00.000Z",
     },
-    createId: () => ids[nextId++] ?? "00000000-0000-4000-8000-000000000099",
+    createId: () =>
+      ids[nextId++] ??
+      `00000000-0000-4000-8000-${String(nextId).padStart(12, "0")}`,
     random: () => 0.5,
     sha256Hex: async (material) => `sha256:${material}`,
     catalogPageDigest: nodeCatalogPageDigest,
@@ -222,12 +224,18 @@ test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutSe
                   "Permissions.PosTerminal.CashDrawer.Open",
                   SALES_PERMISSIONS.view,
                   SALES_PERMISSIONS.addItem,
+                  PAYMENT_PERMISSION.view,
+                  PAYMENT_PERMISSION.takeCash,
+                  PAYMENT_PERMISSION.confirm,
                 ]
               : [
                   "Permissions.PosTerminal.Receipt.PrintLast",
                   SALES_PERMISSIONS.view,
                   SALES_PERMISSIONS.addItem,
                   SALES_PERMISSIONS.changePrice,
+                  PAYMENT_PERMISSION.view,
+                  PAYMENT_PERMISSION.takeCash,
+                  PAYMENT_PERMISSION.confirm,
                 ],
           },
         };
@@ -323,6 +331,9 @@ test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutSe
     storeCode: "S001",
     deviceCode: "IPAD-1",
     permissions: [
+      PAYMENT_PERMISSION.confirm,
+      PAYMENT_PERMISSION.takeCash,
+      PAYMENT_PERMISSION.view,
       "Permissions.PosTerminal.Receipt.PrintLast",
       SALES_PERMISSIONS.addItem,
       SALES_PERMISSIONS.changePrice,
@@ -1649,6 +1660,9 @@ test("RecallActive 启动只建立隐藏门禁，登录后仍需双权限 recove
       cashierPermissions: [
         RECALL_LIST_PERMISSION,
         RECALL_RESTORE_PERMISSION,
+        PAYMENT_PERMISSION.view,
+        PAYMENT_PERMISSION.takeCash,
+        PAYMENT_PERMISSION.confirm,
       ],
       supervisorPermissions: [],
     },
@@ -3171,6 +3185,11 @@ test("生产组合把共享购物车发布到只读客显，支付清车后仍�
   const invalidationCapture: { listener?: () => void } = {};
   const services = createTestComposition(databaseFor([]), {
     externalDisplay: display,
+    cashierPermissions: [
+      PAYMENT_PERMISSION.view,
+      PAYMENT_PERMISSION.takeCash,
+      PAYMENT_PERMISSION.confirm,
+    ],
     captureInvalidation(listener) {
       invalidationCapture.listener = listener;
     },

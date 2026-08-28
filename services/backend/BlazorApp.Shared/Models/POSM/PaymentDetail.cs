@@ -23,7 +23,7 @@ namespace BlazorApp.Shared.Models.POSM;
         [SugarColumn( IsNullable = true)]
         public decimal? Amount { get; set; } = 0;  // 支付金额
 
-        [SugarColumn(Length = 1000, IsNullable = true)]
+        [SugarColumn(Length = 2000, IsNullable = true)]
         public string? Reference { get; set; } = string.Empty;  // 支付参考号（刷卡流水号/代金券编号）
 
         [SugarColumn(Length = 100, IsNullable = true)]
