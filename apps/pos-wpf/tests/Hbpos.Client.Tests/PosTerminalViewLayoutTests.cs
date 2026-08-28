@@ -357,6 +357,105 @@ public sealed class PosTerminalViewLayoutTests
             (string?)text.Attribute("Style") == "{StaticResource PosSidebarActionLabelStyle}"));
     }
 
+    [Fact]
+    public void Card_recovery_center_entry_stays_visible_and_only_warns_for_open_attempts()
+    {
+        var repoRoot = FindRepoRoot();
+        var view = XDocument.Load(Path.Combine(
+            repoRoot,
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "PosTerminalView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+
+        var sidebar = Assert.Single(view.Descendants().Where(element =>
+            (string?)element.Attribute(x + "Name") == "AttendanceQrSidebar"));
+        var statusCard = Assert.Single(sidebar.Elements(presentation + "ContentControl"));
+        Assert.Equal("154", (string?)statusCard.Attribute("Height"));
+        Assert.Equal("154", (string?)statusCard.Attribute("MaxHeight"));
+        Assert.Null(statusCard.Element(presentation + "ContentControl.Style"));
+
+        var statusLayout = Assert.Single(statusCard.Elements(presentation + "Grid").Where(grid =>
+            (string?)grid.Attribute(x + "Name") == "PosTerminalStatusCardLayout"));
+        Assert.Equal("True", (string?)statusLayout.Attribute("ClipToBounds"));
+        var statusRows = statusLayout.Element(presentation + "Grid.RowDefinitions")!
+            .Elements(presentation + "RowDefinition")
+            .ToArray();
+        Assert.Equal(["Auto", "*", "Auto"], statusRows.Select(row => (string?)row.Attribute("Height")));
+        var statusMessage = Assert.Single(statusLayout.Elements(presentation + "TextBlock").Where(text =>
+            (string?)text.Attribute(x + "Name") == "PosTerminalStatusMessage"));
+        Assert.Equal("1", (string?)statusMessage.Attribute("Grid.Row"));
+        Assert.Equal("Wrap", (string?)statusMessage.Attribute("TextWrapping"));
+        Assert.Equal("CharacterEllipsis", (string?)statusMessage.Attribute("TextTrimming"));
+
+        var entry = Assert.Single(statusCard.Descendants(presentation + "Button").Where(button =>
+            (string?)button.Attribute("Command") == "{Binding OpenCardRecoveryCenterCommand}"));
+        Assert.Equal("CardRecoveryCenterEntryButton", (string?)entry.Attribute("AutomationProperties.AutomationId"));
+        Assert.Equal("{Binding CardRecoveryCenterAutomationName}", (string?)entry.Attribute("AutomationProperties.Name"));
+        Assert.Equal("2", (string?)entry.Attribute("Grid.Row"));
+        Assert.Equal("44", (string?)entry.Attribute("MinHeight"));
+        Assert.Null(entry.Attribute("Visibility"));
+
+        var buttonStyle = Assert.Single(entry.Elements(presentation + "Button.Style"))
+            .Element(presentation + "Style")!;
+        AssertSetter(buttonStyle, "Background", "White");
+        AssertSetter(buttonStyle, "BorderBrush", "{StaticResource PosBorderBrush}");
+        AssertSetter(buttonStyle, "Foreground", "{StaticResource PosTextBrush}");
+        Assert.DoesNotContain(buttonStyle.Elements(presentation + "Setter"), setter =>
+            (string?)setter.Attribute("Property") == "FocusVisualStyle"
+            && (string?)setter.Attribute("Value") == "{x:Null}");
+        var buttonTemplate = Assert.Single(buttonStyle.Descendants(presentation + "ControlTemplate"));
+        var keyboardFocusTrigger = Assert.Single(buttonTemplate.Descendants(presentation + "Trigger").Where(trigger =>
+            (string?)trigger.Attribute("Property") == "IsKeyboardFocused"
+            && (string?)trigger.Attribute("Value") == "True"));
+        AssertTriggerSetter(keyboardFocusTrigger, "BorderBrush", "{StaticResource PosPrimaryBrush}");
+        AssertTriggerSetter(keyboardFocusTrigger, "BorderThickness", "2");
+        var warningTrigger = Assert.Single(
+            buttonStyle.Element(presentation + "Style.Triggers")!
+                .Elements(presentation + "DataTrigger")
+                .Where(trigger =>
+                    (string?)trigger.Attribute("Binding") == "{Binding HasOpenCardRecoveryAttempts}"
+                    && (string?)trigger.Attribute("Value") == "True"));
+        AssertTriggerSetter(warningTrigger, "Background", "#FFFFF4E5");
+        AssertTriggerSetter(warningTrigger, "BorderBrush", "#FFF59E0B");
+        AssertTriggerSetter(warningTrigger, "Foreground", "#FF7C2D12");
+
+        var title = Assert.Single(entry.Descendants(presentation + "TextBlock").Where(text =>
+            (string?)text.Attribute(x + "Name") == "CardRecoveryCenterTitle"));
+        Assert.Equal("{Binding CardRecoveryCenterText}", (string?)title.Attribute("Text"));
+
+        var leadingIcon = Assert.Single(entry.Descendants().Where(element =>
+            element.Name.LocalName == "PackIcon"
+            && (string?)element.Attribute(x + "Name") == "CardRecoveryCenterStateIcon"));
+        var leadingIconStyle = Assert.Single(leadingIcon.Elements().Where(element =>
+            element.Name.LocalName == "PackIcon.Style")).Element(presentation + "Style")!;
+        AssertSetter(leadingIconStyle, "Kind", "CreditCardSearchOutline");
+        AssertSetter(leadingIconStyle, "Foreground", "{StaticResource PosMutedForegroundBrush}");
+        var warningIconTrigger = Assert.Single(leadingIconStyle.Descendants(presentation + "DataTrigger").Where(trigger =>
+            (string?)trigger.Attribute("Binding") == "{Binding HasOpenCardRecoveryAttempts}"
+            && (string?)trigger.Attribute("Value") == "True"));
+        AssertTriggerSetter(warningIconTrigger, "Kind", "AlertCircleOutline");
+        AssertTriggerSetter(warningIconTrigger, "Foreground", "#FFB45309");
+
+        var badge = Assert.Single(entry.Descendants(presentation + "Border").Where(border =>
+            (string?)border.Attribute(x + "Name") == "CardRecoveryOpenCountBadge"));
+        var badgeStyle = Assert.Single(badge.Elements(presentation + "Border.Style"))
+            .Element(presentation + "Style")!;
+        AssertSetter(badgeStyle, "Visibility", "Collapsed");
+        var badgeTrigger = Assert.Single(badgeStyle.Descendants(presentation + "DataTrigger").Where(trigger =>
+            (string?)trigger.Attribute("Binding") == "{Binding HasOpenCardRecoveryAttempts}"
+            && (string?)trigger.Attribute("Value") == "True"));
+        AssertTriggerSetter(badgeTrigger, "Visibility", "Visible");
+        AssertTriggerSetter(badgeTrigger, "Background", "#FFB45309");
+        var badgeText = Assert.Single(badge.Descendants(presentation + "TextBlock"));
+        Assert.Equal("{Binding CardRecoveryOpenCount}", (string?)badgeText.Attribute("Text"));
+    }
+
     [Theory]
     [InlineData(1080, 720)]
     [InlineData(1366, 768)]
