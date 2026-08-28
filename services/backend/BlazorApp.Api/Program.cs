@@ -309,6 +309,13 @@ builder.Services.AddHostedService<PerformanceRetentionService>();
 builder.Services.AddHttpClient<SentryReleaseHealthClient>();
 builder.Services.AddHostedService<SentryReleaseHealthSyncService>();
 builder.Services.AddScoped<SalesStatisticsJobService>();
+builder.Services.AddScoped<
+    IProductStoreDailyStatisticQueueService,
+    ProductStoreDailyStatisticQueueService
+>();
+builder.Services.AddScoped<IProductStoreDailyStatisticExecutor>(provider =>
+    provider.GetRequiredService<SalesStatisticsJobService>()
+);
 builder.Services.AddScoped<HBSalesRecordStatisticsService>();
 builder.Services.AddScoped<ScheduledTaskLogService>();
 builder.Services.AddScoped<ScheduledTaskRetryService>();

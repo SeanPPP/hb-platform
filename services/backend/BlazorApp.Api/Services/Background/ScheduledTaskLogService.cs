@@ -93,6 +93,64 @@ namespace BlazorApp.Api.Services.Background
                 };
             }
 
+            PublishTaskStartedAfterCommit(
+                taskLog,
+                performanceExternalRunId,
+                performanceAttempt
+            );
+            return taskLog;
+        }
+
+        /// <summary>
+        /// 严格插入运行中任务日志。调用方可预生成任务 ID，并把本方法放进自己的数据库事务。
+        /// 本方法不发布遥测；只有事务提交成功后才能调用 <see cref="PublishTaskStartedAfterCommit"/>。
+        /// </summary>
+        public async Task<ScheduledTaskLog> LogTaskStartStrictAsync(
+            Guid taskId,
+            string taskType,
+            TaskParameters parameters,
+            string triggeredBy = TaskTrigger.Scheduled,
+            bool canRetry = true,
+            DateTime? startedAtUtc = null
+        )
+        {
+            if (taskId == Guid.Empty)
+            {
+                throw new ArgumentException("严格任务日志必须使用非空任务 ID", nameof(taskId));
+            }
+
+            var startedAt = startedAtUtc ?? DateTime.UtcNow;
+            var taskLog = new ScheduledTaskLog
+            {
+                Id = taskId,
+                TaskType = taskType,
+                TaskParameters = JsonSerializer.Serialize(parameters),
+                Status = TaskStatus.Running,
+                StartedAt = startedAt,
+                ScheduledTime = startedAt,
+                TriggeredBy = triggeredBy,
+                CanRetry = canRetry,
+                ErrorMessage = string.Empty,
+            };
+
+            var inserted = await _context.Db.Insertable(taskLog).ExecuteCommandAsync();
+            if (inserted != 1)
+            {
+                throw new InvalidOperationException($"任务日志未严格插入: {taskId}");
+            }
+
+            return taskLog;
+        }
+
+        /// <summary>
+        /// 在包含任务日志的业务事务提交后发布 started 遥测，避免回滚任务污染运行基线。
+        /// </summary>
+        public void PublishTaskStartedAfterCommit(
+            ScheduledTaskLog taskLog,
+            string? performanceExternalRunId = null,
+            int performanceAttempt = 1
+        )
+        {
             var externalRunId = string.IsNullOrWhiteSpace(performanceExternalRunId)
                 ? taskLog.Id.ToString("N")
                 : performanceExternalRunId.Trim();
@@ -102,7 +160,7 @@ namespace BlazorApp.Api.Services.Background
                 PerformanceOperationalRunTransition.Queued(
                     externalRunId,
                     "background",
-                    taskType,
+                    taskLog.TaskType,
                     taskLog.ScheduledTime,
                     attempt: attempt
                 )
@@ -111,12 +169,11 @@ namespace BlazorApp.Api.Services.Background
                 PerformanceOperationalRunTransition.Started(
                     externalRunId,
                     "background",
-                    taskType,
+                    taskLog.TaskType,
                     taskLog.StartedAt,
                     attempt: attempt
                 )
             );
-            return taskLog;
         }
 
         /// <summary>
@@ -233,6 +290,74 @@ namespace BlazorApp.Api.Services.Background
                 taskLog.Id,
                 errorMessage
             );
+        }
+
+        /// <summary>
+        /// 商品每日持久队列专用的原子终态写入。只有仍为 Running 的同一日志能完成，
+        /// 其他实例已先行终结时返回 false，且不得重复发布 completion 遥测。
+        /// </summary>
+        public async Task<bool> TryCompleteProductStoreDailyTaskAsync(
+            Guid taskId,
+            bool success,
+            string? errorMessage = null
+        )
+        {
+            var taskLog = await _context.Db.Queryable<ScheduledTaskLog>()
+                .Where(item => item.Id == taskId)
+                .FirstAsync();
+            if (taskLog == null)
+            {
+                throw new InvalidOperationException($"任务日志不存在，无法原子终结: {taskId}");
+            }
+            if (taskLog.Status != TaskStatus.Running)
+            {
+                return false;
+            }
+
+            var completedAt = DateTime.UtcNow;
+            var durationMs = (int)(completedAt - taskLog.StartedAt).TotalMilliseconds;
+            int updated;
+            if (success)
+            {
+                updated = await _context.Db.Updateable<ScheduledTaskLog>()
+                    .SetColumns(item => item.Status == TaskStatus.Success)
+                    .SetColumns(item => item.CompletedAt == completedAt)
+                    .SetColumns(item => item.DurationMs == durationMs)
+                    .SetColumns(item => item.ErrorMessage == null)
+                    .Where(item => item.Id == taskId && item.Status == TaskStatus.Running)
+                    .ExecuteCommandAsync();
+            }
+            else
+            {
+                var normalizedError = string.IsNullOrWhiteSpace(errorMessage)
+                    ? "未知错误"
+                    : errorMessage.Trim();
+                updated = await _context.Db.Updateable<ScheduledTaskLog>()
+                    .SetColumns(item => item.Status == TaskStatus.Failed)
+                    .SetColumns(item => item.CompletedAt == completedAt)
+                    .SetColumns(item => item.DurationMs == durationMs)
+                    .SetColumns(item => item.ErrorMessage == normalizedError)
+                    .SetColumns(item => item.CanRetry == false)
+                    .Where(item => item.Id == taskId && item.Status == TaskStatus.Running)
+                    .ExecuteCommandAsync();
+                taskLog.ErrorMessage = normalizedError;
+                taskLog.CanRetry = false;
+            }
+
+            if (updated > 1)
+            {
+                throw new InvalidOperationException($"任务日志原子终结影响了异常行数: {taskId}");
+            }
+            if (updated == 0)
+            {
+                return false;
+            }
+
+            taskLog.Status = success ? TaskStatus.Success : TaskStatus.Failed;
+            taskLog.CompletedAt = completedAt;
+            taskLog.DurationMs = durationMs;
+            PublishCompletion(taskLog, success ? "success" : "failure");
+            return true;
         }
 
         /// <summary>

@@ -1,6 +1,9 @@
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import {
+  buildProductStatisticYearBackfillMessage,
+  buildProductStatisticYearBackfillRequest,
+  createProductStatisticSingleFlightGate,
   getBestSellerDefaultStatisticRange,
   formatProductStatisticDateWithWeekday,
   getProductStatisticPaginationAfterLoad,
@@ -12,6 +15,9 @@ import {
   isProductStatisticRunning,
   isProductStatisticRangeWithinLimit,
   MAX_PRODUCT_STATISTIC_RANGE_DAYS,
+  PRODUCT_STATISTIC_YEAR_BACKFILL_DAYS,
+  requestProductStatisticYearBackfillConfirmation,
+  selectProductStatisticPollDates,
   mergeUniqueDates,
 } from './index'
 import { RequestError } from '../../../utils/request'
@@ -32,6 +38,7 @@ const validRange = [dayjs('2026-06-01'), dayjs('2026-06-30')] as [Dayjs, Dayjs]
 const tooLongRange = [dayjs('2026-06-01'), dayjs('2026-07-02')] as [Dayjs, Dayjs]
 
 assertEqual(MAX_PRODUCT_STATISTIC_RANGE_DAYS, 31, '商品统计重算前端上限应和后端保持一致')
+assertEqual(PRODUCT_STATISTIC_YEAR_BACKFILL_DAYS, 365, '年度回填应固定提交 365 天')
 assertEqual(getProductStatisticConcurrency(), 3, '商品统计范围重算默认并发应为 3')
 assertEqual(getProductStatisticConcurrency(0), 3, '商品统计范围重算异常并发应回退默认值')
 assertEqual(getProductStatisticConcurrency(11), 10, '商品统计范围重算并发最大应限制为 10')
@@ -82,6 +89,109 @@ assertEqual(
   '2026-06-01,2026-06-02',
   '提交日期轮询列表应去重并排序',
 )
+assertEqual(
+  selectProductStatisticPollDates(['2026-06-01', '2026-06-02'], true).join(','),
+  '2026-06-01,2026-06-02',
+  '普通重算应返回已提交日期供轮询',
+)
+assertEqual(
+  selectProductStatisticPollDates(['2025-06-10', '2026-06-09'], false).length,
+  0,
+  '年度回填应返回空轮询日期，不跟踪大批 submittedDates',
+)
+
+const annualRequest = buildProductStatisticYearBackfillRequest(dayjs('2026-06-09'), 12.8)
+assertEqual(annualRequest.endDate, '2026-06-09', '年度回填应以今天为含当天结束日')
+assertEqual(annualRequest.days, 365, '年度回填应使用固定天数')
+assertEqual(annualRequest.maxConcurrency, 10, '年度回填并发应复用 1..10 归一化')
+assertEqual(
+  buildProductStatisticYearBackfillMessage({
+    taskId: 'annual-task-1',
+    jobId: 'annual-task-1',
+    submittedDates: Array.from({ length: 365 }, (_, index) => `submitted-${index}`),
+    skippedDates: ['2025-12-25', '2026-01-01'],
+  }),
+  '年度回填已提交：提交 365 天，跳过 2 天，任务 ID：annual-task-1',
+  '年度提示只应摘要数量和真实任务 ID，不展开跳过日期',
+)
+assertEqual(
+  buildProductStatisticYearBackfillMessage({
+    message: '所选 365 天分属 2 个活动商品统计任务，本次未重复提交',
+    submittedDates: [],
+    skippedDates: Array.from({ length: 365 }, (_, index) => `skipped-${index}`),
+    activeTaskIds: ['active-task-1', 'active-task-2'],
+  }),
+  '所选 365 天分属 2 个活动商品统计任务，本次未重复提交',
+  '全量跳过时应保留后端未重复提交语义，不显示占位任务 ID',
+)
+
+type CapturedYearBackfillConfirmation = {
+  onOk: () => Promise<void>
+  onCancel: () => void
+}
+
+const singleFlightGate = createProductStatisticSingleFlightGate()
+let confirmationCount = 0
+let annualRequestCount = 0
+let capturedConfirmation: CapturedYearBackfillConfirmation | null = null
+const gateStates: boolean[] = []
+const captureConfirmation = (confirmation: CapturedYearBackfillConfirmation) => {
+  confirmationCount += 1
+  capturedConfirmation = confirmation
+}
+const getCapturedConfirmation = () => {
+  assert(capturedConfirmation, '应捕获年度回填确认回调')
+  return capturedConfirmation
+}
+const startConfirmation = () => requestProductStatisticYearBackfillConfirmation({
+  gate: singleFlightGate,
+  confirm: captureConfirmation,
+  action: async () => {
+    annualRequestCount += 1
+  },
+  onGateChange: (locked) => gateStates.push(locked),
+})
+
+assert(startConfirmation(), '首次年度回填应打开确认框')
+assert(!startConfirmation(), '确认框已打开时快速重复点击应被同步门禁拦截')
+assertEqual(confirmationCount, 1, '快速重复点击只能打开一个确认框')
+getCapturedConfirmation().onCancel()
+await getCapturedConfirmation().onOk()
+assertEqual(annualRequestCount, 0, '取消年度回填不得发起请求')
+assert(!singleFlightGate.locked, '取消应释放 single-flight 门禁')
+
+assert(startConfirmation(), '取消后应允许再次打开年度回填确认框')
+const confirmedSubmission = getCapturedConfirmation()
+const firstConfirmPromise = confirmedSubmission.onOk()
+const repeatedConfirmPromise = confirmedSubmission.onOk()
+assertEqual(repeatedConfirmPromise, firstConfirmPromise, '重复确认应复用同一个提交 Promise')
+await Promise.all([firstConfirmPromise, repeatedConfirmPromise])
+assertEqual(annualRequestCount, 1, '重复确认也只能发起一次年度回填请求')
+assert(!singleFlightGate.locked, '年度回填提交完成后应释放 single-flight 门禁')
+assertEqual(gateStates.join(','), 'true,false,true,false', '按钮锁定状态应与门禁获取和释放同步')
+
+const failedGate = createProductStatisticSingleFlightGate()
+const expectedFailure = new Error('年度回填失败')
+let failedConfirmation: CapturedYearBackfillConfirmation | null = null
+requestProductStatisticYearBackfillConfirmation({
+  gate: failedGate,
+  confirm: (confirmation) => {
+    failedConfirmation = confirmation
+  },
+  action: async () => {
+    throw expectedFailure
+  },
+})
+assert(failedConfirmation, '应捕获失败路径的确认回调')
+const rejectedConfirmation = failedConfirmation as CapturedYearBackfillConfirmation
+let actualFailure: unknown
+try {
+  await rejectedConfirmation.onOk()
+} catch (error) {
+  actualFailure = error
+}
+assertEqual(actualFailure, expectedFailure, '年度回填失败应保留原始错误')
+assert(!failedGate.locked, '年度回填失败后也必须释放 single-flight 门禁')
 
 const backendError = new RequestError(
   '请求失败',

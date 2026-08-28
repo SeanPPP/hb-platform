@@ -19,7 +19,7 @@ namespace BlazorApp.Api.Controllers
         private readonly ScheduledTaskLogService _taskLogService;
         private readonly SqlSugarContext _context;
         private readonly ILogger<StatisticsJobTriggerController> _logger;
-        private readonly ISalesDashboardCacheWarmer _cacheWarmer;
+        private readonly IProductStoreDailyStatisticQueueService _productStoreDailyQueue;
         private readonly SalesStatisticsAlignmentService _alignmentService;
         private readonly SalesStatisticsAlignmentBackgroundRecalculateService _alignmentBackgroundRecalculateService;
         private const int MaxProductStoreDailyBatchDays = 31;
@@ -30,7 +30,7 @@ namespace BlazorApp.Api.Controllers
             ScheduledTaskLogService taskLogService,
             SqlSugarContext context,
             ILogger<StatisticsJobTriggerController> logger,
-            ISalesDashboardCacheWarmer cacheWarmer,
+            IProductStoreDailyStatisticQueueService productStoreDailyQueue,
             SalesStatisticsAlignmentService alignmentService,
             SalesStatisticsAlignmentBackgroundRecalculateService alignmentBackgroundRecalculateService
         )
@@ -39,7 +39,7 @@ namespace BlazorApp.Api.Controllers
             _taskLogService = taskLogService;
             _context = context;
             _logger = logger;
-            _cacheWarmer = cacheWarmer;
+            _productStoreDailyQueue = productStoreDailyQueue;
             _alignmentService = alignmentService;
             _alignmentBackgroundRecalculateService = alignmentBackgroundRecalculateService;
         }
@@ -320,11 +320,11 @@ namespace BlazorApp.Api.Controllers
         {
             try
             {
-                var result = await _statisticsJobService.SubmitProductStoreDailyRecalculationAsync(
+                var result = await _productStoreDailyQueue.EnqueueAsync(
                     new[] { request.Date.Date },
-                    HttpContext?.User?.Identity?.Name
+                    HttpContext?.User?.Identity?.Name,
+                    cancellationToken: HttpContext?.RequestAborted ?? CancellationToken.None
                 );
-                await ClearSalesDashboardCacheAfterProductStatisticSubmitAsync();
 
                 return Ok(BuildProductStoreDailySubmitResponse(result));
             }
@@ -348,11 +348,11 @@ namespace BlazorApp.Api.Controllers
             {
                 var endDate = DateTime.Now.Date;
                 var dates = EnumerateDates(endDate.AddDays(-(days - 1)), endDate);
-                var result = await _statisticsJobService.SubmitProductStoreDailyRecalculationAsync(
+                var result = await _productStoreDailyQueue.EnqueueAsync(
                     dates,
-                    HttpContext?.User?.Identity?.Name
+                    HttpContext?.User?.Identity?.Name,
+                    cancellationToken: HttpContext?.RequestAborted ?? CancellationToken.None
                 );
-                await ClearSalesDashboardCacheAfterProductStatisticSubmitAsync();
 
                 return Ok(BuildProductStoreDailySubmitResponse(result));
             }
@@ -650,12 +650,12 @@ namespace BlazorApp.Api.Controllers
                 var maxConcurrency = request.MaxConcurrency < 1
                     ? 3
                     : Math.Min(request.MaxConcurrency, 10);
-                var result = await _statisticsJobService.SubmitProductStoreDailyRecalculationAsync(
+                var result = await _productStoreDailyQueue.EnqueueAsync(
                     EnumerateDates(request.StartDate, request.EndDate),
                     HttpContext?.User?.Identity?.Name,
-                    maxConcurrency
+                    maxConcurrency,
+                    HttpContext?.RequestAborted ?? CancellationToken.None
                 );
-                await ClearSalesDashboardCacheAfterProductStatisticSubmitAsync();
 
                 return Ok(BuildProductStoreDailySubmitResponse(result));
             }
@@ -665,6 +665,42 @@ namespace BlazorApp.Api.Controllers
                 return StatusCode(
                     500,
                     new { success = false, message = "触发任务失败: " + ex.Message }
+                );
+            }
+        }
+
+        [HttpPost("backfill-product-store-daily-year")]
+        public async Task<IActionResult> BackfillProductStoreDailyYear(
+            [FromBody] ProductStoreDailyYearBackfillRequest request
+        )
+        {
+            if (request.Days < 1 || request.Days > 365)
+            {
+                return BadRequest(new
+                {
+                    success = false,
+                    message = "年度商品统计补算天数必须为 1 至 365 天",
+                });
+            }
+
+            try
+            {
+                var endDate = (request.EndDate ?? DateTime.Now.Date).Date;
+                var startDate = endDate.AddDays(-(request.Days - 1));
+                var result = await _productStoreDailyQueue.EnqueueYearBackfillAsync(
+                    EnumerateDates(startDate, endDate),
+                    HttpContext?.User?.Identity?.Name,
+                    request.MaxConcurrency,
+                    HttpContext?.RequestAborted ?? CancellationToken.None
+                );
+                return Ok(BuildProductStoreDailySubmitResponse(result));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "提交年度商品分店每日统计回填任务失败");
+                return StatusCode(
+                    500,
+                    new { success = false, message = "提交年度回填任务失败: " + ex.Message }
                 );
             }
         }
@@ -763,21 +799,22 @@ namespace BlazorApp.Api.Controllers
             return dates;
         }
 
-        private async Task ClearSalesDashboardCacheAfterProductStatisticSubmitAsync()
-        {
-            // 商品统计重算会影响热销榜，提交后立即清理看板缓存，避免页面继续读取旧排名。
-            await _cacheWarmer.ClearCacheAsync();
-        }
-
         private static object BuildProductStoreDailySubmitResponse(
             ProductStoreDailyRecalculationSubmitResult result
         )
         {
+            Guid? responseJobId = result.JobId == Guid.Empty ? null : result.JobId;
             return new
             {
                 success = true,
                 message = result.Message,
-                jobId = result.JobId,
+                taskId = responseJobId,
+                jobId = responseJobId,
+                activeTaskIds = result.ActiveJobIds
+                    .Where(id => id != Guid.Empty)
+                    .Distinct()
+                    .OrderBy(id => id)
+                    .ToList(),
                 status = result.Status,
                 submittedDates = result.SubmittedDates.Select(date => date.ToString("yyyy-MM-dd")).ToList(),
                 skippedDates = result.SkippedDates.Select(date => date.ToString("yyyy-MM-dd")).ToList(),
@@ -1375,6 +1412,13 @@ namespace BlazorApp.Api.Controllers
     {
         public DateTime StartDate { get; set; }
         public DateTime EndDate { get; set; }
+        public int MaxConcurrency { get; set; } = 3;
+    }
+
+    public class ProductStoreDailyYearBackfillRequest
+    {
+        public DateTime? EndDate { get; set; }
+        public int Days { get; set; } = 365;
         public int MaxConcurrency { get; set; } = 3;
     }
 
