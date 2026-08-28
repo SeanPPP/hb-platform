@@ -85,15 +85,16 @@ namespace BlazorApp.Api.Services
 
             if (!productMap.Any() && !storeMap.Any())
             {
+                // 双方都没有统计行表示当天确实为零销售；任务已完成，不能重新落回 Pending。
                 return new ProductStoreDailyReconciliationResult(
-                    SalesStatisticRefreshStatus.Pending,
+                    SalesStatisticRefreshStatus.Fresh,
                     null,
-                    productTotalAmount,
-                    storeTotalAmount,
-                    null,
-                    productTotalQuantity,
-                    storeTotalQuantity,
-                    null
+                    0m,
+                    0m,
+                    0m,
+                    0,
+                    0,
+                    0
                 );
             }
 
