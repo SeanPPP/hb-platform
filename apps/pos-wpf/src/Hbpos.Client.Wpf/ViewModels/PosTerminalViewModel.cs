@@ -348,7 +348,13 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
 
     public bool HasOpenCardRecoveryAttempts => CardRecoveryOpenCount > 0;
 
+    public string CardRecoveryCenterText => T("shell.page.cardRecovery");
+
     public string CardRecoveryOpenText => Format("cardRecovery.center.openCount", CardRecoveryOpenCount);
+
+    public string CardRecoveryCenterAutomationName => HasOpenCardRecoveryAttempts
+        ? $"{CardRecoveryCenterText} {CardRecoveryOpenText}"
+        : CardRecoveryCenterText;
 
     public string StatusMessage => _statusText ?? Format(_statusKey, _statusArgs);
 
@@ -436,6 +442,7 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
     {
         OnPropertyChanged(nameof(HasOpenCardRecoveryAttempts));
         OnPropertyChanged(nameof(CardRecoveryOpenText));
+        OnPropertyChanged(nameof(CardRecoveryCenterAutomationName));
     }
 
     public void LoadMatches(IEnumerable<SellableItemDto> items)
@@ -2237,7 +2244,9 @@ public sealed partial class PosTerminalViewModel : ObservableObject, IScannerInp
         OnPropertyChanged(nameof(ReregisterDeviceText));
         OnPropertyChanged(nameof(OnlineText));
         OnPropertyChanged(nameof(PendingSyncText));
+        OnPropertyChanged(nameof(CardRecoveryCenterText));
         OnPropertyChanged(nameof(CardRecoveryOpenText));
+        OnPropertyChanged(nameof(CardRecoveryCenterAutomationName));
         OnPropertyChanged(nameof(StatusMessage));
     }
 }

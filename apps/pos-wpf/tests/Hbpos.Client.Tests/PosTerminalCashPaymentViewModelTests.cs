@@ -44,6 +44,98 @@ public sealed class PosTerminalCashPaymentViewModelTests
         Assert.True(opened);
         Assert.True(viewModel.HasOpenCardRecoveryAttempts);
         Assert.Contains("2", viewModel.CardRecoveryOpenText, StringComparison.Ordinal);
+        Assert.Equal("Card transaction recovery", viewModel.CardRecoveryCenterText);
+        var automationName = viewModel.CardRecoveryCenterAutomationName;
+        Assert.Contains("Card transaction recovery", automationName, StringComparison.Ordinal);
+        Assert.Contains(viewModel.CardRecoveryOpenText, automationName, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_card_recovery_center_stays_available_without_open_attempts()
+    {
+        var opened = false;
+        var localization = new LocalizationService();
+        localization.SetCulture(LocalizationService.DefaultCultureName);
+        var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            localization: localization,
+            onOpenCardRecoveryCenterAsync: () =>
+            {
+                opened = true;
+                return Task.CompletedTask;
+            })
+        {
+            CardRecoveryOpenCount = 0
+        };
+
+        await viewModel.OpenCardRecoveryCenterCommand.ExecuteAsync(null);
+
+        Assert.True(opened);
+        Assert.False(viewModel.HasOpenCardRecoveryAttempts);
+        var title = viewModel.CardRecoveryCenterText;
+        var automationName = viewModel.CardRecoveryCenterAutomationName;
+        Assert.Equal("Card transaction recovery", title);
+        Assert.Equal(title, automationName);
+        Assert.DoesNotContain("0", title, StringComparison.Ordinal);
+        Assert.DoesNotContain("0", automationName, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Pos_terminal_card_recovery_center_text_and_automation_name_refresh_with_language()
+    {
+        var localization = new LocalizationService();
+        localization.SetCulture(LocalizationService.DefaultCultureName);
+        var viewModel = new PosTerminalViewModel(
+            new LocalSellableItemIndex(),
+            new PosCartService(),
+            Session,
+            onOpenPayment: null,
+            localization: localization)
+        {
+            CardRecoveryOpenCount = 2
+        };
+        var propertyChanges = new List<string?>();
+        viewModel.PropertyChanged += (_, args) => propertyChanges.Add(args.PropertyName);
+
+        try
+        {
+            var englishTitle = viewModel.CardRecoveryCenterText;
+            var englishAutomationName = viewModel.CardRecoveryCenterAutomationName;
+            Assert.Equal("Card transaction recovery", englishTitle);
+            Assert.Contains("2 card transactions need attention", englishAutomationName, StringComparison.Ordinal);
+
+            propertyChanges.Clear();
+            viewModel.CardRecoveryOpenCount = 0;
+            Assert.Contains(nameof(viewModel.HasOpenCardRecoveryAttempts), propertyChanges);
+            Assert.Contains(nameof(viewModel.CardRecoveryOpenText), propertyChanges);
+            Assert.Contains(nameof(viewModel.CardRecoveryCenterAutomationName), propertyChanges);
+
+            propertyChanges.Clear();
+            viewModel.CardRecoveryOpenCount = 2;
+            Assert.Contains(nameof(viewModel.HasOpenCardRecoveryAttempts), propertyChanges);
+            Assert.Contains(nameof(viewModel.CardRecoveryOpenText), propertyChanges);
+            Assert.Contains(nameof(viewModel.CardRecoveryCenterAutomationName), propertyChanges);
+
+            propertyChanges.Clear();
+            await localization.SetCultureAsync(LocalizationService.ChineseCultureName);
+
+            var chineseTitle = viewModel.CardRecoveryCenterText;
+            var chineseAutomationName = viewModel.CardRecoveryCenterAutomationName;
+            Assert.Equal("卡交易异常中心", chineseTitle);
+            Assert.Contains(chineseTitle, chineseAutomationName, StringComparison.Ordinal);
+            Assert.Contains("2 笔卡交易待处理", chineseAutomationName, StringComparison.Ordinal);
+            Assert.Contains("CardRecoveryCenterText", propertyChanges);
+            Assert.Contains("CardRecoveryOpenText", propertyChanges);
+            Assert.Contains("CardRecoveryCenterAutomationName", propertyChanges);
+        }
+        finally
+        {
+            viewModel.Dispose();
+            await localization.SetCultureAsync(LocalizationService.DefaultCultureName);
+        }
     }
 
     [Fact]
