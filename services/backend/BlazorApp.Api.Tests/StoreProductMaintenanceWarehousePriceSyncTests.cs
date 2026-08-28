@@ -1230,14 +1230,7 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
     [Fact]
     public void UpdateMultiCodeAsync_锁内复读完整关系身份并按精确门店商品组重算()
     {
-        var sourcePath = Path.Combine(
-            Environment.GetEnvironmentVariable("HB_PLATFORM_ROOT")
-                ?? Path.Combine(AppContext.BaseDirectory, "..", "..", "..", ".."),
-            "BlazorApp.Api",
-            "Services",
-            "React",
-            "StoreProductMaintenanceReactService.cs"
-        );
+        var sourcePath = ResolveStoreProductMaintenanceServiceSourcePath();
         var source = File.ReadAllText(sourcePath);
         var methodStart = source.IndexOf("UpdateMultiCodeAsync(", StringComparison.Ordinal);
         var methodEnd = source.IndexOf("CreateSetCodeAsync(", methodStart, StringComparison.Ordinal);
@@ -1248,6 +1241,26 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
         Assert.Contains("expectedMultiCodeProductCode", methodSource);
         Assert.Contains("x.SetType == 1 || x.SetType == 2", methodSource);
         Assert.Contains("RecalculateStoreGroupsLockedAsync", methodSource);
+    }
+
+    private static string ResolveStoreProductMaintenanceServiceSourcePath(
+        [CallerFilePath] string testSourcePath = ""
+    )
+    {
+        // 以测试源码位置为锚点，避免 linked worktree 或 --artifacts-path 改变运行目录后误判仓库根。
+        var testProjectDirectory = Path.GetDirectoryName(testSourcePath)
+            ?? throw new InvalidOperationException("无法定位商品维护测试源码目录。");
+
+        return Path.GetFullPath(
+            Path.Combine(
+                testProjectDirectory,
+                "..",
+                "BlazorApp.Api",
+                "Services",
+                "React",
+                "StoreProductMaintenanceReactService.cs"
+            )
+        );
     }
 
     public void Dispose()

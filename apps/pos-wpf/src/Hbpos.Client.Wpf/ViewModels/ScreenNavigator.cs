@@ -19,7 +19,7 @@ internal sealed class ScreenNavigator
     private readonly ICustomerDisplayOrchestrator _customerDisplayOrchestrator;
     private readonly ILinklyFallbackPromptCoordinator? _linklyFallbackPromptCoordinator;
     private readonly ICardPaymentRecoveryService? _cardPaymentRecoveryService;
-    private readonly Func<CardPaymentRecoveryResult, Task> _onCardRecoveryCenterResultAsync;
+    private readonly Func<CardRecoveryAttemptKey, CardPaymentRecoveryResult, Task> _onCardRecoveryCenterResultAsync;
     private readonly Func<CancellationToken, Task> _syncCatalogAndReloadAsync;
     private readonly Func<CancellationToken, Task> _resetCatalogAndReloadAsync;
     private readonly Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? _checkForAppUpdateAsync;
@@ -64,7 +64,7 @@ internal sealed class ScreenNavigator
         ICustomerDisplayOrchestrator customerDisplayOrchestrator,
         ILinklyFallbackPromptCoordinator? linklyFallbackPromptCoordinator,
         ICardPaymentRecoveryService? cardPaymentRecoveryService,
-        Func<CardPaymentRecoveryResult, Task> onCardRecoveryCenterResultAsync,
+        Func<CardRecoveryAttemptKey, CardPaymentRecoveryResult, Task> onCardRecoveryCenterResultAsync,
         Func<CancellationToken, Task> syncCatalogAndReloadAsync,
         Func<CancellationToken, Task> resetCatalogAndReloadAsync,
         Func<CancellationToken, Task<AppUpdateCoordinatorResult>>? checkForAppUpdateAsync,
@@ -186,11 +186,34 @@ internal sealed class ScreenNavigator
             return;
         }
 
+        var originPayment =
+            ReferenceEquals(_currentScreen, CashPayment) &&
+            ReferenceEquals(CashPayment, _cachedCashPaymentScreen)
+                ? CashPayment
+                : null;
+        Action returnFromRecoveryCenter = ShowPos;
+        if (originPayment is not null)
+        {
+            returnFromRecoveryCenter = () =>
+            {
+                // 未解决交易返回原支付实例，避免 PrepareForEntry 清掉同一购物车的未知结果锁。
+                if (ReferenceEquals(CashPayment, originPayment) &&
+                    ReferenceEquals(_cachedCashPaymentScreen, originPayment))
+                {
+                    SetCurrentScreen(originPayment);
+                    return;
+                }
+
+                // 原支付实例已被替换或释放时不得恢复陈旧页面。
+                ShowPos();
+            };
+        }
+
         CardRecoveryCenter?.Dispose();
         CardRecoveryCenter = _factory.CreateCardRecoveryCenterViewModel(
             _cardPaymentRecoveryService,
             Session,
-            ShowPos,
+            returnFromRecoveryCenter,
             count =>
             {
                 if (PosTerminal is not null)

@@ -806,9 +806,11 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         command.CommandText = """
             UPDATE LocalCardPaymentAttempts
             SET
-                Status = $Status,
+                -- 已批准证据仍需继续恢复订单，但不能被降级为较弱的 Recovering。
+                Status = CASE WHEN Status = $ApprovedStatus THEN Status ELSE $Status END,
                 UpdatedAt = $UpdatedAt
             WHERE AttemptGuid = $AttemptGuid
+              AND Status IN ($OpenStatus1, $OpenStatus2, $OpenStatus3, $OpenStatus4)
               AND COALESCE(ResponseCode, '') NOT IN (
                     $ResolvedCode1,
                     $ResolvedCode2,
@@ -820,6 +822,11 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
             """;
         command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
         command.Parameters.AddWithValue("$Status", LocalCardPaymentAttemptStatus.Recovering.ToString());
+        command.Parameters.AddWithValue("$ApprovedStatus", LocalCardPaymentAttemptStatus.Approved.ToString());
+        command.Parameters.AddWithValue("$OpenStatus1", LocalCardPaymentAttemptStatus.Pending.ToString());
+        command.Parameters.AddWithValue("$OpenStatus2", LocalCardPaymentAttemptStatus.SessionStarted.ToString());
+        command.Parameters.AddWithValue("$OpenStatus3", LocalCardPaymentAttemptStatus.Recovering.ToString());
+        command.Parameters.AddWithValue("$OpenStatus4", LocalCardPaymentAttemptStatus.Approved.ToString());
         command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));
         AddTerminalStatusParameters(command);
         AddSupervisorResolvedCodeParameters(command);
@@ -838,7 +845,8 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         command.CommandText = """
             UPDATE LocalCardPaymentAttempts
             SET
-                Status = $Status,
+                -- CAS 仍推进时间戳，但已批准金融事实不能降级为 Recovering。
+                Status = CASE WHEN Status = $ApprovedStatus THEN Status ELSE $Status END,
                 UpdatedAt = $UpdatedAt
             WHERE AttemptGuid = $AttemptGuid
               AND Status = $ExpectedStatus
@@ -854,6 +862,7 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
             """;
         command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
         command.Parameters.AddWithValue("$Status", LocalCardPaymentAttemptStatus.Recovering.ToString());
+        command.Parameters.AddWithValue("$ApprovedStatus", LocalCardPaymentAttemptStatus.Approved.ToString());
         command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
         command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
         command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));

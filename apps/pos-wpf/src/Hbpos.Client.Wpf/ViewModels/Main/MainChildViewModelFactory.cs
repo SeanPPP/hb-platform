@@ -234,14 +234,14 @@ internal sealed class MainChildViewModelFactory
         PosSessionState session,
         Action onBack,
         Action<int> onOpenCountChanged,
-        Func<CardPaymentRecoveryResult, Task> onRecoveryResultHandledAsync)
+        Func<CardRecoveryAttemptKey, CardPaymentRecoveryResult, Task> onRecoveryResultHandledAsync)
     {
         if (_operationAuthorizationService is null)
         {
             throw new InvalidOperationException("卡交易异常中心需要操作授权服务。");
         }
 
-        return new CardRecoveryCenterViewModel(
+        return CardRecoveryCenterViewModel.CreateWithKeyedRecoveryResultHandler(
             recoveryService,
             _cart,
             session,

@@ -128,7 +128,7 @@
                                     <Run Text="  ·  " />
                                     <Run Text="{loc:Loc deviceActivation.expiresAt}" />
                                     <Run Text=": " />
-                                    <Run Text="{Binding PreviewExpiryText}" />
+                                    <Run Text="{Binding PreviewExpiryText, Mode=OneWay}" />
                                 </TextBlock>
                             </StackPanel>
                         </Grid>

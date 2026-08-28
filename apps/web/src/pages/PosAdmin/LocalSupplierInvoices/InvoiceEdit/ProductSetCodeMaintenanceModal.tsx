@@ -138,6 +138,7 @@ export default function ProductSetCodeMaintenanceModal({
   const [repairMultiCodeCount, setRepairMultiCodeCount] = useState(0)
   const [loading, setLoading] = useState(false)
   const [ready, setReady] = useState(false)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const requestSequenceRef = useRef(0)
   const saveInFlightRef = useRef(false)
@@ -147,6 +148,7 @@ export default function ProductSetCodeMaintenanceModal({
     requestSequenceRef.current = requestSequence
     setLoading(true)
     setReady(false)
+    setLoadError(null)
     setIntegrityError(null)
     setRepairMultiCodeCount(0)
 
@@ -199,9 +201,20 @@ export default function ProductSetCodeMaintenanceModal({
       return loadState.ready
     } catch {
       if (requestSequence !== requestSequenceRef.current) return false
+      const errorMessage = t('posAdmin.invoiceDetail.loadSetCodeMaintenanceFailed', '加载商品多码/套装数据失败')
+      // 加载失败时清空上一轮数据，避免把旧快照误当成当前商品的可编辑状态。
+      setProduct(null)
+      setRows([])
+      setBaselineProductType(null)
+      setBaselineRows([])
+      setEdits({})
+      setSelectedPasteField(null)
+      setCanSwitchMode(false)
+      setRepairMultiCodeCount(0)
       setReady(false)
+      setLoadError(errorMessage)
       if (showErrorMessage) {
-        message.error(t('posAdmin.invoiceDetail.loadSetCodeMaintenanceFailed', '加载商品多码/套装数据失败'))
+        message.error(errorMessage)
       }
       return false
     } finally {
@@ -222,6 +235,7 @@ export default function ProductSetCodeMaintenanceModal({
       setIntegrityError(null)
       setRepairMultiCodeCount(0)
       setReady(false)
+      setLoadError(null)
       setLoading(false)
       return
     }
@@ -476,17 +490,24 @@ export default function ProductSetCodeMaintenanceModal({
       } catch {
         readbackConfirmed = false
       }
-      await loadLatestData(false)
+      const stateReloaded = await loadLatestData(false)
       if (readbackConfirmed) {
         message.success(t('posAdmin.invoiceDetail.saveSetCodeMaintenanceSuccess', '商品多码/套装已保存'))
         onClose()
         await onSaved?.()
         return
       }
-      message.warning(t(
-        'posAdmin.invoiceDetail.saveSetCodeMaintenanceUnconfirmed',
-        '保存结果未确认；已重新加载最新数据，请核对后再决定是否重试。',
-      ))
+      if (stateReloaded) {
+        message.warning(t(
+          'posAdmin.invoiceDetail.saveSetCodeMaintenanceUnconfirmed',
+          '保存结果未确认；已重新加载最新数据，请核对后再决定是否重试。',
+        ))
+      } else {
+        message.warning(t(
+          'posAdmin.invoiceDetail.saveSetCodeMaintenanceUnconfirmedReloadFailed',
+          '保存结果未确认，且最新数据加载失败；请先重试加载并核对，再决定是否保存。',
+        ))
+      }
     } finally {
       saveInFlightRef.current = false
       setSaving(false)
@@ -523,10 +544,13 @@ export default function ProductSetCodeMaintenanceModal({
             <Tooltip title={t('common.copy', '复制')}>
               <Button
                 icon={<CopyOutlined />}
+                aria-label={t('common.copyValue', 'Copy {{value}}', { value })}
                 disabled={!value}
                 onClick={() => {
-                  void copyTextToClipboard(value)
-                  message.success(t('message.copySuccess', '复制成功'))
+                  void copyTextToClipboard(value, {
+                    successMessage: t('common.copySuccess', '复制成功'),
+                    failureMessage: t('common.copyFailed', '复制失败'),
+                  })
                 }}
               />
             </Tooltip>
@@ -591,7 +615,7 @@ export default function ProductSetCodeMaintenanceModal({
     },
   ], [edits, loading, mode, ready, rows, saving, selectedPasteField, t, token.colorPrimaryBg])
 
-  const isChangingNormalProduct = product?.productType !== 1 && product?.productType !== 2
+  const isChangingNormalProduct = product != null && product.productType !== 1 && product.productType !== 2
 
   return (
     <Modal
@@ -625,6 +649,14 @@ export default function ProductSetCodeMaintenanceModal({
         </Space>
 
         {integrityError ? <Alert type="error" showIcon message={integrityError} /> : null}
+        {loadError ? (
+          <Alert
+            type="error"
+            showIcon
+            message={loadError}
+            action={<Button size="small" onClick={() => void loadLatestData()}>{t('common.retry', '重试')}</Button>}
+          />
+        ) : null}
         {repairMultiCodeCount > 0 && !integrityError ? (
           <Alert
             type="warning"
@@ -651,17 +683,19 @@ export default function ProductSetCodeMaintenanceModal({
           </span>
         </Space>
 
-        <MeasuredTable<MaintenanceSetCodeDraftRow>
-          metricId="pos-admin.local-supplier-invoices.invoice-edit.set-code-maintenance"
-          rowKey={getRowId}
-          loading={loading}
-          dataSource={rows}
-          columns={columns}
-          pagination={false}
-          size="small"
-          scroll={{ x: 780, y: 420 }}
-          locale={{ emptyText: t('posAdmin.invoiceDetail.noSetCodeRows', '暂无多码/套装条码，请添加或直接粘贴 Excel 列') }}
-        />
+        {!loadError ? (
+          <MeasuredTable<MaintenanceSetCodeDraftRow>
+            metricId="pos-admin.local-supplier-invoices.invoice-edit.set-code-maintenance"
+            rowKey={getRowId}
+            loading={loading}
+            dataSource={rows}
+            columns={columns}
+            pagination={false}
+            size="small"
+            scroll={{ x: 780, y: 420 }}
+            locale={{ emptyText: t('posAdmin.invoiceDetail.noSetCodeRows', '暂无多码/套装条码，请添加或直接粘贴 Excel 列') }}
+          />
+        ) : null}
       </Space>
     </Modal>
   )

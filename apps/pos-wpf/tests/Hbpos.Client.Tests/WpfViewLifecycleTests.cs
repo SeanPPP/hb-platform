@@ -633,7 +633,7 @@ public sealed class WpfViewLifecycleTests
         Assert.InRange(totalsSummary.ActualHeight, 57.5, 58.5);
         Assert.InRange(inputBuffer.ActualHeight, 77.5, 78.5);
 
-        Assert.Equal(6, cartItemsGrid.Columns.Count);
+        Assert.Equal(5, cartItemsGrid.Columns.Count);
         Assert.InRange(cartItemsGrid.Columns[0].ActualWidth, 43.5, 44.5);
         Assert.True(
             cartItemsGrid.Columns.Sum(column => column.ActualWidth) <= cartItemsGrid.ActualWidth + 0.5,
@@ -654,7 +654,7 @@ public sealed class WpfViewLifecycleTests
         var firstRowCells = FindVisualDescendants<DataGridCell>(cartRows[0])
             .OrderBy(cell => cell.Column.DisplayIndex)
             .ToArray();
-        Assert.Equal(6, firstRowCells.Length);
+        Assert.Equal(5, firstRowCells.Length);
         Assert.All(firstRowCells, cell => AssertHorizontallyContained(cell, cartRows[0], targetWidth, targetWindowHeight));
 
         var metadataLine = Assert.Single(FindVisualDescendants<StackPanel>(firstRowCells[1])
@@ -673,9 +673,11 @@ public sealed class WpfViewLifecycleTests
         Assert.NotEmpty(totalTexts);
         Assert.All(totalTexts, text => AssertHorizontallyContained(text, firstRowCells[4], targetWidth, targetWindowHeight));
 
-        var deleteButton = Assert.Single(FindVisualDescendants<Button>(firstRowCells[5]));
-        Assert.Equal(32, deleteButton.ActualWidth);
-        AssertHorizontallyContained(deleteButton, firstRowCells[5], targetWidth, targetWindowHeight);
+        var deleteButton = Assert.Single(FindVisualDescendants<Button>(cartRows[0]).Where(button =>
+            button.Name == "PART_SwipeDeleteAction"));
+        Assert.Equal(88, deleteButton.ActualWidth);
+        Assert.True(deleteButton.ActualHeight >= 67, $"删除操作触控高度不足：{deleteButton.ActualHeight:0.##}。");
+        AssertHorizontallyContained(deleteButton, cartRows[0], targetWidth, targetWindowHeight);
 
         var keypad = Assert.IsType<System.Windows.Controls.Primitives.UniformGrid>(view.FindName("CashierKeypad"));
         var numericParameters = new HashSet<string>(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "."]);

@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Xml.Linq;
 
 namespace Hbpos.Client.Tests;
@@ -255,7 +256,7 @@ public sealed class PosTerminalViewLayoutTests
         var cartColumns = Assert.Single(cartGrid.Elements(presentation + "DataGrid.Columns"))
             .Elements()
             .ToArray();
-        Assert.Equal(6, cartColumns.Length);
+        Assert.Equal(5, cartColumns.Length);
         var rowNumberColumn = cartColumns[0];
         Assert.Equal("#", (string?)rowNumberColumn.Attribute("Header"));
         Assert.Equal("44", (string?)rowNumberColumn.Attribute("Width"));
@@ -511,6 +512,60 @@ public sealed class PosTerminalViewLayoutTests
     }
 
     [Fact]
+    public void Cart_rows_reveal_delete_action_without_a_fixed_delete_column()
+    {
+        var repoRoot = FindRepoRoot();
+        var view = XDocument.Load(Path.Combine(
+            repoRoot,
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "PosTerminalView.xaml"));
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        XNamespace services = "clr-namespace:Hbpos.Client.Wpf.Services";
+
+        var cartGrid = Assert.Single(view.Descendants(presentation + "DataGrid").Where(element =>
+            (string?)element.Attribute("AutomationProperties.AutomationId") == "CartItemsGrid"));
+        Assert.Equal("True", (string?)cartGrid.Attribute(services + "CartSwipeRevealBehavior.IsEnabled"));
+        Assert.Equal("VerticalOnly", (string?)cartGrid.Attribute("ScrollViewer.PanningMode"));
+
+        var cartColumns = Assert.Single(cartGrid.Elements(presentation + "DataGrid.Columns"))
+            .Elements()
+            .ToArray();
+        Assert.Equal(5, cartColumns.Length);
+        Assert.DoesNotContain(cartColumns, column => column.Descendants(presentation + "Button").Any(button =>
+            ((string?)button.Attribute("Command"))?.Contains("RemoveLineCommand", StringComparison.Ordinal) == true));
+
+        var rowStyle = FindStyle(view, x, "CartDataGridRowStyle");
+        var rowTemplate = Assert.Single(rowStyle.Descendants(presentation + "ControlTemplate"));
+        var swipeContent = Assert.Single(rowTemplate.Descendants().Where(element =>
+            (string?)element.Attribute(x + "Name") == "PART_SwipeContent"));
+        Assert.Equal("True", (string?)swipeContent.Attribute("ClipToBounds"));
+        Assert.Single(swipeContent.Descendants(presentation + "DataGridCellsPresenter"));
+
+        var deleteButton = Assert.Single(rowTemplate.Descendants(presentation + "Button").Where(button =>
+            (string?)button.Attribute(x + "Name") == "PART_SwipeDeleteAction"));
+        Assert.Equal("88", (string?)deleteButton.Attribute("Width"));
+        Assert.Equal("Right", (string?)deleteButton.Attribute("HorizontalAlignment"));
+        Assert.Equal("Stretch", (string?)deleteButton.Attribute("VerticalAlignment"));
+        Assert.Equal("{StaticResource PosDangerBrush}", (string?)deleteButton.Attribute("Background"));
+        Assert.Equal(
+            "{Binding DataContext.RemoveLineCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}",
+            (string?)deleteButton.Attribute("Command"));
+        Assert.Equal("{Binding}", (string?)deleteButton.Attribute("CommandParameter"));
+        Assert.Equal("Delete", (string?)deleteButton.Attribute(services + "ButtonFeedback.Cue"));
+        Assert.Equal("{loc:Loc Remove}", (string?)deleteButton.Attribute("AutomationProperties.Name"));
+        Assert.Contains(deleteButton.Descendants(), element =>
+            element.Name.LocalName == "PackIcon" && (string?)element.Attribute("Kind") == "DeleteOutline");
+        Assert.Contains(deleteButton.Descendants(presentation + "TextBlock"), text =>
+            (string?)text.Attribute("Text") == "{loc:Loc Remove}");
+    }
+
+    [Fact]
     public void Attendance_qr_uses_compact_launcher_and_native_overlay_dialog()
     {
         var repoRoot = FindRepoRoot();
@@ -586,10 +641,20 @@ public sealed class PosTerminalViewLayoutTests
         Assert.Contains(trigger.Elements().Where(element => element.Name.LocalName == "Setter"), setter =>
             (string?)setter.Attribute("Property") == property && (string?)setter.Attribute("Value") == value);
 
-    private static string FindRepoRoot()
+    private static string FindRepoRoot([CallerFilePath] string sourceFilePath = "")
     {
-        foreach (var start in new[] { AppContext.BaseDirectory, Directory.GetCurrentDirectory() })
+        foreach (var start in new[]
+                 {
+                     Path.GetDirectoryName(sourceFilePath),
+                     Directory.GetCurrentDirectory(),
+                     AppContext.BaseDirectory,
+                 })
         {
+            if (string.IsNullOrWhiteSpace(start))
+            {
+                continue;
+            }
+
             var current = new DirectoryInfo(start);
             while (current is not null)
             {

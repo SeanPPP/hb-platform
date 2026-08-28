@@ -26,6 +26,11 @@ public interface ICashierSessionRefreshApiClient
     Task<CashierSessionRefreshAttempt> RefreshAsync(CancellationToken cancellationToken = default);
 }
 
+public sealed class CashierSessionRejectedEventArgs(CashierSessionDto rejectedSession) : EventArgs
+{
+    public CashierSessionDto RejectedSession { get; } = rejectedSession;
+}
+
 public sealed class CashierSessionRefreshApiClient(HttpClient httpClient)
     : ICashierSessionRefreshApiClient
 {
@@ -71,6 +76,8 @@ public sealed class CashierSessionRefreshService(
     ICashierSessionContext sessionContext,
     ICashierSessionCacheUpdater cacheUpdater)
 {
+    public event EventHandler<CashierSessionRejectedEventArgs>? SessionRejected;
+
     public async Task RefreshOnceAsync(CancellationToken cancellationToken = default)
     {
         var currentSession = sessionContext.CurrentSession;
@@ -106,8 +113,44 @@ public sealed class CashierSessionRefreshService(
         if (attempt.IsOnlineRejected)
         {
             // CAS 只清除被拒会话；缓存清理按票据版本执行，不会误删同身份的新登录缓存。
-            sessionContext.TryClear(currentSession);
-            await cacheUpdater.RemoveCachedSessionAsync(currentSession, cancellationToken);
+            var sessionCleared = sessionContext.TryClear(currentSession);
+            try
+            {
+                await cacheUpdater.RemoveCachedSessionAsync(currentSession, cancellationToken);
+            }
+            finally
+            {
+                if (sessionCleared)
+                {
+                    NotifySessionRejected(currentSession);
+                }
+            }
+        }
+    }
+
+    private void NotifySessionRejected(CashierSessionDto rejectedSession)
+    {
+        var handlers = SessionRejected;
+        if (handlers is null)
+        {
+            return;
+        }
+
+        var eventArgs = new CashierSessionRejectedEventArgs(rejectedSession);
+        foreach (EventHandler<CashierSessionRejectedEventArgs> handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                handler(this, eventArgs);
+            }
+            catch (Exception ex)
+            {
+                // 界面通知失败不能阻断被拒票据的缓存清理或后台刷新循环。
+                ConsoleLog.WriteError(
+                    "CashierSession",
+                    "收银员会话失效通知处理失败。",
+                    exception: ex);
+            }
         }
     }
 

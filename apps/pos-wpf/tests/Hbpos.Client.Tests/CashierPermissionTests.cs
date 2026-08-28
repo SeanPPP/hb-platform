@@ -341,6 +341,71 @@ public sealed class CashierPermissionTests
     }
 
     [Fact]
+    public async Task Cashier_session_refresh_notifies_rejected_snapshot_after_context_is_cleared()
+    {
+        var current = CreateSession();
+        var context = new CashierSessionContext();
+        context.SetCurrent(current);
+        var cache = new RecordingCashierSessionCacheUpdater(() => context.CurrentSession);
+        var service = new CashierSessionRefreshService(
+            new SequenceCashierSessionRefreshApiClient(CashierSessionRefreshAttempt.OnlineRejected()),
+            context,
+            cache);
+        CashierSessionDto? rejectedSession = null;
+        CashierSessionDto? sessionObservedByHandler = current;
+        service.SessionRejected += (_, args) =>
+        {
+            rejectedSession = args.RejectedSession;
+            sessionObservedByHandler = context.CurrentSession;
+        };
+
+        await service.RefreshOnceAsync();
+
+        Assert.Same(current, rejectedSession);
+        Assert.Null(sessionObservedByHandler);
+    }
+
+    [Fact]
+    public async Task Cashier_session_refresh_notifies_rejection_when_cache_removal_fails()
+    {
+        var current = CreateSession();
+        var context = new CashierSessionContext();
+        context.SetCurrent(current);
+        var service = new CashierSessionRefreshService(
+            new SequenceCashierSessionRefreshApiClient(CashierSessionRefreshAttempt.OnlineRejected()),
+            context,
+            new ThrowingCashierSessionCacheUpdater(new InvalidOperationException("cache unavailable")));
+        CashierSessionDto? rejectedSession = null;
+        service.SessionRejected += (_, args) => rejectedSession = args.RejectedSession;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.RefreshOnceAsync());
+
+        Assert.Null(context.CurrentSession);
+        Assert.Same(current, rejectedSession);
+    }
+
+    [Fact]
+    public async Task Cashier_session_refresh_contains_rejection_subscriber_failure()
+    {
+        var current = CreateSession();
+        var context = new CashierSessionContext();
+        context.SetCurrent(current);
+        var cache = new RecordingCashierSessionCacheUpdater(() => context.CurrentSession);
+        var service = new CashierSessionRefreshService(
+            new SequenceCashierSessionRefreshApiClient(CashierSessionRefreshAttempt.OnlineRejected()),
+            context,
+            cache);
+        var completedSubscriberCount = 0;
+        service.SessionRejected += (_, _) => throw new InvalidOperationException("subscriber failed");
+        service.SessionRejected += (_, _) => completedSubscriberCount++;
+
+        await service.RefreshOnceAsync();
+
+        Assert.True(cache.Removed);
+        Assert.Equal(1, completedSubscriberCount);
+    }
+
+    [Fact]
     public async Task Cashier_session_refresh_skips_emergency_override()
     {
         var context = new CashierSessionContext();
@@ -456,6 +521,36 @@ public sealed class CashierPermissionTests
         await refreshTask;
 
         Assert.Same(newer, context.CurrentSession);
+        Assert.True(cache.Removed);
+        Assert.Same(original, cache.RemovedSession);
+    }
+
+    [Fact]
+    public async Task Cashier_session_refresh_rejection_does_not_notify_after_newer_login_wins()
+    {
+        var original = CreateSession() with { AuthorizationToken = "ticket-a" };
+        var newer = CreateSession() with
+        {
+            UserGuid = "user-b",
+            CashierId = "cashier-b",
+            AuthorizationToken = "ticket-b"
+        };
+        var context = new CashierSessionContext();
+        context.SetCurrent(original);
+        var api = new DeferredCashierSessionRefreshApiClient();
+        var cache = new RecordingCashierSessionCacheUpdater(() => context.CurrentSession);
+        var service = new CashierSessionRefreshService(api, context, cache);
+        var notificationCount = 0;
+        service.SessionRejected += (_, _) => notificationCount++;
+
+        var refreshTask = service.RefreshOnceAsync();
+        await api.Started.Task;
+        context.SetCurrent(newer);
+        api.Complete(CashierSessionRefreshAttempt.OnlineRejected());
+        await refreshTask;
+
+        Assert.Same(newer, context.CurrentSession);
+        Assert.Equal(0, notificationCount);
         Assert.True(cache.Removed);
         Assert.Same(original, cache.RemovedSession);
     }
@@ -617,6 +712,82 @@ public sealed class CashierPermissionTests
         Assert.True(attempt.IsOnlineRejected);
         Assert.False(attempt.IsApiUnavailable);
         Assert.Equal("CASHIER_LOGIN_FAILED", attempt.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    [InlineData(HttpStatusCode.Forbidden)]
+    public async Task Cashier_session_refresh_api_client_treats_auth_rejection_as_online_rejection(
+        HttpStatusCode statusCode)
+    {
+        var client = new CashierSessionRefreshApiClient(new HttpClient(new StaticResponseHandler(
+            new HttpResponseMessage(statusCode)
+            {
+                Content = new StringContent("<html>rejected</html>", Encoding.UTF8, "text/html")
+            }))
+        {
+            BaseAddress = new Uri("http://localhost/")
+        });
+
+        var attempt = await client.RefreshAsync();
+
+        Assert.True(attempt.IsOnlineRejected);
+        Assert.False(attempt.IsApiUnavailable);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.ServiceUnavailable)]
+    [InlineData(HttpStatusCode.RequestTimeout)]
+    [InlineData(HttpStatusCode.TooManyRequests)]
+    public async Task Cashier_session_refresh_api_client_keeps_unavailable_statuses_offline_capable(
+        HttpStatusCode statusCode)
+    {
+        var client = new CashierSessionRefreshApiClient(new HttpClient(new StaticResponseHandler(
+            new HttpResponseMessage(statusCode)
+            {
+                Content = new StringContent("<html>temporarily unavailable</html>", Encoding.UTF8, "text/html")
+            }))
+        {
+            BaseAddress = new Uri("http://localhost/")
+        });
+
+        var attempt = await client.RefreshAsync();
+
+        Assert.True(attempt.IsApiUnavailable);
+        Assert.False(attempt.IsOnlineRejected);
+    }
+
+    [Fact]
+    public async Task Cashier_session_refresh_api_client_treats_invalid_json_as_api_unavailable()
+    {
+        var client = new CashierSessionRefreshApiClient(new HttpClient(new StaticResponseHandler(
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{invalid-json", Encoding.UTF8, "application/json")
+            }))
+        {
+            BaseAddress = new Uri("http://localhost/")
+        });
+
+        var attempt = await client.RefreshAsync();
+
+        Assert.True(attempt.IsApiUnavailable);
+        Assert.False(attempt.IsOnlineRejected);
+    }
+
+    [Fact]
+    public async Task Cashier_session_refresh_api_client_treats_network_failure_as_api_unavailable()
+    {
+        var client = new CashierSessionRefreshApiClient(new HttpClient(
+            new ThrowingResponseHandler(new HttpRequestException("network unavailable")))
+        {
+            BaseAddress = new Uri("http://localhost/")
+        });
+
+        var attempt = await client.RefreshAsync();
+
+        Assert.True(attempt.IsApiUnavailable);
+        Assert.False(attempt.IsOnlineRejected);
     }
 
     [Fact]
@@ -1610,6 +1781,18 @@ public sealed class CashierPermissionTests
         }
     }
 
+    private sealed class ThrowingCashierSessionCacheUpdater(Exception exception)
+        : ICashierSessionCacheUpdater
+    {
+        public Task UpdateCachedSessionAsync(
+            CashierSessionDto session,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task RemoveCachedSessionAsync(
+            CashierSessionDto session,
+            CancellationToken cancellationToken = default) => Task.FromException(exception);
+    }
+
     private sealed class RecordingOperationAuditLogger : IOperationAuditLogger
     {
         public List<OperationAuditEventDto> Events { get; } = [];
@@ -1628,6 +1811,13 @@ public sealed class CashierPermissionTests
         {
             return Task.FromResult(response);
         }
+    }
+
+    private sealed class ThrowingResponseHandler(Exception exception) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) => Task.FromException<HttpResponseMessage>(exception);
     }
 
     private sealed class ConsoleLogCapture : IDisposable

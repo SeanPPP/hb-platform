@@ -48,6 +48,53 @@
             <Setter Property="BorderBrush" Value="#FFE2E2E6" />
             <Setter Property="BorderThickness" Value="0,0,0,1" />
             <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type DataGridRow}">
+                        <Grid ClipToBounds="True">
+                            <Button x:Name="PART_SwipeDeleteAction"
+                                    Width="88"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Stretch"
+                                    Background="{StaticResource PosDangerBrush}"
+                                    Foreground="White"
+                                    AutomationProperties.Name="{loc:Loc Remove}"
+                                    Command="{Binding DataContext.RemoveLineCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                    CommandParameter="{Binding}"
+                                    services:ButtonFeedback.Cue="Delete"
+                                    Style="{DynamicResource CartSwipeDeleteButtonStyle}"
+                                    ToolTip="{loc:Loc Remove}">
+                                <StackPanel HorizontalAlignment="Center"
+                                            VerticalAlignment="Center">
+                                    <materialDesign:PackIcon Kind="DeleteOutline"
+                                                             Width="21"
+                                                             Height="21"
+                                                             HorizontalAlignment="Center" />
+                                    <TextBlock Margin="0,4,0,0"
+                                               Text="{loc:Loc Remove}"
+                                               FontSize="11"
+                                               FontWeight="SemiBold"
+                                               TextAlignment="Center" />
+                                </StackPanel>
+                            </Button>
+                            <Border x:Name="PART_SwipeContent"
+                                    Panel.ZIndex="1"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    ClipToBounds="True"
+                                    SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}">
+                                <Border.RenderTransform>
+                                    <TranslateTransform />
+                                </Border.RenderTransform>
+                                <DataGridCellsPresenter HorizontalAlignment="Stretch"
+                                                        VerticalAlignment="Stretch"
+                                                        SnapsToDevicePixels="{TemplateBinding SnapsToDevicePixels}" />
+                            </Border>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
             <Style.Triggers>
                 <Trigger Property="IsSelected" Value="True">
                     <Setter Property="Background" Value="#FFE8F1FF" />
@@ -91,17 +138,16 @@
             </Style.Triggers>
         </Style>
 
-        <Style x:Key="CartDeleteButtonStyle" TargetType="Button">
-            <Setter Property="Width" Value="32" />
-            <Setter Property="Height" Value="32" />
-            <Setter Property="Padding" Value="0" />
+        <Style x:Key="CartSwipeDeleteButtonStyle" TargetType="Button">
+            <Setter Property="MinHeight" Value="44" />
+            <Setter Property="Padding" Value="8,6" />
             <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Background" Value="Transparent" />
             <Setter Property="BorderBrush" Value="Transparent" />
-            <Setter Property="Foreground" Value="#FF304B73" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Focusable" Value="False" />
             <Setter Property="IsTabStop" Value="False" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="{x:Type Button}">
@@ -116,11 +162,10 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Root" Property="Background" Value="#FFFFF0F1" />
-                                <Setter Property="Foreground" Value="{StaticResource PosDangerBrush}" />
+                                <Setter TargetName="Root" Property="Opacity" Value="0.92" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Root" Property="Background" Value="#FFFFC8D0" />
+                                <Setter TargetName="Root" Property="Opacity" Value="0.8" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.55" />
@@ -755,6 +800,7 @@
                           ScrollViewer.PanningMode="VerticalOnly"
                           ScrollViewer.PanningDeceleration="0.0008"
                           ScrollViewer.PanningRatio="1.0"
+                          services:CartSwipeRevealBehavior.IsEnabled="True"
                           GridLinesVisibility="None"
                           Background="White"
                           BorderThickness="0"
@@ -937,21 +983,6 @@
                                                    TextAlignment="Right"
                                                    HorizontalAlignment="Stretch" />
                                     </StackPanel>
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="" Width="58" HeaderStyle="{StaticResource CartColumnHeaderCenterStyle}">
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                     <Button Command="{Binding DataContext.RemoveLineCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
-                                             CommandParameter="{Binding}"
-                                             services:ButtonFeedback.Cue="Delete"
-                                             Style="{StaticResource CartDeleteButtonStyle}"
-                                            HorizontalAlignment="Center"
-                                            VerticalAlignment="Center"
-                                            ToolTip="{loc:Loc Remove}">
-                                        <materialDesign:PackIcon Kind="DeleteOutline" Width="19" Height="19" />
-                                    </Button>
                                 </DataTemplate>
                             </DataGridTemplateColumn.CellTemplate>
                         </DataGridTemplateColumn>
