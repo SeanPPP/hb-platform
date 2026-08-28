@@ -6092,6 +6092,59 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public async Task Card_recovery_center_payment_session_notification_failure_keeps_owner_and_lock()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("1042", "SKU-RECOVER-PREPARE-FAIL", "930RECOVERPREPAREFAIL"));
+        var viewModel = CreateAuthorizedMainViewModel(
+            new FakeCustomerDisplayWindowService(),
+            cart: cart);
+        await viewModel.InitializeAsync(new AppStartupOptions([], false, null, null));
+        viewModel.ShowCashPaymentCommand.Execute(null);
+        var payment = Assert.IsType<PaymentViewModel>(viewModel.CurrentScreen);
+        var cardSession = GetCardPaymentSession(payment);
+        payment.Session = payment.Session with { DeviceCode = "POS-STALE" };
+        var currentKey = new CardRecoveryAttemptKey(
+            CardProcessorKind.Linkly,
+            Guid.Parse("40000000-0000-0000-0000-000000000129"));
+        var existingTender = new PaymentTender(PaymentMethodKind.Cash, 1m, "ORIGINAL-TENDER");
+        payment.PaymentTenders.Add(existingTender);
+        await cardSession.TryHandleFailedResultAsync(new PaymentTenderAttemptResult(
+            false,
+            "payment.card.resultUnknown",
+            StatusMessage: "Current card result is unknown.",
+            CardResult: new CardPaymentResultDisposition(
+                CardPaymentTerminalOutcome.ResultUnknown,
+                CardPaymentErrorKind.ActiveSessionRequiresRecovery,
+                PreserveStatus: true),
+            RecoveryAttemptKey: currentKey,
+            RecoveryOrderGuid: Guid.Parse("40000000-0000-0000-0000-000000000130")));
+        payment.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(PaymentViewModel.Session))
+            {
+                throw new InvalidOperationException("payment session subscriber failed");
+            }
+        };
+        var result = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.DraftRestored,
+            "Recovered draft must remain locked.",
+            RestoredTenders:
+            [
+                new PaymentTender(PaymentMethodKind.Card, 5m, "RECOVERED-CARD")
+            ]);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => InvokeHandleCardRecoveryCenterResultAsync(viewModel, currentKey, result));
+
+        Assert.Equal("payment session subscriber failed", exception.Message);
+        Assert.True(cardSession.HasUnknownResult);
+        Assert.Equal(currentKey, payment.CreateCardPaymentHandoffRequest().RecoveryAttemptKey);
+        Assert.True(payment.IsPaymentInteractionLocked);
+        Assert.Same(existingTender, Assert.Single(payment.PaymentTenders));
+    }
+
+    [Fact]
     public async Task Card_payment_recovery_completed_during_startup_prints_card_receipt()
     {
         var printService = new RecordingReceiptPrintService();

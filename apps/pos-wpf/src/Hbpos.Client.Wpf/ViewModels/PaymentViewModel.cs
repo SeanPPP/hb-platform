@@ -607,12 +607,15 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     public void PrepareForEntry(PosSessionState session)
     {
+        // 先封死上一付款代际并取消旧卡任务；Session setter 或其通知失败时，迟到结果也不能污染恢复页。
+        _paymentEntryVersion++;
+        _cardSession.ResetManualCancellationState();
+        _cardSession.Cancel();
+        _cardSession.DetachCanceledActiveCardPayment();
         Session = session;
         _pendingVoucherUploadOrderGuid = null;
         _pendingVoucherTenderedAmount = 0m;
         _pendingVoucherChangeAmount = 0m;
-        _paymentEntryVersion++;
-        _cardSession.ResetManualCancellationState();
         if (_cardSession.HasUnknownResult &&
             _unknownCardResultCartEpoch is long protectedEpoch &&
             protectedEpoch != _cartTransactionEpoch)
@@ -621,8 +624,6 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             _cardSession.SetResultUnknownRecoveryRequired(false);
         }
 
-        _cardSession.Cancel();
-        _cardSession.DetachCanceledActiveCardPayment();
         IsCardPaymentInProgress = false;
         IsPaymentInteractionLocked = IsShuttingDown || _cardSession.HasUnknownResult;
         if (_requiresAlternativeRefundMethod &&

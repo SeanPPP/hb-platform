@@ -682,6 +682,62 @@ public sealed class CardPaymentRecoveryService(
         }
 
         var attemptMode = ResolveAttemptConnectionMode(attempt, mode);
+        if (attempt.Status == LocalCardPaymentAttemptStatus.Approved)
+        {
+            // Approved 是已持久化的金融事实；直接续跑订单/草稿恢复，禁止迟到的远端失败结果覆盖它。
+            var approvedDraft = TryDeserializeDraft(attempt);
+            if (approvedDraft is null)
+            {
+                return new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.Unknown,
+                    T("cardRecovery.linkly.approvedRecoveryRequiresReview", "The previous card payment was approved, but POS could not safely rebuild the order. Ask a supervisor to confirm the payment before continuing."),
+                    DialogDetails: BuildDialogDetails(attempt),
+                    PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
+            }
+
+            if (attemptMode == LinklyConnectionMode.LocalIp)
+            {
+                var authorization = new PaymentAuthorizationResult(
+                    true,
+                    Reference: attempt.PaymentReference ?? attempt.TxnRef ?? attempt.AttemptGuid.ToString("N"),
+                    Message: attempt.ResponseText,
+                    AuthorizedAmount: Math.Abs(approvedDraft.CardAmount),
+                    Processor: CardProcessorKind.Linkly.ToString(),
+                    Environment: attempt.Environment,
+                    ConnectionMode: attempt.ConnectionMode,
+                    TxnType: attempt.TxnType,
+                    SessionId: attempt.SessionId,
+                    TxnRef: attempt.TxnRef,
+                    ResponseCode: attempt.ResponseCode,
+                    ResponseText: attempt.ResponseText);
+                return await CompleteApprovedLocalAttemptAsync(
+                    cart,
+                    session,
+                    attempt,
+                    approvedDraft,
+                    authorization,
+                    cancellationToken);
+            }
+
+            if (attemptMode == LinklyConnectionMode.CloudBackendAsync)
+            {
+                return await CompleteApprovedAttemptAsync(
+                    cart,
+                    session,
+                    settings,
+                    attempt,
+                    approvedDraft,
+                    BuildSupervisorApprovedStatus(attempt),
+                    cancellationToken);
+            }
+
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.linkly.approvedRecoveryRequiresReview", "The previous card payment was approved, but POS could not safely rebuild the order. Ask a supervisor to confirm the payment before continuing."),
+                DialogDetails: BuildDialogDetails(attempt),
+                PaymentSupervisorDetails: BuildPaymentSupervisorDetails(attempt));
+        }
+
         if (attempt.Status == LocalCardPaymentAttemptStatus.RequiresReview)
         {
             ConsoleLog.Write(
@@ -1309,7 +1365,13 @@ public sealed class CardPaymentRecoveryService(
             return winner is not null &&
                 (winner.Status != attempt.Status || winner.UpdatedAt != attempt.UpdatedAt ||
                  !string.Equals(winner.RecoveryPhase, attempt.RecoveryPhase, StringComparison.Ordinal))
-                ? await RecoverLatestLocalIpAsync(cart, currentSession, settings, winner, CancellationToken.None)
+                ? await RecoverSaleAttemptAsync(
+                    cart,
+                    currentSession,
+                    settings,
+                    LinklyConnectionMode.LocalIp,
+                    winner,
+                    CancellationToken.None)
                 : new CardPaymentRecoveryResult(
                     CardPaymentRecoveryOutcome.Unknown,
                     T("cardRecovery.linkly.unknown", "The previous card result cannot be confirmed. Ask a supervisor to confirm the Linkly backend status before continuing."),

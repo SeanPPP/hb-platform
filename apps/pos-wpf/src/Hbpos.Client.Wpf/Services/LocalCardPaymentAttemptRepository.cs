@@ -845,7 +845,8 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         command.CommandText = """
             UPDATE LocalCardPaymentAttempts
             SET
-                Status = $Status,
+                -- CAS 仍推进时间戳，但已批准金融事实不能降级为 Recovering。
+                Status = CASE WHEN Status = $ApprovedStatus THEN Status ELSE $Status END,
                 UpdatedAt = $UpdatedAt
             WHERE AttemptGuid = $AttemptGuid
               AND Status = $ExpectedStatus
@@ -861,6 +862,7 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
             """;
         command.Parameters.AddWithValue("$AttemptGuid", attemptGuid.ToString());
         command.Parameters.AddWithValue("$Status", LocalCardPaymentAttemptStatus.Recovering.ToString());
+        command.Parameters.AddWithValue("$ApprovedStatus", LocalCardPaymentAttemptStatus.Approved.ToString());
         command.Parameters.AddWithValue("$ExpectedStatus", expectedStatus.ToString());
         command.Parameters.AddWithValue("$ExpectedUpdatedAt", expectedUpdatedAt.ToString("O"));
         command.Parameters.AddWithValue("$UpdatedAt", updatedAt.ToString("O"));

@@ -31,6 +31,43 @@ public sealed class LinklyRecoveryCasRepositoryTests
         }
     }
 
+    [Fact]
+    public async Task TryMarkRecovering_approved_keeps_status_and_advances_cas_timestamp()
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            var repository = await CreateRepositoryAsync(databasePath);
+            var updatedAt = DateTimeOffset.Parse("2026-06-05T10:00:00+10:00");
+            var recoveringAt = updatedAt.AddMinutes(1);
+            var attempt = CreateAttempt(LocalCardPaymentAttemptStatus.Approved, updatedAt);
+            await repository.CreateAsync(attempt);
+
+            var applied = await repository.TryMarkRecoveringAsync(
+                attempt.AttemptGuid,
+                LocalCardPaymentAttemptStatus.Approved,
+                updatedAt,
+                recoveringAt);
+            var staleReplay = await repository.TryMarkRecoveringAsync(
+                attempt.AttemptGuid,
+                LocalCardPaymentAttemptStatus.Approved,
+                updatedAt,
+                recoveringAt.AddMinutes(1));
+
+            Assert.True(applied);
+            Assert.False(staleReplay);
+            var persisted = Assert.IsType<LocalCardPaymentAttempt>(
+                await repository.GetAttemptAsync(attempt.AttemptGuid));
+            Assert.Equal(LocalCardPaymentAttemptStatus.Approved, persisted.Status);
+            Assert.Equal(recoveringAt, persisted.UpdatedAt);
+            Assert.Equal(CardRecoveryPhases.None, persisted.RecoveryPhase);
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     [Theory]
     [InlineData(LocalCardPaymentAttemptStatus.Declined, CardRecoveryPhases.None)]
     [InlineData(LocalCardPaymentAttemptStatus.Pending, CardRecoveryPhases.FinalizePending)]

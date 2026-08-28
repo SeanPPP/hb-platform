@@ -191,6 +191,244 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.NotNull(attempts.AcknowledgedAt);
     }
 
+    [Theory]
+    [InlineData("Cancelled", "17", "CANCELLED")]
+    [InlineData("Completed", "05", "DECLINED")]
+    public async Task RecoverAttemptAsync_persisted_approved_cloud_ignores_late_failure_without_status_query(
+        string lateStatus,
+        string lateResponseCode,
+        string lateResponseText)
+    {
+        var attempt = CreateAttempt(
+            "SESSION-PERSISTED-APPROVED",
+            "TXN-PERSISTED-APPROVED",
+            LocalCardPaymentAttemptStatus.Approved) with
+        {
+            ResponseCode = "00",
+            ResponseText = "APPROVED",
+            PaymentReference = "ANZ:PERSISTED-APPROVED"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                lateStatus,
+                attempt.SessionId!,
+                attempt.TxnRef,
+                lateResponseCode,
+                lateResponseText,
+                transactionSuccess: false)
+        };
+        var cart = new PosCartService();
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
+        var payment = Assert.Single(Assert.IsType<LocalOrder>(result.Order).Payments);
+        Assert.Equal("ANZ:PERSISTED-APPROVED", payment.Reference);
+        Assert.Equal($"CARD_ATTEMPT:{attempt.AttemptGuid:N}", payment.IdempotencyKey);
+        Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, attempts.Status);
+        Assert.Equal(CardRecoveryPhases.None, attempts.RecoveryPhase);
+        Assert.Equal(0, attempts.MarkRecoveringCallCount);
+        Assert.Equal(0, backend.StatusCallCount);
+        Assert.Equal(0, backend.ResumeCallCount);
+        Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.Equal(1, orders.SaveCount);
+        Assert.True(cart.IsEmpty);
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+    }
+
+    [Theory]
+    [InlineData("17", "CANCELLED")]
+    [InlineData("05", "DECLINED")]
+    public async Task RecoverAttemptAsync_persisted_approved_local_ip_ignores_late_failure_without_get_last(
+        string lateResponseCode,
+        string lateResponseText)
+    {
+        const string txnRef = "P000000000000901";
+        var attempt = CreateAttempt(
+            sessionId: null,
+            txnRef: txnRef,
+            status: LocalCardPaymentAttemptStatus.Approved,
+            connectionMode: LinklyConnectionMode.LocalIp) with
+        {
+            ResponseCode = "00",
+            ResponseText = "APPROVED",
+            PaymentReference = $"ANZ:{txnRef}"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient();
+        var localTerminal = new FakeLinklyTerminalClient(new PaymentAuthorizationResult(
+            false,
+            $"ANZ:{txnRef}",
+            "ANZ Linkly",
+            10m,
+            [CreateLocalCardTransaction(txnRef, lateResponseCode, lateResponseText)],
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.LocalIp.ToString(),
+            "P",
+            null,
+            txnRef,
+            lateResponseCode,
+            lateResponseText));
+        var cart = new PosCartService();
+        var service = CreateService(
+            attempts,
+            orders,
+            backend,
+            new FakeCardTerminalSettingsProvider(LinklyConnectionMode.LocalIp),
+            localTerminal);
+
+        var result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
+        var payment = Assert.Single(Assert.IsType<LocalOrder>(result.Order).Payments);
+        Assert.Equal($"ANZ:{txnRef}", payment.Reference);
+        Assert.Equal($"CARD_ATTEMPT:{attempt.AttemptGuid:N}", payment.IdempotencyKey);
+        Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, attempts.Status);
+        Assert.Equal(CardRecoveryPhases.None, attempts.RecoveryPhase);
+        Assert.Equal(0, attempts.MarkRecoveringCallCount);
+        Assert.Equal(0, localTerminal.RecoverCallCount);
+        Assert.Equal(0, backend.StatusCallCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+        Assert.Equal(1, orders.SaveCount);
+        Assert.True(cart.IsEmpty);
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_local_ip_cas_winner_approved_completes_without_get_last()
+    {
+        const string txnRef = "P000000000000903";
+        var attempt = CreateAttempt(
+            sessionId: null,
+            txnRef: txnRef,
+            status: LocalCardPaymentAttemptStatus.Pending,
+            connectionMode: LinklyConnectionMode.LocalIp);
+        var approvedWinner = attempt with
+        {
+            Status = LocalCardPaymentAttemptStatus.Approved,
+            ResponseCode = "00",
+            ResponseText = "APPROVED",
+            PaymentReference = $"ANZ:{txnRef}",
+            RecoveryPhase = CardRecoveryPhases.None,
+            RecoveryTargetStatus = null,
+            UpdatedAt = attempt.UpdatedAt.AddSeconds(1)
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt)
+        {
+            MarkRecoveringCasWinner = approvedWinner
+        };
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient();
+        var localTerminal = new FakeLinklyTerminalClient(new PaymentAuthorizationResult(
+            false,
+            $"ANZ:{txnRef}",
+            "ANZ Linkly",
+            10m,
+            [CreateLocalCardTransaction(txnRef, "05", "DECLINED")],
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.LocalIp.ToString(),
+            "P",
+            null,
+            txnRef,
+            "05",
+            "DECLINED"));
+        var cart = new PosCartService();
+        var service = CreateService(
+            attempts,
+            orders,
+            backend,
+            new FakeCardTerminalSettingsProvider(LinklyConnectionMode.LocalIp),
+            localTerminal);
+
+        var result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
+        var payment = Assert.Single(Assert.IsType<LocalOrder>(result.Order).Payments);
+        Assert.Equal($"ANZ:{txnRef}", payment.Reference);
+        Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, attempts.Status);
+        Assert.Equal("00", attempts.ResponseCode);
+        Assert.Equal(CardRecoveryPhases.None, attempts.RecoveryPhase);
+        Assert.Equal(1, attempts.MarkRecoveringCallCount);
+        Assert.Equal(0, localTerminal.RecoverCallCount);
+        Assert.Equal(0, backend.StatusCallCount);
+        Assert.Equal(1, orders.SaveCount);
+        Assert.True(cart.IsEmpty);
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+    }
+
+    [Theory]
+    [InlineData(LinklyConnectionMode.CloudBackendAsync)]
+    [InlineData(LinklyConnectionMode.LocalIp)]
+    public async Task RecoverAttemptAsync_persisted_approved_without_draft_fails_closed_without_remote_query(
+        LinklyConnectionMode connectionMode)
+    {
+        var attempt = CreateAttempt(
+            connectionMode == LinklyConnectionMode.CloudBackendAsync ? "SESSION-APPROVED-NO-DRAFT" : null,
+            "P000000000000902",
+            LocalCardPaymentAttemptStatus.Approved,
+            connectionMode: connectionMode) with
+        {
+            ResponseCode = "00",
+            ResponseText = "APPROVED",
+            PaymentReference = "ANZ:PERSISTED-NO-DRAFT",
+            OrderDraftJson = string.Empty
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Cancelled",
+                attempt.SessionId ?? "LATE-SESSION",
+                attempt.TxnRef,
+                "17",
+                "CANCELLED",
+                transactionSuccess: false)
+        };
+        var localTerminal = new FakeLinklyTerminalClient(new PaymentAuthorizationResult(
+            false,
+            attempt.PaymentReference,
+            "ANZ Linkly",
+            10m,
+            [CreateLocalCardTransaction(attempt.TxnRef!, "05", "DECLINED")],
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.LocalIp.ToString(),
+            "P",
+            null,
+            attempt.TxnRef,
+            "05",
+            "DECLINED"));
+        var cart = new PosCartService();
+        var service = CreateService(
+            attempts,
+            orders,
+            backend,
+            new FakeCardTerminalSettingsProvider(connectionMode),
+            localTerminal);
+
+        var result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal(CardRecoveryPhases.None, attempts.RecoveryPhase);
+        Assert.Equal(0, attempts.MarkRecoveringCallCount);
+        Assert.Equal(0, backend.StatusCallCount);
+        Assert.Equal(0, backend.ResumeCallCount);
+        Assert.Equal(0, localTerminal.RecoverCallCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.True(cart.IsEmpty);
+        Assert.Null(cart.RecoveryOwnerAttemptGuid);
+    }
+
     [Fact]
     public async Task RecoverAttemptAsync_approved_order_save_failure_replays_finalize_pending_without_status_lookup()
     {
@@ -7648,6 +7886,10 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public LocalCardPaymentAttempt? RecoveryFinalizationWinner { get; init; }
 
+        public LocalCardPaymentAttempt? MarkRecoveringCasWinner { get; init; }
+
+        private bool _markRecoveringCasWinnerApplied;
+
         public Exception? UpdateOutcomeException { get; init; }
 
         public Exception? MarkAcknowledgedException { get; init; }
@@ -7848,6 +8090,14 @@ public sealed class CardPaymentRecoveryServiceTests
             DateTimeOffset updatedAt,
             CancellationToken cancellationToken = default)
         {
+            MarkRecoveringCallCount++;
+            if (!_markRecoveringCasWinnerApplied && MarkRecoveringCasWinner is not null)
+            {
+                _markRecoveringCasWinnerApplied = true;
+                _attempt = MarkRecoveringCasWinner;
+                return Task.FromResult(false);
+            }
+
             if (_attempt is null ||
                 _attempt.AttemptGuid != attemptGuid ||
                 _attempt.Status != expectedStatus ||
@@ -7859,7 +8109,9 @@ public sealed class CardPaymentRecoveryServiceTests
 
             _attempt = _attempt with
             {
-                Status = LocalCardPaymentAttemptStatus.Recovering,
+                Status = _attempt.Status == LocalCardPaymentAttemptStatus.Approved
+                    ? LocalCardPaymentAttemptStatus.Approved
+                    : LocalCardPaymentAttemptStatus.Recovering,
                 UpdatedAt = updatedAt
             };
             return Task.FromResult(true);

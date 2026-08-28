@@ -4406,6 +4406,41 @@ public sealed class PosTerminalCashPaymentViewModelTests
     }
 
     [Fact]
+    public async Task Payment_page_prepare_for_entry_session_notification_failure_still_invalidates_previous_card_task()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-161-NOTIFY", "Stale Notification Tea", "930161NOTIFY", PriceSourceKind.StoreRetailPrice, 10m));
+        var workflow = new FakeCashPaymentWorkflowService
+        {
+            AddTenderStarted = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            AddTenderResult = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            IgnoreCancellation = true
+        };
+        var viewModel = new PaymentViewModel(cart, workflow, Session);
+        var paymentTask = viewModel.SelectCardCommand.ExecuteAsync(null);
+        await workflow.AddTenderStarted.Task;
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName == nameof(PaymentViewModel.Session))
+            {
+                throw new InvalidOperationException("payment session subscriber failed");
+            }
+        };
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            viewModel.PrepareForEntry(Session with { DeviceCode = "POS-02" }));
+        var cancellationRequested = workflow.LastAddTenderCancellationToken.IsCancellationRequested;
+        workflow.AddTenderResult.SetResult(PaymentTenderAttemptResult.Success(
+            new PaymentTender(PaymentMethodKind.Card, 10m, "CARD-STALE-NOTIFICATION"),
+            "payment.status.cardTenderAdded"));
+        await paymentTask;
+
+        Assert.Equal("payment session subscriber failed", exception.Message);
+        Assert.True(cancellationRequested);
+        Assert.Empty(viewModel.PaymentTenders);
+    }
+
+    [Fact]
     public void Payment_page_prepare_for_entry_keeps_unknown_result_lock_for_same_cart_transaction()
     {
         var cart = new PosCartService();

@@ -676,9 +676,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 ExecuteCardRecoveryPresenterUiStep(
                     "prepare-cached-payment",
                     _screenNavigator.PrepareCachedCashPaymentScreen);
-                ExecuteCardRecoveryPresenterUiStep(
-                    "prepare-payment-entry",
-                    () => CashPayment?.PrepareForEntry(Session));
+                // PrepareForEntry 是 durable handoff 的核心步骤；失败必须交给 presenter 保留 owner 与恢复锁。
+                CashPayment?.PrepareForEntry(Session);
                 ExecuteCardRecoveryPresenterUiStep(
                     "navigate-payment",
                     () => CurrentScreen = CashPayment);
