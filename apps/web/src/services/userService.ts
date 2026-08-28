@@ -4,6 +4,7 @@ import type {
   CreateUserDto,
   UpdateUserDto,
   UserPermissionAssignmentDto,
+  UserAccessPermissionDto,
   UserPermissionStateDto,
   UserLoginRecordDto,
   UserLoginRecordQueryDto,
@@ -97,6 +98,13 @@ export async function assignRolesToUser(guid: string, payload: UserRoleAssignmen
 export async function getUserPermissionState(guid: string): Promise<UserPermissionStateDto> {
   const response = await request.get<ApiResponse<UserPermissionStateDto>>(
     `/api/Users/guid/${guid}/permissions/state`,
+  )
+  return unwrapApiData(response)
+}
+
+export async function getUserAccessPermissions(guid: string): Promise<UserAccessPermissionDto> {
+  const response = await request.get<ApiResponse<UserAccessPermissionDto>>(
+    `/api/Users/guid/${guid}/access-permissions`,
   )
   return unwrapApiData(response)
 }

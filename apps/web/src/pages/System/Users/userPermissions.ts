@@ -3,6 +3,7 @@ import type {
   UserPermissionInheritedSourceDto,
   UserPermissionStateDto,
 } from '../../../types/user'
+import type { PermissionCategoryDto } from '../../../types/role'
 
 const POS_TERMINAL_PREFIX = 'Permissions.PosTerminal.'
 const POS_MODULE_ORDER = ['Sales', 'Payment', 'Returns', 'SpecialProducts', 'Admin', 'Device']
@@ -52,6 +53,38 @@ export interface PosPermissionRequestTarget {
   sequence: number
   userGuid: string
   storeGuid: string
+}
+
+export interface PlatformPermissionCategories {
+  web: PermissionCategoryDto[]
+  pos: PermissionCategoryDto[]
+}
+
+export type AssignmentLoadStatus = 'idle' | 'loading' | 'ready' | 'error'
+
+export function canMutateLoadedAssignment(
+  status: AssignmentLoadStatus,
+  saving: boolean,
+): boolean {
+  return status === 'ready' && !saving
+}
+
+export function splitPermissionCategoriesByPlatform(
+  categories: PermissionCategoryDto[],
+): PlatformPermissionCategories {
+  const selectCategories = (isPosPermission: boolean) => categories
+    .map((category) => ({
+      ...category,
+      permissions: category.permissions.filter((permission) =>
+        permission.name.startsWith(POS_TERMINAL_PREFIX) === isPosPermission,
+      ),
+    }))
+    .filter((category) => category.permissions.length > 0)
+
+  return {
+    web: selectCategories(false),
+    pos: selectCategories(true),
+  }
 }
 
 function getPosPermissionModule(permissionCode: string) {
@@ -202,6 +235,13 @@ export function uniquePermissionCodes(permissionCodes: string[]): string[] {
   return Array.from(new Set(permissionCodes))
 }
 
+export function buildEffectivePermissionCodes(
+  inheritedPermissionCodes: string[],
+  directPermissionCodes: string[],
+): string[] {
+  return uniquePermissionCodes([...inheritedPermissionCodes, ...directPermissionCodes])
+}
+
 export function getCheckedPermissionKeys(permissionState: UserPermissionStateDto | null): string[] {
   if (!permissionState) return []
   return uniquePermissionCodes([
@@ -221,6 +261,8 @@ export function buildFallbackUserPermissionState({
 
   return {
     userGuid,
+    isSuperAdmin: false,
+    implicitAllPermissions: false,
     inheritedPermissionCodes: effectivePermissionCodes,
     directPermissionCodes: [],
     effectivePermissionCodes,
@@ -279,6 +321,34 @@ export function deriveDirectPermissionKeysFromChecked({
       (!inheritedSet.has(permissionCode) || currentDirectSet.has(permissionCode)),
     ),
   )
+}
+
+export function mergeVisibleDirectPermissionSelection({
+  checkedPermissionKeys,
+  visiblePermissionCodes,
+  inheritedPermissionCodes,
+  currentDirectPermissionCodes,
+}: {
+  checkedPermissionKeys: string[]
+  visiblePermissionCodes: string[]
+  inheritedPermissionCodes: string[]
+  currentDirectPermissionCodes: string[]
+}): string[] {
+  const visiblePermissionCodeSet = new Set(visiblePermissionCodes)
+  const nextVisibleDirectPermissions = deriveDirectPermissionKeysFromChecked({
+    checkedPermissionKeys,
+    allPermissionCodes: visiblePermissionCodes,
+    inheritedPermissionCodes,
+    currentDirectPermissionCodes,
+  })
+
+  // 当前树只包含一个终端，另一终端的未保存草稿必须原样保留。
+  return buildDirectPermissionPayload([
+    ...currentDirectPermissionCodes.filter(
+      (permissionCode) => !visiblePermissionCodeSet.has(permissionCode),
+    ),
+    ...nextVisibleDirectPermissions,
+  ])
 }
 
 export function buildPermissionSourceMap(
