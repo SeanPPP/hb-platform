@@ -283,6 +283,7 @@ test('PR/weekly 使用 15/45 分钟端到端预算并为稳定 gate 预留时间
 
 test('POS CI 只消费根 workspace lock，并由各 job 单次安装后调用 workspace 脚本', () => {
   const source = readFileSync(workflowPath, 'utf8')
+  const linuxNode = workflowJobBlock(source, 'linux_node')
   const nodeRunner = readFileSync(nodeRunnerPath, 'utf8')
   const rootPackage = JSON.parse(readFileSync(rootPackagePath, 'utf8'))
   const dotnetRunner = readFileSync(dotnetRunnerPath, 'utf8')
@@ -290,6 +291,11 @@ test('POS CI 只消费根 workspace lock，并由各 job 单次安装后调用 w
   const androidRunner = readFileSync(androidRunnerPath, 'utf8')
 
   assert.doesNotMatch(source, /apps\/pos-(?:ipad|handheld)\/package-lock\.json/)
+  assert.match(
+    linuxNode,
+    /fetch-depth:\s*\$\{\{\s*\(matrix\.component == 'pos-ipad' \|\| matrix\.component == 'pos-handheld'\) && '0' \|\| '1'\s*\}\}/,
+    '双端 POS Node lane 必须保留完整基线历史，才能直接验证迁移归属与语义哈希',
+  )
   for (const jobName of ['linux_node', 'linux_dotnet', 'macos', 'android']) {
     assert.match(workflowJobBlock(source, jobName), /cache-dependency-path:[\s\S]*?package-lock\.json/)
   }

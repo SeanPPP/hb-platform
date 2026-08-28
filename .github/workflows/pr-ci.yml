@@ -100,6 +100,9 @@ jobs:
       TZ: Australia/Brisbane
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          # 共享迁移门禁直接复核固定基线的归属与语义；双端 lane 必须取得完整历史。
+          fetch-depth: ${{ (matrix.component == 'pos-ipad' || matrix.component == 'pos-handheld') && '0' || '1' }}
       - if: matrix.component != 'noop'
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
