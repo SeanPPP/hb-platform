@@ -2,6 +2,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.StoreOrders;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
@@ -58,19 +59,7 @@ public sealed class StoreOrderPasteReplaceJobServiceTests : IDisposable
         services.AddLogging();
         services.AddSingleton(context);
         services.AddSingleton<IHttpContextAccessor, HttpContextAccessor>();
-        services.AddScoped<IStoreOrderReactService>(_ =>
-            new StoreOrderReactService(
-                context,
-                NullLogger<StoreOrderReactService>.Instance,
-                new HttpContextAccessor(),
-                Mock.Of<IOrderNumberGenerator>(),
-                new ConfigurationBuilder().Build(),
-                Mock.Of<IMapper>(),
-                Mock.Of<IInvoiceEmailService>(),
-                Mock.Of<IStoreOrderLocationProductLookupService>(),
-                Mock.Of<IWarehouseProductChangeHistoryService>()
-            )
-        );
+        services.AddStoreOrderFeatures();
         services.AddSingleton<IStoreOrderPasteReplaceJobService, StoreOrderPasteReplaceJobService>();
         _serviceProvider = services.BuildServiceProvider();
     }

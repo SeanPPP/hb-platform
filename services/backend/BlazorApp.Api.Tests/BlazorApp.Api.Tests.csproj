@@ -119,6 +119,10 @@
     <Compile Include="AuthSessionControllerTests.cs" />
     <Compile Include="StoreVoucherReactRouteTests.cs" />
     <Compile Include="ReactStoreOrderAuthorizationTests.cs" />
+    <Compile Include="StoreOrderRouteContractTests.cs" />
+    <Compile Include="StoreOrderArchitectureContractTests.cs" />
+    <Compile Include="StoreOrderDependencyInjectionTests.cs" />
+    <Compile Include="StoreOrderReactServiceTestFactory.cs" />
     <Compile Include="StoreOrderProductListTests.cs" />
     <Compile Include="StoreOrderImportPriceVarianceTests.cs" />
     <Compile Include="StoreOrderPasteReplaceJobServiceTests.cs" />

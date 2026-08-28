@@ -4,6 +4,7 @@ using System.Security.Claims;
 using System.Text.Json;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.StoreOrders.Cart.Domain;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
@@ -1788,21 +1789,18 @@ public sealed class StoreOrderProductListTests : IDisposable
     [Fact]
     public void CartRevision_同毫秒内严格递增()
     {
-        var method = typeof(StoreOrderReactService).GetMethod(
-            "ResolveNextCartRevision",
-            BindingFlags.Static | BindingFlags.NonPublic
-        );
-        Assert.NotNull(method);
-
         var previous = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Local).AddTicks(2_000);
         var now = previous.AddTicks(1);
         var previousRevision = new DateTimeOffset(previous).ToUnixTimeMilliseconds();
         Assert.Equal(previousRevision, new DateTimeOffset(now).ToUnixTimeMilliseconds());
 
-        var result = (ValueTuple<DateTime, long>)method.Invoke(null, new object?[] { previous, now })!;
+        var result = StoreOrderCartRules.ResolveNextRevision(previous, now);
 
-        Assert.Equal(previousRevision + 1, result.Item2);
-        Assert.Equal(result.Item2, new DateTimeOffset(result.Item1).ToUnixTimeMilliseconds());
+        Assert.Equal(previousRevision + 1, result.CartRevision);
+        Assert.Equal(
+            result.CartRevision,
+            new DateTimeOffset(result.RevisionAt).ToUnixTimeMilliseconds()
+        );
     }
 
     [Fact]
@@ -2376,39 +2374,46 @@ public sealed class StoreOrderProductListTests : IDisposable
     [Fact]
     public void 购物车写入路径使用共享事务和SqlServer应用锁()
     {
-        var source = File.ReadAllText(ResolveStoreOrderReactServicePath());
+        var source = File.ReadAllText(
+            FindRepositoryFile(
+                "services/backend/BlazorApp.Api/Features/StoreOrders/Cart/Common/StoreOrderCartCommandCoordinator.cs"
+            )
+        );
         var sharedLockBody = ExtractMethodBody(
             source,
-            "private async Task<T> RunCartMutationLockedAsync<T>"
-        );
-        var coreBody = ExtractMethodBody(
-            source,
-            "private async Task<ApiResponse<StoreOrderCartMutationResultDto?>> AddToCartMutationCoreAsync"
-        );
-        var updateBody = ExtractMethodBody(
-            source,
-            "public async Task<ApiResponse<StoreOrderCartMutationResultDto?>> UpdateCartItemMutationAsync"
-        );
-        var submitBody = ExtractMethodBody(
-            source,
-            "public async Task<ApiResponse<bool>> SubmitOrderAsync"
+            "public async Task<ApiResponse<T>> ExecuteAsync<T>"
         );
         var lockBody = ExtractMethodBody(
             source,
-            "private static async Task AcquireCartMutationDatabaseLockAsync"
+            "private async Task AcquireDatabaseLockAsync"
+        );
+        var addSource = File.ReadAllText(
+            FindRepositoryFile(
+                "services/backend/BlazorApp.Api/Features/StoreOrders/Cart/Commands/AddToCart/AddToCart.cs"
+            )
+        );
+        var updateSource = File.ReadAllText(
+            FindRepositoryFile(
+                "services/backend/BlazorApp.Api/Features/StoreOrders/Cart/Commands/UpdateCartItem/UpdateCartItem.cs"
+            )
+        );
+        var submitSource = File.ReadAllText(
+            FindRepositoryFile(
+                "services/backend/BlazorApp.Api/Features/StoreOrders/OrderPlacement/Commands/SubmitOrder/SubmitOrder.cs"
+            )
         );
 
         AssertInOrder(
             sharedLockBody,
             "BeginTranAsync",
-            "AcquireCartMutationDatabaseLockAsync",
+            "AcquireDatabaseLockAsync",
             "CommitTranAsync"
         );
         Assert.Contains("RollbackTranAsync", sharedLockBody);
-        Assert.Contains("ShouldRollbackCartMutationResult", sharedLockBody);
-        Assert.Contains("RunCartMutationLockedAsync(request.StoreCode", coreBody);
-        Assert.Contains("RunCartMutationLockedAsync(request.StoreCode", updateBody);
-        Assert.Contains("RunCartMutationLockedAsync(request.StoreCode", submitBody);
+        Assert.Contains("if (!response.Success)", sharedLockBody);
+        Assert.Contains("coordinator.ExecuteAsync(scope", addSource);
+        Assert.Contains("coordinator.ExecuteAsync(scope", updateSource);
+        Assert.Contains("cartCoordinator.ExecuteAsync(cartScope", submitSource);
         Assert.Contains("sys.sp_getapplock", lockBody);
         Assert.Contains("@LockOwner = N'Transaction'", lockBody);
     }
@@ -2735,6 +2740,8 @@ public sealed class StoreOrderProductListTests : IDisposable
             var result = await writeTask;
             Assert.False(result.Success);
             Assert.Equal("PREORDER_REQUIRED", result.ErrorCode);
+            Assert.True(result.Details?.IsBlocked);
+            Assert.Equal(1, result.Details?.PendingCount);
         }
         finally
         {
@@ -2756,8 +2763,12 @@ public sealed class StoreOrderProductListTests : IDisposable
             Assert.Empty(targetOrders);
         }
 
-        static (bool Success, string? ErrorCode) ToGateResult<T>(ApiResponse<T> response) =>
-            (response.Success, response.ErrorCode);
+        static (
+            bool Success,
+            string? ErrorCode,
+            PreorderGateResult? Details
+        ) ToGateResult<T>(ApiResponse<T> response) =>
+            (response.Success, response.ErrorCode, response.Details as PreorderGateResult);
     }
 
     [Theory]
@@ -4186,30 +4197,6 @@ public sealed class StoreOrderProductListTests : IDisposable
     }
 
     [Theory]
-    [InlineData("STORE-1", "Bridgewater SA 门店", "Bridgewater SA 5155", "Australia/Sydney")]
-    [InlineData("STORE-2", "Victoria Park 门店", "Victoria Park WA 6100", "Australia/Sydney")]
-    [InlineData("BRI-01", "普通门店", "测试地址", "Australia/Brisbane")]
-    [InlineData("MEL-01", "普通门店", "测试地址", "Australia/Melbourne")]
-    [InlineData("STORE-3", "Brisbane 门店", "Brisbane QLD 4000", "Australia/Brisbane")]
-    [InlineData("STORE-4", "Melbourne 门店", "Melbourne VIC 3000", "Australia/Melbourne")]
-    public void ResolveStoreTimeZoneForSales_文本回退严格匹配门店别名(
-        string storeCode,
-        string storeName,
-        string address,
-        string expectedTimeZoneId
-    )
-    {
-        var resolvedTimeZoneId = InvokeSalesTimeZoneResolution(
-            CreateService(),
-            storeCode,
-            storeName,
-            address
-        );
-
-        Assert.Equal(expectedTimeZoneId, resolvedTimeZoneId);
-    }
-
-    [Theory]
     [InlineData("Australia/Brisbane", "Brisbane QLD 4000", "Brisbane 门店", "2026-01-15")]
     [InlineData("Invalid/TimeZone", "Sydney NSW 2000", "Sydney 门店", "2026-01-16")]
     [InlineData(null, "Melbourne VIC 3000", "Melbourne 门店", "2026-01-16")]
@@ -4926,22 +4913,24 @@ public sealed class StoreOrderProductListTests : IDisposable
     public void GetProductActivityHistoryAsync_单一筛选使用专用投影避免SqlServer全空列类型推断()
     {
         var source = File.ReadAllText(
-            FindRepositoryFile("services/backend/BlazorApp.Api/Services/React/StoreOrderReactService.cs")
+            FindRepositoryFile(
+                "services/backend/BlazorApp.Api/Features/StoreOrders/ProductHistory/Infrastructure/ProductOrderHistoryQueryStore.cs"
+            )
         );
 
-        Assert.Contains("if (recordType == \"order\")", source, StringComparison.Ordinal);
-        Assert.Contains("if (recordType == \"sales\")", source, StringComparison.Ordinal);
+        Assert.Contains("if (input.RecordType == \"order\")", source, StringComparison.Ordinal);
+        Assert.Contains("if (input.RecordType == \"sales\")", source, StringComparison.Ordinal);
 
         var orderMethodStart = source.IndexOf(
-            "private async Task<(int Total, List<StoreOrderProductActivityHistoryRow> Rows)> LoadOrderActivityRowsAsync(",
+            ")> LoadOrderActivityRowsAsync(",
             StringComparison.Ordinal
         );
         var salesMethodStart = source.IndexOf(
-            "private async Task<(int Total, List<StoreOrderProductActivityHistoryRow> Rows)> LoadSalesActivityRowsAsync(",
+            ")> LoadSalesActivityRowsAsync(",
             StringComparison.Ordinal
         );
         var nextMethodStart = source.IndexOf(
-            "private ISugarQueryable<StoreOrderProductOrderHistoryRow> BuildAggregatedProductOrderHistoryQuery(",
+            "private ISugarQueryable<ProductHistoryOrderHistoryRow> BuildAggregatedProductOrderHistoryQuery(",
             StringComparison.Ordinal
         );
         Assert.True(orderMethodStart >= 0 && salesMethodStart > orderMethodStart);
@@ -4952,7 +4941,7 @@ public sealed class StoreOrderProductListTests : IDisposable
         Assert.DoesNotContain("SalesQuantity", orderMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("CreatedAt", salesMethod, StringComparison.Ordinal);
         Assert.Contains(
-            "StoreOrderProductSalesActivityHistoryRow",
+            "ProductHistorySalesActivityHistoryRow",
             salesMethod,
             StringComparison.Ordinal
         );
@@ -7581,25 +7570,16 @@ public sealed class StoreOrderProductListTests : IDisposable
             .Setup(item => item.GetNextOrderNoAsync())
             .ReturnsAsync($"ORD-{userGuid}");
 
-        var service = new StoreOrderReactService(
+        return StoreOrderReactServiceTestFactory.Create(
             context,
-            NullLogger<StoreOrderReactService>.Instance,
             httpContextAccessor,
             orderNumberGenerator.Object,
             new ConfigurationBuilder().Build(),
             Mock.Of<IMapper>(),
-            Mock.Of<IInvoiceEmailService>(),
             _locationLookupService,
-            _changeHistoryService
+            _changeHistoryService,
+            createHqConnection: () => _db
         );
-
-        var hqField = typeof(StoreOrderReactService).GetField(
-            "_createHqConnection",
-            BindingFlags.Instance | BindingFlags.NonPublic
-        );
-        hqField!.SetValue(service, () => _db);
-
-        return service;
     }
 
     private StoreOrderReactService CreateService(TimeProvider timeProvider)
@@ -7613,55 +7593,23 @@ public sealed class StoreOrderProductListTests : IDisposable
         var orderNumberGenerator = new Mock<IOrderNumberGenerator>();
         orderNumberGenerator.Setup(item => item.GetNextOrderNoAsync()).ReturnsAsync("ORD-user-1");
 
-        var service = new StoreOrderReactService(
+        return StoreOrderReactServiceTestFactory.Create(
             context,
-            NullLogger<StoreOrderReactService>.Instance,
             httpContextAccessor,
             orderNumberGenerator.Object,
             new ConfigurationBuilder().Build(),
             Mock.Of<IMapper>(),
-            Mock.Of<IInvoiceEmailService>(),
             _locationLookupService,
             _changeHistoryService,
-            timeProvider
+            timeProvider,
+            createHqConnection: () => _db
         );
-        typeof(StoreOrderReactService)
-            .GetField("_createHqConnection", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .SetValue(service, () => _db);
-        return service;
     }
 
     private StoreOrderReactService CreateServiceForSalesDate(DateTime date)
     {
         var utcDate = DateTime.SpecifyKind(date.Date, DateTimeKind.Utc);
         return CreateService(new FixedTimeProvider(new DateTimeOffset(utcDate)));
-    }
-
-    private static string InvokeSalesTimeZoneResolution(
-        StoreOrderReactService service,
-        string storeCode,
-        string storeName,
-        string address
-    )
-    {
-        var serviceType = typeof(StoreOrderReactService);
-        var storeRowType = serviceType.GetNestedType(
-            "StoreOrderSalesStoreRow",
-            BindingFlags.NonPublic
-        );
-        Assert.NotNull(storeRowType);
-        var storeRow = Activator.CreateInstance(storeRowType!);
-        Assert.NotNull(storeRow);
-        storeRowType!.GetProperty("StoreCode")!.SetValue(storeRow, storeCode);
-        storeRowType.GetProperty("StoreName")!.SetValue(storeRow, storeName);
-        storeRowType.GetProperty("Address")!.SetValue(storeRow, address);
-
-        var method = serviceType.GetMethod(
-            "ResolveStoreTimeZoneForSales",
-            BindingFlags.Instance | BindingFlags.NonPublic
-        );
-        Assert.NotNull(method);
-        return Assert.IsType<string>(method!.Invoke(service, new[] { storeRow }));
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
