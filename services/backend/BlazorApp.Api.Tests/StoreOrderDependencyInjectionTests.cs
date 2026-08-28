@@ -62,6 +62,7 @@ public sealed class StoreOrderDependencyInjectionTests
         services.AddScoped(_ => Mock.Of<IStoreOrderLocationProductLookupService>());
         services.AddScoped(_ => Mock.Of<IWarehouseProductChangeHistoryService>());
         services.AddScoped(_ => Mock.Of<IOrderNumberGenerator>());
+        services.AddScoped(_ => Mock.Of<IInvoiceEmailService>());
         services.AddScoped(_ => Mock.Of<IPreorderGateService>());
         services.AddScoped(_ => Mock.Of<IStoreOrderSyncJobService>());
         services.AddScoped(_ => Mock.Of<IStoreOrderInvoiceEmailJobService>());
@@ -69,7 +70,7 @@ public sealed class StoreOrderDependencyInjectionTests
         services.AddScoped(_ => Mock.Of<IStoreOrderPasteReplaceJobService>());
 
         services.AddStoreOrderFeatures();
-        services.AddScoped<IStoreOrderReactService, StoreOrderReactService>();
+        services.AddStoreOrderReactFacade();
 
         using var provider = services.BuildServiceProvider(
             new ServiceProviderOptions

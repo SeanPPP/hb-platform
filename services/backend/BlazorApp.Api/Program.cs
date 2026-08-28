@@ -915,7 +915,7 @@ builder.Services.AddScoped<
     StoreOrderLocationProductLookupService
 >();
 builder.Services.AddStoreOrderFeatures();
-builder.Services.AddScoped<IStoreOrderReactService, StoreOrderReactService>();
+builder.Services.AddStoreOrderReactFacade();
 builder.Services.AddScoped<IBrowserExtensionAccessService, BrowserExtensionAccessService>();
 builder.Services.AddScoped<IBrowserExtensionService, BrowserExtensionService>();
 builder.Services.AddScoped<PreorderReactService>();
