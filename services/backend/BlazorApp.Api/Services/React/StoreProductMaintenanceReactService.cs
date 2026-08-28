@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using System.Text.Json;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
@@ -16,6 +17,7 @@ namespace BlazorApp.Api.Services.React
 {
     public class StoreProductMaintenanceReactService : IStoreProductMaintenanceReactService
     {
+        public const string SetCodeSnapshotConflictErrorCode = "SET_CODE_SNAPSHOT_CONFLICT";
         private readonly ISqlSugarClient _db;
         private readonly ILogger<StoreProductMaintenanceReactService> _logger;
         private readonly IAutoPricingService _autoPricingService;
@@ -962,6 +964,33 @@ namespace BlazorApp.Api.Services.React
             return RoundNullablePrice(left) == RoundNullablePrice(right);
         }
 
+        private static bool SetCodeSnapshotMatches(
+            IReadOnlyCollection<ProductSetCode> currentItems,
+            IReadOnlyCollection<SaveStoreProductSetCodeSnapshotItemDto> expectedItems
+        )
+        {
+            if (currentItems.Count != expectedItems.Count)
+            {
+                return false;
+            }
+
+            var expectedById = expectedItems.ToDictionary(
+                item => item.SetCodeId!.Trim(),
+                StringComparer.Ordinal
+            );
+            return currentItems.All(current =>
+                expectedById.TryGetValue(current.SetCodeId, out var expected)
+                && string.Equals(
+                    current.SetBarcode?.Trim() ?? string.Empty,
+                    expected.Barcode?.Trim() ?? string.Empty,
+                    StringComparison.Ordinal
+                )
+                && current.SetType == expected.SetType
+                && current.IsActive == expected.IsActive
+                && (current.SetType != 1 || PricesEqual(current.SetRetailPrice, expected.RetailPrice))
+            );
+        }
+
         private static bool DiscountRatesEqual(decimal? left, decimal? right)
         {
             return RoundNullableDiscountRate(left) == RoundNullableDiscountRate(right);
@@ -1010,7 +1039,7 @@ namespace BlazorApp.Api.Services.React
                 var pageResult = await QueryProductCodesPageAsync(
                     productCode,
                     storeCode,
-                    null,
+                    1,
                     page,
                     pageSize,
                     keyword,
@@ -1260,6 +1289,28 @@ namespace BlazorApp.Api.Services.React
                 await _db.Ado.BeginTranAsync();
                 try
                 {
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        _db,
+                        new[] { normalizedProductCode }
+                    );
+                    product = await _db.Queryable<Product>()
+                        .Where(item => item.ProductCode == normalizedProductCode && !item.IsDeleted)
+                        .FirstAsync();
+                    if (product == null)
+                    {
+                        throw new InvalidOperationException("商品在等待业务锁期间已变化");
+                    }
+                    if (product.ProductType != request.ProductType
+                        && await _db.Queryable<ProductSetCode>()
+                            .Where(item => item.ProductCode == normalizedProductCode && !item.IsDeleted)
+                            .AnyAsync())
+                    {
+                        throw new InvalidOperationException("商品已有多码/套装条码，不能直接切换商品类型");
+                    }
+                    domesticProduct = await _db.Queryable<DomesticProduct>()
+                        .Where(item => item.ProductCode == normalizedProductCode && !item.IsDeleted)
+                        .FirstAsync();
+
                     // 两张业务表和审计历史使用同一事务，避免历史缺失或类型不同步。
                     var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(
                         new[] { normalizedProductCode }
@@ -1565,9 +1616,9 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<StoreProductSetCodeDto>.Error("商品编码和条码不能为空");
                 }
 
-                if (request.ProductType == 1 && (!request.RetailPrice.HasValue || request.RetailPrice.Value < 0))
+                if (request.ProductType == 1 && (!request.RetailPrice.HasValue || request.RetailPrice.Value <= 0))
                 {
-                    return ApiResponse<StoreProductSetCodeDto>.Error("套装零售价不能为空");
+                    return ApiResponse<StoreProductSetCodeDto>.Error("套装零售价必须大于 0");
                 }
 
                 var normalizedProductCode = request.ProductCode.Trim();
@@ -1672,6 +1723,11 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<StoreProductSetCodeDto>.Error("条码记录不存在");
                 }
 
+                if (setCode.SetType == 1 && (!request.RetailPrice.HasValue || request.RetailPrice.Value <= 0))
+                {
+                    return ApiResponse<StoreProductSetCodeDto>.Error("套装零售价必须大于 0");
+                }
+
                 var mainStorePrice = await QueryStorePriceByStoreAsync(setCode.ProductCode, request.StoreCode);
                 setCode.SetBarcode = request.Barcode?.Trim();
                 setCode.SetRetailPrice = setCode.SetType == 2
@@ -1752,6 +1808,272 @@ namespace BlazorApp.Api.Services.React
                 if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
                     return BuildSetChildPurchasePriceBusyResponse<StoreProductSetCodeDto>();
                 return ApiResponse<StoreProductSetCodeDto>.Error($"更新条码失败: {ex.Message}");
+            }
+        }
+
+        public async Task<ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>> SaveSetCodeSnapshotAsync(
+            SaveStoreProductSetCodeSnapshotDto request,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        )
+        {
+            request.ExpectedItems ??= new List<SaveStoreProductSetCodeSnapshotItemDto>();
+            request.Items ??= new List<SaveStoreProductSetCodeSnapshotItemDto>();
+            var productCode = request.ProductCode?.Trim();
+            var storeCode = request.StoreCode?.Trim();
+            if (string.IsNullOrWhiteSpace(productCode) || string.IsNullOrWhiteSpace(storeCode))
+            {
+                return ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>.Error("商品编码和分店编码不能为空");
+            }
+            if (accessibleStoreCodes != null)
+            {
+                return ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>.Error("仅管理员可以保存商品条码快照");
+            }
+            if (request.ProductType is < 1 or > 2 || request.ExpectedProductType is < 0 or > 2)
+            {
+                return ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>.Error("商品类型无效");
+            }
+            if (request.ExpectedItems.Count > 10_000 || request.Items.Count > 10_000)
+            {
+                return ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>.Error("条码数量超过上限");
+            }
+
+            var expectedIds = new HashSet<string>(StringComparer.Ordinal);
+            if (request.ExpectedItems.Any(item =>
+                string.IsNullOrWhiteSpace(item.SetCodeId)
+                || !expectedIds.Add(item.SetCodeId.Trim())
+                || item.SetType is < 1 or > 2))
+            {
+                return ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>.Error("期望条码快照无效");
+            }
+            var targetIds = new HashSet<string>(StringComparer.Ordinal);
+            var targetBarcodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (request.Items.Any(item =>
+                string.IsNullOrWhiteSpace(item.Barcode)
+                || item.Barcode.Trim().Length > 50
+                || !targetBarcodes.Add(item.Barcode.Trim())
+                || (!string.IsNullOrWhiteSpace(item.SetCodeId) && !targetIds.Add(item.SetCodeId.Trim()))
+                || item.SetType != request.ProductType
+                || (request.ProductType == 1 && (!item.RetailPrice.HasValue || item.RetailPrice <= 0))))
+            {
+                return ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>.Error("待保存条码快照无效");
+            }
+
+            try
+            {
+                await _db.Ado.BeginTranAsync();
+                try
+                {
+                    var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        _db,
+                        new[] { productCode }
+                    );
+                    var product = await _db.Queryable<Product>()
+                        .Where(item => item.ProductCode == productCode && !item.IsDeleted)
+                        .FirstAsync();
+                    var storeExists = await _db.Queryable<Store>()
+                        .Where(item => item.StoreCode == storeCode && item.IsActive && !item.IsDeleted)
+                        .AnyAsync();
+                    if (product == null || !storeExists)
+                    {
+                        throw new InvalidOperationException(product == null ? "商品不存在" : "分店不存在或已停用");
+                    }
+
+                    var currentItems = await _db.Queryable<ProductSetCode>()
+                        .Where(item => item.ProductCode == productCode && !item.IsDeleted)
+                        .OrderBy(item => item.SetCodeId)
+                        .ToListAsync();
+                    if (product.ProductType != request.ExpectedProductType
+                        || !SetCodeSnapshotMatches(currentItems, request.ExpectedItems))
+                    {
+                        await _db.Ado.RollbackTranAsync();
+                        return ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>.Error(
+                            "商品条码已变化，请重新加载后重试",
+                            SetCodeSnapshotConflictErrorCode
+                        );
+                    }
+                    var beforeSetCodeAuditSnapshot = BuildSetCodeAuditSnapshot(currentItems);
+                    if (product.ProductType != request.ProductType && currentItems.Count > 0)
+                    {
+                        throw new InvalidOperationException("商品已有多码/套装条码，不能直接切换商品类型");
+                    }
+                    if (request.Items.Any(item => !string.IsNullOrWhiteSpace(item.SetCodeId)
+                        && currentItems.All(current => current.SetCodeId != item.SetCodeId.Trim())))
+                    {
+                        throw new InvalidOperationException("待保存条码包含不属于当前商品的记录");
+                    }
+
+                    var now = DateTime.UtcNow;
+                    var actor = string.IsNullOrWhiteSpace(updatedBy) ? "System" : updatedBy.Trim();
+                    var actorUserGuid = _currentUserService.GetCurrentUserGuid();
+                    var isSystemActor = string.IsNullOrWhiteSpace(actorUserGuid)
+                        && string.Equals(actor, "System", StringComparison.OrdinalIgnoreCase);
+                    var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(new[] { productCode });
+                    product.ProductType = request.ProductType;
+                    product.UpdatedAt = now;
+                    product.UpdatedBy = actor;
+                    await _db.Updateable(product)
+                        .UpdateColumns(item => new { item.ProductType, item.UpdatedAt, item.UpdatedBy })
+                        .ExecuteCommandAsync();
+
+                    var domestic = await _db.Queryable<DomesticProduct>()
+                        .Where(item => item.ProductCode == productCode && !item.IsDeleted)
+                        .FirstAsync();
+                    if (domestic != null)
+                    {
+                        domestic.ProductType = request.ProductType;
+                        domestic.UpdatedAt = now;
+                        domestic.UpdatedBy = actor;
+                        await _db.Updateable(domestic)
+                            .UpdateColumns(item => new { item.ProductType, item.UpdatedAt, item.UpdatedBy })
+                            .ExecuteCommandAsync();
+                    }
+
+                    var currentById = currentItems.ToDictionary(item => item.SetCodeId, StringComparer.Ordinal);
+                    var retainedIds = request.Items.Where(item => !string.IsNullOrWhiteSpace(item.SetCodeId))
+                        .Select(item => item.SetCodeId!.Trim()).ToHashSet(StringComparer.Ordinal);
+                    var removedItems = currentItems.Where(item => !retainedIds.Contains(item.SetCodeId)).ToList();
+                    foreach (var removed in removedItems)
+                    {
+                        removed.IsDeleted = true;
+                        removed.IsActive = false;
+                        removed.UpdatedAt = now;
+                        removed.UpdatedBy = actor;
+                    }
+                    if (removedItems.Count > 0)
+                    {
+                        foreach (var batch in removedItems.Chunk(100))
+                        {
+                            await _db.Updateable(batch.ToList())
+                                .UpdateColumns(item => new { item.IsDeleted, item.IsActive, item.UpdatedAt, item.UpdatedBy })
+                                .ExecuteCommandAsync();
+                        }
+                        var removedCodes = removedItems
+                            .Select(item => ResolveSetProductCode(item.SetProductCode, item.SetCodeId))
+                            .Distinct(StringComparer.Ordinal)
+                            .ToList();
+                        foreach (var batch in removedCodes.Chunk(500))
+                        {
+                            var childCodes = batch.ToList();
+                            await _db.Deleteable<StoreMultiCodeProduct>()
+                                .Where(item => item.ProductCode == productCode && item.MultiCodeProductCode != null
+                                    && childCodes.Contains(item.MultiCodeProductCode) && !item.IsDeleted)
+                                .ExecuteCommandAsync();
+                        }
+                    }
+
+                    var existingSetNumbers = currentItems.Select(item => item.SetItemNumber).ToList();
+                    var mainStorePrice = request.ProductType == 2
+                        ? await QueryStorePriceByStoreAsync(productCode, storeCode)
+                        : null;
+                    var targets = new List<ProductSetCode>();
+                    var updates = new List<ProductSetCode>();
+                    var inserts = new List<ProductSetCode>();
+                    foreach (var item in request.Items)
+                    {
+                        var entity = !string.IsNullOrWhiteSpace(item.SetCodeId)
+                            ? currentById[item.SetCodeId.Trim()]
+                            : new ProductSetCode
+                            {
+                                SetCodeId = UuidHelper.GenerateUuid7(),
+                                ProductCode = productCode,
+                                SetProductCode = UuidHelper.GenerateUuid7(),
+                                SetItemNumber = ItemNumberHelper.GenerateSetItemNumber(product.ItemNumber ?? productCode, existingSetNumbers),
+                                SetQuantity = 1,
+                                CreatedAt = now,
+                                CreatedBy = actor,
+                            };
+                        if (string.IsNullOrWhiteSpace(item.SetCodeId))
+                        {
+                            existingSetNumbers.Add(entity.SetItemNumber);
+                            inserts.Add(entity);
+                        }
+                        else
+                        {
+                            updates.Add(entity);
+                        }
+                        entity.SetBarcode = item.Barcode.Trim();
+                        entity.SetType = request.ProductType;
+                        entity.SetPurchasePrice = request.ProductType == 1 ? null : mainStorePrice?.PurchasePrice;
+                        entity.SetRetailPrice = request.ProductType == 1 ? item.RetailPrice : mainStorePrice?.StoreRetailPriceValue;
+                        entity.IsActive = item.IsActive;
+                        entity.IsDeleted = false;
+                        entity.UpdatedAt = now;
+                        entity.UpdatedBy = actor;
+                        targets.Add(entity);
+                    }
+                    if (updates.Count > 0)
+                    {
+                        foreach (var batch in updates.Chunk(100))
+                        {
+                            await _db.Updateable(batch.ToList()).UpdateColumns(item => new {
+                                item.SetBarcode, item.SetPurchasePrice, item.SetRetailPrice, item.SetType,
+                                item.IsActive, item.UpdatedAt, item.UpdatedBy
+                            }).ExecuteCommandAsync();
+                        }
+                    }
+                    if (inserts.Count > 0)
+                    {
+                        foreach (var batch in inserts.Chunk(100))
+                        {
+                            await _db.Insertable(batch.ToList()).ExecuteCommandAsync();
+                        }
+                    }
+                    await SyncSetCodesAcrossStoresAsync(targets, actor, preserveExistingProjectionMetadata: true);
+                    if (targets.Count > 0 || removedItems.Count > 0)
+                    {
+                        var writeback = await new SetChildPurchasePriceService(_db).RecalculateLockedAsync(
+                            lockScope, new[] { productCode }, storeCodes: null, updatedBy: actor
+                        );
+                        EnsureNoSkippedStoreSetGroups(writeback);
+                    }
+                    var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(new[] { productCode });
+                    await _changeHistoryService.RecordChangesAsync(
+                        beforeSnapshots, afterSnapshots,
+                        new WarehouseProductChangeHistoryContextDto
+                        {
+                            Action = "Update", Source = "StoreProductMaintenanceSetCodeSnapshot",
+                            SourceReference = productCode, ActorName = actor,
+                            ActorUserGuid = string.IsNullOrWhiteSpace(actorUserGuid) ? null : actorUserGuid,
+                            ActorType = isSystemActor ? "System" : "User", OccurredAtUtc = now,
+                        }
+                    );
+                    var persisted = await _db.Queryable<ProductSetCode>()
+                        .Where(item => item.ProductCode == productCode && !item.IsDeleted)
+                        .OrderBy(item => item.SetCodeId).ToListAsync();
+                    await RecordSetCodeSnapshotAuditAsync(
+                        productCode, storeCode, beforeSetCodeAuditSnapshot,
+                        BuildSetCodeAuditSnapshot(persisted), actorUserGuid, actor, isSystemActor, now
+                    );
+                    var projections = await QueryProjectedStoreMultiCodesAsync(persisted, storeCode);
+                    var projectionMap = projections.ToDictionary(
+                        item => ResolveSetProductCode(item.MultiCodeProductCode, item.UUID), item => item, StringComparer.Ordinal
+                    );
+                    await _db.Ado.CommitTranAsync();
+                    return ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>.OK(new()
+                    {
+                        ProductCode = productCode, StoreCode = storeCode, ProductType = request.ProductType,
+                        Items = persisted.Select(item =>
+                        {
+                            projectionMap.TryGetValue(ResolveSetProductCode(item.SetProductCode, item.SetCodeId), out var projection);
+                            return BuildSetCodeDto(item, projection);
+                        }).ToList(),
+                    }, "保存成功");
+                }
+                catch
+                {
+                    await _db.Ado.RollbackTranAsync();
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "保存商品条码快照失败: {ProductCode}", productCode);
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                {
+                    return BuildSetChildPurchasePriceBusyResponse<SaveStoreProductSetCodeSnapshotResultDto>();
+                }
+                return ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>.Error("保存商品条码快照失败，请稍后重试");
             }
         }
 
@@ -1977,6 +2299,7 @@ namespace BlazorApp.Api.Services.React
             RefAsync<int> totalCount = 0;
             var setCodes = await BuildProductSetCodeQuery(normalizedProductCode, setType, keyword)
                 .OrderBy(s => s.SetBarcode)
+                .OrderBy(s => s.SetCodeId)
                 .Select(s => new ProductSetCode
                 {
                     SetCodeId = s.SetCodeId,
@@ -2043,8 +2366,9 @@ namespace BlazorApp.Api.Services.React
             var pageIndex = Math.Max(1, page);
             var normalizedPageSize = Math.Clamp(pageSize, 1, 100);
             RefAsync<int> totalCount = 0;
-            var setCodes = await BuildProductSetCodeQuery(normalizedProductCode, null, keyword)
+            var setCodes = await BuildProductSetCodeQuery(normalizedProductCode, 2, keyword)
                 .OrderBy(s => s.SetBarcode)
+                .OrderBy(s => s.SetCodeId)
                 .Select(s => new ProductSetCode
                 {
                     SetCodeId = s.SetCodeId,
@@ -2081,7 +2405,9 @@ namespace BlazorApp.Api.Services.React
                 .Where(s => s.ProductCode == productCode && !s.IsDeleted);
             if (setType.HasValue)
             {
-                query = query.Where(s => s.SetType == setType.Value);
+                // SqlSugar 无法可靠翻译可空参数的 Value；先固化为局部值以保证类型过滤进入 SQL。
+                var targetSetType = setType.GetValueOrDefault();
+                query = query.Where(s => s.SetType == targetSetType);
             }
 
             var normalizedKeyword = keyword?.Trim();
@@ -2104,6 +2430,7 @@ namespace BlazorApp.Api.Services.React
         {
             return await BuildProductSetCodeQuery(productCode, setType, keyword)
                 .OrderBy(s => s.SetBarcode)
+                .OrderBy(s => s.SetCodeId)
                 .Select(s => new ProductSetCode
                 {
                     SetCodeId = s.SetCodeId,
@@ -2814,30 +3141,35 @@ namespace BlazorApp.Api.Services.React
                 throw new InvalidOperationException("门店套装投影查询必须限定单一父商品");
             }
             var parentProductCode = parentProductCodes[0];
-            var existing = await _db.Queryable<StoreMultiCodeProduct>()
-                .Where(x =>
-                    x.StoreCode == storeCode
-                    && x.ProductCode == parentProductCode
-                    && x.MultiCodeProductCode != null
-                    && setProductCodes.Contains(x.MultiCodeProductCode)
-                    && !x.IsDeleted
-                )
-                .Select(x => new StoreMultiCodeProduct
-                {
-                    UUID = x.UUID,
-                    StoreCode = x.StoreCode,
-                    ProductCode = x.ProductCode,
-                    MultiCodeProductCode = x.MultiCodeProductCode,
-                    StoreMultiCodeProductCode = x.StoreMultiCodeProductCode,
-                    MultiBarcode = x.MultiBarcode,
-                    PurchasePrice = x.PurchasePrice,
-                    MultiCodeRetailPrice = x.MultiCodeRetailPrice,
-                    DiscountRate = x.DiscountRate,
-                    IsAutoPricing = x.IsAutoPricing,
-                    IsSpecialProduct = x.IsSpecialProduct,
-                    IsActive = x.IsActive,
-                })
-                .ToListAsync();
+            var existing = new List<StoreMultiCodeProduct>();
+            foreach (var batch in setProductCodes.Chunk(500))
+            {
+                var childCodes = batch.ToList();
+                existing.AddRange(await _db.Queryable<StoreMultiCodeProduct>()
+                    .Where(x =>
+                        x.StoreCode == storeCode
+                        && x.ProductCode == parentProductCode
+                        && x.MultiCodeProductCode != null
+                        && childCodes.Contains(x.MultiCodeProductCode)
+                        && !x.IsDeleted
+                    )
+                    .Select(x => new StoreMultiCodeProduct
+                    {
+                        UUID = x.UUID,
+                        StoreCode = x.StoreCode,
+                        ProductCode = x.ProductCode,
+                        MultiCodeProductCode = x.MultiCodeProductCode,
+                        StoreMultiCodeProductCode = x.StoreMultiCodeProductCode,
+                        MultiBarcode = x.MultiBarcode,
+                        PurchasePrice = x.PurchasePrice,
+                        MultiCodeRetailPrice = x.MultiCodeRetailPrice,
+                        DiscountRate = x.DiscountRate,
+                        IsAutoPricing = x.IsAutoPricing,
+                        IsSpecialProduct = x.IsSpecialProduct,
+                        IsActive = x.IsActive,
+                    })
+                    .ToListAsync());
+            }
 
             var existingMap = existing.ToDictionary(
                 x => ResolveSetProductCode(x.MultiCodeProductCode, x.UUID),
@@ -3044,7 +3376,9 @@ namespace BlazorApp.Api.Services.React
         private async Task SyncSetCodeAcrossStoresAsync(
             ProductSetCode setCode,
             string updatedBy,
-            SetChildPurchasePriceLockScope lockScope
+            SetChildPurchasePriceLockScope lockScope,
+            bool recalculateSetCosts = true,
+            bool preserveExistingProjectionMetadata = false
         )
         {
             var activeStores = await _db.Queryable<Store>()
@@ -3053,7 +3387,7 @@ namespace BlazorApp.Api.Services.React
                 .ToListAsync();
             if (activeStores.Count == 0)
             {
-                if (setCode.SetType == 1 || setCode.SetType == 2)
+                if (recalculateSetCosts && (setCode.SetType == 1 || setCode.SetType == 2))
                 {
                     var writeback = await new SetChildPurchasePriceService(_db)
                         .RecalculateLockedAsync(
@@ -3096,7 +3430,17 @@ namespace BlazorApp.Api.Services.React
                 mainPriceMap.TryGetValue(activeStoreCode, out var mainPrice);
                 if (existingMap.TryGetValue(activeStoreCode, out var current))
                 {
+                    var discountRate = current.DiscountRate;
+                    var isAutoPricing = current.IsAutoPricing;
+                    var isSpecialProduct = current.IsSpecialProduct;
                     ApplyProjectionValues(current, setCode, mainPrice, updatedBy);
+                    if (preserveExistingProjectionMetadata)
+                    {
+                        // 快照维护只负责条码、派生价格和启停状态，不覆盖分店自己的定价策略字段。
+                        current.DiscountRate = discountRate;
+                        current.IsAutoPricing = isAutoPricing;
+                        current.IsSpecialProduct = isSpecialProduct;
+                    }
                     updates.Add(current);
                     continue;
                 }
@@ -3130,7 +3474,7 @@ namespace BlazorApp.Api.Services.React
                     .ExecuteCommandAsync();
             }
 
-            if (setCode.SetType == 1 || setCode.SetType == 2)
+            if (recalculateSetCosts && (setCode.SetType == 1 || setCode.SetType == 2))
             {
                 var writeback = await new SetChildPurchasePriceService(_db)
                     .RecalculateLockedAsync(
@@ -3141,6 +3485,119 @@ namespace BlazorApp.Api.Services.React
                     );
                 EnsureNoSkippedStoreSetGroups(writeback);
             }
+        }
+
+        // 快照保存会携带大量子码；批量路径只用于该端点，避免对每个子码重复读取门店、主价格和投影。
+        private async Task SyncSetCodesAcrossStoresAsync(
+            IReadOnlyCollection<ProductSetCode> setCodes,
+            string updatedBy,
+            bool preserveExistingProjectionMetadata
+        )
+        {
+            if (setCodes.Count == 0) return;
+            var productCode = setCodes.First().ProductCode;
+            var stores = await _db.Queryable<Store>()
+                .Where(s => s.IsActive && !s.IsDeleted && s.StoreCode != null)
+                .Select(s => s.StoreCode!).ToListAsync();
+            if (stores.Count == 0) return;
+            var storeSet = stores.ToHashSet(StringComparer.Ordinal);
+            var prices = (await _db.Queryable<StoreRetailPrice>()
+                .Where(x => x.ProductCode == productCode && x.StoreCode != null && !x.IsDeleted)
+                .ToListAsync())
+                .Where(x => storeSet.Contains(x.StoreCode!))
+                .ToList();
+            var priceMap = prices.ToDictionary(x => x.StoreCode!, x => x);
+            const int queryBatchSize = 500;
+            const int writeBatchSize = 100;
+            var inserts = new List<StoreMultiCodeProduct>();
+            var updates = new List<StoreMultiCodeProduct>();
+            foreach (var batch in setCodes.Chunk(queryBatchSize))
+            {
+                var codeMap = batch.ToDictionary(
+                    item => ResolveSetProductCode(item.SetProductCode, item.SetCodeId), item => item, StringComparer.Ordinal);
+                var childCodes = codeMap.Keys.ToList();
+                var existing = await _db.Queryable<StoreMultiCodeProduct>()
+                    .Where(x => x.ProductCode == productCode && x.MultiCodeProductCode != null
+                        && childCodes.Contains(x.MultiCodeProductCode) && x.StoreCode != null && !x.IsDeleted)
+                    .ToListAsync();
+                existing = existing.Where(item => storeSet.Contains(item.StoreCode!)).ToList();
+                var existingMap = existing.ToDictionary(
+                    item => $"{item.StoreCode}\u001f{item.MultiCodeProductCode}", item => item, StringComparer.Ordinal);
+                foreach (var setCode in batch)
+                {
+                    var childCode = ResolveSetProductCode(setCode.SetProductCode, setCode.SetCodeId);
+                    foreach (var storeCode in stores)
+                    {
+                        priceMap.TryGetValue(storeCode, out var price);
+                        if (existingMap.TryGetValue($"{storeCode}\u001f{childCode}", out var current))
+                        {
+                            var discountRate = current.DiscountRate;
+                            var isAutoPricing = current.IsAutoPricing;
+                            var isSpecialProduct = current.IsSpecialProduct;
+                            ApplyProjectionValues(current, setCode, price, updatedBy);
+                            if (preserveExistingProjectionMetadata)
+                            {
+                                current.DiscountRate = discountRate;
+                                current.IsAutoPricing = isAutoPricing;
+                                current.IsSpecialProduct = isSpecialProduct;
+                            }
+                            updates.Add(current);
+                        }
+                        else
+                        {
+                            inserts.Add(BuildProjectedStoreMultiCode(setCode, price, storeCode, updatedBy));
+                        }
+                    }
+                }
+            }
+            foreach (var batch in inserts.Chunk(writeBatchSize))
+            {
+                await _db.Insertable(batch.ToList()).ExecuteCommandAsync();
+            }
+            foreach (var batch in updates.Chunk(writeBatchSize))
+            {
+                await _db.Updateable(batch.ToList()).UpdateColumns(x => new
+                {
+                    x.ProductCode, x.MultiCodeProductCode, x.StoreMultiCodeProductCode, x.MultiBarcode,
+                    x.PurchasePrice, x.MultiCodeRetailPrice, x.DiscountRate, x.IsAutoPricing,
+                    x.IsSpecialProduct, x.IsActive, x.UpdatedAt, x.UpdatedBy,
+                }).ExecuteCommandAsync();
+            }
+        }
+
+        private static string BuildSetCodeAuditSnapshot(IEnumerable<ProductSetCode> items)
+        {
+            return JsonSerializer.Serialize(items.OrderBy(item => item.SetCodeId, StringComparer.Ordinal)
+                .Select(item => new
+                {
+                    setCodeId = item.SetCodeId,
+                    setProductCode = ResolveSetProductCode(item.SetProductCode, item.SetCodeId),
+                    setItemNumber = item.SetItemNumber,
+                    barcode = item.SetBarcode?.Trim(),
+                    retailPrice = RoundNullablePrice(item.SetRetailPrice),
+                    setType = item.SetType,
+                    isActive = item.IsActive,
+                }));
+        }
+
+        private async Task RecordSetCodeSnapshotAuditAsync(
+            string productCode, string storeCode, string beforeSnapshot, string afterSnapshot,
+            string? actorUserGuid, string actorName, bool isSystemActor, DateTime occurredAtUtc
+        )
+        {
+            if (string.Equals(beforeSnapshot, afterSnapshot, StringComparison.Ordinal)) return;
+            await _db.Insertable(new WarehouseProductChangeHistory
+            {
+                EventGuid = Guid.NewGuid(), ProductCode = productCode, Action = "Update",
+                Source = "StoreProductMaintenanceSetCodeSnapshot", SourceReference = $"{productCode}@{storeCode}",
+                ActorUserGuid = string.IsNullOrWhiteSpace(actorUserGuid) ? null : actorUserGuid,
+                ActorName = actorName, ActorType = isSystemActor ? "System" : "User",
+                OccurredAtUtc = occurredAtUtc,
+                ChangesJson = JsonSerializer.Serialize(new[] { new WarehouseProductChangeItemDto
+                {
+                    FieldKey = "productSetCodes", ValueType = "json", BeforeValue = beforeSnapshot, AfterValue = afterSnapshot,
+                }}),
+            }).ExecuteCommandAsync();
         }
 
         private static ApiResponse<T> BuildSetChildPurchasePriceBusyResponse<T>()

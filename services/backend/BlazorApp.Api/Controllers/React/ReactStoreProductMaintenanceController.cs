@@ -5,6 +5,7 @@ using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
@@ -369,6 +370,33 @@ namespace BlazorApp.Api.Controllers.React
             return BuildMutationResult(result);
         }
 
+        [HttpPost("set-codes/save-snapshot")]
+        public async Task<IActionResult> SaveSetCodeSnapshot(
+            [FromBody] SaveStoreProductSetCodeSnapshotDto request
+        )
+        {
+            // 快照保存会同步所有门店的全局条码，必须使用不受限的超级管理员身份。
+            if (!HasSuperAdminRole())
+            {
+                return Forbid();
+            }
+
+            var access = await ResolveAccessContextAsync();
+            if (!access.IsAllowed)
+            {
+                return Unauthorized(ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>.Error(access.Message));
+            }
+
+            var result = await _service.SaveSetCodeSnapshotAsync(
+                request,
+                access.ActorLabel,
+                access.StoreCodes
+            );
+            return result.ErrorCode == StoreProductMaintenanceReactService.SetCodeSnapshotConflictErrorCode
+                ? Conflict(result)
+                : BuildMutationResult(result);
+        }
+
         [HttpPut("products/{productCode}/clearance-price")]
         public async Task<IActionResult> UpsertClearancePrice(
             string productCode,
@@ -543,10 +571,18 @@ namespace BlazorApp.Api.Controllers.React
 
         private bool HasElevatedStoreAccess()
         {
-            return HasRole("Admin")
+            return HasSuperAdminRole()
                 || HasRole("Manager")
                 || HasRole("WarehouseManager")
                 || HasRole("WarehouseStaff");
+        }
+
+        private bool HasSuperAdminRole()
+        {
+            return User?.Claims.Any(claim =>
+                claim.Type == ClaimTypes.Role
+                && Permissions.IsSuperAdminRole(claim.Value)
+            ) == true;
         }
 
         private bool HasRole(string role)

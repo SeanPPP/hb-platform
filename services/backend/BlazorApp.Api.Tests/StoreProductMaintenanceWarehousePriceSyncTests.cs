@@ -49,11 +49,30 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
         });
         _db.CodeFirst.InitTables(
             typeof(Product),
+            typeof(DomesticProduct),
             typeof(WarehouseProduct),
             typeof(StoreRetailPrice),
             typeof(ProductSetCode),
             typeof(StoreMultiCodeProduct),
             typeof(Store)
+        );
+        _db.Ado.ExecuteCommand(
+            """
+            CREATE TABLE WarehouseProductChangeHistory (
+                Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                EventGuid TEXT NOT NULL,
+                ProductCode TEXT NOT NULL,
+                Action TEXT NOT NULL,
+                Source TEXT NOT NULL,
+                SourceReference TEXT NULL,
+                BatchGuid TEXT NULL,
+                ActorUserGuid TEXT NULL,
+                ActorName TEXT NOT NULL,
+                ActorType TEXT NOT NULL,
+                OccurredAtUtc TEXT NOT NULL,
+                ChangesJson TEXT NOT NULL
+            )
+            """
         );
 
         _autoPricingService
@@ -113,6 +132,430 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
         Assert.NotNull(method);
         Assert.Equal("store-prices/{uuid}/sync-warehouse", route?.Template);
         Assert.NotNull(serviceMethod);
+    }
+
+    [Fact]
+    public void Controller_暴露仅超级管理员可保存的商品条码快照路由()
+    {
+        var method = typeof(ReactStoreProductMaintenanceController).GetMethod(
+            "SaveSetCodeSnapshot",
+            BindingFlags.Instance | BindingFlags.Public
+        );
+        var route = method?.GetCustomAttribute<HttpPostAttribute>();
+
+        Assert.NotNull(method);
+        Assert.Equal("set-codes/save-snapshot", route?.Template);
+        Assert.NotNull(typeof(IStoreProductMaintenanceReactService).GetMethod("SaveSetCodeSnapshotAsync"));
+    }
+
+    [Fact]
+    public async Task Controller_非超级管理员拒绝保存全局条码快照()
+    {
+        var service = new Mock<IStoreProductMaintenanceReactService>(MockBehavior.Strict);
+        var controller = new ReactStoreProductMaintenanceController(
+            service.Object, Mock.Of<IDeviceRegistrationService>(), Mock.Of<IMapper>(),
+            CreateSqlSugarContext(_db), NullLogger<ReactStoreProductMaintenanceController>.Instance
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim(ClaimTypes.Name, "warehouse-manager"),
+                        new Claim(ClaimTypes.Role, "WarehouseManager"),
+                    }, "test")),
+                },
+            },
+        };
+
+        Assert.IsType<ForbidResult>(await controller.SaveSetCodeSnapshot(new()));
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task Controller_SuperAdmin以不受限作用域调用快照服务()
+    {
+        var service = new Mock<IStoreProductMaintenanceReactService>(MockBehavior.Strict);
+        service.Setup(value => value.SaveSetCodeSnapshotAsync(
+                It.IsAny<SaveStoreProductSetCodeSnapshotDto>(), "super-admin", null
+            ))
+            .ReturnsAsync(ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>.OK(new()));
+        var controller = new ReactStoreProductMaintenanceController(
+            service.Object, Mock.Of<IDeviceRegistrationService>(), Mock.Of<IMapper>(),
+            CreateSqlSugarContext(_db), NullLogger<ReactStoreProductMaintenanceController>.Instance
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim(ClaimTypes.Name, "super-admin"),
+                        new Claim(ClaimTypes.Role, "SuperAdmin"),
+                    }, "test")),
+                },
+            },
+        };
+
+        Assert.IsType<OkObjectResult>(await controller.SaveSetCodeSnapshot(new()));
+        service.VerifyAll();
+    }
+
+    [Fact]
+    public async Task SaveSetCodeSnapshotAsync_提交增删改时原子更新并同步投影()
+    {
+        const string productCode = "P-SNAPSHOT-SAVE";
+        await SeedMultiCodeParentAsync(productCode, storePurchasePrice: 30m, productPurchasePrice: 30m);
+        await EnsureActiveStoreAsync();
+        await _db.Updateable<Product>()
+            .SetColumns(x => x.ProductType == 1)
+            .Where(x => x.ProductCode == productCode)
+            .ExecuteCommandAsync();
+        var retained = BuildMultiCodeSetCode(productCode, "RETAIN", 10m, setType: 1);
+        var removed = BuildMultiCodeSetCode(productCode, "REMOVE", 20m, setType: 1);
+        await _db.Insertable(new[] { retained, removed }).ExecuteCommandAsync();
+
+        var result = await CreateService().SaveSetCodeSnapshotAsync(
+            new SaveStoreProductSetCodeSnapshotDto
+            {
+                ProductCode = productCode,
+                StoreCode = StoreCode,
+                ExpectedProductType = 1,
+                ProductType = 1,
+                ExpectedItems = new() { SnapshotItem(retained), SnapshotItem(removed) },
+                Items = new()
+                {
+                    new()
+                    {
+                        SetCodeId = retained.SetCodeId,
+                        Barcode = "BAR-UPDATED",
+                        RetailPrice = 11m,
+                        SetType = 1,
+                        IsActive = true,
+                    },
+                    new()
+                    {
+                        Barcode = "BAR-NEW",
+                        RetailPrice = 30m,
+                        SetType = 1,
+                        IsActive = true,
+                    },
+                },
+            },
+            "测试用户",
+            accessibleStoreCodes: null
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(2, result.Data!.Items.Count);
+        Assert.Contains(result.Data.Items, item => item.SetCodeId == retained.SetCodeId && item.SetBarcode == "BAR-UPDATED");
+        Assert.DoesNotContain(
+            await _db.Queryable<ProductSetCode>().Where(item => item.ProductCode == productCode && !item.IsDeleted).ToListAsync(),
+            item => item.SetCodeId == removed.SetCodeId
+        );
+        Assert.Equal(2, await _db.Queryable<StoreMultiCodeProduct>()
+            .Where(item => item.ProductCode == productCode && !item.IsDeleted)
+            .CountAsync());
+    }
+
+    [Fact]
+    public async Task SaveSetCodeSnapshotAsync_期望快照过期时返回冲突且不写入()
+    {
+        const string productCode = "P-SNAPSHOT-CONFLICT";
+        await SeedMultiCodeParentAsync(productCode, storePurchasePrice: 30m, productPurchasePrice: 30m);
+        await EnsureActiveStoreAsync();
+        await _db.Updateable<Product>()
+            .SetColumns(x => x.ProductType == 1)
+            .Where(x => x.ProductCode == productCode)
+            .ExecuteCommandAsync();
+        var existing = BuildMultiCodeSetCode(productCode, "STALE", 10m, setType: 1);
+        await _db.Insertable(existing).ExecuteCommandAsync();
+
+        var result = await CreateService().SaveSetCodeSnapshotAsync(
+            new SaveStoreProductSetCodeSnapshotDto
+            {
+                ProductCode = productCode,
+                StoreCode = StoreCode,
+                ExpectedProductType = 1,
+                ProductType = 1,
+                ExpectedItems = new()
+                {
+                    new()
+                    {
+                        SetCodeId = existing.SetCodeId,
+                        Barcode = existing.SetBarcode!,
+                        RetailPrice = 9m,
+                        SetType = 1,
+                        IsActive = true,
+                    },
+                },
+                Items = new()
+                {
+                    new()
+                    {
+                        SetCodeId = existing.SetCodeId,
+                        Barcode = "MUST-NOT-SAVE",
+                        RetailPrice = 12m,
+                        SetType = 1,
+                        IsActive = true,
+                    },
+                },
+            },
+            "测试用户",
+            accessibleStoreCodes: null
+        );
+
+        Assert.False(result.Success);
+        Assert.Equal(StoreProductMaintenanceReactService.SetCodeSnapshotConflictErrorCode, result.ErrorCode);
+        var persisted = await _db.Queryable<ProductSetCode>()
+            .SingleAsync(item => item.SetCodeId == existing.SetCodeId);
+        Assert.Equal(existing.SetBarcode, persisted.SetBarcode);
+        Assert.Equal(10m, persisted.SetRetailPrice);
+    }
+
+    [Fact]
+    public async Task SaveSetCodeSnapshotAsync_审计失败时回滚父类型和新增条码()
+    {
+        const string productCode = "P-SNAPSHOT-ROLLBACK";
+        await SeedMultiCodeParentAsync(productCode, storePurchasePrice: 30m, productPurchasePrice: 30m);
+        await EnsureActiveStoreAsync();
+        var history = new Mock<IWarehouseProductChangeHistoryService>();
+        history
+            .Setup(value => value.CaptureSnapshotsAsync(
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(new Dictionary<string, WarehouseProductChangeSnapshotDto>());
+        history
+            .Setup(value => value.RecordChangesAsync(
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ThrowsAsync(new InvalidOperationException("历史写入失败"));
+
+        var result = await CreateService(history.Object).SaveSetCodeSnapshotAsync(
+            new SaveStoreProductSetCodeSnapshotDto
+            {
+                ProductCode = productCode,
+                StoreCode = StoreCode,
+                ExpectedProductType = null,
+                ProductType = 1,
+                Items = new()
+                {
+                    new()
+                    {
+                        Barcode = "ROLLBACK-BARCODE",
+                        RetailPrice = 10m,
+                        SetType = 1,
+                        IsActive = true,
+                    },
+                },
+            },
+            "测试用户",
+            accessibleStoreCodes: null
+        );
+
+        Assert.False(result.Success);
+        Assert.Empty(await _db.Queryable<ProductSetCode>()
+            .Where(item => item.ProductCode == productCode && !item.IsDeleted)
+            .ToListAsync());
+        Assert.Null(await _db.Queryable<Product>()
+            .Where(item => item.ProductCode == productCode)
+            .Select(item => item.ProductType)
+            .FirstAsync());
+    }
+
+    [Fact]
+    public async Task GetCodes和套装编辑_严格区分类型并拒绝零售价()
+    {
+        const string productCode = "P-SET-CODE-GUARD";
+        await SeedMultiCodeParentAsync(productCode, storePurchasePrice: 20m, productPurchasePrice: 20m);
+        await EnsureActiveStoreAsync();
+        var set = BuildMultiCodeSetCode(productCode, "SET", 10m, setType: 1);
+        var multi = BuildMultiCodeSetCode(productCode, "MULTI", 20m, setType: 2);
+        var firstByBarcode = BuildMultiCodeSetCode(productCode, "Z-ID", 11m, setType: 1);
+        firstByBarcode.SetBarcode = "A-STABLE";
+        await _db.Insertable(new[] { set, multi, firstByBarcode }).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var setPage = await service.GetSetCodesAsync(productCode, StoreCode, 1, 50, null, null);
+        var multiPage = await service.GetMultiCodesAsync(productCode, StoreCode, 1, 50, null, null);
+        var create = await service.CreateSetCodeAsync(new()
+        {
+            ProductCode = productCode, StoreCode = StoreCode, ProductType = 1, Barcode = "ZERO", RetailPrice = 0m,
+        }, "测试用户", null);
+        var update = await service.UpdateSetCodeAsync(set.SetCodeId, new()
+        {
+            StoreCode = StoreCode, Barcode = set.SetBarcode!, RetailPrice = 0m,
+        }, "测试用户", null);
+
+        Assert.True(setPage.Success);
+        Assert.All(setPage.Data!.Items, item => Assert.Equal(1, item.SetType));
+        Assert.Equal(new[] { "A-STABLE", set.SetBarcode }, setPage.Data.Items.Select(item => item.SetBarcode).ToArray());
+        Assert.True(multiPage.Success);
+        Assert.Single(multiPage.Data!.Items);
+        Assert.Equal(multi.SetCodeId, multiPage.Data.Items[0].SetCodeId);
+        Assert.False(create.Success);
+        Assert.False(update.Success);
+    }
+
+    [Fact]
+    public async Task UpdateProductTypeAsync_锁内发现已有子码时拒绝类型切换()
+    {
+        const string productCode = "P-TYPE-SWITCH-GUARD";
+        await SeedMultiCodeParentAsync(productCode, storePurchasePrice: 20m, productPurchasePrice: 20m);
+        await _db.Insertable(BuildMultiCodeSetCode(productCode, "CHILD", 10m, setType: 1)).ExecuteCommandAsync();
+
+        var result = await CreateService().UpdateProductTypeAsync(
+            productCode, new() { ProductType = 2, StoreCode = StoreCode }, "测试用户", null
+        );
+
+        Assert.False(result.Success);
+        Assert.Contains("不能直接切换", result.Message);
+    }
+
+    [Fact]
+    public async Task SaveSetCodeSnapshotAsync_历史多码子项可统一修复为套装()
+    {
+        const string productCode = "P-SNAPSHOT-REPAIR-TYPE";
+        await SeedMultiCodeParentAsync(productCode, 30m, 30m);
+        await EnsureActiveStoreAsync();
+        await _db.Updateable<Product>().SetColumns(x => x.ProductType == 1)
+            .Where(x => x.ProductCode == productCode).ExecuteCommandAsync();
+        var legacy = BuildMultiCodeSetCode(productCode, "LEGACY", 50m, 2);
+        await _db.Insertable(legacy).ExecuteCommandAsync();
+
+        var result = await CreateService().SaveSetCodeSnapshotAsync(new()
+        {
+            ProductCode = productCode, StoreCode = StoreCode, ExpectedProductType = 1, ProductType = 1,
+            ExpectedItems = new() { SnapshotItem(legacy) },
+            Items = new() { new() { SetCodeId = legacy.SetCodeId, Barcode = legacy.SetBarcode!, RetailPrice = 15m, SetType = 1, IsActive = true } },
+        }, "测试用户", null);
+
+        Assert.True(result.Success, result.Message);
+        var persisted = await _db.Queryable<ProductSetCode>().SingleAsync(x => x.SetCodeId == legacy.SetCodeId);
+        Assert.Equal(1, persisted.SetType);
+        Assert.Equal(15m, persisted.SetRetailPrice);
+    }
+
+    [Fact]
+    public async Task SaveSetCodeSnapshotAsync_历史空条码可修复为有效条码()
+    {
+        const string productCode = "P-SNAPSHOT-REPAIR-BARCODE";
+        await SeedMultiCodeParentAsync(productCode, 30m, 30m);
+        await EnsureActiveStoreAsync();
+        await _db.Updateable<Product>().SetColumns(x => x.ProductType == 1)
+            .Where(x => x.ProductCode == productCode).ExecuteCommandAsync();
+        var legacy = BuildMultiCodeSetCode(productCode, "EMPTY", 10m, 1);
+        legacy.SetBarcode = null;
+        await _db.Insertable(legacy).ExecuteCommandAsync();
+
+        var result = await CreateService().SaveSetCodeSnapshotAsync(new()
+        {
+            ProductCode = productCode, StoreCode = StoreCode, ExpectedProductType = 1, ProductType = 1,
+            ExpectedItems = new() { SnapshotItem(legacy) },
+            Items = new() { new() { SetCodeId = legacy.SetCodeId, Barcode = "REPAIRED", RetailPrice = 10m, SetType = 1, IsActive = true } },
+        }, "测试用户", null);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal("REPAIRED", await _db.Queryable<ProductSetCode>()
+            .Where(x => x.SetCodeId == legacy.SetCodeId).Select(x => x.SetBarcode).SingleAsync());
+    }
+
+    [Fact]
+    public async Task SaveSetCodeSnapshotAsync_跨店同步保留分店定价策略字段()
+    {
+        const string productCode = "P-SNAPSHOT-METADATA";
+        await SeedMultiCodeParentAsync(productCode, 30m, 30m);
+        await EnsureActiveStoreAsync();
+        await _db.Updateable<Product>().SetColumns(x => x.ProductType == 1)
+            .Where(x => x.ProductCode == productCode).ExecuteCommandAsync();
+        var existing = BuildMultiCodeSetCode(productCode, "KEEP", 10m, 1);
+        await _db.Insertable(existing).ExecuteCommandAsync();
+        await _db.Insertable(new StoreMultiCodeProduct
+        {
+            UUID = "metadata-projection", StoreCode = StoreCode, ProductCode = productCode,
+            MultiCodeProductCode = existing.SetProductCode, StoreMultiCodeProductCode = StoreCode + existing.SetProductCode,
+            MultiBarcode = existing.SetBarcode, MultiCodeRetailPrice = 10m, DiscountRate = .2m,
+            IsAutoPricing = true, IsSpecialProduct = true, IsActive = true, IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().SaveSetCodeSnapshotAsync(new()
+        {
+            ProductCode = productCode, StoreCode = StoreCode, ExpectedProductType = 1, ProductType = 1,
+            ExpectedItems = new() { SnapshotItem(existing) },
+            Items = new() { new() { SetCodeId = existing.SetCodeId, Barcode = "UPDATED", RetailPrice = 12m, SetType = 1, IsActive = true } },
+        }, "测试用户", null);
+
+        Assert.True(result.Success, result.Message);
+        var projection = await _db.Queryable<StoreMultiCodeProduct>().SingleAsync(x => x.UUID == "metadata-projection");
+        Assert.Equal(.2m, projection.DiscountRate);
+        Assert.True(projection.IsAutoPricing);
+        Assert.True(projection.IsSpecialProduct);
+        Assert.Equal("UPDATED", projection.MultiBarcode);
+    }
+
+    [Fact]
+    public async Task SaveSetCodeSnapshotAsync_父类型不变仍写专用子码审计()
+    {
+        const string productCode = "P-SNAPSHOT-AUDIT";
+        await SeedMultiCodeParentAsync(productCode, 30m, 30m);
+        await EnsureActiveStoreAsync();
+        await _db.Updateable<Product>().SetColumns(x => x.ProductType == 1)
+            .Where(x => x.ProductCode == productCode).ExecuteCommandAsync();
+        var existing = BuildMultiCodeSetCode(productCode, "BEFORE", 10m, 1);
+        await _db.Insertable(existing).ExecuteCommandAsync();
+
+        var result = await CreateService().SaveSetCodeSnapshotAsync(new()
+        {
+            ProductCode = productCode, StoreCode = StoreCode, ExpectedProductType = 1, ProductType = 1,
+            ExpectedItems = new() { SnapshotItem(existing) },
+            Items = new() { new() { SetCodeId = existing.SetCodeId, Barcode = "AFTER", RetailPrice = 12m, SetType = 1, IsActive = true } },
+        }, "审计用户", null);
+
+        Assert.True(result.Success, result.Message);
+        var audit = await _db.Queryable<WarehouseProductChangeHistory>().SingleAsync(x =>
+            x.ProductCode == productCode && x.Source == "StoreProductMaintenanceSetCodeSnapshot");
+        Assert.Equal("审计用户", audit.ActorName);
+        Assert.Contains("productSetCodes", audit.ChangesJson);
+        Assert.Contains("BEFORE", audit.ChangesJson);
+        Assert.Contains("AFTER", audit.ChangesJson);
+    }
+
+    [Fact]
+    public async Task SaveSetCodeSnapshotAsync_大快照以批量查询和写入同步多门店投影()
+    {
+        const string productCode = "P-SNAPSHOT-BATCH";
+        await SeedMultiCodeParentAsync(productCode, 30m, 30m);
+        await EnsureActiveStoreAsync();
+        await _db.Insertable(new Store { StoreGUID = "store-2-guid", StoreCode = "store-2", StoreName = "第二分店", IsActive = true, IsDeleted = false }).ExecuteCommandAsync();
+        await _db.Insertable(new StoreRetailPrice { UUID = "batch-store-2", StoreCode = "store-2", ProductCode = productCode, StoreProductCode = "store-2-" + productCode, PurchasePrice = 30m, StoreRetailPriceValue = 50m, IsActive = true, IsDeleted = false }).ExecuteCommandAsync();
+        var commands = 0;
+        _db.Aop.OnLogExecuting = (_, _) => commands++;
+        try
+        {
+            var result = await CreateService().SaveSetCodeSnapshotAsync(new()
+            {
+                ProductCode = productCode, StoreCode = StoreCode, ExpectedProductType = null, ProductType = 1,
+                Items = Enumerable.Range(1, 520).Select(i => new SaveStoreProductSetCodeSnapshotItemDto
+                {
+                    Barcode = $"BATCH-{i:D3}", RetailPrice = 10m + i, SetType = 1, IsActive = true,
+                }).ToList(),
+            }, "测试用户", null);
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1040, await _db.Queryable<StoreMultiCodeProduct>().Where(x => x.ProductCode == productCode && !x.IsDeleted).CountAsync());
+            Assert.True(commands < 50, $"批量快照执行了 {commands} 条 SQL，疑似逐条投影同步");
+        }
+        finally
+        {
+            _db.Aop.OnLogExecuting = null;
+        }
     }
 
     [Fact]
@@ -818,16 +1261,33 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
         }
     }
 
-    private StoreProductMaintenanceReactService CreateService()
+    private StoreProductMaintenanceReactService CreateService(
+        IWarehouseProductChangeHistoryService? historyService = null
+    )
     {
         return new StoreProductMaintenanceReactService(
             CreateSqlSugarContext(_db),
             NullLogger<StoreProductMaintenanceReactService>.Instance,
             _autoPricingService.Object,
             _cache,
-            WarehouseProductChangeHistoryTestDouble.CreateNoop(),
+            historyService ?? WarehouseProductChangeHistoryTestDouble.CreateNoop(),
             Mock.Of<ICurrentUserService>()
         );
+    }
+
+    private async Task EnsureActiveStoreAsync()
+    {
+        if (!await _db.Queryable<Store>().Where(item => item.StoreCode == StoreCode).AnyAsync())
+        {
+            await _db.Insertable(new Store
+            {
+                StoreGUID = $"{StoreCode}-GUID",
+                StoreCode = StoreCode,
+                StoreName = "测试分店",
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+        }
     }
 
     private async Task SeedMultiCodeParentAsync(
@@ -878,6 +1338,15 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
         SetType = setType,
         IsActive = true,
         IsDeleted = false,
+    };
+
+    private static SaveStoreProductSetCodeSnapshotItemDto SnapshotItem(ProductSetCode item) => new()
+    {
+        SetCodeId = item.SetCodeId,
+        Barcode = item.SetBarcode ?? string.Empty,
+        RetailPrice = item.SetRetailPrice,
+        SetType = item.SetType,
+        IsActive = item.IsActive,
     };
 
     private static StoreMultiCodeProduct BuildMultiCodeStoreRow(
