@@ -12,6 +12,7 @@ required_variables=(
   SET_CHILD_PURCHASE_PRICE_SQLSERVER_TEST_CONNECTION
   STORE_PRICE_TRANSFER_SQLSERVER_TEST_CONNECTION
   DEVICE_ACTIVATION_SQLSERVER_TEST_CONNECTION
+  HBWEB_SCHEMA_SQLSERVER_TEST_CONNECTION
   CI_SQL_PASSWORD
 )
 for variable in "${required_variables[@]}"; do
@@ -61,10 +62,22 @@ dotnet build "$project" --configuration Release --no-restore
 dotnet test "$project" \
   --configuration Release \
   --no-build \
-  --filter 'Category=SQL' \
+  --filter 'Category=SQL&FullyQualifiedName!~BlazorApp.Api.Tests.SchemaMigrationSqlServerIntegrationTests' \
   --logger 'trx;LogFileName=weekly-sql.trx' \
   --results-directory "$results_root"
 node scripts/ci/assert-trx-tests.mjs "$results_root/weekly-sql.trx" 'Weekly SQL tests'
+
+# Schema 门禁单独输出 TRX，并要求十个隔离库用例全部实际执行，避免缺环境变量时假绿。
+dotnet test "$project" \
+  --configuration Release \
+  --no-build \
+  --filter 'FullyQualifiedName~BlazorApp.Api.Tests.SchemaMigrationSqlServerIntegrationTests' \
+  --logger 'trx;LogFileName=weekly-schema-migration-sql.trx' \
+  --results-directory "$results_root"
+node scripts/ci/assert-trx-tests.mjs \
+  "$results_root/weekly-schema-migration-sql.trx" \
+  'Weekly schema migration SQL tests' \
+  10
 
 activation_project="apps/pos-wpf/tests/Hbpos.Api.Tests/Hbpos.Api.Tests.csproj"
 dotnet restore "$activation_project"

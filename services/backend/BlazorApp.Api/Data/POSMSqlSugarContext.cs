@@ -16,7 +16,8 @@ namespace BlazorApp.Api.Data
 
         public POSMSqlSugarContext(
             IConfiguration configuration,
-            ICurrentUserService currentUserService
+            ICurrentUserService currentUserService,
+            ILogger<POSMSqlSugarContext> logger
         )
         {
             // 获取POSM数据库连接字符串
@@ -57,11 +58,11 @@ namespace BlazorApp.Api.Data
             // 设置命令超时时间（30分钟）
             _db.Ado.CommandTimeOut = 1800;
 
-            // 调试模式
-            _db.Aop.OnLogExecuting = (sql, pars) =>
+            // SQL 仅在显式调试开关打开时记录，默认避免输出完整语句和参数。
+            if (configuration.GetValue<bool>("Database:EnableSqlLogging", false))
             {
-                Console.WriteLine($"[POSM DB] {sql}");
-            };
+                _db.Aop.OnLogExecuting = (sql, _) => logger.LogDebug("POSM SQL执行: {Sql}", sql);
+            }
 
             _db.Aop.DataExecuting = (oldValue, entityInfo) =>
             {

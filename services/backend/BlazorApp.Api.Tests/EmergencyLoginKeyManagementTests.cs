@@ -38,7 +38,7 @@ public sealed class EmergencyLoginKeySchemaMigratorTests
     }
 
     [Fact]
-    public async Task Program_RegistersServiceAndRunsIdempotentMigratorAtStartup()
+    public async Task Program_RegistersServiceAndRunsIdempotentMigratorThroughExplicitSchemaBaseline()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory != null
@@ -53,11 +53,16 @@ public sealed class EmergencyLoginKeySchemaMigratorTests
             directory!.FullName,
             "services/backend/BlazorApp.Api/Program.cs"
         ));
+        var runtime = await File.ReadAllTextAsync(Path.Combine(
+            directory.FullName,
+            "services/backend/BlazorApp.Api/Data/SchemaMigrations/SchemaMigrationRuntime.cs"
+        ));
         Assert.Contains("AddScoped<EmergencyLoginKeyManagementService>()", program);
-        Assert.Contains(
+        Assert.DoesNotContain(
             "await EmergencyLoginKeySchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);",
             program
         );
+        Assert.Contains("EmergencyLoginKeySchemaMigrator.EnsureAsync", runtime);
     }
 }
 

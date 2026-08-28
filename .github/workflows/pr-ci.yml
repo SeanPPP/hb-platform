@@ -252,6 +252,51 @@ jobs:
           export -f bash
           ./scripts/ci/run-android-component.sh '${{ matrix.component }}'
 
+  schema_sql:
+    name: PR CI / Backend schema SQL
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      CI_SQL_PASSWORD: HbCi_2026!Safe_Only
+      CI_SCHEMA_SQL_CONTAINER_NAME: hbweb-schema-sql-${{ github.run_id }}-${{ github.run_attempt }}
+      HBWEB_SCHEMA_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: 非 Backend PR 无需运行真实 Schema SQL
+        if: ${{ github.event_name != 'pull_request' || !contains(fromJSON(needs.plan.outputs.components), 'backend') }}
+        run: echo 'schema_sql=noop'
+      - if: ${{ github.event_name == 'pull_request' && contains(fromJSON(needs.plan.outputs.components), 'backend') }}
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: 9.0.314
+      - name: 启动隔离 SQL Server
+        if: ${{ github.event_name == 'pull_request' && contains(fromJSON(needs.plan.outputs.components), 'backend') }}
+        run: >-
+          docker run --detach
+          --name "$CI_SCHEMA_SQL_CONTAINER_NAME"
+          --env ACCEPT_EULA=Y
+          --env MSSQL_SA_PASSWORD="$CI_SQL_PASSWORD"
+          --publish 1433:1433
+          mcr.microsoft.com/mssql/server@sha256:7c29dfbac885ad7519e219c7fe4aee0e67283e21a10e9c252d13b0fbde1866f8
+      - name: 运行真实 Schema SQL 门禁
+        if: ${{ github.event_name == 'pull_request' && contains(fromJSON(needs.plan.outputs.components), 'backend') }}
+        run: ./scripts/ci/run-schema-sql.sh
+      - name: 上传 Schema SQL 结果
+        if: ${{ always() && github.event_name == 'pull_request' && contains(fromJSON(needs.plan.outputs.components), 'backend') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: schema-sql-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/schema-sql
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: 清理隔离 SQL Server
+        if: ${{ always() && github.event_name == 'pull_request' && contains(fromJSON(needs.plan.outputs.components), 'backend') }}
+        run: |
+          if docker inspect "$CI_SCHEMA_SQL_CONTAINER_NAME" >/dev/null 2>&1; then
+            docker rm --force "$CI_SCHEMA_SQL_CONTAINER_NAME"
+          fi
+
   required:
     # 分支保护只接受 PR 事件的稳定检查名；手动/定时运行不得伪造同名成功检查。
     name: >-
@@ -266,6 +311,7 @@ jobs:
       - windows
       - macos
       - android
+      - schema_sql
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     steps:
@@ -282,7 +328,7 @@ jobs:
           CI_RUN_ATTEMPT: ${{ github.run_attempt }}
           CI_RUN_BUDGET_SECONDS: ${{ needs.plan.outputs.budget_seconds }}
           CI_JOB_RESULTS: >-
-            {"plan":"${{ needs.plan.result }}","linux_node":"${{ needs.linux_node.result }}","linux_dotnet":"${{ needs.linux_dotnet.result }}","windows":"${{ needs.windows.result }}","macos":"${{ needs.macos.result }}","android":"${{ needs.android.result }}"}
+            {"plan":"${{ needs.plan.result }}","linux_node":"${{ needs.linux_node.result }}","linux_dotnet":"${{ needs.linux_dotnet.result }}","windows":"${{ needs.windows.result }}","macos":"${{ needs.macos.result }}","android":"${{ needs.android.result }}","schema_sql":"${{ needs.schema_sql.result }}"}
         run: node scripts/ci/required-gate.mjs
 
   weekly_sql:
@@ -306,6 +352,7 @@ jobs:
       SET_CHILD_PURCHASE_PRICE_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
       STORE_PRICE_TRANSFER_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
       DEVICE_ACTIVATION_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
+      HBWEB_SCHEMA_SQLSERVER_TEST_CONNECTION: Server=localhost,1433;User Id=sa;Password=HbCi_2026!Safe_Only;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9

@@ -24,6 +24,7 @@ const macosRunnerPath = new URL('./run-macos-component.sh', import.meta.url)
 const androidRunnerPath = new URL('./run-android-component.sh', import.meta.url)
 const windowsRunnerPath = new URL('./run-windows-component.ps1', import.meta.url)
 const weeklySqlRunnerPath = new URL('./run-weekly-sql.sh', import.meta.url)
+const schemaSqlRunnerPath = new URL('./run-schema-sql.sh', import.meta.url)
 const testAllPath = new URL('../test-all.sh', import.meta.url)
 const mobilePackagePath = new URL('../../apps/mobile/package.json', import.meta.url)
 const wpfClientTestsProjectPath = new URL('../../apps/pos-wpf/tests/Hbpos.Client.Tests/Hbpos.Client.Tests.csproj', import.meta.url)
@@ -230,6 +231,26 @@ test('只有 pull_request 能产出分支保护使用的 required 检查名', ()
     required,
     /name:\s*>-\s*\n\s*\$\{\{\s*github\.event_name == 'pull_request'\s*\n\s*&& 'PR CI \/ required'\s*\n\s*\|\| 'Non-PR CI \/ matrix required'\s*\}\}/,
   )
+})
+
+test('Backend PR 的真实 Schema SQL 独立执行并纳入 required 门禁', () => {
+  const source = readFileSync(workflowPath, 'utf8')
+  const schemaSql = workflowJobBlock(source, 'schema_sql')
+  const required = workflowJobBlock(source, 'required')
+  const runner = readFileSync(schemaSqlRunnerPath, 'utf8')
+
+  assert.match(schemaSql, /needs:\s*plan/)
+  assert.match(schemaSql, /contains\(fromJSON\(needs\.plan\.outputs\.components\), 'backend'\)/)
+  assert.match(schemaSql, /run-schema-sql\.sh/)
+  assert.match(schemaSql, /HBWEB_SCHEMA_SQLSERVER_TEST_CONNECTION:/)
+  assert.match(schemaSql, /docker run/)
+  assert.match(schemaSql, /docker rm --force/)
+  assert.match(required, /- schema_sql/)
+  assert.match(required, /"schema_sql":"\$\{\{ needs\.schema_sql\.result \}\}"/)
+  assert.match(runner, /FullyQualifiedName~BlazorApp\.Api\.Tests\.SchemaMigrationSqlServerIntegrationTests/)
+  assert.match(runner, /schema-migration-sql\.trx/)
+  assert.match(runner, /'PR schema migration SQL tests'\s+\\\n\s+10/)
+  assert.doesNotMatch(runner, /docker ps --filter/)
 })
 
 test('PR/weekly 使用 15/45 分钟端到端预算并为稳定 gate 预留时间', () => {
@@ -495,7 +516,15 @@ test('Weekly SQL 使用独立容器且不会接入 LiveE2e', () => {
   assert.match(source, /mcr\.microsoft\.com\/mssql\/server@sha256:[0-9a-f]{64}/)
   assert.match(source, /run-weekly-sql\.sh/)
   assert.match(source, /DEVICE_ACTIVATION_SQLSERVER_TEST_CONNECTION:/)
+  assert.match(source, /HBWEB_SCHEMA_SQLSERVER_TEST_CONNECTION:/)
   assert.match(runner, /DEVICE_ACTIVATION_SQLSERVER_TEST_CONNECTION/)
+  assert.match(runner, /HBWEB_SCHEMA_SQLSERVER_TEST_CONNECTION/)
+  assert.match(runner, /FullyQualifiedName~BlazorApp\.Api\.Tests\.SchemaMigrationSqlServerIntegrationTests/)
+  assert.match(runner, /weekly-schema-migration-sql\.trx/)
+  assert.match(
+    runner,
+    /weekly-schema-migration-sql\.trx"\s+\\\n\s+'Weekly schema migration SQL tests'\s+\\\n\s+10/,
+  )
   assert.match(runner, /apps\/pos-wpf\/tests\/Hbpos\.Api\.Tests\/Hbpos\.Api\.Tests\.csproj/)
   assert.match(runner, /weekly-device-activation-sql\.trx/)
   assert.doesNotMatch(source, /Category=LiveE2e/)
