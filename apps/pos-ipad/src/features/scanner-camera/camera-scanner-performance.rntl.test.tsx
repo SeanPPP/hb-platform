@@ -29,7 +29,7 @@ const { CameraScannerModal } = require("./camera-scanner-modal") as typeof impor
 const { CameraScannerInline } = require("./camera-scanner-inline") as typeof import("./camera-scanner-inline");
 type CameraScannerPort = import("./camera-scanner-session").CameraScannerPort;
 
-test("单次与连续相机只启用 ean13 和 code128", async () => {
+test("单次与连续相机启用 ean13、code128 和 qr", async () => {
   const modal = await render(
     <CameraScannerModal
       context="product"
@@ -49,7 +49,7 @@ test("单次与连续相机只启用 ean13 和 code128", async () => {
     />,
   );
 
-  const expectedSettings = { barcodeTypes: ["ean13", "code128"] };
+  const expectedSettings = { barcodeTypes: ["ean13", "code128", "qr"] };
   expect((await modal.findByTestId("camera-scanner-preview")).props.barcodeScannerSettings).toEqual(expectedSettings);
   expect((await inline.findByTestId("camera-scanner-preview")).props.barcodeScannerSettings).toEqual(expectedSettings);
 
