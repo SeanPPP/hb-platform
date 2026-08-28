@@ -1187,13 +1187,13 @@ namespace BlazorApp.Api.Tests
         [Fact]
         public void BatchExecuteActionsAsync_必须在获取商品锁后复读并核对完整执行身份()
         {
-            var source = File.ReadAllText(ResolveLocalSupplierInvoicesReactServicePath());
+            var source = File.ReadAllText(ResolveLocalSupplierInvoicesProductExecutionCommandWriterPath());
             var methodStart = source.IndexOf(
-                "public async Task<ApiResponse<BatchExecuteActionsResultDto>> BatchExecuteActionsAsync",
+                "public async Task<ProductExecutionCommandResult> ExecuteAsync",
                 StringComparison.Ordinal
             );
             var methodEnd = source.IndexOf(
-                "private static string BuildBatchExecuteHeaderIdentity",
+                "private async Task ExecuteGroupsAsync",
                 methodStart,
                 StringComparison.Ordinal
             );
@@ -1205,46 +1205,22 @@ namespace BlazorApp.Api.Tests
                 "SetChildPurchasePriceMutationLock.Acquire",
                 StringComparison.Ordinal
             );
-            var lockedHeader = method.IndexOf("var lockedHeader", StringComparison.Ordinal);
-            var lockedDetails = method.IndexOf("var lockedDetails", StringComparison.Ordinal);
-            var compareConfirmedAction = method.IndexOf(
-                "confirmedActionSnapshot != null",
-                lockedDetails,
-                StringComparison.Ordinal
-            );
-            var compareConfirmedDetail = method.IndexOf(
-                "confirmedDetailIdentitySnapshot != null",
-                compareConfirmedAction,
-                StringComparison.Ordinal
-            );
-            var compareIdentity = method.IndexOf(
-                "BuildBatchExecuteDetailIdentity(detail) != expectedIdentity",
-                StringComparison.Ordinal
-            );
+            var lockedData = method.IndexOf("var lockedData", StringComparison.Ordinal);
+            var compareIdentity = method.IndexOf("TryValidateLockedData", lockedData, StringComparison.Ordinal);
             var ensureLockCoverage = method.IndexOf("lockScope?.EnsureCovers", StringComparison.Ordinal);
-            var lockedProductLookup = method.IndexOf(
-                "var productItemNumbers = new Dictionary",
-                StringComparison.Ordinal
-            );
-            var validation = method.IndexOf(
-                "ValidateBatchExecuteDetailsAsync",
-                StringComparison.Ordinal
-            );
+            var validation = method.IndexOf("ValidateLockedDetailsAsync", StringComparison.Ordinal);
 
             Assert.True(beginTransaction >= 0);
             Assert.True(acquireLock > beginTransaction);
-            Assert.True(lockedHeader > acquireLock);
-            Assert.True(lockedDetails > lockedHeader);
-            Assert.True(compareConfirmedAction > lockedDetails);
-            Assert.True(compareConfirmedDetail > compareConfirmedAction);
-            Assert.True(compareIdentity > compareConfirmedDetail);
+            Assert.True(lockedData > acquireLock);
+            Assert.True(compareIdentity > lockedData);
             Assert.True(ensureLockCoverage > compareIdentity);
-            Assert.True(lockedProductLookup > ensureLockCoverage);
-            Assert.True(validation > lockedProductLookup);
-            Assert.Contains("detail.ActivityType", source);
-            Assert.Contains("detail.AdditionalBarcodesJson", source);
-            Assert.Contains("detail.PurchasePrice", source);
-            Assert.Contains("detail.RetailPrice", source);
+            Assert.True(validation > ensureLockCoverage);
+            var plan = File.ReadAllText(ResolveLocalSupplierInvoicesProductExecutionPlanPath());
+            Assert.Contains("detail.ActivityType", plan);
+            Assert.Contains("detail.AdditionalBarcodesJson", plan);
+            Assert.Contains("detail.PurchasePrice", plan);
+            Assert.Contains("detail.RetailPrice", plan);
         }
 
         [Fact]
@@ -3974,7 +3950,7 @@ namespace BlazorApp.Api.Tests
             return (T)property.GetValue(value)!;
         }
 
-        private static string ResolveLocalSupplierInvoicesReactServicePath(
+        private static string ResolveLocalSupplierInvoicesProductExecutionCommandWriterPath(
             [CallerFilePath] string testFilePath = ""
         )
         {
@@ -3985,9 +3961,28 @@ namespace BlazorApp.Api.Tests
                     testDirectory,
                     "..",
                     "BlazorApp.Api",
-                    "Services",
-                    "React",
-                    "LocalSupplierInvoicesReactService.cs"
+                    "Features",
+                    "LocalSupplierInvoices",
+                    "ProductExecution",
+                    "LocalSupplierInvoicesProductExecutionCommandWriter.cs"
+                )
+            );
+        }
+
+        private static string ResolveLocalSupplierInvoicesProductExecutionPlanPath(
+            [CallerFilePath] string testFilePath = ""
+        )
+        {
+            var testDirectory = Path.GetDirectoryName(testFilePath)!;
+            return Path.GetFullPath(
+                Path.Combine(
+                    testDirectory,
+                    "..",
+                    "BlazorApp.Api",
+                    "Features",
+                    "LocalSupplierInvoices",
+                    "ProductExecution",
+                    "LocalSupplierInvoicesProductExecutionPlan.cs"
                 )
             );
         }

@@ -942,7 +942,7 @@ public sealed class StartupSchemaMigratorStartupContractTests
         ));
         var service = await File.ReadAllTextAsync(Path.Combine(
             repoRoot,
-            "services/backend/BlazorApp.Api/Services/React/LocalSupplierInvoicesReactService.cs"
+            "services/backend/BlazorApp.Api/Features/LocalSupplierInvoices/Header/LocalSupplierInvoicesHeaderHandler.cs"
         ));
 
         Assert.DoesNotContain(
