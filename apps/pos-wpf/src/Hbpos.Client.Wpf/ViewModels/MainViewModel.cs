@@ -2059,12 +2059,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private string GetActivePageTitleText()
     {
-        if (ReferenceEquals(CurrentScreen, InstallmentCenter))
+        // 启动更新闸门可能在页面 VM 创建前显示主窗口，两个 null 不能被误判为同一页面。
+        if (InstallmentCenter is not null && ReferenceEquals(CurrentScreen, InstallmentCenter))
         {
             return InstallmentCenter?.PageTitleText ?? "分期中心";
         }
 
-        if (ReferenceEquals(CurrentScreen, InstallmentCreate))
+        if (InstallmentCreate is not null && ReferenceEquals(CurrentScreen, InstallmentCreate))
         {
             return InstallmentCreate?.PageTitleText ?? "创建分期";
         }
@@ -2074,6 +2075,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private string GetActivePageTitleKey()
     {
+        if (CurrentScreen is null)
+        {
+            return "shell.page.pos";
+        }
+
         if (ReferenceEquals(CurrentScreen, PosTerminal))
         {
             return "shell.page.pos";

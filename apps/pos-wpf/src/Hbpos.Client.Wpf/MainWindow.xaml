@@ -8,6 +8,7 @@
         xmlns:materialDesign="http://materialdesigninxaml.net/winfx/xaml/themes"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:services="clr-namespace:Hbpos.Client.Wpf.Services"
+        xmlns:shell="clr-namespace:System.Windows.Shell;assembly=PresentationFramework"
         xmlns:views="clr-namespace:Hbpos.Client.Wpf.Views.Screens"
         xmlns:rootViews="clr-namespace:Hbpos.Client.Wpf.Views"
         xmlns:vm="clr-namespace:Hbpos.Client.Wpf.ViewModels"
@@ -196,6 +197,13 @@
             <views:DeviceRegistrationView />
         </DataTemplate>
     </Window.Resources>
+
+    <shell:WindowChrome.WindowChrome>
+        <shell:WindowChrome CaptionHeight="0"
+                            ResizeBorderThickness="6"
+                            CornerRadius="0"
+                            GlassFrameThickness="0" />
+    </shell:WindowChrome.WindowChrome>
 
     <Window.InputBindings>
         <KeyBinding Key="Escape" Command="{Binding ConfirmationDialog.CancelCommand}" />

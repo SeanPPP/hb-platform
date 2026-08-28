@@ -51,6 +51,28 @@ public sealed class MainWindowXamlTests
     }
 
     [Fact]
+    public void Maximized_main_window_uses_zero_glass_custom_chrome_without_a_system_top_strip()
+    {
+        var document = XDocument.Load(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "MainWindow.xaml"));
+        XNamespace shell = "clr-namespace:System.Windows.Shell;assembly=PresentationFramework";
+        var window = Assert.IsType<XElement>(document.Root);
+
+        var chromeProperty = Assert.Single(window.Elements(shell + "WindowChrome.WindowChrome"));
+        var chrome = Assert.Single(chromeProperty.Elements(shell + "WindowChrome"));
+
+        Assert.Equal("0", (string?)chrome.Attribute("CaptionHeight"));
+        Assert.Equal("6", (string?)chrome.Attribute("ResizeBorderThickness"));
+        Assert.Equal("0", (string?)chrome.Attribute("CornerRadius"));
+        Assert.Equal("0", (string?)chrome.Attribute("GlassFrameThickness"));
+    }
+
+    [Fact]
     public void Fallback_screen_content_is_bound_only_while_fallback_is_active()
     {
         var document = XDocument.Load(Path.Combine(

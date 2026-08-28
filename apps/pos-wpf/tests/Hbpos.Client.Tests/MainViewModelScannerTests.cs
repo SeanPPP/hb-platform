@@ -244,6 +244,16 @@ public sealed class MainViewModelScannerTests
     }
 
     [Fact]
+    public void Active_page_title_defaults_to_pos_before_startup_navigation()
+    {
+        var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService());
+
+        Assert.Null(viewModel.CurrentScreen);
+        Assert.Null(viewModel.InstallmentCenter);
+        Assert.Equal("POS", viewModel.ActivePageTitleText);
+    }
+
+    [Fact]
     public async Task Active_page_title_tracks_navigation_and_culture()
     {
         var viewModel = CreateAuthorizedMainViewModel(new FakeCustomerDisplayWindowService());
