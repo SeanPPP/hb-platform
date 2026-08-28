@@ -49,6 +49,7 @@ import {
   type AttendanceSecurityTerminalScope,
 } from "./sqlite-attendance-security-repository";
 import { SqliteDailyCloseRepository } from "@hb/pos-db/core/db/sqlite-daily-close-repository";
+import { SqliteOrderSyncStatusRepository } from "@hb/pos-db";
 import {
   SqliteFulfilmentStore,
   type PersistedDrawerEventInput,
@@ -217,6 +218,11 @@ export class PosDatabase implements DatabasePort {
   /** 程序日志独立于业务 outbox；上传失败不得阻塞订单、支付或员工审计。 */
   public applicationLogOutbox(): SqliteApplicationLogOutbox {
     return new SqliteApplicationLogOutbox(this.connection, this.nowIso);
+  }
+
+  /** 顶部状态只读取去重后的订单补传数量，不向 UI 暴露裸 outbox。 */
+  public orderSyncStatus(): SqliteOrderSyncStatusRepository {
+    return new SqliteOrderSyncStatusRepository(this.connection);
   }
 
   /**

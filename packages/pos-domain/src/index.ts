@@ -8,6 +8,7 @@ export * from "./core/contracts/line-sync-provenance";
 export * from "./core/contracts/money";
 export * from "./core/contracts/order";
 export * from "./core/contracts/payment";
+export * from "./core/contracts/pending-work";
 export * from "./core/contracts/pricing-cart-state";
 export * from "./core/contracts/printer";
 export * from "./core/contracts/remote-history";

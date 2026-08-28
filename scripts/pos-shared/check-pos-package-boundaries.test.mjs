@@ -297,12 +297,34 @@ function sha256(value) {
 }
 
 function matchesDeclaredGlob(path, pattern) {
+  const globstarDirectory = "\u0000";
+  const globstar = "\u0001";
+  const star = "\u0002";
   const expression = pattern
-    .split("*")
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join("[^/]*");
+    .replaceAll("**/", globstarDirectory)
+    .replaceAll("**", globstar)
+    .replaceAll("*", star)
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replaceAll(globstarDirectory, "(?:.*/)?")
+    .replaceAll(globstar, ".*")
+    .replaceAll(star, "[^/]*");
   return new RegExp(`^${expression}$`, "u").test(path);
 }
+
+test("行为测试登记的 glob 同时支持单层与跨目录匹配", () => {
+  assert.equal(
+    matchesDeclaredGlob("src/core/sync/sync-coordinator.test.ts", "src/**/*.test.ts"),
+    true,
+  );
+  assert.equal(
+    matchesDeclaredGlob("src/sync-coordinator.test.ts", "src/**/*.test.ts"),
+    true,
+  );
+  assert.equal(
+    matchesDeclaredGlob("src/core/sync/sync-coordinator.ts", "src/**/*.test.ts"),
+    false,
+  );
+});
 
 test("共享包依赖方向与 package.json 一致", () => {
   for (const [packageName, allowed] of Object.entries(packageRules)) {
@@ -461,6 +483,14 @@ test("迁移语义规范化保留模块来源身份", () => {
 });
 
 test("已迁移共享源码保持固定基线语义，显式类型适配受哈希与行为测试锁定", () => {
+  const runtimeAdaptations = new Map(
+    (migrationState.runtimeAdaptations ?? []).map((entry) => [entry.path, entry]),
+  );
+  assert.equal(
+    runtimeAdaptations.size,
+    (migrationState.runtimeAdaptations ?? []).length,
+    "运行时适配路径不得重复",
+  );
   const adaptations = new Map(
     (migrationState.semanticAdaptations ?? []).map((entry) => [entry.path, entry]),
   );
@@ -479,6 +509,7 @@ test("已迁移共享源码保持固定基线语义，显式类型适配受哈�
       path: entry.path,
     })),
   ];
+  const visitedRuntimeAdaptations = new Set();
   const visitedAdaptations = new Set();
   const testAdaptations = new Map(
     (migrationState.testAdaptations ?? []).map((entry) => [entry.path, entry]),
@@ -495,22 +526,76 @@ test("已迁移共享源码保持固定基线语义，显式类型适配受哈�
       path,
       references: moduleReferencesOf(sourceFileOf(current, path)),
     });
-    const runtimeMatches =
-      canonicalRuntimeSource(current, path, { includeModuleSources: false }) ===
-      canonicalRuntimeSource(baseline, path, { includeModuleSources: false });
+    const currentRuntimeShape = canonicalRuntimeSource(current, path, {
+      includeModuleSources: false,
+    });
+    const baselineRuntimeShape = canonicalRuntimeSource(baseline, path, {
+      includeModuleSources: false,
+    });
+    const runtimeMatches = currentRuntimeShape === baselineRuntimeShape;
+    const runtimeAdaptation = runtimeAdaptations.get(path);
     const testAdaptation = testAdaptations.get(path);
     if (!runtimeMatches) {
-      assert.ok(testAdaptation, `${path} 的运行时语义相对固定基线发生变化`);
-      assert.equal(testAdaptation.package, packageName, `${path} 的测试适配包归属错误`);
-      assert.ok(testAdaptation.reason.length >= 12, `${path} 缺少测试适配原因`);
-      assert.match(path, /\.test\.[cm]?[jt]sx?$/u, `${path} 非测试文件不得登记测试适配`);
-      assert.ok(
-        current.includes(testAdaptation.requiredAssertion),
-        `${path} 缺少登记的行为断言`,
+      if (/\.test\.[cm]?[jt]sx?$/u.test(path)) {
+        assert.ok(testAdaptation, `${path} 的测试运行时语义相对固定基线发生变化`);
+        assert.equal(testAdaptation.package, packageName, `${path} 的测试适配包归属错误`);
+        assert.ok(testAdaptation.reason.length >= 12, `${path} 缺少测试适配原因`);
+        assert.ok(
+          current.includes(testAdaptation.requiredAssertion),
+          `${path} 缺少登记的行为断言`,
+        );
+        visitedTestAdaptations.add(path);
+        continue;
+      }
+
+      assert.ok(runtimeAdaptation, `${path} 的运行时语义相对固定基线发生变化`);
+      assert.equal(runtimeAdaptation.package, packageName, `${path} 的运行时适配包归属错误`);
+      assert.ok(runtimeAdaptation.reason.length >= 12, `${path} 缺少运行时适配原因`);
+      assert.equal(
+        runtimeAdaptation.baselineCanonicalRuntimeSha256,
+        sha256(baselineRuntimeShape),
+        `${path} 的固定运行时基线发生漂移，必须重新审查`,
       );
-      visitedTestAdaptations.add(path);
+      assert.equal(
+        runtimeAdaptation.canonicalRuntimeSha256,
+        sha256(currentRuntimeShape),
+        `${path} 的显式运行时适配发生漂移，必须重新审查`,
+      );
+      assert.equal(
+        runtimeAdaptation.canonicalTypeSha256,
+        sha256(canonicalSource(current, path, { includeModuleSources: false })),
+        `${path} 的显式运行时类型合同发生漂移，必须重新审查`,
+      );
+      assert.ok(runtimeAdaptation.behaviorTests.length > 0, `${path} 缺少行为测试登记`);
+      for (const verification of runtimeAdaptation.behaviorTests) {
+        const workspaceRoot = join(repositoryRoot, verification.workspace);
+        const packageJson = JSON.parse(
+          readFileSync(join(workspaceRoot, "package.json"), "utf8"),
+        );
+        assert.equal(
+          existsSync(join(workspaceRoot, verification.path)),
+          true,
+          `${path} 的行为测试不存在：${verification.workspace}/${verification.path}`,
+        );
+        assert.ok(
+          matchesDeclaredGlob(verification.path, verification.pattern),
+          `${verification.path} 不在登记的测试模式 ${verification.pattern} 中`,
+        );
+        assert.ok(
+          packageJson.scripts?.[verification.script]?.includes(verification.pattern),
+          `${verification.workspace} 的 ${verification.script} 未运行 ${verification.pattern}`,
+        );
+        if (verification.script !== "test") {
+          assert.ok(
+            packageJson.scripts?.test?.includes(`npm run ${verification.script}`),
+            `${verification.workspace} 默认测试未纳入 ${verification.script}`,
+          );
+        }
+      }
+      visitedRuntimeAdaptations.add(path);
       continue;
     }
+    assert.equal(runtimeAdaptation, undefined, `${path} 已无需运行时适配登记`);
     assert.equal(testAdaptation, undefined, `${path} 已无需测试适配登记`);
 
     const baselineTypeShape = canonicalSource(baseline, path, {
@@ -569,6 +654,11 @@ test("已迁移共享源码保持固定基线语义，显式类型适配受哈�
     "已迁移源码的模块来源发生漂移，必须重新审查并更新拓扑哈希",
   );
 
+  assert.deepEqual(
+    [...runtimeAdaptations.keys()].filter((path) => !visitedRuntimeAdaptations.has(path)),
+    [],
+    "存在未对应已迁移源码的运行时适配登记",
+  );
   assert.deepEqual(
     [...adaptations.keys()].filter((path) => !visitedAdaptations.has(path)),
     [],

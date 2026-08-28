@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, jest, test } from "@jest/globals";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -45,7 +46,9 @@ const mockTranslations: Readonly<Record<string, Readonly<Record<string, string>>
       "status.scanner.inactive": "Unfocused",
       "status.storeName": "Branch name",
       "status.sync": "Sync",
+      "status.sync.checking": "Checking",
       "status.sync.pending": "0 pending",
+      "status.sync.unavailable": "Unavailable",
     },
     zh: {
       "status.languageSwitchHint": "将所有界面文字显示为英文。",
@@ -62,7 +65,9 @@ const mockTranslations: Readonly<Record<string, Readonly<Record<string, string>>
       "status.scanner.inactive": "未聚焦",
       "status.storeName": "分店名称",
       "status.sync": "补传",
+      "status.sync.checking": "检查中",
       "status.sync.pending": "0 笔待处理",
+      "status.sync.unavailable": "不可用",
     },
   };
 
@@ -70,8 +75,11 @@ jest.mock("react-i18next", () => ({
   useTranslation: () => ({
     i18n: { language: mockLanguage, resolvedLanguage: mockLanguage },
     t: (key: string, values?: Readonly<{ count?: number }>) =>
-      mockTranslations[mockLanguage]?.[key] ??
-      (key === "status.sync.pending" ? String(values?.count ?? 0) : key),
+      key === "status.sync.pending"
+        ? mockLanguage === "zh"
+          ? `${values?.count ?? 0} 笔待处理`
+          : `${values?.count ?? 0} pending`
+        : mockTranslations[mockLanguage]?.[key] ?? key,
   }),
 }));
 
@@ -106,6 +114,20 @@ test("终端身份默认关闭，即使 shell 已有展示身份也不影响其�
   const screen = await render(<PosStatusStrip language="zh" />);
 
   expect(screen.queryByTestId("status-strip-terminal-identity")).toBeNull();
+});
+
+test("同步状态初始显示检查中，成功读取显示真实数量，失败显示不可用", async () => {
+  const screen = await render(<PosStatusStrip language="zh" />);
+
+  expect(screen.getByLabelText("补传: 检查中")).toBeTruthy();
+  await act(async () => {
+    usePosShellStore.getState().setPendingSync({ kind: "ready", count: 3 });
+  });
+  expect(screen.getByLabelText("补传: 3 笔待处理")).toBeTruthy();
+  await act(async () => {
+    usePosShellStore.getState().setPendingSync({ kind: "unavailable" });
+  });
+  expect(screen.getByLabelText("补传: 不可用")).toBeTruthy();
 });
 
 test("开启后按分店名称、设备代码展示静态身份，并保留设备授权状态", async () => {

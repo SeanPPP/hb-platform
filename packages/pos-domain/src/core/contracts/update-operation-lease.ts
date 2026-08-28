@@ -3,4 +3,8 @@
  */
 export type UpdateOperationLeasePort = Readonly<{
   runOperation<T>(operation: () => T | Promise<T>): Promise<T>;
+  /**
+   * 更新切换完全释放后触发；定时同步依赖它恢复被 transition 拒绝的 wake。
+   */
+  subscribeTransitionReleased(listener: () => void): () => void;
 }>;

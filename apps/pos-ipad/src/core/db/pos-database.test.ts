@@ -10,6 +10,7 @@ import { PosDatabase } from "./pos-database";
 import { PosIpadUpdatePolicyRepository } from "./pos-ipad-update-policy-repository";
 import { PosSettingsRepository } from "./pos-settings-repository";
 import { SqliteDailyCloseRepository } from "@hb/pos-db/core/db/sqlite-daily-close-repository";
+import { SqliteOrderSyncStatusRepository } from "@hb/pos-db";
 import { SqliteFulfilmentStore } from "./sqlite-fulfilment-store";
 import { SqliteOrderSyncMaterialResolver } from "./sqlite-order-sync-material";
 import { SqliteRefundVoucherPrintMaterial } from "./sqlite-refund-voucher-print-material";
@@ -405,6 +406,9 @@ test("PosDatabase 只暴露履约 facade，不向 feature 泄露 SQLCipher 连�
       },
       () => "vpr_abcdefghijklmnop",
     ) instanceof SqliteOrderSyncMaterialResolver,
+  );
+  assert.ok(
+    database.orderSyncStatus() instanceof SqliteOrderSyncStatusRepository,
   );
   assert.ok(
     database.voucherTenderReversals(

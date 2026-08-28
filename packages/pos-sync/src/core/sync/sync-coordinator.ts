@@ -48,6 +48,14 @@ export type SyncDrainReport = Readonly<{
   auditUploaded: number;
 }>;
 
+export type SyncDrainSettledEvent =
+  | Readonly<{ outcome: "fulfilled"; report: SyncDrainReport }>
+  | Readonly<{ outcome: "rejected" }>;
+
+export type SyncDrainSettledListener = (
+  event: SyncDrainSettledEvent,
+) => void;
+
 type MutableSyncDrainReport = {
   leased: number;
   orderSucceeded: number;
@@ -118,6 +126,13 @@ export class PosSyncCoordinator {
   private scheduledDrain: unknown | undefined;
   private stopped = false;
   private shutdownPromise: Promise<void> | undefined;
+  private readonly drainSettledListeners = new Set<SyncDrainSettledListener>();
+  private transitionReleaseUnsubscribe: (() => void) | undefined;
+  /** 定时唤醒被更新切换拒绝后，只在切换释放时补一次，不能短轮询。 */
+  private transitionBlockedTimerWake = false;
+  /** 用于覆盖 transition release 先于 Promise rejection 落入 catch 的微任务竞态。 */
+  private timerWakeAttemptInFlight = false;
+  private transitionReleasedDuringTimerWakeAttempt = false;
 
   public constructor(private readonly options: PosSyncCoordinatorOptions) {
     this.random = options.random ?? Math.random;
@@ -127,6 +142,17 @@ export class PosSyncCoordinator {
     this.retryMaxMs = options.retryMaxMs ?? 5 * 60_000;
     this.retryJitterRatio = options.retryJitterRatio ?? 0.2;
     this.timer = options.timer ?? defaultTimer;
+    if (options.operationLease) {
+      const subscribeTransitionReleased =
+        options.operationLease.subscribeTransitionReleased;
+      if (typeof subscribeTransitionReleased !== "function") {
+        throw new Error("TRANSITION_RELEASE_SUBSCRIPTION_REQUIRED");
+      }
+      this.transitionReleaseUnsubscribe =
+        subscribeTransitionReleased.call(options.operationLease, () => {
+        this.resumeTimerWakeAfterTransitionRelease();
+      });
+    }
   }
 
   /** 仅暴露当前单飞 drain 是否仍在执行，不泄漏队列内容或改变重试状态。 */
@@ -134,11 +160,28 @@ export class PosSyncCoordinator {
     return this.inFlight !== undefined;
   }
 
+  /**
+   * 每个真实单飞 drain 只通知一次；订阅者不得影响同步结果或彼此。
+   * 返回的退订函数幂等，coordinator shutdown 也会清理全部订阅。
+   */
+  public subscribeDrainSettled(listener: SyncDrainSettledListener): () => void {
+    if (this.stopped) return () => undefined;
+    this.drainSettledListeners.add(listener);
+    return () => {
+      this.drainSettledListeners.delete(listener);
+    };
+  }
+
   /** runtime 关闭前释放延迟重试，避免旧数据库连接被 timer 在关闭后再次访问。 */
   public shutdown(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise;
     this.stopped = true;
     this.rerunRequested = false;
+    this.transitionBlockedTimerWake = false;
+    this.transitionReleasedDuringTimerWakeAttempt = false;
+    this.transitionReleaseUnsubscribe?.();
+    this.transitionReleaseUnsubscribe = undefined;
+    this.drainSettledListeners.clear();
     if (this.scheduledDrain !== undefined) {
       this.timer.clear(this.scheduledDrain);
       this.scheduledDrain = undefined;
@@ -160,14 +203,47 @@ export class PosSyncCoordinator {
       return this.inFlight;
     }
     const drain = () => this.drainUntilQuiescent();
-    this.inFlight = (
+    const operation = (
       this.options.operationLease
         ? this.options.operationLease.runOperation(drain)
         : drain()
-    ).finally(() => {
+    );
+    const afterCleanup = operation.finally(() => {
       this.inFlight = undefined;
     });
+    this.inFlight = afterCleanup.then(
+      (report) => {
+        this.notifyDrainSettled(Object.freeze({
+          outcome: "fulfilled",
+          report,
+        }));
+        return report;
+      },
+      (error: unknown) => {
+        this.notifyDrainSettled(Object.freeze({ outcome: "rejected" }));
+        throw error;
+      },
+    );
     return this.inFlight;
+  }
+
+  private notifyDrainSettled(event: SyncDrainSettledEvent): void {
+    for (const listener of [...this.drainSettledListeners]) {
+      try {
+        const result: unknown = listener(event);
+        if (
+          typeof result === "object" &&
+          result !== null &&
+          "then" in result &&
+          typeof (result as { then?: unknown }).then === "function"
+        ) {
+          void Promise.resolve(result as PromiseLike<void>)
+            .catch(() => undefined);
+        }
+      } catch {
+        // 状态刷新订阅者失败不能改变订单/审计 drain 的终态。
+      }
+    }
   }
 
   private async drainUntilQuiescent(): Promise<SyncDrainReport> {
@@ -435,10 +511,53 @@ export class PosSyncCoordinator {
     );
     this.scheduledDrain = this.timer.set(delayMs, () => {
       this.scheduledDrain = undefined;
-      if (this.stopped) return;
-      void this.requestDrain().catch(() => undefined);
+      this.requestScheduledDrain();
     });
   }
+
+  private requestScheduledDrain(): void {
+    if (this.stopped) return;
+    this.timerWakeAttemptInFlight = true;
+    void this.requestDrain().then(
+      () => {
+        this.timerWakeAttemptInFlight = false;
+        this.transitionReleasedDuringTimerWakeAttempt = false;
+      },
+      (error: unknown) => {
+        this.timerWakeAttemptInFlight = false;
+        if (!isUpdateTransitionInProgress(error) || this.stopped) {
+          this.transitionReleasedDuringTimerWakeAttempt = false;
+          return;
+        }
+        this.transitionBlockedTimerWake = true;
+        // 中文注释：release 可能在异步 rejection 链完成前同步通知；此处补看锁存位，
+        // 避免已释放的切换把本次到期重试永久吞掉。
+        if (this.transitionReleasedDuringTimerWakeAttempt) {
+          this.transitionReleasedDuringTimerWakeAttempt = false;
+          this.transitionBlockedTimerWake = false;
+          this.requestScheduledDrain();
+        }
+      },
+    );
+  }
+
+  private resumeTimerWakeAfterTransitionRelease(): void {
+    if (this.stopped) return;
+    if (this.timerWakeAttemptInFlight) {
+      this.transitionReleasedDuringTimerWakeAttempt = true;
+      return;
+    }
+    if (!this.transitionBlockedTimerWake) return;
+    this.transitionBlockedTimerWake = false;
+    this.requestScheduledDrain();
+  }
+}
+
+function isUpdateTransitionInProgress(error: unknown): boolean {
+  return typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "UPDATE_TRANSITION_IN_PROGRESS";
 }
 
 /** 启动、回到前台和联网恢复都走同一单飞入口。 */

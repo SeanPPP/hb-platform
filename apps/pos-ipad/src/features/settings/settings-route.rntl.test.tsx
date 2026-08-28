@@ -17,6 +17,7 @@ const mockGetDeviceIdentity = jest.fn<
   }> | null>
 >();
 const mockRouterDismissTo = jest.fn();
+const mockRouterPush = jest.fn();
 
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
@@ -25,7 +26,7 @@ jest.mock("expo-router", () => {
   return {
     Redirect: ({ href }: { href: string }) =>
       React.createElement(Text, { testID: "redirect" }, href),
-    useRouter: () => ({ dismissTo: mockRouterDismissTo }),
+    useRouter: () => ({ dismissTo: mockRouterDismissTo, push: mockRouterPush }),
   };
 });
 
@@ -132,6 +133,21 @@ test("复核设备身份后只调用零参数 Settings 工厂", async () => {
   expect(mockCreatePresenter).toHaveBeenCalledWith();
   mockScreenProps.onBack();
   expect(mockRouterDismissTo).toHaveBeenCalledWith("/sales");
+  expect(mockScreenProps.onOpenSyncHistory).toBeUndefined();
+});
+
+test("只有同步记录 View 权限时设置页才提供同步记录处理入口", async () => {
+  mockActiveCashier.permissions = [
+    "Permissions.PosTerminal.Settings.View",
+    "Permissions.PosTerminal.History.View",
+  ];
+  const screen = await render(<SettingsRoute />);
+
+  await waitFor(() =>
+    expect(screen.getByTestId("settings-route-screen")).toBeTruthy(),
+  );
+  mockScreenProps.onOpenSyncHistory();
+  expect(mockRouterPush).toHaveBeenCalledWith("/sync-history");
 });
 
 test("没有 View 权限时直链返回销售页且不读取设备身份", async () => {

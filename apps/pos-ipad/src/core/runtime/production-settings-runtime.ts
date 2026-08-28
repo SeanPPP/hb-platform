@@ -28,8 +28,8 @@ export type ProductionSettingsRuntimeDependencies = Readonly<{
    */
   runDangerousExclusive<T>(operation: () => Promise<T>): Promise<T>;
   /**
-   * 设备重置会废弃当前 cashier 和注册凭据，必须走全局 transition 的目录→购物车锁序。
-   * 缺失时拒绝执行，避免回退到普通购物车锁而与 barrier 自锁。
+   * 清注册与换店都会废弃当前 cashier/注册凭据，必须走全局 transition
+   * 的目录→购物车锁序。缺失时拒绝执行，避免回退到普通购物车锁而与 barrier 自锁。
    */
   runDeviceRegistrationResetTransition?<T>(
     operation: () => Promise<T>,
@@ -113,15 +113,19 @@ function securedSettingsPort(
         );
       if (
         action.kind !== "pair-linkly" &&
-        action.kind !== "reset-device-registration"
+        action.kind !== "reset-device-registration" &&
+        action.kind !== "reregister-device"
       ) {
         assertSameSession(lease.get(), identity);
       }
       return result;
     };
-    // restart/payment/pair 的最终互斥由 transition 按目录→购物车顺序取得；
-    // 若这里先持有普通购物车 lease，transition 会等待当前动作自身而永久自锁。
-    if (action.kind === "reset-device-registration") {
+    // 重启、支付、配对与设备身份变更的最终互斥由 transition 按目录→购物车
+    // 顺序取得；若这里先持有普通购物车 lease，会等待当前动作自身而永久自锁。
+    if (
+      action.kind === "reset-device-registration" ||
+      action.kind === "reregister-device"
+    ) {
       const transition = input.runDeviceRegistrationResetTransition;
       if (!transition) {
         return Promise.reject(
@@ -217,6 +221,9 @@ function securedSettingsPort(
         assertSameSession(lease.get(), identity);
         listener();
       }),
+    // 此事件恰好表示旧 identity 已失效，不能再做旧 scope 的后验断言。
+    subscribeDeviceReregistrationCommitted: (listener) =>
+      input.control.subscribeDeviceReregistrationCommitted(listener),
     loadSnapshot: (signal) =>
       run(async () => {
         const snapshot = await input.control.loadSnapshot(signal);
@@ -243,6 +250,8 @@ function securedSettingsPort(
             ),
         }
       : {}),
+    preflightDeviceReregistration: (signal) =>
+      run(() => input.control.preflightDeviceReregistration(signal)),
     testPaymentProvider: (provider, settings, signal) =>
       run(() =>
         input.control.testPaymentProvider(

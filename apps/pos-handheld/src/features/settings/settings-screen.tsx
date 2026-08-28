@@ -32,6 +32,7 @@ import type {
   SettingsSquareDeviceCode,
   SettingsSquareLocation,
 } from "@hb/pos-domain/features/settings/settings-square-setup";
+import type { PendingWorkBlocker } from "@hb/pos-domain";
 
 import {
   HidScannerCapture,
@@ -118,6 +119,7 @@ export type SettingsScreenPresenter = Pick<
 type SettingsScreenProps = Readonly<{
   locale?: SettingsLocale;
   onBack?(): void;
+  onOpenSyncHistory?(): void;
   presenter: SettingsScreenPresenter;
   scanner?: HidScannerRouter;
 }>;
@@ -140,6 +142,7 @@ const NAV_ITEMS: readonly Readonly<{
 export function SettingsScreen({
   locale: localeOverride,
   onBack,
+  onOpenSyncHistory,
   presenter,
   scanner,
 }: SettingsScreenProps) {
@@ -277,6 +280,8 @@ export function SettingsScreen({
           {state.kind === "ready" ? (
             <SettingsPaneContent
               locale={locale}
+              onBackToSales={onBack}
+              onOpenSyncHistory={onOpenSyncHistory}
               presenter={presenter}
               scanner={scanner}
               state={state}
@@ -350,11 +355,15 @@ export function SettingsUnavailableScreen({
 
 function SettingsPaneContent({
   locale,
+  onBackToSales,
+  onOpenSyncHistory,
   presenter,
   scanner,
   state,
 }: Readonly<{
   locale: SettingsLocale;
+  onBackToSales: (() => void) | undefined;
+  onOpenSyncHistory: (() => void) | undefined;
   presenter: SettingsScreenPresenter;
   scanner: HidScannerRouter | undefined;
   state: SettingsState;
@@ -372,6 +381,8 @@ function SettingsPaneContent({
       return (
         <DevicePane
           locale={locale}
+          onBackToSales={onBackToSales}
+          onOpenSyncHistory={onOpenSyncHistory}
           presenter={presenter}
           scanner={scanner}
           state={state}
@@ -2279,11 +2290,15 @@ function PeripheralsPane({
 
 function DevicePane({
   locale,
+  onBackToSales,
+  onOpenSyncHistory,
   presenter,
   scanner,
   state,
 }: Readonly<{
   locale: SettingsLocale;
+  onBackToSales: (() => void) | undefined;
+  onOpenSyncHistory: (() => void) | undefined;
   presenter: SettingsScreenPresenter;
   scanner: HidScannerRouter | undefined;
   state: SettingsState;
@@ -2391,11 +2406,21 @@ function DevicePane({
             <ActionButton
               disabled={disabled}
               label={t("device.reviewReregistration")}
-              onPress={() => presenter.requestDeviceReregistration()}
+              onPress={() => void presenter.requestDeviceReregistration()}
               testID="settings-reregister-request"
               tone="danger"
             />
           </View>
+        ) : null}
+        {state.deviceReregistrationPreflight.kind === "blocked" ||
+        state.deviceReregistrationPreflight.kind === "failed" ? (
+          <PendingWorkPanel
+            locale={locale}
+            onBackToSales={onBackToSales}
+            onOpenSyncHistory={onOpenSyncHistory}
+            onRecheck={() => void presenter.requestDeviceReregistration()}
+            preflight={state.deviceReregistrationPreflight}
+          />
         ) : null}
       </SectionCard>
       <SectionCard
@@ -2436,6 +2461,124 @@ function DevicePane({
         />
       ) : null}
     </View>
+  );
+}
+
+function PendingWorkPanel({
+  locale,
+  onBackToSales,
+  onOpenSyncHistory,
+  onRecheck,
+  preflight,
+}: Readonly<{
+  locale: SettingsLocale;
+  onBackToSales: (() => void) | undefined;
+  onOpenSyncHistory: (() => void) | undefined;
+  onRecheck(): void;
+  preflight: Extract<
+    SettingsState["deviceReregistrationPreflight"],
+    { kind: "blocked" | "failed" }
+  >;
+}>) {
+  const t = (
+    key: SettingsCopyKey,
+    values?: Readonly<Record<string, string | number>>,
+  ) => settingsText(locale, key, values);
+  const blockers = preflight.kind === "blocked" ? preflight.blockers : [];
+  const needsSales = blockers.some(
+    ({ code }) => code === "active-cart" || code === "unresolved-payments",
+  );
+  const needsSyncHistory = blockers.some(
+    ({ code }) =>
+      code === "pending-sales" ||
+      code === "pending-returns" ||
+      code === "payment-configuration-sensitive-orders",
+  );
+
+  return (
+    <View
+      accessibilityLiveRegion="polite"
+      accessibilityRole="alert"
+      style={styles.pendingWorkPanel}
+      testID="settings-reregister-blockers"
+    >
+      <Text style={styles.pendingWorkTitle}>
+        {t(
+          preflight.kind === "blocked"
+            ? "device.reregisterBlockedTitle"
+            : "device.reregisterSafetyFailedTitle",
+        )}
+      </Text>
+      <Text style={styles.pendingWorkBody}>
+        {t(
+          preflight.kind === "blocked"
+            ? "device.reregisterBlockedBody"
+            : "device.reregisterSafetyFailedBody",
+        )}
+      </Text>
+      {blockers.length > 0 ? (
+        <View style={styles.pendingWorkList}>
+          {blockers.map((blocker) => (
+            <View
+              key={blocker.code}
+              style={styles.pendingWorkRow}
+              testID={`settings-reregister-blocker-${blocker.code}`}
+            >
+              <Text style={styles.pendingWorkItem}>
+                {pendingWorkBlockerCopy(locale, blocker)}
+              </Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+      {needsSyncHistory && !onOpenSyncHistory ? (
+        <Text
+          style={styles.pendingWorkPermissionNote}
+          testID="settings-reregister-sync-history-permission"
+        >
+          {t("device.syncHistoryPermissionRequired")}
+        </Text>
+      ) : null}
+      <View style={styles.actionRow}>
+        {needsSales && onBackToSales ? (
+          <ActionButton
+            compact
+            label={t("action.backToSales")}
+            onPress={onBackToSales}
+            testID="settings-reregister-back-to-sales"
+            tone="secondary"
+          />
+        ) : null}
+        {needsSyncHistory && onOpenSyncHistory ? (
+          <ActionButton
+            compact
+            label={t("action.viewSyncHistory")}
+            onPress={onOpenSyncHistory}
+            testID="settings-reregister-open-sync-history"
+            tone="secondary"
+          />
+        ) : null}
+        <ActionButton
+          compact
+          label={t("action.recheck")}
+          onPress={onRecheck}
+          testID="settings-reregister-recheck"
+          tone="danger"
+        />
+      </View>
+    </View>
+  );
+}
+
+function pendingWorkBlockerCopy(
+  locale: SettingsLocale,
+  blocker: PendingWorkBlocker,
+): string {
+  const key = `device.blocker.${blocker.code}` as SettingsCopyKey;
+  return settingsText(
+    locale,
+    key,
+    blocker.kind === "count" ? { count: blocker.count } : undefined,
   );
 }
 
@@ -2769,7 +2912,10 @@ function EmptyPanel({
 function StatusBanner({
   locale,
   statusCode,
-}: Readonly<{ locale: SettingsLocale; statusCode: SettingsStatusCode }>) {
+}: Readonly<{
+  locale: SettingsLocale;
+  statusCode: SettingsStatusCode;
+}>) {
   const success = isSuccessStatus(statusCode);
   return (
     <View
@@ -2780,7 +2926,9 @@ function StatusBanner({
       ]}
       testID="settings-status"
     >
-      <Text style={styles.statusText}>{statusCopy(locale, statusCode)}</Text>
+      <Text style={styles.statusText}>
+        {statusCopy(locale, statusCode)}
+      </Text>
       <Text style={styles.statusCode}>[{statusCode}]</Text>
     </View>
   );
@@ -3328,6 +3476,48 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     lineHeight: 20,
     marginBottom: 12,
+  },
+  pendingWorkPanel: {
+    backgroundColor: posColors.redSoft,
+    borderColor: posColors.red,
+    borderRadius: 6,
+    borderWidth: 1,
+    marginTop: 14,
+    padding: 12,
+  },
+  pendingWorkTitle: {
+    color: posColors.red,
+    fontSize: 16,
+    fontWeight: "800",
+    lineHeight: 22,
+  },
+  pendingWorkBody: {
+    color: posColors.ink,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 6,
+  },
+  pendingWorkList: { gap: 8, marginTop: 12 },
+  pendingWorkRow: {
+    backgroundColor: posColors.surface,
+    borderColor: posColors.border,
+    borderRadius: 6,
+    borderWidth: 1,
+    minHeight: 44,
+    paddingHorizontal: 11,
+    paddingVertical: 10,
+  },
+  pendingWorkItem: {
+    color: posColors.ink,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 20,
+  },
+  pendingWorkPermissionNote: {
+    color: posColors.mutedInk,
+    fontSize: 13,
+    lineHeight: 19,
+    marginTop: 12,
   },
   multilineTextInput: {
     backgroundColor: "#FAFAF8",

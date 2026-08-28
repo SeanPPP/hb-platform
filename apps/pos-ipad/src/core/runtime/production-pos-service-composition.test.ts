@@ -95,11 +95,15 @@ import {
   type DeviceSessionApi,
 } from "../security/device-session";
 import {
+  DeviceLockStore,
   DeviceCredentialStore,
   InMemorySecureStore,
   InstallationIdentityStore,
+  PendingDeviceActivationCodeStore,
+  PendingDeviceRegistrationStore,
 } from "../security/secure-storage";
 
+import { reregisterSettingsDevice } from "./expo-settings-configuration";
 import type { PaymentProviderRuntimeBootstrap } from "./payment-provider-runtime-bootstrap";
 import type {
   InstallmentProviderAttemptPlan,
@@ -450,6 +454,17 @@ test("生产组合只暴露 route 所需业务面，并以 DurableCashCheckoutSe
   assert.equal("checkout" in services, false, "route 不得绕过共享购物车直接提交");
   unlockedPresenter.destroy();
   await services.shutdownBackgroundWork();
+});
+
+test("生产组合向状态桥只暴露轻量订单同步计数与 drain 完成订阅", async () => {
+  const services = createTestComposition(
+    databaseFor([], { pendingOrderSyncCount: 7 }),
+  );
+
+  assert.equal(await services.sync.readPendingOrderSyncCount(), 7);
+  const unsubscribe = services.sync.subscribeDrainSettled(() => undefined);
+  assert.equal(typeof unsubscribe, "function");
+  unsubscribe();
 });
 
 test("销售履约 facade 缺少主管服务时按当前收银员权限 fail-closed", async () => {
@@ -2762,6 +2777,113 @@ test("支付配置切换仍阻断需要恢复的退货，不把普通待同步�
   presenter.destroy();
 });
 
+test("换店门禁独立读取未启用功能的耐久恢复状态并在读取失败时 fail closed", async (context) => {
+  const cases = [
+    {
+      name: "支付 bootstrap 缺失但支付草稿待恢复",
+      database: { paymentDraftRecoveryRequired: true },
+      unavailableService: "payments",
+      expectedStatus: "pending-local-data",
+    },
+    {
+      name: "支付 bootstrap 缺失但礼券 tender reversal 待恢复",
+      database: { voucherTenderReversalRecoveryRequired: true },
+      unavailableService: "payments",
+      expectedStatus: "pending-local-data",
+    },
+    {
+      name: "主管授权缺失但退货执行账本待恢复",
+      database: { returnRecoveryRequired: true },
+      unavailableService: "returns",
+      expectedStatus: "pending-local-data",
+    },
+    {
+      name: "分期配置缺失但分期 action 待恢复",
+      database: { installmentRecoveryRequired: true },
+      unavailableService: "installments",
+      expectedStatus: "pending-local-data",
+    },
+    {
+      name: "恢复探针读取失败",
+      database: { recoveryProbeFailure: "payment" },
+      unavailableService: "payments",
+      expectedStatus: "safety-check-failed",
+    },
+    {
+      name: "退货执行账本存在多条非法恢复记录",
+      database: { returnRecoveryCount: 2 },
+      unavailableService: "returns",
+      expectedStatus: "safety-check-failed",
+    },
+  ] as const;
+
+  for (const scenario of cases) {
+    await context.test(scenario.name, async (scenarioContext) => {
+      let reregisterCalls = 0;
+      let reloadCalls = 0;
+      const baseSettings = settingsRuntimeConfiguration();
+      const services = createTestComposition(
+        databaseFor([], scenario.database),
+        {
+          appUpdateTransition: new UpdateTransitionLeaseCoordinator(),
+          cashierPermissions: [
+            SETTINGS_VIEW_PERMISSION,
+            SETTINGS_DEVICE_REGISTRATION_PERMISSION,
+          ],
+          settings: {
+            ...baseSettings,
+            device: {
+              ...baseSettings.device,
+              previewActivationCode: async () => ({
+                isAllowed: true,
+                storeCode: "S002",
+                storeName: "Target store",
+                deviceSystem: "iPadOS",
+                expiresAtUtc: "2026-08-28T00:00:00.000Z",
+              }),
+              reregister: async () => {
+                reregisterCalls += 1;
+              },
+            },
+            runtimeReload: {
+              reload: async () => {
+                reloadCalls += 1;
+              },
+            },
+          },
+        },
+      );
+      scenarioContext.after(() => services.shutdownBackgroundWork());
+      const unavailableService: unknown =
+        services[scenario.unavailableService];
+      assert.equal(
+        typeof unavailableService === "object" &&
+          unavailableService !== null &&
+          "status" in unavailableService
+          ? unavailableService.status
+          : null,
+        "unavailable",
+      );
+      await services.initialize();
+      await services.cashierSession.signIn("cashier");
+      assert.equal("createPresenter" in services.settings, true);
+      if (!("createPresenter" in services.settings)) return;
+      const presenter = services.settings.createPresenter();
+      await presenter.load();
+      presenter.setDeviceActivationCode(
+        "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ",
+      );
+      await presenter.previewDeviceReregistration();
+      await presenter.requestDeviceReregistration();
+
+      assert.equal(presenter.getState().statusCode, scenario.expectedStatus);
+      assert.equal(reregisterCalls, 0);
+      assert.equal(reloadCalls, 0);
+      presenter.destroy();
+    });
+  }
+});
+
 test("生产组合绑定全局 transition：自身 cart lease 不误报 durable write，封门期间拒绝新同步", async () => {
   const transition = new UpdateTransitionLeaseCoordinator();
   const services = createTestComposition(databaseFor([]), {
@@ -3929,18 +4051,18 @@ test("日结只使用可信收银员作用域，先耐久归档再通过同一�
   presenter.destroy();
 });
 
-test("换店凭据提交后无论 reload 成功、失败或中止都废弃旧 cashier/cart，提交前失败不误杀", async (context) => {
+test("换店凭据提交并 reload 后废弃旧 cashier/cart，提交前失败不误杀", async (context) => {
   const activationCode =
     "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
   const cases = [
     { name: "正常 reload", afterCommit: "success" },
-    { name: "reload 失败", afterCommit: "reload-failed" },
-    { name: "reload 前中止", afterCommit: "aborted" },
     { name: "重新注册失败", afterCommit: "reregister-failed" },
   ] as const;
 
   for (const scenario of cases) {
     await context.test(scenario.name, async (scenarioContext) => {
+      let reregisterCalls = 0;
+      let reloadCalls = 0;
       const secureStore = new InMemorySecureStore();
       const installation = new InstallationIdentityStore(
         secureStore,
@@ -3961,6 +4083,10 @@ test("换店凭据提交后无论 reload 成功、失败或中止都废弃旧 ca
           throw new Error("not used");
         },
         async reregister() {
+          throw new Error("not used");
+        },
+        async rebindActivationCode() {
+          reregisterCalls += 1;
           if (scenario.afterCommit === "reregister-failed") {
             throw new Error("reregister failed before credentials save");
           }
@@ -3969,6 +4095,7 @@ test("换店凭据提交后无论 reload 成功、失败或中止都废弃旧 ca
             storeCode: "S002",
             deviceStatus: 1,
             isAllowed: true,
+            reasonCode: "ACTIVATED",
             authorizationCode: "new-device-secret",
           };
         },
@@ -3980,6 +4107,7 @@ test("换店凭据提交后无论 reload 成功、失败或中止都废弃旧 ca
       );
       const settings = settingsRuntimeConfiguration();
       const services = createTestComposition(databaseFor([]), {
+        appUpdateTransition: new UpdateTransitionLeaseCoordinator(),
         cashierPermissions: [
           SETTINGS_VIEW_PERMISSION,
           SETTINGS_DEVICE_REGISTRATION_PERMISSION,
@@ -3994,21 +4122,20 @@ test("换店凭据提交后无论 reload 成功、失败或中止都废弃旧 ca
               deviceSystem: "iPadOS",
               expiresAtUtc: "2026-08-28T00:00:00.000Z",
             }),
-            reregister: async () => {
-              await coordinator.reregister({ targetStoreCode: "S002" });
-              if (scenario.afterCommit === "aborted") {
-                throw Object.assign(new Error("reregister aborted after save"), {
-                  name: "AbortError",
-                });
-              }
+            reregister: async (request, signal, onCredentialsCommitted) => {
+              await reregisterSettingsDevice(
+                request,
+                signal,
+                (nextRequest, markCommitted) =>
+                  coordinator.rebindActivationCode(nextRequest, markCommitted),
+                onCredentialsCommitted,
+              );
             },
             resetRegistration: async () => "completed",
           },
           runtimeReload: {
             reload: async () => {
-              if (scenario.afterCommit === "reload-failed") {
-                throw new Error("runtime reload failed");
-              }
+              reloadCalls += 1;
             },
           },
         },
@@ -4022,7 +4149,11 @@ test("换店凭据提交后无论 reload 成功、失败或中止都废弃旧 ca
       await presenter.load();
       presenter.setDeviceActivationCode(activationCode);
       await presenter.previewDeviceReregistration();
-      assert.equal(presenter.requestDeviceReregistration(), true);
+      await presenter.requestDeviceReregistration();
+      assert.equal(
+        presenter.getState().confirmation?.kind,
+        "reregister-device",
+      );
       await presenter.confirmDangerousAction();
 
       if (scenario.afterCommit === "reregister-failed") {
@@ -4030,9 +4161,19 @@ test("换店凭据提交后无论 reload 成功、失败或中止都废弃旧 ca
           presenter.getState().statusCode,
           "device-reregister-failed",
         );
+        assert.equal(reregisterCalls, 1);
+        assert.equal(reloadCalls, 0);
         assert.doesNotThrow(() => services.dailyClose.createPresenter());
         return;
       }
+
+      assert.equal(
+        presenter.getState().statusCode,
+        "device-reregister-started",
+      );
+      await presenter.confirmDangerousAction();
+      assert.equal(reregisterCalls, 1);
+      assert.equal(reloadCalls, 1);
 
       assert.equal(
         await coordinator.getRequestHeaders().then((headers) =>
@@ -4045,6 +4186,152 @@ test("换店凭据提交后无论 reload 成功、失败或中止都废弃旧 ca
         /CURRENT_CASHIER_REQUIRED/,
       );
     });
+  }
+});
+
+test("换店已提交但 reload 失败时持续封锁旧 runtime 写入", async () => {
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  const transition = new UpdateTransitionLeaseCoordinator();
+  const reloadAttempted = deferred<void>();
+  let reregisterCalls = 0;
+  let reloadCalls = 0;
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(
+    secureStore,
+    () => "INSTALL-001",
+  );
+  const credentials = new DeviceCredentialStore(secureStore);
+  const lockStore = new DeviceLockStore(secureStore);
+  const pendingRegistration = new PendingDeviceRegistrationStore(secureStore);
+  const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
+  pendingRegistration.clear = async () => {
+    throw new Error("post-save pending registration clear failed");
+  };
+  await credentials.save({
+    deviceCode: "IPAD-1",
+    storeCode: "S001",
+    hardwareId: "INSTALL-001",
+    authorizationCode: "old-device-secret",
+  });
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async verify() { throw new Error("not used"); },
+      async reregister() { throw new Error("not used"); },
+      async rebindActivationCode() {
+        reregisterCalls += 1;
+        return {
+          deviceCode: "IPAD-2",
+          storeCode: "S002",
+          deviceStatus: 1,
+          isAllowed: true,
+          reasonCode: "ACTIVATED",
+          authorizationCode: "new-device-secret",
+        };
+      },
+    },
+    installation,
+    credentials,
+    lockStore,
+    pendingRegistration,
+    undefined,
+    pendingActivation,
+  );
+  const settings = settingsRuntimeConfiguration();
+  const services = createTestComposition(databaseFor([]), {
+    appUpdateTransition: transition,
+    cashierPermissions: [
+      SETTINGS_VIEW_PERMISSION,
+      SETTINGS_DEVICE_REGISTRATION_PERMISSION,
+    ],
+    settings: {
+      ...settings,
+      device: {
+        previewActivationCode: async () => ({
+          isAllowed: true,
+          storeCode: "S002",
+          storeName: "Target store",
+          deviceSystem: "iPadOS",
+          expiresAtUtc: "2026-08-28T00:00:00.000Z",
+        }),
+        reregister: async (request, signal, onCredentialsCommitted) => {
+          await reregisterSettingsDevice(
+            request,
+            signal,
+            (nextRequest, markCommitted) =>
+              coordinator.rebindActivationCode(nextRequest, markCommitted),
+            onCredentialsCommitted,
+          );
+        },
+        resetRegistration: async () => "completed",
+      },
+      runtimeReload: {
+        reload: async () => {
+          reloadCalls += 1;
+          reloadAttempted.resolve();
+          throw new Error("runtime reload failed");
+        },
+      },
+    },
+  });
+
+  try {
+    await services.initialize();
+    await services.cashierSession.signIn("cashier");
+    const sales = services.sales.createPresenter();
+    sales.setQuery("930000000001");
+    assert.equal("createPresenter" in services.settings, true);
+    if (!("createPresenter" in services.settings)) return;
+    const presenter = services.settings.createPresenter();
+    await presenter.load();
+    presenter.setDeviceActivationCode(activationCode);
+    await presenter.previewDeviceReregistration();
+    await presenter.requestDeviceReregistration();
+
+    let confirmationSettled = false;
+    const confirmation = presenter.confirmDangerousAction();
+    void confirmation.then(
+      () => { confirmationSettled = true; },
+      () => { confirmationSettled = true; },
+    );
+    await reloadAttempted.promise;
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+
+    assert.equal(confirmationSettled, false);
+    assert.equal(transition.isTransitionActive(), true);
+    assert.equal(presenter.getState().busy, true);
+    assert.equal(
+      presenter.getState().statusCode,
+      "device-reregister-restart-required",
+    );
+    await presenter.confirmDangerousAction();
+    assert.equal(reregisterCalls, 1);
+    assert.equal(reloadCalls, 1);
+    assert.equal(
+      await coordinator.getRequestHeaders().then((headers) =>
+        headers?.["X-HBPOS-Store-Code"],
+      ),
+      "S002",
+    );
+    assert.equal(await sales.addLookupCode(), false);
+    assert.throws(
+      () => services.dailyClose.createPresenter(),
+      /CURRENT_CASHIER_REQUIRED/,
+    );
+    await assert.rejects(
+      services.sync.requestDrain(),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as Error & { code?: string }).code ===
+          UPDATE_TRANSITION_IN_PROGRESS,
+    );
+    sales.destroy();
+    presenter.destroy();
+  } finally {
+    // terminal fence 故意让 catalog exclusive 永不完成；真实进程由 reload/restart
+    // 丢弃整个 runtime，测试只触发同步退订和 timer 清理，不能等待该 fence。
+    void services.shutdownBackgroundWork();
   }
 });
 
@@ -4715,6 +5002,12 @@ function databaseFor(
     onSyncHistoryRestore?(): void;
     onRefundVoucherPrintMaterialCreated?(): void;
     returnRecoveryRequired?: boolean;
+    returnRecoveryCount?: number;
+    paymentDraftRecoveryRequired?: boolean;
+    voucherTenderReversalRecoveryRequired?: boolean;
+    installmentRecoveryRequired?: boolean;
+    recoveryProbeFailure?: "payment" | "return" | "installment";
+    pendingOrderSyncCount?: number;
     activeCatalogPromotions?: ActiveCatalogPromotions | null;
     activeCatalogMetadata?: ActiveCatalogMetadata | null;
     onCatalogActivate?(): void;
@@ -4805,6 +5098,11 @@ function databaseFor(
     orderSyncMaterial: () => ({
       async resolve(order: LocalOrder) {
         return order;
+      },
+    }),
+    orderSyncStatus: () => ({
+      async readPendingOrderSyncCount() {
+        return options.pendingOrderSyncCount ?? 0;
       },
     }),
     catalogSnapshots: () => ({
@@ -4980,6 +5278,33 @@ function databaseFor(
         };
       },
     }),
+    paymentDraftRecovery: () => ({
+      async findBlockingRecovery() {
+        if (options.recoveryProbeFailure === "payment") {
+          throw new Error("payment recovery storage unavailable");
+        }
+        return options.paymentDraftRecoveryRequired
+          ? ({ draftId: "payment-draft-recovery" } as never)
+          : null;
+      },
+    }),
+    voucherTenderReversals: () => ({
+      async findBlocking() {
+        return options.voucherTenderReversalRecoveryRequired
+          ? ({ actionId: "voucher-reversal-recovery" } as never)
+          : null;
+      },
+    }),
+    installmentActions: () => ({
+      async loadBlocking() {
+        if (options.recoveryProbeFailure === "installment") {
+          throw new Error("installment recovery storage unavailable");
+        }
+        return options.installmentRecoveryRequired
+          ? ({ actionId: "installment-recovery" } as never)
+          : null;
+      },
+    }),
     paymentOrderCommitter: () => ({}),
     returnCapacityVault: () => ({
       async protect() {
@@ -4988,9 +5313,17 @@ function databaseFor(
     }),
     returnExecutionLedger: () => ({
       async listRecoverable() {
-        return options.returnRecoveryRequired
-          ? [{} as never]
-          : [];
+        if (options.recoveryProbeFailure === "return") {
+          throw new Error("return recovery storage unavailable");
+        }
+        return Array.from(
+          {
+            length:
+              options.returnRecoveryCount ??
+              (options.returnRecoveryRequired ? 1 : 0),
+          },
+          () => ({} as never),
+        );
       },
     }),
     returnFulfilmentPlans: () => ({

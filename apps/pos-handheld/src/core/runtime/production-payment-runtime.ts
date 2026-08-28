@@ -104,6 +104,10 @@ export type PosPaymentRuntimeService =
 
 export type ProductionPaymentRuntime = Readonly<{
   service: PosPaymentRuntimeService;
+  /** 不依赖 provider bootstrap 的窄恢复探针，只暴露当前终端是否存在阻断状态。 */
+  recoveryProbe: Readonly<{
+    hasRecoveryRequired(): Promise<boolean>;
+  }>;
   /** 仅供生产组合根接入退货编排；不会进入 route 可见的 payments service。 */
   returnRefund: DurableOnlineReturnRefundPort | null;
   initializeRecovery(): Promise<void>;
@@ -134,9 +138,27 @@ export type ProductionPaymentRuntimeDependencies = Readonly<{
 export function createProductionPaymentRuntime(
   input: ProductionPaymentRuntimeDependencies,
 ): ProductionPaymentRuntime {
+  const terminalScope = normalizeScope(input.terminal);
+  const drafts = input.database.paymentDraftRecovery({
+    createOrderGuid: input.createId,
+    createOrderLineGuid: input.createId,
+    createAuditEventId: input.createId,
+  });
+  const voucherReversalStore = voucherTenderReversalStore(input);
+  const recoveryProbe = Object.freeze({
+    async hasRecoveryRequired(): Promise<boolean> {
+      const [draftRecovery, voucherReversal] = await Promise.all([
+        drafts.findBlockingRecovery(terminalScope),
+        voucherReversalStore.findBlocking(terminalScope),
+      ]);
+      return draftRecovery !== null || voucherReversal !== null;
+    },
+  });
+
   if (!input.bootstrap) {
     return {
       initializeRecovery: async () => undefined,
+      recoveryProbe,
       returnRefund: null,
       service: {
         status: "unavailable",
@@ -150,17 +172,11 @@ export function createProductionPaymentRuntime(
     };
   }
 
-  const terminalScope = normalizeScope(input.terminal);
   const receiptSettings: PaymentReceiptSettingsPort = input.receiptSettings ?? {
     getReceiptPrinterSettings: () =>
       input.database.settings().getReceiptPrinterSettings(),
   };
   const voucherRelease = availableVoucherRelease(input.bootstrap);
-  const drafts = input.database.paymentDraftRecovery({
-    createOrderGuid: input.createId,
-    createOrderLineGuid: input.createId,
-    createAuditEventId: input.createId,
-  });
   const cartLease = new ActivePricingCartPaymentLeaseCoordinator(
     input.activeCart,
     paymentCartRecovery(drafts, terminalScope),
@@ -318,7 +334,6 @@ export function createProductionPaymentRuntime(
         },
       },
     );
-    const voucherReversalStore = voucherTenderReversalStore(input);
     const voucherReversal = voucherRelease
       ? new VoucherTenderReversalService({
           store: voucherReversalStore,
@@ -376,6 +391,7 @@ export function createProductionPaymentRuntime(
 
   return {
     returnRefund,
+    recoveryProbe,
     initializeRecovery: async () => {
       await cartLease.initializeRecovery();
       recoveryInitialized = true;

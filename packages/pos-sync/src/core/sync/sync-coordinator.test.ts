@@ -25,6 +25,14 @@ class TestUpdateOperationLease implements UpdateOperationLeasePort {
   private activeOperations = 0;
   private transitionActive = false;
   private readonly operationWaiters = new Set<() => void>();
+  private readonly transitionReleaseListeners = new Set<() => void>();
+
+  public subscribeTransitionReleased(listener: () => void): () => void {
+    this.transitionReleaseListeners.add(listener);
+    return () => {
+      this.transitionReleaseListeners.delete(listener);
+    };
+  }
 
   public async runOperation<T>(operation: () => T | Promise<T>): Promise<T> {
     if (this.transitionActive) {
@@ -53,6 +61,7 @@ class TestUpdateOperationLease implements UpdateOperationLeasePort {
       return await operation();
     } finally {
       this.transitionActive = false;
+      for (const listener of [...this.transitionReleaseListeners]) listener();
     }
   }
 }
@@ -975,6 +984,118 @@ test("同步与审计 drain 从排队到完成期间公开只读 in-flight 状�
   assert.equal(coordinator.isDraining(), false);
 });
 
+test("每个真实单飞 drain 完成后只通知一次，重叠唤醒不重复通知", async () => {
+  const syncStarted = deferred<void>();
+  const releaseSync = deferred<void>();
+  const coordinator = new PosSyncCoordinator({
+    outbox: new FakeOutbox([[lease("one")], []]),
+    auditRepository: new FakeAuditRepository(),
+    orderSync: {
+      async sync() {
+        syncStarted.resolve(undefined);
+        await releaseSync.promise;
+        return { kind: "synced", alreadySynced: false };
+      },
+    },
+    auditUploader: { async upload() { return { kind: "uploaded" }; } },
+    security: { async lockDevice() {} },
+    now: () => new Date("2026-07-28T00:00:00.000Z"),
+  });
+  const events: unknown[] = [];
+  coordinator.subscribeDrainSettled((event) => events.push(event));
+
+  const first = coordinator.requestDrain();
+  await syncStarted.promise;
+  const overlapping = coordinator.requestDrain();
+  assert.equal(overlapping, first);
+  releaseSync.resolve(undefined);
+  const report = await first;
+
+  assert.deepEqual(events, [{ outcome: "fulfilled", report }]);
+  assert.equal(coordinator.isDraining(), false);
+});
+
+test("drain 失败仍通知且订阅者异常不会替换原始失败", async () => {
+  const databaseError = new Error("outbox unavailable");
+  const outbox = new FakeOutbox([]);
+  outbox.leaseReady = async () => {
+    throw databaseError;
+  };
+  const coordinator = createCoordinator(outbox, {});
+  const outcomes: string[] = [];
+  coordinator.subscribeDrainSettled(() => {
+    throw new Error("listener failed");
+  });
+  coordinator.subscribeDrainSettled(async () => {
+    throw new Error("async listener failed");
+  });
+  coordinator.subscribeDrainSettled((event) => outcomes.push(event.outcome));
+
+  await assert.rejects(
+    () => coordinator.requestDrain(),
+    (error: unknown) => error === databaseError,
+  );
+
+  assert.deepEqual(outcomes, ["rejected"]);
+  assert.equal(coordinator.isDraining(), false);
+});
+
+test("drain-settled 退订幂等，shutdown 后不再通知旧 runtime", async () => {
+  const syncStarted = deferred<void>();
+  const releaseSync = deferred<void>();
+  const coordinator = new PosSyncCoordinator({
+    outbox: new FakeOutbox([[lease("one")]]),
+    auditRepository: new FakeAuditRepository(),
+    orderSync: {
+      async sync() {
+        syncStarted.resolve(undefined);
+        await releaseSync.promise;
+        return { kind: "synced", alreadySynced: false };
+      },
+    },
+    auditUploader: { async upload() { return { kind: "uploaded" }; } },
+    security: { async lockDevice() {} },
+    now: () => new Date("2026-07-28T00:00:00.000Z"),
+  });
+  let notifications = 0;
+  const unsubscribe = coordinator.subscribeDrainSettled(() => {
+    notifications += 1;
+  });
+  let shutdownNotifications = 0;
+  coordinator.subscribeDrainSettled(() => {
+    shutdownNotifications += 1;
+  });
+  unsubscribe();
+  unsubscribe();
+  const drain = coordinator.requestDrain();
+  await syncStarted.promise;
+  const shutdown = coordinator.shutdown();
+  releaseSync.resolve(undefined);
+  await Promise.all([drain, shutdown]);
+
+  assert.equal(notifications, 0);
+  assert.equal(shutdownNotifications, 0);
+});
+
+test("注入 operation lease 时缺少 transition release 订阅会构造失败", () => {
+  assert.throws(
+    () => new PosSyncCoordinator({
+      outbox: new FakeOutbox([]),
+      auditRepository: new FakeAuditRepository(),
+      orderSync: {
+        async sync() { return { kind: "synced", alreadySynced: false }; },
+      },
+      auditUploader: { async upload() { return { kind: "uploaded" }; } },
+      security: { async lockDevice() {} },
+      now: () => new Date("2026-07-28T00:00:00.000Z"),
+      operationLease: {
+        runOperation: (operation) => Promise.resolve(operation()),
+      } as UpdateOperationLeasePort,
+    }),
+    /TRANSITION_RELEASE_SUBSCRIPTION_REQUIRED/u,
+  );
+});
+
 test("更新 transition 等待在途同步，并拒绝 transition 期间的新 drain", async () => {
   const syncRelease = deferred<void>();
   const transitionRelease = deferred<void>();
@@ -1019,6 +1140,80 @@ test("更新 transition 等待在途同步，并拒绝 transition 期间的新 d
   transitionRelease.resolve();
   await update;
   await assert.doesNotReject(coordinator.requestDrain());
+});
+
+test("定时 drain 被更新切换拒绝后，在切换释放时自动单飞重试", async () => {
+  const transitionRelease = deferred<void>();
+  const transition = new TestUpdateOperationLease();
+  const scheduled: { delayMs: number; callback: () => void }[] = [];
+  const outbox = new FakeOutbox(
+    [[], [lease("after-transition")], []],
+    ["2026-07-28T00:00:01.000Z", null],
+  );
+  const coordinator = new PosSyncCoordinator({
+    outbox,
+    auditRepository: new FakeAuditRepository(),
+    orderSync: { async sync() { return { kind: "synced", alreadySynced: false }; } },
+    auditUploader: { async upload() { return { kind: "uploaded" }; } },
+    security: { async lockDevice() {} },
+    now: () => new Date("2026-07-28T00:00:00.000Z"),
+    operationLease: transition,
+    timer: {
+      set(delayMs, callback) {
+        scheduled.push({ delayMs, callback });
+        return scheduled.length;
+      },
+      clear() {},
+    },
+  });
+
+  await coordinator.requestDrain();
+  assert.equal(scheduled[0]?.delayMs, 1_000);
+
+  const update = transition.runTransition(async () => transitionRelease.promise);
+  scheduled[0]?.callback();
+  // 故意在 rejection 链落入 catch 前释放，覆盖 release-before-rejection 微任务竞态。
+  transitionRelease.resolve(undefined);
+  await update;
+
+  await waitUntil(() => outbox.succeeded.includes("after-transition"));
+  assert.equal(outbox.leaseCalls, 3);
+});
+
+test("shutdown 会退订 transition 释放唤醒，释放后不再访问同步数据库", async () => {
+  const transitionRelease = deferred<void>();
+  const transition = new TestUpdateOperationLease();
+  const scheduled: { callback: () => void }[] = [];
+  const outbox = new FakeOutbox(
+    [[], [lease("must-not-run")]],
+    ["2026-07-28T00:00:01.000Z"],
+  );
+  const coordinator = new PosSyncCoordinator({
+    outbox,
+    auditRepository: new FakeAuditRepository(),
+    orderSync: { async sync() { return { kind: "synced", alreadySynced: false }; } },
+    auditUploader: { async upload() { return { kind: "uploaded" }; } },
+    security: { async lockDevice() {} },
+    now: () => new Date("2026-07-28T00:00:00.000Z"),
+    operationLease: transition,
+    timer: {
+      set(_delayMs, callback) {
+        scheduled.push({ callback });
+        return scheduled.length;
+      },
+      clear() {},
+    },
+  });
+
+  await coordinator.requestDrain();
+  const update = transition.runTransition(async () => transitionRelease.promise);
+  scheduled[0]?.callback();
+  await coordinator.shutdown();
+  transitionRelease.resolve(undefined);
+  await update;
+  await Promise.resolve();
+
+  assert.equal(outbox.leaseCalls, 1);
 });
 
 function deferred<T>(): Readonly<{

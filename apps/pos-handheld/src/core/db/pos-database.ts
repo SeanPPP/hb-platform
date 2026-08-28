@@ -49,6 +49,7 @@ import {
   type AttendanceSecurityTerminalScope,
 } from "./sqlite-attendance-security-repository";
 import { SqliteDailyCloseRepository } from "@hb/pos-db/core/db/sqlite-daily-close-repository";
+import { SqliteOrderSyncStatusRepository } from "@hb/pos-db";
 import {
   SqliteFulfilmentStore,
   type PersistedDrawerEventInput,
@@ -198,6 +199,13 @@ export class PosDatabase implements DatabasePort {
 
   public close(): Promise<void> {
     return this.connection.close();
+  }
+
+  /** 顶部状态只读取订单同步去重数量，不向 route 暴露底层 SQLite。 */
+  public readPendingOrderSyncCount(): Promise<number> {
+    return new SqliteOrderSyncStatusRepository(
+      this.connection,
+    ).readPendingOrderSyncCount();
   }
 
   /** 业务层仅取得冻结 Port 的实现，永不取得裸 SQLite connection。 */

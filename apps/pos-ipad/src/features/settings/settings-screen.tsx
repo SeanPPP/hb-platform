@@ -27,6 +27,7 @@ import {
   type SettingsState,
   type SettingsStatusCode,
 } from "./settings-presenter";
+import type { PendingWorkBlocker } from "@hb/pos-domain";
 import type {
   SettingsSquareDevice,
   SettingsSquareDeviceCode,
@@ -118,6 +119,7 @@ export type SettingsScreenPresenter = Pick<
 type SettingsScreenProps = Readonly<{
   locale?: SettingsLocale;
   onBack?(): void;
+  onOpenSyncHistory?(): void;
   presenter: SettingsScreenPresenter;
   scanner?: HidScannerRouter;
 }>;
@@ -140,6 +142,7 @@ const NAV_ITEMS: readonly Readonly<{
 export function SettingsScreen({
   locale: localeOverride,
   onBack,
+  onOpenSyncHistory,
   presenter,
   scanner,
 }: SettingsScreenProps) {
@@ -281,6 +284,8 @@ export function SettingsScreen({
             {state.kind === "ready" ? (
               <SettingsPaneContent
                 locale={locale}
+                onBack={onBack}
+                onOpenSyncHistory={onOpenSyncHistory}
                 presenter={presenter}
                 scanner={scanner}
                 state={state}
@@ -352,11 +357,15 @@ export function SettingsUnavailableScreen({
 
 function SettingsPaneContent({
   locale,
+  onBack,
+  onOpenSyncHistory,
   presenter,
   scanner,
   state,
 }: Readonly<{
   locale: SettingsLocale;
+  onBack: (() => void) | undefined;
+  onOpenSyncHistory: (() => void) | undefined;
   presenter: SettingsScreenPresenter;
   scanner: HidScannerRouter | undefined;
   state: SettingsState;
@@ -374,6 +383,8 @@ function SettingsPaneContent({
       return (
         <DevicePane
           locale={locale}
+          onBack={onBack}
+          onOpenSyncHistory={onOpenSyncHistory}
           presenter={presenter}
           scanner={scanner}
           state={state}
@@ -2291,11 +2302,15 @@ function PeripheralsPane({
 
 function DevicePane({
   locale,
+  onBack,
+  onOpenSyncHistory,
   presenter,
   scanner,
   state,
 }: Readonly<{
   locale: SettingsLocale;
+  onBack: (() => void) | undefined;
+  onOpenSyncHistory: (() => void) | undefined;
   presenter: SettingsScreenPresenter;
   scanner: HidScannerRouter | undefined;
   state: SettingsState;
@@ -2402,12 +2417,32 @@ function DevicePane({
             </View>
             <ActionButton
               disabled={disabled}
-              label={t("device.reviewReregistration")}
-              onPress={() => presenter.requestDeviceReregistration()}
+              label={t(
+                state.deviceReregistrationPreflight.kind === "checking"
+                  ? "action.checking"
+                  : "device.reviewReregistration",
+              )}
+              onPress={() => void presenter.requestDeviceReregistration()}
               testID="settings-reregister-request"
               tone="danger"
             />
           </View>
+        ) : null}
+        {state.deviceReregistrationPreflight.kind === "blocked" ||
+        state.deviceReregistrationPreflight.kind === "failed" ? (
+          <DeviceReregistrationBlockers
+            blockers={
+              state.deviceReregistrationPreflight.kind === "blocked"
+                ? state.deviceReregistrationPreflight.blockers
+                : []
+            }
+            disabled={disabled}
+            failed={state.deviceReregistrationPreflight.kind === "failed"}
+            locale={locale}
+            onBack={onBack}
+            onOpenSyncHistory={onOpenSyncHistory}
+            onRecheck={() => void presenter.requestDeviceReregistration()}
+          />
         ) : null}
       </SectionCard>
       <SectionCard
@@ -2447,6 +2482,168 @@ function DevicePane({
           visible={cameraVisible}
         />
       ) : null}
+    </View>
+  );
+}
+
+const DEVICE_REREGISTRATION_BLOCKER_COPY = {
+  "active-cart": {
+    hint: "device.blockers.active-cart.hint",
+    label: "device.blockers.active-cart",
+  },
+  "fulfilment-in-flight": {
+    hint: "device.blockers.fulfilment-in-flight.hint",
+    label: "device.blockers.fulfilment-in-flight",
+  },
+  "sync-or-audit-in-flight": {
+    hint: "device.blockers.sync-or-audit-in-flight.hint",
+    label: "device.blockers.sync-or-audit-in-flight",
+  },
+  "payment-configuration-sensitive-orders": {
+    hint: "device.blockers.payment-configuration-sensitive-orders.hint",
+    label: "device.blockers.payment-configuration-sensitive-orders",
+  },
+  "pending-durable-writes": {
+    hint: "device.blockers.pending-durable-writes.hint",
+    label: "device.blockers.pending-durable-writes",
+  },
+  "pending-returns": {
+    hint: "device.blockers.pending-returns.hint",
+    label: "device.blockers.pending-returns",
+  },
+  "pending-sales": {
+    hint: "device.blockers.pending-sales.hint",
+    label: "device.blockers.pending-sales",
+  },
+  "unresolved-payments": {
+    hint: "device.blockers.unresolved-payments.hint",
+    label: "device.blockers.unresolved-payments",
+  },
+} as const satisfies Record<
+  PendingWorkBlocker["code"],
+  Readonly<{ hint: SettingsCopyKey; label: SettingsCopyKey }>
+>;
+
+function DeviceReregistrationBlockers({
+  blockers,
+  disabled,
+  failed,
+  locale,
+  onBack,
+  onOpenSyncHistory,
+  onRecheck,
+}: Readonly<{
+  blockers: readonly PendingWorkBlocker[];
+  disabled: boolean;
+  failed: boolean;
+  locale: SettingsLocale;
+  onBack: (() => void) | undefined;
+  onOpenSyncHistory: (() => void) | undefined;
+  onRecheck(): void;
+}>) {
+  const t = (
+    key: SettingsCopyKey,
+    values?: Readonly<Record<string, string | number>>,
+  ) => settingsText(locale, key, values);
+  const needsSales = blockers.some(
+    (blocker) =>
+      blocker.code === "active-cart" ||
+      blocker.code === "unresolved-payments",
+  );
+  const needsSyncHistory = blockers.some(
+    (blocker) =>
+      blocker.code === "payment-configuration-sensitive-orders" ||
+      blocker.code === "pending-returns" ||
+      blocker.code === "pending-sales",
+  );
+
+  return (
+    <View
+      accessibilityLiveRegion="polite"
+      accessibilityRole="alert"
+      style={styles.reregistrationBlockerPanel}
+      testID={
+        failed
+          ? "settings-reregister-preflight-failed"
+          : "settings-reregister-blockers"
+      }
+    >
+      <Text style={styles.reregistrationBlockerTitle}>
+        {t(
+          failed
+            ? "device.blockers.failedTitle"
+            : "device.blockers.title",
+        )}
+      </Text>
+      <Text style={styles.reregistrationBlockerBody}>
+        {t(
+          failed
+            ? "device.blockers.failedBody"
+            : "device.blockers.body",
+        )}
+      </Text>
+      {failed ? null : (
+        <View style={styles.reregistrationBlockerList}>
+          {blockers.map((blocker) => {
+            const copy = DEVICE_REREGISTRATION_BLOCKER_COPY[blocker.code];
+            return (
+              <View
+                key={blocker.code}
+                style={styles.reregistrationBlockerRow}
+                testID={`settings-reregister-blocker-${blocker.code}`}
+              >
+                <View style={styles.reregistrationBlockerCopy}>
+                  <Text style={styles.reregistrationBlockerLabel}>
+                    {t(copy.label)}
+                  </Text>
+                  <Text style={styles.reregistrationBlockerHint}>
+                    {t(copy.hint)}
+                  </Text>
+                </View>
+                <Text style={styles.reregistrationBlockerValue}>
+                  {blocker.kind === "count"
+                    ? t("device.blockers.count", { count: blocker.count })
+                    : t("device.blockers.inProgress")}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      )}
+      {needsSyncHistory && !onOpenSyncHistory ? (
+        <Text style={styles.reregistrationSupervisorHint}>
+          {t("device.blockers.contactSupervisor")}
+        </Text>
+      ) : null}
+      <View style={styles.actionRow}>
+        {needsSales && onBack ? (
+          <ActionButton
+            compact
+            disabled={disabled}
+            label={t("action.backToSales")}
+            onPress={onBack}
+            testID="settings-reregister-back-to-sales"
+            tone="secondary"
+          />
+        ) : null}
+        {needsSyncHistory && onOpenSyncHistory ? (
+          <ActionButton
+            compact
+            disabled={disabled}
+            label={t("device.blockers.openSyncHistory")}
+            onPress={onOpenSyncHistory}
+            testID="settings-reregister-open-sync-history"
+            tone="secondary"
+          />
+        ) : null}
+        <ActionButton
+          compact
+          disabled={disabled}
+          label={t("device.blockers.recheck")}
+          onPress={onRecheck}
+          testID="settings-reregister-recheck"
+        />
+      </View>
     </View>
   );
 }
@@ -3341,6 +3538,69 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     lineHeight: 20,
     marginBottom: 12,
+  },
+  reregistrationBlockerPanel: {
+    backgroundColor: posColors.redSoft,
+    borderColor: posColors.red,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: 14,
+    padding: 14,
+  },
+  reregistrationBlockerTitle: {
+    color: posColors.red,
+    fontSize: 17,
+    fontWeight: "800",
+    lineHeight: 23,
+  },
+  reregistrationBlockerBody: {
+    color: posColors.ink,
+    fontSize: 13,
+    lineHeight: 20,
+    marginTop: 4,
+  },
+  reregistrationBlockerList: {
+    marginTop: 12,
+  },
+  reregistrationBlockerRow: {
+    alignItems: "flex-start",
+    borderTopColor: posColors.border,
+    borderTopWidth: 1,
+    flexDirection: "row",
+    gap: 12,
+    minHeight: SETTINGS_MIN_TOUCH_TARGET,
+    paddingVertical: 9,
+  },
+  reregistrationBlockerCopy: {
+    flex: 1,
+    minWidth: 0,
+  },
+  reregistrationBlockerLabel: {
+    color: posColors.ink,
+    fontSize: 14,
+    fontWeight: "800",
+    lineHeight: 20,
+  },
+  reregistrationBlockerHint: {
+    color: posColors.mutedInk,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 2,
+  },
+  reregistrationBlockerValue: {
+    color: posColors.red,
+    fontSize: 13,
+    fontWeight: "800",
+    lineHeight: 20,
+    minWidth: 58,
+    textAlign: "right",
+  },
+  reregistrationSupervisorHint: {
+    color: posColors.red,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 20,
+    marginTop: 10,
   },
   multilineTextInput: {
     backgroundColor: "#FAFAF8",

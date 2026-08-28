@@ -5,6 +5,7 @@ import {
   render,
   waitFor,
 } from "@testing-library/react-native";
+import { AppState } from "react-native";
 
 import { usePosShellStore } from "./pos-shell-store";
 import { RuntimeStatusBridge } from "./runtime-status-bridge";
@@ -130,4 +131,174 @@ test("旧的异步读取在运行态变化后不得回写终端身份", async ()
   });
 
   expect(usePosShellStore.getState().terminalPresentation).toBeNull();
+});
+
+test("待同步订单数在启动、drain 完成、前台恢复、连接恢复与服务身份变化后刷新", async () => {
+  let foregroundListener: ((state: string) => void) | undefined;
+  const removeForegroundListener = jest.fn();
+  jest.spyOn(AppState, "addEventListener").mockImplementation(
+    ((_event: string, listener: (state: string) => void) => {
+      foregroundListener = listener;
+      return { remove: removeForegroundListener };
+    }) as typeof AppState.addEventListener,
+  );
+  const drainListeners = new Set<(event: any) => void>();
+  let count = 4;
+  let deferredCountRead: Promise<number> | null = null;
+  const readPendingOrderSyncCount = jest.fn(
+    () => deferredCountRead ?? Promise.resolve(count),
+  );
+  const unsubscribeDrainSettled = jest.fn();
+  const sync = {
+    readPendingOrderSyncCount,
+    subscribeDrainSettled(listener: (event: any) => void) {
+      drainListeners.add(listener);
+      return () => {
+        drainListeners.delete(listener);
+        unsubscribeDrainSettled();
+      };
+    },
+  };
+  const services = {
+    deviceSession: { getDevicePresentation: async () => null },
+    sync,
+  };
+  mockRuntime = { state: runtimeState("ready"), services };
+
+  const screen = await render(<RuntimeStatusBridge />);
+  await waitFor(() => {
+    expect(usePosShellStore.getState().pendingSync).toEqual({
+      kind: "ready",
+      count: 4,
+    });
+  });
+
+  count = 3;
+  await act(async () => {
+    for (const listener of [...drainListeners]) {
+      listener({
+        outcome: "fulfilled",
+        report: {
+          leased: 1,
+          orderSucceeded: 1,
+          orderRetried: 0,
+          orderBlocked: 0,
+          orderRejected: 0,
+          auditUploaded: 0,
+        },
+      });
+    }
+  });
+  await waitFor(() => {
+    expect(usePosShellStore.getState().pendingSync).toEqual({
+      kind: "ready",
+      count: 3,
+    });
+  });
+
+  count = 2;
+  await act(async () => {
+    foregroundListener?.("active");
+  });
+  await waitFor(() => {
+    expect(usePosShellStore.getState().pendingSync).toEqual({
+      kind: "ready",
+      count: 2,
+    });
+  });
+
+  const readsBeforeOffline = readPendingOrderSyncCount.mock.calls.length;
+  await act(async () => {
+    usePosShellStore.getState().setConnectivity("offline");
+  });
+  expect(readPendingOrderSyncCount).toHaveBeenCalledTimes(readsBeforeOffline);
+  expect(usePosShellStore.getState().pendingSync).toEqual({
+    kind: "ready",
+    count: 2,
+  });
+
+  count = 1;
+  await act(async () => {
+    usePosShellStore.getState().setConnectivity("online");
+  });
+  await waitFor(() => {
+    expect(usePosShellStore.getState().pendingSync).toEqual({
+      kind: "ready",
+      count: 1,
+    });
+  });
+
+  let resolveBackgroundRead: ((value: number) => void) | undefined;
+  deferredCountRead = new Promise<number>((resolve) => {
+    resolveBackgroundRead = resolve;
+  });
+  await act(async () => {
+    for (const listener of [...drainListeners]) {
+      listener({ outcome: "rejected" });
+    }
+    await Promise.resolve();
+  });
+  expect(usePosShellStore.getState().pendingSync).toEqual({
+    kind: "ready",
+    count: 1,
+  });
+  await act(async () => {
+    resolveBackgroundRead?.(0);
+    await deferredCountRead;
+  });
+  deferredCountRead = null;
+  await waitFor(() => {
+    expect(usePosShellStore.getState().pendingSync).toEqual({
+      kind: "ready",
+      count: 0,
+    });
+  });
+
+  const nextRead = jest.fn(async () => 0);
+  mockRuntime = {
+    state: runtimeState("ready"),
+    services: {
+      ...services,
+      sync: {
+        readPendingOrderSyncCount: nextRead,
+        subscribeDrainSettled: () => () => undefined,
+      },
+    },
+  };
+  await screen.rerender(<RuntimeStatusBridge />);
+  await waitFor(() => {
+    expect(usePosShellStore.getState().pendingSync).toEqual({
+      kind: "ready",
+      count: 0,
+    });
+  });
+  expect(nextRead).toHaveBeenCalledTimes(1);
+  expect(unsubscribeDrainSettled).toHaveBeenCalled();
+});
+
+test("待同步订单数读取失败显示不可用，运行时未就绪时保持检查中", async () => {
+  mockRuntime = {
+    state: runtimeState("ready"),
+    services: {
+      deviceSession: { getDevicePresentation: async () => null },
+      sync: {
+        readPendingOrderSyncCount: async () => {
+          throw new Error("database unavailable");
+        },
+        subscribeDrainSettled: () => () => undefined,
+      },
+    },
+  };
+  const screen = await render(<RuntimeStatusBridge />);
+  await waitFor(() => {
+    expect(usePosShellStore.getState().pendingSync).toEqual({
+      kind: "unavailable",
+    });
+  });
+
+  mockRuntime = { state: runtimeState("starting"), services: null };
+  await screen.rerender(<RuntimeStatusBridge />);
+  expect(usePosShellStore.getState().pendingSync).toEqual({
+    kind: "checking",
+  });
 });

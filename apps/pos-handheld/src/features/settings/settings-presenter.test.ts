@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { derivePendingWorkBlockers } from "@hb/pos-domain";
+
 const deviceActivationCode =
   "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
 
@@ -1723,7 +1725,8 @@ test("API 切换、目录重置、设备重注册与应用重启必须先确认"
     deviceSystem: "Android",
     expiresAtUtc: "2026-08-28T00:00:00.000Z",
   });
-  assert.equal(presenter.requestDeviceReregistration(), true);
+  await presenter.requestDeviceReregistration();
+  assert.equal(presenter.getState().confirmation?.kind, "reregister-device");
   assert.equal(port.reregistrations.length, 0);
   await presenter.confirmDangerousAction();
   assert.deepEqual(port.reregistrations, [
@@ -1735,6 +1738,166 @@ test("API 切换、目录重置、设备重注册与应用重启必须先确认"
   await presenter.confirmDangerousAction();
   assert.equal(port.restartCalls, 1);
   assert.equal(port.dangerousActionCalls, 4);
+});
+
+test("更换分店预检保存八类脱敏阻断并允许只读重新检查", async () => {
+  const port = new FakeSettingsPort();
+  port.pending = {
+    hasActiveCart: true,
+    hasFulfilmentInFlight: true,
+    hasSyncOrAuditInFlight: true,
+    paymentConfigurationSensitiveOrderCount: 4,
+    pendingDurableWriteCount: 5,
+    pendingReturnCount: 2,
+    pendingSaleCount: 3,
+    unresolvedPaymentCount: 1,
+  };
+  const presenter = createPresenter(port);
+  await presenter.load();
+  presenter.setDeviceActivationCode(deviceActivationCode);
+  await presenter.previewDeviceReregistration();
+
+  await presenter.requestDeviceReregistration();
+
+  assert.equal(port.preflightCalls, 1);
+  assert.equal(port.dangerousActionCalls, 0);
+  assert.equal(presenter.getState().confirmation, null);
+  assert.deepEqual(presenter.getState().deviceReregistrationPreflight, {
+    kind: "blocked",
+    blockers: derivePendingWorkBlockers(port.pending),
+  });
+  assert.equal(presenter.getState().statusCode, "pending-local-data");
+
+  port.pending = safePending();
+  await presenter.requestDeviceReregistration();
+
+  assert.equal(port.preflightCalls, 2);
+  assert.equal(port.dangerousActionCalls, 0);
+  assert.equal(presenter.getState().confirmation?.kind, "reregister-device");
+  assert.deepEqual(presenter.getState().deviceReregistrationPreflight, {
+    kind: "ready",
+  });
+});
+
+test("换店提交 side-channel 显示必须重启并保持 busy，销毁后退订", async () => {
+  const port = new FakeSettingsPort();
+  port.deviceReregistrationHold = new Promise<SettingsDangerousActionResult>(
+    () => undefined,
+  );
+  const presenter = createPresenter(port);
+  await presenter.load();
+  presenter.setDeviceActivationCode(deviceActivationCode);
+  await presenter.previewDeviceReregistration();
+  await presenter.requestDeviceReregistration();
+
+  void presenter.confirmDangerousAction();
+  await Promise.resolve();
+  assert.equal(port.dangerousActionCalls, 1);
+  assert.equal(presenter.getState().busy, true);
+  assert.equal(port.deviceReregistrationCommittedListenerCount, 1);
+
+  port.publishDeviceReregistrationCommitted();
+  assert.equal(
+    presenter.getState().statusCode,
+    "device-reregister-restart-required",
+  );
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().busy, true);
+
+  port.publishDeviceReregistrationCommitted();
+  void presenter.confirmDangerousAction();
+  assert.equal(port.dangerousActionCalls, 1);
+  assert.equal(port.deviceReregistrationCommittedListenerCount, 1);
+
+  presenter.destroy();
+  assert.equal(port.deviceReregistrationCommittedListenerCount, 0);
+});
+
+test("其他动作执行中重复申请换店不会伪造 checking 或启动第二次预检", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+  presenter.setDeviceActivationCode(deviceActivationCode);
+  await presenter.previewDeviceReregistration();
+  port.holdScannerUntilAbort = true;
+
+  const scannerInFlight = presenter.testScanner();
+  await Promise.resolve();
+  const reregisterRequest = presenter.requestDeviceReregistration();
+
+  assert.deepEqual(presenter.getState().deviceReregistrationPreflight, {
+    kind: "idle",
+  });
+  assert.equal(port.preflightCalls, 0);
+
+  presenter.destroy();
+  await Promise.all([scannerInFlight, reregisterRequest]);
+});
+
+test("修改开通码会清除旧阻断详情且不会保留已翻译文案", async () => {
+  const port = new FakeSettingsPort();
+  port.pending = safePending({ pendingSaleCount: 2 });
+  const presenter = createPresenter(port);
+  await presenter.load();
+  presenter.setDeviceActivationCode(deviceActivationCode);
+  await presenter.previewDeviceReregistration();
+  await presenter.requestDeviceReregistration();
+  assert.equal(
+    presenter.getState().deviceReregistrationPreflight.kind,
+    "blocked",
+  );
+
+  presenter.setDeviceActivationCode(`${deviceActivationCode}X`);
+
+  assert.deepEqual(presenter.getState().deviceReregistrationPreflight, {
+    kind: "idle",
+  });
+  assert.equal(presenter.getState().deviceActivationPreview, null);
+  assert.equal(presenter.getState().statusCode, null);
+  assert.equal(
+    JSON.stringify(presenter.getState()).includes("待同步销售"),
+    false,
+  );
+});
+
+test("最终确认出现新业务时用最新 blockers 返回详情且不执行换店", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+  presenter.setDeviceActivationCode(deviceActivationCode);
+  await presenter.previewDeviceReregistration();
+  await presenter.requestDeviceReregistration();
+  assert.equal(presenter.getState().confirmation?.kind, "reregister-device");
+
+  port.pending = safePending({ pendingReturnCount: 2 });
+  await presenter.confirmDangerousAction();
+
+  assert.deepEqual(port.reregistrations, []);
+  assert.deepEqual(presenter.getState().deviceReregistrationPreflight, {
+    kind: "blocked",
+    blockers: [
+      { kind: "count", code: "pending-returns", count: 2 },
+    ],
+  });
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().statusCode, "pending-local-data");
+});
+
+test("更换分店预检失败映射 safety-check-failed 且不会打开确认", async () => {
+  const port = new FakeSettingsPort();
+  port.failSafety = true;
+  const presenter = createPresenter(port);
+  await presenter.load();
+  presenter.setDeviceActivationCode(deviceActivationCode);
+  await presenter.previewDeviceReregistration();
+
+  await presenter.requestDeviceReregistration();
+
+  assert.deepEqual(presenter.getState().deviceReregistrationPreflight, {
+    kind: "failed",
+  });
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(presenter.getState().statusCode, "safety-check-failed");
 });
 
 test("清除设备注册必须先展示影响说明，并只在最终确认时传递瞬时员工条码", async () => {
@@ -1816,12 +1979,13 @@ test("安全检查失败时 fail closed，异常详情不会进入 UI 状态", a
   await presenter.load();
   presenter.setDeviceActivationCode(deviceActivationCode);
   await presenter.previewDeviceReregistration();
-  presenter.requestDeviceReregistration();
+  await presenter.requestDeviceReregistration();
 
   await presenter.confirmDangerousAction();
 
   assert.deepEqual(port.reregistrations, []);
-  assert.equal(port.dangerousActionCalls, 1);
+  assert.equal(port.preflightCalls, 1);
+  assert.equal(port.dangerousActionCalls, 0);
   assert.equal(presenter.getState().statusCode, "safety-check-failed");
   assert.equal(
     JSON.stringify(presenter.getState()).includes("Bearer secret"),
@@ -2114,7 +2278,7 @@ test("目录刷新中阻断所有会重绑运行时的危险操作，但不锁�
   assert.equal(presenter.requestCatalogReset(), false);
   await presenter.savePaymentSettings();
   presenter.setDeviceActivationCode(deviceActivationCode);
-  assert.equal(presenter.requestDeviceReregistration(), false);
+  await presenter.requestDeviceReregistration();
   assert.equal(presenter.requestAppRestart(), false);
   assert.equal(presenter.getState().statusCode, "safety-check-failed");
   assert.equal(presenter.getState().confirmation, null);
@@ -2155,7 +2319,7 @@ test("缺少细分权限时写操作 fail closed", async () => {
   await presenter.savePrinterSettings();
   presenter.requestCatalogReset();
   presenter.setDeviceActivationCode(deviceActivationCode);
-  presenter.requestDeviceReregistration();
+  await presenter.requestDeviceReregistration();
 
   assert.deepEqual(port.savedPayments, []);
   assert.deepEqual(port.savedPrinters, []);
@@ -2189,6 +2353,7 @@ class FakeSettingsPort implements SettingsControlPort {
   public linklyPairing: FakeLinklyPairingPort | undefined;
   public loadCalls = 0;
   public safetyCalls = 0;
+  public preflightCalls = 0;
   public dangerousActionCalls = 0;
   public catalogDownloadCalls = 0;
   public catalogResetCalls = 0;
@@ -2200,8 +2365,12 @@ class FakeSettingsPort implements SettingsControlPort {
   public catalogHold: Promise<void> | null = null;
   public catalogDownloadSignal: AbortSignal | null = null;
   public catalogRefreshListenerCount = 0;
+  public deviceReregistrationCommittedListenerCount = 0;
   private catalogRefreshState: CatalogRefreshState = { kind: "idle" };
   private readonly catalogRefreshListeners = new Set<() => void>();
+  private readonly deviceReregistrationCommittedListeners = new Set<
+    () => void
+  >();
   public failSafety = false;
   public failApiHealth = false;
   public pending = safePending();
@@ -2244,7 +2413,11 @@ class FakeSettingsPort implements SettingsControlPort {
     terminalName?: string;
   }[] = [];
   public readonly activationPreviewRequests: string[] = [];
+  public activationPreviewResponse: Awaited<
+    ReturnType<NonNullable<SettingsControlPort["previewDeviceActivationCode"]>>
+  > | null = null;
   public readonly deviceResetBarcodes: string[] = [];
+  public deviceReregistrationHold: Promise<SettingsDangerousActionResult> | null = null;
 
   public async loadSnapshot(): Promise<SettingsSnapshot> {
     this.loadCalls += 1;
@@ -2264,6 +2437,25 @@ class FakeSettingsPort implements SettingsControlPort {
     };
   }
 
+  public subscribeDeviceReregistrationCommitted(
+    listener: () => void,
+  ): () => void {
+    this.deviceReregistrationCommittedListeners.add(listener);
+    this.deviceReregistrationCommittedListenerCount =
+      this.deviceReregistrationCommittedListeners.size;
+    return () => {
+      this.deviceReregistrationCommittedListeners.delete(listener);
+      this.deviceReregistrationCommittedListenerCount =
+        this.deviceReregistrationCommittedListeners.size;
+    };
+  }
+
+  public publishDeviceReregistrationCommitted(): void {
+    for (const listener of this.deviceReregistrationCommittedListeners) {
+      listener();
+    }
+  }
+
   public publishCatalogRefresh(
     state: CatalogRefreshState,
   ): void {
@@ -2278,13 +2470,31 @@ class FakeSettingsPort implements SettingsControlPort {
 
   public async previewDeviceActivationCode(activationCode: string) {
     this.activationPreviewRequests.push(activationCode);
-    return {
+    return this.activationPreviewResponse ?? {
       isAllowed: true,
       storeCode: "BNE-02",
       storeName: "Sunnybank",
       deviceSystem: "Android",
       expiresAtUtc: "2026-08-28T00:00:00.000Z",
     };
+  }
+
+  public async preflightDeviceReregistration() {
+    this.preflightCalls += 1;
+    if (this.failSafety) {
+      return {
+        status: "blocked" as const,
+        reason: "safety-check-failed" as const,
+      };
+    }
+    const blockers = derivePendingWorkBlockers(this.pending);
+    return blockers.length > 0
+      ? {
+          status: "blocked" as const,
+          reason: "pending-local-data" as const,
+          blockers,
+        }
+      : { status: "ready" as const };
   }
 
   public async executeDangerousAction(
@@ -2312,6 +2522,7 @@ class FakeSettingsPort implements SettingsControlPort {
       return {
         status: "blocked" as const,
         reason: "pending-local-data" as const,
+        blockers: derivePendingWorkBlockers(this.pending),
       };
     }
     if (action.kind === "change-api-address" && this.failApiHealth) {
@@ -2350,6 +2561,9 @@ class FakeSettingsPort implements SettingsControlPort {
         activationCode: action.activationCode,
         ...(action.terminalName ? { terminalName: action.terminalName } : {}),
       });
+      if (this.deviceReregistrationHold) {
+        return this.deviceReregistrationHold;
+      }
       return { status: "completed" as const, kind: action.kind };
     }
     if (action.kind === "reset-device-registration") {
