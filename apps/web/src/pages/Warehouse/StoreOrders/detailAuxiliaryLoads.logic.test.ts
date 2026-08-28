@@ -199,7 +199,7 @@ async function main() {
         orderDetailSectionSource.includes('canUseStoreOrderDetailExtraActions ? (\n                  <Space wrap>') &&
         pickingButtonSource.includes('navigate(`/warehouse/store-order/picking/${detail.orderGUID}`)') &&
         managerGuardPosition <= managerGuardClosePosition &&
-        detailSource.includes('rowSelection={\n                  canUseWarehouseManagerActions'),
+        /rowSelection=\{\s*canUseWarehouseManagerActions/.test(detailSource),
       '详情页尚未按仓库管理员权限禁用写控件，或未为 WarehouseStaff 保留只读配货单入口',
     )
   })
