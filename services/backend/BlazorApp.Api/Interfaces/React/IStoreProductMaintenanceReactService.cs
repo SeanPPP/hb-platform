@@ -86,6 +86,12 @@ namespace BlazorApp.Api.Interfaces.React
             List<string>? accessibleStoreCodes
         );
 
+        Task<ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>> SaveSetCodeSnapshotAsync(
+            SaveStoreProductSetCodeSnapshotDto request,
+            string updatedBy,
+            List<string>? accessibleStoreCodes
+        );
+
         Task<ApiResponse<bool>> DeleteSetCodeAsync(
             string setCodeId,
             string updatedBy,
