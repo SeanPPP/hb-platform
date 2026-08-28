@@ -8,6 +8,12 @@ import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const lockBaselinePath = join(
+  repositoryRoot,
+  "scripts",
+  "pos-shared",
+  "pos-shared-lock-baseline.json",
+);
 const appRoots = [
   join(repositoryRoot, "apps", "pos-ipad"),
   join(repositoryRoot, "apps", "pos-handheld"),
@@ -169,6 +175,32 @@ test("workspace 只保留根 lockfile 和根补丁真源", () => {
   }
 });
 
+test("lock 版本基线清单随当前提交提供", () => {
+  assert.equal(
+    existsSync(lockBaselinePath),
+    true,
+    "CI 浅克隆不得依赖未下载的历史提交来校验整合前 lockfile",
+  );
+  const migrationState = readJson(
+    join(repositoryRoot, "scripts", "pos-shared", "pos-shared-migration-state.json"),
+  );
+  const lockBaseline = readJson(lockBaselinePath);
+  assert.equal(lockBaseline.schemaVersion, 1);
+  assert.equal(lockBaseline.baseline, migrationState.baseline);
+  assert.deepEqual(
+    lockBaseline.sourceLockfiles.map(({ path }) => path),
+    ["apps/pos-ipad/package-lock.json", "apps/pos-handheld/package-lock.json"],
+  );
+  for (const { sha256 } of lockBaseline.sourceLockfiles) {
+    assert.match(sha256, /^[a-f0-9]{64}$/u);
+  }
+  assert.deepEqual(
+    lockBaseline.allowedPackageVersions,
+    [...new Set(lockBaseline.allowedPackageVersions)].sort(),
+    "基线版本清单必须去重并保持稳定排序，方便审查来源差异",
+  );
+});
+
 test("从任一 POS App 运行 npm 都以根 workspace 为安装锚点", () => {
   for (const appRoot of appRoots) {
     const npmPrefix = execFileSync("npm", ["prefix"], {
@@ -184,31 +216,14 @@ test("从任一 POS App 运行 npm 都以根 workspace 为安装锚点", () => {
 });
 
 test("根 lockfile 的第三方版本全部来自当前整合基线的双端 lock", () => {
-  const { baseline } = readJson(
-    join(repositoryRoot, "scripts", "pos-shared", "pos-shared-migration-state.json"),
-  );
-  const allowedVersions = new Map();
-  for (const app of ["pos-ipad", "pos-handheld"]) {
-    const source = execFileSync(
-      "git",
-      ["show", `${baseline}:apps/${app}/package-lock.json`],
-      { cwd: repositoryRoot, encoding: "utf8" },
-    );
-    const lock = JSON.parse(source);
-    for (const [lockPath, packageEntry] of Object.entries(lock.packages ?? {})) {
-      const packageName = packageNameFromLockPath(lockPath);
-      if (!packageName || !packageEntry.version) continue;
-      const versions = allowedVersions.get(packageName) ?? new Set();
-      versions.add(packageEntry.version);
-      allowedVersions.set(packageName, versions);
-    }
-  }
+  const { allowedPackageVersions } = readJson(lockBaselinePath);
+  const allowedVersions = new Set(allowedPackageVersions);
   const lock = readJson(join(repositoryRoot, "package-lock.json"));
   const unexpectedVersions = [];
   for (const [lockPath, packageEntry] of Object.entries(lock.packages ?? {})) {
     const packageName = packageNameFromLockPath(lockPath);
     if (!packageName || !packageEntry.version) continue;
-    if (!allowedVersions.get(packageName)?.has(packageEntry.version)) {
+    if (!allowedVersions.has(`${packageName}@${packageEntry.version}`)) {
       unexpectedVersions.push(`${packageName}@${packageEntry.version} (${lockPath})`);
     }
   }
