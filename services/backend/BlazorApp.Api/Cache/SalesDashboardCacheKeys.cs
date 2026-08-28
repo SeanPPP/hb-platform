@@ -189,6 +189,38 @@ namespace BlazorApp.Api.Cache
         }
 
         /// <summary>
+        /// 紧凑销售看板缓存键必须包含授权分店、所有筛选和统计水位，避免跨权限或旧统计结果串用。
+        /// </summary>
+        public static string CompactSalesBoard(
+            DateRangeDto dateRange,
+            List<string>? branchCodes,
+            List<string>? chinaSupplierCodes,
+            string? productCode,
+            int pageIndex,
+            int pageSize,
+            string? cacheVersion
+        )
+        {
+            static List<string>? Canonicalize(IEnumerable<string>? codes)
+            {
+                return codes?
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code.Trim().ToUpperInvariant())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+
+            var canonicalBranchCodes = Canonicalize(branchCodes);
+            var canonicalChinaSupplierCodes = Canonicalize(chinaSupplierCodes);
+            var key = $"{PREFIX}:CompactSalesBoard:{Hash(dateRange, canonicalBranchCodes, canonicalChinaSupplierCodes, productCode?.Trim(), pageIndex, pageSize, cacheVersion)}";
+            // 紧凑看板使用商品销量分析的 generation 生命周期登记，不能作为普通键 TrackKey；
+            // 否则清理期间按 key Remove 会误删同 key 的新代缓存。
+            LogKeyGenerated("CompactSalesBoard", key, dateRange, canonicalBranchCodes, canonicalChinaSupplierCodes, pageIndex, pageSize, cacheVersion);
+            return key;
+        }
+
+        /// <summary>
         /// 生成增强产品销售明细（含折扣信息）缓存键
         /// </summary>
         public static string EnhancedProductDetail(

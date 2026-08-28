@@ -5,6 +5,10 @@ import type {
   BestSellerResponse,
   BranchSalesAggregate,
   ChinaSupplierSalesRank,
+  CompactSalesBoard,
+  CompactSalesBoardChinaSupplier,
+  CompactSalesBoardProduct,
+  CompactSalesBoardStore,
   DateRange,
   ExecutiveBranchPerformance,
   ExecutiveHourlyTraffic,
@@ -19,6 +23,10 @@ export type {
   BestSellerProduct,
   BranchSalesAggregate,
   ChinaSupplierSalesRank,
+  CompactSalesBoard,
+  CompactSalesBoardChinaSupplier,
+  CompactSalesBoardProduct,
+  CompactSalesBoardStore,
   DateRange,
   ExecutiveBranchPerformance,
   ExecutiveHourlyTraffic,
@@ -182,6 +190,96 @@ function unwrapApiResponse<T>(payload: ApiResponse<T> | T): ApiResponse<T> {
   return { success: true, data: payload as T }
 }
 
+function unwrapDataPayload<T>(payload: ApiResponse<T> | T): T {
+  let current: unknown = payload
+
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (!current || typeof current !== 'object' || !('data' in current)) {
+      break
+    }
+    current = (current as { data?: unknown }).data
+  }
+
+  return current as T
+}
+
+function normalizeCompactStore(raw: unknown): CompactSalesBoardStore | null {
+  if (!raw || typeof raw !== 'object') return null
+  const record = raw as Record<string, unknown>
+  const branchCode = readString(record.branchCode ?? record.BranchCode)
+  if (!branchCode) return null
+
+  return {
+    branchCode,
+    branchName: readString(record.branchName ?? record.BranchName) ?? branchCode,
+    totalAmount: readNumber(record.totalAmount ?? record.TotalAmount),
+    totalQuantity: readNumber(record.totalQuantity ?? record.TotalQuantity),
+    domesticSupplierAmount: readNumber(record.domesticSupplierAmount ?? record.DomesticSupplierAmount),
+    australianSupplierCode: readString(record.australianSupplierCode ?? record.AustralianSupplierCode) ?? '200',
+    australianSupplierName: readString(record.australianSupplierName ?? record.AustralianSupplierName) ?? '200-hotbargain',
+  }
+}
+
+function normalizeCompactChinaSupplier(raw: unknown): CompactSalesBoardChinaSupplier | null {
+  if (!raw || typeof raw !== 'object') return null
+  const record = raw as Record<string, unknown>
+  const supplierCode = readString(record.supplierCode ?? record.SupplierCode)
+  if (!supplierCode) return null
+
+  return {
+    supplierCode,
+    supplierName: readString(record.supplierName ?? record.SupplierName) ?? supplierCode,
+    totalAmount: readNumber(record.totalAmount ?? record.TotalAmount),
+    totalQuantity: readNumber(record.totalQuantity ?? record.TotalQuantity),
+  }
+}
+
+function normalizeCompactProduct(raw: unknown): CompactSalesBoardProduct | null {
+  if (!raw || typeof raw !== 'object') return null
+  const record = raw as Record<string, unknown>
+  const productCode = readString(record.productCode ?? record.ProductCode)
+  if (!productCode) return null
+
+  return {
+    productCode,
+    itemNumber: readString(record.itemNumber ?? record.ItemNumber),
+    productImage: readString(record.productImage ?? record.ProductImage),
+    productName: readString(record.productName ?? record.ProductName),
+    chinaSupplierCode: readString(record.chinaSupplierCode ?? record.ChinaSupplierCode),
+    chinaSupplierName: readString(record.chinaSupplierName ?? record.ChinaSupplierName),
+    totalQuantity: readNumber(record.totalQuantity ?? record.TotalQuantity),
+    unitPrice: readNumber(record.unitPrice ?? record.UnitPrice),
+    totalAmount: readNumber(record.totalAmount ?? record.TotalAmount),
+  }
+}
+
+function normalizeCompactSalesBoard(payload: ApiResponse<CompactSalesBoard> | CompactSalesBoard): CompactSalesBoard {
+  const result = (unwrapDataPayload(payload) ?? {}) as unknown as Record<string, unknown>
+  const productDetails = (result.productDetails ?? result.ProductDetails ?? {}) as Record<string, unknown>
+  const productData = Array.isArray(productDetails.data ?? productDetails.Data)
+    ? ((productDetails.data ?? productDetails.Data) as unknown[])
+        .map(normalizeCompactProduct)
+        .filter((item): item is CompactSalesBoardProduct => item !== null)
+    : []
+
+  return {
+    stores: Array.isArray(result.stores ?? result.Stores)
+      ? ((result.stores ?? result.Stores) as unknown[]).map(normalizeCompactStore).filter((item): item is CompactSalesBoardStore => item !== null)
+      : [],
+    chinaSuppliers: Array.isArray(result.chinaSuppliers ?? result.ChinaSuppliers)
+      ? ((result.chinaSuppliers ?? result.ChinaSuppliers) as unknown[]).map(normalizeCompactChinaSupplier).filter((item): item is CompactSalesBoardChinaSupplier => item !== null)
+      : [],
+    productDetails: {
+      data: productData,
+      total: readNumber(productDetails.total ?? productDetails.Total),
+      pageIndex: readNumber(productDetails.pageIndex ?? productDetails.PageIndex, 1),
+      pageSize: readNumber(productDetails.pageSize ?? productDetails.PageSize),
+    },
+    statisticStatus: readString(result.statisticStatus ?? result.StatisticStatus),
+    statisticMessage: readString(result.statisticMessage ?? result.StatisticMessage),
+  }
+}
+
 export async function getSupplierSalesRank(
   dateRange: DateRange,
   topN = 20,
@@ -269,6 +367,37 @@ export async function getBranchSalesAggregate(
   )
 
   return unwrapApiResponse(response)
+}
+
+export async function getCompactSalesBoard(
+  dateRange: DateRange,
+  branchCodes?: string[],
+  chinaSupplierCodes?: string[],
+  productCode?: string,
+  pageIndex = 1,
+  pageSize = 80,
+  signal?: AbortSignal,
+  forceRefresh = false,
+): Promise<CompactSalesBoard> {
+  const response = await request<ApiResponse<CompactSalesBoard> | CompactSalesBoard>(
+    '/api/react/v1/dashboard/compact-sales-board',
+    {
+      method: 'GET',
+      signal,
+      params: {
+        startDate: dateRange.startDate,
+        endDate: dateRange.endDate,
+        branchCodes,
+        chinaSupplierCodes,
+        productCode,
+        pageIndex,
+        pageSize,
+        forceRefresh,
+      },
+    },
+  )
+
+  return normalizeCompactSalesBoard(response)
 }
 
 export async function getWeeklyPerformanceHierarchy(

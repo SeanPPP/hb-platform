@@ -136,6 +136,7 @@ const webMenuPreviewRoutes: WebMenuPreviewRoute[] = [
     children: [
       { path: '/executive-sales-intelligence/overview', title: 'menu.salesData', accessKey: 'canViewReports' },
       { path: '/executive-sales-intelligence/sales-detail-v2', title: 'menu.salesDetail', accessKey: 'canViewReports' },
+      { path: '/executive-sales-intelligence/compact-sales-board', title: 'menu.compactSalesBoard', accessKey: 'canViewReports' },
       { path: '/executive-sales-intelligence/product-movement-report', title: 'menu.productMovementReport', accessKey: 'canViewProductMovementReport' },
       { path: '/executive-sales-intelligence/warehouse-product-flow-analysis', title: 'menu.warehouseProductFlowAnalysis', accessKey: 'canViewProductSalesAnalysis' },
       { path: '/executive-sales-intelligence/local-product-sales-analysis', title: 'menu.localProductSalesAnalysis', accessKey: 'canManageLocalPurchase' },

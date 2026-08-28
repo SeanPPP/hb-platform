@@ -117,6 +117,50 @@ export interface BranchSalesAggregate {
   hbRevenueLY: number
 }
 
+export interface CompactSalesBoardStore {
+  branchCode: string
+  branchName: string
+  totalAmount: number
+  totalQuantity: number
+  domesticSupplierAmount: number
+  australianSupplierCode: string
+  australianSupplierName: string
+}
+
+export interface CompactSalesBoardChinaSupplier {
+  supplierCode: string
+  supplierName: string
+  totalAmount: number
+  totalQuantity: number
+}
+
+export interface CompactSalesBoardProduct {
+  productCode: string
+  itemNumber?: string
+  productImage?: string
+  productName?: string
+  chinaSupplierCode?: string
+  chinaSupplierName?: string
+  totalQuantity: number
+  unitPrice: number
+  totalAmount: number
+}
+
+export interface PagedCompactSalesBoardProduct {
+  data: CompactSalesBoardProduct[]
+  total: number
+  pageIndex: number
+  pageSize: number
+}
+
+export interface CompactSalesBoard {
+  stores: CompactSalesBoardStore[]
+  chinaSuppliers: CompactSalesBoardChinaSupplier[]
+  productDetails: PagedCompactSalesBoardProduct
+  statisticStatus?: string
+  statisticMessage?: string
+}
+
 export interface WeeklyHierarchyData {
   key: string
   level: 'week' | 'branch' | 'date'

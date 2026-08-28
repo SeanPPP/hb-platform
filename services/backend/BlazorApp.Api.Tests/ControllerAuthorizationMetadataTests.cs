@@ -217,6 +217,10 @@ public class ControllerAuthorizationMetadataTests
             Permissions.Reports.ProductMovementView
         );
         yield return Policy<SalesDashboardController>(
+            nameof(SalesDashboardController.GetCompactSalesBoard),
+            Permissions.Reports.View
+        );
+        yield return Policy<SalesDashboardController>(
             nameof(SalesDashboardController.GetProductSalesByAllBranches),
             Permissions.Reports.ProductMovementView
         );

@@ -4264,7 +4264,7 @@ namespace BlazorApp.Api.Services.React
         /// 3) 构建完整映射关系数据；
         /// 4) 查询现有映射数据，区分更新和插入操作；
         /// 5) Upsert 操作：批量更新已有记录，批量插入新记录；
-        /// 6) 清理已删除商品的映射数据。
+        /// 6) 保留不在当前有效商品清单中的历史映射，避免统计回溯失去供应商归属。
         /// </summary>
         public async Task<SyncResult> SyncPosmProductSupplierMappingsAsync()
         {
@@ -4272,6 +4272,9 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 _logger.LogInformation("[ReactSync] 商品-供应商映射同步：开始");
+
+                await using var mappingSyncLock =
+                    await PosmProductSupplierMappingSyncLock.AcquireAsync(_posmContext.Db);
 
                 // 步骤 1：使用独立 SqlSugarClient 并发查询 products 和 localSuppliers（两个查询互不依赖，可以并发执行以提升性能）
                 // 使用独立的数据库连接避免并发连接冲突
@@ -4313,28 +4316,33 @@ namespace BlazorApp.Api.Services.React
                 var productChinaSupplierDict = new Dictionary<string, string>();
                 if (productsWithSupplier200.Any())
                 {
-                    // 查询这些商品在 WarehouseProduct 表中的记录，并关联 DomesticProduct 获取中国供应商代码
-                    var warehouseProducts = await _localContext
-                        .Db.Queryable<WarehouseProduct>()
-                        .Includes(wp => wp.DomesticProduct)
-                        .Where(wp =>
-                            wp.ProductCode != null
-                            && productsWithSupplier200.Contains(wp.ProductCode)
-                            && !wp.IsDeleted
-                        )
-                        .ToListAsync();
-
-                    // 构建商品代码 -> 中国供应商代码的字典映射
-                    foreach (var wp in warehouseProducts)
+                    // 全量同步也要分批查映射，避免大型商品库把 Contains 展开到 SQL Server 参数上限。
+                    foreach (var batch in productsWithSupplier200.Chunk(500))
                     {
-                        if (
-                            !string.IsNullOrEmpty(wp.ProductCode)
-                            && wp.DomesticProduct != null
-                            && !string.IsNullOrEmpty(wp.DomesticProduct.SupplierCode)
-                        )
+                        var batchCodes = batch.ToList();
+                        var warehouseProducts = await _localContext
+                            .Db.Queryable<WarehouseProduct>()
+                            .Includes(wp => wp.DomesticProduct)
+                            .Where(wp =>
+                                wp.ProductCode != null
+                                && batchCodes.Contains(wp.ProductCode)
+                                && !wp.IsDeleted
+                            )
+                            .ToListAsync();
+
+                        // 构建商品代码 -> 中国供应商代码的字典映射
+                        foreach (var wp in warehouseProducts)
                         {
-                            productChinaSupplierDict[wp.ProductCode] =
-                                wp.DomesticProduct.SupplierCode;
+                            if (
+                                !string.IsNullOrEmpty(wp.ProductCode)
+                                && wp.DomesticProduct != null
+                                && !wp.DomesticProduct.IsDeleted
+                                && !string.IsNullOrEmpty(wp.DomesticProduct.SupplierCode)
+                            )
+                            {
+                                productChinaSupplierDict[wp.ProductCode] =
+                                    wp.DomesticProduct.SupplierCode;
+                            }
                         }
                     }
                 }
@@ -4378,14 +4386,12 @@ namespace BlazorApp.Api.Services.React
                     mappings.Add(mapping);
                 }
 
-                // 步骤 5：开启事务，查询现有映射数据用于对比
-                await _posmContext.Db.Ado.BeginTranAsync();
+                // 步骤 5：执行租约已在源快照前开启；在同一事务中重读 POSM 现有映射再写入。
                 try
                 {
                     _logger.LogInformation("[ReactSync] 查询现有映射数据");
                     var existingMappings = await _posmContext
                         .Db.Queryable<PosmProductSupplierMapping>()
-                        .Where(m => !m.IsDeleted)
                         .ToListAsync();
 
                     // 将现有映射转为字典，以 ProductCode 为键，便于快速查找
@@ -4399,10 +4405,6 @@ namespace BlazorApp.Api.Services.React
                     // 步骤 6：区分更新和插入数据（Upsert 策略）
                     var toUpdate = new List<PosmProductSupplierMapping>();
                     var toInsert = new List<PosmProductSupplierMapping>();
-                    // 收集当前所有商品代码，用于后续识别需要删除的映射
-                    var currentProductCodes = new HashSet<string>(
-                        mappings.Select(m => m.ProductCode)
-                    );
 
                     foreach (var mapping in mappings)
                     {
@@ -4412,6 +4414,7 @@ namespace BlazorApp.Api.Services.React
                             if (
                                 existing.LocalSupplierCode != mapping.LocalSupplierCode
                                 || existing.ChinaSupplierCode != mapping.ChinaSupplierCode
+                                || existing.IsDeleted
                             )
                             {
                                 // 保留原有的创建时间
@@ -4426,16 +4429,10 @@ namespace BlazorApp.Api.Services.React
                         }
                     }
 
-                    // 步骤 7：找出需要删除的数据（当前商品列表中不存在的映射）
-                    var toDelete = existingMappings
-                        .Where(m => !currentProductCodes.Contains(m.ProductCode))
-                        .ToList();
-
                     _logger.LogInformation(
-                        "[ReactSync] 需要更新 {UpdateCount} 条，插入 {InsertCount} 条，删除 {DeleteCount} 条",
+                        "[ReactSync] 需要更新 {UpdateCount} 条，插入 {InsertCount} 条；历史映射保持不删",
                         toUpdate.Count,
-                        toInsert.Count,
-                        toDelete.Count
+                        toInsert.Count
                     );
 
                     var updatedCount = 0;
@@ -4467,33 +4464,20 @@ namespace BlazorApp.Api.Services.React
                         );
                     }
 
-                    // 步骤 10：批量删除已不存在商品的映射数据
-                    if (toDelete.Any())
-                    {
-                        var deleteProductCodes = toDelete.Select(m => m.ProductCode).ToList();
-                        await _posmContext
-                            .Db.Deleteable<PosmProductSupplierMapping>()
-                            .In(deleteProductCodes)
-                            .ExecuteCommandAsync();
-                        deletedCount = toDelete.Count;
-                        _logger.LogInformation("[ReactSync] 删除完成，共 {Count} 条", deletedCount);
-                    }
-
                     // 记录操作统计
                     result.UpdatedCount = updatedCount;
                     result.AddedCount = insertedCount;
                     result.DeletedCount = deletedCount;
 
-                    // 提交事务
-                    await _posmContext.Db.Ado.CommitTranAsync();
+                    // 提交事务；跨实例 SQL Server applock 会随此事务一并释放。
+                    await mappingSyncLock.CommitAsync();
                     result.IsSuccess = true;
                     result.Message =
                         $"商品-供应商映射表同步成功：更新 {updatedCount} 条，插入 {insertedCount} 条，删除 {deletedCount} 条";
                 }
                 catch (Exception exTran)
                 {
-                    // 事务异常：回滚所有操作
-                    await _posmContext.Db.Ado.RollbackTranAsync();
+                    // await using 在异常路径回滚事务并释放进程内执行租约。
                     throw new Exception("商品-供应商映射表同步事务失败", exTran);
                 }
             }

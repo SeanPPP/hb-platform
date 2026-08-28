@@ -1263,6 +1263,58 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 紧凑销售看板：分店、国内供应商和商品明细使用同一统计口径。
+    /// </summary>
+    public sealed class CompactSalesBoardDto
+    {
+        public List<CompactSalesBoardStoreDto> Stores { get; set; } = new();
+        public List<CompactSalesBoardChinaSupplierDto> ChinaSuppliers { get; set; } = new();
+        public PagedCompactSalesBoardProductDto ProductDetails { get; set; } = new();
+        public string StatisticStatus { get; set; } = string.Empty;
+        public string? StatisticMessage { get; set; }
+    }
+
+    public sealed class CompactSalesBoardStoreDto
+    {
+        public string BranchCode { get; set; } = string.Empty;
+        public string BranchName { get; set; } = string.Empty;
+        public decimal TotalAmount { get; set; }
+        public int TotalQuantity { get; set; }
+        public decimal DomesticSupplierAmount { get; set; }
+        public string AustralianSupplierCode { get; set; } = "200";
+        public string AustralianSupplierName { get; set; } = "200-hotbargain";
+    }
+
+    public sealed class CompactSalesBoardChinaSupplierDto
+    {
+        public string SupplierCode { get; set; } = string.Empty;
+        public string SupplierName { get; set; } = string.Empty;
+        public decimal TotalAmount { get; set; }
+        public int TotalQuantity { get; set; }
+    }
+
+    public sealed class PagedCompactSalesBoardProductDto
+    {
+        public List<CompactSalesBoardProductDto> Data { get; set; } = new();
+        public int Total { get; set; }
+        public int PageIndex { get; set; }
+        public int PageSize { get; set; }
+    }
+
+    public sealed class CompactSalesBoardProductDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string? ItemNumber { get; set; }
+        public string? ProductImage { get; set; }
+        public string? ProductName { get; set; }
+        public string? ChinaSupplierCode { get; set; }
+        public string? ChinaSupplierName { get; set; }
+        public int TotalQuantity { get; set; }
+        public decimal UnitPrice { get; set; }
+        public decimal TotalAmount { get; set; }
+    }
+
+    /// <summary>
     /// Best Seller 商品 DTO
     /// </summary>
     public class BestSellerProductDto
