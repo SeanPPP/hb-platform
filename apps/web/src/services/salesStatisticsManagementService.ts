@@ -47,10 +47,12 @@ export interface ProductStoreDailyStatisticSummary extends SalesStatisticRefresh
 export interface JobTriggerResponse {
   success?: boolean
   message?: string
+  taskId?: string
   jobId?: string
   status?: string
   submittedDates?: string[]
   skippedDates?: string[]
+  activeTaskIds?: string[]
 }
 
 export interface DailyStatisticsAlignmentQuery {
@@ -184,12 +186,14 @@ function normalizeSubmitResponse(raw: unknown): JobTriggerResponse {
   const record = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
   const submittedDates = record.submittedDates ?? record.SubmittedDates
   const skippedDates = record.skippedDates ?? record.SkippedDates
+  const activeTaskIds = record.activeTaskIds ?? record.ActiveTaskIds
 
   return {
     success: typeof (record.success ?? record.Success) === 'boolean'
       ? (record.success ?? record.Success) as boolean
       : undefined,
     message: readString(record.message ?? record.Message),
+    taskId: readString(record.taskId ?? record.TaskId),
     jobId: readString(record.jobId ?? record.JobId),
     status: readString(record.status ?? record.Status),
     submittedDates: Array.isArray(submittedDates)
@@ -197,6 +201,9 @@ function normalizeSubmitResponse(raw: unknown): JobTriggerResponse {
       : [],
     skippedDates: Array.isArray(skippedDates)
       ? skippedDates.map(readString).filter((item): item is string => Boolean(item))
+      : [],
+    activeTaskIds: Array.isArray(activeTaskIds)
+      ? activeTaskIds.map(readString).filter((item): item is string => Boolean(item))
       : [],
   }
 }
@@ -363,6 +370,18 @@ export async function recalculateProductStoreDailyRange(startDate: string, endDa
   const response = await request.post<ApiResponse<JobTriggerResponse> | JobTriggerResponse>(
     '/api/StatisticsJobTrigger/batch-product-store-daily',
     { startDate, endDate, maxConcurrency },
+  )
+  return normalizeSubmitResponse(unwrapData(response))
+}
+
+export async function backfillProductStoreDailyYear(
+  endDate: string,
+  days: number,
+  maxConcurrency: number,
+) {
+  const response = await request.post<ApiResponse<JobTriggerResponse> | JobTriggerResponse>(
+    '/api/StatisticsJobTrigger/backfill-product-store-daily-year',
+    { endDate, days, maxConcurrency },
   )
   return normalizeSubmitResponse(unwrapData(response))
 }

@@ -1,8 +1,10 @@
 import {
   buildGrantedPosPermissionCodes,
   buildDirectPermissionPayload,
+  buildEffectivePermissionCodes,
   buildFallbackUserPermissionState,
   buildPosPermissionSections,
+  canMutateLoadedAssignment,
   deriveDirectPermissionKeysFromChecked,
   buildPermissionSourceMap,
   getCheckedPermissionKeys,
@@ -10,12 +12,16 @@ import {
   getPosPermissionGroupSelectionState,
   isCurrentPosPermissionRequest,
   isInheritedPosPermissionMode,
+  mergeVisibleDirectPermissionSelection,
   setPosPermissionGroupSelection,
   shouldEnablePosPermissionSave,
+  splitPermissionCategoriesByPlatform,
   toggleDirectPermission,
 } from './userPermissions'
+import type { AssignmentLoadStatus } from './userPermissions'
 import type { PosTerminalPermissionOptionDto } from '../../../types/user'
 import type { UserPermissionStateDto } from '../../../types/user'
+import type { PermissionCategoryDto, PermissionDto } from '../../../types/role'
 
 function assertArrayEqual<T>(actual: T[], expected: T[], message: string) {
   const actualText = JSON.stringify(actual)
@@ -217,6 +223,8 @@ assertEqual(
 
 const permissionState: UserPermissionStateDto = {
   userGuid: 'user-a-guid',
+  isSuperAdmin: false,
+  implicitAllPermissions: false,
   inheritedPermissionCodes: ['Orders.View', 'StoreProducts.View'],
   directPermissionCodes: ['Reports.Export'],
   effectivePermissionCodes: ['Orders.View', 'StoreProducts.View', 'Reports.Export'],
@@ -349,4 +357,109 @@ assertArrayEqual(
   fallbackPermissionState.effectivePermissionCodes,
   ['Orders.View', 'Reports.Export'],
   'Fallback permission state should deduplicate effective permission codes',
+)
+
+const createPermission = (name: string, category: string): PermissionDto => ({
+  name,
+  displayName: name,
+  category,
+  isSystemPermission: true,
+  createdAt: '',
+})
+
+const mixedPermissionCategories: PermissionCategoryDto[] = [
+  {
+    category: 'mixed',
+    displayName: '混合分类',
+    permissions: [
+      createPermission('Orders.View', 'mixed'),
+      createPermission('Permissions.PosTerminal.Sales.View', 'mixed'),
+    ],
+  },
+  {
+    category: 'pos-only',
+    displayName: '仅 POS',
+    permissions: [createPermission('Permissions.PosTerminal.Payment.View', 'pos-only')],
+  },
+  {
+    category: 'web-only',
+    displayName: '仅 Web',
+    permissions: [createPermission('Reports.View', 'web-only')],
+  },
+]
+
+const platformCategories = splitPermissionCategoriesByPlatform(mixedPermissionCategories)
+
+assertArrayEqual(
+  platformCategories.web.map((category) => category.category),
+  ['mixed', 'web-only'],
+  'Web permissions should preserve backend category order and omit empty POS-only categories',
+)
+
+assertArrayEqual(
+  platformCategories.web[0]?.permissions.map((permission) => permission.name) ?? [],
+  ['Orders.View'],
+  'Mixed categories should keep only non-POS permissions in the Web group',
+)
+
+assertArrayEqual(
+  platformCategories.pos.map((category) => category.category),
+  ['mixed', 'pos-only'],
+  'POS permissions should preserve backend category order and omit empty Web-only categories',
+)
+
+assertArrayEqual(
+  platformCategories.pos[0]?.permissions.map((permission) => permission.name) ?? [],
+  ['Permissions.PosTerminal.Sales.View'],
+  'Mixed categories should move POS terminal items into the POS group by code prefix',
+)
+
+assertArrayEqual(
+  mergeVisibleDirectPermissionSelection({
+    checkedPermissionKeys: ['Orders.Create'],
+    visiblePermissionCodes: ['Orders.View', 'Orders.Create'],
+    inheritedPermissionCodes: ['Orders.View'],
+    currentDirectPermissionCodes: [
+      'Orders.View',
+      'Permissions.PosTerminal.Sales.View',
+      'Reports.Export',
+    ],
+  }),
+  ['Permissions.PosTerminal.Sales.View', 'Reports.Export', 'Orders.Create'],
+  'Updating the Web Tree should preserve direct drafts outside the visible platform',
+)
+
+assertArrayEqual(
+  buildEffectivePermissionCodes(
+    ['Orders.View', 'Permissions.PosTerminal.Sales.View'],
+    ['Reports.Export', 'Orders.View'],
+  ),
+  ['Orders.View', 'Permissions.PosTerminal.Sales.View', 'Reports.Export'],
+  'Effective permission preview should combine inherited and direct drafts without duplicates',
+)
+
+const unsafeAssignmentLoadStatuses: AssignmentLoadStatus[] = ['idle', 'loading', 'error']
+let rejectedLoadWriteCount = 0
+unsafeAssignmentLoadStatuses.forEach((status) => {
+  if (canMutateLoadedAssignment(status, false)) {
+    rejectedLoadWriteCount += 1
+  }
+})
+
+assertEqual(
+  rejectedLoadWriteCount,
+  0,
+  'Idle, loading, and rejected assignment loads must never reach a write operation',
+)
+
+assertEqual(
+  canMutateLoadedAssignment('ready', false),
+  true,
+  'Only a successfully loaded assignment draft should allow editing and saving',
+)
+
+assertEqual(
+  canMutateLoadedAssignment('ready', true),
+  false,
+  'An assignment draft must be immutable while its save request is running',
 )

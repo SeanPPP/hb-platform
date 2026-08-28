@@ -153,7 +153,7 @@ public sealed class SalesStatisticsAlignmentBackgroundRecalculateServiceTests : 
             _taskLogService,
             _context,
             NullLogger<StatisticsJobTriggerController>.Instance,
-            cacheWarmer.Object,
+            Mock.Of<IProductStoreDailyStatisticQueueService>(),
             alignmentService.Object,
             CreateService(provider)
         );
@@ -205,7 +205,7 @@ public sealed class SalesStatisticsAlignmentBackgroundRecalculateServiceTests : 
             _taskLogService,
             _context,
             NullLogger<StatisticsJobTriggerController>.Instance,
-            Mock.Of<ISalesDashboardCacheWarmer>(),
+            Mock.Of<IProductStoreDailyStatisticQueueService>(),
             alignmentService.Object,
             CreateService(provider)
         );

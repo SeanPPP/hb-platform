@@ -79,6 +79,7 @@ namespace BlazorApp.Api.Services
     public class ProductStoreDailyRecalculationSubmitResult
     {
         public Guid JobId { get; set; }
+        public IReadOnlyCollection<Guid> ActiveJobIds { get; set; } = Array.Empty<Guid>();
         public List<DateTime> SubmittedDates { get; set; } = new();
         public List<DateTime> SkippedDates { get; set; } = new();
         public string Status { get; set; } = SalesStatisticRefreshStatus.Queued;
@@ -110,7 +111,7 @@ namespace BlazorApp.Api.Services
     /// 销售统计作业服务
     /// 负责从POSM系统获取销售数据并生成各种维度的统计报表
     /// </summary>
-    public class SalesStatisticsJobService
+    public class SalesStatisticsJobService : IProductStoreDailyStatisticExecutor
     {
         /// <summary>
         /// 2025 HBSales 批量快照中单日的不可变来源签名。
@@ -209,11 +210,6 @@ namespace BlazorApp.Api.Services
             internal Dictionary<string, string> DeviceBranchMap { get; }
             public Posm2025DailySnapshotSignature Signature { get; }
         }
-
-        /// <summary>
-        /// 商品统计提交串行锁，避免同一实例内并发请求重复提交相同日期。
-        /// </summary>
-        private static readonly SemaphoreSlim ProductStatisticSubmitLock = new(1, 1);
 
         internal sealed class StoreCostRow
         {
@@ -333,6 +329,7 @@ namespace BlazorApp.Api.Services
             public DateTime Date { get; set; }
             public int Hour { get; set; }
             public string? BranchCode { get; set; }
+            public string? DeviceCode { get; set; }
             public decimal TotalAmount { get; set; }
             public int TotalQuantity { get; set; }
             public int OrderCount { get; set; }
@@ -390,6 +387,7 @@ namespace BlazorApp.Api.Services
         private const int MaxHBSales2025BatchSnapshotRows = 1_250_000;
         private const string ProvisionalFreshStatus = "ProvisionalFresh";
         internal const int StoreCostProductQueryBatchSize = 500;
+        private const int PosmSupplierMappingQueryBatchSize = 500;
 
         /// <summary>
         /// POSM数据库上下文
@@ -590,26 +588,7 @@ namespace BlazorApp.Api.Services
                 _logger.LogInformation("开始更新每日统计数据: {Date}", date);
 
                 var statistic = await BuildDailySalesStatisticAsync(_posmContext, date, DateTime.Now);
-
-                if (statistic != null)
-                {
-                    // 查询是否已存在该日期的统计数据
-                    var existing = await _context
-                        .Db.Queryable<DailySalesStatistic>()
-                        .Where(s => s.Date == date)
-                        .FirstAsync();
-
-                    if (existing != null)
-                    {
-                        // 存在则更新
-                        await _context.Db.Updateable(statistic).ExecuteCommandAsync();
-                    }
-                    else
-                    {
-                        // 不存在则插入
-                        await _context.Db.Insertable(statistic).ExecuteCommandAsync();
-                    }
-                }
+                await ReplaceDailySalesStatisticAsync(_context, _logger, date, statistic);
 
                 _logger.LogInformation("每日统计数据更新完成: {Date}", date);
             }
@@ -663,6 +642,22 @@ namespace BlazorApp.Api.Services
                 })
                 .FirstAsync();
 
+            var skuCodes = await posmContext.Db.Queryable<SalesOrderDetail, SalesOrder>(
+                    (detail, order) => detail.OrderGuid == order.OrderGuid
+                )
+                .Where((detail, order) =>
+                    order.Status != null
+                    && (order.Status == 1 || order.Status == 4)
+                    && order.OrderTime != null
+                    && order.OrderTime >= targetDate
+                    && order.OrderTime < nextDate
+                    && detail.ProductCode != null
+                    && detail.ProductCode != string.Empty
+                )
+                .Select((detail, order) => detail.ProductCode)
+                .Distinct()
+                .ToListAsync();
+
             var orderRows = await posmContext.Db.Queryable<SalesOrder>()
                 .Where(so =>
                     so.Status != null
@@ -697,11 +692,44 @@ namespace BlazorApp.Api.Services
                 TotalAmount = totalAmount,
                 TotalQuantity = totalQuantity,
                 OrderCount = orderCount,
-                SkuCount = orderCount,
+                // SKU 数按当天实际售出的去重商品编码统计，不能再用订单数代替。
+                SkuCount = skuCodes
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Count(),
                 CustomerCount = orderCount,
                 AverageOrderValue = orderCount > 0 ? totalAmount / orderCount : 0m,
                 UpdateTime = updateTime,
             };
+        }
+
+        private static Task ReplaceDailySalesStatisticAsync(
+            SqlSugarContext context,
+            ILogger logger,
+            DateTime date,
+            DailySalesStatistic? statistic
+        )
+        {
+            var targetDate = date.Date;
+            return ExecuteTransactionSafelyAsync(
+                beginAsync: () => context.Db.Ado.BeginTranAsync(),
+                workAsync: async () =>
+                {
+                    // 日统计采用整日替换；来源变为零销售时也必须清除旧快照。
+                    await context.Db.Deleteable<DailySalesStatistic>()
+                        .Where(existing => existing.Date == targetDate)
+                        .ExecuteCommandAsync();
+                    if (statistic != null)
+                    {
+                        await context.Db.Insertable(statistic).ExecuteCommandAsync();
+                    }
+                },
+                commitAsync: () => context.Db.Ado.CommitTranAsync(),
+                rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
+                logger: logger,
+                operationName: "每日统计数据更新"
+            );
         }
 
         /// <summary>
@@ -710,258 +738,16 @@ namespace BlazorApp.Api.Services
         /// </summary>
         /// <param name="date">目标日期</param>
         /// <param name="hour">指定小时，为空则更新全天24小时</param>
-        public async Task UpdateHourlyStatistics(DateTime date, int? hour = null)
+        public Task UpdateHourlyStatistics(DateTime date, int? hour = null)
         {
-            try
-            {
-                // 确定要更新的小时列表
-                var targetHours = hour.HasValue
-                    ? new[] { hour.Value }
-                    : Enumerable.Range(0, 24).ToArray();
-                var rangeStart = hour.HasValue ? date.Date.AddHours(hour.Value) : date.Date;
-                var rangeEnd = hour.HasValue ? rangeStart.AddHours(1) : date.Date.AddDays(1);
-
-                _logger.LogInformation(
-                    "开始更新分时统计数据: {Date}, 小时: {Hours}",
-                    date,
-                    hour.HasValue ? hour.Value.ToString() : "0-23"
-                );
-
-                // 金额取支付明细、销量取销售明细、订单数取订单头，避免拆分支付放大非金额指标。
-                var hourlyRevenueRows = await _posmContext
-                    .Db.Queryable<PaymentDetail, SalesOrder>(
-                        (pd, so) => pd.OrderGuid == so.OrderGuid
-                    )
-                    .Where(
-                        (pd, so) =>
-                            so.Status != null
-                            && (so.Status == 1 || so.Status == 4)
-                            && so.OrderTime != null
-                            && so.OrderTime >= rangeStart
-                            && so.OrderTime < rangeEnd
-                    )
-                    .GroupBy(
-                        (pd, so) =>
-                            new
-                            {
-                                Date = so.OrderTime!.Value.Date,
-                                Hour = so.OrderTime!.Value.Hour,
-                                so.BranchCode,
-                            }
-                    )
-                    .Select(
-                        (pd, so) =>
-                            new HourlyStatisticSourceRow
-                            {
-                                Date = so.OrderTime!.Value.Date,
-                                Hour = so.OrderTime!.Value.Hour,
-                                BranchCode = so.BranchCode,
-                                TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
-                            }
-                    )
-                    .ToListAsync();
-
-                var hourlyQuantityRows = await _posmContext
-                    .Db.Queryable<SalesOrderDetail, SalesOrder>(
-                        (detail, so) => detail.OrderGuid == so.OrderGuid
-                    )
-                    .Where(
-                        (detail, so) =>
-                            so.Status != null
-                            && (so.Status == 1 || so.Status == 4)
-                            && so.OrderTime != null
-                            && so.OrderTime >= rangeStart
-                            && so.OrderTime < rangeEnd
-                    )
-                    .GroupBy(
-                        (detail, so) =>
-                            new
-                            {
-                                Date = so.OrderTime!.Value.Date,
-                                Hour = so.OrderTime!.Value.Hour,
-                                so.BranchCode,
-                            }
-                    )
-                    .Select(
-                        (detail, so) =>
-                            new HourlyStatisticSourceRow
-                            {
-                                Date = so.OrderTime!.Value.Date,
-                                Hour = so.OrderTime!.Value.Hour,
-                                BranchCode = so.BranchCode,
-                                TotalQuantity = SqlFunc.AggregateSum(detail.Quantity) ?? 0,
-                            }
-                    )
-                    .ToListAsync();
-
-                var hourlyOrderRows = await _posmContext
-                    .Db.Queryable<SalesOrder>()
-                    .Where(
-                        so =>
-                            so.Status != null
-                            && (so.Status == 1 || so.Status == 4)
-                            && so.OrderTime != null
-                            && so.OrderTime >= rangeStart
-                            && so.OrderTime < rangeEnd
-                    )
-                    .GroupBy(
-                        so =>
-                            new
-                            {
-                                Date = so.OrderTime!.Value.Date,
-                                Hour = so.OrderTime!.Value.Hour,
-                                so.BranchCode,
-                            }
-                    )
-                    .Select(
-                        so =>
-                            new HourlyStatisticSourceRow
-                            {
-                                Date = so.OrderTime!.Value.Date,
-                                Hour = so.OrderTime!.Value.Hour,
-                                BranchCode = so.BranchCode,
-                                OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
-                                CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
-                            }
-                    )
-                    .ToListAsync();
-
-                var allHourlyData = hourlyRevenueRows
-                    .Concat(hourlyQuantityRows)
-                    .Concat(hourlyOrderRows)
-                    .GroupBy(row => new { row.Date, row.Hour, row.BranchCode })
-                    .Select(group => new HourlyStatisticSourceRow
-                    {
-                        Date = group.Key.Date,
-                        Hour = group.Key.Hour,
-                        BranchCode = group.Key.BranchCode,
-                        TotalAmount = group.Sum(row => row.TotalAmount),
-                        TotalQuantity = group.Sum(row => row.TotalQuantity),
-                        OrderCount = group.Sum(row => row.OrderCount),
-                        CustomerCount = group.Sum(row => row.CustomerCount),
-                    })
-                    .ToList();
-
-                if (!allHourlyData.Any())
-                {
-                    _logger.LogInformation("没有找到销售数据: {Date}", date);
-                    return;
-                }
-
-                // 获取所有分店代码
-                var branchCodes = allHourlyData
-                    .Select(d => d.BranchCode)
-                    .Where(c => !string.IsNullOrEmpty(c))
-                    .Distinct()
-                    .ToList();
-
-                // 查询分店信息
-                var stores = await _context
-                    .Db.Queryable<Store>()
-                    .Where(s => branchCodes.Contains(s.StoreCode))
-                    .ToListAsync();
-
-                var storeDict = stores.ToDictionary(s => s.StoreCode, s => s);
-
-                var statisticsList = new List<HourlySalesStatistic>();
-
-                // 为每个小时创建全店汇总记录
-                foreach (var h in targetHours)
-                {
-                    var hourlyDataForHour = allHourlyData.Where(d => d.Hour == h).ToList();
-
-                    if (hourlyDataForHour.Any())
-                    {
-                        var allStoreData = new HourlySalesStatistic
-                        {
-                            Date = date,
-                            Hour = h,
-                            BranchCode = "ALL",
-                            BranchName = "All Stores",
-                            TotalAmount = hourlyDataForHour.Sum(d => d.TotalAmount),
-                            TotalQuantity = (int)hourlyDataForHour.Sum(d => d.TotalQuantity),
-                            OrderCount = hourlyDataForHour.Sum(d => d.OrderCount),
-                            CustomerCount = hourlyDataForHour.Sum(d => d.CustomerCount),
-                            AverageOrderValue =
-                                hourlyDataForHour.Sum(d => d.OrderCount) > 0
-                                    ? hourlyDataForHour.Sum(d => d.TotalAmount)
-                                        / hourlyDataForHour.Sum(d => d.OrderCount)
-                                    : 0m,
-                            UpdateTime = DateTime.Now,
-                        };
-                        statisticsList.Add(allStoreData);
-                    }
-                }
-
-                LogSkippedBranchCodeRows(
-                    "分时分店销售统计",
-                    allHourlyData,
-                    data => data.BranchCode,
-                    data => data.TotalAmount,
-                    data => data.TotalQuantity
-                );
-
-                // 为每个分店创建分时统计记录
-                foreach (var data in allHourlyData)
-                {
-                    // 分店维度统计必须有有效分店编码，避免把空编码写入统计表。
-                    if (string.IsNullOrWhiteSpace(data.BranchCode))
-                        continue;
-                    var branchCode = data.BranchCode;
-                    var store = storeDict.GetValueOrDefault(branchCode);
-
-                    var storeStatistic = new HourlySalesStatistic
-                    {
-                        Date = data.Date,
-                        Hour = data.Hour,
-                        BranchCode = branchCode,
-                        BranchName = store?.StoreName ?? branchCode,
-                        TotalAmount = data.TotalAmount,
-                        TotalQuantity = (int)data.TotalQuantity,
-                        OrderCount = data.OrderCount,
-                        CustomerCount = data.CustomerCount,
-                        AverageOrderValue =
-                            data.OrderCount > 0 ? data.TotalAmount / data.OrderCount : 0m,
-                        UpdateTime = DateTime.Now,
-                    };
-                    statisticsList.Add(storeStatistic);
-                }
-
-                await ExecuteTransactionSafelyAsync(
-                    beginAsync: () => _context.Db.Ado.BeginTranAsync(),
-                    workAsync: async () =>
-                    {
-                        // 删除指定日期和小时的旧记录
-                        var deletedCount = await _context
-                            .Db.Deleteable<HourlySalesStatistic>()
-                            .Where(s => s.Date == date && targetHours.Contains(s.Hour))
-                            .ExecuteCommandAsync();
-                        _logger.LogInformation("删除 {Count} 条分时统计旧记录", deletedCount);
-
-                        // 批量插入新记录
-                        _context
-                            .Db.Fastest<HourlySalesStatistic>()
-                            .PageSize(BatchSize)
-                            .BulkCopy(statisticsList);
-                    },
-                    commitAsync: () => _context.Db.Ado.CommitTranAsync(),
-                    rollbackAsync: () => _context.Db.Ado.RollbackTranAsync(),
-                    logger: _logger,
-                    operationName: "分时统计数据更新"
-                );
-
-                _logger.LogInformation(
-                    "分时统计数据更新完成: {Date}, 小时: {Hours}, 总记录: {Total}",
-                    date,
-                    hour.HasValue ? hour.Value.ToString() : "0-23",
-                    statisticsList.Count
-                );
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "更新分时统计数据失败: {Date} {Hour}", date, hour);
-                throw;
-            }
+            // 普通入口与并发入口共用同一实现，确保设备分店回退和零销售替换口径一致。
+            return UpdateHourlyStatisticsWithContext(
+                _context,
+                _posmContext,
+                _logger,
+                date,
+                hour
+            );
         }
 
         /// <summary>
@@ -1702,6 +1488,51 @@ namespace BlazorApp.Api.Services
             );
         }
 
+        public async Task ExecuteQueuedDateAsync(
+            DateTime date,
+            Guid expectedJobId,
+            Func<Task> validateExecutionOwnershipAsync,
+            CancellationToken cancellationToken
+        )
+        {
+            if (expectedJobId == Guid.Empty)
+                throw new ArgumentException("队列任务 JobId 不能为空", nameof(expectedJobId));
+            ArgumentNullException.ThrowIfNull(validateExecutionOwnershipAsync);
+            cancellationToken.ThrowIfCancellationRequested();
+            await validateExecutionOwnershipAsync();
+
+            var targetDate = date.Date;
+            async Task ValidateExecutionOwnershipBeforeCommitAsync()
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await validateExecutionOwnershipAsync();
+            }
+
+            if (targetDate.Year == 2025)
+            {
+                await Update2025StoreAndProductStatisticsAtomically(
+                    _context,
+                    _posmContext,
+                    GetHBSalesContextFor2025(targetDate)!,
+                    _logger,
+                    targetDate,
+                    expectedJobId: expectedJobId,
+                    validateExecutionOwnershipAsync: ValidateExecutionOwnershipBeforeCommitAsync
+                );
+                return;
+            }
+
+            await UpdateProductStoreDailyStatisticsWithContext(
+                _context,
+                _posmContext,
+                GetHBSalesContextFor2025(targetDate),
+                _logger,
+                targetDate,
+                expectedJobId: expectedJobId,
+                validateExecutionOwnershipBeforeCommitAsync: ValidateExecutionOwnershipBeforeCommitAsync
+            );
+        }
+
         /// <summary>
         /// 读取最多 31 个 2025 日期的 HBSales 明细快照，并按详情结账日期切片。
         /// 此入口只给回填 Runner 使用；普通日刷新继续走自身的单日读取和 post 复核。
@@ -1979,177 +1810,6 @@ namespace BlazorApp.Api.Services
             }
         }
 
-        public async Task<ProductStoreDailyRecalculationSubmitResult> SubmitProductStoreDailyRecalculationAsync(
-            IEnumerable<DateTime> dates,
-            string? requestedBy,
-            int maxConcurrency = 3
-        )
-        {
-            var targetDates = dates
-                .Select(date => date.Date)
-                .Distinct()
-                .OrderBy(date => date)
-                .ToList();
-            var jobId = Guid.NewGuid();
-            var normalizedMaxConcurrency = ResolveProductStatisticMaxConcurrency(
-                targetDates,
-                maxConcurrency
-            );
-
-            if (!targetDates.Any())
-            {
-                return new ProductStoreDailyRecalculationSubmitResult
-                {
-                    JobId = jobId,
-                    Status = SalesStatisticRefreshStatus.Pending,
-                    Message = "没有可提交的商品统计日期",
-                };
-            }
-
-            if (targetDates.Count > MaxProductStoreDailyBatchDays)
-            {
-                // 与控制器的 400 校验保持同一条输入语义，服务层也不能被其它调用方绕过。
-                throw new ArgumentException(
-                    $"商品分店每日统计一次最多重算 {MaxProductStoreDailyBatchDays} 天，请分段执行",
-                    nameof(dates)
-                );
-            }
-
-            List<DateTime> submittedDates;
-            List<DateTime> skippedDates;
-            await ProductStatisticSubmitLock.WaitAsync();
-            try
-            {
-                var minDate = targetDates.Min();
-                var maxDate = targetDates.Max();
-
-                // 避免 DateTime 列表 Contains 在不同数据库方言下漏匹配，先按范围取回再按日期精确过滤。
-                var existingStates = await _context.Db.Queryable<SalesStatisticRefreshState>()
-                    .Where(s =>
-                        s.StatisticType == SalesStatisticType.ProductStoreDaily
-                        && s.Date >= minDate
-                        && s.Date <= maxDate
-                    )
-                    .ToListAsync();
-                existingStates = existingStates
-                    .Where(s => targetDates.Contains(s.Date.Date))
-                    .ToList();
-                var runningDates = existingStates
-                    .Where(s =>
-                        s.Status == SalesStatisticRefreshStatus.Queued
-                        || s.Status == SalesStatisticRefreshStatus.Running
-                    )
-                    .Select(s => s.Date.Date)
-                    .ToHashSet();
-                submittedDates = targetDates
-                    .Where(date => !runningDates.Contains(date))
-                    .ToList();
-                skippedDates = targetDates
-                    .Where(date => runningDates.Contains(date))
-                    .ToList();
-
-                foreach (var date in submittedDates)
-                {
-                    await UpsertProductStatisticQueuedStateAsync(
-                        _context,
-                        date,
-                        jobId,
-                        requestedBy
-                    );
-                }
-            }
-            finally
-            {
-                ProductStatisticSubmitLock.Release();
-            }
-
-            if (submittedDates.Any())
-            {
-                _ = Task.Run(() =>
-                    RunProductStoreDailyRecalculationJobAsync(
-                        jobId,
-                        submittedDates,
-                        normalizedMaxConcurrency
-                    )
-                );
-            }
-
-            return new ProductStoreDailyRecalculationSubmitResult
-            {
-                JobId = jobId,
-                SubmittedDates = submittedDates,
-                SkippedDates = skippedDates,
-                Status = submittedDates.Any()
-                    ? SalesStatisticRefreshStatus.Queued
-                    : SalesStatisticRefreshStatus.Running,
-                Message = BuildProductStoreDailySubmitMessage(submittedDates.Count, skippedDates.Count),
-            };
-        }
-
-        private static int NormalizeProductStatisticMaxConcurrency(int maxConcurrency)
-        {
-            return maxConcurrency < 1 ? 3 : Math.Min(maxConcurrency, 10);
-        }
-
-        private static int ResolveProductStatisticMaxConcurrency(
-            IReadOnlyCollection<DateTime> dates,
-            int maxConcurrency
-        )
-        {
-            // 2025 会同时重建分店与商品两张日表；同一批次必须串行，避免不同日期的双来源读取争抢资源。
-            return dates.Any(date => date.Year == 2025)
-                ? 1
-                : NormalizeProductStatisticMaxConcurrency(maxConcurrency);
-        }
-
-        public async Task<int> RecoverTimedOutProductStoreDailyRecalculationJobsAsync(
-            TimeSpan timeout,
-            DateTime? nowUtc = null
-        )
-        {
-            var currentUtc = nowUtc ?? DateTime.UtcNow;
-            var activeStates = await _context.Db.Queryable<SalesStatisticRefreshState>()
-                .Where(s =>
-                    s.StatisticType == SalesStatisticType.ProductStoreDaily
-                    && (
-                        s.Status == SalesStatisticRefreshStatus.Queued
-                        || s.Status == SalesStatisticRefreshStatus.Running
-                    )
-                )
-                .ToListAsync();
-
-            var timedOutStates = activeStates
-                .Where(state => IsProductStatisticRecoveryTimedOut(state, currentUtc, timeout))
-                .ToList();
-
-            foreach (var state in timedOutStates)
-            {
-                state.Status = SalesStatisticRefreshStatus.Pending;
-                state.JobId = null;
-                state.StartedAtUtc = null;
-                state.CompletedAtUtc = null;
-                state.ErrorMessage = null;
-                state.LastCheckedAtUtc = currentUtc;
-                await _context.Db.Updateable(state).ExecuteCommandAsync();
-            }
-
-            return timedOutStates.Count;
-        }
-
-        private static bool IsProductStatisticRecoveryTimedOut(
-            SalesStatisticRefreshState state,
-            DateTime nowUtc,
-            TimeSpan timeout
-        )
-        {
-            var referenceTime = state.Status == SalesStatisticRefreshStatus.Running
-                ? state.StartedAtUtc ?? state.LastCheckedAtUtc ?? state.RequestedAtUtc
-                : state.RequestedAtUtc ?? state.LastCheckedAtUtc;
-
-            // 缺少时间水位的执行中状态无法证明仍有后台任务，启动时优先解锁避免永久卡住。
-            return referenceTime == null || nowUtc - referenceTime.Value >= timeout;
-        }
-
         /// <summary>
         /// 滚动刷新最近几天的商品分店每日统计，处理 POSM 延迟上传。
         /// </summary>
@@ -2163,73 +1823,6 @@ namespace BlazorApp.Api.Services
             {
                 await UpdateProductStoreDailyStatistics(date);
             }
-        }
-
-        private async Task RunProductStoreDailyRecalculationJobAsync(
-            Guid jobId,
-            List<DateTime> dates,
-            int maxConcurrency
-        )
-        {
-            try
-            {
-                var normalizedMaxConcurrency = ResolveProductStatisticMaxConcurrency(
-                    dates,
-                    maxConcurrency
-                );
-                using var semaphore = new SemaphoreSlim(normalizedMaxConcurrency, normalizedMaxConcurrency);
-                var tasks = dates.Select(async date =>
-                {
-                    await semaphore.WaitAsync();
-                    try
-                    {
-                        // 每个日期独立创建作用域和服务，避免共享 DbContext/SqlSugarClient 造成并发污染。
-                        using var scope = _serviceScopeFactory.CreateScope();
-                        var service = scope.ServiceProvider.GetRequiredService<SalesStatisticsJobService>();
-                        await service.MarkProductStatisticJobRunningAsync(jobId, date);
-                        await service.UpdateProductStoreDailyStatistics(date);
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(
-                            ex,
-                            "商品分店每日统计异步重算失败: JobId={JobId}, Date={Date}",
-                            jobId,
-                            date
-                        );
-                    }
-                    finally
-                    {
-                        semaphore.Release();
-                    }
-                });
-
-                await Task.WhenAll(tasks);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "商品分店每日统计异步任务启动失败: JobId={JobId}", jobId);
-            }
-        }
-
-        private async Task MarkProductStatisticJobRunningAsync(Guid jobId, DateTime date)
-        {
-            var targetDate = date.Date;
-            var existing = await _context.Db.Queryable<SalesStatisticRefreshState>()
-                .Where(s => s.StatisticType == SalesStatisticType.ProductStoreDaily && s.Date == targetDate)
-                .FirstAsync();
-
-            if (existing == null || existing.JobId != jobId)
-            {
-                return;
-            }
-
-            existing.Status = SalesStatisticRefreshStatus.Running;
-            existing.StartedAtUtc = DateTime.UtcNow;
-            existing.CompletedAtUtc = null;
-            existing.LastCheckedAtUtc = DateTime.UtcNow;
-            existing.ErrorMessage = null;
-            await _context.Db.Updateable(existing).ExecuteCommandAsync();
         }
 
         /// <summary>
@@ -2246,7 +1839,9 @@ namespace BlazorApp.Api.Services
             Func<Task>? validateSourceWatermarkBeforeCommitAsync = null,
             IReadOnlyList<ProductStoreDailySourceRow>? preloadedHBSalesRows = null,
             string? atomicSuccessStatusOverride = null,
-            Posm2025DailySnapshot? preloadedPosmSnapshot = null
+            Posm2025DailySnapshot? preloadedPosmSnapshot = null,
+            Guid? expectedJobId = null,
+            Func<Task>? validateExecutionOwnershipBeforeCommitAsync = null
         )
         {
             var targetDate = date.Date;
@@ -2449,12 +2044,29 @@ namespace BlazorApp.Api.Services
                         x => x.Select(row => (decimal?)row.ImportPrice).FirstOrDefault(price => price.HasValue && price.Value > 0)
                     );
 
+                var posmSupplierMapping = await LoadPosmSupplierMappingInBatchesAsync(
+                    posmContext,
+                    rawRows
+                        .Where(row =>
+                            !row.IsHBSalesSource
+                            && string.IsNullOrWhiteSpace(row.SupplierCode)
+                        )
+                        .Select(row => row.ProductCode)
+                );
+
                 // 先统一解析分店；空供应商保留诊断，同时主表归入 UNKNOWN，保证商品统计总额不漏数。
                 var resolvedRows = rawRows
                     .Select(x => new
                     {
                         Row = x,
                         ResolvedBranchCode = ResolveBranchCode(x.BranchCode, x.DeviceCode, deviceBranchMap),
+                        // HBSales 的供应商是权威事实；仅 POSM 明细缺值时才按商品映射回填。
+                        ResolvedSupplierCode = !x.IsHBSalesSource
+                            && string.IsNullOrWhiteSpace(x.SupplierCode)
+                            && !string.IsNullOrWhiteSpace(x.ProductCode)
+                            && posmSupplierMapping.TryGetValue(x.ProductCode!.Trim(), out var mappedSupplier)
+                                ? mappedSupplier
+                                : x.SupplierCode,
                         StatisticAmount = x.IsHBSalesSource || supplementalReturnRowSet.Contains(x)
                             ? x.ActualAmount
                             : ResolveStatisticAmount(
@@ -2472,7 +2084,7 @@ namespace BlazorApp.Api.Services
 
                 var diagnostics = new ProductStatisticDiagnostics();
                 var unmatchedSupplierRows = resolvedRows
-                    .Where(x => string.IsNullOrWhiteSpace(x.Row.SupplierCode))
+                    .Where(x => string.IsNullOrWhiteSpace(x.ResolvedSupplierCode))
                     .ToList();
                 if (unmatchedSupplierRows.Any())
                 {
@@ -2506,7 +2118,7 @@ namespace BlazorApp.Api.Services
                     {
                         x.Row.Date,
                         BranchCode = x.ResolvedBranchCode,
-                        SupplierCode = ResolveStatisticSupplierCode(x.Row.SupplierCode, null),
+                        SupplierCode = ResolveStatisticSupplierCode(x.ResolvedSupplierCode, null),
                         ProductCode = x.Row.ProductCode!.Trim(),
                     })
                     .Select(group =>
@@ -2614,6 +2226,13 @@ namespace BlazorApp.Api.Services
                     beginAsync: () => context.Db.Ado.BeginTranAsync(),
                     workAsync: async () =>
                     {
+                        // 先用 expected JobId 条件更新状态行并持锁到提交，封住 guard 返回后的 owner 竞态。
+                        await FenceProductStatisticExecutionOwnerAsync(
+                            context,
+                            targetDate,
+                            expectedJobId
+                        );
+
                         if (atomicStoreStatistics != null)
                         {
                             // 2025 先替换分店基线，再替换商品日表和两类状态；四项写入必须同一事务提交。
@@ -2638,6 +2257,12 @@ namespace BlazorApp.Api.Services
                             context.Db.Fastest<ProductStoreDailySalesStatistic>()
                                 .PageSize(BatchSize)
                                 .BulkCopy(statisticsList);
+                        }
+
+                        if (validateExecutionOwnershipBeforeCommitAsync != null)
+                        {
+                            // 状态仍为 Running 时续租并复核 owner，随后只剩状态写入与提交。
+                            await validateExecutionOwnershipBeforeCommitAsync();
                         }
 
                         await UpsertProductStatisticStateAsync(
@@ -2679,12 +2304,30 @@ namespace BlazorApp.Api.Services
                 {
                     try
                     {
-                        await UpsertProductStatisticStateAsync(
-                            context,
-                            targetDate,
-                            new ProductStatisticStatusResult(SalesStatisticRefreshStatus.Failed, ex.Message),
-                            null
-                        );
+                        if (expectedJobId.HasValue)
+                        {
+                            await PersistProductStatisticFailureForExpectedOwnerAsync(
+                                context,
+                                logger,
+                                targetDate,
+                                ex,
+                                expectedJobId.Value,
+                                validateExecutionOwnershipBeforeCommitAsync
+                            );
+                        }
+                        else
+                        {
+                            // 非队列旧调用保持原有失败状态写入行为。
+                            await UpsertProductStatisticStateAsync(
+                                context,
+                                targetDate,
+                                new ProductStatisticStatusResult(
+                                    SalesStatisticRefreshStatus.Failed,
+                                    ex.Message
+                                ),
+                                null
+                            );
+                        }
                     }
                     catch (Exception stateException)
                     {
@@ -2706,6 +2349,46 @@ namespace BlazorApp.Api.Services
             }
         }
 
+        private async Task PersistProductStatisticFailureForExpectedOwnerAsync(
+            SqlSugarContext context,
+            ILogger logger,
+            DateTime targetDate,
+            Exception originalException,
+            Guid expectedJobId,
+            Func<Task>? validateExecutionOwnershipAsync
+        )
+        {
+            await ExecuteTransactionSafelyAsync(
+                beginAsync: () => context.Db.Ado.BeginTranAsync(),
+                workAsync: async () =>
+                {
+                    await FenceProductStatisticExecutionOwnerAsync(
+                        context,
+                        targetDate,
+                        expectedJobId
+                    );
+                    if (validateExecutionOwnershipAsync != null)
+                    {
+                        // 失败状态同样必须在持有 owner 行锁期间复核租约，不能覆盖后继任务。
+                        await validateExecutionOwnershipAsync();
+                    }
+                    await UpsertProductStatisticStateAsync(
+                        context,
+                        targetDate,
+                        new ProductStatisticStatusResult(
+                            SalesStatisticRefreshStatus.Failed,
+                            originalException.Message
+                        ),
+                        null
+                    );
+                },
+                commitAsync: () => context.Db.Ado.CommitTranAsync(),
+                rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
+                logger: logger,
+                operationName: "商品分店每日统计失败状态写入"
+            );
+        }
+
         private async Task Update2025StoreAndProductStatisticsAtomically(
             SqlSugarContext context,
             POSMSqlSugarContext posmContext,
@@ -2716,7 +2399,9 @@ namespace BlazorApp.Api.Services
             IReadOnlyList<ProductStoreDailySourceRow>? preloadedHBSalesRows = null,
             HBSales2025DailySnapshotSignature? expectedHBSalesSignature = null,
             bool deferHBSalesStabilityToBatchEnd = false,
-            Posm2025DailySnapshot? preloadedPosmSnapshot = null
+            Posm2025DailySnapshot? preloadedPosmSnapshot = null,
+            Guid? expectedJobId = null,
+            Func<Task>? validateExecutionOwnershipAsync = null
         )
         {
             var targetDate = date.Date;
@@ -2819,7 +2504,9 @@ namespace BlazorApp.Api.Services
                     },
                     hbSalesRows,
                     deferHBSalesStabilityToBatchEnd ? ProvisionalFreshStatus : null,
-                    preloadedPosmSnapshot
+                    preloadedPosmSnapshot,
+                    expectedJobId,
+                    validateExecutionOwnershipAsync
                 );
                 logger.LogInformation("2025 Runner product build 完成: {Date}, {ElapsedMilliseconds}ms", targetDate, productBuildStopwatch.ElapsedMilliseconds);
             }
@@ -2830,7 +2517,9 @@ namespace BlazorApp.Api.Services
                     logger,
                     targetDate,
                     effectiveSourceWatermark,
-                    ex
+                    ex,
+                    expectedJobId,
+                    validateExecutionOwnershipAsync
                 );
                 throw;
             }
@@ -2841,7 +2530,9 @@ namespace BlazorApp.Api.Services
             ILogger logger,
             DateTime targetDate,
             DateTime? effectiveSourceWatermark,
-            Exception originalException
+            Exception originalException,
+            Guid? expectedJobId = null,
+            Func<Task>? validateExecutionOwnershipAsync = null
         )
         {
             try
@@ -2851,6 +2542,16 @@ namespace BlazorApp.Api.Services
                     beginAsync: () => context.Db.Ado.BeginTranAsync(),
                     workAsync: async () =>
                     {
+                        await FenceProductStatisticExecutionOwnerAsync(
+                            context,
+                            targetDate,
+                            expectedJobId
+                        );
+                        if (validateExecutionOwnershipAsync != null)
+                        {
+                            // Failed 也只能由仍持有租约和 Running owner 的 worker 写入。
+                            await validateExecutionOwnershipAsync();
+                        }
                         await UpsertProductStatisticStateAsync(
                             context,
                             targetDate,
@@ -2885,6 +2586,38 @@ namespace BlazorApp.Api.Services
                     "2025 双表统计失败状态写入失败，保留原始异常: {Date}, OriginalError={OriginalError}",
                     targetDate,
                     originalException.Message
+                );
+            }
+        }
+
+        private static async Task FenceProductStatisticExecutionOwnerAsync(
+            SqlSugarContext context,
+            DateTime targetDate,
+            Guid? expectedJobId
+        )
+        {
+            if (!expectedJobId.HasValue)
+                return;
+            if (expectedJobId.Value == Guid.Empty)
+                throw new InvalidOperationException("队列任务 JobId 不能为空");
+
+            var normalizedDate = targetDate.Date;
+            var nextDate = normalizedDate.AddDays(1);
+            var now = DateTime.UtcNow;
+            var affectedRows = await context.Db.Updateable<SalesStatisticRefreshState>()
+                .SetColumns(state => state.LastCheckedAtUtc == now)
+                .Where(state =>
+                    state.StatisticType == SalesStatisticType.ProductStoreDaily
+                    && state.Date >= normalizedDate
+                    && state.Date < nextDate
+                    && state.JobId == expectedJobId.Value
+                    && state.Status == SalesStatisticRefreshStatus.Running
+                )
+                .ExecuteCommandAsync();
+            if (affectedRows != 1)
+            {
+                throw new InvalidOperationException(
+                    $"商品统计执行权已变化，拒绝旧 worker 写入: {normalizedDate:yyyy-MM-dd} {expectedJobId.Value}"
                 );
             }
         }
@@ -3635,23 +3368,68 @@ namespace BlazorApp.Api.Services
         {
             var targetDeviceCodes = deviceCodes
                 .Where(code => !string.IsNullOrWhiteSpace(code))
-                .Select(code => code!.Trim())
-                .Distinct(StringComparer.Ordinal)
+                .Select(code => code!.Trim().ToUpperInvariant())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
             if (!targetDeviceCodes.Any())
-                return new Dictionary<string, string>();
+                return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
             return (await posmContext.Db.Queryable<POSM_设备注册信息表>()
-                    .Where(device => targetDeviceCodes.Contains(device.系统设备编号))
+                    .Where(device =>
+                        device.系统设备编号 != null
+                        && targetDeviceCodes.Contains(
+                            SqlFunc.ToUpper(device.系统设备编号.Trim())
+                        )
+                    )
                     .Select(device => new { device.系统设备编号, device.分店代码 })
                     .ToListAsync())
                 .Where(device => !string.IsNullOrWhiteSpace(device.系统设备编号))
-                .GroupBy(device => device.系统设备编号.Trim())
+                .GroupBy(
+                    device => NormalizeCode(device.系统设备编号),
+                    StringComparer.OrdinalIgnoreCase
+                )
                 .ToDictionary(
                     group => group.Key,
                     group => group.Select(device => device.分店代码)
-                        .FirstOrDefault(code => !string.IsNullOrWhiteSpace(code))?.Trim() ?? string.Empty
+                        .FirstOrDefault(code => !string.IsNullOrWhiteSpace(code))?.Trim() ?? string.Empty,
+                    StringComparer.OrdinalIgnoreCase
+                );
+        }
+
+        internal static async Task<Dictionary<string, string>> LoadPosmSupplierMappingInBatchesAsync(
+            POSMSqlSugarContext posmContext,
+            IEnumerable<string?> productCodes
+        )
+        {
+            var targetProductCodes = productCodes
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var mappings = new List<PosmProductSupplierMapping>();
+
+            // SQL Server 的 IN 参数有上限；商品供应商映射固定按 500 个商品码读取。
+            foreach (var productCodeBatch in targetProductCodes.Chunk(PosmSupplierMappingQueryBatchSize))
+            {
+                var batchCodes = productCodeBatch.ToList();
+                mappings.AddRange(
+                    await posmContext.Db.Queryable<PosmProductSupplierMapping>()
+                        .Where(mapping => batchCodes.Contains(mapping.ProductCode))
+                        .ToListAsync()
+                );
+            }
+
+            return mappings
+                .Where(mapping =>
+                    !string.IsNullOrWhiteSpace(mapping.ProductCode)
+                    && !string.IsNullOrWhiteSpace(mapping.LocalSupplierCode)
+                )
+                .GroupBy(mapping => mapping.ProductCode.Trim(), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Select(mapping => mapping.LocalSupplierCode.Trim()).First(),
+                    StringComparer.OrdinalIgnoreCase
                 );
         }
 
@@ -3804,25 +3582,19 @@ namespace BlazorApp.Api.Services
                 .ToListAsync();
 
             var deviceCodes = paymentRows
-                .Select(row => row.BranchCode is null or "" ? row.DeviceCode : null)
-                .Concat(quantityRows.Select(row => row.BranchCode is null or "" ? row.DeviceCode : null))
-                .Concat(orderRows.Select(row => row.BranchCode is null or "" ? row.DeviceCode : null))
+                .Select(row => string.IsNullOrWhiteSpace(row.BranchCode) ? row.DeviceCode : null)
+                .Concat(quantityRows.Select(row =>
+                    string.IsNullOrWhiteSpace(row.BranchCode) ? row.DeviceCode : null
+                ))
+                .Concat(orderRows.Select(row =>
+                    string.IsNullOrWhiteSpace(row.BranchCode) ? row.DeviceCode : null
+                ))
                 .Where(code => !string.IsNullOrWhiteSpace(code))
                 .Select(code => code!)
-                .Distinct()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            var deviceBranchMap = preloadedPosmSnapshot?.DeviceBranchMap ?? (deviceCodes.Any()
-                ? (await posmContext.Db.Queryable<POSM_设备注册信息表>()
-                    .Where(d => deviceCodes.Contains(d.系统设备编号))
-                    .Select(d => new { d.系统设备编号, d.分店代码 })
-                    .ToListAsync())
-                    .Where(x => !string.IsNullOrWhiteSpace(x.系统设备编号))
-                    .GroupBy(x => x.系统设备编号)
-                    .ToDictionary(
-                        x => x.Key,
-                        x => x.Select(row => row.分店代码).FirstOrDefault(code => !string.IsNullOrWhiteSpace(code)) ?? string.Empty
-                    )
-                : new Dictionary<string, string>());
+            var deviceBranchMap = preloadedPosmSnapshot?.DeviceBranchMap
+                ?? await LoadDeviceBranchMapAsync(posmContext, deviceCodes);
 
             bool IsTargetBranch(string branchCode) =>
                 !string.IsNullOrWhiteSpace(branchCode)
@@ -4320,60 +4092,6 @@ namespace BlazorApp.Api.Services
                 .Select(value => value!.Value)
                 .ToList();
             return values.Count == 0 ? null : values.Max();
-        }
-
-        private static string BuildProductStoreDailySubmitMessage(int submittedCount, int skippedCount)
-        {
-            if (submittedCount == 0 && skippedCount > 0)
-            {
-                return $"所选 {skippedCount} 天商品统计已有任务执行中，未重复提交";
-            }
-
-            if (skippedCount > 0)
-            {
-                return $"已提交 {submittedCount} 天商品统计重算，跳过 {skippedCount} 天执行中的任务";
-            }
-
-            return $"已提交 {submittedCount} 天商品统计重算任务";
-        }
-
-        private static async Task UpsertProductStatisticQueuedStateAsync(
-            SqlSugarContext context,
-            DateTime targetDate,
-            Guid jobId,
-            string? requestedBy
-        )
-        {
-            var now = DateTime.UtcNow;
-            var existing = await context.Db.Queryable<SalesStatisticRefreshState>()
-                .Where(s => s.StatisticType == SalesStatisticType.ProductStoreDaily && s.Date == targetDate)
-                .FirstAsync();
-
-            if (existing == null)
-            {
-                await context.Db.Insertable(new SalesStatisticRefreshState
-                {
-                    StatisticType = SalesStatisticType.ProductStoreDaily,
-                    Date = targetDate,
-                    Status = SalesStatisticRefreshStatus.Queued,
-                    SourceTimeZone = "POSM_LOCAL",
-                    JobId = jobId,
-                    RequestedBy = requestedBy,
-                    RequestedAtUtc = now,
-                    LastCheckedAtUtc = now,
-                }).ExecuteCommandAsync();
-                return;
-            }
-
-            existing.Status = SalesStatisticRefreshStatus.Queued;
-            existing.JobId = jobId;
-            existing.RequestedBy = requestedBy;
-            existing.RequestedAtUtc = now;
-            existing.StartedAtUtc = null;
-            existing.CompletedAtUtc = null;
-            existing.LastCheckedAtUtc = now;
-            existing.ErrorMessage = null;
-            await context.Db.Updateable(existing).ExecuteCommandAsync();
         }
 
         /// <summary>
@@ -6314,26 +6032,7 @@ namespace BlazorApp.Api.Services
                 logger.LogInformation("开始更新每日统计数据: {Date}", date);
 
                 var statistic = await BuildDailySalesStatisticAsync(posmContext, date, DateTime.Now);
-
-                if (statistic != null)
-                {
-                    // 查询是否已存在该日期的统计数据
-                    var existing = await context
-                        .Db.Queryable<DailySalesStatistic>()
-                        .Where(s => s.Date == date)
-                        .FirstAsync();
-
-                    if (existing != null)
-                    {
-                        // 存在则更新
-                        await context.Db.Updateable(statistic).ExecuteCommandAsync();
-                    }
-                    else
-                    {
-                        // 不存在则插入
-                        await context.Db.Insertable(statistic).ExecuteCommandAsync();
-                    }
-                }
+                await ReplaceDailySalesStatisticAsync(context, logger, date, statistic);
 
                 logger.LogInformation("每日统计数据更新完成: {Date}", date);
             }
@@ -6366,8 +6065,9 @@ namespace BlazorApp.Api.Services
                 var targetHours = hour.HasValue
                     ? new[] { hour.Value }
                     : Enumerable.Range(0, 24).ToArray();
-                var rangeStart = hour.HasValue ? date.Date.AddHours(hour.Value) : date.Date;
-                var rangeEnd = hour.HasValue ? rangeStart.AddHours(1) : date.Date.AddDays(1);
+                var targetDate = date.Date;
+                var rangeStart = hour.HasValue ? targetDate.AddHours(hour.Value) : targetDate;
+                var rangeEnd = hour.HasValue ? rangeStart.AddHours(1) : targetDate.AddDays(1);
 
                 logger.LogInformation(
                     "开始更新分时统计数据: {Date}, 小时: {Hours}",
@@ -6395,6 +6095,7 @@ namespace BlazorApp.Api.Services
                                 Date = so.OrderTime!.Value.Date,
                                 Hour = so.OrderTime!.Value.Hour,
                                 so.BranchCode,
+                                so.DeviceCode,
                             }
                     )
                     .Select(
@@ -6404,6 +6105,7 @@ namespace BlazorApp.Api.Services
                                 Date = so.OrderTime!.Value.Date,
                                 Hour = so.OrderTime!.Value.Hour,
                                 BranchCode = so.BranchCode,
+                                DeviceCode = so.DeviceCode,
                                 TotalAmount = SqlFunc.AggregateSum(pd.Amount) ?? 0m,
                             }
                     )
@@ -6428,6 +6130,7 @@ namespace BlazorApp.Api.Services
                                 Date = so.OrderTime!.Value.Date,
                                 Hour = so.OrderTime!.Value.Hour,
                                 so.BranchCode,
+                                so.DeviceCode,
                             }
                     )
                     .Select(
@@ -6437,6 +6140,7 @@ namespace BlazorApp.Api.Services
                                 Date = so.OrderTime!.Value.Date,
                                 Hour = so.OrderTime!.Value.Hour,
                                 BranchCode = so.BranchCode,
+                                DeviceCode = so.DeviceCode,
                                 TotalQuantity = SqlFunc.AggregateSum(detail.Quantity) ?? 0,
                             }
                     )
@@ -6459,6 +6163,7 @@ namespace BlazorApp.Api.Services
                                 Date = so.OrderTime!.Value.Date,
                                 Hour = so.OrderTime!.Value.Hour,
                                 so.BranchCode,
+                                so.DeviceCode,
                             }
                     )
                     .Select(
@@ -6468,32 +6173,54 @@ namespace BlazorApp.Api.Services
                                 Date = so.OrderTime!.Value.Date,
                                 Hour = so.OrderTime!.Value.Hour,
                                 BranchCode = so.BranchCode,
+                                DeviceCode = so.DeviceCode,
                                 OrderCount = SqlFunc.AggregateCount(so.OrderGuid),
                                 CustomerCount = SqlFunc.AggregateCount(so.OrderGuid),
                             }
                     )
                     .ToListAsync();
 
-                var allHourlyData = hourlyRevenueRows
+                var combinedHourlyRows = hourlyRevenueRows
                     .Concat(hourlyQuantityRows)
                     .Concat(hourlyOrderRows)
-                    .GroupBy(row => new { row.Date, row.Hour, row.BranchCode })
+                    .ToList();
+                var deviceBranchMap = await LoadDeviceBranchMapAsync(
+                    posmContext,
+                    combinedHourlyRows
+                        .Where(row => string.IsNullOrWhiteSpace(row.BranchCode))
+                        .Select(row => row.DeviceCode)
+                );
+                var allHourlyData = combinedHourlyRows
+                    .Select(row => new
+                    {
+                        Row = row,
+                        BranchCode = ResolveBranchCode(
+                            row.BranchCode,
+                            row.DeviceCode,
+                            deviceBranchMap
+                        ),
+                    })
+                    .GroupBy(row => new
+                    {
+                        Date = row.Row.Date,
+                        Hour = row.Row.Hour,
+                        row.BranchCode,
+                    })
                     .Select(group => new HourlyStatisticSourceRow
                     {
-                        Date = group.Key.Date,
+                        Date = group.Key.Date.Date,
                         Hour = group.Key.Hour,
                         BranchCode = group.Key.BranchCode,
-                        TotalAmount = group.Sum(row => row.TotalAmount),
-                        TotalQuantity = group.Sum(row => row.TotalQuantity),
-                        OrderCount = group.Sum(row => row.OrderCount),
-                        CustomerCount = group.Sum(row => row.CustomerCount),
+                        TotalAmount = group.Sum(row => row.Row.TotalAmount),
+                        TotalQuantity = group.Sum(row => row.Row.TotalQuantity),
+                        OrderCount = group.Sum(row => row.Row.OrderCount),
+                        CustomerCount = group.Sum(row => row.Row.CustomerCount),
                     })
                     .ToList();
 
                 if (!allHourlyData.Any())
                 {
                     logger.LogInformation("没有找到销售数据: {Date}", date);
-                    return;
                 }
 
                 // 获取所有分店代码
@@ -6522,7 +6249,7 @@ namespace BlazorApp.Api.Services
                     {
                         var allStoreData = new HourlySalesStatistic
                         {
-                            Date = date,
+                            Date = targetDate,
                             Hour = h,
                             BranchCode = "ALL",
                             BranchName = "All Stores",
@@ -6575,58 +6302,28 @@ namespace BlazorApp.Api.Services
                     statisticsList.Add(storeStatistic);
                 }
 
-                // 查询数据库中已存在的记录
-                var existingRecords = await context
-                    .Db.Queryable<HourlySalesStatistic>()
-                    .Where(s => s.Date == date && targetHours.Contains(s.Hour))
-                    .ToListAsync();
+                await ExecuteTransactionSafelyAsync(
+                    beginAsync: () => context.Db.Ado.BeginTranAsync(),
+                    workAsync: async () =>
+                    {
+                        // 分时统计按日期和目标小时整体替换；零销售也必须清除旧快照。
+                        var deletedCount = await context.Db.Deleteable<HourlySalesStatistic>()
+                            .Where(s => s.Date == targetDate && targetHours.Contains(s.Hour))
+                            .ExecuteCommandAsync();
+                        logger.LogInformation("删除 {Count} 条分时统计旧记录", deletedCount);
 
-                // 构建已存在记录的字典，用于快速查找
-                var existingDict = existingRecords.ToDictionary(
-                    s => $"{s.Date}_{s.Hour}_{s.BranchCode}",
-                    s => s
+                        if (statisticsList.Any())
+                        {
+                            context.Db.Fastest<HourlySalesStatistic>()
+                                .PageSize(BatchSize)
+                                .BulkCopy(statisticsList);
+                        }
+                    },
+                    commitAsync: () => context.Db.Ado.CommitTranAsync(),
+                    rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
+                    logger: logger,
+                    operationName: "分时统计数据更新"
                 );
-
-                var toInsert = new List<HourlySalesStatistic>();
-                var toUpdate = new List<HourlySalesStatistic>();
-
-                // 遍历统计数据，区分插入和更新操作
-                foreach (var stat in statisticsList)
-                {
-                    var key = $"{stat.Date}_{stat.Hour}_{stat.BranchCode}";
-
-                    if (existingDict.TryGetValue(key, out var existing))
-                    {
-                        stat.Date = existing.Date;
-                        stat.Hour = existing.Hour;
-                        stat.BranchCode = existing.BranchCode;
-                        toUpdate.Add(stat);
-                    }
-                    else
-                    {
-                        toInsert.Add(stat);
-                    }
-                }
-
-                // 批量插入新记录
-                if (toInsert.Any())
-                {
-                    context
-                        .Db.Fastest<HourlySalesStatistic>()
-                        .PageSize(BatchSize)
-                        .BulkCopy(toInsert);
-                    logger.LogInformation("批量插入 {Count} 条分时统计记录", toInsert.Count);
-                }
-
-                // 批量更新已存在记录
-                if (toUpdate.Any())
-                {
-                    context
-                        .Db.Fastest<HourlySalesStatistic>()
-                        .PageSize(BatchSize)
-                        .BulkUpdate(toUpdate);
-                    logger.LogInformation("批量更新 {Count} 条分时统计记录", toUpdate.Count);
-                }
 
                 logger.LogInformation(
                     "分时统计数据更新完成: {Date}, 小时: {Hours}, 总记录: {Total}",

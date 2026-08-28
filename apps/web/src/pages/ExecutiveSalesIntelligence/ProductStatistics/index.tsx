@@ -16,8 +16,9 @@ import {
 import type { ColumnsType } from 'antd/es/table'
 import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  backfillProductStoreDailyYear,
   getProductStoreDailyStatisticStates,
   getProductStoreDailyStatisticSummary,
   recalculateProductStoreDaily,
@@ -39,10 +40,22 @@ export const MAX_PRODUCT_STATISTIC_RANGE_DAYS = 31
 export const DEFAULT_PRODUCT_STATISTIC_CONCURRENCY = 3
 export const MIN_PRODUCT_STATISTIC_CONCURRENCY = 1
 export const MAX_PRODUCT_STATISTIC_CONCURRENCY = 10
+export const PRODUCT_STATISTIC_YEAR_BACKFILL_DAYS = 365
 
 type RangeValue = [Dayjs, Dayjs] | null
 type ProductStatisticTablePagination = { current: number; pageSize: number }
 type ProductStatisticLoadOptions = { resetPage?: boolean }
+type ProductStatisticRunActionOptions = {
+  trackSubmittedDates?: boolean
+  successMessageBuilder?: (result: JobTriggerResponse) => string
+}
+type ProductStatisticYearBackfillConfirmation = {
+  onOk: () => Promise<void>
+  onCancel: () => void
+}
+type ProductStatisticSingleFlightGate = {
+  locked: boolean
+}
 type ProductStatisticFormValues = {
   statisticType?: string
   dateRange?: RangeValue
@@ -184,6 +197,14 @@ export function getProductStatisticConcurrency(value?: number | null) {
     : Math.min(MAX_PRODUCT_STATISTIC_CONCURRENCY, integerValue)
 }
 
+export function buildProductStatisticYearBackfillRequest(referenceDate = dayjs(), maxConcurrency?: number | null) {
+  return {
+    endDate: referenceDate.format('YYYY-MM-DD'),
+    days: PRODUCT_STATISTIC_YEAR_BACKFILL_DAYS,
+    maxConcurrency: getProductStatisticConcurrency(maxConcurrency),
+  }
+}
+
 export function getProductStatisticRowNumber(rowIndex: number, currentPage = 1, pageSize = 20) {
   const safeCurrentPage = Number.isFinite(currentPage) && currentPage > 0 ? currentPage : 1
   const safePageSize = Number.isFinite(pageSize) && pageSize > 0 ? pageSize : 20
@@ -247,6 +268,96 @@ export function mergeUniqueDates(currentDates: string[], submittedDates?: string
   return Array.from(new Set([...currentDates, ...(submittedDates ?? [])])).sort()
 }
 
+export function selectProductStatisticPollDates(
+  submittedDates?: string[],
+  trackSubmittedDates = true,
+) {
+  return trackSubmittedDates ? submittedDates ?? [] : []
+}
+
+export function createProductStatisticSingleFlightGate(): ProductStatisticSingleFlightGate {
+  return { locked: false }
+}
+
+export function requestProductStatisticYearBackfillConfirmation({
+  gate,
+  confirm,
+  action,
+  onGateChange,
+}: {
+  gate: ProductStatisticSingleFlightGate
+  confirm: (confirmation: ProductStatisticYearBackfillConfirmation) => void
+  action: () => Promise<void>
+  onGateChange?: (locked: boolean) => void
+}) {
+  if (gate.locked) {
+    return false
+  }
+
+  gate.locked = true
+  let cancelled = false
+  let released = false
+  let actionPromise: Promise<void> | null = null
+
+  const release = () => {
+    if (released) {
+      return
+    }
+
+    released = true
+    gate.locked = false
+    onGateChange?.(false)
+  }
+
+  try {
+    onGateChange?.(true)
+    confirm({
+      onCancel: () => {
+        if (actionPromise) {
+          return
+        }
+
+        cancelled = true
+        release()
+      },
+      onOk: () => {
+        if (cancelled) {
+          return Promise.resolve()
+        }
+
+        if (actionPromise) {
+          return actionPromise
+        }
+
+        actionPromise = Promise.resolve()
+          .then(action)
+          .finally(release)
+        return actionPromise
+      },
+    })
+    return true
+  } catch (error) {
+    release()
+    throw error
+  }
+}
+
+export function buildProductStatisticYearBackfillMessage(result: JobTriggerResponse) {
+  const submittedCount = result.submittedDates?.length ?? 0
+  const skippedCount = result.skippedDates?.length ?? 0
+  if (submittedCount === 0) {
+    const activeTaskCount = result.activeTaskIds?.length ?? 0
+    const fallback = activeTaskCount > 0
+      ? `年度回填未重复提交：跳过 ${skippedCount} 天，关联 ${activeTaskCount} 个活动任务`
+      : `年度回填未重复提交：跳过 ${skippedCount} 天`
+    return result.message?.trim() || fallback
+  }
+
+  const taskId = result.taskId ?? result.jobId
+  const taskSuffix = taskId ? `，任务 ID：${taskId}` : ''
+  return `年度回填已提交：提交 ${submittedCount} 天，跳过 ${skippedCount} 天${taskSuffix}`
+}
+
 export function getBestSellerDefaultStatisticRange(referenceDate = dayjs()): [Dayjs, Dayjs] {
   const range = buildBestSellerDateRange(BEST_SELLERS_DEFAULT_DAYS, referenceDate.toDate())
   return [dayjs(range.startDate), dayjs(range.endDate)]
@@ -261,6 +372,10 @@ export default function ProductStatisticsPage() {
   const [summaryLoading, setSummaryLoading] = useState(false)
   const [summary, setSummary] = useState<ProductStoreDailyStatisticSummary | null>(null)
   const [activePollDates, setActivePollDates] = useState<string[]>([])
+  const [yearBackfillGateLocked, setYearBackfillGateLocked] = useState(false)
+  const yearBackfillGateRef = useRef<ProductStatisticSingleFlightGate | null>(null)
+  const yearBackfillGate = yearBackfillGateRef.current ?? createProductStatisticSingleFlightGate()
+  yearBackfillGateRef.current = yearBackfillGate
   const [tablePagination, setTablePagination] = useState<ProductStatisticTablePagination>({ current: 1, pageSize: 20 })
 
   const defaultRange = useMemo<RangeValue>(() => [dayjs().subtract(6, 'day'), dayjs()], [])
@@ -361,13 +476,23 @@ export default function ProductStatisticsPage() {
     return () => window.clearInterval(timer)
   }, [activePollDates, refreshActiveSubmissions])
 
-  const runAction = useCallback(async (action: () => Promise<JobTriggerResponse>, successText: string) => {
+  const runAction = useCallback(async (
+    action: () => Promise<JobTriggerResponse>,
+    successText: string,
+    options: ProductStatisticRunActionOptions = {},
+  ) => {
     setActionLoading(true)
     try {
       const result = await action()
-      message.success(buildProductStatisticSubmitMessage(result, successText))
-      if (result.submittedDates?.length) {
-        setActivePollDates((currentDates) => mergeUniqueDates(currentDates, result.submittedDates))
+      message.success(
+        options.successMessageBuilder?.(result) ?? buildProductStatisticSubmitMessage(result, successText),
+      )
+      const pollDates = selectProductStatisticPollDates(
+        result.submittedDates,
+        options.trackSubmittedDates,
+      )
+      if (pollDates.length) {
+        setActivePollDates((currentDates) => mergeUniqueDates(currentDates, pollDates))
       }
       await loadStates()
     } catch (error) {
@@ -437,6 +562,40 @@ export default function ProductStatisticsPage() {
     })
   }, [form, runAction])
 
+  const handleBackfillYear = useCallback(() => {
+    const payload = buildProductStatisticYearBackfillRequest(
+      dayjs(),
+      form.getFieldValue('maxConcurrency'),
+    )
+
+    requestProductStatisticYearBackfillConfirmation({
+      gate: yearBackfillGate,
+      onGateChange: setYearBackfillGateLocked,
+      confirm: ({ onOk, onCancel }) => {
+        Modal.confirm({
+          title: '确认回填过去 1 年商品统计？',
+          content: `结束日期：${payload.endDate}（含当天）；共 ${payload.days} 天；请求并发上限：${payload.maxConcurrency}。2025 年日期由后端固定串行处理。`,
+          okText: '确认提交',
+          cancelText: '取消',
+          onOk,
+          onCancel,
+        })
+      },
+      action: () => runAction(
+        () => backfillProductStoreDailyYear(
+          payload.endDate,
+          payload.days,
+          payload.maxConcurrency,
+        ),
+        '年度回填任务已提交',
+        {
+          trackSubmittedDates: false,
+          successMessageBuilder: buildProductStatisticYearBackfillMessage,
+        },
+      ),
+    })
+  }, [form, runAction, yearBackfillGate])
+
   const columns = useMemo<ColumnsType<SalesStatisticRefreshState>>(() => [
     {
       title: '序号',
@@ -487,7 +646,7 @@ export default function ProductStatisticsPage() {
       fixed: 'right',
       width: 180,
       render: (_, record) => (
-        <Space size="small">
+        <Space size="small" wrap>
           <Button type="link" size="small" onClick={() => openDetail(record)}>
             详情
           </Button>
@@ -541,7 +700,7 @@ export default function ProductStatisticsPage() {
             />
           </Form.Item>
           <Form.Item>
-            <Space>
+            <Space wrap>
               <Button type="primary" htmlType="submit" loading={loading}>
                 查询
               </Button>
@@ -556,6 +715,14 @@ export default function ProductStatisticsPage() {
               </Button>
               <Button onClick={handleRecalculateRange} loading={actionLoading}>
                 重算日期范围
+              </Button>
+              <Button
+                danger
+                onClick={handleBackfillYear}
+                loading={yearBackfillGateLocked && actionLoading}
+                disabled={yearBackfillGateLocked || actionLoading}
+              >
+                回填过去 1 年
               </Button>
             </Space>
           </Form.Item>

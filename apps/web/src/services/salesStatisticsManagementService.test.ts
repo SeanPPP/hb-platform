@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
+  backfillProductStoreDailyYear,
   getProductStoreDailyStatisticStates,
   getProductStoreDailyStatisticSummary,
   recalculateDailyStatisticsAlignment,
@@ -138,9 +139,26 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     })
   }
 
+  if (url.includes('/backfill-product-store-daily-year')) {
+    return new Response(JSON.stringify({
+      Success: true,
+      Message: '年度回填已排队',
+      TaskId: 'annual-task-1',
+      JobId: 'annual-task-1',
+      ActiveTaskIds: ['active-task-1', 'active-task-2'],
+      Status: 'Queued',
+      SubmittedDates: ['2025-06-10', '2026-06-09'],
+      SkippedDates: ['2025-12-25'],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+
   return new Response(JSON.stringify({
     success: true,
     message: '已提交 1 天商品统计重算，跳过 1 天执行中的任务',
+    taskId: 'job-submit',
     jobId: 'job-submit',
     status: 'Queued',
     submittedDates: ['2026-06-01'],
@@ -210,6 +228,7 @@ try {
   assertEqual(recentCall.init?.method, 'POST', '最近 7 天重算应使用 POST')
   assertEqual((JSON.parse(String(recentCall.init?.body)) as { days: number }).days, 7, '最近 7 天重算应传递 days')
   assertEqual(recentResult.status, 'Queued', '最近 7 天重算应解包提交状态')
+  assertEqual(recentResult.taskId, 'job-submit', '应兼容 camelCase 任务 ID')
   assertEqual(recentResult.submittedDates?.[0], '2026-06-01', '最近 7 天重算应解包已提交日期')
   assertEqual(recentResult.skippedDates?.[0], '2026-06-02', '最近 7 天重算应解包跳过日期')
 
@@ -222,6 +241,31 @@ try {
   assertEqual(rangeBody.startDate, '2026-06-01', '日期范围重算应传递开始日期')
   assertEqual(rangeBody.endDate, '2026-06-08', '日期范围重算应传递结束日期')
   assertEqual(rangeBody.maxConcurrency, 3, '日期范围重算应传递最大并发')
+
+  const annualResult = await backfillProductStoreDailyYear('2026-06-09', 365, 4)
+  const annualCall = calls[calls.length - 1]
+  assert(annualCall, '应记录过去 1 年回填请求')
+  assertEqual(
+    new URL(annualCall.url, 'http://localhost').pathname,
+    '/api/StatisticsJobTrigger/backfill-product-store-daily-year',
+    '过去 1 年回填接口路径应正确',
+  )
+  assertEqual(annualCall.init?.method, 'POST', '过去 1 年回填应使用 POST')
+  const annualBody = JSON.parse(String(annualCall.init?.body)) as {
+    endDate: string
+    days: number
+    maxConcurrency: number
+  }
+  assertEqual(annualBody.endDate, '2026-06-09', '年度回填应传递含当天的结束日期')
+  assertEqual(annualBody.days, 365, '年度回填应精确传递 365 天')
+  assertEqual(annualBody.maxConcurrency, 4, '年度回填应传递归一化后的并发上限')
+  assertEqual(annualResult.taskId, 'annual-task-1', '年度响应应兼容 PascalCase taskId')
+  assertEqual(annualResult.jobId, 'annual-task-1', '年度响应应兼容 PascalCase jobId')
+  assertEqual(annualResult.activeTaskIds?.length, 2, '年度响应应兼容 PascalCase 活动任务 ID 清单')
+  assertEqual(annualResult.activeTaskIds?.[1], 'active-task-2', '活动任务 ID 清单应保留完整顺序')
+  assertEqual(annualResult.status, 'Queued', '年度响应应兼容 PascalCase 状态')
+  assertEqual(annualResult.submittedDates?.length, 2, '年度响应应解包已提交日期')
+  assertEqual(annualResult.skippedDates?.length, 1, '年度响应应解包跳过日期')
 
   const alignmentResult = await recalculateDailyStatisticsAlignment({
     dates: ['2026-06-01', '2026-06-02'],

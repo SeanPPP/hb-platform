@@ -103,6 +103,7 @@ namespace BlazorApp.Shared.Models.HBweb
         public const string BatchFullRefreshByMonths = "BatchFullRefreshByMonths";
         public const string BatchFullRefreshConcurrent = "BatchFullRefreshConcurrent";
         public const string RecalculateDailyStatisticsAlignment = "RecalculateDailyStatisticsAlignment";
+        public const string RecalculateProductStoreDaily = "RecalculateProductStoreDaily";
         public const string SyncPosmProductSupplierMappingsIncremental = "SyncPosmProductSupplierMappingsIncremental";
         public const string WarmUpStoreOrderCache = "WarmUpStoreOrderCache";
         public const string SyncStoreLocalSupplierInvoices = "SyncStoreLocalSupplierInvoices";

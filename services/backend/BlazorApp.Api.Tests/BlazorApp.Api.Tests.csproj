@@ -95,6 +95,7 @@
     <Compile Include="SalesStatisticsAlignmentBackgroundRecalculateServiceTests.cs" />
     <Compile Include="SalesStatisticsAlignmentServiceTests.cs" />
     <Compile Include="SalesStatisticsJobServiceTests.cs" />
+    <Compile Include="ProductStoreDailyStatisticQueueServiceTests.cs" />
     <Compile Include="SalesDashboardBestSellersTests.cs" />
     <Compile Include="ProductSalesAnalysisLogicTests.cs" />
     <Compile Include="ProductSalesAnalysisServiceTests.cs" />

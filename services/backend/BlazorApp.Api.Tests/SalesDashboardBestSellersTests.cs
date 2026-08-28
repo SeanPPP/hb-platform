@@ -59,6 +59,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             typeof(ProductStoreDailySalesStatistic),
             typeof(SalesStatisticRefreshState)
         );
+        CreateScheduledTaskLogTable(_localDb);
         _posmDb.CodeFirst.InitTables(
             typeof(SalesOrder),
             typeof(SalesOrderDetail),
@@ -1318,8 +1319,7 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     [Fact]
     public async Task TriggerProductStoreDailyStatistics_提交后立即返回排队日期()
     {
-        var cacheWarmerMock = new Mock<ISalesDashboardCacheWarmer>();
-        var result = await CreateStatisticsController(cacheWarmerMock.Object).TriggerProductStoreDailyStatistics(
+        var result = await CreateStatisticsController().TriggerProductStoreDailyStatistics(
             new ProductStoreDailyJobTriggerRequest
             {
                 Date = new DateTime(2026, 6, 1),
@@ -1329,16 +1329,22 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         var ok = AssertOk(result);
         Assert.Equal(SalesStatisticRefreshStatus.Queued, ReadAnonymousProperty<string>(ok.Value, "status"));
         Assert.Contains("2026-06-01", ReadAnonymousProperty<List<string>>(ok.Value, "submittedDates"));
-        cacheWarmerMock.Verify(x => x.ClearCacheAsync(), Times.Once);
+        Assert.Equal(
+            ReadAnonymousProperty<Guid>(ok.Value, "taskId"),
+            ReadAnonymousProperty<Guid>(ok.Value, "jobId")
+        );
     }
 
     [Fact]
     public async Task BatchProductStoreDailyStatistics_执行中日期不重复提交()
     {
-        await SeedStatisticStateAsync(new DateTime(2026, 6, 1), SalesStatisticRefreshStatus.Queued);
+        var controller = CreateStatisticsController();
+        await controller.TriggerProductStoreDailyStatistics(new ProductStoreDailyJobTriggerRequest
+        {
+            Date = new DateTime(2026, 6, 1),
+        });
 
-        var cacheWarmerMock = new Mock<ISalesDashboardCacheWarmer>();
-        var result = await CreateStatisticsController(cacheWarmerMock.Object).BatchProductStoreDailyStatistics(
+        var result = await controller.BatchProductStoreDailyStatistics(
             new BatchProductStoreDailyUpdateRequest
             {
                 StartDate = new DateTime(2026, 6, 1),
@@ -1349,14 +1355,12 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         var ok = AssertOk(result);
         Assert.Empty(ReadAnonymousProperty<List<string>>(ok.Value, "submittedDates"));
         Assert.Contains("2026-06-01", ReadAnonymousProperty<List<string>>(ok.Value, "skippedDates"));
-        cacheWarmerMock.Verify(x => x.ClearCacheAsync(), Times.Once);
     }
 
     [Fact]
     public async Task BatchProductStoreDailyStatistics_允许指定MaxConcurrency并返回排队日期()
     {
-        var cacheWarmerMock = new Mock<ISalesDashboardCacheWarmer>();
-        var result = await CreateStatisticsController(cacheWarmerMock.Object).BatchProductStoreDailyStatistics(
+        var result = await CreateStatisticsController().BatchProductStoreDailyStatistics(
             new BatchProductStoreDailyUpdateRequest
             {
                 StartDate = new DateTime(2026, 6, 2),
@@ -1368,26 +1372,6 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         var ok = AssertOk(result);
         Assert.Equal(SalesStatisticRefreshStatus.Queued, ReadAnonymousProperty<string>(ok.Value, "status"));
         Assert.Contains("2026-06-02", ReadAnonymousProperty<List<string>>(ok.Value, "submittedDates"));
-        cacheWarmerMock.Verify(x => x.ClearCacheAsync(), Times.Once);
-    }
-
-    [Fact]
-    public async Task SubmitProductStoreDailyRecalculationAsync_并发提交同一天只提交一次()
-    {
-        var service = CreateStatisticsJobService();
-
-        var results = await Task.WhenAll(
-            service.SubmitProductStoreDailyRecalculationAsync(new[] { new DateTime(2026, 6, 1) }, "admin-a"),
-            service.SubmitProductStoreDailyRecalculationAsync(new[] { new DateTime(2026, 6, 1) }, "admin-b")
-        );
-
-        Assert.Equal(1, results.Sum(result => result.SubmittedDates.Count));
-        Assert.Equal(1, results.Sum(result => result.SkippedDates.Count));
-        var state = await _localDb.Queryable<SalesStatisticRefreshState>()
-            .Where(s => s.StatisticType == SalesStatisticType.ProductStoreDaily && s.Date == new DateTime(2026, 6, 1))
-            .FirstAsync();
-        Assert.NotNull(state);
-        Assert.Equal(SalesStatisticRefreshStatus.Queued, state.Status);
     }
 
     [Fact]
@@ -1951,17 +1935,24 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
         );
     }
 
-    private StatisticsJobTriggerController CreateStatisticsController(
-        ISalesDashboardCacheWarmer? cacheWarmer = null
-    )
+    private StatisticsJobTriggerController CreateStatisticsController()
     {
         var context = CreateSqlSugarContext(_localDb);
+        var taskLogService = new ScheduledTaskLogService(
+            context,
+            NullLogger<ScheduledTaskLogService>.Instance
+        );
         return new StatisticsJobTriggerController(
             CreateStatisticsJobService(),
-            new ScheduledTaskLogService(context, NullLogger<ScheduledTaskLogService>.Instance),
+            taskLogService,
             context,
             NullLogger<StatisticsJobTriggerController>.Instance,
-            cacheWarmer ?? Mock.Of<ISalesDashboardCacheWarmer>(),
+            new ProductStoreDailyStatisticQueueService(
+                context,
+                taskLogService,
+                Mock.Of<IServiceScopeFactory>(),
+                NullLogger<ProductStoreDailyStatisticQueueService>.Instance
+            ),
             CreateAlignmentService(context),
             new SalesStatisticsAlignmentBackgroundRecalculateService(
                 new ScheduledTaskLogService(context, NullLogger<ScheduledTaskLogService>.Instance),
@@ -2064,6 +2055,33 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             .GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(context, db);
         return context;
+    }
+
+    private static void CreateScheduledTaskLogTable(ISqlSugarClient db)
+    {
+        db.Ado.ExecuteCommand(
+            """
+            CREATE TABLE IF NOT EXISTS ScheduledTaskLog (
+                Id TEXT PRIMARY KEY,
+                TaskType TEXT NOT NULL,
+                TaskParameters TEXT NULL,
+                Status TEXT NOT NULL,
+                StartedAt TEXT NOT NULL,
+                CompletedAt TEXT NULL,
+                DurationMs INTEGER NULL,
+                ErrorMessage TEXT NULL,
+                RetryCount INTEGER NOT NULL,
+                CanRetry INTEGER NOT NULL,
+                ScheduledTime TEXT NOT NULL,
+                TriggeredBy TEXT NULL,
+                CreatedAt TEXT NOT NULL,
+                CreatedBy TEXT NULL,
+                UpdatedAt TEXT NULL,
+                UpdatedBy TEXT NULL,
+                IsDeleted INTEGER NULL
+            );
+            """
+        );
     }
 
     private static POSMSqlSugarContext CreatePosmSqlSugarContext(ISqlSugarClient db)
