@@ -1,7 +1,11 @@
 import {
+  isStoreOrderDetailColumnOrderCustomized,
   isStoreOrderListColumnOrderCustomized,
+  mergeStoreOrderDetailColumnOrder,
   mergeStoreOrderListColumnOrder,
+  moveStoreOrderDetailColumnOrder,
   moveStoreOrderListColumnOrder,
+  type StoreOrderDetailTableColumnKey,
   type StoreOrderListTableColumnKey,
 } from './columnOrder'
 
@@ -76,6 +80,55 @@ assertEqual(
   isStoreOrderListColumnOrderCustomized([], defaultColumnOrder),
   false,
   '分店订货列表列顺序初始化为空时不应误判为已自定义',
+)
+
+const defaultDetailColumnOrder: StoreOrderDetailTableColumnKey[] = [
+  'index',
+  'productImage',
+  'itemNumber',
+  'productName',
+  'barcode',
+  'allocatedImportAmount',
+  'actions',
+]
+
+assertDeepEqual(
+  mergeStoreOrderDetailColumnOrder(['barcode', 'unknown', 'itemNumber', 'barcode'], defaultDetailColumnOrder),
+  ['itemNumber', 'index', 'productImage', 'barcode', 'productName', 'allocatedImportAmount', 'actions'],
+  '订货明细列顺序应过滤未知列、去重、补齐新增列，并把固定列留在两端',
+)
+
+assertDeepEqual(
+  moveStoreOrderDetailColumnOrder(defaultDetailColumnOrder, 'productName', 'itemNumber'),
+  defaultDetailColumnOrder,
+  '订货明细列拖拽不应允许普通列跨入固定左列分区',
+)
+
+assertDeepEqual(
+  moveStoreOrderDetailColumnOrder(defaultDetailColumnOrder, 'actions', 'barcode'),
+  defaultDetailColumnOrder,
+  '订货明细列拖拽不应允许固定右列跨入普通列分区',
+)
+
+assertDeepEqual(
+  moveStoreOrderDetailColumnOrder(defaultDetailColumnOrder, 'barcode', 'productName'),
+  ['index', 'productImage', 'itemNumber', 'barcode', 'productName', 'allocatedImportAmount', 'actions'],
+  '订货明细普通列仍应能在中间分区内调整顺序',
+)
+
+assertEqual(
+  isStoreOrderDetailColumnOrderCustomized(defaultDetailColumnOrder, defaultDetailColumnOrder),
+  false,
+  '订货明细默认列顺序不应判定为已自定义',
+)
+
+assertEqual(
+  isStoreOrderDetailColumnOrderCustomized(
+    moveStoreOrderDetailColumnOrder(defaultDetailColumnOrder, 'barcode', 'productName'),
+    defaultDetailColumnOrder,
+  ),
+  true,
+  '订货明细拖拽列顺序后应判定为已自定义',
 )
 
 console.log('storeOrderColumnOrder.test: ok')

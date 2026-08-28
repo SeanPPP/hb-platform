@@ -44,7 +44,7 @@ const invoiceSource = readSource(invoiceFile)
 const containerProductPickerSource = readSource(containerProductPickerFile)
 const printCssSource = readSource(printCssFile)
 const packageSource = readSource(packageFile)
-const detailMainTableSource = detailSource.slice(detailSource.indexOf('const columns: ColumnsType<StoreOrderDetailLine>'))
+const detailMainTableSource = detailSource.slice(detailSource.indexOf('const baseDetailColumns: ColumnsType<StoreOrderDetailLine>'))
 const detailKeyboardHandlerSource = detailSource.slice(
   detailSource.indexOf('const handleDetailInputKeyDown'),
   detailSource.indexOf('const handleCompleteOrder'),
@@ -173,6 +173,96 @@ async function main() {
     )
   })
   if (listColumnDragFailure) failures.push(listColumnDragFailure)
+
+  const detailColumnLayoutFailure = await runTest('详情页明细表应支持可访问的列头拖拽和列宽拖拽', () => {
+    assert(
+      detailSource.includes('DndContext') &&
+        detailSource.includes('SortableContext') &&
+        detailSource.includes('useSortable') &&
+        detailSource.includes('horizontalListSortingStrategy'),
+      '详情页明细表应复用 @dnd-kit 横向排序能力',
+    )
+    assert(
+      detailSource.includes('KeyboardSensor') &&
+        detailSource.includes('sortableKeyboardCoordinates') &&
+        detailSource.includes('useSensor(KeyboardSensor, {') &&
+        detailSource.includes('coordinateGetter: sortableKeyboardCoordinates'),
+      '详情页列头拖拽应同时支持键盘传感器和横向坐标解析',
+    )
+    assert(
+      detailSource.includes("const STORE_ORDER_DETAIL_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.storeOrders.detail.columnOrder.v1'") &&
+        detailSource.includes("const STORE_ORDER_DETAIL_COLUMN_WIDTH_STORAGE_KEY = 'hbweb_rv.storeOrders.detail.columnWidths.v1'") &&
+        detailSource.includes('localStorage.setItem(STORE_ORDER_DETAIL_COLUMN_ORDER_STORAGE_KEY') &&
+        detailSource.includes('localStorage.setItem(STORE_ORDER_DETAIL_COLUMN_WIDTH_STORAGE_KEY'),
+      '详情页明细表列顺序和列宽应保存到专用 localStorage key',
+    )
+    assert(
+      detailSource.includes('components={{ header: { cell: DraggableHeaderCell } }}') &&
+        detailSource.includes('<SortableContext items={detailSortableColumnKeys} strategy={horizontalListSortingStrategy}>') &&
+        detailSource.includes('<DndContext sensors={detailColumnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>'),
+      '详情页明细表应接入可拖拽表头 cell 与横向 SortableContext',
+    )
+    assert(
+      detailSource.includes('handleColumnResizeStart') &&
+        detailSource.includes('store-order-detail-column-resize-handle') &&
+        detailSource.includes('aria-hidden="true"') &&
+        detailSource.includes("document.body.style.cursor = 'col-resize'"),
+      '详情页明细表应提供仅指针操作的表头列宽拖拽手柄',
+    )
+    assert(
+      detailSource.includes("'data-column-fixed'?: 'left' | 'right'") &&
+        detailSource.includes("const resizeFromLeft = props['data-column-fixed'] === 'right'") &&
+        detailSource.includes("'data-column-fixed': column.fixed") &&
+        detailSource.includes('resizeFromLeft ? -pointerDelta : pointerDelta') &&
+        compactCssSource.includes('.store-order-detail-column-resize-handle-left'),
+      '详情页固定右列表头应从左侧手柄反向调宽，并保留固定列定位信息',
+    )
+    assert(
+      detailSource.includes('event.currentTarget.setPointerCapture(event.pointerId)') &&
+        detailSource.includes('const stopDetailColumnResizeRef = useRef<(() => void) | null>(null)') &&
+        detailSource.includes('stopDetailColumnResizeRef.current?.()') &&
+        detailSource.includes('pointerEvent.pointerId !== pointerId') &&
+        detailSource.includes("window.addEventListener('blur', finishResize, { once: true })") &&
+        detailSource.includes("resizeHandle.addEventListener('lostpointercapture', finishResize, { once: true })") &&
+        detailSource.includes("document.addEventListener('click', suppressHeaderClick, { capture: true, once: true })"),
+      '详情页调宽应隔离 click，并在重复拖拽、失去捕获、窗口失焦或页面卸载时清理监听',
+    )
+    assert(
+      detailSource.includes('itemNumber: 132') &&
+        detailSource.includes('productName: 180') &&
+        detailSource.includes('barcode: 112') &&
+        detailSource.includes('scroll={{ x: detailTableScrollX, y: 620 }}'),
+      '详情页明细表默认货号、名称、条码列宽应放宽，并使用动态横向滚动宽度',
+    )
+    assert(
+      detailSource.includes("key: 'allocatedImportAmount'") &&
+        detailSource.includes('allocatedImportAmount: 76'),
+      '详情页列布局必须保留主线的已分配进口金额列及其默认宽度',
+    )
+    assert(
+      detailSource.includes('className="store-order-detail-item-number-cell"') &&
+        detailSource.includes('className="store-order-detail-item-number-text"') &&
+        detailSource.includes('ellipsis={{ tooltip: value }}'),
+      '详情页货号单元格应使用专用防重叠布局',
+    )
+    assert(
+      detailSource.includes('resetDetailColumnLayout') &&
+        detailSource.includes("t('storeOrders.detail.resetColumnLayout', '重置列布局')") &&
+        detailSource.includes('localStorage.removeItem(STORE_ORDER_DETAIL_COLUMN_ORDER_STORAGE_KEY)') &&
+        detailSource.includes('localStorage.removeItem(STORE_ORDER_DETAIL_COLUMN_WIDTH_STORAGE_KEY)'),
+      '详情页明细表应提供重置列布局入口',
+    )
+    assert(
+      compactCssSource.includes('.store-order-detail-draggable-header') &&
+        compactCssSource.includes('.store-order-detail-draggable-header:focus-visible') &&
+        compactCssSource.includes('.store-order-detail-column-resize-handle') &&
+        compactCssSource.includes('cursor: col-resize') &&
+        compactCssSource.includes('.store-order-detail-item-number-cell') &&
+        compactCssSource.includes('.store-order-detail-item-number-text'),
+      '详情页紧凑样式应包含键盘焦点、拖拽表头、列宽手柄和货号防重叠样式',
+    )
+  })
+  if (detailColumnLayoutFailure) failures.push(detailColumnLayoutFailure)
 
   const listColumnResizeFailure = await runTest('列表页应隐藏无用发货列并支持全部业务列拖拽调宽', () => {
     assert(
@@ -318,27 +408,24 @@ async function main() {
   })
   if (containerPickerRetailPriceFailure) failures.push(containerPickerRetailPriceFailure)
 
-  const densityFailure = await runTest('详情页主明细表关键字段应压缩到首屏优先显示', () => {
+  const densityFailure = await runTest('详情页主明细表关键字段应默认可读并保留紧凑输入列', () => {
     const imageColumn = readColumnBlock(detailMainTableSource, 'productImage')
-    const itemNumberColumn = readColumnBlock(detailMainTableSource, 'itemNumber')
-    const productNameColumn = readColumnBlock(detailMainTableSource, 'productName')
-    const barcodeColumn = readColumnBlock(detailMainTableSource, 'barcode')
     const locationColumn = readColumnBlock(detailMainTableSource, 'locationCode')
     const allocQuantityColumn = readColumnBlock(detailMainTableSource, 'allocQuantity')
     const importPriceColumn = readColumnBlock(detailMainTableSource, 'importPrice')
-    const scrollX = readNumericValue(detailMainTableSource, /scroll=\{\{\s*x:\s*(\d+)/)
 
-    assert(readNumericValue(imageColumn, /width:\s*(\d+)/) <= 44, '图片列宽应压到 44 以内')
+    assert(detailSource.includes('productImage: 42'), '图片列默认宽度应保持 42')
     assert(readNumericValue(imageColumn, /width=\{(\d+)\}/) <= 32, '图片宽度应压到 32 以内')
     assert(readNumericValue(imageColumn, /height=\{(\d+)\}/) <= 32, '图片高度应压到 32 以内')
-    assert(readNumericValue(itemNumberColumn, /width:\s*(\d+)/) <= 80, '货号列宽应压到 80 以内')
-    assert(readNumericValue(productNameColumn, /width:\s*(\d+)/) >= 128, '商品名称列应保留至少 128 宽度')
-    assert(readNumericValue(barcodeColumn, /width:\s*(\d+)/) <= 106, '条码列宽应控制在 106 以内')
-    assert(readNumericValue(locationColumn, /width:\s*(\d+)/) <= 85, '货位列宽应压到 85 以内')
+    assert(detailSource.includes('itemNumber: 132'), '货号列默认宽度应放宽到 132，避免复制按钮挤压名称列')
+    assert(detailSource.includes('productName: 180'), '商品名称列默认宽度应放宽到 180')
+    assert(detailSource.includes('barcode: 112'), '条码列默认宽度应放宽到 112')
+    assert(detailSource.includes('scroll={{ x: detailTableScrollX, y: 620 }}'), '主表 scroll.x 应基于当前列宽动态计算')
+    assert(detailSource.includes('STORE_ORDER_DETAIL_TABLE_MIN_SCROLL_X = 1290'), '主表动态 scroll.x 应保留原紧凑最小宽度')
+    assert(locationColumn.includes('width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.locationCode'), '货位列应继续走默认紧凑列宽常量')
     assert(readNumericValue(allocQuantityColumn, /style=\{\{\s*width:\s*(\d+)/) <= 62, '发货数输入框宽度应压到 62 以内')
     assert(readNumericValue(importPriceColumn, /style=\{\{\s*width:\s*(\d+)/) <= 62, '进口价输入框宽度应压到 62 以内')
     assert(importPriceColumn.includes('controls={false}'), '进口价输入框应隐藏加减按钮，避免误触改价')
-    assert(scrollX >= 1280 && scrollX <= 1320, '主表 scroll.x 应收敛到 1280-1320')
   })
   if (densityFailure) failures.push(densityFailure)
 
@@ -542,7 +629,7 @@ async function main() {
     )
     assert(
       detailSource.includes("column.key !== 'actions'") &&
-        detailSource.includes('rowSelection={\n                  canUseWarehouseManagerActions'),
+        /rowSelection=\{\s*canUseWarehouseManagerActions/.test(detailSource),
       '详情页行操作列和勾选列应仅仓库管理员可见',
     )
     assert(

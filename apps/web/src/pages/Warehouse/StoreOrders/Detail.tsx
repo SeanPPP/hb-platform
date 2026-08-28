@@ -1,4 +1,20 @@
 import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core'
+import {
+  horizontalListSortingStrategy,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import {
   CheckOutlined,
   ContainerOutlined,
   CopyOutlined,
@@ -41,7 +57,18 @@ import type { FilterDropdownProps, SortOrder, SorterResult } from 'antd/es/table
 import dayjs from 'dayjs'
 import type { InputNumberRef } from 'rc-input-number'
 import { useKeepAliveContext } from 'keepalive-for-react'
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type HTMLAttributes,
+  type KeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -125,6 +152,12 @@ import {
   type StoreOrderPasteOptimisticPending,
 } from './pasteOptimisticRows'
 import { formatStoreOrderVolume } from './volumeFormat'
+import {
+  isStoreOrderDetailColumnOrderCustomized,
+  mergeStoreOrderDetailColumnOrder,
+  moveStoreOrderDetailColumnOrder,
+  type StoreOrderDetailTableColumnKey,
+} from './columnOrder'
 import './compact.css'
 import { MeasuredTable } from '../../../components/MeasuredTable'
 
@@ -163,6 +196,7 @@ function formatCurrencyAmount(value?: number) {
 type DetailLoadStatus = 'idle' | 'loading' | 'loaded' | 'notFound' | 'error'
 type DetailSortField = StoreOrderDetailSortField | null
 type DetailEditableField = 'allocQuantity' | 'importPrice'
+type StoreOrderDetailColumnWidthMap = Partial<Record<StoreOrderDetailTableColumnKey, number>>
 type StoreOrderPasteWriteTarget = StoreOrderPasteTargetField | 'allocQuantityByInner' | 'quantityByInner'
 type BatchEditType = 'allocQuantity' | 'importPrice' | 'status' | 'copyOrderQuantityToAllocQuantity'
 type StoreOrderDetailTextFilterKey = 'itemNumber' | 'productName' | 'barcode' | 'locationCode'
@@ -176,6 +210,58 @@ type StoreOrderDetailNumberFilterKey =
 type StoreOrderDetailNumberRange = {
   min: StoreOrderDetailNumberFilterKey
   max: StoreOrderDetailNumberFilterKey
+}
+
+const STORE_ORDER_DETAIL_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.storeOrders.detail.columnOrder.v1'
+const STORE_ORDER_DETAIL_COLUMN_WIDTH_STORAGE_KEY = 'hbweb_rv.storeOrders.detail.columnWidths.v1'
+const STORE_ORDER_DETAIL_TABLE_MIN_SCROLL_X = 1290
+const STORE_ORDER_DETAIL_SELECTION_COLUMN_WIDTH = 34
+const STORE_ORDER_DETAIL_MAX_COLUMN_WIDTH = 420
+const STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS: Record<StoreOrderDetailTableColumnKey, number> = {
+  index: 30,
+  productImage: 42,
+  itemNumber: 132,
+  productName: 180,
+  barcode: 112,
+  price: 62,
+  locationCode: 82,
+  quantity: 58,
+  allocQuantity: 70,
+  importPrice: 70,
+  allocatedImportAmount: 76,
+  orderVolume: 76,
+  allocVolume: 76,
+  isActive: 50,
+  actions: 86,
+}
+const STORE_ORDER_DETAIL_MIN_COLUMN_WIDTHS: Record<StoreOrderDetailTableColumnKey, number> = {
+  index: 30,
+  productImage: 42,
+  itemNumber: 112,
+  productName: 140,
+  barcode: 96,
+  price: 56,
+  locationCode: 70,
+  quantity: 54,
+  allocQuantity: 64,
+  importPrice: 64,
+  allocatedImportAmount: 68,
+  orderVolume: 68,
+  allocVolume: 68,
+  isActive: 50,
+  actions: 80,
+}
+
+interface DraggableHeaderCellProps extends HTMLAttributes<HTMLTableCellElement> {
+  'data-column-key'?: string
+  'data-column-width'?: number
+  'data-column-fixed'?: 'left' | 'right'
+  onColumnResizeStart?: (
+    columnKey: StoreOrderDetailTableColumnKey,
+    width: number,
+    resizeFromLeft: boolean,
+    event: ReactPointerEvent<HTMLSpanElement>,
+  ) => void
 }
 
 const STORE_ORDER_DETAIL_SORT_FIELDS: StoreOrderDetailSortField[] = [
@@ -227,6 +313,94 @@ function isZeroOrEmpty(value: unknown) {
 
 function isAbortError(error: unknown) {
   return typeof error === 'object' && error !== null && 'name' in error && error.name === 'AbortError'
+}
+
+function clampStoreOrderDetailColumnWidth(columnKey: StoreOrderDetailTableColumnKey, width: number) {
+  const minWidth = STORE_ORDER_DETAIL_MIN_COLUMN_WIDTHS[columnKey] ?? 56
+  return Math.min(STORE_ORDER_DETAIL_MAX_COLUMN_WIDTH, Math.max(minWidth, Math.round(width)))
+}
+
+function normalizeStoreOrderDetailColumnWidths(
+  value: unknown,
+  availableColumnKeys: readonly StoreOrderDetailTableColumnKey[],
+): StoreOrderDetailColumnWidthMap {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {}
+  }
+
+  const availableSet = new Set(availableColumnKeys)
+  const nextWidths: StoreOrderDetailColumnWidthMap = {}
+  for (const [key, width] of Object.entries(value)) {
+    if (!availableSet.has(key as StoreOrderDetailTableColumnKey) || typeof width !== 'number' || !Number.isFinite(width)) {
+      continue
+    }
+    const columnKey = key as StoreOrderDetailTableColumnKey
+    nextWidths[columnKey] = clampStoreOrderDetailColumnWidth(columnKey, width)
+  }
+  return nextWidths
+}
+
+function areStoreOrderDetailColumnWidthsEqual(
+  left: StoreOrderDetailColumnWidthMap,
+  right: StoreOrderDetailColumnWidthMap,
+) {
+  const leftKeys = Object.keys(left)
+  const rightKeys = Object.keys(right)
+  return leftKeys.length === rightKeys.length &&
+    leftKeys.every((key) => left[key as StoreOrderDetailTableColumnKey] === right[key as StoreOrderDetailTableColumnKey])
+}
+
+function DraggableHeaderCell({ children, style, onColumnResizeStart, ...props }: DraggableHeaderCellProps) {
+  const columnKey = props['data-column-key']
+  const columnWidth = props['data-column-width']
+  const resizeFromLeft = props['data-column-fixed'] === 'right'
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: columnKey ?? '__store-order-detail-static-column__',
+    disabled: !columnKey,
+  })
+
+  if (!columnKey) {
+    return <th style={style} {...props}>{children}</th>
+  }
+
+  const headerStyle: CSSProperties = {
+    ...style,
+    transform: CSS.Translate.toString(transform),
+    transition,
+    position: style?.position ?? 'relative',
+    zIndex: isDragging ? 3 : style?.zIndex,
+    opacity: isDragging ? 0.85 : style?.opacity,
+  }
+
+  return (
+    <th ref={setNodeRef} style={headerStyle} {...props}>
+      <div className="store-order-detail-draggable-header" {...attributes} {...listeners}>
+        {children}
+      </div>
+      <span
+        className={`store-order-detail-column-resize-handle${resizeFromLeft ? ' store-order-detail-column-resize-handle-left' : ''}`}
+        aria-hidden="true"
+        onPointerDown={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          if (typeof columnWidth !== 'number') return
+          event.currentTarget.setPointerCapture(event.pointerId)
+          onColumnResizeStart?.(columnKey as StoreOrderDetailTableColumnKey, columnWidth, resizeFromLeft, event)
+        }}
+        onClick={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+        }}
+      />
+    </th>
+  )
 }
 
 function renderDangerValue(value: string) {
@@ -1248,6 +1422,17 @@ export default function StoreOrderDetailPage() {
   const id = route?.params.id || ''
   const isDesktop = Boolean(screens.xl)
   const detailRequestControllerRef = useRef<AbortController | null>(null)
+  const stopDetailColumnResizeRef = useRef<(() => void) | null>(null)
+  const detailColumnDragSensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: {
+        distance: 6,
+      },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  )
   // 记录当前订单和查询条件已完成首次加载，保活 Tab 恢复时避免同条件自动刷新。
   const loadedDetailIdRef = useRef<string | null>(null)
   const visibleDetailIdRef = useRef<string | null>(null)
@@ -1255,6 +1440,11 @@ export default function StoreOrderDetailPage() {
   const lastLoadedStoresQueryKeyRef = useRef<string | null>(null)
   const stopPasteReplacePollingRef = useRef<(() => void) | null>(null)
   const detailInputRefs = useRef<Record<string, InputNumberRef | null>>({})
+
+  useEffect(() => () => {
+    stopDetailColumnResizeRef.current?.()
+  }, [])
+
   const [detailLoadStatus, setDetailLoadStatus] = useState<DetailLoadStatus>('idle')
   const [detailErrorMessage, setDetailErrorMessage] = useState('')
   const [detail, setDetail] = useState<StoreOrderDetail | null>(null)
@@ -1292,6 +1482,8 @@ export default function StoreOrderDetailPage() {
   const [detailColumnFilters, setDetailColumnFilters] = useState<StoreOrderDetailColumnFilters>({})
   const [detailSortField, setDetailSortField] = useState<DetailSortField>('locationCode')
   const [detailSortOrder, setDetailSortOrder] = useState<SortOrder>('ascend')
+  const [detailColumnOrder, setDetailColumnOrder] = useState<StoreOrderDetailTableColumnKey[]>([])
+  const [detailColumnWidths, setDetailColumnWidths] = useState<StoreOrderDetailColumnWidthMap>({})
   const [headerForm, setHeaderForm] = useState<{
     storeCode?: string
     orderDate?: string
@@ -2746,18 +2938,20 @@ export default function StoreOrderDetailPage() {
     return quantity
   }
 
-  const columns: ColumnsType<StoreOrderDetailLine> = ([
+  const baseDetailColumns: ColumnsType<StoreOrderDetailLine> = ([
     {
       title: '#',
+      key: 'index',
       dataIndex: 'index',
-      width: 30,
+      width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.index,
       fixed: isDesktop ? 'left' : undefined,
       render: (_, __, index) => renderStoreOrderDetailNumericCell((detailPage - 1) * detailPageSize + index + 1),
     },
     {
       title: t('column.image'),
+      key: 'productImage',
       dataIndex: 'productImage',
-      width: 42,
+      width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.productImage,
       fixed: isDesktop ? 'left' : undefined,
       render: (value: string | undefined, record) => (
         <Image
@@ -2773,16 +2967,19 @@ export default function StoreOrderDetailPage() {
     },
     {
       title: t('column.itemNumber'),
+      key: 'itemNumber',
       dataIndex: 'itemNumber',
-      width: 78,
+      width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.itemNumber,
       fixed: isDesktop ? 'left' : undefined,
       sorter: true,
       sortOrder: detailColumnSortOrder('itemNumber'),
       ...detailTextFilterProps('itemNumber', t('storeOrders.detail.filterItemNumber', '过滤货号')),
       render: (value: string | undefined) =>
         value ? (
-          <Space size={4} wrap={false} className="store-order-nowrap">
-            <Typography.Text>{value}</Typography.Text>
+          <span className="store-order-detail-item-number-cell">
+            <Typography.Text className="store-order-detail-item-number-text" ellipsis={{ tooltip: value }}>
+              {value}
+            </Typography.Text>
             <Button
               size="small"
               type="text"
@@ -2792,15 +2989,16 @@ export default function StoreOrderDetailPage() {
               className="store-order-detail-copy-button"
               onClick={() => void copyTextToClipboard(value)}
             />
-          </Space>
+          </span>
         ) : (
           renderDangerValue('--')
         ),
     },
     {
       title: t('column.productName'),
+      key: 'productName',
       dataIndex: 'productName',
-      width: 132,
+      width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.productName,
       sorter: true,
       sortOrder: detailColumnSortOrder('productName'),
       ...detailTextFilterProps('productName', t('storeOrders.detail.filterProductName', '过滤商品名称')),
@@ -2809,8 +3007,9 @@ export default function StoreOrderDetailPage() {
     },
     {
       title: t('column.barcode'),
+      key: 'barcode',
       dataIndex: 'barcode',
-      width: 104,
+      width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.barcode,
       sorter: true,
       sortOrder: detailColumnSortOrder('barcode'),
       ...detailTextFilterProps('barcode', t('storeOrders.detail.filterBarcode', '过滤条码')),
@@ -2820,14 +3019,16 @@ export default function StoreOrderDetailPage() {
     },
     {
       title: t('column.oemPrice'),
+      key: 'price',
       dataIndex: 'price',
-      width: 62,
+      width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.price,
       render: (value: number | undefined) => renderStoreOrderDetailNumericCell(formatAmount(value)),
     },
     {
       title: t('column.location'),
+      key: 'locationCode',
       dataIndex: 'locationCode',
-      width: 82,
+      width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.locationCode,
       sorter: true,
       sortOrder: detailColumnSortOrder('locationCode'),
       ...detailTextFilterProps('locationCode', t('storeOrders.detail.filterLocation', '过滤货位')),
@@ -2835,8 +3036,9 @@ export default function StoreOrderDetailPage() {
     },
     {
       title: t('column.orderQuantity'),
+      key: 'quantity',
       dataIndex: 'quantity',
-      width: 58,
+      width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.quantity,
       sorter: true,
       sortOrder: detailColumnSortOrder('quantity'),
       ...detailNumberFilterProps({ min: 'quantityMin', max: 'quantityMax' }),
@@ -2844,8 +3046,9 @@ export default function StoreOrderDetailPage() {
     },
     {
       title: t('column.allocQuantity'),
+      key: 'allocQuantity',
       dataIndex: 'allocQuantity',
-      width: 70,
+      width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.allocQuantity,
       sorter: true,
       sortOrder: detailColumnSortOrder('allocQuantity'),
       ...detailNumberFilterProps({ min: 'allocQuantityMin', max: 'allocQuantityMax' }),
@@ -2873,8 +3076,9 @@ export default function StoreOrderDetailPage() {
     },
     {
       title: t('column.importPrice'),
+      key: 'importPrice',
       dataIndex: 'importPrice',
-      width: 70,
+      width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.importPrice,
       sorter: true,
       sortOrder: detailColumnSortOrder('importPrice'),
       ...detailNumberFilterProps({ min: 'importPriceMin', max: 'importPriceMax' }),
@@ -2903,8 +3107,9 @@ export default function StoreOrderDetailPage() {
     },
     {
       title: t('column.importAmount'),
+      key: 'allocatedImportAmount',
       dataIndex: 'allocatedImportAmount',
-      width: 76,
+      width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.allocatedImportAmount,
       sorter: true,
       sortOrder: detailColumnSortOrder('allocatedImportAmount'),
       render: (value: number | undefined, record) => {
@@ -2924,8 +3129,9 @@ export default function StoreOrderDetailPage() {
     },
     {
       title: t('column.orderVolume'),
+      key: 'orderVolume',
       dataIndex: 'orderVolume',
-      width: 76,
+      width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.orderVolume,
       render: (value: number | undefined, record) => {
         const nextValue =
           value ??
@@ -2942,8 +3148,9 @@ export default function StoreOrderDetailPage() {
     },
     {
       title: t('column.shipVolume'),
+      key: 'allocVolume',
       dataIndex: 'allocVolume',
-      width: 76,
+      width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.allocVolume,
       render: (value: number | undefined, record) => {
         const editedAllocQuantity = editingRows[record.detailGUID]?.allocQuantity
         const nextValue =
@@ -2964,8 +3171,9 @@ export default function StoreOrderDetailPage() {
     },
     {
       title: t('column.status'),
+      key: 'isActive',
       dataIndex: 'isActive',
-      width: 50,
+      width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.isActive,
       sorter: true,
       sortOrder: detailColumnSortOrder('isActive'),
       ...detailStatusFilterProps(),
@@ -2974,7 +3182,7 @@ export default function StoreOrderDetailPage() {
     {
       title: t('column.action'),
       key: 'actions',
-      width: 86,
+      width: STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS.actions,
       fixed: isDesktop ? 'right' : undefined,
       render: (_, record) => (
         <Space size={4} wrap={false}>
@@ -3023,6 +3231,214 @@ export default function StoreOrderDetailPage() {
     },
   ] as ColumnsType<StoreOrderDetailLine>).filter(
     (column) => canUseWarehouseManagerActions || column.key !== 'actions',
+  )
+  const detailDraggableColumnKeys = baseDetailColumns.map(
+    (column) => String(column.key) as StoreOrderDetailTableColumnKey,
+  )
+  const detailSortableColumnKeys = detailColumnOrder.length ? detailColumnOrder : detailDraggableColumnKeys
+  const isDetailColumnOrderCustomized = isStoreOrderDetailColumnOrderCustomized(
+    detailColumnOrder,
+    detailDraggableColumnKeys,
+  )
+  const isDetailColumnWidthCustomized = Object.keys(detailColumnWidths).length > 0
+  const isDetailColumnSettingsCustomized = isDetailColumnOrderCustomized || isDetailColumnWidthCustomized
+
+  useEffect(() => {
+    setDetailColumnOrder((current) => {
+      let savedOrder: unknown[] | null = null
+      if (!current.length && typeof window !== 'undefined') {
+        try {
+          const raw = localStorage.getItem(STORE_ORDER_DETAIL_COLUMN_ORDER_STORAGE_KEY)
+          savedOrder = raw ? JSON.parse(raw) : null
+        } catch {
+          savedOrder = null
+        }
+      }
+
+      // 只持久化业务列顺序；选择列仍由 rowSelection 管理，操作列按权限自动补齐或移除。
+      const nextOrder = mergeStoreOrderDetailColumnOrder(
+        current.length ? current : savedOrder,
+        detailDraggableColumnKeys,
+      )
+      if (current.length === nextOrder.length && current.every((key, index) => key === nextOrder[index])) {
+        return current
+      }
+      return nextOrder
+    })
+  }, [detailDraggableColumnKeys.join('|')])
+
+  useEffect(() => {
+    setDetailColumnWidths((current) => {
+      let savedWidths: unknown = null
+      if (!Object.keys(current).length && typeof window !== 'undefined') {
+        try {
+          const raw = localStorage.getItem(STORE_ORDER_DETAIL_COLUMN_WIDTH_STORAGE_KEY)
+          savedWidths = raw ? JSON.parse(raw) : null
+        } catch {
+          savedWidths = null
+        }
+      }
+
+      // 列宽只保留当前可见列，避免权限切换或旧版本字段污染表头。
+      const nextWidths = normalizeStoreOrderDetailColumnWidths(
+        Object.keys(current).length ? current : savedWidths,
+        detailDraggableColumnKeys,
+      )
+      if (areStoreOrderDetailColumnWidthsEqual(current, nextWidths)) {
+        return current
+      }
+      return nextWidths
+    })
+  }, [detailDraggableColumnKeys.join('|')])
+
+  const handleColumnDragEnd = ({ active: dragActive, over }: DragEndEvent) => {
+    if (!over || dragActive.id === over.id) return
+    setDetailColumnOrder((current) => {
+      const nextOrder = moveStoreOrderDetailColumnOrder(
+        current.length ? current : detailDraggableColumnKeys,
+        dragActive.id,
+        over.id,
+      )
+      try {
+        localStorage.setItem(STORE_ORDER_DETAIL_COLUMN_ORDER_STORAGE_KEY, JSON.stringify(nextOrder))
+      } catch {
+        // localStorage 不可用时不影响当前页面内拖拽排序。
+      }
+      return nextOrder
+    })
+  }
+
+  const persistDetailColumnWidths = (nextWidths: StoreOrderDetailColumnWidthMap) => {
+    try {
+      localStorage.setItem(STORE_ORDER_DETAIL_COLUMN_WIDTH_STORAGE_KEY, JSON.stringify(nextWidths))
+    } catch {
+      // localStorage 不可用时不影响当前页面内列宽拖拽。
+    }
+  }
+
+  const handleColumnResizeStart = useCallback((
+    columnKey: StoreOrderDetailTableColumnKey,
+    startWidth: number,
+    resizeFromLeft: boolean,
+    event: ReactPointerEvent<HTMLSpanElement>,
+  ) => {
+    stopDetailColumnResizeRef.current?.()
+
+    const startX = event.clientX
+    const pointerId = event.pointerId
+    const resizeHandle = event.currentTarget
+    const previousCursor = document.body.style.cursor
+    const previousUserSelect = document.body.style.userSelect
+    let latestWidth = startWidth
+    let didResize = false
+
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const handlePointerMove = (pointerEvent: PointerEvent) => {
+      if (pointerEvent.pointerId !== pointerId) return
+      const pointerDelta = pointerEvent.clientX - startX
+      const nextWidth = clampStoreOrderDetailColumnWidth(
+        columnKey,
+        startWidth + (resizeFromLeft ? -pointerDelta : pointerDelta),
+      )
+      if (nextWidth === latestWidth) return
+      latestWidth = nextWidth
+      didResize = true
+      setDetailColumnWidths((current) => {
+        return { ...current, [columnKey]: nextWidth }
+      })
+    }
+
+    function cleanupResize() {
+      document.removeEventListener('pointermove', handlePointerMove)
+      document.removeEventListener('pointerup', finishResize)
+      document.removeEventListener('pointercancel', finishResize)
+      window.removeEventListener('blur', finishResize)
+      resizeHandle.removeEventListener('lostpointercapture', finishResize)
+      if (resizeHandle.hasPointerCapture(pointerId)) {
+        resizeHandle.releasePointerCapture(pointerId)
+      }
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousUserSelect
+      if (stopDetailColumnResizeRef.current === cleanupResize) {
+        stopDetailColumnResizeRef.current = null
+      }
+    }
+
+    function suppressResizeClick() {
+      const headerCell = resizeHandle.closest('th')
+      const suppressHeaderClick = (clickEvent: MouseEvent) => {
+        if (!headerCell?.contains(clickEvent.target as Node)) return
+        clickEvent.preventDefault()
+        clickEvent.stopPropagation()
+      }
+      document.addEventListener('click', suppressHeaderClick, { capture: true, once: true })
+      // 浏览器若未在 pointerup 后派发 click，及时撤掉保护，避免影响下一次正常点击。
+      window.setTimeout(() => document.removeEventListener('click', suppressHeaderClick, true), 0)
+    }
+
+    function finishResize(finishEvent: Event) {
+      if (finishEvent instanceof PointerEvent && finishEvent.pointerId !== pointerId) return
+      cleanupResize()
+      if (!didResize) return
+      suppressResizeClick()
+      setDetailColumnWidths((current) => {
+        const nextWidths = { ...current, [columnKey]: latestWidth }
+        persistDetailColumnWidths(nextWidths)
+        return nextWidths
+      })
+    }
+
+    // 使用 document 级监听，指针拖出表头区域时仍能连续调整列宽。
+    stopDetailColumnResizeRef.current = cleanupResize
+    resizeHandle.addEventListener('lostpointercapture', finishResize, { once: true })
+    document.addEventListener('pointermove', handlePointerMove)
+    document.addEventListener('pointerup', finishResize)
+    document.addEventListener('pointercancel', finishResize)
+    window.addEventListener('blur', finishResize, { once: true })
+  }, [])
+
+  const resetDetailColumnLayout = () => {
+    setDetailColumnOrder(detailDraggableColumnKeys)
+    setDetailColumnWidths({})
+    try {
+      localStorage.removeItem(STORE_ORDER_DETAIL_COLUMN_ORDER_STORAGE_KEY)
+      localStorage.removeItem(STORE_ORDER_DETAIL_COLUMN_WIDTH_STORAGE_KEY)
+    } catch {
+      // localStorage 不可用时仍恢复当前页面内的默认列布局。
+    }
+    message.success(t('containers.messages.columnOrderReset', '列设置已恢复默认'))
+  }
+
+  const orderedBaseDetailColumns = (() => {
+    const columnMap = new Map(baseDetailColumns.map((column) => [String(column.key), column]))
+    return detailSortableColumnKeys
+      .map((key) => columnMap.get(key))
+      .filter((column): column is ColumnsType<StoreOrderDetailLine>[number] => Boolean(column))
+  })()
+
+  const columns = orderedBaseDetailColumns.map((column) => {
+    const columnKey = String(column.key) as StoreOrderDetailTableColumnKey
+    const width = detailColumnWidths[columnKey] ?? column.width ?? STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS[columnKey]
+    return {
+      ...column,
+      width,
+      onHeaderCell: () => ({
+        'data-column-key': columnKey,
+        'data-column-width': typeof width === 'number' ? width : STORE_ORDER_DETAIL_DEFAULT_COLUMN_WIDTHS[columnKey],
+        'data-column-fixed': column.fixed,
+        onColumnResizeStart: handleColumnResizeStart,
+      } as DraggableHeaderCellProps),
+    }
+  }) as ColumnsType<StoreOrderDetailLine>
+  const detailTableScrollX = Math.max(
+    STORE_ORDER_DETAIL_TABLE_MIN_SCROLL_X,
+    (canUseWarehouseManagerActions ? STORE_ORDER_DETAIL_SELECTION_COLUMN_WIDTH : 0) +
+      columns.reduce((total, column) => {
+        const width = typeof column.width === 'number' ? column.width : Number(column.width)
+        return total + (Number.isFinite(width) ? width : 0)
+      }, 0),
   )
 
   if (!id) {
@@ -3458,57 +3874,70 @@ export default function StoreOrderDetailPage() {
                   <Typography.Text type="secondary">
                     {t('storeOrders.detail.currentRows', { count: detail.itemsTotal ?? detail.items.length })}
                   </Typography.Text>
+                  <Button
+                    size="small"
+                    disabled={!isDetailColumnSettingsCustomized}
+                    onClick={resetDetailColumnLayout}
+                  >
+                    {t('storeOrders.detail.resetColumnLayout', '重置列布局')}
+                  </Button>
                 </Space>
               </div>
-              <MeasuredTable metricId="warehouse.store-orders.detail.table-2"
-                className="store-order-detail-table"
-                rowKey="detailGUID"
-                virtual
-                loading={lineActionLoading}
-                columns={columns}
-                dataSource={detail.items}
-                rowSelection={
-                  canUseWarehouseManagerActions
-                    ? {
-                        selectedRowKeys: selectedLineKeys,
-                        onChange: setSelectedLineKeys,
-                        preserveSelectedRowKeys: false,
-                        columnWidth: 34,
+              <DndContext sensors={detailColumnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
+                <SortableContext items={detailSortableColumnKeys} strategy={horizontalListSortingStrategy}>
+                  <MeasuredTable
+                    metricId="warehouse.store-orders.detail.table-2"
+                    className="store-order-detail-table"
+                    rowKey="detailGUID"
+                    virtual
+                    loading={lineActionLoading}
+                    columns={columns}
+                    dataSource={detail.items}
+                    components={{ header: { cell: DraggableHeaderCell } }}
+                    rowSelection={
+                      canUseWarehouseManagerActions
+                        ? {
+                            selectedRowKeys: selectedLineKeys,
+                            onChange: setSelectedLineKeys,
+                            preserveSelectedRowKeys: false,
+                            columnWidth: STORE_ORDER_DETAIL_SELECTION_COLUMN_WIDTH,
+                          }
+                        : undefined
+                    }
+                    pagination={{
+                      current: detailPage,
+                      pageSize: detailPageSize,
+                      total: detail.itemsTotal ?? detail.items.length,
+                      showSizeChanger: true,
+                      // 图片交给浏览器懒加载，表格本身按服务端分页分批请求商品明细。
+                      pageSizeOptions: STORE_ORDER_DETAIL_PAGE_SIZE_OPTIONS,
+                      onChange: (nextPage, nextPageSize) => {
+                        setSelectedLineKeys([])
+                        setDetailPage(nextPage)
+                        setDetailPageSize(nextPageSize)
+                      },
+                    }}
+                    onChange={(_, __, sorter, extra) => {
+                      if (extra.action === 'paginate' || extra.action === 'filter') {
+                        return
                       }
-                    : undefined
-                }
-                pagination={{
-                  current: detailPage,
-                  pageSize: detailPageSize,
-                  total: detail.itemsTotal ?? detail.items.length,
-                  showSizeChanger: true,
-                  // 图片交给浏览器懒加载，表格本身按服务端分页分批请求商品明细。
-                  pageSizeOptions: STORE_ORDER_DETAIL_PAGE_SIZE_OPTIONS,
-                  onChange: (nextPage, nextPageSize) => {
-                    setSelectedLineKeys([])
-                    setDetailPage(nextPage)
-                    setDetailPageSize(nextPageSize)
-                  },
-                }}
-                onChange={(_, __, sorter, extra) => {
-                  if (extra.action === 'paginate' || extra.action === 'filter') {
-                    return
-                  }
 
-                  const nextSorter = Array.isArray(sorter) ? sorter[0] : (sorter as SorterResult<StoreOrderDetailLine>)
-                  const field = nextSorter?.field
-                  setSelectedLineKeys([])
-                  setDetailPage(1)
-                  if (isStoreOrderDetailSortField(field) && nextSorter.order) {
-                    setDetailSortField(field)
-                    setDetailSortOrder(nextSorter.order)
-                    return
-                  }
-                  setDetailSortField(null)
-                  setDetailSortOrder(null)
-                }}
-                scroll={{ x: 1290, y: 620 }}
-              />
+                      const nextSorter = Array.isArray(sorter) ? sorter[0] : (sorter as SorterResult<StoreOrderDetailLine>)
+                      const field = nextSorter?.field
+                      setSelectedLineKeys([])
+                      setDetailPage(1)
+                      if (isStoreOrderDetailSortField(field) && nextSorter.order) {
+                        setDetailSortField(field)
+                        setDetailSortOrder(nextSorter.order)
+                        return
+                      }
+                      setDetailSortField(null)
+                      setDetailSortOrder(null)
+                    }}
+                    scroll={{ x: detailTableScrollX, y: 620 }}
+                  />
+                </SortableContext>
+              </DndContext>
             </Card>
 
             <Card>
