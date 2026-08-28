@@ -922,6 +922,56 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
+        /// 获取紧凑销售看板。
+        /// 分店范围统一从实时用户关系解析，任何解析失败都拒绝请求，不能退化成全分店查询。
+        /// </summary>
+        [HttpGet("compact-sales-board")]
+        [Authorize(Policy = Permissions.Reports.View)]
+        public async Task<IActionResult> GetCompactSalesBoard(
+            [FromQuery] DateTime startDate,
+            [FromQuery] DateTime endDate,
+            [FromQuery] List<string>? branchCodes = null,
+            [FromQuery] List<string>? chinaSupplierCodes = null,
+            [FromQuery] string? productCode = null,
+            [FromQuery] int pageIndex = 1,
+            [FromQuery] int pageSize = 80,
+            [FromQuery] bool forceRefresh = false
+        )
+        {
+            try
+            {
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Forbid();
+
+                var result = await _service.GetCompactSalesBoardAsync(
+                    new DateRangeDto
+                    {
+                        StartDate = startDate,
+                        EndDate = endDate,
+                        CompareMode = CompareMode.ByDate,
+                    },
+                    branchScope.BranchCodes,
+                    chinaSupplierCodes,
+                    productCode,
+                    pageIndex,
+                    pageSize,
+                    forceRefresh
+                );
+                return Ok(new { success = true, data = result });
+            }
+            catch (ArgumentException exception)
+            {
+                return BadRequest(new { success = false, message = exception.Message });
+            }
+            catch (Exception exception)
+            {
+                _logger.LogError(exception, "GetCompactSalesBoard failed");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
         /// 获取指定商品在所有分店的销售数据
         /// GET api/react/v1/dashboard/product-sales-by-branches
         /// </summary>
