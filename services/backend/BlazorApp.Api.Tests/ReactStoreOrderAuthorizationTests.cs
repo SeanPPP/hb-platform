@@ -5,6 +5,10 @@ using System.Text.Json;
 using BlazorApp.Api.Cache;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.StoreOrders.Common;
+using BlazorApp.Api.Features.StoreOrders.ProductPicker;
+using BlazorApp.Api.Features.StoreOrders.ProductPicker.Infrastructure;
+using BlazorApp.Api.Features.StoreOrders.Sync;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
@@ -81,7 +85,7 @@ internal interface ITestLoggerSink
 internal static class StoreOrderCacheWarmerTestFactory
 {
     public static IStoreOrderCacheWarmer Create(
-        IStoreOrderReactService service,
+        IStoreOrderProductPickerSlice productPicker,
         IMemoryCache cache,
         out ITestLoggerSink loggerSink
     )
@@ -94,7 +98,7 @@ internal static class StoreOrderCacheWarmerTestFactory
         loggerSink = (ITestLoggerSink)Activator.CreateInstance(loggerType)!;
 
         return (IStoreOrderCacheWarmer)
-            Activator.CreateInstance(warmerType, service, loggerSink, cache)!;
+            Activator.CreateInstance(warmerType, productPicker, loggerSink, cache)!;
     }
 }
 
@@ -186,7 +190,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     [InlineData("StoreStaff", false)]
     [InlineData("Order", false)]
     [InlineData("User", false)]
-    public async Task GetProducts_缓存范围只由可信角色Claims决定(
+    public void GetProducts_缓存范围只由可信角色Claims决定(
         string roleName,
         bool locationLookupEnabled
     )
@@ -199,30 +203,44 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
             PageSize = 18,
             SortBy = "Default",
         };
-        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
-        service
-            .Setup(item => item.GetPagedListAsync(filter))
-            .ReturnsAsync(new PagedListReactDto<StoreOrderProductDto>());
         var cache = new MemoryCache(new MemoryCacheOptions());
-
-        var controller = CreateController(
-            service,
-            CreateAuthorizationService(Permissions.OrderFront.View, Permissions.Orders.Create),
-            CreateScopeService(),
-            new[] { roleName },
-            cache: cache
+        var httpContextAccessor = new HttpContextAccessor
+        {
+            HttpContext = new DefaultHttpContext
+            {
+                User = new ClaimsPrincipal(
+                    new ClaimsIdentity(
+                        new[]
+                        {
+                            new Claim(ClaimTypes.NameIdentifier, "user-1"),
+                            new Claim(ClaimTypes.Role, roleName),
+                        },
+                        "TestAuth"
+                    )
+                ),
+            },
+        };
+        var locationLookup = new ProductPickerLocationLookup(
+            new StoreOrderActorContext(httpContextAccessor),
+            Mock.Of<IStoreOrderLocationProductLookupService>()
         );
+        var cacheStore = new ProductPickerPageCacheStore(
+            cache,
+            locationLookup,
+            new TestLogger<ProductPickerPageCacheStore>()
+        );
+        var expected = new PagedListReactDto<StoreOrderProductDto>();
 
-        var result = await controller.GetProducts(filter);
+        cacheStore.Set(filter, expected);
 
-        Assert.IsType<OkObjectResult>(result);
-        service.Verify(item => item.GetPagedListAsync(filter), Times.Once);
         Assert.True(
             cache.TryGetValue(
                 StoreOrderCacheKeys.Products(filter, locationLookupEnabled),
                 out _
             )
         );
+        Assert.True(cacheStore.TryGet(filter, out var cachedResult));
+        Assert.Same(expected, cachedResult);
         Assert.False(
             cache.TryGetValue(
                 StoreOrderCacheKeys.Products(filter, !locationLookupEnabled),
@@ -232,13 +250,40 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
+    public void GetProducts_缓存中的Null值按未命中处理()
+    {
+        var filter = new StoreOrderFilterDto
+        {
+            StoreCode = "S001",
+            PageNumber = 1,
+            PageSize = 18,
+            SortBy = "Default",
+        };
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        var locationLookup = new ProductPickerLocationLookup(
+            new StoreOrderActorContext(new HttpContextAccessor()),
+            Mock.Of<IStoreOrderLocationProductLookupService>()
+        );
+        var cacheStore = new ProductPickerPageCacheStore(
+            cache,
+            locationLookup,
+            new TestLogger<ProductPickerPageCacheStore>()
+        );
+        var cacheKey = StoreOrderCacheKeys.Products(filter, locationLookupEnabled: false);
+        cache.Set<object?>(cacheKey, null);
+
+        Assert.False(cacheStore.TryGet(filter, out var cachedResult));
+        Assert.Null(cachedResult);
+    }
+
+    [Fact]
     public async Task ProductCacheClear_KeepsBothWebAndExpoHomePageKeys()
     {
         StoreOrderCacheKeys.ClearActiveKeys();
 
         var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
-        var warmer = StoreOrderCacheWarmerTestFactory.Create(service.Object, cache, out _);
+        var productPicker = new Mock<IStoreOrderProductPickerSlice>(MockBehavior.Strict);
+        var warmer = StoreOrderCacheWarmerTestFactory.Create(productPicker.Object, cache, out _);
         var webHomeKey = StoreOrderCacheKeys.GetHomePageCacheKey(50);
         var expoHomeKey = StoreOrderCacheKeys.GetHomePageCacheKey(18);
         var webWarmUpKey = StoreOrderCacheKeys.GetHomePageWarmUpCacheKey(50);
@@ -273,25 +318,51 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         StoreOrderCacheKeys.ClearActiveKeys();
 
         var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
-        service
-            .Setup(item => item.GetPagedListAsync(It.IsAny<StoreOrderFilterDto>()))
-            .Returns<StoreOrderFilterDto>(filter =>
+        var productPicker = new Mock<IStoreOrderProductPickerSlice>(MockBehavior.Strict);
+        productPicker
+            .Setup(item =>
+                item.GetHomePageWarmUpPageAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<int, CancellationToken>((pageSize, _) =>
                 Task.FromResult(
                     new PagedListReactDto<StoreOrderProductDto>
                     {
                         Items = new List<StoreOrderProductDto>
                         {
-                            new() { ProductCode = $"P-{filter.PageSize}" },
+                            new() { ProductCode = $"W-{pageSize}" },
                         },
-                        Total = filter.PageSize + 1000,
+                        Total = 0,
                         PageNumber = 1,
-                        PageSize = filter.PageSize,
+                        PageSize = pageSize,
+                    }
+                )
+            );
+        productPicker
+            .Setup(item =>
+                item.GetHomePageCachePageAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<int, CancellationToken>((pageSize, _) =>
+                Task.FromResult(
+                    new PagedListReactDto<StoreOrderProductDto>
+                    {
+                        Items = new List<StoreOrderProductDto>
+                        {
+                            new() { ProductCode = $"P-{pageSize}" },
+                        },
+                        Total = pageSize + 1000,
+                        PageNumber = 1,
+                        PageSize = pageSize,
                     }
                 )
             );
 
-        var warmer = StoreOrderCacheWarmerTestFactory.Create(service.Object, cache, out _);
+        var warmer = StoreOrderCacheWarmerTestFactory.Create(productPicker.Object, cache, out _);
 
         await warmer.WarmUpHomePageAsync();
 
@@ -310,6 +381,22 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         Assert.True(cache.TryGetValue(warmExpoKey, out _));
         Assert.Equal(1050, normalWeb!.Total);
         Assert.Equal(1018, normalExpo!.Total);
+        productPicker.Verify(
+            item => item.GetHomePageWarmUpPageAsync(50, It.IsAny<CancellationToken>()),
+            Times.Once
+        );
+        productPicker.Verify(
+            item => item.GetHomePageWarmUpPageAsync(18, It.IsAny<CancellationToken>()),
+            Times.Once
+        );
+        productPicker.Verify(
+            item => item.GetHomePageCachePageAsync(50, It.IsAny<CancellationToken>()),
+            Times.Once
+        );
+        productPicker.Verify(
+            item => item.GetHomePageCachePageAsync(18, It.IsAny<CancellationToken>()),
+            Times.Once
+        );
     }
 
     [Fact]
@@ -318,11 +405,24 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         StoreOrderCacheKeys.ClearActiveKeys();
 
         var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
-        service
-            .Setup(item => item.GetPagedListAsync(It.IsAny<StoreOrderFilterDto>()))
+        var productPicker = new Mock<IStoreOrderProductPickerSlice>(MockBehavior.Strict);
+        productPicker
+            .Setup(item =>
+                item.GetHomePageWarmUpPageAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
             .ReturnsAsync(new PagedListReactDto<StoreOrderProductDto>());
-        var warmer = StoreOrderCacheWarmerTestFactory.Create(service.Object, cache, out _);
+        productPicker
+            .Setup(item =>
+                item.GetHomePageCachePageAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .ReturnsAsync(new PagedListReactDto<StoreOrderProductDto>());
+        var warmer = StoreOrderCacheWarmerTestFactory.Create(productPicker.Object, cache, out _);
 
         await warmer.WarmUpHomePageAsync();
 
@@ -347,35 +447,67 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         StoreOrderCacheKeys.ClearActiveKeys();
 
         var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var productPicker = new Mock<IStoreOrderProductPickerSlice>(MockBehavior.Strict);
         var firstCallEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseFirstCall = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var invocationCount = 0;
 
-        service
-            .Setup(item => item.GetPagedListAsync(It.IsAny<StoreOrderFilterDto>()))
-            .Returns<StoreOrderFilterDto>(async filter =>
+        productPicker
+            .Setup(item =>
+                item.GetHomePageWarmUpPageAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<int, CancellationToken>(async (pageSize, cancellationToken) =>
             {
                 var currentCount = Interlocked.Increment(ref invocationCount);
                 if (currentCount == 1)
                 {
                     firstCallEntered.TrySetResult();
-                    await releaseFirstCall.Task;
+                    await releaseFirstCall.Task.WaitAsync(cancellationToken);
                 }
 
                 return new PagedListReactDto<StoreOrderProductDto>
                 {
                     Items = new List<StoreOrderProductDto>
                     {
-                        new() { ProductCode = $"P-{filter.PageSize}" },
+                        new() { ProductCode = $"W-{pageSize}" },
                     },
                     Total = 1,
                     PageNumber = 1,
-                    PageSize = filter.PageSize,
+                    PageSize = pageSize,
                 };
             });
+        productPicker
+            .Setup(item =>
+                item.GetHomePageCachePageAsync(
+                    It.IsAny<int>(),
+                    It.IsAny<CancellationToken>()
+                )
+            )
+            .Returns<int, CancellationToken>((pageSize, _) =>
+            {
+                Interlocked.Increment(ref invocationCount);
+                return Task.FromResult(
+                    new PagedListReactDto<StoreOrderProductDto>
+                    {
+                        Items = new List<StoreOrderProductDto>
+                        {
+                            new() { ProductCode = $"P-{pageSize}" },
+                        },
+                        Total = 1,
+                        PageNumber = 1,
+                        PageSize = pageSize,
+                    }
+                );
+            });
 
-        var warmer = StoreOrderCacheWarmerTestFactory.Create(service.Object, cache, out var logger);
+        var warmer = StoreOrderCacheWarmerTestFactory.Create(
+            productPicker.Object,
+            cache,
+            out var logger
+        );
 
         var firstWarmUpTask = warmer.WarmUpHomePageAsync();
         await firstCallEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
@@ -392,6 +524,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
 
         releaseFirstCall.TrySetResult();
         await firstWarmUpTask.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(4, Volatile.Read(ref invocationCount));
     }
 
     [Fact]
@@ -400,18 +533,30 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         StoreOrderCacheKeys.ClearActiveKeys();
 
         var cache = new MemoryCache(new MemoryCacheOptions());
-        var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
-        using var cancellationSource = new CancellationTokenSource();
-        cancellationSource.Cancel();
+        var productPicker = new Mock<IStoreOrderProductPickerSlice>(MockBehavior.Strict);
+        var observedCancellationToken = CancellationToken.None;
 
-        service
-            .Setup(item => item.GetPagedListAsync(It.IsAny<StoreOrderFilterDto>()))
-            .Returns(Task.FromCanceled<PagedListReactDto<StoreOrderProductDto>>(cancellationSource.Token));
+        productPicker
+            .Setup(item =>
+                item.GetHomePageWarmUpPageAsync(50, It.IsAny<CancellationToken>())
+            )
+            .Returns<int, CancellationToken>((_, cancellationToken) =>
+            {
+                observedCancellationToken = cancellationToken;
+                return Task.FromException<PagedListReactDto<StoreOrderProductDto>>(
+                    new OperationCanceledException(cancellationToken)
+                );
+            });
 
-        var warmer = StoreOrderCacheWarmerTestFactory.Create(service.Object, cache, out var logger);
+        var warmer = StoreOrderCacheWarmerTestFactory.Create(
+            productPicker.Object,
+            cache,
+            out var logger
+        );
 
         await warmer.WarmUpHomePageAsync();
 
+        Assert.True(observedCancellationToken.CanBeCanceled);
         Assert.Contains(
             logger.Entries,
             entry =>
@@ -1188,12 +1333,19 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     {
         var request = new SubmitStoreOrderRequestDto { StoreCode = "1024" };
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var gate = new PreorderGateResult { IsBlocked = true, PendingCount = 1 };
+        service
+            .Setup(item => item.SubmitOrderAsync(request))
+            .ReturnsAsync(new ApiResponse<bool>
+            {
+                Success = false,
+                ErrorCode = "PREORDER_REQUIRED",
+                Message = "请先完成当前有效的 Preorder，再提交普通订货",
+                Details = gate,
+            });
         var scopeService = CreateScopeService();
         scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(true);
         var preorderGateService = new Mock<IPreorderGateService>(MockBehavior.Strict);
-        preorderGateService
-            .Setup(item => item.CheckAsync("1024"))
-            .ReturnsAsync(new PreorderGateResult { IsBlocked = true, PendingCount = 1 });
         var controller = CreateController(
             service,
             CreateAuthorizationService(Permissions.Orders.Create),
@@ -1208,8 +1360,9 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         var response = Assert.IsType<ApiResponse<PreorderGateResult>>(conflict.Value);
         Assert.Equal("PREORDER_REQUIRED", response.ErrorCode);
         Assert.Equal(1, response.Data?.PendingCount);
-        service.VerifyNoOtherCalls();
-        preorderGateService.Verify(item => item.CheckAsync("1024"), Times.Once);
+        Assert.Same(gate, response.Details);
+        service.Verify(item => item.SubmitOrderAsync(request), Times.Once);
+        preorderGateService.VerifyNoOtherCalls();
     }
 
     [Fact]
@@ -1217,12 +1370,19 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     {
         var request = new CreateStoreOrderDto { StoreCode = "1024" };
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var gate = new PreorderGateResult { IsBlocked = true, PendingCount = 1 };
+        service
+            .Setup(item => item.CreateOrderAsync(request))
+            .ReturnsAsync(new ApiResponse<string>
+            {
+                Success = false,
+                ErrorCode = "PREORDER_REQUIRED",
+                Message = "请先完成当前有效的 Preorder，再创建普通订单",
+                Details = gate,
+            });
         var scopeService = CreateScopeService();
         scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(true);
         var preorderGateService = new Mock<IPreorderGateService>(MockBehavior.Strict);
-        preorderGateService
-            .Setup(item => item.CheckAsync("1024"))
-            .ReturnsAsync(new PreorderGateResult { IsBlocked = true, PendingCount = 1 });
         var controller = CreateController(
             service,
             CreateAuthorizationService(Permissions.Orders.Create),
@@ -1236,8 +1396,10 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         var conflict = Assert.IsType<ConflictObjectResult>(result);
         var response = Assert.IsType<ApiResponse<PreorderGateResult>>(conflict.Value);
         Assert.Equal("PREORDER_REQUIRED", response.ErrorCode);
-        service.VerifyNoOtherCalls();
-        preorderGateService.Verify(item => item.CheckAsync("1024"), Times.Once);
+        Assert.Same(gate, response.Data);
+        Assert.Same(gate, response.Details);
+        service.Verify(item => item.CreateOrderAsync(request), Times.Once);
+        preorderGateService.VerifyNoOtherCalls();
     }
 
     [Fact]
@@ -1249,13 +1411,20 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
             TargetStoreCode = "1024",
         };
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var gate = new PreorderGateResult { IsBlocked = true, PendingCount = 1 };
+        service
+            .Setup(item => item.CopyOrderAsync(request))
+            .ReturnsAsync(new ApiResponse<CopyOrderResultDto>
+            {
+                Success = false,
+                ErrorCode = "PREORDER_REQUIRED",
+                Message = "请先完成当前有效的 Preorder，再复制普通订单",
+                Details = gate,
+            });
         var scopeService = CreateScopeService();
         scopeService.Setup(item => item.CanAccessOrderAsync("source-order")).ReturnsAsync(true);
         scopeService.Setup(item => item.CanAccessStoreCodeAsync("1024")).ReturnsAsync(true);
         var preorderGateService = new Mock<IPreorderGateService>(MockBehavior.Strict);
-        preorderGateService
-            .Setup(item => item.CheckAsync("1024"))
-            .ReturnsAsync(new PreorderGateResult { IsBlocked = true, PendingCount = 1 });
         var controller = CreateController(
             service,
             CreateAuthorizationService(Permissions.Orders.Create),
@@ -1269,8 +1438,10 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         var conflict = Assert.IsType<ConflictObjectResult>(result);
         var response = Assert.IsType<ApiResponse<PreorderGateResult>>(conflict.Value);
         Assert.Equal("PREORDER_REQUIRED", response.ErrorCode);
-        service.VerifyNoOtherCalls();
-        preorderGateService.Verify(item => item.CheckAsync("1024"), Times.Once);
+        Assert.Same(gate, response.Data);
+        Assert.Same(gate, response.Details);
+        service.Verify(item => item.CopyOrderAsync(request), Times.Once);
+        preorderGateService.VerifyNoOtherCalls();
     }
 
     [Theory]
@@ -1338,7 +1509,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         }
 
         Assert.IsType<OkObjectResult>(result);
-        preorderGateService.Verify(item => item.CheckAsync("1024"), Times.Once);
+        preorderGateService.VerifyNoOtherCalls();
     }
 
     [Fact]
@@ -2690,7 +2861,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
-    public async Task UpdateOrderStatus_AllowsWarehouseManageOrdersPermissionWhenOrderScopeRejects()
+    public async Task UpdateOrderStatus_ControllerDoesNotInjectWarehouseBypassFlag()
     {
         var request = new UpdateOrderStatusDto
         {
@@ -2699,7 +2870,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         };
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
         service
-            .Setup(item => item.UpdateOrderStatusAsync("order-outside", 2, true))
+            .Setup(item => item.UpdateOrderStatusAsync("order-outside", 2, false))
             .ReturnsAsync(ApiResponse<bool>.OK(true));
 
         var scopeService = CreateScopeService();
@@ -2715,7 +2886,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         var result = await controller.UpdateOrderStatus(request);
 
         Assert.IsType<OkObjectResult>(result);
-        service.Verify(item => item.UpdateOrderStatusAsync("order-outside", 2, true), Times.Once);
+        service.Verify(item => item.UpdateOrderStatusAsync("order-outside", 2, false), Times.Once);
         scopeService.Verify(item => item.CanAccessOrderAsync("order-outside"), Times.Never);
     }
 
@@ -2756,7 +2927,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
     }
 
     [Fact]
-    public async Task BatchUpdateOrderStatus_仓库管理权限携带绕过标记()
+    public async Task BatchUpdateOrderStatus_Controller不注入仓库绕过标记()
     {
         var request = new BatchUpdateOrderStatusDto
         {
@@ -2765,7 +2936,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
         };
         var service = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
         service
-            .Setup(item => item.BatchUpdateOrderStatusAsync(request.OrderGUIDs, 1, true))
+            .Setup(item => item.BatchUpdateOrderStatusAsync(request.OrderGUIDs, 1, false))
             .ReturnsAsync(ApiResponse<int>.OK(2));
 
         var scopeService = CreateScopeService();
@@ -2780,7 +2951,7 @@ public class ReactStoreOrderAuthorizationTests : IDisposable
 
         Assert.IsType<OkObjectResult>(result);
         service.Verify(
-            item => item.BatchUpdateOrderStatusAsync(request.OrderGUIDs, 1, true),
+            item => item.BatchUpdateOrderStatusAsync(request.OrderGUIDs, 1, false),
             Times.Once
         );
         scopeService.Verify(
@@ -4108,7 +4279,7 @@ public class StoreOrderSyncJobServiceTests
         var completion = new TaskCompletionSource<SyncMissingOrdersResultDto>(
             TaskCreationOptions.RunContinuationsAsynchronously
         );
-        var syncService = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var syncService = new Mock<IStoreOrderMissingOrdersSyncExecutor>(MockBehavior.Strict);
         syncService
             .Setup(item =>
                 item.SyncMissingOrdersFromHqAsync(It.IsAny<SyncMissingOrdersRequestDto?>())
@@ -4153,7 +4324,7 @@ public class StoreOrderSyncJobServiceTests
     public async Task StartJobAsync_任务完成后在保留期内可查询_过期后被清理()
     {
         var timeProvider = new ManualTimeProvider(new DateTimeOffset(2026, 6, 1, 8, 0, 0, TimeSpan.Zero));
-        var syncService = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var syncService = new Mock<IStoreOrderMissingOrdersSyncExecutor>(MockBehavior.Strict);
         syncService
             .Setup(item =>
                 item.SyncMissingOrdersFromHqAsync(It.IsAny<SyncMissingOrdersRequestDto?>())
@@ -4190,7 +4361,7 @@ public class StoreOrderSyncJobServiceTests
     [Fact]
     public async Task StartJobAsync_同一请求在旧任务完成后_应该创建新任务()
     {
-        var syncService = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var syncService = new Mock<IStoreOrderMissingOrdersSyncExecutor>(MockBehavior.Strict);
         syncService
             .Setup(item =>
                 item.SyncMissingOrdersFromHqAsync(It.IsAny<SyncMissingOrdersRequestDto?>())
@@ -4224,7 +4395,7 @@ public class StoreOrderSyncJobServiceTests
     [Fact]
     public async Task StartJobAsync_后台同步抛异常时_任务状态为失败()
     {
-        var syncService = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var syncService = new Mock<IStoreOrderMissingOrdersSyncExecutor>(MockBehavior.Strict);
         syncService
             .Setup(item =>
                 item.SyncMissingOrdersFromHqAsync(It.IsAny<SyncMissingOrdersRequestDto?>())
@@ -4255,7 +4426,7 @@ public class StoreOrderSyncJobServiceTests
         var completion = new TaskCompletionSource<SyncMissingOrdersResultDto>(
             TaskCreationOptions.RunContinuationsAsynchronously
         );
-        var syncService = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var syncService = new Mock<IStoreOrderMissingOrdersSyncExecutor>(MockBehavior.Strict);
         syncService
             .Setup(item =>
                 item.SyncMissingOrdersFromHqAsync(It.IsAny<SyncMissingOrdersRequestDto?>())
@@ -4288,14 +4459,14 @@ public class StoreOrderSyncJobServiceTests
     }
 
     private static StoreOrderSyncJobService CreateJobService(
-        IStoreOrderReactService syncService,
+        IStoreOrderMissingOrdersSyncExecutor syncService,
         TimeProvider? timeProvider = null,
         TimeSpan? completedRetention = null
     )
     {
         var serviceProvider = new Mock<IServiceProvider>(MockBehavior.Strict);
         serviceProvider
-            .Setup(item => item.GetService(typeof(IStoreOrderReactService)))
+            .Setup(item => item.GetService(typeof(IStoreOrderMissingOrdersSyncExecutor)))
             .Returns(syncService);
 
         var scope = new Mock<IServiceScope>(MockBehavior.Strict);

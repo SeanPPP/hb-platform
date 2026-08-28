@@ -120,6 +120,351 @@ public sealed class DataSyncLegacyHistoryTests : IDisposable
     }
 
     [Fact]
+    public void DataSyncFacade_公开入口只委派且Features不反向依赖Facade日志类别()
+    {
+        var facadeSource = File.ReadAllText(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Services/DataSyncService.cs"
+        ));
+        var featureRoot = Directory.GetParent(Path.GetDirectoryName(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Features/DataSync/Common/DataSyncSliceContext.cs"
+        ))!)!.FullName;
+
+        Assert.Contains(
+            "public Task<SyncResult> SyncLocationsFromHqAsync() => _locations.SyncLocationsFromHqAsync();",
+            facadeSource
+        );
+        Assert.Contains(
+            "public Task<SyncResult> SyncContainersFromHqAsync() => _containers.SyncContainersFromHqAsync();",
+            facadeSource
+        );
+        Assert.Contains(
+            "public Task<SyncResult> SyncProductsFromHqAsync() => _products.SyncProductsFromHqAsync();",
+            facadeSource
+        );
+        Assert.Contains(
+            "public Task<SyncResult> SyncStoreRetailPricesFromHqConcurrentAsync",
+            facadeSource
+        );
+        Assert.DoesNotContain("public class BatchResult", facadeSource, StringComparison.Ordinal);
+        Assert.NotNull(
+            typeof(DataSyncService).Assembly.GetType(
+                "BlazorApp.Api.Services.BatchResult",
+                throwOnError: false
+            )
+        );
+
+        var productsSource = File.ReadAllText(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Features/DataSync/Full/Products/DataSyncProductsStore.cs"
+        ));
+        Assert.DoesNotContain("new BatchResult", productsSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Task<BatchResult>", productsSource, StringComparison.Ordinal);
+
+        foreach (var featureFile in Directory.GetFiles(featureRoot, "*.cs", SearchOption.AllDirectories))
+        {
+            Assert.DoesNotContain("ILogger<DataSyncService>", File.ReadAllText(featureFile));
+        }
+    }
+
+    [Fact]
+    public void DataSync全量同步_替换写入必须在提交前受单一事务保护且错误不标记成功()
+    {
+        var containersSource = File.ReadAllText(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Features/DataSync/Full/Stores/DataSyncContainersStore.cs"
+        ));
+        var pricesSource = File.ReadAllText(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Features/DataSync/Full/Stores/DataSyncStorePricesConcurrentStore.cs"
+        ));
+        var productsSource = File.ReadAllText(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Features/DataSync/Full/Products/DataSyncProductsStore.cs"
+        ));
+        var locationsStoreSource = File.ReadAllText(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Features/DataSync/Locations/DataSyncLocationsStore.cs"
+        ));
+        var locationsComponentsSource = File.ReadAllText(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Features/DataSync/Locations/DataSyncLocationsFullSyncComponents.cs"
+        ));
+
+        Assert.True(containersSource.IndexOf("BeginTranAsync", StringComparison.Ordinal) < containersSource.IndexOf("Deleteable<ContainerDetail>", StringComparison.Ordinal));
+        Assert.Contains("CommitTranAsync", containersSource);
+        Assert.Contains("RollbackTranAsync", containersSource);
+
+        Assert.Contains("BeginTransactionAsync", pricesSource);
+        Assert.Contains("CommitAsync", pricesSource);
+        Assert.Contains("RollbackAsync", pricesSource);
+        Assert.DoesNotContain("localDb = SqlSugarContext.CreateConcurrentConnection", pricesSource);
+
+        Assert.Contains("result.IsSuccess = totalErrors == 0;", productsSource);
+        Assert.DoesNotContain("result.IsSuccess = true;\n                    result.Message =\n                        $\"🎉 商品信息同步完成", productsSource);
+
+        Assert.Contains("DataSyncLocationsSourceReader", locationsStoreSource);
+        Assert.Contains("DataSyncLocationsEntityMapper", locationsStoreSource);
+        Assert.Contains("DataSyncLocationsTransactionWriter", locationsStoreSource);
+        Assert.Contains("DataSyncLocationsResultAssembler", locationsStoreSource);
+        Assert.DoesNotContain("BulkMergeAsync", ExtractMethodBody(locationsStoreSource, "SyncLocationsFromHqAsync"));
+        Assert.Contains("BeginTranAsync", locationsComponentsSource);
+        Assert.Contains("RollbackTranAsync", locationsComponentsSource);
+    }
+
+    [Fact]
+    public void DataSync货位全量同步_逐批暂存且最终事务不覆盖远端读取与映射()
+    {
+        var locationsStoreSource = File.ReadAllText(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Features/DataSync/Locations/DataSyncLocationsStore.cs"
+        ));
+        var locationsComponentsSource = File.ReadAllText(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Features/DataSync/Locations/DataSyncLocationsFullSyncComponents.cs"
+        ));
+
+        var syncMethod = ExtractMethodBody(locationsStoreSource, "SyncLocationsFromHqAsync");
+
+        // 读取、映射和暂存逐批完成，绝不能先收集所有 HQ 批次再构造第二套完整 Location 图。
+        Assert.Contains("ReadBatchesAsync", syncMethod);
+        Assert.Contains("DataSyncLocationsSpool", syncMethod);
+        Assert.Contains("MapBatch", syncMethod);
+        Assert.DoesNotContain("ReadAllAsync", syncMethod);
+        Assert.DoesNotContain(".Map(sourceBatches)", syncMethod);
+        Assert.True(
+            syncMethod.IndexOf("CompleteWritingAsync", StringComparison.Ordinal)
+                < syncMethod.IndexOf("WriteAsync", StringComparison.Ordinal)
+        );
+
+        Assert.Contains("IAsyncEnumerable", locationsComponentsSource);
+        Assert.Contains("yield return batch", locationsComponentsSource);
+        Assert.DoesNotContain("var batches = new List<IReadOnlyList<CPT_DIC_货位编码信息表>>", locationsComponentsSource);
+        Assert.Contains("ReadBatchesAsync", locationsComponentsSource);
+        Assert.Contains("ReadBatchesAsync", ExtractMethodBody(locationsComponentsSource, "WriteAsync"));
+        Assert.Contains("BeginTranAsync", locationsComponentsSource);
+        Assert.Contains("RollbackTranAsync", locationsComponentsSource);
+    }
+
+    [Fact]
+    public async Task SyncLocationsFromHqAsync_映射暂存失败时保留原货位数据()
+    {
+        _localDb.CodeFirst.InitTables(typeof(Location));
+        _hqDb.CodeFirst.InitTables(typeof(CPT_DIC_货位编码信息表));
+        await _localDb.Insertable(new Location
+        {
+            LocationGuid = "LOCAL-LOCATION-MUST-STAY",
+            LocationCode = "OLD-A01",
+            Status = 1,
+        }).ExecuteCommandAsync();
+        await _hqDb.Insertable(new CPT_DIC_货位编码信息表
+        {
+            ID = 1,
+            HGUID = "HQ-LOCATION-FAIL",
+            货位编码 = "A01",
+            状态 = 1,
+        }).ExecuteCommandAsync();
+
+        var mapper = new Mock<IMapper>(MockBehavior.Strict);
+        mapper.Setup(item => item.Map<List<Location>>(It.IsAny<object>()))
+            .Throws(new InvalidOperationException("模拟货位映射暂存失败"));
+
+        var result = await CreateService(CreateRealHistoryService(), mapper: mapper.Object)
+            .SyncLocationsFromHqAsync();
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(1, result.ErrorCount);
+        Assert.Equal(1, await _localDb.Queryable<Location>().CountAsync());
+        Assert.Equal(
+            "LOCAL-LOCATION-MUST-STAY",
+            (await _localDb.Queryable<Location>().SingleAsync()).LocationGuid
+        );
+    }
+
+    [Fact]
+    public void DataSync门店零售价全量同步_使用有界生产消费且失败时回滚()
+    {
+        var pricesSource = File.ReadAllText(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Features/DataSync/Full/Stores/DataSyncStorePricesConcurrentStore.cs"
+        ));
+
+        Assert.Contains("Channel.CreateBounded<StorePriceSourceBatch>", pricesSource);
+        // 队列容量是内存预算，不能因为 Controller 放宽并发度就线性放大到百万行。
+        Assert.Contains("StagingChannelCapacity = 2", pricesSource);
+        Assert.Contains("new BoundedChannelOptions(StagingChannelCapacity)", pricesSource);
+        Assert.DoesNotContain("new BoundedChannelOptions(maxConcurrency)", pricesSource);
+        Assert.Contains("BoundedChannelFullMode.Wait", pricesSource);
+        Assert.Contains("sourceBatches.ReadAllAsync(cancellationToken)", pricesSource);
+        Assert.Contains("cancellationSource.Cancel()", pricesSource);
+        Assert.DoesNotContain("var sourceBatches = await Task.WhenAll", pricesSource);
+        Assert.Contains("await transaction.RollbackAsync()", pricesSource);
+    }
+
+    [Fact]
+    public void DataSync门店零售价全量同步_大批量写入与交换必须继承配置超时()
+    {
+        var pricesSource = File.ReadAllText(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Features/DataSync/Full/Stores/DataSyncStorePricesConcurrentStore.cs"
+        ));
+
+        Assert.Contains("Database:BulkCopyCommandTimeoutSeconds", pricesSource);
+        Assert.Contains("BulkCopyTimeout = bulkCopyCommandTimeoutSeconds", pricesSource);
+        Assert.Contains("Database:ConcurrentCommandTimeoutSeconds", pricesSource);
+        Assert.Contains("command.CommandTimeout = commandTimeoutSeconds", pricesSource);
+    }
+
+    [Fact]
+    public void DataSync门店零售价并发全量同步_必须先有界暂存再原子替换()
+    {
+        var pricesSource = File.ReadAllText(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Features/DataSync/Full/Stores/DataSyncStorePricesConcurrentStore.cs"
+        ));
+        var legacyPricesSource = File.ReadAllText(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Features/DataSync/Full/Stores/DataSyncStorePricesStore.cs"
+        ));
+        var legacyProductsSource = File.ReadAllText(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Features/DataSync/Full/Stores/DataSyncStoreProductsStore.cs"
+        ));
+        var spoolSource = File.ReadAllText(ResolveRepositoryFile(
+            "services/backend/BlazorApp.Api/Features/DataSync/Full/Stores/DataSyncStorePricesSpool.cs"
+        ));
+        var readStoreMethod = ExtractMethodBody(
+            pricesSource,
+            "private async Task ReadStorePricesFromHqAsync"
+        );
+        var replaceMethod = ExtractMethodBody(
+            pricesSource,
+            "private async Task ReplaceLocalPricesAsync"
+        );
+        var legacyRetailMethod = ExtractMethodBody(
+            legacyPricesSource,
+            "SyncStoreRetailPricesFromHqAsync"
+        );
+        var legacyClearanceMethod = ExtractMethodBody(
+            legacyProductsSource,
+            "SyncStoreClearancePricesFromHqAsync"
+        );
+
+        // 每店以 HQ 主键推进游标，避免 Offset 翻页漏行或重复行。
+        Assert.Contains("price.ID > lastSeenId", readStoreMethod);
+        Assert.Contains("OrderBy(price => price.ID)", readStoreMethod);
+        Assert.Contains("Take(sourceBatchSize)", readStoreMethod);
+        Assert.Contains("Math.Min(batchSize, MaximumSourceBatchSize)", pricesSource);
+        Assert.Contains("MaximumSourceBatchSize = 50000", pricesSource);
+
+        // 远程读取阶段不能持有本地 live 表事务；完整生产完成后才替换本地数据。
+        Assert.DoesNotContain("LocalContext.Db", readStoreMethod);
+        Assert.DoesNotContain("BeginTranAsync", readStoreMethod);
+        Assert.True(
+            pricesSource.IndexOf("StageStorePricesInDatabaseAsync", StringComparison.Ordinal)
+                < pricesSource.IndexOf("ReplaceLocalPricesAsync", StringComparison.Ordinal)
+        );
+        Assert.Contains("DataSyncStorePricesSpool", pricesSource);
+        Assert.Contains("new DataSyncStorePricesSpool(Logger)", pricesSource);
+        Assert.Contains("SqlBulkCopy", pricesSource);
+
+        var stagingMethod = ExtractMethodBody(pricesSource, "StageStorePricesInDatabaseAsync");
+        // staging 装载发生在最终替换事务之外；SQL Server 通过固定连接保证 #temp 与 BulkCopy 同会话。
+        Assert.DoesNotContain("BeginTransaction", stagingMethod);
+        Assert.DoesNotContain("BeginTranAsync", stagingMethod);
+        Assert.Contains("SqlConnection", pricesSource);
+        Assert.Contains("#DataSyncStorePrices", pricesSource);
+
+        var sqlServerReplaceMethod = ExtractMethodBody(
+            pricesSource,
+            "ReplaceSqlServerLocalPricesAsync"
+        );
+        Assert.Contains("BeginTransactionAsync", sqlServerReplaceMethod);
+        Assert.Contains("RollbackAsync", sqlServerReplaceMethod);
+        Assert.Contains("sp_getapplock", sqlServerReplaceMethod);
+        Assert.Contains("INSERT INTO [StoreRetailPrice]", sqlServerReplaceMethod);
+        Assert.DoesNotContain("ReadBatchesAsync", replaceMethod);
+
+        // BulkCopy 失败必须上抛到同一事务边界，不能提交删除后的部分结果。
+        Assert.DoesNotContain("❌ 批量插入失败", legacyRetailMethod);
+        Assert.DoesNotContain("⚠️ 分店零售价数据同步部分成功", legacyRetailMethod);
+        Assert.DoesNotContain("❌ 批量插入失败", legacyClearanceMethod);
+        Assert.DoesNotContain("⚠️ 分店清货价数据同步部分成功", legacyClearanceMethod);
+
+        // 本地替换提交后，临时文件清理失败只能告警，不能把已提交成功反报为失败。
+        var disposeMethod = ExtractMethodBody(spoolSource, "DisposeAsync");
+        Assert.Contains("catch (Exception cleanupException)", disposeMethod);
+        Assert.Contains("LogWarning", disposeMethod);
+        Assert.DoesNotContain("throw", disposeMethod, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SyncStoreRetailPricesFromHqAsync_BulkCopy失败时回滚并保留原数据()
+    {
+        _hqDb.CodeFirst.InitTables(typeof(DIC_商品零售价表));
+        await _localDb.Insertable(new StoreRetailPrice
+        {
+            UUID = "LOCAL-RETAIL-MUST-STAY",
+            StoreCode = "S01",
+            ProductCode = "P-RETAIL-FAIL",
+            StoreRetailPriceValue = 1m,
+        }).ExecuteCommandAsync();
+        await _hqDb.Insertable(CreateIncrementalProduct(1, "P-RETAIL-FAIL")).ExecuteCommandAsync();
+        await _hqDb.Insertable(new DIC_商品零售价表
+        {
+            ID = 1,
+            HGUID = "HQ-RETAIL-FAIL",
+            H分店代码 = "S01",
+            H商品编码 = "P-RETAIL-FAIL",
+            H供应商编码 = "SUP-01",
+            H进货价 = 2m,
+            H分店零售价 = 3m,
+            H使用状态 = true,
+            FGC_CreateDate = new DateTime(2026, 8, 26),
+            FGC_LastModifyDate = new DateTime(2026, 8, 26),
+        }).ExecuteCommandAsync();
+        await _localDb.Ado.ExecuteCommandAsync(
+            """
+            CREATE TRIGGER reject_store_retail_price_bulk_copy
+            BEFORE INSERT ON "StoreRetailPrice"
+            BEGIN
+                SELECT RAISE(ABORT, '模拟零售价 BulkCopy 失败');
+            END;
+            """
+        );
+
+        var result = await CreateService(CreateRealHistoryService())
+            .SyncStoreRetailPricesFromHqConcurrentAsync(new List<string> { "S01" }, 1, 1);
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(0, result.AddedCount);
+        Assert.Equal(1, await _localDb.Queryable<StoreRetailPrice>().CountAsync());
+        Assert.Equal(
+            "LOCAL-RETAIL-MUST-STAY",
+            (await _localDb.Queryable<StoreRetailPrice>().SingleAsync()).UUID
+        );
+    }
+
+    [Fact]
+    public async Task SyncContainersFromHqAsync_映射失败时保留旧货柜数据()
+    {
+        _localDb.CodeFirst.InitTables(typeof(Container), typeof(ContainerDetail));
+        _hqDb.CodeFirst.InitTables(typeof(CPT_RED_货柜单主表Store));
+        await _localDb.Insertable(new Container
+        {
+            ContainerCode = "LOCAL-CONTAINER-MUST-STAY",
+            ContainerNumber = "旧货柜",
+        }).ExecuteCommandAsync();
+        await _hqDb.Insertable(new CPT_RED_货柜单主表Store
+        {
+            ID = 1,
+            HGUID = "HQ-CONTAINER-FAIL",
+            货柜编号 = "HQ货柜",
+        }).ExecuteCommandAsync();
+
+        var mapper = new Mock<IMapper>(MockBehavior.Strict);
+        mapper.Setup(item => item.Map<List<Container>>(It.IsAny<object>()))
+            .Throws(new InvalidOperationException("模拟货柜映射失败"));
+
+        var result = await CreateService(CreateRealHistoryService(), mapper: mapper.Object)
+            .SyncContainersFromHqAsync();
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(1, result.ErrorCount);
+        Assert.Equal(1, await _localDb.Queryable<Container>().CountAsync());
+        Assert.Equal(
+            "LOCAL-CONTAINER-MUST-STAY",
+            (await _localDb.Queryable<Container>().SingleAsync()).ContainerCode
+        );
+    }
+
+    [Fact]
     public async Task SyncProductStocksIncrementalFromHqAsync_只改变库存时不写历史且恢复仓库审计字段()
     {
         var originalUpdatedAt = new DateTime(2026, 8, 12, 1, 2, 3, DateTimeKind.Utc);
@@ -1067,7 +1412,8 @@ public sealed class DataSyncLegacyHistoryTests : IDisposable
     private DataSyncService CreateService(
         IWarehouseProductChangeHistoryService historyService,
         ICurrentUserService? currentUserService = null,
-        ITranslationService? translationService = null
+        ITranslationService? translationService = null,
+        IMapper? mapper = null
     )
     {
         var localContext = CreateSqlSugarContext(_localDb);
@@ -1077,7 +1423,7 @@ public sealed class DataSyncLegacyHistoryTests : IDisposable
             hqContext,
             CreateHBSalesSqlSugarContext(_hbSalesDb),
             NullLogger<DataSyncService>.Instance,
-            _mapper,
+            mapper ?? _mapper,
             translationService ?? Mock.Of<ITranslationService>(),
             new ConfigurationBuilder().Build(),
             historyService,
@@ -1174,6 +1520,43 @@ public sealed class DataSyncLegacyHistoryTests : IDisposable
             IsAutoCloseConnection = false,
             InitKeyType = InitKeyType.Attribute,
         };
+
+    private static string ResolveRepositoryFile(string relativePath)
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null)
+        {
+            var candidate = Path.Combine(directory.FullName, relativePath);
+            if (File.Exists(candidate))
+                return candidate;
+
+            directory = directory.Parent;
+        }
+
+        throw new FileNotFoundException($"未找到仓库文件: {relativePath}");
+    }
+
+    private static string ExtractMethodBody(string source, string methodName)
+    {
+        var signatureStart = source.IndexOf(methodName, StringComparison.Ordinal);
+        if (signatureStart < 0)
+            throw new InvalidOperationException($"未找到方法: {methodName}");
+
+        var bodyStart = source.IndexOf('{', signatureStart);
+        if (bodyStart < 0)
+            throw new InvalidOperationException($"未找到方法体: {methodName}");
+
+        var depth = 0;
+        for (var index = bodyStart; index < source.Length; index++)
+        {
+            if (source[index] == '{')
+                depth++;
+            else if (source[index] == '}' && --depth == 0)
+                return source[bodyStart..(index + 1)];
+        }
+
+        throw new InvalidOperationException($"无法读取方法体: {methodName}");
+    }
 
     private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)
     {

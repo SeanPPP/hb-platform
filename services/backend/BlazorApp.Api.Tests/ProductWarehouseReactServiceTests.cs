@@ -82,7 +82,17 @@ namespace BlazorApp.Api.Tests
         [Fact]
         public void 套装成本写入路径_必须在产品锁内统一重算且初始成本为空()
         {
-            var source = File.ReadAllText(ResolveProductWarehouseReactServicePath());
+            var source = string.Join(
+                "\n",
+                Directory
+                    .EnumerateFiles(
+                        ResolveProductWarehouseFeatureRoot(),
+                        "*.cs",
+                        SearchOption.AllDirectories
+                    )
+                    .OrderBy(path => path, StringComparer.Ordinal)
+                    .Select(File.ReadAllText)
+            );
             var containerSource = File.ReadAllText(ResolveContainerExecutorPath());
 
             Assert.Contains("SetChildPurchasePriceMutationLock.Acquire", source);
@@ -6179,23 +6189,23 @@ namespace BlazorApp.Api.Tests
             return context;
         }
 
-        private static string ResolveProductWarehouseReactServicePath()
+        private static string ResolveProductWarehouseFeatureRoot()
         {
             var directory = new DirectoryInfo(AppContext.BaseDirectory);
             while (directory != null)
             {
                 var path = Path.Combine(
                     directory.FullName,
-                    "services/backend/BlazorApp.Api/Services/React/ProductWarehouseReactService.cs"
+                    "services/backend/BlazorApp.Api/Features/ProductWarehouse"
                 );
-                if (File.Exists(path))
+                if (Directory.Exists(path))
                 {
                     return path;
                 }
                 directory = directory.Parent;
             }
 
-            throw new FileNotFoundException("未找到 ProductWarehouseReactService.cs");
+            throw new DirectoryNotFoundException("未找到 ProductWarehouse feature 目录");
         }
 
         private static string ResolveContainerExecutorPath()

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using BlazorApp.Api.Features.StoreOrders.Sync;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.Performance;
 using BlazorApp.Shared.DTOs;
@@ -199,7 +200,7 @@ namespace BlazorApp.Api.Services.React
                 }
                 else
                 {
-                    var syncService = scope.ServiceProvider.GetRequiredService<IStoreOrderReactService>();
+                    var syncService = scope.ServiceProvider.GetRequiredService<IStoreOrderMissingOrdersSyncExecutor>();
                     result = await syncService.SyncMissingOrdersFromHqAsync(jobState.Request);
                 }
 
