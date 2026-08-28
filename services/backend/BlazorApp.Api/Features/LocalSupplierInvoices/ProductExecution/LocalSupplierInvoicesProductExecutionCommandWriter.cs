@@ -1,6 +1,7 @@
 using BlazorApp.Api.Interfaces.React;
-using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
+using SetChildPurchasePriceMutationLock = BlazorApp.Api.Services.ProductCosts.ProductCostMutationLock;
+using SetChildPurchasePriceService = BlazorApp.Api.Services.ProductCosts.ProductCostRecalculationService;
 
 namespace BlazorApp.Api.Features.LocalSupplierInvoices
 {

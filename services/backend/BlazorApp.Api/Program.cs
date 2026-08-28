@@ -6,6 +6,7 @@ using AutoMapper; // AutoMapper映射服务
 using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Data; // 数据访问层
 using BlazorApp.Api.Data.SchemaMigrations;
+using BlazorApp.Api.Features.StoreOrders;
 using BlazorApp.Api.Filters;
 using BlazorApp.Api.Interfaces; // 数据模型
 using BlazorApp.Api.Interfaces.React; // React 接口命名空间
@@ -308,7 +309,6 @@ builder.Services.AddHostedService<PerformanceBacklogSamplerService>();
 builder.Services.AddHostedService<PerformanceRetentionService>();
 builder.Services.AddHttpClient<SentryReleaseHealthClient>();
 builder.Services.AddHostedService<SentryReleaseHealthSyncService>();
-builder.Services.AddScoped<SalesStatisticsJobService>();
 builder.Services.AddScoped<
     IProductStoreDailyStatisticQueueService,
     ProductStoreDailyStatisticQueueService
@@ -914,6 +914,7 @@ builder.Services.AddScoped<
     IStoreOrderLocationProductLookupService,
     StoreOrderLocationProductLookupService
 >();
+builder.Services.AddStoreOrderFeatures();
 builder.Services.AddScoped<IStoreOrderReactService, StoreOrderReactService>();
 builder.Services.AddScoped<IBrowserExtensionAccessService, BrowserExtensionAccessService>();
 builder.Services.AddScoped<IBrowserExtensionService, BrowserExtensionService>();
@@ -962,7 +963,19 @@ builder.Services.AddScoped<
     BlazorApp.Api.Cache.StoreOrderCacheWarmer
 >();
 
-builder.Services.AddScoped<SalesStatisticsJobService>();
+builder.Services.AddScoped<SalesStatisticsApplicationCoordinator>();
+builder.Services.AddScoped<ISalesStatisticsRefreshOperations>(serviceProvider =>
+    serviceProvider.GetRequiredService<SalesStatisticsApplicationCoordinator>()
+);
+builder.Services.AddScoped<ISalesStatisticsRecalculationExecutor>(serviceProvider =>
+    serviceProvider.GetRequiredService<SalesStatisticsApplicationCoordinator>()
+);
+builder.Services.AddScoped<SalesStatisticsJobService>(serviceProvider =>
+    new SalesStatisticsJobService(
+        serviceProvider.GetRequiredService<SalesStatisticsApplicationCoordinator>(),
+        serviceProvider.GetRequiredService<IServiceScopeFactory>()
+    )
+);
 builder.Services.AddScoped<SalesStatisticsAlignmentBackgroundRecalculateService>();
 
 builder.Services.AddSingleton<

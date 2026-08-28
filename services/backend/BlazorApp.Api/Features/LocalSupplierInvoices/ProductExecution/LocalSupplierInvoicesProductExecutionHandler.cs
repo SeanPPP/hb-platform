@@ -83,13 +83,13 @@ namespace BlazorApp.Api.Features.LocalSupplierInvoices
         )
         {
             _logger.LogError(exception, "批量执行操作失败");
-            var isBusy = Services.React.SetChildPurchasePriceMutationLock.TryResolveConflict(
+            var isBusy = Services.ProductCosts.ProductCostMutationLock.TryResolveConflict(
                 exception,
                 out var conflict
             );
             return ApiResponse<BatchExecuteActionsResultDto>.Error(
                 isBusy ? conflict!.Message : "批量执行失败",
-                isBusy ? Services.React.SetChildPurchasePriceMutationLock.BusyErrorCode : "BATCH_EXECUTE_ERROR",
+                isBusy ? Services.ProductCosts.ProductCostMutationLock.BusyErrorCode : "BATCH_EXECUTE_ERROR",
                 result
             );
         }
