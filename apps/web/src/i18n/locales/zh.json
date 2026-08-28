@@ -3487,6 +3487,7 @@
       "loadSetCodeMaintenanceFailed": "加载商品多码/套装数据失败",
       "saveSetCodeMaintenanceSuccess": "商品多码/套装已保存",
       "saveSetCodeMaintenanceUnconfirmed": "保存结果未确认；已重新加载最新数据，请核对后再决定是否重试。",
+      "saveSetCodeMaintenanceUnconfirmedReloadFailed": "保存结果未确认，且最新数据加载失败；请先重试加载并核对，再决定是否保存。",
       "saveSetCodeMaintenanceReadbackFailed": "保存请求已完成，但回读校验失败；请刷新后核对。",
       "selectExcelPasteColumn": "选择 {{column}} Excel 粘贴列",
       "normalProductModeChangeHint": "当前为普通商品，保存后将切换为所选商品类型",

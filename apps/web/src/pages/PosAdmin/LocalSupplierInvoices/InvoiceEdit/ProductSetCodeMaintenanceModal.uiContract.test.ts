@@ -34,6 +34,10 @@ requireModalSource('row.sourceSetType', '修复套装历史多条码时，并发
 requireModalSource('productType: mode', '目标快照必须明确保存当前套装/多码类型')
 requireModalSource('await loadLatestData(false)', '保存成功或中断后应回读服务器状态')
 requireModalSource('saveSetCodeMaintenanceUnconfirmed', '异常且回读无法确认时不得断言事务未提交')
+requireModalSource('const [loadError, setLoadError] = useState<string | null>(null)', '加载失败必须保留明确的持久错误状态')
+requireModalSource("action={<Button size=\"small\" onClick={() => void loadLatestData()}>{t('common.retry', '重试')}</Button>}", '加载失败必须提供显式重试入口')
+requireModalSource('saveSetCodeMaintenanceUnconfirmedReloadFailed', '保存结果未确认且回读失败时不得声称已重新加载')
+requireModalSource('const isChangingNormalProduct = product != null', '尚未加载商品或加载失败时不得显示普通商品切换提示')
 requireModalSource('!canSwitchMode', '存在服务端条码时不得直接切换类型')
 requireModalSource('setIntegrityError', '商品类型与条码类型不一致时应停止编辑')
 requireModalSource('resolveProductSetCodeMaintenanceLoadState({', '加载后应通过统一状态解析器决定阻断或套装修复')
@@ -43,6 +47,9 @@ requireModalSource('const MAX_PASTE_ROWS = PAGE_SIZE * MAX_PAGE_COUNT', '弹窗�
 requireModalSource('maxRows: MAX_PASTE_ROWS', '弹窗必须将自身分页容量传给列粘贴助手')
 requireModalSource("result.error === 'too_many_rows'", '超过弹窗容量时必须显式阻止本次粘贴')
 requireModalSource('posAdmin.products.pasteTooManyRows', '超过弹窗容量时必须复用产品页既有双语提示')
+requireModalSource("aria-label={t('common.copyValue', 'Copy {{value}}', { value })}", '仅图标复制按钮必须提供本地化可访问名称')
+requireModalSource("successMessage: t('common.copySuccess', '复制成功')", '复制成功提示必须本地化并由复制工具统一处理')
+requireModalSource("failureMessage: t('common.copyFailed', '复制失败')", '复制失败提示必须本地化并由复制工具统一处理')
 
 const modalPasteMaxRows = 100 * 100
 const clipboardColumn = (count: number) => Array.from(
@@ -89,5 +96,6 @@ assert.equal(modalSource.includes('deleteStoreProductSetCode('), false, '弹窗�
 assert.equal(modalSource.includes('updateStoreProductType('), false, '弹窗不得先切换类型导致部分保存')
 assert.equal(modalSource.includes('completedOperations'), false, '单事务保存失败不应再报告部分成功')
 assert.equal(modalSource.includes('服务器未提交本次修改'), false, '网络中断时不能断言服务端未提交')
+assert.equal(modalSource.includes("message.success(t('message.copySuccess'"), false, '复制按钮不得在复制失败时额外提示成功')
 assert.equal(modalSource.includes('updateProduct('), false, '弹窗不得通过覆盖式商品更新切换类型')
 assert.equal(/(?:window|document)\.addEventListener\(['\"]paste['\"]/.test(modalSource), false, '弹窗不得注册全局 paste 监听')
