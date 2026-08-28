@@ -5,6 +5,25 @@ namespace BlazorApp.Api.Tests;
 public sealed class StartupSchemaMigratorStartupContractTests
 {
     [Fact]
+    public async Task Program_普通启动必须先执行只读Schema门禁且拒绝遗留自动初始化开关()
+    {
+        var program = await File.ReadAllTextAsync(
+            Path.Combine(FindRepoRoot(), "services/backend/BlazorApp.Api/Program.cs")
+        );
+
+        Assert.Contains("SchemaCommand.Parse(args)", program, StringComparison.Ordinal);
+        Assert.Contains("SchemaCommandMode.Check", program, StringComparison.Ordinal);
+        Assert.Contains("await coordinator.CheckAsync", program, StringComparison.Ordinal);
+        Assert.Contains("Database:InitializeOnStartup", program, StringComparison.Ordinal);
+        Assert.Contains("SCHEMA_LEGACY_INITIALIZE_ON_STARTUP_FORBIDDEN", program, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "await StartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);",
+            program,
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
     public async Task StartupSchemaMigrator_仓库商品历史表使用幂等索引和只追加触发器()
     {
         var repoRoot = FindRepoRoot();
@@ -377,7 +396,7 @@ public sealed class StartupSchemaMigratorStartupContractTests
     }
 
     [Fact]
-    public async Task Program_启动初始化接入统一StartupSchemaMigrator()
+    public async Task Program_启动通过迁移协调器管理统一StartupSchemaMigrator()
     {
         var repoRoot = FindRepoRoot();
         var programPath = Path.Combine(repoRoot, "services/backend/BlazorApp.Api/Program.cs");
@@ -389,20 +408,46 @@ public sealed class StartupSchemaMigratorStartupContractTests
         var program = await File.ReadAllTextAsync(programPath);
         var migrator = await File.ReadAllTextAsync(migratorPath);
 
-        Assert.Contains(
-            "await StartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);",
-            program
-        );
-        var createTablesIndex = program.IndexOf("dbContext.CreateTable();", StringComparison.Ordinal);
-        var startupMigratorIndex = program.IndexOf(
-            "await StartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);",
-            StringComparison.Ordinal);
+        var coordinatorIndex = program.IndexOf("SchemaMigrationCoordinator", StringComparison.Ordinal);
+        var appRunIndex = program.IndexOf("app.Run();", StringComparison.Ordinal);
+        Assert.True(coordinatorIndex >= 0, "Program 必须委托 SchemaMigrationCoordinator 管理数据库迁移与就绪门禁。");
         Assert.True(
-            createTablesIndex >= 0 && startupMigratorIndex > createTablesIndex,
-            "空库必须先由 CodeFirst 创建 AttendancePunch 等基础表，再执行考勤二维码增量迁移");
+            appRunIndex > coordinatorIndex,
+            "迁移命令处理和正常启动就绪门禁必须在应用开始监听前完成。"
+        );
+        Assert.Contains("--schema=migrate", program, StringComparison.Ordinal);
+        Assert.Contains("--schema=check", program, StringComparison.Ordinal);
+        var explicitSchemaStart = program.IndexOf(
+            "if (schemaCommand.Mode != SchemaCommandMode.Server)",
+            StringComparison.Ordinal
+        );
+        var regularServiceRegistration = program.IndexOf(
+            "// ===================== 服务注册区域 =====================",
+            StringComparison.Ordinal
+        );
+        Assert.True(
+            explicitSchemaStart >= 0 && regularServiceRegistration > explicitSchemaStart,
+            "显式 schema 命令必须在常规 HTTP 服务注册前进入独立分支。"
+        );
+        var explicitSchemaBranch = program[explicitSchemaStart..regularServiceRegistration];
+        Assert.Contains("schemaApp = builder.Build();", explicitSchemaBranch, StringComparison.Ordinal);
+        Assert.Contains("SCHEMA_HOST_BUILD_FAILED", explicitSchemaBranch, StringComparison.Ordinal);
+        Assert.Contains("SchemaExitCodes.ConfigurationError", explicitSchemaBranch, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddControllers", explicitSchemaBranch, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddSwaggerGen", explicitSchemaBranch, StringComparison.Ordinal);
+        Assert.DoesNotContain("AddHostedService", explicitSchemaBranch, StringComparison.Ordinal);
+        Assert.DoesNotContain("dbContext.EnsureLoginSessionSchema();", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("dbContext.CreateTable();", program, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "await StartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);",
+            program,
+            StringComparison.Ordinal
+        );
+        Assert.DoesNotContain("hqDbContext.CheckTables();", program, StringComparison.Ordinal);
         Assert.DoesNotContain(
             "await LocalSupplierInvoiceStartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);",
-            program
+            program,
+            StringComparison.Ordinal
         );
 
         var localSupplierIndex = migrator.IndexOf(
@@ -1327,6 +1372,26 @@ public sealed class StartupSchemaMigratorStartupContractTests
                 StringComparison.Ordinal
             );
         }
+    }
+
+    [Fact]
+    public async Task SqlSugarContext_遗留启动初始化不再通过后台任务绕过迁移协调器()
+    {
+        var repoRoot = FindRepoRoot();
+        var contextSource = await File.ReadAllTextAsync(
+            Path.Combine(repoRoot, "services/backend/BlazorApp.Api/Data/SqlSugarContext.cs")
+        );
+        var programSource = await File.ReadAllTextAsync(
+            Path.Combine(repoRoot, "services/backend/BlazorApp.Api/Program.cs")
+        );
+
+        Assert.DoesNotContain("Database:InitializeOnStartup", contextSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("Task.Run(", contextSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("CreateTable();\n                        CreateIndexes();", contextSource, StringComparison.Ordinal);
+
+        // 遗留开关只能由 Program 的统一入口拒绝，避免 Scoped 构造器在后台并发执行 DDL。
+        Assert.Contains("Database:InitializeOnStartup", programSource, StringComparison.Ordinal);
+        Assert.Contains("SchemaMigrationCoordinator", programSource, StringComparison.Ordinal);
     }
 
     private static string FindRepoRoot()

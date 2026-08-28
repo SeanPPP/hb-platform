@@ -297,19 +297,72 @@ sudo chmod 600 /www/HBWeb/BackEnd/hbpos-api/.env
 
 DataProtection 目录的 owner/mode 应从旧服务器原样保留，并验证两个容器都可读写。
 
-### 9.4 部署主后端
+### 9.4 构建、迁移和部署主后端
+
+主后端数据库结构不再随 API 常规启动自动迁移。必须按“构建候选镜像 → 数据库备份/恢复点 → 单次迁移 → 只读检查 → 启动 API → 健康及业务验证”的顺序执行。
+
+先构建候选镜像，但暂不启动 API：
 
 ```bash
 cd /www/HBWeb/BackEnd/master-Vite
-sudo docker compose --env-file .env up --build -d hb-api
+sudo docker compose --env-file .env build hb-api
 ```
 
-等待：
+确认 DBA 已为主库和 POSM 数据库建立可验证的备份或恢复点，并记录备份标识、完成时间与恢复负责人。未确认备份可恢复时，不得执行迁移。
+
+性能基线 schema 要求主库已启用 `ALLOW_SNAPSHOT_ISOLATION`。应用迁移只会读取并校验该数据库级选项，不会执行 `ALTER DATABASE`。DBA 必须在维护窗口先核对目标主库，必要时对经过确认的精确数据库名执行：
+
+```sql
+SELECT [name], [snapshot_isolation_state_desc]
+FROM sys.databases
+WHERE [name] = N'<主库名>';
+
+ALTER DATABASE [<主库名>] SET ALLOW_SNAPSHOT_ISOLATION ON;
+```
+
+完成后再次只读查询，确认状态为 `ON`；目标库、备份或回退方式不明确时停止，不得由应用容器代为修改。
+
+使用同一候选镜像运行一次显式迁移。`hb-api-migrate` 位于 `schema` profile，默认 `docker compose up` 不会启动它；该任务不暴露端口，也不执行 HTTP 健康检查：
+
+```bash
+sudo docker compose --env-file .env --profile schema \
+  run --rm hb-api-migrate
+```
+
+迁移命令必须以退出码 `0` 结束。失败时保留日志和数据库恢复点，不要启动新 API，也不要通过重复启动 API 尝试补做迁移。
+
+随后使用候选镜像执行一次只读 schema 检查：
+
+```bash
+sudo docker compose --env-file .env \
+  run --rm --no-deps hb-api --schema=check
+```
+
+只读检查以退出码 `0` 结束后，才启动主后端；`--no-build` 保证启动的是已经迁移验证过的候选镜像：
+
+HBWeb schema 命令的退出码固定如下，部署脚本应按此判断，不能把非零结果当作可忽略警告：
+
+| 退出码 | 含义 |
+| ---: | --- |
+| `0` | 已就绪或迁移成功 |
+| `2` | 命令参数错误，或常规启动仍启用了遗留自动初始化 |
+| `20` | 缺少当前版本要求的迁移记录，或设备激活 schema 不兼容 |
+| `22` | 数据库连接或迁移执行失败 |
+| `23` | 另一个迁移任务正持有数据库迁移锁 |
+| `130` | 用户取消 |
+
+```bash
+sudo docker compose --env-file .env up --no-build -d hb-api
+```
+
+等待容器健康并执行最小业务 smoke test：
 
 ```bash
 sudo docker inspect hb-platform-vite-api --format '{{.State.Health.Status}}'
 curl -fsS http://127.0.0.1:5002/api/health
 ```
+
+除健康端点外，还需通过受控账号验证至少一条已授权的登录或只读业务查询链路；不得在命令、文档或日志中输出账号凭据、连接串、token 或其他秘密。
 
 ### 9.5 部署收银后端
 
@@ -374,6 +427,8 @@ curl --resolve hotbargain.vip:443:NEW_SERVER_IP \
 
 基础服务：
 
+- [ ] `hb-api-migrate` 单次运行以退出码 `0` 完成
+- [ ] 主后端 `--schema=check` 以退出码 `0` 完成
 - [ ] `https://hotbargain.vip/` 返回 `200`
 - [ ] `https://hotbargain.vip/login` 返回 `200`
 - [ ] `https://hotbargain.vip/api/health` 返回 `200`

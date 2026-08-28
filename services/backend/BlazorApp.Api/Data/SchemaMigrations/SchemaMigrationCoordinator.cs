@@ -1,0 +1,444 @@
+using System.Diagnostics;
+
+namespace BlazorApp.Api.Data.SchemaMigrations;
+
+internal sealed record SchemaMigrationStep(
+    string MigrationId,
+    Func<ISchemaMigrationRuntime, CancellationToken, Task> ApplyAsync
+);
+
+internal sealed class SchemaMigrationCoordinator
+{
+    internal const string MainMigrationId = "20260827.001-hbweb-baseline";
+    internal const string PosmMigrationId = "20260827.001-hbweb-posm-baseline";
+
+    internal static readonly IReadOnlyList<SchemaMigrationStep> MainMigrationSteps =
+    [
+        new(
+            MainMigrationId,
+            static (runtime, cancellationToken) =>
+                runtime.ApplyMainBaselineAsync(cancellationToken)
+        ),
+    ];
+
+    internal static readonly IReadOnlyList<SchemaMigrationStep> PosmMigrationSteps =
+    [
+        new(
+            PosmMigrationId,
+            static (runtime, cancellationToken) =>
+                runtime.ApplyPosmBaselineAsync(cancellationToken)
+        ),
+    ];
+
+    private const string MainScope = "Main";
+    private const string PosmScope = "POSM";
+    private const string DeviceActivationSignatureId = "device-activation-schema-signature";
+
+    private readonly ISchemaMigrationRuntime _runtime;
+    private readonly ILogger<SchemaMigrationCoordinator> _logger;
+    private readonly IReadOnlyList<SchemaMigrationStep> _mainMigrations;
+    private readonly IReadOnlyList<SchemaMigrationStep> _posmMigrations;
+
+    public SchemaMigrationCoordinator(
+        IConfiguration configuration,
+        SqlSugarContext mainDbContext,
+        POSMSqlSugarContext posmDbContext,
+        ILogger<SchemaMigrationCoordinator> logger
+    )
+        : this(
+            new SqlServerSchemaMigrationRuntime(
+                configuration,
+                mainDbContext,
+                posmDbContext
+            ),
+            logger
+        )
+    { }
+
+    internal SchemaMigrationCoordinator(
+        ISchemaMigrationRuntime runtime,
+        ILogger<SchemaMigrationCoordinator> logger
+    )
+        : this(runtime, logger, MainMigrationSteps, PosmMigrationSteps)
+    { }
+
+    internal SchemaMigrationCoordinator(
+        ISchemaMigrationRuntime runtime,
+        ILogger<SchemaMigrationCoordinator> logger,
+        IReadOnlyList<SchemaMigrationStep> mainMigrations,
+        IReadOnlyList<SchemaMigrationStep> posmMigrations
+    )
+    {
+        _runtime = runtime;
+        _logger = logger;
+        _mainMigrations = ValidateMigrations(mainMigrations, MainScope);
+        _posmMigrations = ValidateMigrations(posmMigrations, PosmScope);
+    }
+
+    public async Task<SchemaOperationResult> MigrateAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            _runtime.EnsureSupportedProviders();
+            // 数据库级先决条件必须在迁移锁、账本建表或业务 DDL 之前只读验证。
+            await _runtime.ValidatePrerequisitesAsync(cancellationToken);
+            await MigrateMainAsync(cancellationToken);
+            await MigratePosmAsync(cancellationToken);
+
+            var verification = await CheckCoreAsync(cancellationToken);
+            return verification.Success
+                ? SchemaOperationResult.MigrationSucceeded()
+                : verification;
+        }
+        catch (OperationCanceledException)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.Cancelled,
+                SchemaDiagnosticCodes.Cancelled
+            );
+        }
+        catch (SchemaMigrationLockUnavailableException)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.MigrationLockUnavailable,
+                SchemaDiagnosticCodes.MigrationLockUnavailable
+            );
+        }
+        catch (DeviceActivationSchemaMismatchException)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.SchemaNotReady,
+                SchemaDiagnosticCodes.DeviceActivationIncompatible
+            );
+        }
+        catch (SchemaProviderNotSupportedException)
+        {
+            LogResult(
+                "All",
+                "schema-migrate",
+                elapsedMilliseconds: 0,
+                "Failed",
+                SchemaDiagnosticCodes.ProviderUnsupported
+            );
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.DatabaseFailure,
+                SchemaDiagnosticCodes.ProviderUnsupported
+            );
+        }
+        catch (Exception)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.DatabaseFailure,
+                SchemaDiagnosticCodes.MigrationFailure
+            );
+        }
+    }
+
+    public async Task<SchemaOperationResult> CheckAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            _runtime.EnsureSupportedProviders();
+            await _runtime.ValidatePrerequisitesAsync(cancellationToken);
+            return await CheckCoreAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.Cancelled,
+                SchemaDiagnosticCodes.Cancelled
+            );
+        }
+        catch (DeviceActivationSchemaMismatchException)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.SchemaNotReady,
+                SchemaDiagnosticCodes.DeviceActivationIncompatible
+            );
+        }
+        catch (SchemaProviderNotSupportedException)
+        {
+            LogResult(
+                "All",
+                "schema-check",
+                elapsedMilliseconds: 0,
+                "Failed",
+                SchemaDiagnosticCodes.ProviderUnsupported
+            );
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.DatabaseFailure,
+                SchemaDiagnosticCodes.ProviderUnsupported
+            );
+        }
+        catch (Exception)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.DatabaseFailure,
+                SchemaDiagnosticCodes.DatabaseFailure
+            );
+        }
+    }
+
+    private async Task MigrateMainAsync(CancellationToken cancellationToken)
+    {
+        await RunMigrationsAsync(
+            SchemaDatabase.Main,
+            MainScope,
+            _mainMigrations,
+            cancellationToken
+        );
+    }
+
+    private async Task MigratePosmAsync(CancellationToken cancellationToken)
+    {
+        await RunMigrationsAsync(
+            SchemaDatabase.Posm,
+            PosmScope,
+            _posmMigrations,
+            cancellationToken
+        );
+    }
+
+    private async Task RunMigrationsAsync(
+        SchemaDatabase database,
+        string databaseScope,
+        IReadOnlyList<SchemaMigrationStep> migrations,
+        CancellationToken cancellationToken
+    )
+    {
+        await using var migrationSession = await _runtime.AcquireMigrationSessionAsync(
+            database,
+            cancellationToken
+        );
+        await migrationSession.EnsureHistoryTableAsync(cancellationToken);
+
+        foreach (var migration in migrations)
+        {
+            await RunMigrationAsync(
+                migrationSession,
+                database,
+                databaseScope,
+                migration,
+                cancellationToken
+            );
+        }
+    }
+
+    private async Task RunMigrationAsync(
+        ISchemaMigrationSession migrationSession,
+        SchemaDatabase database,
+        string databaseScope,
+        SchemaMigrationStep migration,
+        CancellationToken cancellationToken
+    )
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            if (await migrationSession.IsAppliedAsync(migration.MigrationId, cancellationToken))
+            {
+                LogResult(
+                    databaseScope,
+                    migration.MigrationId,
+                    stopwatch.ElapsedMilliseconds,
+                    "Skipped",
+                    "SCHEMA_MIGRATION_ALREADY_APPLIED"
+                );
+                return;
+            }
+
+            // 每个 versioned step 各自管理事务；这里只在该步骤完全成功后登记账本。
+            await migration.ApplyAsync(_runtime, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            await migrationSession.RecordAppliedAsync(migration.MigrationId, cancellationToken);
+
+            LogResult(
+                databaseScope,
+                migration.MigrationId,
+                stopwatch.ElapsedMilliseconds,
+                "Applied",
+                "SCHEMA_MIGRATION_APPLIED"
+            );
+        }
+        catch (Exception exception)
+        {
+            LogResult(
+                databaseScope,
+                migration.MigrationId,
+                stopwatch.ElapsedMilliseconds,
+                "Failed",
+                exception switch
+                {
+                    OperationCanceledException => SchemaDiagnosticCodes.Cancelled,
+                    SchemaMigrationLockUnavailableException =>
+                        SchemaDiagnosticCodes.MigrationLockUnavailable,
+                    _ => SchemaDiagnosticCodes.MigrationFailure,
+                }
+            );
+            throw;
+        }
+    }
+
+    private async Task<SchemaOperationResult> CheckCoreAsync(CancellationToken cancellationToken)
+    {
+        // 常规启动门禁固定为三批只读 SQL：两个账本各一批，设备激活签名一批。
+        var mainApplied = await CheckLedgerAsync(
+            SchemaDatabase.Main,
+            MainScope,
+            _mainMigrations,
+            SchemaDiagnosticCodes.MainMigrationMissing,
+            cancellationToken
+        );
+        var posmApplied = await CheckLedgerAsync(
+            SchemaDatabase.Posm,
+            PosmScope,
+            _posmMigrations,
+            SchemaDiagnosticCodes.PosmMigrationMissing,
+            cancellationToken
+        );
+        await VerifyDeviceActivationSchemaAsync(cancellationToken);
+
+        if (!mainApplied)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.SchemaNotReady,
+                SchemaDiagnosticCodes.MainMigrationMissing
+            );
+        }
+
+        if (!posmApplied)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.SchemaNotReady,
+                SchemaDiagnosticCodes.PosmMigrationMissing
+            );
+        }
+
+        return SchemaOperationResult.Ready();
+    }
+
+    private async Task<bool> CheckLedgerAsync(
+        SchemaDatabase database,
+        string databaseScope,
+        IReadOnlyList<SchemaMigrationStep> migrations,
+        string missingDiagnosticCode,
+        CancellationToken cancellationToken
+    )
+    {
+        var allApplied = true;
+        foreach (var migration in migrations)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                var applied = await _runtime.IsMigrationAppliedAsync(
+                    database,
+                    migration.MigrationId,
+                    cancellationToken
+                );
+                LogResult(
+                    databaseScope,
+                    migration.MigrationId,
+                    stopwatch.ElapsedMilliseconds,
+                    applied ? "Ready" : "Missing",
+                    applied ? SchemaDiagnosticCodes.Ready : missingDiagnosticCode
+                );
+                allApplied &= applied;
+            }
+            catch (Exception exception)
+            {
+                LogResult(
+                    databaseScope,
+                    migration.MigrationId,
+                    stopwatch.ElapsedMilliseconds,
+                    "Failed",
+                    exception is OperationCanceledException
+                        ? SchemaDiagnosticCodes.Cancelled
+                        : SchemaDiagnosticCodes.DatabaseFailure
+                );
+                throw;
+            }
+        }
+
+        return allApplied;
+    }
+
+    private async Task VerifyDeviceActivationSchemaAsync(CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            await _runtime.VerifyDeviceActivationSchemaAsync(cancellationToken);
+            LogResult(
+                PosmScope,
+                DeviceActivationSignatureId,
+                stopwatch.ElapsedMilliseconds,
+                "Ready",
+                SchemaDiagnosticCodes.Ready
+            );
+        }
+        catch (Exception exception)
+        {
+            LogResult(
+                PosmScope,
+                DeviceActivationSignatureId,
+                stopwatch.ElapsedMilliseconds,
+                "Failed",
+                exception switch
+                {
+                    OperationCanceledException => SchemaDiagnosticCodes.Cancelled,
+                    DeviceActivationSchemaMismatchException =>
+                        SchemaDiagnosticCodes.DeviceActivationIncompatible,
+                    _ => SchemaDiagnosticCodes.DatabaseFailure,
+                }
+            );
+            throw;
+        }
+    }
+
+    private void LogResult(
+        string databaseScope,
+        string migrationId,
+        long elapsedMilliseconds,
+        string result,
+        string diagnosticCode
+    ) =>
+        _logger.LogInformation(
+            "Schema operation Scope={DatabaseScope} MigrationId={MigrationId} ElapsedMs={ElapsedMs} Result={Result} DiagnosticCode={DiagnosticCode}",
+            databaseScope,
+            migrationId,
+            elapsedMilliseconds,
+            result,
+            diagnosticCode
+        );
+
+    private static IReadOnlyList<SchemaMigrationStep> ValidateMigrations(
+        IReadOnlyList<SchemaMigrationStep> migrations,
+        string databaseScope
+    )
+    {
+        if (migrations.Count == 0)
+        {
+            throw new ArgumentException($"{databaseScope} 迁移步骤不得为空。", nameof(migrations));
+        }
+
+        if (
+            migrations.Any(migration => string.IsNullOrWhiteSpace(migration.MigrationId))
+            || migrations.Any(migration =>
+                migration.MigrationId.Length
+                    > SqlServerSchemaMigrationStore.MigrationIdMaxLength
+            )
+            || migrations.Select(migration => migration.MigrationId).Distinct(StringComparer.Ordinal).Count()
+                != migrations.Count
+        )
+        {
+            throw new ArgumentException(
+                $"{databaseScope} 迁移 ID 必须非空、唯一且不超过 {SqlServerSchemaMigrationStore.MigrationIdMaxLength} 个字符。",
+                nameof(migrations)
+            );
+        }
+
+        return migrations.ToArray();
+    }
+
+}
