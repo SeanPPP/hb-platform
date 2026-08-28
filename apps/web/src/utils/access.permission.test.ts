@@ -996,6 +996,7 @@ const adminWebMenuPreview = buildWebRoleMenuPreview(adminAccess, translate, {
   includeHidden: true,
 })
 const productStatisticMenu = findWebMenuNode(adminWebMenuPreview, '/executive-sales-intelligence/product-statistics')
+const compactSalesBoardMenu = findWebMenuNode(adminWebMenuPreview, '/executive-sales-intelligence/compact-sales-board')
 const productMovementReportOnlyWebPreview = buildWebRoleMenuPreview(productMovementReportOnlyAccess, translate, {
   includeHidden: true,
 })
@@ -1007,6 +1008,10 @@ const productMovementReportMenu = findWebMenuNode(
 const hiddenSalesDetailForProductMovementOnly = findWebMenuNode(
   productMovementReportOnlyWebPreview,
   '/executive-sales-intelligence/sales-detail-v2',
+)
+const hiddenCompactSalesBoardForProductMovementOnly = findWebMenuNode(
+  productMovementReportOnlyWebPreview,
+  '/executive-sales-intelligence/compact-sales-board',
 )
 const localPurchaseOnlyWebPreview = buildWebRoleMenuPreview(localPurchaseDashboardOnlyAccess, translate, {
   includeHidden: true,
@@ -1119,6 +1124,18 @@ assertEqual(
 )
 
 assertEqual(
+  compactSalesBoardMenu?.visible,
+  true,
+  '有 Reports.View 时应显示独立销售看板入口',
+)
+
+assertEqual(
+  compactSalesBoardMenu?.permissionCodes.join(','),
+  P.Reports.View,
+  '独立销售看板应仅要求 Reports.View 权限',
+)
+
+assertEqual(
   productMovementParentMenu?.visible,
   true,
   '只有商品经营分析权限时销售看板父菜单应可见',
@@ -1134,6 +1151,12 @@ assertEqual(
   hiddenSalesDetailForProductMovementOnly?.visible,
   false,
   '只有商品经营分析权限时不应打开销售明细菜单',
+)
+
+assertEqual(
+  hiddenCompactSalesBoardForProductMovementOnly?.visible,
+  false,
+  '只有商品经营分析权限时不应打开独立销售看板',
 )
 
 assertEqual(

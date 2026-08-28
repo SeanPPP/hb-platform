@@ -161,6 +161,19 @@ namespace BlazorApp.Api.Interfaces.React
         );
 
         /// <summary>
+        /// 获取紧凑销售看板；调用方传入的分店范围必须已经过授权解析。
+        /// </summary>
+        Task<CompactSalesBoardDto> GetCompactSalesBoardAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes = null,
+            List<string>? chinaSupplierCodes = null,
+            string? productCode = null,
+            int pageIndex = 1,
+            int pageSize = 80,
+            bool forceRefresh = false
+        );
+
+        /// <summary>
         /// 获取 Best Sellers 商品列表（销量排名）
         /// 用于前端 StoreFront 的 Best Sellers 页面
         /// </summary>

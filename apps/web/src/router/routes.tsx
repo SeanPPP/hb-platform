@@ -44,6 +44,7 @@ import ProductImportPage from '../pages/DomesticPurchase/ProductImport'
 import ProductGradeManagementPage from '../pages/Warehouse/ProductGradeManagement'
 import NotFoundPage from '../pages/NotFound'
 import ExecutiveSalesIntelligencePage from '../pages/ExecutiveSalesIntelligence'
+import CompactSalesBoardPage from '../pages/ExecutiveSalesIntelligence/CompactSalesBoard'
 import SalesDetailAnalysisPage from '../pages/ExecutiveSalesIntelligence/SalesDetailAnalysisV2'
 import ProductMovementReportPage from '../pages/ExecutiveSalesIntelligence/ProductMovementReport'
 import WarehouseProductFlowAnalysisPage from '../pages/ExecutiveSalesIntelligence/WarehouseProductFlowAnalysis'
@@ -575,6 +576,16 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewReports',
         },
         element: <SalesDetailAnalysisPage />,
+      },
+      {
+        path: '/executive-sales-intelligence/compact-sales-board',
+        meta: {
+          title: 'menu.compactSalesBoard',
+          icon: 'BarChartOutlined',
+          keepAlive: true,
+          accessKey: 'canViewReports',
+        },
+        element: <CompactSalesBoardPage />,
       },
       {
         path: '/executive-sales-intelligence/product-movement-report',

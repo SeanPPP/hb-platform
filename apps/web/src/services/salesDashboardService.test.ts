@@ -1,4 +1,4 @@
-import { getBestSellers } from './salesDashboardService'
+import { getBestSellers, getCompactSalesBoard } from './salesDashboardService'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -19,6 +19,27 @@ const originalFetch = globalThis.fetch
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   capturedUrl = String(input)
   capturedInit = init
+  const requestUrl = new URL(capturedUrl, 'http://localhost')
+
+  if (requestUrl.pathname === '/api/react/v1/dashboard/compact-sales-board') {
+    return new Response(
+      JSON.stringify({
+        success: true,
+        data: {
+          Stores: [{ BranchCode: 'S1', BranchName: 'Store 1', TotalAmount: 100, TotalQuantity: 10, DomesticSupplierAmount: 70 }],
+          ChinaSuppliers: [{ SupplierCode: 'SUP-CN', SupplierName: '国内供应商', TotalAmount: 70, TotalQuantity: 7 }],
+          ProductDetails: {
+            Data: [{ ProductCode: 'P001', ItemNumber: 'HB001', ProductName: '国内商品', ChinaSupplierCode: 'SUP-CN', TotalQuantity: 7, UnitPrice: 10, TotalAmount: 70 }],
+            Total: 1,
+            PageIndex: 1,
+            PageSize: 80,
+          },
+          StatisticStatus: 'Fresh',
+        },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+  }
 
   return new Response(
     JSON.stringify({
@@ -94,6 +115,31 @@ try {
   assertEqual(result.statisticStatus, 'Fresh', '热销商品响应应接收统计状态')
   assertEqual(result.statisticMessage, 'Ready', '热销商品响应应接收统计提示')
   assertEqual(result.pageIndex, 2, '热销商品响应应继续解包 pageIndex')
+
+  const board = await getCompactSalesBoard(
+    { startDate: '2026-06-17', endDate: '2026-06-17' },
+    ['S1'],
+    ['SUP-CN'],
+    'P001',
+    1,
+    80,
+    controller.signal,
+    true,
+  )
+  const boardRequestUrl = new URL(capturedUrl, 'http://localhost')
+  assertEqual(boardRequestUrl.pathname, '/api/react/v1/dashboard/compact-sales-board', '销售看板应请求独立接口')
+  assertEqual(boardRequestUrl.searchParams.get('startDate'), '2026-06-17', '销售看板应传递开始日期')
+  assertEqual(boardRequestUrl.searchParams.get('endDate'), '2026-06-17', '销售看板应传递结束日期')
+  assertEqual(boardRequestUrl.searchParams.getAll('branchCodes').join(','), 'S1', '销售看板应传递分店筛选')
+  assertEqual(boardRequestUrl.searchParams.getAll('chinaSupplierCodes').join(','), 'SUP-CN', '销售看板应传递国内供应商筛选')
+  assertEqual(boardRequestUrl.searchParams.get('productCode'), 'P001', '销售看板应传递商品联动筛选')
+  assertEqual(boardRequestUrl.searchParams.get('forceRefresh'), 'true', '销售看板手动刷新应传递强制刷新标记')
+  assertEqual(capturedInit?.method, 'GET', '销售看板接口应使用 GET 请求')
+  assertEqual(capturedInit?.signal, controller.signal, '销售看板接口应继续透传 AbortSignal')
+  assertEqual(board.stores[0]?.domesticSupplierAmount, 70, '销售看板应归一化分店国内供应商金额')
+  assertEqual(board.chinaSuppliers[0]?.supplierCode, 'SUP-CN', '销售看板应归一化国内供应商')
+  assertEqual(board.productDetails.data[0]?.itemNumber, 'HB001', '销售看板应归一化商品货号')
+  assertEqual(board.productDetails.data[0]?.unitPrice, 10, '销售看板应归一化商品单价')
 
   console.log('salesDashboardService.test: ok')
 } finally {

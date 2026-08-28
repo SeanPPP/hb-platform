@@ -114,6 +114,198 @@ public sealed class DataSyncIncrementalPosmSupplierMappingsTests : IDisposable
         Assert.False(string.IsNullOrWhiteSpace(taskLog.ErrorMessage));
     }
 
+    [Fact]
+    public async Task SyncPosmProductSupplierMappingsIncrementalAsync_国内供应商关系更新会刷新既有映射()
+    {
+        var start = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+        await SeedProductAsync("P-RELATION", "200", start.AddDays(-1));
+        await SeedWarehouseProductWithDomesticSupplierAsync("P-RELATION", "CN-NEW", start.AddHours(1));
+        await SeedPosmMappingAsync("P-RELATION", "200", "CN-OLD", start.AddDays(-1));
+
+        var result = await CreateService().SyncPosmProductSupplierMappingsIncrementalAsync(start);
+
+        Assert.True(result.IsSuccess, result.Message);
+        Assert.Equal(1, result.UpdatedCount);
+        var mapping = await _posmDb.Queryable<PosmProductSupplierMapping>()
+            .SingleAsync(row => row.ProductCode == "P-RELATION");
+        Assert.Equal("CN-NEW", mapping.ChinaSupplierCode);
+        Assert.False(mapping.IsDeleted);
+    }
+
+    [Fact]
+    public async Task SyncPosmProductSupplierMappingsIncrementalAsync_仓库关系软删除会清空中国供应商编码()
+    {
+        var start = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+        await SeedProductAsync("P-WAREHOUSE-DELETED", "200", start.AddDays(-1));
+        await SeedWarehouseProductWithDomesticSupplierAsync(
+            "P-WAREHOUSE-DELETED", "CN-OLD", start.AddHours(1), warehouseIsDeleted: true);
+        await SeedPosmMappingAsync("P-WAREHOUSE-DELETED", "200", "CN-OLD", start.AddDays(-1));
+
+        var result = await CreateService().SyncPosmProductSupplierMappingsIncrementalAsync(start);
+
+        Assert.True(result.IsSuccess, result.Message);
+        Assert.Equal(1, result.UpdatedCount);
+        var mapping = await _posmDb.Queryable<PosmProductSupplierMapping>()
+            .SingleAsync(row => row.ProductCode == "P-WAREHOUSE-DELETED");
+        Assert.Null(mapping.ChinaSupplierCode);
+        Assert.False(mapping.IsDeleted);
+    }
+
+    [Fact]
+    public async Task SyncPosmProductSupplierMappingsIncrementalAsync_商品软删除保留历史映射()
+    {
+        var start = new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc);
+        await SeedProductAsync("P-PRODUCT-DELETED", "200", start.AddHours(1), isDeleted: true);
+        await SeedPosmMappingAsync("P-PRODUCT-DELETED", "200", "CN-OLD", start.AddDays(-1));
+
+        var result = await CreateService().SyncPosmProductSupplierMappingsIncrementalAsync(start);
+
+        Assert.True(result.IsSuccess, result.Message);
+        Assert.Equal(0, result.DeletedCount);
+        var mapping = await _posmDb.Queryable<PosmProductSupplierMapping>()
+            .SingleAsync(row => row.ProductCode == "P-PRODUCT-DELETED");
+        Assert.Equal("CN-OLD", mapping.ChinaSupplierCode);
+        Assert.False(mapping.IsDeleted);
+    }
+
+    [Fact]
+    public void SyncPosmProductSupplierMappingsAsync_全量同步契约保留历史并可激活软删除映射()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var sourcePath = Path.Combine(
+            repositoryRoot,
+            "services/backend/BlazorApp.Api/Services/React/DataSyncFullService.cs"
+        );
+        var source = File.ReadAllText(sourcePath);
+        var methodStart = source.IndexOf("public async Task<SyncResult> SyncPosmProductSupplierMappingsAsync()", StringComparison.Ordinal);
+        var methodEnd = source.IndexOf("public async Task<SyncResult> SyncProductCategoriesFromHqAsync", methodStart, StringComparison.Ordinal);
+        Assert.True(methodStart >= 0, "未找到全量 POSM 映射同步方法。");
+        Assert.True(methodEnd > methodStart, "无法确定全量 POSM 映射同步方法边界。");
+        var method = source[methodStart..methodEnd];
+
+        Assert.DoesNotContain("Deleteable<PosmProductSupplierMapping>", method, StringComparison.Ordinal);
+        Assert.Contains("|| existing.IsDeleted", method, StringComparison.Ordinal);
+        Assert.Contains(".ToListAsync();", method, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void POSM映射全量与增量同步必须在同一执行租约内读取快照并提交()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var fullMethod = ReadMethod(
+            Path.Combine(
+                repositoryRoot,
+                "services/backend/BlazorApp.Api/Services/React/DataSyncFullService.cs"
+            ),
+            "public async Task<SyncResult> SyncPosmProductSupplierMappingsAsync()",
+            "public async Task<SyncResult> SyncProductCategoriesFromHqAsync"
+        );
+        var incrementalMethod = ReadMethod(
+            Path.Combine(
+                repositoryRoot,
+                "services/backend/BlazorApp.Api/Services/React/DataSyncIncrementalService.cs"
+            ),
+            "public async Task<SyncResult> SyncPosmProductSupplierMappingsIncrementalAsync(",
+            "private async Task<ScheduledTaskLog> StartPosmIncrementalTaskLogAsync"
+        );
+
+        AssertLeaseCoversSnapshotAndCommit(fullMethod, "productsTask");
+        AssertLeaseCoversSnapshotAndCommit(incrementalMethod, "changedProducts");
+    }
+
+    [Fact]
+    public void POSM映射执行租约必须使用统一资源和SQLServer事务级排他锁()
+    {
+        var source = File.ReadAllText(
+            Path.Combine(
+                FindRepositoryRoot(),
+                "services/backend/BlazorApp.Api/Services/React/PosmProductSupplierMappingSyncLock.cs"
+            )
+        );
+
+        Assert.Contains("SemaphoreSlim", source, StringComparison.Ordinal);
+        Assert.Contains("HB:PosmProductSupplierMappingSync", source, StringComparison.Ordinal);
+        Assert.Contains("sys.sp_getapplock", source, StringComparison.Ordinal);
+        Assert.Contains("@LockMode = 'Exclusive'", source, StringComparison.Ordinal);
+        Assert.Contains("@LockOwner = 'Transaction'", source, StringComparison.Ordinal);
+        Assert.Contains("LockTimeoutMilliseconds = 10_000", source, StringComparison.Ordinal);
+        Assert.Contains(
+            "WaitAsync(TimeSpan.FromMilliseconds(LockTimeoutMilliseconds))",
+            source,
+            StringComparison.Ordinal
+        );
+        Assert.Contains("PosmProductSupplierMappingSyncLockException", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task POSM映射增量同步并发运行时第二次不会进入源快照且最终只有一条映射()
+    {
+        var now = DateTime.UtcNow;
+        await SeedProductAsync("P-CONCURRENT", "200", now);
+        await SeedWarehouseProductWithDomesticSupplierAsync("P-CONCURRENT", "CN-CONCURRENT", now);
+
+        var testProbeProperty = typeof(PosmProductSupplierMappingSyncLock).GetProperty(
+            "TestProbeAsync",
+            BindingFlags.Static | BindingFlags.NonPublic
+        );
+        Assert.NotNull(testProbeProperty);
+        var originalProbe = (Func<int, Task>?)testProbeProperty.GetValue(null);
+        var firstSnapshotEntered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var secondWaitStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowFirstToContinue = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var waitStartedCount = 0;
+        var snapshotEnteredCount = 0;
+
+        testProbeProperty.SetValue(
+            null,
+            (Func<int, Task>)(async phase =>
+            {
+                if (phase == 1 && Interlocked.Increment(ref waitStartedCount) == 2)
+                {
+                    secondWaitStarted.TrySetResult();
+                }
+
+                if (phase == 2 && Interlocked.Increment(ref snapshotEnteredCount) == 1)
+                {
+                    firstSnapshotEntered.TrySetResult();
+                    await allowFirstToContinue.Task;
+                }
+            })
+        );
+
+        try
+        {
+            var firstRun = CreateService().SyncPosmProductSupplierMappingsIncrementalAsync(
+                now.AddMinutes(-1)
+            );
+            await firstSnapshotEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            var secondRun = CreateService().SyncPosmProductSupplierMappingsIncrementalAsync(
+                now.AddMinutes(-1)
+            );
+            await secondWaitStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            // 第二个运行已经请求租约，但第一个尚未放行，绝不能读取源快照或基于旧 POSM 快照插入。
+            Assert.Equal(1, Volatile.Read(ref snapshotEnteredCount));
+            allowFirstToContinue.TrySetResult();
+
+            var results = await Task.WhenAll(firstRun, secondRun);
+            Assert.All(results, result => Assert.True(result.IsSuccess, result.Message));
+
+            var mappings = await _posmDb.Queryable<PosmProductSupplierMapping>()
+                .Where(mapping => mapping.ProductCode == "P-CONCURRENT")
+                .ToListAsync();
+            var mapping = Assert.Single(mappings);
+            Assert.Equal("200", mapping.LocalSupplierCode);
+            Assert.Equal("CN-CONCURRENT", mapping.ChinaSupplierCode);
+        }
+        finally
+        {
+            allowFirstToContinue.TrySetResult();
+            testProbeProperty.SetValue(null, originalProbe);
+        }
+    }
+
     public void Dispose()
     {
         _localDb.Dispose();
@@ -167,7 +359,12 @@ public sealed class DataSyncIncrementalPosmSupplierMappingsTests : IDisposable
         return taskLog;
     }
 
-    private async Task SeedProductAsync(string productCode, string localSupplierCode, DateTime updatedAt)
+    private async Task SeedProductAsync(
+        string productCode,
+        string localSupplierCode,
+        DateTime updatedAt,
+        bool isDeleted = false
+    )
     {
         await _localDb.Insertable(
             new Product
@@ -178,22 +375,26 @@ public sealed class DataSyncIncrementalPosmSupplierMappingsTests : IDisposable
                 ProductName = productCode,
                 UpdatedAt = updatedAt,
                 CreatedAt = updatedAt.AddDays(-1),
-                IsDeleted = false,
+                IsDeleted = isDeleted,
             }
         ).ExecuteCommandAsync();
     }
 
     private async Task SeedWarehouseProductWithDomesticSupplierAsync(
         string productCode,
-        string supplierCode
+        string supplierCode,
+        DateTime? updatedAt = null,
+        bool warehouseIsDeleted = false
     )
     {
+        var timestamp = updatedAt ?? DateTime.UtcNow;
         await _localDb.Insertable(
             new DomesticProduct
             {
                 ProductCode = productCode,
                 SupplierCode = supplierCode,
-                CreatedAt = DateTime.UtcNow,
+                CreatedAt = timestamp.AddDays(-1),
+                UpdatedAt = timestamp,
                 IsDeleted = false,
             }
         ).ExecuteCommandAsync();
@@ -202,10 +403,30 @@ public sealed class DataSyncIncrementalPosmSupplierMappingsTests : IDisposable
             new WarehouseProduct
             {
                 ProductCode = productCode,
-                CreatedAt = DateTime.UtcNow,
-                IsDeleted = false,
+                CreatedAt = timestamp.AddDays(-1),
+                UpdatedAt = timestamp,
+                IsDeleted = warehouseIsDeleted,
             }
         ).ExecuteCommandAsync();
+    }
+
+    private async Task SeedPosmMappingAsync(
+        string productCode,
+        string localSupplierCode,
+        string? chinaSupplierCode,
+        DateTime updatedAt
+    )
+    {
+        await _posmDb.Insertable(new PosmProductSupplierMapping
+        {
+            ProductCode = productCode,
+            LocalSupplierCode = localSupplierCode,
+            ChinaSupplierCode = chinaSupplierCode,
+            LastUpdateTime = updatedAt,
+            CreatedAt = updatedAt.AddDays(-1),
+            UpdatedAt = updatedAt,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
     }
 
     private static ConnectionConfig CreateConnectionConfig(string connectionString) =>
@@ -250,6 +471,42 @@ public sealed class DataSyncIncrementalPosmSupplierMappingsTests : IDisposable
         {
             SqliteTempFileCleanup.DeleteIfExists(path);
         }
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        for (var directory = new DirectoryInfo(Directory.GetCurrentDirectory()); directory != null; directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "services/backend/BlazorApp.Api/Services/React/DataSyncFullService.cs")))
+                return directory.FullName;
+        }
+
+        throw new DirectoryNotFoundException("未找到 hb-platform 仓库根目录。");
+    }
+
+    private static void AssertLeaseCoversSnapshotAndCommit(string method, string snapshotMarker)
+    {
+        var acquireIndex = method.IndexOf(
+            "PosmProductSupplierMappingSyncLock.AcquireAsync",
+            StringComparison.Ordinal
+        );
+        var snapshotIndex = method.IndexOf(snapshotMarker, StringComparison.Ordinal);
+        var existingMappingsIndex = method.IndexOf("existingMappings", StringComparison.Ordinal);
+        var commitIndex = method.IndexOf("CommitAsync", StringComparison.Ordinal);
+
+        Assert.True(acquireIndex >= 0, "同步方法必须获取 POSM 映射执行租约。");
+        Assert.True(snapshotIndex > acquireIndex, "源快照必须在获取执行租约之后读取。");
+        Assert.True(existingMappingsIndex > acquireIndex, "POSM 既有映射必须在执行租约内重新读取。");
+        Assert.True(commitIndex > existingMappingsIndex, "执行租约必须覆盖 POSM 写入直到提交。");
+    }
+
+    private static string ReadMethod(string path, string startMarker, string endMarker)
+    {
+        var source = File.ReadAllText(path);
+        var start = source.IndexOf(startMarker, StringComparison.Ordinal);
+        var end = source.IndexOf(endMarker, start, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end > start, $"无法提取方法: {startMarker}");
+        return source[start..end];
     }
 
     private static SqlSugarContext CreateSqlSugarContext(ISqlSugarClient db)

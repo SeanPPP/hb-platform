@@ -165,6 +165,13 @@ namespace BlazorApp.Api.Services.React
         public int OrderCount { get; set; }
     }
 
+    internal sealed class CompactSalesBoardAggregateRow
+    {
+        public string Code { get; set; } = string.Empty;
+        public int TotalQuantity { get; set; }
+        public decimal TotalAmount { get; set; }
+    }
+
     internal class StatisticDateBranchRow
     {
         public DateTime Date { get; set; }
@@ -5319,9 +5326,252 @@ namespace BlazorApp.Api.Services.React
         }
 
         /// <summary>
-        /// 获取 Best Sellers 商品列表（销量排名）
-        /// 用于前端 StoreFront 的 Best Sellers 页面
+        /// 获取紧凑销售看板。统计表只按门店和商品两层聚合，避免把门店×商品组合先拉到应用内存。
         /// </summary>
+        public async Task<CompactSalesBoardDto> GetCompactSalesBoardAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes = null,
+            List<string>? chinaSupplierCodes = null,
+            string? productCode = null,
+            int pageIndex = 1,
+            int pageSize = 80,
+            bool forceRefresh = false
+        )
+        {
+            ValidateDateRange(dateRange);
+            if ((dateRange.EndDate.Date - dateRange.StartDate.Date).TotalDays > 365)
+                throw new ArgumentException("紧凑销售看板日期范围不能超过 366 天。");
+
+            pageIndex = Math.Max(1, pageIndex);
+            pageSize = Math.Clamp(pageSize, 20, 200);
+            var normalizedBranchCodes = branchCodes == null
+                ? null
+                : NormalizeCodes(branchCodes).OrderBy(code => code, StringComparer.OrdinalIgnoreCase).ToList();
+            var normalizedChinaSupplierCodes = NormalizeCodes(chinaSupplierCodes)
+                .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var normalizedProductCode = string.IsNullOrWhiteSpace(productCode) ? null : productCode.Trim();
+            var statisticEndExclusive = dateRange.EndDate.Date.AddDays(1);
+            // 与商品销量分析共用 generation lease：Clear 发生在查询期间时，结果仍返回但不得写回旧代缓存。
+            var expectedGeneration = SalesDashboardCacheKeys.CaptureProductSalesAnalysisGeneration();
+            var status = await GetProductStatisticStatusAsync(dateRange.StartDate.Date, dateRange.EndDate.Date);
+            var cacheKey = SalesDashboardCacheKeys.CompactSalesBoard(
+                dateRange,
+                normalizedBranchCodes,
+                normalizedChinaSupplierCodes,
+                normalizedProductCode,
+                pageIndex,
+                pageSize,
+                status.CacheVersion
+            );
+
+            if (!forceRefresh && _cache.TryGetValue<CompactSalesBoardDto>(cacheKey, out var cached) && cached != null)
+                return cached;
+
+            CompactSalesBoardDto Empty() => new()
+            {
+                StatisticStatus = status.Status,
+                StatisticMessage = status.Message,
+                ProductDetails = new PagedCompactSalesBoardProductDto
+                {
+                    PageIndex = pageIndex,
+                    PageSize = pageSize,
+                },
+            };
+
+            // 统计未完成或 fail-closed 的空授权范围绝不读取数据，避免把旧统计误展示为当前结果。
+            if (status.Status != SalesStatisticRefreshStatus.Fresh || normalizedBranchCodes is { Count: 0 })
+                return CacheCompactSalesBoard(cacheKey, Empty(), status.Status, expectedGeneration);
+
+            // 先取得有效 POSM 映射，再让统计表只扫描可展示的商品；未传供应商时也不可回退为全量统计扫描。
+            var productSupplierMap = await GetChinaSupplierProductMapAsync(
+                normalizedChinaSupplierCodes.Count > 0 ? normalizedChinaSupplierCodes : null
+            );
+            if (normalizedProductCode != null)
+            {
+                productSupplierMap = productSupplierMap
+                    .Where(pair => string.Equals(pair.Key, normalizedProductCode, StringComparison.OrdinalIgnoreCase))
+                    .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+            }
+            if (productSupplierMap.Count == 0)
+                return CacheCompactSalesBoard(cacheKey, Empty(), status.Status, expectedGeneration);
+
+            var candidateProductCodes = productSupplierMap.Keys.ToList();
+            var branchCodeBatches = normalizedBranchCodes == null
+                ? new List<List<string>?> { null }
+                : BatchProductSalesCodes(normalizedBranchCodes).Select(batch => (List<string>?)batch).ToList();
+            var productCodeBatches = BatchProductSalesCodes(candidateProductCodes)
+                .Select(batch => (List<string>?)batch)
+                .ToList();
+
+            var storeAggregates = new Dictionary<string, CompactSalesBoardAggregateRow>(StringComparer.OrdinalIgnoreCase);
+            var productAggregates = new Dictionary<string, CompactSalesBoardAggregateRow>(StringComparer.OrdinalIgnoreCase);
+            foreach (var branchCodeBatch in branchCodeBatches)
+            {
+                foreach (var productCodeBatch in productCodeBatches)
+                {
+                    var baseQuery = _context.Db.Queryable<ProductStoreDailySalesStatistic>()
+                        .Where(s => s.Date >= dateRange.StartDate.Date && s.Date < statisticEndExclusive)
+                        .Where(s => s.SupplierCode == CHINA_LOCAL_SUPPLIER_CODE)
+                        .Where(s => productCodeBatch!.Contains(s.ProductCode));
+                    if (branchCodeBatch != null)
+                        baseQuery = baseQuery.Where(s => branchCodeBatch.Contains(s.BranchCode));
+
+                    // 两类聚合分别在 SQL 完成；内存只合并跨 500 条 IN 批次的少量聚合行。
+                    var storeRows = await baseQuery
+                        .GroupBy(s => s.BranchCode)
+                        .Select(s => new CompactSalesBoardAggregateRow
+                        {
+                            Code = s.BranchCode,
+                            TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
+                            TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
+                        })
+                        .ToListAsync();
+                    var productRows = await baseQuery
+                        .GroupBy(s => s.ProductCode)
+                        .Select(s => new CompactSalesBoardAggregateRow
+                        {
+                            Code = s.ProductCode,
+                            TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
+                            TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
+                        })
+                        .ToListAsync();
+                    MergeCompactSalesBoardAggregates(storeAggregates, storeRows);
+                    MergeCompactSalesBoardAggregates(productAggregates, productRows);
+                }
+            }
+
+            if (productAggregates.Count == 0)
+                return CacheCompactSalesBoard(cacheKey, Empty(), status.Status, expectedGeneration);
+
+            var storeCodes = storeAggregates.Keys.Where(code => !string.IsNullOrWhiteSpace(code)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var storeNameMap = await GetStoreNameMapAsync(storeCodes);
+            var supplierCodes = productAggregates.Keys
+                .Select(productCode => productSupplierMap[productCode])
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var supplierNameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var batch in BatchProductSalesCodes(supplierCodes))
+            {
+                var batchNameMap = await GetChinaSupplierNameMapAsync(batch);
+                foreach (var (supplierCode, supplierName) in batchNameMap)
+                    supplierNameMap.TryAdd(supplierCode, supplierName);
+            }
+
+            var stores = storeAggregates.Values
+                .Select(row => new CompactSalesBoardStoreDto
+                {
+                    BranchCode = row.Code,
+                    BranchName = storeNameMap.GetValueOrDefault(row.Code, row.Code),
+                    TotalAmount = row.TotalAmount,
+                    TotalQuantity = row.TotalQuantity,
+                    DomesticSupplierAmount = row.TotalAmount,
+                })
+                .OrderByDescending(row => row.TotalAmount)
+                .ThenBy(row => row.BranchCode, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var suppliers = productAggregates.Values.GroupBy(row => productSupplierMap[row.Code], StringComparer.OrdinalIgnoreCase)
+                .Select(group => new CompactSalesBoardChinaSupplierDto
+                {
+                    SupplierCode = group.Key,
+                    SupplierName = supplierNameMap.GetValueOrDefault(group.Key, group.Key),
+                    TotalAmount = group.Sum(row => row.TotalAmount),
+                    TotalQuantity = group.Sum(row => row.TotalQuantity),
+                })
+                .OrderByDescending(row => row.TotalAmount)
+                .ThenBy(row => row.SupplierCode, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var products = productAggregates.Values
+                .Select(row => new CompactSalesBoardProductDto
+                {
+                    ProductCode = row.Code,
+                    TotalQuantity = row.TotalQuantity,
+                    TotalAmount = row.TotalAmount,
+                    ChinaSupplierCode = productSupplierMap[row.Code],
+                    ChinaSupplierName = supplierNameMap.GetValueOrDefault(productSupplierMap[row.Code], productSupplierMap[row.Code]),
+                })
+                .OrderByDescending(row => row.TotalAmount)
+                .ThenBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var total = products.Count;
+            var safeOffset = (long)(pageIndex - 1) * pageSize;
+            var page = safeOffset >= total
+                ? new List<CompactSalesBoardProductDto>()
+                : products.Skip((int)safeOffset).Take(pageSize).ToList();
+            var productInfoMap = await GetBestSellerProductInfoMapAsync(page.Select(row => row.ProductCode).ToList());
+            foreach (var product in page)
+            {
+                if (productInfoMap.TryGetValue(product.ProductCode, out var productInfo))
+                {
+                    product.ItemNumber = productInfo.ItemNumber;
+                    product.ProductImage = productInfo.ProductImage;
+                    product.ProductName = productInfo.ProductName ?? product.ProductName;
+                }
+
+                product.UnitPrice = product.TotalQuantity > 0 ? Math.Round(product.TotalAmount / product.TotalQuantity, 4) : 0m;
+            }
+
+            return CacheCompactSalesBoard(cacheKey, new CompactSalesBoardDto
+            {
+                Stores = stores,
+                ChinaSuppliers = suppliers,
+                ProductDetails = new PagedCompactSalesBoardProductDto { Data = page, Total = total, PageIndex = pageIndex, PageSize = pageSize },
+                StatisticStatus = status.Status,
+                StatisticMessage = status.Message,
+            }, status.Status, expectedGeneration);
+        }
+
+        private static void MergeCompactSalesBoardAggregates(
+            Dictionary<string, CompactSalesBoardAggregateRow> target,
+            IEnumerable<CompactSalesBoardAggregateRow> source
+        )
+        {
+            foreach (var row in source.Where(row => !string.IsNullOrWhiteSpace(row.Code)))
+            {
+                if (target.TryGetValue(row.Code, out var existing))
+                {
+                    existing.TotalQuantity += row.TotalQuantity;
+                    existing.TotalAmount += row.TotalAmount;
+                    continue;
+                }
+
+                target[row.Code] = row;
+            }
+        }
+
+        private CompactSalesBoardDto CacheCompactSalesBoard(
+            string cacheKey,
+            CompactSalesBoardDto board,
+            string status,
+            long expectedGeneration
+        )
+        {
+            ProductSalesAnalysisCacheWriteInterceptor?.Invoke();
+            var duration = string.Equals(status, SalesStatisticRefreshStatus.Fresh, StringComparison.OrdinalIgnoreCase)
+                ? TimeSpan.FromMinutes(2)
+                : TimeSpan.FromSeconds(10);
+            SalesDashboardCacheKeys.TryExecuteProductSalesAnalysisCacheWrite(
+                cacheKey,
+                expectedGeneration,
+                (registrationToken, expirationToken) =>
+                {
+                    _cache.Set(
+                        cacheKey,
+                        board,
+                        BuildProductSalesAnalysisCacheOptions(
+                            cacheKey,
+                            duration,
+                            registrationToken,
+                            expirationToken
+                        )
+                    );
+                }
+            );
+            return board;
+        }
+
         public async Task<BestSellerResponseDto> GetBestSellersAsync(
             DateRangeDto dateRange,
             List<string>? branchCodes = null,

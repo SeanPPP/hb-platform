@@ -1871,6 +1871,56 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         Assert.Equal("HB001", capturedProductSearch);
     }
 
+    [Fact]
+    public async Task GetCompactSalesBoard_普通用户无分店时拒绝且不调用服务()
+    {
+        var serviceMock = new Mock<ISalesDashboardReactService>();
+        var controller = CreateController(serviceMock.Object, CreateUserService(Array.Empty<string>()));
+
+        var response = await controller.GetCompactSalesBoard(
+            new DateTime(2026, 8, 1),
+            new DateTime(2026, 8, 1)
+        );
+
+        Assert.IsType<ForbidResult>(response);
+        serviceMock.Verify(service => service.GetCompactSalesBoardAsync(
+            It.IsAny<DateRangeDto>(),
+            It.IsAny<List<string>?>(),
+            It.IsAny<List<string>?>(),
+            It.IsAny<string?>(),
+            It.IsAny<int>(),
+            It.IsAny<int>(),
+            It.IsAny<bool>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task GetCompactSalesBoard_普通用户请求越权分店时仅传授权交集()
+    {
+        List<string>? capturedBranchCodes = null;
+        var serviceMock = new Mock<ISalesDashboardReactService>();
+        serviceMock.Setup(service => service.GetCompactSalesBoardAsync(
+                It.IsAny<DateRangeDto>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<List<string>?>(),
+                It.IsAny<string?>(),
+                It.IsAny<int>(),
+                It.IsAny<int>(),
+                It.IsAny<bool>()))
+            .Callback<DateRangeDto, List<string>?, List<string>?, string?, int, int, bool>(
+                (_, branchCodes, _, _, _, _, _) => capturedBranchCodes = branchCodes)
+            .ReturnsAsync(new CompactSalesBoardDto());
+        var controller = CreateController(serviceMock.Object, CreateUserService(new[] { "S1", "S3" }));
+
+        var response = await controller.GetCompactSalesBoard(
+            new DateTime(2026, 8, 1),
+            new DateTime(2026, 8, 1),
+            branchCodes: new List<string> { "S1", "S2" }
+        );
+
+        Assert.IsType<OkObjectResult>(response);
+        Assert.Equal(new[] { "S1" }, capturedBranchCodes);
+    }
+
     private async Task SeedStoreSalesStatisticAsync(
         DateTime date,
         string branchCode,
