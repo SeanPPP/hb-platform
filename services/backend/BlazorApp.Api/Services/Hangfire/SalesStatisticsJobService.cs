@@ -2575,9 +2575,9 @@ namespace BlazorApp.Api.Services
                     supplementalReturnAdjustments,
                     atomicStoreStatistics
                 );
-                if (status.Status == SalesStatisticRefreshStatus.Pending && rawRows.Any())
+                if (!statisticsList.Any() && rawRows.Any())
                 {
-                    // 有来源行却没有任何有效商品分店主键时不能当作合法空销售日成功。
+                    // 有来源行却没有任何有效商品分店主键时不能当作合法空销售日成功；此判断不依赖对账状态。
                     status = new ProductStatisticStatusResult(
                         SalesStatisticRefreshStatus.Failed,
                         $"商品分店每日统计存在 {rawRows.Count} 条来源记录，但没有可写入的有效分店商品: {targetDate:yyyy-MM-dd}"

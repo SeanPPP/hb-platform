@@ -107,6 +107,110 @@ public sealed class DeviceActivationCodeManagementTests
     }
 
     [Fact]
+    public void Schema_VerifySqlIsReadOnlyAndChecksTheExactSecurityShape()
+    {
+        var sql = DeviceActivationCodeSchema.VerifySql;
+
+        Assert.Contains("OBJECT_ID(N'[dbo].[POSM_DeviceActivationGrant]', N'U')", sql, StringComparison.Ordinal);
+        Assert.Contains("THROW 51100", sql, StringComparison.Ordinal);
+        Assert.Contains(
+            "keyConstraint.[name] = N'PK_POSM_DeviceActivationGrant'",
+            sql,
+            StringComparison.Ordinal
+        );
+        Assert.Contains("expected.[ColumnName]", sql, StringComparison.Ordinal);
+        foreach (var columnName in new[]
+                 {
+                     "GrantId",
+                     "SecretHash",
+                     "StoreCode",
+                     "DeviceSystem",
+                     "CreatedAtUtc",
+                     "CreatedBy",
+                     "Reason",
+                     "ExpiresAtUtc",
+                     "RevokedAtUtc",
+                     "RevokedBy",
+                     "RevokeReason",
+                     "ConsumedAtUtc",
+                     "ConsumedHardwareId",
+                     "ConsumedDeviceCode",
+                     "ConsumedDeviceRegistrationId",
+                     "ConsumedAuthorizationHash",
+                     "ConsumedDeviceSystem",
+                     "ConsumptionKind",
+                     "PreviousStoreCode",
+                     "PreviousDeviceCode",
+                     "RowVersion",
+                 })
+        {
+            Assert.Contains($"N'{columnName}'", sql, StringComparison.Ordinal);
+        }
+
+        Assert.Contains("COL_LENGTH(N'dbo.POSM_DeviceActivationGrant', N'ActivationCode')", sql, StringComparison.Ordinal);
+        Assert.Contains("sys.key_constraints", sql, StringComparison.Ordinal);
+        Assert.Contains("[key_ordinal] = 1", sql, StringComparison.Ordinal);
+        Assert.Contains("UX_POSM_DeviceActivationGrant_SecretHash", sql, StringComparison.Ordinal);
+        Assert.Contains("IX_POSM_DeviceActivationGrant_StoreCreated", sql, StringComparison.Ordinal);
+        Assert.Contains("IX_POSM_DeviceActivationGrant_Usable", sql, StringComparison.Ordinal);
+        Assert.Contains("indexInfo.[is_unique]", sql, StringComparison.Ordinal);
+        Assert.Contains("indexInfo.[is_disabled]", sql, StringComparison.Ordinal);
+        Assert.Contains("indexInfo.[is_hypothetical]", sql, StringComparison.Ordinal);
+        Assert.Contains("indexInfo.[has_filter]", sql, StringComparison.Ordinal);
+        Assert.Contains("indexInfo.[filter_definition]", sql, StringComparison.Ordinal);
+        Assert.Contains("[is_included_column]", sql, StringComparison.Ordinal);
+        Assert.Contains("sys.check_constraints", sql, StringComparison.Ordinal);
+        Assert.Contains("checkInfo.[is_not_trusted] = 0", sql, StringComparison.Ordinal);
+        Assert.Contains("CK_POSM_DeviceActivationGrant_Expiry", sql, StringComparison.Ordinal);
+        Assert.Contains("CK_POSM_DeviceActivationGrant_Revocation", sql, StringComparison.Ordinal);
+        Assert.Contains("CK_POSM_DeviceActivationGrant_Consumption", sql, StringComparison.Ordinal);
+        Assert.Contains("CK_POSM_DeviceActivationGrant_RevokedConsumedExclusive", sql, StringComparison.Ordinal);
+        Assert.Contains(
+            "AS expectedDefinition([ConstraintName], [NormalizedDefinition])",
+            sql,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "expectedDefinition.[NormalizedDefinition] = normalized.[NormalizedDefinition]",
+            sql,
+            StringComparison.Ordinal);
+        Assert.Contains("N'(EXPIRESATUTC>CREATEDATUTC)'", sql, StringComparison.Ordinal);
+        Assert.Contains(
+            "N'(REVOKEDATUTCISNULLANDREVOKEDBYISNULLANDREVOKEREASONISNULLORREVOKEDATUTCISNOTNULLANDREVOKEDBYISNOTNULLANDREVOKEREASONISNOTNULL)'",
+            sql,
+            StringComparison.Ordinal);
+        Assert.Contains("CONSUMPTIONKINDISNOTNULL", sql, StringComparison.Ordinal);
+        Assert.Contains("CONSUMPTIONKIND=''INITIAL''", sql, StringComparison.Ordinal);
+        Assert.Contains("CONSUMPTIONKIND=''REBIND''", sql, StringComparison.Ordinal);
+        Assert.Contains(
+            "N'(REVOKEDATUTCISNULLORCONSUMEDATUTCISNULL)'",
+            sql,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("PATINDEX", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("OR1=1", sql, StringComparison.OrdinalIgnoreCase);
+
+        foreach (var forbidden in new[]
+                 {
+                     "CREATE ",
+                     "ALTER ",
+                     "DROP ",
+                     "TRUNCATE ",
+                     "INSERT ",
+                     "UPDATE ",
+                     "DELETE ",
+                     "MERGE ",
+                     "BEGIN TRAN",
+                     "COMMIT",
+                     "ROLLBACK",
+                     "SAVE TRAN",
+                     "sp_getapplock",
+                     "SCHEMA_PROBE",
+                 })
+        {
+            Assert.DoesNotContain(forbidden, sql, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
     public void Schema_UsesRolledBackSemanticProbesToRejectWeakTrustedChecks()
     {
         var sql = DeviceActivationCodeSchema.EnsureSql;

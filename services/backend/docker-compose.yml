@@ -1,13 +1,13 @@
 services:
   hb-api:
-    build:
+    build: &hb-api-build
       context: .
       dockerfile: BlazorApp.Api/Dockerfile
-    image: blazorapphbweb_hb-api_vite:local
+    image: &hb-api-image blazorapphbweb_hb-api_vite:local
     container_name: hb-platform-vite-api
     ports:
       - "5002:5002"
-    environment:
+    environment: &hb-api-environment
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:5002
       - ASPNETCORE_HTTP_PORTS=5002
@@ -90,18 +90,32 @@ services:
       - TencentCloud__Region=${TENCENT_REGION}
       - TencentCloud__ImageBucketName=${TENCENT_IMAGE_BUCKET_NAME}
       - TencentCloud__ImageRegion=${TENCENT_IMAGE_REGION}
-    volumes:
+    volumes: &hb-api-volumes
       - hb-api-logs:/app/logs
       - ./data-protection-keys:/app/App_Data/DataProtectionKeys
       - ${ATTENDANCE_QR_DATA_PROTECTION_KEYS_HOST_PATH:?required}:/app/App_Data/AttendanceQrDataProtectionKeys
     restart: unless-stopped
-    networks:
+    networks: &hb-api-networks
       - hb-network
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:5002/api/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # 仅在显式启用 schema profile 时运行；默认 docker compose up 不会启动迁移任务。
+  hb-api-migrate:
+    profiles: ["schema"]
+    build: *hb-api-build
+    image: *hb-api-image
+    command: ["--schema=migrate"]
+    environment: *hb-api-environment
+    volumes: *hb-api-volumes
+    restart: "no"
+    networks: *hb-api-networks
+    # 镜像自带 API 健康检查；一次性迁移任务不监听 HTTP，必须显式禁用。
+    healthcheck:
+      disable: true
 
 networks:
   hb-network:

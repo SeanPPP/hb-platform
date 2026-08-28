@@ -488,7 +488,7 @@ namespace BlazorApp.Api.Controllers
                 GrossProfit = rows.Any(x => x.GrossProfit.HasValue)
                     ? rows.Sum(x => x.GrossProfit ?? 0m)
                     : null,
-                ReconciliationStatus = ResolveProductStatisticReconciliationStatus(state?.Status, rows.Any()),
+                ReconciliationStatus = ResolveProductStatisticReconciliationStatus(state?.Status),
                 SalesReconciliationStatus = ResolveProductStatisticSalesReconciliationStatus(
                     state?.Status,
                     reconciliation.Status
@@ -552,11 +552,11 @@ namespace BlazorApp.Api.Controllers
             };
         }
 
-        private static string ResolveProductStatisticReconciliationStatus(string? status, bool hasRows)
+        private static string ResolveProductStatisticReconciliationStatus(string? status)
         {
             return status switch
             {
-                SalesStatisticRefreshStatus.Fresh when hasRows => "Passed",
+                SalesStatisticRefreshStatus.Fresh => "Passed",
                 SalesStatisticRefreshStatus.Failed => "Failed",
                 _ => "Pending",
             };
@@ -567,10 +567,12 @@ namespace BlazorApp.Api.Controllers
             string reconciliationStatus
         )
         {
-            if (
-                stateStatus != SalesStatisticRefreshStatus.Fresh
-                && stateStatus != SalesStatisticRefreshStatus.Failed
-            )
+            if (stateStatus == SalesStatisticRefreshStatus.Failed)
+            {
+                return "Failed";
+            }
+
+            if (stateStatus != SalesStatisticRefreshStatus.Fresh)
             {
                 return "Pending";
             }

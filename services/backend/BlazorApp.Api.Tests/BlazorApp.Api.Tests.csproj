@@ -40,6 +40,9 @@
     <Compile Include="DeviceRegistrationControllerTests.cs" />
     <Compile Include="DeviceRegistrationReactServiceTests.cs" />
     <Compile Include="DeviceActivationCodeManagementTests.cs" />
+    <Compile Include="SchemaMigrationCoordinatorTests.cs" />
+    <Compile Include="SchemaMigrationSqlServerIntegrationTests.cs" />
+    <Compile Include="SchemaCommandProcessTests.cs" />
     <Compile Include="DomesticProductCreationControllerTests.cs" />
     <Compile Include="DomesticSetProductSchemaTests.cs" />
     <Compile Include="DomesticSetTemplateServiceTests.cs" />

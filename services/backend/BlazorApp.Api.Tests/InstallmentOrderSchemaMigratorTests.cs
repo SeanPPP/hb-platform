@@ -95,7 +95,7 @@ public sealed class InstallmentOrderSchemaMigratorTests : IDisposable
     }
 
     [Fact]
-    public async Task StartupSchemaMigrator和Program_启动时接入POSM分期迁移()
+    public async Task StartupSchemaMigrator仅由显式迁移协调器接入POSM分期迁移()
     {
         var repositoryRoot = FindRepositoryRoot();
         var startupSource = await File.ReadAllTextAsync(
@@ -107,12 +107,37 @@ public sealed class InstallmentOrderSchemaMigratorTests : IDisposable
 
         Assert.Contains("public static Task EnsurePosmAsync", startupSource, StringComparison.Ordinal);
         Assert.Contains("InstallmentOrderSchemaMigrator.EnsureAsync(posmDb, logger)", startupSource, StringComparison.Ordinal);
-        Assert.Contains("await StartupSchemaMigrator.EnsurePosmAsync(posmDbContext.Db, app.Logger);", programSource, StringComparison.Ordinal);
+        Assert.Contains("SchemaMigrationCoordinator", programSource, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "await StartupSchemaMigrator.EnsurePosmAsync(posmDbContext.Db, app.Logger);",
+            programSource,
+            StringComparison.Ordinal
+        );
+        Assert.DoesNotContain(
+            "await PaymentTerminalSettingsSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);",
+            programSource,
+            StringComparison.Ordinal
+        );
+        Assert.DoesNotContain(
+            "await DeviceRuntimeStatusSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);",
+            programSource,
+            StringComparison.Ordinal
+        );
+        Assert.DoesNotContain(
+            "await EmergencyLoginGrantSchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);",
+            programSource,
+            StringComparison.Ordinal
+        );
+        Assert.DoesNotContain(
+            "await EmergencyLoginKeySchemaMigrator.EnsureAsync(posmDbContext.Db, app.Logger);",
+            programSource,
+            StringComparison.Ordinal
+        );
         Assert.True(
-            // 主库 CodeFirst 可因其他迁移前置；POSM 分期结构只需在 Web 服务启动前完成。
-            programSource.IndexOf("StartupSchemaMigrator.EnsurePosmAsync", StringComparison.Ordinal)
+            // 显式迁移协调器必须在服务监听前处理迁移模式和正常启动门禁。
+            programSource.IndexOf("SchemaMigrationCoordinator", StringComparison.Ordinal)
             < programSource.IndexOf("app.Run();", StringComparison.Ordinal),
-            "POSM 分期表必须在应用开始服务前完成初始化"
+            "POSM 分期表只能由应用开始服务前的迁移协调器管理"
         );
     }
 

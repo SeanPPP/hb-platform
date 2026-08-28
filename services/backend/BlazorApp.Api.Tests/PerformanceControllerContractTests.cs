@@ -74,6 +74,12 @@ public sealed class PerformanceControllerContractTests
         var source = await File.ReadAllTextAsync(
             Path.Combine(root, "services/backend/BlazorApp.Api/Program.cs")
         );
+        var schemaRuntimeSource = await File.ReadAllTextAsync(
+            Path.Combine(
+                root,
+                "services/backend/BlazorApp.Api/Data/SchemaMigrations/SchemaMigrationRuntime.cs"
+            )
+        );
 
         Assert.Contains("Configure<PerformanceMetricsOptions>", source, StringComparison.Ordinal);
         Assert.Contains("AddSingleton<PerformanceMetricBuffer>", source, StringComparison.Ordinal);
@@ -90,10 +96,11 @@ public sealed class PerformanceControllerContractTests
             StringComparison.Ordinal
         );
         Assert.Contains(
-            "await PerformanceBaselineSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);",
-            source,
+            "() => PerformanceBaselineSchemaMigrator.EnsureAsync",
+            schemaRuntimeSource,
             StringComparison.Ordinal
         );
+        Assert.Contains("SchemaMigrationCoordinator", source, StringComparison.Ordinal);
     }
 
     [Fact]

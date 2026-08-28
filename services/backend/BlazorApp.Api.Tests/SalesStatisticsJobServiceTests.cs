@@ -136,6 +136,84 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateProductStoreDailyStatistics_零销售日应Fresh并写入完成状态()
+    {
+        var targetDate = new DateTime(2026, 1, 3);
+
+        await CreateService().UpdateProductStoreDailyStatistics(targetDate);
+
+        var state = await LoadRefreshStateAsync(targetDate);
+        var productRowCount = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(x => x.Date == targetDate)
+            .CountAsync();
+        var storeRowCount = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(x => x.Date == targetDate)
+            .CountAsync();
+
+        Assert.NotNull(state);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, state!.Status);
+        Assert.Null(state.ErrorMessage);
+        Assert.NotNull(state.LastAggregatedAtUtc);
+        Assert.NotNull(state.LastCheckedAtUtc);
+        Assert.NotNull(state.CompletedAtUtc);
+        Assert.Equal(0, productRowCount);
+        Assert.Equal(0, storeRowCount);
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_2025零销售日应成对写入Fresh状态()
+    {
+        var targetDate = new DateTime(2025, 4, 4);
+
+        await CreateService().UpdateProductStoreDailyStatistics(targetDate);
+
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(x => x.Date == targetDate)
+            .ToListAsync();
+        var productRowCount = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(x => x.Date == targetDate)
+            .CountAsync();
+        var storeRowCount = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(x => x.Date == targetDate)
+            .CountAsync();
+
+        Assert.Contains(states, state =>
+            state.StatisticType == SalesStatisticType.ProductStoreDaily
+            && state.Status == SalesStatisticRefreshStatus.Fresh
+            && state.CompletedAtUtc.HasValue
+        );
+        Assert.Contains(states, state =>
+            state.StatisticType == SalesStatisticType.StoreSales
+            && state.Status == SalesStatisticRefreshStatus.Fresh
+            && state.CompletedAtUtc.HasValue
+        );
+        Assert.Equal(0, productRowCount);
+        Assert.Equal(0, storeRowCount);
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_有来源行但无有效主键时应Failed()
+    {
+        var targetDate = new DateTime(2026, 1, 4);
+        await SeedOrderAsync("ORDER-INVALID-KEY", string.Empty, targetDate.AddHours(10), 1);
+        await SeedSaleDetailAsync(
+            "ORDER-INVALID-KEY",
+            "DETAIL-INVALID-KEY",
+            string.Empty,
+            1,
+            10m,
+            "200"
+        );
+
+        await CreateService().UpdateProductStoreDailyStatistics(targetDate);
+
+        var state = await LoadRefreshStateAsync(targetDate);
+        Assert.NotNull(state);
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, state!.Status);
+        Assert.Contains("没有可写入的有效分店商品", state.ErrorMessage, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task UpdateProductStoreDailyStatistics_2025HBSales普通销售应写入商品分店统计()
     {
         var targetDate = new DateTime(2025, 4, 1);
