@@ -156,6 +156,22 @@ public sealed class ServiceApiTokenServiceTests : IDisposable
             },
             "admin"
         );
+        var ciReporter = await service.CreateAsync(
+            new ServiceApiTokenCreateRequestDto
+            {
+                Name = "Quality CI Reporter",
+                Purpose = ServiceApiTokenPurposes.QualityCiReporter,
+            },
+            "admin"
+        );
+        var deploymentReporter = await service.CreateAsync(
+            new ServiceApiTokenCreateRequestDto
+            {
+                Name = "Deployment Acceptance Reporter",
+                Purpose = ServiceApiTokenPurposes.DeploymentAcceptanceReporter,
+            },
+            "admin"
+        );
 
         Assert.Equal(
             [Permissions.System.ManageAppDownloads],
@@ -166,9 +182,17 @@ public sealed class ServiceApiTokenServiceTests : IDisposable
             Permissions.System.ManageAppDownloads,
             reader.Data.Scopes
         );
+        Assert.Equal(
+            [ServiceApiScopes.WritePerformanceMetrics],
+            ciReporter.Data!.Scopes
+        );
+        Assert.Equal(
+            [ServiceApiScopes.WriteReleaseEvents],
+            deploymentReporter.Data!.Scopes
+        );
         Assert.False(invalid.Success);
         Assert.Equal("SERVICE_API_TOKEN_PURPOSE_INVALID", invalid.ErrorCode);
-        Assert.Equal(2, await _db.Queryable<ServiceApiToken>().CountAsync());
+        Assert.Equal(4, await _db.Queryable<ServiceApiToken>().CountAsync());
     }
 
     [Fact]

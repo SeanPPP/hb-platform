@@ -1,7 +1,8 @@
-import { Button, Modal, Radio, Space, Table } from 'antd'
+import { Button, Modal, Radio, Space } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface ConflictItem {
   productCode: string
@@ -56,7 +57,7 @@ export function ConflictResolutionDialog({ open, conflicts, onClose, onConfirm }
           <Radio value="perItem">{t('productImport.perItemSelect', '逐项选择')}</Radio>
         </Radio.Group>
       </div>
-      <Table columns={columns} dataSource={conflicts} rowKey="productCode" size="small" pagination={false} />
+      <MeasuredTable metricId="domestic-purchase.product-import.conflict-resolution-dialog.table-1" columns={columns} dataSource={conflicts} rowKey="productCode" size="small" pagination={false} />
     </Modal>
   )
 }

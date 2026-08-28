@@ -27,7 +27,7 @@ public sealed class NativeAppUpdatePolicyService(
     }
 
     public async Task<ApiResponse<NativeUpdatePolicyDto>> SetMobileIosPolicyAsync(
-        NativeUpdatePolicyRequest request,
+        MobileIosNativeUpdatePolicyRequest request,
         string currentUser
     )
     {
@@ -69,6 +69,9 @@ public sealed class NativeAppUpdatePolicyService(
                     );
                 Guid? releaseId = request.Enabled ? validation.Release!.Id : null;
                 var minimumVersion = request.Enabled ? validation.MinimumVersion : null;
+                var minimumBuildNumber = request.Enabled
+                    ? validation.MinimumBuildNumber
+                    : null;
                 var releaseMessage = request.Enabled ? validation.ReleaseMessage : null;
                 var actualPolicyVersion = existing?.PolicyVersion ?? 0;
                 if (
@@ -79,6 +82,7 @@ public sealed class NativeAppUpdatePolicyService(
                             request.Enabled,
                             releaseId,
                             minimumVersion,
+                            minimumBuildNumber,
                             releaseMessage
                         )
                 )
@@ -111,6 +115,7 @@ public sealed class NativeAppUpdatePolicyService(
                 entity.Enabled = request.Enabled;
                 entity.ReleaseId = releaseId;
                 entity.MinimumSupportedVersion = minimumVersion;
+                entity.MinimumSupportedBuildNumber = minimumBuildNumber;
                 entity.ReleaseMessage = releaseMessage;
                 entity.PolicyVersion = (existing?.PolicyVersion ?? 0) + 1;
                 entity.UpdatedAt = now;
@@ -386,7 +391,6 @@ public sealed class NativeAppUpdatePolicyService(
         string? build
     )
     {
-        _ = build; // build number 仅用于调用审计，不参与营销版本比较。
         var policy = await db.Queryable<MobileIosNativeUpdatePolicy>()
             .FirstAsync(item =>
                 item.PolicyKey == MobilePolicyKey
@@ -403,9 +407,11 @@ public sealed class NativeAppUpdatePolicyService(
             ? NoNativeDecision()
             : BuildNativeDecision(
                 version,
+                build,
                 policy.PolicyVersion,
                 release,
                 policy.MinimumSupportedVersion,
+                policy.MinimumSupportedBuildNumber,
                 policy.ReleaseMessage
             );
     }
@@ -486,6 +492,11 @@ public sealed class NativeAppUpdatePolicyService(
             AppUpdateApps.PosIpad,
             StringComparison.Ordinal
         );
+        var isMobileIos = string.Equals(
+            expectedApp,
+            AppUpdateApps.MobileIos,
+            StringComparison.Ordinal
+        );
         if (
             isPosIpad
                 ? !PosIpadEffectiveVersion.TryParseMarketing(
@@ -517,10 +528,30 @@ public sealed class NativeAppUpdatePolicyService(
             );
         }
 
+        MobileIosEffectiveVersion latestMobileVersion = default;
+        if (
+            isMobileIos
+            && !MobileIosEffectiveVersion.TryCreate(
+                release.Version,
+                release.BuildNumber,
+                out latestMobileVersion
+            )
+        )
+        {
+            return NativePolicyValidation.Fail(
+                "LATEST_BUILD_NUMBER_INVALID",
+                "Mobile iOS App Store 发布 build 必须是 0 到 Int32.MaxValue 的整数"
+            );
+        }
+
         var minimum = NormalizeOptional(request.MinimumSupportedVersion);
-        var minimumBuild = isPosIpad
-            ? ((PosIpadNativeUpdatePolicyRequest)request).MinimumSupportedBuildNumber
-            : null;
+        var minimumBuild = request switch
+        {
+            MobileIosNativeUpdatePolicyRequest mobile =>
+                mobile.MinimumSupportedBuildNumber,
+            PosIpadNativeUpdatePolicyRequest ipad => ipad.MinimumSupportedBuildNumber,
+            _ => null,
+        };
         if (minimumBuild.HasValue && minimum is null)
         {
             return NativePolicyValidation.Fail(
@@ -539,7 +570,37 @@ public sealed class NativeAppUpdatePolicyService(
 
         if (minimum is not null)
         {
-            if (isPosIpad)
+            if (isMobileIos)
+            {
+                if (
+                    !MobileIosEffectiveVersion.TryCreate(
+                        minimum,
+                        minimumBuild ?? 0,
+                        out var minimumMobileVersion
+                    )
+                )
+                {
+                    return NativePolicyValidation.Fail(
+                        "MINIMUM_VERSION_INVALID",
+                        "最低支持版本无效"
+                    );
+                }
+
+                if (minimumMobileVersion.CompareTo(latestMobileVersion) > 0)
+                {
+                    var errorCode =
+                        minimumMobileVersion.Marketing.CompareTo(
+                            latestMobileVersion.Marketing
+                        ) == 0
+                            ? "MINIMUM_BUILD_ABOVE_LATEST"
+                            : "MINIMUM_VERSION_ABOVE_LATEST";
+                    return NativePolicyValidation.Fail(
+                        errorCode,
+                        "最低支持版本不能高于 App Store 最新版本"
+                    );
+                }
+            }
+            else if (isPosIpad)
             {
                 if (
                     !PosIpadEffectiveVersion.TryCreate(
@@ -707,41 +768,124 @@ public sealed class NativeAppUpdatePolicyService(
 
     private static NativeAppUpdateDecisionDto BuildNativeDecision(
         string? currentVersion,
+        string? currentBuild,
+        long policyVersion,
+        IosAppStoreRelease release,
+        string? minimumVersion,
+        int? minimumBuildNumber,
+        string? releaseMessage
+    )
+    {
+        if (
+            !MobileIosEffectiveVersion.TryCreate(
+                release.Version,
+                release.BuildNumber,
+                out var latest
+            )
+        )
+        {
+            return NoNativeDecision();
+        }
+
+        MobileIosEffectiveVersion? minimum = null;
+        if (minimumVersion is not null)
+        {
+            if (
+                !MobileIosEffectiveVersion.TryCreate(
+                    minimumVersion,
+                    minimumBuildNumber ?? 0,
+                    out var parsedMinimum
+                )
+            )
+            {
+                return NoNativeDecision();
+            }
+
+            minimum = parsedMinimum;
+        }
+
+        if (!AppMarketingVersion.TryParse(currentVersion, out var currentMarketing))
+        {
+            return BuildMobileIosDecision(
+                minimum.HasValue
+                    ? AppUpdateStates.Required
+                    : AppUpdateStates.Optional,
+                policyVersion,
+                release,
+                minimumVersion,
+                releaseMessage
+            );
+        }
+
+        var hasCurrentBuild = PosIpadEffectiveVersion.TryParseBuild(
+            currentBuild,
+            out var parsedCurrentBuild
+        );
+        if (minimum.HasValue && !hasCurrentBuild)
+        {
+            return BuildMobileIosDecision(
+                AppUpdateStates.Required,
+                policyVersion,
+                release,
+                minimumVersion,
+                releaseMessage
+            );
+        }
+
+        if (minimum.HasValue)
+        {
+            var minimumMarketingComparison = currentMarketing.CompareTo(
+                minimum.Value.Marketing
+            );
+            if (
+                minimumMarketingComparison < 0
+                || (
+                    minimumMarketingComparison == 0
+                    && (
+                        parsedCurrentBuild < minimum.Value.Build
+                    )
+                )
+            )
+            {
+                return BuildMobileIosDecision(
+                    AppUpdateStates.Required,
+                    policyVersion,
+                    release,
+                    minimumVersion,
+                    releaseMessage
+                );
+            }
+        }
+
+        var latestMarketingComparison = currentMarketing.CompareTo(latest.Marketing);
+        if (
+            latestMarketingComparison < 0
+            || (
+                latestMarketingComparison == 0
+                && (!hasCurrentBuild || parsedCurrentBuild < latest.Build)
+            )
+        )
+        {
+            return BuildMobileIosDecision(
+                AppUpdateStates.Optional,
+                policyVersion,
+                release,
+                minimumVersion,
+                releaseMessage
+            );
+        }
+
+        return NoNativeDecision();
+    }
+
+    private static NativeAppUpdateDecisionDto BuildMobileIosDecision(
+        string state,
         long policyVersion,
         IosAppStoreRelease release,
         string? minimumVersion,
         string? releaseMessage
     )
     {
-        if (!AppMarketingVersion.TryParse(release.Version, out var latest))
-        {
-            return NoNativeDecision();
-        }
-
-        string state;
-        if (!AppMarketingVersion.TryParse(currentVersion, out var current))
-        {
-            state = minimumVersion is null
-                ? AppUpdateStates.Optional
-                : AppUpdateStates.Required;
-        }
-        else if (
-            minimumVersion is not null
-            && AppMarketingVersion.TryParse(minimumVersion, out var minimum)
-            && current.CompareTo(minimum) < 0
-        )
-        {
-            state = AppUpdateStates.Required;
-        }
-        else if (current.CompareTo(latest) < 0)
-        {
-            state = AppUpdateStates.Optional;
-        }
-        else
-        {
-            return NoNativeDecision();
-        }
-
         return new NativeAppUpdateDecisionDto
         {
             State = state,
@@ -900,6 +1044,7 @@ public sealed class NativeAppUpdatePolicyService(
             ReleaseId = policy.ReleaseId,
             LatestVersion = release?.Version,
             MinimumSupportedVersion = policy.MinimumSupportedVersion,
+            MinimumSupportedBuildNumber = policy.MinimumSupportedBuildNumber,
             AppStoreUrl = release?.AppStoreUrl,
             ReleaseMessage = policy.ReleaseMessage,
             TargetScope = AppUpdateTargetScopes.All,
@@ -941,6 +1086,7 @@ public sealed class NativeAppUpdatePolicyService(
         bool enabled,
         Guid? releaseId,
         string? minimumVersion,
+        int? minimumBuildNumber,
         string? releaseMessage
     ) =>
         existing.Enabled == enabled
@@ -950,6 +1096,7 @@ public sealed class NativeAppUpdatePolicyService(
             minimumVersion,
             StringComparison.Ordinal
         )
+        && existing.MinimumSupportedBuildNumber == minimumBuildNumber
         && string.Equals(
             existing.ReleaseMessage,
             releaseMessage,
@@ -1018,6 +1165,59 @@ public sealed class NativeAppUpdatePolicyService(
 
     private static string NormalizeStoreGuid(string value) =>
         Guid.TryParse(value, out var parsed) ? parsed.ToString() : value.Trim();
+
+    private readonly record struct MobileIosEffectiveVersion(
+        AppMarketingVersion Marketing,
+        int Build
+    ) : IComparable<MobileIosEffectiveVersion>
+    {
+        public static bool TryCreate(
+            string? marketingVersion,
+            string? buildNumber,
+            out MobileIosEffectiveVersion version
+        )
+        {
+            version = default;
+            return AppMarketingVersion.TryParse(marketingVersion, out var marketing)
+                && PosIpadEffectiveVersion.TryParseBuild(buildNumber, out var build)
+                && TryCreate(marketing, build, out version);
+        }
+
+        public static bool TryCreate(
+            string? marketingVersion,
+            int buildNumber,
+            out MobileIosEffectiveVersion version
+        )
+        {
+            version = default;
+            return AppMarketingVersion.TryParse(marketingVersion, out var marketing)
+                && TryCreate(marketing, buildNumber, out version);
+        }
+
+        private static bool TryCreate(
+            AppMarketingVersion marketing,
+            int buildNumber,
+            out MobileIosEffectiveVersion version
+        )
+        {
+            version = default;
+            if (buildNumber < 0)
+            {
+                return false;
+            }
+
+            version = new MobileIosEffectiveVersion(marketing, buildNumber);
+            return true;
+        }
+
+        public int CompareTo(MobileIosEffectiveVersion other)
+        {
+            var marketingComparison = Marketing.CompareTo(other.Marketing);
+            return marketingComparison != 0
+                ? marketingComparison
+                : Build.CompareTo(other.Build);
+        }
+    }
 
     private sealed record NativePolicyValidation(
         bool Success,

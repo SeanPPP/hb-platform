@@ -168,7 +168,22 @@ const seededPermissionCodes = Array.from(
     return code;
   },
 );
-assert.equal(new Set(seededPermissionCodes).size, 156);
+const uniqueSeededPermissionCodes = [...new Set(seededPermissionCodes)].sort();
+assert.equal(
+  uniqueSeededPermissionCodes.length,
+  seededPermissionCodes.length,
+  "权限 seed 不得包含重复 code",
+);
+assert.deepEqual(
+  Object.keys(en.permissions).sort(),
+  uniqueSeededPermissionCodes,
+  "英文权限资源必须与 seed 完全一致",
+);
+assert.deepEqual(
+  Object.keys(zh.permissions).sort(),
+  uniqueSeededPermissionCodes,
+  "中文权限资源必须与 seed 完全一致",
+);
 seededPermissionCodes.forEach((code) => {
   assert.ok(en.permissions[code], `英文资源缺少权限 ${code}`);
   assert.ok(zh.permissions[code], `中文资源缺少权限 ${code}`);

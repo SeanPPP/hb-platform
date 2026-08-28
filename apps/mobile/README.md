@@ -20,41 +20,77 @@ eas webhook:create --event BUILD --url https://<backend-domain>/api/mobile-app-b
 - `<secret>` 必须使用部署环境中的私密值，不能提交到 Git、README、脚本或前端产物。
 - 当前 `eas.json` 的 `preview` 和 `production` profile 都配置为 Android APK 构建，适合用于二维码下载页。
 
-### 给旧 APK 发布 OTA 下载提醒
+### 受控 Mobile OTA 发布
 
-新增原生依赖或安装权限后，旧 APK 不能通过 OTA 获得新原生能力。旧 runtime 只能发布兼容 OTA，提醒用户下载并重新安装新版 APK。当前项目约定：
-
-- 新 APK 使用 `runtimeVersion=1.0.2`，并启用 App 内后台下载和打开安装器。
-- 旧 APK 过渡提醒使用 `runtimeVersion=1.0.1`，并关闭原生安装器，只用系统浏览器打开后端稳定下载入口，由后端实时跳转到最新未过期 APK。
-- 新安装器会绑定检查时拿到的 EAS buildId，下载 `/api/mobile-app-builds/android/{easBuildId}/download?profile=<profile>`，避免 latest 后续变化时下载到另一个 APK；旧 runtime 继续使用 `/api/mobile-app-builds/android-latest/download?profile=<profile>`。
-
-在 `apps/mobile` 目录下发布旧 APK 过渡 OTA：
+Mobile OTA 的 Expo 发布事实与投放策略相互独立。发布脚本只创建平台独立、不可复用的 release channel，并登记不可变事实；它不会启用策略，也不会修改当前目标。
 
 ```bash
-npm run ota:legacy-apk-notice:preview
-npm run ota:legacy-apk-notice:production
+HBWEB_API_BASE_URL=https://<backend-domain> \
+HBWEB_API_TOKEN=<hbsvc-manage-app-downloads-token> \
+node scripts/publish-ota-update.mjs \
+  --environment preview \
+  --platform all \
+  --runtime-version 1.0.2 \
+  --message "验证 Mobile OTA"
 ```
 
-这两个 npm script 会通过 `scripts/publish-ota-update.mjs` 调用 `npx eas-cli@latest update --platform android`，并固定注入以下 OTA 环境变量：
+`--platform all` 会使用同一个 `ReleaseBatchId` 顺序执行 Android、iOS 两次独立发布。脚本在任何 EAS 写入前先对两个平台调用 `/api/app-ota-releases/preflight`，再用固定 EAS CLI 穷尽 `channel:list` 分页并证明所有目标 channel 在 Expo 侧尚不存在；网络失败、失形或无法穷尽时一律停止。随后才发布到以下唯一 channel：
+
+- `mobile-production-android-release-*`
+- `mobile-production-ios-release-*`
+- `mobile-preview-android-release-*`
+- `mobile-preview-ios-release-*`
+
+固定版本的 `eas update --json` 返回后，脚本先严格验证 platform、Runtime、branch、Update Group ID 和 Update ID，再用同版本 `eas channel:view <releaseChannel> --json --non-interactive` 权威回读 active channel、单一 branch mapping 及最新 group 的完整发布身份，最后才 POST `/api/app-ota-releases/register`。一端失败不会抹掉另一端的完整成功结果，但整批命令会返回非零。
+
+回滚必须按平台单独执行，并把同 lane 的已登记来源 UUID 交给发布前 preflight；单个来源不能和 `--platform all` 混用：
 
 ```bash
-EXPO_PUBLIC_APP_BUILD_PROFILE=<preview|production>
-EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED=false
-EXPO_PUBLIC_RUNTIME_VERSION=1.0.1
+node scripts/publish-ota-update.mjs \
+  --environment production \
+  --platform ios \
+  --runtime-version 1.0.2 \
+  --message "iOS 回滚重发" \
+  --rollback-of-release-id <source-release-uuid>
 ```
 
-只有通过这个新脚本发布 OTA，脚本才会先验证后台 Bearer token 和 App 下载管理权限，再在 EAS 发布成功后解析输出并登记 OTA 数据库记录。通过 Expo 控制台发布，或直接裸跑 `eas update` / `npx eas-cli@latest update`，不会自动入库。
-
-发布 OTA 前，必须在发布命令所在 shell 中配置带 `System.ManageAppDownloads` 权限的后台 Bearer token。推荐使用后台生成的 `hbsvc_` service API token；也可以临时使用具备同权限的后台登录 token：
+管理员 JWT 不得放入环境变量，只能从 stdin 读取：
 
 ```bash
-HBWEB_API_BASE_URL=https://<backend-domain>
-HBWEB_API_TOKEN=<hbsvc-service-token-or-backend-bearer-token>
+printf '%s' "$TEMP_ADMIN_JWT" | node scripts/publish-ota-update.mjs \
+  --access-token-stdin \
+  --environment production \
+  --platform ios \
+  --runtime-version 1.0.2 \
+  --message "iOS 修复"
 ```
 
-`HBWEB_API_BASE_URL` 可以是站点根地址，也可以是带 `/api` 的 API base URL。非 `--dry-run` 发布时，脚本会先用 `Authorization: Bearer <token>` 验证 token 和权限：`hbsvc_` token 调用 `GET /api/service-api-tokens/current`，普通后台登录 token 调用 `GET /api/Auth/current`。缺少 base URL/token 或验证失败时会直接退出，不会先发布 OTA。验证通过后，脚本会继续发布 EAS Update，并 POST 到 `/api/mobile-app-builds/ota-updates` 登记，登记请求仍使用同一个 Bearer token。`--dry-run` 只打印命令和补录 JSON，不要求配置 token。
+环境变量 `HBWEB_API_TOKEN` 只接受具备 `System.ManageAppDownloads` 的 `hbsvc_` 服务 token。所有后台凭据都会从 EAS 子进程环境和 recovery 文件中剔除。
 
-发布前需确认后端已通过 EAS Webhook 收到对应 profile 的最新 APK 记录，否则旧 APK 不会弹出下载提示。
+如果 EAS 已成功但后台登记失败，脚本会写入权限为 `0600` 的 `.artifacts/mobile-ota-recovery/<batch-id>.json`。此时禁止重新发布。补登记仍会用固定 EAS CLI 逐条重做只读 `channel:view`，并严格核对 channel、branch、update/group、Runtime、platform、message、commit、Dashboard URL 和发布时间；权威回读不一致时不会调用后台登记：
+
+```bash
+node scripts/publish-ota-update.mjs --register-only .artifacts/mobile-ota-recovery/<batch-id>.json
+```
+
+旧客户端取得受控 coordinator 前，需要在迁移窗口对旧 `production` / `preview` 固定 channel 做最后一次 bootstrap。该模式必须显式指定且一次只允许一个平台；Android、iOS 必须分别执行：
+
+```bash
+HBWEB_API_BASE_URL=https://<backend-domain> \
+HBWEB_API_TOKEN=<hbsvc-manage-app-downloads-token> \
+node scripts/publish-ota-update.mjs \
+  --bootstrap-legacy-fixed-channel \
+  --environment preview \
+  --platform ios \
+  --runtime-version 1.0.2 \
+  --message "安装受控 Mobile OTA coordinator"
+```
+
+bootstrap 会先向新 preflight 接口发送 `bootstrapLegacyFixedChannel: true`；服务端 `EasWebhook:AllowLegacyOtaBootstrapRegistration` 开关默认关闭，必须只在受控迁移窗口临时开启。preflight 全部通过后，脚本才会用固定 EAS CLI 发布到与环境同名的 fixed channel/branch。该模式不会执行普通 release channel 的 unused 检查，因为 fixed channel 必然已经存在；发布后仍会用 `channel:view` 严格核对当前最新 update 的 platform、Runtime、Update/Group ID、message、commit、Dashboard URL 和发布时间。
+
+验证通过后，bootstrap 只 POST 旧 `/api/mobile-app-builds/ota-updates`，请求携带 `bootstrapLegacyFixedChannel: true`；它不会写 `AppOtaRelease`、不会选择目标，也不会启用或修改任何策略。登记失败与普通发布一样写入权限为 `0600` 的无凭据 recovery manifest；使用同一个 `--register-only` 命令补登记时，会先重新执行只读 `channel:view`，身份漂移时拒绝登记，绝不自动重新发布。
+
+bootstrap 完成并验证客户端采用后，应立即关闭后端临时开关并冻结旧 fixed channel。后续发布只能使用上面的平台独立 release channel 流程。
 
 ### 后端配置项
 

@@ -20,6 +20,7 @@ import {
 } from "@/core/db/pos-settings-repository";
 import { isTrustedLocalHbposApiOrigin } from "@/core/security/pos-api-addresses";
 import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
+import { parseDeviceActivationCode } from "@/core/security/device-activation-code";
 
 export type SettingsPane =
   "general" | "payments" | "peripherals" | "device" | "hardware";
@@ -118,6 +119,24 @@ export type SettingsDeviceSnapshot = Readonly<{
   storeCode: string;
   storeName: string;
   terminalName: string;
+}>;
+
+export type SettingsDeviceActivationPreviewResponse = Readonly<{
+  isAllowed: boolean;
+  reasonCode?: string | null;
+  storeCode?: string | null;
+  storeName?: string | null;
+  deviceSystem?: string | null;
+  expiresAtUtc?: string | null;
+  message?: string | null;
+}>;
+
+export type SettingsDeviceActivationPreview = Readonly<{
+  activationCode: string;
+  storeCode: string;
+  storeName: string;
+  deviceSystem: string;
+  expiresAtUtc: string;
 }>;
 
 export type SettingsSnapshot = Readonly<{
@@ -262,9 +281,12 @@ export type SettingsDangerousConfirmation =
   | Readonly<{ kind: "reset-catalog" }>
   | Readonly<{
       kind: "reregister-device";
-      targetStoreCode: string;
+      activationCode: string;
+      currentStoreCode: string;
+      preview: SettingsDeviceActivationPreview;
       terminalName?: string;
     }>
+  | Readonly<{ kind: "reset-device-registration" }>
   | Readonly<{ kind: "restart-app" }>;
 
 export type SettingsDangerousActionResult =
@@ -280,7 +302,12 @@ export type SettingsDangerousActionResult =
         | "change-payment-settings"
         | "pair-linkly"
         | "reregister-device"
+        | "reset-device-registration"
         | "restart-app";
+    }>
+  | Readonly<{
+      status: "pending-recovery";
+      kind: "reset-device-registration";
     }>
   | Readonly<{
       status: "unknown";
@@ -307,6 +334,12 @@ export interface SettingsControlPort {
     apiBaseUrl: string,
     signal: AbortSignal,
   ): Promise<boolean>;
+  previewDeviceActivationCode?:
+    | ((
+        activationCode: string,
+        signal: AbortSignal,
+      ) => Promise<SettingsDeviceActivationPreviewResponse>)
+    | undefined;
   testPaymentProvider(
     provider: "square" | "linkly",
     input: SettingsPaymentSettingsInput,
@@ -341,6 +374,7 @@ export interface SettingsControlPort {
   executeDangerousAction(
     action: SettingsDangerousConfirmation,
     signal: AbortSignal,
+    employeeBarcode?: string,
   ): Promise<SettingsDangerousActionResult>;
 }
 
@@ -360,6 +394,11 @@ export type SettingsStatusCode =
   | "catalog-reset-failed"
   | "device-reregister-failed"
   | "device-reregister-started"
+  | "device-activation-preview-failed"
+  | "device-registration-reset-barcode-required"
+  | "device-registration-reset-completed"
+  | "device-registration-reset-failed"
+  | "device-registration-reset-pending-recovery"
   | "invalid-api-address"
   | "invalid-device-registration"
   | "load-failed"
@@ -411,6 +450,8 @@ export type SettingsState = Readonly<{
   catalogRefresh: CatalogRefreshState;
   confirmation: SettingsDangerousConfirmation | null;
   device: SettingsDeviceSnapshot;
+  deviceActivationCodeDraft: string;
+  deviceActivationPreview: SettingsDeviceActivationPreview | null;
   hardware: SettingsHardwareSnapshot;
   kind: "idle" | "loading" | "ready" | "unauthorized" | "failed";
   linkly: SettingsPaymentProviderSnapshot;
@@ -420,7 +461,6 @@ export type SettingsState = Readonly<{
   paymentProviderDraft: SettingsPaymentProvider | null;
   printer: ReceiptPrinterSettings;
   printerDevices: readonly SettingsPrinterDevice[];
-  reregisterStoreCode: string;
   square: SettingsSquareSnapshot;
   squareDraft: SettingsPaymentDraft["square"];
   squareDeviceCodeNameDraft: string;
@@ -512,6 +552,8 @@ export class SettingsPresenter {
           this.state.catalogRefresh,
         ),
         device: snapshot.device,
+        deviceActivationCodeDraft: "",
+        deviceActivationPreview: null,
         hardware: snapshot.hardware,
         kind: "ready",
         linkly: snapshot.linkly,
@@ -524,7 +566,6 @@ export class SettingsPresenter {
         paymentProvider: snapshot.paymentProvider,
         paymentProviderDraft: snapshot.paymentProvider,
         printer: snapshot.printer,
-        reregisterStoreCode: "",
         square: snapshot.square,
         squareDraft: {
           deviceId: snapshot.square.deviceId,
@@ -1353,9 +1394,13 @@ export class SettingsPresenter {
     });
   }
 
-  public setReregisterStoreCode(value: string): void {
+  public setDeviceActivationCode(value: string): void {
     if (!this.canEdit()) return;
-    this.patch({ reregisterStoreCode: value, statusCode: null });
+    this.patch({
+      deviceActivationCodeDraft: value,
+      deviceActivationPreview: null,
+      statusCode: null,
+    });
   }
 
   public setTerminalName(value: string): void {
@@ -1825,6 +1870,55 @@ export class SettingsPresenter {
     return this.requestConfirmation({ kind: "reset-catalog" });
   }
 
+  public previewDeviceReregistration(): Promise<void> {
+    if (this.catalogRefreshRunning()) {
+      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
+      return Promise.resolve();
+    }
+    if (!this.requirePermission(this.state.access.canReregisterDevice)) {
+      return Promise.resolve();
+    }
+    const activationCode = parseDeviceActivationCode(
+      this.state.deviceActivationCodeDraft,
+    );
+    if (!activationCode) {
+      this.patch({
+        confirmation: null,
+        deviceActivationPreview: null,
+        statusCode: "invalid-device-registration",
+      });
+      return Promise.resolve();
+    }
+    return this.runAction(async () => {
+      try {
+        const previewDeviceActivationCode =
+          this.options.port.previewDeviceActivationCode;
+        if (!previewDeviceActivationCode) {
+          throw new Error("Device activation preview is unavailable.");
+        }
+        const response = await previewDeviceActivationCode.call(
+          this.options.port,
+          activationCode,
+          this.lifetime.signal,
+        );
+        const preview = normalizeDeviceActivationPreview(
+          activationCode,
+          response,
+        );
+        this.patch({
+          deviceActivationCodeDraft: activationCode,
+          deviceActivationPreview: preview,
+          statusCode: null,
+        });
+      } catch {
+        this.patch({
+          deviceActivationPreview: null,
+          statusCode: "device-activation-preview-failed",
+        });
+      }
+    });
+  }
+
   public requestDeviceReregistration(): boolean {
     if (this.catalogRefreshRunning()) {
       this.patch({ confirmation: null, statusCode: "safety-check-failed" });
@@ -1833,20 +1927,33 @@ export class SettingsPresenter {
     if (!this.requirePermission(this.state.access.canReregisterDevice)) {
       return false;
     }
-    const targetStoreCode = this.state.reregisterStoreCode.trim();
+    const activationCode = parseDeviceActivationCode(
+      this.state.deviceActivationCodeDraft,
+    );
+    const preview = this.state.deviceActivationPreview;
     const terminalName = this.state.terminalNameDraft.trim();
-    if (!targetStoreCode || targetStoreCode === this.state.device.storeCode) {
-      this.patch({
-        confirmation: null,
-        statusCode: "invalid-device-registration",
-      });
+    if (!activationCode || !preview || preview.activationCode !== activationCode) {
+      this.patch({ confirmation: null, statusCode: "invalid-device-registration" });
       return false;
     }
     return this.requestConfirmation({
       kind: "reregister-device",
-      targetStoreCode,
+      activationCode,
+      currentStoreCode: this.state.device.storeCode,
+      preview,
       ...(terminalName ? { terminalName } : {}),
     });
+  }
+
+  public requestDeviceRegistrationReset(): boolean {
+    if (this.catalogRefreshRunning()) {
+      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
+      return false;
+    }
+    if (!this.requirePermission(this.state.access.canReregisterDevice)) {
+      return false;
+    }
+    return this.requestConfirmation({ kind: "reset-device-registration" });
   }
 
   public requestAppRestart(): boolean {
@@ -1865,9 +1972,19 @@ export class SettingsPresenter {
     this.patch({ confirmation: null, statusCode: null });
   }
 
-  public confirmDangerousAction(): Promise<void> {
+  public confirmDangerousAction(employeeBarcode?: string): Promise<void> {
     const confirmation = this.state.confirmation;
     if (!confirmation || this.destroyed) return Promise.resolve();
+    const resetEmployeeBarcode = employeeBarcode?.trim() ?? "";
+    if (
+      confirmation.kind === "reset-device-registration" &&
+      !resetEmployeeBarcode
+    ) {
+      this.patch({
+        statusCode: "device-registration-reset-barcode-required",
+      });
+      return Promise.resolve();
+    }
     if (
       this.catalogRefreshRunning() &&
       conflictsWithCatalogRefresh(confirmation)
@@ -1883,6 +2000,9 @@ export class SettingsPresenter {
         const result = await this.options.port.executeDangerousAction(
           confirmation,
           this.lifetime.signal,
+          confirmation.kind === "reset-device-registration"
+            ? resetEmployeeBarcode
+            : undefined,
         );
         if (result.status === "blocked") {
           this.patch({
@@ -1923,6 +2043,13 @@ export class SettingsPresenter {
           if (this.state.linklySetup?.health.kind !== "failed") {
             this.patch({ statusCode: "linkly-pair-unknown" });
           }
+          return;
+        }
+        if (result.status === "pending-recovery") {
+          this.patch({
+            confirmation: null,
+            statusCode: "device-registration-reset-pending-recovery",
+          });
           return;
         }
         if (result.kind !== confirmation.kind) {
@@ -1971,6 +2098,13 @@ export class SettingsPresenter {
             catalog: normalizeCatalog(result.catalog),
             confirmation: null,
             statusCode: "catalog-reset",
+          });
+          return;
+        }
+        if (confirmation.kind === "reset-device-registration") {
+          this.patch({
+            confirmation: null,
+            statusCode: "device-registration-reset-completed",
           });
           return;
         }
@@ -2428,6 +2562,8 @@ function initialState(
       storeName: "",
       terminalName: "",
     }),
+    deviceActivationCodeDraft: "",
+    deviceActivationPreview: null,
     hardware: Object.freeze({
       printerStatus: "unavailable",
       scannerStatus: "unavailable",
@@ -2445,7 +2581,6 @@ function initialState(
     paymentProviderDraft: null,
     printer,
     printerDevices: Object.freeze([]),
-    reregisterStoreCode: "",
     square,
     squareDraft: Object.freeze({
       deviceId: "",
@@ -2999,9 +3134,37 @@ function dangerousActionFailureCode(
       return "catalog-reset-failed";
     case "reregister-device":
       return "device-reregister-failed";
+    case "reset-device-registration":
+      return "device-registration-reset-failed";
     default:
       return "restart-failed";
   }
+}
+
+function normalizeDeviceActivationPreview(
+  activationCode: string,
+  response: SettingsDeviceActivationPreviewResponse,
+): SettingsDeviceActivationPreview {
+  const storeCode = response.storeCode?.trim() ?? "";
+  const storeName = response.storeName?.trim() ?? "";
+  const deviceSystem = response.deviceSystem?.trim() ?? "";
+  const expiresAtUtc = response.expiresAtUtc?.trim() ?? "";
+  if (
+    response.isAllowed !== true ||
+    !storeCode ||
+    !storeName ||
+    !deviceSystem ||
+    !expiresAtUtc
+  ) {
+    throw new Error("Device activation preview was rejected or incomplete.");
+  }
+  return Object.freeze({
+    activationCode,
+    storeCode,
+    storeName,
+    deviceSystem,
+    expiresAtUtc,
+  });
 }
 
 function isLoopbackHostname(hostname: string): boolean {

@@ -90,18 +90,58 @@ router.setCaptureContext("emergency-qr");
 router.acceptHidText("EMERGENCY.SIGNED.PAYLOAD\n");
 assert.equal(events.at(-1)?.category, "emergency-qr", "紧急 QR 必须路由为独立类别");
 
+const privateActivationEventCount = events.length;
+router.setCaptureContext("device-activation");
+assert.equal(
+  router.acceptHidText("HBDEV1-PRIVATE-CODE\n").emitted,
+  true,
+  "设备开通专用上下文仍须接收 HID 原文",
+);
+assert.equal(
+  events.length,
+  privateActivationEventCount,
+  "设备开通码不得进入共享 routed 扫码总线",
+);
+
 const camera = createExpoCameraResultAdapter(router);
 void router.startCamera();
-camera.onBarcodeScanned({ data: "CAMERA-ITEM" });
-assert.deepEqual(scanSummary(events.at(-1)), {
-  value: "CAMERA-ITEM",
-  context: "emergency-qr",
-  source: "camera",
-  category: "emergency-qr",
-});
+assert.equal(
+  camera.onBarcodeScanned({ data: "HBDEV1-CAMERA-PRIVATE" }),
+  true,
+  "设备开通专用上下文仍须接收相机原文",
+);
+assert.equal(
+  events.length,
+  privateActivationEventCount,
+  "设备开通码相机结果也不得进入共享 routed 扫码总线",
+);
 void router.stopCamera();
 
 router.setContext("product");
+const quarantinedActivationEventCount = events.length;
+assert.equal(
+  router.acceptHidText(" h b d e v 1 -DO-NOT-SELL\n").emitted,
+  false,
+  "商品上下文的 HBDEV1 前缀必须被 HID 隔离",
+);
+assert.equal(
+  router.acceptHidText("HBDEV1-ſECRET\n").emitted,
+  false,
+  "前缀已经确认后，后续 Unicode 也不得使开通码逃逸到商品总线",
+);
+void router.startCamera();
+assert.equal(
+  camera.onBarcodeScanned({ data: "\thb dev1 -do-not-sell\r\n" }),
+  false,
+  "商品上下文的 HBDEV1 前缀必须被相机隔离",
+);
+void router.stopCamera();
+assert.equal(
+  events.length,
+  quarantinedActivationEventCount,
+  "隔离的开通码不得进入任何商品扫码订阅",
+);
+
 router.acceptHidText("A".repeat(33));
 router.acceptHidText("GOOD\n");
 assert.equal(events.at(-1)?.value, "GOOD", "超长缓冲必须丢弃，不能污染下一码");

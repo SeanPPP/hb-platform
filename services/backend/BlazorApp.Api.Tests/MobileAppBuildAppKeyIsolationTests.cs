@@ -14,6 +14,8 @@ namespace BlazorApp.Api.Tests;
 public sealed class MobileAppBuildAppKeyIsolationTests : IDisposable
 {
     private const string SharedOtaGroup = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    private const string MobileUpdateId = "11111111-1111-4111-8111-111111111111";
+    private const string HandheldUpdateId = "22222222-2222-4222-8222-222222222222";
     private readonly string dbPath;
     private readonly ISqlSugarClient db;
 
@@ -187,11 +189,10 @@ public sealed class MobileAppBuildAppKeyIsolationTests : IDisposable
         var service = CreateService();
 
         await service.UpsertOtaUpdateAsync(
-            CreateOta("hb-mobile", "mobile-update")
+            CreateOta("hb-mobile", MobileUpdateId)
         );
-        await service.UpsertOtaUpdateAsync(
-            CreateOta("hb-pos-handheld", "handheld-update")
-        );
+        var handheldOta = CreateOta("hb-pos-handheld", HandheldUpdateId);
+        await service.UpsertOtaUpdateAsync(handheldOta);
 
         var mobile = await service.GetOtaUpdatesAsync(
             new MobileAppOtaUpdateQueryDto
@@ -205,7 +206,7 @@ public sealed class MobileAppBuildAppKeyIsolationTests : IDisposable
             new MobileAppOtaUpdateQueryDto
             {
                 AppKey = MobileAppKeys.PosHandheld,
-                Channel = "production",
+                Channel = "pos-handheld-production",
                 RuntimeVersion = "1.0.0",
             }
         );
@@ -214,9 +215,9 @@ public sealed class MobileAppBuildAppKeyIsolationTests : IDisposable
         var mobileItem = Assert.Single(mobile.Data!.Items!);
         var handheldItem = Assert.Single(handheld.Data!.Items!);
         Assert.Equal(MobileAppKeys.Mobile, mobileItem.AppKey);
-        Assert.Equal("mobile-update", mobileItem.UpdateId);
+        Assert.Equal(MobileUpdateId, mobileItem.UpdateId);
         Assert.Equal(MobileAppKeys.PosHandheld, handheldItem.AppKey);
-        Assert.Equal("handheld-update", handheldItem.UpdateId);
+        Assert.Equal(HandheldUpdateId, handheldItem.UpdateId);
     }
 
     [Theory]
@@ -235,11 +236,13 @@ public sealed class MobileAppBuildAppKeyIsolationTests : IDisposable
             {
                 ProjectName = "hb-pos-handheld",
                 UpdateGroupId = SharedOtaGroup,
-                UpdateId = "handheld-update",
-                AndroidUpdateId = "android-update",
+                UpdateId = HandheldUpdateId,
+                AndroidUpdateId = HandheldUpdateId,
                 Channel = "pos-handheld-production",
+                Branch = "pos-handheld-production",
                 Platform = submittedPlatform,
                 RuntimeVersion = "1.0.0",
+                BootstrapLegacyFixedChannel = true,
             }
         );
 
@@ -278,7 +281,7 @@ public sealed class MobileAppBuildAppKeyIsolationTests : IDisposable
     }
 
     [Fact]
-    public async Task Ota_rollback_rejects_unknown_platform_without_generating_command()
+    public async Task Ota_rollback_legacy_endpoint_is_closed_before_parsing_platform()
     {
         var service = CreateService();
 
@@ -288,7 +291,7 @@ public sealed class MobileAppBuildAppKeyIsolationTests : IDisposable
         );
 
         Assert.False(result.Success);
-        Assert.Equal("INVALID_OTA_PLATFORM", result.ErrorCode);
+        Assert.Equal(AppOtaReleaseErrorCodes.LegacyEndpointMigrated, result.ErrorCode);
         Assert.Null(result.Data);
     }
 
@@ -458,6 +461,7 @@ public sealed class MobileAppBuildAppKeyIsolationTests : IDisposable
                         ["hb-mobile"] = MobileAppKeys.Mobile,
                         ["hb-pos-handheld"] = MobileAppKeys.PosHandheld,
                     },
+                    AllowLegacyOtaBootstrapRegistration = true,
                     AcceptedProfiles = ["preview", "production", "android-internal"],
                 }
             ),
@@ -483,18 +487,25 @@ public sealed class MobileAppBuildAppKeyIsolationTests : IDisposable
             NullLogger<MobileAppBuildsController>.Instance
         );
 
-    private static MobileAppOtaUpdateUpsertDto CreateOta(string projectName, string updateId) =>
-        new()
+    private static MobileAppOtaUpdateUpsertDto CreateOta(string projectName, string updateId)
+    {
+        var channel = projectName == "hb-pos-handheld"
+            ? "pos-handheld-production"
+            : "production";
+        return new MobileAppOtaUpdateUpsertDto
         {
             ProjectName = projectName,
             UpdateGroupId = SharedOtaGroup,
             UpdateId = updateId,
             AndroidUpdateId = updateId,
-            Channel = "production",
+            Channel = channel,
+            Branch = channel,
             Platform = "android",
             RuntimeVersion = "1.0.0",
             PublishedAt = new DateTime(2026, 8, 10, 3, 0, 0, DateTimeKind.Utc),
+            BootstrapLegacyFixedChannel = true,
         };
+    }
 
     private static string CreateBuildPayload(
         string buildId,

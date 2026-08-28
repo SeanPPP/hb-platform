@@ -1,4 +1,4 @@
-import { Image, Input, Modal, Select, Space, Table, message } from 'antd'
+import { Image, Input, Modal, Select, Space, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -11,6 +11,7 @@ import {
 } from '../../../services/warehouseProductService'
 import { ProductTypeLabels } from '../../../types/domesticProduct'
 import { createLatestRequestGuard, runLatestGuardedRequest } from '../../../utils/latestRequestGuard'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 function formatPrice(value?: number) {
   if (value === undefined || value === null) {
@@ -298,7 +299,7 @@ export default function ImportNonHbModal({ open, onCancel, onSuccess }: ImportNo
           />
         </Space>
 
-        <Table
+        <MeasuredTable metricId="warehouse.products.import-non-hb-modal.table-1"
           rowKey="productCode"
           virtual
           loading={loading}

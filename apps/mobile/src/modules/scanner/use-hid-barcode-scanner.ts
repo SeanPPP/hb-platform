@@ -9,6 +9,13 @@ import {
   type HidBarcodeKeyEvent,
 } from "./hid-barcode-buffer";
 import { createHiddenInputFocusController, type HiddenInputFocusController } from "./hid-hidden-input-focus";
+import { acquireHidNativeListenerLease } from "./hid-native-listener-lifecycle";
+import {
+  getHidScannerForceTextInput,
+  setHidScannerForceTextInput,
+  setHidScannerForceTextInputIfUnset,
+  subscribeHidScannerMode,
+} from "./hid-scanner-mode-state";
 import { createHidScannerEnabledGate } from "./hid-scanner-enabled-gate";
 
 interface UseHidBarcodeScannerOptions {
@@ -22,7 +29,6 @@ const STORAGE_KEY = "hid_scanner_force_text_input";
 const DUPLICATE_TEXT_INPUT_SUPPRESS_MS = 100;
 
 let nativeModuleRef: any = null;
-let cachedForceTextInput: boolean | null = null;
 
 function getNativeModule() {
   if (nativeModuleRef !== null) {
@@ -38,17 +44,18 @@ function getNativeModule() {
 }
 
 async function loadPersistedMode(): Promise<boolean | null> {
-  if (cachedForceTextInput !== null) {
-    return cachedForceTextInput;
+  const currentMode = getHidScannerForceTextInput();
+  if (currentMode !== null) {
+    return currentMode;
   }
   try {
     const value = await getItemAsync(STORAGE_KEY);
     if (value === "true") {
-      cachedForceTextInput = true;
+      setHidScannerForceTextInputIfUnset(true);
       return true;
     }
     if (value === "false") {
-      cachedForceTextInput = false;
+      setHidScannerForceTextInputIfUnset(false);
       return false;
     }
   } catch {
@@ -58,7 +65,7 @@ async function loadPersistedMode(): Promise<boolean | null> {
 }
 
 async function persistForceTextInput(value: boolean) {
-  cachedForceTextInput = value;
+  setHidScannerForceTextInput(value);
   try {
     await setItemAsync(STORAGE_KEY, value ? "true" : "false");
   } catch {
@@ -87,18 +94,17 @@ export function useHidBarcodeScanner({
   const enabledGateRef = useRef(createHidScannerEnabledGate(enabled));
   enabledGateRef.current.setEnabled(enabled);
 
-  const [forceTextInput, setForceTextInput] = useState<boolean>(cachedForceTextInput === true);
+  const [forceTextInput, setForceTextInput] = useState<boolean>(() => getHidScannerForceTextInput() === true);
   const lastSubmittedRef = useRef("");
   const lastSubmittedTimeRef = useRef(0);
   const lastSubmittedRawValueRef = useRef("");
 
   const switchToTextInputMode = useCallback(() => {
-    if (cachedForceTextInput === true) {
+    if (getHidScannerForceTextInput() === true) {
       return;
     }
     console.log("[HID-Scanner] scanner uses unmapped keyCodes, switching to TextInput mode");
     void persistForceTextInput(true);
-    setForceTextInput(true);
   }, []);
 
   const nativeKeyBuffer = useMemo(() => createHidBarcodeKeyBuffer({
@@ -208,13 +214,11 @@ export function useHidBarcodeScanner({
   }, []);
 
   useEffect(() => {
-    if (cachedForceTextInput === null) {
-      loadPersistedMode().then((persisted) => {
-        if (persisted === true) {
-          setForceTextInput(true);
-        }
-      });
-    }
+    return subscribeHidScannerMode(setForceTextInput);
+  }, []);
+
+  useEffect(() => {
+    void loadPersistedMode();
   }, []);
 
   useEffect(() => {
@@ -255,6 +259,9 @@ export function useHidBarcodeScanner({
     }
     setTextInputValue("");
     lastSubmittedRawValueRef.current = "";
+    lastSubmittedRef.current = "";
+    lastSubmittedTimeRef.current = 0;
+    textInputRef.current?.blur();
     nativeKeyBuffer.dispose();
   }, [enabled, nativeKeyBuffer]);
 
@@ -281,32 +288,15 @@ export function useHidBarcodeScanner({
       nativeKeyBuffer.handleKeyPress(event);
     };
 
-    mod.addListener("onKeyPress", onKeyPress);
+    const lease = acquireHidNativeListenerLease({
+      module: mod,
+      enabled,
+      nativeMode: !forceTextInput,
+      onKeyPress,
+    });
 
-    return () => {
-      mod.removeListener("onKeyPress", onKeyPress);
-    };
-  }, [enabled, nativeKeyBuffer]);
-
-  useEffect(() => {
-    const mod = getNativeModule();
-    if (!mod) {
-      return;
-    }
-
-    const useNativeMode = !forceTextInput;
-    if (useNativeMode && enabled) {
-      mod.startListening();
-    }
-
-    return () => {
-      try {
-        mod.stopListening();
-      } catch {
-        // ignore
-      }
-    };
-  }, [forceTextInput, enabled]);
+    return () => lease.release();
+  }, [forceTextInput, enabled, nativeKeyBuffer]);
 
   if (getNativeModule() && !forceTextInput) {
     return {

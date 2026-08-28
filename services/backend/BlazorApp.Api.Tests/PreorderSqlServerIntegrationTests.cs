@@ -20,6 +20,7 @@ public sealed class PreorderSqlServerFactAttribute : FactAttribute
     }
 }
 
+[Trait("Category", "SQL")]
 public sealed class PreorderSqlServerIntegrationTests
 {
     private const string SqlServerTestConnectionEnvVar =

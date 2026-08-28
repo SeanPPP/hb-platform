@@ -6,8 +6,10 @@ import {
   CashierSessionCache,
   DeviceCredentialStore,
   DevicePresentationStore,
+  DeviceRegistrationResetMarkerStore,
   InMemorySecureStore,
   InstallationIdentityStore,
+  PendingDeviceActivationCodeStore,
   PendingDeviceRegistrationStore,
   type CashierSessionKeyHasher,
 } from "./secure-storage";
@@ -18,6 +20,152 @@ const cacheKeyHasher: CashierSessionKeyHasher = {
     return "b".repeat(64);
   },
 };
+
+test("待兑换开通码仅以 ThisDeviceOnly 暂存并可在崩溃后恢复", async () => {
+  const secureStore = new InMemorySecureStore();
+  const pending = new PendingDeviceActivationCodeStore(secureStore);
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  const otherActivationCode =
+    "HBDEV1-1123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  const intent = {
+    apiPartition: "https://hotbargain.vip/pos-api",
+    hardwareId: "INSTALL-ANDROID-001",
+  } as const;
+
+  await pending.save(`  ${activationCode.toLowerCase()}\n`, "redeem", intent);
+
+  assert.equal(await pending.load(), activationCode);
+  assert.deepEqual(await pending.loadPending(), {
+    activationCode,
+    mode: "redeem",
+    ...intent,
+  });
+  await pending.save(activationCode, "redeem", intent);
+  await assert.rejects(
+    () => pending.save(activationCode, "rebind", intent),
+    /pending.*conflict/i,
+  );
+  await assert.rejects(
+    () => pending.save(otherActivationCode, "redeem", intent),
+    /pending.*conflict/i,
+  );
+  assert.deepEqual(await pending.loadPending(), {
+    activationCode,
+    mode: "redeem",
+    ...intent,
+  });
+  assert.equal(secureStore.lastWriteOptions?.requireThisDeviceOnly, true);
+  await pending.clear();
+  await pending.save(activationCode, "rebind", intent);
+  assert.deepEqual(await pending.loadPending(), {
+    activationCode,
+    mode: "rebind",
+    ...intent,
+  });
+  await pending.clear();
+  assert.equal(await pending.load(), null);
+  await assert.rejects(
+    () => pending.save("HBDEV1-invalid", "redeem", intent),
+    /invalid/i,
+  );
+});
+
+test("待开通码损坏或安全存储读取失败时保留记录并失败关闭", async () => {
+  const key = "hbpos.handheld.pending-device-activation-code.v1";
+  const secureStore = new InMemorySecureStore();
+  const pending = new PendingDeviceActivationCodeStore(secureStore);
+  await secureStore.set(key, "not-json", localOnly);
+
+  await assert.rejects(() => pending.loadPending(), /invalid/i);
+  assert.equal(await secureStore.get(key), "not-json", "不得删除状态不确定的恢复记录");
+
+  const readFailure = new Error("secure store unavailable");
+  secureStore.get = async (requestedKey) => {
+    if (requestedKey === key) throw readFailure;
+    return null;
+  };
+  await assert.rejects(() => pending.loadPending(), (error) => error === readFailure);
+});
+
+test("待开通恢复只允许同一码、模式、API 分区和硬件意图幂等", async () => {
+  const key = "hbpos.handheld.pending-device-activation-code.v1";
+  const secureStore = new InMemorySecureStore();
+  const pending = new PendingDeviceActivationCodeStore(secureStore);
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+  const saveIntent = pending.save.bind(pending) as unknown as (
+    value: string,
+    mode: "redeem" | "rebind",
+    intent: Readonly<{ apiPartition: string; hardwareId: string }>,
+  ) => Promise<void>;
+
+  await saveIntent(activationCode, "redeem", {
+    apiPartition: "https://hotbargain.vip/pos-api/",
+    hardwareId: "INSTALL-ANDROID-001",
+  });
+  const original = await secureStore.get(key);
+  assert.deepEqual(await pending.loadPending(), {
+    activationCode,
+    mode: "redeem",
+    apiPartition: "https://hotbargain.vip/pos-api",
+    hardwareId: "INSTALL-ANDROID-001",
+  });
+  await saveIntent(activationCode, "redeem", {
+    apiPartition: "https://hotbargain.vip/pos-api",
+    hardwareId: "INSTALL-ANDROID-001",
+  });
+  for (const changed of [
+    { apiPartition: "https://staging.hotbargain.vip/pos-api", hardwareId: "INSTALL-ANDROID-001" },
+    { apiPartition: "https://hotbargain.vip/pos-api", hardwareId: "INSTALL-ANDROID-002" },
+  ]) {
+    await assert.rejects(
+      () => saveIntent(activationCode, "redeem", changed),
+      /pending.*conflict/i,
+    );
+    assert.equal(await secureStore.get(key), original);
+  }
+});
+
+test("旧版只有码或 code+mode 的恢复记录必须保留并失败关闭", async () => {
+  const key = "hbpos.handheld.pending-device-activation-code.v1";
+  const secureStore = new InMemorySecureStore();
+  const pending = new PendingDeviceActivationCodeStore(secureStore);
+  const activationCode =
+    "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+
+  for (const legacy of [
+    activationCode,
+    JSON.stringify({ version: 2, activationCode, mode: "redeem" }),
+  ]) {
+    await secureStore.set(key, legacy, localOnly);
+    await assert.rejects(() => pending.loadPending(), /invalid/i);
+    assert.equal(await secureStore.get(key), legacy);
+  }
+});
+
+test("设备注册重置 marker 仅保存精确身份且损坏时失败关闭", async () => {
+  const key = "hbpos.handheld.device-registration-reset.v1";
+  const secureStore = new InMemorySecureStore();
+  const markers = new DeviceRegistrationResetMarkerStore(secureStore);
+  const marker = {
+    version: 1 as const,
+    operationId: "10000000-0000-4000-8000-000000000001",
+    phase: "prepared" as const,
+    deviceCode: "HANDHELD-1042-01",
+    storeCode: "1042",
+    hardwareId: "20000000-0000-4000-8000-000000000002",
+    createdAtUtc: "2026-08-18T02:00:00.000Z",
+  };
+
+  await markers.save(marker);
+  assert.deepEqual(await markers.load(), marker);
+  assert.equal(secureStore.lastWriteOptions?.requireThisDeviceOnly, true);
+
+  await secureStore.set(key, JSON.stringify({ ...marker, phase: "unknown" }), localOnly);
+  await assert.rejects(() => markers.load(), /device-registration-reset.*invalid/i);
+  assert.notEqual(await secureStore.get(key), null, "损坏 marker 不得自动清除");
+});
 
 test("安装 HardwareId 在重复读取时稳定且空白生成值 fail-closed", async () => {
   const secureStore = new InMemorySecureStore();

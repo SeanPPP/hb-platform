@@ -399,7 +399,7 @@ public sealed class SharedHeldOrderRepository(
                        DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount,
                        DiscountPercent, IsAutomaticPromotionDiscount, DiscountSource, ActualAmount, PriceSource,
                        PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason,
-                       IsManualPrice
+                       IsManualPrice, CatalogDiscountBasisPoints
                 FROM SuspendedOrderLines
                 WHERE SuspendedOrderGuid = $SuspendedOrderGuid
                 ORDER BY rowid;
@@ -433,7 +433,9 @@ public sealed class SharedHeldOrderRepository(
                     OriginalOrderGuid = ReadNullableGuid(reader, "OriginalOrderGuid"),
                     OriginalOrderDetailGuid = ReadNullableGuid(reader, "OriginalOrderDetailGuid"),
                     ReturnReason = ReadNullableString(reader, "ReturnReason"),
-                    IsManualPrice = reader.GetInt32(reader.GetOrdinal("IsManualPrice")) != 0
+                    IsManualPrice = reader.GetInt32(reader.GetOrdinal("IsManualPrice")) != 0,
+                    CatalogDiscountBasisPoints = reader.GetInt32(
+                        reader.GetOrdinal("CatalogDiscountBasisPoints"))
                 });
             }
 

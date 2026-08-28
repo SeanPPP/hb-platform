@@ -248,6 +248,7 @@
   <data name="settings.serverAddress.status.postCommitFailed" xml:space="preserve"><value>API 入口已切换，但主界面重载失败；请重启 HBPOS 后重新登录。</value></data>
   <data name="settings.serverAddress.blocked.cart" xml:space="preserve"><value>请先清空购物车，再切换服务器。</value></data>
   <data name="settings.serverAddress.blocked.payment" xml:space="preserve"><value>请先完成或取消当前支付，再切换服务器。</value></data>
+  <data name="settings.serverAddress.blocked.deviceActivation" xml:space="preserve"><value>请先完成待恢复的设备开通，再切换服务器。</value></data>
   <data name="settings.serverAddress.blocked.sync" xml:space="preserve"><value>请先处理所有待上传、失败或同步中的订单，再切换服务器。</value></data>
   <data name="settings.serverAddress.blocked.audit" xml:space="preserve"><value>请等待操作审计记录上传完成，再切换服务器。</value></data>
 </root>

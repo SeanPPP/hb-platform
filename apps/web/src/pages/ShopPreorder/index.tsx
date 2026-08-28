@@ -1,5 +1,5 @@
 import { CheckCircleOutlined, MinusOutlined, PlusOutlined, SaveOutlined, StopOutlined } from '@ant-design/icons'
-import { Alert, App, Button, Card, Empty, Image, Input, InputNumber, Space, Spin, Table, Tag, Typography } from 'antd'
+import { Alert, App, Button, Card, Empty, Image, Input, InputNumber, Space, Spin, Tag, Typography } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -66,6 +66,7 @@ import {
   type PreorderSubmissionObservability,
 } from './preorderObservability'
 import './styles.css'
+import { MeasuredTable } from '../../components/MeasuredTable'
 
 const { Text, Title } = Typography
 
@@ -1063,7 +1064,7 @@ export default function ShopPreorderPage() {
           <Button type={selectedOnly ? 'primary' : 'default'} onClick={() => setSelectedOnly((value) => !value)}>{t('shop.preorder.selectedOnly', { count: selectedCount })}</Button>
         </div>
         {renderMode === 'desktop' ? (
-          <Table className="shop-preorder-table" rowKey="activationItemGuid" dataSource={filteredItems} columns={columns} pagination={false} scroll={{ x: 950 }} locale={{ emptyText: t('shop.preorder.noMatchingProducts') }} />
+          <MeasuredTable metricId="shop-preorder.table-1" className="shop-preorder-table" rowKey="activationItemGuid" dataSource={filteredItems} columns={columns} pagination={false} scroll={{ x: 950 }} locale={{ emptyText: t('shop.preorder.noMatchingProducts') }} />
         ) : (
           <div className="shop-preorder-cards">
             {filteredItems.length ? filteredItems.map((item) => <Card key={item.activationItemGuid} size="small" className={item.packCount ? 'selected' : ''}>

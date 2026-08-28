@@ -8,7 +8,6 @@ import {
   Input,
   Space,
   Statistic,
-  Table,
   Tag,
   Typography,
   message,
@@ -32,6 +31,7 @@ import {
   isAbortError,
   sumAllocationBranchAmounts,
 } from './logic'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { RangePicker } = DatePicker
 
@@ -286,7 +286,7 @@ export default function AllocationsPanel({ productCode, enabled }: AllocationsPa
         {filteredBranches.length === 0 && !loading ? (
           <Empty description={t('warehouseProductRecords.noData')} />
         ) : (
-          <Table
+          <MeasuredTable metricId="warehouse.product-records.allocations-panel.table-1"
             rowKey={(record) => record.storeCode || '__NO_STORE_CODE__'}
             size="small"
             loading={loading}

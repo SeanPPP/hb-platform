@@ -306,6 +306,8 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.PricingStrategy.Edit, "编辑定价策略", "定价策略", "页面 /pos-admin/pricing-strategies - 编辑自动价格策略"),
                 new(Permissions.DeviceRegistration.View, "查看设备注册", "系统管理", "页面 /system/device-registration - 查看 POS 设备注册列表与状态"),
                 new(Permissions.DeviceRegistration.Manage, "管理设备注册", "系统管理", "页面 /system/device-registration - 审核、维护或管理设备注册"),
+                // 仅注册权限，不写入 StoreManager/WarehouseManager 角色模板；手工委派仍受可管理分店范围约束。
+                new(Permissions.DeviceRegistration.ActivationCodes.Manage, "管理设备开通码", "系统管理", "页面 /system/device-registration - 为可管理分店创建和撤销一次性 POS 设备开通码"),
                 new(Permissions.LocalPurchase.View, "查看本地进货", "本地进货管理", "页面 /pos-admin/local-supplier-invoices - 查看分店进货单列表与详情"),
                 new(Permissions.LocalPurchase.MobileView, "移动端查看澳洲进货", "本地进货管理", "移动端 - 查看已授权分店的澳洲进货单列表与详情"),
                 new(Permissions.LocalPurchase.Edit, "编辑本地进货", "本地进货管理", "页面 /pos-admin/local-supplier-invoices - 新增、编辑、提交和维护分店进货单"),
@@ -320,6 +322,9 @@ namespace BlazorApp.Shared.Constants
                 // 仅注册权限，不写入角色模板，避免默认扩大 App 下载入口访问面。
                 new(Permissions.System.ViewAppDownloads, "查看 App 下载", "系统管理", "系统管理 - 查看 App 下载页"),
                 new(Permissions.System.ManageAppDownloads, "管理 App 下载", "系统管理", "系统管理 - 登记 OTA 更新和生成回撤命令"),
+                // 仅注册权限，不写入角色模板；由管理员显式授予查看或冻结基线能力。
+                new(Permissions.System.ViewPerformanceBaseline, "查看性能与质量基线", "系统管理", "页面 /system/performance-baseline - 查看性能与质量指标"),
+                new(Permissions.System.ManagePerformanceBaseline, "管理性能与质量基线", "系统管理", "页面 /system/performance-baseline - 冻结已满足观察期和覆盖率的基线"),
                 new(Permissions.Dashboard.View, "访问后台", "后台管理", "页面 /dashboard - 访问后台工作台"),
                 new(Permissions.OrderFront.View, "前台订货", "前台订货", "前台订货 - 前台订货"),
             };

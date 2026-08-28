@@ -9,6 +9,7 @@ import {
   type SettingsControlPort,
   type SettingsDangerousActionResult,
   type SettingsDangerousConfirmation,
+  type SettingsDeviceActivationPreviewResponse,
   type SettingsPaymentSettingsInput,
   type SettingsPendingDataSnapshot,
   type SettingsPrinterDevice,
@@ -82,11 +83,21 @@ export type ProductionSettingsControlDependencies = Readonly<{
     allowSwitchWithPendingLocalData?: boolean;
     probe(healthUrl: string, signal: AbortSignal): Promise<boolean>;
     save(apiBaseUrl: string): Promise<void>;
+    runSwitchGuarded?<T>(operation: () => Promise<T>): Promise<
+      | Readonly<{ blocked: true }>
+      | Readonly<{ blocked: false; value: T }>
+    >;
   }>;
   device: Readonly<{
+    previewActivationCode?:
+      | ((
+          activationCode: string,
+          signal: AbortSignal,
+        ) => Promise<SettingsDeviceActivationPreviewResponse>)
+      | undefined;
     reregister(
       input: Readonly<{
-        targetStoreCode: string;
+        activationCode: string;
         terminalName?: string;
       }>,
       signal: AbortSignal,
@@ -95,6 +106,7 @@ export type ProductionSettingsControlDependencies = Readonly<{
       employeeBarcode: string,
       signal: AbortSignal,
     ): Promise<"completed" | "pending-recovery">;
+    hasRegistrationRecoveryRisk?(): Promise<boolean>;
   }>;
 }>;
 
@@ -135,6 +147,21 @@ export class ProductionSettingsControl implements SettingsControlPort {
         `${apiBaseUrl}/api/v1/health`,
         signal,
       ),
+    );
+  }
+
+  public previewDeviceActivationCode(
+    activationCode: string,
+    signal: AbortSignal,
+  ): Promise<SettingsDeviceActivationPreviewResponse> {
+    const previewActivationCode = this.input.device.previewActivationCode;
+    if (!previewActivationCode) {
+      return Promise.reject(
+        new Error("Device activation preview is unavailable."),
+      );
+    }
+    return abortChecked(signal, () =>
+      previewActivationCode(activationCode, signal),
     );
   }
 
@@ -255,6 +282,35 @@ export class ProductionSettingsControl implements SettingsControlPort {
         assertActive,
       );
     }
+    if (action.kind === "change-api-address") {
+      // 旧组合或测试替身若未提供分区门闩，绝不能退回到可切换路径。
+      if (!this.input.apiConfiguration.runSwitchGuarded) {
+        return safetyBlocked();
+      }
+      const guarded = await this.input.apiConfiguration.runSwitchGuarded(
+        async () => {
+          try {
+            return await this.input.catalog.runExclusive(() =>
+              this.executeDangerousActionGuarded(
+                action,
+                signal,
+                employeeBarcode,
+              ),
+            );
+          } catch (error) {
+            if (
+              error instanceof CatalogRefreshCoordinatorError &&
+              (error.code === "CATALOG_REFRESH_OPERATION_CONFLICT" ||
+                error.code === "CATALOG_REFRESH_COORDINATOR_SHUTDOWN")
+            ) {
+              return safetyBlocked();
+            }
+            throw error;
+          }
+        },
+      );
+      return guarded.blocked ? safetyBlocked() : guarded.value;
+    }
     try {
       return await this.input.catalog.runExclusive(() =>
         this.executeDangerousActionGuarded(
@@ -283,6 +339,12 @@ export class ProductionSettingsControl implements SettingsControlPort {
   ): Promise<SettingsDangerousActionResult> {
     throwIfAborted(signal);
     assertActive();
+    if (
+      action.kind === "change-api-address" &&
+      await this.registrationRecoveryBlocks(signal)
+    ) {
+      return safetyBlocked();
+    }
     if (this.catalogRefreshBlocks()) {
       return safetyBlocked();
     }
@@ -317,6 +379,11 @@ export class ProductionSettingsControl implements SettingsControlPort {
           });
         }
         if (this.catalogRefreshBlocks()) {
+          return safetyBlocked();
+        }
+        if (
+          await this.registrationRecoveryBlocks(signal)
+        ) {
           return safetyBlocked();
         }
         await abortChecked(signal, () =>
@@ -369,7 +436,7 @@ export class ProductionSettingsControl implements SettingsControlPort {
         await abortChecked(signal, () =>
           this.input.device.reregister(
             {
-              targetStoreCode: action.targetStoreCode,
+              activationCode: action.activationCode,
               ...(action.terminalName
                 ? { terminalName: action.terminalName }
                 : {}),
@@ -418,6 +485,21 @@ export class ProductionSettingsControl implements SettingsControlPort {
 
   private catalogRefreshBlocks(): boolean {
     return this.input.catalog.getRefreshState().kind === "running";
+  }
+
+  private async registrationRecoveryBlocks(
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    const hasRecoveryRisk = this.input.device.hasRegistrationRecoveryRisk;
+    if (!hasRecoveryRisk) return true;
+    try {
+      return await abortChecked(signal, () =>
+        hasRecoveryRisk.call(this.input.device),
+      );
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return true;
+    }
   }
 }
 

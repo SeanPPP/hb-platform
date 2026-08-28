@@ -2,6 +2,7 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.Attendance;
+using BlazorApp.Api.Services.Performance;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
@@ -2185,6 +2186,10 @@ namespace BlazorApp.Api.Services.React
                 }
             );
             concurrentDb.Ado.CommandTimeOut = _db.Ado.CommandTimeOut;
+            SqlPerformanceAttachmentService.Attach(
+                concurrentDb,
+                "SqlSugarContext.StoreOrderHomePageWarmUp"
+            );
 
             return concurrentDb;
         }

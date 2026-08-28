@@ -8,6 +8,7 @@ using Hbpos.Contracts.Linkly;
 
 namespace Hbpos.Client.Tests;
 
+[Collection(GlobalLoggingTestCollection.Name)]
 public sealed class LinklyBackendTerminalClientTests
 {
     [Fact]

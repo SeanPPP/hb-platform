@@ -16,7 +16,6 @@ import {
   Space,
   Spin,
   Switch,
-  Table,
   Tag,
   Tooltip,
   message,
@@ -46,6 +45,7 @@ import {
   createLatestRequestGuard,
   runLatestGuardedRequest,
 } from '../../../utils/latestRequestGuard'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface SupplierOption {
   label: string
@@ -460,7 +460,7 @@ export default function ProductPrefixCodeManagementPage() {
     return (
       <div style={{ padding: '8px 0' }}>
         <Spin spinning={expanded.loading}>
-          <Table
+          <MeasuredTable metricId="domestic-purchase.product-prefix-code-management.table-1"
             rowKey="productCode"
             size="small"
             columns={productColumns}
@@ -719,7 +719,7 @@ export default function ProductPrefixCodeManagementPage() {
         </Space>
 
         <Form form={editForm} component={false}>
-          <Table
+          <MeasuredTable metricId="domestic-purchase.product-prefix-code-management.table-2"
             rowKey="prefixCode"
             loading={loading}
             columns={columns}

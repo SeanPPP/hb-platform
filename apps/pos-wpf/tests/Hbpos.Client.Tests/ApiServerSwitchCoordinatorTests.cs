@@ -22,9 +22,10 @@ public sealed class ApiServerSwitchCoordinatorTests
     }
 
     [Theory]
-    [InlineData(1, false, false, 0, 0, 0, 0)]
-    [InlineData(0, true, false, 0, 0, 0, 0)]
-    [InlineData(0, false, true, 0, 0, 0, 0)]
+    [InlineData(1, false, false, 0, 0, 0, 0, false)]
+    [InlineData(0, true, false, 0, 0, 0, 0, false)]
+    [InlineData(0, false, true, 0, 0, 0, 0, false)]
+    [InlineData(0, false, false, 0, 0, 0, 0, true)]
     public async Task Switch_blocks_for_each_unsafe_runtime_state(
         int cartCount,
         bool cardPayment,
@@ -32,7 +33,8 @@ public sealed class ApiServerSwitchCoordinatorTests
         int pending,
         int failed,
         int syncing,
-        int pendingAudits)
+        int pendingAudits,
+        bool hasPendingActivationRecovery)
     {
         var runtime = new FakeRuntime
         {
@@ -44,7 +46,8 @@ public sealed class ApiServerSwitchCoordinatorTests
                 pending,
                 failed,
                 syncing,
-                pendingAudits)
+                pendingAudits,
+                hasPendingActivationRecovery)
         };
         var (coordinator, healthCalls, _) = CreateCoordinator(runtime);
 
@@ -153,6 +156,23 @@ public sealed class ApiServerSwitchCoordinatorTests
         var result = await coordinator.SwitchAsync("https://new.example.com/pos-api/");
 
         Assert.Equal(ApiServerSwitchStatus.Blocked, result.Status);
+        Assert.Equal(["prepare", "begin", "final-safety", "abort"], runtime.Events);
+        Assert.Null(saved());
+    }
+
+    [Fact]
+    public async Task Switch_aborts_transition_when_activation_recovery_appears_before_final_safety_check()
+    {
+        var runtime = new FakeRuntime
+        {
+            FinalSnapshot = ApiServerSwitchSafetySnapshot.Safe with { HasPendingActivationRecovery = true }
+        };
+        var (coordinator, _, saved) = CreateCoordinator(runtime);
+
+        var result = await coordinator.SwitchAsync("https://new.example.com/pos-api/");
+
+        Assert.Equal(ApiServerSwitchStatus.Blocked, result.Status);
+        Assert.Equal("settings.serverAddress.blocked.deviceActivation", result.BlockReason);
         Assert.Equal(["prepare", "begin", "final-safety", "abort"], runtime.Events);
         Assert.Null(saved());
     }

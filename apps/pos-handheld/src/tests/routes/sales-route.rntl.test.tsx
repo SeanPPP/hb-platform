@@ -11,6 +11,8 @@ let mockCameraScannerProps: any;
 let mockUpdateGate: any;
 let mockUpdatePolicy: any;
 let mockSalesRouteFocusEffect: (() => void) | null;
+let mockPresenterState: any;
+let mockPresenterListener: (() => void) | null;
 type MockSalesFeedbackEvent = Readonly<{
   kind: string;
   timingId?: string;
@@ -24,6 +26,11 @@ const mockDestroyPresenter = jest.fn();
 const mockUnsubscribeSalesFeedback = jest.fn();
 const mockSubscribeSalesFeedback =
   jest.fn<(listener: (event: MockSalesFeedbackEvent) => void) => () => void>();
+const mockUnsubscribePresenter = jest.fn();
+const mockSubscribePresenter = jest.fn<(listener: () => void) => () => void>();
+const mockMarkSalesFirstFrameCommitted = jest.fn();
+const mockMarkSalesInteractive = jest.fn();
+const mockBusinessStartupFail = jest.fn();
 const mockPlaySound = jest.fn();
 const mockExpectSound = jest.fn();
 const mockNoteHidCharacter = jest.fn();
@@ -51,6 +58,11 @@ const mockReconcileSalesToolbarOrder =
   jest.fn<(order: readonly string[] | null | undefined) => string[]>();
 
 const DEFAULT_TOOLBAR_ORDER = ["held-orders", "hold", "language", "lock"];
+
+// Settings 设备换店也引用独立相机入口；本路由测试只验证销售扫码，避免加载原生模块。
+jest.mock("@/features/scanner-camera/camera-scanner-modal", () => ({
+  CameraScannerModal: () => null,
+}));
 
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
@@ -103,6 +115,14 @@ jest.mock("@/features/sales/runtime/scan-timing", () => ({
 
 jest.mock("@/core/runtime/pos-runtime-context", () => ({
   usePosRuntime: () => mockRuntime,
+}));
+
+jest.mock("@/core/performance/business-startup-clock", () => ({
+  businessStartupClock: {
+    markSalesFirstFrameCommitted: () => mockMarkSalesFirstFrameCommitted(),
+    markSalesInteractive: () => mockMarkSalesInteractive(),
+    fail: () => mockBusinessStartupFail(),
+  },
 }));
 
 jest.mock("@/features/cashier-login", () => ({
@@ -214,10 +234,15 @@ beforeEach(() => {
   mockRouteCaptureProps = null;
   mockCameraScannerProps = null;
   mockSalesRouteFocusEffect = null;
+  mockPresenterListener = null;
   delete mockSalesFeedbackSubscription.listener;
   mockSubscribeSalesFeedback.mockImplementation((listener) => {
     mockSalesFeedbackSubscription.listener = listener;
     return mockUnsubscribeSalesFeedback;
+  });
+  mockSubscribePresenter.mockImplementation((listener) => {
+    mockPresenterListener = listener;
+    return mockUnsubscribePresenter;
   });
   mockHasRecoveryRequired.mockResolvedValue(false);
   mockInstallmentHasRecoveryRequired.mockResolvedValue(false);
@@ -263,21 +288,27 @@ beforeEach(() => {
     ],
     source: "online",
   };
+  mockPresenterState = {
+    phase: "selling",
+    cart: {
+      revision: 7,
+      lines: [{ lineId: "line-1" }],
+      actualAmount: { currency: "AUD", cents: 1_250 },
+    },
+    capabilities: {
+      catalog: true,
+      cartEditing: true,
+    },
+  };
   mockCreatePresenter.mockReturnValue({
     addLookupCode: mockAddLookupCode,
     addScannedLookupCode: mockAddScannedLookupCode,
     destroy: mockDestroyPresenter,
-    getState: () => ({
-      phase: "selling",
-      cart: {
-        revision: 7,
-        lines: [{ lineId: "line-1" }],
-        actualAmount: { currency: "AUD", cents: 1_250 },
-      },
-    }),
+    getState: () => mockPresenterState,
     prepareOnlineCheckout: mockPrepareOnlineCheckout,
     releasePreparedCheckout: mockReleasePreparedCheckout,
     setQuery: mockSetQuery,
+    subscribe: mockSubscribePresenter,
     subscribeFeedback: mockSubscribeSalesFeedback,
   });
   mockUpdateGate = {
@@ -360,6 +391,37 @@ test("销售路由零参数创建生产 presenter，并在卸载时销毁", asyn
 
   await screen.unmount();
   expect(mockDestroyPresenter).toHaveBeenCalledTimes(1);
+});
+
+test("销售首帧提交后仍等待目录与销售录入实际可交互", async () => {
+  mockPresenterState = {
+    ...mockPresenterState,
+    capabilities: {
+      ...mockPresenterState.capabilities,
+      catalog: false,
+    },
+  };
+  const screen = await render(<SalesRoute />);
+
+  await waitFor(() => {
+    expect(screen.getByTestId("sales-screen")).toBeTruthy();
+    expect(mockMarkSalesFirstFrameCommitted).toHaveBeenCalledTimes(1);
+  });
+  expect(mockMarkSalesInteractive).not.toHaveBeenCalled();
+
+  await act(async () => {
+    mockPresenterState = {
+      ...mockPresenterState,
+      capabilities: {
+        ...mockPresenterState.capabilities,
+        catalog: true,
+      },
+    };
+    mockPresenterListener?.();
+    await Promise.resolve();
+  });
+
+  expect(mockMarkSalesInteractive).toHaveBeenCalledTimes(1);
 });
 
 test("更新服务尚未注入时使用默认允许的新交易门禁", async () => {
@@ -784,6 +846,7 @@ test("presenter 初始化失败保留活动收银员，展示可重试诊断并�
   expect(screen.getByTestId("status-strip")).toBeTruthy();
   expect(screen.queryByTestId("redirect")).toBeNull();
   expect(mockCreatePresenter).toHaveBeenCalledWith();
+  expect(mockBusinessStartupFail).toHaveBeenCalledTimes(1);
 
   await act(async () => {
     fireEvent.press(screen.getByTestId("sales-bootstrap-retry"));

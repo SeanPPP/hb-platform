@@ -32,6 +32,7 @@ import {
   quickOrderDiscountPermission,
   type SalesOperationSecurity,
 } from "@/features/sales/runtime/sales-operation-security";
+import { scanTiming } from "@/features/sales/runtime/scan-timing";
 
 export const SALES_NEW_TRANSACTIONS_DISABLED =
   "NEW_TRANSACTIONS_DISABLED";
@@ -44,15 +45,20 @@ export type LookupOutcome = Readonly<{
   source: LookupSource;
   kind: "added" | "incremented" | "not-found" | "failed-blocked";
   lineId?: string;
+  /** HID 时序会话 id；业务逻辑不得读取。 */
+  timingId?: string;
 }>;
 
 export type LookupAttemptOptions = Readonly<{
   source?: LookupSource;
+  /** HID 时序会话 id，仅供 scan-timing 打点使用；业务逻辑不得读取。 */
+  timingId?: string;
 }>;
 
 type LookupAttempt = {
   readonly attemptId: string;
   readonly source: LookupSource;
+  readonly timingId?: string;
   terminalPublished: boolean;
 };
 
@@ -828,7 +834,10 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
     lookupCode: string,
     options: LookupAttemptOptions = {},
   ): Promise<string | null> {
-    const attempt = this.createLookupAttempt(options.source ?? "manual");
+    const attempt = this.createLookupAttempt(
+      options.source ?? "manual",
+      options.timingId,
+    );
     try {
       this.sessionGuard.assertActive();
       this.preparedCheckoutGate.assertMutable();
@@ -1276,11 +1285,15 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
     }
   }
 
-  private createLookupAttempt(source: LookupSource): LookupAttempt {
+  private createLookupAttempt(
+    source: LookupSource,
+    timingId?: string,
+  ): LookupAttempt {
     this.nextLookupAttemptId += 1;
     return {
       attemptId: `lookup-${this.nextLookupAttemptId}`,
       source,
+      ...(timingId === undefined ? {} : { timingId }),
       terminalPublished: false,
     };
   }
@@ -1332,8 +1345,21 @@ class ConnectedSalesWorkflow implements SalesWorkflowPort {
     this.notifyLookupOutcome({
       attemptId: attempt.attemptId,
       source: attempt.source,
+      ...(attempt.timingId === undefined
+        ? {}
+        : { timingId: attempt.timingId }),
       ...terminal,
     });
+    try {
+      scanTiming.complete(
+        attempt.timingId,
+        terminal.kind === "added" || terminal.kind === "incremented"
+          ? "success"
+          : "failure",
+      );
+    } catch {
+      // timing 是旁路；权威购物车结果已发布，指标异常不得反转业务结果。
+    }
     return true;
   }
 

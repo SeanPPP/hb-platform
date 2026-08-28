@@ -667,7 +667,7 @@ export class HbposInstallmentsApi implements InstallmentsRemotePort {
   }
 
   private mapSummary(
-    summary: GeneratedSummary,
+    summary: GeneratedSummary | GeneratedDetails,
     updatedAt: unknown = summary.updatedAt,
   ): InstallmentSummary {
     const storeCode = responseIdentity(summary.storeCode, "summary.storeCode");
@@ -733,8 +733,11 @@ export class HbposInstallmentsApi implements InstallmentsRemotePort {
   }
 
   private mapDetails(details: GeneratedDetails): InstallmentDetails {
-    // 详情 DTO 没有 updatedAt；沿用服务端 createdAt，避免伪造本机当前时间。
-    const summary = this.mapSummary(details, details.createdAt);
+    // 兼容尚未回填 updatedAt 的旧详情；只回退服务端 createdAt，不伪造本机时间。
+    const summary = this.mapSummary(
+      details,
+      details.updatedAt ?? details.createdAt,
+    );
     return Object.freeze({
       ...summary,
       cashierId: responseIdentity(

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.Performance;
 using BlazorApp.Shared.DTOs;
 
 namespace BlazorApp.Api.Services.React;
@@ -71,6 +72,15 @@ public sealed class WarehouseStorePriceSyncJobService : IWarehouseStorePriceSync
             };
             _jobs[state.JobId] = state;
             _runningOperationJobIds[operationId] = state.JobId;
+            PerformanceOperationalRunBridge.Publish(
+                PerformanceOperationalRunTransition.Queued(
+                    state.JobId,
+                    state.Request.SyncToHq ? "hq" : "background",
+                    "warehouse-store-price-sync",
+                    state.CreatedAt,
+                    _runningOperationJobIds.Count
+                )
+            );
             // 关键位置：后台重新创建 scope，避免继续使用控制器请求生命周期内的数据库连接。
             _ = Task.Run(() => ExecuteJobAsync(state), CancellationToken.None);
             return Task.FromResult(CreateSnapshot(state, false));
@@ -103,6 +113,15 @@ public sealed class WarehouseStorePriceSyncJobService : IWarehouseStorePriceSync
                 state.Status = WarehouseStorePriceSyncJobStatusConstants.Running;
                 state.Message = "仓库价格同步处理中";
             }
+            PerformanceOperationalRunBridge.Publish(
+                PerformanceOperationalRunTransition.Started(
+                    state.JobId,
+                    state.Request.SyncToHq ? "hq" : "background",
+                    "warehouse-store-price-sync",
+                    _timeProvider.GetUtcNow().UtcDateTime,
+                    _runningOperationJobIds.Count
+                )
+            );
 
             try
             {
@@ -161,11 +180,12 @@ public sealed class WarehouseStorePriceSyncJobService : IWarehouseStorePriceSync
         string? message
     )
     {
+        DateTime completedAt;
         lock (_jobStartSyncRoot)
         {
             lock (state.SyncRoot)
             {
-                var completedAt = _timeProvider.GetUtcNow().UtcDateTime;
+                completedAt = _timeProvider.GetUtcNow().UtcDateTime;
                 state.Status = status;
                 state.Result = CloneResult(result);
                 state.Message = message;
@@ -181,6 +201,15 @@ public sealed class WarehouseStorePriceSyncJobService : IWarehouseStorePriceSync
                 _runningOperationJobIds.TryRemove(state.OperationId, out _);
             }
         }
+        PerformanceOperationalRunBridge.Publish(
+            PerformanceOperationalRunTransition.Completed(
+                state.JobId,
+                state.Request.SyncToHq ? "hq" : "background",
+                "warehouse-store-price-sync",
+                status,
+                completedAt
+            )
+        );
     }
 
     private WarehouseStorePriceSyncJobDto? GetRunningSnapshotNoLock(string operationId)

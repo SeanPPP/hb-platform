@@ -91,6 +91,11 @@ public class NativeUpdatePolicyRequest
     public string? ReleaseMessage { get; set; }
 }
 
+public sealed class MobileIosNativeUpdatePolicyRequest : NativeUpdatePolicyRequest
+{
+    public int? MinimumSupportedBuildNumber { get; set; }
+}
+
 public sealed class PosIpadNativeUpdatePolicyRequest : NativeUpdatePolicyRequest
 {
     public int? MinimumSupportedBuildNumber { get; set; }
@@ -386,6 +391,15 @@ public sealed class PosHandheldUpdateCandidateDto
     public string? AppStoreId { get; set; }
     public string? BundleIdentifier { get; set; }
     public string? ReleaseMessage { get; set; }
+    public Guid? ReleaseBatchId { get; set; }
+    public bool Legacy { get; set; }
+    public string? FactFingerprint { get; set; }
+    public string? GitCommitHash { get; set; }
+    public string? DashboardUrl { get; set; }
+    public bool IsRollback { get; set; }
+    public Guid? RollbackOfReleaseId { get; set; }
+    public string? RegistrationSource { get; set; }
+    public string? RegisteredBy { get; set; }
     public DateTime PublishedAtUtc { get; set; }
     public bool IsCurrentHead { get; set; }
     public bool Activatable { get; set; }

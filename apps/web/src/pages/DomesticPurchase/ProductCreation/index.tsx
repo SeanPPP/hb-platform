@@ -1,5 +1,5 @@
 import { DownloadOutlined, EyeOutlined, PlusOutlined } from '@ant-design/icons'
-import { Button, DatePicker, message, Select, Space, Table } from 'antd'
+import { Button, DatePicker, message, Select, Space } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -10,6 +10,7 @@ import type { BatchInfo } from '../../../types/domesticProductCreation'
 import BatchCreateModal from './BatchCreateModal'
 import BatchDetailModal from './BatchDetailModal'
 import { exportProductCreationBatchToExcel, getExportableBatchItems } from './exportBatchDetail'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { RangePicker } = DatePicker
 
@@ -241,7 +242,7 @@ export default function ProductCreationPage() {
         </Space>
       </div>
 
-      <Table
+      <MeasuredTable metricId="domestic-purchase.product-creation.table-1"
         columns={columns}
         dataSource={data}
         rowKey="batchNumber"

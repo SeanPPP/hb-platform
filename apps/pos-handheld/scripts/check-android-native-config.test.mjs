@@ -26,9 +26,11 @@ function createCleanExpoEnvironment() {
   );
 }
 
-async function resolveAndroidManifest() {
+let androidModResultsPromise;
+
+async function resolveAndroidModResults() {
   // 在内存中执行 config plugin，避免依赖或写入被忽略的原生工程目录。
-  const { stdout } = await execFileAsync(
+  androidModResultsPromise ??= execFileAsync(
     expoCli,
     ["config", "--type", "introspect", "--json"],
     {
@@ -36,12 +38,25 @@ async function resolveAndroidManifest() {
       env: createCleanExpoEnvironment(),
       maxBuffer: 10 * 1024 * 1024,
     },
-  );
-  const config = JSON.parse(stdout);
-  const manifest = config?._internal?.modResults?.android?.manifest?.manifest;
+  ).then(({ stdout }) => JSON.parse(stdout)?._internal?.modResults?.android);
+
+  const modResults = await androidModResultsPromise;
+  assert.ok(modResults, "Expo introspection 未返回 Android modResults");
+  return modResults;
+}
+
+async function resolveAndroidManifest() {
+  const manifest = (await resolveAndroidModResults())?.manifest?.manifest;
 
   assert.ok(manifest, "Expo introspection 未返回 Android manifest");
   return manifest;
+}
+
+async function resolveAndroidStyles() {
+  const styles = (await resolveAndroidModResults())?.styles;
+
+  assert.ok(styles, "Expo introspection 未返回 Android styles");
+  return styles;
 }
 
 test("Expo introspection 生成的 AndroidManifest 全局禁用系统与云备份", async () => {
@@ -54,6 +69,43 @@ test("Expo introspection 生成的 AndroidManifest 全局禁用系统与云备�
   assert.ok(application, "Expo introspection 未返回 application 节点");
   assert.equal(application.$?.["android:allowBackup"], "false");
   assert.doesNotMatch(appConfig, /configureAndroidBackup/);
+});
+
+test("Android 30 生成配置满足通知、相机与启动样式 lint 契约", async () => {
+  const [manifest, styles] = await Promise.all([
+    resolveAndroidManifest(),
+    resolveAndroidStyles(),
+  ]);
+  const permissions = manifest["uses-permission"] ?? [];
+  const cameraFeatures = (manifest["uses-feature"] ?? []).filter(
+    (entry) => entry?.$?.["android:name"] === "android.hardware.camera",
+  );
+  const splashStyle = (styles.resources?.style ?? []).find(
+    (entry) => entry?.$?.name === "Theme.App.SplashScreen",
+  );
+  const splashBehavior = (splashStyle?.item ?? []).find(
+    (entry) =>
+      entry?.$?.name === "android:windowSplashScreenBehavior",
+  );
+
+  assert.deepEqual(
+    {
+      postNotificationsPermissionCount: permissions.filter(
+        (entry) =>
+          entry?.$?.["android:name"] ===
+          "android.permission.POST_NOTIFICATIONS",
+      ).length,
+      cameraFeatureCount: cameraFeatures.length,
+      cameraRequired: cameraFeatures[0]?.$?.["android:required"],
+      splashTargetApi: splashBehavior?.$?.["tools:targetApi"],
+    },
+    {
+      postNotificationsPermissionCount: 1,
+      cameraFeatureCount: 1,
+      cameraRequired: "false",
+      splashTargetApi: "33",
+    },
+  );
 });
 
 test("printer and attendance Expo modules autolink Apple and Android without ReactPackage", async () => {

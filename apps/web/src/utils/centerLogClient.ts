@@ -204,6 +204,36 @@ export function isCenterLogConfigured() {
   return Boolean(CENTER_LOG_KEY)
 }
 
+export interface CenterLogAuthorizedPostOptions {
+  keepalive?: boolean
+  signal?: AbortSignal
+  fetchImpl?: typeof fetch
+}
+
+export async function postCenterLogAuthorizedJson(
+  path: string,
+  payload: unknown,
+  options: CenterLogAuthorizedPostOptions = {},
+) {
+  if (!isCenterLogConfigured()) {
+    return undefined
+  }
+
+  const fetchImpl = options.fetchImpl ?? fetch
+  return fetchImpl(buildApiUrl(path), {
+    method: 'POST',
+    credentials: 'include',
+    keepalive: options.keepalive,
+    signal: options.signal,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Log-Project': CENTER_LOG_PROJECT,
+      'X-Log-Key': CENTER_LOG_KEY,
+    },
+    body: JSON.stringify(payload),
+  })
+}
+
 export interface CenterLogPayload extends Omit<ApplicationLogIngestItem, 'projectCode' | 'environment' | 'serviceName' | 'timestampUtc'> {
   timestampUtc?: string
 }

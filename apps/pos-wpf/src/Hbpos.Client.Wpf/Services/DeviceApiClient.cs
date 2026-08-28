@@ -17,10 +17,31 @@ public interface IDeviceApiClient
     Task<DeviceVerifyResponse> VerifyAsync(DeviceVerifyRequest request, CancellationToken cancellationToken = default);
 
     Task<DeviceReregisterResponse> ReregisterAsync(DeviceReregisterRequest request, CancellationToken cancellationToken = default);
+
+    Task<DeviceActivationCodePreviewResponse> PreviewActivationCodeAsync(
+        DeviceActivationCodePreviewRequest request,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Device activation-code preview is not available.");
+
+    Task<DeviceActivationCodeRedeemResponse> RedeemActivationCodeAsync(
+        DeviceActivationCodeRedeemRequest request,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Device activation-code redemption is not available.");
+
+    Task<DeviceActivationCodeRedeemResponse> RedeemActivationCodeForRecoveryAsync(
+        DeviceActivationCodeRedeemRequest request,
+        CancellationToken cancellationToken = default) =>
+        RedeemActivationCodeAsync(request, cancellationToken);
+
+    Task<DeviceActivationCodeRedeemResponse> RebindActivationCodeAsync(
+        DeviceActivationCodeRebindRequest request,
+        CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException("Device activation-code rebinding is not available.");
 }
 
 public sealed class DeviceApiClient(HttpClient httpClient) : IDeviceApiClient
 {
+    internal const string ActivationRecoveryOnlyHeader = "X-HBPOS-Activation-Recovery-Only";
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     public async Task<IReadOnlyList<StoreSelectionItem>> GetStoresAsync(CancellationToken cancellationToken = default)
@@ -69,6 +90,57 @@ public sealed class DeviceApiClient(HttpClient httpClient) : IDeviceApiClient
             JsonOptions,
             cancellationToken);
         return await ReadApiResultAsync<DeviceReregisterResponse>(response, cancellationToken);
+    }
+
+    public async Task<DeviceActivationCodePreviewResponse> PreviewActivationCodeAsync(
+        DeviceActivationCodePreviewRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            "api/v1/devices/activation-code/preview",
+            request,
+            JsonOptions,
+            cancellationToken);
+        return await ReadApiResultAsync<DeviceActivationCodePreviewResponse>(response, cancellationToken);
+    }
+
+    public async Task<DeviceActivationCodeRedeemResponse> RedeemActivationCodeAsync(
+        DeviceActivationCodeRedeemRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            "api/v1/devices/activation-code/redeem",
+            request,
+            JsonOptions,
+            cancellationToken);
+        return await ReadApiResultAsync<DeviceActivationCodeRedeemResponse>(response, cancellationToken);
+    }
+
+    public async Task<DeviceActivationCodeRedeemResponse> RedeemActivationCodeForRecoveryAsync(
+        DeviceActivationCodeRedeemRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var httpRequest = new HttpRequestMessage(
+            HttpMethod.Post,
+            "api/v1/devices/activation-code/redeem")
+        {
+            Content = JsonContent.Create(request, options: JsonOptions)
+        };
+        httpRequest.Headers.TryAddWithoutValidation(ActivationRecoveryOnlyHeader, "true");
+        using var response = await httpClient.SendAsync(httpRequest, cancellationToken);
+        return await ReadApiResultAsync<DeviceActivationCodeRedeemResponse>(response, cancellationToken);
+    }
+
+    public async Task<DeviceActivationCodeRedeemResponse> RebindActivationCodeAsync(
+        DeviceActivationCodeRebindRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        using var response = await httpClient.PostAsJsonAsync(
+            "api/v1/devices/activation-code/rebind",
+            request,
+            JsonOptions,
+            cancellationToken);
+        return await ReadApiResultAsync<DeviceActivationCodeRedeemResponse>(response, cancellationToken);
     }
 
     private static async Task<T> ReadApiResultAsync<T>(

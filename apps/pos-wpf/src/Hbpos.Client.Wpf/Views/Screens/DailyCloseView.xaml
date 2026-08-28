@@ -377,7 +377,8 @@
                                                 Grid.Column="3"
                                                 Command="{Binding CreateOrResumeDailyCloseCommand}"
                                                 Height="36"
-                                                MinWidth="170">
+                                                MinWidth="170"
+                                                Padding="8,8">
                                             <Button.Style>
                                                 <Style TargetType="Button" BasedOn="{StaticResource PosPrimaryButtonStyle}">
                                                     <Setter Property="Visibility" Value="Collapsed" />

@@ -126,18 +126,33 @@ export type ProductionSettingsCompositionInput = Readonly<{
     allowSwitchWithPendingLocalData?: boolean;
     probe(healthUrl: string, signal: AbortSignal): Promise<boolean>;
     save(apiBaseUrl: string): Promise<void>;
+    runSwitchGuarded?<T>(operation: () => Promise<T>): Promise<
+      | Readonly<{ blocked: true }>
+      | Readonly<{ blocked: false; value: T }>
+    >;
   }>;
   runtimeReload: Readonly<{
     reload(signal: AbortSignal): Promise<void>;
   }>;
   device: Readonly<{
+    previewActivationCode?:
+      | ((
+          activationCode: string,
+          signal: AbortSignal,
+        ) => Promise<import("../../features/settings/settings-presenter").SettingsDeviceActivationPreviewResponse>)
+      | undefined;
     reregister(
       input: Readonly<{
-        targetStoreCode: string;
+        activationCode: string;
         terminalName?: string;
       }>,
       signal: AbortSignal,
     ): Promise<void>;
+    resetRegistration(
+      employeeBarcode: string,
+      signal: AbortSignal,
+    ): Promise<"completed" | "pending-recovery">;
+    hasRegistrationRecoveryRisk?(): Promise<boolean>;
   }>;
   printer: RuntimePrinterAdapter;
   /**
@@ -408,6 +423,10 @@ export function createProductionSettingsComposition(
     control,
     runDangerousExclusive: (operation) =>
       input.activeCart.runExclusive(async () => operation()),
+    // 复用支付配置已注入的全局 transition，确保重置先封门、等待在途业务，
+    // 再由组合根 barrier 按目录→购物车锁序读取最终 pending 快照。
+    runDeviceRegistrationResetTransition: (operation) =>
+      input.paymentConfigurationTransition.run(operation),
   });
 }
 

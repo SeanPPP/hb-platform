@@ -20,6 +20,22 @@ test("公开设备会话只保留注册与脱敏身份，不暴露授权头、�
       calls.push("register");
       return authorized;
     },
+    async previewActivationCode() {
+      calls.push("preview");
+      return { isAllowed: true, storeCode: "S001", storeName: "Chermside" };
+    },
+    async redeemActivationCode() {
+      calls.push("redeem");
+      return authorized;
+    },
+    async rebindActivationCode() {
+      calls.push("rebind");
+      return authorized;
+    },
+    async restorePendingActivationCode() {
+      calls.push("restore-activation");
+      return "HBDEV1-RECOVERY";
+    },
     async poll() {
       calls.push("poll");
       return authorized;
@@ -62,6 +78,10 @@ test("公开设备会话只保留注册与脱敏身份，不暴露授权头、�
     { storeCode: "S001", storeName: "Chermside" },
   ]);
   await service.register({ storeCode: "S001" });
+  await service.previewActivationCode("HBDEV1-CODE");
+  await service.redeemActivationCode({ activationCode: "HBDEV1-CODE" });
+  await service.rebindActivationCode({ activationCode: "HBDEV1-CODE" });
+  await service.restorePendingActivationCode();
   await service.poll();
   await service.reregister({ targetStoreCode: "S002" });
   assert.deepEqual(await service.getDeviceIdentity(), {
@@ -76,6 +96,10 @@ test("公开设备会话只保留注册与脱敏身份，不暴露授权头、�
 
   assert.deepEqual(calls, [
     "register",
+    "preview",
+    "redeem",
+    "rebind",
+    "restore-activation",
     "poll",
     "reregister",
     "identity",
@@ -86,8 +110,12 @@ test("公开设备会话只保留注册与脱敏身份，不暴露授权头、�
     "getDevicePresentation",
     "listRegistrationStores",
     "poll",
+    "previewActivationCode",
+    "rebindActivationCode",
+    "redeemActivationCode",
     "register",
     "reregister",
+    "restorePendingActivationCode",
   ]);
   assert.equal("getRequestHeaders" in service, false);
   assert.equal("getTransportCredentials" in service, false);

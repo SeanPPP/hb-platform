@@ -822,18 +822,16 @@ public sealed class StorePriceTransferJobServiceTests
     }
 
     [Fact]
+    [Trait("Category", "SQL")]
     public async Task TransferAsync_SqlServerBulkMerge_真实执行插入更新和跳过()
     {
         var baseConnectionString = Environment.GetEnvironmentVariable(SqlServerTestConnectionEnvVar);
-        if (string.IsNullOrWhiteSpace(baseConnectionString))
-        {
-            // 关键位置：本地和普通 CI 没有 SQL Server 时不强绑；配置环境变量后会真实执行 bulk MERGE。
-            return;
-        }
+        // SQL 分类必须由 weekly 专用数据库执行；缺少配置时失败，禁止产生“未运行但绿色”的结果。
+        Assert.False(string.IsNullOrWhiteSpace(baseConnectionString));
 
         var databaseName = $"HbStorePriceTransfer_{Guid.NewGuid():N}";
-        var masterConnectionString = BuildSqlServerConnectionString(baseConnectionString, "master");
-        var databaseConnectionString = BuildSqlServerConnectionString(baseConnectionString, databaseName);
+        var masterConnectionString = BuildSqlServerConnectionString(baseConnectionString!, "master");
+        var databaseConnectionString = BuildSqlServerConnectionString(baseConnectionString!, databaseName);
         await ExecuteSqlServerAsync(masterConnectionString, $"CREATE DATABASE {QuoteSqlServerName(databaseName)};");
 
         try

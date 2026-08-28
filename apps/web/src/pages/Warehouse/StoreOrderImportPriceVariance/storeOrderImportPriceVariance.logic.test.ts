@@ -116,7 +116,9 @@ assert(
   pageSource.includes('const [supplierSummaries, setSupplierSummaries]') &&
     pageSource.includes('setSupplierSummaries(result.supplierSummaries)') &&
     pageSource.includes('const supplierSummaryColumns') &&
-    pageSource.includes('<Table<StoreOrderImportPriceVarianceSupplierSummary>') &&
+    pageSource.includes(
+      '<MeasuredTable<StoreOrderImportPriceVarianceSupplierSummary> metricId="warehouse.store-order-import-price-variance.table-1"',
+    ) &&
     pageSource.includes('supplierVarianceRankingTitle') &&
     pageSource.includes('noSupplierVarianceData') &&
     pageSource.includes("dataIndex: 'increaseVarianceAmountTotal'") &&

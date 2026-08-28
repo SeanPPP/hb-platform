@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using BlazorApp.Api.Services.Performance;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services
@@ -71,6 +72,10 @@ namespace BlazorApp.Api.Services
                         IsAutoCloseConnection = false,
                         InitKeyType = InitKeyType.Attribute,
                     });
+                    SqlPerformanceAttachmentService.Attach(
+                        databaseLock,
+                        "SqlSugarContext.EmployeeProfileMediaBatchLock"
+                    );
                     foreach (var (resource, _) in processLocks)
                     {
                         var result = await databaseLock.Ado.SqlQuerySingleAsync<int>(
@@ -168,6 +173,10 @@ namespace BlazorApp.Api.Services
                         IsAutoCloseConnection = false,
                         InitKeyType = InitKeyType.Attribute,
                     });
+                    SqlPerformanceAttachmentService.Attach(
+                        databaseLock,
+                        "SqlSugarContext.EmployeeProfileMediaLock"
+                    );
                     var result = await databaseLock.Ado.SqlQuerySingleAsync<int>(
                         """
                         DECLARE @Result int;

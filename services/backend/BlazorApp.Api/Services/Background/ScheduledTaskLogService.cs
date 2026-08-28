@@ -1,5 +1,7 @@
 using System.Text.Json;
+using System.Collections.Concurrent;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Services.Performance;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.HBweb;
 using SqlSugar;
@@ -18,6 +20,7 @@ namespace BlazorApp.Api.Services.Background
     {
         private readonly SqlSugarContext _context;
         private readonly ILogger<ScheduledTaskLogService> _logger;
+        private static readonly ConcurrentDictionary<Guid, (string ExternalRunId, int Attempt)> PerformanceRuns = new();
 
         public ScheduledTaskLogService(
             SqlSugarContext context,
@@ -35,17 +38,22 @@ namespace BlazorApp.Api.Services.Background
         /// <param name="parameters">任务参数</param>
         /// <param name="triggeredBy">触发方式（默认为定时触发）</param>
         /// <param name="canRetry">是否允许重试（默认为 true）</param>
+        /// <param name="performanceExternalRunId">跨重试关联的性能运行标识</param>
+        /// <param name="performanceAttempt">当前执行尝试序号</param>
         /// <returns>任务日志记录</returns>
         public async Task<ScheduledTaskLog> LogTaskStartAsync(
             string taskType,
             TaskParameters parameters,
             string triggeredBy = TaskTrigger.Scheduled,
-            bool canRetry = true
+            bool canRetry = true,
+            string? performanceExternalRunId = null,
+            int performanceAttempt = 1
         )
         {
+            ScheduledTaskLog taskLog;
             try
             {
-                var taskLog = new ScheduledTaskLog
+                taskLog = new ScheduledTaskLog
                 {
                     TaskType = taskType,
                     TaskParameters = JsonSerializer.Serialize(parameters),
@@ -67,12 +75,11 @@ namespace BlazorApp.Api.Services.Background
                     parameters
                 );
 
-                return taskLog;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "记录任务开始时发生异常（数据库不可用），创建临时日志: {TaskType}", taskType);
-                return new ScheduledTaskLog
+                taskLog = new ScheduledTaskLog
                 {
                     Id = Guid.NewGuid(),
                     TaskType = taskType,
@@ -85,6 +92,31 @@ namespace BlazorApp.Api.Services.Background
                     ErrorMessage = string.Empty,
                 };
             }
+
+            var externalRunId = string.IsNullOrWhiteSpace(performanceExternalRunId)
+                ? taskLog.Id.ToString("N")
+                : performanceExternalRunId.Trim();
+            var attempt = Math.Max(1, performanceAttempt);
+            PerformanceRuns[taskLog.Id] = (externalRunId, attempt);
+            PerformanceOperationalRunBridge.Publish(
+                PerformanceOperationalRunTransition.Queued(
+                    externalRunId,
+                    "background",
+                    taskType,
+                    taskLog.ScheduledTime,
+                    attempt: attempt
+                )
+            );
+            PerformanceOperationalRunBridge.Publish(
+                PerformanceOperationalRunTransition.Started(
+                    externalRunId,
+                    "background",
+                    taskType,
+                    taskLog.StartedAt,
+                    attempt: attempt
+                )
+            );
+            return taskLog;
         }
 
         /// <summary>
@@ -109,7 +141,17 @@ namespace BlazorApp.Api.Services.Background
                 );
 
                 // 更新任务状态为成功
-                await _context.ScheduledTaskLogDb.UpdateAsync(taskLog);
+                var updated = await _context.ScheduledTaskLogDb.UpdateAsync(taskLog);
+                if (!updated)
+                {
+                    // 权威任务日志没有终态时不得污染成功率；保留映射，由运行租约恢复为 interrupted。
+                    _logger.LogWarning(
+                        "任务成功状态未持久化，不发布性能完成事件: {TaskId}",
+                        taskId
+                    );
+                    return;
+                }
+                PublishCompletion(taskLog, "success");
 
                 _logger.LogInformation(
                     "任务成功完成: {TaskType}, TaskId: {TaskId}, 耗时: {Duration}ms",
@@ -147,6 +189,8 @@ namespace BlazorApp.Api.Services.Background
                 throw new InvalidOperationException($"任务成功状态未持久化: {taskId}");
             }
 
+            PublishCompletion(taskLog, "success");
+
             _logger.LogInformation(
                 "任务成功完成并严格持久化: {TaskType}, TaskId: {TaskId}, 耗时: {Duration}ms",
                 taskLog.TaskType,
@@ -180,6 +224,8 @@ namespace BlazorApp.Api.Services.Background
             {
                 throw new InvalidOperationException($"任务失败状态未持久化: {taskId}");
             }
+
+            PublishCompletion(taskLog, "failure");
 
             _logger.LogError(
                 "任务失败状态已严格持久化: {TaskType}, TaskId: {TaskId}, 错误: {Error}",
@@ -220,7 +266,17 @@ namespace BlazorApp.Api.Services.Background
                 taskLog.RetryCount++;
 
                 // 更新任务状态为失败，并记录错误信息
-                await _context.ScheduledTaskLogDb.UpdateAsync(taskLog);
+                var updated = await _context.ScheduledTaskLogDb.UpdateAsync(taskLog);
+                if (!updated)
+                {
+                    // 与成功路径保持同一权威顺序，避免不存在的失败终态进入冻结基线。
+                    _logger.LogWarning(
+                        "任务失败状态未持久化，不发布性能完成事件: {TaskId}",
+                        taskId
+                    );
+                    return;
+                }
+                PublishCompletion(taskLog, "failure");
 
                 _logger.LogError(
                     "任务执行失败: {TaskType}, TaskId: {TaskId}, 耗时: {Duration}ms, 错误: {Error}",
@@ -234,6 +290,23 @@ namespace BlazorApp.Api.Services.Background
             {
                 _logger.LogError(ex, "记录任务失败状态时发生异常: {TaskId}", taskId);
             }
+        }
+
+        private static void PublishCompletion(ScheduledTaskLog taskLog, string status)
+        {
+            var performanceRun = PerformanceRuns.TryRemove(taskLog.Id, out var mapped)
+                ? mapped
+                : (taskLog.Id.ToString("N"), Math.Max(1, taskLog.RetryCount));
+            PerformanceOperationalRunBridge.Publish(
+                PerformanceOperationalRunTransition.Completed(
+                    performanceRun.Item1,
+                    "background",
+                    taskLog.TaskType,
+                    status,
+                    taskLog.CompletedAt ?? DateTime.UtcNow,
+                    performanceRun.Item2
+                )
+            );
         }
 
         /// <summary>

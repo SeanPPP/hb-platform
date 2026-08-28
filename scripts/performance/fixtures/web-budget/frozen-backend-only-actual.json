@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "events": [
+    {
+      "eventId": "77777777-7777-4777-8777-777777777777",
+      "metric": "ci.run.duration",
+      "observedAt": "2026-08-25T01:00:00.000Z",
+      "value": 900,
+      "unit": "ms",
+      "dimensions": {
+        "lane": "backend"
+      }
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 using BlazorApp.Shared.Models.HqEntities;
+using BlazorApp.Api.Services.Performance;
 using Microsoft.Extensions.Configuration;
 using SqlSugar;
 
@@ -46,6 +47,8 @@ namespace BlazorApp.Api.Data
                     };
                 }
             );
+
+            SqlPerformanceAttachmentService.Attach(_db, nameof(HBSalesSqlSugarContext));
         }
 
         /// <summary>

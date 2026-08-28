@@ -234,6 +234,7 @@ public sealed class LinklyCloudConnectionPoolTests
             SandboxRestBaseUrl = "https://sandbox-rest.example/"
         });
         using var service = new LinklyHttpConnectionMetricsService(options, logger);
+        DisableMetricsTimer(service);
         await service.StartAsync(timeout.Token);
         using var meter = new Meter("System.Net.Http");
         var connections = meter.CreateUpDownCounter<long>("http.client.open_connections");
@@ -243,20 +244,19 @@ public sealed class LinklyCloudConnectionPoolTests
         try
         {
             connections.Add(1, idleTags);
-            await WaitForSnapshotAsync(
-                logger,
-                snapshot => snapshot.Environment == "Production" && snapshot.TotalConnections == 1,
-                timeout.Token);
+            InvokeMetricsFlush(service);
+            Assert.Single(logger.Snapshots, snapshot =>
+                snapshot.Environment == "Production" && snapshot.TotalConnections == 1);
             var initialSnapshotCount = logger.Snapshots.Count;
 
-            // 先完成 idle -> active 并启动固定窗口，再让下一次 active -> idle 跨过原 250ms 边界。
+            // 确定性驱动每个窗口边界，验证负增量与后续正增量之间不会输出瞬时归零快照。
             connections.Add(-1, idleTags);
             connections.Add(1, activeTags);
-            await Task.Delay(TimeSpan.FromMilliseconds(150), timeout.Token);
+            InvokeMetricsFlush(service);
             connections.Add(-1, activeTags);
-            await Task.Delay(TimeSpan.FromMilliseconds(140), timeout.Token);
+            InvokeMetricsFlush(service);
             connections.Add(1, idleTags);
-            await Task.Delay(TimeSpan.FromMilliseconds(400), timeout.Token);
+            InvokeMetricsFlush(service);
 
             Assert.DoesNotContain(logger.Snapshots, snapshot => snapshot.TotalConnections == 0);
             Assert.Equal(initialSnapshotCount, logger.Snapshots.Count);

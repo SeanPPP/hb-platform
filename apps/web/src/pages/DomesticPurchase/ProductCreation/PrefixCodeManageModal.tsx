@@ -1,6 +1,6 @@
 import { DeleteOutlined, EditOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next'
-import { Button, Col, Form, Input, InputNumber, message, Modal, Popconfirm, Row, Space, Spin, Switch, Table } from 'antd'
+import { Button, Col, Form, Input, InputNumber, message, Modal, Popconfirm, Row, Space, Spin, Switch } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import React, { useCallback, useEffect, useState } from 'react'
 import {
@@ -10,6 +10,7 @@ import {
   togglePrefixCodeStatus,
   updatePrefixCode,
 } from '../../../services/domesticProductCreationService'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const handlePrefixNameChange = (e: React.ChangeEvent<HTMLInputElement>, form: ReturnType<typeof Form.useForm>[0]) => {
   const upperValue = e.target.value.toUpperCase()
@@ -264,7 +265,7 @@ export default function PrefixCodeManageModal({ visible, supplierCode, supplierN
         </Space>
       </div>
       <Spin spinning={loading}>
-        <Table columns={columns} dataSource={list} rowKey="prefixCode" size="small" pagination={{ current: page, pageSize, total, showSizeChanger: true, showQuickJumper: true, showTotal: (total) => t('common.totalCount', '共 {{count}} 条', { count: total }), onChange: (p, ps) => { setPage(p); setPageSize(ps) } }} scroll={{ x: 800 }} />
+        <MeasuredTable metricId="domestic-purchase.product-creation.prefix-code-manage-modal.table-1" columns={columns} dataSource={list} rowKey="prefixCode" size="small" pagination={{ current: page, pageSize, total, showSizeChanger: true, showQuickJumper: true, showTotal: (total) => t('common.totalCount', '共 {{count}} 条', { count: total }), onChange: (p, ps) => { setPage(p); setPageSize(ps) } }} scroll={{ x: 800 }} />
       </Spin>
     </Modal>
   )

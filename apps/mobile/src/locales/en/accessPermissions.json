@@ -141,6 +141,10 @@
       "name": "Dashboard",
       "description": "Allows access to Dashboard."
     },
+    "DeviceRegistration.ActivationCodes.Manage": {
+      "name": "Manage device activation codes",
+      "description": "Create and revoke one-time POS device activation codes for manageable stores."
+    },
     "DeviceRegistration.Manage": {
       "name": "Device Registration Manage",
       "description": "Allows access to Device Registration Manage."
@@ -593,6 +597,10 @@
       "name": "System Manage App Downloads",
       "description": "Allows access to System Manage App Downloads."
     },
+    "System.ManagePerformanceBaseline": {
+      "name": "Manage performance and quality baseline",
+      "description": "Freeze performance and quality baselines that meet the observation and coverage requirements."
+    },
     "System.ManageScheduledTasks": {
       "name": "System Manage Scheduled Tasks",
       "description": "Allows access to System Manage Scheduled Tasks."
@@ -608,6 +616,10 @@
     "System.ViewLogs": {
       "name": "System View Logs",
       "description": "Allows access to System View Logs."
+    },
+    "System.ViewPerformanceBaseline": {
+      "name": "View performance and quality baseline",
+      "description": "View performance and quality metrics."
     },
     "Users.Create": {
       "name": "Create users",

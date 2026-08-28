@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { Table } from 'antd';
+import { MeasuredTable } from '../../../components/MeasuredTable';
 import type { ColumnsType } from 'antd/es/table';
 import React from 'react';
 import styles from './BranchPerformanceTable.module.css';
@@ -277,7 +277,7 @@ const BranchPerformanceTable: React.FC<BranchPerformanceTableProps> = ({
 
   return (
     <div className={styles.tableWrapper}>
-      <Table
+      <MeasuredTable metricId="executive-sales-intelligence.branch-performance-table.table-1"
         columns={columns}
         dataSource={data}
         loading={loading}

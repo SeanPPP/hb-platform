@@ -62,6 +62,7 @@ public sealed class PosHandheldUpdatePolicyServiceTests : IDisposable
         db.CodeFirst.InitTables(
             typeof(MobileAppBuild),
             typeof(MobileAppOtaUpdate),
+            typeof(AppOtaRelease),
             typeof(IosAppStoreRelease),
             typeof(PosHandheldUpdatePolicy),
             typeof(PosHandheldUpdatePolicyRevision)
@@ -587,6 +588,66 @@ public sealed class PosHandheldUpdatePolicyServiceTests : IDisposable
         );
 
         Assert.Same(error, Assert.IsType<ConflictObjectResult>(result).Value);
+    }
+
+    [Fact]
+    public async Task 手持Ota策略_新release_channel事实可独立激活且保留审计身份()
+    {
+        var release = new AppOtaRelease
+        {
+            Id = Guid.NewGuid(),
+            ReleaseBatchId = Guid.NewGuid(),
+            AppKey = MobileAppKeys.PosHandheld,
+            Environment = "production",
+            ClientChannel = "pos-handheld-production",
+            ReleaseChannel = "pos-handheld-production-ios-release-20260827-a",
+            EasBranch = "pos-handheld-production-ios-release-20260827-a",
+            ProjectName = "hb-pos-handheld",
+            Platform = "ios",
+            RuntimeVersion = "1.0.2",
+            UpdateGroupId = Guid.NewGuid().ToString(),
+            UpdateId = Guid.NewGuid().ToString(),
+            Message = "iOS 独立发布",
+            GitCommitHash = "abcdef12",
+            DashboardUrl = "https://expo.dev/accounts/hb/projects/pos/updates/test",
+            PublishedAtUtc = DateTime.UtcNow,
+            FactFingerprint = new string('a', 64),
+            RegistrationSource = "app-ota-release-api",
+            CreatedAt = DateTime.UtcNow,
+            CreatedBy = "publisher",
+            IsDeleted = false,
+        };
+        await db.Insertable(release).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var candidates = await service.GetCandidatesAsync(
+            PosHandheldUpdateLanes.IosOta
+        );
+        var saved = await service.SetLaneAsync(
+            PosHandheldUpdateLanes.IosOta,
+            new PosHandheldUpdatePolicyRequest
+            {
+                ExpectedPolicyVersion = 0,
+                Enabled = true,
+                Required = true,
+                CandidateId = release.Id,
+                ReleaseMessage = "必须更新",
+            },
+            "admin"
+        );
+        var resolved = await service.ResolveManagedLaneAsync(
+            PosHandheldUpdateLanes.IosOta
+        );
+
+        Assert.True(candidates.Success);
+        var candidate = Assert.Single(candidates.Data!);
+        Assert.Equal(release.ReleaseChannel, candidate.Channel);
+        Assert.False(candidate.Legacy);
+        Assert.Equal(release.ReleaseBatchId, candidate.ReleaseBatchId);
+        Assert.Equal("publisher", candidate.RegisteredBy);
+        Assert.True(saved.Success, saved.Message);
+        Assert.True(resolved!.CandidateValid);
+        Assert.Equal(release.Id, resolved.Candidate!.Id);
     }
 
     [Fact]

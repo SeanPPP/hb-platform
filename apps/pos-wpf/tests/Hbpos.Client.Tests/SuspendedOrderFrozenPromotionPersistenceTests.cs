@@ -74,6 +74,18 @@ public sealed class SuspendedOrderFrozenPromotionPersistenceTests
         {
             var store = new LocalSqliteStore(databasePath);
             await new LocalSchemaService(store).InitializeAsync();
+            await using (var connection = await store.OpenConnectionAsync())
+            {
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    """
+                    ALTER TABLE SuspendedOrders DROP COLUMN FrozenPromotionRulesJson;
+                    ALTER TABLE SuspendedOrderLines DROP COLUMN IsManualPrice;
+                    ALTER TABLE SuspendedOrderLines DROP COLUMN CatalogDiscountBasisPoints;
+                    """;
+                await command.ExecuteNonQueryAsync();
+            }
+
             var repository = new SuspendedOrderRepository(store);
             var order = PromotionOrder();
 
@@ -82,7 +94,8 @@ public sealed class SuspendedOrderFrozenPromotionPersistenceTests
             var saved = await repository.GetAsync(order.SuspendedOrderGuid);
             Assert.NotNull(saved);
             Assert.Null(saved!.FrozenPromotionRules);
-            Assert.False(Assert.Single(saved.Lines).IsManualPrice);
+            Assert.Equal(2, saved.Lines.Count);
+            Assert.All(saved.Lines, line => Assert.False(line.IsManualPrice));
 
             var result = new SharedHeldOrderMapper().Map(saved, saved.FrozenPromotionRules, revision: 1);
             Assert.True(result.IsBlocked);

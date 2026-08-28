@@ -117,6 +117,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private LocalOrder? _lastCompletedOrder;
     private LocalDeviceCache? _pendingDeviceRegistrationCache;
     private Task? _deviceRegistrationStoreLoadTask;
+    private DeviceActivationRecoveryMode? _startupActivationRecoveryMode;
+    private bool _startupActivationRecoveryIsUnreadable;
     private Task? _posPostShowStartupTask;
     private AppStartupOptions? _startupOptions;
     private int _disposed;
@@ -1037,6 +1039,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _startupOptions = startupOptions;
         // 关键逻辑：重新初始化会创建新的页面实例，必须丢弃上一轮 post-show 任务，避免新注册页永久停在“正在加载门店”。
         _deviceRegistrationStoreLoadTask = null;
+        _startupActivationRecoveryMode = null;
+        _startupActivationRecoveryIsUnreadable = false;
         _posPostShowStartupTask = null;
         await _schema.InitializeAsync();
         _schemaReady = true;
@@ -1044,8 +1048,61 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         await RestoreLanguageAsync(startupOptions);
         // 关键逻辑：登录遮罩复用设置页与设备注册页的单例，未登录时也要显示当前服务器地址。
         _apiServerSettings?.Load();
+        DeviceActivationRecoveryMode? pendingActivationRecoveryMode = null;
+        if (!startupOptions.PreviewMode)
+        {
+            try
+            {
+                pendingActivationRecoveryMode =
+                    await _deviceRegistrationWorkflowService.GetPendingActivationRecoveryModeAsync();
+            }
+            catch (DeviceActivationRecoveryUnreadableException)
+            {
+                // 恢复文件存在但无法安全读取时，禁止旧 Enabled 缓存回到离线营业。
+                DeviceRegistration = CreateDeviceRegistrationViewModel(startupOptions);
+                _pendingDeviceRegistrationCache = null;
+                DeviceRegistration.Prepare(null);
+                DeviceRegistration.CanCancel = false;
+                DeviceRegistration.IsBusy = true;
+                DeviceRegistration.IsActivationRecoveryPending = true;
+                DeviceRegistration.StatusMessage = _localization.T(
+                    "deviceActivation.status.recoveryUnreadable");
+                _startupActivationRecoveryIsUnreadable = true;
+                CurrentScreen = DeviceRegistration;
+                RefreshClock();
+                _clockTimer.Start();
+                return;
+            }
+        }
+
         var startupResult = await _mainShellStartupService.EvaluateAsync(Session, startupOptions.PreviewMode);
         Session = startupResult.Session;
+        if (pendingActivationRecoveryMode is not null)
+        {
+            // 恢复记录优先于旧 Enabled 缓存：响应丢失时旧缓存仍可能可离线营业，绝不能清掉开通码继续旧分店。
+            DeviceRegistration = CreateDeviceRegistrationViewModel(startupOptions);
+            _pendingDeviceRegistrationCache = startupResult.CachedDevice;
+            if (pendingActivationRecoveryMode == DeviceActivationRecoveryMode.Rebind)
+            {
+                DeviceRegistration.PrepareReregister(
+                    startupResult.CachedDevice?.StoreCode ?? Session.StoreCode);
+                DeviceRegistration.CanCancel = false;
+            }
+            else
+            {
+                DeviceRegistration.Prepare(startupResult.CachedDevice);
+            }
+
+            DeviceRegistration.IsActivationRecoveryPending = true;
+            DeviceRegistration.IsBusy = true;
+            DeviceRegistration.StatusMessage = _localization.T("deviceActivation.status.recovering");
+            _startupActivationRecoveryMode = pendingActivationRecoveryMode;
+            CurrentScreen = DeviceRegistration;
+            RefreshClock();
+            _clockTimer.Start();
+            return;
+        }
+
         if (startupResult.RequiresDeviceRegistration)
         {
             DeviceRegistration = CreateDeviceRegistrationViewModel(startupOptions);
@@ -1057,6 +1114,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        await ClearActivationRecoverySafeAsync();
         await InitializePosExperienceAsync(startupOptions);
     }
 
@@ -1078,6 +1136,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var startupOptions = _startupOptions ?? new AppStartupOptions([], false, null, null);
         _connectivityTimer.Stop();
         _deviceRegistrationStoreLoadTask = null;
+        _startupActivationRecoveryMode = null;
+        _startupActivationRecoveryIsUnreadable = false;
         _posPostShowStartupTask = null;
         CancelStartupCatalogIndexLoad();
         _screenNavigator.ClearScreens();
@@ -1110,7 +1170,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             _pendingDeviceRegistrationCache = startupResult.CachedDevice;
             DeviceRegistration.Prepare(startupResult.CachedDevice);
             CurrentScreen = DeviceRegistration;
-            _deviceRegistrationStoreLoadTask = DeviceRegistration.LoadStoresAsync(startupResult.CachedDevice);
+            _deviceRegistrationStoreLoadTask = DeviceRegistration.ResumeActivationOrLoadLegacyAsync(startupResult.CachedDevice);
             return;
         }
 
@@ -1128,11 +1188,61 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         if (DeviceRegistration is not null && CurrentScreen == DeviceRegistration)
         {
-            _deviceRegistrationStoreLoadTask ??= DeviceRegistration.LoadStoresAsync(_pendingDeviceRegistrationCache);
+            _deviceRegistrationStoreLoadTask ??= ContinueDeviceRegistrationStartupAsync(startupOptions);
             return _deviceRegistrationStoreLoadTask;
         }
 
         return ContinuePosStartupAfterShownAsync(startupOptions, owner);
+    }
+
+    private async Task ContinueDeviceRegistrationStartupAsync(AppStartupOptions startupOptions)
+    {
+        var registration = DeviceRegistration;
+        if (registration is null)
+        {
+            return;
+        }
+
+        if (_startupActivationRecoveryIsUnreadable)
+        {
+            // 文件仍存在但不可读时只允许管理员修复本地权限/数据后重启，不能加载旧缓存。
+            registration.IsBusy = true;
+            registration.StatusMessage = _localization.T("deviceActivation.status.recoveryUnreadable");
+            return;
+        }
+
+        await registration.ResumeActivationOrLoadLegacyAsync(_pendingDeviceRegistrationCache);
+        if (_startupActivationRecoveryMode is null
+            || !ReferenceEquals(DeviceRegistration, registration)
+            || !ReferenceEquals(CurrentScreen, registration))
+        {
+            return;
+        }
+
+        var stillPending = await _deviceRegistrationWorkflowService.GetPendingActivationRecoveryModeAsync();
+        if (stillPending is not null)
+        {
+            // 网络或响应仍不确定时，继续锁在恢复页，禁止旧缓存回到离线营业。
+            registration.IsBusy = true;
+            return;
+        }
+
+        // 确定性拒绝已经由 workflow 清除恢复记录，此时才重新应用既有设备缓存/离线规则。
+        _startupActivationRecoveryMode = null;
+        _startupActivationRecoveryIsUnreadable = false;
+        var startupResult = await _mainShellStartupService.EvaluateAsync(Session, startupOptions.PreviewMode);
+        Session = startupResult.Session;
+        _pendingDeviceRegistrationCache = startupResult.CachedDevice;
+        if (startupResult.RequiresDeviceRegistration)
+        {
+            registration.Prepare(startupResult.CachedDevice);
+            await registration.ResumeActivationOrLoadLegacyAsync(startupResult.CachedDevice);
+            return;
+        }
+
+        DeviceRegistration = null;
+        await InitializePosExperienceAsync(startupOptions);
+        _ = ContinuePosStartupAfterShownAsync(startupOptions, CurrentOwner);
     }
 
     public bool TryProcessKeyboardScannerInput(string barcode)
@@ -1145,6 +1255,29 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (_operationAuthorizationService?.IsPromptOpen == true)
         {
             return _operationAuthorizationService.ProcessScannerBarcode(barcode);
+        }
+
+        if (IsDeviceReregistrationDialogOpen && DeviceRegistration is IScannerInputTarget registrationScannerTarget)
+        {
+            return registrationScannerTarget.ProcessScannerBarcode(
+                barcode,
+                "keyboard-focus-fallback",
+                "keyboard-fallback");
+        }
+
+        if (ReferenceEquals(CurrentScreen, DeviceRegistration)
+            && DeviceRegistration is IScannerInputTarget initialRegistrationScannerTarget)
+        {
+            return initialRegistrationScannerTarget.ProcessScannerBarcode(
+                barcode,
+                "keyboard-focus-fallback",
+                "keyboard-fallback");
+        }
+
+        if (HasAsciiCaseInsensitiveActivationPrefix(barcode))
+        {
+            // 普通业务页永远不能把设备开通码当作商品、订单或员工条码继续处理。
+            return true;
         }
 
         if (EmergencyLoginTokenCodec.HasSupportedPrefix(barcode.Trim()) &&
@@ -1360,6 +1493,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private async Task ActivateDeviceAsync(DeviceActivatedEventArgs args, AppStartupOptions startupOptions)
     {
         _deviceRegistrationStoreLoadTask = null;
+        _startupActivationRecoveryMode = null;
+        _startupActivationRecoveryIsUnreadable = false;
         _posPostShowStartupTask = null;
         if (DeviceRegistration is not null)
         {
@@ -1367,7 +1502,22 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             DeviceRegistration.StatusMessage = _localization.T("startup.stage.loadingProducts");
         }
 
-        Session = Session with
+        if (args.IsReregistered)
+        {
+            // 换店成功后旧设备和旧分店收银员会话均不可复用；购物车已由前置门禁保证为空。
+            _mainShellStartupService.ClearAuthorization();
+            _cart.Clear();
+        }
+
+        var activationSession = args.IsReregistered
+            ? Session with
+            {
+                CashierId = string.Empty,
+                CashierName = string.Empty,
+                CashierSession = null
+            }
+            : Session;
+        Session = activationSession with
         {
             StoreCode = args.StoreCode,
             StoreName = args.StoreName,
@@ -1704,6 +1854,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     private void RefreshActiveScannerPage()
     {
+        _rawScannerService.SetGlobalBarcodeInterceptor(ShouldConsumeReservedActivationBarcode);
         if (IsApiServerSwitching)
         {
             _rawScannerService.SetActivePage(null);
@@ -1712,8 +1863,60 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         var pageId = _operationAuthorizationService?.IsPromptOpen == true
             ? _operationAuthorizationService.ScannerPageId
-            : (CurrentScreen as IScannerInputTarget)?.ScannerPageId;
+            : IsDeviceReregistrationDialogOpen
+                ? (DeviceRegistration as IScannerInputTarget)?.ScannerPageId
+                : (CurrentScreen as IScannerInputTarget)?.ScannerPageId;
         _rawScannerService.SetActivePage(pageId);
+    }
+
+    private bool ShouldConsumeReservedActivationBarcode(RawBarcodeScannedEventArgs args)
+    {
+        if (!HasAsciiCaseInsensitiveActivationPrefix(args.Barcode))
+        {
+            return false;
+        }
+
+        // 授权弹窗、换店弹窗、首次开通页依次保留现有扫码优先级；其余页面全局吞掉开通码。
+        return _operationAuthorizationService?.IsPromptOpen != true
+            && !IsDeviceReregistrationDialogOpen
+            && !(DeviceRegistration is not null && ReferenceEquals(CurrentScreen, DeviceRegistration));
+    }
+
+    private static bool HasAsciiCaseInsensitiveActivationPrefix(string? value)
+    {
+        const string prefix = "HBDEV1-";
+        if (string.IsNullOrEmpty(value))
+        {
+            return false;
+        }
+
+        var prefixIndex = 0;
+        foreach (var inputCharacter in value)
+        {
+            if (inputCharacter is ' ' or '\t' or '\n' or '\v' or '\f' or '\r')
+            {
+                continue;
+            }
+
+            var character = inputCharacter;
+            if (character is >= 'a' and <= 'z')
+            {
+                character = (char)(character - ('a' - 'A'));
+            }
+
+            if (character != prefix[prefixIndex])
+            {
+                return false;
+            }
+
+            prefixIndex++;
+            if (prefixIndex == prefix.Length)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void RaiseScreenHostStateChanged()
@@ -1742,6 +1945,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         // 关键逻辑：设备重注册弹窗优先级更高，打开或关闭时都要重新计算收银员登录遮盖。
         OnPropertyChanged(nameof(IsCashierLoginOverlayOpen));
+        _rawScannerService.ClearPendingInput();
+        RefreshActiveScannerPage();
     }
 
     partial void OnSelectedCultureNameChanged(string value)
@@ -1911,6 +2116,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             args => ActivateDeviceAsync(args, startupOptions),
             ApplyDeviceReregistered,
             CancelDeviceReregistration);
+    }
+
+    private async Task ClearActivationRecoverySafeAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _deviceRegistrationWorkflowService.ClearActivationRecoveryAsync(cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // 已验证设备不能因临时恢复记录清理失败而阻断营业；日志不得包含一次性开通码。
+            ConsoleLog.Write(
+                "DeviceActivation",
+                $"activation recovery cleanup failed error={ex.GetType().Name}");
+        }
     }
 
     private void ApplySelectedCultureName(string cultureName)
@@ -2308,20 +2528,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         var startupOptions = _startupOptions ?? new AppStartupOptions([], false, null, null);
         DeviceRegistration = CreateDeviceRegistrationViewModel(startupOptions);
+        _startupActivationRecoveryMode = null;
+        _startupActivationRecoveryIsUnreadable = false;
         _pendingDeviceRegistrationCache = null;
         _deviceRegistrationStoreLoadTask = null;
         _screenNavigator.ClearCashPaymentCache();
         DeviceRegistration.PrepareReregister(Session.StoreCode);
         IsDeviceReregistrationDialogOpen = true;
-        // 弹窗打开后立即加载可切换分店，避免用户首次看到空列表。
-        _deviceRegistrationStoreLoadTask = DeviceRegistration.LoadStoresAsync(null);
-        await _deviceRegistrationStoreLoadTask;
-        if (DeviceRegistration is null || !IsDeviceReregistrationDialogOpen)
-        {
-            // 用户可能在门店加载完成前已经取消，后台加载结束后不再恢复或读取弹窗状态。
-            return DeviceReregistrationStartResult.Blocked(StatusMessage);
-        }
-
         return DeviceReregistrationStartResult.StartedWith(DeviceRegistration.StatusMessage);
     }
 

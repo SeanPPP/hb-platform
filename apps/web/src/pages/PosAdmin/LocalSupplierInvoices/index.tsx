@@ -33,7 +33,6 @@ import {
   Popconfirm,
   Select,
   Space,
-  Table,
   Tag,
   message,
 } from 'antd'
@@ -96,6 +95,7 @@ import {
   type LocalSupplierInvoiceColumnKey,
 } from './columnOrder'
 import { formatLocalSupplierInvoiceAuditTime } from './auditTime'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const LOCAL_SUPPLIER_INVOICE_COLUMN_ORDER_STORAGE_KEY =
   'hbweb_rv.localSupplierInvoices.columnOrder.v1'
@@ -1173,7 +1173,7 @@ export default function LocalSupplierInvoicesPage() {
             accessibility={dndAccessibility}
           >
             <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
-              <Table
+              <MeasuredTable metricId="pos-admin.local-supplier-invoices.table-1"
                 ref={invoiceTableRef}
                 rowKey="invoiceGUID"
                 loading={loading}

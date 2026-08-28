@@ -141,6 +141,10 @@
       "name": "访问后台",
       "description": "页面 /dashboard - 访问后台工作台"
     },
+    "DeviceRegistration.ActivationCodes.Manage": {
+      "name": "管理设备开通码",
+      "description": "页面 /system/device-registration - 为可管理分店创建和撤销一次性 POS 设备开通码"
+    },
     "DeviceRegistration.Manage": {
       "name": "管理设备注册",
       "description": "页面 /system/device-registration - 审核、维护或管理设备注册"
@@ -593,6 +597,10 @@
       "name": "管理 App 下载",
       "description": "系统管理 - 登记 OTA 更新和生成回撤命令"
     },
+    "System.ManagePerformanceBaseline": {
+      "name": "管理性能与质量基线",
+      "description": "页面 /system/performance-baseline - 冻结已满足观察期和覆盖率的基线"
+    },
     "System.ManageScheduledTasks": {
       "name": "管理定时任务",
       "description": "系统管理 - 切换定时任务调度实例和运行开关"
@@ -608,6 +616,10 @@
     "System.ViewLogs": {
       "name": "查看日志",
       "description": "系统管理 - 查看日志"
+    },
+    "System.ViewPerformanceBaseline": {
+      "name": "查看性能与质量基线",
+      "description": "页面 /system/performance-baseline - 查看性能与质量指标"
     },
     "Users.Create": {
       "name": "创建用户",

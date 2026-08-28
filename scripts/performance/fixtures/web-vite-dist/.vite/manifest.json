@@ -1,0 +1,22 @@
+{
+  "_vendor.js": {
+    "file": "assets/vendor.js"
+  },
+  "index.html": {
+    "file": "assets/main.js",
+    "name": "index",
+    "src": "index.html",
+    "isEntry": true,
+    "imports": ["_vendor.js"],
+    "dynamicImports": ["src/routes/orders.tsx"],
+    "css": ["assets/main.css"]
+  },
+  "src/routes/orders.tsx": {
+    "file": "assets/orders.js",
+    "name": "orders",
+    "src": "src/routes/orders.tsx",
+    "isDynamicEntry": true,
+    "imports": ["_vendor.js"],
+    "css": ["assets/orders.css"]
+  }
+}

@@ -24,7 +24,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tabs,
   Tag,
   Typography,
@@ -54,6 +53,7 @@ import {
   buildOtaPolicyConfirmationSummary,
   buildOtaRolloutRequest,
   isAppUpdatePolicyVersionConflict,
+  isValidMobileIosBuildNumber,
   isValidPosHandheldBuildNumber,
   isValidPosIpadBuildNumber,
   resolveNativeReleaseStatus,
@@ -72,6 +72,8 @@ import {
 } from './appUpdatePolicyRequestLogic'
 import { formatAppDownloadLocalDateTime } from './time'
 import PosHandheldUpdatePolicyTab from './PosHandheldUpdatePolicyTab'
+import MobileOtaPolicyTab from './MobileOtaPolicyTab'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface AppUpdatePolicyPanelProps {
   canManage: boolean
@@ -210,6 +212,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
   const [registerApp, setRegisterApp] = useState<AppUpdateApp | null>(null)
   const [registerSaving, setRegisterSaving] = useState(false)
   const [handheldRefreshVersion, setHandheldRefreshVersion] = useState(0)
+  const [mobileOtaRefreshVersion, setMobileOtaRefreshVersion] = useState(0)
   const laneRequestsRef = useRef<Record<LoadLaneKey, LatestRequestLane>>({
     mobileNative: new LatestRequestLane(),
     ipadNative: new LatestRequestLane(),
@@ -328,6 +331,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
 
   const refreshAll = useCallback(async () => {
     setHandheldRefreshVersion((version) => version + 1)
+    setMobileOtaRefreshVersion((version) => version + 1)
     await Promise.allSettled([
       loadMobileNativeLane(),
       loadIpadNativeLane(),
@@ -417,6 +421,13 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
               type="warning"
               showIcon
               message={t('system.appDownloads.updatePolicy.ipadBuildNotVerifiedWarning')}
+            />
+          ) : null}
+          {app === 'mobile-ios' ? (
+            <Alert
+              type="warning"
+              showIcon
+              message={t('system.appDownloads.updatePolicy.mobileBuildNotVerifiedWarning')}
             />
           ) : null}
           {app === 'pos-handheld' ? (
@@ -577,6 +588,18 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                   )}
                 />
               ) : null}
+              {kind === 'native' && nativeApp === 'mobile-ios' ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message={t(
+                    'system.appDownloads.updatePolicy.mobileBuildNotVerifiedWarning',
+                  )}
+                  description={t(
+                    'system.appDownloads.updatePolicy.mobilePolicyBuildConfirmDescription',
+                  )}
+                />
+              ) : null}
               <Descriptions size="small" bordered column={1}>
                 <Descriptions.Item
                   label={t('system.appDownloads.updatePolicy.confirmRelease')}
@@ -595,12 +618,19 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                 >
                   {updateMode}
                 </Descriptions.Item>
-                {kind === 'native' && summary.minimumSupportedBuildNumber !== null ? (
-                  <Descriptions.Item
-                    label={t('system.appDownloads.updatePolicy.confirmMinimumBuild')}
-                  >
-                    {summary.minimumSupportedBuildNumber}
-                  </Descriptions.Item>
+                {kind === 'native' ? (
+                  <>
+                    <Descriptions.Item
+                      label={t('system.appDownloads.updatePolicy.confirmMinimumVersion')}
+                    >
+                      {summary.minimumSupportedVersion ?? '--'}
+                    </Descriptions.Item>
+                    <Descriptions.Item
+                      label={t('system.appDownloads.updatePolicy.confirmMinimumBuild')}
+                    >
+                      {summary.minimumSupportedBuildNumber ?? '--'}
+                    </Descriptions.Item>
+                  </>
                 ) : null}
               </Descriptions>
             </Space>
@@ -1071,7 +1101,8 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
     loadState: LoadLaneStatus,
   ) {
     const isIpad = app === 'pos-ipad'
-    const fieldColumn = isIpad ? 6 : 8
+    const supportsMinimumBuild = app === 'mobile-ios' || app === 'pos-ipad'
+    const fieldColumn = 6
     const domainReady = loadState.loaded && !loadState.loading && !loadState.failed
     const storeScopeBlocked = isIpad
       && enabled
@@ -1094,7 +1125,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
           <Descriptions.Item label={t('system.appDownloads.updatePolicy.updatedBy')}>
             {policy.updatedBy || '--'}
           </Descriptions.Item>
-          {isIpad ? (
+          {supportsMinimumBuild ? (
             <Descriptions.Item
               label={t('system.appDownloads.updatePolicy.minimumBuild')}
             >
@@ -1161,7 +1192,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                 />
               </Form.Item>
             </Col>
-            {isIpad ? (
+            {supportsMinimumBuild ? (
               <Col xs={24} md={fieldColumn}>
                 <Form.Item
                   name="minimumSupportedBuildNumber"
@@ -1276,7 +1307,8 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
             message={t('system.appDownloads.updatePolicy.appleVerificationHint')}
             description={t('system.appDownloads.updatePolicy.registrationNotActivation')}
           />
-          <Table<IosAppStoreRelease>
+          <MeasuredTable<IosAppStoreRelease>
+            metricId="system.app-downloads.app-update-policy-panel.table-1"
             rowKey="id"
             size="small"
             columns={nativeReleaseColumns(policy)}
@@ -1327,6 +1359,16 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
       ),
     },
     {
+      key: 'mobile-ota',
+      label: t('system.appDownloads.updatePolicy.tabs.mobileOta'),
+      children: (
+        <MobileOtaPolicyTab
+          canManage={canManage}
+          refreshVersion={mobileOtaRefreshVersion}
+        />
+      ),
+    },
+    {
       key: 'ipad-native',
       label: t('system.appDownloads.updatePolicy.tabs.ipadNative'),
       children: renderNativeTab(
@@ -1359,7 +1401,8 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
               style={{ marginBottom: 12 }}
               message={t('system.appDownloads.updatePolicy.otaScriptHint')}
             />
-            <Table<PosIpadOtaRelease>
+            <MeasuredTable<PosIpadOtaRelease>
+              metricId="system.app-downloads.app-update-policy-panel.table-2"
               rowKey="id"
               size="small"
               columns={otaReleaseColumns}
@@ -1564,6 +1607,17 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
             )}
           />
         ) : null}
+        {registerApp === 'mobile-ios' ? (
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={t('system.appDownloads.updatePolicy.mobileBuildNotVerifiedWarning')}
+            description={t(
+              'system.appDownloads.updatePolicy.mobileBuildDoubleConfirmDescription',
+            )}
+          />
+        ) : null}
         {registerApp === 'pos-handheld' ? (
           <Alert
             type="warning"
@@ -1618,6 +1672,14 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                     )
                   }
                   if (
+                    registerApp === 'mobile-ios'
+                    && !isValidMobileIosBuildNumber(normalized)
+                  ) {
+                    throw new Error(
+                      t('system.appDownloads.updatePolicy.mobileBuildNumberInvalid'),
+                    )
+                  }
+                  if (
                     registerApp === 'pos-handheld'
                     && !isValidPosHandheldBuildNumber(normalized)
                   ) {
@@ -1628,6 +1690,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
                   if (
                     registerApp !== 'pos-ipad'
                     && registerApp !== 'pos-handheld'
+                    && registerApp !== 'mobile-ios'
                     && !/^[0-9A-Za-z._-]{1,64}$/.test(normalized)
                   ) {
                     throw new Error(
@@ -1641,7 +1704,9 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
             <Input
               autoComplete="off"
               inputMode={
-                registerApp === 'pos-ipad' || registerApp === 'pos-handheld'
+                registerApp === 'mobile-ios'
+                || registerApp === 'pos-ipad'
+                || registerApp === 'pos-handheld'
                   ? 'numeric'
                   : undefined
               }

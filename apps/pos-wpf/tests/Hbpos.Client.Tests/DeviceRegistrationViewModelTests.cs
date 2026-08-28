@@ -12,6 +12,8 @@ namespace Hbpos.Client.Tests;
 
 public sealed class DeviceRegistrationViewModelTests
 {
+    private const string ActivationCode = "HBDEV1-0123456789ABCDEFGHJKMNPQRS-6789ABCDEFGHJKMNPQRSTVWXYZ";
+
     [Fact]
     public void Dispose_stops_receiving_culture_changes()
     {
@@ -47,7 +49,7 @@ public sealed class DeviceRegistrationViewModelTests
     }
 
     [Fact]
-    public async Task Saving_new_server_address_blocks_registration_until_restart()
+    public async Task Saving_new_server_address_blocks_activation_until_restart()
     {
         var workflow = new StubDeviceRegistrationWorkflowService();
         var apiServerSettings = CreateApiServerSettings();
@@ -55,31 +57,29 @@ public sealed class DeviceRegistrationViewModelTests
             workflow,
             apiServerSettings: apiServerSettings);
         await viewModel.InitializeAsync(cachedDevice: null);
-        var registerStateChangeCount = 0;
-        viewModel.RegisterCommand.CanExecuteChanged += (_, _) => registerStateChangeCount++;
+        viewModel.ActivationCode = ActivationCode;
+        var activationStateChangeCount = 0;
+        viewModel.PreviewActivationCommand.CanExecuteChanged += (_, _) => activationStateChangeCount++;
 
         Assert.Same(apiServerSettings, viewModel.ApiServerSettings);
-        Assert.True(viewModel.RegisterCommand.CanExecute(null));
-        Assert.True(viewModel.VerifyCommand.CanExecute(null));
+        Assert.True(viewModel.PreviewActivationCommand.CanExecute(null));
 
         apiServerSettings.ServerAddressText = "https://new.example.com";
         await apiServerSettings.SaveCommand.ExecuteAsync(null);
 
         Assert.True(apiServerSettings.RestartRequired);
-        Assert.False(viewModel.RegisterCommand.CanExecute(null));
-        Assert.False(viewModel.VerifyCommand.CanExecute(null));
-        Assert.True(registerStateChangeCount > 0);
+        Assert.False(viewModel.PreviewActivationCommand.CanExecute(null));
+        Assert.False(viewModel.ConfirmActivationCommand.CanExecute(null));
+        Assert.True(activationStateChangeCount > 0);
 
         // 重复加载父页面和共享设置不能解除等待重启期间的注册阻断。
         apiServerSettings.Load();
         await viewModel.InitializeAsync(cachedDevice: null);
 
-        Assert.False(viewModel.RegisterCommand.CanExecute(null));
-        Assert.False(viewModel.VerifyCommand.CanExecute(null));
-        await viewModel.RegisterCommand.ExecuteAsync(null);
-        await viewModel.VerifyCommand.ExecuteAsync(null);
-        Assert.Equal(0, workflow.RegisterCallCount);
-        Assert.Equal(0, workflow.VerifyCallCount);
+        viewModel.ActivationCode = ActivationCode;
+        Assert.False(viewModel.PreviewActivationCommand.CanExecute(null));
+        await viewModel.PreviewActivationCommand.ExecuteAsync(null);
+        Assert.Equal(0, workflow.PreviewCallCount);
     }
 
     [Fact]
@@ -167,7 +167,61 @@ public sealed class DeviceRegistrationViewModelTests
             (string?)viewportGrid.Attribute("MinHeight"));
         var card = Assert.Single(viewportGrid.Elements(presentation + "Border"));
         Assert.Equal("Center", (string?)card.Attribute("VerticalAlignment"));
-        Assert.Equal(3, card.Descendants(presentation + "Button").Count());
+        var commands = card.Descendants(presentation + "Button")
+            .Select(button => (string?)button.Attribute("Command"))
+            .Where(command => command is not null)
+            .ToHashSet(StringComparer.Ordinal);
+        Assert.Contains("{Binding PreviewActivationCommand}", commands);
+        Assert.Contains("{Binding ConfirmActivationCommand}", commands);
+        Assert.Contains("{Binding VerifyCommand}", commands);
+        Assert.Contains("PreviewDeviceSystem", File.ReadAllText(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "DeviceRegistrationView.xaml")));
+        Assert.Contains("StoreTransitionDisplay", File.ReadAllText(Path.Combine(
+            FindRepoRoot(),
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "DeviceRegistrationView.xaml")));
+    }
+
+    [Fact]
+    public void Activation_code_inputs_become_read_only_while_recovery_is_pending()
+    {
+        var repoRoot = FindRepoRoot();
+        var registrationDocument = XDocument.Load(Path.Combine(
+            repoRoot,
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Views",
+            "Screens",
+            "DeviceRegistrationView.xaml"));
+        var mainWindowDocument = XDocument.Load(Path.Combine(
+            repoRoot,
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "MainWindow.xaml"));
+
+        AssertActivationInputIsRecoveryLocked(registrationDocument, "DeviceActivationCodeInput");
+        AssertActivationInputIsRecoveryLocked(mainWindowDocument, "DeviceRebindActivationCodeInput");
+        var serverSettingsPanel = Assert.Single(registrationDocument.Descendants().Where(element =>
+            element.Name.LocalName == "ApiServerSettingsPanel"));
+        Assert.Equal(
+            "{Binding CanEditServerSettings}",
+            serverSettingsPanel.Attribute("IsEnabled")?.Value);
     }
 
     [Fact]
@@ -236,6 +290,18 @@ public sealed class DeviceRegistrationViewModelTests
         throw new DirectoryNotFoundException("Unable to find repository root.");
     }
 
+    private static void AssertActivationInputIsRecoveryLocked(XDocument document, string automationId)
+    {
+        var input = Assert.Single(document.Descendants().Where(element =>
+            element.Name.LocalName == "TextBox" &&
+            element.Attributes().Any(attribute =>
+                attribute.Name.LocalName == "AutomationProperties.AutomationId" &&
+                attribute.Value == automationId)));
+        Assert.Equal(
+            "{Binding IsActivationRecoveryPending}",
+            input.Attribute("IsReadOnly")?.Value);
+    }
+
     private sealed class StubHttpMessageHandler : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
@@ -253,6 +319,8 @@ public sealed class DeviceRegistrationViewModelTests
         public int RegisterCallCount { get; private set; }
 
         public int VerifyCallCount { get; private set; }
+
+        public int PreviewCallCount { get; private set; }
 
         public string GetHardwareId() => "HW-001";
 
@@ -295,6 +363,19 @@ public sealed class DeviceRegistrationViewModelTests
             CancellationToken cancellationToken = default)
         {
             return Task.FromResult(EmptyActionResult());
+        }
+
+        public Task<DeviceActivationPreviewResult> PreviewActivationCodeAsync(
+            string activationCode,
+            CancellationToken cancellationToken = default)
+        {
+            PreviewCallCount++;
+            return Task.FromResult(new DeviceActivationPreviewResult(
+                activationCode,
+                "1002",
+                "Lutwyche",
+                "Windows",
+                DateTimeOffset.UtcNow.AddMinutes(15)));
         }
 
         private static DeviceRegistrationActionResult EmptyActionResult()

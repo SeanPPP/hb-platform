@@ -81,6 +81,8 @@ export const P = {
   },
   System: {
     ViewLogs: 'System.ViewLogs',
+    ViewPerformanceBaseline: 'System.ViewPerformanceBaseline',
+    ManagePerformanceBaseline: 'System.ManagePerformanceBaseline',
     ManageScheduledTasks: 'System.ManageScheduledTasks',
     ManageSettings: 'System.ManageSettings',
     ViewAppDownloads: 'System.ViewAppDownloads',
@@ -89,6 +91,7 @@ export const P = {
   DeviceRegistration: {
     View: 'DeviceRegistration.View',
     Manage: 'DeviceRegistration.Manage',
+    ActivationCodesManage: 'DeviceRegistration.ActivationCodes.Manage',
   },
   EmployeeProfiles: {
     View: 'EmployeeProfiles.View',

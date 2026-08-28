@@ -1558,7 +1558,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             return true;
         }
 
-        if (method == PaymentMethodKind.Card &&
+        if (!IsInstallmentPaymentEnabled &&
+            method == PaymentMethodKind.Card &&
             _workflowService.TryParseTenderedAmount(amountText, out var tenderAmount) &&
             tenderAmount > 0m &&
             tenderAmount < RemainingAmount)

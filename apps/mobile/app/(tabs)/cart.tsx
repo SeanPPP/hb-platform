@@ -25,7 +25,7 @@ import {
   TextInput as PaperTextInput,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { type Href, useRouter } from "expo-router";
 import { useIsMutating, useQueryClient } from "@tanstack/react-query";
 import { EmptyState } from "@/components/ui/EmptyState";
@@ -311,6 +311,7 @@ function CartListItemCard({
 }
 
 export default function Cart() {
+  const isFocused = useIsFocused();
   const router = useRouter();
   const viewport = useWindowDimensions();
   const { t, language } = useAppTranslation(["cart", "common"]);
@@ -414,6 +415,7 @@ export default function Cart() {
   cartMutationPendingRef.current = cartMutationPending;
 
   const hidScanner = useHidBarcodeScanner({
+    enabled: isFocused,
     onScan: async (barcode) => {
       await scanResult.handleBarcode(barcode, "hid");
     },

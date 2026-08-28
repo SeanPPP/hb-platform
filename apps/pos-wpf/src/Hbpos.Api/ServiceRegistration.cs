@@ -3,6 +3,7 @@ using Hbpos.Api.Data;
 using Hbpos.Api.Services;
 using Hbpos.Api.Security;
 using Microsoft.AspNetCore.DataProtection;
+using BlazorApp.Shared.Options;
 
 namespace Hbpos.Api;
 
@@ -57,6 +58,7 @@ public static class ServiceRegistration
         services.AddOptions<InstallmentCancelClaimOptions>();
         services.AddOptions<InstallmentCrossDeviceLifecycleOptions>();
         services.AddOptions<SharedHeldOrderOptions>();
+        services.AddOptions<DeviceActivationOptions>();
         services.AddOptions<SquareTerminalRestOptions>()
             .Validate(
                 options => SquareTerminalRestOptions.IsValidApiVersion(options.ApiVersion),
@@ -86,6 +88,8 @@ public static class ServiceRegistration
             services.Configure<InstallmentCancelClaimOptions>(configuration.GetSection("InstallmentCancelClaims"));
             services.Configure<InstallmentCrossDeviceLifecycleOptions>(configuration.GetSection("InstallmentCrossDeviceLifecycle"));
             services.Configure<SharedHeldOrderOptions>(configuration.GetSection("SharedHeldOrders"));
+            services.Configure<DeviceActivationOptions>(
+                configuration.GetSection(DeviceActivationOptions.SectionName));
         }
 
         services.AddScoped<HbposSqlSugarContext>();
@@ -95,7 +99,11 @@ public static class ServiceRegistration
         services.AddScoped<IDeviceRegistrationRepository, SqlSugarDeviceRegistrationRepository>();
         services.AddScoped<IPosIpadAppReviewAuthorizationBoundary, PosIpadAppReviewAuthorizationBoundary>();
         services.AddScoped<IDeviceService, DeviceService>();
+        services.AddScoped<IDeviceActivationCodeService, DeviceActivationCodeService>();
         services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();
+        services.AddScoped<
+            IDeviceActivationRecoveryAuthorizationService,
+            DeviceActivationRecoveryAuthorizationService>();
         services.AddScoped<IAppUpdateDeviceIdentityValidator, AppUpdateDeviceIdentityValidator>();
         services.AddScoped<IAttendanceSigningKeyRegistrationService, AttendanceSigningKeyRegistrationService>();
         services.AddScoped<IAttendanceQrKeySchemaSqlExecutor, SqlSugarAttendanceQrKeySchemaSqlExecutor>();

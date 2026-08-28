@@ -11,7 +11,8 @@ namespace BlazorApp.Api.Controllers;
 [Authorize]
 public sealed class AppUpdatePoliciesController(
     INativeAppUpdatePolicyService service,
-    IPosHandheldUpdatePolicyService? posHandheldService = null
+    IPosHandheldUpdatePolicyService? posHandheldService = null,
+    IMobileOtaPolicyService? mobileOtaService = null
 )
     : ControllerBase
 {
@@ -24,7 +25,9 @@ public sealed class AppUpdatePoliciesController(
 
     [HttpPut("mobile-ios")]
     [Authorize(Policy = Permissions.System.ManageAppDownloads)]
-    public async Task<IActionResult> PutMobileIos([FromBody] NativeUpdatePolicyRequest request)
+    public async Task<IActionResult> PutMobileIos(
+        [FromBody] MobileIosNativeUpdatePolicyRequest request
+    )
     {
         var response = await service.SetMobileIosPolicyAsync(
             request,
@@ -65,6 +68,40 @@ public sealed class AppUpdatePoliciesController(
     public async Task<IActionResult> GetPosHandheld()
     {
         return Ok(await PosHandheldService.GetPoliciesAsync());
+    }
+
+    [HttpGet("mobile-ota/{environment}/{platform}")]
+    [Authorize(Policy = Permissions.System.ViewAppDownloads)]
+    public async Task<IActionResult> GetMobileOta(string environment, string platform)
+    {
+        return Ok(await MobileOtaService.GetAsync(environment, platform));
+    }
+
+    [HttpPut("mobile-ota/{environment}/{platform}")]
+    [Authorize(Policy = Permissions.System.ManageAppDownloads)]
+    public async Task<IActionResult> PutMobileOta(
+        string environment,
+        string platform,
+        [FromBody] MobileOtaPolicyRequest request
+    )
+    {
+        var response = await MobileOtaService.SetAsync(
+            environment,
+            platform,
+            request,
+            User.Identity?.Name ?? "System"
+        );
+        return ToMutationResult(response);
+    }
+
+    [HttpGet("mobile-ota/{environment}/{platform}/revisions")]
+    [Authorize(Policy = Permissions.System.ViewAppDownloads)]
+    public async Task<IActionResult> GetMobileOtaRevisions(
+        string environment,
+        string platform
+    )
+    {
+        return Ok(await MobileOtaService.GetRevisionsAsync(environment, platform));
     }
 
     [HttpGet("pos-handheld/candidates/native/android")]
@@ -128,6 +165,10 @@ public sealed class AppUpdatePoliciesController(
     private IPosHandheldUpdatePolicyService PosHandheldService =>
         posHandheldService
         ?? throw new InvalidOperationException("手持 POS 更新策略服务未注册");
+
+    private IMobileOtaPolicyService MobileOtaService =>
+        mobileOtaService
+        ?? throw new InvalidOperationException("Mobile OTA 更新策略服务未注册");
 
     private IActionResult ToMutationResult<T>(ApiResponse<T> response) =>
         response.ErrorCode

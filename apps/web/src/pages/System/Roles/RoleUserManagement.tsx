@@ -1,5 +1,5 @@
 import { DeleteOutlined, UserAddOutlined } from '@ant-design/icons'
-import { Button, Drawer, Modal, Popconfirm, Select, Space, Table, Tag, message } from 'antd'
+import { Button, Drawer, Modal, Popconfirm, Select, Space, Tag, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -7,6 +7,7 @@ import { addUsersToRole, getRoleUsers, removeUserFromRole } from '../../../servi
 import { getUsers } from '../../../services/userService'
 import type { RoleDto, RoleUserDto } from '../../../types/role'
 import type { UserDto } from '../../../types/user'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 interface RoleUserManagementProps {
   open: boolean
@@ -154,7 +155,7 @@ export default function RoleUserManagement({ open, role, onClose, onChanged }: R
           </Button>
         }
       >
-        <Table
+        <MeasuredTable metricId="system.roles.role-user-management.table-1"
           rowKey="userGUID"
           loading={loading}
           dataSource={users}

@@ -6,6 +6,7 @@ import {
 } from "../api/hbpos-api";
 
 import type { CashierLoginResult } from "./cashier-authentication";
+import type { DeviceRegistrationApiPartitionGuard } from "./device-registration-api-partition-guard";
 import {
   CashierAuthorizationStore,
   DeviceCredentialStore,
@@ -55,6 +56,7 @@ export type DeviceRegistrationResetDependencies = Readonly<{
   createOperationId(): string;
   nowIso(): string;
   invalidateCurrentCashier(): void;
+  apiPartitionGuard?: DeviceRegistrationApiPartitionGuard;
 }>;
 
 /**
@@ -66,7 +68,13 @@ export class DeviceRegistrationResetCoordinator {
     private readonly input: DeviceRegistrationResetDependencies,
   ) {}
 
-  public async reset(
+  public reset(
+    employeeBarcode: string,
+  ): Promise<DeviceRegistrationResetResponse> {
+    return this.runMutation(() => this.resetCore(employeeBarcode));
+  }
+
+  private async resetCore(
     employeeBarcode: string,
   ): Promise<DeviceRegistrationResetResponse> {
     const barcode = requiredText(employeeBarcode, "employee barcode");
@@ -124,7 +132,11 @@ export class DeviceRegistrationResetCoordinator {
     }
   }
 
-  public async recover(): Promise<DeviceRegistrationResetRecoveryResult> {
+  public recover(): Promise<DeviceRegistrationResetRecoveryResult> {
+    return this.runMutation(() => this.recoverCore());
+  }
+
+  private async recoverCore(): Promise<DeviceRegistrationResetRecoveryResult> {
     let marker: DeviceRegistrationResetMarker | null;
     try {
       marker = await this.input.marker.load();
@@ -189,6 +201,15 @@ export class DeviceRegistrationResetCoordinator {
       return true;
     }
     return marker !== null;
+  }
+
+  private async runMutation<T>(operation: () => Promise<T>): Promise<T> {
+    const lease = this.input.apiPartitionGuard?.beginMutation();
+    try {
+      return await operation();
+    } finally {
+      lease?.release();
+    }
   }
 
   private async requireCurrentCredentials() {

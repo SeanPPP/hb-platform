@@ -29,6 +29,10 @@ export async function getGridData(params: GridDataRequest): Promise<GridDataResp
     },
   })
   const result = unwrapApiData(response)
+  const total = Number(result.total)
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw new Error('商品条码接口未返回有效总数')
+  }
   const items = (result.items ?? [])
     .filter((item) => item.productCode === params.productCode)
     .map((item) => ({
@@ -39,7 +43,8 @@ export async function getGridData(params: GridDataRequest): Promise<GridDataResp
   return {
     ...result,
     items,
-    total: items.length,
+    // 完整草稿加载必须使用后端筛选后的权威总数，不能用当前页行数覆盖。
+    total,
   }
 }
 

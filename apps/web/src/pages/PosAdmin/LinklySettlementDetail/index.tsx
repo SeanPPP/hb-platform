@@ -6,7 +6,6 @@ import {
   Descriptions,
   Empty,
   Space,
-  Table,
   Tag,
   Typography,
   message,
@@ -27,6 +26,7 @@ import {
   getProviderSubmissionColor,
   getSettlementStatusColor,
 } from '../LinklySettlements/logic'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 function formatDateTime(value?: string | null) {
   if (!value) return '--'
@@ -206,7 +206,7 @@ export default function LinklySettlementDetailPage() {
           </Card>
 
           <Card size="small" title={t('linklySettlements.detail.cardTotals')} loading={loading}>
-            <Table<LinklySettlementCardTotal>
+            <MeasuredTable<LinklySettlementCardTotal> metricId="pos-admin.linkly-settlement-detail.table-1"
               rowKey={(record, index) => `${record.cardName}-${index ?? 0}`}
               size="small"
               columns={cardColumns}

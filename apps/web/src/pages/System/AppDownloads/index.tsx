@@ -6,14 +6,11 @@ import {
   Card,
   Descriptions,
   Empty,
-  Input,
   Modal,
   QRCode,
   Segmented,
   Space,
-  Table,
   Tag,
-  Tooltip,
   Typography,
   message,
 } from 'antd'
@@ -23,30 +20,21 @@ import {
   LinkOutlined,
   QrcodeOutlined,
   ReloadOutlined,
-  RollbackOutlined,
 } from '@ant-design/icons'
 import {
-  createMobileAppOtaRollbackCommand,
   getLatestMobileAppBuild,
   getMobileAppBuilds,
-  getMobileAppOtaUpdates,
 } from '../../../services/mobileAppBuildService'
 import { useAuthStore } from '../../../store/auth'
-import type {
-  MobileAppBuild,
-  MobileAppOtaRollbackCommand,
-  MobileAppOtaUpdate,
-} from '../../../types/mobileAppBuild'
+import type { MobileAppBuild } from '../../../types/mobileAppBuild'
 import {
   APP_DOWNLOAD_PROFILES,
   APP_DOWNLOAD_APP_KEYS,
   DEFAULT_APP_DOWNLOAD_APP_KEY,
   DEFAULT_APP_DOWNLOAD_PROFILE,
   buildAppDownloadQuery,
-  buildAppDownloadOtaQuery,
   normalizeAppDownloadAppKey,
   normalizeAppDownloadProfile,
-  normalizeRuntimeVersionFilter,
   resolveAppDownloadMirrorStatus,
   resolveAppDownloadSource,
   resolveAppDownloadContentState,
@@ -57,6 +45,7 @@ import {
 import { formatAppDownloadLocalDateTime } from './time'
 import AppUpdatePolicyPanel from './AppUpdatePolicyPanel'
 import ServiceApiTokensPanel from './ServiceApiTokensPanel'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 function formatVersion(build?: MobileAppBuild | null) {
   if (!build) {
@@ -91,10 +80,6 @@ function getStatusColor(status?: string | null) {
   }
 }
 
-function getOtaTypeColor(record: MobileAppOtaUpdate) {
-  return record.isRollback ? 'orange' : 'blue'
-}
-
 function getMirrorStatusColor(status: AppDownloadMirrorStatus) {
   switch (status) {
     case 'succeeded':
@@ -125,19 +110,7 @@ export default function AppDownloadsPage() {
   const [profile, setProfile] = useState<AppDownloadProfile>(DEFAULT_APP_DOWNLOAD_PROFILE)
   const [loadFailed, setLoadFailed] = useState(false)
   const [qrBuild, setQrBuild] = useState<MobileAppBuild | null>(null)
-  const [otaItems, setOtaItems] = useState<MobileAppOtaUpdate[]>([])
-  const [otaLoading, setOtaLoading] = useState(false)
-  const [otaPage, setOtaPage] = useState(1)
-  const [otaPageSize, setOtaPageSize] = useState(10)
-  const [otaTotal, setOtaTotal] = useState(0)
-  const [otaLoadFailed, setOtaLoadFailed] = useState(false)
-  const [otaRuntimeDraft, setOtaRuntimeDraft] = useState('')
-  const [otaRuntimeVersion, setOtaRuntimeVersion] = useState('')
-  const [rollbackLoadingGroupId, setRollbackLoadingGroupId] = useState<string | null>(null)
-  const [rollbackCommand, setRollbackCommand] = useState<MobileAppOtaRollbackCommand | null>(null)
   const buildLoadRequestIdRef = useRef(0)
-  const otaLoadRequestIdRef = useRef(0)
-  const rollbackRequestIdRef = useRef(0)
 
   async function copyText(
     value: string | null | undefined,
@@ -162,14 +135,6 @@ export default function AppDownloadsPage() {
       url,
       t('system.appDownloads.copySuccess'),
       t('system.appDownloads.copyFailed'),
-    )
-  }
-
-  async function copyGroupId(updateGroupId?: string | null) {
-    await copyText(
-      updateGroupId,
-      t('system.appDownloads.ota.groupIdCopySuccess'),
-      t('system.appDownloads.ota.copyTextFailed'),
     )
   }
 
@@ -225,89 +190,14 @@ export default function AppDownloadsPage() {
     }
   }
 
-  async function loadOtaData(
-    nextPage = otaPage,
-    nextPageSize = otaPageSize,
-    nextProfile: AppDownloadProfile = profile,
-    nextRuntimeVersion = otaRuntimeVersion,
-    nextAppKey: AppDownloadAppKey = appKey,
-  ) {
-    const query = buildAppDownloadOtaQuery(
-      nextProfile,
-      nextPage,
-      nextPageSize,
-      nextRuntimeVersion,
-      nextAppKey,
-    )
-    const requestId = otaLoadRequestIdRef.current + 1
-    otaLoadRequestIdRef.current = requestId
-    setOtaLoading(true)
-    setOtaLoadFailed(false)
-    try {
-      const history = await getMobileAppOtaUpdates(query)
-      if (requestId !== otaLoadRequestIdRef.current) {
-        return
-      }
-      setOtaItems(history.items)
-      setOtaTotal(history.total)
-      setOtaPage(history.page)
-      setOtaPageSize(history.pageSize)
-    } catch (error) {
-      if (requestId !== otaLoadRequestIdRef.current) {
-        return
-      }
-      console.error(t('system.appDownloads.ota.loadFailed'), error)
-      setOtaItems([])
-      setOtaTotal(0)
-      setOtaPage(1)
-      setOtaLoadFailed(true)
-      message.error(t('system.appDownloads.ota.loadFailed'))
-    } finally {
-      // OTA 列表独立收尾，失败时不能影响 APK 最新卡片和构建历史。
-      if (requestId === otaLoadRequestIdRef.current) {
-        setOtaLoading(false)
-      }
-    }
-  }
-
-  async function generateRollbackCommand(record: MobileAppOtaUpdate) {
-    if (!record.updateGroupId) {
-      return
-    }
-
-    const requestId = rollbackRequestIdRef.current + 1
-    rollbackRequestIdRef.current = requestId
-    setRollbackLoadingGroupId(record.updateGroupId)
-    try {
-      const command = await createMobileAppOtaRollbackCommand(record.updateGroupId)
-      if (requestId !== rollbackRequestIdRef.current) {
-        return
-      }
-      setRollbackCommand(command)
-      message.success(t('system.appDownloads.ota.rollbackCommandGenerated'))
-    } catch (error) {
-      if (requestId !== rollbackRequestIdRef.current) {
-        return
-      }
-      console.error(t('system.appDownloads.ota.rollbackCommandFailed'), error)
-      message.error(t('system.appDownloads.ota.rollbackCommandFailed'))
-    } finally {
-      if (requestId === rollbackRequestIdRef.current) {
-        setRollbackLoadingGroupId(null)
-      }
-    }
-  }
-
   function handleAppKeyChange(value: string | number) {
     const nextAppKey = normalizeAppDownloadAppKey(value)
     if (nextAppKey === appKey) {
       return
     }
 
-    // 切换应用时先清空所有应用级展示状态，并使旧请求/回撤结果失效，避免跨应用短暂串数据。
+    // 切换应用时先清空 APK 展示状态并使旧请求失效，避免跨应用短暂串数据。
     buildLoadRequestIdRef.current += 1
-    otaLoadRequestIdRef.current += 1
-    rollbackRequestIdRef.current += 1
     setAppKey(nextAppKey)
     setLatest(null)
     setItems([])
@@ -315,44 +205,18 @@ export default function AppDownloadsPage() {
     setPage(1)
     setLoadFailed(false)
     setQrBuild(null)
-    setOtaItems([])
-    setOtaTotal(0)
-    setOtaPage(1)
-    setOtaLoadFailed(false)
-    setOtaRuntimeDraft('')
-    setOtaRuntimeVersion('')
-    setRollbackLoadingGroupId(null)
-    setRollbackCommand(null)
     void loadBuildData(1, pageSize, profile, nextAppKey)
-    void loadOtaData(1, otaPageSize, profile, '', nextAppKey)
   }
 
   function handleProfileChange(value: string | number) {
     const nextProfile = normalizeAppDownloadProfile(value)
     setProfile(nextProfile)
     void loadBuildData(1, pageSize, nextProfile, appKey)
-    void loadOtaData(1, otaPageSize, nextProfile, otaRuntimeVersion, appKey)
   }
 
   useEffect(() => {
     void loadBuildData(1, pageSize, DEFAULT_APP_DOWNLOAD_PROFILE, DEFAULT_APP_DOWNLOAD_APP_KEY)
-    void loadOtaData(1, otaPageSize, DEFAULT_APP_DOWNLOAD_PROFILE, '', DEFAULT_APP_DOWNLOAD_APP_KEY)
   }, [])
-
-  function handleOtaRuntimeSearch(value: string) {
-    const nextRuntimeVersion = normalizeRuntimeVersionFilter(value)
-    setOtaRuntimeDraft(nextRuntimeVersion)
-    setOtaRuntimeVersion(nextRuntimeVersion)
-    void loadOtaData(1, otaPageSize, profile, nextRuntimeVersion, appKey)
-  }
-
-  function handleOtaRuntimeDraftChange(value: string) {
-    setOtaRuntimeDraft(value)
-    if (!value && otaRuntimeVersion) {
-      setOtaRuntimeVersion('')
-      void loadOtaData(1, otaPageSize, profile, '', appKey)
-    }
-  }
 
   const profileOptions = useMemo(
     () =>
@@ -489,147 +353,6 @@ export default function AppDownloadsPage() {
     [t],
   )
 
-  const otaColumns = useMemo<ColumnsType<MobileAppOtaUpdate>>(
-    () => [
-      {
-        title: t('system.appDownloads.channel'),
-        dataIndex: 'channel',
-        width: 120,
-        render: (value: string | null | undefined) => value || '--',
-      },
-      {
-        title: t('system.appDownloads.runtime'),
-        dataIndex: 'runtimeVersion',
-        width: 130,
-        render: (value: string | null | undefined) => value || '--',
-      },
-      {
-        title: t('system.appDownloads.ota.platform'),
-        dataIndex: 'platform',
-        width: 110,
-        render: (value: string | null | undefined) => value || '--',
-      },
-      {
-        title: t('system.appDownloads.ota.message'),
-        dataIndex: 'message',
-        width: 260,
-        render: (value: string | null | undefined) => (
-          <Typography.Text
-            ellipsis={{ tooltip: value || undefined }}
-            style={{ maxWidth: 240 }}
-          >
-            {value || '--'}
-          </Typography.Text>
-        ),
-      },
-      {
-        title: t('system.appDownloads.ota.updateGroupId'),
-        dataIndex: 'updateGroupId',
-        width: 240,
-        render: (value: string | null | undefined) => (
-          <Typography.Text
-            ellipsis={{ tooltip: value || undefined }}
-            style={{ maxWidth: 220 }}
-          >
-            {value || '--'}
-          </Typography.Text>
-        ),
-      },
-      {
-        title: t('system.appDownloads.ota.androidUpdateId'),
-        dataIndex: 'androidUpdateId',
-        width: 220,
-        render: (value: string | null | undefined) => (
-          <Typography.Text
-            ellipsis={{ tooltip: value || undefined }}
-            style={{ maxWidth: 200 }}
-          >
-            {value || '--'}
-          </Typography.Text>
-        ),
-      },
-      {
-        title: t('system.appDownloads.commit'),
-        dataIndex: 'gitCommitHash',
-        width: 130,
-        render: (value: string | null | undefined) => (
-          <Typography.Text title={value || undefined}>
-            {formatShortCommit(value)}
-          </Typography.Text>
-        ),
-      },
-      {
-        title: t('system.appDownloads.ota.publishedAt'),
-        dataIndex: 'publishedAt',
-        width: 190,
-        render: (value: string | null | undefined) => formatAppDownloadLocalDateTime(value),
-      },
-      {
-        title: t('system.appDownloads.ota.type'),
-        key: 'type',
-        width: 120,
-        render: (_value, record) => (
-          <Tag color={getOtaTypeColor(record)}>
-            {record.isRollback
-              ? t('system.appDownloads.ota.types.rollback')
-              : t('system.appDownloads.ota.types.normal')}
-          </Tag>
-        ),
-      },
-      {
-        title: t('column.action'),
-        key: 'actions',
-        width: 380,
-        fixed: 'right',
-        render: (_value, record, index) => {
-          const canCreateRollback =
-            otaPage === 1 && index === 0 && !record.isRollback && Boolean(record.updateGroupId)
-          const disabledTitle = canCreateRollback
-            ? undefined
-            : t('system.appDownloads.ota.rollbackLatestOnly')
-
-          return (
-            <Space wrap>
-              <Button
-                size="small"
-                icon={<CopyOutlined />}
-                disabled={!record.updateGroupId}
-                onClick={() => void copyGroupId(record.updateGroupId)}
-              >
-                {t('system.appDownloads.ota.copyGroupId')}
-              </Button>
-              <Button
-                size="small"
-                icon={<LinkOutlined />}
-                disabled={!record.dashboardUrl}
-                onClick={() => openLink(record.dashboardUrl)}
-              >
-                {t('system.appDownloads.ota.openDashboard')}
-              </Button>
-              {canManageAppDownloads ? (
-                <Tooltip title={disabledTitle}>
-                  <span>
-                    <Button
-                      size="small"
-                      icon={<RollbackOutlined />}
-                      disabled={!canCreateRollback}
-                      loading={rollbackLoadingGroupId === record.updateGroupId}
-                      title={disabledTitle}
-                      onClick={() => void generateRollbackCommand(record)}
-                    >
-                      {t('system.appDownloads.ota.createRollbackCommand')}
-                    </Button>
-                  </span>
-                </Tooltip>
-              ) : null}
-            </Space>
-          )
-        },
-      },
-    ],
-    [canManageAppDownloads, otaPage, rollbackLoadingGroupId, t],
-  )
-
   const latestActions = (
     <Space wrap>
       <Segmented
@@ -674,26 +397,6 @@ export default function AppDownloadsPage() {
     loadFailed,
     Boolean(latest?.artifactUrl),
     items.length,
-  )
-
-  const otaActions = (
-    <Space wrap>
-      <Input.Search
-        allowClear
-        value={otaRuntimeDraft}
-        placeholder={t('system.appDownloads.ota.runtimePlaceholder')}
-        style={{ width: 220 }}
-        onChange={(event) => handleOtaRuntimeDraftChange(event.target.value)}
-        onSearch={handleOtaRuntimeSearch}
-      />
-      <Button
-        icon={<ReloadOutlined />}
-        loading={otaLoading}
-        onClick={() => void loadOtaData(1, otaPageSize, profile, otaRuntimeVersion, appKey)}
-      >
-        {t('common.refresh')}
-      </Button>
-    </Space>
   )
 
   return (
@@ -763,7 +466,8 @@ export default function AppDownloadsPage() {
       </Card>
 
       <Card title={t('system.appDownloads.historyTitle')}>
-        <Table<MobileAppBuild>
+        <MeasuredTable<MobileAppBuild>
+          metricId="system.app-downloads.table-1"
           rowKey="id"
           loading={buildLoading}
           columns={columns}
@@ -790,44 +494,6 @@ export default function AppDownloadsPage() {
         />
       </Card>
 
-      <Card title={t('system.appDownloads.ota.title')} extra={otaActions}>
-        {otaLoadFailed ? (
-          <Alert
-            type="error"
-            showIcon
-            style={{ marginBottom: 12 }}
-            message={t('system.appDownloads.ota.loadFailed')}
-            description={t('system.appDownloads.ota.loadFailedDescription')}
-          />
-        ) : null}
-        <Table<MobileAppOtaUpdate>
-          rowKey="id"
-          loading={otaLoading}
-          columns={otaColumns}
-          dataSource={otaItems}
-          scroll={{ x: 1800 }}
-          locale={{
-            emptyText: (
-              <Empty
-                description={
-                  otaLoadFailed
-                    ? t('system.appDownloads.ota.loadFailed')
-                    : t('system.appDownloads.ota.empty')
-                }
-              />
-            ),
-          }}
-          pagination={{
-            current: otaPage,
-            pageSize: otaPageSize,
-            total: otaTotal,
-            showSizeChanger: true,
-            onChange: (nextPage, nextPageSize) =>
-              void loadOtaData(nextPage, nextPageSize, profile, otaRuntimeVersion, appKey),
-          }}
-        />
-      </Card>
-
       {canManageAppDownloads ? <ServiceApiTokensPanel /> : null}
 
       <Modal
@@ -845,48 +511,6 @@ export default function AppDownloadsPage() {
         ) : null}
       </Modal>
 
-      <Modal
-        open={!!rollbackCommand}
-        title={t('system.appDownloads.ota.rollbackCommandTitle')}
-        onCancel={() => setRollbackCommand(null)}
-        footer={[
-          <Button key="copy" onClick={() => void copyText(
-            rollbackCommand?.command,
-            t('system.appDownloads.ota.rollbackCommandCopySuccess'),
-            t('system.appDownloads.ota.copyTextFailed'),
-          )}>
-            {t('common.copy')}
-          </Button>,
-          <Button key="close" type="primary" onClick={() => setRollbackCommand(null)}>
-            {t('common.close')}
-          </Button>,
-        ]}
-        destroyOnHidden
-      >
-        <Space direction="vertical" size={12} style={{ width: '100%' }}>
-          {rollbackCommand?.warning ? (
-            <Alert
-              type="warning"
-              showIcon
-              message={t('system.appDownloads.ota.rollbackCommandWarning')}
-              description={rollbackCommand.warning}
-            />
-          ) : null}
-          <Descriptions column={1} bordered size="small">
-            <Descriptions.Item label={t('system.appDownloads.ota.updateGroupId')}>
-              {rollbackCommand?.updateGroupId || '--'}
-            </Descriptions.Item>
-            <Descriptions.Item label={t('system.appDownloads.ota.rollbackCommand')}>
-              <Typography.Paragraph
-                copyable={rollbackCommand?.command ? { text: rollbackCommand.command } : false}
-                style={{ marginBottom: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}
-              >
-                {rollbackCommand?.command || '--'}
-              </Typography.Paragraph>
-            </Descriptions.Item>
-          </Descriptions>
-        </Space>
-      </Modal>
     </Space>
   )
 }

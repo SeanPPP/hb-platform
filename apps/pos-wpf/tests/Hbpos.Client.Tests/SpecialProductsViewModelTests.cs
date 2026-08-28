@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using CommunityToolkit.Mvvm.Input;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
@@ -7,6 +8,7 @@ using Hbpos.Contracts.Catalog;
 
 namespace Hbpos.Client.Tests;
 
+[Collection(ShutdownTimingTestCollection.Name)]
 public sealed class SpecialProductsViewModelTests
 {
     [Fact]
@@ -56,38 +58,31 @@ public sealed class SpecialProductsViewModelTests
     public async Task Navigation_cancels_running_remote_operation_before_leaving(string operation, string navigation)
     {
         var operationStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseOperation = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var cancellationObserved = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        CancellationTokenRegistration operationCancellationRegistration = default;
         var receivedToken = CancellationToken.None;
         var navigated = false;
         var cancellationRequestedBeforeNavigation = false;
-        async Task WaitForCancellationAsync(CancellationToken cancellationToken)
+        var cancellationApplied = false;
+        Task<TResult> WaitForCancellationAsync<TResult>(CancellationToken cancellationToken)
         {
             receivedToken = cancellationToken;
-            using var registration = cancellationToken.Register(cancellationObserved.SetResult);
-            operationStarted.SetResult();
-            await Task.WhenAny(cancellationObserved.Task, releaseOperation.Task);
-            cancellationToken.ThrowIfCancellationRequested();
+            var completion = new TaskCompletionSource<TResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+            operationCancellationRegistration = cancellationToken.Register(() =>
+            {
+                cancellationApplied = completion.TrySetCanceled(cancellationToken);
+                cancellationObserved.TrySetResult();
+            });
+            operationStarted.TrySetResult();
+            return completion.Task;
         }
 
         var workflow = new FakeSpecialProductsWorkflowService
         {
-            DownloadAsyncOverride = async cancellationToken =>
-            {
-                await WaitForCancellationAsync(cancellationToken);
-                return new SpecialProductsDownloadWorkflowResult(
-                    new SpecialProductDownloadResult("S001", 0, 0, 0, 0, 0),
-                    []);
-            },
-            MarkAsyncOverride = async (isSpecialProduct, cancellationToken) =>
-            {
-                await WaitForCancellationAsync(cancellationToken);
-                return new SpecialProductsMutationWorkflowResult(
-                    "S001",
-                    "SKU-001",
-                    isSpecialProduct,
-                    []);
-            }
+            DownloadAsyncOverride = cancellationToken =>
+                WaitForCancellationAsync<SpecialProductsDownloadWorkflowResult>(cancellationToken),
+            MarkAsyncOverride = (isSpecialProduct, cancellationToken) =>
+                WaitForCancellationAsync<SpecialProductsMutationWorkflowResult>(cancellationToken)
         };
         var viewModel = CreateViewModel(
             workflow: workflow,
@@ -110,6 +105,7 @@ public sealed class SpecialProductsViewModelTests
         };
         await operationStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
+        Task navigationExecution = Task.CompletedTask;
         if (navigation == "back")
         {
             Assert.True(viewModel.BackCommand.CanExecute(null));
@@ -118,16 +114,20 @@ public sealed class SpecialProductsViewModelTests
         else
         {
             Assert.True(viewModel.AddToCartCommand.CanExecute(item));
-            viewModel.AddToCartCommand.Execute(item);
+            navigationExecution = Assert.IsAssignableFrom<IAsyncRelayCommand<SellableItemDto>>(viewModel.AddToCartCommand)
+                .ExecuteAsync(item);
         }
+        await WaitUntilAsync(() => navigated);
+        await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(3));
         var wasCancellationRequested = receivedToken.IsCancellationRequested;
-        releaseOperation.TrySetResult();
-        await execution.WaitAsync(TimeSpan.FromSeconds(5));
+        await Task.WhenAll(execution, navigationExecution).WaitAsync(TimeSpan.FromSeconds(5));
+        operationCancellationRegistration.Dispose();
 
         Assert.True(navigated);
         Assert.True(cancellationRequestedBeforeNavigation);
         Assert.True(receivedToken.CanBeCanceled);
         Assert.True(wasCancellationRequested);
+        Assert.True(cancellationApplied);
         Assert.False(viewModel.IsBusy);
     }
 

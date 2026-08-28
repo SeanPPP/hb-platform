@@ -30,6 +30,26 @@ export function buildServiceApiTokenEnvSnippet(
   }
 
   const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, '')
+  const reporterServiceUrl = (() => {
+    try {
+      return new URL(normalizedBaseUrl).origin
+    } catch {
+      return normalizedBaseUrl
+    }
+  })()
+  if (purpose === 'quality-ci-reporter') {
+    return [
+      `QUALITY_BASELINE_SERVICE_URL=${reporterServiceUrl}`,
+      `QUALITY_BASELINE_SERVICE_TOKEN=${token.trim()}`,
+    ].join('\n')
+  }
+  if (purpose === 'deployment-acceptance-reporter') {
+    return [
+      `PERFORMANCE_SERVICE_URL=${reporterServiceUrl}`,
+      `PERFORMANCE_SERVICE_TOKEN=${token.trim()}`,
+    ].join('\n')
+  }
+
   return [`HBWEB_API_BASE_URL=${normalizedBaseUrl}`, `HBWEB_API_TOKEN=${token.trim()}`].join('\n')
 }
 

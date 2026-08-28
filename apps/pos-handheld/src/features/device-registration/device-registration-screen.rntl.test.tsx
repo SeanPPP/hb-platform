@@ -1,5 +1,6 @@
 import { beforeEach, expect, jest, test } from "@jest/globals";
 import {
+  act,
   fireEvent,
   render,
   waitFor,
@@ -8,7 +9,7 @@ import Storage from "expo-sqlite/kv-store";
 
 import { DeviceRegistrationScreen } from "./device-registration-screen";
 
-import type { DeviceRegistrationStore } from "@/core/api/hbpos-api";
+import type { DeviceActivationPreviewResponse } from "@/core/api/hbpos-api";
 import type { DeviceSessionState } from "@/core/security/device-session";
 import i18n from "@/i18n";
 
@@ -23,12 +24,16 @@ jest.mock("expo-sqlite/kv-store", () => ({
 const mockGetItemSync = jest.mocked(Storage.getItemSync);
 const mockSetItem = jest.mocked(Storage.setItem);
 
-const mockRegister = jest.fn<
-  (input: Readonly<{ storeCode: string }>) => Promise<DeviceSessionState>
+const activationCode =
+  "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+const mockPreviewActivationCode = jest.fn<
+  (value: string) => Promise<DeviceActivationPreviewResponse>
 >();
-const mockListRegistrationStores = jest.fn<
-  () => Promise<readonly DeviceRegistrationStore[]>
+const mockRedeemActivationCode = jest.fn<
+  (input: Readonly<{ activationCode: string }>) => Promise<DeviceSessionState>
 >();
+const mockRestorePendingActivationCode = jest.fn<() => Promise<string | null>>();
+const mockClearPendingActivationCode = jest.fn<() => Promise<void>>();
 const mockUpdateOperationalState = jest.fn();
 const mockRetry = jest.fn<() => Promise<void>>();
 const mockServerTest = jest.fn<
@@ -47,9 +52,19 @@ const mockServerChange = jest.fn<
   >
 >();
 let mockRuntimeValue: unknown;
+let mockLatestCameraProps: Readonly<{
+  context: string;
+  onScan(value: string): void;
+  visible: boolean;
+}> | null = null;
 
 jest.mock("@expo/vector-icons", () => ({
   MaterialCommunityIcons: () => null,
+}));
+
+jest.mock("@/core/api/hbpos-api", () => ({
+  ...jest.requireActual<object>("@/core/api/hbpos-api"),
+  resolveHbposDeviceSystem: () => "Android",
 }));
 
 jest.mock("expo-router", () => ({
@@ -68,6 +83,13 @@ jest.mock("@/ui/shell/status-strip", () => ({
   PosStatusStrip: () => null,
 }));
 
+jest.mock("@/features/scanner-camera/camera-scanner-modal", () => ({
+  CameraScannerModal: (props: typeof mockLatestCameraProps) => {
+    mockLatestCameraProps = props;
+    return null;
+  },
+}));
+
 jest.mock("@/core/runtime/pos-runtime-context", () => ({
   usePosRuntime: () => mockRuntimeValue,
 }));
@@ -76,15 +98,20 @@ beforeEach(async () => {
   jest.clearAllMocks();
   mockGetItemSync.mockReturnValue(null);
   mockSetItem.mockResolvedValue(undefined);
-  mockListRegistrationStores.mockResolvedValue([
-    { storeCode: "1002", storeName: "Aspley" },
-    { storeCode: "1003", storeName: "Chermside" },
-  ]);
-  mockRegister.mockResolvedValue({
-    status: "pending-approval",
-    deviceCode: "POS_1003_1210",
-    storeCode: "1003",
+  mockPreviewActivationCode.mockResolvedValue({
+    isAllowed: true,
+    storeCode: "1042",
+    storeName: "Sunnybank",
+    deviceSystem: "Android",
+    expiresAtUtc: "2026-08-27T12:00:00.000Z",
   });
+  mockRedeemActivationCode.mockResolvedValue({
+    status: "authorized",
+    deviceCode: "ANDROID-1042-01",
+    storeCode: "1042",
+  });
+  mockRestorePendingActivationCode.mockResolvedValue(null);
+  mockClearPendingActivationCode.mockResolvedValue(undefined);
   mockRetry.mockResolvedValue(undefined);
   mockServerTest.mockResolvedValue(true);
   mockServerChange.mockResolvedValue({
@@ -95,11 +122,22 @@ beforeEach(async () => {
     retry: mockRetry,
     services: {
       deviceSession: {
+        clearPendingActivationCode: mockClearPendingActivationCode,
         getDeviceIdentity: jest.fn(),
-        listRegistrationStores: mockListRegistrationStores,
         poll: jest.fn(),
-        register: mockRegister,
+        previewActivationCode: mockPreviewActivationCode,
+        redeemActivationCode: mockRedeemActivationCode,
+        register: jest.fn(),
+        restorePendingActivationCode: mockRestorePendingActivationCode,
         reregister: jest.fn(),
+      },
+      scanner: {
+        router: {
+          acceptCameraText: jest.fn(() => true),
+          acquireContext: jest.fn(() => jest.fn()),
+          startCamera: jest.fn(async () => undefined),
+          stopCamera: jest.fn(async () => undefined),
+        },
       },
       serverConnection: {
         change: mockServerChange,
@@ -116,36 +154,58 @@ beforeEach(async () => {
     updateOperationalState: mockUpdateOperationalState,
   };
   await i18n.changeLanguage("zh");
+  mockLatestCameraProps = null;
 });
 
-test("必须选择申请分店，提交时不发送终端名称", async () => {
+test("待开通码读取损坏时显示恢复错误且不把它当作空记录", async () => {
+  mockRestorePendingActivationCode.mockRejectedValue(
+    new Error("Device activation recovery data is unavailable."),
+  );
+
   const screen = await render(<DeviceRegistrationScreen />);
 
-  await waitFor(() =>
-    expect(mockListRegistrationStores).toHaveBeenCalledTimes(1),
-  );
+  expect(
+    await screen.findByText("Device activation recovery data is unavailable."),
+  ).toBeTruthy();
+});
+
+test("编辑输入框不得清除上一次结果不确定的待恢复开通码", async () => {
+  mockRestorePendingActivationCode.mockResolvedValue(activationCode);
+  const screen = await render(<DeviceRegistrationScreen />);
+  const input = screen.getByTestId("registration-activation-code");
+  await waitFor(() => expect(input.props.value).toBe(activationCode));
+
+  await fireEvent.changeText(input, `${activationCode}X`);
+
+  expect(mockClearPendingActivationCode).not.toHaveBeenCalled();
+});
+
+test("手动输入先预览服务端权威分店，确认后才兑换", async () => {
+  const screen = await render(<DeviceRegistrationScreen />);
+
   expect(screen.getByTestId("handheld-state-device-registration")).toBeTruthy();
   expect(screen.queryByText("HB")).toBeNull();
   expect(
     screen.queryByText(/iPad|customer display|external display|客显/iu),
   ).toBeNull();
-  expect(screen.queryByText("终端名称")).toBeNull();
-  expect(
-    screen.getByTestId("registration-submit").props.accessibilityState.disabled,
-  ).toBe(true);
-
-  await fireEvent.press(screen.getByTestId("registration-store-picker"));
-  await fireEvent.press(await screen.findByTestId("registration-store-1003"));
-  await waitFor(() =>
-    expect(screen.getByText("Chermside · 1003")).toBeTruthy(),
+  await fireEvent.changeText(
+    screen.getByTestId("registration-activation-code"),
+    activationCode.toLowerCase(),
   );
-
-  await fireEvent.press(screen.getByTestId("registration-submit"));
+  await fireEvent.press(screen.getByTestId("registration-preview"));
 
   await waitFor(() =>
-    expect(mockRegister).toHaveBeenCalledWith({ storeCode: "1003" }),
+    expect(mockPreviewActivationCode).toHaveBeenCalledWith(activationCode),
   );
-  expect(mockRegister.mock.calls[0]?.[0]).not.toHaveProperty("terminalName");
+  expect(screen.getByText("Sunnybank · 1042")).toBeTruthy();
+  expect(screen.getByText("设备平台：Android")).toBeTruthy();
+  expect(screen.getByText(/2026/)).toBeTruthy();
+  expect(mockRedeemActivationCode).not.toHaveBeenCalled();
+
+  await fireEvent.press(screen.getByTestId("registration-redeem"));
+  await waitFor(() =>
+    expect(mockRedeemActivationCode).toHaveBeenCalledWith({ activationCode }),
+  );
 });
 
 test.each([
@@ -156,7 +216,7 @@ test.each([
 ] as const)(
   "提交后的 %s 由真实注册结果进入 %s 状态",
   async (status, visibleState) => {
-    mockRegister.mockResolvedValueOnce({
+    mockRedeemActivationCode.mockResolvedValueOnce({
       status,
       deviceCode: "POS_1003_1210",
       storeCode: "1003",
@@ -165,13 +225,13 @@ test.each([
         : {}),
     });
     const screen = await render(<DeviceRegistrationScreen />);
-    await waitFor(() =>
-      expect(mockListRegistrationStores).toHaveBeenCalledTimes(1),
+    await fireEvent.changeText(
+      screen.getByTestId("registration-activation-code"),
+      activationCode,
     );
-
-    await fireEvent.press(screen.getByTestId("registration-store-picker"));
-    await fireEvent.press(await screen.findByTestId("registration-store-1003"));
-    await fireEvent.press(screen.getByTestId("registration-submit"));
+    await fireEvent.press(screen.getByTestId("registration-preview"));
+    await screen.findByText("Sunnybank · 1042");
+    await fireEvent.press(screen.getByTestId("registration-redeem"));
 
     expect(
       await screen.findByTestId("handheld-state-registration-states"),
@@ -182,26 +242,28 @@ test.each([
   },
 );
 
-test("中英文切换保留已经选择的申请分店", async () => {
+test("扫码使用私有上下文且中英文切换保留开通码", async () => {
   const screen = await render(<DeviceRegistrationScreen />);
-  await waitFor(() =>
-    expect(mockListRegistrationStores).toHaveBeenCalledTimes(1),
-  );
 
-  await fireEvent.press(screen.getByTestId("registration-store-picker"));
-  await fireEvent.press(await screen.findByTestId("registration-store-1002"));
+  await fireEvent.press(screen.getByTestId("registration-scan"));
+  expect(mockLatestCameraProps?.context).toBe("device-activation");
+  await act(async () => {
+    mockLatestCameraProps?.onScan(activationCode.toLowerCase());
+  });
+  await waitFor(() =>
+    expect(mockPreviewActivationCode).toHaveBeenCalledWith(activationCode),
+  );
   await fireEvent.press(screen.getByTestId("registration-language-switch"));
 
   await waitFor(() =>
-    expect(screen.getByText("Request registration")).toBeTruthy(),
+    expect(screen.getByText("Activate device")).toBeTruthy(),
   );
   await waitFor(() =>
     expect(mockSetItem).toHaveBeenCalledWith("hb.pos.language.v1", "en"),
   );
-  expect(screen.getByText("Aspley · 1002")).toBeTruthy();
-  expect(
-    screen.getByTestId("registration-submit").props.accessibilityState.disabled,
-  ).toBe(false);
+  expect(screen.getByTestId("registration-activation-code").props.value).toBe(
+    activationCode,
+  );
 });
 
 test("未注册设备测试通过后可安全切换服务器并重建 runtime", async () => {
@@ -231,21 +293,22 @@ test("未注册设备测试通过后可安全切换服务器并重建 runtime", 
   await waitFor(() => expect(mockRetry).toHaveBeenCalledTimes(1));
 });
 
-test("申请分店选择面板点击面板外遮罩关闭", async () => {
+test("locked 状态只显示恢复提示并禁止扫码、手输和服务器修改", async () => {
+  mockRuntimeValue = {
+    ...(mockRuntimeValue as Record<string, unknown>),
+    state: {
+      backend: "offline",
+      database: "ready",
+      device: "locked",
+      phase: "locked",
+    },
+  };
+
   const screen = await render(<DeviceRegistrationScreen />);
-  await waitFor(() =>
-    expect(mockListRegistrationStores).toHaveBeenCalledTimes(1),
-  );
 
-  await fireEvent.press(screen.getByTestId("registration-store-picker"));
-  await screen.findByTestId("registration-store-1003");
-  expect(screen.getByTestId("registration-store-modal")).toBeTruthy();
-
-  await fireEvent.press(
-    screen.getByTestId("registration-store-backdrop", {
-      includeHiddenElements: true,
-    }),
-  );
-  expect(screen.queryByTestId("registration-store-modal")).toBeNull();
-  expect(screen.queryByTestId("registration-store-1003")).toBeNull();
+  expect(screen.getByTestId("registration-recovery-readonly")).toBeTruthy();
+  expect(screen.queryByTestId("registration-scan")).toBeNull();
+  expect(screen.queryByTestId("registration-activation-code")).toBeNull();
+  expect(screen.queryByTestId("registration-preview")).toBeNull();
+  expect(screen.queryByTestId("server-connection-edit")).toBeNull();
 });

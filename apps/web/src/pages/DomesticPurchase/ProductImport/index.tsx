@@ -1,5 +1,5 @@
 import { ClearOutlined, DeleteOutlined, EditOutlined, PlusOutlined, TranslationOutlined, WarningOutlined } from '@ant-design/icons'
-import { Button, Checkbox, Image, Input, InputNumber, message, Modal, Select, Space, Table, Tag, Tooltip } from 'antd'
+import { Button, Checkbox, Image, Input, InputNumber, message, Modal, Select, Space, Tag, Tooltip } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -14,6 +14,7 @@ import { applyProductImportNameTranslations, buildAssignContainerItems, buildHbw
 import { ConflictResolutionDialog } from './ConflictResolutionDialog'
 import { DuplicateDialog } from './DuplicateDialog'
 import './styles.css'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const EDITABLE_COLUMNS = ['quantity', 'productCode', 'barcode', 'productName', 'englishName', 'domesticPrice', 'oemPrice', 'midPackQuantity', 'casePackQuantity', 'volume'] as const
 const NUMERIC_EDITABLE_COLUMNS = ['quantity', 'domesticPrice', 'oemPrice', 'midPackQuantity', 'casePackQuantity', 'volume'] as const
@@ -1116,7 +1117,7 @@ export default function ProductImportPage() {
       )}
 
       <div ref={productImportTableRef}>
-        <Table
+        <MeasuredTable metricId="domestic-purchase.product-import.table-1"
           className="product-import-table"
           style={{ '--product-import-table-body-height': `${tableScrollY}px` } as React.CSSProperties}
           columns={columns}

@@ -42,6 +42,7 @@ import {
   DEFAULT_REMOTE_HBPOS_API_BASE_URL,
 } from "@/core/security/pos-api-addresses";
 import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
+import { CameraScannerModal } from "@/features/scanner-camera/camera-scanner-modal";
 import { toggleAppLanguage } from "@/i18n";
 import {
   PosKeyboardAwareScrollView,
@@ -74,7 +75,9 @@ export type SettingsScreenPresenter = Pick<
   | "requestApiAddressChange"
   | "requestAppRestart"
   | "requestCatalogReset"
+  | "requestDeviceRegistrationReset"
   | "requestDeviceReregistration"
+  | "previewDeviceReregistration"
   | "requestLinklyPair"
   | "refreshLinklySetup"
   | "refreshSquareDeviceCode"
@@ -96,7 +99,7 @@ export type SettingsScreenPresenter = Pick<
   | "setReceiptPhone"
   | "setReceiptAbn"
   | "setReceiptReturnPolicy"
-  | "setReregisterStoreCode"
+  | "setDeviceActivationCode"
   | "setSquareDeviceId"
   | "setSquareDeviceCodeId"
   | "setSquareDeviceCodeNameDraft"
@@ -275,6 +278,7 @@ export function SettingsScreen({
             <SettingsPaneContent
               locale={locale}
               presenter={presenter}
+              scanner={scanner}
               state={state}
             />
           ) : null}
@@ -303,9 +307,13 @@ export function SettingsScreen({
               <ConfirmationCard
                 busy={state.busy}
                 confirmation={state.confirmation}
+                deviceCode={state.device.deviceCode}
                 locale={locale}
                 onCancel={() => presenter.cancelConfirmation()}
-                onConfirm={() => void presenter.confirmDangerousAction()}
+                onConfirm={(employeeBarcode) =>
+                  void presenter.confirmDangerousAction(employeeBarcode)
+                }
+                storeCode={state.device.storeCode}
               />
             ) : null}
           </View>
@@ -343,10 +351,12 @@ export function SettingsUnavailableScreen({
 function SettingsPaneContent({
   locale,
   presenter,
+  scanner,
   state,
 }: Readonly<{
   locale: SettingsLocale;
   presenter: SettingsScreenPresenter;
+  scanner: HidScannerRouter | undefined;
   state: SettingsState;
 }>) {
   switch (state.activePane) {
@@ -359,7 +369,14 @@ function SettingsPaneContent({
         <PeripheralsPane locale={locale} presenter={presenter} state={state} />
       );
     case "device":
-      return <DevicePane locale={locale} presenter={presenter} state={state} />;
+      return (
+        <DevicePane
+          locale={locale}
+          presenter={presenter}
+          scanner={scanner}
+          state={state}
+        />
+      );
     case "hardware":
       return (
         <HardwarePane locale={locale} presenter={presenter} state={state} />
@@ -2263,18 +2280,28 @@ function PeripheralsPane({
 function DevicePane({
   locale,
   presenter,
+  scanner,
   state,
 }: Readonly<{
   locale: SettingsLocale;
   presenter: SettingsScreenPresenter;
+  scanner: HidScannerRouter | undefined;
   state: SettingsState;
 }>) {
+  const [cameraVisible, setCameraVisible] = useState(false);
+  useEffect(() => {
+    if (!cameraVisible || !scanner) return undefined;
+    return scanner.acquireContext("device-activation");
+  }, [cameraVisible, scanner]);
   const disabled =
     state.busy ||
     state.confirmation !== null ||
     state.catalogRefresh.kind === "running" ||
     !state.access.canReregisterDevice;
-  const t = (key: SettingsCopyKey) => settingsText(locale, key);
+  const t = (
+    key: SettingsCopyKey,
+    values?: Readonly<Record<string, string | number>>,
+  ) => settingsText(locale, key, values);
   return (
     <View testID="settings-pane-content-device">
       <PaneHeading subtitle={t("device.subtitle")} title={t("device.title")} />
@@ -2301,17 +2328,36 @@ function DevicePane({
         eyebrow={t("eyebrow.reregister")}
         title={t("device.reregister")}
       >
-        <FieldLabel label={t("field.targetStoreCode")} />
+        <FieldLabel label={t("field.deviceActivationCode")} />
         <PosKeyboardAwareTextInput
-          accessibilityLabel={t("field.targetStoreCode")}
+          accessibilityLabel={t("field.deviceActivationCode")}
           autoCapitalize="characters"
           autoCorrect={false}
           editable={!disabled}
-          onChangeText={(value) => presenter.setReregisterStoreCode(value)}
+          maxLength={96}
+          onChangeText={(value) => presenter.setDeviceActivationCode(value)}
+          secureTextEntry
           style={styles.textInput}
           testID="settings-reregister-store"
-          value={state.reregisterStoreCode}
+          textContentType="oneTimeCode"
+          value={state.deviceActivationCodeDraft}
         />
+        <View style={styles.actionRow}>
+          <ActionButton
+            disabled={disabled || !scanner}
+            label={t("device.scanActivationCode")}
+            onPress={() => setCameraVisible(true)}
+            testID="settings-reregister-scan"
+            tone="secondary"
+          />
+          <ActionButton
+            disabled={disabled}
+            label={t("device.previewActivationCode")}
+            onPress={() => void presenter.previewDeviceReregistration()}
+            testID="settings-reregister-preview"
+            tone="secondary"
+          />
+        </View>
         <FieldLabel label={t("field.terminalName")} />
         <PosKeyboardAwareTextInput
           accessibilityLabel={t("field.terminalName")}
@@ -2321,14 +2367,74 @@ function DevicePane({
           testID="settings-reregister-terminal"
           value={state.terminalNameDraft}
         />
+        {state.deviceActivationPreview ? (
+          <View testID="settings-reregister-preview-card">
+            <Text style={styles.dangerDescription}>
+              {t("device.currentToTarget", {
+                current: state.device.storeCode || "—",
+                target: `${state.deviceActivationPreview.storeName} · ${state.deviceActivationPreview.storeCode}`,
+              })}
+            </Text>
+            <View style={styles.metricRow}>
+              <Metric
+                label={t("metric.platform")}
+                value={state.deviceActivationPreview.deviceSystem}
+              />
+              <Metric
+                label={t("metric.expires")}
+                value={formatActivationExpiry(
+                  state.deviceActivationPreview.expiresAtUtc,
+                  locale,
+                )}
+              />
+            </View>
+            <ActionButton
+              disabled={disabled}
+              label={t("device.reviewReregistration")}
+              onPress={() => presenter.requestDeviceReregistration()}
+              testID="settings-reregister-request"
+              tone="danger"
+            />
+          </View>
+        ) : null}
+      </SectionCard>
+      <SectionCard
+        eyebrow={t("eyebrow.dangerZone")}
+        title={t("device.resetRegistration")}
+      >
+        <Text style={styles.dangerDescription}>
+          {t("device.resetRegistrationImpact")}
+        </Text>
+        <View style={styles.metricRow}>
+          <Metric
+            label={t("metric.store")}
+            value={state.device.storeCode || "—"}
+          />
+          <Metric
+            label={t("metric.device")}
+            value={state.device.deviceCode || "—"}
+          />
+        </View>
         <ActionButton
           disabled={disabled}
-          label={t("device.reviewReregistration")}
-          onPress={() => presenter.requestDeviceReregistration()}
-          testID="settings-reregister-request"
+          label={t("device.reviewResetRegistration")}
+          onPress={() => presenter.requestDeviceRegistrationReset()}
+          testID="settings-device-registration-reset-request"
           tone="danger"
         />
       </SectionCard>
+      {scanner ? (
+        <CameraScannerModal
+          context="device-activation"
+          onClose={() => setCameraVisible(false)}
+          onScan={(value) => {
+            presenter.setDeviceActivationCode(value);
+            void presenter.previewDeviceReregistration();
+          }}
+          scanner={scanner}
+          visible={cameraVisible}
+        />
+      ) : null}
     </View>
   );
 }
@@ -2392,49 +2498,108 @@ function HardwarePane({
 function ConfirmationCard({
   busy,
   confirmation,
+  deviceCode,
   locale,
   onCancel,
   onConfirm,
+  storeCode,
 }: Readonly<{
   busy: boolean;
   confirmation: SettingsDangerousConfirmation;
+  deviceCode: string;
   locale: SettingsLocale;
   onCancel(): void;
-  onConfirm(): void;
+  onConfirm(employeeBarcode?: string): void;
+  storeCode: string;
 }>) {
+  const requiresEmployeeScan =
+    confirmation.kind === "reset-device-registration";
+  const [employeeBarcode, setEmployeeBarcode] = useState("");
+  const submit = (): void => {
+    const scannedBarcode = employeeBarcode.trim();
+    if (requiresEmployeeScan) {
+      setEmployeeBarcode("");
+      onConfirm(scannedBarcode);
+      return;
+    }
+    onConfirm();
+  };
   return (
     <View
       accessibilityRole="alert"
       style={styles.confirmation}
       testID="settings-confirmation"
     >
-      <View style={styles.confirmationCopy}>
-        <Text style={styles.confirmationTitle}>
-          {confirmationTitle(locale, confirmation)}
-        </Text>
-        <Text style={styles.confirmationBody}>
-          {settingsText(locale, "confirmation.body")}
-        </Text>
-      </View>
-      <View style={styles.confirmationActions}>
-        <ActionButton
-          disabled={busy}
-          label={settingsText(locale, "action.cancel")}
-          onPress={onCancel}
-          testID="settings-confirm-cancel"
-          tone="quiet"
-        />
-        <ActionButton
-          disabled={busy}
-          label={settingsText(
-            locale,
-            busy ? "action.checking" : "action.confirm",
-          )}
-          onPress={onConfirm}
-          testID="settings-confirm"
-          tone="danger"
-        />
-      </View>
+      <PosKeyboardAwareScrollView
+        contentContainerStyle={styles.confirmationScrollContent}
+        style={styles.confirmationScroll}
+        testID="settings-confirmation-scroll"
+      >
+        <View style={styles.confirmationCopy}>
+          <Text style={styles.confirmationTitle}>
+            {confirmationTitle(
+              locale,
+              confirmation,
+              storeCode,
+              deviceCode,
+            )}
+          </Text>
+          <Text style={styles.confirmationBody}>
+            {settingsText(
+              locale,
+              requiresEmployeeScan
+                ? "confirmation.resetDeviceBody"
+                : "confirmation.body",
+            )}
+          </Text>
+          {requiresEmployeeScan ? (
+            <View style={styles.confirmationScan}>
+              <FieldLabel
+                label={settingsText(locale, "field.employeeBarcode")}
+              />
+              <PosKeyboardAwareTextInput
+                accessibilityLabel={settingsText(
+                  locale,
+                  "field.employeeBarcode",
+                )}
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoFocus
+                editable={!busy}
+                onChangeText={setEmployeeBarcode}
+                secureTextEntry
+                style={styles.textInput}
+                testID="settings-device-registration-reset-barcode"
+                value={employeeBarcode}
+              />
+              <Text style={styles.fieldHint}>
+                {settingsText(locale, "field.employeeBarcodeHint")}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+        <View style={styles.confirmationActions}>
+          <ActionButton
+            disabled={busy}
+            label={settingsText(locale, "action.cancel")}
+            onPress={onCancel}
+            testID="settings-confirm-cancel"
+            tone="quiet"
+          />
+          <ActionButton
+            disabled={
+              busy || (requiresEmployeeScan && !employeeBarcode.trim())
+            }
+            label={settingsText(
+              locale,
+              busy ? "action.checking" : "action.confirm",
+            )}
+            onPress={submit}
+            testID="settings-confirm"
+            tone="danger"
+          />
+        </View>
+      </PosKeyboardAwareScrollView>
     </View>
   );
 }
@@ -2715,6 +2880,8 @@ function ActionButton({
 function confirmationTitle(
   locale: SettingsLocale,
   confirmation: SettingsDangerousConfirmation,
+  storeCode: string,
+  deviceCode: string,
 ): string {
   switch (confirmation.kind) {
     case "change-api-address":
@@ -2729,7 +2896,19 @@ function confirmationTitle(
       return settingsText(locale, "confirmation.resetCatalog");
     case "reregister-device":
       return settingsText(locale, "confirmation.reregisterDevice", {
-        targetStoreCode: confirmation.targetStoreCode,
+        currentStoreCode: confirmation.currentStoreCode || "—",
+        targetStoreCode: confirmation.preview.storeCode,
+        targetStoreName: confirmation.preview.storeName,
+        deviceSystem: confirmation.preview.deviceSystem,
+        expiresAt: formatActivationExpiry(
+          confirmation.preview.expiresAtUtc,
+          locale,
+        ),
+      });
+    case "reset-device-registration":
+      return settingsText(locale, "confirmation.resetDeviceRegistration", {
+        storeCode: storeCode || "—",
+        deviceCode: deviceCode || "—",
       });
     default:
       return settingsText(locale, "confirmation.restartApp");
@@ -2753,6 +2932,7 @@ function isSuccessStatus(statusCode: SettingsStatusCode): boolean {
     "catalog-downloaded",
     "catalog-reset",
     "device-reregister-started",
+    "device-registration-reset-completed",
     "linkly-paired",
     "payment-settings-saved",
     "payment-test-passed",
@@ -2789,6 +2969,16 @@ function formatElapsedMilliseconds(elapsedMilliseconds: number): string {
     2,
     "0",
   )}`;
+}
+
+function formatActivationExpiry(
+  expiresAtUtc: string,
+  locale: SettingsLocale,
+): string {
+  const date = new Date(expiresAtUtc);
+  return Number.isNaN(date.getTime())
+    ? expiresAtUtc
+    : date.toLocaleString(locale === "zh" ? "zh-CN" : "en-AU");
 }
 
 const styles = StyleSheet.create({
@@ -3126,6 +3316,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 13,
     paddingVertical: 9,
   },
+  fieldHint: {
+    color: posColors.mutedInk,
+    fontSize: 12,
+    lineHeight: 18,
+    marginTop: 5,
+  },
+  dangerDescription: {
+    color: posColors.red,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 20,
+    marginBottom: 12,
+  },
   multilineTextInput: {
     backgroundColor: "#FAFAF8",
     borderColor: posColors.border,
@@ -3459,6 +3662,8 @@ const styles = StyleSheet.create({
     top: 0,
   },
   confirmationCopy: { flex: 1 },
+  confirmationScroll: { width: "100%" },
+  confirmationScrollContent: { gap: 20 },
   confirmationTitle: {
     color: posColors.red,
     fontSize: 18,
@@ -3470,6 +3675,7 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     marginTop: 6,
   },
+  confirmationScan: { marginTop: 8 },
   confirmationActions: {
     alignItems: "center",
     flexDirection: "row",

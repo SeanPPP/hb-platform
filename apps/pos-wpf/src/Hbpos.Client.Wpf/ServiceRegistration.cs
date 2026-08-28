@@ -51,6 +51,12 @@ public static class ServiceRegistration
         services.AddSingleton<ILocalSchemaService>(sp => sp.GetRequiredService<LocalSchemaService>());
         services.AddSingleton<IAppUpdateDeviceCacheInitializer, AppUpdateDeviceCacheInitializer>();
         services.AddSingleton<IDeviceAuthorizationProtector, WindowsDpapiDeviceAuthorizationProtector>();
+        services.AddSingleton<IDeviceActivationRecoveryStore>(sp =>
+            new LocalDeviceActivationRecoveryStore(
+                sp.GetRequiredService<IDeviceAuthorizationProtector>(),
+                sp.GetRequiredService<ApiRuntimeEndpointState>(),
+                sp.GetRequiredService<IDeviceFingerprintService>(),
+                Path.Combine(localDataDirectory, "device-activation-recovery.pending")));
         services.AddSingleton<DeviceAuthorizationState>();
         services.AddTransient<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<ILocalAppSettingsRepository, LocalAppSettingsRepository>();

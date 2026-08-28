@@ -7,11 +7,11 @@ import { Linking } from "react-native";
 
 import { AppUpdateCoordinator } from "../../features/app-updates/app-update-coordinator";
 import { AppUpdateOrchestrator } from "../../features/app-updates/app-update-orchestrator";
-import { createExpoAndroidNativeUpdatePort } from "../../features/app-updates/expo-android-native-update-port";
 import {
   type AppUpdateRecoveryRuntimePort,
   createAppUpdateRecoveryRuntimeSnapshot,
 } from "../../features/app-updates/app-update-recovery-contract";
+import { createExpoAndroidNativeUpdatePort } from "../../features/app-updates/expo-android-native-update-port";
 import { ExpoOtaUpdatePort } from "../../features/app-updates/expo-ota-update-port";
 import { HbposPosHandheldOtaUpdateApi } from "../../features/app-updates/hbpos-pos-handheld-ota-update-api";
 import { HbposPosHandheldUpdateApi } from "../../features/app-updates/hbpos-pos-handheld-update-api";
@@ -27,6 +27,7 @@ import {
 import type { SettingsPaymentSettingsInput } from "../../features/settings";
 import {
   createAxiosHbposTransport,
+  createFreshCashierAxiosHbposTransport,
   type HbposAuthenticationFailureHandler,
   type HbposRequestCredentialProvider,
   type HbposRequestCredentials,
@@ -52,6 +53,12 @@ import {
   ApplicationLogUploader,
   resolveApplicationLogCenterConfig,
 } from "../logging/application-log";
+import { businessStartupClock } from "../performance/business-startup-clock";
+import {
+  ClientMetricRuntime,
+  clientMetrics,
+} from "../performance/client-metrics";
+import { createExpoClientMetricRuntime } from "../performance/expo-client-metric-runtime";
 import {
   createExpoAttendanceSecurityAdapter,
 } from "../peripherals/attendance-security/native";
@@ -63,6 +70,8 @@ import {
 import { SecurityApiCredentialProvider } from "../security/api-credential-provider";
 import { CashierAuthenticationService } from "../security/cashier-authentication";
 import { CashierSessionInvalidationBus } from "../security/cashier-session-invalidation";
+import { DeviceRegistrationResetCoordinator } from "../security/device-registration-reset";
+import { DeviceRegistrationApiPartitionGuard } from "../security/device-registration-api-partition-guard";
 import { DeviceSessionCoordinator } from "../security/device-session";
 import { ExpoSecureStoreAdapter } from "../security/expo-secure-store";
 import {
@@ -75,7 +84,10 @@ import {
   CashierSessionCache,
   DeviceCredentialStore,
   DeviceLockStore,
+  DevicePresentationStore,
+  DeviceRegistrationResetMarkerStore,
   InstallationIdentityStore,
+  PendingDeviceActivationCodeStore,
   PendingDeviceRegistrationStore,
 } from "../security/secure-storage";
 import { SensitivePayloadEncryptor } from "../security/sensitive-payload-encryptor";
@@ -397,6 +409,16 @@ class DeferredSecurityBridge
 }
 
 export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServices> {
+  try {
+    return await createExpoPosRuntimeServicesCore();
+  } catch (error) {
+    // 覆盖数据库打开等内部清理 try 之前的启动失败；计时器自身严格一次。
+    businessStartupClock.fail();
+    throw error;
+  }
+}
+
+async function createExpoPosRuntimeServicesCore(): Promise<ExpoPosRuntimeServices> {
   const deviceSystem = resolveHbposDeviceSystem();
   const publicExtra =
     Constants.expoConfig?.extra as HbposExtraConfig | undefined;
@@ -430,8 +452,12 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     () => Crypto.randomUUID(),
   );
   const deviceCredentials = new DeviceCredentialStore(secureStore);
+  const devicePresentation = new DevicePresentationStore(secureStore);
   const pendingRegistration = new PendingDeviceRegistrationStore(secureStore);
+  const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
   const deviceLock = new DeviceLockStore(secureStore);
+  const deviceRegistrationResetMarker =
+    new DeviceRegistrationResetMarkerStore(secureStore);
   const cashierAuthorization = new CashierAuthorizationStore(
     secureStore,
     {
@@ -453,16 +479,35 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     undefined,
     securityBridge,
   );
+  const anonymousDeviceTransport = createAxiosHbposTransport(apiBaseUrl, {
+    getCredentials: async () => Object.freeze({}),
+  });
   const deviceApi = new HbposDeviceApi(
     transport,
     deviceSystem,
+    anonymousDeviceTransport,
   );
+  const deviceResetApi = new HbposDeviceApi(
+    createFreshCashierAxiosHbposTransport(
+      apiBaseUrl,
+      securityBridge,
+      undefined,
+      securityBridge,
+    ),
+    deviceSystem,
+    anonymousDeviceTransport,
+  );
+  const apiPartitionGuard = new DeviceRegistrationApiPartitionGuard();
   const deviceSession = new DeviceSessionCoordinator(
     deviceApi,
     installation,
     deviceCredentials,
     deviceLock,
     pendingRegistration,
+    devicePresentation,
+    pendingActivation,
+    apiBaseUrl,
+    apiPartitionGuard,
   );
   const publicDeviceSession = createPublicDeviceSession(
     deviceSession,
@@ -483,6 +528,28 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
 
   const network = new ExpoNetworkStatus();
   const cashierApi = new HbposCashierApi(transport);
+  const resetRecovery = new DeviceRegistrationResetCoordinator({
+    api: deviceResetApi,
+    authenticateOnline: async () => {
+      throw new Error(
+        "Device reset authentication is unavailable during startup recovery.",
+      );
+    },
+    credentials: deviceCredentials,
+    presentation: devicePresentation,
+    pendingRegistration,
+    lock: deviceLock,
+    marker: deviceRegistrationResetMarker,
+    cashierAuthorization,
+    installation,
+    createOperationId: () => Crypto.randomUUID(),
+    nowIso: () => new Date().toISOString(),
+    invalidateCurrentCashier: () => {
+      cashierSessionInvalidation.notify("device-scope-change");
+    },
+    apiPartitionGuard,
+  });
+  await resetRecovery.recover();
   const cashierCache = new CashierSessionCache(secureStore, {
     sha256Hex: async (material) =>
       Crypto.digestStringAsync(
@@ -491,37 +558,52 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
         { encoding: Crypto.CryptoEncoding.HEX },
       ),
   });
-  const [locked, credentials, pending, installationId, online] = await Promise.all([
+  const [
+    locked,
+    credentials,
+    pending,
+    resetPending,
+    installationId,
+    online,
+  ] = await Promise.all([
     deviceLock.isLocked(),
     deviceCredentials.load(),
     pendingRegistration.load(),
+    resetRecovery.isResetRecoveryPending(),
     installation.getOrCreate(),
     network.isOnline(),
   ]);
   const localDevice = resolveLocalDeviceState({
     locked,
+    registrationResetPending: resetPending,
     credentials,
     pending,
     installationId,
   });
   const startupGate = await resolveStartupDeviceGate({
     internetReachable: online,
+    registrationResetPending: resetPending,
+    readPendingDeviceActivation: () =>
+      deviceSession.restorePendingActivationCode(),
     verifyCurrentDevice: () => deviceSession.poll(),
     readLocalDevice: async () => {
       const [
         currentLocked,
         currentCredentials,
         currentPending,
+        currentResetPending,
         currentInstallationId,
       ] =
         await Promise.all([
           deviceLock.isLocked(),
           deviceCredentials.load(),
           pendingRegistration.load(),
+          resetRecovery.isResetRecoveryPending(),
           installation.getOrCreate(),
         ]);
       return resolveLocalDeviceState({
         locked: currentLocked,
+        registrationResetPending: currentResetPending,
         credentials: currentCredentials,
         pending: currentPending,
         installationId: currentInstallationId,
@@ -544,7 +626,15 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     Constants.nativeAppVersion ??
     Constants.expoConfig?.version ??
     "0.0.0";
+  const applicationLogCenterConfig = resolveApplicationLogCenterConfig({
+    enabled: publicExtra?.hbpos?.logCenter?.enabled,
+    ingestUrl: publicExtra?.hbpos?.logCenter?.ingestUrl,
+    writeKey: publicExtra?.hbpos?.logCenter?.writeKey,
+    environment: publicExtra?.hbpos?.logCenter?.environment,
+  });
   let applicationLog: ApplicationLogRuntime | null = null;
+  let clientMetricRuntime: ClientMetricRuntime | null = null;
+  let releaseClientMetricBinding: (() => void) | null = null;
   let shutdownComposition: (() => Promise<void>) | null = null;
 
   try {
@@ -568,12 +658,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       ),
       new ApplicationLogUploader(
         database.applicationLogOutbox(),
-        resolveApplicationLogCenterConfig({
-          enabled: publicExtra?.hbpos?.logCenter?.enabled,
-          ingestUrl: publicExtra?.hbpos?.logCenter?.ingestUrl,
-          writeKey: publicExtra?.hbpos?.logCenter?.writeKey,
-          environment: publicExtra?.hbpos?.logCenter?.environment,
-        }),
+        applicationLogCenterConfig,
         fetch,
         now,
       ),
@@ -635,6 +720,25 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       deviceLock,
       emergencyCashier?.authentication,
     );
+    const deviceRegistrationReset =
+      new DeviceRegistrationResetCoordinator({
+        api: deviceResetApi,
+        authenticateOnline: (input) =>
+          cashierAuthentication.loginOnlineOnly(input),
+        credentials: deviceCredentials,
+        presentation: devicePresentation,
+        pendingRegistration,
+        lock: deviceLock,
+        marker: deviceRegistrationResetMarker,
+        cashierAuthorization,
+        installation,
+        createOperationId: () => Crypto.randomUUID(),
+        nowIso: () => new Date().toISOString(),
+        invalidateCurrentCashier: () => {
+          cashierSessionInvalidation.notify("device-scope-change");
+        },
+        apiPartitionGuard,
+      });
     // 主管代授权复用同一加密离线缓存，但紧急二维码不得替换当前收银员或主管票据。
     const supervisorAuthentication =
       new CashierAuthenticationService(
@@ -668,6 +772,26 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     );
     const configuredUpdateChannel = Updates.channel?.trim() || null;
     const updateChannel = configuredUpdateChannel ?? "embedded";
+    try {
+      clientMetricRuntime = await createExpoClientMetricRuntime({
+        appVersion,
+        channel: updateChannel,
+        store: runtimeCredentials?.storeCode ?? null,
+        sessionId: createId(),
+        logCenter: applicationLogCenterConfig,
+        createId,
+        getRequestHeaders: () => deviceSession.getRequestHeaders(),
+      });
+      releaseClientMetricBinding = clientMetrics.bind(clientMetricRuntime);
+      clientMetricRuntime.start();
+    } catch (error) {
+      applicationLog.record({
+        level: "Warning",
+        message: "POS client metric runtime initialization failed.",
+        category: "runtime.performance",
+        error,
+      });
+    }
     const currentUpdateId = Updates.updateId;
     const currentUpdateGroupId = readCurrentUpdateGroupId(
       Updates.manifest,
@@ -953,6 +1077,8 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
           probe: probeApiHealth,
           save: (nextApiBaseUrl) =>
             publicConfigurationStore.saveApiBaseUrl(nextApiBaseUrl),
+          runSwitchGuarded: (operation) =>
+            apiPartitionGuard.runSwitch(operation),
         },
         runtimeReload: {
           reload: async (signal) => {
@@ -963,15 +1089,50 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
           },
         },
         device: {
+          previewActivationCode: async (activationCode, signal) => {
+            throwIfRuntimeAborted(signal);
+            const response = await deviceSession.previewActivationCode(
+              activationCode,
+            );
+            throwIfRuntimeAborted(signal);
+            if (
+              response.isAllowed !== true ||
+              response.deviceSystem !== deviceSystem
+            ) {
+              throw new Error("SETTINGS_DEVICE_ACTIVATION_PREVIEW_REJECTED");
+            }
+            return response;
+          },
           reregister: async (request, signal) => {
             throwIfRuntimeAborted(signal);
-            const result = await deviceSession.reregister(request);
+            const result = await deviceSession.rebindActivationCode(request);
             throwIfRuntimeAborted(signal);
             if (result.status !== "authorized") {
               throw new Error(
                 `SETTINGS_DEVICE_REREGISTRATION_${result.status.toUpperCase()}`,
               );
             }
+          },
+          resetRegistration: async (employeeBarcode, signal) => {
+            throwIfRuntimeAborted(signal);
+            try {
+              await deviceRegistrationReset.reset(employeeBarcode);
+              return "completed" as const;
+            } catch (error) {
+              // marker 存在或读取失败都由 coordinator 视为恢复中并锁机；
+              // 只有显式拒绝且确认无 marker 才把原错误交回设置页。
+              if (await deviceRegistrationReset.isResetRecoveryPending()) {
+                return "pending-recovery" as const;
+              }
+              throw error;
+            }
+          },
+          hasRegistrationRecoveryRisk: async () => {
+            const [activationPending, resetPendingNow] = await Promise.all([
+              deviceSession.hasActivationRecoveryRisk(),
+              deviceRegistrationReset.isResetRecoveryPending(),
+            ]);
+            return activationPending || resetPendingNow;
           },
         },
         scanner: {
@@ -1033,11 +1194,21 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       probe: probeApiHealth,
       save: (nextApiBaseUrl) =>
         publicConfigurationStore.saveApiBaseUrl(nextApiBaseUrl),
+      runSwitchGuarded: (operation) =>
+        apiPartitionGuard.runSwitch(operation),
+      hasRegistrationRecoveryRisk: async () => {
+        const [activationPending, resetPendingNow] = await Promise.all([
+          deviceSession.hasActivationRecoveryRisk(),
+          deviceRegistrationReset.isResetRecoveryPending(),
+        ]);
+        return activationPending || resetPendingNow;
+      },
     });
     appUpdateSafety = composition.appUpdateSafety;
     // 销售路由拿到 runtime 前必须先处理崩溃遗留的 HoldClear/RecallActive fence。
     // 初始化失败保持数据库可恢复并让启动 fail-closed，绝不开放普通收银。
     await composition.initialize();
+    businessStartupClock.markRuntimeReady();
     applicationLog.record({
       level: "Information",
       message: "POS runtime initialized.",
@@ -1089,6 +1260,8 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       applicationLog: activeApplicationLog,
       updateIdentity,
       shutdown: async () => {
+        releaseClientMetricBinding?.();
+        await clientMetricRuntime?.shutdown();
         await shutdownExpoPosRuntimeServices({
           beforeShutdown: [
             // 与 401/403/手动锁屏使用同一可信桥撤销可信会话。
@@ -1109,6 +1282,9 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
           : startupGate.device,
     };
   } catch (error) {
+    businessStartupClock.fail();
+    releaseClientMetricBinding?.();
+    await clientMetricRuntime?.shutdown();
     await recordRuntimeInitializationFailure(
       applicationLog,
       error,

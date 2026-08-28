@@ -440,6 +440,7 @@ public sealed class SharedHeldOrderCoordinatorTests
         var cart = new PosCartService();
         var holdGuid = Guid.NewGuid();
         var payload = SampleCanonical(quantity: 2.25m, unitPriceCents: 888);
+        await InsertLegacyOrderAsync(scope, holdGuid);
         Assert.True(await scope.Repository.UpsertPublicationAsync(
             holdGuid,
             "S001",
@@ -449,6 +450,8 @@ public sealed class SharedHeldOrderCoordinatorTests
             "2026-07-28T00:59:00.000Z",
             "2026-07-28T00:59:00.000Z",
             "2026-07-28T00:59:00.000Z"));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-01", "2026-07-28T01:00:00.000Z"));
         Assert.True(await scope.Repository.TryStagePendingPublishAsync(
             holdGuid,
             expectedRevision: 1,
@@ -482,6 +485,7 @@ public sealed class SharedHeldOrderCoordinatorTests
         var cart = new PosCartService();
         var holdGuid = Guid.NewGuid();
         var payload = SampleCanonical();
+        await InsertLegacyOrderAsync(scope, holdGuid);
         Assert.True(await scope.Repository.UpsertPublicationAsync(
             holdGuid,
             "S001",
@@ -491,6 +495,8 @@ public sealed class SharedHeldOrderCoordinatorTests
             "2026-07-28T00:59:00.000Z",
             "2026-07-28T00:59:00.000Z",
             "2026-07-28T00:59:00.000Z"));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            holdGuid, "S001", "POS-01", "2026-07-28T01:00:00.000Z"));
         Assert.True(await scope.Repository.TryStagePendingPublishAsync(
             holdGuid,
             expectedRevision: 1,
@@ -756,6 +762,7 @@ public sealed class SharedHeldOrderCoordinatorTests
         var cart = new PosCartService();
         var holdGuid = Guid.NewGuid();
         var payload = SampleCanonical();
+        await InsertLegacyOrderAsync(scope, holdGuid);
         Assert.True(await scope.Repository.UpsertPublicationAsync(
             holdGuid,
             session.StoreCode,
@@ -765,6 +772,8 @@ public sealed class SharedHeldOrderCoordinatorTests
             "2026-07-28T00:59:00.000Z",
             "2026-07-28T00:59:00.000Z",
             "2026-07-28T00:59:00.000Z"));
+        Assert.Equal(SharedHeldOrderShareRequestResult.Requested, await scope.Repository.TryRequestShareAsync(
+            holdGuid, session.StoreCode, session.DeviceCode, "2026-07-28T01:00:00.000Z"));
         Assert.True(await scope.Repository.TryStagePendingPublishAsync(
             holdGuid,
             expectedRevision: 1,
@@ -951,7 +960,9 @@ public sealed class SharedHeldOrderCoordinatorTests
         var cart = new PosCartService();
         var remoteHold = Guid.NewGuid();
         var remoteClaim = Guid.NewGuid();
-        var remoteDraft = ClaimDraft(remoteClaim, remoteHold, session, SharedHeldOrderClaimSource.RemoteClaim, "remote-1", SampleCanonical());
+        // 两条 Active claim 属于不同设备，避免把 fixture 误写成同设备双开放 fence。
+        var remoteDraft = ClaimDraft(remoteClaim, remoteHold, session, SharedHeldOrderClaimSource.RemoteClaim, "remote-1", SampleCanonical())
+            with { DeviceCode = "POS-02" };
         Assert.True(await scope.Repository.TrySavePreparedClaimAsync(remoteDraft));
         Assert.True(await scope.Repository.TryActivateClaimAsync(
             remoteClaim,
@@ -1550,7 +1561,11 @@ public sealed class SharedHeldOrderCoordinatorTests
                     new DateTimeOffset(2026, 7, 28, 1, 8, 1, TimeSpan.Zero),
                     Revision: 1L));
             },
-            Activate = (_, _, _) => Task.FromResult(ActiveClaimDto(newHoldGuid, newClaimGuid, Revision: 2L))
+            Activate = (_, _, _) =>
+            {
+                calls.Add("activate");
+                return Task.FromResult(ActiveClaimDto(newHoldGuid, newClaimGuid, Revision: 2L));
+            }
         };
         // 旧 claim 服务端已不存在（服务端同样会过期 Prepared）：本地推进 Released。
         api.ClaimsMine = _ =>
@@ -1804,6 +1819,23 @@ public sealed class SharedHeldOrderCoordinatorTests
             payload,
             "2026-07-28T01:02:00.000Z",
             "2026-07-28T01:04:00.000Z");
+    }
+
+    private static async Task InsertLegacyOrderAsync(RepositoryScope scope, Guid holdGuid)
+    {
+        // 召回链的显式 share 只接受真实 Pending 挂单，不能只造 publication 副本。
+        await using var connection = await scope.Store.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO SuspendedOrders (
+                SuspendedOrderGuid, StoreCode, DeviceCode, CashierId, CashierName, SuspendedAt,
+                TotalAmount, DiscountAmount, ActualAmount, Status)
+            VALUES ($HoldGuid, 'S001', 'POS-01', 'cashier-1', 'Cashier One',
+                    '2026-07-28T00:00:00+00:00', '11.00', '0.00', '11.00', 0);
+            """;
+        command.Parameters.AddWithValue("$HoldGuid", holdGuid.ToString("D"));
+        await command.ExecuteNonQueryAsync();
     }
 
     private static SharedHeldOrderClaimDto ActiveClaimDto(Guid holdGuid, Guid claimGuid, long Revision)

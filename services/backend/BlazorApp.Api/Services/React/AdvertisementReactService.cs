@@ -800,11 +800,42 @@ namespace BlazorApp.Api.Services.React
                 .OrderBy(item => item.StoreCode)
                 .ToListAsync();
 
+            var storeCodeKeys = stores
+                .Select(item => item.StoreCode?.Trim())
+                .Where(storeCode => !string.IsNullOrWhiteSpace(storeCode))
+                .Select(storeCode => storeCode!.ToUpperInvariant())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var storeNamesByCode = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+            if (storeCodeKeys.Count > 0)
+            {
+                // 一次性回填未软删除分店名称；历史停用分店仍应在广告范围中可读。
+                var storeNames = await _context
+                    .StoreDb.AsQueryable()
+                    .Where(store =>
+                        !store.IsDeleted
+                        && storeCodeKeys.Contains(SqlFunc.ToUpper(store.StoreCode))
+                    )
+                    .Select(store => new { store.StoreCode, store.StoreName })
+                    .ToListAsync();
+
+                foreach (var store in storeNames)
+                {
+                    storeNamesByCode.TryAdd(store.StoreCode, store.StoreName);
+                }
+            }
+
             return stores
                 .GroupBy(item => item.AdvertisementId)
                 .ToDictionary(
                     group => group.Key,
-                    group => group.Select(item => new AdvertisementStoreItemDto { StoreCode = item.StoreCode }).ToList()
+                    group => group.Select(item => new AdvertisementStoreItemDto
+                    {
+                        StoreCode = item.StoreCode,
+                        StoreName = storeNamesByCode.TryGetValue(item.StoreCode, out var storeName)
+                            ? storeName
+                            : null,
+                    }).ToList()
                 );
         }
 

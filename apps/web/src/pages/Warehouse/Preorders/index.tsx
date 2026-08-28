@@ -21,7 +21,6 @@ import {
   Space,
   Spin,
   Switch,
-  Table,
   Tag,
   Typography,
 } from 'antd'
@@ -64,6 +63,7 @@ import {
   isCurrentModalRequest,
 } from './modalRequestGuard'
 import './styles.css'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { Text, Title } = Typography
 const { RangePicker } = DatePicker
@@ -435,7 +435,7 @@ export default function PreordersPage() {
     <ConfigProvider locale={antdLocale}>
       <PageContainer title={t('warehouse.preorders.title')} extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>{t('warehouse.preorders.createTemplate')}</Button>}>
       <Card className="preorder-admin-card">
-        <Table rowKey="templateGuid" columns={columns} dataSource={templates} loading={loading} scroll={{ x: 1000 }} pagination={false} />
+        <MeasuredTable metricId="warehouse.preorders.table-1" rowKey="templateGuid" columns={columns} dataSource={templates} loading={loading} scroll={{ x: 1000 }} pagination={false} />
       </Card>
 
       <Modal title={editing ? t('warehouse.preorders.editTemplateTitle', { revision: editing.revision }) : t('warehouse.preorders.createTemplateTitle')} open={editorOpen} width={1120} confirmLoading={saving} okButtonProps={{ disabled: editorLoading || resolving || !canSavePreorderTemplate(items, pasteErrors) }} onOk={() => void saveTemplate()} onCancel={closeEditor} okText={t('warehouse.preorders.saveTemplate')} destroyOnClose>
@@ -474,7 +474,7 @@ export default function PreordersPage() {
               <Button type="primary" ghost loading={resolving} onClick={() => void resolvePaste()} style={{ marginTop: 8 }}>{t('warehouse.preorders.paste.parseAndPreview')}</Button>
               {pasteErrors.length ? <Alert style={{ marginTop: 12 }} type="error" showIcon message={t('warehouse.preorders.paste.resolveIssues')} description={pasteErrors.map((error) => <div key={error}>{error}</div>)} /> : null}
             </div>
-            <Table<PreorderResolvedItem>
+            <MeasuredTable<PreorderResolvedItem> metricId="warehouse.preorders.table-2"
               size="small"
               rowKey={(row) => `${row.lineNumber}-${row.itemNumber}`}
               dataSource={items}
@@ -518,7 +518,7 @@ export default function PreordersPage() {
       </Modal>
 
       <Modal title={t('warehouse.preorders.historyTitle', { name: historyTemplate?.name || '' })} open={historyOpen} footer={null} width={920} onCancel={closeHistory}>
-        <Table loading={historyLoading} rowKey="activationGuid" dataSource={activations} pagination={false} scroll={{ x: 900 }} columns={[
+        <MeasuredTable metricId="warehouse.preorders.table-3" loading={historyLoading} rowKey="activationGuid" dataSource={activations} pagination={false} scroll={{ x: 900 }} columns={[
           { title: t('warehouse.preorders.periodNumber'), dataIndex: 'sequenceNumber', width: 80, render: (value) => t('warehouse.preorders.period', { sequence: value }) },
           { title: t('warehouse.preorders.activationNumber'), dataIndex: 'activationNumber', width: 150 },
           { title: t('warehouse.preorders.status'), dataIndex: 'status', width: 100, render: (status) => activationStatusTag(status, t(`warehouse.preorders.activationStatus.${status}`)) },

@@ -4,7 +4,7 @@ import {
   FireOutlined,
   ShoppingCartOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Card, Empty, Popover, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd'
+import { Alert, Button, Card, Empty, Popover, Select, Space, Tag, Tooltip, Typography, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -16,6 +16,7 @@ import type { BestSellerBranchSale, BestSellerProduct } from '../../../types/sal
 import { buildBestSellerDateRange } from '../../../utils/bestSellerDateRange'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { formatStatisticMessageAmounts } from '../../../utils/statisticMessage'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const { Text, Title } = Typography
 
@@ -406,7 +407,7 @@ export default function BestSellersSection() {
               title={t('shop.branchSalesTitle', 'Store Sales')}
               content={
                 <div className="shop-best-sellers-branch-sales-popover">
-                  <Table<BestSellerBranchSale>
+                  <MeasuredTable<BestSellerBranchSale> metricId="shop-home.best-sellers-section.table-1"
                     size="small"
                     rowKey={(row) => row.branchCode}
                     columns={BRANCH_SALES_COLUMNS}
@@ -534,7 +535,7 @@ export default function BestSellersSection() {
         />
       ) : null}
 
-      <Table<BestSellerProduct>
+      <MeasuredTable<BestSellerProduct> metricId="shop-home.best-sellers-section.table-2"
         rowKey={(record) => record.productCode || record.itemNumber || String(record.rank)}
         className="shop-best-sellers-table"
         columns={columns}

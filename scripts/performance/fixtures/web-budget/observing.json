@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "QualityBaselineBudgetV1",
+  "mode": "observing",
+  "metrics": {
+    "web.first_screen.bytes#lane=web": {
+      "max": 1000,
+      "unit": "bytes",
+      "required": true
+    },
+    "web.largest_initial_chunk.bytes#lane=web": {
+      "max": 600,
+      "unit": "bytes",
+      "required": true
+    }
+  }
+}

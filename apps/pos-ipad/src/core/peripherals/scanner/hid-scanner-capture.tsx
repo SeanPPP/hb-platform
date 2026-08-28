@@ -15,6 +15,7 @@ export type HidScannerCaptureProps = {
   active: boolean;
   focusRequestKey?: string | number;
   onCaptureStatusChange?: (status: ScannerCaptureStatus) => void;
+  onHidTextChange?: () => void;
 };
 
 /**
@@ -22,7 +23,7 @@ export type HidScannerCaptureProps = {
  * 没有焦点时通过 status=inactive 显式暴露，绝不声称存在全局捕获能力。
  */
 export const HidScannerCapture = forwardRef<HidScannerCaptureHandle, HidScannerCaptureProps>(
-  ({ active, focusRequestKey, onCaptureStatusChange, scanner }, ref) => {
+  ({ active, focusRequestKey, onCaptureStatusChange, onHidTextChange, scanner }, ref) => {
     const inputRef = useRef<TextInputInstance>(null);
     const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [value, setValue] = useState("");
@@ -106,6 +107,9 @@ export const HidScannerCapture = forwardRef<HidScannerCaptureHandle, HidScannerC
         keyboardType="default"
         onBlur={() => updateCaptureState(false)}
         onChangeText={(nextValue) => {
+          if (nextValue && nextValue !== valueRef.current) {
+            onHidTextChange?.();
+          }
           const result = scanner.acceptTextInputValue(nextValue);
           setCapturedValue(result.valueToRender);
           scheduleIdleReset();

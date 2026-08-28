@@ -36,8 +36,8 @@ import {
   Space,
   Spin,
   Switch,
-  Table,
   Tag,
+  theme,
   Tooltip,
   Tree,
 } from 'antd'
@@ -45,7 +45,8 @@ import type { ColumnsType, TableRef } from 'antd/es/table'
 import type { FilterDropdownProps, FilterValue } from 'antd/es/table/interface'
 import dayjs from 'dayjs'
 import { useKeepAliveContext } from 'keepalive-for-react'
-import type { ReactNode, UIEvent } from 'react'
+import { MeasuredTable } from '../../../components/MeasuredTable'
+import type { ClipboardEvent, ReactNode, UIEvent } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import BarcodePreview from '../../../components/BarcodePreview'
@@ -139,6 +140,17 @@ import {
   buildProductIntegritySummary,
   type ProductIntegrityIssueRow,
 } from './productIntegrityReport'
+import {
+  applySetCodeColumnPaste,
+  deriveSetCodePurchasePrice,
+  mergeSetCodeRetailPriceEdit,
+  validateSetCodeDrafts,
+  type SetCodeColumnPasteResult,
+  type SetCodeDraftEdits,
+  type SetCodeDraftRow,
+  type SetCodePasteField,
+} from './setCodeColumnPaste'
+import { loadCompleteSetCodeDraftRows, MAX_SET_CODE_DRAFT_ROWS } from './setCodeDraftLoader'
 
 type ProductRow = (PosProductDto & {
   warehouseCategoryGuid?: string
@@ -149,6 +161,7 @@ type HqSyncMode = Parameters<typeof buildProductHqSyncOperationId>[0]
 type SupplierOption = { label: string; value: string; localSupplierCode: string; name?: string; imageBaseUrl?: string }
 type ChinaSupplierOption = { label: string; value: string }
 type ProductFilterParams = PosProductFilterParams & { warehouseCategoryGuid?: string }
+type SetCodePasteTarget = { productType: 1 | 2; field: SetCodePasteField }
 type StoreRecordBatchEditFormValues = {
   updatePurchasePrice?: boolean
   purchasePrice?: number
@@ -172,6 +185,13 @@ type ActiveProductHqSyncJob = {
   status?: HqProductSyncJobStatus | string
   message?: string
   startDate?: string
+}
+
+function isSameSetCodePasteTarget(
+  left: SetCodePasteTarget | null,
+  right: SetCodePasteTarget,
+) {
+  return left?.productType === right.productType && left.field === right.field
 }
 
 const PRODUCT_HQ_SYNC_ACTIVE_JOB_STORAGE_KEY = 'posAdmin.products.activeHqSyncJob'
@@ -471,6 +491,7 @@ const SORT_FIELD_MAP: Record<string, string> = {
 
 export default function ProductManagementPage() {
   const { t } = useTranslation()
+  const { token } = theme.useToken()
   const { active } = useKeepAliveContext()
   const isAdmin = useAuthStore((state) => state.access.isAdmin)
   const canManagePosProducts = useAuthStore((state) => state.access.canManagePosProducts)
@@ -561,11 +582,15 @@ export default function ProductManagementPage() {
   const productTypeWatch = Form.useWatch('productType', editForm)
   const imageBatchSupplierCode = Form.useWatch('localSupplierCode', imageBatchForm)
   const imageBatchTemplate = Form.useWatch('urlTemplate', imageBatchForm)
-  const [editSetCodes, setEditSetCodes] = useState<any[]>([])
+  const [editSetCodes, setEditSetCodes] = useState<SetCodeDraftRow[]>([])
   const [editSetCodesLoading, setEditSetCodesLoading] = useState(false)
-  const [editSetPriceEdits, setEditSetPriceEdits] = useState<Record<string, { setItemNumber?: string; setBarcode?: string; setPurchasePrice?: number; setRetailPrice?: number }>>({})
+  const [editSetCodesReady, setEditSetCodesReady] = useState(false)
+  const [editSaving, setEditSaving] = useState(false)
+  const [editSetPriceEdits, setEditSetPriceEdits] = useState<SetCodeDraftEdits>({})
   const [editPendingDeletes, setEditPendingDeletes] = useState<Record<string, any>>({})
+  const [editSetCodePasteTarget, setEditSetCodePasteTarget] = useState<SetCodePasteTarget | null>(null)
   const editSetCodesRequestSeqRef = useRef(0)
+  const editSaveInFlightRef = useRef(false)
 
   const [setCodeVisible, setSetCodeVisible] = useState(false)
   const [setCodeProduct, setSetCodeProduct] = useState<PosProductDto | null>(null)
@@ -891,8 +916,10 @@ export default function ProductManagementPage() {
   const resetEditSetCodeState = useCallback(() => {
     // 编辑弹窗会复用组件实例，打开新商品前必须清空条码明细，避免上一个商品残留。
     setEditSetCodes([])
+    setEditSetCodesReady(false)
     setEditSetPriceEdits({})
     setEditPendingDeletes({})
+    setEditSetCodePasteTarget(null)
   }, [])
 
   const loadData = useCallback(async () => {
@@ -2002,9 +2029,23 @@ export default function ProductManagementPage() {
   const handleEditSave = async () => {
     if (!editingProduct) return
     if (!ensureCanManagePosProducts()) return
+    if ((productTypeWatch === 1 || productTypeWatch === 2) && (editSetCodesLoading || !editSetCodesReady)) {
+      message.warning(t('posAdmin.products.setCodeDataNotReady', '条码明细尚未完整加载，请稍后重试'))
+      return
+    }
+    if (editSaveInFlightRef.current) return
+
+    editSaveInFlightRef.current = true
+    setEditSaving(true)
     try {
       const values = await editForm.validateFields()
       if (!validateEditSetCodes()) return
+      // 固定本次保存的前端草稿，避免多请求期间后续输入混入不同版本的数据。
+      const setCodesSnapshot = editSetCodes.map((row) => ({ ...row }))
+      const priceEditsSnapshot = Object.fromEntries(
+        Object.entries(editSetPriceEdits).map(([rowId, edit]) => [rowId, { ...edit }]),
+      ) as SetCodeDraftEdits
+      const pendingDeletesSnapshot = { ...editPendingDeletes }
       const resolvedCategoryGuid = resolveCascaderLeafValue(values.categoryGuid)
       const updateData: Partial<PosProductDto> = {
         productName: values.productName,
@@ -2027,17 +2068,17 @@ export default function ProductManagementPage() {
       await updateProduct(editingProduct.productCode, updateData)
 
       if (productTypeWatch === 1 || productTypeWatch === 2) {
-        const deleteIds = Object.values(editPendingDeletes).filter((c: any) => c.id).map((c: any) => c.id)
+        const deleteIds = Object.values(pendingDeletesSnapshot).filter((c: any) => c.id).map((c: any) => c.id)
         if (deleteIds.length) {
           await batchDeleteSetCodes({ ids: deleteIds })
         }
 
-        const newRows = editSetCodes.filter((r: any) => !r.id)
+        const newRows = setCodesSnapshot.filter((r: any) => !r.id)
         if (newRows.length) {
           await batchCreateSetCodes({
             items: newRows.map((r: any) => {
               const rowId = r._rowId
-              const edit = editSetPriceEdits[rowId] || {}
+              const edit = priceEditsSnapshot[rowId] || {}
               return {
                 productCode: editingProduct.productCode,
                 setItemNumber: (edit.setItemNumber ?? r.setItemNumber) || undefined,
@@ -2050,15 +2091,15 @@ export default function ProductManagementPage() {
           })
         }
 
-        const barcodeUpdates = Object.entries(editSetPriceEdits)
-          .filter(([id, p]: [string, any]) => p.setBarcode !== undefined && editSetCodes.find((r: any) => (r.id || r._rowId) === id && r.id))
+        const barcodeUpdates = Object.entries(priceEditsSnapshot)
+          .filter(([id, p]: [string, any]) => p.setBarcode !== undefined && setCodesSnapshot.find((r: any) => (r.id || r._rowId) === id && r.id))
           .map(([id, p]: [string, any]) => ({ id, setBarcode: p.setBarcode }))
         if (barcodeUpdates.length) {
           await batchUpdateSetBarcodes({ items: barcodeUpdates })
         }
 
-        const priceUpdates = Object.entries(editSetPriceEdits)
-          .filter(([id, p]: [string, any]) => (p.setPurchasePrice !== undefined || p.setRetailPrice !== undefined) && editSetCodes.find((r: any) => (r.id || r._rowId) === id && r.id))
+        const priceUpdates = Object.entries(priceEditsSnapshot)
+          .filter(([id, p]: [string, any]) => (p.setPurchasePrice !== undefined || p.setRetailPrice !== undefined) && setCodesSnapshot.find((r: any) => (r.id || r._rowId) === id && r.id))
           .map(([id, p]: [string, any]) => ({ id, setPurchasePrice: p.setPurchasePrice, setRetailPrice: p.setRetailPrice }))
         if (priceUpdates.length) {
           await batchUpdateSetPrices({ items: priceUpdates })
@@ -2072,6 +2113,9 @@ export default function ProductManagementPage() {
       await loadData()
     } catch {
       message.error(t('message.saveFailed', '保存失败'))
+    } finally {
+      editSaveInFlightRef.current = false
+      setEditSaving(false)
     }
   }
 
@@ -2586,14 +2630,28 @@ export default function ProductManagementPage() {
     if (editVisible && (productTypeWatch === 1 || productTypeWatch === 2) && editingProductCode) {
       resetEditSetCodeState()
       setEditSetCodesLoading(true)
-      getGridData({ productCode: editingProductCode, pageIndex: 1, pageSize: 200 })
-        .then((result) => {
+      loadCompleteSetCodeDraftRows({
+        fetchPage: async (pageIndex, pageSize) => {
+          const result = await getGridData({ productCode: editingProductCode, pageIndex, pageSize })
+          if (requestSeq !== editSetCodesRequestSeqRef.current) {
+            throw new Error('商品条码加载请求已失效')
+          }
+          return result
+        },
+        getRowId: (item) => item.id ?? item.setCodeId,
+      })
+        .then((allItems) => {
           if (requestSeq !== editSetCodesRequestSeqRef.current) return
-          const items = (result?.items ?? []).map((r: any) => ({ ...r, _rowId: r.id || `loaded_${Date.now()}_${Math.random().toString(36).slice(2)}` }))
+          const items: SetCodeDraftRow[] = allItems.map((row) => {
+            const rowId = row.id ?? row.setCodeId
+            return { ...row, id: rowId, _rowId: rowId }
+          })
           setEditSetCodes(items)
+          setEditSetCodesReady(true)
         })
         .catch(() => {
           if (requestSeq === editSetCodesRequestSeqRef.current) {
+            setEditSetCodesReady(false)
             message.error(t('posAdmin.products.loadBarcodeDataFailed', '加载条码数据失败'))
           }
         })
@@ -2609,6 +2667,7 @@ export default function ProductManagementPage() {
   }, [editVisible, productTypeWatch, editingProductCode, resetEditSetCodeState, t])
 
   const handleProductTypeChange = (newType: number) => {
+    if (editSaveInFlightRef.current) return
     if (newType === 0 && editSetCodes.length > 0) {
       message.warning(t('posAdmin.products.deleteBarcodesFirst', '请先删除所有条码后再切换为普通商品'))
       const current = editForm.getFieldValue('productType')
@@ -2616,20 +2675,56 @@ export default function ProductManagementPage() {
     }
   }
 
-  const editAddSetCodeRow = () => {
-    const tempId = `tmp_${Date.now()}_${Math.random().toString(36).slice(2)}`
-    let defaults: any = { setPurchasePrice: undefined, setRetailPrice: undefined }
-    if (editingProduct) {
-      if (productTypeWatch === 2) {
-        defaults = { setPurchasePrice: editingProduct.purchasePrice, setRetailPrice: editingProduct.retailPrice }
-      }
+  const readCurrentEditMainPrices = () => {
+    const formPurchasePrice = editForm.getFieldValue('purchasePrice')
+    const formRetailPrice = editForm.getFieldValue('retailPrice')
+    return {
+      purchasePrice: formPurchasePrice === undefined
+        ? editingProduct?.purchasePrice
+        : typeof formPurchasePrice === 'number' && Number.isFinite(formPurchasePrice) ? formPurchasePrice : undefined,
+      retailPrice: formRetailPrice === undefined
+        ? editingProduct?.retailPrice
+        : typeof formRetailPrice === 'number' && Number.isFinite(formRetailPrice) ? formRetailPrice : undefined,
     }
-    const newRow = { _rowId: tempId, id: undefined, productCode: editingProduct?.productCode || '', setItemNumber: '', setBarcode: '', ...defaults, isActive: true }
+  }
+
+  const createEditSetCodeRow = (productType: 1 | 2): SetCodeDraftRow => {
+    const tempId = `tmp_${Date.now()}_${Math.random().toString(36).slice(2)}`
+    const currentMainPrices = readCurrentEditMainPrices()
+    const defaults = productType === 2
+      ? { setPurchasePrice: currentMainPrices.purchasePrice, setRetailPrice: currentMainPrices.retailPrice }
+      : { setPurchasePrice: undefined, setRetailPrice: undefined }
+
+    return {
+      _rowId: tempId,
+      id: undefined,
+      productCode: editingProduct?.productCode || '',
+      setItemNumber: '',
+      setBarcode: '',
+      ...defaults,
+      isActive: true,
+    }
+  }
+
+  const editAddSetCodeRow = () => {
+    if (editSaveInFlightRef.current || !editSetCodesReady || editSetCodesLoading || editSaving) return
+    const productType = productTypeWatch === 2 ? 2 : 1
+    const newRow = createEditSetCodeRow(productType)
+    const tempId = newRow._rowId!
     setEditSetCodes((prev) => [...prev, newRow])
-    setEditSetPriceEdits((prev) => ({ ...prev, [tempId]: { setItemNumber: '', setBarcode: '', ...defaults } }))
+    setEditSetPriceEdits((prev) => ({
+      ...prev,
+      [tempId]: {
+        setItemNumber: '',
+        setBarcode: '',
+        setPurchasePrice: newRow.setPurchasePrice,
+        setRetailPrice: newRow.setRetailPrice,
+      },
+    }))
   }
 
   const editDeleteSetCodeRow = (row: any) => {
+    if (editSaveInFlightRef.current) return
     const rowId = row.id || row._rowId
     if (row.id) {
       setEditPendingDeletes((prev) => ({ ...prev, [rowId]: row }))
@@ -2638,42 +2733,171 @@ export default function ProductManagementPage() {
     setEditSetPriceEdits((prev) => { const next = { ...prev }; delete next[rowId]; return next })
   }
 
-  const editHandleRetailPriceChange = (row: any, retailPrice: number) => {
+  const calculateEditSetPurchasePrice = (retailPrice: number) => {
+    const currentMainPrices = readCurrentEditMainPrices()
+    const mainPurchasePrice = currentMainPrices.purchasePrice ?? 0
+    const mainRetailPrice = currentMainPrices.retailPrice ?? 0
+    return deriveSetCodePurchasePrice({ retailPrice, mainPurchasePrice, mainRetailPrice })
+  }
+
+  const editHandleRetailPriceChange = (row: SetCodeDraftRow, retailPrice: number | null) => {
+    if (editSaveInFlightRef.current) return
     const rowId = row.id || row._rowId
-    if (productTypeWatch === 1 && editingProduct) {
-      const mainPP = editingProduct.purchasePrice || 0
-      const mainRP = editingProduct.retailPrice || 0
-      let calcPP: number | undefined
-      if (mainRP > 0 && retailPrice > 0) {
-        calcPP = parseFloat((retailPrice * (mainPP / mainRP)).toFixed(2))
-      }
-      setEditSetPriceEdits((prev) => ({ ...prev, [rowId]: { ...prev[rowId], setRetailPrice: retailPrice, setPurchasePrice: calcPP } }))
+    if (!rowId) return
+    if (productTypeWatch === 1) {
+      setEditSetPriceEdits((prev) => ({
+        ...prev,
+        [rowId]: mergeSetCodeRetailPriceEdit(prev[rowId], retailPrice, calculateEditSetPurchasePrice),
+      }))
     } else {
       setEditSetPriceEdits((prev) => ({ ...prev, [rowId]: { ...prev[rowId], setRetailPrice: retailPrice } }))
     }
   }
 
   const editHandlePurchasePriceChange = (row: any, purchasePrice: number) => {
+    if (editSaveInFlightRef.current) return
     const rowId = row.id || row._rowId
     setEditSetPriceEdits((prev) => ({ ...prev, [rowId]: { ...prev[rowId], setPurchasePrice: purchasePrice } }))
   }
 
   const editHandleBarcodeChange = (row: any, barcode: string) => {
+    if (editSaveInFlightRef.current) return
     const rowId = row.id || row._rowId
     setEditSetPriceEdits((prev) => ({ ...prev, [rowId]: { ...prev[rowId], setBarcode: barcode } }))
   }
 
-  const validateEditSetCodes = (): boolean => {
-    if (productTypeWatch !== 1 && productTypeWatch !== 2) return true
-    for (const code of editSetCodes) {
-      const rowId = code.id || code._rowId
-      const edit = editSetPriceEdits[rowId] || {}
-      const barcode = edit.setBarcode ?? code.setBarcode
-      const retailPrice = edit.setRetailPrice ?? code.setRetailPrice
-      if (!barcode || barcode.trim() === '') { message.error(t('posAdmin.products.barcodeRequired', '条码不能为空')); return false }
-      if (retailPrice === undefined || retailPrice === null) { message.error(t('posAdmin.products.retailPriceRequired', '零售价不能为空')); return false }
+  const reportEditSetCodePasteResult = (result: SetCodeColumnPasteResult) => {
+    if (result.error === 'multiple_columns') {
+      message.warning(t('posAdmin.products.pasteMultipleColumns', '一次只能粘贴一列 Excel 数据'))
+      return false
+    }
+    if (result.error === 'missing_target') {
+      setEditSetCodePasteTarget(null)
+      message.warning(t('posAdmin.products.pasteTargetMissing', '粘贴目标已失效，请重新选择列'))
+      return false
+    }
+    if (result.error === 'too_many_rows') {
+      message.warning(t('posAdmin.products.pasteTooManyRows', '粘贴后条码行数不能超过 {{max}} 行，本次粘贴未生效', {
+        max: MAX_SET_CODE_DRAFT_ROWS,
+      }))
+      return false
+    }
+    if (result.error === 'duplicate_barcode') {
+      message.error(t('posAdmin.products.pasteDuplicateBarcode', '条码 {{barcode}} 在第 {{rows}} 行重复，本次粘贴未生效', {
+        barcode: result.duplicateBarcode || '-',
+        rows: result.duplicateRowNumbers?.join('、') || '-',
+      }))
+      return false
+    }
+
+    setEditSetCodes(result.rows)
+    setEditSetPriceEdits(result.edits)
+    if (result.appliedCount + result.addedCount > 0) {
+      message.success(t('posAdmin.products.setCodePasteResult', '已粘贴 {{applied}} 个值，跳过 {{blank}} 个空单元格，自动新增 {{added}} 行', {
+        applied: result.appliedCount,
+        blank: result.skippedBlankCount,
+        added: result.addedCount,
+      }))
+    }
+    if (result.invalidCount > 0) {
+      message.warning(t('posAdmin.products.pasteInvalidRetailPrices', '已跳过 {{count}} 个无效零售价，原值保持不变', {
+        count: result.invalidCount,
+      }))
     }
     return true
+  }
+
+  const handleEditSetCodePaste = (
+    event: ClipboardEvent<HTMLElement>,
+    productType: 1 | 2,
+    field: SetCodePasteField,
+    startRowId?: string,
+  ) => {
+    if (editSaveInFlightRef.current || !editSetCodesReady || editSetCodesLoading || editSaving || productTypeWatch !== productType) return
+    if (productType === 2 && field !== 'setBarcode') return
+
+    const clipboardText = event.clipboardData.getData('text')
+    if (!clipboardText) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    const target = { productType, field } satisfies SetCodePasteTarget
+    setEditSetCodePasteTarget(target)
+    const result = applySetCodeColumnPaste({
+      rows: editSetCodes,
+      edits: editSetPriceEdits,
+      startRowId,
+      field,
+      clipboardText,
+      createRow: () => createEditSetCodeRow(productType),
+      derivePurchasePrice: productType === 1 && field === 'setRetailPrice'
+        ? calculateEditSetPurchasePrice
+        : undefined,
+    })
+    reportEditSetCodePasteResult(result)
+  }
+
+  const renderEditSetCodePasteTitle = (
+    label: string,
+    target: SetCodePasteTarget,
+  ) => {
+    const selected = isSameSetCodePasteTarget(editSetCodePasteTarget, target)
+    const accessibleLabel = selected
+      ? t('posAdmin.products.deselectPasteColumn', '取消选择“{{column}}”列', { column: label })
+      : t('posAdmin.products.selectPasteColumn', '选择“{{column}}”列进行粘贴', { column: label })
+
+    return (
+      <button
+        type="button"
+        aria-label={accessibleLabel}
+        aria-pressed={selected}
+        title={accessibleLabel}
+        disabled={!editSetCodesReady || editSetCodesLoading || editSaving}
+        onClick={(event) => {
+          if (editSaveInFlightRef.current) return
+          event.stopPropagation()
+          setEditSetCodePasteTarget((current) => (
+            isSameSetCodePasteTarget(current, target) ? null : target
+          ))
+        }}
+        onPaste={(event) => handleEditSetCodePaste(event, target.productType, target.field)}
+        style={{
+          appearance: 'none',
+          border: `1px solid ${selected ? token.colorPrimaryBorder : 'transparent'}`,
+          borderRadius: token.borderRadiusSM,
+          background: selected ? token.colorPrimaryBg : 'transparent',
+          color: 'inherit',
+          cursor: !editSetCodesReady || editSetCodesLoading || editSaving ? 'not-allowed' : 'copy',
+          font: 'inherit',
+          lineHeight: 'inherit',
+          margin: '-2px -6px',
+          padding: '2px 6px',
+        }}
+      >
+        {label}
+      </button>
+    )
+  }
+
+  const validateEditSetCodes = (): boolean => {
+    if (productTypeWatch !== 1 && productTypeWatch !== 2) return true
+    const result = validateSetCodeDrafts(editSetCodes, editSetPriceEdits)
+    if (result.valid) return true
+
+    if (result.reason === 'barcode_required') {
+      message.error(t('posAdmin.products.barcodeRequiredAtRow', '第 {{row}} 行条码不能为空', { row: result.rowNumbers[0] }))
+      return false
+    }
+    if (result.reason === 'retail_price_required') {
+      message.error(t('posAdmin.products.retailPriceRequiredAtRow', '第 {{row}} 行零售价不能为空', { row: result.rowNumbers[0] }))
+      return false
+    }
+
+    message.error(t('posAdmin.products.duplicateBarcodeAtRows', '条码 {{barcode}} 在第 {{rows}} 行重复', {
+      barcode: result.barcode || '-',
+      rows: result.rowNumbers.join('、'),
+    }))
+    return false
   }
 
   const openSetCodeManager = async (product: PosProductDto) => {
@@ -3412,7 +3636,7 @@ export default function ProductManagementPage() {
         </div>
 
         <div style={{ flex: 1, minHeight: 0 }}>
-          <Table
+          <MeasuredTable metricId="pos-admin.product-management.table-1"
             key={productTableRenderKey}
             ref={productTableRef}
             virtual
@@ -3596,12 +3820,22 @@ export default function ProductManagementPage() {
       <Modal
         open={editVisible}
         title={editingProduct ? t('posAdmin.products.editProductWithCode', '编辑商品 - {{code}}', { code: editingProduct.productCode }) : t('posAdmin.products.editProduct', '编辑商品')}
-        onCancel={() => { setEditVisible(false); setEditingProduct(null); resetEditSetCodeState() }}
+        onCancel={() => {
+          if (editSaveInFlightRef.current) return
+          setEditVisible(false)
+          setEditingProduct(null)
+          resetEditSetCodeState()
+        }}
         onOk={handleEditSave}
+        confirmLoading={editSaving}
+        okButtonProps={{
+          disabled: editSetCodesLoading || ((productTypeWatch === 1 || productTypeWatch === 2) && !editSetCodesReady),
+        }}
+        cancelButtonProps={{ disabled: editSaving }}
         width={900}
         destroyOnHidden
       >
-        <Form form={editForm} labelCol={{ span: 6 }} wrapperCol={{ span: 18 }}>
+        <Form form={editForm} disabled={editSaving} labelCol={{ span: 6 }} wrapperCol={{ span: 18 }}>
           <Form.Item name="productName" label={t('posAdmin.products.productName', '商品名称')} rules={[{ required: true, message: t('posAdmin.products.inputProductName', '请输入商品名称') }]}>
             <Input />
           </Form.Item>
@@ -3660,7 +3894,10 @@ export default function ProductManagementPage() {
             </Col>
             <Col span={12}>
               <Form.Item name="productType" label={t('posAdmin.products.productTypeLabel', '商品类型')}>
-                <Radio.Group onChange={(e) => handleProductTypeChange(e.target.value)}>
+                <Radio.Group
+                  disabled={editSaving || editSetCodesLoading || ((productTypeWatch === 1 || productTypeWatch === 2) && !editSetCodesReady)}
+                  onChange={(e) => handleProductTypeChange(e.target.value)}
+                >
                   <Radio.Button value={0}>{t('posAdmin.products.normalProduct', '普通商品')}</Radio.Button>
                   <Radio.Button value={1}>{t('posAdmin.products.setProduct', '套装商品')}</Radio.Button>
                   <Radio.Button value={2}>{t('posAdmin.products.multiBarcodeProduct', '多条码商品')}</Radio.Button>
@@ -3731,7 +3968,7 @@ export default function ProductManagementPage() {
                   showSearch
                   changeOnSelect
                   options={buildCategoryCascaderOptions(categoryTree)}
-                  disabled={categoryLoadFailed}
+                  disabled={editSaving || categoryLoadFailed}
                   placeholder={t('posAdmin.products.selectCategory', '选择分类')}
                   style={{ width: '100%' }}
                 />
@@ -3741,46 +3978,151 @@ export default function ProductManagementPage() {
         </Form>
         {productTypeWatch === 1 && (
           <div style={{ marginTop: 12 }}>
-            <Space style={{ marginBottom: 8 }}>
-              <Button type="dashed" onClick={editAddSetCodeRow}>{t('posAdmin.products.addBarcodeBtn', '添加条码')}</Button>
+            <Space wrap style={{ marginBottom: 8 }}>
+              <Button type="dashed" disabled={!editSetCodesReady || editSetCodesLoading || editSaving} onClick={editAddSetCodeRow}>{t('posAdmin.products.addBarcodeBtn', '添加条码')}</Button>
               <span style={{ fontSize: 12, color: '#52c41a' }}>{t('posAdmin.products.setBarcodeTip', '套装条码采购价和零售价和主条码不一致')}</span>
+              <span style={{ fontSize: 12, color: token.colorTextSecondary }}>
+                {t('posAdmin.products.setCodePasteNavigationHint', '点击“套装条码”或“零售价”列头后，可粘贴 Excel 单列；也可从任意单元格开始')}
+              </span>
             </Space>
-            <Table
-              rowKey={(r: any) => r.id || r._rowId}
+            <MeasuredTable<SetCodeDraftRow> metricId="pos-admin.product-management.table-2"
+              rowKey={(row) => row.id || row._rowId || ''}
               loading={editSetCodesLoading}
               dataSource={editSetCodes}
               pagination={false}
               size="small"
+              scroll={{ x: 700 }}
               locale={{ emptyText: t('posAdmin.products.noSetBarcode', '暂无套装条码') }}
               columns={[
-                { title: t('posAdmin.products.setBarcodeLabel', '套装条码 *'), dataIndex: 'setBarcode', width: 220, render: (_: any, row: any) => { const rowId = row.id || row._rowId; const edit = editSetPriceEdits[rowId] || {}; return (<Space.Compact style={{ width: '100%' }}><Input style={{ flex: 1 }} value={edit.setBarcode ?? row.setBarcode} placeholder="请输入条码" onChange={(e) => editHandleBarcodeChange(row, e.target.value)} /><Button type="text" size="small" icon={<CopyOutlined />} onClick={() => { const v = editSetPriceEdits[rowId]?.setBarcode ?? row.setBarcode; if (v) { copyTextToClipboard(v); message.success('复制成功') } }} style={{ padding: '0 4px' }} /></Space.Compact>) } },
-                { title: t('posAdmin.productPrice.purchasePrice', '采购价'), dataIndex: 'setPurchasePrice', width: 120, render: (_: any, row: any) => { const rowId = row.id || row._rowId; const edit = editSetPriceEdits[rowId] || {}; return <InputNumber style={{ width: '100%' }} min={0} step={0.01} value={edit.setPurchasePrice !== undefined ? edit.setPurchasePrice : row.setPurchasePrice} placeholder="根据零售价自动计算" onChange={(v) => v !== undefined && editHandlePurchasePriceChange(row, v)} /> } },
-                { title: t('posAdmin.invoiceDetail.retailPrice', '零售价'), dataIndex: 'setRetailPrice', width: 120, render: (_: any, row: any) => { const rowId = row.id || row._rowId; const edit = editSetPriceEdits[rowId] || {}; return <InputNumber style={{ width: '100%' }} min={0} step={0.01} value={edit.setRetailPrice !== undefined ? edit.setRetailPrice : row.setRetailPrice} onChange={(v) => v !== undefined && editHandleRetailPriceChange(row, v!)} /> } },
+                {
+                  title: renderEditSetCodePasteTitle(
+                    t('posAdmin.products.setBarcodeLabel', '套装条码 *'),
+                    { productType: 1, field: 'setBarcode' },
+                  ),
+                  dataIndex: 'setBarcode',
+                  width: 220,
+                  render: (_: unknown, row) => {
+                    const rowId = row.id || row._rowId
+                    const edit = rowId ? editSetPriceEdits[rowId] || {} : {}
+                    const selected = isSameSetCodePasteTarget(editSetCodePasteTarget, { productType: 1, field: 'setBarcode' })
+                    return (
+                      <Space.Compact style={{ width: '100%' }}>
+                        <Input
+                          disabled={editSaving}
+                          style={{ flex: 1, backgroundColor: selected ? token.colorPrimaryBg : undefined }}
+                          value={edit.setBarcode ?? row.setBarcode}
+                          placeholder={t('posAdmin.products.inputBarcode', '请输入条码')}
+                          onPaste={(event) => handleEditSetCodePaste(event, 1, 'setBarcode', rowId)}
+                          onChange={(event) => editHandleBarcodeChange(row, event.target.value)}
+                        />
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<CopyOutlined />}
+                          onClick={() => {
+                            const value = (rowId ? editSetPriceEdits[rowId]?.setBarcode : undefined) ?? row.setBarcode
+                            if (value) {
+                              copyTextToClipboard(value)
+                              message.success(t('posAdmin.products.copySuccess', '复制成功'))
+                            }
+                          }}
+                          style={{ padding: '0 4px' }}
+                        />
+                      </Space.Compact>
+                    )
+                  },
+                },
+                { title: t('posAdmin.productPrice.purchasePrice', '采购价'), dataIndex: 'setPurchasePrice', width: 120, render: (_: any, row: any) => { const rowId = row.id || row._rowId; const edit = editSetPriceEdits[rowId] || {}; return <InputNumber disabled={editSaving} style={{ width: '100%' }} min={0} step={0.01} value={edit.setPurchasePrice !== undefined ? edit.setPurchasePrice : row.setPurchasePrice} placeholder="根据零售价自动计算" onChange={(v) => v !== undefined && editHandlePurchasePriceChange(row, v)} /> } },
+                {
+                  title: renderEditSetCodePasteTitle(
+                    t('posAdmin.invoiceDetail.retailPrice', '零售价'),
+                    { productType: 1, field: 'setRetailPrice' },
+                  ),
+                  dataIndex: 'setRetailPrice',
+                  width: 120,
+                  render: (_: unknown, row) => {
+                    const rowId = row.id || row._rowId
+                    const edit = rowId ? editSetPriceEdits[rowId] || {} : {}
+                    const selected = isSameSetCodePasteTarget(editSetCodePasteTarget, { productType: 1, field: 'setRetailPrice' })
+                    return (
+                      <InputNumber
+                        disabled={editSaving}
+                        style={{ width: '100%', backgroundColor: selected ? token.colorPrimaryBg : undefined }}
+                        min={0}
+                        step={0.01}
+                        value={edit.setRetailPrice !== undefined ? edit.setRetailPrice : row.setRetailPrice}
+                        onPaste={(event) => handleEditSetCodePaste(event, 1, 'setRetailPrice', rowId)}
+                        onChange={(value) => editHandleRetailPriceChange(row, value)}
+                      />
+                    )
+                  },
+                },
                 { title: t('posAdmin.cashierUsers.status', '状态'), dataIndex: 'isActive', width: 80, render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? t('posAdmin.products.enable', '启用') : t('posAdmin.products.disable', '禁用')}</Tag> },
-                { title: t('column.action'), width: 80, render: (_: any, row: any) => <Button type="link" danger size="small" onClick={() => editDeleteSetCodeRow(row)}>{t('common.delete')}</Button> },
+                { title: t('column.action'), width: 80, render: (_: any, row: any) => <Button type="link" danger size="small" disabled={editSaving} onClick={() => editDeleteSetCodeRow(row)}>{t('common.delete')}</Button> },
               ]}
             />
           </div>
         )}
         {productTypeWatch === 2 && (
           <div style={{ marginTop: 12 }}>
-            <Space style={{ marginBottom: 8 }}>
-              <Button type="dashed" onClick={editAddSetCodeRow}>{t('posAdmin.products.addBarcodeBtn', '添加条码')}</Button>
+            <Space wrap style={{ marginBottom: 8 }}>
+              <Button type="dashed" disabled={!editSetCodesReady || editSetCodesLoading || editSaving} onClick={editAddSetCodeRow}>{t('posAdmin.products.addBarcodeBtn', '添加条码')}</Button>
               <span style={{ fontSize: 12, color: '#52c41a' }}>{t('posAdmin.products.multiBarcodeTip', '多条码零售价和采购价和主条码一致')}</span>
+              <span style={{ fontSize: 12, color: token.colorTextSecondary }}>
+                {t('posAdmin.products.multiCodePasteNavigationHint', '点击“多码条码”列头后，可粘贴 Excel 单列；也可从任意条码单元格开始')}
+              </span>
             </Space>
-            <Table
-              rowKey={(r: any) => r.id || r._rowId}
+            <MeasuredTable<SetCodeDraftRow> metricId="pos-admin.product-management.table-3"
+              rowKey={(row) => row.id || row._rowId || ''}
               loading={editSetCodesLoading}
               dataSource={editSetCodes}
               pagination={false}
               size="small"
+              scroll={{ x: 700 }}
               locale={{ emptyText: t('posAdmin.products.noMultiBarcodeBarcode', '暂无多码条码') }}
               columns={[
-                { title: t('posAdmin.products.multiCodeBarcodeLabel', '多码条码 *'), dataIndex: 'setBarcode', width: 220, render: (_: any, row: any) => { const rowId = row.id || row._rowId; const edit = editSetPriceEdits[rowId] || {}; return (<Space.Compact style={{ width: '100%' }}><Input style={{ flex: 1 }} value={edit.setBarcode ?? row.setBarcode} placeholder="请输入条码" onChange={(e) => editHandleBarcodeChange(row, e.target.value)} /><Button type="text" size="small" icon={<CopyOutlined />} onClick={() => { const v = editSetPriceEdits[rowId]?.setBarcode ?? row.setBarcode; if (v) { copyTextToClipboard(v); message.success('复制成功') } }} style={{ padding: '0 4px' }} /></Space.Compact>) } },
-                { title: t('posAdmin.productPrice.purchasePrice', '采购价'), dataIndex: 'setPurchasePrice', width: 120, render: (_: any, row: any) => { const rowId = row.id || row._rowId; const edit = editSetPriceEdits[rowId] || {}; return <InputNumber style={{ width: '100%' }} min={0} step={0.01} value={edit.setPurchasePrice !== undefined ? edit.setPurchasePrice : row.setPurchasePrice} onChange={(v) => v !== undefined && editHandlePurchasePriceChange(row, v)} /> } },
-                { title: t('posAdmin.invoiceDetail.retailPrice', '零售价'), dataIndex: 'setRetailPrice', width: 120, render: (_: any, row: any) => { const rowId = row.id || row._rowId; const edit = editSetPriceEdits[rowId] || {}; return <InputNumber style={{ width: '100%' }} min={0} step={0.01} value={edit.setRetailPrice !== undefined ? edit.setRetailPrice : row.setRetailPrice} onChange={(v) => v !== undefined && editHandleRetailPriceChange(row, v!)} /> } },
+                {
+                  title: renderEditSetCodePasteTitle(
+                    t('posAdmin.products.multiCodeBarcodeLabel', '多码条码 *'),
+                    { productType: 2, field: 'setBarcode' },
+                  ),
+                  dataIndex: 'setBarcode',
+                  width: 220,
+                  render: (_: unknown, row) => {
+                    const rowId = row.id || row._rowId
+                    const edit = rowId ? editSetPriceEdits[rowId] || {} : {}
+                    const selected = isSameSetCodePasteTarget(editSetCodePasteTarget, { productType: 2, field: 'setBarcode' })
+                    return (
+                      <Space.Compact style={{ width: '100%' }}>
+                        <Input
+                          disabled={editSaving}
+                          style={{ flex: 1, backgroundColor: selected ? token.colorPrimaryBg : undefined }}
+                          value={edit.setBarcode ?? row.setBarcode}
+                          placeholder={t('posAdmin.products.inputBarcode', '请输入条码')}
+                          onPaste={(event) => handleEditSetCodePaste(event, 2, 'setBarcode', rowId)}
+                          onChange={(event) => editHandleBarcodeChange(row, event.target.value)}
+                        />
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<CopyOutlined />}
+                          onClick={() => {
+                            const value = (rowId ? editSetPriceEdits[rowId]?.setBarcode : undefined) ?? row.setBarcode
+                            if (value) {
+                              copyTextToClipboard(value)
+                              message.success(t('posAdmin.products.copySuccess', '复制成功'))
+                            }
+                          }}
+                          style={{ padding: '0 4px' }}
+                        />
+                      </Space.Compact>
+                    )
+                  },
+                },
+                { title: t('posAdmin.productPrice.purchasePrice', '采购价'), dataIndex: 'setPurchasePrice', width: 120, render: (_: any, row: any) => { const rowId = row.id || row._rowId; const edit = editSetPriceEdits[rowId] || {}; return <InputNumber disabled={editSaving} style={{ width: '100%' }} min={0} step={0.01} value={edit.setPurchasePrice !== undefined ? edit.setPurchasePrice : row.setPurchasePrice} onChange={(v) => v !== undefined && editHandlePurchasePriceChange(row, v)} /> } },
+                { title: t('posAdmin.invoiceDetail.retailPrice', '零售价'), dataIndex: 'setRetailPrice', width: 120, render: (_: any, row: any) => { const rowId = row.id || row._rowId; const edit = editSetPriceEdits[rowId] || {}; return <InputNumber disabled={editSaving} style={{ width: '100%' }} min={0} step={0.01} value={edit.setRetailPrice !== undefined ? edit.setRetailPrice : row.setRetailPrice} onChange={(v) => v !== undefined && editHandleRetailPriceChange(row, v!)} /> } },
                 { title: t('posAdmin.cashierUsers.status', '状态'), dataIndex: 'isActive', width: 80, render: (v: boolean) => <Tag color={v ? 'green' : 'red'}>{v ? t('posAdmin.products.enable', '启用') : t('posAdmin.products.disable', '禁用')}</Tag> },
-                { title: t('column.action'), width: 80, render: (_: any, row: any) => <Button type="link" danger size="small" onClick={() => editDeleteSetCodeRow(row)}>{t('common.delete')}</Button> },
+                { title: t('column.action'), width: 80, render: (_: any, row: any) => <Button type="link" danger size="small" disabled={editSaving} onClick={() => editDeleteSetCodeRow(row)}>{t('common.delete')}</Button> },
               ]}
             />
           </div>
@@ -4051,7 +4393,7 @@ export default function ProductManagementPage() {
         ]}
         width={1100}
       >
-        <Table
+        <MeasuredTable metricId="pos-admin.product-management.table-4"
           rowKey={(record) => `${record.storeCode || ''}-${record.storeProductCode || ''}`}
           loading={storeRecordsLoading}
           dataSource={storeRecordsData}
@@ -4253,7 +4595,7 @@ export default function ProductManagementPage() {
               {t('posAdmin.products.addSubCode', '添加子码')}
             </Button>
           </div>
-          <Table
+          <MeasuredTable metricId="pos-admin.product-management.table-5"
             rowKey={(r) => r.id || ''}
             dataSource={setCodeData}
             pagination={false}
@@ -4457,7 +4799,7 @@ export default function ProductManagementPage() {
                 </Descriptions.Item>
               </Descriptions>
               {integritySummary.issueRows.length > 0 ? (
-                <Table<ProductIntegrityIssueRow>
+                <MeasuredTable<ProductIntegrityIssueRow> metricId="pos-admin.product-management.table-6"
                   rowKey="key"
                   dataSource={integritySummary.issueRows}
                   pagination={false}

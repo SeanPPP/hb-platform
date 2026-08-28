@@ -15,8 +15,19 @@ export interface PosHandheldReleaseCandidate {
   buildNumber: string | null
   runtimeVersion: string | null
   channel: string | null
+  clientChannel?: string | null
+  releaseChannel?: string | null
+  releaseBatchId?: string | null
   updateId: string | null
   updateGroupId: string | null
+  message?: string | null
+  gitCommitHash?: string | null
+  dashboardUrl?: string | null
+  factFingerprint?: string | null
+  legacy?: boolean
+  isRollback?: boolean
+  rollbackOfReleaseId?: string | null
+  registrationSource?: string | null
   downloadUrl: string | null
   appStoreUrl: string | null
   artifactSha256: string | null

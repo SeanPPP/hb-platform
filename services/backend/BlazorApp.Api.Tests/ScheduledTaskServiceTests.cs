@@ -1,10 +1,12 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Collections.Concurrent;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.Background;
+using BlazorApp.Api.Services.Performance;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
 using Microsoft.Data.Sqlite;
@@ -235,6 +237,80 @@ public sealed class ScheduledTaskServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task LogTaskSuccessAsync_更新返回False时不发布完成并保留性能运行映射()
+    {
+        PerformanceOperationalRunBridge.Configure(null);
+        var taskLog = await _taskLogService.LogTaskStartAsync(
+            TaskType.UpdateCurrentHourStatistics,
+            new TaskParameters()
+        );
+        var performanceRuns = GetPerformanceRuns();
+        Assert.True(performanceRuns.ContainsKey(taskLog.Id));
+        var deleted = false;
+        _db.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (deleted || !IsScheduledTaskLogUpdate(sql))
+            {
+                return;
+            }
+            deleted = true;
+            using var concurrentDb = CreateIndependentDb();
+            concurrentDb.Deleteable<ScheduledTaskLog>()
+                .Where(item => item.Id == taskLog.Id)
+                .ExecuteCommand();
+        };
+
+        try
+        {
+            await _taskLogService.LogTaskSuccessAsync(taskLog.Id);
+            Assert.True(deleted);
+            Assert.True(performanceRuns.ContainsKey(taskLog.Id));
+        }
+        finally
+        {
+            _db.Aop.OnLogExecuting = null;
+            performanceRuns.TryRemove(taskLog.Id, out _);
+        }
+    }
+
+    [Fact]
+    public async Task LogTaskFailureAsync_更新返回False时不发布完成并保留性能运行映射()
+    {
+        PerformanceOperationalRunBridge.Configure(null);
+        var taskLog = await _taskLogService.LogTaskStartAsync(
+            TaskType.UpdateCurrentHourStatistics,
+            new TaskParameters()
+        );
+        var performanceRuns = GetPerformanceRuns();
+        Assert.True(performanceRuns.ContainsKey(taskLog.Id));
+        var deleted = false;
+        _db.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (deleted || !IsScheduledTaskLogUpdate(sql))
+            {
+                return;
+            }
+            deleted = true;
+            using var concurrentDb = CreateIndependentDb();
+            concurrentDb.Deleteable<ScheduledTaskLog>()
+                .Where(item => item.Id == taskLog.Id)
+                .ExecuteCommand();
+        };
+
+        try
+        {
+            await _taskLogService.LogTaskFailureAsync(taskLog.Id, "test failure");
+            Assert.True(deleted);
+            Assert.True(performanceRuns.ContainsKey(taskLog.Id));
+        }
+        finally
+        {
+            _db.Aop.OnLogExecuting = null;
+            performanceRuns.TryRemove(taskLog.Id, out _);
+        }
+    }
+
+    [Fact]
     public async Task StopAsync_与重新布置并发时原子清空销售统计Timer引用()
     {
         var service = CreateScheduledTaskService(
@@ -352,6 +428,27 @@ public sealed class ScheduledTaskServiceTests : IDisposable
             .SetValue(context, db);
         return context;
     }
+
+    private SqlSugarClient CreateIndependentDb() =>
+        new(
+            new ConnectionConfig
+            {
+                ConnectionString = $"Data Source={_dbPath}",
+                DbType = DbType.Sqlite,
+                IsAutoCloseConnection = true,
+                InitKeyType = InitKeyType.Attribute,
+            }
+        );
+
+    private static ConcurrentDictionary<Guid, (string ExternalRunId, int Attempt)> GetPerformanceRuns() =>
+        (ConcurrentDictionary<Guid, (string ExternalRunId, int Attempt)>)
+            typeof(ScheduledTaskLogService)
+                .GetField("PerformanceRuns", BindingFlags.Static | BindingFlags.NonPublic)!
+                .GetValue(null)!;
+
+    private static bool IsScheduledTaskLogUpdate(string sql) =>
+        sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase)
+        && sql.Contains("ScheduledTaskLog", StringComparison.OrdinalIgnoreCase);
 
     private static void CreateScheduledTaskLogTable(ISqlSugarClient db)
     {

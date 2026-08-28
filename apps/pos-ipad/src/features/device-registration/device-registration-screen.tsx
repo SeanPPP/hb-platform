@@ -12,6 +12,7 @@ import {
 import { useTranslation } from "react-i18next";
 import {
   Image,
+  Keyboard,
   ScrollView,
   StyleSheet,
   Text,
@@ -25,10 +26,16 @@ import { ServerConnectionPanel } from "./server-connection-panel";
 
 import {
   HbposApiError,
+  type DeviceActivationPreviewResponse,
   type DeviceRegistrationStore,
 } from "@/core/api/hbpos-api";
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
+import {
+  normalizeDeviceActivationCode,
+  parseDeviceActivationCode,
+} from "@/core/security/device-activation-code";
 import type { DeviceSessionState } from "@/core/security/device-session";
+import { CameraScannerModal } from "@/features/scanner-camera/camera-scanner-modal";
 import { toggleAppLanguage } from "@/i18n";
 import {
   PosKeyboardAwareScrollView,
@@ -39,22 +46,35 @@ import { PosStatusStrip } from "@/ui/shell/status-strip";
 import { posColors } from "@/ui/theme";
 
 type StoreLoadState = "idle" | "loading" | "ready" | "failed";
+type RegistrationOperation = "preview" | "redeem" | "app-review" | null;
+type RegistrationKind = "unresolved" | "activation" | "app-review";
+type ActivationPreview = Readonly<{
+  activationCode: string;
+  response: DeviceActivationPreviewResponse;
+}>;
 
 export function DeviceRegistrationScreen() {
   const { t } = useTranslation();
   const runtime = usePosRuntime();
   const [session, setSession] = useState<DeviceSessionState | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
+  const [registrationCode, setRegistrationCode] = useState("");
+  const [activationPreview, setActivationPreview] =
+    useState<ActivationPreview | null>(null);
+  const [cameraVisible, setCameraVisible] = useState(false);
+  const [operation, setOperation] = useState<RegistrationOperation>(null);
+  const [registrationKind, setRegistrationKind] =
+    useState<RegistrationKind>("unresolved");
   const [stores, setStores] = useState<readonly DeviceRegistrationStore[]>([]);
   const [storeLoadState, setStoreLoadState] =
     useState<StoreLoadState>("idle");
   const [storeLoadError, setStoreLoadError] = useState<string | null>(null);
   const [selectedStoreCode, setSelectedStoreCode] = useState("");
-  const [provisioningCode, setProvisioningCode] = useState("");
   const [pickerVisible, setPickerVisible] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const serverOperation = useRef<AbortController | null>(null);
+  const previewRequestId = useRef(0);
   const deviceSession = runtime.services?.deviceSession;
+  const scannerRouter = runtime.services?.scanner.router;
   const serverConnection = runtime.services?.serverConnection;
   const selectedStore =
     stores.find((store) => store.storeCode === selectedStoreCode) ?? null;
@@ -94,13 +114,40 @@ export function DeviceRegistrationScreen() {
 
   useEffect(() => {
     if (
+      registrationKind !== "app-review" ||
       runtime.state.phase === "pending-approval" ||
       runtime.state.phase === "locked"
     ) {
       return;
     }
     void loadStores();
-  }, [loadStores, runtime.state.phase]);
+  }, [loadStores, registrationKind, runtime.state.phase]);
+
+  useEffect(() => {
+    if (
+      !deviceSession ||
+      runtime.state.phase !== "registration-required"
+    ) {
+      return;
+    }
+    let cancelled = false;
+    void deviceSession
+      .restorePendingActivationCode()
+      .then((restored) => {
+        if (!cancelled && restored) setRegistrationCode(restored);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) applyRequestFailure(error, runtime, setRequestError);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [deviceSession, runtime.state.phase]);
+
+  useEffect(() => {
+    if (!cameraVisible || !scannerRouter) return;
+    return scannerRouter.acquireContext("device-activation");
+  }, [cameraVisible, scannerRouter]);
 
   const poll = useCallback(async () => {
     if (!deviceSession) return;
@@ -133,6 +180,82 @@ export function DeviceRegistrationScreen() {
     [],
   );
 
+  const previewActivation = useCallback(async (rawCode: string) => {
+    const requestId = ++previewRequestId.current;
+    if (!deviceSession) {
+      setRequestError(t("registration.runtimeUnavailable"));
+      return;
+    }
+    const normalized = parseDeviceActivationCode(rawCode);
+    if (!normalized) {
+      setActivationPreview(null);
+      setRequestError(t("registration.activationInvalid"));
+      return;
+    }
+
+    setRequestError(null);
+    setActivationPreview(null);
+    setRegistrationKind("activation");
+    setRegistrationCode(normalized);
+    setOperation("preview");
+    try {
+      const response = await deviceSession.previewActivationCode(normalized);
+      if (requestId !== previewRequestId.current) return;
+      const storeCode = response.storeCode?.trim() ?? "";
+      const storeName = response.storeName?.trim() ?? "";
+      const expiresAtUtc = response.expiresAtUtc?.trim() ?? "";
+      const platformMatches = response.deviceSystem === "iPadOS";
+      if (
+        !response.isAllowed ||
+        !storeCode ||
+        !storeName ||
+        !expiresAtUtc ||
+        !platformMatches
+      ) {
+        setRequestError(
+          response.message ?? t("registration.activationPreviewRejected"),
+        );
+        return;
+      }
+      setActivationPreview({
+        activationCode: normalized,
+        response: { ...response, storeCode, storeName, expiresAtUtc },
+      });
+    } catch (error: unknown) {
+      if (requestId === previewRequestId.current) {
+        applyRequestFailure(error, runtime, setRequestError);
+      }
+    } finally {
+      if (requestId === previewRequestId.current) setOperation(null);
+    }
+  }, [deviceSession, runtime, t]);
+
+  const identifyRegistrationCode = useCallback((rawCode: string) => {
+    Keyboard.dismiss();
+    const trimmed = rawCode.trim();
+    if (!trimmed) {
+      setRequestError(t("registration.codeRequired"));
+      return;
+    }
+
+    previewRequestId.current += 1;
+    setRegistrationCode(rawCode);
+    setActivationPreview(null);
+    setSelectedStoreCode("");
+    setPickerVisible(false);
+    setRequestError(null);
+
+    // HBDEV1 是保留前缀：即使格式损坏也只能走严格开通码校验，禁止降级到 App Review。
+    if (normalizeDeviceActivationCode(trimmed).startsWith("HBDEV1")) {
+      setRegistrationKind("activation");
+      void previewActivation(rawCode);
+      return;
+    }
+
+    setRegistrationCode(rawCode);
+    setRegistrationKind("app-review");
+  }, [previewActivation, t]);
+
   if (
     runtime.state.phase === "ready" ||
     runtime.state.phase === "ready-offline"
@@ -140,41 +263,73 @@ export function DeviceRegistrationScreen() {
     return <Redirect href="/" />;
   }
 
-  const submit = async () => {
-    if (!deviceSession) {
-      setRequestError(t("registration.runtimeUnavailable"));
-      return;
+  const redeemActivation = async () => {
+    if (!deviceSession || !activationPreview) return;
+    setRequestError(null);
+    setOperation("redeem");
+    try {
+      const next = await deviceSession.redeemActivationCode({
+        activationCode: activationPreview.activationCode,
+      });
+      if (next.status !== "authorized") {
+        setRequestError(
+          next.message ?? t("registration.activationRedeemRejected"),
+        );
+        setActivationPreview(null);
+      } else {
+        setRegistrationCode("");
+        setActivationPreview(null);
+        setRegistrationKind("unresolved");
+      }
+      await reconcile(next);
+    } catch (error: unknown) {
+      applyRequestFailure(error, runtime, setRequestError);
+    } finally {
+      setOperation(null);
     }
-    if (!selectedStore) {
+  };
+
+  const submitAppReview = async () => {
+    if (!deviceSession || !selectedStore) {
       setRequestError(t("registration.storeRequired"));
       return;
     }
-
+    const provisioningCode = registrationCode.trim();
+    if (!provisioningCode) {
+      setRequestError(t("registration.appReviewCodeRequired"));
+      return;
+    }
     setRequestError(null);
-    setIsSubmitting(true);
-    const normalizedProvisioningCode = provisioningCode.trim();
+    setOperation("app-review");
     try {
-      const next = await deviceSession.register({
+      const next = await deviceSession.registerAppReview({
         storeCode: selectedStore.storeCode,
-        ...(normalizedProvisioningCode
-          ? { provisioningCode: normalizedProvisioningCode }
-          : {}),
+        provisioningCode,
       });
       await reconcile(next);
     } catch (error: unknown) {
       applyRequestFailure(error, runtime, setRequestError);
     } finally {
-      // 开通码只用于本次设备注册，不保存在组件状态或本地安全存储中。
-      setProvisioningCode("");
-      setIsSubmitting(false);
+      setRegistrationCode("");
+      setRegistrationKind("unresolved");
+      setSelectedStoreCode("");
+      setPickerVisible(false);
+      setOperation(null);
     }
   };
 
-  const submitDisabled =
-    isSubmitting ||
-    runtime.state.database !== "ready" ||
-    storeLoadState !== "ready" ||
-    !selectedStore;
+  const changeRegistrationCode = (value: string) => {
+    previewRequestId.current += 1;
+    setRegistrationCode(value);
+    setRegistrationKind("unresolved");
+    setActivationPreview(null);
+    setSelectedStoreCode("");
+    setPickerVisible(false);
+    setRequestError(null);
+  };
+
+  const registrationBusy = operation !== null;
+  const registrationReady = registrationCode.trim().length > 0;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -229,6 +384,7 @@ export function DeviceRegistrationScreen() {
 
         <PosKeyboardAwareScrollView
           contentContainerStyle={styles.formPanelContent}
+          keyboardRevealOffset={112}
           style={styles.formPanel}
         >
           <Text style={styles.formTitle}>
@@ -266,93 +422,7 @@ export function DeviceRegistrationScreen() {
                 </Text>
               </View>
             </View>
-          ) : runtime.state.phase !== "pending-approval" ? (
-            <>
-              <FieldLabel>{t("registration.storeCode")}</FieldLabel>
-              <PosPressable
-                accessibilityRole="button"
-                accessibilityState={{
-                  disabled:
-                    storeLoadState !== "ready" || stores.length === 0,
-                  expanded: pickerVisible,
-                }}
-                disabled={
-                  storeLoadState !== "ready" || stores.length === 0
-                }
-                onPress={() => setPickerVisible(true)}
-                sound="navigate"
-                style={({ pressed }) => [
-                  styles.storePicker,
-                  pressed && styles.storePickerPressed,
-                ]}
-                testID="registration-store-picker"
-              >
-                <View style={styles.storePickerCopy}>
-                  <Text
-                    style={[
-                      styles.storePickerValue,
-                      !selectedStore && styles.storePickerPlaceholder,
-                    ]}
-                  >
-                    {selectedStore
-                      ? storeDisplayName(selectedStore)
-                      : storePickerMessage(storeLoadState, stores.length, t)}
-                  </Text>
-                </View>
-                <MaterialCommunityIcons
-                  color={posColors.ink}
-                  name="chevron-down"
-                  size={24}
-                />
-              </PosPressable>
-
-              {storeLoadState === "failed" ||
-              (storeLoadState === "ready" && stores.length === 0) ? (
-                <View style={styles.storeStatus}>
-                  <Text style={styles.storeStatusText}>
-                    {storeLoadError ?? (
-                      storeLoadState === "failed"
-                        ? t("registration.storeLoadFailed")
-                        : t("registration.storeEmpty")
-                    )}
-                  </Text>
-                  <PosPressable
-                    accessibilityRole="button"
-                    onPress={() => void loadStores()}
-                    style={({ pressed }) => [
-                      styles.retryButton,
-                      pressed && styles.retryButtonPressed,
-                    ]}
-                    testID="registration-store-retry"
-                  >
-                    <Text style={styles.retryButtonLabel}>
-                      {t("registration.storeRetry")}
-                    </Text>
-                  </PosPressable>
-                </View>
-              ) : null}
-
-              <FieldLabel>{t("registration.provisioningCode")}</FieldLabel>
-              <PosKeyboardAwareTextInput
-                accessibilityLabel={t("registration.provisioningCode")}
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!isSubmitting}
-                onChangeText={setProvisioningCode}
-                maxLength={128}
-                placeholder={t("registration.provisioningCodePlaceholder")}
-                placeholderTextColor={posColors.mutedInk}
-                secureTextEntry
-                style={styles.provisioningCodeInput}
-                testID="registration-provisioning-code"
-                textContentType="oneTimeCode"
-                value={provisioningCode}
-              />
-              <Text style={styles.provisioningCodeHint}>
-                {t("registration.provisioningCodeHint")}
-              </Text>
-            </>
-          ) : (
+          ) : runtime.state.phase === "pending-approval" ? (
             <View style={styles.pendingCard}>
               <MaterialCommunityIcons
                 color={posColors.orange}
@@ -368,6 +438,171 @@ export function DeviceRegistrationScreen() {
                 </Text>
               </View>
             </View>
+          ) : (
+            <>
+              <PosPressable
+                accessibilityRole="button"
+                accessibilityState={{
+                  disabled: registrationBusy || !scannerRouter,
+                }}
+                disabled={registrationBusy || !scannerRouter}
+                onPress={() => setCameraVisible(true)}
+                style={({ pressed }) => [
+                  styles.primaryButton,
+                  pressed && styles.primaryButtonPressed,
+                  (!scannerRouter || registrationBusy) &&
+                    styles.primaryButtonDisabled,
+                ]}
+                testID="registration-scan"
+              >
+                <MaterialCommunityIcons
+                  color="#FFFFFF"
+                  name="qrcode-scan"
+                  size={22}
+                />
+                <Text style={styles.primaryButtonLabel}>
+                  {t("registration.scan")}
+                </Text>
+              </PosPressable>
+
+              <FieldLabel>{t("registration.activationCode")}</FieldLabel>
+              <PosKeyboardAwareTextInput
+                accessibilityLabel={t("registration.activationCode")}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!registrationBusy}
+                maxLength={128}
+                onChangeText={changeRegistrationCode}
+                onSubmitEditing={() =>
+                  identifyRegistrationCode(registrationCode)
+                }
+                placeholder={t("registration.activationCodePlaceholder")}
+                placeholderTextColor={posColors.mutedInk}
+                secureTextEntry
+                style={styles.provisioningCodeInput}
+                testID="registration-activation-code"
+                textContentType="oneTimeCode"
+                returnKeyType="go"
+                value={registrationCode}
+              />
+              <Text style={styles.provisioningCodeHint}>
+                {t("registration.activationCodeHint")}
+              </Text>
+
+              {registrationKind === "app-review" ? (
+                <>
+                  <View style={styles.compatibilityNote}>
+                    <Text style={styles.compatibilityTitle}>
+                      {t("registration.appReviewTitle")}
+                    </Text>
+                    <Text style={styles.compatibilityHint}>
+                      {t("registration.appReviewHint")}
+                    </Text>
+                  </View>
+
+                  <FieldLabel>{t("registration.storeCode")}</FieldLabel>
+                  <PosPressable
+                    accessibilityRole="button"
+                    accessibilityState={{
+                      disabled:
+                        storeLoadState !== "ready" || stores.length === 0,
+                      expanded: pickerVisible,
+                    }}
+                    disabled={
+                      storeLoadState !== "ready" || stores.length === 0
+                    }
+                    onPress={() => setPickerVisible(true)}
+                    sound="navigate"
+                    style={({ pressed }) => [
+                      styles.storePicker,
+                      pressed && styles.storePickerPressed,
+                    ]}
+                    testID="registration-store-picker"
+                  >
+                    <View style={styles.storePickerCopy}>
+                      <Text
+                        style={[
+                          styles.storePickerValue,
+                          !selectedStore && styles.storePickerPlaceholder,
+                        ]}
+                      >
+                        {selectedStore
+                          ? storeDisplayName(selectedStore)
+                          : storePickerMessage(
+                              storeLoadState,
+                              stores.length,
+                              t,
+                            )}
+                      </Text>
+                    </View>
+                    <MaterialCommunityIcons
+                      color={posColors.ink}
+                      name="chevron-down"
+                      size={24}
+                    />
+                  </PosPressable>
+
+                  {storeLoadState === "failed" ||
+                  (storeLoadState === "ready" && stores.length === 0) ? (
+                    <View style={styles.storeStatus}>
+                      <Text style={styles.storeStatusText}>
+                        {storeLoadError ?? (
+                          storeLoadState === "failed"
+                            ? t("registration.storeLoadFailed")
+                            : t("registration.storeEmpty")
+                        )}
+                      </Text>
+                      <PosPressable
+                        accessibilityRole="button"
+                        onPress={() => void loadStores()}
+                        style={({ pressed }) => [
+                          styles.retryButton,
+                          pressed && styles.retryButtonPressed,
+                        ]}
+                        testID="registration-store-retry"
+                      >
+                        <Text style={styles.retryButtonLabel}>
+                          {t("registration.storeRetry")}
+                        </Text>
+                      </PosPressable>
+                    </View>
+                  ) : null}
+                </>
+              ) : null}
+
+              {activationPreview ? (
+                <View style={styles.activationPreview}>
+                  <MaterialCommunityIcons
+                    color={posColors.green}
+                    name="store-check-outline"
+                    size={28}
+                  />
+                  <View style={styles.pendingCopy}>
+                    <Text style={styles.activationPreviewLabel}>
+                      {t("registration.activationPreviewTitle")}
+                    </Text>
+                    <Text style={styles.activationPreviewStore}>
+                      {activationPreview.response.storeName} ·{" "}
+                      {activationPreview.response.storeCode}
+                    </Text>
+                    <Text style={styles.activationPreviewExpiry}>
+                      {t("registration.activationPlatform", {
+                        value: activationPreview.response.deviceSystem,
+                      })}
+                    </Text>
+                    <Text style={styles.activationPreviewExpiry}>
+                      {activationPreview.response.expiresAtUtc
+                        ? t("registration.activationExpires", {
+                            value: new Date(
+                              activationPreview.response.expiresAtUtc,
+                            ).toLocaleString(),
+                          })
+                        : t("registration.activationExpiryUnavailable")}
+                    </Text>
+                  </View>
+                </View>
+              ) : null}
+            </>
           )}
 
           {requestError ? (
@@ -390,26 +625,7 @@ export function DeviceRegistrationScreen() {
                 {t("registration.recoveryRetry")}
               </Text>
             </PosPressable>
-          ) : runtime.state.phase !== "pending-approval" ? (
-            <PosPressable
-              accessibilityRole="button"
-              accessibilityState={{ disabled: submitDisabled }}
-              disabled={submitDisabled}
-              onPress={() => void submit()}
-              style={({ pressed }) => [
-                styles.primaryButton,
-                (pressed || isSubmitting) && styles.primaryButtonPressed,
-                submitDisabled && styles.primaryButtonDisabled,
-              ]}
-              testID="registration-submit"
-            >
-              <Text style={styles.primaryButtonLabel}>
-                {isSubmitting
-                  ? t("registration.submitting")
-                  : t("registration.submit")}
-              </Text>
-            </PosPressable>
-          ) : (
+          ) : runtime.state.phase === "pending-approval" ? (
             <PosPressable
               accessibilityRole="button"
               onPress={() => void poll()}
@@ -420,6 +636,84 @@ export function DeviceRegistrationScreen() {
             >
               <Text style={styles.secondaryButtonLabel}>
                 {t("registration.checkNow")}
+              </Text>
+            </PosPressable>
+          ) : registrationKind === "app-review" ? (
+            <PosPressable
+              accessibilityRole="button"
+              accessibilityState={{
+                disabled:
+                  operation === "app-review" ||
+                  !selectedStore ||
+                  !registrationCode.trim(),
+              }}
+              disabled={
+                operation === "app-review" ||
+                !selectedStore ||
+                !registrationCode.trim()
+              }
+              onPress={() => void submitAppReview()}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                pressed && styles.primaryButtonPressed,
+                (operation === "app-review" ||
+                  !selectedStore ||
+                  !registrationCode.trim()) && styles.primaryButtonDisabled,
+              ]}
+              testID="registration-app-review-submit"
+            >
+              <Text style={styles.primaryButtonLabel}>
+                {operation === "app-review"
+                  ? t("registration.appReviewSubmitting")
+                  : t("registration.appReviewSubmit")}
+              </Text>
+            </PosPressable>
+          ) : activationPreview ? (
+            <PosPressable
+              accessibilityRole="button"
+              accessibilityState={{ disabled: registrationBusy }}
+              disabled={registrationBusy}
+              onPress={() => void redeemActivation()}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                pressed && styles.primaryButtonPressed,
+                registrationBusy && styles.primaryButtonDisabled,
+              ]}
+              testID="registration-redeem"
+            >
+              <Text style={styles.primaryButtonLabel}>
+                {operation === "redeem"
+                  ? t("registration.redeeming")
+                  : t("registration.confirmActivation")}
+              </Text>
+            </PosPressable>
+          ) : (
+            <PosPressable
+              accessibilityRole="button"
+              accessibilityState={{
+                disabled:
+                  registrationBusy ||
+                  runtime.state.database !== "ready" ||
+                  !registrationReady,
+              }}
+              disabled={
+                registrationBusy ||
+                runtime.state.database !== "ready" ||
+                !registrationReady
+              }
+              onPress={() => identifyRegistrationCode(registrationCode)}
+              style={({ pressed }) => [
+                styles.secondaryButton,
+                pressed && styles.secondaryButtonPressed,
+                (registrationBusy || !registrationReady) &&
+                  styles.primaryButtonDisabled,
+              ]}
+              testID="registration-preview"
+            >
+              <Text style={styles.secondaryButtonLabel}>
+                {operation === "preview"
+                  ? t("registration.previewing")
+                  : t("registration.preview")}
               </Text>
             </PosPressable>
           )}
@@ -463,8 +757,20 @@ export function DeviceRegistrationScreen() {
         }}
         selectedStoreCode={selectedStoreCode}
         stores={stores}
-        visible={pickerVisible}
+        visible={registrationKind === "app-review" && pickerVisible}
       />
+      {scannerRouter ? (
+        <CameraScannerModal
+          context="device-activation"
+          onClose={() => setCameraVisible(false)}
+          onScan={(value) => {
+            setCameraVisible(false);
+            identifyRegistrationCode(value);
+          }}
+          scanner={scannerRouter}
+          visible={cameraVisible}
+        />
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -712,6 +1018,25 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 21,
   },
+  compatibilityNote: {
+    marginTop: 18,
+    marginBottom: 4,
+    padding: 14,
+    borderLeftWidth: 3,
+    borderLeftColor: posColors.orange,
+    backgroundColor: "#FFF7ED",
+  },
+  compatibilityTitle: {
+    color: posColors.ink,
+    fontSize: 14,
+    fontWeight: "900",
+  },
+  compatibilityHint: {
+    marginTop: 5,
+    color: posColors.mutedInk,
+    fontSize: 12,
+    lineHeight: 18,
+  },
   fieldLabel: {
     marginTop: 14,
     marginBottom: 8,
@@ -756,6 +1081,31 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 18,
   },
+  activationPreview: {
+    marginTop: 18,
+    padding: 14,
+    borderLeftWidth: 4,
+    borderLeftColor: posColors.green,
+    backgroundColor: posColors.greenSoft,
+  },
+  activationPreviewLabel: {
+    color: posColors.green,
+    fontSize: 11,
+    fontWeight: "900",
+    letterSpacing: 1.1,
+  },
+  activationPreviewStore: {
+    marginTop: 6,
+    color: posColors.ink,
+    fontSize: 18,
+    fontWeight: "900",
+  },
+  activationPreviewExpiry: {
+    marginTop: 4,
+    color: posColors.mutedInk,
+    fontSize: 12,
+    lineHeight: 18,
+  },
   storeStatus: {
     marginTop: 10,
     padding: 12,
@@ -792,8 +1142,10 @@ const styles = StyleSheet.create({
   primaryButton: {
     minHeight: 52,
     marginTop: 24,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
+    gap: 9,
     backgroundColor: posColors.ink,
   },
   primaryButtonPressed: { opacity: 0.7 },

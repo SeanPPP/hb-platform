@@ -1,5 +1,6 @@
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
+using BlazorApp.Api.Services.Performance;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using SqlSugar;
@@ -69,6 +70,8 @@ namespace BlazorApp.Api.Data
             {
                 _logger.LogError(exp, "PostgreSQL操作异常: {Message}", exp.Message);
             };
+
+            SqlPerformanceAttachmentService.Attach(_db, nameof(PostgresSqlSugarContext));
         }
 
         /// <summary>
@@ -536,6 +539,10 @@ namespace BlazorApp.Api.Data
 
             // 设置额外的连接参数
             client.Ado.CommandTimeOut = 300; // 5分钟SQL命令超时
+            SqlPerformanceAttachmentService.Attach(
+                client,
+                $"{nameof(PostgresSqlSugarContext)}.Concurrent"
+            );
 
             return client;
         }

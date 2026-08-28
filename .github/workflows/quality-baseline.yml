@@ -1,0 +1,298 @@
+name: 质量基线
+
+run-name: 质量基线 · ${{ github.event_name }} · ${{ github.ref_name }}
+
+on:
+  pull_request:
+    paths:
+      - "services/backend/**"
+      - "apps/web/**"
+      - "apps/pos-ipad/**"
+      - "apps/pos-handheld/**"
+      - ".github/workflows/quality-baseline.yml"
+      - "scripts/performance/**"
+      - "scripts/test-all.sh"
+      - "quality-baseline-budget.json"
+      - "global.json"
+  push:
+    branches: [main]
+    paths:
+      - "services/backend/**"
+      - "apps/web/**"
+      - "apps/pos-ipad/**"
+      - "apps/pos-handheld/**"
+      - ".github/workflows/quality-baseline.yml"
+      - "scripts/performance/**"
+      - "scripts/test-all.sh"
+      - "quality-baseline-budget.json"
+      - "global.json"
+  schedule:
+    # Brisbane 无夏令时：UTC 16:00 = 次日 02:00 Australia/Brisbane。
+    - cron: "0 16 * * *"
+  workflow_dispatch:
+  # backend/web 部署目前在仓库外执行；外部部署系统必须调用此受保护契约登记验收结论。
+  workflow_call:
+    inputs:
+      action:
+        required: true
+        type: string
+      conclusion:
+        required: true
+        type: string
+      component:
+        required: true
+        type: string
+      environment:
+        required: true
+        type: string
+      release_id:
+        required: true
+        type: string
+      commit_sha:
+        required: true
+        type: string
+      started_at_utc:
+        required: true
+        type: string
+      completed_at_utc:
+        required: true
+        type: string
+      health_check_reference:
+        required: true
+        type: string
+    secrets:
+      PERFORMANCE_SERVICE_URL:
+        required: true
+      PERFORMANCE_SERVICE_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # 发布验收可能来自并发的外部部署；每次调用独立分组，避免丢失 release event。
+  group: quality-baseline-${{ github.event_name == 'workflow_call' && format('release-{0}-{1}', github.run_id, github.run_attempt) || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_call' }}
+
+jobs:
+  plan:
+    name: 选择受影响 lane
+    if: ${{ github.event_name != 'workflow_call' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      has_lanes: ${{ steps.lanes.outputs.has_lanes }}
+      matrix: ${{ steps.lanes.outputs.matrix }}
+      backend: ${{ steps.lanes.outputs.backend }}
+      web: ${{ steps.lanes.outputs.web }}
+      pos_ipad: ${{ steps.lanes.outputs.pos_ipad }}
+      pos_handheld: ${{ steps.lanes.outputs.pos_handheld }}
+    steps:
+      - name: 检出源码与比较基点
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+
+      - name: 校验性能基线脚本
+        run: node --test scripts/performance/*.test.mjs
+
+      - name: 按事件和变更路径选择 lane
+        id: lanes
+        env:
+          QUALITY_EVENT_NAME: ${{ github.event_name }}
+          QUALITY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          QUALITY_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          QUALITY_BEFORE_SHA: ${{ github.event.before }}
+        run: node scripts/performance/select-quality-lanes.mjs
+
+  quality:
+    name: 质量基线 / ${{ matrix.lane }}
+    needs: plan
+    if: ${{ github.event_name != 'workflow_call' && needs.plan.outputs.has_lanes == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: 记录 lane 开始
+        run: >-
+          node scripts/performance/quality-lane.mjs start
+          --lane "${{ matrix.lane }}"
+          --state ".artifacts/quality-baseline/${{ matrix.lane }}.state.json"
+
+      - name: 安装仓库固定 .NET SDK
+        if: matrix.lane == 'backend'
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
+        with:
+          dotnet-version: 9.0.314
+
+      - name: 安装 Node.js
+        if: matrix.lane != 'backend'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/${{ matrix.lane }}/package-lock.json
+
+      - name: 运行现有 build/typecheck/test
+        id: verify
+        run: node scripts/performance/quality-lane.mjs run --lane "${{ matrix.lane }}"
+
+      - name: 采集 Web bundle 体积
+        id: web_bundle
+        if: ${{ always() && matrix.lane == 'web' && steps.verify.outcome == 'success' }}
+        run: >-
+          node scripts/performance/collect-web-bundle.mjs
+          --dist apps/web/dist
+          --output .artifacts/quality-baseline/web-bundle.json
+          --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: 记录 lane 结束、用时和结论
+        if: ${{ always() }}
+        env:
+          QUALITY_JOB_STATUS: ${{ job.status }}
+          QUALITY_VERIFICATION_OUTCOME: ${{ steps.verify.outcome }}
+        run: >-
+          node scripts/performance/quality-lane.mjs finish
+          --lane "${{ matrix.lane }}"
+          --state ".artifacts/quality-baseline/${{ matrix.lane }}.state.json"
+          --output ".artifacts/quality-baseline/${{ matrix.lane }}.json"
+          --job-status "$QUALITY_JOB_STATUS"
+          --verification-outcome "${QUALITY_VERIFICATION_OUTCOME:-skipped}"
+          --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: 保存 lane 结果
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: quality-lane-${{ github.run_id }}-${{ matrix.lane }}
+          path: .artifacts/quality-baseline/${{ matrix.lane }}.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 保存 Web bundle 明细
+        if: ${{ always() && matrix.lane == 'web' && steps.web_bundle.outcome == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: quality-web-bundle-${{ github.run_id }}
+          path: .artifacts/quality-baseline/web-bundle.json
+          if-no-files-found: error
+          retention-days: 14
+
+  report:
+    name: 汇总、预算与自动化上报
+    needs: [plan, quality]
+    if: ${{ github.event_name != 'workflow_call' && always() && needs.plan.result == 'success' && needs.plan.outputs.has_lanes == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: 检出上报脚本与预算
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: 下载所有 lane 结果
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: quality-lane-${{ github.run_id }}-*
+          path: .artifacts/quality-baseline/lanes
+          merge-multiple: true
+
+      - name: 下载 Web bundle 明细
+        if: needs.plan.outputs.web == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: quality-web-bundle-${{ github.run_id }}
+          path: .artifacts/quality-baseline/web-bundle
+
+      - name: 生成 MetricBatchV1 与汇总
+        if: ${{ always() }}
+        env:
+          QUALITY_EXPECTED_LANES: ${{ needs.plan.outputs.matrix }}
+        run: >-
+          node scripts/performance/build-metric-batch.mjs
+          --results-dir .artifacts/quality-baseline/lanes
+          --web-bundle-file .artifacts/quality-baseline/web-bundle/web-bundle.json
+          --output .artifacts/quality-baseline/metric-batch-v1.json
+          --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: 比较 observing/frozen JSON budget
+        if: ${{ always() }}
+        run: >-
+          node scripts/performance/compare-json-budget.mjs
+          --budget quality-baseline-budget.json
+          --actual .artifacts/quality-baseline/metric-batch-v1.json
+          --selected-lanes '${{ needs.plan.outputs.matrix }}'
+          --output .artifacts/quality-baseline/budget-report.json
+          --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: 可选上报 automation batch
+        # pull_request 工作流内容可被分支修改，禁止向其中注入长期 service token。
+        if: ${{ always() && github.event_name != 'pull_request' }}
+        env:
+          QUALITY_BASELINE_SERVICE_URL: ${{ secrets.QUALITY_BASELINE_SERVICE_URL }}
+          QUALITY_BASELINE_SERVICE_TOKEN: ${{ secrets.QUALITY_BASELINE_SERVICE_TOKEN }}
+          QUALITY_BASELINE_TIMEOUT_MS: "10000"
+        run: >-
+          node scripts/performance/report-metric-batch.mjs
+          --file .artifacts/quality-baseline/metric-batch-v1.json
+          --optional
+
+      - name: 保存质量基线 artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: quality-baseline-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/quality-baseline/lanes/*.json
+            .artifacts/quality-baseline/web-bundle/*.json
+            .artifacts/quality-baseline/metric-batch-v1.json
+            .artifacts/quality-baseline/budget-report.json
+          if-no-files-found: error
+          retention-days: 30
+
+  release_acceptance:
+    name: 发布验收上报
+    if: ${{ github.event_name == 'workflow_call' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 检出上报脚本
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: 记录部署或回滚验收
+        env:
+          PERFORMANCE_SERVICE_URL: ${{ secrets.PERFORMANCE_SERVICE_URL }}
+          PERFORMANCE_SERVICE_TOKEN: ${{ secrets.PERFORMANCE_SERVICE_TOKEN }}
+          RELEASE_ACTION: ${{ inputs.action }}
+          RELEASE_CONCLUSION: ${{ inputs.conclusion }}
+          RELEASE_COMPONENT: ${{ inputs.component }}
+          RELEASE_ENVIRONMENT: ${{ inputs.environment }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_COMMIT_SHA: ${{ inputs.commit_sha }}
+          RELEASE_STARTED_AT_UTC: ${{ inputs.started_at_utc }}
+          RELEASE_COMPLETED_AT_UTC: ${{ inputs.completed_at_utc }}
+          RELEASE_HEALTH_CHECK_REFERENCE: ${{ inputs.health_check_reference }}
+        run: >-
+          node scripts/performance/report-release-event.mjs
+          --health-checked
+          --action "$RELEASE_ACTION"
+          --conclusion "$RELEASE_CONCLUSION"
+          --component "$RELEASE_COMPONENT"
+          --environment "$RELEASE_ENVIRONMENT"
+          --release-id "$RELEASE_ID"
+          --commit-sha "$RELEASE_COMMIT_SHA"
+          --started-at-utc "$RELEASE_STARTED_AT_UTC"
+          --completed-at-utc "$RELEASE_COMPLETED_AT_UTC"
+          --health-check-reference "$RELEASE_HEALTH_CHECK_REFERENCE"

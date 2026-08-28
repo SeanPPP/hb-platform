@@ -142,7 +142,7 @@ test("后端离线时分期页进入离线状态，不自动加载", async () =>
   expect(mockLoad).not.toHaveBeenCalled();
 });
 
-test("网络从离线恢复为在线时自动刷新分期数据（无需手动重试）", async () => {
+test("网络从离线恢复为在线时只同步 presenter 状态，刷新由 Screen 负责", async () => {
   // 进入分期页时后端已离线。
   mockShellStore.setState({ connectivity: "offline" });
   await act(async () => {
@@ -160,8 +160,8 @@ test("网络从离线恢复为在线时自动刷新分期数据（无需手动�
 
   await waitFor(() => {
     expect(mockSetOnline).toHaveBeenCalledWith(true);
-    // 关键：恢复后自动调用 load() 刷新数据，无需用户点击重试。
-    expect(mockLoad).toHaveBeenCalledTimes(1);
+    // 路由不直接刷新，避免与 InstallmentScreen 的恢复 effect 重复 load。
+    expect(mockLoad).not.toHaveBeenCalled();
   });
 });
 

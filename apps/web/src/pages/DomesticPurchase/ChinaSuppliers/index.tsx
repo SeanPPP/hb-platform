@@ -18,7 +18,6 @@ import {
   Popconfirm,
   Select,
   Space,
-  Table,
   Tag,
   Tooltip,
   message,
@@ -48,6 +47,7 @@ import {
   createLatestRequestGuard,
   runLatestGuardedRequest,
 } from '../../../utils/latestRequestGuard'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 type SupplierFormValues = SaveChinaSupplierPayload
 type DesiredChinaSupplierQuery = ChinaSupplierListParams & {
@@ -469,7 +469,7 @@ export default function DomesticChinaSuppliersPage() {
           </Button>
         </Space>
 
-        <Table
+        <MeasuredTable metricId="domestic-purchase.china-suppliers.table-1"
           rowKey="guid"
           loading={loading}
           columns={columns}

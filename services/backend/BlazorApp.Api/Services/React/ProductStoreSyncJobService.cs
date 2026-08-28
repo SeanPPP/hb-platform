@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.Performance;
 using BlazorApp.Shared.DTOs;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -91,6 +92,26 @@ namespace BlazorApp.Api.Services.React
                 _runningOperationJobIds[operationId] = jobState.JobId;
             }
 
+            var backlog = _runningOperationJobIds.Count;
+            PerformanceOperationalRunBridge.Publish(
+                PerformanceOperationalRunTransition.Queued(
+                    jobState.JobId,
+                    "background",
+                    "product-store-sync",
+                    now,
+                    backlog
+                )
+            );
+            PerformanceOperationalRunBridge.Publish(
+                PerformanceOperationalRunTransition.Started(
+                    jobState.JobId,
+                    "background",
+                    "product-store-sync",
+                    now,
+                    backlog
+                )
+            );
+
             // 关键位置：后台任务重新创建 scope，避免请求结束后继续复用 scoped 服务。
             _ = Task.Run(() => ExecuteJobAsync(jobState), CancellationToken.None);
             return Task.FromResult(CreateSnapshot(jobState, false));
@@ -142,11 +163,12 @@ namespace BlazorApp.Api.Services.React
             string? message
         )
         {
+            DateTime completedAt;
             lock (_jobStartSyncRoot)
             {
                 lock (jobState.SyncRoot)
                 {
-                    var completedAt = _timeProvider.GetUtcNow().UtcDateTime;
+                    completedAt = _timeProvider.GetUtcNow().UtcDateTime;
                     jobState.Status = status;
                     jobState.CompletedAt = completedAt;
                     jobState.ExpiresAt = completedAt.Add(_completedRetention);
@@ -162,6 +184,16 @@ namespace BlazorApp.Api.Services.React
                     _runningOperationJobIds.TryRemove(jobState.OperationId, out _);
                 }
             }
+
+            PerformanceOperationalRunBridge.Publish(
+                PerformanceOperationalRunTransition.Completed(
+                    jobState.JobId,
+                    "background",
+                    "product-store-sync",
+                    status,
+                    completedAt
+                )
+            );
         }
 
         private void CleanupExpiredJobs()

@@ -422,8 +422,10 @@ async function main() {
       '多码/套装明细加载依赖应绑定当前编辑商品 productCode',
     )
     assert(
-      effectSource.includes('getGridData({ productCode: editingProductCode, pageIndex: 1, pageSize: 200 })'),
-      '条码明细加载应使用当前编辑商品 productCode',
+      effectSource.includes('loadCompleteSetCodeDraftRows({') &&
+        effectSource.includes('getGridData({ productCode: editingProductCode, pageIndex, pageSize })') &&
+        effectSource.includes('getRowId: (item) => item.id ?? item.setCodeId'),
+      '条码明细加载应使用当前编辑商品 productCode 并校验完整快照',
     )
     assert(
       effectSource.includes('if (requestSeq === editSetCodesRequestSeqRef.current)') &&
@@ -1660,7 +1662,10 @@ async function main() {
     )
     const mainTableClassIndex = pageSource.indexOf('className="pos-products-compact-table"')
     const mainTableSource = pageSource.slice(
-      pageSource.lastIndexOf('<Table', mainTableClassIndex),
+      pageSource.lastIndexOf(
+        '<MeasuredTable metricId="pos-admin.product-management.table-1"',
+        mainTableClassIndex,
+      ),
       pageSource.indexOf('\n        </div>\n\n        <div\n          ref={pagerRef}', mainTableClassIndex),
     )
     assert(

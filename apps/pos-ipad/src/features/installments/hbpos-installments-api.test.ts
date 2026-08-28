@@ -587,6 +587,21 @@ test("详情只投影 UI 白名单，不暴露支付引用、授权码或原始�
   }
 });
 
+test("详情优先使用服务端 updatedAt，null 时回退 createdAt", async () => {
+  const current = detailsPayload({ status: 1, balanceAmount: 80 });
+  const transport = new QueueTransport([
+    { success: true, data: current },
+    { success: true, data: { ...current, updatedAt: null } },
+  ]);
+  const api = new HbposInstallmentsApi(transport, "S1");
+
+  const updated = await api.getDetails(installmentGuid);
+  const legacy = await api.getDetails(installmentGuid);
+
+  assert.equal(updated?.updatedAtIso, "2026-07-27T02:03:04.000Z");
+  assert.equal(legacy?.updatedAtIso, "2026-07-27T01:02:03.000Z");
+});
+
 test("创建、补款、退款取消、作废和取货使用固定 v1 路由", async () => {
   const responseDetails = detailsPayload({ status: 1, balanceAmount: 80 });
   const transport = new QueueTransport([

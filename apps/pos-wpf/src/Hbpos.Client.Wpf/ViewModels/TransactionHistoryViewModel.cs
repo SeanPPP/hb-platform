@@ -1423,8 +1423,9 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, ISca
         var localFirst = MergeHeldRows(localRows, cachedRemoteRows, remoteAuthoritative: false);
         ReplaceHeldOrdersIfCurrent(localFirst, generation);
 
-        if (_sharedHeldOrderApiClient is null)
+        if (_sharedHeldOrderApiClient is null || !Session.IsOnline)
         {
+            // 离线列表只能以本地快照为准；发起远端刷新会把成功空响应误当成权威收敛。
             return localFirst;
         }
 
@@ -2734,8 +2735,12 @@ public sealed partial class TransactionHistoryViewModel : ObservableObject, ISca
                 reason,
                 Session,
                 CancellationToken.None);
-            StatusMessage = T("history.held.forceReleased");
             await LoadAsync();
+            // 刷新失败时保留具体错误；刷新成功后再显示强制释放结果，避免成功提示被 LoadAsync 清空。
+            if (string.IsNullOrWhiteSpace(StatusMessage))
+            {
+                StatusMessage = T("history.held.forceReleased");
+            }
         }
         catch (Exception ex)
         {

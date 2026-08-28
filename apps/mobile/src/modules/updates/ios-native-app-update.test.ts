@@ -30,6 +30,14 @@ class MemoryStorage implements IosNativeUpdateStorage {
   async removeItem(key: string) {
     this.values.delete(key);
   }
+
+  seed(key: string, value: unknown) {
+    this.values.set(key, value);
+  }
+
+  has(key: string) {
+    return this.values.has(key);
+  }
 }
 
 function deferred<T>() {
@@ -62,6 +70,13 @@ const optionalDecision = {
 };
 
 async function run() {
+  assert.match(IOS_NATIVE_REQUIRED_CACHE_KEY, /:v2$/, "required 缓存键必须升级到 v2");
+  assert.match(
+    IOS_NATIVE_OPTIONAL_REMINDER_KEY,
+    /:v2$/,
+    "optional 提醒键必须升级到 v2",
+  );
+
   {
     assert.equal(
       shouldEnableIosNativeUpdate({
@@ -201,8 +216,8 @@ async function run() {
           shouldPromptOptional: true,
         },
       }),
-      { allowed: false, epoch: 12 },
-      "需要展示的原生 optional 必须先于 OTA",
+      { allowed: true, epoch: 12 },
+      "原生 optional 必须先让 OTA 完成 required 判定，再竞争 optional 提示",
     );
     assert.deepEqual(
       deriveIosNativeOtaBarrier({
@@ -371,8 +386,8 @@ async function run() {
         ...context,
         installedBuild: "29",
       }),
-      requiredDecision,
-      "同一营销版本更换 build 时仍必须沿用离线 required 缓存",
+      null,
+      "同一营销版本更换 build 后不得沿用旧构建的离线 required 缓存",
     );
     assert.equal(
       await readCachedIosNativeRequiredDecision(storage, {
@@ -390,6 +405,37 @@ async function run() {
       }),
       null,
       "required 缓存只能绑定可信中央更新地址，不能被业务或局域网 Host 复用",
+    );
+  }
+
+  {
+    const storage = new MemoryStorage();
+    storage.seed("mobile-ios-native-update:required:v1", {
+      schemaVersion: 1,
+      scope: `${context.apiBaseUrl}|${context.installedVersion}`,
+      decision: requiredDecision,
+    });
+    storage.seed("mobile-ios-native-update:optional-reminder:v1", {
+      schemaVersion: 1,
+      scope: `${context.apiBaseUrl}|${context.installedVersion}`,
+      targetVersion: optionalDecision.latestVersion,
+      promptedAt: 1_000,
+    });
+
+    assert.equal(
+      await readCachedIosNativeRequiredDecision(storage, context),
+      null,
+      "v1 required 缓存必须视为不兼容，不能继续拦截新构建",
+    );
+    assert.equal(
+      storage.has("mobile-ios-native-update:required:v1"),
+      false,
+      "读取 v2 缓存时应安全清理旧 required 记录",
+    );
+    assert.equal(
+      storage.has("mobile-ios-native-update:optional-reminder:v1"),
+      false,
+      "读取 v2 缓存时应安全清理旧 optional 提醒记录",
     );
   }
 
@@ -583,6 +629,18 @@ async function run() {
     });
     assert.equal(within24Hours.shouldPromptOptional, false, "24 小时内同一目标版本不得重复提示");
 
+    const nextBuild = await checkIosNativeAppUpdate({
+      context: { ...context, installedBuild: "29" },
+      storage,
+      now: () => 2_001,
+      fetchDecision: async () => optionalDecision,
+    });
+    assert.equal(
+      nextBuild.shouldPromptOptional,
+      true,
+      "同一营销版本换 build 后不得沿用旧构建的 24 小时提醒记录",
+    );
+
     const after24Hours = await checkIosNativeAppUpdate({
       context,
       storage,
@@ -590,6 +648,25 @@ async function run() {
       fetchDecision: async () => optionalDecision,
     });
     assert.equal(after24Hours.shouldPromptOptional, true, "满 24 小时后可再次提醒");
+  }
+
+  {
+    const storage = new MemoryStorage();
+    const optionalReminderSession = createIosNativeOptionalReminderSession();
+    optionalReminderSession.markSeen(context, optionalDecision);
+
+    const nextBuild = await checkIosNativeAppUpdate({
+      context: { ...context, installedBuild: "29" },
+      storage,
+      now: () => 8_000,
+      fetchDecision: async () => optionalDecision,
+      optionalReminderSession,
+    });
+    assert.equal(
+      nextBuild.shouldPromptOptional,
+      true,
+      "进程内 optional 去重也必须按 installedBuild 隔离",
+    );
   }
 
   console.log("ios-native-app-update.test.ts: ok");

@@ -30,7 +30,6 @@ import {
   Select,
   Space,
   Spin,
-  Table,
   Tag,
   Tooltip,
   Typography,
@@ -127,6 +126,7 @@ import {
 } from './pasteOptimisticRows'
 import { formatStoreOrderVolume } from './volumeFormat'
 import './compact.css'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 function formatDateTime(value?: string) {
   if (!value) {
@@ -1042,7 +1042,7 @@ function ProductPickerModal({ open, orderGUID, loading, onCancel, onConfirm }: P
             }}
           />
         </Space>
-        <Table
+        <MeasuredTable metricId="warehouse.store-orders.detail.table-1"
           className="store-order-product-picker-table"
           rowKey="productCode"
           loading={fetching}
@@ -3460,7 +3460,7 @@ export default function StoreOrderDetailPage() {
                   </Typography.Text>
                 </Space>
               </div>
-              <Table
+              <MeasuredTable metricId="warehouse.store-orders.detail.table-2"
                 className="store-order-detail-table"
                 rowKey="detailGUID"
                 virtual
@@ -3699,7 +3699,7 @@ export default function StoreOrderDetailPage() {
                         </Button>
                       </Space>
                     </Space>
-                    <Table<StoreOrderPastePreviewItem>
+                    <MeasuredTable<StoreOrderPastePreviewItem> metricId="warehouse.store-orders.detail.table-3"
                       size="small"
                       rowKey={(record) => `${record.itemNumber}-${record.rowIndex}`}
                       style={{ marginTop: 8 }}

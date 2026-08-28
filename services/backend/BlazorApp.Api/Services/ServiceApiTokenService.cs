@@ -28,6 +28,10 @@ namespace BlazorApp.Api.Services
                     [Permissions.System.ManageAppDownloads],
                 [ServiceApiTokenPurposes.PosIpadUpdateDecisionReader] =
                     [ServiceApiScopes.ReadAppUpdateDecisions],
+                [ServiceApiTokenPurposes.QualityCiReporter] =
+                    [ServiceApiScopes.WritePerformanceMetrics],
+                [ServiceApiTokenPurposes.DeploymentAcceptanceReporter] =
+                    [ServiceApiScopes.WriteReleaseEvents],
             };
         private readonly ISqlSugarClient _db;
         private readonly ILogger<ServiceApiTokenService> _logger;

@@ -12,7 +12,6 @@ import {
   Select,
   Space,
   Switch,
-  Table,
   Tag,
   Typography,
   message,
@@ -45,6 +44,7 @@ import {
   resolveSystemListPagination,
   runLatestGuardedRequest,
 } from '../listPagination'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const brandTagPalette = [
   { background: '#e6f4ff', borderColor: '#91caff', color: '#0958d9' },
@@ -641,7 +641,7 @@ export default function SystemStoresPage() {
           </HasPermission>
         </Space>
 
-        <Table
+        <MeasuredTable metricId="system.stores.table-1"
           rowKey="storeGUID"
           rowSelection={canEditStores ? {
             selectedRowKeys: selectedStoreGuids,

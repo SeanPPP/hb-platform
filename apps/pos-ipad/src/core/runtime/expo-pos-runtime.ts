@@ -29,6 +29,7 @@ import {
 import type { SettingsPaymentSettingsInput } from "../../features/settings";
 import {
   createAxiosHbposTransport,
+  createFreshCashierAxiosHbposTransport,
   type HbposAuthenticationFailureHandler,
   type HbposRequestCredentialProvider,
   type HbposRequestCredentials,
@@ -48,6 +49,12 @@ import {
   ApplicationLogUploader,
   resolveApplicationLogCenterConfig,
 } from "../logging/application-log";
+import { businessStartupClock } from "../performance/business-startup-clock";
+import {
+  ClientMetricRuntime,
+  clientMetrics,
+} from "../performance/client-metrics";
+import { createExpoClientMetricRuntime } from "../performance/expo-client-metric-runtime";
 import {
   createExpoAttendanceSecurityAdapter,
 } from "../peripherals/attendance-security/native";
@@ -61,6 +68,7 @@ import { SecurityApiCredentialProvider } from "../security/api-credential-provid
 import { CashierAuthenticationService } from "../security/cashier-authentication";
 import { CashierSessionInvalidationBus } from "../security/cashier-session-invalidation";
 import { DeviceRegistrationResetCoordinator } from "../security/device-registration-reset";
+import { DeviceRegistrationApiPartitionGuard } from "../security/device-registration-api-partition-guard";
 import { DeviceSessionCoordinator } from "../security/device-session";
 import { ExpoSecureStoreAdapter } from "../security/expo-secure-store";
 import {
@@ -76,6 +84,7 @@ import {
   DevicePresentationStore,
   DeviceRegistrationResetMarkerStore,
   InstallationIdentityStore,
+  PendingDeviceActivationCodeStore,
   PendingDeviceRegistrationStore,
 } from "../security/secure-storage";
 import { SensitivePayloadEncryptor } from "../security/sensitive-payload-encryptor";
@@ -348,6 +357,16 @@ class DeferredSecurityBridge
 }
 
 export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServices> {
+  try {
+    return await createExpoPosRuntimeServicesCore();
+  } catch (error) {
+    // 覆盖数据库打开等内部清理 try 之前的启动失败；计时器自身严格一次。
+    businessStartupClock.fail();
+    throw error;
+  }
+}
+
+async function createExpoPosRuntimeServicesCore(): Promise<ExpoPosRuntimeServices> {
   const publicExtra =
     Constants.expoConfig?.extra as HbposExtraConfig | undefined;
   const secureStore = new ExpoSecureStoreAdapter();
@@ -382,6 +401,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
   const deviceCredentials = new DeviceCredentialStore(secureStore);
   const devicePresentation = new DevicePresentationStore(secureStore);
   const pendingRegistration = new PendingDeviceRegistrationStore(secureStore);
+  const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
   const deviceLock = new DeviceLockStore(secureStore);
   const deviceRegistrationResetMarker =
     new DeviceRegistrationResetMarkerStore(secureStore);
@@ -406,7 +426,20 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     undefined,
     securityBridge,
   );
-  const deviceApi = new HbposDeviceApi(transport);
+  const anonymousDeviceTransport = createAxiosHbposTransport(apiBaseUrl, {
+    getCredentials: async () => Object.freeze({}),
+  });
+  const deviceApi = new HbposDeviceApi(transport, anonymousDeviceTransport);
+  const deviceResetApi = new HbposDeviceApi(
+    createFreshCashierAxiosHbposTransport(
+      apiBaseUrl,
+      securityBridge,
+      undefined,
+      securityBridge,
+    ),
+    anonymousDeviceTransport,
+  );
+  const apiPartitionGuard = new DeviceRegistrationApiPartitionGuard();
   const deviceSession = new DeviceSessionCoordinator(
     deviceApi,
     installation,
@@ -414,6 +447,9 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     deviceLock,
     pendingRegistration,
     devicePresentation,
+    pendingActivation,
+    apiBaseUrl,
+    apiPartitionGuard,
   );
   const publicDeviceSession = createPublicDeviceSession(
     deviceSession,
@@ -435,7 +471,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
   const network = new ExpoNetworkStatus();
   const cashierApi = new HbposCashierApi(transport);
   const resetRecovery = new DeviceRegistrationResetCoordinator({
-    api: deviceApi,
+    api: deviceResetApi,
     authenticateOnline: async () => {
       throw new Error("Device reset authentication is unavailable during startup recovery.");
     },
@@ -451,6 +487,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     invalidateCurrentCashier: () => {
       cashierSessionInvalidation.notify("device-scope-change");
     },
+    apiPartitionGuard,
   });
   await resetRecovery.recover();
   const cashierCache = new CashierSessionCache(secureStore, {
@@ -497,6 +534,9 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
   });
   const startupGate = await resolveStartupDeviceGate({
     internetReachable: online,
+    registrationResetPending: resetPending,
+    readPendingDeviceActivation: () =>
+      deviceSession.restorePendingActivationCode(),
     verifyCurrentDevice: () => deviceSession.poll(),
     readLocalDevice: async () => {
       const [
@@ -538,7 +578,15 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     Constants.nativeAppVersion ??
     Constants.expoConfig?.version ??
     "0.0.0";
+  const applicationLogCenterConfig = resolveApplicationLogCenterConfig({
+    enabled: publicExtra?.hbpos?.logCenter?.enabled,
+    ingestUrl: publicExtra?.hbpos?.logCenter?.ingestUrl,
+    writeKey: publicExtra?.hbpos?.logCenter?.writeKey,
+    environment: publicExtra?.hbpos?.logCenter?.environment,
+  });
   let applicationLog: ApplicationLogRuntime | null = null;
+  let clientMetricRuntime: ClientMetricRuntime | null = null;
+  let releaseClientMetricBinding: (() => void) | null = null;
   let shutdownComposition: (() => Promise<void>) | null = null;
 
   try {
@@ -562,12 +610,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       ),
       new ApplicationLogUploader(
         database.applicationLogOutbox(),
-        resolveApplicationLogCenterConfig({
-          enabled: publicExtra?.hbpos?.logCenter?.enabled,
-          ingestUrl: publicExtra?.hbpos?.logCenter?.ingestUrl,
-          writeKey: publicExtra?.hbpos?.logCenter?.writeKey,
-          environment: publicExtra?.hbpos?.logCenter?.environment,
-        }),
+        applicationLogCenterConfig,
         fetch,
         now,
       ),
@@ -631,7 +674,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     );
     const deviceRegistrationReset =
       new DeviceRegistrationResetCoordinator({
-        api: deviceApi,
+        api: deviceResetApi,
         authenticateOnline: (input) =>
           cashierAuthentication.loginOnlineOnly(input),
         credentials: deviceCredentials,
@@ -646,6 +689,7 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
         invalidateCurrentCashier: () => {
           cashierSessionInvalidation.notify("device-scope-change");
         },
+        apiPartitionGuard,
       });
     // 主管代授权复用同一加密离线缓存，但紧急二维码不得替换当前收银员或主管票据。
     const supervisorAuthentication =
@@ -763,6 +807,26 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
     const currentPaymentSettings =
       settingsPaymentConfiguration(paymentPublicConfiguration);
     const updateChannel = Updates.channel?.trim() || "embedded";
+    try {
+      clientMetricRuntime = await createExpoClientMetricRuntime({
+        appVersion,
+        channel: updateChannel,
+        store: runtimeCredentials?.storeCode ?? null,
+        sessionId: createId(),
+        logCenter: applicationLogCenterConfig,
+        createId,
+        getRequestHeaders: () => deviceSession.getRequestHeaders(),
+      });
+      releaseClientMetricBinding = clientMetrics.bind(clientMetricRuntime);
+      clientMetricRuntime.start();
+    } catch (error) {
+      applicationLog.record({
+        level: "Warning",
+        message: "POS client metric runtime initialization failed.",
+        category: "runtime.performance",
+        error,
+      });
+    }
     const readUpdateSnapshot = () =>
       settingsAppUpdateSnapshot({
         channel: updateChannel,
@@ -937,6 +1001,8 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
           probe: probeApiHealth,
           save: (nextApiBaseUrl) =>
             publicConfigurationStore.saveApiBaseUrl(nextApiBaseUrl),
+          runSwitchGuarded: (operation) =>
+            apiPartitionGuard.runSwitch(operation),
         },
         runtimeReload: {
           reload: async (signal) => {
@@ -947,9 +1013,23 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
           },
         },
         device: {
+          previewActivationCode: async (activationCode, signal) => {
+            throwIfRuntimeAborted(signal);
+            const response = await deviceSession.previewActivationCode(
+              activationCode,
+            );
+            throwIfRuntimeAborted(signal);
+            if (
+              response.isAllowed !== true ||
+              response.deviceSystem !== "iPadOS"
+            ) {
+              throw new Error("SETTINGS_DEVICE_ACTIVATION_PREVIEW_REJECTED");
+            }
+            return response;
+          },
           reregister: async (request, signal) => {
             throwIfRuntimeAborted(signal);
-            const result = await deviceSession.reregister(request);
+            const result = await deviceSession.rebindActivationCode(request);
             throwIfRuntimeAborted(signal);
             if (result.status !== "authorized") {
               throw new Error(
@@ -971,6 +1051,13 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
               }
               throw error;
             }
+          },
+          hasRegistrationRecoveryRisk: async () => {
+            const [activationPending, resetPendingNow] = await Promise.all([
+              deviceSession.hasActivationRecoveryRisk(),
+              deviceRegistrationReset.isResetRecoveryPending(),
+            ]);
+            return activationPending || resetPendingNow;
           },
         },
         scanner: {
@@ -1032,11 +1119,21 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       probe: probeApiHealth,
       save: (nextApiBaseUrl) =>
         publicConfigurationStore.saveApiBaseUrl(nextApiBaseUrl),
+      runSwitchGuarded: (operation) =>
+        apiPartitionGuard.runSwitch(operation),
+      hasRegistrationRecoveryRisk: async () => {
+        const [activationPending, resetPendingNow] = await Promise.all([
+          deviceSession.hasActivationRecoveryRisk(),
+          deviceRegistrationReset.isResetRecoveryPending(),
+        ]);
+        return activationPending || resetPendingNow;
+      },
     });
     appUpdateSafety = composition.appUpdateSafety;
     // 销售路由拿到 runtime 前必须先处理崩溃遗留的 HoldClear/RecallActive fence。
     // 初始化失败保持数据库可恢复并让启动 fail-closed，绝不开放普通收银。
     await composition.initialize();
+    businessStartupClock.markRuntimeReady();
     applicationLog.record({
       level: "Information",
       message: "POS runtime initialized.",
@@ -1086,6 +1183,8 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
       applicationLog: activeApplicationLog,
       updateIdentity,
       shutdown: async () => {
+        releaseClientMetricBinding?.();
+        await clientMetricRuntime?.shutdown();
         await shutdownExpoPosRuntimeServices({
           beforeShutdown: [
             () => {
@@ -1115,6 +1214,9 @@ export async function createExpoPosRuntimeServices(): Promise<ExpoPosRuntimeServ
           : startupGate.device,
     };
   } catch (error) {
+    businessStartupClock.fail();
+    releaseClientMetricBinding?.();
+    await clientMetricRuntime?.shutdown();
     await recordRuntimeInitializationFailure(
       applicationLog,
       error,

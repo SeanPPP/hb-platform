@@ -14,7 +14,6 @@ import {
   Space,
   Spin,
   Switch,
-  Table,
   Tag,
   Tooltip,
 } from 'antd'
@@ -55,6 +54,7 @@ import { copyTextToClipboard } from '../../../utils/clipboard'
 import { discountRateToDecimal, formatDiscountRate } from '../../../utils/discountRate'
 import { useAuthStore } from '../../../store/auth'
 import { formatPaginationTotalText } from './pagination'
+import { MeasuredTable } from '../../../components/MeasuredTable'
 
 type DataType = StoreProductPriceListDto & { key: string }
 const PRICE_TRANSFER_POLL_TIMEOUT_MS = 45 * 60 * 1000
@@ -756,7 +756,7 @@ export default function StoreProductPricePage() {
           </Space>
         </div>
 
-        <Table
+        <MeasuredTable metricId="pos-admin.store-product-price.table-1"
           className="store-product-price-compact-table"
           rowKey="key"
           loading={loading}

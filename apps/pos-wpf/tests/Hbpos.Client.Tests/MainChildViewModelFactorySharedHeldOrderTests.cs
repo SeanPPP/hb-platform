@@ -31,7 +31,7 @@ public sealed class MainChildViewModelFactorySharedHeldOrderTests
             holdGuid,
             session.StoreCode,
             session.DeviceCode,
-            SharedHeldOrderClaimSource.RemoteClaim,
+            SharedHeldOrderClaimSource.OfflineOrigin,
             $"prepare:{claimGuid:D}",
             SampleCanonical(),
             "2026-07-01T09:00:00.000Z",
@@ -92,6 +92,8 @@ public sealed class MainChildViewModelFactorySharedHeldOrderTests
             showPos: () => { },
             printSelectedHistoryReceiptAsync: _ => Task.CompletedTask);
 
+        viewModel.DateFrom = new DateTime(2026, 7, 1);
+        viewModel.DateTo = new DateTime(2026, 7, 1);
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
 
@@ -221,6 +223,8 @@ public sealed class MainChildViewModelFactorySharedHeldOrderTests
             showPos: () => { },
             printSelectedHistoryReceiptAsync: _ => Task.CompletedTask);
 
+        viewModel.DateFrom = new DateTime(2026, 7, 1);
+        viewModel.DateTo = new DateTime(2026, 7, 1);
         viewModel.IsHeldSourceSelected = true;
         await viewModel.LoadAsync();
         var row = Assert.Single(viewModel.Orders);
@@ -235,7 +239,7 @@ public sealed class MainChildViewModelFactorySharedHeldOrderTests
         Assert.Equal(SharedHeldOrderPublicationStatus.PendingPublish, publication.Status);
         var refreshed = Assert.Single(viewModel.Orders);
         Assert.False(refreshed.CanShare);
-        Assert.Equal("Shared", refreshed.ShareStatusLabel);
+        Assert.Equal("Awaiting share", refreshed.ShareStatusLabel);
     }
 
     private static SuspendedOrderSummary HeldSummary(
@@ -468,7 +472,7 @@ public sealed class MainChildViewModelFactorySharedHeldOrderTests
 
         public string T(string key)
         {
-            return key;
+            return key == "history.held.sharePending" ? "Awaiting share" : key;
         }
     }
 }

@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using static Hbpos.Client.Tests.SharedHeldOrderClientTestSupport;
@@ -15,6 +16,7 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
     {
         await using var scope = await CreateRepositoryScopeAsync();
         var holdGuid = Guid.NewGuid();
+        await InsertLegacyOrderAsync(scope, holdGuid);
         Assert.True(await scope.Repository.UpsertPublicationAsync(
             holdGuid,
             "S001",
@@ -44,7 +46,7 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
         Assert.Equal(SharedHeldOrderPublicationStatus.PendingPublish, publication!.Status);
         Assert.Equal(2, publication.Revision);
         Assert.NotNull(publication.PayloadCiphertext);
-        Assert.Equal(
+        AssertCanonicalEqual(
             payload,
             await scope.Repository.GetPublicationPayloadAsync(holdGuid));
 
@@ -61,6 +63,7 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
     {
         await using var scope = await CreateRepositoryScopeAsync();
         var holdGuid = Guid.NewGuid();
+        await InsertLegacyOrderAsync(scope, holdGuid);
         Assert.True(await scope.Repository.UpsertPublicationAsync(
             holdGuid,
             "S001",
@@ -109,6 +112,7 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
     {
         await using var scope = await CreateRepositoryScopeAsync();
         var holdGuid = Guid.NewGuid();
+        await InsertLegacyOrderAsync(scope, holdGuid);
         var payload = SampleCanonical();
         Assert.True(await scope.Repository.UpsertPublicationAsync(
             holdGuid,
@@ -128,7 +132,7 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
             1,
             payload,
             "2026-07-28T01:01:00.000Z"));
-        Assert.Equal(payload, await scope.Repository.GetPublicationPayloadAsync(holdGuid));
+        AssertCanonicalEqual(payload, await scope.Repository.GetPublicationPayloadAsync(holdGuid));
 
         Assert.True(await scope.Repository.TryAdvancePublicationAsync(
             holdGuid,
@@ -138,9 +142,45 @@ public sealed class SharedHeldOrderRepositoryPhase2CTests
             "2026-07-28T01:02:00.000Z",
             remoteRevision: 5L,
             remoteUpdatedAtIso: "2026-07-28T01:02:00.000Z"));
-        Assert.Equal(payload, await scope.Repository.GetPublicationPayloadAsync(holdGuid));
+        AssertCanonicalEqual(payload, await scope.Repository.GetPublicationPayloadAsync(holdGuid));
 
         var missing = await scope.Repository.GetPublicationPayloadAsync(Guid.NewGuid());
         Assert.Null(missing);
+    }
+
+    private static async Task InsertLegacyOrderAsync(RepositoryScope scope, Guid holdGuid)
+    {
+        // 显式构造没有 publication 行的旧挂单；share 请求必须绑定真实 Pending 挂单。
+        await using var connection = await scope.Store.OpenConnectionAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText =
+            """
+            INSERT INTO SuspendedOrders (
+                SuspendedOrderGuid, StoreCode, DeviceCode, CashierId, CashierName, SuspendedAt,
+                TotalAmount, DiscountAmount, ActualAmount, Status)
+            VALUES ($HoldGuid, 'S001', 'POS-01', 'cashier-1', 'Cashier One',
+                    '2026-07-28T00:00:00+00:00', '11.00', '0.00', '11.00', 0);
+
+            INSERT INTO SuspendedOrderLines (
+                SuspendedOrderLineGuid, SuspendedOrderGuid, StoreCode, ProductCode, ReferenceCode,
+                DisplayName, LookupCode, ItemNumber, ProductImage, Quantity, UnitPrice, DiscountAmount,
+                DiscountPercent, IsAutomaticPromotionDiscount, DiscountSource, ActualAmount, PriceSource,
+                PriceSourceLabel, Kind, ReturnSourceKey, OriginalOrderGuid, OriginalOrderDetailGuid, ReturnReason)
+            VALUES ($LineGuid, $HoldGuid, 'S001', 'P-1', NULL, 'Product 1', 'CODE-1', NULL, NULL,
+                    '1', '11.00', '0.00', NULL, 0, 0, '11.00', 0, 'ProductBase', 0, '', NULL, NULL, NULL);
+            """;
+        command.Parameters.AddWithValue("$HoldGuid", holdGuid.ToString("D"));
+        command.Parameters.AddWithValue("$LineGuid", Guid.NewGuid().ToString("D"));
+        await command.ExecuteNonQueryAsync();
+    }
+
+    private static void AssertCanonicalEqual(
+        SharedHeldOrderCanonicalPayload expected,
+        SharedHeldOrderCanonicalPayload? actual)
+    {
+        Assert.NotNull(actual);
+        // 使用独立于生产 canonical serializer 的结构序列化，既忽略集合实现类型，
+        // 又能发现生产序列化/反序列化遗漏字段或改变集合顺序。
+        Assert.Equal(JsonSerializer.Serialize(expected), JsonSerializer.Serialize(actual));
     }
 }

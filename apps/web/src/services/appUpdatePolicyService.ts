@@ -5,8 +5,8 @@ import type {
   AppUpdateTargetStoreOption,
   IosAppStoreRelease,
   IosAppStoreReleaseCreateRequest,
+  MobileIosNativeUpdatePolicyRequest,
   NativeUpdatePolicy,
-  NativeUpdatePolicyRequest,
   PosIpadNativeUpdatePolicyRequest,
   PosIpadOtaRelease,
   PosIpadOtaRollout,
@@ -199,7 +199,7 @@ export function createAppUpdatePolicyService(transport: AppUpdatePolicyTransport
     },
 
     async saveMobileIosNativePolicy(
-      payload: NativeUpdatePolicyRequest,
+      payload: MobileIosNativeUpdatePolicyRequest,
       signal?: AbortSignal,
     ) {
       const response = await transport.put(

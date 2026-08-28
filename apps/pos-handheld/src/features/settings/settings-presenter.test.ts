@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+const deviceActivationCode =
+  "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+
 import {
   SETTINGS_APP_UPDATE_PERMISSION,
   SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
@@ -1710,13 +1713,21 @@ test("API 切换、目录重置、设备重注册与应用重启必须先确认"
   await presenter.confirmDangerousAction();
   assert.equal(port.catalogResetCalls, 1);
 
-  presenter.setReregisterStoreCode(" BNE-02 ");
+  presenter.setDeviceActivationCode(` \t${deviceActivationCode.toLowerCase()}\n`);
   presenter.setTerminalName(" iPad Front ");
+  await presenter.previewDeviceReregistration();
+  assert.deepEqual(presenter.getState().deviceActivationPreview, {
+    activationCode: deviceActivationCode,
+    storeCode: "BNE-02",
+    storeName: "Sunnybank",
+    deviceSystem: "Android",
+    expiresAtUtc: "2026-08-28T00:00:00.000Z",
+  });
   assert.equal(presenter.requestDeviceReregistration(), true);
   assert.equal(port.reregistrations.length, 0);
   await presenter.confirmDangerousAction();
   assert.deepEqual(port.reregistrations, [
-    { targetStoreCode: "BNE-02", terminalName: "iPad Front" },
+    { activationCode: deviceActivationCode, terminalName: "iPad Front" },
   ]);
 
   assert.equal(presenter.requestAppRestart(), true);
@@ -1724,6 +1735,27 @@ test("API 切换、目录重置、设备重注册与应用重启必须先确认"
   await presenter.confirmDangerousAction();
   assert.equal(port.restartCalls, 1);
   assert.equal(port.dangerousActionCalls, 4);
+});
+
+test("清除设备注册必须先展示影响说明，并只在最终确认时传递瞬时员工条码", async () => {
+  const port = new FakeSettingsPort();
+  const presenter = createPresenter(port);
+  await presenter.load();
+
+  assert.equal(presenter.requestDeviceRegistrationReset(), true);
+  assert.deepEqual(presenter.getState().confirmation, {
+    kind: "reset-device-registration",
+  });
+  assert.deepEqual(port.deviceResetBarcodes, []);
+
+  await presenter.confirmDangerousAction(" 9900000000001 ");
+
+  assert.deepEqual(port.deviceResetBarcodes, ["9900000000001"]);
+  assert.equal(presenter.getState().confirmation, null);
+  assert.equal(
+    presenter.getState().statusCode,
+    "device-registration-reset-completed",
+  );
 });
 
 test("任何待同步、未决支付、活动购物车或耐久写入都会阻断危险操作并保留本地数据", async () => {
@@ -1782,7 +1814,8 @@ test("安全检查失败时 fail closed，异常详情不会进入 UI 状态", a
   port.failSafety = true;
   const presenter = createPresenter(port);
   await presenter.load();
-  presenter.setReregisterStoreCode("BNE-02");
+  presenter.setDeviceActivationCode(deviceActivationCode);
+  await presenter.previewDeviceReregistration();
   presenter.requestDeviceReregistration();
 
   await presenter.confirmDangerousAction();
@@ -2080,7 +2113,7 @@ test("目录刷新中阻断所有会重绑运行时的危险操作，但不锁�
   assert.equal(presenter.requestApiAddressChange(), false);
   assert.equal(presenter.requestCatalogReset(), false);
   await presenter.savePaymentSettings();
-  presenter.setReregisterStoreCode("BNE-02");
+  presenter.setDeviceActivationCode(deviceActivationCode);
   assert.equal(presenter.requestDeviceReregistration(), false);
   assert.equal(presenter.requestAppRestart(), false);
   assert.equal(presenter.getState().statusCode, "safety-check-failed");
@@ -2121,7 +2154,7 @@ test("缺少细分权限时写操作 fail closed", async () => {
   presenter.setPrinterEnabled(false);
   await presenter.savePrinterSettings();
   presenter.requestCatalogReset();
-  presenter.setReregisterStoreCode("BNE-02");
+  presenter.setDeviceActivationCode(deviceActivationCode);
   presenter.requestDeviceReregistration();
 
   assert.deepEqual(port.savedPayments, []);
@@ -2207,9 +2240,11 @@ class FakeSettingsPort implements SettingsControlPort {
     preferred: boolean;
   }>[] = [];
   public readonly reregistrations: {
-    targetStoreCode: string;
+    activationCode: string;
     terminalName?: string;
   }[] = [];
+  public readonly activationPreviewRequests: string[] = [];
+  public readonly deviceResetBarcodes: string[] = [];
 
   public async loadSnapshot(): Promise<SettingsSnapshot> {
     this.loadCalls += 1;
@@ -2241,8 +2276,21 @@ class FakeSettingsPort implements SettingsControlPort {
     return !this.failApiHealth;
   }
 
+  public async previewDeviceActivationCode(activationCode: string) {
+    this.activationPreviewRequests.push(activationCode);
+    return {
+      isAllowed: true,
+      storeCode: "BNE-02",
+      storeName: "Sunnybank",
+      deviceSystem: "Android",
+      expiresAtUtc: "2026-08-28T00:00:00.000Z",
+    };
+  }
+
   public async executeDangerousAction(
     action: SettingsDangerousConfirmation,
+    _signal?: AbortSignal,
+    employeeBarcode?: string,
   ): Promise<SettingsDangerousActionResult> {
     this.dangerousActionCalls += 1;
     if (this.failSafety) {
@@ -2299,9 +2347,13 @@ class FakeSettingsPort implements SettingsControlPort {
     }
     if (action.kind === "reregister-device") {
       this.reregistrations.push({
-        targetStoreCode: action.targetStoreCode,
+        activationCode: action.activationCode,
         ...(action.terminalName ? { terminalName: action.terminalName } : {}),
       });
+      return { status: "completed" as const, kind: action.kind };
+    }
+    if (action.kind === "reset-device-registration") {
+      this.deviceResetBarcodes.push(employeeBarcode?.trim() ?? "");
       return { status: "completed" as const, kind: action.kind };
     }
     if (action.kind === "change-payment-settings") {
