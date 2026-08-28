@@ -11,6 +11,7 @@ import {
   Input,
   List,
   Modal,
+  Segmented,
   Select,
   Skeleton,
   Space,
@@ -39,8 +40,8 @@ import {
   createUser,
   deleteUserStorePosTerminalPermissions,
   getUserByGuid,
+  getUserAccessPermissions,
   getUserLoginRecords,
-  getUserPermissionState,
   getUserRoles,
   getUserStorePosTerminalPermissions,
   getUserStores,
@@ -50,7 +51,6 @@ import {
   updateUserStorePosTerminalPermissions,
 } from '../../../services/userService'
 import { getActiveRoles } from '../../../services/roleService'
-import { getPermissions } from '../../../services/roleService'
 import { getStores } from '../../../services/storeService'
 import type { CreateUserDto, UpdateUserDto, UserDetailDto, UserDto, UserLoginRecordDto, UserPermissionStateDto, UserStoreDto, UserStorePosTerminalPermissionsResponse } from '../../../types/user'
 import type { RoleOptionDto, PermissionCategoryDto } from '../../../types/role'
@@ -74,18 +74,20 @@ import {
   arePermissionSetsEqual,
   buildGrantedPosPermissionCodes,
   buildDirectPermissionPayload,
+  buildEffectivePermissionCodes,
   buildPosPermissionSections,
   buildPermissionSourceMap,
-  deriveDirectPermissionKeysFromChecked,
+  canMutateLoadedAssignment,
   getEditablePosPermissionCodes,
   getPosPermissionGroupSelectionState,
   isCurrentPosPermissionRequest,
   isInheritedPosPermissionMode,
+  mergeVisibleDirectPermissionSelection,
   setPosPermissionGroupSelection,
   shouldEnablePosPermissionSave,
-  uniquePermissionCodes,
+  splitPermissionCategoriesByPlatform,
 } from './userPermissions'
-import type { PosPermissionRequestTarget } from './userPermissions'
+import type { AssignmentLoadStatus, PosPermissionRequestTarget } from './userPermissions'
 import { formatUserLocalDateTime } from './time'
 import {
   DEFAULT_SYSTEM_LIST_PAGE_SIZE,
@@ -94,11 +96,15 @@ import {
   runLatestGuardedRequest,
 } from '../listPagination'
 import { MeasuredTable } from '../../../components/MeasuredTable'
+import UserMobileMenuPermissionManager from './UserMobileMenuPermissionManager'
+
+type PermissionPlatform = 'web' | 'pos'
 
 export default function SystemUsersPage() {
   const { t } = useTranslation()
   const currentUser = useAuthStore((state) => state.currentUser)
   const access = useAuthStore((state) => state.access)
+  const refreshCurrentUserSilently = useAuthStore((state) => state.refreshCurrentUserSilently)
   const [loading, setLoading] = useState(false)
   const [keyword, setKeyword] = useState('')
   const [data, setData] = useState<UserDto[]>([])
@@ -107,6 +113,14 @@ export default function SystemUsersPage() {
   const [total, setTotal] = useState(0)
   const mainListRequestGuardRef = useRef(createLatestRequestGuard())
   const loginRecordsRequestGuardRef = useRef(createLatestRequestGuard())
+  const editUserRequestGuardRef = useRef(createLatestRequestGuard())
+  const editSessionGuardRef = useRef(createLatestRequestGuard())
+  const currentEditSessionIdRef = useRef<number | null>(null)
+  const roleRequestGuardRef = useRef(createLatestRequestGuard())
+  const storeRequestGuardRef = useRef(createLatestRequestGuard())
+  const permissionRequestGuardRef = useRef(createLatestRequestGuard())
+  const permissionSaveGuardRef = useRef(createLatestRequestGuard())
+  const editingUserGuidRef = useRef<string | null>(null)
 
   const [selectedStoreGuid, setSelectedStoreGuid] = useState<string | undefined>(undefined)
   const [selectedRoleGuid, setSelectedRoleGuid] = useState<string | undefined>(undefined)
@@ -138,13 +152,15 @@ export default function SystemUsersPage() {
 
   const [allRoles, setAllRoles] = useState<RoleOptionDto[]>([])
   const [roleTargetKeys, setRoleTargetKeys] = useState<string[]>([])
-  const [roleLoading, setRoleLoading] = useState(false)
+  const [roleLoadStatus, setRoleLoadStatus] = useState<AssignmentLoadStatus>('idle')
+  const roleLoading = roleLoadStatus === 'loading'
   const [roleSaving, setRoleSaving] = useState(false)
 
   const [allStores, setAllStores] = useState<StoreDto[]>([])
   const [storeTargetKeys, setStoreTargetKeys] = useState<string[]>([])
   const [storeManageableKeys, setStoreManageableKeys] = useState<string[]>([])
-  const [storeLoading, setStoreLoading] = useState(false)
+  const [storeLoadStatus, setStoreLoadStatus] = useState<AssignmentLoadStatus>('idle')
+  const storeLoading = storeLoadStatus === 'loading'
   const [storeSaving, setStoreSaving] = useState(false)
 
   const [permCategories, setPermCategories] = useState<PermissionCategoryDto[]>([])
@@ -153,6 +169,8 @@ export default function SystemUsersPage() {
   const [originalDirectPermKeys, setOriginalDirectPermKeys] = useState<string[]>([])
   const [permLoading, setPermLoading] = useState(false)
   const [permSaving, setPermSaving] = useState(false)
+  const [permLoadError, setPermLoadError] = useState<string | null>(null)
+  const [permissionPlatform, setPermissionPlatform] = useState<PermissionPlatform>('web')
 
   const [posPermissionOpen, setPosPermissionOpen] = useState(false)
   const [posPermissionUser, setPosPermissionUser] = useState<UserDto | null>(null)
@@ -194,8 +212,15 @@ export default function SystemUsersPage() {
   const managedStoreKey = managedStores.map((store) => store.storeGUID).join('|')
   const canLoadRoleOptions = access.canReadRole || access.hasPermission(P.Users.ManageRoles)
   const canManageUserPermissions = access.hasPermission(P.Users.ManageRoles)
-  const canEditUserPermissions = canManageUserPermissions
   const canManagePosTerminalPermissions = access.hasPermission(P.Users.ManagePosTerminalPermissions)
+  const canEditUserPermissions = canManageUserPermissions || (
+    isCurrentUserScoped && canManagePosTerminalPermissions
+  )
+  const isCurrentEditingSession = (userGuid: string, sessionId: number | null) => Boolean(
+    sessionId !== null &&
+    editingUserGuidRef.current === userGuid &&
+    editSessionGuardRef.current.isLatest(sessionId),
+  )
 
   const visibleStoreOptions = useMemo(() => {
     if (isCurrentUserScoped) {
@@ -408,6 +433,12 @@ export default function SystemUsersPage() {
   useEffect(() => () => {
     mainListRequestGuardRef.current.invalidate()
     loginRecordsRequestGuardRef.current.invalidate()
+    editUserRequestGuardRef.current.invalidate()
+    editSessionGuardRef.current.invalidate()
+    roleRequestGuardRef.current.invalidate()
+    storeRequestGuardRef.current.invalidate()
+    permissionRequestGuardRef.current.invalidate()
+    permissionSaveGuardRef.current.invalidate()
   }, [])
 
   const loadLoginRecords = async (
@@ -556,72 +587,135 @@ export default function SystemUsersPage() {
   }
 
   const loadRoleData = async (userGuid: string) => {
-    setRoleLoading(true)
-    try {
-      if (!canLoadRoleOptions) {
-        setAllRoles([])
-        setRoleTargetKeys([])
-        return
-      }
+    const editSessionId = currentEditSessionIdRef.current
+    if (!isCurrentEditingSession(userGuid, editSessionId)) return
 
-      const [roles, userRoles] = await Promise.all([getActiveRoles(), getUserRoles(userGuid)])
-      setAllRoles(isCurrentUserScoped ? filterRoleOptionsForScopedManager(roles) : roles)
-      setRoleTargetKeys(userRoles.map((item) => item.roleGUID))
-    } catch (error) {
-      console.error(error)
-      message.error(t('system.users.loadRolesFailed', '加载角色数据失败'))
-    } finally {
-      setRoleLoading(false)
-    }
+    await runLatestGuardedRequest(
+      roleRequestGuardRef.current,
+      async () => {
+        if (!canLoadRoleOptions) {
+          return { roles: [] as RoleOptionDto[], targetKeys: [] as string[] }
+        }
+
+        const [roles, userRoles] = await Promise.all([getActiveRoles(), getUserRoles(userGuid)])
+        return {
+          roles: isCurrentUserScoped ? filterRoleOptionsForScopedManager(roles) : roles,
+          targetKeys: userRoles.map((item) => item.roleGUID),
+        }
+      },
+      {
+        onStart: () => setRoleLoadStatus('loading'),
+        onSuccess: ({ roles, targetKeys }) => {
+          if (!isCurrentEditingSession(userGuid, editSessionId)) return
+          setAllRoles(roles)
+          setRoleTargetKeys(targetKeys)
+          setRoleLoadStatus('ready')
+        },
+        onError: (error) => {
+          if (!isCurrentEditingSession(userGuid, editSessionId)) return
+          setRoleLoadStatus('error')
+          console.error(error)
+          message.error(t('system.users.loadRolesFailed', '加载角色数据失败'))
+        },
+      },
+    )
+  }
+
+  const retryRoleData = () => {
+    const userGuid = editingUserGuidRef.current
+    const editSessionId = currentEditSessionIdRef.current
+    if (!userGuid || !isCurrentEditingSession(userGuid, editSessionId)) return
+    void loadRoleData(userGuid)
   }
 
   const loadStoreData = async (userGuid: string) => {
-    setStoreLoading(true)
-    try {
-      if (isCurrentUserScoped) {
-        const userStores = await getUserStores(userGuid)
-        const scopedUserStores = filterStoresForManager(userStores, managedStores)
-        setAllStores(managedStoreDetails)
-        setStoreTargetKeys(sortStoreGuidsFromStores(scopedUserStores.map((item) => item.storeGUID), managedStoreDetails))
-        setStoreManageableKeys(sortStoreGuidsFromStores(
-          scopedUserStores.filter((item) => item.isManageable).map((item) => item.storeGUID),
-          managedStoreDetails,
-        ))
-        return
-      }
+    const editSessionId = currentEditSessionIdRef.current
+    if (!isCurrentEditingSession(userGuid, editSessionId)) return
 
-      const [stores, userStores] = await Promise.all([
-        getStores({ page: 1, pageSize: 200, sortField: 'storeName', sortOrder: 'asc' }),
-        getUserStores(userGuid),
-      ])
-      setAllStores(stores.items)
-      setStoreTargetKeys(sortStoreGuids(userStores.map((item) => item.storeGUID)))
-      setStoreManageableKeys(sortStoreGuids(userStores.filter((item) => item.isManageable).map((item) => item.storeGUID)))
-    } catch (error) {
-      console.error(error)
-      message.error(t('system.users.loadStoresFailed', '加载分店数据失败'))
-    } finally {
-      setStoreLoading(false)
-    }
+    await runLatestGuardedRequest(
+      storeRequestGuardRef.current,
+      async () => {
+        if (isCurrentUserScoped) {
+          const userStores = await getUserStores(userGuid)
+          const scopedUserStores = filterStoresForManager(userStores, managedStores)
+          return {
+            stores: managedStoreDetails,
+            targetKeys: sortStoreGuidsFromStores(
+              scopedUserStores.map((item) => item.storeGUID),
+              managedStoreDetails,
+            ),
+            manageableKeys: sortStoreGuidsFromStores(
+              scopedUserStores.filter((item) => item.isManageable).map((item) => item.storeGUID),
+              managedStoreDetails,
+            ),
+          }
+        }
+
+        const [stores, userStores] = await Promise.all([
+          getStores({ page: 1, pageSize: 200, sortField: 'storeName', sortOrder: 'asc' }),
+          getUserStores(userGuid),
+        ])
+        return {
+          stores: stores.items,
+          targetKeys: sortStoreGuids(userStores.map((item) => item.storeGUID)),
+          manageableKeys: sortStoreGuids(
+            userStores.filter((item) => item.isManageable).map((item) => item.storeGUID),
+          ),
+        }
+      },
+      {
+        onStart: () => setStoreLoadStatus('loading'),
+        onSuccess: ({ stores, targetKeys, manageableKeys }) => {
+          if (!isCurrentEditingSession(userGuid, editSessionId)) return
+          setAllStores(stores)
+          setStoreTargetKeys(targetKeys)
+          setStoreManageableKeys(manageableKeys)
+          setStoreLoadStatus('ready')
+        },
+        onError: (error) => {
+          if (!isCurrentEditingSession(userGuid, editSessionId)) return
+          setStoreLoadStatus('error')
+          console.error(error)
+          message.error(t('system.users.loadStoresFailed', '加载分店数据失败'))
+        },
+      },
+    )
+  }
+
+  const retryStoreData = () => {
+    const userGuid = editingUserGuidRef.current
+    const editSessionId = currentEditSessionIdRef.current
+    if (!userGuid || !isCurrentEditingSession(userGuid, editSessionId)) return
+    void loadStoreData(userGuid)
   }
 
   const loadPermData = async (userGuid: string) => {
-    setPermLoading(true)
-    try {
-      const [categories, nextPermissionState] = await Promise.all([
-        getPermissions(),
-        getUserPermissionState(userGuid),
-      ])
-      setPermCategories(categories)
-      setPermissionState(nextPermissionState)
-      setDirectPermKeys(nextPermissionState.directPermissionCodes)
-      setOriginalDirectPermKeys(nextPermissionState.directPermissionCodes)
-    } catch (error) {
-      console.error(error)
-      message.error(t('system.users.loadPermsFailed', '加载权限数据失败'))
-    } finally {
-      setPermLoading(false)
-    }
+    // 角色保存等旧异步流程可能晚到；只有当前编辑会话可以启动权限读取。
+    if (editingUserGuidRef.current !== userGuid) return
+
+    await runLatestGuardedRequest(
+      permissionRequestGuardRef.current,
+      () => getUserAccessPermissions(userGuid),
+      {
+        onStart: () => {
+          setPermLoading(true)
+          setPermLoadError(null)
+        },
+        onSuccess: ({ categories, state }) => {
+          setPermCategories(categories)
+          setPermissionState(state)
+          setDirectPermKeys(state.directPermissionCodes)
+          setOriginalDirectPermKeys(state.directPermissionCodes)
+          setPermLoadError(null)
+        },
+        onError: (error) => {
+          console.error(error)
+          setPermLoadError(t('system.users.permissionLoadErrorState', '无法取得该用户的权限范围，请稍后重试。'))
+          message.error(t('system.users.loadPermsFailed', '加载权限数据失败'))
+        },
+        onSettled: () => setPermLoading(false),
+      },
+    )
   }
 
   const handleEdit = async (record: UserDto) => {
@@ -630,141 +724,284 @@ export default function SystemUsersPage() {
       return
     }
 
+    currentEditSessionIdRef.current = editSessionGuardRef.current.begin()
+    roleRequestGuardRef.current.invalidate()
+    storeRequestGuardRef.current.invalidate()
     setEditOpen(true)
-    setEditLoading(true)
+    editingUserGuidRef.current = record.userGUID
     setEditingUser(null)
     setEditTab('info')
+    setPermissionPlatform(isCurrentUserScoped ? 'pos' : 'web')
+    permissionRequestGuardRef.current.invalidate()
+    permissionSaveGuardRef.current.invalidate()
+    setAllRoles([])
+    setRoleTargetKeys([])
+    setRoleLoadStatus('idle')
+    setAllStores([])
+    setStoreTargetKeys([])
+    setStoreManageableKeys([])
+    setStoreLoadStatus('idle')
+    setPermCategories([])
     setPermissionState(null)
     setDirectPermKeys([])
     setOriginalDirectPermKeys([])
+    setPermLoading(false)
+    setPermSaving(false)
+    setPermLoadError(null)
+    setRoleSaving(false)
+    setStoreSaving(false)
     form.resetFields()
-    try {
-      const detail = await getUserByGuid(record.userGUID)
-      if (isCurrentUserScoped && hasForbiddenRoleForScopedManager(detail)) {
-        message.error(t('system.users.editOutOfScope', '无权编辑该用户'))
-        setEditOpen(false)
-        return
-      }
-      setEditingUser(detail)
-      form.setFieldsValue({
-        username: detail.username,
-        email: detail.email,
-        fullName: detail.fullName,
-        isActive: detail.isActive,
-      })
-      void loadRoleData(record.userGUID)
-      void loadStoreData(record.userGUID)
-      void loadPermData(record.userGUID)
-    } catch (error) {
-      console.error(error)
-      message.error(t('system.users.loadEditFailed', '加载用户编辑数据失败'))
-      setEditOpen(false)
-    } finally {
-      setEditLoading(false)
-    }
+    await runLatestGuardedRequest(
+      editUserRequestGuardRef.current,
+      () => getUserByGuid(record.userGUID),
+      {
+        onStart: () => setEditLoading(true),
+        onSuccess: (detail) => {
+          if (isCurrentUserScoped && hasForbiddenRoleForScopedManager(detail)) {
+            message.error(t('system.users.editOutOfScope', '无权编辑该用户'))
+            editingUserGuidRef.current = null
+            currentEditSessionIdRef.current = null
+            editSessionGuardRef.current.invalidate()
+            setEditOpen(false)
+            return
+          }
+          setEditingUser(detail)
+          form.setFieldsValue({
+            username: detail.username,
+            email: detail.email,
+            fullName: detail.fullName,
+            isActive: detail.isActive,
+          })
+          void loadRoleData(record.userGUID)
+          void loadStoreData(record.userGUID)
+          if (canEditUserPermissions) {
+            void loadPermData(record.userGUID)
+          }
+        },
+        onError: (error) => {
+          console.error(error)
+          message.error(t('system.users.loadEditFailed', '加载用户编辑数据失败'))
+          editingUserGuidRef.current = null
+          currentEditSessionIdRef.current = null
+          editSessionGuardRef.current.invalidate()
+          setEditOpen(false)
+        },
+        onSettled: () => setEditLoading(false),
+      },
+    )
   }
 
   const handleEditSubmit = async () => {
     if (!editingUser) return
+    const targetUserGuid = editingUser.userGUID
+    const editSessionId = currentEditSessionIdRef.current
+    if (editSessionId === null) return
+
     try {
       const values = await form.validateFields()
+      if (!isCurrentEditingSession(targetUserGuid, editSessionId)) return
+
       setEditLoading(true)
-      const updated = await updateUser(editingUser.userGUID, values)
+      const updated = await updateUser(targetUserGuid, values)
+      void loadData(page, pageSize, sortBy, sortOrder)
+      if (!isCurrentEditingSession(targetUserGuid, editSessionId)) return
+
       message.success(t('system.users.updateSuccess', '用户信息已更新'))
       setEditingUser(updated)
       if (detailUser?.userGUID === updated.userGUID) {
         setDetailUser(updated)
       }
-      void loadData(page, pageSize, sortBy, sortOrder)
     } catch (error) {
       if (typeof error === 'object' && error !== null && 'errorFields' in error) return
-      console.error(error)
-      message.error(t('system.users.updateFailed', '更新用户失败'))
+      if (isCurrentEditingSession(targetUserGuid, editSessionId)) {
+        console.error(error)
+        message.error(t('system.users.updateFailed', '更新用户失败'))
+      }
     } finally {
-      setEditLoading(false)
+      if (isCurrentEditingSession(targetUserGuid, editSessionId)) {
+        setEditLoading(false)
+      }
     }
   }
 
   const handleSaveRoles = async () => {
-    if (!editingUser) return
+    if (!editingUser || !canMutateLoadedAssignment(roleLoadStatus, roleSaving)) return
+    const targetUserGuid = editingUser.userGUID
+    const editSessionId = currentEditSessionIdRef.current
+    if (editSessionId === null) return
     if (isCurrentUserScoped && !areRoleGuidsAllowedForScopedManager(roleTargetKeys, allRoles)) {
       message.error(t('system.users.roleAssignForbidden', '店长不能分配管理员、店长或仓库经理角色'))
       return
     }
     setRoleSaving(true)
     try {
-      await assignRolesToUser(editingUser.userGUID, { roleGuids: roleTargetKeys })
-      message.success(t('system.users.roleAssignSuccess', '角色分配成功'))
+      try {
+        await assignRolesToUser(targetUserGuid, { roleGuids: roleTargetKeys })
+      } catch (error) {
+        if (isCurrentEditingSession(targetUserGuid, editSessionId)) {
+          console.error(error)
+          message.error(t('system.users.roleAssignFailed', '角色分配失败'))
+        }
+        return
+      }
+
       void loadData(page, pageSize, sortBy, sortOrder)
-      const updated = await getUserByGuid(editingUser.userGUID)
-      void loadPermData(editingUser.userGUID)
-      setEditingUser(updated)
-      if (detailUser?.userGUID === updated.userGUID) setDetailUser(updated)
-    } catch (error) {
-      console.error(error)
-      message.error(t('system.users.roleAssignFailed', '角色分配失败'))
+      if (!isCurrentEditingSession(targetUserGuid, editSessionId)) return
+
+      message.success(t('system.users.roleAssignSuccess', '角色分配成功'))
+      try {
+        const updated = await getUserByGuid(targetUserGuid)
+        if (!isCurrentEditingSession(targetUserGuid, editSessionId)) return
+
+        void loadPermData(targetUserGuid)
+        setEditingUser(updated)
+        if (detailUser?.userGUID === updated.userGUID) setDetailUser(updated)
+      } catch (error) {
+        if (isCurrentEditingSession(targetUserGuid, editSessionId)) {
+          console.error(error)
+          message.warning(t(
+            'system.users.permissionRefreshFailed',
+            '角色已保存，但最新用户状态刷新失败；请关闭后重新打开抽屉。',
+          ))
+        }
+      }
     } finally {
-      setRoleSaving(false)
+      if (isCurrentEditingSession(targetUserGuid, editSessionId)) {
+        setRoleSaving(false)
+      }
     }
   }
 
   const handleSavePermissions = async () => {
-    if (!editingUser || !canEditUserPermissions) return
+    if (
+      !editingUser ||
+      !canEditUserPermissions ||
+      permissionState?.isSuperAdmin ||
+      permissionState?.implicitAllPermissions
+    ) return
+
+    const targetUserGuid = editingUser.userGUID
+    const saveRequestId = permissionSaveGuardRef.current.begin()
+    const isCurrentSaveSession = () => permissionSaveGuardRef.current.isLatest(saveRequestId)
+    const permissions = buildDirectPermissionPayload(directPermKeys)
     setPermSaving(true)
+
     try {
-      const permissions = buildDirectPermissionPayload(directPermKeys)
-      await assignPermissionsToUser(editingUser.userGUID, { permissions })
+      try {
+        await assignPermissionsToUser(targetUserGuid, { permissions })
+      } catch (error) {
+        if (isCurrentSaveSession()) {
+          console.error(error)
+          message.error(t('system.users.permissionAssignFailed', '用户直接权限保存失败'))
+        }
+        return
+      }
+
+      if (!isCurrentSaveSession()) return
+
+      setOriginalDirectPermKeys(permissions)
       message.success(t('system.users.permissionAssignSuccess', '用户直接权限已保存'))
-      await loadPermData(editingUser.userGUID)
       void loadData(page, pageSize, sortBy, sortOrder)
-      const updated = await getUserByGuid(editingUser.userGUID)
-      setEditingUser(updated)
-      if (detailUser?.userGUID === updated.userGUID) setDetailUser(updated)
-    } catch (error) {
-      console.error(error)
-      message.error(t('system.users.permissionAssignFailed', '用户直接权限保存失败'))
+
+      try {
+        const [{ categories, state }, updated] = await Promise.all([
+          getUserAccessPermissions(targetUserGuid),
+          getUserByGuid(targetUserGuid),
+        ])
+        if (!isCurrentSaveSession()) return
+
+        setPermCategories(categories)
+        setPermissionState(state)
+        setDirectPermKeys(state.directPermissionCodes)
+        setOriginalDirectPermKeys(state.directPermissionCodes)
+        setPermLoadError(null)
+        setEditingUser(updated)
+        if (detailUser?.userGUID === updated.userGUID) setDetailUser(updated)
+
+        if (currentUser?.userGUID === updated.userGUID) {
+          await refreshCurrentUserSilently()
+          if (!isCurrentSaveSession()) return
+        }
+      } catch (error) {
+        if (isCurrentSaveSession()) {
+          console.error(error)
+          message.warning(t(
+            'system.users.permissionRefreshFailed',
+            '权限已保存，但最新权限状态刷新失败；请关闭后重新打开抽屉。',
+          ))
+        }
+      }
     } finally {
-      setPermSaving(false)
+      if (isCurrentSaveSession()) {
+        setPermSaving(false)
+      }
     }
   }
 
   const handleSaveStores = async () => {
-    if (!editingUser) return
+    if (!editingUser || !canMutateLoadedAssignment(storeLoadStatus, storeSaving)) return
+    const targetUserGuid = editingUser.userGUID
+    const editSessionId = currentEditSessionIdRef.current
+    if (editSessionId === null) return
     setStoreSaving(true)
     try {
-      const storeAssignments = isCurrentUserScoped
-        ? buildScopedStoreAssignments(
-          await getUserStores(editingUser.userGUID),
-          storeTargetKeys,
-          storeManageableKeys,
-          managedStores,
-        )
-        : storeTargetKeys.map((storeGUID) => ({
-          storeGUID,
-          accessLevel: 'ReadWrite',
-          isManageable: storeManageableKeys.includes(storeGUID),
-        }))
+      try {
+        const storeAssignments = isCurrentUserScoped
+          ? buildScopedStoreAssignments(
+            await getUserStores(targetUserGuid),
+            storeTargetKeys,
+            storeManageableKeys,
+            managedStores,
+          )
+          : storeTargetKeys.map((storeGUID) => ({
+            storeGUID,
+            accessLevel: 'ReadWrite',
+            isManageable: storeManageableKeys.includes(storeGUID),
+          }))
 
-      await assignStoresToUser(
-        editingUser.userGUID,
-        storeAssignments,
-      )
-      message.success(t('system.users.storeAssignSuccess', '分店分配成功'))
-      void loadData(page, pageSize, sortBy, sortOrder)
-      const updated = await getUserByGuid(editingUser.userGUID)
-      setEditingUser(updated)
-      if (detailUser?.userGUID === updated.userGUID) {
-        void reloadUserDetail(updated.userGUID)
+        if (!isCurrentEditingSession(targetUserGuid, editSessionId)) return
+
+        await assignStoresToUser(
+          targetUserGuid,
+          storeAssignments,
+        )
+      } catch (error) {
+        if (isCurrentEditingSession(targetUserGuid, editSessionId)) {
+          console.error(error)
+          message.error(
+            error instanceof Error
+              ? error.message
+              : t('system.users.storeAssignFailed', '分店分配失败'),
+          )
+        }
+        return
       }
-    } catch (error) {
-      console.error(error)
-      message.error(
-        error instanceof Error
-          ? error.message
-          : t('system.users.storeAssignFailed', '分店分配失败'),
-      )
+
+      void loadData(page, pageSize, sortBy, sortOrder)
+      if (!isCurrentEditingSession(targetUserGuid, editSessionId)) return
+
+      message.success(t('system.users.storeAssignSuccess', '分店分配成功'))
+      try {
+        const updated = await getUserByGuid(targetUserGuid)
+        if (!isCurrentEditingSession(targetUserGuid, editSessionId)) return
+
+        setEditingUser(updated)
+        if (detailUser?.userGUID === updated.userGUID) {
+          void reloadUserDetail(updated.userGUID)
+        }
+      } catch (error) {
+        if (isCurrentEditingSession(targetUserGuid, editSessionId)) {
+          console.error(error)
+          message.warning(t(
+            'system.users.permissionRefreshFailed',
+            '分店已保存，但最新用户状态刷新失败；请关闭后重新打开抽屉。',
+          ))
+        }
+      }
     } finally {
-      setStoreSaving(false)
+      if (isCurrentEditingSession(targetUserGuid, editSessionId)) {
+        setStoreSaving(false)
+      }
     }
   }
 
@@ -1028,16 +1265,36 @@ export default function SystemUsersPage() {
     return new Set(permCategories.flatMap((cat) => cat.permissions.map((permission) => permission.name)))
   }, [permCategories])
 
+  const platformPermissionCategories = useMemo(
+    () => splitPermissionCategoriesByPlatform(permCategories),
+    [permCategories],
+  )
+
+  const visiblePermissionCategories = platformPermissionCategories[permissionPlatform]
+  const visiblePermissionCodes = useMemo(
+    () => visiblePermissionCategories.flatMap((category) =>
+      category.permissions.map((permission) => permission.name),
+    ),
+    [visiblePermissionCategories],
+  )
+
   const directPermSet = useMemo(() => {
     return new Set(directPermKeys)
   }, [directPermKeys])
 
   const effectivePermSet = useMemo(() => {
-    return new Set(uniquePermissionCodes([
-      ...(permissionState?.inheritedPermissionCodes ?? []),
-      ...directPermKeys,
-    ]))
+    return new Set(buildEffectivePermissionCodes(
+      permissionState?.inheritedPermissionCodes ?? [],
+      directPermKeys,
+    ))
   }, [directPermKeys, permissionState])
+
+  const isPermissionStateReadOnly = Boolean(
+    permissionState?.isSuperAdmin || permissionState?.implicitAllPermissions,
+  )
+  const canEditCurrentPermissionState = Boolean(
+    permissionState && canEditUserPermissions && !isPermissionStateReadOnly,
+  )
 
   const permissionSourceMap = useMemo(() => {
     return buildPermissionSourceMap(permissionState?.inheritedSources ?? [])
@@ -1048,13 +1305,14 @@ export default function SystemUsersPage() {
   }, [directPermKeys, originalDirectPermKeys])
 
   const permTreeData = useMemo<DataNode[]>(() => {
-    return permCategories.map((cat) => ({
+    return visiblePermissionCategories.map((cat) => ({
       key: `category:${cat.category}`,
       title: <strong>{cat.displayName}</strong>,
       children: cat.permissions.map((p) => ({
         key: p.name,
+        disableCheckbox: inheritedPermSet.has(p.name) && !directPermSet.has(p.name),
         title: (
-          <Space size={4}>
+          <Space size={4} wrap>
             <span>{p.displayName}</span>
             {(permissionSourceMap[p.name] ?? []).map((roleName) => (
               <Tag key={roleName} color={getRoleColor(roleName)} style={{ fontSize: 11, lineHeight: '18px', padding: '0 4px' }}>
@@ -1070,11 +1328,11 @@ export default function SystemUsersPage() {
         ),
       })),
     }))
-  }, [directPermSet, permCategories, permissionSourceMap, t])
+  }, [directPermSet, inheritedPermSet, permissionSourceMap, t, visiblePermissionCategories])
 
   const checkedPermKeys = useMemo(() => {
-    return Array.from(effectivePermSet)
-  }, [effectivePermSet])
+    return visiblePermissionCodes.filter((permissionCode) => effectivePermSet.has(permissionCode))
+  }, [effectivePermSet, visiblePermissionCodes])
 
   const posPermissionSections = useMemo(
     () => buildPosPermissionSections(posPermissionState?.assignablePermissions ?? []),
@@ -1105,7 +1363,7 @@ export default function SystemUsersPage() {
     nextCheckedKeys: Key[] | { checked: Key[]; halfChecked: Key[] },
     info: { checked: boolean; node: { key: Key } },
   ) => {
-    if (!canEditUserPermissions) return
+    if (!canEditCurrentPermissionState || permSaving) return
 
     const changedKey = String(info.node.key)
     const checkedKeys = Array.isArray(nextCheckedKeys)
@@ -1122,9 +1380,9 @@ export default function SystemUsersPage() {
     }
 
     setDirectPermKeys(
-      deriveDirectPermissionKeysFromChecked({
+      mergeVisibleDirectPermissionSelection({
         checkedPermissionKeys,
-        allPermissionCodes: Array.from(allPermissionCodes),
+        visiblePermissionCodes,
         inheritedPermissionCodes: Array.from(inheritedPermSet),
         currentDirectPermissionCodes: directPermKeys,
       }),
@@ -1322,6 +1580,19 @@ export default function SystemUsersPage() {
       children: (
         <HasPermission code={P.Users.ManageRoles} fallback={<Typography.Text type="secondary">{t('system.users.noRolePermission', '无权限管理角色')}</Typography.Text>}>
           <Spin spinning={roleLoading}>
+            {roleLoadStatus === 'error' ? (
+              <Alert
+                type="error"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message={t('system.users.loadRolesFailed', '加载角色数据失败')}
+                action={(
+                  <Button size="small" onClick={retryRoleData}>
+                    {t('common.retry', '重试')}
+                  </Button>
+                )}
+              />
+            ) : null}
             <div style={{ marginBottom: 12 }}>
               <Typography.Text type="secondary">
                 {t('system.users.assignedRoles', '当前用户已分配 {{count}} 个角色', { count: roleTargetKeys.length })}
@@ -1335,15 +1606,22 @@ export default function SystemUsersPage() {
               }))}
               targetKeys={roleTargetKeys}
               onChange={(nextTargetKeys: Key[], _direction: TransferDirection, _moveKeys: Key[]) => {
+                if (!canMutateLoadedAssignment(roleLoadStatus, roleSaving)) return
                 setRoleTargetKeys(nextTargetKeys.map(String))
               }}
+              disabled={!canMutateLoadedAssignment(roleLoadStatus, roleSaving)}
               render={(item) => item.title}
               titles={[t('system.users.availableRoles', '可选角色'), t('system.users.assignedRolesLabel', '已分配角色')]}
               listStyle={{ width: 320, height: 400 }}
               showSearch
             />
             <div style={{ marginTop: 16, textAlign: 'right' }}>
-              <Button type="primary" loading={roleSaving} onClick={() => void handleSaveRoles()}>
+              <Button
+                type="primary"
+                loading={roleSaving}
+                disabled={!canMutateLoadedAssignment(roleLoadStatus, roleSaving)}
+                onClick={() => void handleSaveRoles()}
+              >
                 {t('system.users.saveRoleAssign', '保存角色分配')}
               </Button>
             </div>
@@ -1361,6 +1639,19 @@ export default function SystemUsersPage() {
       children: (
         <HasPermission code={P.Users.ManageStores} fallback={<Typography.Text type="secondary">{t('system.users.noStorePermission', '无权限管理分店')}</Typography.Text>}>
           <Spin spinning={storeLoading}>
+            {storeLoadStatus === 'error' ? (
+              <Alert
+                type="error"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message={t('system.users.loadStoresFailed', '加载分店数据失败')}
+                action={(
+                  <Button size="small" onClick={retryStoreData}>
+                    {t('common.retry', '重试')}
+                  </Button>
+                )}
+              />
+            ) : null}
             <div style={{ marginBottom: 12 }}>
               <Typography.Text type="secondary">
                 {t('system.users.assignedStores', '当前用户已关联 {{count}} 个分店', { count: storeTargetKeys.length })}
@@ -1374,16 +1665,25 @@ export default function SystemUsersPage() {
               }))}
               targetKeys={storeTargetKeys}
               onChange={(nextTargetKeys: Key[], _direction: TransferDirection, _moveKeys: Key[]) => {
+                if (!canMutateLoadedAssignment(storeLoadStatus, storeSaving)) return
                 handleStoreTargetChange(nextTargetKeys)
               }}
+              disabled={!canMutateLoadedAssignment(storeLoadStatus, storeSaving)}
               render={(item) => item.title}
               titles={[t('system.users.availableStores', '可选分店'), t('system.users.assignedStoresLabel', '已分配分店')]}
               listStyle={{ width: 320, height: 400 }}
               showSearch
             />
-            {renderManageableStoreControls(storeTargetKeys, storeManageableKeys, setStoreManageableKeys)}
+            {canMutateLoadedAssignment(storeLoadStatus, storeSaving)
+              ? renderManageableStoreControls(storeTargetKeys, storeManageableKeys, setStoreManageableKeys)
+              : null}
             <div style={{ marginTop: 16, textAlign: 'right' }}>
-              <Button type="primary" loading={storeSaving} onClick={() => void handleSaveStores()}>
+              <Button
+                type="primary"
+                loading={storeSaving}
+                disabled={!canMutateLoadedAssignment(storeLoadStatus, storeSaving)}
+                onClick={() => void handleSaveStores()}
+              >
                 {t('system.users.saveStoreAssign', '保存分店分配')}
               </Button>
             </div>
@@ -1393,43 +1693,94 @@ export default function SystemUsersPage() {
     },
     {
       key: 'permissions',
-      label: t('system.users.permissions', '权限'),
+      label: t('system.users.functionPermissions', '功能权限'),
       children: (
         <Spin spinning={permLoading}>
-          <div style={{ marginBottom: 12 }}>
-            <Typography.Text type="secondary">
-              {t(
-                'system.users.permEditDesc',
-                '当前有效权限共 {{effectiveCount}} 项，其中角色继承 {{inheritedCount}} 项，直接授权 {{directCount}} 项。角色标签表示继承来源。',
-                {
-                  effectiveCount: effectivePermSet.size,
-                  inheritedCount: inheritedPermSet.size,
-                  directCount: directPermKeys.length,
-                },
+          {!canEditUserPermissions ? (
+            <Alert
+              type="info"
+              showIcon
+              message={t(
+                'system.users.permissionAccessUnavailable',
+                '当前账号没有权限委派资格，无法读取或修改该用户的权限范围。',
               )}
-            </Typography.Text>
-            {!canManageUserPermissions ? (
-              <Typography.Text type="secondary" style={{ display: 'block', marginTop: 4 }}>
-                {t('system.users.noPermissionManagePermission', '无权限编辑用户直接权限')}
-              </Typography.Text>
-            ) : null}
-          </div>
-          {permCategories.length === 0 ? (
-            <Typography.Text type="secondary">{t('system.users.noPermData', '暂无权限数据')}</Typography.Text>
+            />
+          ) : permLoadError ? (
+            <Alert type="error" showIcon message={permLoadError} />
+          ) : !permissionState ? (
+            <Empty description={t('system.users.noPermData', '暂无权限数据')} />
           ) : (
-            <>
-              <Tree
-                treeData={permTreeData}
-                checkedKeys={checkedPermKeys}
-                checkable
-                disabled={!canEditUserPermissions}
-                selectable={false}
-                defaultExpandAll
-                onCheck={handlePermissionCheck}
-                style={{ background: '#fafafa', padding: 12, borderRadius: 8 }}
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Typography.Text type="secondary">
+                {t(
+                  'system.users.permEditDesc',
+                  '当前有效权限共 {{effectiveCount}} 项，其中角色继承 {{inheritedCount}} 项，直接授权 {{directCount}} 项。角色标签表示继承来源。',
+                  {
+                    effectiveCount: effectivePermSet.size,
+                    inheritedCount: inheritedPermSet.size,
+                    directCount: directPermKeys.length,
+                  },
+                )}
+              </Typography.Text>
+
+              {isPermissionStateReadOnly ? (
+                <Alert
+                  type="info"
+                  showIcon
+                  message={t(
+                    'system.users.superAdminPermissionsReadOnly',
+                    '管理员默认拥有全部权限和移动端菜单，此处仅供查看。',
+                  )}
+                />
+              ) : null}
+
+              <Segmented
+                value={permissionPlatform}
+                options={[
+                  {
+                    label: `${t('system.users.webPermissions', 'Web 端')} (${platformPermissionCategories.web.reduce((count, category) => count + category.permissions.length, 0)})`,
+                    value: 'web',
+                  },
+                  {
+                    label: `${t('system.users.posAccountPermissions', 'POS 端')} (${platformPermissionCategories.pos.reduce((count, category) => count + category.permissions.length, 0)})`,
+                    value: 'pos',
+                  },
+                ]}
+                onChange={(value) => setPermissionPlatform(value as PermissionPlatform)}
               />
-              {canEditUserPermissions ? (
-                <div style={{ marginTop: 16, textAlign: 'right' }}>
+
+              <Alert
+                type="info"
+                showIcon
+                message={permissionPlatform === 'pos'
+                  ? t(
+                      'system.users.posAccountPermissionTip',
+                      '此处为账号级 POS 权限；分店覆盖请使用用户列表中的收银权限。',
+                    )
+                  : t(
+                      'system.users.webPermissionTip',
+                      'Web 端包含网页与 HbwebExpo 共用的非 POS 账号权限。',
+                    )}
+              />
+
+              {visiblePermissionCategories.length === 0 ? (
+                <Empty description={t('system.users.noPermData', '暂无权限数据')} />
+              ) : (
+                <Tree
+                  key={permissionPlatform}
+                  treeData={permTreeData}
+                  checkedKeys={checkedPermKeys}
+                  checkable
+                  disabled={!canEditCurrentPermissionState || permSaving}
+                  selectable={false}
+                  defaultExpandAll
+                  onCheck={handlePermissionCheck}
+                  style={{ background: '#fafafa', padding: 12, borderRadius: 8 }}
+                />
+              )}
+
+              {canEditCurrentPermissionState ? (
+                <div style={{ textAlign: 'right' }}>
                   <Button
                     type="primary"
                     icon={<SaveOutlined />}
@@ -1441,7 +1792,39 @@ export default function SystemUsersPage() {
                   </Button>
                 </div>
               ) : null}
-            </>
+            </Space>
+          )}
+        </Spin>
+      ),
+    },
+    {
+      key: 'mobile-menu',
+      label: t('system.users.mobileMenu', '移动端菜单'),
+      children: (
+        <Spin spinning={permLoading}>
+          {!canEditUserPermissions ? (
+            <Alert
+              type="info"
+              showIcon
+              message={t(
+                'system.users.permissionAccessUnavailable',
+                '当前账号没有权限委派资格，无法读取或修改该用户的权限范围。',
+              )}
+            />
+          ) : permLoadError ? (
+            <Alert type="error" showIcon message={permLoadError} />
+          ) : (
+            <UserMobileMenuPermissionManager
+              permissionState={permissionState}
+              directPermissionCodes={directPermKeys}
+              assignablePermissionCodes={Array.from(allPermissionCodes)}
+              scoped={isCurrentUserScoped}
+              canEdit={canEditCurrentPermissionState}
+              saving={permSaving}
+              hasChanges={hasDirectPermChanges}
+              onChange={setDirectPermKeys}
+              onSave={() => void handleSavePermissions()}
+            />
           )}
         </Spin>
       ),
@@ -1857,18 +2240,47 @@ export default function SystemUsersPage() {
 
       <Drawer
         title={editingUser ? t('system.users.editUserTitle', '编辑用户 - {{name}}', { name: editingUser.username }) : t('system.users.editUser', '编辑用户')}
-        width={860}
+        width="min(860px, 100vw)"
         open={editOpen}
         onClose={() => {
+          editingUserGuidRef.current = null
+          currentEditSessionIdRef.current = null
+          editUserRequestGuardRef.current.invalidate()
+          editSessionGuardRef.current.invalidate()
+          roleRequestGuardRef.current.invalidate()
+          storeRequestGuardRef.current.invalidate()
+          permissionRequestGuardRef.current.invalidate()
+          permissionSaveGuardRef.current.invalidate()
           setEditOpen(false)
+          setEditLoading(false)
           setEditingUser(null)
+          setAllRoles([])
+          setRoleTargetKeys([])
+          setRoleLoadStatus('idle')
+          setAllStores([])
+          setStoreTargetKeys([])
+          setStoreManageableKeys([])
+          setStoreLoadStatus('idle')
+          setPermCategories([])
           setPermissionState(null)
           setDirectPermKeys([])
+          setOriginalDirectPermKeys([])
+          setPermLoading(false)
+          setPermSaving(false)
+          setPermLoadError(null)
+          setRoleSaving(false)
+          setStoreSaving(false)
+          setPermissionPlatform('web')
           form.resetFields()
         }}
         destroyOnHidden
       >
-        <Tabs activeKey={editTab} onChange={setEditTab} items={editTabItems} />
+        <Tabs
+          activeKey={editTab}
+          onChange={setEditTab}
+          items={editTabItems}
+          tabBarStyle={{ overflowX: 'auto' }}
+        />
       </Drawer>
 
       <Modal

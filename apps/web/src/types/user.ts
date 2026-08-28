@@ -1,3 +1,5 @@
+import type { PermissionCategoryDto } from './role'
+
 export interface UserQueryDto {
   page?: number
   pageNumber?: number
@@ -76,10 +78,17 @@ export interface UserPermissionInheritedSourceDto {
 
 export interface UserPermissionStateDto {
   userGuid: string
+  isSuperAdmin: boolean
+  implicitAllPermissions: boolean
   inheritedPermissionCodes: string[]
   directPermissionCodes: string[]
   effectivePermissionCodes: string[]
   inheritedSources: UserPermissionInheritedSourceDto[]
+}
+
+export interface UserAccessPermissionDto {
+  state: UserPermissionStateDto
+  categories: PermissionCategoryDto[]
 }
 
 export interface UserPermissionAssignmentDto {

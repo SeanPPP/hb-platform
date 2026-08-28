@@ -920,8 +920,8 @@ const attendanceSelfByAvailabilityPreview = buildExpoRoleMenuPreview(
 
 assertEqual(
   attendanceSelfByAvailabilityPreview.visibleRoutes.some((route) => route.routeName === 'attendance-personal'),
-  true,
-  'HbwebExpo attendance personal menu should follow AnyPermissions rules, not only ScheduleViewSelf',
+  false,
+  'HbwebExpo attendance personal menu should match FullAppMenu and require ScheduleViewSelf',
 )
 
 const attendanceManagementPreview = buildExpoRoleMenuPreview(
