@@ -241,7 +241,7 @@ internal sealed class MainChildViewModelFactory
             throw new InvalidOperationException("卡交易异常中心需要操作授权服务。");
         }
 
-        return new CardRecoveryCenterViewModel(
+        return CardRecoveryCenterViewModel.CreateWithKeyedRecoveryResultHandler(
             recoveryService,
             _cart,
             session,

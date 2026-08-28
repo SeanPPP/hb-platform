@@ -79,7 +79,49 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         ILocalizationService? localization = null,
         Action? back = null,
         Action<int>? openCountChanged = null,
+        Func<CardPaymentRecoveryResult, Task>? recoveryResultHandledAsync = null)
+        : this(
+            AdaptLegacyRecoveryResultHandler(recoveryResultHandledAsync),
+            recoveryService,
+            cart,
+            session,
+            authorizationService,
+            localization,
+            back,
+            openCountChanged)
+    {
+    }
+
+    internal static CardRecoveryCenterViewModel CreateWithKeyedRecoveryResultHandler(
+        ICardPaymentRecoveryService recoveryService,
+        PosCartService cart,
+        PosSessionState session,
+        IOperationAuthorizationService authorizationService,
+        ILocalizationService? localization = null,
+        Action? back = null,
+        Action<int>? openCountChanged = null,
         Func<CardRecoveryAttemptKey, CardPaymentRecoveryResult, Task>? recoveryResultHandledAsync = null)
+    {
+        return new CardRecoveryCenterViewModel(
+            recoveryResultHandledAsync,
+            recoveryService,
+            cart,
+            session,
+            authorizationService,
+            localization,
+            back,
+            openCountChanged);
+    }
+
+    private CardRecoveryCenterViewModel(
+        Func<CardRecoveryAttemptKey, CardPaymentRecoveryResult, Task>? recoveryResultHandledAsync,
+        ICardPaymentRecoveryService recoveryService,
+        PosCartService cart,
+        PosSessionState session,
+        IOperationAuthorizationService authorizationService,
+        ILocalizationService? localization,
+        Action? back,
+        Action<int>? openCountChanged)
     {
         ArgumentNullException.ThrowIfNull(recoveryService);
         ArgumentNullException.ThrowIfNull(cart);
@@ -122,6 +164,18 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         }
 
         SetStatusResource("cardRecovery.center.status.ready", "Review an open card transaction.");
+    }
+
+    private static Func<CardRecoveryAttemptKey, CardPaymentRecoveryResult, Task>? AdaptLegacyRecoveryResultHandler(
+        Func<CardPaymentRecoveryResult, Task>? recoveryResultHandledAsync)
+    {
+        if (recoveryResultHandledAsync is null)
+        {
+            return null;
+        }
+
+        // 公开构造函数保留旧回调契约；主线内部仍携带精确 attempt key 完成安全交接。
+        return (_, result) => recoveryResultHandledAsync(result);
     }
 
     public ObservableCollection<CardRecoveryQueueItem> OpenAttempts { get; } = [];

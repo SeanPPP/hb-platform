@@ -127,6 +127,41 @@ public sealed class CardRecoveryCenterViewModelTests
     }
 
     [Fact]
+    public async Task Public_constructor_preserves_result_only_recovery_callback_contract()
+    {
+        var selected = CreateQueueItem(
+            CardProcessorKind.Linkly,
+            Guid.Parse("42000000-0000-0000-0000-000000000012"),
+            updatedAt: Now);
+        var completed = new CardPaymentRecoveryResult(
+            CardPaymentRecoveryOutcome.OrderCompleted,
+            "Recovered order completed");
+        var recovery = new RecordingRecoveryService
+        {
+            OpenItems = [selected],
+            RecoverResult = completed
+        };
+        CardPaymentRecoveryResult? handledResult = null;
+        Func<CardPaymentRecoveryResult, Task> legacyCallback = result =>
+        {
+            handledResult = result;
+            return Task.CompletedTask;
+        };
+        using var viewModel = new CardRecoveryCenterViewModel(
+            recovery,
+            new PosCartService(),
+            CreateSession(),
+            new RecordingAuthorizationService(CreateCashier("SUPERVISOR")),
+            CreateLocalization(),
+            recoveryResultHandledAsync: legacyCallback);
+        await viewModel.LoadAsync();
+
+        await viewModel.RecoverCommand.ExecuteAsync(null);
+
+        Assert.Same(completed, handledResult);
+    }
+
+    [Fact]
     public async Task RecoverCommand_reports_operation_start_key_after_queue_refresh_clears_selection()
     {
         var selected = CreateQueueItem(
@@ -143,7 +178,7 @@ public sealed class CardRecoveryCenterViewModelTests
         };
         var handled = new List<(CardRecoveryAttemptKey Key, CardPaymentRecoveryResult Result, int RemainingCount)>();
         var remainingCount = -1;
-        using var viewModel = new CardRecoveryCenterViewModel(
+        using var viewModel = CardRecoveryCenterViewModel.CreateWithKeyedRecoveryResultHandler(
             recovery,
             new PosCartService(),
             CreateSession(),
@@ -183,7 +218,7 @@ public sealed class CardRecoveryCenterViewModelTests
             RecoverResult = completed
         };
         var handled = new List<(CardRecoveryAttemptKey Key, CardPaymentRecoveryResult Result)>();
-        using var viewModel = new CardRecoveryCenterViewModel(
+        using var viewModel = CardRecoveryCenterViewModel.CreateWithKeyedRecoveryResultHandler(
             recovery,
             new PosCartService(),
             CreateSession(),
@@ -223,7 +258,7 @@ public sealed class CardRecoveryCenterViewModelTests
             RecoverResult = completed
         };
         var callbackCount = 0;
-        using var viewModel = new CardRecoveryCenterViewModel(
+        using var viewModel = CardRecoveryCenterViewModel.CreateWithKeyedRecoveryResultHandler(
             recovery,
             new PosCartService(),
             CreateSession(),
@@ -286,7 +321,7 @@ public sealed class CardRecoveryCenterViewModelTests
                 completed)
         };
         var callbackCount = 0;
-        using var viewModel = new CardRecoveryCenterViewModel(
+        using var viewModel = CardRecoveryCenterViewModel.CreateWithKeyedRecoveryResultHandler(
             recovery,
             new PosCartService(),
             CreateSession(),
@@ -347,7 +382,7 @@ public sealed class CardRecoveryCenterViewModelTests
             RecoverResult = completed
         };
         var handled = new List<(CardRecoveryAttemptKey Key, CardPaymentRecoveryResult Result)>();
-        using var viewModel = new CardRecoveryCenterViewModel(
+        using var viewModel = CardRecoveryCenterViewModel.CreateWithKeyedRecoveryResultHandler(
             recovery,
             new PosCartService(),
             CreateSession(),
@@ -402,7 +437,7 @@ public sealed class CardRecoveryCenterViewModelTests
         var callbackCount = 0;
         CardRecoveryAttemptKey? callbackKey = null;
         CardPaymentRecoveryResult? callbackResult = null;
-        using var viewModel = new CardRecoveryCenterViewModel(
+        using var viewModel = CardRecoveryCenterViewModel.CreateWithKeyedRecoveryResultHandler(
             recovery,
             new PosCartService(),
             CreateSession(),
@@ -491,7 +526,7 @@ public sealed class CardRecoveryCenterViewModelTests
             CardPaymentRecoveryResult Result,
             CardRecoveryAttemptKey? SelectedKeyAtCallback)>();
         CardRecoveryCenterViewModel? callbackOwner = null;
-        using var viewModel = new CardRecoveryCenterViewModel(
+        using var viewModel = CardRecoveryCenterViewModel.CreateWithKeyedRecoveryResultHandler(
             recovery,
             new PosCartService(),
             CreateSession(),
@@ -535,7 +570,7 @@ public sealed class CardRecoveryCenterViewModelTests
                 completed)
         };
         var handled = new List<(CardRecoveryAttemptKey Key, CardPaymentRecoveryResult Result)>();
-        using var viewModel = new CardRecoveryCenterViewModel(
+        using var viewModel = CardRecoveryCenterViewModel.CreateWithKeyedRecoveryResultHandler(
             recovery,
             new PosCartService(),
             CreateSession(),
@@ -581,7 +616,7 @@ public sealed class CardRecoveryCenterViewModelTests
         var callbackCount = 0;
         CardRecoveryAttemptKey? callbackKey = null;
         CardPaymentRecoveryResult? callbackResult = null;
-        using var viewModel = new CardRecoveryCenterViewModel(
+        using var viewModel = CardRecoveryCenterViewModel.CreateWithKeyedRecoveryResultHandler(
             recovery,
             new PosCartService(),
             CreateSession(),
@@ -1535,7 +1570,7 @@ public sealed class CardRecoveryCenterViewModelTests
                 CardPaymentRecoveryOutcome.DraftRestored,
                 "The refund draft is ready.")
         };
-        using var viewModel = new CardRecoveryCenterViewModel(
+        using var viewModel = CardRecoveryCenterViewModel.CreateWithKeyedRecoveryResultHandler(
             recovery,
             new PosCartService(),
             CreateSession(),
@@ -1570,7 +1605,7 @@ public sealed class CardRecoveryCenterViewModelTests
         };
         const string warning =
             "Recovery was committed, but the payment page remains locked. Review the recovery center before continuing.";
-        using var viewModel = new CardRecoveryCenterViewModel(
+        using var viewModel = CardRecoveryCenterViewModel.CreateWithKeyedRecoveryResultHandler(
             recovery,
             new PosCartService(),
             CreateSession(),
@@ -1610,7 +1645,7 @@ public sealed class CardRecoveryCenterViewModelTests
                 ResolutionPersisted: true,
                 ResolutionApplied: true)
         };
-        using var viewModel = new CardRecoveryCenterViewModel(
+        using var viewModel = CardRecoveryCenterViewModel.CreateWithKeyedRecoveryResultHandler(
             recovery,
             new PosCartService(),
             CreateSession(),
@@ -1649,7 +1684,7 @@ public sealed class CardRecoveryCenterViewModelTests
                 CardPaymentRecoveryOutcome.DraftRestored,
                 "The refund draft is ready.")
         };
-        using var viewModel = new CardRecoveryCenterViewModel(
+        using var viewModel = CardRecoveryCenterViewModel.CreateWithKeyedRecoveryResultHandler(
             recovery,
             new PosCartService(),
             CreateSession(),
