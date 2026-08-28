@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 
-import type { DurableReturnLine, TrustedReturnIdentity } from "./durable-return-execution-orchestrator";
+import type { DurableReturnLine, TrustedReturnIdentity } from "@hb/pos-domain/features/returns/adapters/durable-return-execution-orchestrator";
 import {
   CanonicalReturnFingerprint,
   CatalogLocalReturnAdapter,
@@ -12,8 +12,8 @@ import {
 } from "./production-return-support";
 import type { ProtectedTenderCapacityMaterial } from "./return-lookup-adapter";
 
-import type { LocalOrder } from "@/core/contracts/order";
-import type { OrderRepositoryPort } from "@/core/contracts/repositories";
+import type { LocalOrder } from "@hb/pos-domain/core/contracts/order";
+import type { OrderRepositoryPort } from "@hb/pos-domain/core/contracts/repositories";
 
 const orderGuid = "11111111-1111-4111-8111-111111111111";
 const identity: TrustedReturnIdentity = {

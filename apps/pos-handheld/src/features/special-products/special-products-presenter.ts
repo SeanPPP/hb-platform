@@ -1,7 +1,7 @@
 import {
   resolveSpecialProductsAccess,
   type SpecialProductsAccess,
-} from "./special-products-authorization";
+} from "@hb/pos-domain/features/special-products/special-products-authorization";
 
 import type {
   SpecialProductItem,

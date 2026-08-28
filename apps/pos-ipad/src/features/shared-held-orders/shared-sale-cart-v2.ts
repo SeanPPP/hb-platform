@@ -5,7 +5,7 @@ import {
   type SharedSaleCartV1,
   type SharedPricingStateV1,
   type SharedSaleLineV1,
-} from "./shared-sale-cart-v1";
+} from "@hb/pos-domain/features/shared-held-orders/shared-sale-cart-v1";
 
 import type { PricingCartStateSnapshot } from "@/core/contracts";
 

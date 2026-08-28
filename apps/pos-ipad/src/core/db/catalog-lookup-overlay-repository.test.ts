@@ -11,7 +11,7 @@ import type {
   SqliteDriverPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 const T0 = "2026-07-29T00:00:00.000Z";
 const T1 = "2026-07-29T01:00:00.000Z";

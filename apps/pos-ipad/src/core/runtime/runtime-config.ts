@@ -1,4 +1,4 @@
-import { isTrustedLocalHbposApiOrigin } from "../security/pos-api-addresses";
+import { isTrustedLocalHbposApiOrigin } from "@hb/pos-domain/core/security/pos-api-addresses";
 
 export const DEFAULT_HBPOS_API_URL = "https://hotbargain.vip/pos-api";
 

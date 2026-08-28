@@ -5,7 +5,7 @@ import {
   DAILY_CLOSE_REPRINT_PERMISSION,
   DAILY_CLOSE_SAVE_PERMISSION,
   DAILY_CLOSE_VIEW_PERMISSION,
-} from "./daily-close-authorization";
+} from "@hb/pos-domain/features/daily-close/daily-close-authorization";
 import {
   DailyClosePresenter,
   type DailyClosePrintJob,

@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 
-import type { LocalOrder } from "../contracts/order";
+import type { LocalOrder } from "@hb/pos-domain/core/contracts/order";
 
 import {
   applyMigrations,
   POS_DATABASE_MIGRATIONS,
 } from "./migrations";
-import { ProtectedMaterialIntegrityError } from "./protected-material-integrity-error";
+import { ProtectedMaterialIntegrityError } from "@hb/pos-db/core/db/protected-material-integrity-error";
 import {
   OrderSyncMaterialError,
   SqliteOrderSyncMaterialResolver,
@@ -16,7 +16,7 @@ import {
 import {
   encryptPaymentProtectedMaterial,
   SqlitePaymentProtectedMaterialReader,
-} from "./sqlite-payment-protected-material";
+} from "@hb/pos-db/core/db/sqlite-payment-protected-material";
 import { createSqliteRepositories } from "./sqlite-repositories";
 import { SqliteReturnCapacityVault } from "./sqlite-return-capacity-vault";
 import { SqliteVoucherProtectedTokenStore } from "./sqlite-voucher-protected-token-store";
@@ -25,7 +25,7 @@ import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 const NOW = "2026-07-28T00:00:00.000Z";
 const VOUCHER_REVERSAL_ACTOR = Object.freeze({

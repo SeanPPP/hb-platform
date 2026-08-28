@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 
-import type { LocalOrder } from "../contracts/order";
+import type { LocalOrder } from "@hb/pos-domain/core/contracts/order";
 
 import { applyMigrations } from "./migrations";
 import { SqliteOrderSyncMaterialResolver } from "./sqlite-order-sync-material";
@@ -10,7 +10,7 @@ import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 const NOW = "2026-07-28T00:00:00.000Z";
 

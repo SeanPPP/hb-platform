@@ -5,7 +5,7 @@ import test from "node:test";
 import { createAud } from "../contracts";
 
 import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
-import { SqliteOperationAuditRead } from "./sqlite-operation-audit-read";
+import { SqliteOperationAuditRead } from "@hb/pos-db/core/db/sqlite-operation-audit-read";
 import { createSqliteRepositories } from "./sqlite-repositories";
 import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
 import { SqliteVoucherProtectedTokenStore } from "./sqlite-voucher-protected-token-store";
@@ -17,7 +17,7 @@ import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 const T0 = "2026-07-28T00:00:00.000Z";
 const T1 = "2026-07-28T00:01:00.000Z";

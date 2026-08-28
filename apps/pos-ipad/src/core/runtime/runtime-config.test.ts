@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   DEFAULT_LOCAL_HBPOS_API_BASE_URL,
   LEGACY_LOCAL_HBPOS_API_BASE_URL,
-} from "../security/pos-api-addresses";
+} from "@hb/pos-domain/core/security/pos-api-addresses";
 
 import {
   DEFAULT_HBPOS_API_URL,

@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 
-import type { SpecialProductItem } from "../contracts/special-products";
+import type { SpecialProductItem } from "@hb/pos-domain/core/contracts/special-products";
 
 import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
-import { SqliteSpecialProductsRepository } from "./sqlite-special-products-repository";
+import { SqliteSpecialProductsRepository } from "@hb/pos-db/core/db/sqlite-special-products-repository";
 import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 const T0 = "2026-07-28T00:00:00.000Z";
 const T1 = "2026-07-28T01:00:00.000Z";

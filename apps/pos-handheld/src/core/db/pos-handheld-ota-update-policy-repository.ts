@@ -15,7 +15,7 @@ import {
   matchesStoredAppUpdateCacheScope,
   normalizePolicyVersion,
 } from "./scoped-app-update-cache";
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 const OTA_POINTER_PREFIX = "pos_handheld_ota_update_policy_v4:pointer";
 const OTA_RECORD_PREFIX = "pos_handheld_ota_update_policy_v4:record";

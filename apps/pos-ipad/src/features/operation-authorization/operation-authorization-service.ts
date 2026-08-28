@@ -1,6 +1,6 @@
 import type { CashierSessionDto } from "@/core/api/hbpos-api";
 import { auditActorPayload } from "@/core/contracts";
-import type { AuditRepositoryPort } from "@/core/contracts/repositories";
+import type { AuditRepositoryPort } from "@hb/pos-domain/core/contracts/repositories";
 import type { CashierAuthenticationService } from "@/core/security/cashier-authentication";
 
 export type OperationAuthorizationMode =

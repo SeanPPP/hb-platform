@@ -1,13 +1,13 @@
 import {
   buildSaleReceiptDocument,
   documentToEscPosBytes,
-} from "./receipt-document";
+} from "@hb/pos-receipt-core/features/receipts/receipt-document";
 import type {
   FrozenReceiptReprintSettings,
   ReceiptReprintSettingsSource,
-} from "./receipt-reprint-service";
+} from "@hb/pos-receipt-core/features/receipts/receipt-reprint-service";
 
-import type { PreparedLastReceiptReprint } from "@/features/fulfilment/fulfilment-service";
+import type { PreparedLastReceiptReprint } from "@hb/pos-domain/features/fulfilment/fulfilment-service";
 import type {
   InstallmentDetails,
   InstallmentPayment,

@@ -11,7 +11,7 @@ import {
   LinklyCloudBackendApi,
   type LinklyCloudBackendSession,
 } from "@/features/payments/linkly/linkly-cloud-backend";
-import type { PaymentAttemptService } from "@/features/payments/payment-attempt-service";
+import type { PaymentAttemptService } from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 
 
 export type LinklySafeOperatorKey =

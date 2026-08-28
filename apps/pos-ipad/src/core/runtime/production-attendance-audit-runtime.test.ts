@@ -14,12 +14,12 @@ import type {
   AttendanceQrProvisioning,
   AttendanceSchedulerPort,
 } from "@/features/attendance-audit/attendance-qr-controller";
-import type { AttendanceSecurityRemotePort } from "@/features/attendance-audit/hbpos-attendance-security-api";
+import type { AttendanceSecurityRemotePort } from "@hb/pos-api-client/features/attendance-audit/hbpos-attendance-security-api";
 import {
   AUDIT_VIEW_PERMISSION,
   type OperationAuditRawRecord,
   type OperationAuditReadPort,
-} from "@/features/attendance-audit/operation-audit-presenter";
+} from "@hb/pos-domain/features/attendance-audit/operation-audit-presenter";
 
 const STORE_CODE = "STORE-1";
 const DEVICE_CODE = "IPAD-1";

@@ -183,17 +183,22 @@ async function runLane(app, lane, files) {
     throw new Error(`${app}/${lane} 分片没有测试文件`)
   }
   const appRoot = resolve(repositoryRoot, APP_ROOTS[app])
+  const appRequire = createRequire(resolve(appRoot, 'package.json'))
   const relativeFiles = files.map((file) => relative(appRoot, resolve(repositoryRoot, file)))
   if (lane === 'web-esbuild') {
     await runWebEsbuild(files, appRoot)
   } else if (lane === 'tsx') {
-    run(resolve(appRoot, 'node_modules/.bin/tsx'), [
-      '--test',
-      '--test-concurrency=4',
-      ...relativeFiles,
-    ], appRoot)
+    run(
+      process.execPath,
+      [appRequire.resolve('tsx/cli'), '--test', '--test-concurrency=4', ...relativeFiles],
+      appRoot,
+    )
   } else if (lane === 'jest') {
-    run(resolve(appRoot, 'node_modules/.bin/jest'), [...relativeFiles, '--runInBand'], appRoot)
+    run(process.execPath, [
+      appRequire.resolve('jest/bin/jest'),
+      ...relativeFiles,
+      '--runInBand',
+    ], appRoot)
   } else if (lane === 'node' || lane === 'native') {
     run(process.execPath, ['--test', ...relativeFiles], appRoot)
   } else {

@@ -5,7 +5,7 @@ import type {
   CatalogRefreshOutcome,
   CatalogRefreshProgressEvent,
   CatalogSummary,
-} from "./catalog-refresh-contract";
+} from "@hb/pos-domain/features/catalog/catalog-refresh-contract";
 import {
   CatalogRefreshCoordinator,
   CatalogRefreshCoordinatorError,

@@ -6,7 +6,7 @@ import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "@/core/db/types";
+} from "@hb/pos-db/core/db/types";
 
 export const TEST_NOW_ISO = "2026-07-28T08:00:00.000Z";
 

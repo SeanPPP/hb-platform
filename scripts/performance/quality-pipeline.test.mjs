@@ -29,6 +29,17 @@ test("路径选择只启用受影响 lane，共享基线文件启用全部 lane"
   assert.deepEqual(selectLanesForPaths(["apps/pos-handheld/src/app.ts"]), [
     "pos-handheld",
   ]);
+  for (const path of [
+    "packages/pos-domain/src/core/contracts/cart.ts",
+    "scripts/pos-shared/check-pos-package-boundaries.test.mjs",
+    "patches/react-native+0.81.5.patch",
+    "package.json",
+    "package-lock.json",
+    "eslint.config.mjs",
+    "tsconfig.pos-packages.json",
+  ]) {
+    assert.deepEqual(selectLanesForPaths([path]), ["pos-ipad", "pos-handheld"], path);
+  }
   assert.deepEqual(
     selectLanesForPaths(["scripts/performance/report-metric-batch.mjs"]),
     QUALITY_LANES,
@@ -104,10 +115,11 @@ test("lane 命令使用现有 build/typecheck/test 且不通过 shell 拼接", (
     const commands = laneCommands.map((item) => [item.command, ...item.args]);
     assert.deepEqual(commands, [
       ["npm", "ci"],
-      ["npm", "run", "typecheck"],
-      ["npm", "run", "verify:metro-bundle"],
-      ["npm", "run", "test:ci"],
+      ["npm", "run", "typecheck", `--workspace=@hb/${lane}`],
+      ["npm", "run", "verify:metro-bundle", `--workspace=@hb/${lane}`],
+      ["npm", "run", "test:ci", `--workspace=@hb/${lane}`],
     ]);
+    assert.deepEqual(laneCommands.map((item) => item.cwd), [".", ".", ".", "."]);
     assert.deepEqual(laneCommands[3].environment, {
       TZ: "Australia/Brisbane",
     });

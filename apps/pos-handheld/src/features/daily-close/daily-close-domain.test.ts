@@ -6,7 +6,7 @@ import {
   DAILY_CLOSE_SAVE_PERMISSION,
   DAILY_CLOSE_VIEW_PERMISSION,
   resolveDailyCloseAccess,
-} from "./daily-close-authorization";
+} from "@hb/pos-domain/features/daily-close/daily-close-authorization";
 import {
   buildDailyCloseArchiveCommit,
   businessDateInTimeZone,

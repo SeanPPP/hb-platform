@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const generatedIosRoot = process.env.HB_POS_IPAD_GENERATED_IOS_ROOT
+  ? resolve(process.env.HB_POS_IPAD_GENERATED_IOS_ROOT)
+  : fileURLToPath(new URL("../ios", import.meta.url));
 
 test("应用唯一根入口注册非交互外接屏第二 React surface", async () => {
   const source = await readFile(
@@ -49,7 +55,7 @@ test("Expo 生产 runtime 只向业务层暴露冻结的外接客显 Port", asyn
 
 test("生成的 AppDelegate 在 Expo subscribers 运行前准备唯一主窗口和 main root", async () => {
   const source = await readFile(
-    new URL("../ios/HBPOS/AppDelegate.swift", import.meta.url),
+    resolve(generatedIosRoot, "HBPOS", "AppDelegate.swift"),
     "utf8",
   );
   const windowIndex = source.indexOf(
@@ -101,7 +107,7 @@ test("外接客显 Scene 保持非交互角色且不接触主窗口或 main root
       ),
       "utf8",
     ),
-    readFile(new URL("../ios/HBPOS/Info.plist", import.meta.url), "utf8"),
+    readFile(resolve(generatedIosRoot, "HBPOS", "Info.plist"), "utf8"),
   ]);
 
   assert.match(

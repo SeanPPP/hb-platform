@@ -1,13 +1,13 @@
 import { fromSharedSaleCart } from "./shared-held-order-cart-reverse-mapper";
-import type { SharedLineDiscountStateV1 } from "./shared-sale-cart-v1";
+import type { SharedLineDiscountStateV1 } from "@hb/pos-domain/features/shared-held-orders/shared-sale-cart-v1";
 import {
   normalizeSharedSaleCart,
   type SharedSaleCartPayload,
 } from "./shared-sale-cart-v2";
 
 import type { HeldOrderScope } from "@/core/contracts";
-import { multiplyCentsAwayFromZero } from "@/core/contracts/money";
-import type { SqliteConnectionPort } from "@/core/db/types";
+import { multiplyCentsAwayFromZero } from "@hb/pos-domain/core/contracts/money";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 /**
  * 与现有 SensitivePayloadEncryptor（sqlite-repositories）结构一致的适配口；

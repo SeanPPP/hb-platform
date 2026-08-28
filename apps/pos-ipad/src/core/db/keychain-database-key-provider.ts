@@ -1,6 +1,6 @@
 import type { SecureStorePort } from "../security/secure-storage";
 
-import type { DatabaseKeyProviderPort } from "./types";
+import type { DatabaseKeyProviderPort } from "@hb/pos-db/core/db/types";
 
 const databaseKeyName = "hbpos.ipad.sqlcipher-key.v1";
 const thisDeviceOnly = { requireThisDeviceOnly: true };

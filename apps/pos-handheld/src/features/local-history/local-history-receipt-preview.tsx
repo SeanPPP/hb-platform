@@ -6,10 +6,10 @@ import {
   View,
 } from "react-native";
 
-import { receiptCode128Runs } from "./receipt-code128";
-import { receiptQrMatrix } from "./receipt-qr-matrix";
+import { receiptCode128Runs } from "@hb/pos-receipt-core/features/local-history/receipt-code128";
+import { receiptQrMatrix } from "@hb/pos-receipt-core/features/local-history/receipt-qr-matrix";
 
-import type { EscPosDocument } from "@/features/receipts/receipt-document";
+import type { EscPosDocument } from "@hb/pos-receipt-core/features/receipts/receipt-document";
 import { posColors } from "@/ui/theme";
 
 export type LocalHistoryReceiptDocument = EscPosDocument;

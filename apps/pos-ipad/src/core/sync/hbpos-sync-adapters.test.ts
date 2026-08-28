@@ -2,16 +2,16 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { HbposApiError, type HbposTransport, type HbposTransportRequest, type HbposTransportResponse } from "../api/hbpos-api";
-import type { AuditEventDraft, LocalOrder } from "../contracts/order";
-import type { CardSyncEvidenceV1 } from "../contracts/payment";
-import type { OrderRepositoryPort } from "../contracts/repositories";
+import type { AuditEventDraft, LocalOrder } from "@hb/pos-domain/core/contracts/order";
+import type { CardSyncEvidenceV1 } from "@hb/pos-domain/core/contracts/payment";
+import type { OrderRepositoryPort } from "@hb/pos-domain/core/contracts/repositories";
 import { OrderSyncMaterialError } from "../db/sqlite-order-sync-material";
 
 import {
   HbposAuditBatchAdapter,
   HbposOrderSyncAdapter,
   type OrderSyncMaterialResolverPort,
-} from "./hbpos-sync-adapters";
+} from "@hb/pos-sync/core/sync/hbpos-sync-adapters";
 
 const orderGuid = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d01";
 const lineGuid = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d02";

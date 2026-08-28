@@ -30,7 +30,7 @@ import {
   INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
   INSTALLMENTS_CANCEL_PERMISSION,
   INSTALLMENTS_CREATE_PERMISSION,
-} from "@/features/installments/installment-authorization";
+} from "@hb/pos-domain/features/installments/installment-authorization";
 import { InstallmentCheckoutPresenter } from "@/features/installments/installment-checkout-presenter";
 import type { InstallmentDetails } from "@/features/installments/installment-models";
 import {

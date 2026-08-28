@@ -1,7 +1,7 @@
 import type {
   CashierSessionInvalidationBus,
   CashierSessionInvalidationListener,
-} from "../security/cashier-session-invalidation";
+} from "@hb/pos-domain/core/security/cashier-session-invalidation";
 
 export type PosCashierInvalidationRuntimeService = Readonly<{
   subscribe(listener: CashierSessionInvalidationListener): () => void;

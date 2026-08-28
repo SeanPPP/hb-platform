@@ -1,4 +1,4 @@
-import { paymentProviderAmountCents } from "../payment-amount";
+import { paymentProviderAmountCents } from "@hb/pos-payments-core/features/payments/payment-amount";
 
 import {
   HbposApiError,
@@ -12,8 +12,8 @@ import {
   type OnlinePaymentPort,
   type PaymentAttempt,
   type PaymentProviderResult,
-} from "@/core/contracts/payment";
-import type { components } from "@/generated/hbpos/schema";
+} from "@hb/pos-domain/core/contracts/payment";
+import type { components } from "@hb/pos-api-client/openapi";
 
 type LinklySessionDto = components["schemas"]["LinklyCloudBackendSessionResponse"];
 type LinklyCardTransactionDto = components["schemas"]["LinklyCloudBackendCardTransactionDto"];

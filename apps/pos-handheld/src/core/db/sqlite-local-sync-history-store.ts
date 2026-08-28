@@ -1,4 +1,4 @@
-import type { SqliteConnectionPort, SqlValue } from "./types";
+import type { SqliteConnectionPort, SqlValue } from "@hb/pos-db/core/db/types";
 
 import type {
   LocalSyncHistoryFilters,

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import type { RemoteHistoryReprintPort } from "./remote-history-presenter";
+import type { RemoteHistoryReprintPort } from "@hb/pos-domain/features/remote-history/remote-history-presenter";
 import {
   createHbposRemoteHistoryPresenterFactory,
   resolveRemoteHistoryPresenterFactory,

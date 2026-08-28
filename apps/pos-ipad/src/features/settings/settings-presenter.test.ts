@@ -43,7 +43,7 @@ import {
   type SettingsSquareEnvironment,
   type SettingsSquareLocation,
   type SettingsSquareTokenStatus,
-} from "@/features/settings/settings-square-setup";
+} from "@hb/pos-domain/features/settings/settings-square-setup";
 
 const allPermissions = [
   SETTINGS_VIEW_PERMISSION,

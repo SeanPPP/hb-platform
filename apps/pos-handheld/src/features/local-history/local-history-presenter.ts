@@ -9,11 +9,11 @@ import {
   type LocalHistorySummary,
 } from "./local-history-domain";
 
-import type { EscPosDocument } from "@/features/receipts/receipt-document";
+import type { EscPosDocument } from "@hb/pos-receipt-core/features/receipts/receipt-document";
 import {
   businessDayUtcRange,
   resolveBusinessTimeZone,
-} from "@/features/sync-history/business-day-range";
+} from "@hb/pos-sync/features/sync-history/business-day-range";
 
 export const LOCAL_HISTORY_VIEW_PERMISSION =
   "Permissions.PosTerminal.History.View";

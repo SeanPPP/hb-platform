@@ -9,12 +9,12 @@ import { POS_DATABASE_MIGRATIONS, applyMigrations } from "./migrations";
 import { PosDatabase } from "./pos-database";
 import { PosIpadUpdatePolicyRepository } from "./pos-ipad-update-policy-repository";
 import { PosSettingsRepository } from "./pos-settings-repository";
-import { SqliteDailyCloseRepository } from "./sqlite-daily-close-repository";
+import { SqliteDailyCloseRepository } from "@hb/pos-db/core/db/sqlite-daily-close-repository";
 import { SqliteFulfilmentStore } from "./sqlite-fulfilment-store";
 import { SqliteOrderSyncMaterialResolver } from "./sqlite-order-sync-material";
 import { SqliteRefundVoucherPrintMaterial } from "./sqlite-refund-voucher-print-material";
 import { SqliteReturnFulfilmentPlanStore } from "./sqlite-return-fulfilment-plan-store";
-import { SqliteSpecialProductsRepository } from "./sqlite-special-products-repository";
+import { SqliteSpecialProductsRepository } from "@hb/pos-db/core/db/sqlite-special-products-repository";
 import { SqliteVoucherTenderReversalStore } from "./sqlite-voucher-tender-reversal-store";
 import type {
   DatabaseKeyProviderPort,
@@ -23,7 +23,7 @@ import type {
   SqliteDriverPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 class RecordingConnection implements SqliteConnectionPort {
   public readonly executed: string[] = [];

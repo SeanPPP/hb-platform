@@ -26,7 +26,7 @@ import type {
   OperationAuditRecord,
   OperationAuditSource,
   OperationAuditUploadState,
-} from "./operation-audit-presenter";
+} from "@hb/pos-domain/features/attendance-audit/operation-audit-presenter";
 
 import {
   PosKeyboardAwareScrollView,

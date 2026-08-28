@@ -18,7 +18,7 @@ import {
   SqliteInstallmentVoucherProtectedTokenStore,
 } from "./sqlite-installment-voucher-persistence";
 import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 /**
  * 第二套分期 provider bootstrap 只取得这六个窄成员；不会取得裸连接或通用

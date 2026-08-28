@@ -75,6 +75,24 @@ test('组件路径只选择自身及固定跨目录依赖', () => {
   assert.deepEqual(selectedFor(['apps/antpos-web/index.html']), ['antpos-web'])
 })
 
+test('POS 共享包、脚本与根 workspace 文件精确触发双端和契约检查', () => {
+  for (const path of [
+    'packages/pos-domain/src/core/contracts/cart.ts',
+    'scripts/pos-shared/check-pos-package-boundaries.test.mjs',
+    'patches/react-native+0.81.5.patch',
+    'package.json',
+    'package-lock.json',
+    'eslint.config.mjs',
+    'tsconfig.pos-packages.json',
+  ]) {
+    assert.deepEqual(
+      selectedFor([path]),
+      ['pos-contract', 'pos-handheld', 'pos-ipad'],
+      path,
+    )
+  }
+})
+
 test('BlazorApp.Shared 任意路径触发 backend、POS WPF 与契约检查', () => {
   assert.deepEqual(
     selectedFor(['services/backend/BlazorApp.Shared/Models/HBweb/Product.cs']),

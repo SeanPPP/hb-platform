@@ -1,0 +1,42 @@
+{
+  "name": "@hb/pos-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/pos-ipad",
+    "apps/pos-handheld",
+    "packages/pos-*"
+  ],
+  "scripts": {
+    "postinstall": "patch-package --patch-dir patches --error-on-fail",
+    "test": "npm run test:pos-shared-ci && npm run test:pos-apps",
+    "test:pos-shared-ci": "npm run check:pos-workspace-resolution && npm run check:pos-shared-ownership && npm run check:pos-package-boundaries && npm run test:react-native-scheduler && npm run test:expo-audio-android-routing && npm run test:pos-packages && npm run lint:pos-packages && npm run typecheck:pos",
+    "test:pos-packages": "npm test --workspace=@hb/pos-domain && npm test --workspace=@hb/pos-api-client && npm test --workspace=@hb/pos-db && npm test --workspace=@hb/pos-sync && npm test --workspace=@hb/pos-payments-core && npm test --workspace=@hb/pos-receipt-core && npm test --workspace=@hb/pos-testing",
+    "test:pos-apps": "node scripts/pos-shared/run-pos-app-tests.mjs @hb/pos-ipad @hb/pos-handheld",
+    "check:pos-workspace-resolution": "node --test scripts/pos-shared/check-pos-workspace-resolution.test.mjs",
+    "check:pos-shared-ownership": "node --test scripts/pos-shared/check-pos-shared-ownership.test.mjs",
+    "check:pos-package-boundaries": "node --test scripts/pos-shared/check-pos-package-boundaries.test.mjs",
+    "generate:pos-shared-ownership": "node scripts/pos-shared/generate-pos-shared-ownership.mjs",
+    "generate:pos-shared-retained": "node scripts/pos-shared/refresh-pos-shared-retained-paths.mjs",
+    "generate:hbpos-client": "node packages/pos-api-client/scripts/generate-hbpos-client.mjs",
+    "check:hbpos-client": "node packages/pos-api-client/scripts/generate-hbpos-client.mjs --check",
+    "test:hbpos-client": "node packages/pos-api-client/scripts/generate-hbpos-client.test.mjs && npm run check:hbpos-client",
+    "test:react-native-scheduler": "node --test scripts/pos-shared/check-react-native-scheduler-patch.test.mjs",
+    "test:expo-audio-android-routing": "node --test scripts/pos-shared/check-expo-audio-android-routing.test.mjs",
+    "lint:pos-packages": "eslint packages/pos-*/src --config eslint.config.mjs",
+    "typecheck:pos": "npm run typecheck --workspaces --if-present"
+  },
+  "dependencies": {
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "eslint": "^9.39.1",
+    "eslint-config-expo": "~10.0.0",
+    "openapi-typescript": "7.13.0",
+    "patch-package": "8.0.1",
+    "tsx": "^4.21.0",
+    "typescript": "~5.9.2"
+  }
+}

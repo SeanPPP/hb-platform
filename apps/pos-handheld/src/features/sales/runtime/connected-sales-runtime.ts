@@ -31,7 +31,7 @@ import {
   quickLineDiscountPermission,
   quickOrderDiscountPermission,
   type SalesOperationSecurity,
-} from "@/features/sales/runtime/sales-operation-security";
+} from "@hb/pos-domain/features/sales/runtime/sales-operation-security";
 import { scanTiming } from "@/features/sales/runtime/scan-timing";
 
 export const SALES_NEW_TRANSACTIONS_DISABLED =

@@ -1,10 +1,10 @@
-import type { AuditEventDraft } from "./order";
-import type { PricingCartStateSnapshot } from "./pricing-cart-state";
+import type { AuditEventDraft } from "@hb/pos-domain/core/contracts/order";
+import type { PricingCartStateSnapshot } from "@hb/pos-domain/core/contracts/pricing-cart-state";
 import type {
   RecallActiveBinding,
   TerminalCartFence,
   TerminalCartScope,
-} from "./terminal-cart";
+} from "@hb/pos-domain/core/contracts/terminal-cart";
 
 export type HeldOrderStatus = "Pending" | "Recalling" | "Recalled";
 

@@ -69,7 +69,7 @@ import {
 } from "../peripherals/scanner";
 import { SecurityApiCredentialProvider } from "../security/api-credential-provider";
 import { CashierAuthenticationService } from "../security/cashier-authentication";
-import { CashierSessionInvalidationBus } from "../security/cashier-session-invalidation";
+import { CashierSessionInvalidationBus } from "@hb/pos-domain/core/security/cashier-session-invalidation";
 import { DeviceRegistrationResetCoordinator } from "../security/device-registration-reset";
 import { DeviceRegistrationApiPartitionGuard } from "../security/device-registration-api-partition-guard";
 import { DeviceSessionCoordinator } from "../security/device-session";

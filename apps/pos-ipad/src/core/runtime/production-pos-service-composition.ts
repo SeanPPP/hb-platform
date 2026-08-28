@@ -11,7 +11,7 @@ import type {
   CatalogRefreshOutcome,
   CatalogRefreshProgressObserver,
   CatalogSummary,
-} from "../../features/catalog/catalog-refresh-contract";
+} from "@hb/pos-domain/features/catalog/catalog-refresh-contract";
 import {
   CatalogRefreshCoordinator,
   type CatalogRefreshState,
@@ -24,7 +24,7 @@ import {
   HbposCatalogPageApi,
   type CatalogPageDigest,
 } from "../../features/catalog/hbpos-catalog-remote";
-import { CATALOG_DOWNLOAD_PERMISSION } from "../../features/catalog/maintenance/catalog-maintenance-authorization";
+import { CATALOG_DOWNLOAD_PERMISSION } from "@hb/pos-domain/features/catalog/maintenance/catalog-maintenance-authorization";
 import { HbposCatalogLookupApi } from "../../features/catalog/remote-catalog-fallback";
 import { DurableCashCheckoutService } from "../../features/checkout/cash";
 import {
@@ -43,7 +43,7 @@ import {
   FulfilmentService,
   type FulfilmentActionResult,
   type FulfilmentAuthorizationContext,
-} from "../../features/fulfilment";
+} from "@hb/pos-domain/features/fulfilment/index";
 import {
   type ActivePricingCartPort,
   type HeldOrderActionResult,
@@ -73,7 +73,7 @@ import {
   type OperationAuthorizationServiceOptions,
   type SupervisorBarcodeScanResult,
 } from "../../features/operation-authorization";
-import type { PaymentConnectivityPort } from "../../features/payments/payment-attempt-service";
+import type { PaymentConnectivityPort } from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 import { VoucherHbposApi } from "../../features/payments/voucher";
 import {
   CashFulfilmentPlanner,
@@ -91,19 +91,19 @@ import {
 import {
   buildDailyCloseReceipt,
   dailyCloseReceiptToEscPosBytes,
-} from "../../features/receipts/daily-close-receipt";
-import { ProtectedRefundVoucherReceiptRenderer } from "../../features/receipts/refund-voucher-receipt-renderer";
+} from "@hb/pos-receipt-core/features/receipts/daily-close-receipt";
+import { ProtectedRefundVoucherReceiptRenderer } from "@hb/pos-receipt-core/features/receipts/refund-voucher-receipt-renderer";
 import {
   OrderRepositoryReturnReceiptRenderer,
   type ReturnReceiptSettingsPort,
-} from "../../features/receipts/return-receipt-renderer";
+} from "@hb/pos-receipt-core/features/receipts/return-receipt-renderer";
 import {
   PostSyncVoucherLatestBalanceApi,
   VoucherBalancePostSyncService,
   VoucherBalanceReceiptRenderer,
 } from "../../features/receipts/voucher-balance-receipt";
-import { HbposRemoteHistoryApi } from "../../features/remote-history/remote-history-api";
-import { REMOTE_HISTORY_REPRINT_PERMISSION } from "../../features/remote-history/remote-history-presenter";
+import { HbposRemoteHistoryApi } from "@hb/pos-api-client/features/remote-history/remote-history-api";
+import { REMOTE_HISTORY_REPRINT_PERMISSION } from "@hb/pos-domain/features/remote-history/remote-history-presenter";
 import {
   createHbposRemoteHistoryPresenterFactory,
   type RemoteHistoryPresenterFactory,
@@ -121,7 +121,7 @@ import {
 import type {
   SalesAuthorizedOperationContext,
   SalesOperationAuthorizationPort,
-} from "../../features/sales/runtime/sales-operation-security";
+} from "@hb/pos-domain/features/sales/runtime/sales-operation-security";
 import type { SalesPresenter } from "../../features/sales/ui/sales-presenter";
 import {
   SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
@@ -148,27 +148,27 @@ import {
   SharedHeldOrderPublicationWorker,
   type SharedHeldOrderPublicationRunResult,
 } from "../../features/shared-held-orders/shared-held-order-publication-worker";
-import { HbposSpecialProductsApi } from "../../features/special-products/hbpos-special-products-api";
-import { SPECIAL_PRODUCTS_ADD_TO_CART_PERMISSION } from "../../features/special-products/special-products-authorization";
+import { HbposSpecialProductsApi } from "@hb/pos-api-client/features/special-products/hbpos-special-products-api";
+import { SPECIAL_PRODUCTS_ADD_TO_CART_PERMISSION } from "@hb/pos-domain/features/special-products/special-products-authorization";
 import { SpecialProductsPresenter } from "../../features/special-products/special-products-presenter";
 import type { SpecialProductsRuntimeFactory } from "../../features/special-products/special-products-runtime";
-import type { LocalSyncHistoryPort } from "../../features/sync-history/sync-history-domain";
-import { SyncHistoryPresenter } from "../../features/sync-history/sync-history-presenter";
+import type { LocalSyncHistoryPort } from "@hb/pos-sync/features/sync-history/sync-history-domain";
+import { SyncHistoryPresenter } from "@hb/pos-sync/features/sync-history/sync-history-presenter";
 import { HbposStoreApi, type HbposTransport } from "../api/hbpos-api";
 import { createAud, type CartSnapshot } from "../contracts";
 import type { NewTransactionGate } from "../contracts/app-updates";
-import type { CashDrawerPort } from "../contracts/drawer";
+import type { CashDrawerPort } from "@hb/pos-domain/core/contracts/drawer";
 import type {
   CustomerDisplaySnapshot,
   DisplayStatus,
   ExternalCustomerDisplayPort,
 } from "../contracts/external-display";
-import type { PrinterPort } from "../contracts/printer";
+import type { PrinterPort } from "@hb/pos-domain/core/contracts/printer";
 import type {
   RecallActiveBinding,
   TerminalCartFence,
   TerminalCartScope,
-} from "../contracts/terminal-cart";
+} from "@hb/pos-domain/core/contracts/terminal-cart";
 import type { LocalCatalogMatch } from "../db/catalog-repository";
 import { PosDatabase } from "../db/pos-database";
 import type { ReceiptPrinterSettings } from "../db/pos-settings-repository";
@@ -185,12 +185,12 @@ import {
   HbposAuditBatchAdapter,
   HbposOrderSyncAdapter,
   type HbposAuditMetadata,
-} from "../sync/hbpos-sync-adapters";
+} from "@hb/pos-sync/core/sync/hbpos-sync-adapters";
 import {
   PosSyncCoordinator,
   SyncLifecycleController,
   type SyncSecurityPort,
-} from "../sync/sync-coordinator";
+} from "@hb/pos-sync/core/sync/sync-coordinator";
 
 import {
   CurrentCashierSession,

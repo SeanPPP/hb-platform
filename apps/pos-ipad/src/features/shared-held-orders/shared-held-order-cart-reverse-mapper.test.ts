@@ -10,7 +10,7 @@ import {
   normalizeSharedSaleCartV1,
   type SharedSaleCartV1,
   toSharedSaleCartV1,
-} from "./shared-sale-cart-v1";
+} from "@hb/pos-domain/features/shared-held-orders/shared-sale-cart-v1";
 import { normalizeSharedSaleCartV2 } from "./shared-sale-cart-v2";
 
 import type { PricingCartStateSnapshot } from "@/core/contracts";
