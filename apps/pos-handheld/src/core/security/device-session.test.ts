@@ -15,7 +15,11 @@ import {
   InMemorySecureStore,
   InstallationIdentityStore,
   PendingDeviceActivationCodeStore,
+  PendingDeviceRegistrationStore,
 } from "./secure-storage";
+
+const DEVICE_ACTIVATION_CODE =
+  "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
 
 test("设备验证成功后保存不可同步授权，并生成 iPad 认证头", async () => {
   const secureStore = new InMemorySecureStore();
@@ -125,6 +129,186 @@ test("换店凭据提交后才发布 scope 切换，重新注册失败不误发"
       authorization: "Bearer new-secret",
     },
   ]);
+});
+
+test("rebind 凭据落盘后在三种后置维护失败前发布一次显式 committed 信号", async (context) => {
+  for (const failure of [
+    "pending-registration-clear",
+    "pending-activation-clear",
+    "lock-unlock",
+  ] as const) {
+    await context.test(failure, async () => {
+      const secureStore = new InMemorySecureStore();
+      const installation = new InstallationIdentityStore(
+        secureStore,
+        () => "INSTALL-001",
+      );
+      const credentials = new DeviceCredentialStore(secureStore);
+      const lockStore = new DeviceLockStore(secureStore);
+      const pendingRegistration = new PendingDeviceRegistrationStore(secureStore);
+      const pendingActivation = new PendingDeviceActivationCodeStore(secureStore);
+      await credentials.save({
+        deviceCode: "HANDHELD-OLD",
+        storeCode: "S1",
+        hardwareId: "INSTALL-001",
+        authorizationCode: "old-secret",
+      });
+      const failureError = new Error(`post-save:${failure}`);
+      if (failure === "pending-registration-clear") {
+        pendingRegistration.clear = async () => { throw failureError; };
+      } else if (failure === "pending-activation-clear") {
+        pendingActivation.clear = async () => { throw failureError; };
+      } else {
+        lockStore.unlock = async () => { throw failureError; };
+      }
+      const coordinator = new DeviceSessionCoordinator(
+        {
+          async register() { throw new Error("not used"); },
+          async verify() { throw new Error("not used"); },
+          async reregister() { throw new Error("not used"); },
+          async rebindActivationCode() {
+            return {
+              isAllowed: true,
+              reasonCode: "ACTIVATED",
+              deviceCode: "HANDHELD-NEW",
+              storeCode: "S2",
+              deviceStatus: 1,
+              authorizationCode: "new-secret",
+            };
+          },
+        },
+        installation,
+        credentials,
+        lockStore,
+        pendingRegistration,
+        undefined,
+        pendingActivation,
+      );
+      const committedPayloads: unknown[][] = [];
+
+      await assert.rejects(
+        () => coordinator.rebindActivationCode(
+          { activationCode: DEVICE_ACTIVATION_CODE },
+          (...payload) => { committedPayloads.push(payload); },
+        ),
+        failureError,
+      );
+
+      assert.deepEqual(committedPayloads, [[]]);
+      assert.equal((await credentials.load())?.storeCode, "S2");
+    });
+  }
+});
+
+test("handheld poll 不得 supersede 在途 rebind 或重放一次性开通码", async () => {
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(
+    secureStore,
+    () => "INSTALL-001",
+  );
+  const credentials = new DeviceCredentialStore(secureStore);
+  await credentials.save({
+    deviceCode: "HANDHELD-OLD",
+    storeCode: "S1",
+    hardwareId: "INSTALL-001",
+    authorizationCode: "old-secret",
+  });
+  const originalSave = credentials.save.bind(credentials);
+  let coordinator!: DeviceSessionCoordinator;
+  let triggerPoll = false;
+  let pollTriggered = false;
+  let poll: Promise<unknown> | null = null;
+  credentials.save = async (next) => {
+    await originalSave(next);
+    if (triggerPoll && !pollTriggered) {
+      pollTriggered = true;
+      poll = coordinator.poll();
+    }
+  };
+  let rebindCalls = 0;
+  coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async verify() { throw new Error("poll must not verify during rebind"); },
+      async reregister() { throw new Error("not used"); },
+      async rebindActivationCode() {
+        rebindCalls += 1;
+        return {
+          isAllowed: true,
+          reasonCode: "ACTIVATED",
+          deviceCode: "HANDHELD-NEW",
+          storeCode: "S2",
+          deviceStatus: 1,
+          authorizationCode: "new-secret",
+        };
+      },
+    },
+    installation,
+    credentials,
+  );
+  const committedPayloads: unknown[][] = [];
+  triggerPoll = true;
+
+  const result = await coordinator.rebindActivationCode(
+    { activationCode: DEVICE_ACTIVATION_CODE },
+    (...payload) => { committedPayloads.push(payload); },
+  );
+  await poll;
+
+  assert.equal(result.status, "authorized");
+  assert.equal(rebindCalls, 1);
+  assert.deepEqual(committedPayloads, [[]]);
+  assert.equal((await credentials.load())?.storeCode, "S2");
+});
+
+test("handheld activation mutation 失败后释放门禁并继续正常 poll", async () => {
+  const secureStore = new InMemorySecureStore();
+  const installation = new InstallationIdentityStore(
+    secureStore,
+    () => "INSTALL-001",
+  );
+  const credentials = new DeviceCredentialStore(secureStore);
+  await credentials.save({
+    deviceCode: "HANDHELD-OLD",
+    storeCode: "S1",
+    hardwareId: "INSTALL-001",
+    authorizationCode: "old-secret",
+  });
+  let rebindCalls = 0;
+  let verifyCalls = 0;
+  const coordinator = new DeviceSessionCoordinator(
+    {
+      async register() { throw new Error("not used"); },
+      async verify() {
+        verifyCalls += 1;
+        return {
+          isAllowed: true,
+          deviceCode: "HANDHELD-OLD",
+          storeCode: "S1",
+          deviceStatus: 1,
+          authorizationCode: "old-secret",
+        };
+      },
+      async reregister() { throw new Error("not used"); },
+      async rebindActivationCode() {
+        rebindCalls += 1;
+        throw new Error("temporary network failure");
+      },
+    },
+    installation,
+    credentials,
+  );
+
+  await assert.rejects(
+    () => coordinator.rebindActivationCode({ activationCode: DEVICE_ACTIVATION_CODE }),
+    /temporary network failure/u,
+  );
+  const recovered = await coordinator.poll();
+
+  assert.equal(recovered.status, "authorized");
+  assert.equal(rebindCalls, 1);
+  assert.equal(verifyCalls, 1);
+  assert.equal((await credentials.load())?.storeCode, "S1");
 });
 
 test("同设备 scope 重新注册轮换授权后发布一次，首次 register 与 verify 不误发", async () => {

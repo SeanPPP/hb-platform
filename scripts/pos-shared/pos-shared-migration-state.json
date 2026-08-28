@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "baseline": "ddcca999b9d6a90e07b7b3d88c5b93a28d0c7b13",
   "reviewedModuleTopologySha256": "de2db7029f01e40162e3e9f23196d16596c16d7260da590d8ad1e6ad88156fcc",
   "migratedPaths": {
@@ -165,6 +165,36 @@
       "package": "pos-sync",
       "reason": "共享包测试改用只实现 UpdateOperationLeasePort 的测试租约，避免反向依赖 App-local OTA 状态机",
       "requiredAssertion": "更新 transition 等待在途同步，并拒绝 transition 期间的新 drain"
+    }
+  ],
+  "runtimeAdaptations": [
+    {
+      "path": "core/sync/sync-coordinator.ts",
+      "package": "pos-sync",
+      "reason": "换店门禁需要同步协调器在更新切换释放后补做定时唤醒，并向双端运行时发布脱敏的单飞 drain 终态",
+      "baselineCanonicalRuntimeSha256": "3ea1a760b8bef7d1df2cd3e2db0a3a10597e193bfa8fb3dd5b9af5e5657cc7dc",
+      "canonicalRuntimeSha256": "4267724517a55341b4163a2224afaa6b5bea0eb12f7d16c489f4bff381ac243f",
+      "canonicalTypeSha256": "3cd166460bda67dd6d694866cdf55af607338063d833e8ea65ce79b456621534",
+      "behaviorTests": [
+        {
+          "workspace": "packages/pos-sync",
+          "script": "test",
+          "path": "src/core/sync/sync-coordinator.test.ts",
+          "pattern": "src/**/*.test.ts"
+        },
+        {
+          "workspace": "apps/pos-ipad",
+          "script": "test:runtime",
+          "path": "src/core/runtime/production-pos-service-composition.test.ts",
+          "pattern": "src/core/runtime/*.test.ts"
+        },
+        {
+          "workspace": "apps/pos-handheld",
+          "script": "test:runtime",
+          "path": "src/core/runtime/production-pos-service-composition.test.ts",
+          "pattern": "src/core/runtime/*.test.ts"
+        }
+      ]
     }
   ],
   "semanticAdaptations": [

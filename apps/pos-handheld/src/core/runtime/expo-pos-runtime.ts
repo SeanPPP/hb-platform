@@ -98,6 +98,7 @@ import { createLazyExpoPrinterAdapter } from "./expo-printer-adapter";
 import {
   createSettingsApiHealthProbe,
   reloadSettingsRuntimeTerminally,
+  reregisterSettingsDevice,
   settingsAppUpdateSnapshot,
   settingsPaymentConfiguration,
 } from "./expo-settings-configuration";
@@ -1103,15 +1104,14 @@ async function createExpoPosRuntimeServicesCore(): Promise<ExpoPosRuntimeService
             }
             return response;
           },
-          reregister: async (request, signal) => {
-            throwIfRuntimeAborted(signal);
-            const result = await deviceSession.rebindActivationCode(request);
-            throwIfRuntimeAborted(signal);
-            if (result.status !== "authorized") {
-              throw new Error(
-                `SETTINGS_DEVICE_REREGISTRATION_${result.status.toUpperCase()}`,
-              );
-            }
+          reregister: async (request, signal, onCredentialsCommitted) => {
+            await reregisterSettingsDevice(
+              request,
+              signal,
+              (nextRequest, markCommitted) =>
+                deviceSession.rebindActivationCode(nextRequest, markCommitted),
+              onCredentialsCommitted,
+            );
           },
           resetRegistration: async (employeeBarcode, signal) => {
             throwIfRuntimeAborted(signal);

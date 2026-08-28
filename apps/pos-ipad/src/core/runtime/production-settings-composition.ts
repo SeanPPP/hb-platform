@@ -148,6 +148,7 @@ export type ProductionSettingsCompositionInput = Readonly<{
         terminalName?: string;
       }>,
       signal: AbortSignal,
+      onCredentialsCommitted: () => void,
     ): Promise<void>;
     resetRegistration(
       employeeBarcode: string,

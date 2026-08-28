@@ -221,6 +221,7 @@ import {
   ProductionReturnOnlineRefundRouter,
 } from "./production-return-online-refund-router";
 import {
+  createProductionReturnRecoveryProbe,
   createProductionReturnRuntime,
   type PosReturnRuntimeService,
 } from "./production-return-runtime";
@@ -429,6 +430,8 @@ export type ProductionPosRuntimeServices = Readonly<{
   fulfilment: PosFulfilmentRuntimeService;
   sync: Readonly<{
     requestDrain: PosSyncCoordinator["requestDrain"];
+    readPendingOrderSyncCount(): Promise<number>;
+    subscribeDrainSettled: PosSyncCoordinator["subscribeDrainSettled"];
     onApplicationStarted: SyncLifecycleController["onApplicationStarted"];
     onForeground: SyncLifecycleController["onForeground"];
     onNetworkChanged: SyncLifecycleController["onNetworkChanged"];
@@ -1225,6 +1228,7 @@ export function createProductionPosRuntimeServices(
     fulfilment,
     localHistoryReceiptPreview,
   );
+  const orderSyncStatus = input.database.orderSyncStatus();
   const coordinator = new PosSyncCoordinator({
     outbox: repositories.outbox,
     auditRepository: repositories.audit,
@@ -1378,6 +1382,9 @@ export function createProductionPosRuntimeServices(
   const installmentActionStore = installmentConfiguration
     ? input.database.installmentActions(input.encryptor)
     : null;
+  const installmentRecoveryActionStore =
+    installmentActionStore ??
+    input.database.installmentActions(input.encryptor);
   const installmentSnapshotRepository = installmentConfiguration
     ? input.database.installmentSnapshots(input.encryptor)
     : null;
@@ -1473,6 +1480,13 @@ export function createProductionPosRuntimeServices(
         status: "unavailable",
         reason: "INSTALLMENT_PAYMENT_PERSISTENCE_MISSING",
       };
+  const returnRecoveryProbe = createProductionReturnRecoveryProbe({
+    database: input.database,
+    encryptor: input.encryptor,
+    currentCashier,
+    terminal: input.auditMetadata,
+    createId: input.createId,
+  });
   const returns: PosReturnsRuntimeService = operationAuthorization
     ? createAvailableReturnRuntime({
         input,
@@ -1541,17 +1555,11 @@ export function createProductionPosRuntimeServices(
               returnRecoveryRequired,
               installmentRecoveryRequired,
             ] = await Promise.all([
-              payments.status === "available"
-                ? payments.hasRecoveryRequired()
-                : Promise.resolve(false),
-              returns.status === "available"
-                ? returns.hasRecoveryRequired()
-                : Promise.resolve(false),
-              installmentActionStore
-                ? installmentActionStore
-                    .loadBlocking(input.auditMetadata)
-                    .then((action) => action !== null)
-                : Promise.resolve(false),
+              paymentRuntime.recoveryProbe.hasRecoveryRequired(),
+              returnRecoveryProbe.hasRecoveryRequired(),
+              installmentRecoveryActionStore
+                .loadBlocking(input.auditMetadata)
+                .then((action) => action !== null),
             ]);
             return Object.freeze({
               ...durable,
@@ -1940,6 +1948,10 @@ export function createProductionPosRuntimeServices(
     },
     sync: {
       requestDrain: () => coordinator.requestDrain(),
+      readPendingOrderSyncCount: () =>
+        orderSyncStatus.readPendingOrderSyncCount(),
+      subscribeDrainSettled: (listener) =>
+        coordinator.subscribeDrainSettled(listener),
       onApplicationStarted: () => lifecycle.onApplicationStarted(),
       onForeground: async () => {
         await recoverVoucherBalancePrints();

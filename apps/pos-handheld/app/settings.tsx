@@ -1,5 +1,6 @@
 import { Redirect, type Href, useRouter } from "expo-router";
 import { useEffect, useState } from "react";
+import { resolveSyncHistoryAccess } from "@hb/pos-sync";
 
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
 import {
@@ -40,6 +41,9 @@ export default function SettingsRoute() {
     activeCashier,
   );
   const access = resolveSettingsAccess(
+    activeCashier?.permissions ?? [],
+  );
+  const syncHistoryAccess = resolveSyncHistoryAccess(
     activeCashier?.permissions ?? [],
   );
   const factory = runtime.services
@@ -140,6 +144,9 @@ export default function SettingsRoute() {
   return (
     <SettingsScreen
       onBack={() => router.dismissTo("/sales" as Href)}
+      {...(syncHistoryAccess.canView
+        ? { onOpenSyncHistory: () => router.push("/sync-history" as Href) }
+        : {})}
       presenter={presenter}
       {...(runtime.services?.scanner?.router
         ? { scanner: runtime.services.scanner.router }

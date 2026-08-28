@@ -85,6 +85,8 @@ export class DeviceSessionCoordinator {
   private operationGeneration = 0;
   // 安全存储写入不可取消；同一队列确保已启动旧写入先结束，由新操作在队尾完成最终覆盖。
   private mutationQueue: Promise<void> = Promise.resolve();
+  // 一次性开通码变更覆盖完整提交链，poll 不得在途中抢占 generation 或重放开通码。
+  private activationMutationDepth = 0;
   private state: DeviceSessionState = { status: "unregistered" };
 
   public constructor(
@@ -181,14 +183,16 @@ export class DeviceSessionCoordinator {
   public rebindActivationCode(input: Readonly<{
     activationCode: string;
     terminalName?: string;
-  }>): Promise<DeviceSessionState> {
-    return this.runActivationMutation(() => this.rebindActivationCodeCore(input));
+  }>, onCredentialsCommitted?: () => void): Promise<DeviceSessionState> {
+    return this.runActivationMutation(() =>
+      this.rebindActivationCodeCore(input, onCredentialsCommitted),
+    );
   }
 
   private async rebindActivationCodeCore(input: Readonly<{
     activationCode: string;
     terminalName?: string;
-  }>): Promise<DeviceSessionState> {
+  }>, onCredentialsCommitted?: () => void): Promise<DeviceSessionState> {
     await this.assertRebindAllowed();
     const rebindActivationCode = this.api.rebindActivationCode;
     if (!rebindActivationCode) {
@@ -210,6 +214,7 @@ export class DeviceSessionCoordinator {
             }),
             "rebind",
             generation,
+            onCredentialsCommitted,
           ),
           generation,
         );
@@ -240,6 +245,7 @@ export class DeviceSessionCoordinator {
   }
 
   public async poll(): Promise<DeviceSessionState> {
+    if (this.activationMutationDepth > 0) return this.state;
     const generation = this.beginOperation();
     const recovered = await this.tryRecoverPendingActivation(generation);
     if (recovered) return recovered;
@@ -351,6 +357,7 @@ export class DeviceSessionCoordinator {
     responsePromise: Promise<DeviceRegisterResponse | DeviceVerifyResponse | DeviceReregisterResponse>,
     operation: "register" | "verify" | "reregister" | "activate" | "rebind",
     generation: number,
+    onCredentialsCommitted?: () => void,
   ): Promise<DeviceSessionState> {
     const response = await responsePromise;
     if (!this.isCurrentOperation(generation)) {
@@ -414,6 +421,10 @@ export class DeviceSessionCoordinator {
             );
           }
           throw error;
+        }
+        if (operation === "rebind") {
+          // 凭据落盘是不可逆提交点；后续清理失败或 generation 变化不得把它误报为未提交。
+          onCredentialsCommitted?.();
         }
         if ((operation === "reregister" || operation === "rebind") && previousCredentials) {
           // 中文注释：save 已不可逆成功，即使本操作此刻变 stale 也必须广播实际 previous/current，generation 只阻止后续 UI 状态写入。
@@ -721,11 +732,16 @@ export class DeviceSessionCoordinator {
   }
 
   private async runActivationMutation<T>(operation: () => Promise<T>): Promise<T> {
-    const lease = this.apiPartitionGuard?.beginMutation();
+    this.activationMutationDepth += 1;
     try {
-      return await operation();
+      const lease = this.apiPartitionGuard?.beginMutation();
+      try {
+        return await operation();
+      } finally {
+        lease?.release();
+      }
     } finally {
-      lease?.release();
+      this.activationMutationDepth -= 1;
     }
   }
 

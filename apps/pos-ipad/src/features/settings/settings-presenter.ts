@@ -21,6 +21,10 @@ import {
 import { isTrustedLocalHbposApiOrigin } from "@hb/pos-domain/core/security/pos-api-addresses";
 import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
 import { parseDeviceActivationCode } from "@/core/security/device-activation-code";
+import type {
+  PendingWorkBlocker,
+  PendingWorkSnapshot,
+} from "@hb/pos-domain";
 
 export type SettingsPane =
   "general" | "payments" | "peripherals" | "device" | "hardware";
@@ -236,16 +240,26 @@ export interface SettingsSquareSetupControlPort
   ): Promise<SettingsSquareDeviceCode>;
 }
 
-export type SettingsPendingDataSnapshot = Readonly<{
-  hasActiveCart: boolean;
-  hasFulfilmentInFlight: boolean;
-  hasSyncOrAuditInFlight: boolean;
-  paymentConfigurationSensitiveOrderCount: number;
-  pendingDurableWriteCount: number;
-  pendingReturnCount: number;
-  pendingSaleCount: number;
-  unresolvedPaymentCount: number;
-}>;
+export type SettingsPendingDataSnapshot = PendingWorkSnapshot;
+
+export type SettingsDeviceReregistrationPreflightResult =
+  | Readonly<{ status: "ready" }>
+  | Readonly<{
+      status: "blocked";
+      reason: "pending-local-data";
+      blockers: readonly PendingWorkBlocker[];
+    }>
+  | Readonly<{
+      status: "blocked";
+      reason: "safety-check-failed";
+    }>;
+
+export type SettingsDeviceReregistrationPreflightState =
+  | Readonly<{ kind: "idle" | "checking" | "ready" | "failed" }>
+  | Readonly<{
+      kind: "blocked";
+      blockers: readonly PendingWorkBlocker[];
+    }>;
 
 export type SettingsPrinterDevice = Readonly<{
   id: string;
@@ -300,8 +314,12 @@ export type SettingsDangerousConfirmation =
 export type SettingsDangerousActionResult =
   | Readonly<{
       status: "blocked";
-      reason:
-        "candidate-unreachable" | "pending-local-data" | "safety-check-failed";
+      reason: "candidate-unreachable" | "safety-check-failed";
+    }>
+  | Readonly<{
+      status: "blocked";
+      reason: "pending-local-data";
+      blockers: readonly PendingWorkBlocker[];
     }>
   | Readonly<{
       status: "completed";
@@ -316,6 +334,10 @@ export type SettingsDangerousActionResult =
   | Readonly<{
       status: "pending-recovery";
       kind: "reset-device-registration";
+    }>
+  | Readonly<{
+      status: "committed-reload-required";
+      kind: "reregister-device";
     }>
   | Readonly<{
       status: "unknown";
@@ -334,6 +356,8 @@ export interface SettingsControlPort {
   loadSnapshot(signal: AbortSignal): Promise<SettingsSnapshot>;
   getCatalogRefreshState(): CatalogRefreshState;
   subscribeCatalogRefresh(listener: () => void): () => void;
+  /** 凭据已不可逆提交后的脱敏终态通知；无 payload，必须由实现只发布一次。 */
+  subscribeDeviceReregistrationCommitted(listener: () => void): () => void;
   downloadCatalog(signal: AbortSignal): Promise<SettingsCatalogSnapshot>;
   /**
    * 只探测候选地址，不保存配置、不重载运行时。
@@ -348,6 +372,9 @@ export interface SettingsControlPort {
         signal: AbortSignal,
       ) => Promise<SettingsDeviceActivationPreviewResponse>)
     | undefined;
+  preflightDeviceReregistration(
+    signal: AbortSignal,
+  ): Promise<SettingsDeviceReregistrationPreflightResult>;
   testPaymentProvider(
     provider: "square" | "linkly",
     input: SettingsPaymentSettingsInput,
@@ -406,6 +433,7 @@ export type SettingsStatusCode =
   | "catalog-reset"
   | "catalog-reset-failed"
   | "device-reregister-failed"
+  | "device-reregister-restart-required"
   | "device-reregister-started"
   | "device-activation-preview-failed"
   | "device-registration-reset-barcode-required"
@@ -469,6 +497,7 @@ export type SettingsState = Readonly<{
   device: SettingsDeviceSnapshot;
   deviceActivationCodeDraft: string;
   deviceActivationPreview: SettingsDeviceActivationPreview | null;
+  deviceReregistrationPreflight: SettingsDeviceReregistrationPreflightState;
   externalDisplay: SettingsExternalDisplaySnapshot;
   hardware: SettingsHardwareSnapshot;
   kind: "idle" | "loading" | "ready" | "unauthorized" | "failed";
@@ -500,6 +529,8 @@ export class SettingsPresenter {
   private readonly listeners = new Set<() => void>();
   private readonly lifetime = new AbortController();
   private catalogRefreshUnsubscribe: () => void = () => undefined;
+  private deviceReregistrationCommittedUnsubscribe: () => void =
+    () => undefined;
   private state: SettingsState;
   private destroyed = false;
   private loadGeneration = 0;
@@ -523,6 +554,19 @@ export class SettingsPresenter {
       options.port.subscribeCatalogRefresh(
         this.handleCatalogRefreshChanged,
       );
+    this.deviceReregistrationCommittedUnsubscribe =
+      options.port.subscribeDeviceReregistrationCommitted(() => {
+        if (
+          this.destroyed ||
+          this.state.statusCode === "device-reregister-restart-required"
+        ) {
+          return;
+        }
+        this.patch({
+          confirmation: null,
+          statusCode: "device-reregister-restart-required",
+        });
+      });
   }
 
   public readonly getState = (): SettingsState => this.state;
@@ -541,6 +585,8 @@ export class SettingsPresenter {
     this.invalidateSquareRequests("environment");
     this.catalogRefreshUnsubscribe();
     this.catalogRefreshUnsubscribe = () => undefined;
+    this.deviceReregistrationCommittedUnsubscribe();
+    this.deviceReregistrationCommittedUnsubscribe = () => undefined;
     this.lifetime.abort();
     this.listeners.clear();
   }
@@ -572,6 +618,7 @@ export class SettingsPresenter {
         device: snapshot.device,
         deviceActivationCodeDraft: "",
         deviceActivationPreview: null,
+        deviceReregistrationPreflight: Object.freeze({ kind: "idle" }),
         externalDisplay: snapshot.externalDisplay,
         hardware: snapshot.hardware,
         kind: "ready",
@@ -1417,6 +1464,7 @@ export class SettingsPresenter {
     this.patch({
       deviceActivationCodeDraft: value,
       deviceActivationPreview: null,
+      deviceReregistrationPreflight: Object.freeze({ kind: "idle" }),
       statusCode: null,
     });
   }
@@ -1936,6 +1984,7 @@ export class SettingsPresenter {
       this.patch({
         confirmation: null,
         deviceActivationPreview: null,
+        deviceReregistrationPreflight: Object.freeze({ kind: "idle" }),
         statusCode: "invalid-device-registration",
       });
       return Promise.resolve();
@@ -1959,24 +2008,30 @@ export class SettingsPresenter {
         this.patch({
           deviceActivationCodeDraft: activationCode,
           deviceActivationPreview: preview,
+          deviceReregistrationPreflight: Object.freeze({ kind: "idle" }),
           statusCode: null,
         });
       } catch {
         this.patch({
           deviceActivationPreview: null,
+          deviceReregistrationPreflight: Object.freeze({ kind: "idle" }),
           statusCode: "device-activation-preview-failed",
         });
       }
     });
   }
 
-  public requestDeviceReregistration(): boolean {
+  public requestDeviceReregistration(): Promise<void> {
     if (this.catalogRefreshRunning()) {
-      this.patch({ confirmation: null, statusCode: "safety-check-failed" });
-      return false;
+      this.patch({
+        confirmation: null,
+        deviceReregistrationPreflight: Object.freeze({ kind: "failed" }),
+        statusCode: "safety-check-failed",
+      });
+      return Promise.resolve();
     }
     if (!this.requirePermission(this.state.access.canReregisterDevice)) {
-      return false;
+      return Promise.resolve();
     }
     const activationCode = parseDeviceActivationCode(
       this.state.deviceActivationCodeDraft,
@@ -1984,15 +2039,68 @@ export class SettingsPresenter {
     const preview = this.state.deviceActivationPreview;
     const terminalName = this.state.terminalNameDraft.trim();
     if (!activationCode || !preview || preview.activationCode !== activationCode) {
-      this.patch({ confirmation: null, statusCode: "invalid-device-registration" });
-      return false;
+      this.patch({
+        confirmation: null,
+        deviceReregistrationPreflight: Object.freeze({ kind: "idle" }),
+        statusCode: "invalid-device-registration",
+      });
+      return Promise.resolve();
     }
-    return this.requestConfirmation({
+    const confirmation: SettingsDangerousConfirmation = Object.freeze({
       kind: "reregister-device",
       activationCode,
       currentStoreCode: this.state.device.storeCode,
       preview,
       ...(terminalName ? { terminalName } : {}),
+    });
+    return this.runAction(async () => {
+      this.patch({
+        confirmation: null,
+        deviceReregistrationPreflight: Object.freeze({ kind: "checking" }),
+      });
+      try {
+        const result = await this.options.port.preflightDeviceReregistration(
+          this.lifetime.signal,
+        );
+        if (result.status === "ready") {
+          this.patch({
+            confirmation,
+            deviceReregistrationPreflight: Object.freeze({ kind: "ready" }),
+            statusCode: null,
+          });
+          return;
+        }
+        if (result.reason === "pending-local-data") {
+          this.patch({
+            confirmation: null,
+            deviceReregistrationPreflight: Object.freeze({
+              kind: "blocked",
+              blockers: result.blockers,
+            }),
+            statusCode: "pending-local-data",
+          });
+          return;
+        }
+        this.patch({
+          confirmation: null,
+          deviceReregistrationPreflight: Object.freeze({ kind: "failed" }),
+          statusCode: "safety-check-failed",
+        });
+      } catch {
+        this.patch({
+          confirmation: null,
+          deviceReregistrationPreflight: Object.freeze({ kind: "failed" }),
+          statusCode: "safety-check-failed",
+        });
+      }
+    });
+  }
+
+  public dismissDeviceReregistrationPreflight(): void {
+    if (!this.canEdit()) return;
+    this.patch({
+      deviceReregistrationPreflight: Object.freeze({ kind: "idle" }),
+      statusCode: null,
     });
   }
 
@@ -2056,11 +2164,29 @@ export class SettingsPresenter {
             : undefined,
         );
         if (result.status === "blocked") {
+          const reregistrationPreflightPatch =
+            confirmation.kind === "reregister-device"
+              ? result.reason === "pending-local-data"
+                ? {
+                    deviceReregistrationPreflight: Object.freeze({
+                      kind: "blocked" as const,
+                      blockers: result.blockers,
+                    }),
+                  }
+                : result.reason === "safety-check-failed"
+                  ? {
+                      deviceReregistrationPreflight: Object.freeze({
+                        kind: "failed" as const,
+                      }),
+                    }
+                  : {}
+              : {};
           this.patch({
             ...(confirmation.kind === "change-api-address"
               ? { apiAddressDraft: this.state.apiBaseUrl }
               : {}),
             confirmation: null,
+            ...reregistrationPreflightPatch,
             statusCode:
               result.reason === "candidate-unreachable"
                 ? confirmation.kind === "change-api-address"
@@ -2094,6 +2220,18 @@ export class SettingsPresenter {
           if (this.state.linklySetup?.health.kind !== "failed") {
             this.patch({ statusCode: "linkly-pair-unknown" });
           }
+          return;
+        }
+        if (result.status === "committed-reload-required") {
+          if (confirmation.kind !== "reregister-device") {
+            throw new Error(
+              "unexpected committed reload dangerous action result",
+            );
+          }
+          this.patch({
+            confirmation: null,
+            statusCode: "device-reregister-started",
+          });
           return;
         }
         if (result.status === "pending-recovery") {
@@ -2615,6 +2753,7 @@ function initialState(
     }),
     deviceActivationCodeDraft: "",
     deviceActivationPreview: null,
+    deviceReregistrationPreflight: Object.freeze({ kind: "idle" }),
     externalDisplay: Object.freeze({
       available: false,
       enabled: false,

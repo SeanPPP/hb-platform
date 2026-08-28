@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react-native";
 import { Linking, StyleSheet } from "react-native";
 
+import { derivePendingWorkBlockers } from "@hb/pos-domain";
 import type { SettingsSquareLocation } from "@hb/pos-domain/features/settings/settings-square-setup";
 
 import {
@@ -19,6 +20,8 @@ import {
   type SettingsControlPort,
   type SettingsDangerousConfirmation,
   type SettingsDangerousActionResult,
+  type SettingsDeviceReregistrationPreflightResult,
+  type SettingsDeviceActivationPreviewResponse,
   type SettingsPaymentSettingsInput,
   type SettingsPrinterDevice,
   type SettingsReceiptProfileDraft,
@@ -1670,6 +1673,197 @@ describe("SettingsScreen", () => {
     expect(screen.getByText(/Android.*2026/s)).toBeTruthy();
   });
 
+  it("换店阻断面板按稳定顺序展示八类脱敏详情，并提供匹配入口和只读重新检查", async () => {
+    const port = new ScreenSettingsPort();
+    port.preflightResult = {
+      status: "blocked",
+      reason: "pending-local-data",
+      blockers: derivePendingWorkBlockers({
+        hasActiveCart: true,
+        hasFulfilmentInFlight: true,
+        hasSyncOrAuditInFlight: true,
+        paymentConfigurationSensitiveOrderCount: 2,
+        pendingDurableWriteCount: 3,
+        pendingReturnCount: 4,
+        pendingSaleCount: 5,
+        unresolvedPaymentCount: 6,
+      }),
+    };
+    const backToSales = jest.fn();
+    const openSyncHistory = jest.fn();
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen
+        locale="zh"
+        onBack={backToSales}
+        onOpenSyncHistory={openSyncHistory}
+        presenter={presenter}
+      />,
+    );
+
+    await fireEvent.press(screen.getByTestId("settings-nav-device"));
+    await fireEvent.changeText(
+      screen.getByTestId("settings-reregister-store"),
+      DEVICE_ACTIVATION_CODE,
+    );
+    await fireEvent.press(screen.getByTestId("settings-reregister-preview"));
+    await screen.findByTestId("settings-reregister-preview-card");
+    await fireEvent.press(screen.getByTestId("settings-reregister-request"));
+
+    const panel = await screen.findByTestId("settings-reregister-blockers");
+    expect(panel.props.accessibilityRole).toBe("alert");
+    expect(within(panel).getByText("暂时无法更换分店")).toBeTruthy();
+    expect(within(panel).getByText(/当前购物车/)).toBeTruthy();
+    expect(within(panel).getByText(/履约或硬件操作｜进行中/)).toBeTruthy();
+    expect(within(panel).getByText(/同步或审计上传｜进行中/)).toBeTruthy();
+    expect(within(panel).getByText("依赖当前支付配置的订单：2 笔")).toBeTruthy();
+    expect(within(panel).getByText(/未完成耐久写入：3 项/)).toBeTruthy();
+    expect(within(panel).getByText("待同步退货：4 笔")).toBeTruthy();
+    expect(within(panel).getByText("待同步销售：5 笔")).toBeTruthy();
+    expect(within(panel).getByText(/未决支付：6 笔/)).toBeTruthy();
+    expect(screen.queryByTestId("settings-confirmation")).toBeNull();
+    for (const testID of [
+      "settings-reregister-back-to-sales",
+      "settings-reregister-open-sync-history",
+      "settings-reregister-recheck",
+    ]) {
+      expect(
+        StyleSheet.flatten(screen.getByTestId(testID).props.style).minHeight,
+      ).toBeGreaterThanOrEqual(SETTINGS_MIN_TOUCH_TARGET);
+    }
+
+    await fireEvent.press(screen.getByTestId("settings-reregister-back-to-sales"));
+    expect(backToSales).toHaveBeenCalledTimes(1);
+    await fireEvent.press(
+      screen.getByTestId("settings-reregister-open-sync-history"),
+    );
+    expect(openSyncHistory).toHaveBeenCalledTimes(1);
+
+    port.preflightResult = { status: "ready" };
+    await fireEvent.press(screen.getByTestId("settings-reregister-recheck"));
+    await screen.findByTestId("settings-confirmation");
+    expect(port.preflightCalls).toBe(2);
+  });
+
+  it("英文换店阻断显示准确笔数与英文安全入口", async () => {
+    const port = new ScreenSettingsPort();
+    port.preflightResult = {
+      status: "blocked",
+      reason: "pending-local-data",
+      blockers: derivePendingWorkBlockers({
+        hasActiveCart: false,
+        hasFulfilmentInFlight: false,
+        hasSyncOrAuditInFlight: false,
+        paymentConfigurationSensitiveOrderCount: 0,
+        pendingDurableWriteCount: 0,
+        pendingReturnCount: 0,
+        pendingSaleCount: 2,
+        unresolvedPaymentCount: 0,
+      }),
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen
+        locale="en"
+        onOpenSyncHistory={jest.fn()}
+        presenter={presenter}
+      />,
+    );
+
+    await fireEvent.press(screen.getByTestId("settings-nav-device"));
+    await fireEvent.changeText(
+      screen.getByTestId("settings-reregister-store"),
+      DEVICE_ACTIVATION_CODE,
+    );
+    await fireEvent.press(screen.getByTestId("settings-reregister-preview"));
+    await screen.findByTestId("settings-reregister-preview-card");
+    await fireEvent.press(screen.getByTestId("settings-reregister-request"));
+
+    const panel = await screen.findByTestId("settings-reregister-blockers");
+    expect(
+      within(panel).getByText("Store change is temporarily blocked"),
+    ).toBeTruthy();
+    expect(within(panel).getByText("Sales waiting to sync: 2")).toBeTruthy();
+    expect(within(panel).getByText("View sync history")).toBeTruthy();
+    expect(within(panel).getByText("Recheck")).toBeTruthy();
+  });
+
+  it("没有同步记录权限时不显示误导入口并提示联系主管", async () => {
+    const port = new ScreenSettingsPort();
+    port.preflightResult = {
+      status: "blocked",
+      reason: "pending-local-data",
+      blockers: derivePendingWorkBlockers({
+        hasActiveCart: false,
+        hasFulfilmentInFlight: false,
+        hasSyncOrAuditInFlight: false,
+        paymentConfigurationSensitiveOrderCount: 0,
+        pendingDurableWriteCount: 0,
+        pendingReturnCount: 0,
+        pendingSaleCount: 1,
+        unresolvedPaymentCount: 0,
+      }),
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+
+    await fireEvent.press(screen.getByTestId("settings-nav-device"));
+    await fireEvent.changeText(
+      screen.getByTestId("settings-reregister-store"),
+      DEVICE_ACTIVATION_CODE,
+    );
+    await fireEvent.press(screen.getByTestId("settings-reregister-preview"));
+    await screen.findByTestId("settings-reregister-preview-card");
+    await fireEvent.press(screen.getByTestId("settings-reregister-request"));
+
+    expect(
+      await screen.findByTestId("settings-reregister-sync-history-permission"),
+    ).toHaveTextContent("请联系具备同步记录权限的主管检查待处理订单。");
+    expect(
+      screen.queryByTestId("settings-reregister-open-sync-history"),
+    ).toBeNull();
+  });
+
+  it("本地安全快照读取失败只显示 safety-check-failed 面板与重新检查", async () => {
+    const port = new ScreenSettingsPort();
+    port.preflightResult = {
+      status: "blocked",
+      reason: "safety-check-failed",
+    };
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+
+    await fireEvent.press(screen.getByTestId("settings-nav-device"));
+    await fireEvent.changeText(
+      screen.getByTestId("settings-reregister-store"),
+      DEVICE_ACTIVATION_CODE,
+    );
+    await fireEvent.press(screen.getByTestId("settings-reregister-preview"));
+    await screen.findByTestId("settings-reregister-preview-card");
+    await fireEvent.press(screen.getByTestId("settings-reregister-request"));
+
+    const panel = await screen.findByTestId("settings-reregister-blockers");
+    expect(within(panel).getByText("无法读取本地安全状态")).toBeTruthy();
+    expect(
+      within(panel).getByText(/无法确认本地业务是否已安全完成/),
+    ).toBeTruthy();
+    expect(
+      within(panel).getByTestId("settings-reregister-recheck"),
+    ).toBeTruthy();
+    expect(
+      within(panel).queryAllByTestId(/settings-reregister-blocker-/),
+    ).toHaveLength(0);
+    expect(screen.queryByTestId("settings-confirmation")).toBeNull();
+  });
+
   it("清除设备注册显示精确设备影响说明，员工条码不预填且只在最终确认时提交", async () => {
     const port = new ScreenSettingsPort();
     const presenter = createPresenter(port);
@@ -2000,6 +2194,12 @@ class ScreenSettingsPort implements SettingsControlPort {
   public printerTests = 0;
   public receiptProfileValue: SettingsReceiptProfileDraft | null = null;
   public scannerTests = 0;
+  public activationPreviewResponse: SettingsDeviceActivationPreviewResponse | null =
+    null;
+  public preflightCalls = 0;
+  public preflightResult: SettingsDeviceReregistrationPreflightResult = {
+    status: "ready",
+  };
   public snapshotValue: SettingsSnapshot | null = null;
   private catalogRefreshState: ReturnType<
     SettingsControlPort["getCatalogRefreshState"]
@@ -2017,6 +2217,10 @@ class ScreenSettingsPort implements SettingsControlPort {
   public subscribeCatalogRefresh(listener: () => void): () => void {
     this.catalogRefreshListeners.add(listener);
     return () => this.catalogRefreshListeners.delete(listener);
+  }
+
+  public subscribeDeviceReregistrationCommitted(): () => void {
+    return () => undefined;
   }
 
   public publishCatalogRefresh(
@@ -2040,13 +2244,18 @@ class ScreenSettingsPort implements SettingsControlPort {
   }
 
   public async previewDeviceActivationCode() {
-    return {
+    return this.activationPreviewResponse ?? {
       deviceSystem: "Android",
       expiresAtUtc: "2026-08-28T00:00:00.000Z",
       isAllowed: true,
       storeCode: "BNE-02",
       storeName: "Sunnybank",
     };
+  }
+
+  public async preflightDeviceReregistration() {
+    this.preflightCalls += 1;
+    return this.preflightResult;
   }
 
   public async executeDangerousAction(

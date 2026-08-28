@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   createSettingsApiHealthProbe,
   reloadSettingsRuntimeTerminally,
+  reregisterSettingsDevice,
   settingsAppUpdateSnapshot,
   settingsPaymentConfiguration,
 } from "./expo-settings-configuration";
@@ -93,6 +94,68 @@ test("候选 API 探测只接受 2xx，并把 AbortSignal 传给 fetch", async (
     true,
   );
   assert.equal(signals[0], abort.signal);
+});
+
+test("设备 rebind 提交后 signal 中止仍保留 authorized 终态，提交前中止零调用", async () => {
+  const controller = new AbortController();
+  const requests: string[] = [];
+  let committedEvents = 0;
+  const rebind = async (
+    request: Readonly<{ activationCode: string }>,
+    onCredentialsCommitted: () => void,
+  ) => {
+    requests.push(request.activationCode);
+    onCredentialsCommitted();
+    controller.abort();
+    return { status: "authorized" } as const;
+  };
+
+  assert.deepEqual(
+    await reregisterSettingsDevice(
+      { activationCode: "HBDEV1-CODE" },
+      controller.signal,
+      rebind,
+      () => { committedEvents += 1; },
+    ),
+    { status: "committed" },
+  );
+  assert.deepEqual(requests, ["HBDEV1-CODE"]);
+  assert.equal(committedEvents, 1);
+
+  const preAborted = new AbortController();
+  preAborted.abort();
+  await assert.rejects(
+    () =>
+      reregisterSettingsDevice(
+        { activationCode: "HBDEV1-SECOND" },
+        preAborted.signal,
+        rebind,
+        () => { committedEvents += 1; },
+      ),
+    /abort/i,
+  );
+  assert.deepEqual(requests, ["HBDEV1-CODE"]);
+  assert.equal(committedEvents, 1);
+});
+
+test("设备凭据已提交后吞并后置异常或 supersession，并只发布一次窄 committed outcome", async () => {
+  for (const outcome of ["throw", "superseded"] as const) {
+    const committedPayloads: unknown[][] = [];
+    const result = await reregisterSettingsDevice(
+      { activationCode: `HBDEV1-${outcome}` },
+      new AbortController().signal,
+      async (_request, onCredentialsCommitted) => {
+        onCredentialsCommitted();
+        onCredentialsCommitted();
+        if (outcome === "throw") throw new Error("post-save cleanup failed");
+        return { status: "verifying" };
+      },
+      (...payload) => { committedPayloads.push(payload); },
+    );
+
+    assert.deepEqual(result, { status: "committed" });
+    assert.deepEqual(committedPayloads, [[]]);
+  }
 });
 
 test("设置 reload 成功后保持 terminal pending，失败时仍向上抛出", async () => {

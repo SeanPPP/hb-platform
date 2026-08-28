@@ -11,6 +11,7 @@ import type {
 
 import { createProductionSettingsRuntime } from "./production-settings-runtime";
 
+const DEVICE_ACTIVATION_CODE = `HBDEV1-${"A".repeat(26)}-${"B".repeat(26)}`;
 const SNAPSHOT: SettingsSnapshot = {
   apiBaseUrl: "https://pos.example.test/api",
   appUpdate: {
@@ -409,6 +410,133 @@ test("危险动作只能在组合根独占区执行，并在动作完成后再�
     "lease",
     "exclusive:end",
   ]);
+});
+
+test("更换分店只读预检复核 lease 且不进入最终危险独占区", async () => {
+  const events: string[] = [];
+  const runtime = createProductionSettingsRuntime({
+    createSessionLease: () => ({
+      get: () => {
+        events.push("lease");
+        return {
+          storeCode: "S1",
+          deviceCode: "IPAD-1",
+          permissionCodes: [
+            "Permissions.PosTerminal.Settings.View",
+            "Permissions.PosTerminal.Settings.DeviceRegistration",
+          ],
+        };
+      },
+    }),
+    control: fakeControl({
+      loadSnapshot: async () => SNAPSHOT,
+      previewDeviceActivationCode: async () => ({
+        isAllowed: true,
+        storeCode: "S2",
+        storeName: "Store Two",
+        deviceSystem: "Android",
+        expiresAtUtc: "2026-08-28T00:00:00.000Z",
+      }),
+      preflightDeviceReregistration: async () => {
+        events.push("preflight");
+        return { status: "ready" };
+      },
+    }),
+    runDangerousExclusive: async () => {
+      events.push("exclusive:must-not-run");
+      throw new Error("preflight must remain read-only");
+    },
+  });
+  const presenter = runtime.createPresenter();
+  await presenter.load();
+  presenter.setDeviceActivationCode(DEVICE_ACTIVATION_CODE);
+  await presenter.previewDeviceReregistration();
+  events.length = 0;
+
+  await presenter.requestDeviceReregistration();
+
+  assert.deepEqual(events, ["lease", "preflight", "lease"]);
+  assert.equal(presenter.getState().confirmation?.kind, "reregister-device");
+});
+
+test("更换分店最终确认通过全局 transition 等待在途业务并拒绝新业务", async () => {
+  let sessionActive = true;
+  const events: string[] = [];
+  const transition = new UpdateTransitionLeaseCoordinator();
+  const operationRelease = deferred<void>();
+  transition.bindTransitionBarrier((operation) => operation());
+  const runtime = createProductionSettingsRuntime({
+    createSessionLease: () => ({
+      get: () => {
+        if (!sessionActive) throw new Error("SESSION_REPLACED");
+        events.push("lease");
+        return {
+          storeCode: "S1",
+          deviceCode: "IPAD-1",
+          permissionCodes: [
+            "Permissions.PosTerminal.Settings.View",
+            "Permissions.PosTerminal.Settings.DeviceRegistration",
+          ],
+        };
+      },
+    }),
+    control: fakeControl({
+      loadSnapshot: async () => SNAPSHOT,
+      previewDeviceActivationCode: async () => ({
+        isAllowed: true,
+        storeCode: "S2",
+        storeName: "Store Two",
+        deviceSystem: "Android",
+        expiresAtUtc: "2026-08-28T00:00:00.000Z",
+      }),
+      preflightDeviceReregistration: async () => ({ status: "ready" }),
+      executeDangerousAction: async (action) => {
+        assert.equal(action.kind, "reregister-device");
+        events.push("reregister");
+        // 成功重绑会同步废弃旧设备范围，不能在不可逆提交后再用旧 lease 改写为失败。
+        sessionActive = false;
+        return { status: "completed", kind: "reregister-device" };
+      },
+    }),
+    runDangerousExclusive: async () => {
+      throw new Error("device reregistration must not pre-acquire cart lease");
+    },
+    runDeviceRegistrationResetTransition: (operation) =>
+      transition.runTransition(operation),
+  } as Parameters<typeof createProductionSettingsRuntime>[0] & {
+    runDeviceRegistrationResetTransition<T>(
+      operation: () => Promise<T>,
+    ): Promise<T>;
+  });
+  const presenter = runtime.createPresenter();
+  await presenter.load();
+  presenter.setDeviceActivationCode(DEVICE_ACTIVATION_CODE);
+  await presenter.previewDeviceReregistration();
+  await presenter.requestDeviceReregistration();
+  events.length = 0;
+  const existing = transition.runOperation(async () => {
+    events.push("operation:started");
+    await operationRelease.promise;
+    events.push("operation:finished");
+  });
+
+  const reregister = presenter.confirmDangerousAction();
+
+  assert.equal(transition.isTransitionActive(), true);
+  await assert.rejects(transition.runOperation(async () => undefined));
+  assert.deepEqual(events, ["operation:started", "lease"]);
+
+  operationRelease.resolve();
+  await existing;
+  await reregister;
+
+  assert.deepEqual(events, [
+    "operation:started",
+    "lease",
+    "operation:finished",
+    "reregister",
+  ]);
+  assert.equal(presenter.getState().statusCode, "device-reregister-started");
 });
 
 test("清除设备注册通过全局 transition 等待在途 operation 并拒绝新 operation", async () => {
@@ -826,9 +954,11 @@ function fakeControl(
   return {
     getCatalogRefreshState: () => ({ kind: "idle" }),
     subscribeCatalogRefresh: () => () => undefined,
+    subscribeDeviceReregistrationCommitted: () => () => undefined,
     loadSnapshot: unavailable,
     downloadCatalog: unavailable,
     testApiAddress: unavailable,
+    preflightDeviceReregistration: unavailable,
     testPaymentProvider: unavailable,
     savePrinterSettings: unavailable,
     loadReceiptProfile: unavailable,

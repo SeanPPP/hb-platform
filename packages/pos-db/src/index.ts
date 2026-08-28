@@ -3,6 +3,7 @@ export * from "./core/db/order-sync-material-contract";
 export * from "./core/db/serialized-sqlite-connection";
 export * from "./core/db/sqlite-daily-close-repository";
 export * from "./core/db/sqlite-offline-return-capacity";
+export * from "./core/db/sqlite-order-sync-status-repository";
 export * from "./core/db/sqlite-payment-protected-material";
 export * from "./core/db/sqlite-settings-safety-repository";
 export * from "./core/db/sqlite-special-products-repository";

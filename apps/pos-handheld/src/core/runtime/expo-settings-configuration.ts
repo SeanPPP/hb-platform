@@ -72,6 +72,41 @@ export function createSettingsApiHealthProbe(
 }
 
 /**
+ * 设备重新绑定会先提交新凭据再返回结果；取消信号只在不可逆调用前生效。
+ * rebind resolve 后不得再检查旧 signal，否则会把已提交的 authorized 误报成可重试失败。
+ */
+export async function reregisterSettingsDevice<TRequest>(
+  request: TRequest,
+  signal: AbortSignal,
+  rebind: (
+    request: TRequest,
+    onCredentialsCommitted: () => void,
+  ) => Promise<Readonly<{ status: string }>>,
+  onCredentialsCommitted: () => void,
+): Promise<Readonly<{ status: "committed" }>> {
+  if (signal.aborted) throw abortError();
+  let committed = false;
+  const markCommitted = () => {
+    if (committed) return;
+    committed = true;
+    onCredentialsCommitted();
+  };
+  try {
+    const result = await rebind(request, markCommitted);
+    if (committed) return Object.freeze({ status: "committed" });
+    if (result.status !== "authorized") {
+      throw new Error(
+        `SETTINGS_DEVICE_REREGISTRATION_${result.status.toUpperCase()}`,
+      );
+    }
+    throw new Error("SETTINGS_DEVICE_REREGISTRATION_COMMIT_UNCONFIRMED");
+  } catch (error: unknown) {
+    if (committed) return Object.freeze({ status: "committed" });
+    throw error;
+  }
+}
+
+/**
  * Expo 不保证 reloadAsync resolve 后旧 JS 会立即停止。成功后保持 Promise pending，
  * 让支付配置 transition 一直封门直到新 runtime 接管；reload 失败仍原样抛出。
  */
