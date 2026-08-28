@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createCashierInvalidationHandler } from "./cashier-session-invalidation-recovery";
+import { createCashierInvalidationHandler } from "@hb/pos-domain/features/cashier-login/cashier-session-invalidation-recovery";
 
 test("401 只清除收银员，403 原地锁定 runtime 而不触发重建", () => {
   let clears = 0;

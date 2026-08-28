@@ -8,7 +8,7 @@ import {
   INSTALLMENTS_CREATE_PERMISSION,
   INSTALLMENTS_REPRINT_PERMISSION,
   INSTALLMENTS_VIEW_PERMISSION,
-} from "./installment-authorization";
+} from "@hb/pos-domain/features/installments/installment-authorization";
 import type { InstallmentDetails } from "./installment-models";
 import {
   InstallmentPresenter,

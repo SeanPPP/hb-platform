@@ -22,7 +22,7 @@ import type {
   PaymentProvider,
   PaymentProviderResult,
 } from "@/core/contracts";
-import type { PaymentProviderRegistryPort } from "@/features/payments/payment-attempt-service";
+import type { PaymentProviderRegistryPort } from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 
 const ACTION_ID = "10000000-0000-4000-8000-000000000001";
 const INSTALLMENT_GUID = "20000000-0000-4000-8000-000000000001";

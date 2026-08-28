@@ -14,10 +14,10 @@ import type {
 } from "../runtime/production-installment-payment-adapter";
 import type { PersistedInstallmentAction } from "../runtime/production-installment-runtime";
 
-import { ProtectedMaterialIntegrityError } from "./protected-material-integrity-error";
+import { ProtectedMaterialIntegrityError } from "@hb/pos-db/core/db/protected-material-integrity-error";
 import { SqliteInstallmentActionStore } from "./sqlite-installment-action-store";
 import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 type AttemptRow = Readonly<{
   attempt_id: unknown;

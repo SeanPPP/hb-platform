@@ -2,10 +2,10 @@ import {
   SharedSaleCartValidationError,
   normalizeSharedSaleCartV1,
   toSharedSaleCartV1,
-} from "./shared-sale-cart-v1";
+} from "@hb/pos-domain/features/shared-held-orders/shared-sale-cart-v1";
 import type {
   SharedSaleCartValidationCode,
-} from "./shared-sale-cart-v1";
+} from "@hb/pos-domain/features/shared-held-orders/shared-sale-cart-v1";
 import {
   toSharedSaleCartV2,
   type SharedSaleCartPayload,

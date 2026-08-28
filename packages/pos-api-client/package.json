@@ -1,0 +1,39 @@
+{
+  "name": "@hb/pos-api-client",
+  "version": "0.1.0",
+  "private": true,
+  "sideEffects": false,
+  "type": "module",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./forbidden-response": {
+      "types": "./src/core/api/forbidden-response.ts",
+      "default": "./src/core/api/forbidden-response.ts"
+    },
+    "./*": {
+      "types": "./src/*.ts",
+      "default": "./src/*.ts"
+    }
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "generate:hbpos-client": "node scripts/generate-hbpos-client.mjs",
+    "check:hbpos-client": "node scripts/generate-hbpos-client.mjs --check",
+    "test:codegen": "node scripts/generate-hbpos-client.test.mjs && npm run check:hbpos-client",
+    "test": "tsx --test src/**/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@hb/pos-domain": "0.1.0",
+    "axios": "1.18.1"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0"
+  }
+}

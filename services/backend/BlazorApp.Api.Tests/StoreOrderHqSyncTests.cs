@@ -963,16 +963,10 @@ public sealed class StoreOrderHqSyncTests : IDisposable
         await SeedLocalOrderAsync("order-store", "S001", now, isDeleted: false);
         await SeedLocalOrderAsync("order-external", externalCustomerGuid, now, isDeleted: false);
 
-        var service = CreateService();
-        var factoryField = typeof(StoreOrderReactService).GetField(
-            "_createHqConnection",
-            BindingFlags.Instance | BindingFlags.NonPublic
-        );
-        factoryField!.SetValue(
-            service,
-            (Func<ISqlSugarClient>)(() => throw new SqlSugarException(
+        var service = CreateService(
+            createHqConnection: () => throw new SqlSugarException(
                 "Connection open error . A network-related or instance-specific error occurred while establishing a connection to SQL Server."
-            ))
+            )
         );
 
         var result = await service.GetUsedBranchesAsync();
@@ -1003,42 +997,38 @@ public sealed class StoreOrderHqSyncTests : IDisposable
         }
     }
 
-    private StoreOrderReactService CreateService(List<string>? hqSqlLogs = null)
+    private StoreOrderReactService CreateService(
+        List<string>? hqSqlLogs = null,
+        Func<ISqlSugarClient>? createHqConnection = null
+    )
     {
-        var service = new StoreOrderReactService(
+        createHqConnection ??= () =>
+        {
+            var client = new SqlSugarClient(
+                CreateConnectionConfig(_hqConnection.ConnectionString)
+            );
+            if (hqSqlLogs != null)
+            {
+                // 记录 HQ SQL，确保同步只读取目标订单的完整明细。
+                client.Aop.OnLogExecuting = (sql, parameters) =>
+                {
+                    hqSqlLogs.Add(FormatSqlLog(sql, parameters));
+                };
+            }
+
+            return client;
+        };
+
+        return StoreOrderReactServiceTestFactory.Create(
             CreateSqlSugarContext(_localDb),
-            NullLogger<StoreOrderReactService>.Instance,
             new HttpContextAccessor(),
             new StubOrderNumberGenerator(),
             CreateHqConfiguration(_hqConnection.ConnectionString),
             _mapper,
-            Mock.Of<IInvoiceEmailService>(),
             Mock.Of<IStoreOrderLocationProductLookupService>(),
-            Mock.Of<IWarehouseProductChangeHistoryService>()
+            Mock.Of<IWarehouseProductChangeHistoryService>(),
+            createHqConnection: createHqConnection
         );
-
-        var factoryField = typeof(StoreOrderReactService).GetField(
-            "_createHqConnection",
-            BindingFlags.Instance | BindingFlags.NonPublic
-        );
-        factoryField!.SetValue(
-            service,
-            () =>
-            {
-                var client = new SqlSugarClient(CreateConnectionConfig(_hqConnection.ConnectionString));
-                if (hqSqlLogs != null)
-                {
-                    // 记录 HQ SQL，确保同步只读取目标订单的完整明细。
-                    client.Aop.OnLogExecuting = (sql, parameters) =>
-                    {
-                        hqSqlLogs.Add(FormatSqlLog(sql, parameters));
-                    };
-                }
-
-                return client;
-            }
-        );
-        return service;
     }
 
     private StoreOrderHqSyncService CreateHqSyncService(List<string>? hqSqlLogs = null)

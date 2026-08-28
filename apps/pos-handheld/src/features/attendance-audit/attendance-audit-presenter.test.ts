@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { AttendanceAuditPresenter } from "./attendance-audit-presenter";
 import type { AttendanceQrState } from "./attendance-qr-controller";
-import type { OperationAuditPresenterState } from "./operation-audit-presenter";
+import type { OperationAuditPresenterState } from "@hb/pos-domain/features/attendance-audit/operation-audit-presenter";
 
 test("启动二维码状态机并按权限读取审计，统一发布只读快照", async () => {
   const qr = new FakeQrController();

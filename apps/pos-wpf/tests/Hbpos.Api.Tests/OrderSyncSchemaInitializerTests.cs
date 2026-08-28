@@ -19,10 +19,53 @@ public sealed class OrderSyncSchemaInitializerTests
         await initializer.InitializeAsync();
 
         var sql = Assert.Single(executor.SqlStatements);
-        Assert.Contains("IF OBJECT_ID(N'[dbo].[payment_detail]', N'U') IS NOT NULL", sql);
-        Assert.Contains("COL_LENGTH(N'dbo.payment_detail', N'Reference') < 1000", sql);
+        Assert.Contains("SET LOCK_TIMEOUT 15000", sql);
+        Assert.Contains("FROM sys.columns AS columns", sql);
+        Assert.Contains("INNER JOIN sys.types AS types", sql);
+        Assert.Contains("@ReferenceType = types.[name]", sql);
+        Assert.Contains("@ReferenceMaxLength <> -1", sql);
+        Assert.Contains("@ReferenceMaxLength < 2000", sql);
+        Assert.Contains("@ReferenceMaxLength < 4000", sql);
         Assert.Contains("ALTER TABLE [dbo].[payment_detail]", sql);
-        Assert.Contains("ALTER COLUMN [Reference] VARCHAR(1000) NULL", sql);
+        Assert.Contains("ALTER COLUMN [Reference] VARCHAR(2000) NULL", sql);
+        Assert.Contains("ALTER COLUMN [Reference] NVARCHAR(2000) NULL", sql);
+    }
+
+    [Fact]
+    public async Task InitializeAsync_fails_closed_for_missing_or_unsupported_reference_column()
+    {
+        var executor = new CapturingOrderSyncSchemaSqlExecutor();
+        var initializer = new SqlSugarOrderSyncSchemaInitializer(executor);
+
+        await initializer.InitializeAsync();
+
+        var sql = Assert.Single(executor.SqlStatements);
+        Assert.Contains("IF @ReferenceType IS NULL", sql);
+        Assert.Contains("THROW 51000", sql);
+        Assert.Contains("IF @ReferenceType NOT IN (N'varchar', N'nvarchar')", sql);
+        Assert.Contains("THROW 51001", sql);
+    }
+
+    [Fact]
+    public async Task InitializeAsync_restores_default_lock_timeout_on_success_and_failure()
+    {
+        var executor = new CapturingOrderSyncSchemaSqlExecutor();
+        var initializer = new SqlSugarOrderSyncSchemaInitializer(executor);
+
+        await initializer.InitializeAsync();
+
+        var sql = Assert.Single(executor.SqlStatements);
+        Assert.Equal(
+            2,
+            System.Text.RegularExpressions.Regex.Matches(sql, "SET LOCK_TIMEOUT -1").Count);
+        Assert.Contains("SET LOCK_TIMEOUT -1;\nEND TRY", sql);
+
+        var catchStart = sql.IndexOf("BEGIN CATCH", StringComparison.Ordinal);
+        Assert.True(catchStart >= 0);
+        var catchReset = sql.IndexOf("SET LOCK_TIMEOUT -1", catchStart, StringComparison.Ordinal);
+        var rethrow = sql.IndexOf("THROW;", catchStart, StringComparison.Ordinal);
+        Assert.True(catchReset > catchStart);
+        Assert.True(rethrow > catchReset);
     }
 
     [Fact]
@@ -56,7 +99,7 @@ public sealed class OrderSyncSchemaInitializerTests
 
         Assert.True(reference.Length > 100);
         Assert.NotNull(column);
-        Assert.Equal(1000, column!.Length);
+        Assert.Equal(2000, column!.Length);
         Assert.True(reference.Length <= column.Length);
     }
 

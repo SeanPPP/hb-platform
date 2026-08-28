@@ -16,7 +16,7 @@ import {
 import {
   normalizeSharedSaleCartV1,
   type SharedSaleCartV1,
-} from "./shared-sale-cart-v1";
+} from "@hb/pos-domain/features/shared-held-orders/shared-sale-cart-v1";
 import {
   normalizeSharedSaleCartV2,
   type SharedSaleCartPayload,
@@ -24,7 +24,7 @@ import {
 } from "./shared-sale-cart-v2";
 
 import { SqliteHeldOrderRecordRepository } from "@/core/db/sqlite-repositories";
-import type { SqliteConnectionPort } from "@/core/db/types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 const SCOPE = { storeCode: "S1", deviceCode: "IPAD-01" } as const;
 

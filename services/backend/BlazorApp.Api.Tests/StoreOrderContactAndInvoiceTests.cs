@@ -4,6 +4,7 @@ using System.Security.Claims;
 using System.Net.Sockets;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.StoreOrders.Invoice;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
@@ -110,6 +111,34 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         Assert.True(fullResult.Success);
         Assert.Equal("Test Store", fullResult.Data!.StoreName);
         Assert.Equal("store@example.com", fullResult.Data!.StoreContactEmail);
+    }
+
+    [Fact]
+    public async Task StoreOrderInvoiceDetailReader_PreservesOrderAndAllocatedImportAmounts()
+    {
+        await SeedStoreOrderGraphAsync();
+        await _db.Updateable<WareHouseOrderDetails>()
+            .SetColumns(item => item.ImportAmount == 17.5m)
+            .Where(item => item.DetailGUID == "detail-1")
+            .ExecuteCommandAsync();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(CreateSqlSugarContext(_db));
+        services.AddSingleton<IHttpContextAccessor>(new HttpContextAccessor());
+        services.AddStoreOrderInvoiceSlice();
+        using var provider = services.BuildServiceProvider();
+
+        var result = await provider
+            .GetRequiredService<IStoreOrderInvoiceDetailReader>()
+            .GetInvoiceDetailAsync("order-1");
+
+        Assert.True(result.Success, result.Message);
+        var order = Assert.IsType<StoreOrderCartDto>(result.Data);
+        Assert.Equal(17.5m, order.TotalImportAmount);
+        Assert.Equal(12m, order.TotalAllocatedImportAmount);
+        var item = Assert.Single(order.Items);
+        Assert.Equal(17.5m, item.ImportAmount);
+        Assert.Equal(12m, item.AllocatedImportAmount);
     }
 
     [Fact]
@@ -803,9 +832,9 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     [Fact]
     public async Task StoreOrderInvoiceAttachmentService_GeneratesPdfAndExcel()
     {
-        var orderService = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var orderService = new Mock<IStoreOrderInvoiceDetailReader>(MockBehavior.Strict);
         orderService
-            .Setup(item => item.GetOrderDetailFullAsync("order-1"))
+            .Setup(item => item.GetInvoiceDetailAsync("order-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(ApiResponse<StoreOrderCartDto?>.OK(CreateInvoiceOrder()));
         var service = new StoreOrderInvoiceAttachmentService(
             orderService.Object,
@@ -877,9 +906,9 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
     [Fact]
     public async Task StoreOrderInvoiceAttachmentService_WhenOutboundDateMissing_UsesOrderDate()
     {
-        var orderService = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var orderService = new Mock<IStoreOrderInvoiceDetailReader>(MockBehavior.Strict);
         orderService
-            .Setup(item => item.GetOrderDetailFullAsync("order-1"))
+            .Setup(item => item.GetInvoiceDetailAsync("order-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(ApiResponse<StoreOrderCartDto?>.OK(CreateInvoiceOrder(includeOutboundDate: false)));
         var service = new StoreOrderInvoiceAttachmentService(
             orderService.Object,
@@ -908,9 +937,9 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         const string productName = "Middle Card Small Beetle 🐞 45 Pieces";
         var order = CreateInvoiceOrder();
         order.Items.Single().ProductName = productName;
-        var orderService = new Mock<IStoreOrderReactService>(MockBehavior.Strict);
+        var orderService = new Mock<IStoreOrderInvoiceDetailReader>(MockBehavior.Strict);
         orderService
-            .Setup(item => item.GetOrderDetailFullAsync("order-1"))
+            .Setup(item => item.GetInvoiceDetailAsync("order-1", It.IsAny<CancellationToken>()))
             .ReturnsAsync(ApiResponse<StoreOrderCartDto?>.OK(order));
         Exception? loggedException = null;
         var logger = new Mock<ILogger<StoreOrderInvoiceAttachmentService>>();
@@ -1325,10 +1354,7 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
         return new StoreService(CreateSqlSugarContext(_db), NullLogger<StoreService>.Instance);
     }
 
-    private StoreOrderReactService CreateStoreOrderService(
-        string? username = null,
-        IInvoiceEmailService? invoiceEmailService = null
-    )
+    private StoreOrderReactService CreateStoreOrderService(string? username = null)
     {
         var httpContextAccessor = new HttpContextAccessor
         {
@@ -1338,14 +1364,12 @@ public sealed class StoreOrderContactAndInvoiceTests : IDisposable
             },
         };
 
-        return new StoreOrderReactService(
+        return StoreOrderReactServiceTestFactory.Create(
             CreateSqlSugarContext(_db),
-            NullLogger<StoreOrderReactService>.Instance,
             httpContextAccessor,
             Mock.Of<IOrderNumberGenerator>(),
             new ConfigurationBuilder().Build(),
             Mock.Of<IMapper>(),
-            invoiceEmailService ?? Mock.Of<IInvoiceEmailService>(),
             Mock.Of<IStoreOrderLocationProductLookupService>(),
             Mock.Of<IWarehouseProductChangeHistoryService>()
         );

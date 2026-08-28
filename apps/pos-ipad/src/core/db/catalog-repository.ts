@@ -2,7 +2,7 @@ import type {
   ActiveCatalogSnapshotMetadata,
 } from "../../features/catalog/catalog-snapshot-service";
 
-import type { SqliteConnectionPort, SqlValue } from "./types";
+import type { SqliteConnectionPort, SqlValue } from "@hb/pos-db/core/db/types";
 
 // 中文注释：Android 11（API 30，PDA 目标）系统 SQLite 3.28 的宿主参数上限为 999
 //（3.32+ 才是 32766）。catalog_items 多行 VALUES 每行 19 个绑定参数，批大小取 50

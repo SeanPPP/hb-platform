@@ -224,6 +224,43 @@ export const settingsEnglishCopy = {
   "device.previewActivationCode": "Preview target store",
   "device.currentToTarget": "{{current}} → {{target}}",
   "device.reviewReregistration": "Review device store change",
+  "device.blockers.title": "Store change is temporarily unavailable",
+  "device.blockers.body":
+    "Finish or synchronize the local work below, then check again. No local data was removed.",
+  "device.blockers.failedTitle": "Local safety status unavailable",
+  "device.blockers.failedBody":
+    "Local work could not be checked safely, so the store change was blocked to protect your data. Check again.",
+  "device.blockers.inProgress": "In progress",
+  "device.blockers.count": "{{count}} item(s)",
+  "device.blockers.active-cart": "Active cart",
+  "device.blockers.active-cart.hint":
+    "Return to sales to complete or clear the current cart.",
+  "device.blockers.fulfilment-in-flight": "Fulfilment or hardware operation",
+  "device.blockers.fulfilment-in-flight.hint":
+    "Wait for the operation to finish, then check again.",
+  "device.blockers.sync-or-audit-in-flight": "Sync or audit upload",
+  "device.blockers.sync-or-audit-in-flight.hint":
+    "Wait for the upload to finish, then check again.",
+  "device.blockers.payment-configuration-sensitive-orders":
+    "Orders using the current payment configuration",
+  "device.blockers.payment-configuration-sensitive-orders.hint":
+    "Review the sync records before changing stores.",
+  "device.blockers.pending-durable-writes": "Unfinished durable writes",
+  "device.blockers.pending-durable-writes.hint":
+    "Wait for local writes to finish, then check again.",
+  "device.blockers.pending-returns": "Returns waiting to sync",
+  "device.blockers.pending-returns.hint":
+    "Open sync records and resolve the pending returns.",
+  "device.blockers.pending-sales": "Sales waiting to sync",
+  "device.blockers.pending-sales.hint":
+    "Open sync records and resolve the pending sales.",
+  "device.blockers.unresolved-payments": "Pending payment or recovery",
+  "device.blockers.unresolved-payments.hint":
+    "Return to sales and complete payment recovery.",
+  "device.blockers.recheck": "Check again",
+  "device.blockers.openSyncHistory": "Open sync records",
+  "device.blockers.contactSupervisor":
+    "Ask a supervisor to review the sync records.",
   "eyebrow.dangerZone": "DANGER ZONE",
   "device.resetRegistration": "Clear device registration",
   "device.resetRegistrationImpact":
@@ -284,6 +321,7 @@ export const settingsEnglishCopy = {
   "status.catalog-reset": "Local catalog reset",
   "status.catalog-reset-failed": "Catalog reset failed",
   "status.device-reregister-failed": "Re-registration did not start",
+  "status.device-reregister-restart-required": "Store change committed. Restart the POS to continue.",
   "status.device-reregister-started": "Device re-registration started",
   "status.device-activation-preview-failed":
     "Activation code was rejected, expired, or is for another platform",
@@ -572,6 +610,38 @@ export const settingsChineseCopy = {
   "device.previewActivationCode": "预览目标分店",
   "device.currentToTarget": "{{current}} → {{target}}",
   "device.reviewReregistration": "检查并确认设备换店",
+  "device.blockers.title": "暂时无法更换分店",
+  "device.blockers.body":
+    "请先完成或同步下列本地业务，再重新检查。本地数据未被清除。",
+  "device.blockers.failedTitle": "无法确认本地安全状态",
+  "device.blockers.failedBody":
+    "无法安全确认是否仍有本地业务；为保护数据，设备换店已被阻断。请重新检查。",
+  "device.blockers.inProgress": "进行中",
+  "device.blockers.count": "{{count}} 笔",
+  "device.blockers.active-cart": "当前活动购物车",
+  "device.blockers.active-cart.hint": "返回收银完成或清空当前购物车。",
+  "device.blockers.fulfilment-in-flight": "履约或硬件操作",
+  "device.blockers.fulfilment-in-flight.hint":
+    "请等待操作结束后重新检查。",
+  "device.blockers.sync-or-audit-in-flight": "同步或审计上传",
+  "device.blockers.sync-or-audit-in-flight.hint":
+    "请等待上传结束后重新检查。",
+  "device.blockers.payment-configuration-sensitive-orders":
+    "依赖当前支付配置的订单",
+  "device.blockers.payment-configuration-sensitive-orders.hint":
+    "更换分店前请检查同步记录。",
+  "device.blockers.pending-durable-writes": "未完成耐久写入",
+  "device.blockers.pending-durable-writes.hint":
+    "请等待本地写入完成后重新检查。",
+  "device.blockers.pending-returns": "待同步退货",
+  "device.blockers.pending-returns.hint": "请打开同步记录处理待同步退货。",
+  "device.blockers.pending-sales": "待同步销售",
+  "device.blockers.pending-sales.hint": "请打开同步记录处理待同步销售。",
+  "device.blockers.unresolved-payments": "未决支付或支付恢复",
+  "device.blockers.unresolved-payments.hint": "请返回收银完成支付恢复。",
+  "device.blockers.recheck": "重新检查",
+  "device.blockers.openSyncHistory": "打开同步记录",
+  "device.blockers.contactSupervisor": "请联系主管检查同步记录。",
   "eyebrow.dangerZone": "危险操作",
   "device.resetRegistration": "清除设备注册",
   "device.resetRegistrationImpact":
@@ -628,6 +698,7 @@ export const settingsChineseCopy = {
   "status.catalog-reset": "本地目录已重置",
   "status.catalog-reset-failed": "目录重置失败",
   "status.device-reregister-failed": "重新注册未开始",
+  "status.device-reregister-restart-required": "门店切换已提交；必须重启 POS 后才能继续。",
   "status.device-reregister-started": "设备重新注册已开始",
   "status.device-activation-preview-failed": "开通码已被拒绝、已过期或不属于当前平台",
   "status.device-registration-reset-barcode-required":

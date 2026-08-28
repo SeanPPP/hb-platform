@@ -8,7 +8,7 @@ import {
 } from "./linkly-cloud-backend";
 
 import { HbposApiError, type HbposTransport, type HbposTransportRequest } from "@/core/api/hbpos-api";
-import type { PaymentAttempt } from "@/core/contracts/payment";
+import type { PaymentAttempt } from "@hb/pos-domain/core/contracts/payment";
 
 const session = (overrides: Partial<LinklyCloudBackendSession> = {}): LinklyCloudBackendSession => ({
   environment: "Sandbox", storeCode: "S1", deviceCode: "IPAD1", sessionId: "session-1", status: "InProgress",

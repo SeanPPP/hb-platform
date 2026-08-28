@@ -10,7 +10,7 @@ import {
   type EmergencySystemUptimePort,
   type EmergencyTrustedTimePort,
 } from "@/features/attendance-audit/emergency-login-security";
-import type { AttendanceSecurityRemotePort } from "@/features/attendance-audit/hbpos-attendance-security-api";
+import type { AttendanceSecurityRemotePort } from "@hb/pos-api-client/features/attendance-audit/hbpos-attendance-security-api";
 
 export type EmergencyCashierRuntime = Readonly<{
   authentication: EmergencyCashierAuthenticationConfiguration;

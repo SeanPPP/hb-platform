@@ -24,7 +24,7 @@ import {
   type SharedHeldOrderPrepareResult,
   type SharedHeldOrderRecoveryClaimDto,
 } from "./shared-held-order-network-api";
-import { toSharedSaleCartV1 } from "./shared-sale-cart-v1";
+import { toSharedSaleCartV1 } from "@hb/pos-domain/features/shared-held-orders/shared-sale-cart-v1";
 import {
   sameSharedSaleCart,
   toSharedSaleCartV2,

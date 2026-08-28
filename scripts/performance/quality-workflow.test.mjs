@@ -25,12 +25,25 @@ test("quality-baseline workflow 覆盖 PR/main/nightly、路径 lane 与 always 
     "apps/web/**",
     "apps/pos-ipad/**",
     "apps/pos-handheld/**",
+    "packages/pos-*/**",
+    "scripts/pos-shared/**",
+    "patches/**",
+    "package.json",
+    "package-lock.json",
+    "eslint.config.mjs",
+    "tsconfig.pos-packages.json",
   ]) {
     assert.ok(workflow.includes(path), `workflow 缺少路径 ${path}`);
   }
   for (const lane of ["backend", "web", "pos-ipad", "pos-handheld"]) {
     assert.ok(workflow.includes(lane), `workflow 缺少 lane ${lane}`);
   }
+  assert.doesNotMatch(workflow, /apps\/pos-(?:ipad|handheld)\/package-lock\.json/);
+  assert.match(
+    workflow,
+    /startsWith\(matrix\.lane, 'pos-'\)[^\n]*'package-lock\.json'/,
+    "POS 质量 lane 必须以根 workspace lock 作为 npm cache 真源",
+  );
   assert.match(
     workflow,
     /node --test scripts\/performance\/\*\.test\.mjs/,

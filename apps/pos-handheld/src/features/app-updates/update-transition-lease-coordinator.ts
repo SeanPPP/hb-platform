@@ -11,6 +11,7 @@ type TransitionListener = () => void;
 
 export type UpdateOperationLeasePort = Readonly<{
   runOperation<T>(operation: () => T | Promise<T>): Promise<T>;
+  subscribeTransitionReleased(listener: () => void): () => void;
 }>;
 
 /**
@@ -48,6 +49,15 @@ export class UpdateTransitionLeaseCoordinator {
     return () => {
       this.listeners.delete(listener);
     };
+  }
+
+  /**
+   * 给共享同步等后台任务使用：只在切换完全释放时通知，不能把开始封门误判为可重试。
+   */
+  public subscribeTransitionReleased(listener: () => void): () => void {
+    return this.subscribe(() => {
+      if (!this.transitionActive) listener();
+    });
   }
 
   public runOperation<T>(operation: () => T | Promise<T>): Promise<T> {

@@ -1,8 +1,8 @@
 import {
   freezeAuditScope,
   type AuditScope,
-} from "../contracts/audit-scope";
-import type { CartSnapshot } from "../contracts/cart";
+} from "@hb/pos-domain/core/contracts/audit-scope";
+import type { CartSnapshot } from "@hb/pos-domain/core/contracts/cart";
 import type {
   HeldOrderActor,
   HeldOrderPayloadV1,
@@ -16,24 +16,24 @@ import type {
 import {
   normalizeLineSyncProvenance,
   type LineSyncProvenance,
-} from "../contracts/line-sync-provenance";
+} from "@hb/pos-domain/core/contracts/line-sync-provenance";
 import {
   createAud,
   MoneySchema,
   multiplyCentsAwayFromZero,
-} from "../contracts/money";
+} from "@hb/pos-domain/core/contracts/money";
 import type {
   AuditEventDraft,
   LocalOrder,
   OrderTender,
   OutboxMessageDraft,
-} from "../contracts/order";
+} from "@hb/pos-domain/core/contracts/order";
 import {
   normalizeCardSyncEvidence,
   type CardSyncEvidenceV1,
   type PaymentAttempt,
-} from "../contracts/payment";
-import type { PricingCartStateSnapshot } from "../contracts/pricing-cart-state";
+} from "@hb/pos-domain/core/contracts/payment";
+import type { PricingCartStateSnapshot } from "@hb/pos-domain/core/contracts/pricing-cart-state";
 import type {
   AuditRepositoryPort,
   DrawerEventRepositoryPort,
@@ -45,18 +45,18 @@ import type {
   OperationAuditDeliveryEvent,
   PaymentAttemptRepositoryPort,
   PrintJobRepositoryPort,
-} from "../contracts/repositories";
-import { canTransitionOrder } from "../contracts/state-machines";
+} from "@hb/pos-domain/core/contracts/repositories";
+import { canTransitionOrder } from "@hb/pos-domain/core/contracts/state-machines";
 import type {
   RecallActiveBinding,
   TerminalCartFence,
-} from "../contracts/terminal-cart";
+} from "@hb/pos-domain/core/contracts/terminal-cart";
 
 import {
   decryptPaymentProtectedMaterial,
   encryptPaymentProtectedMaterial,
-} from "./sqlite-payment-protected-material";
-import type { SqliteConnectionPort, SqlValue } from "./types";
+} from "@hb/pos-db/core/db/sqlite-payment-protected-material";
+import type { SqliteConnectionPort, SqlValue } from "@hb/pos-db/core/db/types";
 
 export interface SensitivePayloadEncryptor {
   encrypt(plaintext: string): Promise<Uint8Array>;

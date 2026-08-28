@@ -1,13 +1,13 @@
 import {
   appendEscPosInitialize,
   encodeEscPosText,
-} from "./esc-pos-text-encoding";
-import { receiptStoreHeading } from "./receipt-document";
+} from "@hb/pos-receipt-core/features/receipts/esc-pos-text-encoding";
+import { receiptStoreHeading } from "@hb/pos-receipt-core/features/receipts/receipt-document";
 import type {
   FrozenReturnReceiptSettings,
   RenderedReturnReceipt,
   ReturnReceiptSettingsPort,
-} from "./return-receipt-renderer";
+} from "@hb/pos-receipt-core/features/receipts/return-receipt-renderer";
 
 import { HbposApiError } from "@/core/api";
 import type { VoucherLatestBalanceConfirmation } from "@/features/payments/voucher";

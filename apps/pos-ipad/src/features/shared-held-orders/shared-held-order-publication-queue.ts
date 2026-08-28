@@ -1,7 +1,7 @@
 import type { SharedHeldOrderBlockReason } from "./legacy-held-order-evaluator";
 
 import type { HeldOrderScope } from "@/core/contracts";
-import type { SqliteConnectionPort } from "@/core/db/types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 import type { SharedHeldOrderShareRequestOutcome } from "@/features/held-orders/held-orders-domain";
 
 export type { SharedHeldOrderShareRequestOutcome } from "@/features/held-orders/held-orders-domain";

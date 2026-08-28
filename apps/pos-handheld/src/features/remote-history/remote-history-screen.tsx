@@ -19,13 +19,13 @@ import {
 import {
   type RemoteHistoryFilters,
   type RemoteHistoryPresenter,
-} from "./remote-history-presenter";
+} from "@hb/pos-domain/features/remote-history/remote-history-presenter";
 
 import type {
   RemoteOrderHistoryDetails,
   RemoteOrderHistorySummary,
   RemoteOrderPaymentPreview,
-} from "@/core/contracts/remote-history";
+} from "@hb/pos-domain/core/contracts/remote-history";
 import { PosDatePickerField } from "@/ui/controls/pos-date-picker-field";
 import {
   PosKeyboardAwareScrollView,

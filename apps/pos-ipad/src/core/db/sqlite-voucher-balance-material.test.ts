@@ -9,7 +9,7 @@ import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 import type {
   VoucherProtectedAttemptState,

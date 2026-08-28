@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   SETTINGS_SQUARE_SANDBOX_CHECKOUT_DEVICES,
   mergeSettingsSquareDevices,
-} from "../../features/settings/settings-square-setup";
+} from "@hb/pos-domain/features/settings/settings-square-setup";
 import type {
   HbposTransport,
   HbposTransportRequest,

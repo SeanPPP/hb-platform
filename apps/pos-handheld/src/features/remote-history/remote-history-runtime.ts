@@ -1,9 +1,9 @@
-import { HbposRemoteHistoryApi } from "./remote-history-api";
+import { HbposRemoteHistoryApi } from "@hb/pos-api-client/features/remote-history/remote-history-api";
 import {
   RemoteHistoryPresenter,
   type RemoteHistoryReprintPort,
   type RemoteHistoryPresenterOptions,
-} from "./remote-history-presenter";
+} from "@hb/pos-domain/features/remote-history/remote-history-presenter";
 
 import type { HbposTransport } from "@/core/api/hbpos-api";
 

@@ -1,17 +1,25 @@
-import { auditActorSnapshotFromPayload } from "../contracts/audit-actor";
-import type { CartLine } from "../contracts/cart";
+import {
+  OrderSyncMaterialError,
+  type OrderSyncMaterialErrorCode,
+  type ResolvedHeldOrderSource,
+} from "@hb/pos-db/core/db/order-sync-material-contract";
+import { ProtectedMaterialIntegrityError } from "@hb/pos-db/core/db/protected-material-integrity-error";
+import type { SqlitePaymentProtectedMaterialReader } from "@hb/pos-db/core/db/sqlite-payment-protected-material";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
+import { auditActorSnapshotFromPayload } from "@hb/pos-domain/core/contracts/audit-actor";
+import type { CartLine } from "@hb/pos-domain/core/contracts/cart";
 import {
   normalizeLineSyncProvenance,
   type LineSyncProvenance,
-} from "../contracts/line-sync-provenance";
-import type { LocalOrder, OrderTender } from "../contracts/order";
-import type { CardSyncEvidenceV1 } from "../contracts/payment";
+} from "@hb/pos-domain/core/contracts/line-sync-provenance";
+import type { LocalOrder, OrderTender } from "@hb/pos-domain/core/contracts/order";
+import type { CardSyncEvidenceV1 } from "@hb/pos-domain/core/contracts/payment";
 
-import { ProtectedMaterialIntegrityError } from "./protected-material-integrity-error";
-import type { SqlitePaymentProtectedMaterialReader } from "./sqlite-payment-protected-material";
 import type { SqliteReturnCapacityVault } from "./sqlite-return-capacity-vault";
 import type { SqliteVoucherProtectedTokenStore } from "./sqlite-voucher-protected-token-store";
-import type { SqliteConnectionPort } from "./types";
+
+export { OrderSyncMaterialError };
+export type { OrderSyncMaterialErrorCode, ResolvedHeldOrderSource };
 
 export type LinklyOrderSyncEnvironment = "Sandbox" | "Production";
 
@@ -28,29 +36,6 @@ export type SqliteOrderSyncMaterialResolverOptions = Readonly<{
     SqlitePaymentProtectedMaterialReader,
     "read"
   >;
-}>;
-
-export type OrderSyncMaterialErrorCode =
-  | "ORDER_SYNC_ENVIRONMENT_INVALID"
-  | "ORDER_SYNC_ORDER_MISMATCH"
-  | "ORDER_SYNC_TENDER_MISMATCH"
-  | "ORDER_SYNC_ATTEMPT_MISMATCH"
-  | "ORDER_SYNC_RETURN_BINDING_MISMATCH"
-  | "ORDER_SYNC_RETURN_CONTEXT_MISMATCH"
-  | "ORDER_SYNC_LINE_PROVENANCE_MISSING"
-  | "ORDER_SYNC_LINE_PROVENANCE_MISMATCH"
-  | "ORDER_SYNC_CARD_EVIDENCE_MISMATCH"
-  | "ORDER_SYNC_VOUCHER_STATE_MISMATCH"
-  | "ORDER_SYNC_VOUCHER_REVERSAL_UNRESOLVED"
-  | "ORDER_SYNC_VOUCHER_REVERSAL_MISMATCH"
-  | "ORDER_SYNC_CARD_REVERSAL_UNSUPPORTED"
-  | "ORDER_SYNC_HELD_SOURCE_MISSING";
-
-/** 同步 wire 的不可变共享挂单来源；只从数据库解析，绝不依赖调用方内存对象。 */
-export type ResolvedHeldOrderSource = Readonly<{
-  holdGuid: string;
-  claimGuid: string | null;
-  sourceKind: 1 | 2;
 }>;
 
 export type ResolvedSqliteOrderSyncMaterial = Readonly<{
@@ -1071,13 +1056,6 @@ export class SqliteOrderSyncMaterialResolver {
        WHERE binding.tender_guid = ?`,
       [inputText(tenderGuid, "ORDER_SYNC_TENDER_MISMATCH")],
     );
-  }
-}
-
-export class OrderSyncMaterialError extends Error {
-  public constructor(public readonly code: OrderSyncMaterialErrorCode) {
-    super(`Order sync material was rejected (${code}).`);
-    this.name = "OrderSyncMaterialError";
   }
 }
 

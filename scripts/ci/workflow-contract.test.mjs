@@ -19,7 +19,9 @@ import { fileURLToPath } from 'node:url'
 const workflowDirectoryPath = new URL('../../.github/workflows/', import.meta.url)
 const workflowPath = new URL('../../.github/workflows/pr-ci.yml', import.meta.url)
 const wpfWorkflowPath = new URL('../../.github/workflows/wpf-inno-smoke-build.yml', import.meta.url)
+const rootPackagePath = new URL('../../package.json', import.meta.url)
 const nodeRunnerPath = new URL('./run-node-component.sh', import.meta.url)
+const dotnetRunnerPath = new URL('./run-dotnet-component.sh', import.meta.url)
 const macosRunnerPath = new URL('./run-macos-component.sh', import.meta.url)
 const androidRunnerPath = new URL('./run-android-component.sh', import.meta.url)
 const windowsRunnerPath = new URL('./run-windows-component.ps1', import.meta.url)
@@ -279,6 +281,52 @@ test('PR/weekly 使用 15/45 分钟端到端预算并为稳定 gate 预留时间
   assert.match(source, /weekly_required:[\s\S]*?needs:\s*\n\s*- plan\s*\n/)
 })
 
+test('POS CI 只消费根 workspace lock，并由各 job 单次安装后调用 workspace 脚本', () => {
+  const source = readFileSync(workflowPath, 'utf8')
+  const linuxNode = workflowJobBlock(source, 'linux_node')
+  const nodeRunner = readFileSync(nodeRunnerPath, 'utf8')
+  const rootPackage = JSON.parse(readFileSync(rootPackagePath, 'utf8'))
+  const dotnetRunner = readFileSync(dotnetRunnerPath, 'utf8')
+  const macosRunner = readFileSync(macosRunnerPath, 'utf8')
+  const androidRunner = readFileSync(androidRunnerPath, 'utf8')
+
+  assert.doesNotMatch(source, /apps\/pos-(?:ipad|handheld)\/package-lock\.json/)
+  assert.match(
+    linuxNode,
+    /fetch-depth:\s*\$\{\{\s*\(matrix\.component == 'pos-ipad' \|\| matrix\.component == 'pos-handheld'\) && '0' \|\| '1'\s*\}\}/,
+    '双端 POS Node lane 必须保留完整基线历史，才能直接验证迁移归属与语义哈希',
+  )
+  for (const jobName of ['linux_node', 'linux_dotnet', 'macos', 'android']) {
+    assert.match(workflowJobBlock(source, jobName), /cache-dependency-path:[\s\S]*?package-lock\.json/)
+  }
+
+  for (const runner of [nodeRunner, dotnetRunner, macosRunner, androidRunner]) {
+    assert.doesNotMatch(runner, /npm --prefix apps\/pos-(?:ipad|handheld) ci/)
+    assert.match(runner, /npm ci --no-audit --no-fund/)
+  }
+  assert.equal(nodeRunner.match(/npm run test:pos-shared-ci/g)?.length, 1)
+  const sharedCiScript = rootPackage.scripts?.['test:pos-shared-ci']
+  assert.equal(typeof sharedCiScript, 'string')
+  for (const command of [
+    'check:pos-workspace-resolution',
+    'check:pos-shared-ownership',
+    'check:pos-package-boundaries',
+    'test:react-native-scheduler',
+    'test:expo-audio-android-routing',
+    'test:pos-packages',
+    'lint:pos-packages',
+    'typecheck:pos',
+  ]) {
+    assert.match(sharedCiScript, new RegExp(`npm run ${command.replaceAll(':', '\\:')}`))
+  }
+  assert.doesNotMatch(sharedCiScript, /test:hbpos-client/)
+  assert.match(nodeRunner, /npm run typecheck --workspace=@hb\/pos-ipad/)
+  assert.match(nodeRunner, /npm run test:ci --workspace=@hb\/pos-handheld/)
+  assert.match(dotnetRunner, /npm run test:hbpos-client/)
+  assert.match(macosRunner, /npm run prebuild:ios --workspace=@hb\/pos-(?:ipad|handheld) -- --clean/)
+  assert.match(androidRunner, /npm run prebuild:android --workspace=@hb\/pos-handheld -- --clean/)
+})
+
 test('托管 runner 隔离 WPF 分片，并避免原生多架构与 Android 内存争抢', () => {
   const source = readFileSync(workflowPath, 'utf8')
   const windows = workflowJobBlock(source, 'windows')
@@ -426,8 +474,8 @@ test('macOS runner 按 profile 执行原生 PR 快检与 weekly 完整构建', (
   for (const [component, workspace, scheme] of components) {
     const pr = runMacosProfile({ component, profile: 'pr' })
     assert.equal(pr.result.status, 0, pr.result.stderr)
-    assert.match(pr.commands, /npm --prefix apps\/pos-(?:ipad|handheld) ci --no-audit --no-fund/)
-    assert.match(pr.commands, /npm --prefix apps\/pos-(?:ipad|handheld) run prebuild:ios -- --clean/)
+    assert.match(pr.commands, /npm ci --no-audit --no-fund/)
+    assert.match(pr.commands, /npm run prebuild:ios --workspace=@hb\/pos-(?:ipad|handheld) -- --clean/)
     assert.match(pr.commands, /node scripts\/ci\/test-inventory\.mjs --app pos-(?:ipad|handheld) --run native/)
     assert.doesNotMatch(pr.commands, /xcodebuild -workspace/)
 

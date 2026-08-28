@@ -5,7 +5,7 @@ import type {
   OnlineReturnRefundInput,
   PreparedOnlineReturnAttempt,
   ReturnAllocationExternalOutcome,
-} from "@/features/returns/adapters/durable-return-execution-orchestrator";
+} from "@hb/pos-domain/features/returns/adapters/durable-return-execution-orchestrator";
 
 export type ProductionReturnOnlineRefundRouterOptions = Readonly<{
   providerRefund: DurableOnlineReturnRefundPort | null;

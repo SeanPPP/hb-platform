@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 
 const appRoot = new URL("../", import.meta.url);
+const workspaceRoot = new URL("../../", appRoot);
 const packageJson = JSON.parse(
   readFileSync(new URL("package.json", appRoot), "utf8"),
 );
 const packageLock = JSON.parse(
-  readFileSync(new URL("package-lock.json", appRoot), "utf8"),
+  readFileSync(new URL("package-lock.json", workspaceRoot), "utf8"),
 );
+const appLockEntry = packageLock.packages["apps/pos-handheld"];
 const easJson = JSON.parse(readFileSync(new URL("eas.json", appRoot), "utf8"));
 const appConfigSource = readFileSync(
   new URL("app.config.ts", appRoot),
@@ -30,10 +32,8 @@ const appEntrySource = readFileSync(new URL("index.js", appRoot), "utf8");
 
 assert.equal(packageJson.name, "@hb/pos-handheld");
 assert.equal(packageJson.version, "0.1.0");
-assert.equal(packageLock.name, "@hb/pos-handheld");
-assert.equal(packageLock.version, "0.1.0");
-assert.equal(packageLock.packages[""].name, "@hb/pos-handheld");
-assert.equal(packageLock.packages[""].version, "0.1.0");
+assert.equal(appLockEntry.name, "@hb/pos-handheld");
+assert.equal(appLockEntry.version, "0.1.0");
 assert.equal(packageJson.main, "index.js");
 assert.equal(packageJson.private, true);
 assert.equal(

@@ -11,7 +11,7 @@ import {
   type PreparedManualDrawerOpen,
   type PreparedLastReceiptReprint,
   type ReceiptReprintSource,
-} from "./fulfilment-service";
+} from "@hb/pos-domain/features/fulfilment/fulfilment-service";
 
 import {
   UPDATE_TRANSITION_IN_PROGRESS,

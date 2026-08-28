@@ -1,4 +1,8 @@
-import type { ReceiptLocale, ReceiptPaper } from "./receipt-document";
+import type {
+  ReceiptLocale,
+  ReceiptPaper,
+  ReceiptStoreHeading,
+} from "@hb/pos-receipt-core/features/receipts/receipt-document";
 
 import type {
   CashFulfilmentDraft,
@@ -9,15 +13,6 @@ import type {
   DurableCashFulfilmentPlan,
   DurableCashFulfilmentPlannerPort,
 } from "@/features/checkout/cash/durable-cash-checkout-service";
-
-export type ReceiptStoreHeading = Readonly<{
-  brandName: string;
-  storeName: string;
-  address: string;
-  phone: string;
-  abn: string;
-  returnPolicy: string;
-}>;
 
 /** 打印、钱箱共用同一台芯烨设备；缺失其标识时两者都不能排队。 */
 export type ReceiptFulfilmentSettings = Readonly<{

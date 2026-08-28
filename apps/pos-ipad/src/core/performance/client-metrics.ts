@@ -1,4 +1,4 @@
-import type { SqliteConnectionPort } from "../db/types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 import { sanitizeText } from "../logging/application-log";
 
 export const POS_CLIENT_METRICS = Object.freeze({

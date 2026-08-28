@@ -31,9 +31,12 @@ import {
   unwrapHbposEnvelope,
   type HbposEnvelope,
   type HbposTransport,
-} from "@/core/api/hbpos-api";
-import type { InstallmentStatus, InstallmentSummary } from "@/core/contracts";
-import type { components } from "@/generated/hbpos/schema";
+} from "@hb/pos-api-client/transport";
+import type { components } from "@hb/pos-api-client/openapi";
+import type {
+  InstallmentStatus,
+  InstallmentSummary,
+} from "@hb/pos-domain/core/contracts/installments";
 
 type GeneratedAppendRequest =
   components["schemas"]["InstallmentAppendPaymentRequest"];

@@ -1,4 +1,4 @@
-import { paymentProviderAmountCents } from "../payment-amount";
+import { paymentProviderAmountCents } from "@hb/pos-payments-core/features/payments/payment-amount";
 
 import {
   HbposApiError,
@@ -15,7 +15,7 @@ import {
   type PaymentProviderReferences,
   type PaymentProviderResult,
 } from "@/core/contracts";
-import type { components } from "@/generated/hbpos/schema";
+import type { components } from "@hb/pos-api-client/openapi";
 
 type SquareCreateCheckoutRequest =
   components["schemas"]["SquareCreateCheckoutRequest"];

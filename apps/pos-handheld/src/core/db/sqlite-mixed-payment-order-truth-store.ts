@@ -1,6 +1,6 @@
 import { createAud, type LocalOrder, type OrderTender } from "../contracts";
 
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 import type {
   MixedPaymentOrderTruth,

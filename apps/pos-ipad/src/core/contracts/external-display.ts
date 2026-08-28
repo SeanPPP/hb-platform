@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { MoneySchema } from "./money";
+import { MoneySchema } from "@hb/pos-domain/core/contracts/money";
 
 export type DisplayStatus = "disconnected" | "connecting" | "ready" | "failed";
 export const CUSTOMER_DISPLAY_VISIBLE_ITEM_LIMIT = 12;

@@ -229,14 +229,16 @@ export class DeviceSessionCoordinator {
   public rebindActivationCode(input: Readonly<{
     activationCode: string;
     terminalName?: string;
-  }>): Promise<DeviceSessionState> {
-    return this.runActivationMutation(() => this.rebindActivationCodeCore(input));
+  }>, onCredentialsCommitted?: () => void): Promise<DeviceSessionState> {
+    return this.runActivationMutation(() =>
+      this.rebindActivationCodeCore(input, onCredentialsCommitted),
+    );
   }
 
   private async rebindActivationCodeCore(input: Readonly<{
     activationCode: string;
     terminalName?: string;
-  }>): Promise<DeviceSessionState> {
+  }>, onCredentialsCommitted?: () => void): Promise<DeviceSessionState> {
     await this.assertRebindAllowed();
     const rebindActivationCode = this.api.rebindActivationCode;
     if (!rebindActivationCode) {
@@ -258,6 +260,7 @@ export class DeviceSessionCoordinator {
             }),
             "rebind",
             generation,
+            onCredentialsCommitted,
           ),
           generation,
         );
@@ -408,6 +411,7 @@ export class DeviceSessionCoordinator {
     responsePromise: Promise<DeviceRegisterResponse | DeviceVerifyResponse | DeviceReregisterResponse>,
     operation: "register" | "verify" | "reregister" | "activate" | "rebind",
     generation: number,
+    onCredentialsCommitted?: () => void,
   ): Promise<DeviceSessionState> {
     const response = await responsePromise;
     if (!this.isCurrentOperation(generation)) {
@@ -471,6 +475,10 @@ export class DeviceSessionCoordinator {
             );
           }
           throw error;
+        }
+        if (operation === "rebind") {
+          // 凭据落盘是不可逆提交点；后续清理失败或 generation 变化不得把它误报为未提交。
+          onCredentialsCommitted?.();
         }
         if ((operation === "reregister" || operation === "rebind") && previousCredentials) {
           // 中文注释：save 已不可逆成功，即使本操作此刻变 stale 也必须广播实际 previous/current，generation 只阻止后续 UI 状态写入。

@@ -1,15 +1,20 @@
 import {
+  derivePendingWorkBlockers,
+  type PendingWorkBlocker,
+} from "@hb/pos-domain";
+
+import {
   CatalogRefreshCoordinatorError,
   type CatalogRefreshState,
 } from "../../features/catalog/catalog-refresh-coordinator";
 import {
-  hasPendingLocalData,
   type SettingsAppUpdateSnapshot,
   type SettingsCatalogSnapshot,
   type SettingsControlPort,
   type SettingsDangerousActionResult,
   type SettingsDangerousConfirmation,
   type SettingsDeviceActivationPreviewResponse,
+  type SettingsDeviceReregistrationPreflightResult,
   type SettingsPaymentSettingsInput,
   type SettingsPendingDataSnapshot,
   type SettingsPrinterDevice,
@@ -101,6 +106,7 @@ export type ProductionSettingsControlDependencies = Readonly<{
         terminalName?: string;
       }>,
       signal: AbortSignal,
+      onCredentialsCommitted: () => void,
     ): Promise<void>;
     resetRegistration(
       employeeBarcode: string,
@@ -116,6 +122,11 @@ export type ProductionSettingsControlDependencies = Readonly<{
  * 组合根必须在外层独占锁释放前完成整个调用。
  */
 export class ProductionSettingsControl implements SettingsControlPort {
+  private deviceReregistrationCommitted = false;
+  private readonly deviceReregistrationCommittedListeners = new Set<
+    () => void
+  >();
+
   public constructor(
     private readonly input: ProductionSettingsControlDependencies,
   ) {}
@@ -130,6 +141,15 @@ export class ProductionSettingsControl implements SettingsControlPort {
 
   public subscribeCatalogRefresh(listener: () => void): () => void {
     return this.input.catalog.subscribeRefresh(listener);
+  }
+
+  public subscribeDeviceReregistrationCommitted(
+    listener: () => void,
+  ): () => void {
+    this.deviceReregistrationCommittedListeners.add(listener);
+    return () => {
+      this.deviceReregistrationCommittedListeners.delete(listener);
+    };
   }
 
   public downloadCatalog(
@@ -163,6 +183,31 @@ export class ProductionSettingsControl implements SettingsControlPort {
     return abortChecked(signal, () =>
       previewActivationCode(activationCode, signal),
     );
+  }
+
+  public async preflightDeviceReregistration(
+    signal: AbortSignal,
+  ): Promise<SettingsDeviceReregistrationPreflightResult> {
+    throwIfAborted(signal);
+    if (this.catalogRefreshBlocks()) return safetyBlocked();
+    try {
+      const pending = await abortChecked(signal, () =>
+        this.input.pendingData.read(signal),
+      );
+      const blockers = derivePendingWorkBlockers(pending);
+      if (blockers.length > 0) {
+        return Object.freeze({
+          status: "blocked" as const,
+          reason: "pending-local-data" as const,
+          blockers,
+        });
+      }
+      if (this.catalogRefreshBlocks()) return safetyBlocked();
+      return Object.freeze({ status: "ready" as const });
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return safetyBlocked();
+    }
   }
 
   public testPaymentProvider(
@@ -240,6 +285,12 @@ export class ProductionSettingsControl implements SettingsControlPort {
     employeeBarcodeOrAssertActive?: string | (() => void),
     explicitAssertActive?: () => void,
   ): Promise<SettingsDangerousActionResult> {
+    if (
+      action.kind === "reregister-device" &&
+      this.deviceReregistrationCommitted
+    ) {
+      return deviceReregistrationCommitted();
+    }
     const employeeBarcode =
       typeof employeeBarcodeOrAssertActive === "string"
         ? employeeBarcodeOrAssertActive
@@ -273,8 +324,12 @@ export class ProductionSettingsControl implements SettingsControlPort {
         employeeBarcode,
       );
     }
-    if (action.kind === "reset-device-registration") {
-      // 已由全局 transition 取得目录→购物车 barrier；不得重复申请目录门。
+    if (
+      action.kind === "reset-device-registration" ||
+      action.kind === "reregister-device"
+    ) {
+      // 已由全局 transition 取得目录→购物车 barrier；必须在 barrier 内直接
+      // 重读 pending，且不得重复申请目录门造成 operation 等待自身的死锁。
       return this.executeDangerousActionGuarded(
         action,
         signal,
@@ -337,6 +392,12 @@ export class ProductionSettingsControl implements SettingsControlPort {
     employeeBarcode?: string,
     assertActive: () => void = () => undefined,
   ): Promise<SettingsDangerousActionResult> {
+    if (
+      action.kind === "reregister-device" &&
+      this.deviceReregistrationCommitted
+    ) {
+      return deviceReregistrationCommitted();
+    }
     throwIfAborted(signal);
     assertActive();
     if (
@@ -348,16 +409,25 @@ export class ProductionSettingsControl implements SettingsControlPort {
     if (this.catalogRefreshBlocks()) {
       return safetyBlocked();
     }
-    const pending = await abortChecked(signal, () =>
-      this.input.pendingData.read(signal),
-    );
+    let pending: SettingsPendingDataSnapshot;
+    let blockers: readonly PendingWorkBlocker[];
+    try {
+      pending = await abortChecked(signal, () =>
+        this.input.pendingData.read(signal),
+      );
+      blockers = pendingDataBlockersForAction(action, pending);
+    } catch (error) {
+      if (signal.aborted) throw error;
+      return safetyBlocked();
+    }
     const mayBypassPendingData =
       action.kind === "change-api-address" &&
       this.input.apiConfiguration.allowSwitchWithPendingLocalData === true;
-    if (pendingDataBlocksAction(action, pending) && !mayBypassPendingData) {
+    if (blockers.length > 0 && !mayBypassPendingData) {
       return Object.freeze({
         status: "blocked",
         reason: "pending-local-data",
+        blockers,
       });
     }
     if (this.catalogRefreshBlocks()) {
@@ -432,9 +502,14 @@ export class ProductionSettingsControl implements SettingsControlPort {
           catalog,
         });
       }
-      case "reregister-device":
-        await abortChecked(signal, () =>
-          this.input.device.reregister(
+      case "reregister-device": {
+        // 重新绑定会提交新设备凭据并广播 scope 变化；只允许在提交前响应取消。
+        // 提交成功后必须进入 terminal reload，绝不能把旧 signal/identity 复核
+        // 造成的失败误报成可重试，从而重复消费激活码。
+        throwIfAborted(signal);
+        assertActive();
+        try {
+          await this.input.device.reregister(
             {
               activationCode: action.activationCode,
               ...(action.terminalName
@@ -442,12 +517,25 @@ export class ProductionSettingsControl implements SettingsControlPort {
                 : {}),
             },
             signal,
-          ),
-        );
-        await abortChecked(signal, () =>
-          this.input.runtimeReload.reload(signal),
-        );
+            () => { this.markDeviceReregistrationCommitted(); },
+          );
+        } catch (error: unknown) {
+          if (!this.deviceReregistrationCommitted) throw error;
+        }
+        if (!this.deviceReregistrationCommitted) {
+          throw new Error("SETTINGS_DEVICE_REREGISTRATION_COMMIT_UNCONFIRMED");
+        }
+        try {
+          await this.input.runtimeReload.reload(
+            new AbortController().signal,
+          );
+        } catch {
+          // 凭据和 scope 已不可逆提交；reload 失败时不能 resolve 外层全局
+          // transition，否则旧 runtime 的后台写入会在新 scope 下恢复。
+          return holdCommittedDeviceReregistrationFence();
+        }
         return completed(action.kind);
+      }
       case "reset-device-registration": {
         const barcode = employeeBarcode?.trim() ?? "";
         if (!barcode) {
@@ -483,6 +571,18 @@ export class ProductionSettingsControl implements SettingsControlPort {
     }
   }
 
+  private markDeviceReregistrationCommitted(): void {
+    if (this.deviceReregistrationCommitted) return;
+    this.deviceReregistrationCommitted = true;
+    for (const listener of [...this.deviceReregistrationCommittedListeners]) {
+      try {
+        listener();
+      } catch {
+        // UI side-channel 只能观察不可逆事实；监听器失败不得改变提交或封门结果。
+      }
+    }
+  }
+
   private catalogRefreshBlocks(): boolean {
     return this.input.catalog.getRefreshState().kind === "running";
   }
@@ -503,25 +603,28 @@ export class ProductionSettingsControl implements SettingsControlPort {
   }
 }
 
-function pendingDataBlocksAction(
+function pendingDataBlockersForAction(
   action: SettingsDangerousConfirmation,
   pending: SettingsPendingDataSnapshot,
-): boolean {
+): readonly PendingWorkBlocker[] {
+  const blockers = derivePendingWorkBlockers(pending);
   if (
-    action.kind === "change-payment-settings" ||
-    action.kind === "pair-linkly"
+    action.kind !== "change-payment-settings" &&
+    action.kind !== "pair-linkly"
   ) {
-    // 普通已耐久队列可在 reload 后继续处理；内存购物车、进行中的外部动作，
-    // 以及仍依赖旧 provider/environment 的订单或恢复必须保持失败关闭。
-    return (
-      pending.hasActiveCart ||
-      pending.hasFulfilmentInFlight ||
-      pending.hasSyncOrAuditInFlight ||
-      pending.paymentConfigurationSensitiveOrderCount > 0 ||
-      pending.unresolvedPaymentCount > 0
-    );
+    return blockers;
   }
-  return hasPendingLocalData(pending);
+  // 普通已耐久队列可在 reload 后继续处理；内存购物车、进行中的外部动作，
+  // 以及仍依赖旧 provider/environment 的订单或恢复必须保持失败关闭。
+  return Object.freeze(
+    blockers.filter((blocker) =>
+      blocker.code === "active-cart" ||
+      blocker.code === "fulfilment-in-flight" ||
+      blocker.code === "sync-or-audit-in-flight" ||
+      blocker.code === "payment-configuration-sensitive-orders" ||
+      blocker.code === "unresolved-payments",
+    ),
+  );
 }
 
 function completed(
@@ -533,7 +636,23 @@ function completed(
   return Object.freeze({ status: "completed", kind });
 }
 
-function safetyBlocked(): SettingsDangerousActionResult {
+function deviceReregistrationCommitted(): SettingsDangerousActionResult {
+  return Object.freeze({
+    status: "committed-reload-required" as const,
+    kind: "reregister-device" as const,
+  });
+}
+
+function holdCommittedDeviceReregistrationFence(): Promise<never> {
+  return new Promise<never>(() => {
+    // 进程重启会丢弃旧 runtime；此前始终持有 transition，禁止任何旧写入恢复。
+  });
+}
+
+function safetyBlocked(): Readonly<{
+  status: "blocked";
+  reason: "safety-check-failed";
+}> {
   return Object.freeze({
     status: "blocked",
     reason: "safety-check-failed",

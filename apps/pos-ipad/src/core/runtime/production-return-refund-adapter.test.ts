@@ -7,12 +7,12 @@ import {
 } from "./production-return-refund-adapter";
 
 import type { PaymentAttempt } from "@/core/contracts";
-import { paymentProviderAmountCents } from "@/features/payments/payment-amount";
+import { paymentProviderAmountCents } from "@hb/pos-payments-core/features/payments/payment-amount";
 import type {
   PaymentAttemptExecutionResult,
   PaymentAttemptService,
   PaymentProviderRegistryPort,
-} from "@/features/payments/payment-attempt-service";
+} from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 import type { DurableVoucherPreparationService } from "@/features/payments/runtime/voucher-preparation";
 
 

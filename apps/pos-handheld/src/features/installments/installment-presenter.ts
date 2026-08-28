@@ -3,7 +3,7 @@ import {
   hasInstallmentReprintPermission,
   resolveInstallmentsAccess,
   type InstallmentsAccess,
-} from "./installment-authorization";
+} from "@hb/pos-domain/features/installments/installment-authorization";
 import { isValidInstallmentDateFilter } from "./installment-date-filter";
 import type {
   InstallmentCardProvider,

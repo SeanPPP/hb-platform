@@ -10,7 +10,7 @@ import {
 import type {
   DurableOnlineReturnRefundPort,
   OnlineReturnRefundInput,
-} from "@/features/returns/adapters/durable-return-execution-orchestrator";
+} from "@hb/pos-domain/features/returns/adapters/durable-return-execution-orchestrator";
 
 
 const cashPreparation = Object.freeze({

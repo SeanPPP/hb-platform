@@ -13,10 +13,10 @@ import type {
   InstallmentRefundProvenanceVaultPort,
 } from "../runtime/production-installment-refund-provenance";
 
-import { ProtectedMaterialIntegrityError } from "./protected-material-integrity-error";
+import { ProtectedMaterialIntegrityError } from "@hb/pos-db/core/db/protected-material-integrity-error";
 import { SqliteInstallmentActionStore } from "./sqlite-installment-action-store";
 import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 type ProvenanceScope = Pick<
   InstallmentProtectedProvenanceImport,

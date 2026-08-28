@@ -2,7 +2,7 @@ import {
   AttendanceSecurityApiError,
   type AttendanceSecurityRemotePort,
   type RegisteredAttendanceSigningKey,
-} from "./hbpos-attendance-security-api";
+} from "@hb/pos-api-client/features/attendance-audit/hbpos-attendance-security-api";
 
 export const ATTENDANCE_QR_TOKEN_LIFETIME_MS = 15_000;
 export const ATTENDANCE_QR_TICK_INTERVAL_MS = 1_000;

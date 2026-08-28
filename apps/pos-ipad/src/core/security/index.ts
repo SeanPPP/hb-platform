@@ -1,6 +1,6 @@
 export * from "./api-credential-provider";
 export * from "./cashier-authentication";
-export * from "./cashier-session-invalidation";
+export * from "@hb/pos-domain/core/security/cashier-session-invalidation";
 export * from "./device-session";
 export * from "./expo-installation-id";
 export * from "./expo-secure-store";

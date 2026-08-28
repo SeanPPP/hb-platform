@@ -8,11 +8,11 @@ import {
 import {
   AUD_CASH_DENOMINATIONS_CENTS,
   normalizeDailyCloseCounts,
-} from "./daily-close";
+} from "@hb/pos-domain/core/contracts/daily-close";
 import { evaluateDeviceReregistrationPreflight } from "./device-reregistration";
-import { canTransitionInstallment } from "./installments";
-import { normalizeRemoteHistoryQuery } from "./remote-history";
-import { normalizeSpecialProductOrder } from "./special-products";
+import { canTransitionInstallment } from "@hb/pos-domain/core/contracts/installments";
+import { normalizeRemoteHistoryQuery } from "@hb/pos-domain/core/contracts/remote-history";
+import { normalizeSpecialProductOrder } from "@hb/pos-domain/core/contracts/special-products";
 
 test("远程历史固定当前门店、WPF 首批 100 条并规范化可选筛选", () => {
   assert.deepEqual(

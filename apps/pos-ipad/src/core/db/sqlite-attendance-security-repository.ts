@@ -1,5 +1,5 @@
 import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 import type {
   AttendanceQrCachePort,
@@ -13,7 +13,7 @@ import type {
 import type {
   EmergencyPublicKey,
   EmergencyPublicKeyPackage,
-} from "@/features/attendance-audit/hbpos-attendance-security-api";
+} from "@hb/pos-api-client/features/attendance-audit/hbpos-attendance-security-api";
 
 export type {
   AttendanceQrCachePort,

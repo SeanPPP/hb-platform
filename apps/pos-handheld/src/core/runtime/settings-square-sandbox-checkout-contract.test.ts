@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { SquarePaymentAdapter } from "../../features/payments/square/square-payment-adapter";
-import { SETTINGS_SQUARE_SANDBOX_CHECKOUT_DEVICES } from "../../features/settings/settings-square-setup";
+import { SETTINGS_SQUARE_SANDBOX_CHECKOUT_DEVICES } from "@hb/pos-domain/features/settings/settings-square-setup";
 import type {
   HbposTransport,
   HbposTransportRequest,

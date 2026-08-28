@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 
-import type { InstallmentSnapshot } from "../contracts/installments";
+import type { InstallmentSnapshot } from "@hb/pos-domain/core/contracts/installments";
 
 import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
 import { PosDatabase } from "./pos-database";
@@ -16,7 +16,7 @@ import type {
   SqliteDriverPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 const T0 = "2026-07-28T00:00:00.000Z";
 const T1 = "2026-07-28T01:00:00.000Z";

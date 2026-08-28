@@ -4,17 +4,17 @@ import test from "node:test";
 import type {
   NoReceiptReturnItem,
   ReceiptReturnContext,
-} from "./return-domain";
+} from "@hb/pos-domain/features/returns/return-domain";
 import {
   ReturnPresenter,
   type ReturnPresenterState,
-} from "./return-presenter";
+} from "@hb/pos-domain/features/returns/return-presenter";
 import {
   ReturnWorkflow,
   type ReturnExecutionCommand,
   type ReturnExecutionOutcome,
   type ReturnExecutionPort,
-} from "./return-workflow";
+} from "@hb/pos-domain/features/returns/return-workflow";
 
 import {
   UpdateTransitionLeaseCoordinator,

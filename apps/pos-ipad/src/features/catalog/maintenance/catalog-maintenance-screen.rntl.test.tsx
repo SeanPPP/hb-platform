@@ -6,7 +6,7 @@ import type {
   CatalogRefreshOutcome,
   CatalogRefreshProgressEvent,
   CatalogSummary,
-} from "../catalog-refresh-contract";
+} from "@hb/pos-domain/features/catalog/catalog-refresh-contract";
 
 import {
   CATALOG_MAINTENANCE_MIN_TOUCH_TARGET,

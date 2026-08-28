@@ -70,6 +70,9 @@ const SNAPSHOT: SettingsSnapshot = {
   },
 };
 
+const DEVICE_ACTIVATION_CODE =
+  "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+
 test("零参数工厂冻结可信权限，并在每次端口调用前后复核 cashier lease", async () => {
   let epoch = 1;
   const events: string[] = [];
@@ -444,6 +447,94 @@ test("清除设备注册通过全局 transition 等待在途 operation 并拒绝
   ]);
 });
 
+test("设备换店共用全局 transition，等待在途业务、拒绝新业务且重复确认单飞", async () => {
+  let sessionActive = true;
+  let reregisterCalls = 0;
+  const events: string[] = [];
+  const transition = new UpdateTransitionLeaseCoordinator();
+  const operationRelease = deferred<void>();
+  transition.bindTransitionBarrier((operation) => operation());
+  const runtime = createProductionSettingsRuntime({
+    createSessionLease: () => ({
+      get: () => {
+        if (!sessionActive) throw new Error("SESSION_REPLACED");
+        events.push("lease");
+        return {
+          storeCode: "S1",
+          deviceCode: "IPAD-1",
+          permissionCodes: [
+            "Permissions.PosTerminal.Settings.View",
+            "Permissions.PosTerminal.Settings.DeviceRegistration",
+          ],
+        };
+      },
+    }),
+    control: fakeControl({
+      loadSnapshot: async () => SNAPSHOT,
+      previewDeviceActivationCode: async () => ({
+        isAllowed: true,
+        storeCode: "S2",
+        storeName: "Target store",
+        deviceSystem: "iPadOS",
+        expiresAtUtc: "2026-08-28T00:00:00.000Z",
+      }),
+      executeDangerousAction: async (action) => {
+        assert.equal(action.kind, "reregister-device");
+        assert.equal(transition.isTransitionActive(), true);
+        reregisterCalls += 1;
+        events.push("reregister");
+        // 换店成功会废弃旧 cashier；不可在提交后把成功改写为失败。
+        sessionActive = false;
+        return { status: "completed", kind: "reregister-device" };
+      },
+    }),
+    runDangerousExclusive: async () => {
+      throw new Error("device reregistration must not pre-acquire cart lease");
+    },
+    runDeviceRegistrationResetTransition: (operation) =>
+      transition.runTransition(operation),
+  });
+  const presenter = runtime.createPresenter();
+  await presenter.load();
+  presenter.setDeviceActivationCode(DEVICE_ACTIVATION_CODE);
+  await presenter.previewDeviceReregistration();
+  await presenter.requestDeviceReregistration();
+  assert.equal(
+    presenter.getState().confirmation?.kind,
+    "reregister-device",
+  );
+  events.length = 0;
+
+  const existing = transition.runOperation(async () => {
+    events.push("operation:started");
+    await operationRelease.promise;
+    events.push("operation:finished");
+  });
+  const firstConfirmation = presenter.confirmDangerousAction();
+  const duplicateConfirmation = presenter.confirmDangerousAction();
+
+  assert.equal(firstConfirmation, duplicateConfirmation);
+  assert.equal(transition.isTransitionActive(), true);
+  await assert.rejects(transition.runOperation(async () => undefined));
+  assert.deepEqual(events, ["operation:started", "lease"]);
+
+  operationRelease.resolve();
+  await existing;
+  await firstConfirmation;
+
+  assert.equal(reregisterCalls, 1);
+  assert.equal(
+    presenter.getState().statusCode,
+    "device-reregister-started",
+  );
+  assert.deepEqual(events, [
+    "operation:started",
+    "lease",
+    "operation:finished",
+    "reregister",
+  ]);
+});
+
 test("App 重启跳过普通购物车独占，但动作完成后仍复核可信 cashier lease", async () => {
   const events: string[] = [];
   const runtime = createProductionSettingsRuntime({
@@ -787,9 +878,11 @@ function fakeControl(
   return {
     getCatalogRefreshState: () => ({ kind: "idle" }),
     subscribeCatalogRefresh: () => () => undefined,
+    subscribeDeviceReregistrationCommitted: () => () => undefined,
     loadSnapshot: unavailable,
     downloadCatalog: unavailable,
     testApiAddress: unavailable,
+    preflightDeviceReregistration: async () => ({ status: "ready" }),
     testPaymentProvider: unavailable,
     savePrinterSettings: unavailable,
     loadReceiptProfile: unavailable,

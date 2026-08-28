@@ -103,6 +103,26 @@ test("transition 异常或 unavailable 结果都在 finally 释放，随后 oper
   );
 });
 
+test("transition 释放订阅仅在完全释放后通知，退订后不再通知", async () => {
+  const coordinator = new UpdateTransitionLeaseCoordinator();
+  const release = deferred<void>();
+  const events: string[] = [];
+  coordinator.bindTransitionBarrier((operation) => operation());
+  const unsubscribe = coordinator.subscribeTransitionReleased(() => {
+    events.push("released");
+  });
+
+  const transition = coordinator.runTransition(async () => release.promise);
+  assert.deepEqual(events, []);
+  release.resolve(undefined);
+  await transition;
+  assert.deepEqual(events, ["released"]);
+
+  unsubscribe();
+  await coordinator.runTransition(async () => undefined);
+  assert.deepEqual(events, ["released"]);
+});
+
 test("固定锁序先等已登记 cart operation 再取 transition exclusive，不死锁且等待期间拒绝新购物车写入", async () => {
   const coordinator = new UpdateTransitionLeaseCoordinator();
   const cart = new ActivePricingCartSession(

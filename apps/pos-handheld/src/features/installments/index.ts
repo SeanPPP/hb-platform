@@ -1,5 +1,5 @@
 export * from "./hbpos-installments-api";
-export * from "./installment-authorization";
+export * from "@hb/pos-domain/features/installments/installment-authorization";
 export * from "./installment-checkout-presenter";
 export * from "./installment-models";
 export * from "./installment-presenter";

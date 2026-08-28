@@ -9,6 +9,13 @@ on:
       - "apps/web/**"
       - "apps/pos-ipad/**"
       - "apps/pos-handheld/**"
+      - "packages/pos-*/**"
+      - "scripts/pos-shared/**"
+      - "patches/**"
+      - "package.json"
+      - "package-lock.json"
+      - "eslint.config.mjs"
+      - "tsconfig.pos-packages.json"
       - ".github/workflows/quality-baseline.yml"
       - "scripts/performance/**"
       - "scripts/test-all.sh"
@@ -21,6 +28,13 @@ on:
       - "apps/web/**"
       - "apps/pos-ipad/**"
       - "apps/pos-handheld/**"
+      - "packages/pos-*/**"
+      - "scripts/pos-shared/**"
+      - "patches/**"
+      - "package.json"
+      - "package-lock.json"
+      - "eslint.config.mjs"
+      - "tsconfig.pos-packages.json"
       - ".github/workflows/quality-baseline.yml"
       - "scripts/performance/**"
       - "scripts/test-all.sh"
@@ -142,7 +156,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: apps/${{ matrix.lane }}/package-lock.json
+          cache-dependency-path: ${{ startsWith(matrix.lane, 'pos-') && 'package-lock.json' || format('apps/{0}/package-lock.json', matrix.lane) }}
 
       - name: 运行现有 build/typecheck/test
         id: verify

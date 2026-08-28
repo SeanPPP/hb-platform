@@ -7,13 +7,13 @@ import type {
   HbposTransportRequest,
   HbposTransportResponse,
 } from "../api/hbpos-api";
-import type { LocalOrder } from "../contracts/order";
-import type { OrderRepositoryPort } from "../contracts/repositories";
-import { HbposAuditBatchAdapter } from "../sync/hbpos-sync-adapters";
+import type { LocalOrder } from "@hb/pos-domain/core/contracts/order";
+import type { OrderRepositoryPort } from "@hb/pos-domain/core/contracts/repositories";
+import { HbposAuditBatchAdapter } from "@hb/pos-sync/core/sync/hbpos-sync-adapters";
 
 import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
 import { createSqliteRepositories } from "./sqlite-repositories";
-import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "./types";
+import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "@hb/pos-db/core/db/types";
 
 const NOW = "2026-08-01T00:00:00.000Z";
 const RETRY_AT = "2026-08-01T00:05:00.000Z";

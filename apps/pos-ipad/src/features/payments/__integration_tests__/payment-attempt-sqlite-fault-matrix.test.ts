@@ -18,14 +18,14 @@ import { SqliteApprovedPaymentOrderCommitter } from "@/core/db/pos-database";
 import { SqliteMixedPaymentOrderTruthStore } from "@/core/db/sqlite-mixed-payment-order-truth-store";
 import { SqlitePaymentActionBindingStore } from "@/core/db/sqlite-payment-action-binding-store";
 import { createSqliteRepositories } from "@/core/db/sqlite-repositories";
-import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "@/core/db/types";
+import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "@hb/pos-db/core/db/types";
 import { ApprovedPaymentOrderCompletionService } from "@/features/payments/approved-payment-order-completion";
 import { MixedPaymentCoordinator } from "@/features/payments/mixed";
 import {
   PaymentAttemptBlockedError,
   PaymentAttemptOfflineError,
   PaymentAttemptService,
-} from "@/features/payments/payment-attempt-service";
+} from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 
 const T0 = "2026-07-28T00:00:00.000Z";
 const references = (): PaymentProviderReferences => ({

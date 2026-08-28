@@ -111,6 +111,8 @@
   "status.sync": "Sync",
   "status.sync.pending_one": "{{count}} pending",
   "status.sync.pending_other": "{{count}} pending",
+  "status.sync.checking": "Checking",
+  "status.sync.unavailable": "Unavailable",
   "status.printer": "Printer",
   "status.scanner": "Scanner",
   "status.languageSwitchLabel": "Switch interface language to Chinese",

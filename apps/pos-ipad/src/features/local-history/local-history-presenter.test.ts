@@ -19,7 +19,7 @@ import {
   localHistoryBusinessDayRange,
 } from "./local-history-presenter";
 
-import type { EscPosDocument } from "@/features/receipts/receipt-document";
+import type { EscPosDocument } from "@hb/pos-receipt-core/features/receipts/receipt-document";
 
 const firstSummary: LocalHistorySummary = {
   orderGuid: "order-42",

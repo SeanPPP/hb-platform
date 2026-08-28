@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 
 import { useCashierLoginStore } from "./cashier-login-store";
-import { createCashierInvalidationHandler } from "./cashier-session-invalidation-recovery";
+import { createCashierInvalidationHandler } from "@hb/pos-domain/features/cashier-login/cashier-session-invalidation-recovery";
 
 import { usePosRuntime } from "@/core/runtime/pos-runtime-context";
 

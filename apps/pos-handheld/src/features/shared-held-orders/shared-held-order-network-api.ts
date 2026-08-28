@@ -1,7 +1,7 @@
 import type {
   SharedLineDiscountStateV1,
   SharedSaleLineV1,
-} from "./shared-sale-cart-v1";
+} from "@hb/pos-domain/features/shared-held-orders/shared-sale-cart-v1";
 import {
   normalizeSharedSaleCart,
   type SharedSaleCartPayload,
@@ -13,7 +13,7 @@ import {
   type HbposEnvelope,
   type HbposTransport,
 } from "@/core/api/hbpos-api";
-import type { components } from "@/generated/hbpos/schema";
+import type { components } from "@hb/pos-api-client/openapi";
 
 type GeneratedCapabilities =
   components["schemas"]["SharedHeldOrderCapabilitiesResponse"];

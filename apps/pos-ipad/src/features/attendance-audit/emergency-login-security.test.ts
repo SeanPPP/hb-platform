@@ -18,7 +18,7 @@ import type {
   EmergencyPublicKeyFetchResult,
   EmergencyPublicKeyPackage,
   RegisteredAttendanceSigningKey,
-} from "./hbpos-attendance-security-api";
+} from "@hb/pos-api-client/features/attendance-audit/hbpos-attendance-security-api";
 
 class FakeRemote implements AttendanceSecurityRemotePort {
   public readonly fetchVersions: (number | null)[] = [];

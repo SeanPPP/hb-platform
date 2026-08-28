@@ -12,7 +12,7 @@ import {
 import {
   PaymentAttemptStateError,
   type PaymentProviderRegistryPort,
-} from "@/features/payments/payment-attempt-service";
+} from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 import {
   SquarePaymentAdapter,
   type SquareTerminalConfiguration,

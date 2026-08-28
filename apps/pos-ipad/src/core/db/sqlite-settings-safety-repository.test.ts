@@ -5,13 +5,13 @@ import test from "node:test";
 import { SqliteCatalogSnapshotRepository } from "./catalog-repository";
 import { applyMigrations } from "./migrations";
 import { PosDatabase } from "./pos-database";
-import { SqliteSettingsSafetyRepository } from "./sqlite-settings-safety-repository";
+import { SqliteSettingsSafetyRepository } from "@hb/pos-db/core/db/sqlite-settings-safety-repository";
 import type {
   SqliteConnectionPort,
   SqliteDriverPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 const NOW = "2026-07-28T00:00:00.000Z";
 

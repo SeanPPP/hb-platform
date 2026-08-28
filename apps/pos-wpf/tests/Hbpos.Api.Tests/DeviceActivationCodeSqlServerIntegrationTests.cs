@@ -235,9 +235,21 @@ public sealed class DeviceActivationSqlServerFixture : IAsyncLifetime
             """
             CREATE TABLE [dbo].[Store]
             (
+                [StoreGUID] varchar(36) NOT NULL DEFAULT (CONVERT(varchar(36), NEWID())),
                 [StoreCode] varchar(50) NOT NULL PRIMARY KEY,
                 [StoreName] nvarchar(100) NOT NULL,
+                [Address] nvarchar(500) NULL,
+                [TimeZoneId] nvarchar(80) NULL,
+                [ReturnPolicy] nvarchar(500) NULL,
+                [ContactEmail] nvarchar(100) NULL,
+                [ABN] nvarchar(20) NULL,
+                [BrandName] nvarchar(100) NULL,
+                [Phone] nvarchar(200) NULL,
                 [IsActive] bit NOT NULL,
+                [CreatedAt] datetime2(7) NOT NULL DEFAULT (SYSUTCDATETIME()),
+                [CreatedBy] nvarchar(100) NULL,
+                [UpdatedAt] datetime2(7) NULL,
+                [UpdatedBy] nvarchar(100) NULL,
                 [IsDeleted] bit NOT NULL
             );
             INSERT INTO [dbo].[Store] ([StoreCode], [StoreName], [IsActive], [IsDeleted])
@@ -1420,9 +1432,9 @@ public sealed class DeviceActivationCodeSqlServerIntegrationTests(
                 UPDATE target
                 SET target.[设备授权码] = 'ROTATED-LATER-AUTH'
                 FROM [dbo].[POSM_设备注册信息表] AS target
-                INNER JOIN [dbo].[POSM_DeviceActivationGrant] AS grant
-                    ON grant.[ConsumedDeviceRegistrationId] = target.[ID]
-                WHERE grant.[GrantId] = @GrantId;
+                INNER JOIN [dbo].[POSM_DeviceActivationGrant] AS [grant]
+                    ON [grant].[ConsumedDeviceRegistrationId] = target.[ID]
+                WHERE [grant].[GrantId] = @GrantId;
                 """,
                 new SqlParameter("@GrantId", initial.GrantId));
             var rotatedCredentialRejected = await first.Service.RedeemAsync(
@@ -1503,9 +1515,9 @@ public sealed class DeviceActivationCodeSqlServerIntegrationTests(
                 UPDATE target
                 SET target.[设备授权码] = 'ROTATED-REBIND-AUTH'
                 FROM [dbo].[POSM_设备注册信息表] AS target
-                INNER JOIN [dbo].[POSM_DeviceActivationGrant] AS grant
-                    ON grant.[ConsumedDeviceRegistrationId] = target.[ID]
-                WHERE grant.[GrantId] = @GrantId;
+                INNER JOIN [dbo].[POSM_DeviceActivationGrant] AS [grant]
+                    ON [grant].[ConsumedDeviceRegistrationId] = target.[ID]
+                WHERE [grant].[GrantId] = @GrantId;
                 """,
                 new SqlParameter("@GrantId", rebind.GrantId));
             var rotatedCredentialRejected = await second.Service.RedeemAsync(

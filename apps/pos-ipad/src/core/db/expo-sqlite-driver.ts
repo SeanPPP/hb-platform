@@ -3,12 +3,12 @@ import * as SQLite from "expo-sqlite";
 import {
   type NativeSqliteOperations,
   SerializedSqliteConnection,
-} from "./serialized-sqlite-connection";
+} from "@hb/pos-db/core/db/serialized-sqlite-connection";
 import type {
   SqliteConnectionPort,
   SqliteDriverPort,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 type ExpoDatabase = Awaited<ReturnType<typeof SQLite.openDatabaseAsync>>;
 

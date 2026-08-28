@@ -18,7 +18,7 @@ import {
 import {
   AuthorizedSalesOperationExecutor,
   type SalesOperationSecurity,
-} from "./sales-operation-security";
+} from "@hb/pos-domain/features/sales/runtime/sales-operation-security";
 
 import type { LocalCatalogMatch } from "@/core/db/catalog-repository";
 import { PricingCart } from "@/features/sales/domain";

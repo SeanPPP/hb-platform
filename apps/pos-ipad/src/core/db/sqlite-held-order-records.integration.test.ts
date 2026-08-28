@@ -9,7 +9,7 @@ import type {
   HeldOrderRecordRepositoryPort,
   HeldOrderScope,
 } from "../contracts";
-import type { AuditEventDraft } from "../contracts/order";
+import type { AuditEventDraft } from "@hb/pos-domain/core/contracts/order";
 
 import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
 import {
@@ -22,7 +22,7 @@ import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 const nowIso = "2026-07-28T08:00:00.000Z";
 const scope = { storeCode: "S1", deviceCode: "IPAD-01" } as const;

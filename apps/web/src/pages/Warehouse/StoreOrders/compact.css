@@ -178,6 +178,7 @@
 
 .store-order-detail-table .ant-table-thead > tr > th {
   line-height: 1.2;
+  position: relative;
   white-space: normal;
 }
 
@@ -191,6 +192,54 @@
   overflow: hidden;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+.store-order-detail-draggable-header {
+  width: 100%;
+  min-width: 0;
+  cursor: move;
+  user-select: none;
+}
+
+.store-order-detail-draggable-header:focus-visible {
+  border-radius: 2px;
+  outline: 2px solid #1677ff;
+  outline-offset: 2px;
+}
+
+.store-order-detail-column-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  z-index: 4;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.store-order-detail-column-resize-handle::after {
+  position: absolute;
+  top: 20%;
+  right: 3px;
+  bottom: 20%;
+  width: 1px;
+  background: transparent;
+  content: '';
+}
+
+.store-order-detail-column-resize-handle:hover::after {
+  background: #1677ff;
+}
+
+.store-order-detail-column-resize-handle-left {
+  right: auto;
+  left: -3px;
+}
+
+.store-order-detail-column-resize-handle-left::after {
+  right: auto;
+  left: 3px;
 }
 
 .store-order-detail-table .ant-tag {
@@ -240,9 +289,26 @@
 }
 
 .store-order-detail-table .store-order-detail-copy-button {
+  flex: 0 0 18px;
   width: 18px;
   height: 20px;
   padding: 0;
+}
+
+.store-order-detail-table .store-order-detail-item-number-cell {
+  display: inline-flex;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.store-order-detail-table .store-order-detail-item-number-text {
+  min-width: 0;
+  max-width: calc(100% - 22px);
 }
 
 .store-order-detail-filter-bar {

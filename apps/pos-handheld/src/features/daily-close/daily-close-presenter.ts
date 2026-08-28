@@ -1,7 +1,7 @@
 import {
   resolveDailyCloseAccess,
   type DailyCloseAccess,
-} from "./daily-close-authorization";
+} from "@hb/pos-domain/features/daily-close/daily-close-authorization";
 import {
   buildDailyCloseArchiveCommit,
   businessDateInTimeZone,
@@ -23,11 +23,11 @@ import {
 import {
   buildDailyCloseReceipt,
   type DailyCloseReceiptDocument,
-} from "@/features/receipts/daily-close-receipt";
+} from "@hb/pos-receipt-core/features/receipts/daily-close-receipt";
 import type {
   ReceiptLocale,
   ReceiptPaper,
-} from "@/features/receipts/receipt-document";
+} from "@hb/pos-receipt-core/features/receipts/receipt-document";
 
 export type DailyCloseStatusCode =
   | "invalid-business-date"

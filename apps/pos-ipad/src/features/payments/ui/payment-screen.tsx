@@ -42,7 +42,7 @@ import {
   type PaymentUiPhase,
 } from "./payment-presenter";
 
-import { receiptQrMatrix } from "@/features/local-history/receipt-qr-matrix";
+import { receiptQrMatrix } from "@hb/pos-receipt-core/features/local-history/receipt-qr-matrix";
 import type {
   LinklySafeOperatorKey,
 } from "@/features/payments/runtime/linkly-operator-runtime";

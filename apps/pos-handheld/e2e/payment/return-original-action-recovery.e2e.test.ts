@@ -8,8 +8,8 @@ import {
   type DurableReturnAllocation,
   type PrepareDurableReturnAction,
   type ReturnExecutionLedgerPort,
-} from "@/features/returns/adapters/durable-return-execution-orchestrator";
-import type { ReturnExecutionCommand } from "@/features/returns/return-workflow";
+} from "@hb/pos-domain/features/returns/adapters/durable-return-execution-orchestrator";
+import type { ReturnExecutionCommand } from "@hb/pos-domain/features/returns/return-workflow";
 
 test("return fault matrix: Unknown original online refund resumes the same opaque allocation without a second submit", async () => {
   const ledger = new MemoryReturnLedger();

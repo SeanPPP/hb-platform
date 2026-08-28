@@ -12,7 +12,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { businessDayUtcRange } from "./business-day-range";
+import { businessDayUtcRange } from "@hb/pos-sync/features/sync-history/business-day-range";
 import {
   resolveSyncHistoryLocale,
   syncHistoryText,
@@ -22,12 +22,12 @@ import {
 import {
   type LocalSyncHistoryFilters,
   type LocalSyncHistoryOrderState,
-} from "./sync-history-domain";
+} from "@hb/pos-sync/features/sync-history/sync-history-domain";
 import {
   type SyncHistoryPresenter,
   type SyncHistoryPresenterState,
   type SyncHistoryRow,
-} from "./sync-history-presenter";
+} from "@hb/pos-sync/features/sync-history/sync-history-presenter";
 
 import { PosDatePickerField } from "@/ui/controls/pos-date-picker-field";
 import { PosPressable } from "@/ui/controls/pos-pressable";

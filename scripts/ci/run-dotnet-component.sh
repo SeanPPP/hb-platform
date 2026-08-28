@@ -47,10 +47,8 @@ case "$component" in
   pos-contract)
     project="apps/pos-wpf/tests/Hbpos.Api.Tests/Hbpos.Api.Tests.csproj"
     dotnet restore "$project"
-    npm --prefix apps/pos-ipad ci --no-audit --no-fund
-    npm --prefix apps/pos-handheld ci --no-audit --no-fund
-    npm --prefix apps/pos-ipad run test:codegen
-    npm --prefix apps/pos-handheld run test:codegen
+    npm ci --no-audit --no-fund
+    npm run test:hbpos-client
     ;;
   *)
     echo "未知 .NET 组件: $component" >&2

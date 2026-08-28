@@ -5,7 +5,7 @@ import {
   buildDailyCloseReceipt,
   dailyCloseReceiptToEscPosBytes,
   dailyCloseReceiptDisplayWidth,
-} from "./daily-close-receipt";
+} from "@hb/pos-receipt-core/features/receipts/daily-close-receipt";
 
 import type { DailyCloseArchive } from "@/core/contracts";
 

@@ -1,5 +1,8 @@
-import type { InstallmentStatus, InstallmentSummary } from "@/core/contracts";
-import type { components } from "@/generated/hbpos/schema";
+import type { components } from "@hb/pos-api-client/openapi";
+import type {
+  InstallmentStatus,
+  InstallmentSummary,
+} from "@hb/pos-domain/core/contracts/installments";
 
 export type InstallmentPaymentMethod = "cash" | "card" | "voucher";
 export type InstallmentCardProvider = "square" | "linkly-cloud";

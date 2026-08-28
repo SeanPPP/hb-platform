@@ -10,7 +10,7 @@ import {
   type HbposEnvelope,
   type HbposTransport,
 } from "@/core/api/hbpos-api";
-import type { components } from "@/generated/hbpos/schema";
+import type { components } from "@hb/pos-api-client/openapi";
 
 const CHECKSUM_SPECS = {
   1: {

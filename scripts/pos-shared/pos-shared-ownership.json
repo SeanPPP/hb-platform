@@ -1,0 +1,2922 @@
+{
+  "schemaVersion": 1,
+  "baseline": "ddcca999b9d6a90e07b7b3d88c5b93a28d0c7b13",
+  "generatedFrom": [
+    "apps/pos-ipad/src",
+    "apps/pos-handheld/src"
+  ],
+  "summary": {
+    "identical": 414,
+    "production": 252,
+    "tests": 162,
+    "productionByOwner": {
+      "app-local": 81,
+      "pos-api-client": 8,
+      "pos-db": 33,
+      "pos-domain": 95,
+      "pos-payments-core": 13,
+      "pos-receipt-core": 15,
+      "pos-sync": 7
+    }
+  },
+  "files": [
+    {
+      "path": "app-providers.tsx",
+      "blob": "bdae13539f1f4caf17d559339080fa20b94dd60d",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/api/index.ts",
+      "blob": "41f666805eca82d9f727045f249cb862fd401291",
+      "kind": "production",
+      "owner": "pos-api-client",
+      "reason": "公共 Hbpos API endpoint adapter 或 API 客户端出口"
+    },
+    {
+      "path": "core/contracts/audit-actor.test.ts",
+      "blob": "d4ba8d710e7f69773a2bfd0df057e48eec65c1d6",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "core/contracts/audit-actor.ts",
+      "blob": "bcaf8496fa63bd9bb967f1da30e75d9fd4884faf",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/contracts/audit-scope.ts",
+      "blob": "6efd95c71cf0fefa92f37bea5927790bfed6f3ab",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/contracts/cart.ts",
+      "blob": "b94422872c805a31433d4cba9c938f447b0f48a0",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/contracts/daily-close.ts",
+      "blob": "2059eb316c63fbaa9b9c27e61b6fc1b2afa8c7b4",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/contracts/device-reregistration.ts",
+      "blob": "89e3aa41d445486fb3f9e7c1a8430fbe10347d9f",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "设备重注册合同属于第 13 项设备恢复，本轮保持 App-local"
+    },
+    {
+      "path": "core/contracts/drawer.ts",
+      "blob": "cede02aa98e27c4001c59501d49d28ac81b1450a",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/contracts/installments.ts",
+      "blob": "8cf2c02c5b22817fa52f27d5c90ce8cb6838d360",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/contracts/line-sync-provenance.ts",
+      "blob": "55ca1147c49feec58ebbe1d0d00f1078ddcc0894",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/contracts/money.test.ts",
+      "blob": "88c9d227083f41c303fe771b295d22ff134b0cd2",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "core/contracts/order.ts",
+      "blob": "2745d7cc237db69a538505ea61a8b16167cd9f59",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/contracts/printer.ts",
+      "blob": "d1ff3b52b8007f8bc40ef885d8b6272ea4e5f998",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/contracts/remote-history.ts",
+      "blob": "2b61dc743e52658a5ef42f14b08e060ed456d7fd",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/contracts/repositories.ts",
+      "blob": "747eeb0c4868707e309500e513e5511398261782",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/contracts/special-products.ts",
+      "blob": "7b1afcd78fdc6eee5857e7612252889bffb0aac0",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/contracts/state-machines.ts",
+      "blob": "2f7b68a238976581c4520f1c594eff4e1444d721",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/contracts/sync.ts",
+      "blob": "f8e61e6b54607bebc01ef66271f7bdc77d64ab0e",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/contracts/terminal-cart.ts",
+      "blob": "71a5341a74045200e3d53b9bf2d8d5159883892b",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/db/catalog-repository.test.ts",
+      "blob": "b19ea6f83d6fac7aab0146b005158e70cd2d8c3e",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/catalog-repository.ts",
+      "blob": "af6b3af4d013635a13e0411f5a64baf249ab3fa8",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/expo-keychain-database-key-provider.ts",
+      "blob": "0b57c2c715f5801086607f32c3a06dfc1c83cb59",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/db/expo-sqlite-driver.ts",
+      "blob": "89405cb6b669fcfd4f1b4cdf09bfd945e47e82a5",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/db/index.ts",
+      "blob": "2a14812347aaa8b8d8f1d53f73c0a96466a9f79c",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/db/payment-attempt-repository.integration.test.ts",
+      "blob": "615858d1285b99b818b97553971ccd9e5e25eff0",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/pos-settings-repository.test.ts",
+      "blob": "2a217e2c0a8089a2f71fc390bf7d93290bc31ca5",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/protected-material-integrity-error.ts",
+      "blob": "532e0cc14556bc9eb3e4dd68c52ba2b9a83ee4ee",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/serialized-sqlite-connection.test.ts",
+      "blob": "a28a1485deba88cb54922f1a2de148c3fe274592",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/serialized-sqlite-connection.ts",
+      "blob": "b455d923e3660b0aff144115daf8d010471e0578",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-attendance-security-repository.test.ts",
+      "blob": "d149d3a13a57f692f32ec05cbeef0b43e211f97c",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-attendance-security-repository.ts",
+      "blob": "271cfd4e2ecffb7184d7d810cbd4f2f87bef2276",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-daily-close-repository.test.ts",
+      "blob": "13a0d22e3f7537e4324eef8d1b32e7af4f35db94",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-daily-close-repository.ts",
+      "blob": "c3468f323e87c55a395b369495442482fc5bc274",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-feature-facades.integration.test.ts",
+      "blob": "0eadc8769b60e98437b6ea52896827807ddb6afe",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-fulfilment-audit.integration.test.ts",
+      "blob": "426af02242899874d49de1f683d05c636701720f",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-fulfilment-idempotent-print.test.ts",
+      "blob": "0ed94585cd6d656154d0860d19c71f489df20a10",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-fulfilment-store.test.ts",
+      "blob": "b779a01254224817bb2836b4e7f47555ea8845d3",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-fulfilment-store.ts",
+      "blob": "2e64bc3dc96bb3a22de9b2cb3c6392c53ab06096",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-installment-action-store.test.ts",
+      "blob": "353f86a4ba58eccdb4361bfef7b52f8bdc64cf26",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-installment-action-store.ts",
+      "blob": "213834c909f796b5c6999e5f89c249f20e6043f2",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-installment-payment-ledger.test.ts",
+      "blob": "49da1d935877c7d67c5477e6b01a2e8b5ca623db",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-installment-payment-persistence.ts",
+      "blob": "0f21c2d3542709f17e6480dcb885785adc77f5a8",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-installment-provider-attempt-store.ts",
+      "blob": "54b95b2d967709cefbb85b9fde60634f926ce243",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-installment-refund-provenance-vault.ts",
+      "blob": "556aad44cd3d5c61cb7dc50dbbc01190520ec0a1",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-installment-snapshot-repository.test.ts",
+      "blob": "9ea9a52f11eaaa63e1848f7477bf8d7d9db62264",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-installment-snapshot-repository.ts",
+      "blob": "7d4cb2eb3e8120b92376699d8b680363866962bc",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-installment-voucher-persistence.ts",
+      "blob": "e01edd00f7cc3b30326b624e8842faf32cc4e0b7",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-local-history-store.integration.test.ts",
+      "blob": "ac23c14175bdbe473469c2dffb4429f0927f6599",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-local-history-store.test.ts",
+      "blob": "bc6ae56fe1cb3f1035495d59513b4ba9babfc3b8",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-local-history-store.ts",
+      "blob": "48358a43fa3141f8afca7cfe99f11cb930b63687",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-local-sync-history-store.ts",
+      "blob": "8fa7af273271d6c87d3a3fac4084e9b568df3afd",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-mixed-payment-order-truth-store.ts",
+      "blob": "550ffd55af99acb6b0db4883b7c7dadc534e60e2",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-offline-return-capacity.ts",
+      "blob": "f9fb463782bfc99a28b6063784fc43a770999c8c",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-operation-audit-delivery.integration.test.ts",
+      "blob": "7e8aaa670c9179defc66da480673f60e869d72dc",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-operation-audit-read.test.ts",
+      "blob": "54061c6425b957483197b56352732effe45b5b9a",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-operation-audit-read.ts",
+      "blob": "5617551b3ef1bc6482357bef9df467935bc7dd83",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-order-sync-material.test.ts",
+      "blob": "744caec2d01b8d7e7a44fa47724f2297168a24b3",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-order-sync-material.ts",
+      "blob": "8ae4e9bae3f853a37f376bb511d42c9abd0e847f",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-outbox-order-state.integration.test.ts",
+      "blob": "0e51c4a5dd97ac34b0cd09c4f43857758f77d228",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-payment-action-binding-store.ts",
+      "blob": "be53a7ad9a67cd0582ba8c4c81b951d007630a06",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-payment-draft-recovery-store.ts",
+      "blob": "a213887580c10aa01beb5ff816b27c317fe5fab4",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-payment-protected-material.test.ts",
+      "blob": "1da7eb8549138d92b59bd7ace0e1070f188c2c3b",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-payment-protected-material.ts",
+      "blob": "2f5b049052954d813062cf9133c3a328bcebefab",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-refund-voucher-print-material.test.ts",
+      "blob": "3a24e37f63f94549852df4ca1127348b9ce08298",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-refund-voucher-print-material.ts",
+      "blob": "df64aabce9f80a69bb80b72f9ddf9a837cce564f",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-repositories.test.ts",
+      "blob": "d1e1f2f375e153ab2dcef5e631c15b420121498c",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-return-api-attempt-store.ts",
+      "blob": "f0bd337259766a04fb66d04c8ff81203e9546e10",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-return-capacity-vault.ts",
+      "blob": "9ee7c96a8bf86610103266d952eee524a7d73bf7",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-return-execution-ledger.provenance.test.ts",
+      "blob": "f828939f0fc6fcf2ecef029f0323bf9a4ab8f320",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-return-execution-ledger.ts",
+      "blob": "cf1e5e555a186ceac8d59a6f7ac25f50e3da941c",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-return-fulfilment-plan-store.ts",
+      "blob": "526a2232a9fb342d3f6645285907f12593d7432d",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-settings-safety-repository.test.ts",
+      "blob": "dcf0cdd6aa2d6f2b3152d93a6023c752e68ac573",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-settings-safety-repository.ts",
+      "blob": "4903e4ca143abb86945e261824ee3547ac8ad19a",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-special-products-repository.test.ts",
+      "blob": "6d5c41087c1e257cb6db9050eba9661dd6b86b3f",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-special-products-repository.ts",
+      "blob": "2a7c47141d1ff186bff1c7173f341c60d1f63876",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-voucher-balance-material.test.ts",
+      "blob": "79d03161aa1f5c07ef03db258b4f55e8c89b5899",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-voucher-balance-material.ts",
+      "blob": "4cfe141fde53346c0af0425f9483f2b89a8f7777",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-voucher-preparation-store.ts",
+      "blob": "5984231e19eeeeb364b17ced32a3a8f34cd5e8a3",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-voucher-protected-token-store.ts",
+      "blob": "5cdc949588a07ae8536beebea0ebe4579ba4e81b",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/sqlite-voucher-tender-reversal-store.test.ts",
+      "blob": "e6437158687703cbe0bd57c5a3541a55d4f7e292",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "core/db/sqlite-voucher-tender-reversal-store.ts",
+      "blob": "ad959a3dc5febe251b434749787d382de0d9ee5d",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/db/types.ts",
+      "blob": "95e95d849a643821493f709a9c2e0587102f486e",
+      "kind": "production",
+      "owner": "pos-db",
+      "reason": "driver-neutral SQLite 抽象、事务、迁移或 repository 实现"
+    },
+    {
+      "path": "core/logging/application-error-observer.rntl.test.tsx",
+      "blob": "89414b67729f412d515a20e33b14a147bc0afa6e",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/logging/application-error-observer.tsx",
+      "blob": "7e5eb9cc0d2e39c28d4e173a31c16d755a092a1a",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/observability/sentry-config.ts",
+      "blob": "386fd983706325d1a6c8b42dbb6b4e42241a7c4d",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "Sentry 配置属于 App 运行时观测边界，本轮保持 App-local"
+    },
+    {
+      "path": "core/performance/business-startup-clock.ts",
+      "blob": "da5743d56425da10a9c31205838d93d08bef209f",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "启动性能计时绑定 App 生命周期，本轮保持 App-local"
+    },
+    {
+      "path": "core/performance/business-startup-origin.ts",
+      "blob": "4def823ceaedf664db11c2f11da389bc24f8c949",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "启动性能来源绑定 App 生命周期，本轮保持 App-local"
+    },
+    {
+      "path": "core/performance/business-timings.test.ts",
+      "blob": "fe51ae308c48d1f6b85843049b4395428e666f7d",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "性能测试验证 App 级计时组合，本轮保持 App-local"
+    },
+    {
+      "path": "core/performance/client-metrics.ts",
+      "blob": "396e65ce742b2242acb705a6ae06edf0ca6b08ae",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "客户端指标绑定 App 运行时上传，本轮保持 App-local"
+    },
+    {
+      "path": "core/performance/payment-performance.ts",
+      "blob": "b998aca3f84b4dbd5b92fb02140e2ca5282e2033",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "支付性能采样绑定 App 运行时，本轮保持 App-local"
+    },
+    {
+      "path": "core/peripherals/attendance-security/native/expo-adapter-factory.ts",
+      "blob": "1b58bb066c0a9379b6b6944df12a24ab464b1bb4",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/attendance-security/native/expo-attendance-security-adapter.test.ts",
+      "blob": "3c5934b93246c3464ff7fb6377138405f0a1d423",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/peripherals/attendance-security/native/expo-attendance-security-adapter.ts",
+      "blob": "359d9f0574a50576b6630620b52846396daf8bab",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/attendance-security/native/index.ts",
+      "blob": "f3cb7e79cd2f9a6a9e54c5029c5007ef830c859c",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/attendance-security/native/native-module.ts",
+      "blob": "67b08854d54ccfb972ee46b86e317c83f0f5654a",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/attendance-security/native/types.ts",
+      "blob": "9697266d181120b4af09cde8e2fc2a87cdf897bd",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/printer/native/hb-printer-adapter.test.ts",
+      "blob": "0348957441e4419f1249dc4910b1801ef378b040",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/peripherals/printer/native/hb-printer-adapter.ts",
+      "blob": "eceb3bb117c4c222686c981a0df1f753b5bb263e",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/printer/native/index.ts",
+      "blob": "bfd8d1062d3bfd2a344bd1e4400a0d6b851e58a2",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/printer/native/types.ts",
+      "blob": "8a01fe8a369a0f41be30cefb8a94b54cd4ca8e5d",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/scanner/expo-camera-adapter.ts",
+      "blob": "7a1442976cef749efa8ecda262d4b4760b8b1736",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/scanner/types.ts",
+      "blob": "2fb775aef84a10d26899851cd9a0efc5428e2a23",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/bootstrap-server-diagnostics.ts",
+      "blob": "ea69c60f5d0775e820cfe58a8933d78c44dd829e",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/current-cashier-session.test.ts",
+      "blob": "8382645b6d1a554e8404069c2fac77bc11311951",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/current-cashier-session.ts",
+      "blob": "8487d10e8c3c7f6d69c62b50802645c1bd50b8ca",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/deferred-voucher-context-provider.test.ts",
+      "blob": "92543fbdff82a8612f6e9e2377bd7440397b35b5",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/deferred-voucher-context-provider.ts",
+      "blob": "92a29f74670052ced378b1c9839a8b733ca6496f",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/emergency-cashier-runtime.test.ts",
+      "blob": "0886be82e3b8b6b94f0f07da687c0d519284c099",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/emergency-cashier-runtime.ts",
+      "blob": "1a90ed31788df294bd13a2d381ae854b5e2e5701",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/expo-attendance-runtime-configuration.test.ts",
+      "blob": "91bbb898d806f8366fdc6e915c762c328a7200c1",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/expo-attendance-runtime-configuration.ts",
+      "blob": "1877b553aec3908f4413c4c8dd0b07028e457069",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/expo-bootstrap-server-diagnostics.test.ts",
+      "blob": "da3d07b203f515196eba62359514fa2a11eedcb8",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/expo-printer-adapter.test.ts",
+      "blob": "3a17be7f3322d6b4bb4a1eeadf2749bb13abd7a2",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/expo-printer-adapter.ts",
+      "blob": "70646c5a51135a1598df6d66317f551a44e0e9f2",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/expo-update-runtime-version.test.ts",
+      "blob": "5abe14cdaab01ff9c2010f376660ba6307704def",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/lazy-printer-adapter.ts",
+      "blob": "b4a3601cff6cd55dcdc9ee5ea3b28b3a290e4126",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/local-device-state.test.ts",
+      "blob": "25cdee405fee007363d49e5154e8891e6cc9dd1b",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "本地设备状态测试属于 App 运行时边界，本轮保持 App-local"
+    },
+    {
+      "path": "core/runtime/local-device-state.ts",
+      "blob": "1113f78d30ad9d4196339b5cccb2a8455a349692",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "本地设备状态属于 App 运行时边界，本轮保持 App-local"
+    },
+    {
+      "path": "core/runtime/payment-cart-lease-coordinator.test.ts",
+      "blob": "19f6eecd20bc8ac2968747ad530e16d42f48398f",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/payment-cart-lease-coordinator.ts",
+      "blob": "96d7be5f9bea9803a7b7cd932e760723c518705a",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/payment-completion-runtime.ts",
+      "blob": "4ab2fbd50c604395745a6a489f0b5006c9dac325",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/payment-provider-runtime-bootstrap.test.ts",
+      "blob": "a1d95950bcb7c76b48702aef1dcf98bd9931886d",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/payment-provider-runtime-bootstrap.ts",
+      "blob": "5bf1db7f8dc6189df8d6e01643b7c1ddff10aef7",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/payment-runtime-config.test.ts",
+      "blob": "d83ca1d82993e9114b5a2029f3695bd5e4654b36",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/payment-runtime-config.ts",
+      "blob": "5c269755f49215a269b82b54be81d4bfe8e1c12b",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/pos-runtime-context.tsx",
+      "blob": "d9b9ee9c9dd423fd986efd6093f62173ca8b85c6",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/pos-runtime.test.ts",
+      "blob": "3527abb561a7eabdbd26a4a9509dfdbadb56a6ed",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/pos-runtime.ts",
+      "blob": "6c424d79418f9c8350bf4b14b9d861bf15ca3347",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/prelogin-server-connection-control.test.ts",
+      "blob": "499756d5fd2747c7816b57c6f21f826f796a8869",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/prelogin-server-connection-control.ts",
+      "blob": "a32c3f5f220b021939f681a22b7f9b414f60aba4",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/production-attendance-audit-runtime.test.ts",
+      "blob": "e239a3e725267797da830ed385d57a79245517bc",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-attendance-audit-runtime.ts",
+      "blob": "7a2aad6ee858bc0ff51b4131994cfee0546bf42c",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/production-installment-payment-adapter.test.ts",
+      "blob": "94d986be50f6df731e1fc79e78f007c91ca8b3a3",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-installment-payment-adapter.ts",
+      "blob": "b409c50773195c10ac4e646fe8d34a4541cbbf2e",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/production-installment-refund-provenance.test.ts",
+      "blob": "e823e8329207dab33d66cdcc334cbb19da1ef602",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-installment-refund-provenance.ts",
+      "blob": "7758b752580cfea1cb2fd333022939fcb135931b",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/production-installment-runtime.test.ts",
+      "blob": "2be6baf7b0d54b18da6a8c59fa82e582a0e7a91a",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-installment-runtime.ts",
+      "blob": "8426ca595f797c311e334e6bb2d0faa3eb99115d",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/production-payment-runtime.test.ts",
+      "blob": "c13d5b76c12f0b12a59e7a4d0973417c3d447032",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-return-online-refund-router.test.ts",
+      "blob": "c18113fe3ac7d21a2fd5ebc06e188bc40bad0a6b",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-return-online-refund-router.ts",
+      "blob": "8a3f459aad7b97533cd5d43456d25058d1fdbcbb",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/production-return-refund-adapter.test.ts",
+      "blob": "59afb1a8546b8190865bdeda158e6da291293a35",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-return-refund-adapter.ts",
+      "blob": "b36ef0a10bd6cb6168c817b4820125aba227f33c",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/production-return-runtime.test.ts",
+      "blob": "104abb3768afcc687d0de8853b23b8baa5a71fe8",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-return-runtime.ts",
+      "blob": "c1377e127c7990738d7bb1abef200bc6d271cc9a",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/public-cashier-invalidation.test.ts",
+      "blob": "9b981ab6c12229ab6aafebac42662e16c7457b29",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/public-cashier-invalidation.ts",
+      "blob": "98c97e5a8064cf543901021ab5746b2e2b04e421",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/return-fulfilment-runtime.test.ts",
+      "blob": "10633569fa34e9bd7eeee7e9d133213ff0f7c296",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/return-fulfilment-runtime.ts",
+      "blob": "b4e232b1e2287688456bb2baed54700467a5d389",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/runtime-config.test.ts",
+      "blob": "7d7aa1ebf551107aa43ad759ab87297107bc1643",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/runtime-config.ts",
+      "blob": "545aa74be5a6ad95d543d84faf1be7f93e35e55f",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/settings-linkly-setup-api.test.ts",
+      "blob": "6c03490ec300aa79d380859c51ae55b3b388cdcd",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/settings-linkly-setup-api.ts",
+      "blob": "dde5fd21d25df154c8de9ff0fff6499c4b7da7c0",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/settings-payment-test-api.test.ts",
+      "blob": "3afd0ad7186682f50077f1ec1a5adf28f30527c5",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/settings-payment-test-api.ts",
+      "blob": "ed0cf86d558b7bb3a1440dfd7433c4714b3222fd",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/settings-scanner-test.test.ts",
+      "blob": "4a331987b473a982bfe80c8f0ad11b7757b9a304",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/settings-scanner-test.ts",
+      "blob": "8b1a3bd38a0a7ee60950e0b49ee48c73490f4efe",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/settings-square-setup-api.test.ts",
+      "blob": "36011df8a6e6d7007921c84f9689bd8ace5234b3",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/settings-square-setup-api.ts",
+      "blob": "3c674ab0611b9e53170eccf239985e0f654258bf",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/startup-device-gate.ts",
+      "blob": "84c49085b7eaa041c2a700a6820b62923f53942b",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/trusted-receipt-settings.test.ts",
+      "blob": "bd216be194c4311a8558145b2157b7f09e4ddbb6",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/security/api-credential-provider.test.ts",
+      "blob": "0af99dcbadf57a56078d254104ff5e3aa7596949",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/security/api-credential-provider.ts",
+      "blob": "a25cda0b945cf3507f03a59a78a5526f5d885970",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/security/cashier-authentication.ts",
+      "blob": "4a1b27ec1406c2ce8f2a3839bfde21186b606bb0",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "收银员认证绑定 App 安全运行时，本轮保持 App-local"
+    },
+    {
+      "path": "core/security/cashier-session-invalidation.ts",
+      "blob": "a16042496ce86a47b1e760bc83e5ef902e3a69eb",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/security/device-activation-code.test.ts",
+      "blob": "42dd512e784164965977ed6c8612d38f85760b21",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "开通码测试属于第 13 项设备恢复，本轮保持 App-local"
+    },
+    {
+      "path": "core/security/device-activation-code.ts",
+      "blob": "4912263ad69871bd4d5daed50c15906dda8907e1",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "开通码属于第 13 项设备恢复，本轮保持 App-local"
+    },
+    {
+      "path": "core/security/device-registration-api-partition-guard.test.ts",
+      "blob": "6a2273e846c08d7194e8b0580f4b76047ee49841",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "设备注册 API 分区测试属于 App 安全边界，本轮保持 App-local"
+    },
+    {
+      "path": "core/security/device-registration-api-partition-guard.ts",
+      "blob": "43ba5260e3147767e0447eb1c553dcf3a13f19ba",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "设备注册 API 分区门禁属于 App 安全边界，本轮保持 App-local"
+    },
+    {
+      "path": "core/security/expo-installation-id.ts",
+      "blob": "ca9473d2e35683bb18046b7911660f18824f10ed",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/security/expo-secure-store.ts",
+      "blob": "f54d4d95bf58551234ab17d090d03d43217eb4c2",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/security/index.ts",
+      "blob": "6021edff1c7918c5d2f038875ee7f05894c25421",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/security/pos-api-addresses.ts",
+      "blob": "2e0730547ac9379334e046ff177fab8e6303fd36",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "core/sync/forbidden-runtime-lifecycle.integration.test.ts",
+      "blob": "9a416a397b8e0b17bc0d9c46c18d521c666d8c47",
+      "kind": "test",
+      "owner": "pos-sync",
+      "reason": "随同步协调、重试或同步历史模块迁移的测试"
+    },
+    {
+      "path": "core/sync/hbpos-order-sync-post-accept.test.ts",
+      "blob": "9a80b9409c442a86f9d27dc8a85677d7cafc2033",
+      "kind": "test",
+      "owner": "pos-sync",
+      "reason": "随同步协调、重试或同步历史模块迁移的测试"
+    },
+    {
+      "path": "core/sync/hbpos-sync-adapters.ts",
+      "blob": "24ea34af4fd87d347c8cf3336616d5ef48c21417",
+      "kind": "production",
+      "owner": "pos-sync",
+      "reason": "同步协调、审计上传、重试或同步历史公共逻辑"
+    },
+    {
+      "path": "core/sync/index.ts",
+      "blob": "924a2c561794b41f4772948db59edced062dde35",
+      "kind": "production",
+      "owner": "pos-sync",
+      "reason": "同步协调、审计上传、重试或同步历史公共逻辑"
+    },
+    {
+      "path": "core/sync/sync-coordinator.test.ts",
+      "blob": "c9e0acc4a36fd5dcb59ae8ab5930b2a8654678f2",
+      "kind": "test",
+      "owner": "pos-sync",
+      "reason": "随同步协调、重试或同步历史模块迁移的测试"
+    },
+    {
+      "path": "core/sync/voucher-tender-reversal-audit.integration.test.ts",
+      "blob": "3ea8e84b7a55c5254c08a4d3d8641d8cbfb8794c",
+      "kind": "test",
+      "owner": "pos-sync",
+      "reason": "随同步协调、重试或同步历史模块迁移的测试"
+    },
+    {
+      "path": "features/app-updates/app-update-recovery-contract.ts",
+      "blob": "4c15374d5bdf984b4c33b72a96519f03e8537345",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/app-updates/expo-app-update-restart.test.ts",
+      "blob": "d4d55521146633a954b52d245fa45b229b4f6f3c",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/app-updates/expo-app-update-restart.ts",
+      "blob": "fcff4016ba8aeca8d96e938889a826acf84262e9",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/app-updates/update-transition-lease-coordinator.test.ts",
+      "blob": "9903b887f25855abb60ad24ac69563f0b74e84a8",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/app-updates/update-transition-lease-coordinator.ts",
+      "blob": "df2721a040c59a6d53954281c05a013d617d5202",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "OTA 切换互斥状态机属于第 11 项，本轮保持 App-local"
+    },
+    {
+      "path": "features/attendance-audit/attendance-audit-presenter.test.ts",
+      "blob": "b3c46c2b04a126a26bda9895328e013ae62e6f4f",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/attendance-audit/attendance-audit-presenter.ts",
+      "blob": "f3331b45cb7e218e695ac3fca52f509766c34f17",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/attendance-audit/attendance-audit-route.rntl.test.tsx",
+      "blob": "208005ed95e8a67f9dfdc4319b000d38138ba155",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/attendance-audit/attendance-audit-runtime.test.ts",
+      "blob": "8c4c897ee5d7552a969585c7b3afe2cf25b08d12",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/attendance-audit/attendance-audit-runtime.ts",
+      "blob": "578cd9efee76765b2720f4b6d6d91a7cf3f7e70b",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/attendance-audit/attendance-qr-controller.test.ts",
+      "blob": "d93cf57dad5850947282cf45c63bb53d2cc93004",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/attendance-audit/attendance-qr-controller.ts",
+      "blob": "b6bf1419db701843a61264b335fca606a0734459",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/attendance-audit/emergency-login-security.test.ts",
+      "blob": "aac3913b5f0af4b80b8425aff32e5d22784d26b7",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/attendance-audit/emergency-login-security.ts",
+      "blob": "18754465593390f462ab1b23d32ec714cb042903",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/attendance-audit/hbpos-attendance-security-api.test.ts",
+      "blob": "878e975287d8ea0dc82e536344103dba04254a47",
+      "kind": "test",
+      "owner": "pos-api-client",
+      "reason": "共享 endpoint adapter 或 transport 契约测试"
+    },
+    {
+      "path": "features/attendance-audit/hbpos-attendance-security-api.ts",
+      "blob": "f04dd0f5bb6d5977f7fa38b35528b49d7ec4b871",
+      "kind": "production",
+      "owner": "pos-api-client",
+      "reason": "公共 Hbpos API endpoint adapter 或 API 客户端出口"
+    },
+    {
+      "path": "features/attendance-audit/hbpos-operation-audit-read-api.test.ts",
+      "blob": "d7e19777d72316f61824645766bfe79007977701",
+      "kind": "test",
+      "owner": "pos-api-client",
+      "reason": "共享 endpoint adapter 或 transport 契约测试"
+    },
+    {
+      "path": "features/attendance-audit/hbpos-operation-audit-read-api.ts",
+      "blob": "b97f2b4173f2b6a372dae3a85b0bdcfbf2eda115",
+      "kind": "production",
+      "owner": "pos-api-client",
+      "reason": "公共 Hbpos API endpoint adapter 或 API 客户端出口"
+    },
+    {
+      "path": "features/attendance-audit/index.ts",
+      "blob": "a97e90615958c817d5c2d2c402258ccae1a094ef",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/attendance-audit/operation-audit-presenter.test.ts",
+      "blob": "7be8d25cc040de1431700ce1380e5e16a572be12",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/attendance-audit/operation-audit-presenter.ts",
+      "blob": "fabfd4fbb9192eded8e039ac4a9df39c9126f09f",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/cashier-lock/index.ts",
+      "blob": "888fdff2e671de6ea879d4437f5299404786bd04",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/cashier-login/cashier-login-controller.test.ts",
+      "blob": "6e8006efbe2309a961513acae719903177a29863",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/cashier-login/cashier-login-controller.ts",
+      "blob": "4bbdfc005a9efca4f682f9c49fc45bf347ebebc0",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/cashier-login/cashier-login-store.ts",
+      "blob": "772d87af19281aceb9178aa4ddd613ea2a7a7787",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/cashier-login/cashier-session-invalidation-bridge.test.ts",
+      "blob": "a72fef3ebed180600c67878d7d71b36adb10087a",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/cashier-login/cashier-session-invalidation-bridge.tsx",
+      "blob": "162b2835881bed0f26c10798f5d2c815286b0810",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/cashier-login/cashier-session-invalidation-recovery.ts",
+      "blob": "90e848c06816e070f1b77d5dd40b600cb63c13b5",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/cashier-login/index.ts",
+      "blob": "c3bb6155a28781d7d6514a32bbdfc9bfe84f900d",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/catalog/catalog-lookup-revalidation.test.ts",
+      "blob": "f6beb7a29d671e9485da833be64f73386ca6c044",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/catalog/catalog-lookup-revalidation.ts",
+      "blob": "93d419656ca57a2e9c502a9995ae0499788be6f4",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/catalog/catalog-refresh-contract.ts",
+      "blob": "57405c0a4b09c762ea0f3e2e8115a0b80dd8b4d9",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/catalog/catalog-snapshot-service.test.ts",
+      "blob": "f0b700e34e82c6a2b18d98ec646bad0a50ea065c",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/catalog/catalog-snapshot-service.ts",
+      "blob": "f8e81ee945ecea1798da652f6be3c1fe2c8454d6",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/catalog/hbpos-catalog-remote.test.ts",
+      "blob": "111b821eff3422c08cb953448cca62342e3cecaf",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/catalog/index.ts",
+      "blob": "a0303b0dd9e78fb6686b635d8d8b4926f25bedb2",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/catalog/maintenance/catalog-maintenance-authorization.test.ts",
+      "blob": "e9bd3a48092efa9987c88e25dc4f74d3e9ac9918",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/catalog/maintenance/catalog-maintenance-authorization.ts",
+      "blob": "6455c19435a9ba7f760823913c23f127096a2231",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/catalog/maintenance/catalog-maintenance-copy.ts",
+      "blob": "65d0688c02e63ba353ea5ec40d69490c7cac8328",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/catalog/maintenance/catalog-maintenance-presenter.test.ts",
+      "blob": "621e6f5fc684c5f79f2dc109cb902817adbf23c7",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/catalog/maintenance/catalog-maintenance-presenter.ts",
+      "blob": "2e3e87afdca93707bd24b3da88a04b65b603810a",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/catalog/maintenance/index.ts",
+      "blob": "2e8597a445608d79d1a520977e8aac5890368a5b",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/catalog/remote-catalog-fallback.test.ts",
+      "blob": "20bf15b60b3c71e7085d8bf8cf61ac39fcafb216",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/catalog/remote-catalog-fallback.ts",
+      "blob": "8c89f70c611ce19306b19e36e9acfe208fc46fda",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/checkout/cash/atomic-cash-database-adapter.test.ts",
+      "blob": "ce19bcbdccdf9d70eb630419b4a1d969f0dee11d",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/checkout/cash/atomic-cash-database-adapter.ts",
+      "blob": "560f9e43ad4dd29ab8039d8fe1cc1945aaa2730c",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/checkout/cash/cash-checkout-service.test.ts",
+      "blob": "8b1f808cb7fca3342b35141d30ea55c88ea9b5bd",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/checkout/cash/cash-checkout-service.ts",
+      "blob": "a586bf794d66d5660e8bac47a62cf78952ee749d",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/checkout/cash/index.ts",
+      "blob": "e577b9dd313556ccb6f7e746a6d1cedf15167421",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/daily-close/daily-close-authorization.ts",
+      "blob": "442c507487ba4be60d492f88144e9a6c7e5a453f",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/daily-close/daily-close-domain.test.ts",
+      "blob": "bf438f099946737604188089ef648fe86bf97e9d",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/daily-close/daily-close-domain.ts",
+      "blob": "8cb010de3b7268888b313c0b1668a3ffa3e0d8b3",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/daily-close/daily-close-route.rntl.test.tsx",
+      "blob": "15eaef094a155babac600436656be7fe38ff93fa",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/daily-close/daily-close-runtime.ts",
+      "blob": "cc5a8f04257e26f8d11d9fbc736ad8743f46514b",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/daily-close/index.ts",
+      "blob": "7f2f8eda412e38ea4c2b8d6c3d7add9c5f6c59f2",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/device-registration/device-registration-state.test.ts",
+      "blob": "2ee789fe90ca9831884bb0a1120082f80c669082",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/device-registration/device-registration-state.ts",
+      "blob": "a79cfd0ac6833cea38927a0fa7e27b24cdcbdfe5",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/device-registration/index.ts",
+      "blob": "5b66bcc245081904d1e30b791f8cc1aa9bb6f075",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/device-registration/server-connection-copy.ts",
+      "blob": "fdddfa81d92f5d7515ea64c5b0da7c27e51065a9",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/fulfilment/fulfilment-service.test.ts",
+      "blob": "7d55b961a44072b2aeebfc1f099fb329bab16f55",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/fulfilment/fulfilment-service.ts",
+      "blob": "88b102c81591795cba28e5fa17335752a3e584d9",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/fulfilment/index.ts",
+      "blob": "8112a0c648efb01177cf280039649e61f0ef0b08",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/held-orders/index.ts",
+      "blob": "c6195a819322997276e661fe983eb5d4a6307509",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/installments/hbpos-installments-api.test.ts",
+      "blob": "bf764dcf90c6c3c2927b37820dc8175c4197cb83",
+      "kind": "test",
+      "owner": "pos-api-client",
+      "reason": "共享 endpoint adapter 或 transport 契约测试"
+    },
+    {
+      "path": "features/installments/hbpos-installments-api.ts",
+      "blob": "12925b1466e41918e399c9e06b32be4ebcd0bcf3",
+      "kind": "production",
+      "owner": "pos-api-client",
+      "reason": "公共 Hbpos API endpoint adapter 或 API 客户端出口"
+    },
+    {
+      "path": "features/installments/index.ts",
+      "blob": "5aa35b8c8ee1db897c804c859a051256ace19343",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/installments/installment-authorization.test.ts",
+      "blob": "e91f95d4a3fac2e0973c0e084c7dc84c9133c85e",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/installments/installment-authorization.ts",
+      "blob": "e6ba84b3c05e1fdc71c60664a8fff2bbf7277c3e",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/installments/installment-checkout-presenter.test.ts",
+      "blob": "9f1df13b13b58419aef111e731e4d82305f41614",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/installments/installment-checkout-presenter.ts",
+      "blob": "3dcaa54cdc2a45f9ffd65a986b7a640d80293f13",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/installments/installment-date-filter.test.ts",
+      "blob": "a519fc92d7516814dacbb2882be922326d437e14",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/installments/installment-date-filter.ts",
+      "blob": "3f76b8b0cb3ec7b663c766d98706198889ceadf5",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/installments/installment-models.ts",
+      "blob": "0b0f27ebd0cb0da8baa65bf85a377cfa5744dcd7",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/installments/installment-presenter.test.ts",
+      "blob": "ad36ca25bcb235a46939e0d427026ceab73c2113",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/installments/installment-presenter.ts",
+      "blob": "ee59b6c3b1eab41e0689819ce310645b1cc81ba6",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/installments/installment-runtime.test.ts",
+      "blob": "2e32fdca02d4a6ef027a8c6ce3d7d0e81d5d115b",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/installments/installment-runtime.ts",
+      "blob": "741c6af9e3a0b7b8ee2765dba5ceae805148abf6",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/local-history/index.ts",
+      "blob": "c954a1ced680dcb308ff973642693394ede8b771",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/local-history/local-history-domain.test.ts",
+      "blob": "6fc868f309a644b73e075c6f2c9f5e72ad0bcb15",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/local-history/local-history-domain.ts",
+      "blob": "a6a114638380dc139d07af6bd6a20aceb5fc7dea",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/local-history/local-history-presenter.test.ts",
+      "blob": "9ca628ca7e824c4330efdd30f508404fdffb2fb4",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/local-history/local-history-presenter.ts",
+      "blob": "6919910a07a1cf32061ef301332260023754f49a",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/local-history/local-history-receipt-preview.rntl.test.tsx",
+      "blob": "b084888f8b8f051ea4fa28a171fcf439fe3efbc4",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/local-history/local-history-receipt-preview.tsx",
+      "blob": "57002e3f29b59a4b8087d27fe6bd94235f1dc690",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/local-history/local-history-runtime.test.ts",
+      "blob": "b1c924e4ec233b51defd6d132b5b76c1306f6639",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/local-history/local-history-runtime.ts",
+      "blob": "1fb6395cf63513209aaeef4754685bcc5c96762f",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/local-history/receipt-code128.test.ts",
+      "blob": "368325210258bbd941089ce55754237390e61f67",
+      "kind": "test",
+      "owner": "pos-receipt-core",
+      "reason": "随小票编码、渲染或重打准备模块迁移的测试"
+    },
+    {
+      "path": "features/local-history/receipt-code128.ts",
+      "blob": "dd8349d7223ab7455e58aabe135b04ea8a4a886b",
+      "kind": "production",
+      "owner": "pos-receipt-core",
+      "reason": "小票文档、编码、条码、渲染或重打准备逻辑"
+    },
+    {
+      "path": "features/local-history/receipt-qr-matrix.ts",
+      "blob": "3b254c020e9205271550bb3f5eac752fb2f9e29c",
+      "kind": "production",
+      "owner": "pos-receipt-core",
+      "reason": "小票文档、编码、条码、渲染或重打准备逻辑"
+    },
+    {
+      "path": "features/operation-authorization/index.ts",
+      "blob": "84704435e14530e49ff83a31a4eaca061b362c11",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/payments/__integration_tests__/payment-attempt-sqlite-fault-matrix.test.ts",
+      "blob": "cd49909952697f02ebc32dbd1f43371749f1b2f6",
+      "kind": "test",
+      "owner": "pos-db",
+      "reason": "随 driver-neutral SQLite 或 repository 模块迁移的测试"
+    },
+    {
+      "path": "features/payments/index.ts",
+      "blob": "28877be288c27e74a63a9767b9af54cc7ccfa3c0",
+      "kind": "production",
+      "owner": "pos-payments-core",
+      "reason": "provider-neutral 支付状态、恢复、幂等或现金混合支付逻辑"
+    },
+    {
+      "path": "features/payments/linkly/index.ts",
+      "blob": "0bc0df625c57cea7846252a19d99aa470c2c9fc6",
+      "kind": "production",
+      "owner": "pos-payments-core",
+      "reason": "provider-neutral 支付状态、恢复、幂等或现金混合支付逻辑"
+    },
+    {
+      "path": "features/payments/linkly/linkly-cloud-backend.test.ts",
+      "blob": "b9af3103daf28bdba92a1463c07567efc54fc664",
+      "kind": "test",
+      "owner": "pos-payments-core",
+      "reason": "随 provider-neutral 支付核心迁移的测试"
+    },
+    {
+      "path": "features/payments/mixed/index.ts",
+      "blob": "765d16098564347ccf1e044addb4d38fae987587",
+      "kind": "production",
+      "owner": "pos-payments-core",
+      "reason": "provider-neutral 支付状态、恢复、幂等或现金混合支付逻辑"
+    },
+    {
+      "path": "features/payments/mixed/mixed-payment-coordinator.test.ts",
+      "blob": "6683de894e764b1066faae45c2a52e124a7941d8",
+      "kind": "test",
+      "owner": "pos-payments-core",
+      "reason": "随 provider-neutral 支付核心迁移的测试"
+    },
+    {
+      "path": "features/payments/mixed/mixed-payment-coordinator.ts",
+      "blob": "b68b5b917720e48ee1ad8619cd9be98a12e24875",
+      "kind": "production",
+      "owner": "pos-payments-core",
+      "reason": "provider-neutral 支付状态、恢复、幂等或现金混合支付逻辑"
+    },
+    {
+      "path": "features/payments/mixed/voucher-tender-reversal-service.test.ts",
+      "blob": "240dfa0ddb4e572d21cddfad36bea22719003b0b",
+      "kind": "test",
+      "owner": "pos-payments-core",
+      "reason": "随 provider-neutral 支付核心迁移的测试"
+    },
+    {
+      "path": "features/payments/mixed/voucher-tender-reversal-service.ts",
+      "blob": "c52a5accd9bd313bc066685f3f92b216d60b11b4",
+      "kind": "production",
+      "owner": "pos-payments-core",
+      "reason": "provider-neutral 支付状态、恢复、幂等或现金混合支付逻辑"
+    },
+    {
+      "path": "features/payments/payment-amount.ts",
+      "blob": "ce80bbec104f96be8a2a4e6a41ad0470f1fc7405",
+      "kind": "production",
+      "owner": "pos-payments-core",
+      "reason": "provider-neutral 支付状态、恢复、幂等或现金混合支付逻辑"
+    },
+    {
+      "path": "features/payments/payment-attempt-service.test.ts",
+      "blob": "08d736400172a757a286ae0708fb6a6c30fe46fc",
+      "kind": "test",
+      "owner": "pos-payments-core",
+      "reason": "随 provider-neutral 支付核心迁移的测试"
+    },
+    {
+      "path": "features/payments/payment-attempt-service.ts",
+      "blob": "edf52d53f271befd80b3e5aef5c8869a4679122c",
+      "kind": "production",
+      "owner": "pos-payments-core",
+      "reason": "provider-neutral 支付状态、恢复、幂等或现金混合支付逻辑"
+    },
+    {
+      "path": "features/payments/runtime/linkly-operator-runtime.test.ts",
+      "blob": "b97ce3137e7a957a9a0e5edda14c1c589fbcd1a2",
+      "kind": "test",
+      "owner": "pos-payments-core",
+      "reason": "随 provider-neutral 支付核心迁移的测试"
+    },
+    {
+      "path": "features/payments/runtime/linkly-operator-runtime.ts",
+      "blob": "2541b9234bfbaae36d4bb9b56fbe8f05a7591f13",
+      "kind": "production",
+      "owner": "pos-payments-core",
+      "reason": "provider-neutral 支付状态、恢复、幂等或现金混合支付逻辑"
+    },
+    {
+      "path": "features/payments/runtime/payment-checkout-runtime.test.ts",
+      "blob": "52c0aceae4b686a5bb0a155f409adc7c80f940b5",
+      "kind": "test",
+      "owner": "pos-payments-core",
+      "reason": "随 provider-neutral 支付核心迁移的测试"
+    },
+    {
+      "path": "features/payments/runtime/payment-checkout-runtime.ts",
+      "blob": "620d7db48cd17e7c8203d6ba1ab6994fb0f664b7",
+      "kind": "production",
+      "owner": "pos-payments-core",
+      "reason": "provider-neutral 支付状态、恢复、幂等或现金混合支付逻辑"
+    },
+    {
+      "path": "features/payments/runtime/payment-completion-planner.test.ts",
+      "blob": "4090de7a340f906cc73004655924549d59496e8c",
+      "kind": "test",
+      "owner": "pos-payments-core",
+      "reason": "随 provider-neutral 支付核心迁移的测试"
+    },
+    {
+      "path": "features/payments/runtime/payment-completion-planner.ts",
+      "blob": "73c7c7d4d5dd6d1f3a1a5e0ce75f8670a0683838",
+      "kind": "production",
+      "owner": "pos-payments-core",
+      "reason": "provider-neutral 支付状态、恢复、幂等或现金混合支付逻辑"
+    },
+    {
+      "path": "features/payments/runtime/payment-provider-registry.test.ts",
+      "blob": "a2702b71d44417e5c2987b5734b8c64c58a81a50",
+      "kind": "test",
+      "owner": "pos-payments-core",
+      "reason": "随 provider-neutral 支付核心迁移的测试"
+    },
+    {
+      "path": "features/payments/runtime/voucher-preparation.test.ts",
+      "blob": "f38263222224ecaccc5b728fd825d65df7ac7e5a",
+      "kind": "test",
+      "owner": "pos-payments-core",
+      "reason": "随 provider-neutral 支付核心迁移的测试"
+    },
+    {
+      "path": "features/payments/runtime/voucher-preparation.ts",
+      "blob": "5494d0fbfe3ecd0eb23629c44e57fdbcae69fe7a",
+      "kind": "production",
+      "owner": "pos-payments-core",
+      "reason": "provider-neutral 支付状态、恢复、幂等或现金混合支付逻辑"
+    },
+    {
+      "path": "features/payments/square/index.ts",
+      "blob": "3bb23b64a4127e30ebd83d450b6b74f6a3be8014",
+      "kind": "production",
+      "owner": "pos-payments-core",
+      "reason": "provider-neutral 支付状态、恢复、幂等或现金混合支付逻辑"
+    },
+    {
+      "path": "features/payments/ui/index.ts",
+      "blob": "8a02d13dbc6539c0dd158065f2a4cb0a2624b43a",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/payments/ui/payment-presenter.ts",
+      "blob": "fe09f63724831c501eda5ea3842a663bd6e9700a",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/payments/ui/unified-payment-entry.ts",
+      "blob": "eba4532479e5dcb93ff1fa95a40d4da320ba00f1",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/payments/ui/unified-payment-facade.test.ts",
+      "blob": "0309bd7b728e0cb571c6d9df0ca6a7c88079a7a3",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/payments/ui/unified-payment-facade.ts",
+      "blob": "9de53530122da37672c72901ec73586bc11a8bde",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/payments/voucher/index.ts",
+      "blob": "3416ce0674468a32fd523497f0f158ad05aefb9f",
+      "kind": "production",
+      "owner": "pos-payments-core",
+      "reason": "provider-neutral 支付状态、恢复、幂等或现金混合支付逻辑"
+    },
+    {
+      "path": "features/payments/voucher/voucher-payment-adapter.test.ts",
+      "blob": "deb13b7d8e9f6bebc65552b5409df2e594e0ebed",
+      "kind": "test",
+      "owner": "pos-payments-core",
+      "reason": "随 provider-neutral 支付核心迁移的测试"
+    },
+    {
+      "path": "features/receipts/cash-fulfilment-planner.test.ts",
+      "blob": "afd587bfedd396ce791f8a680f7de8c77038f09a",
+      "kind": "test",
+      "owner": "pos-receipt-core",
+      "reason": "随小票编码、渲染或重打准备模块迁移的测试"
+    },
+    {
+      "path": "features/receipts/cash-fulfilment-planner.ts",
+      "blob": "4f3f9feb2eb00c53f6c6826d8a79b307ba2c4a4f",
+      "kind": "production",
+      "owner": "pos-receipt-core",
+      "reason": "小票文档、编码、条码、渲染或重打准备逻辑"
+    },
+    {
+      "path": "features/receipts/daily-close-receipt.ts",
+      "blob": "19d89f5b726b94dd6e859020b8c66cd7834ff547",
+      "kind": "production",
+      "owner": "pos-receipt-core",
+      "reason": "小票文档、编码、条码、渲染或重打准备逻辑"
+    },
+    {
+      "path": "features/receipts/esc-pos-text-encoding.ts",
+      "blob": "5892ae3fde442edacb4cbb8d9133f75b19a26f5a",
+      "kind": "production",
+      "owner": "pos-receipt-core",
+      "reason": "小票文档、编码、条码、渲染或重打准备逻辑"
+    },
+    {
+      "path": "features/receipts/index.ts",
+      "blob": "4591dabb11edc51c92a8641025b0007f6badbe56",
+      "kind": "production",
+      "owner": "pos-receipt-core",
+      "reason": "小票文档、编码、条码、渲染或重打准备逻辑"
+    },
+    {
+      "path": "features/receipts/installment-receipt-reprint-service.ts",
+      "blob": "6b1212b177921d7925d92e4f714c478ba96f4375",
+      "kind": "production",
+      "owner": "pos-receipt-core",
+      "reason": "小票文档、编码、条码、渲染或重打准备逻辑"
+    },
+    {
+      "path": "features/receipts/receipt-code128.test.ts",
+      "blob": "562fac04f7f5d5c3e06aff91d558a7c3d097bda5",
+      "kind": "test",
+      "owner": "pos-receipt-core",
+      "reason": "随小票编码、渲染或重打准备模块迁移的测试"
+    },
+    {
+      "path": "features/receipts/receipt-code128.ts",
+      "blob": "0941e5e3b857cd961e4147cfb19233628f49956c",
+      "kind": "production",
+      "owner": "pos-receipt-core",
+      "reason": "小票文档、编码、条码、渲染或重打准备逻辑"
+    },
+    {
+      "path": "features/receipts/receipt-document.ts",
+      "blob": "952f8543795d12aeb2a09cdad02cb4d7a06d38fe",
+      "kind": "production",
+      "owner": "pos-receipt-core",
+      "reason": "小票文档、编码、条码、渲染或重打准备逻辑"
+    },
+    {
+      "path": "features/receipts/receipt-preview-service.ts",
+      "blob": "a74a78a879c869fe9b1c391565380859b8612431",
+      "kind": "production",
+      "owner": "pos-receipt-core",
+      "reason": "小票文档、编码、条码、渲染或重打准备逻辑"
+    },
+    {
+      "path": "features/receipts/receipt-reprint-service.ts",
+      "blob": "78f3bc6737b857b17dc57ac5ef59b75baaebf9f7",
+      "kind": "production",
+      "owner": "pos-receipt-core",
+      "reason": "小票文档、编码、条码、渲染或重打准备逻辑"
+    },
+    {
+      "path": "features/receipts/refund-voucher-receipt-renderer.test.ts",
+      "blob": "d8df7440ed20ae07105a2008ac04fd5040a290c1",
+      "kind": "test",
+      "owner": "pos-receipt-core",
+      "reason": "随小票编码、渲染或重打准备模块迁移的测试"
+    },
+    {
+      "path": "features/receipts/refund-voucher-receipt-renderer.ts",
+      "blob": "1e36a2b19ba70840ace07b209f29234aa0380ddb",
+      "kind": "production",
+      "owner": "pos-receipt-core",
+      "reason": "小票文档、编码、条码、渲染或重打准备逻辑"
+    },
+    {
+      "path": "features/receipts/remote-history-receipt-reprint-service.ts",
+      "blob": "266715c092f6f01c520c0ed0d83ee5176e322d2c",
+      "kind": "production",
+      "owner": "pos-receipt-core",
+      "reason": "小票文档、编码、条码、渲染或重打准备逻辑"
+    },
+    {
+      "path": "features/receipts/return-receipt-renderer.test.ts",
+      "blob": "9a4d6b26767de27ad9ff894b1103d884e3244d7d",
+      "kind": "test",
+      "owner": "pos-receipt-core",
+      "reason": "随小票编码、渲染或重打准备模块迁移的测试"
+    },
+    {
+      "path": "features/receipts/return-receipt-renderer.ts",
+      "blob": "ff49b9a01f578c826b32b574527206f0e83bc179",
+      "kind": "production",
+      "owner": "pos-receipt-core",
+      "reason": "小票文档、编码、条码、渲染或重打准备逻辑"
+    },
+    {
+      "path": "features/receipts/voucher-balance-receipt.test.ts",
+      "blob": "dfd4cd90818b0178371c9750bdee950b90a382f8",
+      "kind": "test",
+      "owner": "pos-receipt-core",
+      "reason": "随小票编码、渲染或重打准备模块迁移的测试"
+    },
+    {
+      "path": "features/receipts/voucher-balance-receipt.ts",
+      "blob": "d63520bcf7e3d0aad42af92f513cf773b27818ca",
+      "kind": "production",
+      "owner": "pos-receipt-core",
+      "reason": "小票文档、编码、条码、渲染或重打准备逻辑"
+    },
+    {
+      "path": "features/remote-history/index.ts",
+      "blob": "51377b8208017328cde2e101612179bf4962b5c2",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/remote-history/remote-history-api.test.ts",
+      "blob": "cba5500a737c759f1d55747aa44760e43b5f6c4f",
+      "kind": "test",
+      "owner": "pos-api-client",
+      "reason": "共享 endpoint adapter 或 transport 契约测试"
+    },
+    {
+      "path": "features/remote-history/remote-history-api.ts",
+      "blob": "dddc6773ac2933fdebca5291048d482e9d1c544e",
+      "kind": "production",
+      "owner": "pos-api-client",
+      "reason": "公共 Hbpos API endpoint adapter 或 API 客户端出口"
+    },
+    {
+      "path": "features/remote-history/remote-history-presenter.test.ts",
+      "blob": "6dd6cf8b24772dc0b4955794987b8dc3c520f597",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/remote-history/remote-history-presenter.ts",
+      "blob": "1b43d41ced1a63d2cac1c98c24a9093e745fc521",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/remote-history/remote-history-runtime.test.ts",
+      "blob": "65e83f092db61695f0305aa36f866f4bacdcd30b",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/remote-history/remote-history-runtime.ts",
+      "blob": "4765c260086cd349e961db52033ff07d20608de2",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/returns/adapters/durable-return-execution-orchestrator.test.ts",
+      "blob": "563df7f82ba36d2bfad3e96db61b4682c7da7410",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/returns/adapters/durable-return-execution-orchestrator.ts",
+      "blob": "141c799ec15d7ef52d089adc17d2ec031e7bb747",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/returns/adapters/index.ts",
+      "blob": "404b5a4e851415b18176f13635d4f0141a45ffe3",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/returns/adapters/production-return-support.test.ts",
+      "blob": "d7c0d0cf46d17b12322ffb800552c54c832976cd",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/returns/adapters/production-return-support.ts",
+      "blob": "2c20dd0bb26b51aebe9d085b5075ad1637ae7e92",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/returns/adapters/return-lookup-adapter.test.ts",
+      "blob": "137f3028785050cb881ef3136df56d77f38e244e",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/returns/adapters/return-lookup-adapter.ts",
+      "blob": "5ea731775f5269555e59646ec03044c9ac2ee55b",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/returns/index.ts",
+      "blob": "9ea0ce9ac6fe1396e30839403ca2163617dd1b35",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/returns/return-domain.test.ts",
+      "blob": "eba12c76d36b428bf6d92c3f0b0a9595d393f054",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/returns/return-domain.ts",
+      "blob": "285269da82801bd0437dcfcf65c46bb4409b17c0",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/returns/return-presenter.test.ts",
+      "blob": "95f9a46a2f76f22edb0eaea0586909adf96b7725",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/returns/return-presenter.ts",
+      "blob": "8732e84ca88b6a55514b674ea7a92a44cb42217d",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/returns/return-workflow.test.ts",
+      "blob": "dd92e5823ded018f0c6e1c87c14627e5986f2819",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/returns/return-workflow.ts",
+      "blob": "2772caf838ccd61b0e0398ec0c8a3a873f3d041c",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/sales/domain/cash-rounding.test.ts",
+      "blob": "5738db05f768028f7e53cc9d32ba2659f9499ee3",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/sales/domain/cash-rounding.ts",
+      "blob": "9fb841a3c6786a933a5ebab9d38b5840e2ba1b05",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/sales/domain/index.ts",
+      "blob": "289657e1c0b4855668d6482ba5121e131bfd399e",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/sales/domain/line-sync-provenance.test.ts",
+      "blob": "1cfe345cdb49964395e9951bb857426818a48c6d",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/sales/domain/promotions.test.ts",
+      "blob": "32e7d0a124eef39b9b74a57f9f1b652f89539e55",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/sales/runtime/index.ts",
+      "blob": "32eab1e8a06c62a10741d9bed79dbde0a777c5a2",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/sales/runtime/promotion-snapshot-loader.test.ts",
+      "blob": "7a4dc217f3353ee313d87857d39666b65335e1e7",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/sales/runtime/promotion-snapshot-loader.ts",
+      "blob": "db986d046f38a4c22510e198523f391e41e6a342",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/sales/runtime/sales-operation-parity.test.ts",
+      "blob": "6c714796a81eab55c2068935c4e4d7c43b047b9d",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/sales/runtime/sales-operation-security.ts",
+      "blob": "affa3c2b5d11d81470a7aa033d30abefa229b25a",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/sales/runtime/scan-timing.test.ts",
+      "blob": "504aea23a5d91c47f3dce9e63469a75d775fdfec",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "扫码性能测试绑定 App 输入运行时，本轮保持 App-local"
+    },
+    {
+      "path": "features/sales/runtime/scan-timing.ts",
+      "blob": "9775b55382fa87622417afac4009e35867859341",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "扫码性能采样绑定 App 输入运行时，本轮保持 App-local"
+    },
+    {
+      "path": "features/sales/runtime/trusted-product-image-uri.test.ts",
+      "blob": "2143acfff811b7264604c6a2c13f3142bb760c45",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/sales/runtime/trusted-product-image-uri.ts",
+      "blob": "7b89e6c85e762d5f6d2f3e1896bac26de1463513",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/sales/ui/index.ts",
+      "blob": "dbafb4d3a645663c494b205b72cfc9e61158de82",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/sales/ui/sales-number-keypad.rntl.test.tsx",
+      "blob": "9fc5f3f1aa235bf47d3cf2b848134dc12b0aada9",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/sales/ui/sales-number-keypad.tsx",
+      "blob": "420fb92d13f962f199ed393649f2d22534227a45",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/settings/index.ts",
+      "blob": "256eda3a5fef11fb565e12b3b5fd569a9abcd9c3",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/settings/settings-route.rntl.test.tsx",
+      "blob": "9c69d872e9ab7ea3880655cd1957b2a3ed0b1af3",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/settings/settings-runtime.test.ts",
+      "blob": "08f7cd8540f95b9a8024d0fdca1443cc8720d717",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/settings/settings-runtime.ts",
+      "blob": "ba0375e9ba6489b2264f9be4783e8ac832e9f815",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/settings/settings-square-setup.ts",
+      "blob": "03e349bd3e0f8824c7f2945bf41e21ca5c5b0c50",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/shared-held-orders/shared-held-order-cart-reverse-mapper.ts",
+      "blob": "297bdf431f21667d89f467c8b41a183bb3489c26",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/shared-held-orders/shared-held-order-claim-repository.ts",
+      "blob": "364c59b5aa72c72fb733cf3929720315311f591e",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/shared-held-orders/shared-held-order-local-publication.ts",
+      "blob": "b6ce0e326483cbdee9df32b513ce5d0137384f00",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/shared-held-orders/shared-held-order-network-api.ts",
+      "blob": "f3d72a42178c3f4dd41d5132295739d9ca18702a",
+      "kind": "production",
+      "owner": "pos-api-client",
+      "reason": "公共 Hbpos API endpoint adapter 或 API 客户端出口"
+    },
+    {
+      "path": "features/shared-held-orders/shared-held-order-publication-loop.ts",
+      "blob": "24f606c55f09f8ef62c3fc98239574af3edade14",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/shared-held-orders/shared-held-order-publication-queue.ts",
+      "blob": "10f7e7eba1b4957fdb719e5290391f68e1f61a06",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/shared-held-orders/shared-held-order-publication-worker.ts",
+      "blob": "519c41ca1293d76089b5077b14212b6c5031e326",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/shared-held-orders/shared-sale-cart-v1.ts",
+      "blob": "308911dedb17f3a0b32fed3adf118a9b617036b2",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/special-products/hbpos-special-products-api.test.ts",
+      "blob": "5693831de15648ce2545135f970262f0d490ad28",
+      "kind": "test",
+      "owner": "pos-api-client",
+      "reason": "共享 endpoint adapter 或 transport 契约测试"
+    },
+    {
+      "path": "features/special-products/hbpos-special-products-api.ts",
+      "blob": "5317d7df1eed1e58e58690624f3db9fcbe6c231c",
+      "kind": "production",
+      "owner": "pos-api-client",
+      "reason": "公共 Hbpos API endpoint adapter 或 API 客户端出口"
+    },
+    {
+      "path": "features/special-products/index.ts",
+      "blob": "4d1424a7e9687416100522db1aa3800d4394d781",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/special-products/special-products-authorization.test.ts",
+      "blob": "a7bbbcd4c15098a8aae9a49f39c682c581d82e08",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/special-products/special-products-authorization.ts",
+      "blob": "7c7cff0c412552c487ddad89222c4d263779063f",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/special-products/special-products-presenter.test.ts",
+      "blob": "bd00f3eac4aeb7186b8840e311d8745edf0587f1",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/special-products/special-products-presenter.ts",
+      "blob": "7b473ef4590672fe7ef9341d2aa29143acbe43e6",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/special-products/special-products-route.rntl.test.tsx",
+      "blob": "cf2eb17483654f88f5336f808f103720ae97a73b",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/special-products/special-products-runtime.ts",
+      "blob": "241887baaee4870e56b3318e57b8c0e5c3a76830",
+      "kind": "production",
+      "owner": "pos-domain",
+      "reason": "无平台直接依赖的 POS 合同、状态机、校验或应用领域逻辑"
+    },
+    {
+      "path": "features/special-products/special-products-screen.touch-gate.test.ts",
+      "blob": "98630f9cf0be82ea4c647ad8f87667dbd67ef30f",
+      "kind": "test",
+      "owner": "pos-domain",
+      "reason": "随 POS 合同、状态机、校验或应用领域模块迁移的测试"
+    },
+    {
+      "path": "features/sync-history/business-day-range.test.ts",
+      "blob": "49b8eca5fb509ab2fb293f72b6b03661b6f445df",
+      "kind": "test",
+      "owner": "pos-sync",
+      "reason": "随同步协调、重试或同步历史模块迁移的测试"
+    },
+    {
+      "path": "features/sync-history/business-day-range.ts",
+      "blob": "2144bb28364fb5dec0aa73861819c797de456624",
+      "kind": "production",
+      "owner": "pos-sync",
+      "reason": "同步协调、审计上传、重试或同步历史公共逻辑"
+    },
+    {
+      "path": "features/sync-history/index.ts",
+      "blob": "9ca9730b06ef13fc305136b16552567d7492c3da",
+      "kind": "production",
+      "owner": "pos-sync",
+      "reason": "同步协调、审计上传、重试或同步历史公共逻辑"
+    },
+    {
+      "path": "features/sync-history/sync-history-authorization.ts",
+      "blob": "7d80737ab51e368f7dda883a0e79f3a1c6cfc1e2",
+      "kind": "production",
+      "owner": "pos-sync",
+      "reason": "同步协调、审计上传、重试或同步历史公共逻辑"
+    },
+    {
+      "path": "features/sync-history/sync-history-domain.ts",
+      "blob": "9e54465061c547c13818737cbb904001f6265f48",
+      "kind": "production",
+      "owner": "pos-sync",
+      "reason": "同步协调、审计上传、重试或同步历史公共逻辑"
+    },
+    {
+      "path": "features/sync-history/sync-history-presenter.test.ts",
+      "blob": "9739f0f208901327cface350089f4cc1f393308a",
+      "kind": "test",
+      "owner": "pos-sync",
+      "reason": "随同步协调、重试或同步历史模块迁移的测试"
+    },
+    {
+      "path": "features/sync-history/sync-history-presenter.ts",
+      "blob": "238421e68677cefe4b2df8b3e5f5ad3658904788",
+      "kind": "production",
+      "owner": "pos-sync",
+      "reason": "同步协调、审计上传、重试或同步历史公共逻辑"
+    },
+    {
+      "path": "generated/hbpos/schema.d.ts",
+      "blob": "741c9f4f8f1f5c75b2c3a26ea2c6d52a0b09e38f",
+      "kind": "production",
+      "owner": "pos-api-client",
+      "reason": "公共 Hbpos API endpoint adapter 或 API 客户端出口"
+    },
+    {
+      "path": "i18n/index.test.ts",
+      "blob": "18046b134841c87555168430c5f6dacde6c00671",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "i18n/index.ts",
+      "blob": "b6e21113aa8d292a6a80e64058aac26246cf8cf8",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "tests/routes/catalog-maintenance-route.rntl.test.tsx",
+      "blob": "8398f077a2bc74227820436d767cb7aeaefe54f0",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "tests/routes/index-route.rntl.test.tsx",
+      "blob": "5e45a3ff9147237f69bdcfe50bc1e2edfcaaf96e",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "tests/routes/installments-route.rntl.test.tsx",
+      "blob": "45a6f7febd7d42ae8465d3d434b4888dbe9bebe3",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "tests/routes/local-history-route.rntl.test.tsx",
+      "blob": "a1c0cca034a24fbd0a85f7e64765b5abd3f02cc0",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "tests/routes/login-route.rntl.test.tsx",
+      "blob": "e811911d9d905acba40d1e6a57a0a96de2d67c02",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "tests/routes/sync-history-route.rntl.test.tsx",
+      "blob": "d7364085312cf0a3aa968039eb4517afdb7e7e7f",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/controls/pos-pan-responder-view.rntl.test.tsx",
+      "blob": "12745c686e6904276937d0871a22d81cb7f4dfe8",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/controls/pos-pan-responder-view.tsx",
+      "blob": "212644cafacbc37d12da77c3bd59294f033e2a00",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/controls/pos-pressable-native-deps.rntl.test.tsx",
+      "blob": "48e05f898b2bb75f53cae2b41874aefdee52e277",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/controls/pos-pressable.rntl.test.tsx",
+      "blob": "80116b45f399405911263f86d91393a4c0301006",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/controls/pos-pressable.tsx",
+      "blob": "d8e6241d58825bc20be21a24a22b5c7ef6cd3bd7",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/controls/pos-switch.rntl.test.tsx",
+      "blob": "b6c29fd2b59828ded2ecde5f7213d1acb881ca0b",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/controls/pos-switch.tsx",
+      "blob": "38a159e50333d88ef14abc2ee97b7b7fb72a79e4",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/controls/pos-text-input.rntl.test.tsx",
+      "blob": "05f64d74c8b2eeb7ffccca74d041c7fdaba86739",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/controls/pos-text-input.tsx",
+      "blob": "e484e3bb4f77d1e443aacd8a9589b0879682300c",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/feedback/index.ts",
+      "blob": "9e685e34f3beae83903c6281f4e24822bf72bf57",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/feedback/pos-sound-context.ts",
+      "blob": "a9707f3131484277b54e0fa565a7e943daafff2d",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/scanner/scanner-route-bridge.tsx",
+      "blob": "05d149a7e09d9c317cb46ffeaa7cc9647af4033f",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "扫描路由桥接属于 App UI 与导航边界，本轮保持 App-local"
+    },
+    {
+      "path": "ui/shell/network-status-bridge.tsx",
+      "blob": "ab43db6de008b2d4e7008848dc9bf7bd5fd930d2",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/shell/runtime-status-bridge.rntl.test.tsx",
+      "blob": "6b6bf0d46cc794bb3579c45d6c71670e2f73c986",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/shell/runtime-status-bridge.tsx",
+      "blob": "6dd85d07665763bf046b7e166d4b071d5b064061",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/shell/runtime-work-bridge.rntl.test.tsx",
+      "blob": "9f17c4d544c69b40124976eb29f13fab19754716",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/shell/runtime-work-bridge.tsx",
+      "blob": "02bacc4417fadf9178f8679426c88f55677120e8",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/shell/runtime-work-controller.test.ts",
+      "blob": "6b04f4d024b9c70f739d5b3ec0bec5313d8c8a87",
+      "kind": "test",
+      "owner": "app-local",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/shell/runtime-work-controller.ts",
+      "blob": "08c65316bed11d0a7f9c633efb1565be60628cab",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/theme.ts",
+      "blob": "dd1344bab569949984b476884c7f41f18ddcb948",
+      "kind": "production",
+      "owner": "app-local",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    }
+  ]
+}

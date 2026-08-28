@@ -1,7 +1,7 @@
 import type {
   AttendanceAuditPresenterState,
 } from "./attendance-audit-presenter";
-import type { OperationAuditUploadState } from "./operation-audit-presenter";
+import type { OperationAuditUploadState } from "@hb/pos-domain/features/attendance-audit/operation-audit-presenter";
 
 export const attendanceAuditEnglishCopy = {
   "header.eyebrow": "Store security",

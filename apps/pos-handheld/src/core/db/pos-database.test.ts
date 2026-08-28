@@ -10,12 +10,12 @@ import { PosDatabase } from "./pos-database";
 import { PosHandheldOtaUpdatePolicyRepository } from "./pos-handheld-ota-update-policy-repository";
 import { PosHandheldUpdatePolicyRepository } from "./pos-handheld-update-policy-repository";
 import { PosSettingsRepository } from "./pos-settings-repository";
-import { SqliteDailyCloseRepository } from "./sqlite-daily-close-repository";
+import { SqliteDailyCloseRepository } from "@hb/pos-db/core/db/sqlite-daily-close-repository";
 import { SqliteFulfilmentStore } from "./sqlite-fulfilment-store";
 import { SqliteOrderSyncMaterialResolver } from "./sqlite-order-sync-material";
 import { SqliteRefundVoucherPrintMaterial } from "./sqlite-refund-voucher-print-material";
 import { SqliteReturnFulfilmentPlanStore } from "./sqlite-return-fulfilment-plan-store";
-import { SqliteSpecialProductsRepository } from "./sqlite-special-products-repository";
+import { SqliteSpecialProductsRepository } from "@hb/pos-db/core/db/sqlite-special-products-repository";
 import { SqliteVoucherTenderReversalStore } from "./sqlite-voucher-tender-reversal-store";
 import type {
   DatabaseKeyProviderPort,
@@ -24,7 +24,7 @@ import type {
   SqliteDriverPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 class RecordingConnection implements SqliteConnectionPort {
   public readonly executed: string[] = [];
@@ -33,6 +33,7 @@ class RecordingConnection implements SqliteConnectionPort {
   public closed = false;
   public appliedVersions: number[] = [];
   public nextSequence: number | null = null;
+  public pendingOrderSyncCount = 0;
   public failWhenSqlIncludes: string | null = null;
   public cipherVersion: string | null | undefined = "4.7.0";
   public cipherVersionError: Error | null = null;
@@ -90,6 +91,9 @@ class RecordingConnection implements SqliteConnectionPort {
     }
     if (sql.includes("RETURNING setting_value AS next_sequence")) {
       return (this.nextSequence === null ? null : { next_sequence: this.nextSequence }) as T;
+    }
+    if (sql.includes("COUNT(DISTINCT aggregate_id) AS pending_order_sync_count")) {
+      return { pending_order_sync_count: this.pendingOrderSyncCount } as T;
     }
     if (
       sql.includes("ux_catalog_snapshots_single_active") &&
@@ -789,6 +793,18 @@ test("local_sequence 在独占事务内递增且不使用设备时间排序", as
   assert.equal(connection.transactionCount, 1);
   assert.ok(connection.runs.some((entry) => entry.sql.includes("INSERT INTO app_settings")));
   assert.ok(connection.executed.every((sql) => !sql.includes("Date.now")));
+});
+
+test("顶部同步状态只通过窄读接口查询非成功 order-sync 去重数量", async () => {
+  const connection = new RecordingConnection();
+  connection.pendingOrderSyncCount = 6;
+  const database = await PosDatabase.open(options(connection));
+
+  assert.equal(await database.readPendingOrderSyncCount(), 6);
+  assert.match(
+    connection.firstQueries.at(-1) ?? "",
+    /kind = 'order-sync'[\s\S]*state <> 'succeeded'/,
+  );
 });
 
 test("完整现金单在一个独占事务内写入订单、审计和 outbox", async () => {

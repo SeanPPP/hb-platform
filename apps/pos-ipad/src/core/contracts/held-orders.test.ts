@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { HoldCartCommand } from "./held-orders";
-import type { PricingCartStateSnapshot } from "./pricing-cart-state";
+import type { PricingCartStateSnapshot } from "@hb/pos-domain/core/contracts/pricing-cart-state";
 
 const pricingState = {} as PricingCartStateSnapshot;
 

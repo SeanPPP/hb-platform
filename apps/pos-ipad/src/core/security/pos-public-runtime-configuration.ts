@@ -1,4 +1,4 @@
-import { isTrustedLocalHbposApiOrigin } from "./pos-api-addresses";
+import { isTrustedLocalHbposApiOrigin } from "@hb/pos-domain/core/security/pos-api-addresses";
 import type { SecureStorePort } from "./secure-storage";
 
 const THIS_DEVICE_ONLY = Object.freeze({

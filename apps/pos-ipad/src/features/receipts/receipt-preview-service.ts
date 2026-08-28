@@ -1,11 +1,11 @@
-import type { EscPosDocument } from "./receipt-document";
+import type { EscPosDocument } from "@hb/pos-receipt-core/features/receipts/receipt-document";
 import {
   renderLocalOrderReceiptDocument,
   requiresCashSettlementAudit,
   type FrozenReceiptDocumentSettings,
   type ReceiptCompletionSettlementSource,
   type ReceiptReprintOrderSource,
-} from "./receipt-reprint-service";
+} from "@hb/pos-receipt-core/features/receipts/receipt-reprint-service";
 
 import type { LocalHistoryReceiptPreviewPort } from "@/features/local-history/local-history-domain";
 

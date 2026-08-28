@@ -2,15 +2,15 @@ import {
   ReturnFeatureError,
   type ReceiptReturnLine,
   type ReturnRefundPlan,
-} from "../return-domain";
-import type { ReturnExecutionCommand } from "../return-workflow";
+} from "@hb/pos-domain/features/returns/return-domain";
+import type { ReturnExecutionCommand } from "@hb/pos-domain/features/returns/return-workflow";
 
 import type {
   DurableReturnLine,
   ReturnExecutionLineMaterialPort,
   ReturnRequestFingerprintPort,
   TrustedReturnIdentity,
-} from "./durable-return-execution-orchestrator";
+} from "@hb/pos-domain/features/returns/adapters/durable-return-execution-orchestrator";
 import type {
   LocalReceiptReturnSnapshot,
   LocalReturnCatalogItem,
@@ -22,13 +22,13 @@ import type {
   ReturnCapacityVaultPort,
 } from "./return-lookup-adapter";
 
-import type { CartLine } from "@/core/contracts/cart";
+import type { CartLine } from "@hb/pos-domain/core/contracts/cart";
 import {
   normalizeLineSyncProvenance,
   type LineSyncProvenance,
-} from "@/core/contracts/line-sync-provenance";
-import type { LocalOrder, OrderTender } from "@/core/contracts/order";
-import type { OrderRepositoryPort } from "@/core/contracts/repositories";
+} from "@hb/pos-domain/core/contracts/line-sync-provenance";
+import type { LocalOrder, OrderTender } from "@hb/pos-domain/core/contracts/order";
+import type { OrderRepositoryPort } from "@hb/pos-domain/core/contracts/repositories";
 import type { LocalCatalogMatch, SqliteCatalogSnapshotRepository } from "@/core/db/catalog-repository";
 import type { SqliteReturnCapacityVault } from "@/core/db/sqlite-return-capacity-vault";
 

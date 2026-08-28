@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { derivePendingWorkBlockers } from "@hb/pos-domain";
+
 import type {
   SettingsDangerousConfirmation,
   SettingsPendingDataSnapshot,
@@ -21,6 +23,17 @@ const CLEAR: SettingsPendingDataSnapshot = {
   pendingSaleCount: 0,
   unresolvedPaymentCount: 0,
 };
+
+const DEVICE_ACTIVATION_CODE =
+  "HBDEV1-0123456789ABCDEFGHJKMNPQRS-STVWXYZ0123456789ABCDEFGHJ";
+
+function pendingBlocked(pending: SettingsPendingDataSnapshot) {
+  return {
+    status: "blocked" as const,
+    reason: "pending-local-data" as const,
+    blockers: derivePendingWorkBlockers(pending),
+  };
+}
 
 test("测试 API 连接只探测候选 health，不保存、不重载", async () => {
   const events: string[] = [];
@@ -453,8 +466,359 @@ test("任一活动购物车、未决支付或耐久队列都会原子阻断危�
   assert.deepEqual(result, {
     status: "blocked",
     reason: "pending-local-data",
+    blockers: [
+      { kind: "count", code: "unresolved-payments", count: 1 },
+    ],
   });
   assert.equal(executed, false);
+});
+
+test("设备换店只读预检返回稳定脱敏 blocker，读取失败则 fail closed", async () => {
+  let shouldFail = false;
+  const pending = {
+    ...CLEAR,
+    hasActiveCart: true,
+    pendingReturnCount: 2,
+    pendingSaleCount: 3,
+  };
+  const subject = new ProductionSettingsControl(
+    deps({
+      pendingData: {
+        read: async () => {
+          if (shouldFail) throw new Error("database unavailable");
+          return pending;
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(
+    await (
+      subject as unknown as {
+        preflightDeviceReregistration(
+          signal: AbortSignal,
+        ): Promise<unknown>;
+      }
+    ).preflightDeviceReregistration(new AbortController().signal),
+    {
+      status: "blocked",
+      reason: "pending-local-data",
+      blockers: [
+        { kind: "in-progress", code: "active-cart" },
+        { kind: "count", code: "pending-returns", count: 2 },
+        { kind: "count", code: "pending-sales", count: 3 },
+      ],
+    },
+  );
+
+  shouldFail = true;
+  assert.deepEqual(
+    await (
+      subject as unknown as {
+        preflightDeviceReregistration(
+          signal: AbortSignal,
+        ): Promise<unknown>;
+      }
+    ).preflightDeviceReregistration(new AbortController().signal),
+    { status: "blocked", reason: "safety-check-failed" },
+  );
+});
+
+test("设备换店预检读取期间若目录刷新启动，不得短暂返回 ready", async () => {
+  let refreshRunning = false;
+  const subject = new ProductionSettingsControl(
+    deps({
+      pendingData: {
+        read: async () => {
+          refreshRunning = true;
+          return CLEAR;
+        },
+      },
+      catalog: {
+        getRefreshState: () =>
+          refreshRunning
+            ? {
+                kind: "running",
+                storeCode: "S1",
+                progress: {
+                  currentStep: "prepare",
+                  overallPercent: 0,
+                  elapsedMilliseconds: 1,
+                  steps: [
+                    { step: "prepare", percent: 0 },
+                    { step: "products", percent: 0 },
+                    { step: "promotions", percent: 0 },
+                    { step: "activate", percent: 0 },
+                  ],
+                },
+              }
+            : { kind: "idle" },
+        subscribeRefresh: () => () => undefined,
+        runExclusive: (operation) => operation(),
+        download: async () => {
+          throw new Error("not implemented");
+        },
+        reset: async () => {
+          throw new Error("not implemented");
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(
+    await subject.preflightDeviceReregistration(
+      new AbortController().signal,
+    ),
+    { status: "blocked", reason: "safety-check-failed" },
+  );
+});
+
+test("设备换店已在全局 transition 内时不重复申请目录锁，并在写入前重读 pending", async () => {
+  const events: string[] = [];
+  const subject = new ProductionSettingsControl(
+    deps({
+      pendingData: {
+        read: async () => {
+          events.push("pending:read");
+          return CLEAR;
+        },
+      },
+      catalog: {
+        getRefreshState: () => ({ kind: "idle" }),
+        subscribeRefresh: () => () => undefined,
+        runExclusive: async () => {
+          events.push("catalog:exclusive");
+          throw new Error("reregister must not reacquire catalog lock");
+        },
+        download: async () => {
+          throw new Error("not implemented");
+        },
+        reset: async () => {
+          throw new Error("not implemented");
+        },
+      },
+      device: {
+        reregister: async (_request, _signal, onCredentialsCommitted) => {
+          events.push("device:reregister");
+          onCredentialsCommitted();
+        },
+        resetRegistration: async () => "completed",
+      },
+      runtimeReload: {
+        reload: async () => {
+          events.push("runtime:reload");
+        },
+      },
+    }),
+  );
+
+  assert.deepEqual(
+    await subject.executeDangerousAction(
+      {
+        kind: "reregister-device",
+        activationCode: DEVICE_ACTIVATION_CODE,
+        currentStoreCode: "S1",
+        preview: {
+          activationCode: DEVICE_ACTIVATION_CODE,
+          storeCode: "S2",
+          storeName: "Target store",
+          deviceSystem: "iPadOS",
+          expiresAtUtc: "2026-08-28T00:00:00.000Z",
+        },
+      },
+      new AbortController().signal,
+    ),
+    { status: "completed", kind: "reregister-device" },
+  );
+  assert.deepEqual(events, [
+    "pending:read",
+    "device:reregister",
+    "runtime:reload",
+  ]);
+});
+
+test("换店凭据提交后 signal 中止仍进入不可重放的 terminal reload", async () => {
+  const controller = new AbortController();
+  const events: string[] = [];
+  const subject = new ProductionSettingsControl(
+    deps({
+      pendingData: { read: async () => CLEAR },
+      device: {
+        reregister: async (_request, _signal, onCredentialsCommitted) => {
+          events.push("device:committed");
+          onCredentialsCommitted();
+          controller.abort();
+        },
+        resetRegistration: async () => "completed",
+      },
+      runtimeReload: {
+        reload: async (signal) => {
+          events.push(`runtime:reload:${signal.aborted}`);
+        },
+      },
+    }),
+  );
+  const action = {
+    kind: "reregister-device" as const,
+    activationCode: DEVICE_ACTIVATION_CODE,
+    currentStoreCode: "S1",
+    preview: {
+      activationCode: DEVICE_ACTIVATION_CODE,
+      storeCode: "S2",
+      storeName: "Target store",
+      deviceSystem: "iPadOS" as const,
+      expiresAtUtc: "2026-08-28T00:00:00.000Z",
+    },
+  };
+
+  assert.deepEqual(
+    await subject.executeDangerousAction(action, controller.signal),
+    { status: "completed", kind: "reregister-device" },
+  );
+  assert.deepEqual(events, [
+    "device:committed",
+    "runtime:reload:false",
+  ]);
+
+  const preAborted = new AbortController();
+  preAborted.abort();
+  const preCommitSubject = new ProductionSettingsControl(
+    deps({
+      pendingData: { read: async () => CLEAR },
+      device: {
+        reregister: async () => {
+          events.push("unexpected-pre-commit");
+        },
+        resetRegistration: async () => "completed",
+      },
+    }),
+  );
+  await assert.rejects(
+    () => preCommitSubject.executeDangerousAction(action, preAborted.signal),
+    /abort/i,
+  );
+  assert.deepEqual(events, [
+    "device:committed",
+    "runtime:reload:false",
+  ]);
+});
+
+test("换店凭据已提交但 reload 失败时保持 terminal fence 且禁止二次提交", async () => {
+  let reregisterCalls = 0;
+  let reloadCalls = 0;
+  const committedNotifications: unknown[][] = [];
+  let notifyReloadAttempted!: () => void;
+  const reloadAttempted = new Promise<void>((resolve) => {
+    notifyReloadAttempted = resolve;
+  });
+  const subject = new ProductionSettingsControl(
+    deps({
+      pendingData: { read: async () => CLEAR },
+      device: {
+        reregister: async (_request, _signal, onCredentialsCommitted) => {
+          reregisterCalls += 1;
+          onCredentialsCommitted();
+          throw new Error("post-save cleanup failed");
+        },
+        resetRegistration: async () => "completed",
+      },
+      runtimeReload: {
+        reload: async () => {
+          reloadCalls += 1;
+          notifyReloadAttempted();
+          throw new Error("terminal reload failed");
+        },
+      },
+    }),
+  );
+  const unsubscribe = subject.subscribeDeviceReregistrationCommitted(
+    (...payload) => { committedNotifications.push(payload); },
+  );
+  const action = {
+    kind: "reregister-device" as const,
+    activationCode: DEVICE_ACTIVATION_CODE,
+    currentStoreCode: "S1",
+    preview: {
+      activationCode: DEVICE_ACTIVATION_CODE,
+      storeCode: "S2",
+      storeName: "Target store",
+      deviceSystem: "iPadOS" as const,
+      expiresAtUtc: "2026-08-28T00:00:00.000Z",
+    },
+  };
+
+  const expected = {
+    status: "committed-reload-required" as const,
+    kind: "reregister-device" as const,
+  };
+  let committedActionSettled = false;
+  const committedAction = subject.executeDangerousAction(
+    action,
+    new AbortController().signal,
+  );
+  void committedAction.then(
+    () => { committedActionSettled = true; },
+    () => { committedActionSettled = true; },
+  );
+  await reloadAttempted;
+  await new Promise<void>((resolve) => { setImmediate(resolve); });
+
+  assert.equal(
+    committedActionSettled,
+    false,
+    "凭据已提交后 reload 失败必须继续持有外层 transition",
+  );
+  assert.deepEqual(
+    await (() => {
+      const repeated = new AbortController();
+      repeated.abort();
+      return subject.executeDangerousAction(action, repeated.signal);
+    })(),
+    expected,
+  );
+  assert.equal(reregisterCalls, 1);
+  assert.equal(reloadCalls, 1);
+  assert.deepEqual(committedNotifications, [[]]);
+  unsubscribe();
+});
+
+test("最终换店安全快照读取失败时返回 safety-check-failed 且零写入", async () => {
+  let reregisterCalls = 0;
+  const subject = new ProductionSettingsControl(
+    deps({
+      pendingData: {
+        read: async () => {
+          throw new Error("database unavailable");
+        },
+      },
+      device: {
+        reregister: async () => {
+          reregisterCalls += 1;
+        },
+        resetRegistration: async () => "completed",
+      },
+    }),
+  );
+
+  assert.deepEqual(
+    await subject.executeDangerousAction(
+      {
+        kind: "reregister-device",
+        activationCode: "S2",
+        currentStoreCode: "S1",
+        preview: {
+          activationCode: "S2",
+          storeCode: "S2",
+          storeName: "Target store",
+          deviceSystem: "iPadOS",
+          expiresAtUtc: "2026-08-28T00:00:00.000Z",
+        },
+      },
+      new AbortController().signal,
+    ),
+    { status: "blocked", reason: "safety-check-failed" },
+  );
+  assert.equal(reregisterCalls, 0);
 });
 
 test("开发豁免只允许 API 切换跨过待处理门禁，其他危险动作仍阻断", async () => {
@@ -522,12 +886,12 @@ test("开发豁免只允许 API 切换跨过待处理门禁，其他危险动作
       { kind: "reset-catalog" },
       new AbortController().signal,
     ),
-    { status: "blocked", reason: "pending-local-data" },
+    pendingBlocked({ ...CLEAR, pendingDurableWriteCount: 3 }),
   );
   assert.equal(events.includes("catalog:reset"), false);
 });
 
-test("普通危险动作持有目录独占门，支付配置单独进入全局 transition", async () => {
+test("普通危险动作持有目录独占门，支付配置与换店由外层全局 transition 包裹", async () => {
   let exclusiveCalls = 0;
   let paymentTransitionCalls = 0;
   const subject = new ProductionSettingsControl(
@@ -563,7 +927,9 @@ test("普通危险动作持有目录独占门，支付配置单独进入全局 t
         },
       },
       device: {
-        reregister: async () => undefined,
+        reregister: async (_request, _signal, onCredentialsCommitted) => {
+          onCredentialsCommitted();
+        },
         resetRegistration: async () => "completed",
       },
       appUpdate: {
@@ -612,7 +978,7 @@ test("普通危险动作持有目录独占门，支付配置单独进入全局 t
   await subject.executeDangerousAction({ kind: "restart-app" }, signal);
   await subject.executeDangerousAction({ kind: "reset-catalog" }, signal);
 
-  assert.equal(exclusiveCalls, 2);
+  assert.equal(exclusiveCalls, 1);
   assert.equal(paymentTransitionCalls, 1);
 });
 
@@ -931,7 +1297,7 @@ test("支付配置变更仍被内存交易、通道敏感订单或在途外部�
           },
           new AbortController().signal,
         ),
-        { status: "blocked", reason: "pending-local-data" },
+        pendingBlocked(pending),
       );
       assert.deepEqual(events, []);
     });
@@ -1015,7 +1381,7 @@ test("支付配置之外的危险动作仍由完整待处理数据门禁阻断",
   for (const action of actions) {
     assert.deepEqual(
       await subject.executeDangerousAction(action, signal),
-      { status: "blocked", reason: "pending-local-data" },
+      pendingBlocked({ ...CLEAR, pendingSaleCount: 1 }),
     );
   }
   assert.deepEqual(events, []);
@@ -1109,7 +1475,10 @@ test("Linkly 配对复用 payment configuration transition、pending-data gate�
       action,
       new AbortController().signal,
     ),
-    { status: "blocked", reason: "pending-local-data" },
+    pendingBlocked({
+      ...CLEAR,
+      paymentConfigurationSensitiveOrderCount: 1,
+    }),
   );
   assert.deepEqual(events, []);
 });
@@ -1169,11 +1538,11 @@ test("Linkly 配对和支付切换允许普通耐久队列但阻断敏感订单"
       },
       signal,
     ),
-    { status: "blocked", reason: "pending-local-data" },
+    pendingBlocked(pending),
   );
   assert.deepEqual(
     await subject.executeDangerousAction(paymentSettingsAction(), signal),
-    { status: "blocked", reason: "pending-local-data" },
+    pendingBlocked(pending),
   );
   assert.equal(pairCalls, 1);
   assert.equal(saveCalls, 1);
@@ -1259,7 +1628,7 @@ test("清除设备注册必须通过全量待处理门禁且不会调用重置�
       new AbortController().signal,
       "EMPLOYEE-BARCODE",
     ),
-    { status: "blocked", reason: "pending-local-data" },
+    pendingBlocked({ ...CLEAR, pendingSaleCount: 1 }),
   );
   assert.equal(resetCalls, 0);
 });

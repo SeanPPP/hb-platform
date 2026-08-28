@@ -1,10 +1,10 @@
 import type {
   InstallmentSnapshot,
   InstallmentSnapshotRepositoryPort,
-} from "../contracts/installments";
+} from "@hb/pos-domain/core/contracts/installments";
 
 import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 export const INSTALLMENT_SENSITIVE_PAYLOAD_REVISION = 1;
 

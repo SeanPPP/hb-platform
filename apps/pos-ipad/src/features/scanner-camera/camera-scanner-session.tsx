@@ -29,6 +29,7 @@ export const CAMERA_SCANNER_SUPPORTED_ORIENTATIONS = [
 export const CAMERA_SCANNER_BARCODE_TYPES: BarcodeType[] = [
   "ean13",
   "code128",
+  "qr",
 ];
 
 /** 相机功能只依赖扫描公共边界，禁止把会话或授权资料传入 UI。 */

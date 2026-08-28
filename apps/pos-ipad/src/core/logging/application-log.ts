@@ -1,4 +1,4 @@
-import type { SqliteConnectionPort } from "../db/types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 export type ApplicationLogLevel =
   "Trace" | "Debug" | "Information" | "Warning" | "Error" | "Critical";

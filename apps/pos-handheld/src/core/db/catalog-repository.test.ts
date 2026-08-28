@@ -14,7 +14,7 @@ import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 class RecordingConnection implements SqliteConnectionPort {
   public readonly runs: { sql: string; parameters: readonly SqlValue[] }[] = [];

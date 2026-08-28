@@ -15,7 +15,7 @@ import {
   type CashierSessionDto,
 } from "@/core/api/hbpos-api";
 import type { AuditEventDraft } from "@/core/contracts";
-import type { LocalOrder } from "@/core/contracts/order";
+import type { LocalOrder } from "@hb/pos-domain/core/contracts/order";
 import type { LocalCatalogMatch } from "@/core/db/catalog-repository";
 import type { SensitivePayloadEncryptor } from "@/core/db/sqlite-repositories";
 import {
@@ -32,7 +32,7 @@ import type {
   ReturnAllocationExternalOutcome,
   ReturnExecutionLedgerPort,
   ReturnRecoveryScope,
-} from "@/features/returns/adapters/durable-return-execution-orchestrator";
+} from "@hb/pos-domain/features/returns/adapters/durable-return-execution-orchestrator";
 
 const NOW_ISO = "2026-07-28T08:00:00.000Z";
 const STORE_CODE = "STORE-1";

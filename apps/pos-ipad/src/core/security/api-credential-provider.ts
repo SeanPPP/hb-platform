@@ -4,7 +4,7 @@ import type {
   HbposRequestCredentials,
 } from "../api/axios-transport";
 
-import type { CashierSessionInvalidationBus } from "./cashier-session-invalidation";
+import type { CashierSessionInvalidationBus } from "@hb/pos-domain/core/security/cashier-session-invalidation";
 import { DeviceSessionCoordinator } from "./device-session";
 import { CashierAuthorizationStore } from "./secure-storage";
 

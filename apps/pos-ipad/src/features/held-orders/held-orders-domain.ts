@@ -8,7 +8,7 @@ import type {
   RecallActiveBinding,
 } from "@/core/contracts";
 import { auditActorPayload } from "@/core/contracts";
-import type { AuditEventDraft } from "@/core/contracts/order";
+import type { AuditEventDraft } from "@hb/pos-domain/core/contracts/order";
 
 export const HOLD_ORDER_PERMISSION =
   "Permissions.PosTerminal.Sales.HoldOrder";

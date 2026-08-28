@@ -1,5 +1,5 @@
-import type { CashDrawerPort } from "../contracts/drawer";
-import type { PrinterPort } from "../contracts/printer";
+import type { CashDrawerPort } from "@hb/pos-domain/core/contracts/drawer";
+import type { PrinterPort } from "@hb/pos-domain/core/contracts/printer";
 import { createDefaultHbPrinterAdapter } from "../peripherals/printer/native";
 
 export type RuntimePrinterAdapter = PrinterPort &

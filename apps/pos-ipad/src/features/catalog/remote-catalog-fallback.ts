@@ -5,7 +5,7 @@ import {
   type HbposTransport,
 } from "@/core/api/hbpos-api";
 import type { LocalCatalogMatch } from "@/core/db/catalog-repository";
-import type { components } from "@/generated/hbpos/schema";
+import type { components } from "@hb/pos-api-client/openapi";
 
 type GeneratedLookupItem = components["schemas"]["CatalogLookupItemDto"];
 type GeneratedLookupResponse = components["schemas"]["CatalogLookupResponse"];

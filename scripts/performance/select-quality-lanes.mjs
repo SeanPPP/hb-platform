@@ -18,6 +18,13 @@ const SHARED_PATHS = new Set([
   "scripts/test-all.sh",
 ]);
 
+const POS_SHARED_ROOT_PATHS = new Set([
+  "package.json",
+  "package-lock.json",
+  "eslint.config.mjs",
+  "tsconfig.pos-packages.json",
+]);
+
 function normalizeChangedPath(filePath) {
   assertSafeString(filePath, "changed path", { maxLength: 1024 });
   if (filePath.startsWith("/") || filePath.includes("\\") || filePath.split("/").includes("..")) {
@@ -34,6 +41,15 @@ export function selectLanesForPaths(paths) {
     const filePath = normalizeChangedPath(rawPath);
     if (SHARED_PATHS.has(filePath) || filePath.startsWith("scripts/performance/")) {
       return [...QUALITY_LANES];
+    }
+    if (
+      POS_SHARED_ROOT_PATHS.has(filePath) ||
+      filePath.startsWith("packages/pos-") ||
+      filePath.startsWith("scripts/pos-shared/") ||
+      filePath.startsWith("patches/")
+    ) {
+      selected.add("pos-ipad");
+      selected.add("pos-handheld");
     }
     if (filePath === "global.json" || filePath.startsWith("services/backend/")) {
       selected.add("backend");

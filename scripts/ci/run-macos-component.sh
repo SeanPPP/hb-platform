@@ -68,8 +68,8 @@ fi
 
 case "$component" in
   pos-ipad-native)
-    npm --prefix apps/pos-ipad ci --no-audit --no-fund
-    npm --prefix apps/pos-ipad run prebuild:ios -- --clean
+    npm ci --no-audit --no-fund
+    npm run prebuild:ios --workspace=@hb/pos-ipad -- --clean
     node scripts/ci/test-inventory.mjs --app pos-ipad --run native
     if [[ "$profile" == "weekly" ]]; then
       xcodebuild \
@@ -87,8 +87,8 @@ case "$component" in
     fi
     ;;
   pos-handheld-native)
-    npm --prefix apps/pos-handheld ci --no-audit --no-fund
-    npm --prefix apps/pos-handheld run prebuild:ios -- --clean
+    npm ci --no-audit --no-fund
+    npm run prebuild:ios --workspace=@hb/pos-handheld -- --clean
     node scripts/ci/test-inventory.mjs --app pos-handheld --run native
     if [[ "$profile" == "weekly" ]]; then
       xcodebuild \

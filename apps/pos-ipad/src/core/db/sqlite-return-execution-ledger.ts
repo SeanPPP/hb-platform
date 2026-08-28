@@ -1,14 +1,14 @@
 import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 import {
   auditActorPayload,
   auditActorSnapshotFromPayload,
-} from "@/core/contracts/audit-actor";
+} from "@hb/pos-domain/core/contracts/audit-actor";
 import {
   normalizeLineSyncProvenance,
   type LineSyncProvenance,
-} from "@/core/contracts/line-sync-provenance";
+} from "@hb/pos-domain/core/contracts/line-sync-provenance";
 import type {
   CompleteDurableReturnAction,
   DurableExternalAttemptKind,
@@ -24,7 +24,7 @@ import type {
   ReturnRecoveryScope,
   ReturnRecordDraft,
   TrustedReturnIdentity,
-} from "@/features/returns/adapters/durable-return-execution-orchestrator";
+} from "@hb/pos-domain/features/returns/adapters/durable-return-execution-orchestrator";
 import type {
   OfflineCashCapacityProof,
   ReturnRefundAllocation,
@@ -32,7 +32,7 @@ import type {
   ReturnRefundPlan,
   ReturnSourceKind,
   ReturnTenderMethod,
-} from "@/features/returns/return-domain";
+} from "@hb/pos-domain/features/returns/return-domain";
 
 export type ReturnExecutionPersistenceIds = Readonly<{
   createTenderGuid(): string;

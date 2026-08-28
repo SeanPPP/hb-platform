@@ -4,10 +4,12 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const appRoot = new URL("../", import.meta.url);
+const workspaceRoot = new URL("../../", appRoot);
 const packageJson = JSON.parse(readFileSync(new URL("package.json", appRoot), "utf8"));
 const packageLock = JSON.parse(
-  readFileSync(new URL("package-lock.json", appRoot), "utf8"),
+  readFileSync(new URL("package-lock.json", workspaceRoot), "utf8"),
 );
+const appLockEntry = packageLock.packages["apps/pos-ipad"];
 const appConfigSource = readFileSync(new URL("app.config.ts", appRoot), "utf8");
 const easConfig = JSON.parse(readFileSync(new URL("eas.json", appRoot), "utf8"));
 const appProvidersSource = readFileSync(
@@ -24,8 +26,8 @@ const routeFiles = readdirSync(new URL("app/", appRoot), {
 
 assert.equal(packageJson.name, "@hb/pos-ipad");
 assert.equal(packageJson.version, "0.2.0");
-assert.equal(packageLock.version, "0.2.0");
-assert.equal(packageLock.packages[""].version, "0.2.0");
+assert.equal(appLockEntry.name, "@hb/pos-ipad");
+assert.equal(appLockEntry.version, "0.2.0");
 assert.equal(packageJson.main, "index.js");
 assert.equal(
   appEntrySource.trim(),

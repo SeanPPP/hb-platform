@@ -51,14 +51,28 @@ test("backend-aware connectivity: 设备断网时恒为离线，不受后端探�
   assert.equal(resolveBackendAwareConnectivity("checking", true), "checking");
 });
 
-test("shell store rejects invalid pending sync counts", () => {
+test("shell store starts in checking and validates ready pending sync counts", () => {
   usePosShellStore.getState().reset();
-  usePosShellStore.getState().setPendingSyncCount(4);
-  assert.equal(usePosShellStore.getState().pendingSyncCount, 4);
+  assert.deepEqual(usePosShellStore.getState().pendingSync, {
+    kind: "checking",
+  });
+  usePosShellStore.getState().setPendingSync({ kind: "ready", count: 4 });
+  assert.deepEqual(usePosShellStore.getState().pendingSync, {
+    kind: "ready",
+    count: 4,
+  });
   assert.throws(
-    () => usePosShellStore.getState().setPendingSyncCount(-1),
+    () =>
+      usePosShellStore.getState().setPendingSync({
+        kind: "ready",
+        count: -1,
+      }),
     /non-negative safe integer/,
   );
+  usePosShellStore.getState().setPendingSync({ kind: "unavailable" });
+  assert.deepEqual(usePosShellStore.getState().pendingSync, {
+    kind: "unavailable",
+  });
   usePosShellStore.getState().reset();
 });
 

@@ -1,0 +1,574 @@
+{
+  "schemaVersion": 1,
+  "baseline": "ddcca999b9d6a90e07b7b3d88c5b93a28d0c7b13",
+  "files": [
+    {
+      "path": "app-providers.tsx",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/contracts/device-reregistration.ts",
+      "reason": "设备重注册合同属于第 13 项设备恢复，本轮保持 App-local"
+    },
+    {
+      "path": "core/db/expo-keychain-database-key-provider.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/db/expo-sqlite-driver.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/db/index.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/logging/application-error-observer.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/logging/application-error-observer.tsx",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/observability/sentry-config.ts",
+      "reason": "Sentry 配置属于 App 运行时观测边界，本轮保持 App-local"
+    },
+    {
+      "path": "core/performance/business-startup-clock.ts",
+      "reason": "启动性能计时绑定 App 生命周期，本轮保持 App-local"
+    },
+    {
+      "path": "core/performance/business-startup-origin.ts",
+      "reason": "启动性能来源绑定 App 生命周期，本轮保持 App-local"
+    },
+    {
+      "path": "core/performance/business-timings.test.ts",
+      "reason": "性能测试验证 App 级计时组合，本轮保持 App-local"
+    },
+    {
+      "path": "core/performance/client-metrics.ts",
+      "reason": "客户端指标绑定 App 运行时上传，本轮保持 App-local"
+    },
+    {
+      "path": "core/performance/payment-performance.ts",
+      "reason": "支付性能采样绑定 App 运行时，本轮保持 App-local"
+    },
+    {
+      "path": "core/peripherals/attendance-security/native/expo-adapter-factory.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/attendance-security/native/expo-attendance-security-adapter.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/peripherals/attendance-security/native/expo-attendance-security-adapter.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/attendance-security/native/index.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/attendance-security/native/native-module.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/attendance-security/native/types.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/printer/native/hb-printer-adapter.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/peripherals/printer/native/hb-printer-adapter.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/printer/native/index.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/printer/native/types.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/scanner/expo-camera-adapter.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/peripherals/scanner/types.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/bootstrap-server-diagnostics.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/current-cashier-session.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/current-cashier-session.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/deferred-voucher-context-provider.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/deferred-voucher-context-provider.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/emergency-cashier-runtime.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/emergency-cashier-runtime.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/expo-attendance-runtime-configuration.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/expo-attendance-runtime-configuration.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/expo-bootstrap-server-diagnostics.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/expo-printer-adapter.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/expo-printer-adapter.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/expo-update-runtime-version.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/lazy-printer-adapter.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/local-device-state.test.ts",
+      "reason": "本地设备状态测试属于 App 运行时边界，本轮保持 App-local"
+    },
+    {
+      "path": "core/runtime/local-device-state.ts",
+      "reason": "本地设备状态属于 App 运行时边界，本轮保持 App-local"
+    },
+    {
+      "path": "core/runtime/payment-cart-lease-coordinator.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/payment-cart-lease-coordinator.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/payment-completion-runtime.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/payment-provider-runtime-bootstrap.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/payment-provider-runtime-bootstrap.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/payment-runtime-config.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/payment-runtime-config.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/pos-runtime-context.tsx",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/pos-runtime.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/pos-runtime.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/prelogin-server-connection-control.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/prelogin-server-connection-control.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/production-attendance-audit-runtime.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-attendance-audit-runtime.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/production-installment-payment-adapter.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-installment-payment-adapter.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/production-installment-refund-provenance.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-installment-refund-provenance.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/production-installment-runtime.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-installment-runtime.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/production-payment-runtime.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-return-online-refund-router.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-return-online-refund-router.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/production-return-refund-adapter.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-return-refund-adapter.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/production-return-runtime.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/production-return-runtime.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/public-cashier-invalidation.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/public-cashier-invalidation.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/return-fulfilment-runtime.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/return-fulfilment-runtime.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/runtime-config.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/runtime-config.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/settings-linkly-setup-api.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/settings-linkly-setup-api.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/settings-payment-test-api.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/settings-payment-test-api.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/settings-scanner-test.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/settings-scanner-test.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/settings-square-setup-api.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/runtime/settings-square-setup-api.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/startup-device-gate.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/runtime/trusted-receipt-settings.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/security/api-credential-provider.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "core/security/cashier-authentication.ts",
+      "reason": "收银员认证绑定 App 安全运行时，本轮保持 App-local"
+    },
+    {
+      "path": "core/security/device-activation-code.test.ts",
+      "reason": "开通码测试属于第 13 项设备恢复，本轮保持 App-local"
+    },
+    {
+      "path": "core/security/device-activation-code.ts",
+      "reason": "开通码属于第 13 项设备恢复，本轮保持 App-local"
+    },
+    {
+      "path": "core/security/device-registration-api-partition-guard.test.ts",
+      "reason": "设备注册 API 分区测试属于 App 安全边界，本轮保持 App-local"
+    },
+    {
+      "path": "core/security/device-registration-api-partition-guard.ts",
+      "reason": "设备注册 API 分区门禁属于 App 安全边界，本轮保持 App-local"
+    },
+    {
+      "path": "core/security/expo-installation-id.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/security/expo-secure-store.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "core/security/index.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/app-updates/expo-app-update-restart.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/app-updates/expo-app-update-restart.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/app-updates/update-transition-lease-coordinator.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/app-updates/update-transition-lease-coordinator.ts",
+      "reason": "OTA 切换互斥状态机属于第 11 项，本轮保持 App-local"
+    },
+    {
+      "path": "features/attendance-audit/attendance-audit-route.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/cashier-login/cashier-session-invalidation-bridge.tsx",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/daily-close/daily-close-route.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/local-history/local-history-receipt-preview.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/local-history/local-history-receipt-preview.tsx",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/payments/ui/index.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/payments/ui/payment-presenter.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/payments/ui/unified-payment-entry.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/payments/ui/unified-payment-facade.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/payments/ui/unified-payment-facade.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/sales/runtime/scan-timing.test.ts",
+      "reason": "扫码性能测试绑定 App 输入运行时，本轮保持 App-local"
+    },
+    {
+      "path": "features/sales/runtime/scan-timing.ts",
+      "reason": "扫码性能采样绑定 App 输入运行时，本轮保持 App-local"
+    },
+    {
+      "path": "features/sales/ui/index.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/sales/ui/sales-number-keypad.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/sales/ui/sales-number-keypad.tsx",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "features/settings/settings-route.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "features/special-products/special-products-route.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "i18n/index.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "i18n/index.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "tests/routes/catalog-maintenance-route.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "tests/routes/index-route.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "tests/routes/installments-route.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "tests/routes/local-history-route.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "tests/routes/login-route.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "tests/routes/sync-history-route.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/controls/pos-pan-responder-view.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/controls/pos-pan-responder-view.tsx",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/controls/pos-pressable-native-deps.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/controls/pos-pressable.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/controls/pos-pressable.tsx",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/controls/pos-switch.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/controls/pos-switch.tsx",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/controls/pos-text-input.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/controls/pos-text-input.tsx",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/feedback/index.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/feedback/pos-sound-context.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/scanner/scanner-route-bridge.tsx",
+      "reason": "扫描路由桥接属于 App UI 与导航边界，本轮保持 App-local"
+    },
+    {
+      "path": "ui/shell/network-status-bridge.tsx",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/shell/runtime-status-bridge.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/shell/runtime-status-bridge.tsx",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/shell/runtime-work-bridge.rntl.test.tsx",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/shell/runtime-work-bridge.tsx",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/shell/runtime-work-controller.test.ts",
+      "reason": "验证 App 生命周期、React Native UI、Expo 或原生适配器行为"
+    },
+    {
+      "path": "ui/shell/runtime-work-controller.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    },
+    {
+      "path": "ui/theme.ts",
+      "reason": "绑定 App 生命周期、React/Expo、原生适配器、平台 UI 或本地组合根"
+    }
+  ]
+}

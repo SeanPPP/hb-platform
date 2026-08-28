@@ -7,13 +7,13 @@ import { PosDatabase } from "./pos-database";
 import {
   SqliteOperationAuditRead,
   type OperationAuditLocalScope,
-} from "./sqlite-operation-audit-read";
+} from "@hb/pos-db/core/db/sqlite-operation-audit-read";
 import type {
   SqliteConnectionPort,
   SqliteDriverPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 const NOW = "2026-07-29T00:00:00.000Z";
 const SCOPE: OperationAuditLocalScope = Object.freeze({

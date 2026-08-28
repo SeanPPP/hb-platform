@@ -8,7 +8,7 @@ import test from "node:test";
 import { POS_DATABASE_MIGRATIONS } from "./migrations";
 import { PosIpadOtaUpdatePolicyRepository } from "./pos-ipad-ota-update-policy-repository";
 import { PosIpadUpdatePolicyRepository } from "./pos-ipad-update-policy-repository";
-import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "./types";
+import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "@hb/pos-db/core/db/types";
 
 import type { PosIpadUpdatePolicy } from "@/core/contracts/app-updates";
 import type {

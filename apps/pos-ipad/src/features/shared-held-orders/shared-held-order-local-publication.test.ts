@@ -10,7 +10,7 @@ import {
 } from "./shared-held-order-test-support";
 
 import type { PricingCartStateSnapshot } from "@/core/contracts";
-import type { SqliteConnectionPort } from "@/core/db/types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 const SCOPE = { storeCode: "S1", deviceCode: "IPAD-01" } as const;
 

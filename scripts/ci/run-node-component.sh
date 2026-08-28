@@ -27,16 +27,17 @@ case "$component" in
     EXPO_NO_TELEMETRY=1 npm --prefix apps/mobile run build:ci
     ;;
   pos-ipad)
-    npm --prefix apps/pos-ipad ci --no-audit --no-fund
-    npm --prefix apps/pos-ipad run typecheck
-    npm --prefix apps/pos-ipad run lint
-    npm --prefix apps/pos-ipad run test:ci
+    npm ci --no-audit --no-fund
+    npm run test:pos-shared-ci
+    npm run typecheck --workspace=@hb/pos-ipad
+    npm run lint --workspace=@hb/pos-ipad
+    npm run test:ci --workspace=@hb/pos-ipad
     ;;
   pos-handheld)
-    npm --prefix apps/pos-handheld ci --no-audit --no-fund
-    npm --prefix apps/pos-handheld run typecheck
-    npm --prefix apps/pos-handheld run lint
-    npm --prefix apps/pos-handheld run test:ci
+    npm ci --no-audit --no-fund
+    npm run typecheck --workspace=@hb/pos-handheld
+    npm run lint --workspace=@hb/pos-handheld
+    npm run test:ci --workspace=@hb/pos-handheld
     ;;
   supplier-extension)
     npm --prefix apps/supplier-order-extension ci --no-audit --no-fund

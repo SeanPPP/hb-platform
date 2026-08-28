@@ -1,4 +1,5 @@
 using System.Text;
+using BlazorApp.Api.Features.StoreOrders.Invoice;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 using ClosedXML.Excel;
@@ -28,15 +29,15 @@ namespace BlazorApp.Api.Services.React
         private const string PaymentDisclaimer =
             "All products remain the property of Hot Bargain International Pty Ltd until payment is received in full for the invoiced amount. Payment strictly within 30 days of the invoice date.";
 
-        private readonly IStoreOrderReactService _storeOrderService;
+        private readonly IStoreOrderInvoiceDetailReader _invoiceDetailReader;
         private readonly ILogger<StoreOrderInvoiceAttachmentService> _logger;
 
         public StoreOrderInvoiceAttachmentService(
-            IStoreOrderReactService storeOrderService,
+            IStoreOrderInvoiceDetailReader invoiceDetailReader,
             ILogger<StoreOrderInvoiceAttachmentService> logger
         )
         {
-            _storeOrderService = storeOrderService;
+            _invoiceDetailReader = invoiceDetailReader;
             _logger = logger;
         }
 
@@ -48,8 +49,9 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 var normalizedOrderGuid = orderGuid.Trim();
-                var orderResult = await _storeOrderService.GetOrderDetailFullAsync(
-                    normalizedOrderGuid
+                var orderResult = await _invoiceDetailReader.GetInvoiceDetailAsync(
+                    normalizedOrderGuid,
+                    cancellationToken
                 );
                 if (!orderResult.Success || orderResult.Data == null)
                 {

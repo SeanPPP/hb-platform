@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using BlazorApp.Api.Features.StoreOrders.PasteReplace;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Shared.DTOs;
 
@@ -92,7 +93,7 @@ namespace BlazorApp.Api.Services.React
                 SetRunning(jobState);
 
                 using var scope = _serviceScopeFactory.CreateScope();
-                var service = scope.ServiceProvider.GetRequiredService<IStoreOrderReactService>();
+                var service = scope.ServiceProvider.GetRequiredService<IStoreOrderPasteReplaceExecutor>();
                 var result = await service.PasteReplaceOrderLinesAsync(jobState.Request);
 
                 CompleteJob(

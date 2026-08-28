@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import test from "node:test";
+
+const expoCli = createRequire(import.meta.url).resolve("expo/bin/cli");
 
 test("resolved Expo config 永久关闭启动自动检查，development/test 禁止 OTA 自动策略检查", () => {
   const config = resolveConfig({
@@ -132,7 +135,7 @@ function runConfig(environment) {
   return spawnSync(
     process.execPath,
     [
-      "./node_modules/expo/bin/cli",
+      expoCli,
       "config",
       "--type",
       "public",

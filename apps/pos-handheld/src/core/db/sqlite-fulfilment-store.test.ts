@@ -8,7 +8,7 @@ import {
   type PersistedDrawerEventInput,
   type PersistedPrintJobInput,
 } from "./sqlite-fulfilment-store";
-import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "./types";
+import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "@hb/pos-db/core/db/types";
 
 type PrintRow = Record<string, SqlValue>;
 type DrawerRow = Record<string, SqlValue>;

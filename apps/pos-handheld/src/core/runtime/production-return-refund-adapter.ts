@@ -15,14 +15,14 @@ import {
   type StartPaymentAttemptInput,
   type TrustedRefundReferenceSeed,
   type TrustedRefundReferenceSeedHook,
-} from "@/features/payments/payment-attempt-service";
+} from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 import type { DurableVoucherPreparationService } from "@/features/payments/runtime/voucher-preparation";
 import type {
   DurableOnlineReturnRefundPort,
   OnlineReturnRefundInput,
   PreparedOnlineReturnAttempt,
   ReturnAllocationExternalOutcome,
-} from "@/features/returns/adapters/durable-return-execution-orchestrator";
+} from "@hb/pos-domain/features/returns/adapters/durable-return-execution-orchestrator";
 
 /** 退款桥只需要 Vault 的只读面；UI 和 route 不会取得受保护 provider context。 */
 export interface ReturnCapacityVaultReadPort {

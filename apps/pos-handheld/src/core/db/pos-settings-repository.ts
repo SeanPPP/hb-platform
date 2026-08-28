@@ -1,4 +1,4 @@
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 const RECEIPT_PRINTER_KEY = "receipt_printer_v1";
 const SENSITIVE_KEY = /token|authorization|voucher|card/i;

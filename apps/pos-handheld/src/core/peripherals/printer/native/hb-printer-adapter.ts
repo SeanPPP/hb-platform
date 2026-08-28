@@ -1,10 +1,10 @@
-import type { CashDrawerPort, DrawerResult } from "../../../contracts/drawer";
+import type { CashDrawerPort, DrawerResult } from "@hb/pos-domain/core/contracts/drawer";
 import type {
   PrintResult,
   PrinterDevice,
   PrinterPort,
   PrinterStatus,
-} from "../../../contracts/printer";
+} from "@hb/pos-domain/core/contracts/printer";
 
 import { createHbPrinterBridge, type NativeModuleLoader } from "./bridge";
 import type {

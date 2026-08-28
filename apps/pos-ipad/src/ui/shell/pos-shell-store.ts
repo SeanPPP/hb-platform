@@ -9,6 +9,10 @@ export type DeviceGateStatus =
   | "pending-approval"
   | "authorized"
   | "locked";
+export type PendingSyncStatus =
+  | Readonly<{ kind: "checking" }>
+  | Readonly<{ kind: "ready"; count: number }>
+  | Readonly<{ kind: "unavailable" }>;
 
 export type TerminalPresentation = Readonly<{
   storeName: string | null;
@@ -18,14 +22,14 @@ export type TerminalPresentation = Readonly<{
 type PosShellState = {
   connectivity: ConnectivityStatus;
   deviceGate: DeviceGateStatus;
-  pendingSyncCount: number;
+  pendingSync: PendingSyncStatus;
   printer: PrinterStatus;
   scanner: ScannerCaptureStatus;
   display: DisplayStatus;
   terminalPresentation: TerminalPresentation | null;
   setConnectivity(status: ConnectivityStatus): void;
   setDeviceGate(status: DeviceGateStatus): void;
-  setPendingSyncCount(count: number): void;
+  setPendingSync(status: PendingSyncStatus): void;
   setPrinter(status: PrinterStatus): void;
   setScanner(status: ScannerCaptureStatus): void;
   setDisplay(status: DisplayStatus): void;
@@ -38,7 +42,7 @@ type PosShellState = {
 const initialStatus = {
   connectivity: "checking",
   deviceGate: "unregistered",
-  pendingSyncCount: 0,
+  pendingSync: { kind: "checking" },
   printer: "disconnected",
   scanner: "inactive",
   display: "disconnected",
@@ -49,11 +53,14 @@ export const usePosShellStore = create<PosShellState>((set) => ({
   ...initialStatus,
   setConnectivity: (connectivity) => set({ connectivity }),
   setDeviceGate: (deviceGate) => set({ deviceGate }),
-  setPendingSyncCount: (pendingSyncCount) => {
-    if (!Number.isSafeInteger(pendingSyncCount) || pendingSyncCount < 0) {
+  setPendingSync: (pendingSync) => {
+    if (
+      pendingSync.kind === "ready" &&
+      (!Number.isSafeInteger(pendingSync.count) || pendingSync.count < 0)
+    ) {
       throw new TypeError("pending sync count must be a non-negative safe integer");
     }
-    set({ pendingSyncCount });
+    set({ pendingSync: Object.freeze({ ...pendingSync }) });
   },
   setPrinter: (printer) => set({ printer }),
   setScanner: (scanner) => set({ scanner }),

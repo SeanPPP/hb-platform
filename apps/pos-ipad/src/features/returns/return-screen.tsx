@@ -15,11 +15,11 @@ import {
   type ReturnCopyKey,
   type ReturnLocale,
 } from "./return-copy";
-import type { ReturnTenderMethod } from "./return-domain";
+import type { ReturnTenderMethod } from "@hb/pos-domain/features/returns/return-domain";
 import {
   ReturnPresenter,
   type ReturnPresenterLine,
-} from "./return-presenter";
+} from "@hb/pos-domain/features/returns/return-presenter";
 
 import {
   PosKeyboardAwareScrollView,

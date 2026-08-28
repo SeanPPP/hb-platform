@@ -4,11 +4,16 @@ namespace Hbpos.Api.Services;
 
 public sealed class PosIpadOptions
 {
-    public string? MinimumSupportedVersion { get; set; }
+    public const string DefaultMinimumSupportedVersion = "0.0.0";
 
-    public string? LatestVersion { get; set; }
+    public const string DefaultLatestVersion = "0.2.0";
 
-    public bool ForceUpdate { get; set; }
+    // 未配置或中央策略不可用时默认放行首个试点版本，不能因缺省配置误触发强制升级。
+    public string? MinimumSupportedVersion { get; set; } = DefaultMinimumSupportedVersion;
+
+    public string? LatestVersion { get; set; } = DefaultLatestVersion;
+
+    public bool ForceUpdate { get; set; } = false;
 
     public string? AppStoreUrl { get; set; }
 

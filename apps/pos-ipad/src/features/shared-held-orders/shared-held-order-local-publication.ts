@@ -5,7 +5,7 @@ import type { SharedPayloadEncryptorPort } from "./shared-held-order-claim-repos
 import type { SharedSaleCartPayload } from "./shared-sale-cart-v2";
 
 import type { HeldOrderScope } from "@/core/contracts";
-import type { SqliteConnectionPort } from "@/core/db/types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 export type LocalPublicationEligibility =
   | Readonly<{ eligible: true; cart: SharedSaleCartPayload }>

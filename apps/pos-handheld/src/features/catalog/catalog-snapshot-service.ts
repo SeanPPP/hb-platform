@@ -1,7 +1,7 @@
 import type {
   CatalogRefreshProgressEvent,
   CatalogRefreshProgressObserver,
-} from "./catalog-refresh-contract";
+} from "@hb/pos-domain/features/catalog/catalog-refresh-contract";
 import type {
   CatalogDeletedLookup,
   CatalogLookupItem,

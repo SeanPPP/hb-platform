@@ -1,6 +1,5 @@
+using BlazorApp.Api.Features.StoreOrders.ProductPicker;
 using BlazorApp.Api.Interfaces;
-using BlazorApp.Api.Interfaces.React;
-using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -12,7 +11,7 @@ namespace BlazorApp.Api.Cache
     /// </summary>
     public class StoreOrderCacheWarmer : IStoreOrderCacheWarmer
     {
-        private readonly IStoreOrderReactService _service;
+        private readonly IStoreOrderProductPickerSlice _productPicker;
         private readonly ILogger<StoreOrderCacheWarmer> _logger;
         private readonly IMemoryCache _cache;
 
@@ -21,12 +20,12 @@ namespace BlazorApp.Api.Cache
         private int _isHomePageWarmUpRunning;
 
         public StoreOrderCacheWarmer(
-            IStoreOrderReactService service,
+            IStoreOrderProductPickerSlice productPicker,
             ILogger<StoreOrderCacheWarmer> logger,
             IMemoryCache cache
         )
         {
-            _service = service;
+            _productPicker = productPicker;
             _logger = logger;
             _cache = cache;
         }
@@ -89,10 +88,10 @@ namespace BlazorApp.Api.Cache
                 SortBy = "Default"
             };
 
-            // 真实运行时优先走轻量预热路径；单元测试里的 mock 仍可回退到旧接口，便于验证互斥与取消行为。
-            var result = _service is StoreOrderReactService concreteService
-                ? await concreteService.GetHomePageWarmUpPageAsync(pageSize, cancellationToken)
-                : await _service.GetPagedListAsync(filter);
+            var result = await _productPicker.GetHomePageWarmUpPageAsync(
+                pageSize,
+                cancellationToken
+            );
             // 轻量预热结果没有真实 Total，必须写入专用键，避免污染正常分页缓存。
             var warmUpCacheKey = StoreOrderCacheKeys.GetHomePageWarmUpCacheKey(pageSize);
             var cacheOptions = new MemoryCacheEntryOptions()
@@ -109,9 +108,10 @@ namespace BlazorApp.Api.Cache
             );
 
             // 商品列表所有分店一致，StoreCode 只用于权限校验；正常首页缓存必须保留准确 Total，供真实 /products 命中。
-            var homePageResult = _service is StoreOrderReactService fullCacheService
-                ? await fullCacheService.GetHomePageCachePageAsync(pageSize, cancellationToken)
-                : await _service.GetPagedListAsync(filter);
+            var homePageResult = await _productPicker.GetHomePageCachePageAsync(
+                pageSize,
+                cancellationToken
+            );
             // 后台预热没有用户 Claims，固定写入普通范围，避免污染带货位解析能力的缓存。
             var homePageCacheKey = StoreOrderCacheKeys.Products(
                 filter,

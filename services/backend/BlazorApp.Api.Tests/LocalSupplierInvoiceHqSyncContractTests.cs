@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using AutoMapper;
 using BlazorApp.Api.Controllers.React;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Mappings.Profiles.React;
 using BlazorApp.Api.Services.React;
@@ -56,6 +57,8 @@ public sealed class LocalSupplierInvoiceHqSyncContractTests : IDisposable
             {
                 cfg.AddProfile<ReactStoreLocalSupplierInvoiceProfile>();
                 cfg.AddProfile<ReactStoreLocalSupplierInvoiceDetailProfile>();
+                cfg.AddProfile<ReactHBwebToHqInvoiceProfile>();
+                cfg.AddProfile<ReactHBwebToHqInvoiceDetailProfile>();
             },
             NullLoggerFactory.Instance
         ).CreateMapper();
@@ -264,6 +267,161 @@ public sealed class LocalSupplierInvoiceHqSyncContractTests : IDisposable
         Assert.Contains("请选择有效的启用分店", result.Data.Errors);
     }
 
+    [Fact]
+    public async Task PushInvoicesToHqAsync_明细失败时回滚该单并返回失败计数()
+    {
+        await _localDb.Insertable(new StoreLocalSupplierInvoice
+        {
+            InvoiceGUID = "PUSH-ROLLBACK",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            InvoiceNo = "PUSH-ROLLBACK",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "PUSH-DETAIL-ROLLBACK",
+            InvoiceGUID = "PUSH-ROLLBACK",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ItemNumber = "ITEM-ROLLBACK",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _hqDb.Ado.ExecuteCommandAsync(
+            "CREATE TRIGGER reject_push_detail BEFORE INSERT ON \"RED_进货单详情表\" "
+                + "BEGIN SELECT RAISE(ABORT, 'forced hq detail failure'); END;"
+        );
+
+        var result = await CreatePushService().PushInvoicesToHqAsync(
+            new List<string> { "PUSH-ROLLBACK" }
+        );
+
+        Assert.False(result.IsSuccess);
+        Assert.Equal(1, result.TotalCount);
+        Assert.Equal(1, result.ErrorCount);
+        Assert.Equal(0, result.AddedCount);
+        Assert.Equal(0, result.UpdatedCount);
+        Assert.Contains("推送失败", result.Message);
+        Assert.False(await _hqDb.Queryable<RED_进货单主表Store>()
+            .AnyAsync(x => x.HGUID == "PUSH-ROLLBACK"));
+    }
+
+    [Fact]
+    public void PushInvoicesToHqAsync_回滚失败不得覆盖原异常且连接失败停止后续单据()
+    {
+        var source = File.ReadAllText(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Features/LocalSupplierInvoices/HqSync/LocalSupplierInvoicesHqSyncHandler.cs"
+            )
+        );
+
+        Assert.Contains("var originalException = ex;", source, StringComparison.Ordinal);
+        Assert.Contains("推送进货单到HQ回滚失败", source, StringComparison.Ordinal);
+        Assert.Contains("IsConnectionLevelFailure", source, StringComparison.Ordinal);
+        Assert.Contains("invoices.Count - invoiceIndex", source, StringComparison.Ordinal);
+        Assert.Contains("await hqDb.Ado.CommitTranAsync();", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PushInvoicesToHqAsync_本地单头和明细必须在同一可串行化快照读取()
+    {
+        var source = File.ReadAllText(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Features/LocalSupplierInvoices/HqSync/LocalSupplierInvoicesHqSyncHandler.cs"
+            )
+        );
+
+        Assert.Contains("ReadSourceSnapshotAsync", source, StringComparison.Ordinal);
+        Assert.Contains("BeginTranAsync(IsolationLevel.Serializable)", source, StringComparison.Ordinal);
+        Assert.Contains("await localDb.Ado.CommitTranAsync();", source, StringComparison.Ordinal);
+        Assert.Contains("await localDb.Ado.RollbackTranAsync();", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PushInvoicesToHqAsync_并发幂等必须在逐单事务内取得规范化业务锁并重读HQ()
+    {
+        var handlerSource = File.ReadAllText(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Features/LocalSupplierInvoices/HqSync/LocalSupplierInvoicesHqSyncHandler.cs"
+            )
+        );
+        var lockSource = File.ReadAllText(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Features/LocalSupplierInvoices/HqSync/LocalSupplierInvoiceHqSyncMutationLock.cs"
+            )
+        );
+
+        Assert.Contains("LocalSupplierInvoiceHqSyncMutationLock.AcquireAsync", handlerSource, StringComparison.Ordinal);
+        Assert.Contains("await hqDb.Ado.BeginTranAsync();", handlerSource, StringComparison.Ordinal);
+        Assert.Contains("ReadHqInvoiceAsync", handlerSource, StringComparison.Ordinal);
+        Assert.Contains("ReadHqDetailAsync", handlerSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("existingHqInvoiceSet", handlerSource, StringComparison.Ordinal);
+        Assert.DoesNotContain("existingHqDetails", handlerSource, StringComparison.Ordinal);
+        Assert.Contains("NormalizeInvoiceKey", lockSource, StringComparison.Ordinal);
+        Assert.Contains("@LockOwner = N'Transaction'", lockSource, StringComparison.Ordinal);
+        Assert.Contains("DbType.SqlServer", lockSource, StringComparison.Ordinal);
+        Assert.Contains("TryAddReference", lockSource, StringComparison.Ordinal);
+        Assert.Contains("ReleaseReference", lockSource, StringComparison.Ordinal);
+        Assert.Contains("ICollection<KeyValuePair", lockSource, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "ConcurrentDictionary<string, SemaphoreSlim>",
+            lockSource,
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
+    public async Task PushInvoicesToHqAsync_并发重复推送同一单据_两次成功且HQ仅保留一组数据()
+    {
+        await _localDb.Insertable(new StoreLocalSupplierInvoice
+        {
+            InvoiceGUID = " push-concurrent ",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            InvoiceNo = "PUSH-CONCURRENT",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new StoreLocalSupplierInvoiceDetails
+        {
+            DetailGUID = "PUSH-CONCURRENT-DETAIL",
+            InvoiceGUID = " push-concurrent ",
+            StoreCode = "S01",
+            SupplierCode = "SUP01",
+            ItemNumber = "ITEM-CONCURRENT",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        using var localDbOne = CreateSqlSugarClient(_localConnection.ConnectionString);
+        using var hqDbOne = CreateSqlSugarClient(_hqConnection.ConnectionString);
+        using var localDbTwo = CreateSqlSugarClient(_localConnection.ConnectionString);
+        using var hqDbTwo = CreateSqlSugarClient(_hqConnection.ConnectionString);
+        var serviceOne = CreatePushService(localDbOne, hqDbOne);
+        var serviceTwo = CreatePushService(localDbTwo, hqDbTwo);
+
+        var results = await Task.WhenAll(
+            Task.Run(() => serviceOne.PushInvoicesToHqAsync(new List<string> { " push-concurrent " })),
+            Task.Run(() => serviceTwo.PushInvoicesToHqAsync(new List<string> { " push-concurrent " }))
+        );
+
+        Assert.All(results, result => Assert.True(result.IsSuccess, result.Message));
+        Assert.Equal(
+            1,
+            await _hqDb.Queryable<RED_进货单主表Store>()
+                .CountAsync(x => x.HGUID == " push-concurrent ")
+        );
+        Assert.Equal(
+            1,
+            await _hqDb.Queryable<RED_进货单详情表Store>()
+                .CountAsync(x => x.HGUID == "PUSH-CONCURRENT-DETAIL")
+        );
+        Assert.Equal(2, results.Sum(result => result.AddedCount));
+        Assert.Equal(2, results.Sum(result => result.UpdatedCount));
+    }
+
     private ReactLocalSupplierInvoicesController CreateController(
         ILocalSupplierInvoiceHqSyncService syncService
     )
@@ -283,6 +441,29 @@ public sealed class LocalSupplierInvoiceHqSyncContractTests : IDisposable
             CreateHqSqlSugarContext(_hqDb),
             _mapper,
             NullLogger<LocalSupplierInvoiceHqSyncService>.Instance
+        );
+    }
+
+    private LocalSupplierInvoicesReactService CreatePushService()
+    {
+        return CreatePushService(_localDb, _hqDb);
+    }
+
+    private LocalSupplierInvoicesReactService CreatePushService(
+        ISqlSugarClient localDb,
+        ISqlSugarClient hqDb
+    )
+    {
+        var autoPricing = new Mock<IAutoPricingService>();
+        autoPricing.Setup(x => x.GetAllActiveStrategiesAsync())
+            .ReturnsAsync(new List<BlazorApp.Shared.Models.HBweb.PricingStrategy>());
+        return new LocalSupplierInvoicesReactService(
+            CreateSqlSugarContext(localDb),
+            CreateHqSqlSugarContext(hqDb),
+            _mapper,
+            NullLogger<LocalSupplierInvoicesReactService>.Instance,
+            autoPricing.Object,
+            WarehouseProductChangeHistoryTestDouble.CreateNoop()
         );
     }
 
@@ -377,6 +558,20 @@ public sealed class LocalSupplierInvoiceHqSyncContractTests : IDisposable
             .GetField("_db", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(context, db);
         return context;
+    }
+
+    private static string FindRepoRoot([CallerFilePath] string sourcePath = "")
+    {
+        var directory = new DirectoryInfo(Path.GetDirectoryName(sourcePath)!);
+        while (directory != null)
+        {
+            var gitPath = Path.Combine(directory.FullName, ".git");
+            if (Directory.Exists(gitPath) || File.Exists(gitPath))
+                return directory.FullName;
+            directory = directory.Parent;
+        }
+
+        throw new DirectoryNotFoundException("无法定位仓库根目录。");
     }
 
     public void Dispose()

@@ -16,7 +16,7 @@ import {
   matchesStoredAppUpdateCacheScope,
   type StoredAppUpdateCacheScope,
 } from "./scoped-app-update-cache";
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 const NATIVE_POLICY_VERSION = "native-v3";
 const NATIVE_POLICY_CACHE_PREFIX =

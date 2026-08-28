@@ -66,7 +66,7 @@ import {
 import { HidScannerRouter } from "../peripherals/scanner";
 import { SecurityApiCredentialProvider } from "../security/api-credential-provider";
 import { CashierAuthenticationService } from "../security/cashier-authentication";
-import { CashierSessionInvalidationBus } from "../security/cashier-session-invalidation";
+import { CashierSessionInvalidationBus } from "@hb/pos-domain/core/security/cashier-session-invalidation";
 import { DeviceRegistrationResetCoordinator } from "../security/device-registration-reset";
 import { DeviceRegistrationApiPartitionGuard } from "../security/device-registration-api-partition-guard";
 import { DeviceSessionCoordinator } from "../security/device-session";
@@ -95,6 +95,7 @@ import { createLazyExpoPrinterAdapter } from "./expo-printer-adapter";
 import {
   createSettingsApiHealthProbe,
   reloadSettingsRuntimeTerminally,
+  reregisterSettingsDevice,
   settingsAppUpdateSnapshot,
   settingsPaymentConfiguration,
 } from "./expo-settings-configuration";
@@ -1027,15 +1028,14 @@ async function createExpoPosRuntimeServicesCore(): Promise<ExpoPosRuntimeService
             }
             return response;
           },
-          reregister: async (request, signal) => {
-            throwIfRuntimeAborted(signal);
-            const result = await deviceSession.rebindActivationCode(request);
-            throwIfRuntimeAborted(signal);
-            if (result.status !== "authorized") {
-              throw new Error(
-                `SETTINGS_DEVICE_REREGISTRATION_${result.status.toUpperCase()}`,
-              );
-            }
+          reregister: async (request, signal, onCredentialsCommitted) => {
+            await reregisterSettingsDevice(
+              request,
+              signal,
+              (nextRequest, markCommitted) =>
+                deviceSession.rebindActivationCode(nextRequest, markCommitted),
+              onCredentialsCommitted,
+            );
           },
           resetRegistration: async (employeeBarcode, signal) => {
             throwIfRuntimeAborted(signal);

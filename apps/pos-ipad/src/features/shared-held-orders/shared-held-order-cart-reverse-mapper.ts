@@ -1,7 +1,7 @@
 import {
   normalizeSharedSaleCartV1,
   type SharedSaleCartV1,
-} from "./shared-sale-cart-v1";
+} from "@hb/pos-domain/features/shared-held-orders/shared-sale-cart-v1";
 import {
   normalizeSharedSaleCart,
   normalizeSharedSaleCartV2,

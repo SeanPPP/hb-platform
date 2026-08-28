@@ -22,7 +22,7 @@ import {
   PaymentAttemptOfflineError,
   type PaymentAttemptExecutionResult,
   type PaymentAttemptService,
-} from "@/features/payments/payment-attempt-service";
+} from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 import type { DurableVoucherPreparationService } from "@/features/payments/runtime/voucher-preparation";
 import { calculateCashSettlement } from "@/features/sales/domain";
 

@@ -3,8 +3,8 @@ import {
   mergeSettingsSquareDevices,
   normalizeSettingsSquareDeviceId,
   type SettingsSquareDevice,
-} from "../../features/settings/settings-square-setup";
-import type { components } from "../../generated/hbpos/schema";
+} from "@hb/pos-domain/features/settings/settings-square-setup";
+import type { components } from "@hb/pos-api-client/openapi";
 import {
   unwrapHbposEnvelope,
   type HbposEnvelope,

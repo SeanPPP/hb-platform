@@ -8,13 +8,13 @@ import test from "node:test";
 import type {
   CardSyncEvidenceV1,
   PaymentAttempt,
-} from "../contracts/payment";
-import type { LocalOrderState } from "../contracts/state-machines";
+} from "@hb/pos-domain/core/contracts/payment";
+import type { LocalOrderState } from "@hb/pos-domain/core/contracts/state-machines";
 
 import { POS_DATABASE_MIGRATIONS } from "./migrations";
-import { SqlitePaymentProtectedMaterialReader } from "./sqlite-payment-protected-material";
+import { SqlitePaymentProtectedMaterialReader } from "@hb/pos-db/core/db/sqlite-payment-protected-material";
 import { createSqliteRepositories } from "./sqlite-repositories";
-import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "./types";
+import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "@hb/pos-db/core/db/types";
 
 class SystemSqliteConnection implements SqliteConnectionPort {
   private readonly database: DatabaseSync;

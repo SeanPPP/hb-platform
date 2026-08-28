@@ -2,7 +2,7 @@ import {
   auditActorPayload,
   type AuditEventDraft,
 } from "@/core/contracts";
-import type { AuditRepositoryPort } from "@/core/contracts/repositories";
+import type { AuditRepositoryPort } from "@hb/pos-domain/core/contracts/repositories";
 
 export type CashierLockIdentity = Readonly<{
   storeCode: string;

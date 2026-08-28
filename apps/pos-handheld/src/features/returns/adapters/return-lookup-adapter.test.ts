@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ReturnFeatureError } from "../return-domain";
+import { ReturnFeatureError } from "@hb/pos-domain/features/returns/return-domain";
 
 import {
   ReturnLookupAdapter,
@@ -18,7 +18,7 @@ import {
 } from "./return-lookup-adapter";
 
 import { HbposApiError } from "@/core/api/hbpos-api";
-import type { components } from "@/generated/hbpos/schema";
+import type { components } from "@hb/pos-api-client/openapi";
 
 type OrderHistoryQueryResponse =
   components["schemas"]["OrderHistoryQueryResponse"];

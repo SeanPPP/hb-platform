@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createSqliteRepositories } from "./sqlite-repositories";
-import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "./types";
+import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "@hb/pos-db/core/db/types";
 
 class FakeConnection implements SqliteConnectionPort {
   public readonly runs: { sql: string; parameters: readonly SqlValue[] }[] = [];

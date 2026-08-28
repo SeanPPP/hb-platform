@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 
-import { FulfilmentService } from "../../features/fulfilment/fulfilment-service";
+import { FulfilmentService } from "@hb/pos-domain/features/fulfilment/fulfilment-service";
 
 import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
 import {
@@ -11,7 +11,7 @@ import {
   type FulfilmentInitialAuthorization,
 } from "./sqlite-fulfilment-store";
 import { createSqliteRepositories } from "./sqlite-repositories";
-import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "./types";
+import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "@hb/pos-db/core/db/types";
 
 class NodeSqliteConnection implements SqliteConnectionPort {
   public failNextAuditInsert = false;

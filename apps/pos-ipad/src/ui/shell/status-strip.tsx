@@ -102,7 +102,7 @@ export function PosStatusStrip({
     connectivity,
     deviceGate,
     display,
-    pendingSyncCount,
+    pendingSync,
     printer,
     scanner,
     terminalPresentation,
@@ -152,8 +152,20 @@ export function PosStatusStrip({
       <StatusIndicator
         icon="sync"
         label={t("status.sync")}
-        tone={pendingSyncCount === 0 ? "good" : "warning"}
-        value={t("status.sync.pending", { count: pendingSyncCount })}
+        tone={
+          pendingSync.kind === "ready"
+            ? pendingSync.count === 0
+              ? "good"
+              : "warning"
+            : pendingSync.kind === "unavailable"
+              ? "danger"
+              : "neutral"
+        }
+        value={
+          pendingSync.kind === "ready"
+            ? t("status.sync.pending", { count: pendingSync.count })
+            : t(`status.sync.${pendingSync.kind}`)
+        }
       />
       <StatusIndicator
         icon="printer-outline"

@@ -29,7 +29,7 @@ import {
 import { LOCAL_HISTORY_VIEW_PERMISSION } from "@/features/local-history/local-history-presenter";
 import { REMOTE_HISTORY_VIEW_PERMISSION } from "@/features/remote-history";
 import { scanTiming } from "@/features/sales/runtime/scan-timing";
-import { resolveTrustedProductImageUri } from "@/features/sales/runtime/trusted-product-image-uri";
+import { resolveTrustedProductImageUri } from "@hb/pos-domain/features/sales/runtime/trusted-product-image-uri";
 import {
   resolveSalesLocale,
   type SalesCartProductDetails,

@@ -75,7 +75,7 @@ const blockerKinds = new Set([
 
 function assertRepositoryFile(relativePath, label) {
   assert.equal(typeof relativePath, "string", `${label} must be a string`);
-  assert.match(relativePath, /^(apps|docs)\//, `${label} must be repository-relative`);
+  assert.match(relativePath, /^(apps|docs|packages)\//, `${label} must be repository-relative`);
   assert.ok(!relativePath.includes("\\"), `${label} must use POSIX separators`);
   assert.ok(!relativePath.split("/").includes(".."), `${label} must not escape the repository`);
 
@@ -160,14 +160,18 @@ for (const feature of features) {
   assert.ok(Array.isArray(evidence.blockers), `${feature.id}.blockers must be an array`);
 
   for (const [index, path] of evidence.ipad.entries()) {
-    assert.match(path, /^apps\/pos-ipad\//, `${feature.id}.ipad[${index}] must be iPad code`);
+    assert.match(
+      path,
+      /^(?:apps\/pos-ipad|packages\/pos-[^/]+)\//,
+      `${feature.id}.ipad[${index}] must be iPad or shared POS code`,
+    );
     assertRepositoryFile(path, `${feature.id}.ipad[${index}]`);
   }
   for (const [index, path] of evidence.tests.entries()) {
     assert.match(
       path,
-      /^apps\/pos-ipad\/(?:e2e\/|.*(?:\.test|\.spec)\.[cm]?[jt]sx?$)/,
-      `${feature.id}.tests[${index}] must be an automated iPad test`,
+      /^(?:apps\/pos-ipad\/(?:e2e\/|.*(?:\.test|\.spec)\.[cm]?[jt]sx?$)|packages\/pos-[^/]+\/src\/.*(?:\.test|\.spec)\.[cm]?[jt]sx?$)/,
+      `${feature.id}.tests[${index}] must be an automated iPad or shared POS test`,
     );
     assertRepositoryFile(path, `${feature.id}.tests[${index}]`);
   }

@@ -227,6 +227,30 @@ export const settingsEnglishCopy = {
   "device.previewActivationCode": "Preview target store",
   "device.currentToTarget": "{{current}} → {{target}}",
   "device.reviewReregistration": "Review device store change",
+  "device.reregisterBlockedTitle": "Store change is temporarily blocked",
+  "device.reregisterBlockedBody":
+    "To protect unfinished work on this device, its store binding was not changed. Resolve every item below, then recheck.",
+  "device.reregisterSafetyFailedTitle": "Local safety status unavailable",
+  "device.reregisterSafetyFailedBody":
+    "The app could not verify that local work is safe. Store change remains blocked; retry the read-only check.",
+  "device.syncHistoryPermissionRequired":
+    "A supervisor with sync-history permission must review the queued orders.",
+  "device.blocker.active-cart":
+    "Current cart · Finish or clear the cart before trying again",
+  "device.blocker.fulfilment-in-flight":
+    "Fulfilment or hardware task · In progress; wait for it to finish",
+  "device.blocker.sync-or-audit-in-flight":
+    "Sync or audit upload · In progress; wait for it to finish",
+  "device.blocker.payment-configuration-sensitive-orders":
+    "Orders using the current payment setup: {{count}}",
+  "device.blocker.pending-durable-writes":
+    "Pending protected local writes: {{count}} · Wait and recheck; contact a supervisor if this persists",
+  "device.blocker.pending-returns": "Returns waiting to sync: {{count}}",
+  "device.blocker.pending-sales": "Sales waiting to sync: {{count}}",
+  "device.blocker.unresolved-payments":
+    "Unresolved payments: {{count}} · Return to sales to recover them",
+  "action.viewSyncHistory": "View sync history",
+  "action.recheck": "Recheck",
   "eyebrow.dangerZone": "DANGER ZONE",
   "device.resetRegistration": "Clear device registration",
   "device.resetRegistrationImpact":
@@ -285,6 +309,7 @@ export const settingsEnglishCopy = {
   "status.catalog-reset": "Local catalog reset",
   "status.catalog-reset-failed": "Catalog reset failed",
   "status.device-reregister-failed": "Re-registration did not start",
+  "status.device-reregister-restart-required": "Store change committed. Restart the POS to continue.",
   "status.device-reregister-started": "Device re-registration started",
   "status.device-activation-preview-failed":
     "Activation code was rejected, expired, or is for another platform",
@@ -571,6 +596,29 @@ export const settingsChineseCopy = {
   "device.previewActivationCode": "预览目标分店",
   "device.currentToTarget": "{{current}} → {{target}}",
   "device.reviewReregistration": "检查并确认设备换店",
+  "device.reregisterBlockedTitle": "暂时无法更换分店",
+  "device.reregisterBlockedBody":
+    "为保护本机未完成业务，设备不会更改绑定。请先处理以下全部项目，然后重新检查。",
+  "device.reregisterSafetyFailedTitle": "无法读取本地安全状态",
+  "device.reregisterSafetyFailedBody":
+    "当前无法确认本地业务是否已安全完成，因此继续阻断更换分店；请重新执行只读检查。",
+  "device.syncHistoryPermissionRequired":
+    "请联系具备同步记录权限的主管检查待处理订单。",
+  "device.blocker.active-cart": "当前购物车｜请完成或清空购物车后再试",
+  "device.blocker.fulfilment-in-flight":
+    "履约或硬件操作｜进行中，请等待完成后再试",
+  "device.blocker.sync-or-audit-in-flight":
+    "同步或审计上传｜进行中，请等待完成后再试",
+  "device.blocker.payment-configuration-sensitive-orders":
+    "依赖当前支付配置的订单：{{count}} 笔",
+  "device.blocker.pending-durable-writes":
+    "未完成耐久写入：{{count}} 项｜请等待后重试；持续存在时联系主管",
+  "device.blocker.pending-returns": "待同步退货：{{count}} 笔",
+  "device.blocker.pending-sales": "待同步销售：{{count}} 笔",
+  "device.blocker.unresolved-payments":
+    "未决支付：{{count}} 笔｜请返回收银完成支付恢复",
+  "action.viewSyncHistory": "查看同步记录",
+  "action.recheck": "重新检查",
   "eyebrow.dangerZone": "危险操作",
   "device.resetRegistration": "清除设备注册",
   "device.resetRegistrationImpact":
@@ -625,6 +673,7 @@ export const settingsChineseCopy = {
   "status.catalog-reset": "本地目录已重置",
   "status.catalog-reset-failed": "目录重置失败",
   "status.device-reregister-failed": "重新注册未开始",
+  "status.device-reregister-restart-required": "门店切换已提交；必须重启 POS 后才能继续。",
   "status.device-reregister-started": "设备重新注册已开始",
   "status.device-activation-preview-failed": "开通码已被拒绝、已过期或不属于当前平台",
   "status.device-registration-reset-barcode-required":

@@ -8,7 +8,7 @@ import {
   type PriceSource,
   normalizeLineSyncProvenance,
 } from "../../../core/contracts";
-import { multiplyCentsAwayFromZero } from "../../../core/contracts/money";
+import { multiplyCentsAwayFromZero } from "@hb/pos-domain/core/contracts/money";
 
 import type {
   AddCartItemInput,

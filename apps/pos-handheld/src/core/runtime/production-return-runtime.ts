@@ -8,7 +8,7 @@ import type { ReturnFulfilmentRuntime } from "./return-fulfilment-runtime";
 import {
   normalizeLineSyncProvenance,
   type LineSyncProvenance,
-} from "@/core/contracts/line-sync-provenance";
+} from "@hb/pos-domain/core/contracts/line-sync-provenance";
 import type { PosDatabase } from "@/core/db/pos-database";
 import type {
   PosRepositoryBundle,
@@ -32,7 +32,7 @@ import {
   type ReturnRecoveryScope,
   type ReturnTrustedIdentityPort,
   type TrustedReturnIdentity,
-} from "@/features/returns/adapters/durable-return-execution-orchestrator";
+} from "@hb/pos-domain/features/returns/adapters/durable-return-execution-orchestrator";
 import {
   CanonicalReturnFingerprint,
   CatalogLocalReturnAdapter,
@@ -50,10 +50,10 @@ import {
   type ReceiptReturnContext,
   type ReceiptReturnLine,
   type ReturnRefundLine,
-} from "@/features/returns/return-domain";
+} from "@hb/pos-domain/features/returns/return-domain";
 import {
   ReturnPresenter,
-} from "@/features/returns/return-presenter";
+} from "@hb/pos-domain/features/returns/return-presenter";
 import {
   ReturnWorkflow,
   type ReturnConnectivityPort,
@@ -64,7 +64,7 @@ import {
   type ReturnWorkflowOptions,
   type ReturnRecoveryHydration,
   type ReturnWorkflowSnapshot,
-} from "@/features/returns/return-workflow";
+} from "@hb/pos-domain/features/returns/return-workflow";
 
 export const POS_RETURN_PERMISSIONS = Object.freeze({
   view: "Permissions.PosTerminal.Returns.View",
@@ -123,6 +123,18 @@ export type ProductionReturnRuntimeDependencies = Readonly<{
   operationLease?: UpdateOperationLeasePort;
 }>;
 
+export type ProductionReturnRecoveryProbeDependencies = Readonly<{
+  database: Pick<PosDatabase, "returnExecutionLedger">;
+  encryptor: SensitivePayloadEncryptor;
+  currentCashier: CurrentCashierSession;
+  terminal: Readonly<{ storeCode: string; deviceCode: string }>;
+  createId(): string;
+}>;
+
+export type ProductionReturnRecoveryProbe = Readonly<{
+  hasRecoveryRequired(): Promise<boolean>;
+}>;
+
 export class PosReturnRuntimeError extends Error {
   public constructor(
     public readonly code:
@@ -133,6 +145,28 @@ export class PosReturnRuntimeError extends Error {
     super(code);
     this.name = "PosReturnRuntimeError";
   }
+}
+
+/**
+ * 设置与更新门禁只读取当前终端的退货恢复布尔值；不依赖主管授权、history API
+ * 或完整退货 feature 是否可用，ledger 异常继续上抛给调用方 fail closed。
+ */
+export function createProductionReturnRecoveryProbe(
+  input: ProductionReturnRecoveryProbeDependencies,
+): ProductionReturnRecoveryProbe {
+  const terminal = Object.freeze({
+    storeCode: requiredText(input.terminal.storeCode),
+    deviceCode: requiredText(input.terminal.deviceCode),
+  });
+  const ledger = input.database.returnExecutionLedger(input.encryptor, {
+    createTenderGuid: () => runtimeId(input),
+    createAuditEventId: () => runtimeId(input),
+  });
+  return createScopedReturnRecoveryProbe(
+    ledger,
+    input.currentCashier,
+    terminal,
+  );
 }
 
 type PendingPresenterCreation = Readonly<{
@@ -168,6 +202,11 @@ export function createProductionReturnRuntime(
       createTenderGuid: () => runtimeId(input),
       createAuditEventId: () => runtimeId(input),
     });
+  const recoveryProbe = createScopedReturnRecoveryProbe(
+    ledger,
+    input.currentCashier,
+    terminal,
+  );
 
   let pendingCreation: PendingPresenterCreation | null = null;
 
@@ -237,7 +276,21 @@ export function createProductionReturnRuntime(
     },
 
     async hasRecoveryRequired(): Promise<boolean> {
-      const lease = input.currentCashier.createLease();
+      return recoveryProbe.hasRecoveryRequired();
+    },
+  });
+
+  return service;
+}
+
+function createScopedReturnRecoveryProbe(
+  ledger: ReturnRecoveryListPort,
+  currentCashier: CurrentCashierSession,
+  terminal: Readonly<{ storeCode: string; deviceCode: string }>,
+): ProductionReturnRecoveryProbe {
+  return Object.freeze({
+    async hasRecoveryRequired(): Promise<boolean> {
+      const lease = currentCashier.createLease();
       const before = requireScopedLease(lease, terminal);
       const recoverable = await ledger.listRecoverable(
         recoveryScope(before),
@@ -251,8 +304,6 @@ export function createProductionReturnRuntime(
       return recoverable.length === 1;
     },
   });
-
-  return service;
 }
 
 type PresenterFactoryContext = Readonly<{

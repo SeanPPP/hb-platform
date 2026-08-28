@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { CashierSessionInvalidationBus } from "../security/cashier-session-invalidation";
+import { CashierSessionInvalidationBus } from "@hb/pos-domain/core/security/cashier-session-invalidation";
 
 import { createPublicCashierInvalidation } from "./public-cashier-invalidation";
 

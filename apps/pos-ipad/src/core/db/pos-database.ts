@@ -14,8 +14,8 @@ import {
 import {
   freezeAuditScope,
   type AuditScope,
-} from "../contracts/audit-scope";
-import { normalizeLineSyncProvenance } from "../contracts/line-sync-provenance";
+} from "@hb/pos-domain/core/contracts/audit-scope";
+import { normalizeLineSyncProvenance } from "@hb/pos-domain/core/contracts/line-sync-provenance";
 import type {
   ApprovedPaymentOrderCommit,
   ApprovedPaymentOrderCommitResult,
@@ -26,15 +26,15 @@ import type {
   AuditEventDraft,
   LocalOrder,
   RecalledHoldCompletion,
-} from "../contracts/order";
+} from "@hb/pos-domain/core/contracts/order";
 import type { AppUpdateCacheScope } from "../contracts/ota-app-updates";
 import type {
   DatabasePort,
   DatabaseTransactionPort,
   ApprovedPaymentOrderCommitPort,
   DurableCashOrderCommitPort,
-} from "../contracts/repositories";
-import type { TerminalCartFence } from "../contracts/terminal-cart";
+} from "@hb/pos-domain/core/contracts/repositories";
+import type { TerminalCartFence } from "@hb/pos-domain/core/contracts/terminal-cart";
 import { SqliteApplicationLogOutbox } from "../logging/application-log";
 
 import { SqliteCatalogLookupOverlayRepository } from "./catalog-lookup-overlay-repository";
@@ -48,7 +48,8 @@ import {
   SqliteAttendanceSecurityFacade,
   type AttendanceSecurityTerminalScope,
 } from "./sqlite-attendance-security-repository";
-import { SqliteDailyCloseRepository } from "./sqlite-daily-close-repository";
+import { SqliteDailyCloseRepository } from "@hb/pos-db/core/db/sqlite-daily-close-repository";
+import { SqliteOrderSyncStatusRepository } from "@hb/pos-db";
 import {
   SqliteFulfilmentStore,
   type PersistedDrawerEventInput,
@@ -71,18 +72,18 @@ import {
 import {
   SqliteOfflineReturnCapacity,
   type OfflineReturnCapacityFacade,
-} from "./sqlite-offline-return-capacity";
+} from "@hb/pos-db/core/db/sqlite-offline-return-capacity";
 import {
   SqliteOperationAuditRead,
   type OperationAuditLocalScope,
-} from "./sqlite-operation-audit-read";
+} from "@hb/pos-db/core/db/sqlite-operation-audit-read";
 import { SqliteOrderSyncMaterialResolver } from "./sqlite-order-sync-material";
 import { SqlitePaymentActionBindingStore } from "./sqlite-payment-action-binding-store";
 import {
   SqlitePaymentDraftRecoveryStore,
   type PaymentDraftPersistenceIds,
 } from "./sqlite-payment-draft-recovery-store";
-import { SqlitePaymentProtectedMaterialReader } from "./sqlite-payment-protected-material";
+import { SqlitePaymentProtectedMaterialReader } from "@hb/pos-db/core/db/sqlite-payment-protected-material";
 import { SqliteRefundVoucherPrintMaterial } from "./sqlite-refund-voucher-print-material";
 import {
   createSqliteRepositories,
@@ -97,8 +98,8 @@ import {
   type ReturnExecutionPersistenceIds,
 } from "./sqlite-return-execution-ledger";
 import { SqliteReturnFulfilmentPlanStore } from "./sqlite-return-fulfilment-plan-store";
-import { SqliteSettingsSafetyRepository } from "./sqlite-settings-safety-repository";
-import { SqliteSpecialProductsRepository } from "./sqlite-special-products-repository";
+import { SqliteSettingsSafetyRepository } from "@hb/pos-db/core/db/sqlite-settings-safety-repository";
+import { SqliteSpecialProductsRepository } from "@hb/pos-db/core/db/sqlite-special-products-repository";
 import { SqliteVoucherBalanceMaterialStore } from "./sqlite-voucher-balance-material";
 import { SqliteVoucherPreparationStore } from "./sqlite-voucher-preparation-store";
 import { SqliteVoucherProtectedTokenStore } from "./sqlite-voucher-protected-token-store";
@@ -106,7 +107,7 @@ import {
   SqliteVoucherTenderReversalStore,
   type VoucherTenderReversalPersistenceIds,
 } from "./sqlite-voucher-tender-reversal-store";
-import type { PosDatabaseOptions, SqliteConnectionPort } from "./types";
+import type { PosDatabaseOptions, SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 import type { LocalSyncHistorySupportContext } from "@/features/sync-history";
 
@@ -217,6 +218,11 @@ export class PosDatabase implements DatabasePort {
   /** 程序日志独立于业务 outbox；上传失败不得阻塞订单、支付或员工审计。 */
   public applicationLogOutbox(): SqliteApplicationLogOutbox {
     return new SqliteApplicationLogOutbox(this.connection, this.nowIso);
+  }
+
+  /** 顶部状态只读取去重后的订单补传数量，不向 UI 暴露裸 outbox。 */
+  public orderSyncStatus(): SqliteOrderSyncStatusRepository {
+    return new SqliteOrderSyncStatusRepository(this.connection);
   }
 
   /**

@@ -1,7 +1,7 @@
-import type { DrawerEventState, PrintJobState } from "../contracts/state-machines";
+import type { DrawerEventState, PrintJobState } from "@hb/pos-domain/core/contracts/state-machines";
 
 import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 export type FulfilmentAuditEvent = Readonly<{
   eventId: string;

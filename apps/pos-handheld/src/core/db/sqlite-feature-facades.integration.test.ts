@@ -7,13 +7,13 @@ import { PosDatabase } from "./pos-database";
 import { SqliteFulfilmentStore } from "./sqlite-fulfilment-store";
 import { SqliteLocalSyncHistoryStore } from "./sqlite-local-sync-history-store";
 import { SqliteMixedPaymentOrderTruthStore } from "./sqlite-mixed-payment-order-truth-store";
-import { SqliteOfflineReturnCapacity } from "./sqlite-offline-return-capacity";
+import { SqliteOfflineReturnCapacity } from "@hb/pos-db/core/db/sqlite-offline-return-capacity";
 import { SqlitePaymentActionBindingStore } from "./sqlite-payment-action-binding-store";
 import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 import type { CartSnapshot } from "@/core/contracts";
 import type {

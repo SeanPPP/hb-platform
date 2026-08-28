@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, jest, test } from "@jest/globals";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -45,6 +46,8 @@ const mockTranslations: Readonly<Record<string, Readonly<Record<string, string>>
       "status.storeName": "Branch name",
       "status.sync": "Sync",
       "status.sync.pending": "0 pending",
+      "status.sync.checking": "Checking",
+      "status.sync.unavailable": "Unavailable",
     },
     zh: {
       "status.languageSwitchHint": "将所有界面文字显示为英文。",
@@ -61,6 +64,8 @@ const mockTranslations: Readonly<Record<string, Readonly<Record<string, string>>
       "status.storeName": "分店名称",
       "status.sync": "同步",
       "status.sync.pending": "0 个待同步",
+      "status.sync.checking": "检查中",
+      "status.sync.unavailable": "不可用",
     },
   };
 
@@ -68,8 +73,11 @@ jest.mock("react-i18next", () => ({
   useTranslation: () => ({
     i18n: { language: mockLanguage, resolvedLanguage: mockLanguage },
     t: (key: string, values?: Readonly<{ count?: number }>) =>
-      mockTranslations[mockLanguage]?.[key] ??
-      (key === "status.sync.pending" ? String(values?.count ?? 0) : key),
+      key === "status.sync.pending"
+        ? mockLanguage === "zh"
+          ? `${String(values?.count ?? 0)} 个待同步`
+          : `${String(values?.count ?? 0)} pending`
+        : (mockTranslations[mockLanguage]?.[key] ?? key),
   }),
 }));
 
@@ -93,6 +101,26 @@ test("没有切换回调时不显示语言入口", async () => {
   const screen = await render(<PosStatusStrip language="zh" />);
 
   expect(screen.queryByTestId("status-strip-language-switch")).toBeNull();
+});
+
+test("同步状态初始检查中、成功显示真实数量、读取失败显示不可用", async () => {
+  const screen = await render(<PosStatusStrip language="zh" />);
+
+  expect(screen.getByLabelText("同步: 检查中")).toBeTruthy();
+
+  await act(async () => {
+    usePosShellStore
+      .getState()
+      .setPendingSync({ kind: "ready", count: 4 });
+  });
+  expect(await screen.findByLabelText("同步: 4 个待同步")).toBeTruthy();
+
+  await act(async () => {
+    usePosShellStore
+      .getState()
+      .setPendingSync({ kind: "unavailable" });
+  });
+  expect(await screen.findByLabelText("同步: 不可用")).toBeTruthy();
 });
 
 test("终端身份默认关闭，即使 shell 已有展示身份也不影响其他调用方", async () => {

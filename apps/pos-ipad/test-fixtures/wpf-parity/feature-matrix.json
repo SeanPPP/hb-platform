@@ -297,7 +297,7 @@
           "id": "cash-sale",
           "name": "现金销售与找零",
           "workPackage": "W2.5",
-          "status": "in-progress",
+          "status": "implemented-and-tested",
           "connectivity": "offline",
           "permissions": [
             "Permissions.PosTerminal.Payment.View",
@@ -315,7 +315,7 @@
           "id": "zero-total-sale",
           "name": "零金额订单",
           "workPackage": "W2.5",
-          "status": "in-progress",
+          "status": "implemented-and-tested",
           "connectivity": "offline",
           "permissions": [
             "Permissions.PosTerminal.Payment.View",

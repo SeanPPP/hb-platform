@@ -3,6 +3,10 @@ using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using AutoMapper;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Features.StoreOrders.ImportPriceVariance;
+using BlazorApp.Api.Features.StoreOrders.ImportPriceVariance.Application;
+using BlazorApp.Api.Features.StoreOrders.ImportPriceVariance.Domain;
+using BlazorApp.Api.Features.StoreOrders.ImportPriceVariance.Infrastructure;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
@@ -79,13 +83,133 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
         string duplicatedFragment
     )
     {
-        var orderBy = StoreOrderReactService.BuildStoreOrderImportPriceVarianceDetailOrderBy(
+        var orderBy = ImportPriceVarianceSqlBuilder.BuildDetailOrderBy(
             sortBy,
             sortDescending
         );
 
         Assert.Equal(expected, orderBy);
         Assert.DoesNotContain(duplicatedFragment, orderBy);
+    }
+
+    [Theory]
+    [InlineData(true, "LENGTH(c.ContainerNumber) > 10", "LIMIT @PageSize OFFSET @Offset")]
+    [InlineData(false, "LEN(c.ContainerNumber) > 10", "OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY")]
+    public void ImportPriceVarianceSqlBuilder_PreservesDatabaseDialect(
+        bool isSqlite,
+        string containerLengthSql,
+        string paginationSql
+    )
+    {
+        var result = ImportPriceVarianceSqlBuilder.BuildSummary(
+            new StoreOrderImportPriceVarianceQueryDto { SortDescending = false },
+            new[] { "S1" },
+            new ImportPriceVariancePage(2, 25),
+            isSqlite
+        );
+
+        Assert.Contains(containerLengthSql, result.SummarySql);
+        Assert.Contains(paginationSql, result.PagedSql);
+        Assert.Contains("ORDER BY ABS(VarianceAmountTotal) ASC, ProductCode ASC", result.PagedSql);
+        Assert.Contains("@StoreCode0", result.SummarySql);
+        Assert.Equal("S1", result.Parameters.Single(item => item.ParameterName == "@StoreCode0").Value);
+    }
+
+    [Fact]
+    public void ImportPriceVarianceValidators_PreserveLegacyValidationAndNormalization()
+    {
+        var query = new GetImportPriceVarianceValidator().Validate(
+            new GetImportPriceVarianceQuery(
+                new StoreOrderImportPriceVarianceQueryDto
+                {
+                    PageNumber = 0,
+                    PageSize = 999,
+                    StoreCode = " S1 ",
+                    StoreCodes = new List<string> { "s1", " S2 " },
+                }
+            )
+        );
+        Assert.Equal(1, query.Page.PageNumber);
+        Assert.Equal(500, query.Page.PageSize);
+        Assert.Equal(new[] { "S1", "S2" }, query.RequestedStoreCodes);
+
+        var domestic = new UpdateImportPriceVarianceDomesticPriceValidator().Validate(
+            new UpdateImportPriceVarianceDomesticPriceCommand(
+                new StoreOrderImportPriceVarianceDomesticPriceUpdateDto
+                {
+                    ProductCode = " P1 ",
+                    DomesticPrice = 1.235m,
+                }
+            )
+        );
+        Assert.True(domestic.IsValid);
+        Assert.Equal(1.24m, domestic.Value!.DomesticPrice);
+
+        var warehouse = new UpdateImportPriceVarianceWarehouseImportPriceValidator().Validate(
+            new UpdateImportPriceVarianceWarehouseImportPriceCommand(
+                new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto
+                {
+                    ProductCode = "P1",
+                    WarehouseImportPrice = -0.01m,
+                }
+            )
+        );
+        Assert.False(warehouse.IsValid);
+        Assert.Equal("仓库进货价格不能小于 0", warehouse.ErrorMessage);
+
+        var batch = new UpdateImportPriceVarianceWarehouseImportPriceBatchValidator().Validate(
+            new UpdateImportPriceVarianceWarehouseImportPriceBatchCommand(
+                new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto
+                {
+                    ProductCodes = new List<string> { " P1 ", "p1", "P2" },
+                    WarehouseImportPrice = 2m,
+                }
+            )
+        );
+        Assert.True(batch.IsValid);
+        Assert.Equal(new[] { "P1", "P2" }, batch.Value!.ProductCodes);
+    }
+
+    [Fact]
+    public async Task ImportPriceVarianceFacade_DelegatesAllFiveUseCases()
+    {
+        var query = new StoreOrderImportPriceVarianceQueryDto();
+        var detailQuery = new StoreOrderImportPriceVarianceDetailQueryDto { ProductCode = "P1" };
+        var domesticRequest = new StoreOrderImportPriceVarianceDomesticPriceUpdateDto
+        {
+            ProductCode = "P1",
+            DomesticPrice = 1m,
+        };
+        var warehouseRequest = new StoreOrderImportPriceVarianceWarehouseImportPriceUpdateDto
+        {
+            ProductCode = "P1",
+            WarehouseImportPrice = 2m,
+        };
+        var batchRequest = new StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateDto
+        {
+            ProductCodes = new List<string> { "P1" },
+            WarehouseImportPrice = 3m,
+        };
+        var slice = new Mock<IStoreOrderImportPriceVarianceSlice>(MockBehavior.Strict);
+        slice.Setup(item => item.GetImportPriceVarianceAsync(query))
+            .ReturnsAsync(ApiResponse<StoreOrderImportPriceVarianceResultDto>.OK(new()));
+        slice.Setup(item => item.GetImportPriceVarianceDetailsAsync(detailQuery))
+            .ReturnsAsync(ApiResponse<StoreOrderImportPriceVarianceDetailResultDto>.OK(new()));
+        slice.Setup(item => item.UpdateImportPriceVarianceDomesticPriceAsync(domesticRequest))
+            .ReturnsAsync(ApiResponse<StoreOrderImportPriceVarianceDomesticPriceUpdateResultDto>.OK(new()));
+        slice.Setup(item => item.UpdateImportPriceVarianceWarehouseImportPriceAsync(warehouseRequest))
+            .ReturnsAsync(ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceUpdateResultDto>.OK(new()));
+        slice.Setup(item => item.UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(batchRequest))
+            .ReturnsAsync(ApiResponse<StoreOrderImportPriceVarianceWarehouseImportPriceBatchUpdateResultDto>.OK(new()));
+        var service = CreateService(importPriceVarianceSlice: slice.Object);
+
+        await service.GetImportPriceVarianceAsync(query);
+        await service.GetImportPriceVarianceDetailsAsync(detailQuery);
+        await service.UpdateImportPriceVarianceDomesticPriceAsync(domesticRequest);
+        await service.UpdateImportPriceVarianceWarehouseImportPriceAsync(warehouseRequest);
+        await service.UpdateImportPriceVarianceWarehouseImportPriceBatchAsync(batchRequest);
+
+        slice.VerifyAll();
     }
 
     [Fact]
@@ -903,7 +1027,11 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
         ).ExecuteCommandAsync();
     }
 
-    private StoreOrderReactService CreateService(ISqlSugarClient? db = null, string? userName = null)
+    private StoreOrderReactService CreateService(
+        ISqlSugarClient? db = null,
+        string? userName = null,
+        IStoreOrderImportPriceVarianceSlice? importPriceVarianceSlice = null
+    )
     {
         var httpContextAccessor = string.IsNullOrWhiteSpace(userName)
             ? new HttpContextAccessor()
@@ -920,16 +1048,15 @@ public sealed class StoreOrderImportPriceVarianceTests : IDisposable
                 },
             };
 
-        return new StoreOrderReactService(
+        return StoreOrderReactServiceTestFactory.Create(
             CreateSqlSugarContext(db ?? _db),
-            NullLogger<StoreOrderReactService>.Instance,
             httpContextAccessor,
             Mock.Of<IOrderNumberGenerator>(),
             new ConfigurationBuilder().Build(),
             Mock.Of<IMapper>(),
-            Mock.Of<IInvoiceEmailService>(),
             Mock.Of<IStoreOrderLocationProductLookupService>(),
-            Mock.Of<IWarehouseProductChangeHistoryService>()
+            Mock.Of<IWarehouseProductChangeHistoryService>(),
+            importPriceVarianceSlice: importPriceVarianceSlice
         );
     }
 

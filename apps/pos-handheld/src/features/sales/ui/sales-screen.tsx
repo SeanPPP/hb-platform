@@ -200,8 +200,8 @@ export function SalesScreen({
     presenter.getState,
   );
   const connectivity = usePosShellStore((current) => current.connectivity);
-  const pendingSyncCount = usePosShellStore(
-    (current) => current.pendingSyncCount,
+  const pendingSync = usePosShellStore(
+    (current) => current.pendingSync,
   );
   const printer = usePosShellStore((current) => current.printer);
   const scanner = usePosShellStore((current) => current.scanner);
@@ -336,8 +336,20 @@ export function SalesScreen({
     {
       key: "sync",
       label: t("status.sync"),
-      tone: pendingSyncCount === 0 ? "success" : "warning",
-      value: t("status.pending", { count: pendingSyncCount }),
+      tone:
+        pendingSync.kind === "ready"
+          ? pendingSync.count === 0
+            ? "success"
+            : "warning"
+          : "neutral",
+      value:
+        pendingSync.kind === "ready"
+          ? t("status.pending", { count: pendingSync.count })
+          : t(
+              pendingSync.kind === "checking"
+                ? "status.checking"
+                : "status.unavailable",
+            ),
     },
     {
       key: "printer",

@@ -17,13 +17,54 @@ public sealed class SqlSugarOrderSyncSchemaInitializer(
 {
     // Square/Linkly 退款引用会同时保存退款号与原交易号，长度可能超过旧库的 100 字符限制。
     internal const string EnsurePaymentReferenceLengthSql = """
-        IF OBJECT_ID(N'[dbo].[payment_detail]', N'U') IS NOT NULL
-           AND COL_LENGTH(N'dbo.payment_detail', N'Reference') IS NOT NULL
-           AND COL_LENGTH(N'dbo.payment_detail', N'Reference') < 1000
-        BEGIN
-            ALTER TABLE [dbo].[payment_detail]
-                ALTER COLUMN [Reference] VARCHAR(1000) NULL;
-        END;
+        SET LOCK_TIMEOUT 15000;
+
+        BEGIN TRY
+            DECLARE @ReferenceType sysname;
+            DECLARE @ReferenceMaxLength smallint;
+
+            SELECT
+                @ReferenceType = types.[name],
+                @ReferenceMaxLength = columns.[max_length]
+            FROM sys.columns AS columns
+            INNER JOIN sys.types AS types
+                ON columns.[user_type_id] = types.[user_type_id]
+            WHERE columns.[object_id] = OBJECT_ID(N'[dbo].[payment_detail]', N'U')
+              AND columns.[name] = N'Reference';
+
+            -- 缺表、缺列或无法读取列元数据时停止启动，避免把未兼容的库误判为可同步。
+            IF @ReferenceType IS NULL OR @ReferenceMaxLength IS NULL
+            BEGIN
+                THROW 51000, 'dbo.payment_detail.Reference does not exist.', 1;
+            END;
+
+            -- 仅支持保持原类型并扩宽 varchar/nvarchar；其他类型需要人工迁移。
+            IF @ReferenceType NOT IN (N'varchar', N'nvarchar')
+            BEGIN
+                THROW 51001, 'dbo.payment_detail.Reference must be varchar or nvarchar.', 1;
+            END;
+
+            -- sys.columns.max_length 使用字节数；-1 表示 MAX，已有 MAX 或更宽列绝不收窄。
+            IF @ReferenceMaxLength <> -1
+            BEGIN
+                IF @ReferenceType = N'varchar' AND @ReferenceMaxLength < 2000
+                BEGIN
+                    ALTER TABLE [dbo].[payment_detail]
+                        ALTER COLUMN [Reference] VARCHAR(2000) NULL;
+                END;
+                ELSE IF @ReferenceType = N'nvarchar' AND @ReferenceMaxLength < 4000
+                BEGIN
+                    ALTER TABLE [dbo].[payment_detail]
+                        ALTER COLUMN [Reference] NVARCHAR(2000) NULL;
+                END;
+            END;
+
+            SET LOCK_TIMEOUT -1;
+        END TRY
+        BEGIN CATCH
+            SET LOCK_TIMEOUT -1;
+            THROW;
+        END CATCH;
 
         -- 退货订单详情按 OrderGuid 查询；缺少索引时会扫描百万级支付和银行流水表。
         BEGIN TRY

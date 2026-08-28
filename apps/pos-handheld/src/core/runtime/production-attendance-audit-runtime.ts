@@ -19,12 +19,12 @@ import {
 } from "@/features/attendance-audit/attendance-qr-controller";
 import type {
   AttendanceSecurityRemotePort,
-} from "@/features/attendance-audit/hbpos-attendance-security-api";
+} from "@hb/pos-api-client/features/attendance-audit/hbpos-attendance-security-api";
 import {
   OperationAuditPresenter,
   type OperationAuditReadPort,
   type OperationAuditRawRecord,
-} from "@/features/attendance-audit/operation-audit-presenter";
+} from "@hb/pos-domain/features/attendance-audit/operation-audit-presenter";
 
 type TerminalScope = Readonly<{ storeCode: string; deviceCode: string }>;
 

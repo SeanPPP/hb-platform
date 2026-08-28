@@ -11,7 +11,7 @@ import type {
   InstallmentStatus,
   InstallmentSummary,
 } from "@/core/contracts";
-import type { CartSnapshot } from "@/core/contracts/cart";
+import type { CartSnapshot } from "@hb/pos-domain/core/contracts/cart";
 import {
   INSTALLMENT_SENSITIVE_PAYLOAD_REVISION,
   type SqliteInstallmentSnapshotRepository,
@@ -20,7 +20,7 @@ import type {
   FulfilmentActionResult,
   FulfilmentAuthorizationContext,
   FulfilmentLeaseGuard,
-} from "@/features/fulfilment";
+} from "@hb/pos-domain/features/fulfilment/index";
 import {
   INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
   INSTALLMENTS_CANCEL_PERMISSION,
@@ -28,7 +28,7 @@ import {
   INSTALLMENTS_CREATE_PERMISSION,
   INSTALLMENTS_REPRINT_PERMISSION,
   INSTALLMENTS_VIEW_PERMISSION,
-} from "@/features/installments/installment-authorization";
+} from "@hb/pos-domain/features/installments/installment-authorization";
 import { InstallmentCheckoutPresenter } from "@/features/installments/installment-checkout-presenter";
 import { resolveInstallmentDateRange } from "@/features/installments/installment-date-filter";
 import type {

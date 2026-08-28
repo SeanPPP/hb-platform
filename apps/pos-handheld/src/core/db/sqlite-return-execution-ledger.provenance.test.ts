@@ -11,11 +11,11 @@ import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 import type {
   PrepareDurableReturnAction,
-} from "@/features/returns/adapters/durable-return-execution-orchestrator";
+} from "@hb/pos-domain/features/returns/adapters/durable-return-execution-orchestrator";
 
 const NOW_ISO = "2026-07-28T00:00:00.000Z";
 

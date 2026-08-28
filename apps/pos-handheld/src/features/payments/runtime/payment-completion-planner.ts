@@ -11,7 +11,7 @@ import type {
   ApprovedPaymentOrderCompletionPlan,
   ApprovedPaymentOrderCompletionPlannerPort,
 } from "@/features/payments/approved-payment-order-completion";
-import type { PaymentAttemptExecutionResult } from "@/features/payments/payment-attempt-service";
+import type { PaymentAttemptExecutionResult } from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 
 export type PaymentCompletionProjection = Readonly<{
   orderGuid: string;

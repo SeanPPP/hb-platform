@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **hb-platform-main** (117185 symbols, 416231 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **hb-platform** (122713 symbols, 480199 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
@@ -24,10 +24,10 @@ This project is indexed by GitNexus as **hb-platform-main** (117185 symbols, 416
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/hb-platform-main/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/hb-platform-main/clusters` | All functional areas |
-| `gitnexus://repo/hb-platform-main/processes` | All execution flows |
-| `gitnexus://repo/hb-platform-main/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/hb-platform/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/hb-platform/clusters` | All functional areas |
+| `gitnexus://repo/hb-platform/processes` | All execution flows |
+| `gitnexus://repo/hb-platform/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 
@@ -42,13 +42,13 @@ This project is indexed by GitNexus as **hb-platform-main** (117185 symbols, 416
 
 <!-- gitnexus:end -->
 
+## 子代理与任务列表管理
+
+- 默认由主代理直接处理任务；仅当工作确实可以拆成互不冲突的独立范围，或用户明确要求使用子代理/并行代理时，才创建原生子代理。
+- 子任务只能使用当前任务内部的原生子代理机制，不得使用 `create_thread`、`fork_thread` 或独立 Codex 任务代替子代理。
+- 主代理收集结果、完成整体验证并确认不再需要子代理后，必须关闭并归档所有已完成的子代理线程，再输出最终答复。
+- 不得关闭仍在运行、等待结果、等待审批或尚未完成交接的子代理线程。
+
 ## Notes
 
 - 涉及 UI 层、界面、视觉或交互体验的任务，自动使用全局 `taste-skill` 技能。
-
-## 个性化代理策略
-
-- 对适合委派的常规纯文本任务，尽量优先使用已配置的 `DeepSeek-Flash` 原生子代理，不再以 Codex 周额度作为启用条件；复杂编码、架构分析和高难度 Agent 任务使用 `DeepSeek-Pro`。
-- 代码审查任务在派发 `code-reviewer` 的同时，并发派发一个不继承当前任务上下文的独立 `DeepSeek-Pro` 原生子代理，并向其提供自包含的审查目标、范围及 diff、commit 或 PR 证据来执行第二路审查；主代理须汇总、去重并依据代码证据逐条复核两路发现，`DeepSeek-Pro` 结论不构成最终批准。若该路未返回有效结果，必须明确标注“未完成 DeepSeek-Pro 独立复核”，不得冒充已完成。
-- 仅在对应 DeepSeek 角色已配置且当前可用时启用；角色不可用或当前工具无法识别时，继续使用现有原生代理策略，不绕过配置流程。
-- 图片、视频、截图及其他视觉输入仍由主代理先识别并整理为文字事实，再按需交给 `DeepSeek-Pro` 或 `DeepSeek-Flash`。

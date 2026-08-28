@@ -17,7 +17,7 @@ import {
   type EmergencyPublicKeyAckResult,
   type EmergencyPublicKeyFetchResult,
   type RegisteredAttendanceSigningKey,
-} from "./hbpos-attendance-security-api";
+} from "@hb/pos-api-client/features/attendance-audit/hbpos-attendance-security-api";
 
 class FakeClock {
   public nowMs = Date.parse("2026-07-28T01:00:00.000Z");

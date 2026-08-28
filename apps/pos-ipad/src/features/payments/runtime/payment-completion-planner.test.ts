@@ -10,7 +10,7 @@ import {
 } from "./payment-completion-planner";
 
 import type { PaymentAttempt } from "@/core/contracts";
-import type { PaymentAttemptExecutionResult } from "@/features/payments/payment-attempt-service";
+import type { PaymentAttemptExecutionResult } from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 
 test("partial Approved 只规划 tender，不读取打印设置、不渲染、不创建最终履约", async () => {
   const events: string[] = [];

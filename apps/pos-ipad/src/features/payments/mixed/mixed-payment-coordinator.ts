@@ -7,7 +7,7 @@ import {
   type PaymentAttemptExecutionResult,
   type PaymentAttemptService,
   type StartPaymentAttemptInput,
-} from "../payment-attempt-service";
+} from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 
 import type {
   ApprovedPaymentOrderCommitResult,

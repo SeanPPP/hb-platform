@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.pos-packages.json",
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules"]
+}

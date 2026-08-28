@@ -7,7 +7,7 @@ import {
   normalizePosIpadUpdatePolicy,
   type PosIpadUpdatePolicy,
 } from "@/core/contracts/app-updates";
-import type { components, paths } from "@/generated/hbpos/schema";
+import type { components, paths } from "@hb/pos-api-client/openapi";
 
 type GeneratedGet = paths["/api/v1/app-updates/pos-ipad"]["get"];
 type GeneratedQuery = NonNullable<GeneratedGet["parameters"]["query"]>;

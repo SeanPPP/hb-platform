@@ -11,7 +11,7 @@ import type {
   EmergencySystemUptimePort,
   EmergencyTokenCryptoResult,
 } from "@/features/attendance-audit/emergency-login-security";
-import type { EmergencyPublicKey } from "@/features/attendance-audit/hbpos-attendance-security-api";
+import type { EmergencyPublicKey } from "@hb/pos-api-client/features/attendance-audit/hbpos-attendance-security-api";
 
 const OPAQUE_HANDLE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;

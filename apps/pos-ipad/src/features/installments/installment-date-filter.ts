@@ -3,7 +3,7 @@ import type { InstallmentDateFilter } from "./installment-models";
 import {
   businessDayUtcRange,
   resolveBusinessTimeZone,
-} from "@/features/sync-history/business-day-range";
+} from "@hb/pos-sync/features/sync-history/business-day-range";
 
 export type InstallmentHistoryDateRange = Readonly<{
   createdFromIso: string | null;

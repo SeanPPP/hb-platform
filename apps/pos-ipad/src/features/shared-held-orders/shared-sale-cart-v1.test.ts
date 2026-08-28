@@ -6,7 +6,7 @@ import {
   normalizeSharedSaleCartV1,
   toSharedSaleCartV1,
   type SharedSaleCartV1,
-} from "./shared-sale-cart-v1";
+} from "@hb/pos-domain/features/shared-held-orders/shared-sale-cart-v1";
 
 import type { PricingCartStateSnapshot } from "@/core/contracts";
 
