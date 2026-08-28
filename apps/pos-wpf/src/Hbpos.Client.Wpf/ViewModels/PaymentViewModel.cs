@@ -887,9 +887,13 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
     }
 
+    internal bool LastCardPaymentHandoffHadWarning { get; private set; }
+
     internal bool CompleteCardPaymentHandoff()
     {
         // 安全移交只清理当前活动订单和付款页投影；持久化 attempt、草稿、tender 与终端证据由恢复中心继续持有。
+        LastCardPaymentHandoffHadWarning = false;
+
         void RunPostHandoffAction(string stage, Action action)
         {
             try
@@ -899,10 +903,19 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
             {
                 // 中文注释：集合和 WPF 通知可能在 backing state 已更新后抛错；继续完成可验证的核心 handoff。
-                ConsoleLog.WriteError(
-                    "CardPayment",
-                    $"card payment handoff UI action failed stage={stage} error={ex.GetType().Name}",
-                    exception: ex);
+                LastCardPaymentHandoffHadWarning = true;
+                try
+                {
+                    ConsoleLog.WriteError(
+                        "CardPayment",
+                        $"card payment handoff UI action failed stage={stage} error={ex.GetType().Name}",
+                        exception: ex);
+                }
+                catch (Exception logException) when (
+                    logException is not OutOfMemoryException and not StackOverflowException)
+                {
+                    // best-effort 日志订阅者失败不能中断已经提交的付款交接。
+                }
             }
         }
 
@@ -918,7 +931,13 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         RunPostHandoffAction("close-voucher-dialog", () => IsVoucherEntryDialogOpen = false);
         RunPostHandoffAction("clear-tender-amount", () => TenderAmountText = string.Empty);
         RunPostHandoffAction("select-cash", () => SelectedPaymentMethod = PaymentMethodKind.Cash);
-        RunPostHandoffAction("close-error-overlay", () => CardPaymentErrorOverlay = null);
+        var activeOverlay = CardPaymentErrorOverlay;
+        if (activeOverlay is not null)
+        {
+            RunPostHandoffAction("close-error-overlay", () => activeOverlay.IsOpen = false);
+        }
+
+        RunPostHandoffAction("clear-error-overlay", () => CardPaymentErrorOverlay = null);
         RunPostHandoffAction("clear-cart", _cart.Clear);
 
         if (PaymentTenders.Count != 0 || !_cart.IsEmpty)

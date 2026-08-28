@@ -280,6 +280,7 @@
   <data name="payment.card.error.overlay.activeSession.recovering" xml:space="preserve"><value>Recovering previous Linkly transaction...</value></data>
   <data name="payment.card.error.overlay.activeSession.handoff" xml:space="preserve"><value>Move to recovery center and start a new sale</value></data>
   <data name="payment.card.error.overlay.activeSession.openCenter" xml:space="preserve"><value>Open card recovery center</value></data>
+  <data name="payment.card.error.overlay.activeSession.openRecoveryCenter" xml:space="preserve"><value>Open card transaction recovery</value></data>
   <data name="payment.card.error.overlay.activeSession.handingOff" xml:space="preserve"><value>Moving the card transaction to the recovery center...</value></data>
   <data name="payment.card.error.overlay.fallback.title" xml:space="preserve"><value>Use Backup Card Payment?</value></data>
   <data name="payment.card.error.overlay.fallback.message" xml:space="preserve"><value>The selected Linkly mode is unavailable and no transaction was submitted. Switch to {0}?</value></data>
@@ -1027,6 +1028,7 @@
   <data name="cardRecovery.linkly.supervisorPaidNoDraft" xml:space="preserve"><value>The supervisor confirmed the previous payment. The session is cleared, but no local order draft was available; reconcile the order before continuing.</value></data>
   <data name="cardRecovery.linkly.approvedRecoveryRequiresReview" xml:space="preserve"><value>The previous card payment was approved, but POS could not safely rebuild the order. Ask a supervisor to confirm the payment before continuing.</value></data>
   <data name="cardRecovery.linkly.approvedTenderRestored" xml:space="preserve"><value>The previous card payment was approved and restored as a tender. Complete the remaining payment amount before finishing the order.</value></data>
+  <data name="cardRecovery.linkly.supervisorNotPaidFinalizeFailed" xml:space="preserve"><value>The previous Linkly result remains unresolved because POS could not restore or clear it safely. Run recovery again before charging.</value></data>
   <data name="cardRecovery.square.currentCartNotEmpty" xml:space="preserve"><value>The previous Square card result needs handling, but the current cart already contains items. Complete or clear the current cart before recovering the previous order.</value></data>
   <data name="cardRecovery.square.unknown" xml:space="preserve"><value>The previous Square card result cannot be confirmed. Ask a supervisor to confirm the Square backend status before continuing.</value></data>
   <data name="cardRecovery.square.checking" xml:space="preserve"><value>A previous Square card transaction for {0:C2} was in progress before the POS closed. Checking the card terminal status.</value></data>
@@ -1040,6 +1042,7 @@
   <data name="cardRecovery.square.notPaidRestoreFailed" xml:space="preserve"><value>The previous Square payment could not be restored. Run recovery again.</value></data>
   <data name="cardRecovery.square.notPaidTerminalizeFailed" xml:space="preserve"><value>The previous Square payment could not be finalized. Run recovery again.</value></data>
   <data name="cardRecovery.square.notPaidRetryAllowed" xml:space="preserve"><value>The bank confirmed that no payment was processed. The original order is ready to retry with the same operation.</value></data>
+  <data name="cardRecovery.square.stateChanged" xml:space="preserve"><value>The Square payment state changed while the bank result was being checked. Run recovery again.</value></data>
   <data name="settings.section.appUpdate.title" xml:space="preserve"><value>Software update</value></data>
   <data name="settings.section.appUpdate.description" xml:space="preserve"><value>Check for a new WPF POS installer without interrupting the current checkout flow.</value></data>
   <data name="settings.section.appUpdate.channel" xml:space="preserve"><value>Channel</value></data>
@@ -1135,8 +1138,12 @@
   <data name="cardRecovery.refund.squareAlternativeMethodRequired" xml:space="preserve"><value>Square confirmed that no refund was processed. The return was restored, but card refund is blocked for this recovery. Use cash or voucher.</value></data>
   <data name="cardRecovery.refund.waitingSaved" xml:space="preserve"><value>The refund remains locked. Run recovery again after the bank result is available.</value></data>
   <data name="cardRecovery.refund.retryAllowed" xml:space="preserve"><value>The bank confirmed that no refund was processed. The original return is ready to retry with the same operation.</value></data>
+  <data name="cardRecovery.refund.retryDraftInvalid" xml:space="preserve"><value>The bank confirmed no refund, but POS could not rebuild the original return. Do not retry until support checks this attempt.</value></data>
+  <data name="cardRecovery.refund.retryRestoreFailed" xml:space="preserve"><value>The original return could not be restored to the current cart. Run recovery again.</value></data>
   <data name="cardRecovery.refund.confirmedSaved" xml:space="preserve"><value>The confirmed refund was recorded and the original return was recovered.</value></data>
   <data name="cardRecovery.refund.confirmedDraftInvalid" xml:space="preserve"><value>The refund is confirmed, but POS could not rebuild the original return. Do not refund again; contact support.</value></data>
+  <data name="cardRecovery.refund.confirmedOrderSaveFailed" xml:space="preserve"><value>The refund is confirmed, but POS could not save the recovered return. Do not refund again; run recovery after the local store is available.</value></data>
+  <data name="cardRecovery.refund.confirmedRestoreFailed" xml:space="preserve"><value>The confirmed refund could not be restored to the current cart. Run recovery again.</value></data>
   <data name="cardRecovery.refund.confirmedTenderRestored" xml:space="preserve"><value>The confirmed card refund was restored. Complete the remaining refund methods without refunding this card again.</value></data>
   <data name="cardRecovery.refund.confirmedCompleted" xml:space="preserve"><value>The confirmed card refund was recovered and the return was saved.</value></data>
   <data name="cardRecovery.payment.section.title" xml:space="preserve"><value>Supervisor payment reconciliation</value></data>
@@ -1253,4 +1260,25 @@
   <data name="dailyClose.status.draftPreserved" xml:space="preserve"><value>Daily close draft preserved. Select Continue Daily Close when you are ready.</value></data>
   <data name="dailyClose.status.draftDiscarded" xml:space="preserve"><value>Daily close draft discarded.</value></data>
   <data name="dailyClose.status.draftIdentityChanged" xml:space="preserve"><value>The daily close draft was discarded because the store, terminal, or cashier changed.</value></data>
+  <data name="cardRecovery.center.value.unknown" xml:space="preserve"><value>Unknown</value></data>
+  <data name="cardRecovery.center.type.sale" xml:space="preserve"><value>Card sale</value></data>
+  <data name="cardRecovery.center.type.refund" xml:space="preserve"><value>Card refund</value></data>
+  <data name="cardRecovery.center.type.activeSession" xml:space="preserve"><value>Active terminal session</value></data>
+  <data name="cardRecovery.center.channel.linkly" xml:space="preserve"><value>Linkly</value></data>
+  <data name="cardRecovery.center.channel.square" xml:space="preserve"><value>Square</value></data>
+  <data name="cardRecovery.center.transactionStatus.pending" xml:space="preserve"><value>Pending</value></data>
+  <data name="cardRecovery.center.transactionStatus.sessionStarted" xml:space="preserve"><value>Session started</value></data>
+  <data name="cardRecovery.center.transactionStatus.recovering" xml:space="preserve"><value>Checking result</value></data>
+  <data name="cardRecovery.center.transactionStatus.approved" xml:space="preserve"><value>Payment approved</value></data>
+  <data name="cardRecovery.center.transactionStatus.requiresReview" xml:space="preserve"><value>Needs supervisor review</value></data>
+  <data name="cardRecovery.center.transactionStatus.orderCompleted" xml:space="preserve"><value>Order completed</value></data>
+  <data name="cardRecovery.center.transactionStatus.checkoutCreated" xml:space="preserve"><value>Checkout created</value></data>
+  <data name="cardRecovery.center.transactionStatus.checkoutCompleted" xml:space="preserve"><value>Checkout completed</value></data>
+  <data name="cardRecovery.center.transactionStatus.paymentVerified" xml:space="preserve"><value>Payment verified</value></data>
+  <data name="cardRecovery.center.transactionStatus.unknown" xml:space="preserve"><value>Result unknown</value></data>
+  <data name="cardRecovery.center.transactionStatus.declined" xml:space="preserve"><value>Declined</value></data>
+  <data name="cardRecovery.center.transactionStatus.timedOut" xml:space="preserve"><value>Timed out</value></data>
+  <data name="cardRecovery.center.transactionStatus.cancelled" xml:space="preserve"><value>Cancelled</value></data>
+  <data name="cardRecovery.center.transactionStatus.failed" xml:space="preserve"><value>Failed</value></data>
+  <data name="cardRecovery.center.transactionStatus.abandoned" xml:space="preserve"><value>Abandoned</value></data>
 </root>

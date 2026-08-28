@@ -673,13 +673,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             getOwner: () => CurrentOwner,
             navigateToPaymentOnDraft: () =>
             {
-                _screenNavigator.PrepareCachedCashPaymentScreen();
-                CashPayment?.PrepareForEntry(Session);
-                CurrentScreen = CashPayment;
+                ExecuteCardRecoveryPresenterUiStep(
+                    "prepare-cached-payment",
+                    _screenNavigator.PrepareCachedCashPaymentScreen);
+                ExecuteCardRecoveryPresenterUiStep(
+                    "prepare-payment-entry",
+                    () => CashPayment?.PrepareForEntry(Session));
+                ExecuteCardRecoveryPresenterUiStep(
+                    "navigate-payment",
+                    () => CurrentScreen = CashPayment);
                 return Task.CompletedTask;
             },
             getSession: () => Session,
-            setSession: value => Session = value,
+            setSession: value => ExecuteCardRecoveryPresenterUiStep(
+                "apply-session",
+                () => Session = value),
             onCardRecoveryOrderCompleted: order =>
             {
                 _lastCompletedOrder = order;
@@ -723,6 +731,30 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             operationAuditLogger: _operationAuditLogger,
             requirePermission: TryRequireShellPermission,
             setAlternativeRefundMethodRequired: required => CashPayment?.SetAlternativeRefundMethodRequired(required));
+
+    private static void ExecuteCardRecoveryPresenterUiStep(string stage, Action action)
+    {
+        try
+        {
+            action();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // MainViewModel 的 setter 会先提交 backing state 再通知；订阅者失败不能撤销已提交的恢复交接。
+            try
+            {
+                ConsoleLog.WriteError(
+                    "CardRecovery",
+                    $"recovery presenter UI step failed stage={stage}",
+                    exception: ex);
+            }
+            catch (Exception logException) when (
+                logException is not OutOfMemoryException and not StackOverflowException)
+            {
+                // 诊断外围失败不能覆盖恢复交接结果。
+            }
+        }
+    }
 
     private SyncOrchestrator CreateSyncOrchestrator(
         ILinklySettlementUploadQueueReader? linklySettlementUploadQueueReader,
@@ -2704,7 +2736,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private async Task HandleCardRecoveryCenterResultAsync(CardPaymentRecoveryResult result)
+    private async Task HandleCardRecoveryCenterResultAsync(
+        CardRecoveryAttemptKey selectedKey,
+        CardPaymentRecoveryResult result)
     {
         if (result.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
         {
@@ -2724,24 +2758,117 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         if (result.UpdatedSession is not null)
         {
-            Session = result.UpdatedSession;
+            await ExecuteCardRecoveryPostResultStepAsync(
+                "apply-updated-session",
+                () =>
+                {
+                    Session = result.UpdatedSession;
+                    return Task.CompletedTask;
+                },
+                allowPaymentCompletedWarning: result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted);
         }
 
-        StatusMessage = result.Message;
+        await ExecuteCardRecoveryPostResultStepAsync(
+            "set-result-status",
+            () =>
+            {
+                StatusMessage = result.Message;
+                return Task.CompletedTask;
+            },
+            allowPaymentCompletedWarning: result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted);
         if (result.Outcome == CardPaymentRecoveryOutcome.OrderCompleted)
         {
-            // 旧单由持久化快照独立完成；这里只刷新壳层状态，绝不跳成功页或清理正在进行的新购物车。
             if (result.Order is not null)
             {
                 _lastCompletedOrder = result.Order;
             }
 
-            PosTerminal?.RefreshCart();
-            CashPayment?.RefreshCart();
-            await RefreshPendingSyncAsync();
+            var cachedCashPayment = _screenNavigator.CachedCashPaymentScreen;
+            if (cachedCashPayment is not null &&
+                ReferenceEquals(cachedCashPayment, CashPayment) &&
+                cachedCashPayment.CreateCardPaymentHandoffRequest().RecoveryAttemptKey == selectedKey)
+            {
+                // 只有核心购物车和 tender 都确认清空后，付款页才会释放同 key 锁；失败时继续 fail-closed。
+                await ExecuteCardRecoveryPostResultStepAsync(
+                    "complete-payment-handoff",
+                    () =>
+                    {
+                        if (!cachedCashPayment.CompleteCardPaymentHandoff())
+                        {
+                            throw new InvalidOperationException("Card recovery payment handoff remained locked.");
+                        }
+
+                        if (cachedCashPayment.LastCardPaymentHandoffHadWarning)
+                        {
+                            throw new InvalidOperationException(
+                                "Card recovery payment handoff completed with a UI follow-up warning.");
+                        }
+
+                        return Task.CompletedTask;
+                    });
+            }
+
+            await ExecuteCardRecoveryPostResultStepAsync(
+                "pos-cart-refresh",
+                () =>
+                {
+                    PosTerminal?.RefreshCart();
+                    return Task.CompletedTask;
+                });
+            await ExecuteCardRecoveryPostResultStepAsync(
+                "cash-payment-cart-refresh",
+                () =>
+                {
+                    CashPayment?.RefreshCart();
+                    return Task.CompletedTask;
+                });
+            await ExecuteCardRecoveryPostResultStepAsync(
+                "pending-sync-refresh",
+                RefreshPendingSyncAsync);
             return;
         }
 
+    }
+
+    private async Task ExecuteCardRecoveryPostResultStepAsync(
+        string stage,
+        Func<Task> action,
+        bool allowPaymentCompletedWarning = true)
+    {
+        try
+        {
+            await action();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 金融结果已经确定；普通 UI/同步收尾异常只能告警并继续，不能回写异常中心为失败。
+            if (allowPaymentCompletedWarning)
+            {
+                try
+                {
+                    SetPaymentCompletedWarning();
+                }
+                catch (Exception warningException) when (
+                    warningException is not OutOfMemoryException and not StackOverflowException)
+                {
+                    // 告警本身也是 UI 收尾，失败时仍保留已经落库的金融结果。
+                }
+            }
+
+            try
+            {
+                ConsoleLog.WriteError(
+                    "CardRecovery",
+                    $"card recovery post-result step failed stage={stage}",
+                    null,
+                    ex);
+            }
+            catch (Exception logException) when (
+                logException is not OutOfMemoryException and not StackOverflowException)
+            {
+                // 日志订阅者失败不能中断后续收尾，也不能覆盖已确定的金融结果。
+            }
+        }
     }
 
     private Window? CurrentOwner => _windowOwnerProvider?.CurrentOwner;

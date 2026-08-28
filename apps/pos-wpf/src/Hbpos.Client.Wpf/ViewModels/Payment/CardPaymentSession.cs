@@ -24,6 +24,9 @@ internal sealed class CardPaymentSession
     private bool _discardLateCardResultAfterManualCancel;
     private bool _cardPaymentResultUnknownRequiresRecovery;
     private CardPaymentHandoffCandidate? _cardPaymentHandoffCandidate;
+    private bool _cardPaymentHandoffQualificationPending;
+    private long _cardPaymentHandoffQualificationGeneration;
+    private bool _disposed;
     private CardRecoveryAttemptKey? _recoveryAttemptKey;
     private Guid? _recoveryOrderGuid;
     private string? _unknownResultStatusKey;
@@ -56,11 +59,19 @@ internal sealed class CardPaymentSession
         _vm.OnCardResultUnknownRecoveryChanged(value);
         if (!value)
         {
+            Interlocked.Increment(ref _cardPaymentHandoffQualificationGeneration);
+            _cardPaymentHandoffQualificationPending = false;
             _cardPaymentHandoffCandidate = null;
             _recoveryAttemptKey = null;
             _recoveryOrderGuid = null;
             _unknownResultStatusKey = null;
             _unknownResultStatusMessage = null;
+            if (_vm.CardPaymentErrorOverlay is { PrimaryActionKind:
+                    CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious } overlay)
+            {
+                overlay.IsOpen = false;
+                _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
+            }
         }
     }
 
@@ -70,7 +81,9 @@ internal sealed class CardPaymentSession
 
     public CancellationTokenSource BeginCardPayment()
     {
+        Interlocked.Increment(ref _cardPaymentHandoffQualificationGeneration);
         _cardPaymentHandoffCandidate = null;
+        _cardPaymentHandoffQualificationPending = false;
         _recoveryAttemptKey = null;
         _recoveryOrderGuid = null;
         _cardPaymentCancellationRequested = false;
@@ -291,24 +304,53 @@ internal sealed class CardPaymentSession
     {
         if (result.CardResult?.RequiresRecovery == true)
         {
+            var qualificationGeneration = Interlocked.Increment(
+                ref _cardPaymentHandoffQualificationGeneration);
             SetResultUnknownRecoveryRequired(true);
             _cardPaymentHandoffCandidate = null;
-            _recoveryAttemptKey = result.RecoveryAttemptKey is { AttemptGuid: var attemptGuid } key &&
+            CardRecoveryAttemptKey? recoveryAttemptKey = result.RecoveryAttemptKey is { AttemptGuid: var attemptGuid } key &&
                 attemptGuid != Guid.Empty
                 ? key
                 : null;
-            _recoveryOrderGuid = result.RecoveryOrderGuid is { } orderGuid && orderGuid != Guid.Empty
+            Guid? recoveryOrderGuid = result.RecoveryOrderGuid is { } orderGuid && orderGuid != Guid.Empty
                 ? orderGuid
                 : null;
+            _recoveryAttemptKey = recoveryAttemptKey;
+            _recoveryOrderGuid = recoveryOrderGuid;
             _unknownResultStatusKey = result.StatusKey;
             _unknownResultStatusMessage = result.StatusMessage;
+            var shouldQualifyHandoff =
+                recoveryAttemptKey is not null &&
+                recoveryOrderGuid is not null &&
+                _vm.NavigationActions.PrepareCardPaymentHandoffAsync is not null;
+            _cardPaymentHandoffQualificationPending = shouldQualifyHandoff;
             _vm.IsPaymentInteractionLocked = true;
             RestoreUnknownResultStatus();
             ResetManualCancellationState();
             ShowOverlayIfTerminalError(result);
-            if (_recoveryAttemptKey is not null && _recoveryOrderGuid is not null)
+            if (shouldQualifyHandoff &&
+                recoveryAttemptKey is { } capturedAttemptKey &&
+                recoveryOrderGuid is { } capturedOrderGuid &&
+                _vm.CardPaymentErrorOverlay is { } targetOverlay)
             {
-                await PrepareCardPaymentHandoffAsync();
+                if (!await PrepareCardPaymentHandoffAsync(
+                        qualificationGeneration,
+                        capturedAttemptKey,
+                        capturedOrderGuid,
+                        targetOverlay))
+                {
+                    return true;
+                }
+            }
+            else if (qualificationGeneration != Volatile.Read(
+                         ref _cardPaymentHandoffQualificationGeneration))
+            {
+                return true;
+            }
+            else if (shouldQualifyHandoff)
+            {
+                // 没有可绑定的目标遮罩时结束本代资格窗口，避免永久保持 pending。
+                _cardPaymentHandoffQualificationPending = false;
             }
             _vm.NotifyPaymentCommandStates();
             return true;
@@ -357,9 +399,18 @@ internal sealed class CardPaymentSession
     public void CloseErrorOverlay()
     {
         CompletePendingLinklyFallbackPrompt(confirmed: false);
-        if (_vm.CardPaymentErrorOverlay is not null)
+        if (_vm.CardPaymentErrorOverlay is { } overlay)
         {
-            _vm.CardPaymentErrorOverlay.IsOpen = false;
+            if (overlay.PrimaryActionKind == CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious)
+            {
+                Interlocked.Increment(ref _cardPaymentHandoffQualificationGeneration);
+                _cardPaymentHandoffQualificationPending = false;
+                _cardPaymentHandoffCandidate = null;
+                // 关闭前转为“打开异常中心”动作，保证当前锁定订单关闭后仍可继续恢复。
+                ConfigureRecoveryCenterPrimaryAction(overlay);
+            }
+
+            overlay.IsOpen = false;
         }
 
         ReleaseFallbackPromptLockIfIdle();
@@ -378,46 +429,89 @@ internal sealed class CardPaymentSession
             CardPaymentErrorOverlayPrimaryActionKind.ConfirmFallback => overlay.IsOpen,
             CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious =>
                 _cardPaymentResultUnknownRequiresRecovery &&
-                _cardPaymentHandoffCandidate is not null &&
+                !_cardPaymentHandoffQualificationPending &&
                 !_vm.IsShuttingDown &&
-                _vm.NavigationActions.HandoffCardPaymentAsync is not null,
+                (_cardPaymentHandoffCandidate is not null
+                    ? _vm.NavigationActions.HandoffCardPaymentAsync is not null
+                    : _vm.OpenCardRecoveryCenterCommand.CanExecute(null)),
             _ => false
         };
     }
 
-    private async Task PrepareCardPaymentHandoffAsync()
+    private async Task<bool> PrepareCardPaymentHandoffAsync(
+        long qualificationGeneration,
+        CardRecoveryAttemptKey recoveryAttemptKey,
+        Guid recoveryOrderGuid,
+        CardPaymentErrorOverlayViewModel targetOverlay)
     {
+        if (qualificationGeneration != Volatile.Read(ref _cardPaymentHandoffQualificationGeneration) ||
+            _disposed ||
+            _vm.IsShuttingDown ||
+            !_cardPaymentResultUnknownRequiresRecovery ||
+            !Equals(_recoveryAttemptKey, recoveryAttemptKey) ||
+            _recoveryOrderGuid != recoveryOrderGuid ||
+            !ReferenceEquals(_vm.CardPaymentErrorOverlay, targetOverlay) ||
+            targetOverlay.PrimaryActionKind != CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious)
+        {
+            return false;
+        }
+
         var prepare = _vm.NavigationActions.PrepareCardPaymentHandoffAsync;
         if (prepare is null)
         {
-            return;
+            _cardPaymentHandoffCandidate = null;
+            _cardPaymentHandoffQualificationPending = false;
+            ConfigureRecoveryCenterPrimaryAction(targetOverlay);
+            _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
+            return true;
         }
 
+        CardPaymentHandoffCandidate? candidate = null;
+        Exception? qualificationException = null;
         try
         {
-            _cardPaymentHandoffCandidate = await prepare(_vm.CreateCardPaymentHandoffRequest());
+            candidate = await prepare(_vm.CreateCardPaymentHandoffRequest());
         }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            qualificationException = ex;
+        }
+
+        if (qualificationGeneration != Volatile.Read(ref _cardPaymentHandoffQualificationGeneration) ||
+            _disposed ||
+            _vm.IsShuttingDown ||
+            !_cardPaymentResultUnknownRequiresRecovery ||
+            !Equals(_recoveryAttemptKey, recoveryAttemptKey) ||
+            _recoveryOrderGuid != recoveryOrderGuid ||
+            !ReferenceEquals(_vm.CardPaymentErrorOverlay, targetOverlay) ||
+            targetOverlay.PrimaryActionKind != CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious)
+        {
+            return false;
+        }
+
+        _cardPaymentHandoffCandidate = candidate;
+        _cardPaymentHandoffQualificationPending = false;
+        if (qualificationException is not null)
         {
             // 查询失败必须保持当前订单锁定；不能把持久化异常升级成清单或导航动作。
             ConsoleLog.WriteError(
                 "CardPayment",
-                $"card payment handoff qualification failed error={ex.GetType().Name}",
-                exception: ex);
-            _cardPaymentHandoffCandidate = null;
+                $"card payment handoff qualification failed error={qualificationException.GetType().Name}",
+                exception: qualificationException);
             RestoreUnknownResultStatus();
         }
 
-        if (_cardPaymentHandoffCandidate is not null &&
-            _vm.CardPaymentErrorOverlay?.PrimaryActionKind ==
-            CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious)
+        if (_cardPaymentHandoffCandidate is not null)
         {
-            _vm.CardPaymentErrorOverlay.HasPrimaryAction = true;
-            _vm.CardPaymentErrorOverlay.PrimaryButtonTextKey =
-                "payment.card.error.overlay.activeSession.handoff";
+            ConfigureHandoffPrimaryAction(targetOverlay);
+        }
+        else
+        {
+            ConfigureRecoveryCenterPrimaryAction(targetOverlay);
         }
 
         _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
+        return true;
     }
 
     public async Task ExecuteErrorPrimaryActionAsync()
@@ -437,8 +531,15 @@ internal sealed class CardPaymentSession
         }
 
         var candidate = _cardPaymentHandoffCandidate;
+        if (candidate is null)
+        {
+            _vm.OpenCardRecoveryCenterCommand.Execute(null);
+            _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
+            return;
+        }
+
         var handoff = _vm.NavigationActions.HandoffCardPaymentAsync;
-        if (candidate is null || handoff is null)
+        if (handoff is null)
         {
             return;
         }
@@ -565,14 +666,38 @@ internal sealed class CardPaymentSession
             return;
 
         overlay.IsOpen = true;
+        if (overlay.PrimaryActionKind == CardPaymentErrorOverlayPrimaryActionKind.RecoverPrevious)
+        {
+            ConfigureRecoveryCenterPrimaryAction(overlay);
+        }
+
         _vm.CardPaymentErrorOverlay = overlay;
         _vm.CardPaymentErrorPrimaryActionCommand.NotifyCanExecuteChanged();
+    }
+
+    private void ConfigureRecoveryCenterPrimaryAction(CardPaymentErrorOverlayViewModel overlay)
+    {
+        overlay.PrimaryButtonTextKey =
+            "payment.card.error.overlay.activeSession.openRecoveryCenter";
+        overlay.HasPrimaryAction =
+            !_cardPaymentHandoffQualificationPending &&
+            _cardPaymentResultUnknownRequiresRecovery &&
+            _vm.OpenCardRecoveryCenterCommand.CanExecute(null);
+    }
+
+    private void ConfigureHandoffPrimaryAction(CardPaymentErrorOverlayViewModel overlay)
+    {
+        overlay.PrimaryButtonTextKey =
+            "payment.card.error.overlay.activeSession.handoff";
+        overlay.HasPrimaryAction =
+            !_vm.IsShuttingDown &&
+            _vm.NavigationActions.HandoffCardPaymentAsync is not null;
     }
 
     private static CardPaymentErrorOverlayViewModel CreateUnqualifiedRecoveryOverlay()
     {
         var overlay = CardPaymentErrorOverlayViewModel.ActiveSessionRequiresRecovery();
-        // 持久化 attempt 与完整草稿尚未核验前，只允许关闭提示，不暴露失效的恢复按钮。
+        // 创建时先收起旧“恢复上一笔”入口；调用方核验现有导航后再一次性填充动作状态。
         overlay.HasPrimaryAction = false;
         return overlay;
     }
@@ -581,6 +706,10 @@ internal sealed class CardPaymentSession
 
     public void Dispose()
     {
+        _disposed = true;
+        Interlocked.Increment(ref _cardPaymentHandoffQualificationGeneration);
+        _cardPaymentHandoffQualificationPending = false;
+        _cardPaymentHandoffCandidate = null;
         CompletePendingLinklyFallbackPrompt(confirmed: false);
         CancellationTokenSource? orphanedManuallyCancelled;
         CancellationTokenSource? orphanedShutdownCancellation;

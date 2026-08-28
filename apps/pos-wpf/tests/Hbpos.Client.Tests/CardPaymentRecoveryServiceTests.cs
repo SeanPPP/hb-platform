@@ -9,10 +9,163 @@ using static Hbpos.Client.Tests.SharedHeldOrderClientTestSupport;
 
 namespace Hbpos.Client.Tests;
 
+[Collection(ConsoleLogGlobalStateTestCollection.Name)]
 public sealed class CardPaymentRecoveryServiceTests
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private static readonly PosSessionState Session = new("HB POS", "S001", "Main Branch", "POS-01", "C001", "Alice", true, 0);
+
+    [Theory]
+    [InlineData(LocalCardPaymentAttemptStatus.Declined)]
+    [InlineData(LocalCardPaymentAttemptStatus.Failed)]
+    [InlineData(LocalCardPaymentAttemptStatus.Cancelled)]
+    [InlineData(LocalCardPaymentAttemptStatus.TimedOut)]
+    [InlineData(LocalCardPaymentAttemptStatus.Abandoned)]
+    public async Task RecoverAttemptAsync_terminal_linkly_attempt_is_not_reopened(
+        LocalCardPaymentAttemptStatus terminalStatus)
+    {
+        var attempt = CreateAttempt("SESSION-TERMINAL", "TXN-TERMINAL", terminalStatus);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                "SESSION-TERMINAL",
+                "TXN-TERMINAL",
+                "05",
+                "DECLINED",
+                transactionSuccess: false)
+        };
+        var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
+
+        var result = await service.RecoverAttemptAsync(attempt.AttemptGuid, new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.None, result.Outcome);
+        Assert.Equal(terminalStatus, attempts.Status);
+        Assert.Equal(0, attempts.MarkRecoveringCallCount);
+        Assert.Equal(0, backend.StatusCallCount);
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_supervisor_not_paid_open_record_retries_acknowledge_and_restore()
+    {
+        var attempt = CreateAttempt(
+            "SESSION-SUPERVISOR-RETRY",
+            "TXN-SUPERVISOR-RETRY",
+            LocalCardPaymentAttemptStatus.Cancelled) with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Bank case confirms no charge"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var backend = new FakeLinklyBackendTerminalClient();
+        var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
+        var cart = new PosCartService();
+
+        var result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.Outcome);
+        Assert.Single(cart.Lines);
+        Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.NotNull(attempts.AcknowledgedAt);
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_acknowledged_supervisor_not_paid_terminal_attempt_is_not_reopened()
+    {
+        var acknowledgedAt = DateTimeOffset.Parse("2026-06-05T10:05:00+10:00");
+        var attempt = CreateAttempt(
+            "SESSION-SUPERVISOR-STALE",
+            "TXN-SUPERVISOR-STALE",
+            LocalCardPaymentAttemptStatus.Cancelled,
+            acknowledgedAt) with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Bank case already acknowledged"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var backend = new FakeLinklyBackendTerminalClient();
+        var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
+        var cart = new PosCartService();
+
+        var result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.None, result.Outcome);
+        Assert.True(cart.IsEmpty);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+        Assert.Equal(acknowledgedAt, attempts.AcknowledgedAt);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Cancelled, attempts.Status);
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_acknowledged_order_completed_supervisor_paid_attempt_is_not_reopened()
+    {
+        var acknowledgedAt = DateTimeOffset.Parse("2026-06-05T10:05:00+10:00");
+        var attempt = CreateAttempt(
+            "SESSION-SUPERVISOR-PAID-STALE",
+            "TXN-SUPERVISOR-PAID-STALE",
+            LocalCardPaymentAttemptStatus.OrderCompleted,
+            acknowledgedAt) with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
+            ResponseText = "Bank case already completed",
+            PaymentReference = "ANZ:SUPERVISOR-PAID-STALE"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                "SESSION-SUPERVISOR-PAID-STALE",
+                "TXN-SUPERVISOR-PAID-STALE",
+                "00",
+                "APPROVED",
+                transactionSuccess: true)
+        };
+        var service = CreateService(attempts, orders, backend);
+        var cart = new PosCartService();
+
+        var result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.None, result.Outcome);
+        Assert.True(cart.IsEmpty);
+        Assert.Equal(0, attempts.MarkRecoveringCallCount);
+        Assert.Equal(0, backend.StatusCallCount);
+        Assert.Equal(0, backend.ResumeCallCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, attempts.Status);
+        Assert.Equal(acknowledgedAt, attempts.AcknowledgedAt);
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_order_completed_without_acknowledgement_retries_ack_only()
+    {
+        var attempt = CreateAttempt(
+            "SESSION-ORDER-COMPLETED-ACK",
+            "TXN-ORDER-COMPLETED-ACK",
+            LocalCardPaymentAttemptStatus.OrderCompleted);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient();
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverAttemptAsync(
+            attempt.AttemptGuid,
+            new PosCartService(),
+            Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.None, result.Outcome);
+        Assert.Equal(0, attempts.MarkRecoveringCallCount);
+        Assert.Equal(0, backend.StatusCallCount);
+        Assert.Equal(0, backend.ResumeCallCount);
+        Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.Equal("SESSION-ORDER-COMPLETED-ACK", backend.AcknowledgedSessionId);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(LocalCardPaymentAttemptStatus.OrderCompleted, attempts.Status);
+        Assert.NotNull(attempts.AcknowledgedAt);
+    }
 
     [Fact]
     public async Task RecoverLatestAsync_approved_matching_session_completes_order_and_acknowledges_once()
@@ -448,6 +601,91 @@ public sealed class CardPaymentRecoveryServiceTests
     }
 
     [Fact]
+    public async Task RecoverLatestAsync_approved_semantically_invalid_snapshot_persists_approved_before_rebuild_and_returns_unknown()
+    {
+        var draft = CreateSemanticallyInvalidDraft();
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-BAD-SNAP",
+            txnRef: "TXN-BAD-SNAP",
+            draft: draft);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-BAD-SNAP",
+                txnRef: "TXN-BAD-SNAP",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var cart = CreateCurrentCart();
+        var service = CreateService(attempts, orders, backend);
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result!.Outcome);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+        Assert.Equal("CURRENT-SKU", Assert.Single(cart.Lines).ProductCode);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_local_ip_approved_semantically_invalid_snapshot_persists_approved_before_rebuild_and_returns_unknown()
+    {
+        var draft = CreateSemanticallyInvalidDraft();
+        var attempt = CreateAttempt(
+            sessionId: null,
+            txnRef: "LOCAL-BAD-SNAP",
+            connectionMode: LinklyConnectionMode.LocalIp,
+            draft: draft);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient();
+        var localTerminal = new FakeLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            "ANZ:LOCAL-BAD-SNAP",
+            "ANZ Linkly",
+            10m,
+            [CreateLocalCardTransaction("LOCAL-BAD-SNAP", "00", "APPROVED")],
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.LocalIp.ToString(),
+            "P",
+            null,
+            "LOCAL-BAD-SNAP",
+            "00",
+            "APPROVED"));
+        var cart = CreateCurrentCart();
+        var service = CreateService(
+            attempts,
+            orders,
+            backend,
+            new FakeCardTerminalSettingsProvider(LinklyConnectionMode.LocalIp),
+            localTerminal);
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result!.Outcome);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+        Assert.Equal("CURRENT-SKU", Assert.Single(cart.Lines).ProductCode);
+    }
+
+    [Fact]
     public async Task RecoverLatestAsync_stale_approved_result_cannot_save_order_after_supervisor_wins()
     {
         var attempt = CreateAttempt(
@@ -475,6 +713,83 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
         Assert.Equal(0, orders.SaveCount);
         Assert.Equal(0, backend.AcknowledgeCallCount);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_persistence_and_log_failure_still_returns_unknown()
+    {
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-PERSIST-LOG-FAIL",
+            txnRef: "TXN-PERSIST-LOG-FAIL");
+        var attempts = new FakeCardPaymentAttemptRepository(attempt)
+        {
+            UpdateOutcomeException = new InvalidOperationException("database unavailable")
+        };
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-PERSIST-LOG-FAIL",
+                txnRef: "TXN-PERSIST-LOG-FAIL",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var service = CreateService(attempts, orders, backend);
+        void ThrowFromPersistenceLog(string line)
+        {
+            if (line.Contains("approved outcome persistence failed", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("log subscriber failed");
+            }
+        }
+
+        CardPaymentRecoveryResult? result = null;
+        Exception? exception;
+        ConsoleLog.LineWritten += ThrowFromPersistenceLog;
+        try
+        {
+            exception = await Record.ExceptionAsync(async () =>
+            {
+                result = await service.RecoverLatestAsync(new PosCartService(), Session);
+            });
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= ThrowFromPersistenceLog;
+        }
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result!.Outcome);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_persistence_out_of_memory_is_rethrown()
+    {
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-PERSIST-OOM",
+            txnRef: "TXN-PERSIST-OOM");
+        var attempts = new FakeCardPaymentAttemptRepository(attempt)
+        {
+            UpdateOutcomeException = new OutOfMemoryException("fatal persistence failure")
+        };
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-PERSIST-OOM",
+                txnRef: "TXN-PERSIST-OOM",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
+
+        await Assert.ThrowsAsync<OutOfMemoryException>(
+            () => service.RecoverLatestAsync(new PosCartService(), Session));
     }
 
     [Fact]
@@ -991,8 +1306,224 @@ public sealed class CardPaymentRecoveryServiceTests
     }
 
     [Fact]
+    public async Task RecoverLatestAsync_local_ip_approved_null_txn_type_persists_approved_before_draft_materialization()
+    {
+        var draft = CreateDraft() with { TxnType = null! };
+        var attempt = CreateAttempt(
+            sessionId: null,
+            txnRef: "P000000000000777",
+            connectionMode: LinklyConnectionMode.LocalIp,
+            draft: draft,
+            amount: 10m);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var localTerminal = new FakeLinklyTerminalClient(new PaymentAuthorizationResult(
+            true,
+            "ANZ:P000000000000777",
+            "ANZ Linkly",
+            10m,
+            [CreateLocalCardTransaction("P000000000000777", "00", "APPROVED")],
+            "ANZ",
+            "Sandbox",
+            LinklyConnectionMode.LocalIp.ToString(),
+            "P",
+            null,
+            "P000000000000777",
+            "TOP-LEVEL-CODE",
+            "TOP-LEVEL-TEXT"));
+        var cart = new PosCartService();
+        var service = CreateService(
+            attempts,
+            orders,
+            new FakeLinklyBackendTerminalClient(),
+            new FakeCardTerminalSettingsProvider(LinklyConnectionMode.LocalIp),
+            localTerminal);
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result!.Outcome);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal("00", attempts.ResponseCode);
+        Assert.Equal("APPROVED", attempts.ResponseText);
+        Assert.Equal("ANZ:P000000000000777", attempts.PaymentReference);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.True(cart.IsEmpty);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_partial_invalid_second_line_leaves_real_cart_empty()
+    {
+        var draft = CreateSemanticallyInvalidDraft() with { CardAmount = 5m };
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-PARTIAL-BAD-SNAPSHOT",
+            txnRef: "TXN-PARTIAL-BAD-SNAPSHOT",
+            draft: draft,
+            amount: 5m);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-PARTIAL-BAD-SNAPSHOT",
+                txnRef: "TXN-PARTIAL-BAD-SNAPSHOT",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var cart = new PosCartService();
+        var service = CreateService(attempts, orders, backend);
+
+        var result = await service.RecoverLatestAsync(cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.True(cart.IsEmpty);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_partial_cart_changed_failure_keeps_complete_cart_and_tenders()
+    {
+        var draft = CreateDraft(cardAmount: 5m);
+        var firstLine = Assert.Single(draft.CartSnapshot.Lines);
+        draft = draft with
+        {
+            CartSnapshot = new PosCartSnapshot(
+            [
+                firstLine,
+                firstLine with { ProductCode = "SKU-SECOND", LookupCode = "930020", ItemNumber = "ITEM-20" }
+            ])
+        };
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-PARTIAL-NOTIFY",
+            txnRef: "TXN-PARTIAL-NOTIFY",
+            draft: draft,
+            amount: 5m);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-PARTIAL-NOTIFY",
+                txnRef: "TXN-PARTIAL-NOTIFY",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new InvalidOperationException("subscriber failed");
+        var service = CreateService(attempts, orders, backend);
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result!.Outcome);
+        Assert.Equal(2, cart.Lines.Count);
+        Assert.Contains(cart.Lines, line => line.ProductCode == "SKU-10");
+        Assert.Contains(cart.Lines, line => line.ProductCode == "SKU-SECOND");
+        var restoredTender = Assert.Single(result.RestoredTenders!);
+        Assert.Equal(PaymentMethodKind.Card, restoredTender.Method);
+        Assert.Equal(5m, restoredTender.Amount);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal(0, orders.SaveCount);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_rebuild_log_subscriber_failure_still_returns_unknown()
+    {
+        var draft = CreateSemanticallyInvalidDraft();
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-REBUILD-LOG-FAIL",
+            txnRef: "TXN-REBUILD-LOG-FAIL",
+            draft: draft);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-REBUILD-LOG-FAIL",
+                txnRef: "TXN-REBUILD-LOG-FAIL",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var service = CreateService(attempts, orders, backend);
+        void ThrowFromApprovedRebuildLog(string line)
+        {
+            if (line.Contains("recover approved draft rebuild failed", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("log subscriber failed");
+            }
+        }
+
+        CardPaymentRecoveryResult? result = null;
+        Exception? exception;
+        ConsoleLog.LineWritten += ThrowFromApprovedRebuildLog;
+        try
+        {
+            exception = await Record.ExceptionAsync(async () =>
+            {
+                result = await service.RecoverLatestAsync(new PosCartService(), Session);
+            });
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= ThrowFromApprovedRebuildLog;
+        }
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result!.Outcome);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Equal(0, orders.SaveCount);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_approved_partial_cart_changed_out_of_memory_is_rethrown()
+    {
+        var draft = CreateDraft(cardAmount: 5m);
+        var attempt = CreateAttempt(
+            sessionId: "SESSION-PARTIAL-OOM",
+            txnRef: "TXN-PARTIAL-OOM",
+            draft: draft,
+            amount: 5m);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            Status = CreateStatus(
+                "Completed",
+                sessionId: "SESSION-PARTIAL-OOM",
+                txnRef: "TXN-PARTIAL-OOM",
+                responseCode: "00",
+                responseText: "APPROVED",
+                transactionSuccess: true)
+        };
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new OutOfMemoryException("fatal subscriber failure");
+        var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
+
+        await Assert.ThrowsAsync<OutOfMemoryException>(() => service.RecoverLatestAsync(cart, Session));
+
+        Assert.Equal(LocalCardPaymentAttemptStatus.Approved, attempts.Status);
+        Assert.Single(cart.Lines);
+    }
+
+    [Fact]
     public async Task RecoverLatestAsync_local_ip_get_last_declined_restores_draft_without_backend_acknowledgement()
     {
+        var existingTender = new PaymentTender(PaymentMethodKind.Cash, 2m);
+        var draft = CreateDraft(cardAmount: 8m, currentTenders: [existingTender]);
         var attempt = CreateAttempt(
             sessionId: null,
             txnRef: "P000000000000009",
@@ -2459,6 +2990,118 @@ public sealed class CardPaymentRecoveryServiceTests
     }
 
     [Fact]
+    public async Task RecoverAttemptAsync_square_refund_payment_verified_reuses_existing_return_and_preserves_current_cart_without_remote_lookup()
+    {
+        const string refundId = "REFUND-VERIFIED-RESTART";
+        var draft = CreateRefundDraft("SQ:ORIGINAL-PAYMENT");
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.PaymentVerified,
+            checkoutId: null,
+            paymentId: refundId,
+            paymentStatus: "COMPLETED") with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            SubmissionToken = "SUBMISSION-VERIFIED-RESTART",
+            OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
+        };
+        var existingOrder = CreateExistingRefundOrder(draft, refundId);
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository(existingOrder);
+        var terminal = new FakeSquareTerminalPaymentClient();
+        var service = CreateSquareService(attempts, orders, terminal);
+        var currentCart = CreateCurrentCart();
+
+        var result = await service.RecoverAttemptAsync(
+            attempt.AttemptGuid,
+            currentCart,
+            Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
+        Assert.Same(existingOrder, result.Order);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.OrderCompleted, attempts.Status);
+        Assert.Equal(1, attempts.MarkOrderCompletedCount);
+        Assert.Equal(0, attempts.MarkRecoveringCount);
+        Assert.Equal(0, terminal.GetRefundCallCount);
+        Assert.Equal(0, terminal.GetCheckoutCallCount);
+        Assert.Equal(0, terminal.GetPaymentCallCount);
+        Assert.Equal("CURRENT-SKU", Assert.Single(currentCart.Lines).ProductCode);
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_square_authoritative_draft_mismatch_for_verified_refund_keeps_fact_and_rejects_order()
+    {
+        const string refundId = "REFUND-VERIFIED-AUTHORITY-MISMATCH";
+        var mismatch = CreateMismatchedSquareRefundDraft("OperationGuid");
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.PaymentVerified,
+            checkoutId: null,
+            paymentId: refundId,
+            paymentStatus: "COMPLETED") with
+        {
+            OperationKind = "Refund",
+            OperationGuid = mismatch.OperationGuid,
+            SubmissionToken = "SUBMISSION-VERIFIED-AUTHORITY-MISMATCH",
+            RefundBusinessKey = mismatch.RefundBusinessKey,
+            OrderDraftJson = JsonSerializer.Serialize(mismatch.Draft, JsonOptions)
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var terminal = new FakeSquareTerminalPaymentClient();
+        var service = CreateSquareService(attempts, orders, terminal);
+        var cart = new PosCartService();
+
+        var result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, attempts.Status);
+        Assert.Equal(refundId, attempts.PaymentId);
+        Assert.Equal(0, attempts.MarkOrderCompletedCount);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, terminal.GetRefundCallCount);
+        Assert.True(cart.IsEmpty);
+    }
+
+    [Theory]
+    [InlineData(null, "COMPLETED")]
+    [InlineData("REFUND-VERIFIED-MISSING-EVIDENCE", null)]
+    public async Task RecoverAttemptAsync_square_refund_payment_verified_with_missing_evidence_fails_closed_without_remote_lookup(
+        string? paymentId,
+        string? paymentStatus)
+    {
+        var draft = CreateRefundDraft("SQ:ORIGINAL-PAYMENT");
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.PaymentVerified,
+            checkoutId: null,
+            paymentId: paymentId,
+            paymentStatus: paymentStatus) with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            SubmissionToken = "SUBMISSION-VERIFIED-MISSING-EVIDENCE",
+            OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var terminal = new FakeSquareTerminalPaymentClient();
+        var service = CreateSquareService(attempts, orders, terminal);
+        var currentCart = CreateCurrentCart();
+
+        var result = await service.RecoverAttemptAsync(
+            attempt.AttemptGuid,
+            currentCart,
+            Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, attempts.Status);
+        Assert.Equal(0, attempts.MarkOrderCompletedCount);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Equal(0, terminal.GetRefundCallCount);
+        Assert.Equal("CURRENT-SKU", Assert.Single(currentCart.Lines).ProductCode);
+    }
+
+    [Fact]
     public async Task RecoverLatestAsync_square_verified_with_non_empty_current_cart_completes_old_order_without_overwriting_cart()
     {
         var attempt = CreateSquareAttempt(
@@ -2617,8 +3260,24 @@ public sealed class CardPaymentRecoveryServiceTests
             attempts,
             orders,
             new FakeSquareTerminalPaymentClient());
+        void ThrowFromFinalizeLog(string line)
+        {
+            if (line.Contains("verified payment order saved but attempt finalization failed", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("log subscriber failed");
+            }
+        }
 
-        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+        CardPaymentRecoveryResult result;
+        ConsoleLog.LineWritten += ThrowFromFinalizeLog;
+        try
+        {
+            result = await service.RecoverLatestAsync(new PosCartService(), Session);
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= ThrowFromFinalizeLog;
+        }
 
         Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
         Assert.True(result.HasPostCommitWarning);
@@ -2659,6 +3318,109 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal("COMPLETED", transaction.ResponseText);
     }
 
+    [Theory]
+    [InlineData("CardAmount")]
+    [InlineData("OrderGuid")]
+    [InlineData("StoreCode")]
+    [InlineData("DeviceCode")]
+    [InlineData("CashierId")]
+    [InlineData("TxnType")]
+    public async Task RecoverLatestAsync_square_authoritative_draft_mismatch_after_automatic_verification_keeps_fact_and_rejects_order(
+        string mismatch)
+    {
+        var draft = CreateMismatchedSquareSaleDraft(mismatch);
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.CheckoutCreated,
+            checkoutId: "CHECKOUT-AUTHORITY-AUTO") with
+        {
+            OperationGuid = CreateOrderGuid(),
+            OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult(
+                "CHECKOUT-AUTHORITY-AUTO",
+                "COMPLETED",
+                1000,
+                "AUD",
+                ["PAYMENT-AUTHORITY-AUTO"],
+                null),
+            Payment = new SquarePaymentStatusResult(
+                "PAYMENT-AUTHORITY-AUTO",
+                "COMPLETED",
+                1000,
+                "AUD")
+        };
+        var service = CreateSquareService(attempts, orders, terminal);
+        var cart = CreateCurrentCart();
+        var originalCart = cart.CreateSnapshot();
+
+        var result = await service.RecoverLatestAsync(cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.Outcome);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.PaymentVerified, attempts.Status);
+        Assert.Equal("PAYMENT-AUTHORITY-AUTO", attempts.PaymentId);
+        Assert.Equal("COMPLETED", attempts.PaymentStatus);
+        Assert.Equal(0, attempts.MarkOrderCompletedCount);
+        Assert.Equal(0, orders.SaveCount);
+        AssertCartUnchanged(cart, originalCart);
+    }
+
+    [Theory]
+    [InlineData("CardAmount")]
+    [InlineData("OrderGuid")]
+    [InlineData("StoreCode")]
+    [InlineData("DeviceCode")]
+    [InlineData("CashierId")]
+    [InlineData("TxnType")]
+    public async Task ResolveAttemptAsync_square_authoritative_draft_mismatch_after_confirm_processed_keeps_fact_and_rejects_order(
+        string mismatch)
+    {
+        var draft = CreateMismatchedSquareSaleDraft(mismatch);
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Unknown,
+            checkoutId: "CHECKOUT-AUTHORITY-SUPERVISOR") with
+        {
+            OperationGuid = CreateOrderGuid(),
+            OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var service = CreateSquareService(
+            attempts,
+            orders,
+            new FakeSquareTerminalPaymentClient());
+        var cart = CreateCurrentCart();
+        var originalCart = cart.CreateSnapshot();
+
+        var result = await service.ResolveAttemptAsync(
+            attempt.AttemptGuid,
+            CardRecoverySupervisorDecision.ConfirmProcessed,
+            "Matched Square settlement",
+            "Square payment details were reconciled",
+            "PAYMENT-AUTHORITY-SUPERVISOR",
+            cart,
+            Session);
+
+        Assert.False(result.Succeeded);
+        Assert.True(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
+        Assert.Equal(1, attempts.ResolvePaymentCount);
+        Assert.Equal(CardRecoverySupervisorDecision.ConfirmProcessed, attempts.LastPaymentResolution?.Decision);
+        Assert.NotNull(attempts.LastPaymentJournal);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, attempts.Status);
+        Assert.Null(attempts.PaymentId);
+        Assert.Equal("PAYMENT-AUTHORITY-SUPERVISOR", attempts.SupervisorFinancialReference);
+        Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedPaid, attempts.ResponseCode);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, attempts.RecoveryPhase);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.OrderCompleted, attempts.RecoveryTargetStatus);
+        Assert.Equal(0, attempts.MarkOrderCompletedCount);
+        Assert.Equal(0, orders.SaveCount);
+        AssertCartUnchanged(cart, originalCart);
+    }
+
     [Fact]
     public async Task RecoverLatestAsync_square_canceled_with_non_empty_current_cart_defers_without_restoring_or_marking_terminal()
     {
@@ -2682,6 +3444,477 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, attempts.Status);
         Assert.Equal(0, attempts.UpdateCheckoutStatusCount);
         Assert.Equal(0, attempts.MarkFailedCount);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_canceled_race_after_second_read_completes_latest_supervisor_paid_result()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.CheckoutCreated,
+            checkoutId: "CHECKOUT-CANCELED-RACE");
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult(
+                "CHECKOUT-CANCELED-RACE",
+                "CANCELED",
+                1000,
+                "AUD",
+                [],
+                "OPERATOR TIMEOUT")
+        };
+        attempts.OnGetAttemptAfterRead = current =>
+        {
+            if (terminal.GetCheckoutCallCount == 0 || current is null)
+            {
+                return;
+            }
+
+            attempts.OnGetAttemptAfterRead = null;
+            attempts.ReplaceAttempt(current with
+            {
+                Status = LocalSquarePaymentAttemptStatus.PaymentVerified,
+                PaymentId = "PAYMENT-SUPERVISOR-RACE",
+                PaymentStatus = "COMPLETED",
+                ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
+                ResponseText = "Matched after checkout lookup",
+                UpdatedAt = current.UpdatedAt.AddMinutes(1)
+            });
+        };
+        var service = CreateSquareService(attempts, orders, terminal);
+        var cart = new PosCartService();
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result!.Outcome);
+        Assert.True(cart.IsEmpty);
+        Assert.Equal(1, attempts.UpdateCheckoutStatusCount);
+        Assert.Equal(1, orders.SaveCount);
+        var payment = Assert.Single(result.Order!.Payments);
+        Assert.Equal("SQ:PAYMENT-SUPERVISOR-RACE", payment.Reference);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_canceled_semantically_invalid_snapshot_stays_open_and_leaves_cart_empty()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.CheckoutCreated,
+            checkoutId: "CHECKOUT-CANCELED-BAD-SNAPSHOT") with
+        {
+            OrderDraftJson = JsonSerializer.Serialize(CreateSemanticallyInvalidDraft(), JsonOptions)
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult(
+                "CHECKOUT-CANCELED-BAD-SNAPSHOT",
+                "CANCELED",
+                1000,
+                "AUD",
+                [],
+                "OPERATOR TIMEOUT")
+        };
+        var service = CreateSquareService(attempts, new FakeLocalOrderRepository(), terminal);
+        var cart = new PosCartService();
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result!.Outcome);
+        Assert.True(cart.IsEmpty);
+        Assert.Equal(0, attempts.TryTerminalizeNotPaidCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, attempts.Status);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecoverLatestAsync_square_supervisor_not_paid_subscriber_cancellation_is_post_commit_warning(
+        bool taskCanceled)
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Pending,
+            checkoutId: "CHECKOUT-SUPERVISOR-NOT-PAID-SUBSCRIBER-CANCELED") with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Supervisor confirmed no payment"
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var service = CreateSquareService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            new FakeSquareTerminalPaymentClient());
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) =>
+        {
+            if (taskCanceled)
+            {
+                throw new TaskCanceledException("subscriber canceled");
+            }
+
+            throw new OperationCanceledException("subscriber canceled");
+        };
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result!.Outcome);
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Single(cart.Lines);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Pending, attempts.Status);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, attempts.RecoveryPhase);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, attempts.RecoveryTargetStatus);
+        Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, attempts.ResponseCode);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_supervisor_not_paid_restore_out_of_memory_is_rethrown()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Pending,
+            checkoutId: "CHECKOUT-SUPERVISOR-NOT-PAID-OOM") with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Supervisor confirmed no payment"
+        };
+        var service = CreateSquareService(
+            new FakeSquarePaymentAttemptRepository(attempt),
+            new FakeLocalOrderRepository(),
+            new FakeSquareTerminalPaymentClient());
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new OutOfMemoryException("fatal subscriber failure");
+
+        await Assert.ThrowsAsync<OutOfMemoryException>(
+            () => service.RecoverLatestAsync(cart, Session));
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_supervisor_not_paid_ordinary_subscriber_failure_does_not_trigger_rollback_notification()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Pending,
+            checkoutId: "CHECKOUT-SUPERVISOR-NOT-PAID-NO-ROLLBACK") with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Supervisor confirmed no payment"
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var service = CreateSquareService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            new FakeSquareTerminalPaymentClient());
+        var cart = new PosCartService();
+        var notificationCount = 0;
+        cart.CartChanged += (_, _) =>
+        {
+            notificationCount++;
+            if (notificationCount == 1)
+            {
+                throw new InvalidOperationException("restore subscriber failed");
+            }
+
+            throw new OutOfMemoryException("unexpected rollback subscriber failure");
+        };
+
+        var result = await service.RecoverLatestAsync(cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.Outcome);
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Equal(1, notificationCount);
+        Assert.Single(cart.Lines);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Pending, attempts.Status);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, attempts.RecoveryPhase);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, attempts.RecoveryTargetStatus);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_supervisor_not_paid_subscriber_caller_cancellation_is_post_commit_warning()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Pending,
+            checkoutId: "CHECKOUT-SUPERVISOR-NOT-PAID-CALLER-CANCELED") with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Supervisor confirmed no payment"
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var service = CreateSquareService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            new FakeSquareTerminalPaymentClient());
+        var cart = new PosCartService();
+        using var cancellation = new CancellationTokenSource();
+        cart.CartChanged += (_, _) =>
+        {
+            cancellation.Cancel();
+            throw new OperationCanceledException("caller canceled", cancellation.Token);
+        };
+
+        var result = await service.RecoverLatestAsync(cart, Session, cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.Outcome);
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Single(cart.Lines);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Pending, attempts.Status);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, attempts.RecoveryPhase);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, attempts.RecoveryTargetStatus);
+        Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, attempts.ResponseCode);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_existing_continue_waiting_consumes_completed_checkout()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Recovering,
+            checkoutId: "CHECKOUT-CONTINUE-WAITING-COMPLETED") with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ContinueWaiting,
+            ResponseText = "Check Square again later"
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult(
+                "CHECKOUT-CONTINUE-WAITING-COMPLETED",
+                "COMPLETED",
+                1000,
+                "AUD",
+                ["PAYMENT-CONTINUE-WAITING-COMPLETED"],
+                null),
+            Payment = new SquarePaymentStatusResult(
+                "PAYMENT-CONTINUE-WAITING-COMPLETED",
+                "COMPLETED",
+                1000,
+                "AUD")
+        };
+        var service = CreateSquareService(attempts, orders, terminal);
+
+        var result = await service.RecoverLatestAsync(new PosCartService(), Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
+        Assert.Equal(1, orders.SaveCount);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.OrderCompleted, attempts.Status);
+        Assert.Equal(
+            "SQ:PAYMENT-CONTINUE-WAITING-COMPLETED",
+            Assert.Single(result.Order!.Payments).Reference);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_existing_continue_waiting_consumes_canceled_checkout()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Recovering,
+            checkoutId: "CHECKOUT-CONTINUE-WAITING-CANCELED") with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ContinueWaiting,
+            ResponseText = "Check Square again later"
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult(
+                "CHECKOUT-CONTINUE-WAITING-CANCELED",
+                "CANCELED",
+                1000,
+                "AUD",
+                [],
+                "OPERATOR TIMEOUT")
+        };
+        var service = CreateSquareService(attempts, new FakeLocalOrderRepository(), terminal);
+        var cart = new PosCartService();
+
+        var result = await service.RecoverLatestAsync(cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.Outcome);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Recovering, attempts.Status);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, attempts.RecoveryPhase);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Canceled, attempts.RecoveryTargetStatus);
+        Assert.Equal(
+            new CardRecoveryAttemptKey(CardProcessorKind.Square, attempt.AttemptGuid),
+            cart.RecoveryOwnerAttemptKey);
+        Assert.Single(cart.Lines);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_pending_write_paid_race_uses_latest_supervisor_result()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.CheckoutCreated,
+            checkoutId: "CHECKOUT-PENDING-WRITE-PAID-RACE");
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult(
+                "CHECKOUT-PENDING-WRITE-PAID-RACE",
+                "PENDING",
+                1000,
+                "AUD",
+                [],
+                null)
+        };
+        attempts.OnGetAttemptAfterRead = current =>
+        {
+            if (terminal.GetCheckoutCallCount == 0 || current is null)
+            {
+                return;
+            }
+
+            attempts.OnGetAttemptAfterRead = null;
+            attempts.ReplaceAttempt(current with
+            {
+                Status = LocalSquarePaymentAttemptStatus.PaymentVerified,
+                PaymentId = "PAYMENT-PENDING-WRITE-RACE",
+                PaymentStatus = "COMPLETED",
+                ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
+                UpdatedAt = current.UpdatedAt.AddMinutes(1)
+            });
+        };
+        var orders = new FakeLocalOrderRepository();
+        var service = CreateSquareService(attempts, orders, terminal);
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(new PosCartService(), Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result!.Outcome);
+        Assert.Equal(1, orders.SaveCount);
+        Assert.Equal("SQ:PAYMENT-PENDING-WRITE-RACE", Assert.Single(result.Order!.Payments).Reference);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_payment_verified_write_not_paid_race_restores_latest_supervisor_result()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.CheckoutCreated,
+            checkoutId: "CHECKOUT-VERIFIED-WRITE-NOT-PAID-RACE");
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult(
+                "CHECKOUT-VERIFIED-WRITE-NOT-PAID-RACE",
+                "COMPLETED",
+                1000,
+                "AUD",
+                ["PAYMENT-VERIFIED-WRITE-RACE"],
+                null),
+            Payment = new SquarePaymentStatusResult(
+                "PAYMENT-VERIFIED-WRITE-RACE",
+                "COMPLETED",
+                1000,
+                "AUD")
+        };
+        attempts.OnGetAttemptAfterRead = current =>
+        {
+            if (terminal.GetPaymentCallCount == 0 || current is null)
+            {
+                return;
+            }
+
+            attempts.OnGetAttemptAfterRead = null;
+            attempts.ReplaceAttempt(current with
+            {
+                Status = LocalSquarePaymentAttemptStatus.Pending,
+                CheckoutId = null,
+                PaymentId = null,
+                PaymentStatus = null,
+                ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+                ResponseText = "No charge found",
+                UpdatedAt = current.UpdatedAt.AddMinutes(1)
+            });
+        };
+        var orders = new FakeLocalOrderRepository();
+        var service = CreateSquareService(attempts, orders, terminal);
+        var cart = new PosCartService();
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result!.Outcome);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Pending, attempts.Status);
+        Assert.Equal(CardRecoveryPhases.FinalizePending, attempts.RecoveryPhase);
+        Assert.Equal(LocalSquarePaymentAttemptStatus.Abandoned, attempts.RecoveryTargetStatus);
+        Assert.Equal(
+            new CardRecoveryAttemptKey(CardProcessorKind.Square, attempt.AttemptGuid),
+            cart.RecoveryOwnerAttemptKey);
+        Assert.Equal(0, orders.SaveCount);
+        Assert.Single(cart.Lines);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_failed_write_paid_race_uses_latest_supervisor_result()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.CheckoutCreated,
+            checkoutId: "CHECKOUT-FAILED-WRITE-PAID-RACE");
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult(
+                "CHECKOUT-FAILED-WRITE-PAID-RACE",
+                "COMPLETED",
+                1000,
+                "AUD",
+                ["PAYMENT-FAILED-WRITE-RACE"],
+                null),
+            Payment = new SquarePaymentStatusResult(
+                "PAYMENT-FAILED-WRITE-RACE",
+                "COMPLETED",
+                999,
+                "AUD")
+        };
+        attempts.OnGetAttemptAfterRead = current =>
+        {
+            if (terminal.GetPaymentCallCount == 0 || current is null)
+            {
+                return;
+            }
+
+            attempts.OnGetAttemptAfterRead = null;
+            attempts.ReplaceAttempt(current with
+            {
+                Status = LocalSquarePaymentAttemptStatus.PaymentVerified,
+                PaymentId = "PAYMENT-SUPERVISOR-AFTER-VERIFY",
+                PaymentStatus = "COMPLETED",
+                ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
+                UpdatedAt = current.UpdatedAt.AddMinutes(1)
+            });
+        };
+        var orders = new FakeLocalOrderRepository();
+        var service = CreateSquareService(attempts, orders, terminal);
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverLatestAsync(new PosCartService(), Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result!.Outcome);
+        Assert.Equal(1, orders.SaveCount);
+        Assert.Equal("SQ:PAYMENT-SUPERVISOR-AFTER-VERIFY", Assert.Single(result.Order!.Payments).Reference);
     }
 
     [Fact]
@@ -3624,6 +4857,377 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.Equal("CURRENT-SKU", Assert.Single(cart.Lines).ProductCode);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ResolvePaymentAsync_confirm_not_paid_terminal_failure_rolls_back_and_marker_failure_warns(
+        bool terminalAcknowledgeFails)
+    {
+        var attempt = CreateAttempt(
+            "SESSION-SUPERVISOR-ACK-FAIL",
+            "TXN-SUPERVISOR-ACK-FAIL",
+            LocalCardPaymentAttemptStatus.Recovering);
+        var attempts = new FakeCardPaymentAttemptRepository(attempt)
+        {
+            MarkAcknowledgedException = terminalAcknowledgeFails
+                ? null
+                : new InvalidOperationException("local acknowledge failed")
+        };
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            AcknowledgeException = terminalAcknowledgeFails
+                ? new HttpRequestException("terminal acknowledge failed")
+                : null
+        };
+        var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
+        var cart = new PosCartService();
+
+        var result = await service.ResolvePaymentAsync(
+            new CardPaymentSupervisorResolution(
+                attempt.AttemptGuid,
+                CardProcessorKind.Linkly,
+                CardPaymentSupervisorDecision.ConfirmNotPaid,
+                string.Empty,
+                "MANAGER-01",
+                Evidence: "Bank case confirms no charge"),
+            cart,
+            Session);
+
+        Assert.Equal(!terminalAcknowledgeFails, result.Succeeded);
+        Assert.True(result.LockRetained);
+        Assert.Equal(
+            terminalAcknowledgeFails
+                ? CardPaymentRecoveryOutcome.Unknown
+                : CardPaymentRecoveryOutcome.DraftRestored,
+            result.RecoveryResult?.Outcome);
+        Assert.Equal(terminalAcknowledgeFails, cart.IsEmpty);
+        Assert.Equal(!terminalAcknowledgeFails, result.RecoveryResult?.HasPostCommitWarning);
+        Assert.Null(attempts.AcknowledgedAt);
+        Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, attempts.ResponseCode);
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_supervisor_not_paid_restore_subscriber_failure_is_post_commit_warning()
+    {
+        var attempt = CreateAttempt(
+            "SESSION-SUPERVISOR-RESTORE-FAIL",
+            "TXN-SUPERVISOR-RESTORE-FAIL",
+            LocalCardPaymentAttemptStatus.Cancelled) with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Bank case confirms no charge"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var backend = new FakeLinklyBackendTerminalClient();
+        var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
+        var cart = new PosCartService();
+        var notificationCount = 0;
+        cart.CartChanged += (_, _) =>
+        {
+            notificationCount++;
+            throw new InvalidOperationException("subscriber failed");
+        };
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result!.Outcome);
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Single(cart.Lines);
+        Assert.Equal(1, notificationCount);
+        Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.NotNull(attempts.AcknowledgedAt);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Cancelled, attempts.Status);
+        Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, attempts.ResponseCode);
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_supervisor_not_paid_restore_out_of_memory_is_rethrown()
+    {
+        var attempt = CreateAttempt(
+            "SESSION-SUPERVISOR-RESTORE-OOM",
+            "TXN-SUPERVISOR-RESTORE-OOM",
+            LocalCardPaymentAttemptStatus.Cancelled) with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Bank case confirms no charge"
+        };
+        var service = CreateService(
+            new FakeCardPaymentAttemptRepository(attempt),
+            new FakeLocalOrderRepository(),
+            new FakeLinklyBackendTerminalClient());
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new OutOfMemoryException("fatal subscriber failure");
+
+        await Assert.ThrowsAsync<OutOfMemoryException>(
+            () => service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session));
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_supervisor_not_paid_subscriber_failure_does_not_trigger_rollback_log()
+    {
+        var attempt = CreateAttempt(
+            "SESSION-SUPERVISOR-ROLLBACK-LOG",
+            "TXN-SUPERVISOR-ROLLBACK-LOG",
+            LocalCardPaymentAttemptStatus.Cancelled) with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Bank case confirms no charge"
+        };
+        var service = CreateService(
+            new FakeCardPaymentAttemptRepository(attempt),
+            new FakeLocalOrderRepository(),
+            new FakeLinklyBackendTerminalClient());
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new InvalidOperationException("cart subscriber failed");
+        void ThrowFromRollbackLog(string line)
+        {
+            if (line.Contains("supervisor not-paid cart rollback notification failed", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("log subscriber failed");
+            }
+        }
+
+        CardPaymentRecoveryResult? result = null;
+        Exception? exception;
+        ConsoleLog.LineWritten += ThrowFromRollbackLog;
+        try
+        {
+            exception = await Record.ExceptionAsync(async () =>
+            {
+                result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+            });
+        }
+        finally
+        {
+            ConsoleLog.LineWritten -= ThrowFromRollbackLog;
+        }
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result!.Outcome);
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Single(cart.Lines);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecoverAttemptAsync_supervisor_not_paid_restore_subscriber_cancellation_is_post_commit_warning(
+        bool taskCanceled)
+    {
+        var attempt = CreateAttempt(
+            "SESSION-SUPERVISOR-RESTORE-CANCELED",
+            "TXN-SUPERVISOR-RESTORE-CANCELED",
+            LocalCardPaymentAttemptStatus.Cancelled) with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Bank case confirms no charge"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var backend = new FakeLinklyBackendTerminalClient();
+        var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
+        var cart = new PosCartService();
+        var notificationCount = 0;
+        cart.CartChanged += (_, _) =>
+        {
+            notificationCount++;
+            if (taskCanceled)
+            {
+                throw new TaskCanceledException("subscriber canceled");
+            }
+
+            throw new OperationCanceledException("subscriber canceled");
+        };
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result!.Outcome);
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Single(cart.Lines);
+        Assert.Equal(1, notificationCount);
+        Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.NotNull(attempts.AcknowledgedAt);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Cancelled, attempts.Status);
+        Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, attempts.ResponseCode);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RecoverAttemptAsync_supervisor_not_paid_acknowledge_cancellation_without_caller_cancel_rolls_back_and_keeps_attempt_open(
+        bool taskCanceled)
+    {
+        var attempt = CreateAttempt(
+            "SESSION-SUPERVISOR-ACK-CANCELED",
+            "TXN-SUPERVISOR-ACK-CANCELED",
+            LocalCardPaymentAttemptStatus.Cancelled) with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Bank case confirms no charge"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            AcknowledgeException = taskCanceled
+                ? new TaskCanceledException("terminal acknowledge canceled")
+                : new OperationCanceledException("terminal acknowledge canceled")
+        };
+        var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
+        var cart = new PosCartService();
+
+        CardPaymentRecoveryResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+        });
+
+        Assert.Null(exception);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result!.Outcome);
+        Assert.True(cart.IsEmpty);
+        Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.Null(attempts.AcknowledgedAt);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Cancelled, attempts.Status);
+        Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, attempts.ResponseCode);
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_supervisor_not_paid_subscriber_caller_cancellation_is_post_commit_warning()
+    {
+        var attempt = CreateAttempt(
+            "SESSION-SUPERVISOR-CALLER-CANCELED",
+            "TXN-SUPERVISOR-CALLER-CANCELED",
+            LocalCardPaymentAttemptStatus.Cancelled) with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Bank case confirms no charge"
+        };
+        var attempts = new FakeCardPaymentAttemptRepository(attempt);
+        var backend = new FakeLinklyBackendTerminalClient();
+        var service = CreateService(attempts, new FakeLocalOrderRepository(), backend);
+        var cart = new PosCartService();
+        using var cancellation = new CancellationTokenSource();
+        var notificationCount = 0;
+        cart.CartChanged += (_, _) =>
+        {
+            notificationCount++;
+            cancellation.Cancel();
+            throw new OperationCanceledException("caller canceled", cancellation.Token);
+        };
+
+        var result = await service.RecoverAttemptAsync(
+            attempt.AttemptGuid,
+            cart,
+            Session,
+            cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.Outcome);
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Single(cart.Lines);
+        Assert.Equal(1, notificationCount);
+        Assert.Equal(1, backend.AcknowledgeCallCount);
+        Assert.NotNull(attempts.AcknowledgedAt);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Cancelled, attempts.Status);
+        Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, attempts.ResponseCode);
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_local_ip_supervisor_not_paid_failed_marker_is_post_commit_warning()
+    {
+        var attempt = CreateAttempt(
+            sessionId: null,
+            txnRef: "TXN-LOCAL-SUPERVISOR-MARKER-FAIL",
+            status: LocalCardPaymentAttemptStatus.Cancelled,
+            connectionMode: LinklyConnectionMode.LocalIp) with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Bank case confirms no charge"
+        };
+        using var cancellation = new CancellationTokenSource();
+        var attempts = new FakeCardPaymentAttemptRepository(attempt)
+        {
+            OnMarkAcknowledged = cancellation.Cancel,
+            MarkAcknowledgedException = new InvalidOperationException("local marker failed")
+        };
+        var backend = new FakeLinklyBackendTerminalClient();
+        var service = CreateService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            backend,
+            new FakeCardTerminalSettingsProvider(LinklyConnectionMode.LocalIp));
+        var cart = new PosCartService();
+        var notificationCount = 0;
+        cart.CartChanged += (_, _) => notificationCount++;
+
+        var result = await service.RecoverAttemptAsync(
+            attempt.AttemptGuid,
+            cart,
+            Session,
+            cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.Outcome);
+        Assert.True(result.HasPostCommitWarning);
+        Assert.Single(cart.Lines);
+        Assert.Equal(1, notificationCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+        Assert.Null(attempts.AcknowledgedAt);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Cancelled, attempts.Status);
+        Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, attempts.ResponseCode);
+    }
+
+    [Fact]
+    public async Task RecoverAttemptAsync_local_ip_supervisor_not_paid_successful_marker_wins_over_concurrent_caller_cancellation()
+    {
+        var attempt = CreateAttempt(
+            sessionId: null,
+            txnRef: "TXN-LOCAL-SUPERVISOR-MARKER-SUCCESS",
+            status: LocalCardPaymentAttemptStatus.Cancelled,
+            connectionMode: LinklyConnectionMode.LocalIp) with
+        {
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid,
+            ResponseText = "Bank case confirms no charge"
+        };
+        using var cancellation = new CancellationTokenSource();
+        var attempts = new FakeCardPaymentAttemptRepository(attempt)
+        {
+            OnMarkAcknowledged = cancellation.Cancel
+        };
+        var backend = new FakeLinklyBackendTerminalClient();
+        var service = CreateService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            backend,
+            new FakeCardTerminalSettingsProvider(LinklyConnectionMode.LocalIp));
+        var cart = new PosCartService();
+        var notificationCount = 0;
+        cart.CartChanged += (_, _) => notificationCount++;
+
+        var result = await service.RecoverAttemptAsync(
+            attempt.AttemptGuid,
+            cart,
+            Session,
+            cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.Outcome);
+        Assert.Single(cart.Lines);
+        Assert.Equal(1, notificationCount);
+        Assert.Equal(0, backend.AcknowledgeCallCount);
+        Assert.NotNull(attempts.AcknowledgedAt);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Cancelled, attempts.Status);
+        Assert.Equal(ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid, attempts.ResponseCode);
+    }
+
     [Fact]
     public async Task ResolvePaymentAsync_confirm_paid_accepts_reference_with_empty_note()
     {
@@ -3768,6 +5372,7 @@ public sealed class CardPaymentRecoveryServiceTests
         CardPaymentSupervisorDecision loserDecision,
         ActiveSessionSupervisorDecision winnerDecision)
     {
+        var draft = CreateRefundDraft("ANZ:ORIGINAL-NOT-REFUNDED");
         var attempt = CreateAttempt(
             "SESSION-PAYMENT-CAS-LOSER",
             "TXN-PAYMENT-CAS-LOSER",
@@ -5075,6 +6680,226 @@ public sealed class CardPaymentRecoveryServiceTests
     }
 
     [Fact]
+    public async Task ResolveRefundAsync_square_confirm_not_refunded_does_not_replace_nonempty_current_cart()
+    {
+        var draft = CreateRefundDraft("SQ:ORIGINAL-PAYMENT");
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Unknown,
+            checkoutId: "CHECKOUT-REFUND") with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var service = CreateSquareService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            new FakeSquareTerminalPaymentClient());
+        var currentCart = new PosCartService();
+        currentCart.RestoreSnapshot(CreateDraft().CartSnapshot);
+
+        var result = await service.ResolveRefundAsync(
+            new CardRefundSupervisorResolution(
+                attempt.AttemptGuid,
+                CardProcessorKind.Square,
+                CardRefundSupervisorDecision.ConfirmNotRefunded,
+                Reason: "Checked Square settlement",
+                Evidence: "No refund exists for this payment"),
+            currentCart,
+            Session);
+
+        Assert.False(result.Succeeded);
+        Assert.False(result.RetryAllowed);
+        Assert.True(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, result.RecoveryResult?.Outcome);
+        Assert.Equal("SKU-10", Assert.Single(currentCart.Lines).ProductCode);
+    }
+
+    [Fact]
+    public async Task ResolveRefundAsync_square_confirm_not_refunded_semantically_invalid_snapshot_leaves_cart_unchanged()
+    {
+        var draft = CreateSemanticallyInvalidRefundDraft("SQ:ORIGINAL-PAYMENT");
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Unknown,
+            checkoutId: "CHECKOUT-REFUND-NOT-REFUNDED-BAD-SNAPSHOT") with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var service = CreateSquareService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            new FakeSquareTerminalPaymentClient());
+        var cart = new PosCartService();
+
+        CardRefundSupervisorResolutionResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.ResolveRefundAsync(
+                new CardRefundSupervisorResolution(
+                    attempt.AttemptGuid,
+                    CardProcessorKind.Square,
+                    CardRefundSupervisorDecision.ConfirmNotRefunded,
+                    Reason: "Checked Square settlement",
+                    Evidence: "No refund exists for this payment"),
+                cart,
+                Session);
+        });
+
+        Assert.Null(exception);
+        Assert.False(result!.Succeeded);
+        Assert.False(result.RetryAllowed);
+        Assert.True(result.LockRetained);
+        Assert.Null(result.RecoveryResult);
+        Assert.Equal(0, attempts.ResolveRefundCount);
+        Assert.True(cart.IsEmpty);
+    }
+
+    [Fact]
+    public async Task ResolveRefundAsync_square_confirm_not_refunded_cart_subscriber_failure_is_post_commit_warning()
+    {
+        var draft = CreateRefundDraft("SQ:ORIGINAL-PAYMENT");
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Unknown,
+            checkoutId: "CHECKOUT-REFUND-NOT-REFUNDED-SUBSCRIBER-FAIL") with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var service = CreateSquareService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            new FakeSquareTerminalPaymentClient());
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) => throw new InvalidOperationException("subscriber failed");
+
+        CardRefundSupervisorResolutionResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.ResolveRefundAsync(
+                new CardRefundSupervisorResolution(
+                    attempt.AttemptGuid,
+                    CardProcessorKind.Square,
+                    CardRefundSupervisorDecision.ConfirmNotRefunded,
+                    Reason: "Checked Square settlement",
+                    Evidence: "No refund exists for this payment"),
+                cart,
+                Session);
+        });
+
+        Assert.Null(exception);
+        Assert.True(result!.Succeeded);
+        Assert.True(result.RetryAllowed);
+        Assert.True(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.RecoveryResult?.Outcome);
+        Assert.True(result.RecoveryResult?.HasPostCommitWarning);
+        Assert.Single(cart.Lines);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ResolveRefundAsync_square_confirm_not_refunded_subscriber_cancellation_is_post_commit_warning(
+        bool taskCanceled)
+    {
+        var draft = CreateRefundDraft("SQ:ORIGINAL-PAYMENT");
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Unknown,
+            checkoutId: "CHECKOUT-REFUND-NOT-REFUNDED-SUBSCRIBER-CANCELED") with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
+        };
+        var service = CreateSquareService(
+            new FakeSquarePaymentAttemptRepository(attempt),
+            new FakeLocalOrderRepository(),
+            new FakeSquareTerminalPaymentClient());
+        var cart = new PosCartService();
+        cart.CartChanged += (_, _) =>
+        {
+            if (taskCanceled)
+            {
+                throw new TaskCanceledException("subscriber canceled");
+            }
+
+            throw new OperationCanceledException("subscriber canceled");
+        };
+
+        CardRefundSupervisorResolutionResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.ResolveRefundAsync(
+                new CardRefundSupervisorResolution(
+                    attempt.AttemptGuid,
+                    CardProcessorKind.Square,
+                    CardRefundSupervisorDecision.ConfirmNotRefunded,
+                    Reason: "Checked Square settlement",
+                    Evidence: "No refund exists for this payment"),
+                cart,
+                Session);
+        });
+
+        Assert.Null(exception);
+        Assert.True(result!.Succeeded);
+        Assert.True(result.RetryAllowed);
+        Assert.True(result.LockRetained);
+        Assert.Equal(CardPaymentRecoveryOutcome.DraftRestored, result.RecoveryResult?.Outcome);
+        Assert.True(result.RecoveryResult?.HasPostCommitWarning);
+        Assert.Single(cart.Lines);
+    }
+
+    [Theory]
+    [InlineData("CurrentTenders")]
+    [InlineData("CartSnapshot")]
+    [InlineData("Lines")]
+    public async Task ResolveRefundAsync_square_confirm_not_refunded_nested_null_draft_leaves_cart_unchanged(string nullField)
+    {
+        var draft = CreateNestedNullRefundDraft(nullField, cardAmount: 10m);
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.Unknown,
+            checkoutId: $"CHECKOUT-REFUND-NOT-REFUNDED-NULL-{nullField}") with
+        {
+            OperationKind = "Refund",
+            OperationGuid = draft.OrderGuid,
+            OrderDraftJson = JsonSerializer.Serialize(draft, JsonOptions)
+        };
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var service = CreateSquareService(
+            attempts,
+            new FakeLocalOrderRepository(),
+            new FakeSquareTerminalPaymentClient());
+        var cart = new PosCartService();
+
+        CardRefundSupervisorResolutionResult? result = null;
+        var exception = await Record.ExceptionAsync(async () =>
+        {
+            result = await service.ResolveRefundAsync(
+                new CardRefundSupervisorResolution(
+                    attempt.AttemptGuid,
+                    CardProcessorKind.Square,
+                    CardRefundSupervisorDecision.ConfirmNotRefunded,
+                    Reason: "Checked Square settlement",
+                    Evidence: "No refund exists for this payment"),
+                cart,
+                Session);
+        });
+
+        Assert.Null(exception);
+        Assert.False(result!.Succeeded);
+        Assert.False(result.RetryAllowed);
+        Assert.True(result.LockRetained);
+        Assert.Null(result.RecoveryResult);
+        Assert.Equal(0, attempts.ResolveRefundCount);
+        Assert.True(cart.IsEmpty);
+    }
+
+    [Fact]
     public async Task ResolveRefundAsync_square_continue_waiting_keeps_attempt_locked()
     {
         var draft = CreateRefundDraft("SQ:ORIGINAL-PAYMENT");
@@ -5194,6 +7019,44 @@ public sealed class CardPaymentRecoveryServiceTests
         Assert.False(attempts.LastMarkOrderCompletedCancellationToken.CanBeCanceled);
         Assert.False(orders.LastGetOrderCancellationToken.CanBeCanceled);
         Assert.False(orders.LastSaveCancellationToken.CanBeCanceled);
+    }
+
+    [Fact]
+    public async Task RecoverLatestAsync_square_checkout_lookup_cannot_restore_opposite_of_supervisor_paid_closure()
+    {
+        var attempt = CreateSquareAttempt(
+            LocalSquarePaymentAttemptStatus.CheckoutCreated,
+            "CHECKOUT-RACE");
+        var attempts = new FakeSquarePaymentAttemptRepository(attempt);
+        var orders = new FakeLocalOrderRepository();
+        var terminal = new FakeSquareTerminalPaymentClient
+        {
+            Checkout = new SquareCheckoutStatusResult(
+                "CHECKOUT-RACE",
+                "CANCELED",
+                1000,
+                "AUD",
+                [],
+                "terminal canceled")
+        };
+        terminal.OnGetCheckout = () => attempts.ReplaceAttempt(attempt with
+        {
+            Status = LocalSquarePaymentAttemptStatus.PaymentVerified,
+            PaymentId = "PAYMENT-SUPERVISOR",
+            PaymentStatus = "COMPLETED",
+            ResponseCode = ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
+            UpdatedAt = attempt.UpdatedAt.AddMinutes(1)
+        });
+        var service = CreateSquareService(attempts, orders, terminal);
+        var cart = new PosCartService();
+
+        var result = await service.RecoverLatestAsync(cart, Session);
+
+        Assert.Equal(CardPaymentRecoveryOutcome.OrderCompleted, result.Outcome);
+        Assert.True(cart.IsEmpty);
+        Assert.Equal(1, orders.SaveCount);
+        var payment = Assert.Single(result.Order!.Payments);
+        Assert.Equal("SQ:PAYMENT-SUPERVISOR", payment.Reference);
     }
 
     private static CardPaymentRecoveryService CreateService(
@@ -5404,6 +7267,21 @@ public sealed class CardPaymentRecoveryServiceTests
             DateTimeOffset.Parse("2026-06-05T10:00:00+10:00"));
     }
 
+    private static CardPaymentOrderDraft CreateMismatchedSquareSaleDraft(string mismatchKind)
+    {
+        var draft = CreateDraft();
+        return mismatchKind switch
+        {
+            "CardAmount" => CreateDraft(actualAmount: 9m, cardAmount: 9m),
+            "OrderGuid" => draft with { OrderGuid = Guid.Parse("88888888-7777-6666-5555-444444444444") },
+            "StoreCode" => draft with { Session = draft.Session with { StoreCode = "S999" } },
+            "DeviceCode" => draft with { Session = draft.Session with { DeviceCode = "POS-99" } },
+            "CashierId" => draft with { Session = draft.Session with { CashierId = "C999" } },
+            "TxnType" => draft with { TxnType = "R" },
+            _ => throw new ArgumentOutOfRangeException(nameof(mismatchKind), mismatchKind, null)
+        };
+    }
+
     private static CardPaymentOrderDraft CreateSemanticallyInvalidDraft()
     {
         var draft = CreateDraft();
@@ -5470,11 +7348,142 @@ public sealed class CardPaymentRecoveryServiceTests
             DateTimeOffset.Parse("2026-06-05T10:00:00+10:00"));
     }
 
+    private static (CardPaymentOrderDraft Draft, Guid? OperationGuid, string RefundBusinessKey)
+        CreateMismatchedSquareRefundDraft(string mismatchKind)
+    {
+        var authoritativeDraft = CreateRefundDraft("SQ:ORIGINAL-PAYMENT");
+        var draft = authoritativeDraft;
+        Guid? operationGuid = authoritativeDraft.OrderGuid;
+        var refundBusinessKey = BuildSquareRefundBusinessKey(authoritativeDraft);
+
+        switch (mismatchKind)
+        {
+            case "OrderGuid":
+                draft = draft with { OrderGuid = Guid.Parse("99999999-8888-7777-6666-555555555555") };
+                break;
+            case "OperationGuid":
+                operationGuid = Guid.Parse("aaaaaaaa-9999-8888-7777-666666666666");
+                break;
+            case "OperationGuidNull":
+                operationGuid = null;
+                break;
+            case "CardAmount":
+                draft = draft with { CardAmount = 9m };
+                break;
+            case "StoreCode":
+                draft = draft with { Session = draft.Session with { StoreCode = "S999" } };
+                break;
+            case "DeviceCode":
+                draft = draft with { Session = draft.Session with { DeviceCode = "POS-99" } };
+                break;
+            case "CashierId":
+                draft = draft with { Session = draft.Session with { CashierId = "C999" } };
+                break;
+            case "TxnType":
+                draft = draft with { TxnType = "P" };
+                break;
+            case "RefundBusinessKey":
+                refundBusinessKey = "MISMATCHED-SQUARE-REFUND-BUSINESS-KEY";
+                break;
+            case "PositiveTender":
+                draft = draft with
+                {
+                    CurrentTenders = [new PaymentTender(PaymentMethodKind.Cash, 1m)]
+                };
+                break;
+            case "CashOverRefund":
+                draft = draft with
+                {
+                    CurrentTenders = [new PaymentTender(PaymentMethodKind.Cash, -1m)]
+                };
+                break;
+            case "ActualAmount":
+                draft = draft with { ActualAmount = -9m };
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(mismatchKind), mismatchKind, null);
+        }
+
+        return (draft, operationGuid, refundBusinessKey);
+    }
+
+    private static string BuildSquareRefundBusinessKey(CardPaymentOrderDraft draft)
+    {
+        var canonical = string.Join(
+            "\n",
+            "ordinary-card-refund-v1",
+            "SQUARE",
+            "SANDBOX",
+            draft.Session.StoreCode.Trim().ToUpperInvariant(),
+            draft.Session.DeviceCode.Trim().ToUpperInvariant(),
+            draft.OriginalReference!.Trim().ToUpperInvariant(),
+            decimal.ToInt64(decimal.Round(draft.CardAmount * 100m, 0, MidpointRounding.AwayFromZero))
+                .ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "AUD");
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(canonical)));
+    }
+
+    private static string BuildLinklyRefundBusinessKey(
+        CardPaymentOrderDraft draft,
+        string originalReference)
+    {
+        var canonical = string.Join(
+            "\n",
+            "ordinary-card-refund-v1",
+            "LINKLY",
+            "SANDBOX",
+            draft.Session.StoreCode.Trim().ToUpperInvariant(),
+            draft.Session.DeviceCode.Trim().ToUpperInvariant(),
+            originalReference.Trim().ToUpperInvariant(),
+            decimal.ToInt64(decimal.Round(draft.CardAmount * 100m, 0, MidpointRounding.AwayFromZero))
+                .ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "AUD");
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(canonical)));
+    }
+
+    private static CardPaymentOrderDraft CreateSemanticallyInvalidRefundDraft(string originalReference)
+    {
+        var draft = CreateRefundDraft(originalReference);
+        var validLine = Assert.Single(draft.CartSnapshot.Lines);
+        return draft with
+        {
+            CartSnapshot = new PosCartSnapshot(
+            [
+                validLine,
+                validLine with { ProductCode = "INVALID-REFUND-QUANTITY", Quantity = 0m }
+            ])
+        };
+    }
+
+    private static CardPaymentOrderDraft CreateNestedNullRefundDraft(string nullField, decimal cardAmount)
+    {
+        var draft = CreateRefundDraft("SQ:ORIGINAL-PAYMENT") with { CardAmount = cardAmount };
+        return nullField switch
+        {
+            "CurrentTenders" => draft with { CurrentTenders = null! },
+            "CartSnapshot" => draft with { CartSnapshot = null! },
+            "Lines" => draft with
+            {
+                CartSnapshot = draft.CartSnapshot with { Lines = null! }
+            },
+            _ => throw new ArgumentOutOfRangeException(nameof(nullField), nullField, null)
+        };
+    }
+
     private static PosCartService CreateCurrentCart()
     {
         var cart = new PosCartService();
         AddCurrentCartItem(cart);
         return cart;
+    }
+
+    private static void AssertCartUnchanged(PosCartService cart, PosCartSnapshot expectedSnapshot)
+    {
+        Assert.Equal(
+            JsonSerializer.Serialize(expectedSnapshot, JsonOptions),
+            JsonSerializer.Serialize(cart.CreateSnapshot(), JsonOptions));
     }
 
     private static void AddCurrentCartItem(PosCartService cart)
@@ -5535,6 +7544,28 @@ public sealed class CardPaymentRecoveryServiceTests
                     "ANZ:EXISTING-ORDER",
                     IdempotencyKey: paymentIdempotencyKey)
             ]);
+    }
+
+    private static LocalOrder CreateExistingRefundOrder(
+        CardPaymentOrderDraft draft,
+        string refundId)
+    {
+        var cart = new PosCartService();
+        cart.RestoreSnapshot(draft.CartSnapshot);
+        var checkoutResult = new CashCheckoutService().CreatePaymentOrder(
+            cart,
+            draft.Session,
+            [
+                new PaymentTender(
+                    PaymentMethodKind.Card,
+                    -Math.Abs(draft.CardAmount),
+                    CardRefundReference.Format(
+                        refundId,
+                        draft.OriginalReference ?? throw new InvalidOperationException("Refund draft reference is missing.")),
+                    IdempotencyKey: "SQUARE_ATTEMPT:bbbbbbbbccccddddeeeeffffffffffff")
+            ],
+            cashTenderedAmount: 0m);
+        return checkoutResult.Order with { OrderGuid = draft.OrderGuid };
     }
 
     private static LinklyCloudBackendSessionResponse CreateStatus(
@@ -5618,6 +7649,12 @@ public sealed class CardPaymentRecoveryServiceTests
         public LocalCardPaymentAttempt? RecoveryFinalizationWinner { get; init; }
 
         public Exception? UpdateOutcomeException { get; init; }
+
+        public Exception? MarkAcknowledgedException { get; init; }
+
+        public Action? OnMarkAcknowledged { get; init; }
+
+        public int MarkRecoveringCallCount { get; private set; }
 
         public int ResolveRefundCount { get; private set; }
 
@@ -5712,6 +7749,12 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public Task MarkAcknowledgedAsync(Guid attemptGuid, DateTimeOffset acknowledgedAt, CancellationToken cancellationToken = default)
         {
+            OnMarkAcknowledged?.Invoke();
+            if (MarkAcknowledgedException is not null)
+            {
+                throw MarkAcknowledgedException;
+            }
+
             _attempt = _attempt! with
             {
                 AcknowledgedAt = acknowledgedAt,
@@ -5735,6 +7778,12 @@ public sealed class CardPaymentRecoveryServiceTests
                 !CanAcknowledgeFinalizePendingSale(_attempt))
             {
                 return Task.FromResult(false);
+            }
+
+            OnMarkAcknowledged?.Invoke();
+            if (MarkAcknowledgedException is not null)
+            {
+                throw MarkAcknowledgedException;
             }
 
             _attempt = _attempt with
@@ -5783,6 +7832,7 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public Task MarkRecoveringAsync(Guid attemptGuid, DateTimeOffset updatedAt, CancellationToken cancellationToken = default)
         {
+            MarkRecoveringCallCount++;
             _attempt = _attempt! with
             {
                 Status = LocalCardPaymentAttemptStatus.Recovering,
@@ -6218,7 +8268,11 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public string? PaymentId => _attempt?.PaymentId;
 
+        public string? PaymentStatus => _attempt?.PaymentStatus;
+
         public string? ResponseCode => _attempt?.ResponseCode;
+
+        public string? SupervisorFinancialReference => _attempt?.SupervisorFinancialReference;
 
         public string? RecoveryPhase => _attempt?.RecoveryPhase;
 
@@ -6226,9 +8280,25 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public int MarkFailedCount { get; private set; }
 
+        public int MarkRecoveringCount { get; private set; }
+
         public int UpdateCheckoutStatusCount { get; private set; }
 
         public int MarkOrderCompletedCount { get; private set; }
+
+        public int TryTerminalizeNotPaidCount { get; private set; }
+
+        public int ResolvePaymentCount { get; private set; }
+
+        public SquarePaymentResolution? LastPaymentResolution { get; private set; }
+
+        public LocalFinancialSupervisorResolution? LastPaymentJournal { get; private set; }
+
+        public int ResolveRefundCount { get; private set; }
+
+        public CardRefundAttemptResolution? LastRefundResolution { get; private set; }
+
+        public LocalFinancialSupervisorResolution? LastRefundJournal { get; private set; }
 
         public ManualResetEventSlim? GetLatestEntered { get; init; }
 
@@ -6240,11 +8310,23 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public Exception? MarkOrderCompletedException { get; init; }
 
+        public Exception? MarkRecoveringException { get; init; }
+
+        public Action? BeforeMarkRecoveringFailure { get; set; }
+
+        public Action<LocalSquarePaymentAttempt?>? OnGetAttemptAfterRead { get; set; }
+
         public bool FailRecoveryFinalization { get; init; }
 
         public LocalSquarePaymentAttempt? RecoveryFinalizationWinner { get; init; }
 
         public Exception? PostCommitGetAttemptException { get; init; }
+
+        public void ReplaceAttempt(LocalSquarePaymentAttempt replacement)
+        {
+            _attempt = replacement;
+            Status = replacement.Status;
+        }
 
         public Task CreateAsync(LocalSquarePaymentAttempt attempt, CancellationToken cancellationToken = default)
         {
@@ -6264,6 +8346,7 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public Task MarkCheckoutCreatedAsync(Guid attemptGuid, string checkoutId, string? checkoutStatus, DateTimeOffset updatedAt, CancellationToken cancellationToken = default)
         {
+            EnsureAutomaticWriteAllowed(attemptGuid);
             Status = LocalSquarePaymentAttemptStatus.CheckoutCreated;
             _attempt = _attempt! with
             {
@@ -6277,9 +8360,43 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public Task MarkRecoveringAsync(Guid attemptGuid, DateTimeOffset updatedAt, CancellationToken cancellationToken = default)
         {
+            MarkRecoveringCount++;
+            if (MarkRecoveringException is not null)
+            {
+                BeforeMarkRecoveringFailure?.Invoke();
+                throw MarkRecoveringException;
+            }
+
+            EnsureAutomaticWriteAllowed(attemptGuid);
+
             Status = LocalSquarePaymentAttemptStatus.Recovering;
             _attempt = _attempt! with { Status = Status, UpdatedAt = updatedAt };
             return Task.CompletedTask;
+        }
+
+        public Task<bool> TryMarkRecoveringAsync(
+            Guid attemptGuid,
+            LocalSquarePaymentAttemptStatus expectedStatus,
+            DateTimeOffset expectedUpdatedAt,
+            DateTimeOffset updatedAt,
+            CancellationToken cancellationToken = default)
+        {
+            MarkRecoveringCount++;
+            if (MarkRecoveringException is not null)
+            {
+                BeforeMarkRecoveringFailure?.Invoke();
+                throw MarkRecoveringException;
+            }
+
+            OnGetAttemptAfterRead?.Invoke(_attempt);
+            if (!CanApplyAutomaticWrite(attemptGuid, expectedStatus, expectedUpdatedAt))
+            {
+                return Task.FromResult(false);
+            }
+
+            Status = LocalSquarePaymentAttemptStatus.Recovering;
+            _attempt = _attempt! with { Status = Status, UpdatedAt = updatedAt };
+            return Task.FromResult(true);
         }
 
         public Task UpdateCheckoutStatusAsync(
@@ -6291,6 +8408,8 @@ public sealed class CardPaymentRecoveryServiceTests
             CancellationToken cancellationToken = default)
         {
             UpdateCheckoutStatusCount++;
+            EnsureAutomaticWriteAllowed(attemptGuid);
+
             Status = status;
             _attempt = _attempt! with
             {
@@ -6312,6 +8431,8 @@ public sealed class CardPaymentRecoveryServiceTests
             CancellationToken cancellationToken = default)
         {
             LastMarkPaymentVerifiedCancellationToken = cancellationToken;
+            EnsureAutomaticWriteAllowed(attemptGuid);
+
             Status = LocalSquarePaymentAttemptStatus.PaymentVerified;
             _attempt = _attempt! with
             {
@@ -6337,18 +8458,15 @@ public sealed class CardPaymentRecoveryServiceTests
             DateTimeOffset completedAt,
             CancellationToken cancellationToken = default)
         {
-            if (_attempt is null ||
-                _attempt.AttemptGuid != attemptGuid ||
-                _attempt.Status != expectedStatus ||
-                _attempt.UpdatedAt != expectedUpdatedAt ||
-                string.Equals(_attempt.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal))
+            OnGetAttemptAfterRead?.Invoke(_attempt);
+            if (!CanApplyAutomaticWrite(attemptGuid, expectedStatus, expectedUpdatedAt))
             {
                 return Task.FromResult(false);
             }
 
             LastMarkPaymentVerifiedCancellationToken = cancellationToken;
             Status = LocalSquarePaymentAttemptStatus.PaymentVerified;
-            _attempt = _attempt with
+            _attempt = _attempt! with
             {
                 Status = Status,
                 PaymentId = paymentId,
@@ -6397,6 +8515,8 @@ public sealed class CardPaymentRecoveryServiceTests
             string? cancelReason = null)
         {
             MarkFailedCount++;
+            EnsureAutomaticWriteAllowed(attemptGuid);
+
             Status = status;
             _attempt = _attempt! with
             {
@@ -6430,6 +8550,69 @@ public sealed class CardPaymentRecoveryServiceTests
                 UpdatedAt = completedAt
             };
             return Task.CompletedTask;
+        }
+
+        public Task<bool> TryMarkFailedAsync(
+            Guid attemptGuid,
+            LocalSquarePaymentAttemptStatus expectedStatus,
+            DateTimeOffset expectedUpdatedAt,
+            LocalSquarePaymentAttemptStatus status,
+            string? checkoutStatus,
+            string? paymentStatus,
+            string? responseCode,
+            string? responseText,
+            DateTimeOffset resolvedAt,
+            CancellationToken cancellationToken = default,
+            string? cancelReason = null)
+        {
+            MarkFailedCount++;
+            OnGetAttemptAfterRead?.Invoke(_attempt);
+            if (!CanApplyAutomaticWrite(attemptGuid, expectedStatus, expectedUpdatedAt))
+            {
+                return Task.FromResult(false);
+            }
+
+            Status = status;
+            _attempt = _attempt! with
+            {
+                Status = status,
+                CheckoutStatus = checkoutStatus ?? _attempt.CheckoutStatus,
+                PaymentStatus = paymentStatus ?? _attempt.PaymentStatus,
+                ResponseCode = responseCode,
+                ResponseText = responseText,
+                CancelReason = cancelReason ?? _attempt.CancelReason,
+                ResolvedAt = resolvedAt,
+                UpdatedAt = resolvedAt
+            };
+            return Task.FromResult(true);
+        }
+
+        public Task<bool> TryUpdateCheckoutStatusAsync(
+            Guid attemptGuid,
+            LocalSquarePaymentAttemptStatus expectedStatus,
+            DateTimeOffset expectedUpdatedAt,
+            LocalSquarePaymentAttemptStatus status,
+            string? checkoutStatus,
+            string? cancelReason,
+            DateTimeOffset updatedAt,
+            CancellationToken cancellationToken = default)
+        {
+            UpdateCheckoutStatusCount++;
+            OnGetAttemptAfterRead?.Invoke(_attempt);
+            if (!CanApplyAutomaticWrite(attemptGuid, expectedStatus, expectedUpdatedAt))
+            {
+                return Task.FromResult(false);
+            }
+
+            Status = status;
+            _attempt = _attempt! with
+            {
+                Status = status,
+                CheckoutStatus = checkoutStatus ?? _attempt.CheckoutStatus,
+                CancelReason = cancelReason ?? _attempt.CancelReason,
+                UpdatedAt = updatedAt
+            };
+            return Task.FromResult(true);
         }
 
         public Task<bool> TryBeginRecoveryFinalizationAsync(
@@ -6508,6 +8691,49 @@ public sealed class CardPaymentRecoveryServiceTests
             return Task.FromResult(true);
         }
 
+        private void EnsureAutomaticWriteAllowed(Guid attemptGuid)
+        {
+            if (_attempt is null ||
+                _attempt.AttemptGuid != attemptGuid ||
+                _attempt.OperationKind is not ("Sale" or "Refund") ||
+                _attempt.Status is not (
+                    LocalSquarePaymentAttemptStatus.Pending or
+                    LocalSquarePaymentAttemptStatus.CheckoutCreated or
+                    LocalSquarePaymentAttemptStatus.Recovering or
+                    LocalSquarePaymentAttemptStatus.CheckoutCompleted or
+                    LocalSquarePaymentAttemptStatus.Unknown) ||
+                string.Equals(_attempt.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) ||
+                _attempt.ResponseCode is ActiveSessionSupervisorResolutionCodes.ConfirmedPaid or
+                    ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid or
+                    CardRefundSupervisorResolutionCodes.ConfirmedRefunded or
+                    CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded)
+            {
+                throw new InvalidOperationException("支付 attempt 状态已变化，旧任务不得继续写入。");
+            }
+        }
+
+        private bool CanApplyAutomaticWrite(
+            Guid attemptGuid,
+            LocalSquarePaymentAttemptStatus expectedStatus,
+            DateTimeOffset expectedUpdatedAt) =>
+            _attempt is not null &&
+            _attempt.AttemptGuid == attemptGuid &&
+            _attempt.Status == expectedStatus &&
+            _attempt.UpdatedAt == expectedUpdatedAt &&
+            _attempt.OperationKind is "Sale" or "Refund" &&
+            _attempt.Status is
+                LocalSquarePaymentAttemptStatus.Pending or
+                LocalSquarePaymentAttemptStatus.CheckoutCreated or
+                LocalSquarePaymentAttemptStatus.Recovering or
+                LocalSquarePaymentAttemptStatus.CheckoutCompleted or
+                LocalSquarePaymentAttemptStatus.Unknown &&
+            !string.Equals(_attempt.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal) &&
+            _attempt.ResponseCode is not (
+                ActiveSessionSupervisorResolutionCodes.ConfirmedPaid or
+                ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid or
+                CardRefundSupervisorResolutionCodes.ConfirmedRefunded or
+                CardRefundSupervisorResolutionCodes.ConfirmedNotRefunded);
+
         public Task<LocalSquarePaymentAttempt?> GetLatestOpenAttemptAsync(
             string storeCode,
             string deviceCode,
@@ -6532,8 +8758,9 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public Task<LocalSquarePaymentAttempt?> GetAttemptAsync(Guid attemptGuid, CancellationToken cancellationToken = default)
         {
+            var current = _attempt;
             if (PostCommitGetAttemptException is not null &&
-                _attempt?.ResponseCode is
+                current?.ResponseCode is
                     ActiveSessionSupervisorResolutionCodes.ConfirmedPaid or
                     ActiveSessionSupervisorResolutionCodes.ConfirmedNotPaid or
                     ActiveSessionSupervisorResolutionCodes.ContinueWaiting or
@@ -6544,13 +8771,16 @@ public sealed class CardPaymentRecoveryServiceTests
                 throw PostCommitGetAttemptException;
             }
 
-            return Task.FromResult(_attempt);
+            OnGetAttemptAfterRead?.Invoke(current);
+            return Task.FromResult(current);
         }
 
         public Task<bool> ResolveRefundAsync(
             CardRefundAttemptResolution resolution,
             CancellationToken cancellationToken = default)
         {
+            ResolveRefundCount++;
+            LastRefundResolution = resolution;
             if (_attempt is null ||
                 _attempt.OperationKind != "Refund" ||
                 _attempt.ResponseCode is CardRefundSupervisorResolutionCodes.ConfirmedRefunded or
@@ -6609,6 +8839,9 @@ public sealed class CardPaymentRecoveryServiceTests
             LocalFinancialSupervisorResolution journal,
             CancellationToken cancellationToken = default)
         {
+            ResolvePaymentCount++;
+            LastPaymentResolution = resolution;
+            LastPaymentJournal = journal;
             if (_attempt is null ||
                 _attempt.AttemptGuid != resolution.AttemptGuid ||
                 !string.Equals(_attempt.OperationKind, "Sale", StringComparison.Ordinal) ||
@@ -6673,6 +8906,8 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public Action? OnGetPayment { get; init; }
 
+        public Action? OnGetCheckout { get; set; }
+
         public int GetCheckoutCallCount { get; private set; }
 
         public int GetPaymentCallCount { get; private set; }
@@ -6685,6 +8920,7 @@ public sealed class CardPaymentRecoveryServiceTests
             CancellationToken cancellationToken = default)
         {
             GetCheckoutCallCount++;
+            OnGetCheckout?.Invoke();
             return Task.FromResult(Checkout);
         }
 
@@ -6824,6 +9060,8 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public Exception? SaveException { get; init; }
 
+        public Exception? GetException { get; init; }
+
         public Task SavePendingOrderAsync(LocalOrder order, CancellationToken cancellationToken = default)
         {
             LastSaveCancellationToken = cancellationToken;
@@ -6868,6 +9106,11 @@ public sealed class CardPaymentRecoveryServiceTests
         public Task<LocalOrder?> GetOrderAsync(Guid orderGuid, CancellationToken cancellationToken = default)
         {
             LastGetOrderCancellationToken = cancellationToken;
+            if (GetException is not null)
+            {
+                throw GetException;
+            }
+
             var existing = _existingOrder is not null && _existingOrder.OrderGuid == orderGuid
                 ? _existingOrder
                 : null;
@@ -6877,8 +9120,15 @@ public sealed class CardPaymentRecoveryServiceTests
 
     private sealed class FakeSyncQueueRepository : ISyncQueueRepository
     {
+        public Exception? CountPendingException { get; init; }
+
         public Task<int> CountPendingAsync(CancellationToken cancellationToken = default)
         {
+            if (CountPendingException is not null)
+            {
+                throw CountPendingException;
+            }
+
             return Task.FromResult(0);
         }
 

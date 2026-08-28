@@ -4114,6 +4114,12 @@ public sealed class CardPaymentRecoveryService(
                     cancellationToken);
                 return true;
             }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                TryWriteRecoveryLog(
+                    $"supervisor payment backend acknowledge canceled without caller cancellation attemptGuid={attempt.AttemptGuid} sessionId={LogValue(sessionId)} error={ex.GetType().Name}");
+                return false;
+            }
             catch (Exception ex) when (ex is not OperationCanceledException and not OutOfMemoryException and not StackOverflowException)
             {
                 TryWriteRecoveryLog(
@@ -4221,7 +4227,9 @@ public sealed class CardPaymentRecoveryService(
         // 主管决定与未 acknowledge 的已完成订单仍是可恢复状态，不能当作不可恢复终态拒绝。
         if (IsSupervisorResolvedPayment(attempt))
         {
-            return false;
+            // 已完成 terminal acknowledge 的主管终态不得再次发布草稿或补写订单；
+            // 只有尚未完成收尾的历史主管决定才继续进入恢复。
+            return attempt.AcknowledgedAt is not null;
         }
 
         return !(attempt.Status == LocalCardPaymentAttemptStatus.OrderCompleted &&

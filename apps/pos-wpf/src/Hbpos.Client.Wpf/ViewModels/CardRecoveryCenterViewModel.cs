@@ -59,7 +59,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
     private readonly ILocalizationService? _localization;
     private readonly Action? _back;
     private readonly Action<int>? _openCountChanged;
-    private readonly Func<CardPaymentRecoveryResult, Task>? _recoveryResultHandledAsync;
+    private readonly Func<CardRecoveryAttemptKey, CardPaymentRecoveryResult, Task>? _recoveryResultHandledAsync;
     private Task? _initialLoadTask;
     private CardRecoveryQueueItem? _selectedAttempt;
     private CardRecoveryQueueRowViewModel? _selectedRow;
@@ -79,7 +79,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         ILocalizationService? localization = null,
         Action? back = null,
         Action<int>? openCountChanged = null,
-        Func<CardPaymentRecoveryResult, Task>? recoveryResultHandledAsync = null)
+        Func<CardRecoveryAttemptKey, CardPaymentRecoveryResult, Task>? recoveryResultHandledAsync = null)
     {
         ArgumentNullException.ThrowIfNull(recoveryService);
         ArgumentNullException.ThrowIfNull(cart);
@@ -374,6 +374,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             return;
         }
 
+        var selectedKey = selected.Key;
         IsBusy = true;
         try
         {
@@ -391,7 +392,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             }
 
             using var activation = authorization.Activate();
-            if (SelectedAttempt?.Key != selected.Key)
+            if (SelectedAttempt?.Key != selectedKey)
             {
                 SetStatusResource(
                     "cardRecovery.center.status.selectionChanged",
@@ -400,19 +401,16 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             }
 
             var result = await _recoveryService.RecoverAsync(
-                selected.Key,
+                selectedKey,
                 _cart,
                 _session);
             var actionMessage = string.IsNullOrWhiteSpace(result.Message)
                 ? T("cardRecovery.center.status.recoverNoResult", "The selected transaction is no longer open.")
                 : result.Message;
-            await RunPostCommitActionAsync(
-                () => RefreshListCoreAsync(actionMessage),
-                actionMessage,
-                $"targeted recovery refresh processor={selected.Processor} attempt={selected.AttemptGuid:D}");
+            await TryRefreshListAfterOperationAsync(actionMessage, "recover");
             if (_recoveryResultHandledAsync is not null)
             {
-                Func<Task> callback = () => _recoveryResultHandledAsync(result);
+                Func<Task> callback = () => _recoveryResultHandledAsync(selectedKey, result);
                 var context =
                     $"targeted recovery callback processor={selected.Processor} attempt={selected.AttemptGuid:D}";
                 if (result.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
@@ -421,7 +419,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
                 }
                 else
                 {
-                    await RunPostCommitActionAsync(callback, actionMessage, context);
+                    await TryHandleRecoveryResultAsync(selectedKey, result, "recover");
                 }
             }
         }
@@ -529,6 +527,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             return;
         }
 
+        var selectedKey = selected.Key;
         var reason = Normalize(ResolutionReason) ?? string.Empty;
         var evidence = Normalize(ResolutionEvidence);
         var reference = Normalize(ResolutionReference);
@@ -556,7 +555,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
 
             using var activation = authorization.Activate();
             // 主管扫码期间列表选择可能变化，旧授权不得落到另一笔金融交易。
-            if (SelectedAttempt?.Key != selected.Key)
+            if (SelectedAttempt?.Key != selectedKey)
             {
                 SetStatusResource(
                     "cardRecovery.center.status.selectionChanged",
@@ -565,7 +564,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             }
 
             var result = await _recoveryService.ResolveAsync(
-                selected.Key,
+                selectedKey,
                 decision,
                 reason,
                 evidence,
@@ -575,14 +574,14 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             var actionMessage = string.IsNullOrWhiteSpace(result.Message)
                 ? T("cardRecovery.center.status.resolveNoResult", "The resolution returned no message.")
                 : result.Message;
-            await RunPostCommitActionAsync(
-                () => RefreshListCoreAsync(actionMessage),
+            await TryRefreshListAfterOperationAsync(
                 actionMessage,
-                $"targeted resolution refresh processor={selected.Processor} attempt={selected.AttemptGuid:D} decision={decision}");
+                action,
+                preserveActionMessageOnFailure: result.ResolutionPersisted && result.RecoveryResult is null);
             if (result.RecoveryResult is not null && _recoveryResultHandledAsync is not null)
             {
                 var recoveryResult = result.RecoveryResult;
-                Func<Task> callback = () => _recoveryResultHandledAsync(recoveryResult);
+                Func<Task> callback = () => _recoveryResultHandledAsync(selectedKey, recoveryResult);
                 var context =
                     $"targeted resolution callback processor={selected.Processor} attempt={selected.AttemptGuid:D} decision={decision}";
                 if (recoveryResult.Outcome == CardPaymentRecoveryOutcome.DraftRestored)
@@ -591,7 +590,7 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
                 }
                 else
                 {
-                    await RunPostCommitActionAsync(callback, actionMessage, context);
+                    await TryHandleRecoveryResultAsync(selectedKey, recoveryResult, action);
                 }
             }
         }
@@ -612,33 +611,63 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
         }
     }
 
-    private async Task RunPostCommitActionAsync(
-        Func<Task> action,
-        string committedMessage,
-        string context)
+    private async Task TryRefreshListAfterOperationAsync(
+        string actionMessage,
+        string action,
+        bool preserveActionMessageOnFailure = false)
     {
         try
         {
-            await action();
+            await RefreshListCoreAsync(actionMessage);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
         {
-            // 服务结果已经确定，刷新或壳层回调失败不能伪装成主管决定保存失败。
+            // 金融结果已经确定；刷新失败只显示队列告警，并继续交付原结果。
             try
             {
-                SetLiteralStatus(committedMessage);
+                if (preserveActionMessageOnFailure)
+                {
+                    SetLiteralStatus(actionMessage);
+                }
+                else
+                {
+                    SetStatusResource(
+                        "cardRecovery.center.status.refreshFailed",
+                        "Could not refresh card transactions. {0}",
+                        ex.Message);
+                }
             }
             catch (Exception statusException) when (
-                statusException is not OutOfMemoryException and
-                not StackOverflowException)
+                statusException is not OutOfMemoryException and not StackOverflowException)
             {
-                TryWritePostCommitWarning(
-                    $"post-commit status restore failed context={context} error={statusException.GetType().Name}",
-                    statusException);
+                // UI 通知失败不能覆盖已确定的金融结果。
             }
 
             TryWritePostCommitWarning(
-                $"post-commit action failed context={context} error={ex.GetType().Name}",
+                $"refresh failed action={action} error={ex.GetType().Name}",
+                ex);
+        }
+    }
+
+    private async Task TryHandleRecoveryResultAsync(
+        CardRecoveryAttemptKey selectedKey,
+        CardPaymentRecoveryResult result,
+        string action)
+    {
+        if (_recoveryResultHandledAsync is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _recoveryResultHandledAsync(selectedKey, result);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            // 壳层回调属于提交后收尾；失败只能记录，不能把结果改写为恢复失败。
+            TryWritePostCommitWarning(
+                $"post-result callback failed action={action} processor={selectedKey.Processor} attempt={selectedKey.AttemptGuid:D} error={ex.GetType().Name}",
                 ex);
         }
     }
@@ -883,33 +912,33 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             : string.Empty;
         var key = compact switch
         {
-            "sale" => "cardRecovery.operation.sale",
-            "refund" => "cardRecovery.operation.refund",
-            "activesession" => "cardRecovery.operation.activeSession",
-            _ => "cardRecovery.operation.unknown"
+            "sale" => "cardRecovery.center.type.sale",
+            "refund" => "cardRecovery.center.type.refund",
+            "activesession" => "cardRecovery.center.type.activeSession",
+            _ => "cardRecovery.center.value.unknown"
         };
-        return T(key, key == "cardRecovery.operation.sale"
-            ? "Sale"
-            : key == "cardRecovery.operation.refund"
-                ? "Refund"
-                : key == "cardRecovery.operation.activeSession"
-                    ? "Active session"
-                    : "Unknown operation");
+        return T(key, key == "cardRecovery.center.type.sale"
+            ? "Card sale"
+            : key == "cardRecovery.center.type.refund"
+                ? "Card refund"
+                : key == "cardRecovery.center.type.activeSession"
+                    ? "Active terminal session"
+                    : "Unknown");
     }
 
     private string MapChannel(CardProcessorKind? value)
     {
         var key = value switch
         {
-            CardProcessorKind.Linkly => "cardRecovery.channel.linkly",
-            CardProcessorKind.Square => "cardRecovery.channel.square",
-            _ => "cardRecovery.channel.unknown"
+            CardProcessorKind.Linkly => "cardRecovery.center.channel.linkly",
+            CardProcessorKind.Square => "cardRecovery.center.channel.square",
+            _ => "cardRecovery.center.value.unknown"
         };
         return T(key, key switch
         {
-            "cardRecovery.channel.linkly" => "Linkly",
-            "cardRecovery.channel.square" => "Square",
-            _ => "Unknown channel"
+            "cardRecovery.center.channel.linkly" => "Linkly",
+            "cardRecovery.center.channel.square" => "Square",
+            _ => "Unknown"
         });
     }
 
@@ -920,48 +949,46 @@ public sealed class CardRecoveryCenterViewModel : ObservableObject, IDisposable
             ? new string(normalized.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant()
             : string.Empty;
         var key = compact.Length == 0
-            ? "cardRecovery.status.none"
+            ? "cardRecovery.center.value.unknown"
             : compact switch
         {
-            "none" => "cardRecovery.status.none",
-            "pending" => "cardRecovery.status.pending",
-            "sessionstarted" => "cardRecovery.status.sessionStarted",
-            "recovering" => "cardRecovery.status.recovering",
-            "approved" => "cardRecovery.status.approved",
-            "requiresreview" => "cardRecovery.status.requiresReview",
-            "declined" => "cardRecovery.status.declined",
-            "timedout" => "cardRecovery.status.timedOut",
-            "cancelled" => "cardRecovery.status.cancelled",
-            "canceled" => "cardRecovery.status.canceled",
-            "failed" => "cardRecovery.status.failed",
-            "ordercompleted" => "cardRecovery.status.orderCompleted",
-            "abandoned" => "cardRecovery.status.abandoned",
-            "checkoutcreated" => "cardRecovery.status.checkoutCreated",
-            "checkoutcompleted" => "cardRecovery.status.checkoutCompleted",
-            "paymentverified" => "cardRecovery.status.paymentVerified",
+            "none" => "cardRecovery.center.value.unknown",
+            "pending" => "cardRecovery.center.transactionStatus.pending",
+            "sessionstarted" => "cardRecovery.center.transactionStatus.sessionStarted",
+            "recovering" => "cardRecovery.center.transactionStatus.recovering",
+            "approved" => "cardRecovery.center.transactionStatus.approved",
+            "requiresreview" => "cardRecovery.center.transactionStatus.requiresReview",
+            "declined" => "cardRecovery.center.transactionStatus.declined",
+            "timedout" => "cardRecovery.center.transactionStatus.timedOut",
+            "cancelled" or "canceled" => "cardRecovery.center.transactionStatus.cancelled",
+            "failed" => "cardRecovery.center.transactionStatus.failed",
+            "ordercompleted" => "cardRecovery.center.transactionStatus.orderCompleted",
+            "abandoned" => "cardRecovery.center.transactionStatus.abandoned",
+            "checkoutcreated" => "cardRecovery.center.transactionStatus.checkoutCreated",
+            "checkoutcompleted" => "cardRecovery.center.transactionStatus.checkoutCompleted",
+            "paymentverified" => "cardRecovery.center.transactionStatus.paymentVerified",
             // Provider 队列会把该阶段放入 Status；它不是数据库状态枚举。
             "finalizepending" => "cardRecovery.status.finalizePending",
-            _ => "cardRecovery.status.unknown"
+            _ => "cardRecovery.center.transactionStatus.unknown"
         };
         return T(key, key switch
         {
-            "cardRecovery.status.none" => "None",
-            "cardRecovery.status.pending" => "Pending",
-            "cardRecovery.status.sessionStarted" => "Session started",
-            "cardRecovery.status.recovering" => "Recovering",
-            "cardRecovery.status.approved" => "Approved",
-            "cardRecovery.status.requiresReview" => "Requires review",
-            "cardRecovery.status.declined" => "Declined",
-            "cardRecovery.status.timedOut" => "Timed out",
-            "cardRecovery.status.cancelled" or "cardRecovery.status.canceled" => "Cancelled",
-            "cardRecovery.status.failed" => "Failed",
-            "cardRecovery.status.orderCompleted" => "Order completed",
-            "cardRecovery.status.abandoned" => "Abandoned",
-            "cardRecovery.status.checkoutCreated" => "Checkout created",
-            "cardRecovery.status.checkoutCompleted" => "Checkout completed",
-            "cardRecovery.status.paymentVerified" => "Payment verified",
+            "cardRecovery.center.transactionStatus.pending" => "Pending",
+            "cardRecovery.center.transactionStatus.sessionStarted" => "Session started",
+            "cardRecovery.center.transactionStatus.recovering" => "Checking result",
+            "cardRecovery.center.transactionStatus.approved" => "Payment approved",
+            "cardRecovery.center.transactionStatus.requiresReview" => "Needs supervisor review",
+            "cardRecovery.center.transactionStatus.declined" => "Declined",
+            "cardRecovery.center.transactionStatus.timedOut" => "Timed out",
+            "cardRecovery.center.transactionStatus.cancelled" => "Cancelled",
+            "cardRecovery.center.transactionStatus.failed" => "Failed",
+            "cardRecovery.center.transactionStatus.orderCompleted" => "Order completed",
+            "cardRecovery.center.transactionStatus.abandoned" => "Abandoned",
+            "cardRecovery.center.transactionStatus.checkoutCreated" => "Checkout created",
+            "cardRecovery.center.transactionStatus.checkoutCompleted" => "Checkout completed",
+            "cardRecovery.center.transactionStatus.paymentVerified" => "Payment verified",
             "cardRecovery.status.finalizePending" => "Finalization pending",
-            _ => "Unknown status"
+            _ => "Unknown"
         });
     }
 

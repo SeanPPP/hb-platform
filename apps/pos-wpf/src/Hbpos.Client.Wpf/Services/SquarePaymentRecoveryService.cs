@@ -1,4 +1,7 @@
 ﻿using System.IO;
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using BlazorApp.Shared.DTOs;
 using Hbpos.Client.Wpf.Localization;
@@ -282,8 +285,49 @@ public sealed class SquarePaymentRecoveryService(
         var normalizedReason = string.IsNullOrWhiteSpace(reason) ? string.Empty : reason.Trim();
         var normalizedEvidence = string.IsNullOrWhiteSpace(evidence) ? null : evidence.Trim();
         var normalizedReference = string.IsNullOrWhiteSpace(reference) ? null : reference.Trim();
+
+        var verifiedPaymentReference = attempt.PaymentId ?? attempt.SupervisorFinancialReference;
+        var hasVerifiedPayment =
+            attempt.Status == LocalSquarePaymentAttemptStatus.PaymentVerified &&
+            !string.IsNullOrWhiteSpace(attempt.PaymentId) &&
+            !string.IsNullOrWhiteSpace(attempt.PaymentStatus);
+        var hasPendingOrderFinalization =
+            string.Equals(
+                attempt.RecoveryPhase,
+                CardRecoveryPhases.FinalizePending,
+                StringComparison.Ordinal) &&
+            attempt.RecoveryTargetStatus == LocalSquarePaymentAttemptStatus.OrderCompleted &&
+            !string.IsNullOrWhiteSpace(verifiedPaymentReference);
+        if (hasVerifiedPayment || hasPendingOrderFinalization)
+        {
+            // Square 已有真实付款或精确 FinalizePending owner 时，主管按钮不能把它改写为未付款。
+            var verifiedDraft = TryDeserializeDraft(attempt);
+            var verifiedCompletion = verifiedDraft is null
+                ? new CardPaymentRecoveryResult(
+                    CardPaymentRecoveryOutcome.Unknown,
+                    UnknownResultMessage())
+                : await CompleteVerifiedAttemptAsync(
+                    attempt,
+                    verifiedDraft,
+                    verifiedPaymentReference!,
+                    attempt.PaymentStatus ?? ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
+                    cardBrand: null,
+                    maskedCardNumber: null,
+                    authCode: null,
+                    CancellationToken.None);
+            var verifiedCompletionSucceeded =
+                verifiedCompletion.Outcome == CardPaymentRecoveryOutcome.OrderCompleted;
+            return new CardRecoveryResolutionResult(
+                verifiedCompletionSucceeded,
+                verifiedCompletionSucceeded ? verifiedCompletion.Message : ResolutionPendingMessage(),
+                verifiedCompletion,
+                LockRetained: await IsResolutionLockRetainedAsync(
+                    attempt.AttemptGuid,
+                    verifiedCompletionSucceeded),
+                ResolutionPersisted: IsPersistedSquareSupervisorResolution(attempt));
+        }
+
         if (IsTerminalSquareStatus(attempt.Status) ||
-            attempt.Status == LocalSquarePaymentAttemptStatus.PaymentVerified ||
             !string.IsNullOrWhiteSpace(attempt.PaymentId) ||
             !string.IsNullOrWhiteSpace(attempt.PaymentStatus) ||
             string.Equals(attempt.RecoveryPhase, CardRecoveryPhases.FinalizePending, StringComparison.Ordinal))
@@ -811,8 +855,38 @@ public sealed class SquarePaymentRecoveryService(
                 var winner = await RunLocalStoreAsync(
                     () => attemptRepository.GetAttemptAsync(attempt.AttemptGuid, CancellationToken.None),
                     CancellationToken.None);
-                if (winner is null || !IsCanceledSaleDraftHandoff(winner))
+                if (winner is null)
                 {
+                    return new CardPaymentRecoveryResult(
+                        CardPaymentRecoveryOutcome.Unknown,
+                        UnknownResultMessage());
+                }
+
+                if (!IsCanceledSaleDraftHandoff(winner))
+                {
+                    var winningPaymentReference = winner.PaymentId ?? winner.SupervisorFinancialReference;
+                    var winningDraft = TryDeserializeDraft(winner);
+                    if ((winner.Status == LocalSquarePaymentAttemptStatus.PaymentVerified ||
+                         string.Equals(
+                             winner.ResponseCode,
+                             ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
+                             StringComparison.Ordinal)) &&
+                        !string.IsNullOrWhiteSpace(winningPaymentReference) &&
+                        winningDraft is not null)
+                    {
+                        // CANCELED 查询结果只能提交自己的 CAS；若主管/付款验证已抢先落库，
+                        // 必须服从最新金融事实，不能恢复相反的未付款草稿。
+                        return await CompleteVerifiedAttemptAsync(
+                            winner,
+                            winningDraft,
+                            winningPaymentReference,
+                            winner.PaymentStatus ?? ActiveSessionSupervisorResolutionCodes.ConfirmedPaid,
+                            cardBrand: null,
+                            maskedCardNumber: null,
+                            authCode: null,
+                            CancellationToken.None);
+                    }
+
                     return new CardPaymentRecoveryResult(
                         CardPaymentRecoveryOutcome.Unknown,
                         UnknownResultMessage());
@@ -977,6 +1051,16 @@ public sealed class SquarePaymentRecoveryService(
                 session,
                 refundAttempt,
                 cancellationToken);
+        }
+
+        if (refundAttempt.Status == LocalSquarePaymentAttemptStatus.PaymentVerified)
+        {
+            // 已进入 PaymentVerified 却缺少完整本地证据时必须失败关闭，不能重新查询远端覆盖该事实。
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.refund.requiresReview", "A previous card refund is still unresolved. Do not refund again; ask a supervisor to reconcile Square and the original sale."),
+                DialogDetails: BuildRefundDialogDetails(refundAttempt),
+                RefundDetails: BuildRefundDetails(refundAttempt));
         }
 
         if (IsUnfinalizedTerminalRefundFailure(refundAttempt))
@@ -2044,6 +2128,26 @@ public sealed class SquarePaymentRecoveryService(
                 ResolutionPersisted: IsPersistedSquareSupervisorResolution(attempt));
         }
 
+        if (normalized.Decision == CardRefundSupervisorDecision.ConfirmNotRefunded)
+        {
+            try
+            {
+                var retryDraft = TryDeserializeDraft(attempt) ??
+                    throw new InvalidOperationException("Square refund draft is missing.");
+                _ = ValidateAuthoritativeDraft(attempt, retryDraft);
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+            {
+                TryWriteRecoveryLog(
+                    $"not-refunded authoritative draft invalid attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+                return new CardRefundSupervisorResolutionResult(
+                    false,
+                    T("cardRecovery.refund.retryDraftInvalid", "The bank confirmed no refund, but POS could not rebuild the original return. Do not retry until support checks this attempt."),
+                    RetryAllowed: false,
+                    LockRetained: true);
+            }
+        }
+
         var resolvedAt = DateTimeOffset.UtcNow;
         var journal = BuildRefundSupervisorJournal(attempt, normalized, session, resolvedAt);
         var applied = await RunLocalStoreAsync(
@@ -2242,7 +2346,21 @@ public sealed class SquarePaymentRecoveryService(
                 DialogDetails: dialogDetails);
         }
 
-        var draft = preparedDraft;
+        CardPaymentOrderDraft draft;
+        try
+        {
+            draft = ValidateAuthoritativeDraft(attempt, preparedDraft);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            TryWriteRecoveryLog(
+                $"confirmed refund authoritative draft invalid attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.refund.confirmedDraftInvalid", "The refund is confirmed, but POS could not rebuild the original return. Do not refund again; contact support."),
+                DialogDetails: dialogDetails,
+                RefundDetails: BuildRefundDetails(attempt));
+        }
 
         if (string.IsNullOrWhiteSpace(draft.OriginalReference))
         {
@@ -2472,6 +2590,20 @@ public sealed class SquarePaymentRecoveryService(
                 DialogDetails: BuildRefundDialogDetails(attempt));
         }
 
+        try
+        {
+            draft = ValidateAuthoritativeDraft(attempt, draft);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            TryWriteRecoveryLog(
+                $"not-refunded retry authoritative draft invalid attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.refund.retryDraftInvalid", "The bank confirmed no refund, but POS could not rebuild the original return. Do not retry until support checks this attempt."),
+                DialogDetails: BuildRefundDialogDetails(attempt));
+        }
+
         var expectedRevision = cart.Revision;
         var finalizePending = await EnsureRecoveryFinalizationAsync(
             attempt,
@@ -2660,7 +2792,11 @@ public sealed class SquarePaymentRecoveryService(
         string.Equals(attempt.CheckoutStatus?.Trim(), "CANCELED", StringComparison.OrdinalIgnoreCase) &&
         string.IsNullOrWhiteSpace(attempt.PaymentId) &&
         string.IsNullOrWhiteSpace(attempt.PaymentStatus) &&
-        string.IsNullOrWhiteSpace(attempt.ResponseCode);
+        (string.IsNullOrWhiteSpace(attempt.ResponseCode) ||
+         string.Equals(
+             attempt.ResponseCode,
+             ActiveSessionSupervisorResolutionCodes.ContinueWaiting,
+             StringComparison.Ordinal));
 
     private static bool IsUnfinalizedTerminalRefundFailure(LocalSquarePaymentAttempt? attempt) =>
         attempt is not null &&
@@ -2940,6 +3076,121 @@ public sealed class SquarePaymentRecoveryService(
     private static string? NormalizeRecoveryOptional(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
+    private static CardPaymentOrderDraft ValidateAuthoritativeDraft(
+        LocalSquarePaymentAttempt attempt,
+        CardPaymentOrderDraft draft)
+    {
+        var isSale = string.Equals(attempt.OperationKind, "Sale", StringComparison.OrdinalIgnoreCase);
+        var isRefund = string.Equals(attempt.OperationKind, "Refund", StringComparison.OrdinalIgnoreCase);
+        if (!isSale && !isRefund)
+        {
+            throw new InvalidOperationException("Square attempt operation kind is invalid.");
+        }
+
+        var validationCart = new PosCartService();
+        validationCart.RestoreSnapshot(draft.CartSnapshot);
+        var expectedTxnType = isRefund ? "R" : "P";
+        if (draft.OrderGuid == Guid.Empty ||
+            !SameTerminal(draft.Session.StoreCode, attempt.StoreCode) ||
+            !SameTerminal(draft.Session.DeviceCode, attempt.DeviceCode) ||
+            !SameTerminal(draft.Session.CashierId, attempt.CashierId) ||
+            !SameTerminal(draft.TxnType, expectedTxnType))
+        {
+            throw new InvalidOperationException("Square payment draft identity does not match its attempt.");
+        }
+
+        // 历史销售 attempt 允许 OperationGuid 为空；退款必须存在，非空时始终精确匹配 draft。
+        if ((attempt.OperationGuid is not null && attempt.OperationGuid != draft.OrderGuid) ||
+            (isRefund && attempt.OperationGuid is null))
+        {
+            throw new InvalidOperationException("Square payment draft order identity does not match its attempt.");
+        }
+
+        var attemptAmount = RoundRecoveryCurrency(attempt.Amount);
+        var cardAmount = RoundRecoveryCurrency(draft.CardAmount);
+        var actualAmount = RoundRecoveryCurrency(draft.ActualAmount);
+        var cartActualAmount = RoundRecoveryCurrency(validationCart.ActualAmount);
+        var expectedAmountCents = checked(decimal.ToInt64(decimal.Round(
+            attemptAmount * 100m,
+            0,
+            MidpointRounding.AwayFromZero)));
+        if (attemptAmount <= 0m ||
+            cardAmount <= 0m ||
+            (isSale ? cardAmount != attemptAmount : cardAmount > attemptAmount) ||
+            attempt.AmountCents != expectedAmountCents ||
+            actualAmount != cartActualAmount)
+        {
+            throw new InvalidOperationException("Square payment draft amount does not match its attempt or cart snapshot.");
+        }
+
+        var currentTenderTotal = RoundRecoveryCurrency(draft.CurrentTenders.Sum(tender => tender.Amount));
+        if (isSale)
+        {
+            if (actualAmount <= 0m || draft.CurrentTenders.Any(tender => tender.Amount <= 0m))
+            {
+                throw new InvalidOperationException("Square sale draft contains invalid tender signs.");
+            }
+
+            var nonCashTotal = RoundRecoveryCurrency(draft.CurrentTenders
+                .Where(tender => tender.Method != PaymentMethodKind.Cash)
+                .Sum(tender => tender.Amount));
+            if (RoundRecoveryCurrency(nonCashTotal + cardAmount) > actualAmount ||
+                RoundRecoveryCurrency(currentTenderTotal + cardAmount) < actualAmount)
+            {
+                throw new InvalidOperationException("Square sale draft tender totals are inconsistent.");
+            }
+
+            return draft;
+        }
+
+        if (actualAmount >= 0m ||
+            string.IsNullOrWhiteSpace(draft.OriginalReference) ||
+            draft.CurrentTenders.Any(tender => tender.Amount >= 0m) ||
+            RoundRecoveryCurrency(currentTenderTotal - cardAmount) < actualAmount)
+        {
+            throw new InvalidOperationException("Square refund draft contains invalid amount or tender semantics.");
+        }
+
+        var nonCashRefundTotal = Math.Abs(RoundRecoveryCurrency(draft.CurrentTenders
+            .Where(tender => tender.Method != PaymentMethodKind.Cash)
+            .Sum(tender => tender.Amount)));
+        if (RoundRecoveryCurrency(nonCashRefundTotal + cardAmount) > Math.Abs(actualAmount))
+        {
+            throw new InvalidOperationException("Square refund draft non-cash tenders exceed the return amount.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(attempt.RefundBusinessKey) &&
+            !string.Equals(
+                attempt.RefundBusinessKey.Trim(),
+                BuildRecoveryRefundBusinessKey(attempt, draft),
+                StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Square refund business identity does not match its draft.");
+        }
+
+        return draft;
+    }
+
+    private static decimal RoundRecoveryCurrency(decimal amount) =>
+        decimal.Round(amount, 2, MidpointRounding.AwayFromZero);
+
+    private static string BuildRecoveryRefundBusinessKey(
+        LocalSquarePaymentAttempt attempt,
+        CardPaymentOrderDraft draft)
+    {
+        var canonical = string.Join(
+            "\n",
+            "ordinary-card-refund-v1",
+            "SQUARE",
+            attempt.Environment.Trim().ToUpperInvariant(),
+            attempt.StoreCode.Trim().ToUpperInvariant(),
+            attempt.DeviceCode.Trim().ToUpperInvariant(),
+            draft.OriginalReference!.Trim().ToUpperInvariant(),
+            attempt.AmountCents.ToString(CultureInfo.InvariantCulture),
+            attempt.Currency.Trim().ToUpperInvariant());
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+    }
+
     private static string SquareAttemptTenderKey(Guid attemptGuid) =>
         $"SQUARE_ATTEMPT:{attemptGuid:N}";
 
@@ -2964,7 +3215,18 @@ public sealed class SquarePaymentRecoveryService(
                 UnknownResultMessage());
         }
 
-        draft = preparedDraft;
+        try
+        {
+            draft = ValidateAuthoritativeDraft(attempt, preparedDraft);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            TryWriteRecoveryLog(
+                $"verified payment authoritative draft invalid attemptGuid={attempt.AttemptGuid} error={ex.GetType().Name}");
+            return new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                UnknownResultMessage());
+        }
 
         LocalOrder? existingOrder;
         try
