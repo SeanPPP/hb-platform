@@ -183,6 +183,7 @@ import {
   includeCurrentInvoiceHeaderOption,
   type InvoiceHeaderSelectOption,
 } from './invoiceHeaderForm'
+import ProductSetCodeMaintenanceModal from './ProductSetCodeMaintenanceModal'
 import type {
   BarcodeStatusFilter,
   ActionTypeFilterValue,
@@ -536,6 +537,7 @@ export default function InvoiceEditPage() {
 
   /* ---- 行选择 ---- */
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([])
+  const [setCodeMaintenanceTarget, setSetCodeMaintenanceTarget] = useState<LocalSupplierInvoiceItemDto | null>(null)
 
   /* ---- 行内数字编辑焦点 ---- */
   const [activeInlineNumberEdit, setActiveInlineNumberEdit] = useState<InvoiceDetailInlineNavigationTarget | null>(null)
@@ -2850,7 +2852,7 @@ export default function InvoiceEditPage() {
     {
       title: renderCompactHeader(t('posAdmin.invoiceDetail.action', '操作')),
       key: 'action',
-      width: 98,
+      width: isAdmin ? 184 : 98,
       fixed: 'right',
       filters: actionTypeFilters.map((actionType) => {
         const config = detailActionConfig[actionType] ?? detailActionConfig[DetailActionEnum.None]
@@ -2859,10 +2861,11 @@ export default function InvoiceEditPage() {
       filteredValue: (columnFilteredValues.action ?? null) as React.Key[] | null,
       onFilter: (value, record) => matchesActionTypeColumnFilter(record, value, rowActions),
       render: (_, record) => {
+        const maintenanceProductCode = record.productCode?.trim()
         const currentAction = rowActions[record.detailGUID] ?? record.activityType ?? 0
         const actionConfig = DETAIL_ACTION_CONFIG(t)
         const config = actionConfig[currentAction] || actionConfig[0]
-        return isAdmin ? (
+        const actionSelector = isAdmin ? (
           <Dropdown
             menu={{
               items: ACTION_MENU_ITEMS(t),
@@ -2879,6 +2882,34 @@ export default function InvoiceEditPage() {
           </Dropdown>
         ) : (
           <Tag color={config.color}>{config.label}</Tag>
+        )
+
+        return (
+          <Space size={2}>
+            {actionSelector}
+            {isAdmin ? (
+              <Tooltip
+                title={maintenanceProductCode
+                  ? t('posAdmin.invoiceDetail.setCodeMaintenanceTooltip', '维护该商品的多条码或套装条码')
+                  : t('posAdmin.invoiceDetail.setCodeMaintenanceNeedsProduct', '请先检测并匹配商品')}
+              >
+                <Button
+                  type="link"
+                  size="small"
+                  disabled={!maintenanceProductCode}
+                  style={{ paddingInline: 4 }}
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    if (maintenanceProductCode) {
+                      setSetCodeMaintenanceTarget({ ...record, productCode: maintenanceProductCode })
+                    }
+                  }}
+                >
+                  {t('posAdmin.invoiceDetail.setCodeMaintenanceShort', '多码/套装')}
+                </Button>
+              </Tooltip>
+            ) : null}
+          </Space>
         )
       },
     },
@@ -3653,6 +3684,13 @@ export default function InvoiceEditPage() {
           </Form.Item>
         </Form>
       </Modal>
+
+      <ProductSetCodeMaintenanceModal
+        open={setCodeMaintenanceTarget !== null}
+        productCode={setCodeMaintenanceTarget?.productCode}
+        storeCode={setCodeMaintenanceTarget?.storeCode?.trim() || invoice?.storeCode?.trim()}
+        onClose={() => setSetCodeMaintenanceTarget(null)}
+      />
     </Space>
   )
 }

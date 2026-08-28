@@ -211,6 +211,33 @@ namespace BlazorApp.Shared.DTOs
         public bool? IsActive { get; set; }
     }
 
+    public class SaveStoreProductSetCodeSnapshotItemDto
+    {
+        public string? SetCodeId { get; set; }
+        public string Barcode { get; set; } = string.Empty;
+        public decimal? RetailPrice { get; set; }
+        public int SetType { get; set; }
+        public bool IsActive { get; set; } = true;
+    }
+
+    public class SaveStoreProductSetCodeSnapshotDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string StoreCode { get; set; } = string.Empty;
+        public int? ExpectedProductType { get; set; }
+        public int ProductType { get; set; }
+        public List<SaveStoreProductSetCodeSnapshotItemDto> ExpectedItems { get; set; } = new();
+        public List<SaveStoreProductSetCodeSnapshotItemDto> Items { get; set; } = new();
+    }
+
+    public class SaveStoreProductSetCodeSnapshotResultDto
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string StoreCode { get; set; } = string.Empty;
+        public int ProductType { get; set; }
+        public List<StoreProductSetCodeDto> Items { get; set; } = new();
+    }
+
     public class UpsertStoreProductClearancePriceDto
     {
         public string StoreCode { get; set; } = string.Empty;

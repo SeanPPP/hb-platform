@@ -43,6 +43,7 @@ public sealed class ProductChangeHistoryLegacyEntryPointTests : IDisposable
             typeof(Product),
             typeof(Store),
             typeof(StoreRetailPrice),
+            typeof(ProductSetCode),
             typeof(DomesticProduct),
             typeof(WarehouseProduct)
         );
