@@ -1016,6 +1016,47 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
     }
 
     [Fact]
+    public async Task GetProductStoreDailyStatisticSummary_零销售Fresh日应返回零汇总和通过状态()
+    {
+        var targetDate = new DateTime(2026, 6, 2);
+        await SeedStatisticStateAsync(targetDate, SalesStatisticRefreshStatus.Fresh);
+
+        var result = await CreateStatisticsController()
+            .GetProductStoreDailyStatisticSummary(targetDate);
+
+        var ok = AssertOk(result);
+        var data = ExtractAnonymousData<ProductStoreDailyStatisticSummaryDto>(ok.Value);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, data.Status);
+        Assert.Equal(0, data.RecordCount);
+        Assert.Equal(0, data.TotalQuantity);
+        Assert.Equal(0m, data.TotalAmount);
+        Assert.Equal("Passed", data.ReconciliationStatus);
+        Assert.Equal("Passed", data.SalesReconciliationStatus);
+        Assert.Equal(0m, data.ProductTotalAmount);
+        Assert.Equal(0m, data.StoreTotalAmount);
+        Assert.Equal(0m, data.AmountDifference);
+        Assert.Equal(0, data.ProductTotalQuantity);
+        Assert.Equal(0, data.StoreTotalQuantity);
+        Assert.Equal(0, data.QuantityDifference);
+    }
+
+    [Fact]
+    public async Task GetProductStoreDailyStatisticSummary_零行Failed状态不应显示对账通过()
+    {
+        var targetDate = new DateTime(2026, 6, 3);
+        await SeedStatisticStateAsync(targetDate, SalesStatisticRefreshStatus.Failed);
+
+        var result = await CreateStatisticsController()
+            .GetProductStoreDailyStatisticSummary(targetDate);
+
+        var ok = AssertOk(result);
+        var data = ExtractAnonymousData<ProductStoreDailyStatisticSummaryDto>(ok.Value);
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, data.Status);
+        Assert.Equal("Failed", data.ReconciliationStatus);
+        Assert.Equal("Failed", data.SalesReconciliationStatus);
+    }
+
+    [Fact]
     public async Task GetProductStoreDailyStatisticSummary_返回营业额差异和空供应商诊断()
     {
         await SeedStatisticStateAsync(
