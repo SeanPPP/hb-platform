@@ -966,10 +966,19 @@ public sealed class DeviceActivationCodeService : IDeviceActivationCodeService
                 @StoreCode = @StoreCode;
             """;
         // 关键逻辑：使用 POSM 当前事务连接跨库重读并锁住目标分店，门店停用与 grant 消费不能穿透同一事务。
-        return await _dbContext.PosmDb.Ado.SqlQuerySingleAsync<DeviceStoreInfo>(
+        var store = await _dbContext.PosmDb.Ado.SqlQuerySingleAsync<ActivationStoreRow>(
             sql,
             new SugarParameter("@MainDatabaseName", _mainDatabaseName),
             new SugarParameter("@StoreCode", storeCode));
+        return store == null ? null : new DeviceStoreInfo(store.StoreCode, store.StoreName);
+    }
+
+    // SqlSugar 的原始 SQL 映射需要可无参构造的可变类型，不能直接映射到位置 record。
+    private sealed class ActivationStoreRow
+    {
+        public string StoreCode { get; set; } = string.Empty;
+
+        public string StoreName { get; set; } = string.Empty;
     }
 
     private static bool IsAvailableGrant(
