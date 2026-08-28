@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import test from "node:test";
+
+const expoCli = createRequire(import.meta.url).resolve("expo/bin/cli");
 
 test("resolved Expo config 与客户端共享冻结的 iOS bundle identity", async () => {
   const identity = JSON.parse(
@@ -281,7 +284,7 @@ function runConfig(environment) {
   return spawnSync(
     process.execPath,
     [
-      "./node_modules/expo/bin/cli",
+      expoCli,
       "config",
       "--type",
       "public",

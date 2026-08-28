@@ -1,10 +1,10 @@
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 import type { VoucherProtectedTokenPort } from "@/features/payments/voucher";
 import type {
   ProtectedRefundVoucherPrintMaterial,
   ProtectedRefundVoucherPrintMaterialPort,
-} from "@/features/receipts/refund-voucher-receipt-renderer";
+} from "@hb/pos-receipt-core/features/receipts/refund-voucher-receipt-renderer";
 
 type RefundVoucherBindingRow = Readonly<{
   plan_action_id: unknown;

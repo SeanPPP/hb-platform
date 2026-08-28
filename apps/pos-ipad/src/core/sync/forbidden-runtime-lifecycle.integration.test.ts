@@ -2,22 +2,22 @@ import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 
-import type { LocalOrder } from "../contracts/order";
+import type { LocalOrder } from "@hb/pos-domain/core/contracts/order";
 import { PosDatabase } from "../db/pos-database";
 import type { PosRepositoryBundle } from "../db/sqlite-repositories";
 import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "../db/types";
+} from "@hb/pos-db/core/db/types";
 import {
   PosRuntimeController,
   type PosRuntimeServices,
 } from "../runtime/pos-runtime";
 
-import { PosSyncCoordinator } from "./sync-coordinator";
+import { PosSyncCoordinator } from "@hb/pos-sync/core/sync/sync-coordinator";
 
-import { createCashierInvalidationHandler } from "@/features/cashier-login/cashier-session-invalidation-recovery";
+import { createCashierInvalidationHandler } from "@hb/pos-domain/features/cashier-login/cashier-session-invalidation-recovery";
 
 const nowIso = "2026-07-28T06:00:00.000Z";
 const orderGuid = "019fa81c-9c82-7a75-9f1f-f47be4a6fe81";

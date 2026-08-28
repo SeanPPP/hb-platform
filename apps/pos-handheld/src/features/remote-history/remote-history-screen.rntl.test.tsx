@@ -11,13 +11,13 @@ import {
   REMOTE_HISTORY_REPRINT_PERMISSION,
   RemoteHistoryPresenter,
   type RemoteHistoryReprintPort,
-} from "./remote-history-presenter";
+} from "@hb/pos-domain/features/remote-history/remote-history-presenter";
 import {
   REMOTE_HISTORY_MIN_TOUCH_TARGET,
   RemoteHistoryScreen,
 } from "./remote-history-screen";
 
-import type { RemoteOrderHistoryPort } from "@/core/contracts/remote-history";
+import type { RemoteOrderHistoryPort } from "@hb/pos-domain/core/contracts/remote-history";
 
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({

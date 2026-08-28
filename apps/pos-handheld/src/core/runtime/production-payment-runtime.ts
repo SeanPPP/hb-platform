@@ -38,7 +38,7 @@ import type {
   VoucherTenderReversalStorePort,
 } from "@/core/db/sqlite-voucher-tender-reversal-store";
 import { instrumentPaymentPresenter } from "@/core/performance/payment-performance";
-import type { HbposAuditMetadata } from "@/core/sync/hbpos-sync-adapters";
+import type { HbposAuditMetadata } from "@hb/pos-sync/core/sync/hbpos-sync-adapters";
 import {
   ApprovedPaymentOrderCompletionService,
 } from "@/features/payments/approved-payment-order-completion";
@@ -53,7 +53,7 @@ import {
 import {
   PaymentAttemptService,
   type PaymentConnectivityPort,
-} from "@/features/payments/payment-attempt-service";
+} from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 import {
   PaymentCheckoutRuntime,
   PaymentCheckoutRuntimeError,
@@ -78,7 +78,7 @@ import {
 } from "@/features/payments/ui/payment-presenter";
 import type {
   DurableOnlineReturnRefundPort,
-} from "@/features/returns/adapters/durable-return-execution-orchestrator";
+} from "@hb/pos-domain/features/returns/adapters/durable-return-execution-orchestrator";
 import type { ActivePricingCartSession } from "@/features/sales/runtime";
 
 const CASH_DRAWER_PERMISSION =

@@ -14,7 +14,7 @@ import type {
 import type {
   AttendanceSecurityRemotePort,
   EmergencyPublicKeyPackage,
-} from "@/features/attendance-audit/hbpos-attendance-security-api";
+} from "@hb/pos-api-client/features/attendance-audit/hbpos-attendance-security-api";
 
 const PACKAGE: EmergencyPublicKeyPackage = {
   version: 1,

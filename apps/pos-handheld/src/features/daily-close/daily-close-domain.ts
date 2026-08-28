@@ -5,7 +5,7 @@ import {
   type DailyCloseScope,
   type DailyCloseSummary,
 } from "@/core/contracts";
-import { businessDayUtcRange } from "@/features/sync-history/business-day-range";
+import { businessDayUtcRange } from "@hb/pos-sync/features/sync-history/business-day-range";
 
 export type DailyCloseIdentity = Readonly<{
   cashierId: string;

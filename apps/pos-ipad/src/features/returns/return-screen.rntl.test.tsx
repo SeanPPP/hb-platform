@@ -4,8 +4,8 @@ import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import type {
   NoReceiptReturnItem,
   ReceiptReturnContext,
-} from "./return-domain";
-import { ReturnPresenter } from "./return-presenter";
+} from "@hb/pos-domain/features/returns/return-domain";
+import { ReturnPresenter } from "@hb/pos-domain/features/returns/return-presenter";
 import {
   RETURN_MIN_TOUCH_TARGET,
   ReturnScreen,
@@ -15,7 +15,7 @@ import {
   ReturnWorkflow,
   type ReturnExecutionCommand,
   type ReturnExecutionPort,
-} from "./return-workflow";
+} from "@hb/pos-domain/features/returns/return-workflow";
 
 jest.mock("react-i18next", () => ({
   useTranslation: () => ({

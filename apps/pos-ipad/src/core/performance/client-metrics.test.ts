@@ -22,7 +22,7 @@ import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "@/core/db/types";
+} from "@hb/pos-db/core/db/types";
 
 const EVENT_ID = "11111111-1111-4111-8111-111111111111";
 const OBSERVED_AT = "2026-08-25T00:00:00.000Z";

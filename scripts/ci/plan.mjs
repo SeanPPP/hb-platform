@@ -58,6 +58,15 @@ const COMPONENT_PATTERNS = [
   ['antpos-web', /^apps\/antpos-web\//],
 ]
 
+const POS_SHARED_PATTERNS = [
+  /^packages\/pos-[^/]+\//,
+  /^scripts\/pos-shared\//,
+  /^patches\//,
+  /^package(?:-lock)?\.json$/,
+  /^eslint\.config\.mjs$/,
+  /^tsconfig\.pos-packages\.json$/,
+]
+
 function addDependencies(selected) {
   if (selected.has('pos-wpf')) {
     selected.add('pos-contract')
@@ -89,6 +98,11 @@ export function selectComponents(files, { full = false } = {}) {
     }
 
     let matched = false
+    if (POS_SHARED_PATTERNS.some((pattern) => pattern.test(file))) {
+      selected.add('pos-ipad')
+      selected.add('pos-handheld')
+      matched = true
+    }
     for (const [component, pattern] of COMPONENT_PATTERNS) {
       if (pattern.test(file)) {
         selected.add(component)

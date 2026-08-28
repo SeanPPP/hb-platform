@@ -13,14 +13,14 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import type {
   CatalogRefreshStep,
   CatalogSummary,
-} from "../catalog-refresh-contract";
+} from "@hb/pos-domain/features/catalog/catalog-refresh-contract";
 
 import {
   catalogMaintenanceText,
   resolveCatalogMaintenanceLocale,
   type CatalogMaintenanceCopyKey,
   type CatalogMaintenanceLocale,
-} from "./catalog-maintenance-copy";
+} from "@hb/pos-domain/features/catalog/maintenance/catalog-maintenance-copy";
 import type {
   CatalogMaintenancePresenter,
   CatalogMaintenanceState,

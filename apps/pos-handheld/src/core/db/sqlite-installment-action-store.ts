@@ -1,4 +1,4 @@
-import type { InstallmentSnapshot } from "../contracts/installments";
+import type { InstallmentSnapshot } from "@hb/pos-domain/core/contracts/installments";
 import type {
   InstallmentActionCommand,
   InstallmentActionState,
@@ -13,7 +13,7 @@ import {
   type SqliteInstallmentSnapshotRepository,
 } from "./sqlite-installment-snapshot-repository";
 import type { SensitivePayloadEncryptor } from "./sqlite-repositories";
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 export type {
   InstallmentActionState,

@@ -3,7 +3,22 @@ import {
   DEVICE_SYSTEM_IOS,
   type DeviceSystem,
 } from "@/core/contracts/security";
-import type { components } from "@/generated/hbpos/schema";
+import type { components } from "@hb/pos-api-client/openapi";
+import {
+  HbposApiError,
+  unwrapHbposEnvelope,
+  type HbposEnvelope,
+  type HbposTransport,
+} from "@hb/pos-api-client/transport";
+
+export { HbposApiError, unwrapHbposEnvelope };
+export type {
+  HbposApiErrorKind,
+  HbposEnvelope,
+  HbposTransport,
+  HbposTransportRequest,
+  HbposTransportResponse,
+} from "@hb/pos-api-client/transport";
 
 export function resolveHbposDeviceSystem(
   expoOs: string | undefined = process.env.EXPO_OS,
@@ -11,91 +26,6 @@ export function resolveHbposDeviceSystem(
   if (expoOs === "ios") return DEVICE_SYSTEM_IOS;
   if (expoOs === "android") return DEVICE_SYSTEM_ANDROID;
   throw new Error(`Unsupported handheld platform: ${expoOs ?? "unknown"}.`);
-}
-
-export type HbposEnvelope<T> = Readonly<{
-  success?: boolean;
-  data?: T;
-  errorCode?: string | null;
-  message?: string | null;
-}>;
-
-export type HbposTransportRequest = Readonly<{
-  method: "GET" | "POST" | "PUT";
-  url: string;
-  data?: unknown;
-  params?: Readonly<Record<string, string | number | boolean | undefined>>;
-  headers?: Readonly<Record<string, string>>;
-  /** 请求级取消信号；页面离开时用于中止仍在等待的目录下载。 */
-  signal?: AbortSignal;
-  /**
-   * 请求级超时覆盖。0 表示不设置固定超时，适用于可由用户主动取消的长目录下载；
-   * 未提供时继续使用 transport 的全局默认值。
-   */
-  timeoutMs?: number;
-  /**
-   * Axios 默认只接受 2xx；条件 GET 的 304 与幂等冲突的 409 必须由领域
-   * 适配器读取并恢复，不能提前折叠成通用传输异常。
-   */
-  acceptedStatuses?: readonly number[];
-  /**
-   * 某些端点的 401 是业务身份校验失败，而非设备或当前收银员会话失效。
-   * 该策略仅在返回 CASHIER_LOGIN_FAILED 时抑制全局 401 清理；
-   * 403 只有携带明确设备撤销码时才允许锁定设备。
-   */
-  authenticationFailurePolicy?: "default" | "suppress-unauthorized";
-}>;
-
-export type HbposTransportResponse<T> = Readonly<{
-  status: number;
-  data: T;
-  headers?: Readonly<Record<string, string>>;
-}>;
-
-export interface HbposTransport {
-  request<T>(request: HbposTransportRequest): Promise<HbposTransportResponse<T>>;
-}
-
-export type HbposApiErrorKind = "transport" | "http" | "envelope";
-
-export class HbposApiError extends Error {
-  public readonly kind: HbposApiErrorKind;
-  public readonly status: number | undefined;
-  public readonly code: string | undefined;
-  /**
-   * 底层网络错误码（如 axios 的 ERR_NETWORK / ECONNREFUSED / ETIMEDOUT），
-   * 仅 transport 类错误携带，用于 UI 层区分“断网 / 服务器未启动 / 超时”等场景。
-   */
-  public readonly networkCode: string | undefined;
-
-  public constructor(
-    message: string,
-    details: Readonly<{
-      kind: HbposApiErrorKind;
-      status?: number;
-      code?: string;
-      networkCode?: string;
-    }>
-  ) {
-    super(message);
-    this.name = "HbposApiError";
-    this.kind = details.kind;
-    this.status = details.status;
-    this.code = details.code;
-    this.networkCode = details.networkCode;
-  }
-}
-
-export function unwrapHbposEnvelope<T>(envelope: HbposEnvelope<T>): T {
-  if (envelope.success !== true || envelope.data === undefined) {
-    const code = envelope.errorCode ?? undefined;
-    throw new HbposApiError(
-      envelope.message ?? "Hbpos API request was rejected.",
-      code ? { kind: "envelope", code } : { kind: "envelope" }
-    );
-  }
-
-  return envelope.data;
 }
 
 export type DeviceRegisterRequest = components["schemas"]["DeviceRegisterRequest"];

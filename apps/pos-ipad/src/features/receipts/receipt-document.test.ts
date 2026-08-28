@@ -4,14 +4,14 @@ import test from "node:test";
 import {
   receiptCode128,
   receiptCode128ModuleWidth,
-} from "./receipt-code128";
+} from "@hb/pos-receipt-core/features/receipts/receipt-code128";
 import {
   buildBankReceiptDocument,
   buildDailyCloseDocument,
   buildSaleReceiptDocument,
   documentToEscPosBytes,
   displayWidth,
-} from "./receipt-document";
+} from "@hb/pos-receipt-core/features/receipts/receipt-document";
 
 const sale = {
   locale: "en" as const,

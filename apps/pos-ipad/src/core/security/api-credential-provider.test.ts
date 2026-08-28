@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { SecurityApiCredentialProvider } from "./api-credential-provider";
-import { CashierSessionInvalidationBus } from "./cashier-session-invalidation";
+import { CashierSessionInvalidationBus } from "@hb/pos-domain/core/security/cashier-session-invalidation";
 import {
   DeviceSessionCoordinator,
   subscribeDeviceScopeChange,

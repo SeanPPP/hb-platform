@@ -2,7 +2,7 @@ import {
   INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
   INSTALLMENTS_CANCEL_PERMISSION,
   INSTALLMENTS_CREATE_PERMISSION,
-} from "./installment-authorization";
+} from "@hb/pos-domain/features/installments/installment-authorization";
 import {
   INSTALLMENT_MINIMUM_DOWN_PAYMENT_CENTS,
   INSTALLMENT_MINIMUM_TOTAL_CENTS,

@@ -83,8 +83,8 @@
     },
     "operation-audit": {
       "ipad": [
-        "apps/pos-ipad/src/core/sync/hbpos-sync-adapters.ts",
-        "apps/pos-ipad/src/core/sync/sync-coordinator.ts",
+        "packages/pos-sync/src/core/sync/hbpos-sync-adapters.ts",
+        "packages/pos-sync/src/core/sync/sync-coordinator.ts",
         "apps/pos-ipad/src/core/runtime/production-attendance-audit-runtime.ts",
         "apps/pos-ipad/src/core/runtime/expo-attendance-runtime-configuration.ts",
         "apps/pos-ipad/app/attendance-audit.tsx"
@@ -113,7 +113,7 @@
     "barcode-search": {
       "ipad": [
         "apps/pos-ipad/src/features/sales/runtime/connected-sales-runtime.ts",
-        "apps/pos-ipad/src/features/sales/runtime/sales-operation-security.ts",
+        "packages/pos-domain/src/features/sales/runtime/sales-operation-security.ts",
         "apps/pos-ipad/src/features/sales/ui/sales-screen.tsx",
         "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
       ],
@@ -185,7 +185,7 @@
     "clear-cart": {
       "ipad": [
         "apps/pos-ipad/src/features/sales/runtime/connected-sales-runtime.ts",
-        "apps/pos-ipad/src/features/sales/runtime/sales-operation-security.ts",
+        "packages/pos-domain/src/features/sales/runtime/sales-operation-security.ts",
         "apps/pos-ipad/src/features/sales/ui/sales-screen.tsx"
       ],
       "tests": [
@@ -315,12 +315,12 @@
     },
     "payment-recovery": {
       "ipad": [
-        "apps/pos-ipad/src/features/payments/payment-attempt-service.ts",
+        "packages/pos-payments-core/src/features/payments/payment-attempt-service.ts",
         "apps/pos-ipad/src/core/runtime/production-payment-runtime.ts",
         "apps/pos-ipad/src/core/runtime/payment-provider-runtime-bootstrap.ts"
       ],
       "tests": [
-        "apps/pos-ipad/src/features/payments/payment-attempt-service.test.ts",
+        "packages/pos-payments-core/src/features/payments/payment-attempt-service.test.ts",
         "apps/pos-ipad/src/features/payments/__integration_tests__/payment-attempt-sqlite-fault-matrix.test.ts",
         "apps/pos-ipad/e2e/payment/payment-fault-matrix.fixture.test.mjs"
       ],
@@ -347,12 +347,12 @@
     },
     "receipt-return": {
       "ipad": [
-        "apps/pos-ipad/src/features/returns/return-workflow.ts",
+        "packages/pos-domain/src/features/returns/return-workflow.ts",
         "apps/pos-ipad/src/core/runtime/production-return-runtime.ts",
         "apps/pos-ipad/src/features/returns/return-screen.tsx"
       ],
       "tests": [
-        "apps/pos-ipad/src/features/returns/return-workflow.test.ts",
+        "packages/pos-domain/src/features/returns/return-workflow.test.ts",
         "apps/pos-ipad/src/core/runtime/production-return-runtime.test.ts",
         "apps/pos-ipad/e2e/payment/return-original-action-recovery.e2e.test.ts"
       ],
@@ -366,13 +366,13 @@
     },
     "no-receipt-return": {
       "ipad": [
-        "apps/pos-ipad/src/features/returns/return-workflow.ts",
+        "packages/pos-domain/src/features/returns/return-workflow.ts",
         "apps/pos-ipad/src/core/runtime/production-return-runtime.ts",
         "apps/pos-ipad/src/features/returns/return-screen.tsx"
       ],
       "tests": [
-        "apps/pos-ipad/src/features/returns/return-domain.test.ts",
-        "apps/pos-ipad/src/features/returns/return-workflow.test.ts",
+        "packages/pos-domain/src/features/returns/return-domain.test.ts",
+        "packages/pos-domain/src/features/returns/return-workflow.test.ts",
         "apps/pos-ipad/src/features/returns/return-screen.rntl.test.tsx"
       ],
       "blockers": [
@@ -385,26 +385,26 @@
     },
     "offline-cash-return": {
       "ipad": [
-        "apps/pos-ipad/src/core/db/sqlite-offline-return-capacity.ts",
+        "packages/pos-db/src/core/db/sqlite-offline-return-capacity.ts",
         "apps/pos-ipad/src/core/runtime/production-return-runtime.ts",
-        "apps/pos-ipad/src/features/returns/return-workflow.ts"
+        "packages/pos-domain/src/features/returns/return-workflow.ts"
       ],
       "tests": [
         "apps/pos-ipad/src/core/db/sqlite-feature-facades.integration.test.ts",
         "apps/pos-ipad/src/core/runtime/production-return-runtime.test.ts",
-        "apps/pos-ipad/src/features/returns/return-workflow.test.ts"
+        "packages/pos-domain/src/features/returns/return-workflow.test.ts"
       ],
       "blockers": []
     },
     "local-history": {
       "ipad": [
         "apps/pos-ipad/src/core/db/sqlite-local-sync-history-store.ts",
-        "apps/pos-ipad/src/features/sync-history/sync-history-authorization.ts",
-        "apps/pos-ipad/src/features/sync-history/sync-history-presenter.ts",
+        "packages/pos-sync/src/features/sync-history/sync-history-authorization.ts",
+        "packages/pos-sync/src/features/sync-history/sync-history-presenter.ts",
         "apps/pos-ipad/app/sync-history.tsx"
       ],
       "tests": [
-        "apps/pos-ipad/src/features/sync-history/sync-history-presenter.test.ts",
+        "packages/pos-sync/src/features/sync-history/sync-history-presenter.test.ts",
         "apps/pos-ipad/src/features/sync-history/sync-history-screen.rntl.test.tsx",
         "apps/pos-ipad/src/tests/routes/sync-history-route.rntl.test.tsx"
       ],
@@ -412,16 +412,16 @@
     },
     "remote-history": {
       "ipad": [
-        "apps/pos-ipad/src/features/remote-history/remote-history-api.ts",
-        "apps/pos-ipad/src/features/remote-history/remote-history-presenter.ts",
+        "packages/pos-api-client/src/features/remote-history/remote-history-api.ts",
+        "packages/pos-domain/src/features/remote-history/remote-history-presenter.ts",
         "apps/pos-ipad/src/features/remote-history/remote-history-runtime.ts",
         "apps/pos-ipad/src/features/remote-history/remote-history-screen.tsx",
-        "apps/pos-ipad/src/features/fulfilment/fulfilment-service.ts",
+        "packages/pos-domain/src/features/fulfilment/fulfilment-service.ts",
         "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
       ],
       "tests": [
-        "apps/pos-ipad/src/features/remote-history/remote-history-api.test.ts",
-        "apps/pos-ipad/src/features/remote-history/remote-history-presenter.test.ts",
+        "packages/pos-api-client/src/features/remote-history/remote-history-api.test.ts",
+        "packages/pos-domain/src/features/remote-history/remote-history-presenter.test.ts",
         "apps/pos-ipad/src/features/remote-history/remote-history-runtime.test.ts",
         "apps/pos-ipad/src/features/remote-history/remote-history-route.rntl.test.tsx",
         "apps/pos-ipad/src/features/fulfilment/fulfilment-service.test.ts",
@@ -431,26 +431,26 @@
     },
     "sync-recovery": {
       "ipad": [
-        "apps/pos-ipad/src/core/sync/sync-coordinator.ts",
-        "apps/pos-ipad/src/core/sync/hbpos-sync-adapters.ts",
+        "packages/pos-sync/src/core/sync/sync-coordinator.ts",
+        "packages/pos-sync/src/core/sync/hbpos-sync-adapters.ts",
         "apps/pos-ipad/src/core/runtime/expo-pos-runtime.ts"
       ],
       "tests": [
-        "apps/pos-ipad/src/core/sync/sync-coordinator.test.ts",
+        "packages/pos-sync/src/core/sync/sync-coordinator.test.ts",
         "apps/pos-ipad/src/core/sync/forbidden-runtime-lifecycle.integration.test.ts",
         "apps/pos-ipad/src/core/db/sqlite-outbox-order-state.integration.test.ts",
-        "apps/pos-ipad/src/features/sync-history/sync-history-presenter.test.ts"
+        "packages/pos-sync/src/features/sync-history/sync-history-presenter.test.ts"
       ],
       "blockers": []
     },
     "support-export": {
       "ipad": [
-        "apps/pos-ipad/src/features/sync-history/sync-history-domain.ts",
-        "apps/pos-ipad/src/features/sync-history/sync-history-presenter.ts",
+        "packages/pos-sync/src/features/sync-history/sync-history-domain.ts",
+        "packages/pos-sync/src/features/sync-history/sync-history-presenter.ts",
         "apps/pos-ipad/app/sync-history.tsx"
       ],
       "tests": [
-        "apps/pos-ipad/src/features/sync-history/sync-history-presenter.test.ts",
+        "packages/pos-sync/src/features/sync-history/sync-history-presenter.test.ts",
         "apps/pos-ipad/src/features/sync-history/sync-history-screen.rntl.test.tsx",
         "apps/pos-ipad/src/tests/routes/sync-history-route.rntl.test.tsx"
       ],
@@ -463,7 +463,7 @@
         "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
       ],
       "tests": [
-        "apps/pos-ipad/src/features/special-products/hbpos-special-products-api.test.ts",
+        "packages/pos-api-client/src/features/special-products/hbpos-special-products-api.test.ts",
         "apps/pos-ipad/src/features/special-products/special-products-presenter.test.ts",
         "apps/pos-ipad/src/features/special-products/special-products-route.rntl.test.tsx"
       ],
@@ -493,7 +493,7 @@
         "apps/pos-ipad/src/features/daily-close/daily-close-runtime.ts",
         "apps/pos-ipad/src/features/daily-close/daily-close-screen.tsx",
         "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts",
-        "apps/pos-ipad/src/features/receipts/daily-close-receipt.ts"
+        "packages/pos-receipt-core/src/features/receipts/daily-close-receipt.ts"
       ],
       "tests": [
         "apps/pos-ipad/src/features/daily-close/daily-close-domain.test.ts",
@@ -570,7 +570,7 @@
       "ipad": [
         "apps/pos-ipad/src/core/peripherals/printer/native/hb-printer-adapter.ts",
         "apps/pos-ipad/modules/hb-printer/ios/HbPrinterModule.swift",
-        "apps/pos-ipad/src/features/fulfilment/fulfilment-service.ts"
+        "packages/pos-domain/src/features/fulfilment/fulfilment-service.ts"
       ],
       "tests": [
         "apps/pos-ipad/src/core/peripherals/printer/native/hb-printer-adapter.test.ts",
@@ -588,7 +588,7 @@
     "cash-drawer": {
       "ipad": [
         "apps/pos-ipad/src/core/peripherals/printer/native/hb-printer-adapter.ts",
-        "apps/pos-ipad/src/features/fulfilment/fulfilment-service.ts",
+        "packages/pos-domain/src/features/fulfilment/fulfilment-service.ts",
         "apps/pos-ipad/src/core/runtime/production-pos-service-composition.ts"
       ],
       "tests": [

@@ -25,7 +25,7 @@ import {
   PaymentAttemptOfflineError,
   type PaymentAttemptExecutionResult,
   type StartPaymentAttemptInput,
-} from "@/features/payments/payment-attempt-service";
+} from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 
 const aud = (cents: number): Money => ({ currency: "AUD", cents });
 

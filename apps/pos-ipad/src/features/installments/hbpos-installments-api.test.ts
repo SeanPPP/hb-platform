@@ -8,7 +8,7 @@ import type {
   HbposTransport,
   HbposTransportRequest,
   HbposTransportResponse,
-} from "@/core/api/hbpos-api";
+} from "@hb/pos-api-client/transport";
 
 class QueueTransport implements HbposTransport {
   public readonly requests: HbposTransportRequest[] = [];

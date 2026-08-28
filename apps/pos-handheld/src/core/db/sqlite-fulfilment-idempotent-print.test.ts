@@ -8,7 +8,7 @@ import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 const NOW = "2026-07-31T00:00:00.000Z";
 const ORDER_GUID = "018f1b9b-47c5-7c1b-9f8e-39c5cb3b9d01";

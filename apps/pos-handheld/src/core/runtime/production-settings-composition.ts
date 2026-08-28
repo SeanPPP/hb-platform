@@ -12,7 +12,7 @@ import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coo
 import {
   buildSaleReceiptDocument,
   documentToEscPosBytes,
-} from "@/features/receipts/receipt-document";
+} from "@hb/pos-receipt-core/features/receipts/receipt-document";
 import type { ActivePricingCartSession } from "@/features/sales/runtime";
 import {
   SETTINGS_PRINTER_TEST_OUTCOME_UNKNOWN,
@@ -31,7 +31,7 @@ import {
   type SettingsSnapshot,
 } from "@/features/settings/settings-presenter";
 import type { SettingsRuntimeFactory } from "@/features/settings/settings-runtime";
-import type { SettingsSquareSetupPort } from "@/features/settings/settings-square-setup";
+import type { SettingsSquareSetupPort } from "@hb/pos-domain/features/settings/settings-square-setup";
 
 type TerminalScope = Readonly<{
   storeCode: string;

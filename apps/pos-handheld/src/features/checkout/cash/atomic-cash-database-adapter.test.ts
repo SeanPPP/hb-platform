@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   AtomicCashCheckoutDatabaseAdapter,
   type CashFulfilmentDraft,
-} from "./atomic-cash-database-adapter";
+} from "@hb/pos-domain/features/checkout/cash/atomic-cash-database-adapter";
 import { CashCheckoutService } from "./cash-checkout-service";
 
 import type { CompleteCashOrderCommand } from "@/core/contracts";

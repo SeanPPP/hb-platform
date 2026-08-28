@@ -12,7 +12,7 @@ import type { HeldOrderSummary } from "@/core/contracts";
 import {
   businessDayUtcRange,
   resolveBusinessTimeZone,
-} from "@/features/sync-history/business-day-range";
+} from "@hb/pos-sync/features/sync-history/business-day-range";
 
 export type HeldOrdersDateFilter = "today" | "all";
 export type HeldOrdersSourceTab = "local" | "other";

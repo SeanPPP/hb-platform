@@ -8,7 +8,7 @@ import {
 import type {
   FrozenReceiptReprintSettings,
   ReceiptReprintSettingsSource,
-} from "./receipt-reprint-service";
+} from "@hb/pos-receipt-core/features/receipts/receipt-reprint-service";
 
 import type { InstallmentDetails, InstallmentsRemotePort } from "@/features/installments/installment-models";
 

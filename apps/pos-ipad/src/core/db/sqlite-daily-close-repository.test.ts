@@ -7,16 +7,16 @@ import {
   normalizeDailyCloseCounts,
   type DailyCloseArchive,
   type DailyCloseScope,
-} from "../contracts/daily-close";
+} from "@hb/pos-domain/core/contracts/daily-close";
 
 import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
-import { SqliteDailyCloseRepository } from "./sqlite-daily-close-repository";
+import { SqliteDailyCloseRepository } from "@hb/pos-db/core/db/sqlite-daily-close-repository";
 import { createSqliteRepositories } from "./sqlite-repositories";
 import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 const T0 = "2026-07-28T00:00:00.000Z";
 const T1 = "2026-07-28T23:59:59.000Z";

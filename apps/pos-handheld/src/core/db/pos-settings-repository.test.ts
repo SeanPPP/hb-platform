@@ -11,7 +11,7 @@ import {
   PosSettingsRepository,
   type ReceiptPrinterSettings,
 } from "./pos-settings-repository";
-import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "./types";
+import type { SqliteConnectionPort, SqlRunResult, SqlValue } from "@hb/pos-db/core/db/types";
 
 class SystemSqliteConnection implements SqliteConnectionPort {
   private tail: Promise<void> = Promise.resolve();

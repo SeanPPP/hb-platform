@@ -31,7 +31,7 @@ import type {
   SettingsSquareDevice,
   SettingsSquareDeviceCode,
   SettingsSquareLocation,
-} from "./settings-square-setup";
+} from "@hb/pos-domain/features/settings/settings-square-setup";
 
 import {
   HidScannerCapture,
@@ -40,7 +40,7 @@ import {
 import {
   DEFAULT_LOCAL_HBPOS_API_BASE_URL,
   DEFAULT_REMOTE_HBPOS_API_BASE_URL,
-} from "@/core/security/pos-api-addresses";
+} from "@hb/pos-domain/core/security/pos-api-addresses";
 import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
 import { CameraScannerModal } from "@/features/scanner-camera/camera-scanner-modal";
 import {

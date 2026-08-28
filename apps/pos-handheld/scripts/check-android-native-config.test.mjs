@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const appRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const expoCli = path.join(appRoot, "node_modules/expo/bin/cli");
+const expoCli = createRequire(import.meta.url).resolve("expo/bin/cli");
 const execFileAsync = promisify(execFile);
 
 async function read(relativePath) {

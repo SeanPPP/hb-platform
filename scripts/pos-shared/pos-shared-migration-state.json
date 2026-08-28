@@ -1,0 +1,1262 @@
+{
+  "schemaVersion": 2,
+  "baseline": "ddcca999b9d6a90e07b7b3d88c5b93a28d0c7b13",
+  "reviewedModuleTopologySha256": "de2db7029f01e40162e3e9f23196d16596c16d7260da590d8ad1e6ad88156fcc",
+  "migratedPaths": {
+    "pos-domain": [
+      "core/contracts/audit-actor.test.ts",
+      "core/contracts/audit-actor.ts",
+      "core/contracts/audit-scope.ts",
+      "core/contracts/cart.ts",
+      "core/contracts/daily-close.ts",
+      "core/contracts/drawer.ts",
+      "core/contracts/installments.ts",
+      "core/contracts/line-sync-provenance.ts",
+      "core/contracts/money.test.ts",
+      "core/contracts/order.ts",
+      "core/contracts/printer.ts",
+      "core/contracts/remote-history.ts",
+      "core/contracts/repositories.ts",
+      "core/contracts/special-products.ts",
+      "core/contracts/state-machines.ts",
+      "core/contracts/sync.ts",
+      "core/contracts/terminal-cart.ts",
+      "core/security/cashier-session-invalidation.ts",
+      "core/security/pos-api-addresses.ts",
+      "features/attendance-audit/operation-audit-presenter.test.ts",
+      "features/attendance-audit/operation-audit-presenter.ts",
+      "features/cashier-login/cashier-session-invalidation-recovery.ts",
+      "features/catalog/catalog-refresh-contract.ts",
+      "features/catalog/maintenance/catalog-maintenance-authorization.test.ts",
+      "features/catalog/maintenance/catalog-maintenance-authorization.ts",
+      "features/catalog/maintenance/catalog-maintenance-copy.ts",
+      "features/checkout/cash/atomic-cash-database-adapter.ts",
+      "features/daily-close/daily-close-authorization.ts",
+      "features/fulfilment/fulfilment-service.ts",
+      "features/fulfilment/index.ts",
+      "features/installments/installment-authorization.test.ts",
+      "features/installments/installment-authorization.ts",
+      "features/remote-history/remote-history-presenter.test.ts",
+      "features/remote-history/remote-history-presenter.ts",
+      "features/returns/adapters/durable-return-execution-orchestrator.test.ts",
+      "features/returns/adapters/durable-return-execution-orchestrator.ts",
+      "features/returns/return-domain.test.ts",
+      "features/returns/return-domain.ts",
+      "features/returns/return-presenter.ts",
+      "features/returns/return-workflow.test.ts",
+      "features/returns/return-workflow.ts",
+      "features/sales/runtime/sales-operation-security.ts",
+      "features/sales/runtime/trusted-product-image-uri.test.ts",
+      "features/sales/runtime/trusted-product-image-uri.ts",
+      "features/settings/settings-square-setup.ts",
+      "features/shared-held-orders/shared-sale-cart-v1.ts",
+      "features/special-products/special-products-authorization.test.ts",
+      "features/special-products/special-products-authorization.ts"
+    ],
+    "pos-api-client": [
+      "features/attendance-audit/hbpos-attendance-security-api.test.ts",
+      "features/attendance-audit/hbpos-attendance-security-api.ts",
+      "features/attendance-audit/hbpos-operation-audit-read-api.test.ts",
+      "features/attendance-audit/hbpos-operation-audit-read-api.ts",
+      "features/remote-history/remote-history-api.test.ts",
+      "features/remote-history/remote-history-api.ts",
+      "features/special-products/hbpos-special-products-api.test.ts",
+      "features/special-products/hbpos-special-products-api.ts"
+    ],
+    "pos-db": [
+      "core/db/protected-material-integrity-error.ts",
+      "core/db/serialized-sqlite-connection.test.ts",
+      "core/db/serialized-sqlite-connection.ts",
+      "core/db/sqlite-daily-close-repository.ts",
+      "core/db/sqlite-offline-return-capacity.ts",
+      "core/db/sqlite-operation-audit-read.ts",
+      "core/db/sqlite-payment-protected-material.test.ts",
+      "core/db/sqlite-payment-protected-material.ts",
+      "core/db/sqlite-settings-safety-repository.ts",
+      "core/db/sqlite-special-products-repository.ts",
+      "core/db/types.ts"
+    ],
+    "pos-sync": [
+      "core/sync/hbpos-order-sync-post-accept.test.ts",
+      "core/sync/hbpos-sync-adapters.ts",
+      "core/sync/sync-coordinator.test.ts",
+      "features/sync-history/business-day-range.test.ts",
+      "features/sync-history/business-day-range.ts",
+      "features/sync-history/sync-history-authorization.ts",
+      "features/sync-history/sync-history-domain.ts",
+      "features/sync-history/sync-history-presenter.test.ts",
+      "features/sync-history/sync-history-presenter.ts"
+    ],
+    "pos-payments-core": [
+      "features/payments/payment-amount.ts",
+      "features/payments/payment-attempt-service.test.ts",
+      "features/payments/payment-attempt-service.ts"
+    ],
+    "pos-receipt-core": [
+      "features/local-history/receipt-code128.test.ts",
+      "features/local-history/receipt-code128.ts",
+      "features/local-history/receipt-qr-matrix.ts",
+      "features/receipts/daily-close-receipt.ts",
+      "features/receipts/esc-pos-text-encoding.ts",
+      "features/receipts/receipt-code128.test.ts",
+      "features/receipts/receipt-code128.ts",
+      "features/receipts/receipt-document.ts",
+      "features/receipts/receipt-reprint-service.ts",
+      "features/receipts/refund-voucher-receipt-renderer.test.ts",
+      "features/receipts/refund-voucher-receipt-renderer.ts",
+      "features/receipts/remote-history-receipt-reprint-service.ts",
+      "features/receipts/return-receipt-renderer.test.ts",
+      "features/receipts/return-receipt-renderer.ts"
+    ],
+    "pos-testing": []
+  },
+  "reconciledPaths": [
+    {
+      "path": "core/contracts/money.ts",
+      "package": "pos-domain",
+      "reason": "双端函数体与类型完全一致，仅中文注释换行不同"
+    },
+    {
+      "path": "core/contracts/payment.ts",
+      "package": "pos-domain",
+      "reason": "双端支付合同完全一致，仅安全注释措辞不同"
+    },
+    {
+      "path": "core/contracts/pricing-cart-state.ts",
+      "package": "pos-domain",
+      "reason": "双端定价购物车合同完全一致，仅注释标点不同"
+    },
+    {
+      "path": "core/api/forbidden-response.ts",
+      "package": "pos-api-client",
+      "reason": "双端设备撤销码逻辑完全一致，仅平台名称注释不同"
+    },
+    {
+      "path": "core/sync/sync-coordinator.ts",
+      "package": "pos-sync",
+      "reason": "双端同步协调、重试与审计逻辑完全一致，仅平台名称注释不同"
+    }
+  ],
+  "centralizedPaths": [
+    {
+      "path": "generated/hbpos/schema.d.ts",
+      "package": "pos-api-client",
+      "specifier": "@hb/pos-api-client/openapi",
+      "reason": "双端当前生成 DTO 完全一致，连同 107 路径、261 schema 的 OpenAPI 快照集中为共享真源"
+    }
+  ],
+  "extractedContracts": [
+    {
+      "path": "core/contracts/update-operation-lease.ts",
+      "package": "pos-domain",
+      "sourcePath": "features/app-updates/update-transition-lease-coordinator.ts",
+      "reason": "仅抽取共享业务需要的普通操作租约结构接口；OTA 切换状态机继续由 App-local 实现"
+    },
+    {
+      "path": "core/db/order-sync-material-contract.ts",
+      "package": "pos-db",
+      "sourcePath": "core/db/sqlite-order-sync-material.ts",
+      "reason": "抽取稳定材料错误码、挂单来源与错误构造器，确保共享同步适配器和双端 SQLite 解析器使用同一运行时身份"
+    }
+  ],
+  "testAdaptations": [
+    {
+      "path": "core/sync/sync-coordinator.test.ts",
+      "package": "pos-sync",
+      "reason": "共享包测试改用只实现 UpdateOperationLeasePort 的测试租约，避免反向依赖 App-local OTA 状态机",
+      "requiredAssertion": "更新 transition 等待在途同步，并拒绝 transition 期间的新 drain"
+    }
+  ],
+  "semanticAdaptations": [
+    {
+      "path": "features/receipts/receipt-document.ts",
+      "package": "pos-receipt-core",
+      "reason": "抽取 ReceiptStoreHeading 命名类型供共享重打服务与 App adapter 复用；类型擦除后的运行时语义与固定基线一致",
+      "canonicalTypeSha256": "75096c5b9534e58b340adf5a5f7bb782d5895bbf5d4298a7f7994e9a7f680a14",
+      "behaviorTests": [
+        {
+          "workspace": "apps/pos-ipad",
+          "script": "test:receipts",
+          "path": "src/features/receipts/receipt-document.test.ts",
+          "pattern": "src/features/receipts/*.test.ts"
+        },
+        {
+          "workspace": "apps/pos-handheld",
+          "script": "test:receipts",
+          "path": "src/features/receipts/receipt-document.test.ts",
+          "pattern": "src/features/receipts/*.test.ts"
+        }
+      ]
+    }
+  ],
+  "retainedPaths": [
+    {
+      "path": "core/api/index.ts",
+      "owner": "pos-api-client",
+      "kind": "production",
+      "reason": "仍依赖 App API facade、分叉 DTO 或平台策略 wrapper，保留为 App adapter"
+    },
+    {
+      "path": "core/db/catalog-repository.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/catalog-repository.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/payment-attempt-repository.integration.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/pos-settings-repository.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-attendance-security-repository.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-attendance-security-repository.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-daily-close-repository.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-feature-facades.integration.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-fulfilment-audit.integration.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-fulfilment-idempotent-print.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-fulfilment-store.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-fulfilment-store.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-installment-action-store.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-installment-action-store.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-installment-payment-ledger.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-installment-payment-persistence.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-installment-provider-attempt-store.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-installment-refund-provenance-vault.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-installment-snapshot-repository.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-installment-snapshot-repository.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-installment-voucher-persistence.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-local-history-store.integration.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-local-history-store.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-local-history-store.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-local-sync-history-store.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-mixed-payment-order-truth-store.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-operation-audit-delivery.integration.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-operation-audit-read.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-order-sync-material.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-order-sync-material.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-outbox-order-state.integration.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-payment-action-binding-store.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-payment-draft-recovery-store.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-refund-voucher-print-material.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-refund-voucher-print-material.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-repositories.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-return-api-attempt-store.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-return-capacity-vault.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-return-execution-ledger.provenance.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-return-execution-ledger.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-return-fulfilment-plan-store.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-settings-safety-repository.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-special-products-repository.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-voucher-balance-material.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-voucher-balance-material.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-voucher-preparation-store.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-voucher-protected-token-store.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/db/sqlite-voucher-tender-reversal-store.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/db/sqlite-voucher-tender-reversal-store.ts",
+      "owner": "pos-db",
+      "kind": "production",
+      "reason": "仍耦合 App SQLite 组合实现或支付、小票具体类型，需先下沉 domain port"
+    },
+    {
+      "path": "core/security/api-credential-provider.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "core/sync/forbidden-runtime-lifecycle.integration.test.ts",
+      "owner": "pos-sync",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "core/sync/index.ts",
+      "owner": "pos-sync",
+      "kind": "production",
+      "reason": "仍依赖 App 生命周期、分叉同步组合或未共享数据库实现，保留在 App"
+    },
+    {
+      "path": "core/sync/voucher-tender-reversal-audit.integration.test.ts",
+      "owner": "pos-sync",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/app-updates/app-update-recovery-contract.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/attendance-audit/attendance-audit-presenter.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/attendance-audit/attendance-audit-presenter.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/attendance-audit/attendance-audit-runtime.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/attendance-audit/attendance-audit-runtime.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/attendance-audit/attendance-qr-controller.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/attendance-audit/attendance-qr-controller.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/attendance-audit/emergency-login-security.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/attendance-audit/emergency-login-security.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/attendance-audit/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/cashier-lock/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/cashier-login/cashier-login-controller.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/cashier-login/cashier-login-controller.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/cashier-login/cashier-login-store.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/cashier-login/cashier-session-invalidation-bridge.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/cashier-login/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/catalog/catalog-lookup-revalidation.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/catalog/catalog-lookup-revalidation.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/catalog/catalog-snapshot-service.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/catalog/catalog-snapshot-service.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/catalog/hbpos-catalog-remote.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/catalog/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/catalog/maintenance/catalog-maintenance-presenter.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/catalog/maintenance/catalog-maintenance-presenter.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/catalog/maintenance/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/catalog/remote-catalog-fallback.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/catalog/remote-catalog-fallback.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/checkout/cash/atomic-cash-database-adapter.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合实现，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/checkout/cash/cash-checkout-service.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/checkout/cash/cash-checkout-service.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/checkout/cash/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/daily-close/daily-close-domain.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/daily-close/daily-close-domain.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/daily-close/daily-close-runtime.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/daily-close/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/device-registration/device-registration-state.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/device-registration/device-registration-state.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/device-registration/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/device-registration/server-connection-copy.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/fulfilment/fulfilment-service.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合实现，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/held-orders/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/installments/hbpos-installments-api.test.ts",
+      "owner": "pos-api-client",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/installments/hbpos-installments-api.ts",
+      "owner": "pos-api-client",
+      "kind": "production",
+      "reason": "仍依赖 App API facade、分叉 DTO 或平台策略 wrapper，保留为 App adapter"
+    },
+    {
+      "path": "features/installments/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/installments/installment-checkout-presenter.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/installments/installment-checkout-presenter.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/installments/installment-date-filter.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/installments/installment-date-filter.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/installments/installment-models.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "模块仍直接依赖 API transport 或生成 DTO，需拆分网络映射后迁移"
+    },
+    {
+      "path": "features/installments/installment-presenter.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/installments/installment-presenter.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/installments/installment-runtime.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/installments/installment-runtime.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/local-history/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/local-history/local-history-domain.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/local-history/local-history-domain.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/local-history/local-history-presenter.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/local-history/local-history-presenter.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/local-history/local-history-runtime.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/local-history/local-history-runtime.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/operation-authorization/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/payments/__integration_tests__/payment-attempt-sqlite-fault-matrix.test.ts",
+      "owner": "pos-db",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/payments/index.ts",
+      "owner": "pos-payments-core",
+      "kind": "production",
+      "reason": "仍依赖 provider adapter、App runtime 或数据库具体实现，保留在 App"
+    },
+    {
+      "path": "features/payments/linkly/index.ts",
+      "owner": "pos-payments-core",
+      "kind": "production",
+      "reason": "仍依赖 provider adapter、App runtime 或数据库具体实现，保留在 App"
+    },
+    {
+      "path": "features/payments/linkly/linkly-cloud-backend.test.ts",
+      "owner": "pos-payments-core",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/payments/mixed/index.ts",
+      "owner": "pos-payments-core",
+      "kind": "production",
+      "reason": "仍依赖 provider adapter、App runtime 或数据库具体实现，保留在 App"
+    },
+    {
+      "path": "features/payments/mixed/mixed-payment-coordinator.test.ts",
+      "owner": "pos-payments-core",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/payments/mixed/mixed-payment-coordinator.ts",
+      "owner": "pos-payments-core",
+      "kind": "production",
+      "reason": "仍依赖 provider adapter、App runtime 或数据库具体实现，保留在 App"
+    },
+    {
+      "path": "features/payments/mixed/voucher-tender-reversal-service.test.ts",
+      "owner": "pos-payments-core",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/payments/mixed/voucher-tender-reversal-service.ts",
+      "owner": "pos-payments-core",
+      "kind": "production",
+      "reason": "仍依赖 provider adapter、App runtime 或数据库具体实现，保留在 App"
+    },
+    {
+      "path": "features/payments/runtime/linkly-operator-runtime.test.ts",
+      "owner": "pos-payments-core",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/payments/runtime/linkly-operator-runtime.ts",
+      "owner": "pos-payments-core",
+      "kind": "production",
+      "reason": "仍依赖 provider adapter、App runtime 或数据库具体实现，保留在 App"
+    },
+    {
+      "path": "features/payments/runtime/payment-checkout-runtime.test.ts",
+      "owner": "pos-payments-core",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/payments/runtime/payment-checkout-runtime.ts",
+      "owner": "pos-payments-core",
+      "kind": "production",
+      "reason": "仍依赖 provider adapter、App runtime 或数据库具体实现，保留在 App"
+    },
+    {
+      "path": "features/payments/runtime/payment-completion-planner.test.ts",
+      "owner": "pos-payments-core",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/payments/runtime/payment-completion-planner.ts",
+      "owner": "pos-payments-core",
+      "kind": "production",
+      "reason": "仍依赖 provider adapter、App runtime 或数据库具体实现，保留在 App"
+    },
+    {
+      "path": "features/payments/runtime/payment-provider-registry.test.ts",
+      "owner": "pos-payments-core",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/payments/runtime/voucher-preparation.test.ts",
+      "owner": "pos-payments-core",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/payments/runtime/voucher-preparation.ts",
+      "owner": "pos-payments-core",
+      "kind": "production",
+      "reason": "仍依赖 provider adapter、App runtime 或数据库具体实现，保留在 App"
+    },
+    {
+      "path": "features/payments/square/index.ts",
+      "owner": "pos-payments-core",
+      "kind": "production",
+      "reason": "仍依赖 provider adapter、App runtime 或数据库具体实现，保留在 App"
+    },
+    {
+      "path": "features/payments/voucher/index.ts",
+      "owner": "pos-payments-core",
+      "kind": "production",
+      "reason": "仍依赖 provider adapter、App runtime 或数据库具体实现，保留在 App"
+    },
+    {
+      "path": "features/payments/voucher/voucher-payment-adapter.test.ts",
+      "owner": "pos-payments-core",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/receipts/cash-fulfilment-planner.test.ts",
+      "owner": "pos-receipt-core",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/receipts/cash-fulfilment-planner.ts",
+      "owner": "pos-receipt-core",
+      "kind": "production",
+      "reason": "仍依赖 App 打印设置、支付 adapter 或平台副作用，保留在 App"
+    },
+    {
+      "path": "features/receipts/index.ts",
+      "owner": "pos-receipt-core",
+      "kind": "production",
+      "reason": "仍依赖 App 打印设置、支付 adapter 或平台副作用，保留在 App"
+    },
+    {
+      "path": "features/receipts/installment-receipt-reprint-service.ts",
+      "owner": "pos-receipt-core",
+      "kind": "production",
+      "reason": "仍依赖 App 打印设置、支付 adapter 或平台副作用，保留在 App"
+    },
+    {
+      "path": "features/receipts/receipt-preview-service.ts",
+      "owner": "pos-receipt-core",
+      "kind": "production",
+      "reason": "仍依赖 App 打印设置、支付 adapter 或平台副作用，保留在 App"
+    },
+    {
+      "path": "features/receipts/voucher-balance-receipt.test.ts",
+      "owner": "pos-receipt-core",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/receipts/voucher-balance-receipt.ts",
+      "owner": "pos-receipt-core",
+      "kind": "production",
+      "reason": "仍依赖 App 打印设置、支付 adapter 或平台副作用，保留在 App"
+    },
+    {
+      "path": "features/remote-history/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/remote-history/remote-history-runtime.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/remote-history/remote-history-runtime.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/returns/adapters/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "模块仍直接依赖 API transport 或生成 DTO，需拆分网络映射后迁移"
+    },
+    {
+      "path": "features/returns/adapters/production-return-support.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/returns/adapters/production-return-support.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/returns/adapters/return-lookup-adapter.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合实现，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/returns/adapters/return-lookup-adapter.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "模块仍直接依赖 API transport 或生成 DTO，需拆分网络映射后迁移"
+    },
+    {
+      "path": "features/returns/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/returns/return-presenter.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合实现，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/sales/domain/cash-rounding.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/sales/domain/cash-rounding.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/sales/domain/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/sales/domain/line-sync-provenance.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/sales/domain/promotions.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/sales/runtime/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/sales/runtime/promotion-snapshot-loader.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/sales/runtime/promotion-snapshot-loader.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/sales/runtime/sales-operation-parity.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/settings/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/settings/settings-runtime.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/settings/settings-runtime.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/shared-held-orders/shared-held-order-cart-reverse-mapper.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/shared-held-orders/shared-held-order-claim-repository.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/shared-held-orders/shared-held-order-local-publication.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/shared-held-orders/shared-held-order-network-api.ts",
+      "owner": "pos-api-client",
+      "kind": "production",
+      "reason": "仍依赖 App API facade、分叉 DTO 或平台策略 wrapper，保留为 App adapter"
+    },
+    {
+      "path": "features/shared-held-orders/shared-held-order-publication-loop.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/shared-held-orders/shared-held-order-publication-queue.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/shared-held-orders/shared-held-order-publication-worker.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/special-products/index.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/special-products/special-products-presenter.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/special-products/special-products-presenter.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/special-products/special-products-runtime.ts",
+      "owner": "pos-domain",
+      "kind": "production",
+      "reason": "仍依赖 App UI/runtime、反向层或双端分叉模块，需先提取纯 port 才能迁移"
+    },
+    {
+      "path": "features/special-products/special-products-screen.touch-gate.test.ts",
+      "owner": "pos-domain",
+      "kind": "test",
+      "reason": "测试依赖各 App 私有组合、平台分支或分叉 fixture，保留为双端集成契约门禁"
+    },
+    {
+      "path": "features/sync-history/index.ts",
+      "owner": "pos-sync",
+      "kind": "production",
+      "reason": "仍依赖 App 生命周期、分叉同步组合或未共享数据库实现，保留在 App"
+    }
+  ]
+}

@@ -15,7 +15,7 @@ import type {
   PricingCartStateSnapshot,
   RecallActiveBinding,
 } from "../contracts";
-import { HbposOrderSyncAdapter } from "../sync/hbpos-sync-adapters";
+import { HbposOrderSyncAdapter } from "@hb/pos-sync/core/sync/hbpos-sync-adapters";
 
 import { applyMigrations, POS_DATABASE_MIGRATIONS } from "./migrations";
 import {
@@ -37,7 +37,7 @@ import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 const T0 = "2026-07-28T00:00:00.000Z";
 const T1 = "2026-07-28T00:01:00.000Z";

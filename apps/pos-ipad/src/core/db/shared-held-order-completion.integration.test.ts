@@ -23,7 +23,7 @@ import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 import {
   SqliteSharedHeldOrderClaimRepository,
@@ -34,7 +34,7 @@ import {
 import {
   normalizeSharedSaleCartV1,
   type SharedSaleCartV1,
-} from "@/features/shared-held-orders/shared-sale-cart-v1";
+} from "@hb/pos-domain/features/shared-held-orders/shared-sale-cart-v1";
 
 const NOW = "2026-07-28T08:00:00.000Z";
 const SOLD_AT = "2026-07-28T08:05:00.000Z";

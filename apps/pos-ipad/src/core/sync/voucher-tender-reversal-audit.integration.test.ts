@@ -18,10 +18,10 @@ import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "../db/types";
+} from "@hb/pos-db/core/db/types";
 
-import { HbposAuditBatchAdapter } from "./hbpos-sync-adapters";
-import { PosSyncCoordinator } from "./sync-coordinator";
+import { HbposAuditBatchAdapter } from "@hb/pos-sync/core/sync/hbpos-sync-adapters";
+import { PosSyncCoordinator } from "@hb/pos-sync/core/sync/sync-coordinator";
 
 const T0 = "2026-07-28T00:00:00.000Z";
 const T1 = "2026-07-28T00:01:00.000Z";

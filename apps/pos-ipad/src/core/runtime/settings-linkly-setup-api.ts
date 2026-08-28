@@ -5,7 +5,7 @@ import type {
   SettingsLinklyPairResult,
   SettingsLinklySetupControlPort,
 } from "../../features/settings/settings-presenter";
-import type { components } from "../../generated/hbpos/schema";
+import type { components } from "@hb/pos-api-client/openapi";
 import {
   HbposApiError,
   unwrapHbposEnvelope,

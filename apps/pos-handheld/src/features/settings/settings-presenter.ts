@@ -12,13 +12,13 @@ import {
   type SettingsSquareLocation,
   type SettingsSquareSetupPort,
   type SettingsSquareTokenStatus,
-} from "./settings-square-setup";
+} from "@hb/pos-domain/features/settings/settings-square-setup";
 
 import {
   DEFAULT_RECEIPT_PRINTER_SETTINGS,
   type ReceiptPrinterSettings,
 } from "@/core/db/pos-settings-repository";
-import { isTrustedLocalHbposApiOrigin } from "@/core/security/pos-api-addresses";
+import { isTrustedLocalHbposApiOrigin } from "@hb/pos-domain/core/security/pos-api-addresses";
 import type { CatalogRefreshState } from "@/features/catalog/catalog-refresh-coordinator";
 import { parseDeviceActivationCode } from "@/core/security/device-activation-code";
 

@@ -8,7 +8,7 @@ import type { ReturnFulfilmentRuntime } from "./return-fulfilment-runtime";
 import {
   normalizeLineSyncProvenance,
   type LineSyncProvenance,
-} from "@/core/contracts/line-sync-provenance";
+} from "@hb/pos-domain/core/contracts/line-sync-provenance";
 import type { PosDatabase } from "@/core/db/pos-database";
 import type {
   PosRepositoryBundle,
@@ -32,7 +32,7 @@ import {
   type ReturnRecoveryScope,
   type ReturnTrustedIdentityPort,
   type TrustedReturnIdentity,
-} from "@/features/returns/adapters/durable-return-execution-orchestrator";
+} from "@hb/pos-domain/features/returns/adapters/durable-return-execution-orchestrator";
 import {
   CanonicalReturnFingerprint,
   CatalogLocalReturnAdapter,
@@ -50,10 +50,10 @@ import {
   type ReceiptReturnContext,
   type ReceiptReturnLine,
   type ReturnRefundLine,
-} from "@/features/returns/return-domain";
+} from "@hb/pos-domain/features/returns/return-domain";
 import {
   ReturnPresenter,
-} from "@/features/returns/return-presenter";
+} from "@hb/pos-domain/features/returns/return-presenter";
 import {
   ReturnWorkflow,
   type ReturnConnectivityPort,
@@ -64,7 +64,7 @@ import {
   type ReturnWorkflowOptions,
   type ReturnRecoveryHydration,
   type ReturnWorkflowSnapshot,
-} from "@/features/returns/return-workflow";
+} from "@hb/pos-domain/features/returns/return-workflow";
 
 export const POS_RETURN_PERMISSIONS = Object.freeze({
   view: "Permissions.PosTerminal.Returns.View",

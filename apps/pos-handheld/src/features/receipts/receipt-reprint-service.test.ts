@@ -8,7 +8,7 @@ import {
   type ReceiptCompletionSettlementSource,
   type ReceiptReprintOrderSource,
   type ReceiptReprintSettingsSource,
-} from "./receipt-reprint-service";
+} from "@hb/pos-receipt-core/features/receipts/receipt-reprint-service";
 
 import { createAud, type LocalOrder, type OrderRepositoryPort } from "@/core/contracts";
 

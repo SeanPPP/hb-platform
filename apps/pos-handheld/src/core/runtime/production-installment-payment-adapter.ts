@@ -19,7 +19,7 @@ import type {
   InstallmentPaymentCommand,
   InstallmentRefundCommand,
 } from "@/features/installments/installment-models";
-import type { PaymentProviderRegistryPort } from "@/features/payments/payment-attempt-service";
+import type { PaymentProviderRegistryPort } from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 import type { PaymentProviderAvailability } from "@/features/payments/runtime/payment-provider-registry";
 
 export type InstallmentCardProvider = Extract<

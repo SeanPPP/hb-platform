@@ -14,8 +14,8 @@ if [[ "$component" != "pos-handheld-android" ]]; then
   exit 2
 fi
 
-npm --prefix apps/pos-handheld ci --no-audit --no-fund
-npm --prefix apps/pos-handheld run prebuild:android -- --clean
+npm ci --no-audit --no-fund
+npm run prebuild:android --workspace=@hb/pos-handheld -- --clean
 cd apps/pos-handheld/android
 node --print "require.resolve('@sentry/react-native/package.json')" >/dev/null
 bash ./gradlew \

@@ -7,7 +7,7 @@ import type {
   OperationAuditPresenterState,
   OperationAuditSource,
   OperationAuditUploadState,
-} from "./operation-audit-presenter";
+} from "@hb/pos-domain/features/attendance-audit/operation-audit-presenter";
 
 export type AttendanceAuditPresenterState = Readonly<{
   audit: OperationAuditPresenterState;

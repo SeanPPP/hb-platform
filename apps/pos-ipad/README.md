@@ -5,11 +5,17 @@
 ## 本地启动
 
 ```bash
-npm install
-npm run test
-npm run prebuild:ios
-npm run ios
+cd ../..
+npm ci
+npm run test --workspace=@hb/pos-ipad
+npm run prebuild:ios --workspace=@hb/pos-ipad
+npm run ios --workspace=@hb/pos-ipad
 ```
+
+根目录 `package-lock.json` 是两个 POS App 的唯一依赖锁，根 `postinstall` 是
+React Native Scheduler 与 expo-audio 补丁的唯一应用入口。不要在 App 目录建立
+独立 lockfile、patch 或执行 app-only install。EAS CLI 仍从本 App 目录运行；npm
+workspace discovery 会把依赖安装锚定到仓库根并执行根补丁门禁。
 
 原生打印、SQLCipher 和外接客显必须使用 Development Build，Expo Go 不在支持范围内。
 

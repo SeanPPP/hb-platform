@@ -18,7 +18,7 @@ import type {
   SqliteDriverPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 import {
   EmergencyPublicKeySyncService,

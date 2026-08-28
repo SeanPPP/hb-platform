@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals
 import { act, fireEvent, render, waitFor, within } from "@testing-library/react-native";
 import { Linking, StyleSheet } from "react-native";
 
-import type { SettingsSquareLocation } from "./settings-square-setup";
+import type { SettingsSquareLocation } from "@hb/pos-domain/features/settings/settings-square-setup";
 
 import {
   SETTINGS_APP_UPDATE_PERMISSION,

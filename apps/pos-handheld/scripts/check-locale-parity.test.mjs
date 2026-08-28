@@ -12,7 +12,7 @@ const placeholderPattern = /\{\{([A-Za-z][A-Za-z0-9_]*)\}\}/gu;
 // 新增页面必须在这里登记其实际承载可见文案的 source，避免路由已注册而未纳入双语审计。
 const registeredPageCopySurfaces = {
   "app/attendance-audit.tsx": "src/features/attendance-audit/attendance-audit-copy.ts",
-  "app/catalog-maintenance.tsx": "src/features/catalog/maintenance/catalog-maintenance-copy.ts",
+  "app/catalog-maintenance.tsx": "../../packages/pos-domain/src/features/catalog/maintenance/catalog-maintenance-copy.ts",
   "app/daily-close.tsx": "src/features/daily-close/daily-close-copy.ts",
   "app/held-orders.tsx": "src/features/held-orders/held-orders-copy.ts",
   "app/index.tsx": "src/ui/screens/bootstrap-screen.tsx",
@@ -59,7 +59,7 @@ test("手持端全局文案不再暴露 iPad 或客显身份", async () => {
 });
 
 test("所有显式双语 copy 表保持键和插值参数一致", async () => {
-  const files = await sourceFiles();
+  const files = await copyAuditFiles();
   let checkedPairs = 0;
   for (const file of files) {
     const sourceText = await readFile(file, "utf8");
@@ -162,7 +162,7 @@ test("所有已注册 POS 页面均登记到可审计的可见文案 source", as
 });
 
 test("页面、弹窗与无障碍文案不得把中英文翻译拼在同一字面量", async () => {
-  const files = await sourceFiles();
+  const files = await copyAuditFiles();
   const uiFiles = files.filter((file) => {
     const path = relativePath(file);
     return (
@@ -250,9 +250,9 @@ test("稳定错误码与票据文案均保持可审计的双语覆盖", async ()
   }
 
   const receiptSources = [
-    "src/features/receipts/receipt-document.ts",
-    "src/features/receipts/refund-voucher-receipt-renderer.ts",
-    "src/features/receipts/return-receipt-renderer.ts",
+    "../../packages/pos-receipt-core/src/features/receipts/receipt-document.ts",
+    "../../packages/pos-receipt-core/src/features/receipts/refund-voucher-receipt-renderer.ts",
+    "../../packages/pos-receipt-core/src/features/receipts/return-receipt-renderer.ts",
   ];
   for (const path of receiptSources) {
     const source = await readFile(new URL(path, projectRoot), "utf8");
@@ -261,7 +261,10 @@ test("稳定错误码与票据文案均保持可审计的双语覆盖", async ()
   }
 
   const receiptDocument = await readFile(
-    new URL("src/features/receipts/receipt-document.ts", projectRoot),
+    new URL(
+      "../../packages/pos-receipt-core/src/features/receipts/receipt-document.ts",
+      projectRoot,
+    ),
     "utf8",
   );
   assert.match(
@@ -281,6 +284,14 @@ async function sourceFiles() {
     await walk(new URL(`${root}/`, projectRoot), files);
   }
   return files.filter((file) => /\.(?:ts|tsx)$/u.test(file));
+}
+
+async function copyAuditFiles() {
+  const files = await sourceFiles();
+  const registeredSurfaces = Object.values(registeredPageCopySurfaces).map(
+    (surface) => new URL(surface, projectRoot).pathname,
+  );
+  return [...new Set([...files, ...registeredSurfaces])];
 }
 
 async function walk(directoryUrl, files) {

@@ -1,6 +1,6 @@
 import type { PaymentAttemptService } from "../../features/payments";
 import { LinklyCloudBackendApi } from "../../features/payments/linkly";
-import type { PaymentProviderRegistryPort } from "../../features/payments/payment-attempt-service";
+import type { PaymentProviderRegistryPort } from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 import {
   LinklyOperatorRuntime,
   type LinklyOperatorRuntimeOptions,

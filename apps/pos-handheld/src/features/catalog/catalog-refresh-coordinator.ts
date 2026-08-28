@@ -3,7 +3,7 @@ import type {
   CatalogRefreshProgressEvent,
   CatalogRefreshStep,
   CatalogSummary,
-} from "./catalog-refresh-contract";
+} from "@hb/pos-domain/features/catalog/catalog-refresh-contract";
 import { CatalogSnapshotFailure } from "./catalog-snapshot-service";
 
 import { HbposApiError } from "@/core/api";

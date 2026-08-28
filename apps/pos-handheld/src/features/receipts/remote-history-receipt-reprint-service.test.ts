@@ -4,16 +4,16 @@ import test from "node:test";
 import type {
   FrozenReceiptReprintSettings,
   ReceiptReprintSettingsSource,
-} from "./receipt-reprint-service";
+} from "@hb/pos-receipt-core/features/receipts/receipt-reprint-service";
 import {
   isRemoteHistoryReceiptReprintEligible,
   RemoteHistoryReceiptReprintPreparationService,
-} from "./remote-history-receipt-reprint-service";
+} from "@hb/pos-receipt-core/features/receipts/remote-history-receipt-reprint-service";
 
 import type {
   RemoteOrderHistoryDetails,
   RemoteOrderHistoryPort,
-} from "@/core/contracts/remote-history";
+} from "@hb/pos-domain/core/contracts/remote-history";
 
 const decoder = new TextDecoder();
 const orderGuid = "12345678-1234-1234-1234-abcdef47c164";

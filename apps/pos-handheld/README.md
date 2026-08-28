@@ -5,16 +5,23 @@
 ## 本地启动
 
 ```bash
+cd ../..
 npm ci
-npm run prebuild:ios
-npm run ios
+npm run prebuild:ios --workspace=@hb/pos-handheld
+npm run ios --workspace=@hb/pos-handheld
 ```
 
 ```bash
+cd ../..
 npm ci
-npm run prebuild:android
-npm run android
+npm run prebuild:android --workspace=@hb/pos-handheld
+npm run android --workspace=@hb/pos-handheld
 ```
+
+根目录 `package-lock.json` 是两个 POS App 的唯一依赖锁，根 `postinstall` 是
+React Native Scheduler 与 expo-audio 补丁的唯一应用入口。不要在 App 目录建立
+独立 lockfile、patch 或执行 app-only install。EAS CLI 仍从本 App 目录运行；npm
+workspace discovery 会把依赖安装锚定到仓库根并执行根补丁门禁。
 
 `EXPO_PUBLIC_HBPOS_API_URL` 可覆盖 POS API 地址；生产默认值为 `https://hotbargain.vip/pos-api`。不要把设备凭据、支付密钥或服务令牌写入 Expo 公共环境变量。
 

@@ -3,7 +3,7 @@ import type {
   EmergencyPublicKey,
   EmergencyPublicKeyAckResult,
   EmergencyPublicKeyPackage,
-} from "./hbpos-attendance-security-api";
+} from "@hb/pos-api-client/features/attendance-audit/hbpos-attendance-security-api";
 
 export const EMERGENCY_LOGIN_MAX_TOKEN_LENGTH = 2_048;
 const EMERGENCY_TRUSTED_TIME_MAX_ACK_RTT_MS = 5_000;

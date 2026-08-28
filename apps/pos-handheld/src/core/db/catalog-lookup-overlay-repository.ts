@@ -1,5 +1,5 @@
 import type { LocalCatalogMatch } from "./catalog-repository";
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
 const NO_ACTIVE_SNAPSHOT_GENERATION = "__HBPOS_NO_ACTIVE_CATALOG__";
 

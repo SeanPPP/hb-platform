@@ -5,8 +5,8 @@ import {
   type ReceiptReturnContext,
   type ReceiptReturnLine,
   type ReturnTenderMethod,
-} from "../return-domain";
-import type { ReturnLookupPort } from "../return-workflow";
+} from "@hb/pos-domain/features/returns/return-domain";
+import type { ReturnLookupPort } from "@hb/pos-domain/features/returns/return-workflow";
 
 import {
   HbposApiError,
@@ -17,8 +17,8 @@ import {
 import {
   normalizeLineSyncProvenance,
   type LineSyncProvenance,
-} from "@/core/contracts/line-sync-provenance";
-import type { components } from "@/generated/hbpos/schema";
+} from "@hb/pos-domain/core/contracts/line-sync-provenance";
+import type { components } from "@hb/pos-api-client/openapi";
 
 type OrderHistoryQueryResponse =
   components["schemas"]["OrderHistoryQueryResponse"];

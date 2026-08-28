@@ -3,7 +3,7 @@ import test from "node:test";
 
 
 import { evaluateLegacyHeldOrderPayload } from "./legacy-held-order-evaluator";
-import { normalizeSharedSaleCartV1 } from "./shared-sale-cart-v1";
+import { normalizeSharedSaleCartV1 } from "@hb/pos-domain/features/shared-held-orders/shared-sale-cart-v1";
 
 import type { HeldOrderPayloadV1 } from "@/core/contracts";
 

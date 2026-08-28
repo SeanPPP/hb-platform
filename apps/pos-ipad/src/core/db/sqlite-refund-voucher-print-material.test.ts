@@ -3,14 +3,14 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import test from "node:test";
 
 import { applyMigrations } from "./migrations";
-import { ProtectedMaterialIntegrityError } from "./protected-material-integrity-error";
+import { ProtectedMaterialIntegrityError } from "@hb/pos-db/core/db/protected-material-integrity-error";
 import { SqliteRefundVoucherPrintMaterial } from "./sqlite-refund-voucher-print-material";
 import { SqliteVoucherProtectedTokenStore } from "./sqlite-voucher-protected-token-store";
 import type {
   SqliteConnectionPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 import type { VoucherProtectedAttemptState } from "@/features/payments/voucher";
 

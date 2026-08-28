@@ -5,7 +5,7 @@ import {
   SPECIAL_PRODUCTS_ADD_TO_CART_PERMISSION,
   SPECIAL_PRODUCTS_MANAGE_PERMISSION,
   SPECIAL_PRODUCTS_VIEW_PERMISSION,
-} from "./special-products-authorization";
+} from "@hb/pos-domain/features/special-products/special-products-authorization";
 import {
   SpecialProductsPresenter,
   type SpecialProductsCartPort,

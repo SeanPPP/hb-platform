@@ -29,7 +29,7 @@ import type {
   SqliteDriverPort,
   SqlRunResult,
   SqlValue,
-} from "./types";
+} from "@hb/pos-db/core/db/types";
 
 const NOW = "2026-07-29T01:00:00.000Z";
 const ACTION_ID = "10000000-0000-4000-8000-000000000001";

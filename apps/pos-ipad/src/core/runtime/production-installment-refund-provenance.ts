@@ -10,7 +10,7 @@ import {
   type HbposTransport,
 } from "@/core/api";
 import type { PaymentAttempt, PaymentProvider } from "@/core/contracts";
-import type { components } from "@/generated/hbpos/schema";
+import type { components } from "@hb/pos-api-client/openapi";
 
 type GeneratedDetails = components["schemas"]["InstallmentDetailsDto"];
 type GeneratedCardTransaction =

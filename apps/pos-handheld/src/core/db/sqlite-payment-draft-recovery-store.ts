@@ -16,9 +16,9 @@ import {
   type RecallActiveBinding,
 } from "../contracts";
 
-import type { SqliteConnectionPort } from "./types";
+import type { SqliteConnectionPort } from "@hb/pos-db/core/db/types";
 
-import type { PersistedOrderDraftPort } from "@/features/payments/payment-attempt-service";
+import type { PersistedOrderDraftPort } from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 import type { PaymentCheckoutDraft } from "@/features/payments/runtime/payment-checkout-runtime";
 import { PricingCart } from "@/features/sales/domain/pricing-cart";
 

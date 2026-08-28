@@ -11,7 +11,7 @@ import {
   type CatalogPageDigest,
   type CatalogLookupItem,
 } from "../../features/catalog/hbpos-catalog-remote";
-import { CATALOG_DOWNLOAD_PERMISSION } from "../../features/catalog/maintenance/catalog-maintenance-authorization";
+import { CATALOG_DOWNLOAD_PERMISSION } from "@hb/pos-domain/features/catalog/maintenance/catalog-maintenance-authorization";
 import type { CashCheckoutResult } from "../../features/checkout/cash";
 import type { CustomerDisplayAdvertisementCachePort } from "../../features/customer-display";
 import {
@@ -22,7 +22,7 @@ import {
 import {
   INSTALLMENTS_ADD_REPAYMENT_PERMISSION,
   INSTALLMENTS_VIEW_PERMISSION,
-} from "../../features/installments/installment-authorization";
+} from "@hb/pos-domain/features/installments/installment-authorization";
 import {
   type LocalHistoryDetails,
   type LocalHistoryPage,
@@ -37,9 +37,9 @@ import { installmentRepaymentPaymentEntry } from "../../features/payments/ui/uni
 import {
   REMOTE_HISTORY_REPRINT_PERMISSION,
   REMOTE_HISTORY_VIEW_PERMISSION,
-} from "../../features/remote-history/remote-history-presenter";
+} from "@hb/pos-domain/features/remote-history/remote-history-presenter";
 import { PricingCart } from "../../features/sales/domain";
-import { SALES_PERMISSIONS } from "../../features/sales/runtime/sales-operation-security";
+import { SALES_PERMISSIONS } from "@hb/pos-domain/features/sales/runtime/sales-operation-security";
 import {
   SETTINGS_APP_UPDATE_PERMISSION,
   SETTINGS_CATALOG_DOWNLOAD_PERMISSION,
@@ -50,7 +50,7 @@ import {
   SETTINGS_VIEW_PERMISSION,
 } from "../../features/settings/settings-authorization";
 import type { SharedHeldOrderPublicationSchedulerPort } from "../../features/shared-held-orders/shared-held-order-publication-loop";
-import { normalizeSharedSaleCartV1 } from "../../features/shared-held-orders/shared-sale-cart-v1";
+import { normalizeSharedSaleCartV1 } from "@hb/pos-domain/features/shared-held-orders/shared-sale-cart-v1";
 import type {
   LocalSyncHistoryOrder,
   LocalSyncHistorySupportContext,
@@ -59,7 +59,7 @@ import {
   SYNC_HISTORY_EXPORT_PERMISSION,
   SYNC_HISTORY_MANUAL_SYNC_PERMISSION,
   SYNC_HISTORY_VIEW_PERMISSION,
-} from "../../features/sync-history/sync-history-authorization";
+} from "@hb/pos-sync/features/sync-history/sync-history-authorization";
 import type {
   HbposTransport,
   HbposTransportRequest,
@@ -80,7 +80,7 @@ import type {
 import type {
   DurableCashOrderCommit,
   LocalOrder,
-} from "../contracts/order";
+} from "@hb/pos-domain/core/contracts/order";
 import type {
   ActiveCatalogMetadata,
   ActiveCatalogPromotions,
