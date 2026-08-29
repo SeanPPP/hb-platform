@@ -3,7 +3,7 @@ import { Stack } from "expo-router";
 import Constants from "expo-constants";
 import * as SplashScreen from "expo-splash-screen";
 import { Image, Platform, StyleSheet, Text, View } from "react-native";
-import { PaperProvider, MD3LightTheme } from "react-native-paper";
+import { PaperProvider } from "react-native-paper";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { I18nextProvider } from "react-i18next";
 import { QueryClientProvider } from "@tanstack/react-query";
@@ -28,6 +28,7 @@ import { useDeviceStore } from "@/store/device-store";
 import { useAuthStore } from "@/store/auth-store";
 import { NetworkRecoveryProvider } from "@/shared/network";
 import { IosReviewBanner } from "@/modules/ios-review/IosReviewBanner";
+import { hbLightTheme } from "@/shared/theme/theme";
 import "@/modules/attendance/location-tracking";
 
 const MIN_SPLASH_VISIBLE_MS = 900;
@@ -40,16 +41,6 @@ SplashScreen.setOptions({
   duration: 700,
   fade: true,
 });
-
-const theme = {
-  ...MD3LightTheme,
-  colors: {
-    ...MD3LightTheme.colors,
-    primary: "#1677FF",
-    secondary: "#52C41A",
-    error: "#FF4D4F",
-  },
-};
 
 export default function RootLayout() {
   const [appReady, setAppReady] = useState(false);
@@ -208,7 +199,7 @@ export default function RootLayout() {
     <SafeAreaProvider>
       <QueryClientProvider client={queryClient}>
         <I18nextProvider i18n={i18n}>
-          <PaperProvider theme={theme}>
+          <PaperProvider theme={hbLightTheme}>
             {/* 浅色业务页面统一使用深色系统图标，避免白底白字看不清。 */}
             <StatusBar style="dark" />
             {/* 网络恢复补传：启动就绪且非 iOS 审核态时启用。

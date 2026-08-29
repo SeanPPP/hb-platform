@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ActivityIndicator, View } from "react-native";
 import { Tabs, usePathname, useRouter } from "expo-router";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { ScrollableTabBar } from "@/components/navigation/ScrollableTabBar";
+import { PrimaryTabBar } from "@/components/navigation";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
@@ -12,6 +12,7 @@ import { useAppDeviceStatusHeartbeat } from "@/modules/device-management/use-app
 import {
   filterAccountTabRouteNames,
   getVisibleTabRouteNames,
+  resolvePreferredDefaultTabRoute,
   resolveTabRouteCorrection,
 } from "@/modules/navigation/default-route";
 import { prepareStoredDeviceSession } from "@/modules/auth/device-login-session";
@@ -21,6 +22,7 @@ import {
   getEmployeeProfileReviewAccess,
 } from "@/modules/employee-profile-review/access";
 import { getEmployeeProfileReviewRequestsApi } from "@/modules/employee-profile-review/api";
+import { AppNavigationAccessProvider } from "@/modules/navigation/access-context";
 
 export default function TabsLayout() {
   const router = useRouter();
@@ -40,6 +42,7 @@ export default function TabsLayout() {
   const navigationItems = useAppNavigationStore((state) => state.items);
   const navigationReady = useAppNavigationStore((state) => state.isReady);
   const navigationLoading = useAppNavigationStore((state) => state.isLoading);
+  const navigationErrorMessage = useAppNavigationStore((state) => state.errorMessage);
   const canViewAttendanceManagement = useAuthStore(
     (state) => state.access.canViewAttendanceManagement
   );
@@ -47,6 +50,7 @@ export default function TabsLayout() {
   const isWarehouseStaffOnly = useAuthStore((state) => state.access.isWarehouseStaffOnly);
   const hasRestored = useRef(false);
   const hasAppliedDefaultRoute = useRef(false);
+  const awaitingPreferredDefaultRoute = useRef(false);
   const [heartbeatReady, setHeartbeatReady] = useState(false);
   const [heartbeatUsesDeviceSession, setHeartbeatUsesDeviceSession] = useState(false);
   const hasUserSession = Boolean(isAuthenticated && userGuid);
@@ -261,28 +265,69 @@ export default function TabsLayout() {
     (hasUserSession || isDeviceMode) && (!navigationReady || navigationLoading);
   const isRouteVisible = (routeName: string) =>
     visibleRouteNames.size === 0 ? routeName === "settings" : visibleRouteNames.has(routeName);
+  const preferredDefaultRoute = resolvePreferredDefaultTabRoute({
+    isDeviceMode,
+    isWarehouseStaffOnly,
+    routeNames: orderedVisibleRouteNames,
+  });
+  const shouldAwaitPreferredDefaultRouteRecovery = Boolean(
+    navigationErrorMessage
+      && (isDeviceMode || isWarehouseStaffOnly)
+      && !preferredDefaultRoute
+  );
 
   useEffect(() => {
     if (shouldWaitForNavigation || visibleRouteNames.size === 0) {
       return;
     }
 
+    if (shouldAwaitPreferredDefaultRouteRecovery) {
+      awaitingPreferredDefaultRoute.current = true;
+    }
+
+    const preferredDefaultStillUnavailable = Boolean(
+      awaitingPreferredDefaultRoute.current && !preferredDefaultRoute
+    );
     const currentRouteName = pathname.split("/").filter(Boolean).pop();
     const nextPath = resolveTabRouteCorrection({
       currentRouteName,
-      hasAppliedDefaultRoute: hasAppliedDefaultRoute.current,
+      hasAppliedDefaultRoute: awaitingPreferredDefaultRoute.current
+        ? false
+        : hasAppliedDefaultRoute.current,
       isDeviceMode,
+      isWarehouseStaffOnly,
       routeNames: orderedVisibleRouteNames,
     });
 
     if (!nextPath) {
+      if (preferredDefaultStillUnavailable) {
+        hasAppliedDefaultRoute.current = false;
+        return;
+      }
+
+      awaitingPreferredDefaultRoute.current = false;
       hasAppliedDefaultRoute.current = true;
       return;
     }
 
-    hasAppliedDefaultRoute.current = true;
+    if (preferredDefaultStillUnavailable) {
+      hasAppliedDefaultRoute.current = false;
+    } else {
+      awaitingPreferredDefaultRoute.current = false;
+      hasAppliedDefaultRoute.current = true;
+    }
     router.navigate(nextPath as Parameters<typeof router.navigate>[0]);
-  }, [isDeviceMode, orderedVisibleRouteNames, pathname, router, shouldWaitForNavigation, visibleRouteNames]);
+  }, [
+    isDeviceMode,
+    isWarehouseStaffOnly,
+    orderedVisibleRouteNames,
+    pathname,
+    preferredDefaultRoute,
+    router,
+    shouldAwaitPreferredDefaultRouteRecovery,
+    shouldWaitForNavigation,
+    visibleRouteNames,
+  ]);
 
   if (
     shouldWaitForNavigation ||
@@ -304,7 +349,34 @@ export default function TabsLayout() {
   }
 
   return (
-    <Tabs screenOptions={{ headerShown: false }} tabBar={(props) => <ScrollableTabBar {...props} />}>
+    <AppNavigationAccessProvider
+      value={{
+        orderedVisibleRouteNames,
+        navigationErrorMessage,
+        navigationLoading,
+        pendingProfileReviewCount: pendingReviewQuery.data?.total ?? 0,
+        isDeviceMode,
+        isWarehouseStaffOnly,
+      }}
+    >
+      <Tabs
+        screenOptions={{ headerShown: false }}
+        tabBar={(props) => <PrimaryTabBar {...props} />}
+      >
+        <Tabs.Screen
+          name="workbench"
+          options={{
+            href: undefined,
+            title: t("tabs.workbench"),
+            tabBarIcon: ({ color, size }) => (
+              <MaterialCommunityIcons
+                name="view-dashboard-outline"
+                color={color}
+                size={size}
+              />
+            ),
+          }}
+        />
       <Tabs.Screen
         name="home"
         options={{
@@ -527,6 +599,7 @@ export default function TabsLayout() {
           ),
         }}
       />
-    </Tabs>
+      </Tabs>
+    </AppNavigationAccessProvider>
   );
 }

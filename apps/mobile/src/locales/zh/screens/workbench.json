@@ -1,0 +1,69 @@
+{
+  "title": "工作台",
+  "subtitle": "门店与获权功能集中处理",
+  "greeting": "你好，{{name}}",
+  "session": {
+    "account": "账号模式",
+    "device": "设备模式",
+    "warehouse": "仓库账号"
+  },
+  "summary": {
+    "currentStore": "当前门店",
+    "noStore": "未选择门店",
+    "authorizedFunctions": "获权功能",
+    "functionCount": "{{count}} 项",
+    "cartSku": "购物车 SKU",
+    "skuCount": "{{count}} 项"
+  },
+  "quickActions": {
+    "title": "常用功能",
+    "caption": "按当前权限显示"
+  },
+  "groups": {
+    "salesProduct": "销售与商品",
+    "warehousePurchase": "仓库与采购",
+    "operationsReports": "运营与报表",
+    "peopleManagement": "人员与管理"
+  },
+  "routes": {
+    "productQuery": "商品查询",
+    "storeOrdering": "门店订货",
+    "cart": "购物车",
+    "orders": "订单",
+    "installmentOrders": "分期订单",
+    "storeVouchers": "代金券",
+    "seasonalCards": "节日卡",
+    "warehouse": "仓库",
+    "domesticPurchase": "国内采购",
+    "localSupplierInvoices": "供应商发票",
+    "advertisements": "广告",
+    "promotions": "促销",
+    "reports": "报表中心",
+    "attendancePersonal": "个人考勤",
+    "attendanceManagement": "考勤管理",
+    "users": "员工列表",
+    "employeeProfile": "个人资料",
+    "employeeProfileReview": "资料审核",
+    "deviceManagement": "设备管理"
+  },
+  "allFunctions": {
+    "title": "全部功能",
+    "caption": "按角色与设备授权",
+    "sectionCount": "{{count}} 项可用"
+  },
+  "states": {
+    "loadingTitle": "正在加载功能权限",
+    "loadingDescription": "请稍候，工作台会按当前账号和设备权限显示功能。",
+    "emptyTitle": "暂无可用功能",
+    "emptyDescription": "当前会话未获授权任何业务功能。为保护数据，工作台不会展示未授权入口。",
+    "errorTitle": "功能菜单加载失败",
+    "errorDescription": "当前仅显示安全的空工作台。请重试加载权限菜单。"
+  },
+  "actions": {
+    "retry": "重新加载"
+  },
+  "accessibility": {
+    "openFunction": "打开{{title}}",
+    "functionCount": "{{title}}，{{count}}项可用功能"
+  }
+}

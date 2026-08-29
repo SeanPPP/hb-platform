@@ -30,6 +30,11 @@
     "openFilters": "打开过滤面板"
   },
   "tabs": {
+    "workbench": "工作台",
+    "scan": "扫码查询",
+    "checkIn": "打卡",
+    "me": "我的",
+    "lockedLabel": "{{label}}，当前模式无权限",
     "home": "商品",
     "store": "门店",
     "orders": "订单",

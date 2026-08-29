@@ -3,6 +3,7 @@ import {
   expandAttendanceRouteNames,
   filterAccountTabRouteNames,
   resolveDefaultTabRoute,
+  resolvePreferredDefaultTabRoute,
   resolveTabRouteCorrection,
   TAB_PATHS,
 } from "./default-route";
@@ -29,12 +30,56 @@ assertEqual(
 );
 
 assertEqual(
+  resolvePreferredDefaultTabRoute({
+    isDeviceMode: true,
+    routeNames: ["workbench", "settings"],
+  }),
+  null,
+  "设备菜单恢复前不得把本地安全壳误认为设备首选业务入口"
+);
+
+assertEqual(
+  resolvePreferredDefaultTabRoute({
+    isDeviceMode: true,
+    routeNames: ["workbench", "product-query", "settings"],
+  }),
+  "/(tabs)/product-query",
+  "设备菜单恢复后必须重新识别扫码查询首选入口"
+);
+
+assertEqual(
+  resolveDefaultTabRoute({
+    isDeviceMode: false,
+    isWarehouseStaffOnly: true,
+    routeNames: ["workbench", "warehouse", "settings"],
+  }),
+  "/(tabs)/warehouse",
+  "纯仓库员工有仓库权限时必须默认进入仓库"
+);
+
+assertEqual(
+  resolveDefaultTabRoute({
+    isDeviceMode: false,
+    isWarehouseStaffOnly: true,
+    routeNames: ["workbench", "settings"],
+  }),
+  "/(tabs)/workbench",
+  "纯仓库员工没有仓库入口时回退到工作台，而不是推断仓库权限"
+);
+
+assertEqual(
+  TAB_PATHS.workbench,
+  "/(tabs)/workbench",
+  "工作台必须注册为本地固定 Tab 路径"
+);
+
+assertEqual(
   resolveDefaultTabRoute({
     isDeviceMode: false,
     routeNames: warehouseManagerWithoutMenu.appMenu,
   }),
-  "/(tabs)/settings",
-  "WarehouseManager without permissions or app menu does not default to warehouse"
+  "/(tabs)/workbench",
+  "账号会话即使无业务菜单也必须进入 fail-closed 工作台"
 );
 
 assertEqual(
@@ -42,8 +87,8 @@ assertEqual(
     isDeviceMode: false,
     routeNames: ["home", "attendance", "settings"],
   }),
-  "/(tabs)/attendance-personal",
-  "user login defaults to personal attendance"
+  "/(tabs)/workbench",
+  "账号登录默认进入工作台"
 );
 
 assertEqual(
@@ -51,8 +96,8 @@ assertEqual(
     isDeviceMode: false,
     routeNames: ["home", "attendance-personal", "attendance-management", "settings"],
   }),
-  "/(tabs)/attendance-personal",
-  "split attendance menu defaults to personal attendance"
+  "/(tabs)/workbench",
+  "管理员菜单也不得把账号登录默认页改为打卡"
 );
 
 assertEqual(
@@ -73,8 +118,17 @@ assertEqual(
     isDeviceMode: true,
     canViewAttendanceManagement: true,
   }).join(","),
-  "home,attendance-personal,settings",
-  "shared visible routes expand legacy attendance and hide management-only/report routes in device mode"
+  "workbench,home,settings",
+  "设备模式必须保留工作台和我的安全壳，同时隐藏个人打卡、考勤管理、敏感资料、设备管理和报表"
+);
+
+assertEqual(
+  getVisibleTabRouteNames({
+    routeNames: ["product-query", "attendance-personal"],
+    isDeviceMode: true,
+  }).join(","),
+  "workbench,product-query,settings",
+  "设备模式收到显式个人考勤菜单时也必须保留工作台和我的安全壳，并隐藏个人考勤"
 );
 
 assertEqual(
@@ -90,8 +144,8 @@ assertEqual(
     isDeviceMode: true,
     routeNames: ["employee-profile-review", "settings"],
   }),
-  "/(tabs)/settings",
-  "device mode redirects away from sensitive employee profile review"
+  "/(tabs)/workbench",
+  "设备模式离开敏感资料审核后必须回到工作台安全壳"
 );
 
 assertEqual(
@@ -100,8 +154,8 @@ assertEqual(
     isDeviceMode: false,
     canViewAttendanceManagement: true,
   }).join(","),
-  "home,attendance-personal,attendance-management,settings",
-  "shared visible routes expand legacy attendance to management for users with management permission"
+  "workbench,home,attendance-personal,attendance-management,settings",
+  "账号模式必须保留工作台安全壳，并展开 legacy 考勤到管理入口"
 );
 
 assertEqual(
@@ -135,8 +189,8 @@ assertEqual(
     isDeviceMode: false,
     routeNames: ["settings"],
   }),
-  "/(tabs)/settings",
-  "role-only sessions without app menu entries stay on settings"
+  "/(tabs)/workbench",
+  "没有可见业务项的账号会话仍进入 fail-closed 工作台"
 );
 
 assertEqual(
@@ -144,8 +198,8 @@ assertEqual(
     isDeviceMode: false,
     routeNames: ["home", "settings"],
   }),
-  "/(tabs)/home",
-  "missing preferred route falls back to first visible tab"
+  "/(tabs)/workbench",
+  "工作台是账号模式本地固定入口，不依赖后端菜单返回"
 );
 
 assertEqual(
@@ -153,8 +207,8 @@ assertEqual(
     isDeviceMode: true,
     routeNames: ["device-management", "reports", "settings"],
   }),
-  "/(tabs)/settings",
-  "device mode never defaults to device management or report routes"
+  "/(tabs)/workbench",
+  "设备模式没有扫码权限时不得回退到设备管理或报表，必须进入工作台安全壳"
 );
 
 assertEqual(
@@ -162,8 +216,8 @@ assertEqual(
     isDeviceMode: false,
     routeNames: ["device-management", "settings"],
   }),
-  "/(tabs)/device-management",
-  "account sessions can fall back to device management"
+  "/(tabs)/workbench",
+  "账号会话不得因菜单排序回退到设备管理页"
 );
 
 assertEqual(
@@ -173,8 +227,8 @@ assertEqual(
     isDeviceMode: true,
     routeNames: ["device-management", "settings"],
   }),
-  "/(tabs)/settings",
-  "device mode redirects away from device management"
+  "/(tabs)/workbench",
+  "设备模式离开设备管理后必须回到工作台安全壳"
 );
 
 assertEqual(
@@ -184,8 +238,8 @@ assertEqual(
     isDeviceMode: true,
     routeNames: ["reports", "settings"],
   }),
-  "/(tabs)/settings",
-  "device mode redirects away from reports"
+  "/(tabs)/workbench",
+  "设备模式离开报表后必须回到工作台安全壳"
 );
 
 assertEqual(
@@ -193,8 +247,8 @@ assertEqual(
     isDeviceMode: true,
     routeNames: [],
   }),
-  "/(tabs)/settings",
-  "empty navigation falls back to settings"
+  "/(tabs)/workbench",
+  "空菜单必须进入工作台安全壳，由工作台展示 fail-closed 状态"
 );
 
 assertEqual(
@@ -204,8 +258,8 @@ assertEqual(
     isDeviceMode: false,
     routeNames: ["home", "attendance", "settings"],
   }),
-  "/(tabs)/attendance-personal",
-  "startup home route redirects user sessions to personal attendance"
+  "/(tabs)/workbench",
+  "启动时旧 home 地址必须校正到工作台"
 );
 
 assertEqual(
@@ -216,7 +270,7 @@ assertEqual(
     routeNames: ["home", "attendance", "settings"],
   }),
   "/(tabs)/attendance-personal",
-  "legacy attendance route redirects to personal attendance"
+  "旧考勤路径必须固定重定向到个人考勤，而不是当前默认工作台"
 );
 
 assertEqual(

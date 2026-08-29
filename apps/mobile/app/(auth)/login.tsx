@@ -322,6 +322,7 @@ export default function Login() {
       router.replace(
         resolveDefaultTabRoute({
           isDeviceMode: false,
+          isWarehouseStaffOnly: useAuthStore.getState().access.isWarehouseStaffOnly,
           routeNames: getVisibleRouteNames(),
         }) as Parameters<typeof router.replace>[0]
       );

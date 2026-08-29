@@ -1,0 +1,683 @@
+import { useCallback, useMemo, type ComponentProps } from "react";
+import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
+import {
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
+import {
+  ActivityIndicator,
+  Button,
+  Divider,
+  Surface,
+  Text,
+} from "react-native-paper";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { useAppNavigationAccess } from "@/modules/navigation/access-context";
+import { TAB_PATHS } from "@/modules/navigation/default-route";
+import { useAppNavigationStore } from "@/modules/navigation/store";
+import {
+  buildWorkbenchSections,
+  type WorkbenchNavigationItem,
+} from "@/modules/navigation/workbench";
+import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { HB_COLORS, HB_RADIUS, HB_SPACING } from "@/shared/theme/tokens";
+import { useAuthStore } from "@/store/auth-store";
+import { useCartStore } from "@/store/cart-store";
+import { useDeviceStore } from "@/store/device-store";
+
+const QUICK_ACTION_ROUTE_ORDER = [
+  "product-query",
+  "home",
+  "cart",
+  "warehouse",
+  "attendance-personal",
+  "orders",
+  "domestic-purchase",
+  "reports",
+] as const;
+
+type MaterialIconName = ComponentProps<typeof MaterialCommunityIcons>["name"];
+
+function formatStoreLabel(
+  storeName: string | null | undefined,
+  storeCode: string | null | undefined,
+  fallback: string
+) {
+  const name = storeName?.trim();
+  const code = storeCode?.trim();
+  if (name && code && name !== code) {
+    return `${name} · ${code}`;
+  }
+  return name || code || fallback;
+}
+
+interface FunctionButtonProps {
+  item: WorkbenchNavigationItem;
+  label: string;
+  pendingCount?: number;
+  onPress: () => void;
+  compact?: boolean;
+}
+
+function FunctionButton({
+  item,
+  label,
+  pendingCount = 0,
+  onPress,
+  compact = false,
+}: FunctionButtonProps) {
+  const { t } = useAppTranslation("workbench");
+  const visiblePendingCount = pendingCount > 99 ? "99+" : String(pendingCount);
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={t("accessibility.openFunction", { title: label })}
+      onPress={onPress}
+      style={({ pressed }) => [
+        compact ? styles.quickAction : styles.functionRow,
+        pressed ? styles.pressed : null,
+      ]}
+    >
+      <View style={compact ? styles.quickIcon : styles.rowIcon}>
+        <MaterialCommunityIcons
+          name={item.icon as MaterialIconName}
+          color={HB_COLORS.action}
+          size={compact ? 23 : 21}
+        />
+      </View>
+      <Text
+        variant={compact ? "labelLarge" : "bodyMedium"}
+        style={compact ? styles.quickLabel : styles.functionLabel}
+      >
+        {label}
+      </Text>
+      {!compact && pendingCount > 0 ? (
+        <View style={styles.countBadge}>
+          <Text variant="labelSmall" style={styles.countBadgeText}>
+            {visiblePendingCount}
+          </Text>
+        </View>
+      ) : null}
+      {!compact ? (
+        <MaterialCommunityIcons
+          name="chevron-right"
+          color={HB_COLORS.textSecondary}
+          size={21}
+        />
+      ) : null}
+    </Pressable>
+  );
+}
+
+interface AccessStateProps {
+  kind: "loading" | "error" | "empty";
+  onRetry: () => void;
+}
+
+function AccessState({ kind, onRetry }: AccessStateProps) {
+  const { t } = useAppTranslation("workbench");
+  const isLoading = kind === "loading";
+  const title = t(`states.${kind}Title`);
+  const description = t(`states.${kind}Description`);
+
+  return (
+    <Surface style={styles.stateSurface} elevation={0}>
+      {isLoading ? (
+        <ActivityIndicator
+          color={HB_COLORS.action}
+          accessibilityLabel={title}
+        />
+      ) : (
+        <MaterialCommunityIcons
+          name={kind === "error" ? "alert-circle-outline" : "shield-lock-outline"}
+          color={kind === "error" ? HB_COLORS.danger : HB_COLORS.textSecondary}
+          size={30}
+        />
+      )}
+      <Text variant="titleMedium" style={styles.stateTitle}>
+        {title}
+      </Text>
+      <Text variant="bodyMedium" style={styles.stateDescription}>
+        {description}
+      </Text>
+      {!isLoading ? (
+        <Button
+          icon="refresh"
+          mode="contained"
+          buttonColor={HB_COLORS.action}
+          onPress={onRetry}
+          style={styles.retryButton}
+        >
+          {t("actions.retry")}
+        </Button>
+      ) : null}
+    </Surface>
+  );
+}
+
+export function WorkbenchScreen() {
+  const router = useRouter();
+  const { t } = useAppTranslation("workbench");
+  const {
+    orderedVisibleRouteNames,
+    navigationErrorMessage,
+    navigationLoading,
+    pendingProfileReviewCount,
+    isDeviceMode,
+    isWarehouseStaffOnly,
+  } = useAppNavigationAccess();
+  const fetchMenu = useAppNavigationStore((state) => state.fetchMenu);
+  const currentUser = useAuthStore((state) => state.user);
+  const deviceSession = useDeviceStore((state) => state.session);
+  const selectedStore = useCartStore((state) => state.selectedStore);
+  const cartSummary = useCartStore((state) => state.cartSummary);
+
+  const sections = useMemo(
+    () =>
+      navigationLoading || navigationErrorMessage
+        ? []
+        : buildWorkbenchSections(orderedVisibleRouteNames),
+    [navigationErrorMessage, navigationLoading, orderedVisibleRouteNames]
+  );
+  const allItems = useMemo(
+    () => sections.flatMap((section) => section.items),
+    [sections]
+  );
+  const itemsByRoute = useMemo(
+    () => new Map(allItems.map((item) => [item.routeName, item])),
+    [allItems]
+  );
+  const quickActions = useMemo(
+    () =>
+      QUICK_ACTION_ROUTE_ORDER.map((routeName) => itemsByRoute.get(routeName))
+        .filter((item): item is WorkbenchNavigationItem => Boolean(item))
+        .slice(0, 4),
+    [itemsByRoute]
+  );
+
+  const effectiveStoreCode = selectedStore?.storeCode
+    ?? (isDeviceMode ? deviceSession?.storeCode : null);
+  const effectiveStoreName = selectedStore?.storeName
+    ?? (isDeviceMode ? deviceSession?.storeName : null);
+  const storeLabel = formatStoreLabel(
+    effectiveStoreName,
+    effectiveStoreCode,
+    t("summary.noStore")
+  );
+  const cartMatchesStore = Boolean(
+    effectiveStoreCode
+    && (!cartSummary?.storeCode || cartSummary.storeCode === effectiveStoreCode)
+  );
+  const cartSkuCount = cartMatchesStore
+    ? cartSummary?.totalSku ?? cartSummary?.items.length ?? 0
+    : 0;
+  const identityName = isDeviceMode
+    ? deviceSession?.systemDeviceNumber?.trim()
+      || deviceSession?.storeName?.trim()
+      || t("session.device")
+    : currentUser?.fullName?.trim()
+      || currentUser?.username?.trim()
+      || t("session.account");
+
+  const navigateTo = useCallback(
+    (routeName: string) => {
+      const path = TAB_PATHS[routeName];
+      if (
+        !path
+        || !itemsByRoute.has(routeName)
+        || navigationLoading
+        || navigationErrorMessage
+      ) {
+        return;
+      }
+      router.navigate(path as Parameters<typeof router.navigate>[0]);
+    },
+    [itemsByRoute, navigationErrorMessage, navigationLoading, router]
+  );
+
+  const retryMenu = useCallback(() => {
+    void fetchMenu();
+  }, [fetchMenu]);
+
+  const accessState = navigationLoading
+    ? "loading"
+    : navigationErrorMessage
+      ? "error"
+      : allItems.length === 0
+        ? "empty"
+        : null;
+
+  return (
+    <SafeAreaView
+      style={styles.safeArea}
+      edges={["top", "left", "right"]}
+    >
+      <ScrollView
+        contentContainerStyle={styles.content}
+        contentInsetAdjustmentBehavior="automatic"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.header}>
+          <View style={styles.headingRow}>
+            <View style={styles.headingCopy}>
+              <Text variant="headlineSmall" style={styles.title}>
+                {t("title")}
+              </Text>
+              <Text variant="titleMedium" style={styles.greeting}>
+                {t("greeting", { name: identityName })}
+              </Text>
+            </View>
+            <View style={styles.modeTag}>
+              <MaterialCommunityIcons
+                name={
+                  isDeviceMode
+                    ? "cellphone-link"
+                    : isWarehouseStaffOnly
+                      ? "warehouse"
+                      : "account-outline"
+                }
+                color={HB_COLORS.action}
+                size={15}
+              />
+              <Text variant="labelMedium" style={styles.modeText}>
+                {t(
+                  isDeviceMode
+                    ? "session.device"
+                    : isWarehouseStaffOnly
+                      ? "session.warehouse"
+                      : "session.account"
+                )}
+              </Text>
+            </View>
+          </View>
+          <Text variant="bodyMedium" style={styles.subtitle}>
+            {t("subtitle")}
+          </Text>
+        </View>
+
+        <Surface style={styles.summarySurface} elevation={0}>
+          <View style={styles.storeSummary}>
+            <MaterialCommunityIcons
+              name="store-marker-outline"
+              color={HB_COLORS.textSecondary}
+              size={21}
+            />
+            <View style={styles.storeCopy}>
+              <Text variant="labelMedium" style={styles.summaryLabel}>
+                {t("summary.currentStore")}
+              </Text>
+              <Text variant="bodyMedium" style={styles.storeValue}>
+                {storeLabel}
+              </Text>
+            </View>
+          </View>
+          <Divider />
+          <View style={styles.metricsRow}>
+            <View style={styles.metric}>
+              <Text variant="labelMedium" style={styles.summaryLabel}>
+                {t("summary.authorizedFunctions")}
+              </Text>
+              <Text variant="titleMedium" style={styles.metricValue}>
+                {t("summary.functionCount", { count: allItems.length })}
+              </Text>
+            </View>
+            <View style={styles.metricDivider} />
+            <View style={styles.metric}>
+              <Text variant="labelMedium" style={styles.summaryLabel}>
+                {t("summary.cartSku")}
+              </Text>
+              <Text variant="titleMedium" style={styles.metricValue}>
+                {t("summary.skuCount", { count: cartSkuCount })}
+              </Text>
+            </View>
+          </View>
+        </Surface>
+
+        {accessState ? (
+          <AccessState
+            kind={accessState}
+            onRetry={retryMenu}
+          />
+        ) : (
+          <>
+            {quickActions.length > 0 ? (
+              <View style={styles.sectionBlock}>
+                <View style={styles.sectionHeading}>
+                  <Text variant="titleMedium" style={styles.sectionTitle}>
+                    {t("quickActions.title")}
+                  </Text>
+                  <Text variant="bodySmall" style={styles.sectionCaption}>
+                    {t("quickActions.caption")}
+                  </Text>
+                </View>
+                <Surface style={styles.quickSurface} elevation={0}>
+                  {quickActions.map((item) => (
+                    <FunctionButton
+                      key={item.routeName}
+                      item={item}
+                      label={t(item.labelKey)}
+                      compact
+                      onPress={() => navigateTo(item.routeName)}
+                    />
+                  ))}
+                </Surface>
+              </View>
+            ) : null}
+
+            <View style={styles.sectionBlock}>
+              <View style={styles.sectionHeading}>
+                <Text variant="titleMedium" style={styles.sectionTitle}>
+                  {t("allFunctions.title")}
+                </Text>
+                <Text variant="bodySmall" style={styles.sectionCaption}>
+                  {t("allFunctions.caption")}
+                </Text>
+              </View>
+              <View style={styles.functionSections}>
+                <Surface style={styles.functionSurface} elevation={0}>
+                  {sections.map((section, sectionIndex) => (
+                    <View key={section.key}>
+                      {sectionIndex > 0 ? <Divider style={styles.groupDivider} /> : null}
+                      <View
+                        accessible
+                        accessibilityRole="header"
+                        accessibilityLabel={t("accessibility.functionCount", {
+                          title: t(section.titleKey),
+                          count: section.items.length,
+                        })}
+                        style={styles.functionSectionHeader}
+                      >
+                        <Text variant="titleSmall" style={styles.functionSectionTitle}>
+                          {t(section.titleKey)}
+                        </Text>
+                        <Text variant="labelMedium" style={styles.functionSectionCount}>
+                          {t("allFunctions.sectionCount", { count: section.items.length })}
+                        </Text>
+                      </View>
+                      <Divider />
+                      {section.items.map((item, index) => (
+                        <View key={item.routeName}>
+                          {index > 0 ? <Divider style={styles.insetDivider} /> : null}
+                          <FunctionButton
+                            item={item}
+                            label={t(item.labelKey)}
+                            pendingCount={
+                              item.routeName === "employee-profile-review"
+                                ? pendingProfileReviewCount
+                                : 0
+                            }
+                            onPress={() => navigateTo(item.routeName)}
+                          />
+                        </View>
+                      ))}
+                    </View>
+                  ))}
+                </Surface>
+              </View>
+            </View>
+          </>
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+const INTERACTIVE_HEIGHT = Platform.OS === "android" ? 48 : 44;
+
+const styles = StyleSheet.create({
+  safeArea: {
+    flex: 1,
+    backgroundColor: HB_COLORS.background,
+  },
+  content: {
+    paddingHorizontal: HB_SPACING.md,
+    paddingTop: HB_SPACING.sm,
+    paddingBottom: HB_SPACING.lg,
+    gap: HB_SPACING.md,
+  },
+  header: {
+    gap: HB_SPACING.xs,
+  },
+  headingRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: HB_SPACING.sm,
+  },
+  headingCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  title: {
+    color: HB_COLORS.textPrimary,
+    fontWeight: "700",
+  },
+  greeting: {
+    color: HB_COLORS.textPrimary,
+    fontWeight: "600",
+  },
+  subtitle: {
+    color: HB_COLORS.textSecondary,
+  },
+  modeTag: {
+    minHeight: 28,
+    maxWidth: "44%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: HB_SPACING.xxs,
+    paddingHorizontal: HB_SPACING.xs,
+    paddingVertical: HB_SPACING.xxs,
+    borderRadius: 999,
+    backgroundColor: "#EAF2FF",
+  },
+  modeText: {
+    flexShrink: 1,
+    color: HB_COLORS.action,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  summarySurface: {
+    overflow: "hidden",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HB_COLORS.outline,
+    borderRadius: HB_RADIUS.surface,
+    backgroundColor: HB_COLORS.surface,
+  },
+  storeSummary: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: HB_SPACING.sm,
+    paddingHorizontal: HB_SPACING.md,
+    paddingVertical: HB_SPACING.sm,
+  },
+  storeCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  summaryLabel: {
+    color: HB_COLORS.textSecondary,
+    fontWeight: "600",
+  },
+  storeValue: {
+    color: HB_COLORS.textPrimary,
+    fontWeight: "600",
+  },
+  metricsRow: {
+    flexDirection: "row",
+    alignItems: "stretch",
+  },
+  metric: {
+    flex: 1,
+    minWidth: 0,
+    gap: HB_SPACING.xxs,
+    paddingHorizontal: HB_SPACING.md,
+    paddingVertical: HB_SPACING.sm,
+  },
+  metricDivider: {
+    width: StyleSheet.hairlineWidth,
+    backgroundColor: HB_COLORS.outline,
+  },
+  metricValue: {
+    color: HB_COLORS.textPrimary,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
+  },
+  sectionBlock: {
+    gap: HB_SPACING.xs,
+  },
+  sectionHeading: {
+    minHeight: 24,
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: HB_SPACING.xs,
+  },
+  sectionTitle: {
+    color: HB_COLORS.textPrimary,
+    fontWeight: "700",
+  },
+  sectionCaption: {
+    flexShrink: 1,
+    color: HB_COLORS.textSecondary,
+    textAlign: "right",
+  },
+  quickSurface: {
+    overflow: "hidden",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HB_COLORS.outline,
+    borderRadius: HB_RADIUS.surface,
+    backgroundColor: HB_COLORS.surface,
+  },
+  quickAction: {
+    width: "50%",
+    minHeight: 72,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: HB_SPACING.xs,
+    paddingHorizontal: HB_SPACING.sm,
+    paddingVertical: HB_SPACING.xs,
+    borderRightWidth: StyleSheet.hairlineWidth,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderColor: HB_COLORS.outlineMuted,
+  },
+  quickIcon: {
+    width: 34,
+    height: 34,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: HB_RADIUS.control,
+    backgroundColor: "#EAF2FF",
+  },
+  quickLabel: {
+    flex: 1,
+    color: HB_COLORS.textPrimary,
+    fontWeight: "600",
+  },
+  pressed: {
+    backgroundColor: "#EAF2FF",
+  },
+  functionSections: {
+    width: "100%",
+  },
+  functionSurface: {
+    overflow: "hidden",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HB_COLORS.outline,
+    borderRadius: HB_RADIUS.surface,
+    backgroundColor: HB_COLORS.surface,
+  },
+  functionSectionHeader: {
+    minHeight: INTERACTIVE_HEIGHT,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: HB_SPACING.xs,
+    paddingHorizontal: HB_SPACING.md,
+    paddingVertical: HB_SPACING.xs,
+  },
+  functionSectionTitle: {
+    flexShrink: 1,
+    color: HB_COLORS.textPrimary,
+    fontWeight: "700",
+  },
+  functionSectionCount: {
+    color: HB_COLORS.textSecondary,
+  },
+  functionRow: {
+    minHeight: INTERACTIVE_HEIGHT,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: HB_SPACING.sm,
+    paddingHorizontal: HB_SPACING.md,
+    paddingVertical: HB_SPACING.xs,
+  },
+  rowIcon: {
+    width: 28,
+    height: 28,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  functionLabel: {
+    flex: 1,
+    color: HB_COLORS.textPrimary,
+    fontWeight: "500",
+  },
+  insetDivider: {
+    marginLeft: 56,
+  },
+  groupDivider: {
+    height: 1,
+    backgroundColor: HB_COLORS.outline,
+  },
+  countBadge: {
+    minWidth: 24,
+    minHeight: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 6,
+    borderRadius: 999,
+    backgroundColor: "#FEE4E2",
+  },
+  countBadgeText: {
+    color: HB_COLORS.danger,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
+  },
+  stateSurface: {
+    alignItems: "center",
+    gap: HB_SPACING.xs,
+    paddingHorizontal: HB_SPACING.lg,
+    paddingVertical: HB_SPACING.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HB_COLORS.outline,
+    borderRadius: HB_RADIUS.surface,
+    backgroundColor: HB_COLORS.surface,
+  },
+  stateTitle: {
+    color: HB_COLORS.textPrimary,
+    fontWeight: "700",
+    textAlign: "center",
+  },
+  stateDescription: {
+    color: HB_COLORS.textSecondary,
+    textAlign: "center",
+  },
+  retryButton: {
+    minHeight: INTERACTIVE_HEIGHT,
+    justifyContent: "center",
+    marginTop: HB_SPACING.xxs,
+  },
+});

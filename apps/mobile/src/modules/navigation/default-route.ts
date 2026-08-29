@@ -1,4 +1,5 @@
 export type AppTabPath =
+  | "/(tabs)/workbench"
   | "/(tabs)/home"
   | "/(tabs)/orders"
   | "/(tabs)/cart"
@@ -21,6 +22,7 @@ export type AppTabPath =
   | "/(tabs)/settings";
 
 export const TAB_PATHS: Record<string, AppTabPath> = {
+  workbench: "/(tabs)/workbench",
   home: "/(tabs)/home",
   orders: "/(tabs)/orders",
   cart: "/(tabs)/cart",
@@ -47,6 +49,7 @@ export const SUPPORTED_TAB_ROUTE_NAMES = new Set(Object.keys(TAB_PATHS));
 export const SETTINGS_FALLBACK_ROUTE_NAME = "settings";
 
 const DEVICE_MODE_BLOCKED_ROUTE_NAMES = new Set([
+  "attendance-personal",
   "attendance-management",
   "employee-profile-review",
   "device-management",
@@ -54,7 +57,9 @@ const DEVICE_MODE_BLOCKED_ROUTE_NAMES = new Set([
 ]);
 const LEGACY_ATTENDANCE_ROUTE_NAME = "attendance";
 export const SUPPORTED_APP_MENU_ROUTE_NAMES = new Set([
-  ...SUPPORTED_TAB_ROUTE_NAMES,
+  ...Array.from(SUPPORTED_TAB_ROUTE_NAMES).filter(
+    (routeName) => routeName !== "workbench"
+  ),
   LEGACY_ATTENDANCE_ROUTE_NAME,
 ]);
 
@@ -119,9 +124,18 @@ export function getVisibleTabRouteNames({
     routeNames,
     canViewAttendanceManagement ?? canManageAttendance
   );
-  return isDeviceMode
+  const filteredRouteNames = isDeviceMode
     ? orderedRouteNames.filter((routeName) => !DEVICE_MODE_BLOCKED_ROUTE_NAMES.has(routeName))
     : orderedRouteNames;
+
+  // 工作台和设置属于本地安全壳，不代表任何业务权限；业务入口仍完全来自后端菜单。
+  return [
+    "workbench",
+    ...filteredRouteNames.filter(
+      (routeName) => routeName !== "workbench" && routeName !== SETTINGS_FALLBACK_ROUTE_NAME
+    ),
+    SETTINGS_FALLBACK_ROUTE_NAME,
+  ];
 }
 
 export function hasVisibleTabRoute(
@@ -134,6 +148,7 @@ export function hasVisibleTabRoute(
 
 interface ResolveDefaultTabRouteOptions {
   isDeviceMode: boolean;
+  isWarehouseStaffOnly?: boolean;
   routeNames: Iterable<string>;
 }
 
@@ -144,25 +159,38 @@ interface ResolveTabRouteCorrectionOptions extends ResolveDefaultTabRouteOptions
 
 export function resolveDefaultTabRoute({
   isDeviceMode,
+  isWarehouseStaffOnly = false,
   routeNames,
 }: ResolveDefaultTabRouteOptions): AppTabPath {
-  const orderedRouteNames = getVisibleTabRouteNames({ routeNames, isDeviceMode });
-  const preferredRouteName = isDeviceMode ? "product-query" : "attendance-personal";
+  return resolvePreferredDefaultTabRoute({
+    isDeviceMode,
+    isWarehouseStaffOnly,
+    routeNames,
+  }) ?? TAB_PATHS.workbench;
+}
 
-  if (orderedRouteNames.includes(preferredRouteName)) {
-    return TAB_PATHS[preferredRouteName];
+export function resolvePreferredDefaultTabRoute({
+  isDeviceMode,
+  isWarehouseStaffOnly = false,
+  routeNames,
+}: ResolveDefaultTabRouteOptions): AppTabPath | null {
+  const orderedRouteNames = getVisibleTabRouteNames({ routeNames, isDeviceMode });
+  if (isDeviceMode && orderedRouteNames.includes("product-query")) {
+    return TAB_PATHS["product-query"];
   }
 
-  const firstVisibleRouteName = orderedRouteNames.find((routeName) => Boolean(TAB_PATHS[routeName]));
-  return firstVisibleRouteName
-    ? TAB_PATHS[firstVisibleRouteName]
-    : TAB_PATHS[SETTINGS_FALLBACK_ROUTE_NAME];
+  if (isWarehouseStaffOnly && orderedRouteNames.includes("warehouse")) {
+    return TAB_PATHS.warehouse;
+  }
+
+  return null;
 }
 
 export function resolveTabRouteCorrection({
   currentRouteName,
   hasAppliedDefaultRoute,
   isDeviceMode,
+  isWarehouseStaffOnly = false,
   routeNames,
 }: ResolveTabRouteCorrectionOptions): AppTabPath | null {
   if (!currentRouteName) {
@@ -171,11 +199,17 @@ export function resolveTabRouteCorrection({
 
   const orderedRouteNames = getVisibleTabRouteNames({ routeNames, isDeviceMode });
   const visibleRouteNames = new Set(orderedRouteNames);
-  const defaultRoute = resolveDefaultTabRoute({ isDeviceMode, routeNames: orderedRouteNames });
+  const defaultRoute = resolveDefaultTabRoute({
+    isDeviceMode,
+    isWarehouseStaffOnly,
+    routeNames: orderedRouteNames,
+  });
   const currentRoute = TAB_PATHS[currentRouteName];
 
   if (currentRouteName === LEGACY_ATTENDANCE_ROUTE_NAME) {
-    return defaultRoute;
+    return visibleRouteNames.has("attendance-personal")
+      ? TAB_PATHS["attendance-personal"]
+      : defaultRoute;
   }
 
   if (!currentRoute) {
@@ -187,7 +221,11 @@ export function resolveTabRouteCorrection({
     return defaultRoute;
   }
 
-  if (!hasAppliedDefaultRoute && currentRouteName === "home" && currentRoute !== defaultRoute) {
+  if (
+    !hasAppliedDefaultRoute
+    && (currentRouteName === "home" || currentRouteName === "workbench")
+    && currentRoute !== defaultRoute
+  ) {
     return defaultRoute;
   }
 
