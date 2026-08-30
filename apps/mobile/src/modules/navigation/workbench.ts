@@ -23,6 +23,7 @@ const WORKBENCH_SECTIONS: WorkbenchNavigationSection[] = [
       { routeName: "home", labelKey: "routes.storeOrdering", icon: "storefront-outline" },
       { routeName: "cart", labelKey: "routes.cart", icon: "cart-outline" },
       { routeName: "orders", labelKey: "routes.orders", icon: "clipboard-list-outline" },
+      { routeName: "local-supplier-invoices", labelKey: "routes.localSupplierInvoices", icon: "receipt-text-outline" },
       { routeName: "installment-orders", labelKey: "routes.installmentOrders", icon: "cash-clock" },
       { routeName: "store-vouchers", labelKey: "routes.storeVouchers", icon: "ticket-confirmation-outline" },
       { routeName: "seasonal-cards", labelKey: "routes.seasonalCards", icon: "cards-outline" },
@@ -34,7 +35,6 @@ const WORKBENCH_SECTIONS: WorkbenchNavigationSection[] = [
     items: [
       { routeName: "warehouse", labelKey: "routes.warehouse", icon: "warehouse" },
       { routeName: "domestic-purchase", labelKey: "routes.domesticPurchase", icon: "shopping-outline" },
-      { routeName: "local-supplier-invoices", labelKey: "routes.localSupplierInvoices", icon: "receipt-text-outline" },
     ],
   },
   {

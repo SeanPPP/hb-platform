@@ -1,6 +1,31 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { buildPrimaryNavigation } from "./primary-navigation";
 import { buildWorkbenchSections } from "./workbench";
+
+const localeRoot = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../locales"
+);
+const zhWorkbench = JSON.parse(
+  readFileSync(resolve(localeRoot, "zh/screens/workbench.json"), "utf8")
+);
+const enWorkbench = JSON.parse(
+  readFileSync(resolve(localeRoot, "en/screens/workbench.json"), "utf8")
+);
+const zhOrders = JSON.parse(
+  readFileSync(resolve(localeRoot, "zh/screens/orders.json"), "utf8")
+);
+const enOrders = JSON.parse(
+  readFileSync(resolve(localeRoot, "en/screens/orders.json"), "utf8")
+);
+
+assert.equal(zhWorkbench.routes.orders, "HB订单", "中文工作台必须显示 HB订单");
+assert.equal(enWorkbench.routes.orders, "HB Orders", "英文工作台必须显示 HB Orders");
+assert.equal(zhOrders.title, "订单列表", "中文订单业务页标题不得随工作台入口改名");
+assert.equal(enOrders.title, "Orders", "英文订单业务页标题不得随工作台入口改名");
 
 function compactPrimaryItems(
   activeRouteName: string | undefined,
@@ -186,6 +211,39 @@ assert.deepEqual(
     { key: "people-management", itemRouteNames: ["users"] },
   ],
   "工作台仅按显式可见路由显示四类业务入口"
+);
+
+const salesAndSupplierInvoiceSections = buildWorkbenchSections([
+  "local-supplier-invoices",
+  "warehouse",
+  "orders",
+]);
+assert.deepEqual(
+  salesAndSupplierInvoiceSections.map((section) => ({
+    key: section.key,
+    itemRouteNames: section.items.map((item) => item.routeName),
+  })),
+  [
+    {
+      key: "sales-product",
+      itemRouteNames: ["orders", "local-supplier-invoices"],
+    },
+    { key: "warehouse-purchase", itemRouteNames: ["warehouse"] },
+  ],
+  "供应商发票必须归入销售与商品并紧跟 HB订单，仓库与采购不得再包含该入口"
+);
+assert.deepEqual(
+  buildWorkbenchSections(["local-supplier-invoices"]).map((section) => ({
+    key: section.key,
+    itemRouteNames: section.items.map((item) => item.routeName),
+  })),
+  [
+    {
+      key: "sales-product",
+      itemRouteNames: ["local-supplier-invoices"],
+    },
+  ],
+  "只有供应商发票权限时必须只生成销售与商品分组"
 );
 
 const visibleSectionRoutes = sparseSections.flatMap((section) =>
