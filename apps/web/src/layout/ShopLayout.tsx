@@ -1,10 +1,15 @@
 import {
   AppstoreOutlined,
+  DashboardOutlined,
   DownOutlined,
   FileTextOutlined,
   GiftOutlined,
   HomeOutlined,
+  LogoutOutlined,
   MenuOutlined,
+  MoreOutlined,
+  OrderedListOutlined,
+  ScanOutlined,
   ShoppingCartOutlined,
   UserOutlined,
 } from '@ant-design/icons'
@@ -13,6 +18,7 @@ import type { MenuProps } from 'antd'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
+import shopBrandCart from '../assets/shop-brand-cart.png'
 import LanguageSwitch from '../components/LanguageSwitch'
 import ShopCartDrawer from '../components/ShopCartDrawer'
 import ShopCartSummary from '../components/ShopCartSummary'
@@ -71,6 +77,14 @@ function useShopMobileLayout() {
   return isMobileShopLayout
 }
 
+function ShopBrandMark() {
+  return (
+    <span className="shop-brand-mark" aria-hidden="true">
+      <img className="shop-brand-mark__image" src={shopBrandCart} alt="" draggable={false} />
+    </span>
+  )
+}
+
 export default function ShopLayout() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -84,6 +98,7 @@ export default function ShopLayout() {
   const isComingSoonPage = location.pathname.startsWith('/shop/coming-soon')
   const isOrdersPage = location.pathname.startsWith('/shop/orders')
   const isLocalSupplierInvoicesPage = location.pathname.startsWith('/shop/local-supplier-invoices')
+  const isMorePage = isPreorderPage || isBestSellersPage || isComingSoonPage || isLocalSupplierInvoicesPage
   const shopBannerCopy = useMemo(() => resolveShopBannerCopy(location.pathname), [location.pathname])
   const preorderDateTimeFormatter = useMemo(
     () => new Intl.DateTimeFormat(i18n.resolvedLanguage || i18n.language, { dateStyle: 'medium', timeStyle: 'short' }),
@@ -130,6 +145,7 @@ export default function ShopLayout() {
   const [cartDrawerOpen, setCartDrawerOpen] = useState(false)
   const [cartDrawerLoading, setCartDrawerLoading] = useState(false)
   const [mobileCategoryVisible, setMobileCategoryVisible] = useState(false)
+  const [mobileMoreVisible, setMobileMoreVisible] = useState(false)
   const [isHoverSupported, setIsHoverSupported] = useState(true)
   const [dismissedPreorderPromptKey, setDismissedPreorderPromptKey] = useState<string | null>(null)
   const preorderPromptOpen = preorderPrompt.mode === 'pending'
@@ -409,220 +425,256 @@ export default function ShopLayout() {
     })
   }
 
+  const openShopScanner = () => {
+    if (!isShopHomePage) {
+      navigate('/shop?scan=1')
+      return
+    }
+
+    window.dispatchEvent(new Event('shop:open-scanner'))
+  }
+
   return (
     <div className="shop-layout">
-      <div className="shop-top-bar">
+      <header className="shop-main-header">
         <div className="shop-shell">
-          {currentUser ? (
-            <span className="shop-account-info">{t('shop.account', 'ACCOUNT')}: {currentUser.username}</span>
-          ) : (
-            <Link to="/login">{t('login.submit', 'Login')}</Link>
-          )}
-          {access.canAccessDashboard && (
-            <span onClick={() => window.open('/dashboard', '_blank')}>{t('menu.dashboard', 'Dashboard')}</span>
-          )}
-          <span onClick={() => navigate('/shop/best-sellers')}>{t('shop.bestSellers', 'Best Sellers')}</span>
-          <span onClick={() => navigate('/shop/coming-soon')}>{t('shop.comingSoon', 'Coming Soon')}</span>
-          <span onClick={() => navigate('/shop/orders')}>{t('shop.orderHistory')}</span>
-          <Link
-            to="/shop/local-supplier-invoices"
-            className="shop-local-invoice-nav-entry"
-            aria-current={isLocalSupplierInvoicesPage ? 'page' : undefined}
+          <button
+            type="button"
+            className="shop-brand"
+            onClick={() => navigate('/shop')}
+            aria-label={t('shop.shopHome', 'Shop Home')}
           >
-            {t('shop.localSupplierInvoices')}
-          </Link>
-          <span onClick={() => void handleLogout()}>{t('layout.logout', 'Log Out')}</span>
-          {isShopHomePage && !isMobileShopLayout
-            ? <SupplierOrderingExtensionEntry presentation="desktop" />
-            : null}
-          <LanguageSwitch className="shop-top-language-switch" size="small" />
-        </div>
-      </div>
+            <ShopBrandMark />
+            <span className="shop-brand-copy">
+              <strong>HB SHOP</strong>
+              <span>{t('shop.storeOrdering', 'Store Ordering')}</span>
+            </span>
+          </button>
 
-      <div className="shop-main-header">
-        <div className="shop-shell">
-          <div className="shop-logo" onClick={() => navigate('/shop')}>
-            <div className="shop-logo-inner">
-              <div className="shop-hb-logo">
-                <div className="shop-hb-circle" />
-                <div className="shop-hb-text">HB</div>
-              </div>
-              <div className="shop-brand-text">
-                <div className="shop-brand-main">
-                  <span className="shop-brand-hot">HOT</span>
-                  <span className="shop-brand-bargain">BARGAIN</span>
-                </div>
-                <div className="shop-brand-sub">Platform</div>
-              </div>
-            </div>
+          <nav className="shop-primary-nav" aria-label={t('shop.primaryNavigation', 'Shop navigation')}>
+            <Link
+              to="/shop"
+              className={`shop-primary-nav__item${isShopHomePage ? ' active' : ''}`}
+              aria-current={isShopHomePage ? 'page' : undefined}
+            >
+              {t('shop.shopHome', 'Shop Home')}
+            </Link>
+            <button
+              type="button"
+              className={`shop-primary-nav__item${isPreorderPage ? ' active' : ''}`}
+              onClick={handleOpenPreorder}
+              aria-current={isPreorderPage ? 'page' : undefined}
+            >
+              {t('shop.preorder.navigation', 'Preorder')}
+            </button>
+            <Link
+              to="/shop/best-sellers"
+              className={`shop-primary-nav__item${isBestSellersPage ? ' active' : ''}`}
+              aria-current={isBestSellersPage ? 'page' : undefined}
+            >
+              {t('shop.bestSellers', 'Best Sellers')}
+            </Link>
+            <Link
+              to="/shop/coming-soon"
+              className={`shop-primary-nav__item${isComingSoonPage ? ' active' : ''}`}
+              aria-current={isComingSoonPage ? 'page' : undefined}
+            >
+              {t('shop.comingSoon', 'Coming Soon')}
+            </Link>
+            <Link
+              to="/shop/orders"
+              className={`shop-primary-nav__item${isOrdersPage ? ' active' : ''}`}
+              aria-current={isOrdersPage ? 'page' : undefined}
+            >
+              {t('shop.orderHistory', 'Orders')}
+            </Link>
+            <Link
+              to="/shop/local-supplier-invoices"
+              className={`shop-primary-nav__item${isLocalSupplierInvoicesPage ? ' active' : ''}`}
+              aria-current={isLocalSupplierInvoicesPage ? 'page' : undefined}
+            >
+              {t('shop.localSupplierInvoices', 'Local Invoices')}
+            </Link>
+          </nav>
+
+          <div className="shop-header-account">
+            {isShopHomePage && !isMobileShopLayout
+              ? <SupplierOrderingExtensionEntry presentation="desktop" />
+              : null}
+            <LanguageSwitch className="shop-header-language" size="small" compact />
+            {currentUser ? (
+              <Dropdown
+                trigger={['click']}
+                placement="bottomRight"
+                menu={{
+                  items: [
+                    ...(access.canAccessDashboard ? [{
+                      key: 'dashboard',
+                      icon: <DashboardOutlined />,
+                      label: t('menu.dashboard', 'Dashboard'),
+                      onClick: () => window.open('/dashboard', '_blank'),
+                    }] : []),
+                    {
+                      key: 'logout',
+                      icon: <LogoutOutlined />,
+                      label: t('layout.logout', 'Log Out'),
+                      danger: true,
+                      onClick: () => void handleLogout(),
+                    },
+                  ],
+                }}
+              >
+                <button type="button" className="shop-account-button" aria-label={`${t('shop.account', 'Account')}: ${currentUser.username}`}>
+                  <UserOutlined />
+                </button>
+              </Dropdown>
+            ) : (
+              <Link className="shop-account-button" to="/login" aria-label={t('login.submit', 'Login')}>
+                <UserOutlined />
+              </Link>
+            )}
           </div>
+        </div>
+      </header>
 
-          <div className="shop-header-actions">
-            <div className="shop-cart-entry" onClick={openCartDrawer}>
-              <div className="shop-cart-entry-label">
-                <Badge count={cart?.totalQuantity ?? 0} size="small" offset={[8, -8]}>
-                  <ShoppingCartOutlined style={{ fontSize: 20 }} />
-                </Badge>
-                <span>{t('shop.shoppingCart', 'Shopping Cart')}</span>
-              </div>
-              <div className="shop-cart-entry-value">
-                <ShopCartSummary cart={cart} />
-              </div>
-            </div>
-
-            <div className="shop-selector-wrap">
-              <Select
-                placeholder={t('shop.selectStore', 'Select Store')}
-                className="shop-selector"
-                value={selectedStore?.storeCode}
-                onChange={(value) => void handleStoreChange(value)}
-                allowClear
-                options={userStores.map((item) => ({
-                  value: item.storeCode,
-                  label: item.storeName,
-                }))}
-              />
-            </div>
-
-            <Button className="shop-checkout-btn" onClick={openCartDrawer}>
-              {t('shop.checkout', 'Checkout')} »
-            </Button>
-
-            <Search
-              placeholder={t('shop.productSearch', 'Product Search')}
-              onSearch={handleSearch}
-              className="shop-search-bar"
-              enterButton
+      <div className="shop-ordering-toolbar">
+        <div className="shop-shell">
+          <Search
+            placeholder={t('shop.searchOrScan', 'Search products or scan barcode')}
+            onSearch={handleSearch}
+            className="shop-ordering-search"
+            enterButton
+          />
+          <Button
+            className="shop-ordering-scan"
+            icon={<ScanOutlined />}
+            onClick={openShopScanner}
+            data-shop-scan-trigger
+          >
+            {t('shop.scan.barcodeScan', 'Scan Barcode')}
+          </Button>
+          <div className="shop-ordering-store">
+            <span>{t('shop.orderingFor', 'Ordering for:')}</span>
+            <Select
+              placeholder={t('shop.selectStore', 'Select Store')}
+              className="shop-selector"
+              value={selectedStore?.storeCode}
+              onChange={(value) => void handleStoreChange(value)}
+              allowClear
+              options={userStores.map((item) => ({ value: item.storeCode, label: item.storeName }))}
             />
           </div>
+          <button type="button" className="shop-ordering-cart" onClick={openCartDrawer}>
+            <ShoppingCartOutlined aria-hidden="true" />
+            <ShopCartSummary cart={cart} />
+          </button>
+          <Button type="primary" className="shop-ordering-review" onClick={openCartDrawer}>
+            {t('shop.reviewOrder', 'Review Order')}
+          </Button>
         </div>
       </div>
 
-      <div className="shop-mobile-header">
+      <header className="shop-mobile-header">
         <div className="shop-mobile-top-row">
-          <div className="shop-mobile-logo" onClick={() => navigate('/shop')}>
-            <div className="shop-hb-logo">
-              <div className="shop-hb-circle" />
-              <div className="shop-hb-text">HB</div>
-            </div>
-          </div>
-          <div className="shop-mobile-search">
-            <Search placeholder={t('shop.productSearch', 'Product Search')} onSearch={handleSearch} enterButton />
-          </div>
-          <LanguageSwitch className="shop-mobile-language-switch" size="small" compact />
-        </div>
-        <div className="shop-mobile-grid">
-          <div className="shop-mobile-grid-item" onClick={() => navigate('/shop')}>
-            <HomeOutlined className="icon" />
-            <span>{t('shop.shopHome', 'Shop Home')}</span>
-          </div>
-          <div className="shop-mobile-grid-item" onClick={() => setMobileCategoryVisible(true)}>
-            <MenuOutlined className="icon" />
-            <span>{t('shop.categories', 'Categories')}</span>
-          </div>
-          <div className="shop-mobile-grid-item" onClick={handleOpenPreorder}>
-            <GiftOutlined className="icon" />
-            <span>{t('shop.preorder.navigation', 'Preorder')}</span>
-          </div>
-          <div className="shop-mobile-grid-item" onClick={() => navigate('/shop/best-sellers')}>
-            <AppstoreOutlined className="icon" />
-            <span>{t('shop.bestSellers', 'Best Sellers')}</span>
-          </div>
-          <div className="shop-mobile-grid-item" onClick={() => navigate('/shop/coming-soon')}>
-            <AppstoreOutlined className="icon" />
-            <span>{t('shop.comingSoon', 'Coming Soon')}</span>
-          </div>
-          <div className="shop-mobile-grid-item shop-mobile-store-item">
+          <button type="button" className="shop-mobile-logo" onClick={() => navigate('/shop')} aria-label={t('shop.shopHome', 'Shop Home')}>
+            <ShopBrandMark />
+            <span className="shop-brand-copy"><strong>HB SHOP</strong><span>{t('shop.storeOrdering', 'Store Ordering')}</span></span>
+          </button>
+          <div className="shop-mobile-store">
+            <span>{t('shop.orderingFor', 'Ordering for:')}</span>
             <Select
-              placeholder={t('common.store', 'Store')}
+              placeholder={t('shop.selectStore', 'Select Store')}
               className="shop-mobile-store-select"
               value={selectedStore?.storeCode}
               onChange={(value) => void handleStoreChange(value)}
               allowClear
-              options={userStores.map((item) => ({
-                value: item.storeCode,
-                label: item.storeName,
-              }))}
+              options={userStores.map((item) => ({ value: item.storeCode, label: item.storeName }))}
+              variant="borderless"
             />
           </div>
-          <div className="shop-mobile-grid-item" onClick={openCartDrawer}>
-            <Badge count={cart?.totalQuantity ?? 0} size="small" offset={[5, -5]}>
-              <ShoppingCartOutlined className="icon" />
+          <button type="button" className="shop-mobile-cart" onClick={openCartDrawer} aria-label={t('shop.shoppingCart', 'Shopping Cart')}>
+            <Badge count={cart?.totalQuantity ?? 0} size="small" offset={[4, -2]}>
+              <ShoppingCartOutlined />
             </Badge>
-            <span>{t('shop.cart', 'Cart')}</span>
-          </div>
-          <div className="shop-mobile-grid-item" onClick={() => navigate('/shop/orders')}>
-            <AppstoreOutlined className="icon" />
-            <span>{t('shop.orderHistory', '订单')}</span>
-          </div>
-          <Link
-            to="/shop/local-supplier-invoices"
-            className="shop-mobile-grid-item shop-local-invoice-nav-entry"
-            aria-current={isLocalSupplierInvoicesPage ? 'page' : undefined}
-          >
-            <FileTextOutlined className="icon" />
-            <span>{t('shop.localSupplierInvoices', '本地进货单')}</span>
-          </Link>
-          {isShopHomePage && isMobileShopLayout
-            ? <SupplierOrderingExtensionEntry presentation="mobile-nav" />
-            : null}
-          <div className="shop-mobile-grid-item" onClick={() => void handleLogout()}>
-            <UserOutlined className="icon" />
-            <span>{t('layout.logout', 'Logout')}</span>
-          </div>
-          {access.canAccessDashboard && (
-            <div className="shop-mobile-grid-item" onClick={() => window.open('/dashboard', '_blank')}>
-              <AppstoreOutlined className="icon" />
-              <span>{t('menu.dashboard', 'Dashboard')}</span>
-            </div>
-          )}
+          </button>
+          <button type="button" className="shop-mobile-menu" onClick={() => setMobileMoreVisible(true)} aria-label={t('shop.more', 'More')}>
+            <MenuOutlined />
+          </button>
         </div>
-      </div>
-
-      <div className="shop-nav-bar">
-        <div className="shop-orange-menu">
-          <div
-            className={`shop-menu-item${isShopHomePage ? ' active' : ''}`}
-            onClick={() => navigate('/shop')}
-          >
-            {t('shop.shopHome', 'Shop Home')}
-          </div>
-          <div
-            className={`shop-menu-item${isPreorderPage ? ' active' : ''}`}
-            onClick={handleOpenPreorder}
-          >
-            {t('shop.preorder.navigation', 'Preorder')}
-          </div>
-          <div
-            className={`shop-menu-item${isBestSellersPage ? ' active' : ''}`}
-            onClick={() => navigate('/shop/best-sellers')}
-          >
-            {t('shop.bestSellers', 'Best Sellers')}
-          </div>
-          <div
-            className={`shop-menu-item${isComingSoonPage ? ' active' : ''}`}
-            onClick={() => navigate('/shop/coming-soon')}
-          >
-            {t('shop.comingSoon', 'Coming Soon')}
-          </div>
-          <div
-            className={`shop-menu-item${isOrdersPage ? ' active' : ''}`}
-            onClick={() => navigate('/shop/orders')}
-          >
-            {t('shop.orderHistory', '历史订单')}
-          </div>
-          <Link
-            to="/shop/local-supplier-invoices"
-            className={`shop-menu-item shop-local-invoice-nav-entry${isLocalSupplierInvoicesPage ? ' active' : ''}`}
-            aria-current={isLocalSupplierInvoicesPage ? 'page' : undefined}
-          >
-            {t('shop.localSupplierInvoices', '澳洲本地进货单')}
-          </Link>
-        </div>
-
         {isShopHomePage ? (
-          <div className="shop-blue-menu">
+          <div className="shop-mobile-ordering-tools">
+            <Search
+              placeholder={t('shop.searchOrScan', 'Search or scan barcode')}
+              onSearch={handleSearch}
+              className="shop-mobile-search"
+              enterButton
+            />
+            <Button type="primary" icon={<ScanOutlined />} onClick={openShopScanner} data-shop-scan-trigger>
+              {t('shop.scan.shortAction', 'Scan')}
+            </Button>
+          </div>
+        ) : null}
+      </header>
+
+      <nav className="shop-mobile-bottom-nav" aria-label={t('shop.mobileNavigation', 'Shop mobile navigation')}>
+        <button
+          type="button"
+          className={`shop-mobile-bottom-nav__item shop-mobile-bottom-nav__shop${isShopHomePage ? ' active' : ''}`}
+          onClick={() => navigate('/shop')}
+          aria-current={isShopHomePage ? 'page' : undefined}
+        >
+          <HomeOutlined /><span>{t('shop.mobileShop', 'Shop')}</span>
+        </button>
+        <button
+          type="button"
+          className="shop-mobile-bottom-nav__item shop-mobile-bottom-nav__categories"
+          onClick={() => setMobileCategoryVisible(true)}
+          aria-expanded={mobileCategoryVisible}
+        >
+          <AppstoreOutlined /><span>{t('shop.allCategories', 'All Categories')}</span>
+        </button>
+        <button
+          type="button"
+          className="shop-mobile-bottom-nav__item shop-mobile-bottom-nav__scan"
+          onClick={openShopScanner}
+          data-shop-scan-trigger
+        >
+          <span className="shop-mobile-bottom-nav__scan-icon"><ScanOutlined /></span>
+          <span>{t('shop.scan.shortAction', 'Scan')}</span>
+        </button>
+        <button
+          type="button"
+          className={`shop-mobile-bottom-nav__item shop-mobile-bottom-nav__orders${isOrdersPage ? ' active' : ''}`}
+          onClick={() => navigate('/shop/orders')}
+          aria-current={isOrdersPage ? 'page' : undefined}
+        >
+          <OrderedListOutlined /><span>{t('shop.orderHistory', 'Orders')}</span>
+        </button>
+        <button
+          type="button"
+          className={`shop-mobile-bottom-nav__item shop-mobile-bottom-nav__more${isMorePage ? ' active' : ''}`}
+          onClick={() => setMobileMoreVisible(true)}
+          aria-current={isMorePage ? 'page' : undefined}
+          aria-expanded={mobileMoreVisible}
+        >
+          <MoreOutlined /><span>{t('shop.more', 'More')}</span>
+        </button>
+      </nav>
+
+      <div className={`shop-nav-bar${isShopHomePage ? '' : ' shop-nav-bar--secondary'}`}>
+        {isShopHomePage ? (
+          <div className="shop-blue-menu shop-category-nav">
             <div className="shop-shell">
+              <button type="button" className="shop-category-trigger" onClick={() => setMobileCategoryVisible(true)}>
+                <MenuOutlined /> {t('shop.categories', 'Categories')}
+              </button>
+              <button
+                type="button"
+                className={`shop-category-item${selectedCategory ? '' : ' active'}`}
+                onClick={() => navigate('/shop')}
+              >
+                {t('shop.allProducts', 'All Products')}
+              </button>
               {loadingCategories ? (
                 <div className="shop-category-loading">
                   <Spin size="small" /> {t('shop.loadingCategories', 'Loading categories...')}
@@ -633,17 +685,18 @@ export default function ShopLayout() {
                     ? (buildMenuItems(category.children) ?? [])
                     : []
                   const content = (
-                    <div
+                    <button
+                      type="button"
                       className={`shop-category-item${selectedCategory === category.categoryGUID ? ' active' : ''}`}
                       onClick={() => navigate(`/shop?category=${category.categoryGUID}`)}
                     >
                       {category.categoryName}
                       {childMenus.length ? <DownOutlined style={{ fontSize: 10, marginLeft: 4 }} /> : null}
-                    </div>
+                    </button>
                   )
 
                   if (!childMenus.length) {
-                    return <div key={category.categoryGUID}>{content}</div>
+                    return <span key={category.categoryGUID}>{content}</span>
                   }
 
                   return (
@@ -745,8 +798,94 @@ export default function ShopLayout() {
         onClose={() => setMobileCategoryVisible(false)}
         open={mobileCategoryVisible}
         width="85%"
+        className="shop-mobile-category-drawer"
       >
+        <Button
+          type={selectedCategory ? 'default' : 'primary'}
+          block
+          className="shop-mobile-category-all"
+          onClick={() => {
+            navigate('/shop')
+            setMobileCategoryVisible(false)
+          }}
+        >
+          {t('shop.allProducts', 'All Products')}
+        </Button>
         <Menu mode="inline" items={buildMenuItems(categories)} selectedKeys={selectedCategory ? [selectedCategory] : []} />
+      </Drawer>
+
+      <Drawer
+        title={t('shop.more', 'More')}
+        placement="right"
+        onClose={() => setMobileMoreVisible(false)}
+        open={mobileMoreVisible}
+        width="min(86vw, 360px)"
+        className="shop-mobile-more-drawer"
+      >
+        <div className="shop-mobile-more-menu">
+          <button
+            type="button"
+            className={isPreorderPage ? 'active' : ''}
+            onClick={() => {
+              setMobileMoreVisible(false)
+              handleOpenPreorder()
+            }}
+          >
+            <GiftOutlined /><span>{t('shop.preorder.navigation', 'Preorder')}</span>
+          </button>
+          <Link
+            to="/shop/best-sellers"
+            className={isBestSellersPage ? 'active' : ''}
+            onClick={() => setMobileMoreVisible(false)}
+            aria-current={isBestSellersPage ? 'page' : undefined}
+          >
+            <AppstoreOutlined /><span>{t('shop.bestSellers', 'Best Sellers')}</span>
+          </Link>
+          <Link
+            to="/shop/coming-soon"
+            className={isComingSoonPage ? 'active' : ''}
+            onClick={() => setMobileMoreVisible(false)}
+            aria-current={isComingSoonPage ? 'page' : undefined}
+          >
+            <AppstoreOutlined /><span>{t('shop.comingSoon', 'Coming Soon')}</span>
+          </Link>
+          <Link
+            to="/shop/local-supplier-invoices"
+            className={isLocalSupplierInvoicesPage ? 'active' : ''}
+            onClick={() => setMobileMoreVisible(false)}
+            aria-current={isLocalSupplierInvoicesPage ? 'page' : undefined}
+          >
+            <FileTextOutlined /><span>{t('shop.localSupplierInvoices', 'Local Invoices')}</span>
+          </Link>
+          <div className="shop-mobile-more-menu__separator" />
+          {isShopHomePage && isMobileShopLayout
+            ? <SupplierOrderingExtensionEntry presentation="mobile-nav" />
+            : null}
+          <div className="shop-mobile-more-menu__utility">
+            <span>{t('shop.language', 'Language')}</span>
+            <LanguageSwitch size="small" compact />
+          </div>
+          {currentUser ? (
+            <div className="shop-mobile-more-menu__utility">
+              <span>{t('shop.account', 'Account')}</span>
+              <strong>{currentUser.username}</strong>
+            </div>
+          ) : (
+            <Link to="/login" onClick={() => setMobileMoreVisible(false)}>
+              <UserOutlined /><span>{t('login.submit', 'Login')}</span>
+            </Link>
+          )}
+          {access.canAccessDashboard ? (
+            <button type="button" onClick={() => window.open('/dashboard', '_blank')}>
+              <DashboardOutlined /><span>{t('menu.dashboard', 'Dashboard')}</span>
+            </button>
+          ) : null}
+          {currentUser ? (
+            <button type="button" className="danger" onClick={() => void handleLogout()}>
+              <LogoutOutlined /><span>{t('layout.logout', 'Log Out')}</span>
+            </button>
+          ) : null}
+        </div>
       </Drawer>
     </div>
   )

@@ -1,13 +1,14 @@
 import {
   AudioOutlined,
   CameraOutlined,
+  DownOutlined,
   PauseCircleOutlined,
   PlayCircleOutlined,
   ScanOutlined,
   SoundOutlined,
 } from '@ant-design/icons'
 import { Button, Card, Image, Input, Space, Tag, Typography } from 'antd'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { TFunction } from 'i18next'
 import { useTranslation } from 'react-i18next'
 import type { StoreOrderScanStatus } from '../types/storeOrder'
@@ -83,6 +84,43 @@ export default function ShopScanBar({
   const [manualValue, setManualValue] = useState('')
   const [scannerVisible, setScannerVisible] = useState(false)
 
+  useEffect(() => {
+    let renderFrame: number | undefined
+    let scrollFrame: number | undefined
+
+    const openScanner = () => {
+      setScannerVisible(true)
+
+      // 固定导航可在页面任意位置唤起扫码；等待面板完成渲染后再把它带入视口。
+      renderFrame = window.requestAnimationFrame(() => {
+        scrollFrame = window.requestAnimationFrame(() => {
+          document.getElementById('shop-scan-panel')?.scrollIntoView({
+            behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+            block: 'start',
+          })
+        })
+      })
+    }
+    window.addEventListener('shop:open-scanner', openScanner)
+
+    const currentUrl = new URL(window.location.href)
+    if (currentUrl.searchParams.get('scan') === '1') {
+      openScanner()
+      currentUrl.searchParams.delete('scan')
+      window.history.replaceState(window.history.state, '', currentUrl)
+    }
+
+    return () => {
+      window.removeEventListener('shop:open-scanner', openScanner)
+      if (renderFrame !== undefined) {
+        window.cancelAnimationFrame(renderFrame)
+      }
+      if (scrollFrame !== undefined) {
+        window.cancelAnimationFrame(scrollFrame)
+      }
+    }
+  }, [])
+
   const helperText = cameraEnabled
     ? t('shop.scan.cameraActiveHint', 'Camera scanning is active; scanner and manual input are paused.')
     : enabled
@@ -109,7 +147,7 @@ export default function ShopScanBar({
     <>
       <Button
         className="shop-scan-toggle-btn"
-        icon={<ScanOutlined />}
+        icon={<span className={`shop-scan-status-dot${enabled ? ' ready' : ''}`} aria-hidden="true" />}
         aria-expanded={scannerVisible}
         aria-controls="shop-scan-panel"
         onClick={() => {
@@ -120,12 +158,13 @@ export default function ShopScanBar({
           setScannerVisible((current) => !current)
         }}
       >
-        {scannerVisible ? t('shop.scan.hideScanner', 'Hide Scanner') : t('shop.scan.barcodeScan', 'Barcode Scan')}
+        <span>{scannerVisible ? t('shop.scan.hideScanner', 'Hide Scanner') : enabled ? t('shop.scan.ready', 'Scanner ready') : t('shop.scan.paused', 'Scanner paused')}</span>
+        <DownOutlined className={scannerVisible ? 'expanded' : ''} />
       </Button>
       <Card
         id="shop-scan-panel"
         className={`shop-scan-bar${scannerVisible ? ' shop-scan-bar-visible' : ''}`}
-        bordered={false}
+        variant="borderless"
       >
         <div className="shop-scan-bar-header">
           <div>
