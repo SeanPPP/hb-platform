@@ -54,7 +54,7 @@ public sealed class AppOtaRelease : BaseEntity
     [SugarColumn(Length = 2048, IsNullable = true)]
     public string? DashboardUrl { get; set; }
 
-    [SugarColumn(IsNullable = false)]
+    [SugarColumn(IsNullable = false, SqlParameterDbType = System.Data.DbType.DateTime2)]
     public DateTime PublishedAtUtc { get; set; }
 
     [SugarColumn(IsNullable = false)]
