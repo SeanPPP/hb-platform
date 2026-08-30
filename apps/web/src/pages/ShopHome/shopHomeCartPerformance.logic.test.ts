@@ -1182,7 +1182,8 @@ async function main() {
         globalCssSource.includes('max-width: 98px') &&
         globalCssSource.includes('.shop-best-sellers-item-number') &&
         globalCssSource.includes('.shop-best-sellers-store-count') &&
-        globalCssSource.includes('width: 560px') &&
+        globalCssSource.includes('width: min(560px, calc(100vw - 32px))') &&
+        globalCssSource.includes('max-width: calc(100vw - 32px)') &&
         globalCssSource.includes('.shop-best-sellers-product-name') &&
         globalCssSource.includes('max-height: calc(1.3em * 2)') &&
         globalCssSource.includes('-webkit-line-clamp: 2') &&
@@ -1191,7 +1192,7 @@ async function main() {
         globalCssSource.includes('padding: 7px 6px !important') &&
         !globalCssSource.includes('.shop-best-sellers-virtual-list') &&
         !globalCssSource.includes('.shop-best-seller-card'),
-      '热销商品表格未保留全列、紧凑列宽和固定图片条码尺寸，或仍保留旧卡片样式',
+      '热销商品表格未保留全列、紧凑列宽、响应式门店销量弹层和固定图片条码尺寸，或仍保留旧卡片样式',
     )
   })
   if (bestSellerTableLayoutFailure) failures.push(bestSellerTableLayoutFailure)

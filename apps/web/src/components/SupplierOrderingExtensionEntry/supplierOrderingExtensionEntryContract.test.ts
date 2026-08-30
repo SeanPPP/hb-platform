@@ -27,14 +27,23 @@ assert.ok(
 const preorderGateIndex = layout.indexOf('showPreorderGateAlert ? (')
 const entryIndex = layout.indexOf('<SupplierOrderingExtensionEntry presentation="desktop" />')
 const outletIndex = layout.indexOf('<Outlet />')
-const desktopLogoutIndex = layout.indexOf("<span onClick={() => void handleLogout()}>{t('layout.logout', 'Log Out')}</span>")
-const desktopLanguageIndex = layout.indexOf('<LanguageSwitch className="shop-top-language-switch"')
+const desktopLanguageIndex = layout.indexOf('<LanguageSwitch className="shop-header-language"')
+const desktopAccountDropdownIndex = layout.indexOf('<Dropdown', desktopLanguageIndex)
+const desktopLogoutIndex = layout.indexOf("key: 'logout'", desktopAccountDropdownIndex)
+const desktopLogoutLabelIndex = layout.indexOf("label: t('layout.logout', 'Log Out')", desktopLogoutIndex)
+const desktopLogoutHandlerIndex = layout.indexOf('onClick: () => void handleLogout()', desktopLogoutIndex)
 assert.ok(preorderGateIndex >= 0, '预订拦截提示块必须存在')
 assert.ok(entryIndex >= 0, '扩展入口必须存在')
-assert.ok(desktopLogoutIndex >= 0, '桌面端退出登录入口必须存在')
 assert.ok(desktopLanguageIndex >= 0, '桌面端语言切换必须存在')
-assert.ok(desktopLogoutIndex < entryIndex, '扩展入口必须位于桌面端退出登录之后')
+assert.ok(desktopAccountDropdownIndex >= 0, '桌面端账户下拉菜单必须存在')
+assert.ok(
+  desktopLogoutIndex >= 0
+    && desktopLogoutLabelIndex > desktopLogoutIndex
+    && desktopLogoutHandlerIndex > desktopLogoutIndex,
+  '桌面端账户下拉菜单必须保留退出登录入口及处理函数',
+)
 assert.ok(entryIndex < desktopLanguageIndex, '扩展入口必须位于桌面端语言切换之前')
+assert.ok(desktopLanguageIndex < desktopAccountDropdownIndex, '账户下拉菜单必须位于桌面端语言切换之后')
 assert.ok(entryIndex < preorderGateIndex, '扩展入口不得继续渲染在商品内容区')
 assert.ok(outletIndex > preorderGateIndex, 'Outlet 必须保留在预订拦截提示之后')
 
