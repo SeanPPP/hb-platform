@@ -100,7 +100,7 @@ export function PrimaryTabBar({ state, navigation }: BottomTabBarProps) {
             <Text
               allowFontScaling
               maxFontSizeMultiplier={1.6}
-              numberOfLines={1}
+              numberOfLines={2}
               style={[
                 styles.label,
                 item.active ? styles.labelActive : null,
@@ -128,7 +128,7 @@ const styles = StyleSheet.create({
     minHeight: Platform.OS === "android" ? 56 : 50,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 4,
+    paddingHorizontal: 2,
     paddingVertical: 5,
   },
   itemPressed: {

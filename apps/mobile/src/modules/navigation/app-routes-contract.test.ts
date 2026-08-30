@@ -119,12 +119,14 @@ async function run() {
       workbench: zhTabs.workbench,
       scan: zhTabs.scan,
       checkIn: zhTabs.checkIn,
+      reports: zhTabs.reports,
       me: zhTabs.me,
     },
     {
       workbench: "工作台",
       scan: "扫码查询",
       checkIn: "打卡",
+      reports: "报表",
       me: "我的",
     },
     "中文一级导航文案必须精确匹配产品定义"
@@ -134,12 +136,14 @@ async function run() {
       workbench: enTabs.workbench,
       scan: enTabs.scan,
       checkIn: enTabs.checkIn,
+      reports: enTabs.reports,
       me: enTabs.me,
     },
     {
-      workbench: "Workspace",
+      workbench: "Home",
       scan: "Scan",
       checkIn: "Check in",
+      reports: "Reports",
       me: "Me",
     },
     "英文一级导航文案必须精确匹配产品定义"

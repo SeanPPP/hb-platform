@@ -36,10 +36,20 @@ async function run() {
   assert.match(primaryTabBar, /buildPrimaryNavigation/);
   assert.match(primaryTabBar, /locked/);
   assert.match(primaryTabBar, /accessibilityRole="button"/);
+  assert.match(
+    primaryTabBar,
+    /numberOfLines=\{2\}/,
+    "五列窄屏必须允许放大后的一级导航标签换行"
+  );
+  assert.match(
+    primaryTabBar,
+    /paddingHorizontal:\s*2/,
+    "五列一级导航需要保留足够的标签可用宽度"
+  );
   assert.doesNotMatch(
     primaryTabBar,
     /buildNavigationDisplayTabs/,
-    "固定四入口不得回退到旧的动态门店折叠导航"
+    "固定五入口不得回退到旧的动态门店折叠导航"
   );
   assert.doesNotMatch(primaryTabBar, /task-center/);
 
@@ -57,8 +67,10 @@ async function run() {
   assert.match(primaryNavigation, /key:\s*"workbench"/);
   assert.match(primaryNavigation, /key:\s*"scan"/);
   assert.match(primaryNavigation, /key:\s*"attendance"/);
+  assert.match(primaryNavigation, /key:\s*"reports"/);
   assert.match(primaryNavigation, /key:\s*"me"/);
   assert.match(primaryNavigation, /targetRouteName:\s*"attendance-personal"/);
+  assert.match(primaryNavigation, /targetRouteName:\s*"reports"/);
   assert.match(primaryNavigation, /isDeviceMode/);
   assert.match(primaryNavigation, /locked:/);
   assert.doesNotMatch(primaryNavigation, /task-center/);

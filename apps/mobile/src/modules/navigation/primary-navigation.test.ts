@@ -67,6 +67,13 @@ assert.deepEqual(
       locked: false,
     },
     {
+      key: "reports",
+      targetRouteName: "reports",
+      labelKey: "tabs.reports",
+      active: false,
+      locked: false,
+    },
+    {
       key: "me",
       targetRouteName: "settings",
       labelKey: "tabs.me",
@@ -74,17 +81,22 @@ assert.deepEqual(
       locked: false,
     },
   ],
-  "一级导航必须固定为工作台、扫码查询、打卡、我的四项"
+  "一级导航必须固定为工作台、扫码查询、打卡、报表、我的五项"
 );
 assert.equal(
   accountPrimaryItems.every((item) => typeof item.icon === "string" && item.icon.length > 0),
   true,
-  "四个一级入口必须都声明图标"
+  "五个一级入口必须都声明图标"
 );
 assert.match(
   accountPrimaryItems[2]?.icon ?? "",
   /clock/,
   "打卡入口必须使用时钟语义图标"
+);
+assert.equal(
+  accountPrimaryItems[3]?.icon,
+  "chart-box-outline",
+  "报表入口必须使用清晰的报表语义图标"
 );
 
 assert.equal(
@@ -103,7 +115,12 @@ assert.equal(
   "考勤管理页也必须高亮打卡，而不是改变打卡的个人考勤目标"
 );
 assert.equal(
-  compactPrimaryItems("employee-profile", fullMenu)[3]?.active,
+  compactPrimaryItems("reports", fullMenu)[3]?.active,
+  true,
+  "报表中心必须高亮独立的报表入口"
+);
+assert.equal(
+  compactPrimaryItems("employee-profile", fullMenu)[4]?.active,
   true,
   "个人资料页必须高亮我的"
 );
@@ -125,6 +142,11 @@ assert.deepEqual(
   },
   "设备模式即使收到个人考勤菜单，也必须锁定打卡入口"
 );
+assert.equal(
+  devicePrimaryItems[3]?.locked,
+  true,
+  "设备模式即使收到报表菜单，也必须锁定报表入口"
+);
 
 const attendanceUnavailableItems = compactPrimaryItems(
   "workbench",
@@ -134,6 +156,16 @@ assert.equal(
   attendanceUnavailableItems[2]?.locked,
   true,
   "只有考勤管理权限但没有个人考勤菜单时，不得解锁固定个人打卡目标"
+);
+
+const reportsUnavailableItems = compactPrimaryItems(
+  "workbench",
+  fullMenu.filter((routeName) => routeName !== "reports")
+);
+assert.equal(
+  reportsUnavailableItems[3]?.locked,
+  true,
+  "没有报表菜单时必须锁定固定报表入口"
 );
 
 const sparseSections = buildWorkbenchSections([

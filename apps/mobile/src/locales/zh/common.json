@@ -33,6 +33,7 @@
     "workbench": "工作台",
     "scan": "扫码查询",
     "checkIn": "打卡",
+    "reports": "报表",
     "me": "我的",
     "lockedLabel": "{{label}}，当前模式无权限",
     "home": "商品",
@@ -45,7 +46,6 @@
     "installmentOrders": "分期订单",
     "advertisements": "广告素材",
     "promotions": "促销",
-    "reports": "报告",
     "productReport": "商品报告",
     "storeVouchers": "门店代金券",
     "seasonalCards": "季节卡片",
@@ -108,7 +108,7 @@
     "selected": "已选择匹配商品"
   },
   "reports": {
-    "title": "报告",
+    "title": "报表中心",
     "sections": {
       "revenue": "营业额报告",
       "product": "商品报告"

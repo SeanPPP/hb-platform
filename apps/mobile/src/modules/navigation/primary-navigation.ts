@@ -1,10 +1,30 @@
-export type PrimaryNavigationKey = "workbench" | "scan" | "attendance" | "me";
+export type PrimaryNavigationKey =
+  | "workbench"
+  | "scan"
+  | "attendance"
+  | "reports"
+  | "me";
 
 export interface PrimaryNavigationItem {
   key: PrimaryNavigationKey;
-  targetRouteName: "workbench" | "product-query" | "attendance-personal" | "settings";
-  labelKey: "tabs.workbench" | "tabs.scan" | "tabs.checkIn" | "tabs.me";
-  icon: "view-dashboard-outline" | "barcode-scan" | "clock-outline" | "account-circle-outline";
+  targetRouteName:
+    | "workbench"
+    | "product-query"
+    | "attendance-personal"
+    | "reports"
+    | "settings";
+  labelKey:
+    | "tabs.workbench"
+    | "tabs.scan"
+    | "tabs.checkIn"
+    | "tabs.reports"
+    | "tabs.me";
+  icon:
+    | "view-dashboard-outline"
+    | "barcode-scan"
+    | "clock-outline"
+    | "chart-box-outline"
+    | "account-circle-outline";
   active: boolean;
   locked: boolean;
 }
@@ -29,6 +49,10 @@ function resolveActivePrimaryKey(routeName: string | undefined): PrimaryNavigati
 
   if (routeName && ATTENDANCE_CONTEXT_ROUTE_NAMES.has(routeName)) {
     return "attendance";
+  }
+
+  if (routeName === "reports") {
+    return "reports";
   }
 
   if (routeName && ME_CONTEXT_ROUTE_NAMES.has(routeName)) {
@@ -70,6 +94,14 @@ export function buildPrimaryNavigation({
       icon: "clock-outline",
       active: activeKey === "attendance",
       locked: isDeviceMode || !visibleRoutes.has("attendance-personal"),
+    },
+    {
+      key: "reports",
+      targetRouteName: "reports",
+      labelKey: "tabs.reports",
+      icon: "chart-box-outline",
+      active: activeKey === "reports",
+      locked: isDeviceMode || !visibleRoutes.has("reports"),
     },
     {
       key: "me",
