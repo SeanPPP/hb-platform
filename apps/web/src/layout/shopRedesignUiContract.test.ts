@@ -30,12 +30,22 @@ assert.equal(
   'Shop 品牌图标必须保持已批准的页面色板版本，禁止无声漂色',
 )
 assert.ok(
-  indexHtml.includes('<link rel="icon" type="image/png" sizes="384x384" href="/src/assets/shop-brand-cart.png" />'),
-  '浏览器标签页必须复用 Shop 品牌图标资产',
+  indexHtml.includes('<link rel="icon" type="image/png" href="/pwa/icon-192.png" />'),
+  '浏览器标签页必须默认使用原蓝色 HB 图标',
 )
-assert.ok(!indexHtml.includes('rel="icon" type="image/png" href="/pwa/icon-192.png"'), '浏览器标签页不得继续使用旧蓝色 HB 图标')
+assert.ok(!indexHtml.includes('href="/src/assets/shop-brand-cart.png"'), 'Shop 购物车图标不得污染登录页及其他非 Shop 页面')
 
 assert.ok(layout.includes("import shopBrandCart from '../assets/shop-brand-cart.png'"), 'ShopLayout 必须导入品牌图片资产')
+const faviconHookStart = layout.indexOf('function useShopFavicon()')
+const faviconHookEnd = layout.indexOf('function ShopBrandMark()', faviconHookStart)
+assert.ok(faviconHookStart >= 0 && faviconHookEnd > faviconHookStart, 'ShopLayout 必须提供路由作用域内的 favicon 切换逻辑')
+const faviconHook = layout.slice(faviconHookStart, faviconHookEnd)
+assert.ok(faviconHook.includes("document.querySelector<HTMLLinkElement>('link[rel=\"icon\"]')"), 'Shop favicon 必须复用现有标签图标节点')
+assert.ok(faviconHook.includes("favicon.setAttribute('href', shopBrandCart)"), '进入 /shop 路由树时必须切换为购物车图标')
+assert.ok(faviconHook.includes("favicon.setAttribute('sizes', '384x384')"), 'Shop favicon 必须声明正确的资源尺寸')
+assert.ok(faviconHook.includes("favicon.setAttribute('href', previousHref)"), '离开 /shop 路由树时必须恢复原 HB 图标')
+assert.ok(faviconHook.includes("favicon.removeAttribute('sizes')"), '离开 /shop 后必须恢复原 favicon 的尺寸属性状态')
+assert.ok(layout.includes('useShopFavicon()'), '所有 ShopLayout 路径必须启用统一的 Shop favicon')
 const brandComponentStart = layout.indexOf('function ShopBrandMark()')
 const brandComponentEnd = layout.indexOf('export default function ShopLayout()', brandComponentStart)
 assert.ok(brandComponentStart >= 0 && brandComponentEnd > brandComponentStart, 'ShopLayout 必须提供内部 ShopBrandMark 组件')

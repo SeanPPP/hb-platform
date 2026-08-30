@@ -77,6 +77,35 @@ function useShopMobileLayout() {
   return isMobileShopLayout
 }
 
+function useShopFavicon() {
+  useEffect(() => {
+    const favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
+    if (!favicon) {
+      return undefined
+    }
+
+    const previousHref = favicon.getAttribute('href')
+    const previousSizes = favicon.getAttribute('sizes')
+    favicon.setAttribute('href', shopBrandCart)
+    favicon.setAttribute('sizes', '384x384')
+
+    // Shop 路由树卸载时还原全局 HB favicon，避免影响登录页和后台页面。
+    return () => {
+      if (previousHref === null) {
+        favicon.removeAttribute('href')
+      } else {
+        favicon.setAttribute('href', previousHref)
+      }
+
+      if (previousSizes === null) {
+        favicon.removeAttribute('sizes')
+      } else {
+        favicon.setAttribute('sizes', previousSizes)
+      }
+    }
+  }, [])
+}
+
 function ShopBrandMark() {
   return (
     <span className="shop-brand-mark" aria-hidden="true">
@@ -86,6 +115,7 @@ function ShopBrandMark() {
 }
 
 export default function ShopLayout() {
+  useShopFavicon()
   const navigate = useNavigate()
   const location = useLocation()
   const { currentUser, access, logout } = useAuthStore()
