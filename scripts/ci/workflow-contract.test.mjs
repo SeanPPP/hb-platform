@@ -579,11 +579,38 @@ test('Weekly SQL 使用独立容器且不会接入 LiveE2e', () => {
 })
 
 test('Mobile CI 同时执行 iOS 与 Android bundle 构建', () => {
+  const source = readFileSync(workflowPath, 'utf8')
+  const android = workflowJobBlock(source, 'android')
+  const required = workflowJobBlock(source, 'required')
   const runner = readFileSync(nodeRunnerPath, 'utf8')
+  const androidRunner = readFileSync(androidRunnerPath, 'utf8')
   const mobilePackage = JSON.parse(readFileSync(mobilePackagePath, 'utf8'))
   assert.match(runner, /npm --prefix apps\/mobile run build:ci/)
   assert.match(mobilePackage.scripts['build:ci'], /expo export --platform ios/)
   assert.match(mobilePackage.scripts['build:ci'], /expo export --platform android/)
+
+  assert.match(android, /apps\/mobile\/package-lock\.json/)
+  assert.match(android, /apps\/mobile\/android\/gradlew/)
+  assert.match(required, /- android/)
+  assert.match(required, /"android":"\$\{\{ needs\.android\.result \}\}"/)
+  assert.match(androidRunner, /mobile-android\)/)
+  assert.match(androidRunner, /npm --prefix apps\/mobile ci --no-audit --no-fund/)
+  assert.match(
+    androidRunner,
+    /npx expo prebuild --platform android --no-install/,
+  )
+  const mobileAndroidCase = androidRunner.slice(
+    androidRunner.indexOf('  mobile-android)'),
+    androidRunner.indexOf('  pos-handheld-android)'),
+  )
+  assert.doesNotMatch(mobileAndroidCase, /prebuild[^\n]*--clean/)
+  for (const task of [
+    ':hb-app-installer:testDebugUnitTest',
+    ':app:compileDebugKotlin',
+    ':app:processDebugResources',
+  ]) {
+    assert.match(androidRunner, new RegExp(task.replaceAll(':', '\\:')))
+  }
 })
 
 test('Web PR CI 以 manifest 构建并执行确定性 bundle 硬门禁', () => {

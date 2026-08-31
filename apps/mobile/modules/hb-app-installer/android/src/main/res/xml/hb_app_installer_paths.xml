@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- 仅开放本模块写入的应用私有更新目录，拒绝 cache/files 的其他内容。 -->
+  <cache-path name="hb_app_updates_cache" path="hb-app-updates/" />
+  <files-path name="hb_app_updates_files" path="hb-app-updates/" />
+</paths>

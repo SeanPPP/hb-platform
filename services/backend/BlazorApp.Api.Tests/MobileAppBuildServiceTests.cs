@@ -735,9 +735,18 @@ public sealed class MobileAppBuildServiceTests : IDisposable
                 completedAt: "2026-06-15T03:00:00Z"
             )
         );
+        var anonymousBuilds = await _db.Queryable<MobileAppBuild>().ToListAsync();
+        foreach (var build in anonymousBuilds)
+        {
+            build.CosArtifactUrl = $"https://downloads.example/{build.EasBuildId}.apk";
+            build.CosMirrorStatus = MobileAppBuildService.CosMirrorStatusSucceeded;
+            build.ArtifactSha256 = new string('a', 64);
+            build.ArtifactSize = 2048;
+        }
+        await _db.Updateable(anonymousBuilds).ExecuteCommandAsync();
         var controller = CreateController("{}", CreateSignature("{}"));
 
-        var result = await controller.AndroidLatest("production");
+        var result = await controller.AndroidLatest("production", "sha256-v1");
 
         var ok = Assert.IsType<OkObjectResult>(result);
         var response = Assert.IsType<ApiResponse<MobileAppBuildPublicDto?>>(ok.Value);
@@ -753,6 +762,8 @@ public sealed class MobileAppBuildServiceTests : IDisposable
             [
                 nameof(MobileAppBuildPublicDto.AppBuildVersion),
                 nameof(MobileAppBuildPublicDto.AppVersion),
+                nameof(MobileAppBuildPublicDto.ArtifactSha256),
+                nameof(MobileAppBuildPublicDto.ArtifactSize),
                 nameof(MobileAppBuildPublicDto.ArtifactUrl),
                 nameof(MobileAppBuildPublicDto.BuildProfile),
                 nameof(MobileAppBuildPublicDto.CosArtifactUrl),
@@ -760,20 +771,207 @@ public sealed class MobileAppBuildServiceTests : IDisposable
             ],
             publicFields
         );
-        Assert.Null(response.Data.CosArtifactUrl);
+        Assert.Equal(
+            "https://downloads.example/anonymous-latest.apk",
+            response.Data.CosArtifactUrl
+        );
 
-        var previewResult = await controller.AndroidLatest("preview");
+        Assert.Equal(new string('a', 64), response.Data.ArtifactSha256);
+        Assert.Equal(2048, response.Data.ArtifactSize);
+
+        var previewResult = await controller.AndroidLatest("preview", "sha256-v1");
         var previewOk = Assert.IsType<OkObjectResult>(previewResult);
         var previewResponse = Assert.IsType<ApiResponse<MobileAppBuildPublicDto?>>(previewOk.Value);
         Assert.True(previewResponse.Success);
         Assert.Equal("anonymous-preview", previewResponse.Data!.EasBuildId);
         Assert.Equal("preview", previewResponse.Data.BuildProfile);
 
-        var internalResult = await controller.AndroidLatest("development");
+        var internalResult = await controller.AndroidLatest("development", "sha256-v1");
         var internalOk = Assert.IsType<OkObjectResult>(internalResult);
         var internalResponse = Assert.IsType<ApiResponse<MobileAppBuildPublicDto?>>(internalOk.Value);
         Assert.True(internalResponse.Success);
         Assert.Null(internalResponse.Data);
+    }
+
+    [Fact]
+    public async Task AndroidLatest_缺少完整性能力协商时不返回匿名自动更新候选()
+    {
+        var service = CreateService();
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "integrity-required",
+                artifactUrl: "https://expo.dev/artifacts/eas/integrity-required.apk"
+            )
+        );
+        var build = await _db.Queryable<MobileAppBuild>().SingleAsync();
+        build.CosArtifactUrl = "https://downloads.example/integrity-required.apk";
+        build.CosMirrorStatus = MobileAppBuildService.CosMirrorStatusSucceeded;
+        build.ArtifactSha256 = new string('a', 64);
+        build.ArtifactSize = 2048;
+        await _db.Updateable(build).ExecuteCommandAsync();
+
+        var result = await CreateController("{}", CreateSignature("{}")).AndroidLatest("production");
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<ApiResponse<MobileAppBuildPublicDto?>>(ok.Value);
+        Assert.True(response.Success);
+        Assert.Null(response.Data);
+    }
+
+    [Fact]
+    public async Task AndroidLatest_完整性协议只返回完整Cos镜像且跳过无效摘要()
+    {
+        var service = CreateService();
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "integrity-valid",
+                artifactUrl: "https://expo.dev/artifacts/eas/integrity-valid.apk",
+                completedAt: "2026-06-15T01:00:00Z"
+            )
+        );
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "integrity-invalid-newer",
+                artifactUrl: "https://expo.dev/artifacts/eas/integrity-invalid-newer.apk",
+                completedAt: "2026-06-15T02:00:00Z"
+            )
+        );
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "integrity-too-large-newest",
+                artifactUrl: "https://expo.dev/artifacts/eas/integrity-too-large-newest.apk",
+                completedAt: "2026-06-15T03:00:00Z"
+            )
+        );
+        var builds = await _db.Queryable<MobileAppBuild>().ToListAsync();
+        var valid = Assert.Single(builds, build => build.EasBuildId == "integrity-valid");
+        valid.CosArtifactUrl = "https://downloads.example/integrity-valid.apk";
+        valid.CosMirrorStatus = MobileAppBuildService.CosMirrorStatusSucceeded;
+        valid.ArtifactSha256 = new string('b', 64);
+        valid.ArtifactSize = 4096;
+        var invalid = Assert.Single(
+            builds,
+            build => build.EasBuildId == "integrity-invalid-newer"
+        );
+        invalid.CosArtifactUrl = "https://downloads.example/integrity-invalid-newer.apk";
+        invalid.CosMirrorStatus = MobileAppBuildService.CosMirrorStatusSucceeded;
+        invalid.ArtifactSha256 = "not-a-sha256";
+        invalid.ArtifactSize = 4096;
+        var tooLarge = Assert.Single(
+            builds,
+            build => build.EasBuildId == "integrity-too-large-newest"
+        );
+        tooLarge.CosArtifactUrl = "https://downloads.example/integrity-too-large-newest.apk";
+        tooLarge.CosMirrorStatus = MobileAppBuildService.CosMirrorStatusSucceeded;
+        tooLarge.ArtifactSha256 = new string('c', 64);
+        tooLarge.ArtifactSize = MobileAppBuildService.PublicAndroidArtifactMaxBytes + 1;
+        await _db.Updateable(builds).ExecuteCommandAsync();
+
+        var controller = CreateController("{}", CreateSignature("{}"));
+        var result = await controller.AndroidLatest("production", "sha256-v1");
+        var unknownProtocol = await controller.AndroidLatest("production", "sha512-v1");
+
+        var ok = Assert.IsType<OkObjectResult>(result);
+        var response = Assert.IsType<ApiResponse<MobileAppBuildPublicDto?>>(ok.Value);
+        Assert.True(response.Success);
+        Assert.Equal("integrity-valid", response.Data!.EasBuildId);
+        Assert.Equal("https://downloads.example/integrity-valid.apk", response.Data.ArtifactUrl);
+        Assert.Equal(new string('b', 64), response.Data.ArtifactSha256);
+        Assert.Equal(4096, response.Data.ArtifactSize);
+        Assert.Null(
+            Assert.IsType<ApiResponse<MobileAppBuildPublicDto?>>(Assert.IsType<OkObjectResult>(unknownProtocol).Value)
+                .Data
+        );
+    }
+
+    [Fact]
+    public async Task AndroidLatest_匿名候选扫描有固定上限且超出时失败关闭()
+    {
+        var service = CreateService();
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "bounded-valid-oldest",
+                artifactUrl: "https://expo.dev/artifacts/eas/bounded-valid-oldest.apk",
+                completedAt: "2026-06-01T00:00:00Z"
+            )
+        );
+        for (var index = 0; index < 40; index++)
+        {
+            await service.HandleEasWebhookAsync(
+                CreatePayload(
+                    easBuildId: $"bounded-invalid-{index}",
+                    artifactUrl: $"https://expo.dev/artifacts/eas/bounded-invalid-{index}.apk",
+                    completedAt: new DateTimeOffset(2026, 6, 2, 0, 0, 0, TimeSpan.Zero)
+                        .AddMinutes(index)
+                        .ToString("O")
+                )
+            );
+        }
+
+        var builds = await _db.Queryable<MobileAppBuild>().ToListAsync();
+        foreach (var build in builds)
+        {
+            build.CosArtifactUrl = $"https://downloads.example/{build.EasBuildId}.apk";
+            build.CosMirrorStatus = MobileAppBuildService.CosMirrorStatusSucceeded;
+            build.ArtifactSha256 = build.EasBuildId == "bounded-valid-oldest"
+                ? new string('a', 64)
+                : new string('g', 64);
+            build.ArtifactSize = 4096;
+        }
+        await _db.Updateable(builds).ExecuteCommandAsync();
+
+        var result = await service.GetLatestPublicMobileAndroidAsync("production");
+
+        Assert.True(result.Success);
+        Assert.Null(result.Data);
+    }
+
+    [Fact]
+    public async Task AndroidBuildDownload_仅允许同一构建的完整Cos镜像且受总开关控制()
+    {
+        var service = CreateService();
+        await service.HandleEasWebhookAsync(
+            CreatePayload(
+                easBuildId: "bound-integrity",
+                artifactUrl: "https://expo.dev/artifacts/eas/bound-integrity.apk"
+            )
+        );
+        var controller = CreateController("{}", CreateSignature("{}"));
+
+        var unmirrored = await controller.AndroidBuildDownload("bound-integrity", "production");
+
+        Assert.IsType<NotFoundObjectResult>(unmirrored);
+
+        var build = await _db.Queryable<MobileAppBuild>().SingleAsync();
+        build.CosArtifactUrl = "https://downloads.example/bound-integrity.apk";
+        build.CosMirrorStatus = MobileAppBuildService.CosMirrorStatusSucceeded;
+        build.ArtifactSha256 = new string('c', 64);
+        build.ArtifactSize = 8192;
+        await _db.Updateable(build).ExecuteCommandAsync();
+
+        var complete = await controller.AndroidBuildDownload("bound-integrity", "production");
+        var disabledController = CreateController(
+            "{}",
+            CreateSignature("{}"),
+            publicAndroidUpdatesEnabled: false
+        );
+        var disabled = await disabledController.AndroidBuildDownload("bound-integrity", "production");
+        var disabledMetadata = await disabledController.AndroidLatest("production", "sha256-v1");
+        var manualLatestDownload = await disabledController.AndroidLatestDownload("production");
+
+        Assert.Equal(
+            "https://downloads.example/bound-integrity.apk",
+            Assert.IsType<RedirectResult>(complete).Url
+        );
+        Assert.IsType<NotFoundObjectResult>(disabled);
+        Assert.Null(
+            Assert.IsType<ApiResponse<MobileAppBuildPublicDto?>>(Assert.IsType<OkObjectResult>(disabledMetadata).Value)
+                .Data
+        );
+        Assert.Equal(
+            "https://downloads.example/bound-integrity.apk",
+            Assert.IsType<RedirectResult>(manualLatestDownload).Url
+        );
     }
 
     [Fact]
@@ -827,16 +1025,25 @@ public sealed class MobileAppBuildServiceTests : IDisposable
                 completedAt: "2026-06-15T02:00:00Z"
             )
         );
+        var boundBuilds = await _db.Queryable<MobileAppBuild>().ToListAsync();
+        foreach (var build in boundBuilds)
+        {
+            build.CosArtifactUrl = $"https://downloads.example/{build.EasBuildId}.apk";
+            build.CosMirrorStatus = MobileAppBuildService.CosMirrorStatusSucceeded;
+            build.ArtifactSha256 = new string('d', 64);
+            build.ArtifactSize = 4096;
+        }
+        await _db.Updateable(boundBuilds).ExecuteCommandAsync();
         var controller = CreateController("{}", CreateSignature("{}"));
 
         var boundResult = await controller.AndroidBuildDownload("download-bound-old", "production");
         var latestResult = await controller.AndroidLatestDownload("production");
 
         var boundRedirect = Assert.IsType<RedirectResult>(boundResult);
-        Assert.Equal("https://expo.dev/download-bound-old.apk", boundRedirect.Url);
+        Assert.Equal("https://downloads.example/download-bound-old.apk", boundRedirect.Url);
 
         var latestRedirect = Assert.IsType<RedirectResult>(latestResult);
-        Assert.Equal("https://expo.dev/download-bound-new.apk", latestRedirect.Url);
+        Assert.Equal("https://downloads.example/download-bound-new.apk", latestRedirect.Url);
     }
 
     [Fact]
@@ -1287,17 +1494,35 @@ public sealed class MobileAppBuildServiceTests : IDisposable
         }
     }
 
-    private MobileAppBuildsController CreateController(string body, string signature)
+    private MobileAppBuildsController CreateController(
+        string body,
+        string signature,
+        bool publicAndroidUpdatesEnabled = true
+    )
     {
-        return CreateController(Encoding.UTF8.GetBytes(body), signature);
+        return CreateController(
+            Encoding.UTF8.GetBytes(body),
+            signature,
+            publicAndroidUpdatesEnabled
+        );
     }
 
-    private MobileAppBuildsController CreateController(byte[] bodyBytes, string signature)
+    private MobileAppBuildsController CreateController(
+        byte[] bodyBytes,
+        string signature,
+        bool publicAndroidUpdatesEnabled = true
+    )
     {
         var controller = new MobileAppBuildsController(
             CreateService(),
             Options.Create(CreateOptions()),
-            NullLogger<MobileAppBuildsController>.Instance
+            NullLogger<MobileAppBuildsController>.Instance,
+            Options.Create(
+                new MobileAppBuildOptions
+                {
+                    PublicAndroidUpdatesEnabled = publicAndroidUpdatesEnabled,
+                }
+            )
         );
         var context = new DefaultHttpContext();
         context.Request.Body = new MemoryStream(bodyBytes);
