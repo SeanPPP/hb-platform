@@ -7,6 +7,7 @@ import { buildMenus, getCurrentElement, getCurrentRoute } from '../router/routes
 import { useAuthStore } from '../store/auth'
 import MobileNavBar from '../components/MobileNavBar'
 import MobileTabBar from '../components/MobileTabBar'
+import RouteLoadBoundary from '../components/RouteLoadBoundary'
 
 export default function MobileLayout() {
   const { t } = useTranslation()
@@ -33,7 +34,9 @@ export default function MobileLayout() {
       <MobileNavBar onRefresh={handleRefresh} onMenuClick={() => setMenuOpen(true)} />
 
       <div className="mobile-content" key={location.pathname}>
-        {currentElement}
+        <RouteLoadBoundary resetKey={location.pathname}>
+          {currentElement}
+        </RouteLoadBoundary>
       </div>
 
       <div className="mobile-tab-bar-wrapper">

@@ -9,8 +9,8 @@ function assert(condition: unknown, message: string): asserts condition {
 const routeSource = readFileSync('src/router/routes.tsx', 'utf8')
 const menuPreviewSource = readFileSync('src/utils/webMenuPreview.ts', 'utf8')
 assert(
-  routeSource.includes("import EmergencyLoginKeysPage from '../pages/System/EmergencyLoginKeys'"),
-  'Routes should import the emergency login keys page',
+  routeSource.includes("const EmergencyLoginKeysPage = lazy(() => import('../pages/System/EmergencyLoginKeys'))"),
+  'Routes should lazy import the emergency login keys page',
 )
 assert(routeSource.includes("path: '/system/emergency-login-keys'"), 'Route should use the fixed system path')
 assert(routeSource.includes("title: 'menu.emergencyLoginKeys'"), 'Route should use the localized menu key')

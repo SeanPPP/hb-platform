@@ -1,5 +1,10 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
+import {
+  CHUNK_RELOAD_STORAGE_KEY,
+  CHUNK_RELOAD_WINDOW_MS,
+  claimChunkReload,
+} from '../router/chunkRecovery'
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
@@ -29,6 +34,9 @@ function collectSourceFiles(directory: string): string[] {
 }
 
 const root = process.cwd()
+const appSource = readFileSync(path.join(root, 'src/App.tsx'), 'utf8')
+const mainSource = readFileSync(path.join(root, 'src/main.tsx'), 'utf8')
+const routesSource = readFileSync(path.join(root, 'src/router/routes.tsx'), 'utf8')
 const pagesDirectory = path.join(root, 'src/pages')
 const pageReloadFiles = collectSourceFiles(pagesDirectory).filter((file) =>
   readFileSync(file, 'utf8').includes('window.location.reload'),
@@ -39,11 +47,34 @@ assert(
   `页面文件不应自动 hard reload: ${pageReloadFiles.map((file) => path.relative(root, file)).join(', ')}`,
 )
 
+assert(
+  appSource.includes("const AdminLayout = lazy(loadAdminLayout)") &&
+    appSource.includes("const ShopLayout = lazy(loadShopLayout)") &&
+    appSource.includes("const ShopHomePage = lazy(() => import('./pages/ShopHome'))") &&
+    appSource.includes('const shellLoader = /^\\/shop(?:\\/|$)/.test(location.pathname)') &&
+    appSource.includes("location.pathname === '/' ? undefined : loadAdminLayout") &&
+    appSource.includes('void shellLoader?.()'),
+  '应用根路由必须稳定懒加载 Admin、Shop 和 Shop 页面，并只预热当前路径所属外壳',
+)
+assert(
+  routesSource.includes("const DashboardPage = lazy(() => import('../pages/Dashboard'))") &&
+    routesSource.includes("const WarehouseProductsPage = lazy(() => import('../pages/Warehouse/Products'))") &&
+    routesSource.includes("const StoreOrderInvoicePage = lazy(() => import('../pages/Warehouse/StoreOrders/Invoice'))"),
+  '代表性后台页面必须保留独立动态入口',
+)
+assert(
+  mainSource.indexOf('registerChunkPreloadRecovery()') >= 0 &&
+    mainSource.indexOf('registerChunkPreloadRecovery()') < mainSource.indexOf('ReactDOM.createRoot'),
+  'Vite chunk 恢复监听必须在 React 应用启动前注册',
+)
+
 const mobileLayoutSource = readFileSync(path.join(root, 'src/layout/MobileLayout.tsx'), 'utf8')
 const adminLayoutSource = readFileSync(path.join(root, 'src/layout/AdminLayout.tsx'), 'utf8')
 const shopLayoutSource = readFileSync(path.join(root, 'src/layout/ShopLayout.tsx'), 'utf8')
 const shopCartDrawerSource = readFileSync(path.join(root, 'src/components/ShopCartDrawer.tsx'), 'utf8')
 const errorBoundarySource = readFileSync(path.join(root, 'src/components/GlobalErrorBoundary.tsx'), 'utf8')
+const routeBoundarySource = readFileSync(path.join(root, 'src/components/RouteLoadBoundary.tsx'), 'utf8')
+const chunkRecoverySource = readFileSync(path.join(root, 'src/router/chunkRecovery.ts'), 'utf8')
 const containerDetailSource = readFileSync(path.join(root, 'src/pages/Warehouse/ContainerDetail/index.tsx'), 'utf8')
 
 assert(
@@ -67,6 +98,50 @@ assert(
 assert(
   errorBoundarySource.includes('window.location.reload()'),
   '错误恢复按钮应继续保留主动刷新能力',
+)
+assert(
+  routeBoundarySource.includes('window.location.reload()') &&
+    routeBoundarySource.includes("reportRuntimeError('react-error-boundary'") &&
+    routeBoundarySource.includes('<Suspense'),
+  '路由加载边界必须上报错误、保留手动恢复并提供局部 Suspense',
+)
+assert(
+  chunkRecoverySource.includes("window.addEventListener('vite:preloadError'") &&
+    chunkRecoverySource.includes('CHUNK_RELOAD_WINDOW_MS = 5 * 60 * 1000') &&
+    chunkRecoverySource.includes('event.preventDefault()') &&
+    chunkRecoverySource.includes('window.location.reload()'),
+  'Vite 预加载失败只能通过五分钟限流的一次自动刷新恢复',
+)
+
+const chunkReloadStorage = new Map<string, string>()
+const timestampStorage = {
+  getItem: (key: string) => chunkReloadStorage.get(key) ?? null,
+  setItem: (key: string, value: string) => {
+    chunkReloadStorage.set(key, value)
+  },
+}
+const initialTimestamp = 1_000_000
+assert(claimChunkReload(timestampStorage, initialTimestamp), '首次 Vite 预加载错误必须允许自动刷新')
+assert(
+  chunkReloadStorage.get(CHUNK_RELOAD_STORAGE_KEY) === String(initialTimestamp),
+  '首次自动刷新必须记录当前标签页时间戳',
+)
+assert(
+  !claimChunkReload(timestampStorage, initialTimestamp + CHUNK_RELOAD_WINDOW_MS - 1),
+  '五分钟窗口内第二次失败不得再次自动刷新',
+)
+assert(
+  claimChunkReload(timestampStorage, initialTimestamp + CHUNK_RELOAD_WINDOW_MS),
+  '达到五分钟边界后可以恢复一次新的自动刷新机会',
+)
+assert(
+  !claimChunkReload({
+    getItem: () => {
+      throw new Error('storage unavailable')
+    },
+    setItem: () => undefined,
+  }, initialTimestamp),
+  'sessionStorage 不可用时不得自动刷新',
 )
 assert(
   shopLayoutSource.includes("window.addEventListener('focus', refreshFocusedCart)") &&
