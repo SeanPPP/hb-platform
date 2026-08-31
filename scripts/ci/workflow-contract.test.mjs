@@ -586,6 +586,23 @@ test('Mobile CI 同时执行 iOS 与 Android bundle 构建', () => {
   assert.match(mobilePackage.scripts['build:ci'], /expo export --platform android/)
 })
 
+test('Web PR CI 以 manifest 构建并执行确定性 bundle 硬门禁', () => {
+  const runner = readFileSync(nodeRunnerPath, 'utf8')
+  const webPackage = JSON.parse(readFileSync(new URL('../../apps/web/package.json', import.meta.url), 'utf8'))
+  const webCase = runner.slice(runner.indexOf('  web)'), runner.indexOf('  mobile)'))
+
+  assert.match(webCase, /npm --prefix apps\/web run build:ci -- --manifest/)
+  assert.match(webCase, /npm --prefix apps\/web run verify:bundle/)
+  assert.ok(
+    webCase.indexOf('run build:ci -- --manifest') < webCase.indexOf('run verify:bundle'),
+    'bundle 硬门禁必须使用当前 CI 构建产物',
+  )
+  assert.equal(
+    webPackage.scripts['verify:bundle'],
+    'node ../../scripts/performance/verify-web-bundle.mjs --dist dist --budget ../../web-bundle-budget.json',
+  )
+})
+
 test('环境敏感的 POS 微基准只在 weekly profile 执行', () => {
   const workflowSource = readFileSync(workflowPath, 'utf8')
   const testAllSource = readFileSync(testAllPath, 'utf8')

@@ -38,8 +38,8 @@ const detailRouteStart = routeSource.indexOf("path: '/pos-admin/linkly-settlemen
 const detailRouteEnd = routeSource.indexOf('\n      },', detailRouteStart)
 const detailRoute = routeSource.slice(detailRouteStart, detailRouteEnd)
 
-assert(routeSource.includes("import LinklySettlementsPage from '../pages/PosAdmin/LinklySettlements'"), '列表页必须注册路由 import')
-assert(routeSource.includes("import LinklySettlementDetailPage from '../pages/PosAdmin/LinklySettlementDetail'"), '详情页必须注册路由 import')
+assert(routeSource.includes("const LinklySettlementsPage = lazy(() => import('../pages/PosAdmin/LinklySettlements'))"), '列表页必须注册独立懒加载路由 import')
+assert(routeSource.includes("const LinklySettlementDetailPage = lazy(() => import('../pages/PosAdmin/LinklySettlementDetail'))"), '详情页必须注册独立懒加载路由 import')
 assert(routeSource.includes("path: '/pos-admin/linkly-settlements'"), '必须注册列表路由')
 assert(routeSource.includes("title: 'menu.linklySettlements'"), '列表路由必须使用 i18n 标题')
 assert(detailRouteStart >= 0 && detailRouteEnd > detailRouteStart, '必须注册隐藏详情路由')

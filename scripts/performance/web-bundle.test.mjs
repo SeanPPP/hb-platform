@@ -137,7 +137,7 @@ test("collector 原子写入 artifact report，并支持根 manifest.json", () =
   });
 });
 
-test("缺失 manifest 或 modulepreload/preload 时明确失败而不产生零值", () => {
+test("缺失 manifest 明确失败；合法的单入口构建不强制要求 modulepreload", () => {
   withFixture(({ distPath }) => {
     unlinkSync(join(distPath, ".vite/manifest.json"));
     assert.throws(() => analyzeWebBundle(distPath), /manifest/i);
@@ -148,7 +148,10 @@ test("缺失 manifest 或 modulepreload/preload 时明确失败而不产生零�
       .replace(/<link rel="modulepreload"[^>]*>/u, (tag) => `<!-- ${tag} -->`)
       .replace(/<link rel="preload"[^>]*>/u, (tag) => `<!-- ${tag} -->`);
     writeFileSync(indexPath, html, "utf8");
-    assert.throws(() => analyzeWebBundle(distPath), /preload/i);
+    const report = analyzeWebBundle(distPath);
+    assert.ok(report.initialAssets.some((asset) => asset.file === "assets/main.js"));
+    assert.ok(report.initialAssets.some((asset) => asset.file === "assets/vendor.js"));
+    assert.ok(report.initialAssets.some((asset) => asset.file === "assets/main.css"));
   });
 });
 
@@ -292,6 +295,33 @@ test("首屏闭包只从 index.html 的 module script 入口展开，不混入�
     assert.ok(!report.initialAssets.some((asset) => asset.file === "assets/admin.js"));
     assert.ok(
       !report.routeDynamicChunks.some((chunk) => chunk.file === "assets/admin-route.js"),
+    );
+  });
+});
+
+test("动态 chunk 排序对 Vite 的大小写文件名使用同一比较器", () => {
+  withFixture(({ distPath }) => {
+    const manifestPath = join(distPath, ".vite/manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest["index.html"].dynamicImports.push("src/routes/Invoice.tsx", "excel");
+    manifest["src/routes/Invoice.tsx"] = {
+      file: "assets/Invoice.js",
+      src: "src/routes/Invoice.tsx",
+      isDynamicEntry: true,
+    };
+    manifest.excel = {
+      file: "assets/excel.js",
+      name: "excel",
+      isDynamicEntry: true,
+    };
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+    writeFileSync(join(distPath, "assets/Invoice.js"), "export const invoice = true;\n", "utf8");
+    writeFileSync(join(distPath, "assets/excel.js"), "export const excel = true;\n", "utf8");
+
+    const report = analyzeWebBundle(distPath);
+    assert.deepEqual(
+      report.routeDynamicChunks.map((chunk) => chunk.file),
+      ["assets/Invoice.js", "assets/excel.js", "assets/orders.js"].sort(),
     );
   });
 });

@@ -4,7 +4,7 @@ import {
   FireOutlined,
   ShoppingCartOutlined,
 } from '@ant-design/icons'
-import { Alert, Button, Card, Empty, Popover, Select, Space, Tag, Tooltip, Typography, message } from 'antd'
+import { Alert, Button, Card, Empty, Pagination, Popover, Select, Space, Spin, Tag, Tooltip, Typography, message } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -534,6 +534,132 @@ export default function BestSellersSection() {
           className="shop-home-alert"
         />
       ) : null}
+
+      <div className="shop-best-sellers-mobile-list" aria-busy={loading}>
+        {loading ? (
+          <div className="shop-best-sellers-mobile-state"><Spin size="large" /></div>
+        ) : products.length ? (
+          products.map((product, index) => {
+            const rank = (currentPage - 1) * pageSize + index + 1
+            const branchSalesRows = getBranchSalesRows(product)
+            const branchSalesCount = getBranchSalesCount(product)
+            const addDisabled = product.isActive !== true || !selectedStore?.storeCode
+            const addTooltip = !selectedStore?.storeCode
+              ? t('shop.selectStoreFirst', 'Please select a store first')
+              : product.isActive !== true
+                ? t('common.inactiveUpper', 'Off Shelf')
+                : ''
+
+            return (
+              <article
+                key={product.productCode || product.itemNumber || String(rank)}
+                className="shop-best-sellers-mobile-card"
+              >
+                <div className="shop-best-sellers-mobile-card__rank">#{rank}</div>
+                <div className="shop-best-sellers-mobile-card__media">
+                  {product.productImage ? (
+                    <img
+                      src={product.productImage}
+                      alt={product.productName || product.itemNumber || NO_IMAGE_PLACEHOLDER}
+                      loading="lazy"
+                      decoding="async"
+                    />
+                  ) : (
+                    <span>{NO_IMAGE_PLACEHOLDER}</span>
+                  )}
+                </div>
+                <div className="shop-best-sellers-mobile-card__identity">
+                  <strong>{product.productName || 'Unknown Product'}</strong>
+                  <div>
+                    <Text type="secondary">Item No. </Text>
+                    <Text copyable>{product.itemNumber || '-'}</Text>
+                  </div>
+                  <BarcodePreview
+                    value={product.barcode}
+                    align="left"
+                    compactCopy={false}
+                    gap={2}
+                    options={{ height: 18, width: 1, margin: 0 }}
+                    showCopy={false}
+                    textMaxWidth={150}
+                    textNoWrap
+                  />
+                </div>
+
+                <div className="shop-best-sellers-mobile-card__metrics">
+                  <div><span>Units Sold</span><strong>{product.quantity ?? 0}</strong></div>
+                  <div><span>Sales Amount</span><strong>{formatCurrency(product.salesAmount)}</strong></div>
+                  <div><span>Gross Profit</span><strong>{formatOptionalCurrency(product.grossProfit)}</strong></div>
+                  <div><span>Gross Margin</span><strong>{formatPercent(product.grossMarginRate)}</strong></div>
+                </div>
+
+                <div className="shop-best-sellers-mobile-card__footer">
+                  <Space wrap size={[4, 4]}>
+                    <Tag color={getStatisticStatusColor(product.statisticStatus || statisticStatus)}>
+                      {product.statisticStatus || statisticStatus || 'Live'}
+                    </Tag>
+                    <Tag color={product.isActive === true ? 'green' : product.isActive === false ? 'red' : undefined}>
+                      {product.isActive === true
+                        ? t('common.activeUpper', 'On Shelf')
+                        : product.isActive === false
+                          ? t('common.inactiveUpper', 'Off Shelf')
+                          : t('shop.statusUnknown', 'Unknown')}
+                    </Tag>
+                    <Popover
+                      trigger="click"
+                      placement="top"
+                      title={t('shop.branchSalesTitle', 'Store Sales')}
+                      content={(
+                        <div className="shop-best-sellers-branch-sales-popover">
+                          <MeasuredTable<BestSellerBranchSale>
+                            metricId="shop-home.best-sellers-section.mobile-table-1"
+                            size="small"
+                            rowKey={(row) => row.branchCode}
+                            columns={BRANCH_SALES_COLUMNS}
+                            dataSource={branchSalesRows}
+                            pagination={false}
+                            scroll={{ x: 520, y: 320 }}
+                            locale={{ emptyText: t('shop.noBranchSales', 'No sales by store') }}
+                          />
+                        </div>
+                      )}
+                    >
+                      <Button type="link" size="small" className="shop-best-sellers-store-count">
+                        {branchSalesCount} stores
+                      </Button>
+                    </Popover>
+                  </Space>
+                  <Tooltip title={addTooltip}>
+                    <span>
+                      <Button
+                        type="primary"
+                        icon={<ShoppingCartOutlined />}
+                        disabled={addDisabled}
+                        onClick={() => void handleAddToCart(product)}
+                      >
+                        {t('common.add', 'Add')}
+                      </Button>
+                    </span>
+                  </Tooltip>
+                </div>
+              </article>
+            )
+          })
+        ) : (
+          <div className="shop-best-sellers-mobile-state">{getBestSellerEmptyText()}</div>
+        )}
+
+        {!loading && products.length ? (
+          <Pagination
+            className="shop-best-sellers-mobile-pagination"
+            current={currentPage}
+            pageSize={pageSize}
+            total={total}
+            showSizeChanger={false}
+            onChange={setCurrentPage}
+          />
+        ) : null}
+      </div>
 
       <MeasuredTable<BestSellerProduct> metricId="shop-home.best-sellers-section.table-2"
         rowKey={(record) => record.productCode || record.itemNumber || String(record.rank)}

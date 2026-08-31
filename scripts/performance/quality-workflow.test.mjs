@@ -7,6 +7,7 @@ import test from "node:test";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const workflowPath = resolve(repositoryRoot, ".github/workflows/quality-baseline.yml");
 const budgetPath = resolve(repositoryRoot, "quality-baseline-budget.json");
+const bundleBudgetPath = resolve(repositoryRoot, "web-bundle-budget.json");
 
 test("quality-baseline workflow 覆盖 PR/main/nightly、路径 lane 与 always 上报", () => {
   assert.ok(existsSync(workflowPath), "必须新增 quality-baseline workflow");
@@ -106,6 +107,8 @@ test("quality-baseline workflow 覆盖 PR/main/nightly、路径 lane 与 always 
   );
   assert.match(workflow, /quality-web-bundle-/);
   assert.match(workflow, /collect-web-bundle\.mjs/);
+  assert.match(workflow, /verify:bundle/);
+  assert.match(workflow, /web-bundle-budget\.json/);
   assert.match(workflow, /web-bundle\.json/);
   assert.match(workflow, /--web-bundle-file/);
   assert.match(
@@ -116,8 +119,9 @@ test("quality-baseline workflow 覆盖 PR/main/nightly、路径 lane 与 always 
   assert.match(workflow, /--selected-lanes/);
   assert.ok(
     workflow.indexOf("quality-lane.mjs run") < workflow.indexOf("collect-web-bundle.mjs") &&
-      workflow.indexOf("collect-web-bundle.mjs") < workflow.indexOf("quality-lane.mjs finish"),
-    "Web bundle 必须在现有 build/test 后、lane 结束记录前采集",
+      workflow.indexOf("collect-web-bundle.mjs") < workflow.indexOf("verify:bundle") &&
+      workflow.indexOf("verify:bundle") < workflow.indexOf("quality-lane.mjs finish"),
+    "Web bundle 必须在现有 build/test 后采集并执行硬门禁，再记录 lane 结束",
   );
 });
 
@@ -127,4 +131,36 @@ test("初始预算只处于 observing，且不固化本机测量值", () => {
   assert.equal(budget.schemaVersion, "QualityBaselineBudgetV1");
   assert.equal(budget.mode, "observing");
   assert.deepEqual(budget.metrics, {});
+});
+
+test("确定性 Web bundle 预算独立版本化且不修改 observing P95 预算", () => {
+  assert.ok(existsSync(bundleBudgetPath), "必须新增根 web-bundle-budget.json");
+  const budget = JSON.parse(readFileSync(bundleBudgetPath, "utf8"));
+  assert.equal(budget.schemaVersion, "WebBundleBudgetV1");
+  assert.deepEqual(budget.mainEntry, {
+    manifestKey: "index.html",
+    maxRawBytes: 700 * 1024,
+    maxGzipBytes: 250 * 1024,
+  });
+  assert.equal(budget.firstScreen.maxGzipBytes, 450 * 1024);
+  assert.equal(budget.largestInitialJs.maxGzipBytes, 250 * 1024);
+  assert.equal(budget.anyJsChunk.maxRawBytes, 1000 * 1024);
+  assert.deepEqual(
+    Object.fromEntries(
+      budget.asyncChunks.map((chunk) => [chunk.id, [chunk.maxRawBytes, chunk.maxGzipBytes]]),
+    ),
+    {
+      excel: [1000 * 1024, 300 * 1024],
+      pdf: [650 * 1024, 200 * 1024],
+    },
+  );
+  assert.deepEqual(
+    budget.requiredDynamicEntries.map((entry) => entry.manifestKey),
+    [
+      "src/pages/Dashboard/index.tsx",
+      "src/pages/ShopHome/index.tsx",
+      "src/pages/Warehouse/Products/index.tsx",
+      "src/pages/Warehouse/StoreOrders/Invoice.tsx",
+    ],
+  );
 });

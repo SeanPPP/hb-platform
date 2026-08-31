@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "WebBundleBudgetV1",
+  "mainEntry": {
+    "manifestKey": "index.html",
+    "maxRawBytes": 716800,
+    "maxGzipBytes": 256000
+  },
+  "firstScreen": {
+    "maxGzipBytes": 460800
+  },
+  "largestInitialJs": {
+    "maxGzipBytes": 256000
+  },
+  "anyJsChunk": {
+    "maxRawBytes": 1024000
+  },
+  "asyncChunks": [
+    {
+      "id": "excel",
+      "patterns": ["assets/excel"],
+      "maxRawBytes": 1024000,
+      "maxGzipBytes": 307200
+    },
+    {
+      "id": "pdf",
+      "patterns": ["assets/pdf"],
+      "maxRawBytes": 665600,
+      "maxGzipBytes": 204800
+    }
+  ],
+  "forbiddenInitialPatterns": ["excel", "pdf", "leaflet", "zxing"],
+  "requiredDynamicEntries": [
+    {
+      "id": "dashboard",
+      "manifestKey": "src/pages/Dashboard/index.tsx"
+    },
+    {
+      "id": "shop-home",
+      "manifestKey": "src/pages/ShopHome/index.tsx"
+    },
+    {
+      "id": "warehouse-products",
+      "manifestKey": "src/pages/Warehouse/Products/index.tsx"
+    },
+    {
+      "id": "store-order-invoice",
+      "manifestKey": "src/pages/Warehouse/StoreOrders/Invoice.tsx"
+    }
+  ]
+}

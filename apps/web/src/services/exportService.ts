@@ -1,7 +1,9 @@
-import ExcelJS from 'exceljs'
 import { generateBarcodeImages } from '../utils/barcode'
 import { reportExternalFetchError } from '../utils/centerLogClient'
 import type { ProductGradeListItem } from '../types/productGrade'
+
+type ExcelWorksheet = import('exceljs').Worksheet
+type ExcelWorkbook = import('exceljs').Workbook
 
 export interface ExportOptions {
   includeLabelPrice?: boolean
@@ -357,6 +359,7 @@ export async function exportDomesticProductsToExcel(
   options: ExportOptions = defaultExportOptions,
 ): Promise<ExportResult> {
   const mergedOptions = { ...defaultExportOptions, ...options }
+  const { default: ExcelJS } = await import('exceljs')
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet('仓库商品')
 
@@ -558,6 +561,7 @@ export async function exportProductGradesToExcel(
   options: ProductGradeExportOptions = {},
 ): Promise<ExportResult> {
   const mergedOptions = { ...defaultProductGradeExportOptions, ...options }
+  const { default: ExcelJS } = await import('exceljs')
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet('商品等级')
 
@@ -659,7 +663,7 @@ export async function exportProductGradesToExcel(
 }
 
 export function populateProductGradesWorksheet(
-  worksheet: ExcelJS.Worksheet,
+  worksheet: ExcelWorksheet,
   products: ProductGradeListItem[],
   options: ProductGradeWorksheetOptions = {},
 ) {
@@ -749,6 +753,7 @@ export async function exportContainerDetailsToExcel(
   items: ContainerDetailExportItem[],
   options: ContainerExportOptions = {},
 ): Promise<void> {
+  const { default: ExcelJS } = await import('exceljs')
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet('货柜明细')
   const columns = getContainerDetailWorksheetColumns(options)
@@ -905,7 +910,7 @@ export function resolveContainerDetailPdfLayout(columns: ContainerDetailExportCo
 }
 
 export function populateContainerDetailsWorksheet(
-  worksheet: ExcelJS.Worksheet,
+  worksheet: ExcelWorksheet,
   items: ContainerDetailExportItem[],
   options: ContainerExportOptions = {},
 ) {
@@ -1046,8 +1051,8 @@ async function prepareContainerDetailExportImages(
 }
 
 function addContainerDetailWorksheetImages(
-  workbook: ExcelJS.Workbook,
-  worksheet: ExcelJS.Worksheet,
+  workbook: ExcelWorkbook,
+  worksheet: ExcelWorksheet,
   items: ContainerDetailExportItem[],
   worksheetInfo: ReturnType<typeof populateContainerDetailsWorksheet>,
   preparedImages: ContainerExportPreparedImages,
@@ -1335,7 +1340,7 @@ function escapeContainerDetailPdfAttribute(value: string) {
 }
 
 function writeContainerExportSummary(
-  worksheet: ExcelJS.Worksheet,
+  worksheet: ExcelWorksheet,
   columnCount: number,
   summary?: ContainerExportSummary,
 ) {

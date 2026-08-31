@@ -17,8 +17,8 @@ const zhSource = readFileSync('src/i18n/locales/zh.json', 'utf8')
 const enSource = readFileSync('src/i18n/locales/en.json', 'utf8')
 
 assert(
-  routeSource.includes("import WarehouseProductRecordsPage from '../pages/Warehouse/ProductRecords'"),
-  '路由应导入商品数据查询页',
+  routeSource.includes("const WarehouseProductRecordsPage = lazy(() => import('../pages/Warehouse/ProductRecords'))"),
+  '路由应懒加载商品数据查询页',
 )
 assert(
   routeSource.includes("path: '/warehouse/products/:productCode/records'"),

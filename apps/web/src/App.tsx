@@ -2,31 +2,36 @@ import { App as AntdApp, ConfigProvider, Result, Spin, theme } from 'antd'
 import enUS from 'antd/locale/en_US'
 import zhCN from 'antd/locale/zh_CN'
 import 'dayjs/locale/zh-cn'
-import { useEffect } from 'react'
+import { lazy, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { createBrowserRouter, Navigate, Route, RouterProvider, Routes, useLocation } from 'react-router-dom'
 import GlobalErrorBoundary from './components/GlobalErrorBoundary'
-import AdminLayout from './layout/AdminLayout'
-import ShopLayout from './layout/ShopLayout'
-import BrowserExtensionPrivacyPage from './pages/BrowserExtensionPrivacy'
-import HbSupplierOrderSupportPage from './pages/HbSupplierOrderSupport'
+import RouteLoadBoundary from './components/RouteLoadBoundary'
 import LoginPage from './pages/Login'
-import MobilePrivacyPage from './pages/MobilePrivacy'
 import { isPublicAppPath } from './pages/MobilePrivacy/publicPath'
-import ShopBestSellersPage from './pages/ShopBestSellers'
-import ShopComingSoonPage from './pages/ShopComingSoon'
-import ShopHomePage from './pages/ShopHome'
-import ShopLocalSupplierInvoiceDetailPage from './pages/ShopLocalSupplierInvoiceDetail'
-import ShopLocalSupplierInvoicesPage from './pages/ShopLocalSupplierInvoices'
-import ShopOrderDetailPage from './pages/ShopOrderDetail'
-import ShopOrdersPage from './pages/ShopOrders'
-import ShopPreorderPage from './pages/ShopPreorder'
 import { ShopPreorderLeaveProvider } from './pages/ShopPreorder/preorderLeaveContext'
 import ForbiddenPage from './pages/Forbidden'
 import WebAccessDeniedPage from './pages/WebAccessDenied'
 import { useAuthStore } from './store/auth'
 import { AUTH_EXPIRED_EVENT } from './utils/request'
 import { getDefaultWebPath, WEB_NO_ACCESS_PATH } from './utils/webPortalAccess'
+
+const loadAdminLayout = () => import('./layout/AdminLayout')
+const loadShopLayout = () => import('./layout/ShopLayout')
+
+const AdminLayout = lazy(loadAdminLayout)
+const ShopLayout = lazy(loadShopLayout)
+const BrowserExtensionPrivacyPage = lazy(() => import('./pages/BrowserExtensionPrivacy'))
+const HbSupplierOrderSupportPage = lazy(() => import('./pages/HbSupplierOrderSupport'))
+const MobilePrivacyPage = lazy(() => import('./pages/MobilePrivacy'))
+const ShopBestSellersPage = lazy(() => import('./pages/ShopBestSellers'))
+const ShopComingSoonPage = lazy(() => import('./pages/ShopComingSoon'))
+const ShopHomePage = lazy(() => import('./pages/ShopHome'))
+const ShopLocalSupplierInvoiceDetailPage = lazy(() => import('./pages/ShopLocalSupplierInvoiceDetail'))
+const ShopLocalSupplierInvoicesPage = lazy(() => import('./pages/ShopLocalSupplierInvoices'))
+const ShopOrderDetailPage = lazy(() => import('./pages/ShopOrderDetail'))
+const ShopOrdersPage = lazy(() => import('./pages/ShopOrders'))
+const ShopPreorderPage = lazy(() => import('./pages/ShopPreorder'))
 
 function AppBootstrap() {
   const { t } = useTranslation()
@@ -39,6 +44,18 @@ function AppBootstrap() {
       void fetchCurrentUser()
     }
   }, [fetchCurrentUser, initialized, isPublicPath, loading])
+
+  useEffect(() => {
+    if ((initialized && !loading) || isPublicPath || location.pathname === WEB_NO_ACCESS_PATH) {
+      return
+    }
+
+    // 认证等待期间只预热当前 URL 所属外壳，避免后台与 Shop 互相进入首屏闭包。
+    const shellLoader = /^\/shop(?:\/|$)/.test(location.pathname)
+      ? loadShopLayout
+      : (location.pathname === '/' ? undefined : loadAdminLayout)
+    void shellLoader?.()
+  }, [initialized, isPublicPath, loading, location.pathname])
 
   useEffect(() => {
     window.addEventListener(AUTH_EXPIRED_EVENT, clearAuth)
@@ -65,9 +82,18 @@ function AppBootstrap() {
         path="/login"
         element={currentUser ? <Navigate to={homePage} replace /> : <LoginPage />}
       />
-      <Route path="/privacy/browser-extension" element={<BrowserExtensionPrivacyPage />} />
-      <Route path="/privacy/mobile" element={<MobilePrivacyPage />} />
-      <Route path="/support/hb-supplier-order" element={<HbSupplierOrderSupportPage />} />
+      <Route
+        path="/privacy/browser-extension"
+        element={<RouteLoadBoundary resetKey="browser-extension-privacy"><BrowserExtensionPrivacyPage /></RouteLoadBoundary>}
+      />
+      <Route
+        path="/privacy/mobile"
+        element={<RouteLoadBoundary resetKey="mobile-privacy"><MobilePrivacyPage /></RouteLoadBoundary>}
+      />
+      <Route
+        path="/support/hb-supplier-order"
+        element={<RouteLoadBoundary resetKey="hb-supplier-order-support"><HbSupplierOrderSupportPage /></RouteLoadBoundary>}
+      />
       <Route
         path={WEB_NO_ACCESS_PATH}
         element={
@@ -80,7 +106,13 @@ function AppBootstrap() {
         path="/shop"
         element={
           currentUser
-            ? (access.canAccessOrderFront ? <ShopPreorderLeaveProvider><ShopLayout /></ShopPreorderLeaveProvider> : portalDeniedPage)
+            ? (access.canAccessOrderFront
+                ? (
+                    <ShopPreorderLeaveProvider>
+                      <RouteLoadBoundary resetKey="shop-layout"><ShopLayout /></RouteLoadBoundary>
+                    </ShopPreorderLeaveProvider>
+                  )
+                : portalDeniedPage)
             : <Navigate to="/login" replace />
         }
       >
@@ -97,7 +129,9 @@ function AppBootstrap() {
         path="/*"
         element={
           currentUser
-            ? (access.canAccessAdminShell ? <AdminLayout /> : portalDeniedPage)
+            ? (access.canAccessAdminShell
+                ? <RouteLoadBoundary resetKey="admin-layout"><AdminLayout /></RouteLoadBoundary>
+                : portalDeniedPage)
             : <Navigate to="/login" replace />
         }
       />

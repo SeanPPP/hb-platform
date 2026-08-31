@@ -24,8 +24,12 @@ assert.ok(
   'App 必须接入澳洲本地进货单明细路由',
 )
 
-const orderNavigationIndex = layout.indexOf("navigate('/shop/orders')")
-const localInvoiceNavigationIndex = layout.indexOf('to="/shop/local-supplier-invoices"')
+const primaryNavigationStart = layout.indexOf('<nav className="shop-primary-nav"')
+const primaryNavigationEnd = layout.indexOf('</nav>', primaryNavigationStart)
+assert.ok(primaryNavigationStart >= 0 && primaryNavigationEnd > primaryNavigationStart, '商城必须提供语义化桌面一级导航')
+const primaryNavigation = layout.slice(primaryNavigationStart, primaryNavigationEnd)
+const orderNavigationIndex = primaryNavigation.indexOf('to="/shop/orders"')
+const localInvoiceNavigationIndex = primaryNavigation.indexOf('to="/shop/local-supplier-invoices"')
 assert.ok(orderNavigationIndex >= 0, '商城导航必须保留历史订单')
 assert.ok(
   localInvoiceNavigationIndex > orderNavigationIndex,
@@ -36,10 +40,9 @@ assert.ok(
   '澳洲本地进货单 active 状态必须覆盖列表与明细路由',
 )
 assert.ok(
-  (layout.match(/to="\/shop\/local-supplier-invoices"/g) ?? []).length >= 3,
-  '桌面顶栏、紫色主导航和移动菜单都必须提供语义化澳洲本地进货单链接',
+  (layout.match(/to="\/shop\/local-supplier-invoices"/g) ?? []).length >= 2,
+  '桌面一级导航和移动 More 抽屉都必须提供语义化澳洲本地进货单链接',
 )
-assert.ok(layout.includes('shop-local-invoice-nav-entry'), '三个新增入口必须共享可聚焦样式钩子')
 assert.ok(layout.includes("aria-current={isLocalSupplierInvoicesPage ? 'page' : undefined}"), '当前列表或明细路由必须向辅助技术暴露 active 状态')
 
 for (const contract of [
@@ -136,12 +139,14 @@ for (const [localeName, locale] of [
 
 assert.match(styles, /\.shop-local-invoice-card-footer:focus-visible/,
   '查看明细入口必须有清晰的键盘焦点状态')
-assert.match(styles, /\.shop-local-invoice-nav-entry:focus-visible/,
-  '三个新增导航入口必须有清晰的键盘焦点状态')
+assert.match(styles, /\.shop-primary-nav__item:focus-visible/,
+  '桌面一级导航入口必须有清晰的键盘焦点状态')
+assert.match(styles, /\.shop-mobile-more-menu > a:focus-visible/,
+  '移动 More 导航入口必须有清晰的键盘焦点状态')
 assert.match(
   styles,
-  /@media \(min-width: 769px\) and \(max-width: 992px\)[\s\S]*?\.shop-orange-menu[\s\S]*?overflow-x:\s*auto/,
-  '769–992px 必须约束紫色导航横向滚动，避免英文长标签撑宽页面',
+  /\.shop-primary-nav\s*\{[\s\S]*?white-space:\s*nowrap/,
+  '桌面一级导航必须维持单行，避免英文长标签破坏头部结构',
 )
 assert.match(styles, /@media \(max-width: 480px\)[\s\S]*?\.shop-local-invoice/,
   '必须为约 390px 手机宽度提供专属响应式规则')

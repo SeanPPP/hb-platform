@@ -13,6 +13,7 @@ import { useTranslation } from 'react-i18next'
 import { useLocation, useNavigate } from 'react-router-dom'
 import AppTabs from '../components/AppTabs'
 import LanguageSwitch from '../components/LanguageSwitch'
+import RouteLoadBoundary from '../components/RouteLoadBoundary'
 import RouteKeepAlive, { type RouteKeepAliveRef } from '../components/RouteKeepAlive'
 import { useIsMobile } from '../hooks/useIsMobile'
 import MobileLayout from './MobileLayout'
@@ -218,7 +219,11 @@ function DesktopAdminLayout() {
             ref={keepAliveRef}
             activeKey={activeCacheKey}
             include={cacheKeys}
-            currentElement={currentElement}
+            currentElement={(
+              <RouteLoadBoundary resetKey={activeCacheKey}>
+                {currentElement}
+              </RouteLoadBoundary>
+            )}
           />
         </Content>
       </Layout>
