@@ -105,7 +105,7 @@ export function PreorderListScreen() {
               title={selectedStoreCode ? t("list.completedTitle") : t("list.selectStoreTitle")}
               description={selectedStoreCode ? t("list.completedDescription") : t("list.selectStoreDescription")}
               actionLabel={t("list.backToShop")}
-              onAction={() => router.replace("/(tabs)/home")}
+              onAction={() => router.replace("/(shell)/home")}
             />
           ) : null
         }

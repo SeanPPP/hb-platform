@@ -667,7 +667,7 @@ export default function LocalSupplierInvoicesScreen() {
 
       try {
         const pushParams = {
-          pathname: "/(tabs)/product-query",
+          pathname: "/(shell)/product-query",
           params: {
             productCode: detail.productCode,
             keyword,

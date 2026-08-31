@@ -41,7 +41,7 @@ export interface BuildLocalSupplierInvoicesReturnStateInput {
 }
 
 export interface LocalSupplierInvoicesRestoreHref {
-  pathname: "/(tabs)/local-supplier-invoices";
+  pathname: "/(shell)/local-supplier-invoices";
   params: Record<string, string>;
 }
 
@@ -171,7 +171,7 @@ export function buildLocalSupplierInvoicesRestoreHref(
   state: LocalSupplierInvoicesReturnState
 ): LocalSupplierInvoicesRestoreHref {
   return {
-    pathname: "/(tabs)/local-supplier-invoices",
+    pathname: "/(shell)/local-supplier-invoices",
     params: buildLocalSupplierInvoicesReturnParams(state),
   };
 }

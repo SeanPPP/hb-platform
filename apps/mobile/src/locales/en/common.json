@@ -30,6 +30,12 @@
     "openFilters": "Open filters"
   },
   "tabs": {
+    "workbench": "Home",
+    "scan": "Scan",
+    "checkIn": "Check in",
+    "reports": "Reports",
+    "me": "Me",
+    "lockedLabel": "{{label}}, unavailable in the current mode",
     "home": "Home",
     "store": "Store",
     "orders": "Orders",
@@ -40,7 +46,6 @@
     "installmentOrders": "Installments",
     "advertisements": "Advertisements",
     "promotions": "Promotions",
-    "reports": "Reports",
     "productReport": "Product Report",
     "storeVouchers": "Vouchers",
     "seasonalCards": "Seasonal Cards",

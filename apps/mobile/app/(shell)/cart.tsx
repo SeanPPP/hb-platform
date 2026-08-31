@@ -679,7 +679,7 @@ export default function Cart() {
       setOrderRemarks("");
       setPage(1);
       setSnackbarMessage(t("messages.submitSuccess"));
-      router.push("/(tabs)/orders");
+      router.push("/(shell)/orders");
     } catch (error) {
       if (isPreorderRequiredError(error)) {
         setSubmitDialogVisible(false);
@@ -1025,7 +1025,7 @@ export default function Cart() {
 
           <View style={styles.storeHintCard}>
             <Text variant="bodyMedium">{t("filters.storeHint")}</Text>
-            <Button mode="outlined" onPress={() => router.push("/(tabs)/home")}>
+            <Button mode="outlined" onPress={() => router.push("/(shell)/home")}>
               {t("filters.goHome")}
             </Button>
           </View>

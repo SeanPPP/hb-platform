@@ -158,7 +158,7 @@ export default function EmployeeProfileScreen() {
       return;
     }
 
-    router.navigate("/(tabs)/settings");
+    router.navigate("/(shell)/settings");
   }, [router]);
 
   const showMessage = useCallback((message: string) => {
@@ -172,7 +172,7 @@ export default function EmployeeProfileScreen() {
     }
 
     showMessage(t("messages.loginRequired"));
-    router.navigate("/(tabs)/settings");
+    router.navigate("/(shell)/settings");
   }, [isAuthenticated, router, showMessage, t, user]);
 
   useEffect(() => {

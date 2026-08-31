@@ -37,10 +37,6 @@ function readWorkspaceSource(relativePath: string) {
   return readFileSync(resolve(process.cwd(), '../..', relativePath), 'utf8')
 }
 
-function extractQuotedValues(source: string) {
-  return Array.from(source.matchAll(/["']([^"']+)["']/g), (match) => match[1])
-}
-
 assertEqual(
   buildPreview([P.Attendance.AvailabilitySubmitSelf]).visibleRoutes.some(
     (route) => route.routeName === 'attendance-personal',
@@ -129,11 +125,11 @@ const mobileTabPathsSource = mobileDefaultRouteSource.slice(
 const mobileRouteNames = Array.from(
   mobileTabPathsSource.matchAll(/^\s*(?:"([^"]+)"|'([^']+)'|([a-z][\w-]*)):\s*["']/gm),
   (match) => match[1] ?? match[2] ?? match[3],
-)
+).filter((routeName) => routeName !== 'workbench')
 assertArrayEqual(
   [...mobileRouteNames].sort(),
   [...previewRouteNames].sort(),
-  'Web 预览路由集合应直接匹配移动端 TAB_PATHS',
+  'Web 预览业务路由集合应匹配移动端 TAB_PATHS，固定工作台不进入权限菜单',
 )
 
 assertArrayEqual(
@@ -148,18 +144,7 @@ assertArrayEqual(
     'store-vouchers',
     'seasonal-cards',
   ],
-  '门店折叠分组应与移动端 tab-grouping 保持一致并包含节日贺卡',
-)
-
-const mobileTabGroupingSource = readWorkspaceSource('apps/mobile/src/components/navigation/tab-grouping.ts')
-const mobileStoreRouteSource = mobileTabGroupingSource.slice(
-  mobileTabGroupingSource.indexOf('export const STORE_ROUTE_NAMES'),
-  mobileTabGroupingSource.indexOf('export type NavigationGroupRoute'),
-)
-assertArrayEqual(
-  extractQuotedValues(mobileStoreRouteSource).sort(),
-  completePreview.storeChildren.map((route) => route.routeName).sort(),
-  'Web 门店折叠分组应直接匹配移动端 STORE_ROUTE_NAMES',
+  'Web 权限预览的门店业务分组应包含节日贺卡',
 )
 
 const warehouseRoute = completePreview.allRoutes.find((route) => route.routeName === 'warehouse')

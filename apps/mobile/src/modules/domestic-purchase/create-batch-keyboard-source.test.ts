@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
 const screenSource = readFileSync(
-  resolve(currentDir, "../../../app/(tabs)/domestic-purchase.tsx"),
+  resolve(currentDir, "../../../app/(shell)/domestic-purchase.tsx"),
   "utf8"
 );
 const zhLocale = JSON.parse(

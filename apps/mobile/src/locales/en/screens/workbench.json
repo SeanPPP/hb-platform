@@ -1,0 +1,69 @@
+{
+  "title": "Workbench",
+  "subtitle": "Stores and authorised tools in one place",
+  "greeting": "Hello, {{name}}",
+  "session": {
+    "account": "Account mode",
+    "device": "Device mode",
+    "warehouse": "Warehouse account"
+  },
+  "summary": {
+    "currentStore": "Current store",
+    "noStore": "No store selected",
+    "authorizedFunctions": "Authorised tools",
+    "functionCount": "{{count}} available",
+    "cartSku": "Cart SKUs",
+    "skuCount": "{{count}} items"
+  },
+  "quickActions": {
+    "title": "Quick actions",
+    "caption": "Based on your current access"
+  },
+  "groups": {
+    "salesProduct": "Sales & products",
+    "warehousePurchase": "Warehouse & purchasing",
+    "operationsReports": "Operations & reports",
+    "peopleManagement": "People & management"
+  },
+  "routes": {
+    "productQuery": "Product lookup",
+    "storeOrdering": "Store ordering",
+    "cart": "Cart",
+    "orders": "HB Orders",
+    "installmentOrders": "Instalment orders",
+    "storeVouchers": "Vouchers",
+    "seasonalCards": "Seasonal cards",
+    "warehouse": "Warehouse",
+    "domesticPurchase": "Domestic purchasing",
+    "localSupplierInvoices": "Supplier invoices",
+    "advertisements": "Advertisements",
+    "promotions": "Promotions",
+    "reports": "Reports",
+    "attendancePersonal": "My attendance",
+    "attendanceManagement": "Attendance management",
+    "users": "Employees",
+    "employeeProfile": "My profile",
+    "employeeProfileReview": "Profile reviews",
+    "deviceManagement": "Device management"
+  },
+  "allFunctions": {
+    "title": "All tools",
+    "caption": "Authorised by role and device",
+    "sectionCount": "{{count}} available"
+  },
+  "states": {
+    "loadingTitle": "Loading your access",
+    "loadingDescription": "Your workbench will show only the tools authorised for this account and device.",
+    "emptyTitle": "No tools available",
+    "emptyDescription": "This session has no authorised business tools. The workbench stays empty to protect your data.",
+    "errorTitle": "Unable to load the function menu",
+    "errorDescription": "Only the safe empty workbench is shown. Retry to reload your access menu."
+  },
+  "actions": {
+    "retry": "Retry"
+  },
+  "accessibility": {
+    "openFunction": "Open {{title}}",
+    "functionCount": "{{title}}, {{count}} available tools"
+  }
+}

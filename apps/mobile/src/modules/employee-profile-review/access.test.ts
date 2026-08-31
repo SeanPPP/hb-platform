@@ -86,6 +86,6 @@ assert.equal(
       false
     ),
   }),
-  "/(tabs)/settings",
-  "客户端审核 guard 拒绝时，审核入口不能成为默认路由"
+  "/(shell)/workbench",
+  "客户端审核 guard 拒绝时，审核入口不能成为默认路由，且必须回到安全工作台"
 );

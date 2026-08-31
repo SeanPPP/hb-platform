@@ -21,6 +21,7 @@ import settingsEn from "@/locales/en/screens/settings.json";
 import storeVouchersEn from "@/locales/en/screens/storeVouchers.json";
 import userManagementEn from "@/locales/en/screens/userManagement.json";
 import warehouseEn from "@/locales/en/screens/warehouse.json";
+import workbenchEn from "@/locales/en/screens/workbench.json";
 import commonZh from "@/locales/zh/common.json";
 import attendanceZh from "@/locales/zh/screens/attendance.json";
 import cartZh from "@/locales/zh/screens/cart.json";
@@ -42,6 +43,7 @@ import settingsZh from "@/locales/zh/screens/settings.json";
 import storeVouchersZh from "@/locales/zh/screens/storeVouchers.json";
 import userManagementZh from "@/locales/zh/screens/userManagement.json";
 import warehouseZh from "@/locales/zh/screens/warehouse.json";
+import workbenchZh from "@/locales/zh/screens/workbench.json";
 import { getStoredLanguage, setStoredLanguage } from "@/shared/i18n/storage";
 import {
   DEFAULT_APP_LANGUAGE,
@@ -72,6 +74,7 @@ const resources = {
     preorder: preorderZh,
     userManagement: userManagementZh,
     warehouse: warehouseZh,
+    workbench: workbenchZh,
   },
   en: {
     common: commonEn,
@@ -95,6 +98,7 @@ const resources = {
     preorder: preorderEn,
     userManagement: userManagementEn,
     warehouse: warehouseEn,
+    workbench: workbenchEn,
   },
 } as const;
 
@@ -120,7 +124,7 @@ if (!i18n.isInitialized) {
     lng: DEFAULT_APP_LANGUAGE,
     fallbackLng: DEFAULT_APP_LANGUAGE,
     defaultNS: "common",
-    ns: ["common", "advertisements", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "employeeProfileReview", "installmentOrders", "localSupplierInvoices", "orders", "promotions", "preorder", "seasonalCards", "settings", "storeVouchers", "productQuery", "userManagement", "warehouse"],
+    ns: ["common", "advertisements", "attendance", "login", "home", "cart", "domesticPurchase", "deviceManagement", "employeeProfile", "employeeProfileReview", "installmentOrders", "localSupplierInvoices", "orders", "promotions", "preorder", "seasonalCards", "settings", "storeVouchers", "productQuery", "userManagement", "warehouse", "workbench"],
     interpolation: {
       escapeValue: false,
     },
