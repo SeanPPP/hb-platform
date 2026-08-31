@@ -1,5 +1,4 @@
 import type { TFunction } from 'i18next'
-import ExcelJS from 'exceljs'
 import { ProductCreationType } from '../../../types/domesticProductCreation'
 import type { BatchDetail, BatchProductItem } from '../../../types/domesticProductCreation'
 import { generateBarcodeImages } from '../../../utils/barcode'
@@ -78,6 +77,7 @@ export async function exportProductCreationBatchToExcel(
   detail: BatchDetail,
   { batchNumber, t }: ExportBatchDetailOptions,
 ) {
+  const { default: ExcelJS } = await import('exceljs')
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet(t('productCreation.batchDetail', '批次明细'))
   worksheet.columns = [

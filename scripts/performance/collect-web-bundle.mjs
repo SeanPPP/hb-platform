@@ -30,6 +30,10 @@ const MAX_MANIFEST_ENTRIES = 5_000;
 const MAX_ASSETS = 5_000;
 const ASSET_TYPES = ["js", "css"];
 
+function compareStableText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function tryLstat(filePath) {
   try {
     return lstatSync(filePath);
@@ -231,7 +235,6 @@ function parseIndexAssets(realRoot) {
   // 注释中的 preload/script 不是浏览器初始请求，必须先剔除，避免伪造首屏依赖。
   const html = readUtf8File(indexFile, "Vite index.html").replace(/<!--[\s\S]*?-->/gu, "");
   const initialReferences = [];
-  const preloadReferences = [];
   const moduleScripts = [];
 
   for (const match of html.matchAll(/<link\b[^>]*>/giu)) {
@@ -247,7 +250,6 @@ function parseIndexAssets(realRoot) {
         validateRelativePath(href, "modulepreload href", { allowLeadingSlash: true }),
         "modulepreload href",
       );
-      preloadReferences.push(href);
       initialReferences.push(href);
     } else if (rel.includes("preload")) {
       const as = (attributes.get("as") ?? "").toLowerCase();
@@ -256,7 +258,6 @@ function parseIndexAssets(realRoot) {
           validateRelativePath(href, "preload href", { allowLeadingSlash: true }),
           "preload href",
         );
-        preloadReferences.push(href);
         initialReferences.push(href);
       }
     } else if (rel.includes("stylesheet")) {
@@ -272,9 +273,6 @@ function parseIndexAssets(realRoot) {
     initialReferences.push(src);
   }
 
-  if (preloadReferences.length === 0) {
-    throw new ValidationError("Vite index.html 缺少 modulepreload/preload 初始资源");
-  }
   if (moduleScripts.length === 0) {
     throw new ValidationError("Vite index.html 缺少 module script 入口");
   }
@@ -292,7 +290,7 @@ function collectStaticManifestAssets(manifest, moduleScriptPaths) {
   const entryKeys = [...manifest.entries()]
     .filter(([, record]) => moduleScriptSet.has(record.file))
     .map(([key]) => key)
-    .sort();
+    .sort(compareStableText);
   if (entryKeys.length === 0) {
     throw new ValidationError("Vite manifest 缺少与 index.html module script 对应的 entry");
   }
@@ -326,7 +324,7 @@ function measureAsset(realRoot, rawPath, pathLabel, { allowLeadingSlash = false 
 }
 
 function collectDynamicChunks(realRoot, manifest, seedKeys, initialFiles) {
-  const pending = [...seedKeys].sort();
+  const pending = [...seedKeys].sort(compareStableText);
   const visited = new Set();
   const byFile = new Map();
   while (pending.length > 0) {
@@ -347,7 +345,7 @@ function collectDynamicChunks(realRoot, manifest, seedKeys, initialFiles) {
     }
     const cssAssets = record.css
       .map((file) => measureAsset(realRoot, file, `dynamic chunk ${key} CSS`))
-      .sort((left, right) => left.file.localeCompare(right.file));
+      .sort((left, right) => compareStableText(left.file, right.file));
     if (cssAssets.some((asset) => asset.type !== "css")) {
       throw new ValidationError(`dynamic chunk ${key}.css 只能引用 CSS`);
     }
@@ -362,7 +360,7 @@ function collectDynamicChunks(realRoot, manifest, seedKeys, initialFiles) {
     }
     record.dynamicImports.forEach((dynamicKey) => pending.push(dynamicKey));
   }
-  return [...byFile.values()].sort((left, right) => left.file.localeCompare(right.file));
+  return [...byFile.values()].sort((left, right) => compareStableText(left.file, right.file));
 }
 
 function validateAssetMeasurement(asset, path, { requiredType = null } = {}) {
@@ -460,7 +458,7 @@ export function validateWebBundleReport(report) {
     }
     initialFiles.add(asset.file);
   });
-  const sortedInitialFiles = [...initialFiles].sort();
+  const sortedInitialFiles = [...initialFiles].sort(compareStableText);
   if (report.initialAssets.some((asset, index) => asset.file !== sortedInitialFiles[index])) {
     throw new ValidationError("web bundle report.initialAssets 必须按文件名排序");
   }
@@ -475,7 +473,7 @@ export function validateWebBundleReport(report) {
     throw new ValidationError("web bundle report 首屏总量与 initialAssets 不一致");
   }
   const largest = [...initialJs].sort(
-    (left, right) => right.gzipBytes - left.gzipBytes || left.file.localeCompare(right.file),
+    (left, right) => right.gzipBytes - left.gzipBytes || compareStableText(left.file, right.file),
   )[0];
   if (
     report.measurements.largestInitialChunkFile !== largest.file ||
@@ -529,12 +527,12 @@ export function validateWebBundleReport(report) {
       if (cssFiles.has(asset.file)) throw new ValidationError(`${path}.cssAssets 包含重复文件`);
       cssFiles.add(asset.file);
     });
-    const sortedCssFiles = [...cssFiles].sort();
+    const sortedCssFiles = [...cssFiles].sort(compareStableText);
     if (chunk.cssAssets.some((asset, cssIndex) => asset.file !== sortedCssFiles[cssIndex])) {
       throw new ValidationError(`${path}.cssAssets 必须按文件名排序`);
     }
   });
-  const sortedRouteFiles = [...routeFiles].sort();
+  const sortedRouteFiles = [...routeFiles].sort(compareStableText);
   if (report.routeDynamicChunks.some((chunk, index) => chunk.file !== sortedRouteFiles[index])) {
     throw new ValidationError("web bundle report.routeDynamicChunks 必须按文件名排序");
   }
@@ -571,13 +569,13 @@ export function analyzeWebBundle(distPath, { now = new Date() } = {}) {
     byFile.set(measured.file, measured);
   }
   const initialAssets = [...byFile.values()].sort((left, right) =>
-    left.file.localeCompare(right.file),
+    compareStableText(left.file, right.file),
   );
   const initialFiles = new Set(initialAssets.map((asset) => asset.file));
   const initialJs = initialAssets.filter((asset) => asset.type === "js");
   if (initialJs.length === 0) throw new ValidationError("首屏资源没有 JS chunk");
   const largestInitialChunk = [...initialJs].sort(
-    (left, right) => right.gzipBytes - left.gzipBytes || left.file.localeCompare(right.file),
+    (left, right) => right.gzipBytes - left.gzipBytes || compareStableText(left.file, right.file),
   )[0];
 
   const report = {

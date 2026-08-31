@@ -1,11 +1,66 @@
 import { defineConfig, loadEnv } from 'vite'
+import type { Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+import { fileURLToPath } from 'node:url'
 
 export interface CenterLogBuildEnvironment {
   VITE_CENTER_LOG_KEY?: string
   VITE_CENTER_LOG_PROJECT?: string
   VITE_CENTER_LOG_ENVIRONMENT?: string
   VITE_CENTER_LOG_SERVICE_NAME?: string
+}
+
+const PDF_CHUNK_DEPENDENCIES = ['jspdf', 'html2canvas', 'dompurify'] as const
+const BUNDLE_DEPENDENCY_GROUPS = [
+  { id: 'excel', patterns: ['/node_modules/exceljs/'] },
+  { id: 'pdf', patterns: PDF_CHUNK_DEPENDENCIES.map((dependency) => `/node_modules/${dependency}/`) },
+  { id: 'leaflet', patterns: ['/node_modules/leaflet/'] },
+  { id: 'zxing', patterns: ['/node_modules/@zxing/'] },
+] as const
+
+export function resolveWebBundleDependencyGroups(moduleIds: string[]) {
+  const normalizedIds = moduleIds.map((id) => id.replace(/\\/g, '/').toLowerCase())
+  return BUNDLE_DEPENDENCY_GROUPS
+    .filter((group) => group.patterns.some((pattern) => normalizedIds.some((id) => id.includes(pattern))))
+    .map((group) => group.id)
+}
+
+export function createWebBundleDependencyMetadataPlugin(): Plugin {
+  return {
+    name: 'hb-web-bundle-dependency-metadata',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      const chunks = Object.fromEntries(
+        Object.values(bundle)
+          .filter((output) => output.type === 'chunk')
+          .sort((left, right) => left.fileName.localeCompare(right.fileName))
+          .map((chunk) => {
+            const dependencies = resolveWebBundleDependencyGroups(Object.keys(chunk.modules))
+            return [chunk.fileName, dependencies]
+          }),
+      )
+
+      this.emitFile({
+        type: 'asset',
+        fileName: '.vite/bundle-dependencies.json',
+        source: `${JSON.stringify({ schemaVersion: 'WebBundleDependencyMapV1', chunks }, null, 2)}\n`,
+      })
+    },
+  }
+}
+
+export function resolveWebManualChunk(id: string) {
+  const normalizedId = id.replace(/\\/g, '/')
+
+  if (normalizedId.includes('/node_modules/exceljs/')) {
+    return 'excel'
+  }
+
+  if (PDF_CHUNK_DEPENDENCIES.some((dependency) => normalizedId.includes(`/node_modules/${dependency}/`))) {
+    return 'pdf'
+  }
+
+  return undefined
 }
 
 const EXPECTED_CENTER_LOG_BUILD_VALUES = {
@@ -63,6 +118,7 @@ export default defineConfig(({ command, mode }) => {
     },
     plugins: [
       react(),
+      createWebBundleDependencyMetadataPlugin(),
     ],
     server: {
       proxy: {
@@ -77,16 +133,21 @@ export default defineConfig(({ command, mode }) => {
       },
     },
     build: {
-      // 业务后台包含 AntD、Excel 和 PDF 生成依赖，分包后 vendor chunk 仍会超过 Vite 默认 500k 阈值。
-      chunkSizeWarningLimit: 1600,
+      // 重型导出依赖保留稳定名称，其余共享依赖由 Rollup 按动态入口自然切分。
+      chunkSizeWarningLimit: 1000,
       rollupOptions: {
+        input: {
+          index: fileURLToPath(new URL('index.html', import.meta.url)),
+          'initial-app-runtime': fileURLToPath(new URL('src/App.tsx', import.meta.url)),
+          'initial-runtime-dependencies': fileURLToPath(
+            new URL('src/initial-runtime-dependencies.ts', import.meta.url),
+          ),
+          'initial-i18n-zh': fileURLToPath(new URL('src/i18n/initial-zh.ts', import.meta.url)),
+          'initial-i18n-en': fileURLToPath(new URL('src/i18n/initial-en.ts', import.meta.url)),
+        },
         output: {
-          manualChunks: {
-            react: ['react', 'react-dom', 'react-router-dom'],
-            antd: ['antd', '@ant-design/icons'],
-            excel: ['exceljs'],
-            pdf: ['jspdf', 'html2canvas', 'dompurify'],
-          },
+          manualChunks: resolveWebManualChunk,
+          onlyExplicitManualChunks: true,
         },
       },
     },

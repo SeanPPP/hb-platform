@@ -20,6 +20,7 @@ import { useTranslation } from 'react-i18next'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import shopBrandCart from '../assets/shop-brand-cart.png'
 import LanguageSwitch from '../components/LanguageSwitch'
+import RouteLoadBoundary from '../components/RouteLoadBoundary'
 import ShopCartDrawer from '../components/ShopCartDrawer'
 import ShopCartSummary from '../components/ShopCartSummary'
 import SupplierOrderingExtensionEntry from '../components/SupplierOrderingExtensionEntry'
@@ -769,7 +770,9 @@ export default function ShopLayout() {
             action={<Space>{preorderActivations[0] ? <Button size="small" type="primary" onClick={() => navigate(`/shop/preorders/${preorderActivations[0].activationGuid}`)}>{t('shop.preorder.enterPreorder')}</Button> : null}</Space>}
           />
         ) : null}
-        <Outlet />
+        <RouteLoadBoundary resetKey={location.pathname}>
+          <Outlet />
+        </RouteLoadBoundary>
       </div>
 
       <div className="shop-footer">{t('shop.footer', '© 2026 Hotbargain International. All rights reserved.')}</div>

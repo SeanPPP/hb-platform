@@ -4,7 +4,7 @@ import { HB_SUPPLIER_ORDER_SUPPORT } from './supportContent'
 
 const appSource = readFileSync('src/App.tsx', 'utf8')
 
-assert.ok(appSource.includes("import HbSupplierOrderSupportPage from './pages/HbSupplierOrderSupport'"))
+assert.ok(appSource.includes("const HbSupplierOrderSupportPage = lazy(() => import('./pages/HbSupplierOrderSupport'))"))
 assert.ok(appSource.includes('path="/support/hb-supplier-order"'))
 assert.equal(HB_SUPPLIER_ORDER_SUPPORT.publicUrl, 'https://hotbargain.vip/support/hb-supplier-order')
 assert.equal(HB_SUPPLIER_ORDER_SUPPORT.privacyUrl, 'https://hotbargain.vip/privacy/browser-extension')
