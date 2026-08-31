@@ -11,13 +11,14 @@ async function readMobileSource(relativePath: string) {
 }
 
 async function run() {
-  const [shellLayout, primaryTabBar, primaryNavigation, workbenchRoute, workbenchScreen, attendancePersonal, attendanceManagement, legacyAttendance, containerLayout, userLayout] =
+  const [shellLayout, primaryTabBar, primaryNavigation, workbenchRoute, workbenchScreen, storePickerModal, attendancePersonal, attendanceManagement, legacyAttendance, containerLayout, userLayout] =
     await Promise.all([
       readMobileSource("app/(shell)/_layout.tsx"),
       readMobileSource("src/components/navigation/PrimaryTabBar.tsx"),
       readMobileSource("src/modules/navigation/primary-navigation.ts"),
       readMobileSource("app/(shell)/workbench.tsx"),
       readMobileSource("src/modules/workbench/workbench-screen.tsx"),
+      readMobileSource("src/components/ui/StorePickerModal.tsx"),
       readMobileSource("app/(shell)/attendance-personal.tsx"),
       readMobileSource("app/(shell)/attendance-management.tsx"),
       readMobileSource("app/(shell)/attendance.tsx"),
@@ -90,6 +91,56 @@ async function run() {
   assert.match(workbenchRoute, /<WorkbenchScreen\s*\/>/);
   assert.match(workbenchScreen, /buildWorkbenchSections/);
   assert.match(workbenchScreen, /router\.push/);
+  assert.match(
+    workbenchScreen,
+    /useStores\(\)/,
+    "工作台必须复用授权门店查询与持久化选择入口"
+  );
+  assert.match(
+    workbenchScreen,
+    /<StorePickerModal\b/,
+    "当前门店必须复用共享门店选择弹层"
+  );
+  assert.match(
+    workbenchScreen,
+    /const canSwitchStore\s*=\s*!isDeviceMode[\s\S]*stores\.length > 1/,
+    "设备模式或少于两个可用门店时不得暴露伪切换入口"
+  );
+  assert.match(
+    workbenchScreen,
+    /store\.storeCode === selectedStoreCode[\s\S]*setStorePickerVisible\(false\)[\s\S]*return;/,
+    "重选当前门店必须直接关闭弹层，不得清空购物车摘要"
+  );
+  assert.match(
+    workbenchScreen,
+    /useCartSummary\(selectedStoreCode\)/,
+    "工作台必须按所选门店刷新购物车摘要"
+  );
+  assert.match(
+    workbenchScreen,
+    /cartSummary\.storeCode === effectiveStoreCode/,
+    "工作台不得显示其他门店的购物车 SKU"
+  );
+  assert.match(
+    workbenchScreen,
+    /cartSummaryQuery\.isError\s*\|\|\s*cartSummaryQuery\.isRefetchError[\s\S]*scopedCart\s*=\s*cartSummaryFailed\s*\?\s*null/,
+    "购物车请求或后台刷新失败时必须显示占位符，不得继续显示缓存数量"
+  );
+  assert.doesNotMatch(
+    workbenchScreen,
+    /useCartStore\(\(state\) => state\.selectedStore\)/,
+    "工作台不得绕过 useStores 直接取得可切换门店"
+  );
+  assert.doesNotMatch(
+    workbenchScreen,
+    /setSelectedStore|useCartStore\.setState/,
+    "工作台不得绕过 useStores 直接写入全局门店状态"
+  );
+  assert.match(
+    storePickerModal,
+    /accessibilityState=\{\{ selected \}\}/,
+    "共享门店弹层必须向 VoiceOver 暴露当前选中状态"
+  );
   assert.doesNotMatch(
     workbenchScreen,
     /router\.navigate/,
