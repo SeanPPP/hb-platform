@@ -119,6 +119,145 @@ test("MetricBatchV1 只向固定 HTTPS 路径发送 Bearer service token", async
   assert.deepEqual(JSON.parse(calls[0].options.body), createValidBatch());
 });
 
+test("service reporter 接受后端返回的采样策略字段", async () => {
+  const result = await reportMetricBatch({
+    payload: createValidBatch(),
+    baseUrl: "https://metrics.example.test",
+    token: SERVICE_TOKEN,
+    fetchImpl: async () =>
+      apiResponse({
+        success: true,
+        data: {
+          acceptedCount: 1,
+          duplicateCount: 0,
+          rejectedCount: 0,
+          baselineState: "frozen",
+          defaultSampleRate: 1,
+          policies: [
+            {
+              metric: "ci.run.duration",
+              selector: "backend",
+              sampleRate: 0.2,
+              slowThreshold: 5_000,
+            },
+          ],
+        },
+      }),
+  });
+
+  assert.deepEqual(result, {
+    status: 200,
+    requestId: null,
+    acceptedCount: 1,
+    duplicateCount: 0,
+  });
+});
+
+test("service reporter 接受后端基于极大 P95 放大的有限慢阈值", async () => {
+  const result = await reportMetricBatch({
+    payload: createValidBatch(),
+    baseUrl: "https://metrics.example.test",
+    token: SERVICE_TOKEN,
+    fetchImpl: async () =>
+      apiResponse({
+        success: true,
+        data: {
+          acceptedCount: 1,
+          duplicateCount: 0,
+          rejectedCount: 0,
+          baselineState: "frozen",
+          defaultSampleRate: 1,
+          policies: [
+            {
+              metric: "ci.run.duration",
+              selector: "backend",
+              sampleRate: 0.2,
+              slowThreshold: 1_200_000_000_000_000,
+            },
+          ],
+        },
+      }),
+  });
+
+  assert.equal(result.acceptedCount, 1);
+});
+
+test("service reporter 继续拒绝不完整或未知的采样策略响应", async () => {
+  const validCounts = {
+    acceptedCount: 1,
+    duplicateCount: 0,
+    rejectedCount: 0,
+  };
+  const cases = [
+    {
+      name: "采样字段不完整",
+      data: { ...validCounts, baselineState: "observing" },
+      pattern: /采样策略字段必须同时返回/i,
+    },
+    {
+      name: "基线状态未知",
+      data: {
+        ...validCounts,
+        baselineState: "unknown",
+        defaultSampleRate: 1,
+        policies: [],
+      },
+      pattern: /baselineState|not_started|observing|frozen/i,
+    },
+    {
+      name: "策略包含未知字段",
+      data: {
+        ...validCounts,
+        baselineState: "frozen",
+        defaultSampleRate: 1,
+        policies: [
+          {
+            metric: "ci.run.duration",
+            selector: "backend",
+            sampleRate: 0.2,
+            unexpected: true,
+          },
+        ],
+      },
+      pattern: /未知字段|unexpected/i,
+    },
+    {
+      name: "策略指标不属于 automation 端点",
+      data: {
+        ...validCounts,
+        baselineState: "frozen",
+        defaultSampleRate: 1,
+        policies: [
+          {
+            metric: "api.request.duration",
+            selector: "all",
+            sampleRate: 0.2,
+          },
+        ],
+      },
+      pattern: /metric|ci\.run\.duration|web\.first_screen\.bytes/i,
+    },
+    {
+      name: "响应包含未知顶层字段",
+      data: { ...validCounts, unexpected: true },
+      pattern: /未知字段|unexpected/i,
+    },
+  ];
+
+  for (const current of cases) {
+    await assert.rejects(
+      reportMetricBatch({
+        payload: createValidBatch(),
+        baseUrl: "https://metrics.example.test",
+        token: SERVICE_TOKEN,
+        fetchImpl: async () => apiResponse({ success: true, data: current.data }),
+      }),
+      current.pattern,
+      current.name,
+    );
+  }
+});
+
 test("service reporter 拒绝 HTTP、非 hbsvc token、单边配置和重定向错误泄密", async () => {
   const payload = createValidBatch();
   await assert.rejects(
