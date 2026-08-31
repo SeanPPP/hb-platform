@@ -71,6 +71,8 @@ services:
       - EasWebhook__Secret=${EAS_WEBHOOK_SECRET}
       - EasWebhook__AllowedAccountName=${EAS_WEBHOOK_ALLOWED_ACCOUNT_NAME}
       - EasWebhook__AllowedProjectName=${EAS_WEBHOOK_ALLOWED_PROJECT_NAME}
+      # 匿名 Mobile APK 自动更新总闸；生产异常时在服务器 .env 置 false 后仅重建 API 即可止损。
+      - MobileAppBuilds__PublicAndroidUpdatesEnabled=${MOBILE_APP_BUILDS_PUBLIC_ANDROID_UPDATES_ENABLED:-true}
       # 旧移动端与独立手持端按 EAS project 显式映射到不同 AppKey，避免构建记录串包。
       - EasWebhook__ProjectAppKeys__hbweb-expo=mobile
       - EasWebhook__ProjectAppKeys__hb-pos-handheld=pos-handheld

@@ -10,6 +10,14 @@ const nativeAppBuildProfile =
   process.env.EXPO_PUBLIC_APP_BUILD_PROFILE?.trim() || process.env.EAS_BUILD_PROFILE?.trim() || "production";
 const nativeInstallerFlag = process.env.EXPO_PUBLIC_NATIVE_APK_INSTALLER_ENABLED?.trim().toLowerCase();
 const nativeAppInstallerEnabled = nativeInstallerFlag !== "0" && nativeInstallerFlag !== "false";
+const nativeAppInstallerTrustedOrigins = Array.from(new Set([
+  "https://hotbargain.vip",
+  "https://hb-sales-2019-1300114625.cos.ap-singapore.myqcloud.com",
+  ...(process.env.EXPO_PUBLIC_NATIVE_APK_TRUSTED_ORIGINS ?? "")
+    .split(",")
+    .map((value: string) => value.trim())
+    .filter(Boolean),
+]));
 // 仅供 development 手工验证中央更新策略；production 固定使用代码中的可信地址。
 const nativeIosUpdateCenterUrl = process.env.EXPO_PUBLIC_IOS_UPDATE_CENTER_URL?.trim() || "";
 
@@ -28,6 +36,8 @@ export default {
       nativeAppBuildProfile,
       // 旧 runtime 的 OTA 包关闭原生安装器，只用 Linking 提醒下载，避免加载新 native module。
       nativeAppInstallerEnabled,
+      // 原生下载器只跟随明确受信的 HTTPS API/COS origin；各环境可追加但不能覆盖生产基线。
+      nativeAppInstallerTrustedOrigins,
       nativeIosUpdateCenterUrl,
       logCenter: {
         endpoint: process.env.EXPO_PUBLIC_LOG_CENTER_ENDPOINT?.trim() || "",

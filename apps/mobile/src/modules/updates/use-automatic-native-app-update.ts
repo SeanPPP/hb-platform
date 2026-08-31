@@ -1,20 +1,34 @@
 import { useEffect, useRef } from "react";
-import { Alert, AppState, Linking, Platform, type AppStateStatus } from "react-native";
+import { Alert, AppState, Platform, type AppStateStatus } from "react-native";
+import { toByteArray } from "base64-js";
 import { i18n } from "@/shared/i18n/i18n";
+import HBAppInstaller, {
+  type HBAppInstallerNativeModule,
+} from "../../../modules/hb-app-installer/src/HBAppInstallerModule";
 import {
   appUpdateMutualExclusion,
   createUpdateLaneRetryGate,
 } from "./app-update-mutual-exclusion";
 import {
   checkAndDownloadNativeAppUpdate,
-  checkLegacyNativeAppUpdate,
   getBuildBoundNativeAppDownloadUrl,
-  getStableNativeAppDownloadUrl,
   type NativeAppBuildInfo,
 } from "./native-app-update";
 
 const APK_MIME_TYPE = "application/vnd.android.package-archive";
 const FLAG_GRANT_READ_URI_PERMISSION = 1;
+
+function toTrustedHttpsOrigin(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) {
+    return null;
+  }
+  try {
+    const url = new URL(value.trim());
+    return url.protocol === "https:" && !url.username && !url.password ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
 
 async function getExpoConstants() {
   return (await import("expo-constants")).default;
@@ -32,13 +46,21 @@ async function getNativeAppInstallerEnabled() {
   return value !== false && value !== "false" && value !== "0";
 }
 
-async function getLegacyCurrentBuildVersion() {
+async function getConfiguredNativeAppInstallerOrigins() {
   const Constants = await getExpoConstants();
-  const nativeVersionCode = (Constants as { platform?: { android?: { versionCode?: number | string } } })
-    .platform?.android?.versionCode;
-  const configVersionCode = Constants.expoConfig?.android?.versionCode;
-  const value = nativeVersionCode ?? configVersionCode;
-  return value == null ? null : String(value);
+  const configured = Constants.expoConfig?.extra?.nativeAppInstallerTrustedOrigins;
+  return Array.isArray(configured) ? configured : [];
+}
+
+function getNativeAppInstallerTrustedOrigins(
+  apiBaseUrl: string | undefined,
+  configured: unknown[],
+) {
+  const values = [
+    apiBaseUrl,
+    ...configured,
+  ];
+  return Array.from(new Set(values.map(toTrustedHttpsOrigin).filter((value): value is string => Boolean(value))));
 }
 
 export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
@@ -52,17 +74,38 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
     optionsRef.current = options;
   }, [options.enabled]);
 
-  async function openDownloadedApk(fileUri: string) {
+  async function openDownloadedApk(
+    build: NativeAppBuildInfo,
+    fileUri: string,
+    nativeInstaller: HBAppInstallerNativeModule | null,
+  ) {
     try {
-      const FileSystem = await import("expo-file-system/legacy");
-      const IntentLauncher = await import("expo-intent-launcher");
-      const contentUri = await FileSystem.getContentUriAsync(fileUri);
+      if (nativeInstaller) {
+        const Application = await import("expo-application");
+        const packageName = Application.applicationId?.trim();
+        const expectedVersionCode = Number(build.appBuildVersion);
+        if (!packageName || !Number.isSafeInteger(expectedVersionCode) || expectedVersionCode <= 0) {
+          throw new Error("APK 安装身份元数据无效");
+        }
+        await nativeInstaller.installVerifiedApk({
+          fileUri,
+          expectedSizeBytes: build.artifactSize,
+          expectedSha256Hex: build.artifactSha256,
+          expectedPackageName: packageName,
+          expectedVersionCode,
+          expectedVersionName: build.appVersion,
+        });
+      } else {
+        const FileSystem = await import("expo-file-system/legacy");
+        const IntentLauncher = await import("expo-intent-launcher");
+        const contentUri = await FileSystem.getContentUriAsync(fileUri);
 
-      await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
-        data: contentUri,
-        type: APK_MIME_TYPE,
-        flags: FLAG_GRANT_READ_URI_PERMISSION,
-      });
+        await IntentLauncher.startActivityAsync("android.intent.action.VIEW", {
+          data: contentUri,
+          type: APK_MIME_TYPE,
+          flags: FLAG_GRANT_READ_URI_PERMISSION,
+        });
+      }
     } catch (error) {
       appUpdateMutualExclusion.clearNativeInstaller();
       promptedBuildIdRef.current = null;
@@ -87,7 +130,10 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
                 return;
               }
               appUpdateMutualExclusion.activateNativeInstaller();
-              void openUnknownSourceSettings().catch((settingsError) => {
+              const settingsAction = nativeInstaller
+                ? nativeInstaller.openInstallPermissionSettings()
+                : openUnknownSourceSettings();
+              void settingsAction.catch((settingsError) => {
                 appUpdateMutualExclusion.clearNativeInstaller();
                 console.warn("[updates] open unknown app source settings failed", settingsError);
               });
@@ -110,7 +156,11 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
     });
   }
 
-  function promptInstall(build: NativeAppBuildInfo, fileUri: string) {
+  function promptInstall(
+    build: NativeAppBuildInfo,
+    fileUri: string,
+    nativeInstaller: HBAppInstallerNativeModule | null,
+  ) {
     if (!appUpdateMutualExclusion.tryOwnPrompt("native")) {
       return false;
     }
@@ -135,45 +185,7 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
               return;
             }
             appUpdateMutualExclusion.activateNativeInstaller();
-            void openDownloadedApk(fileUri);
-          },
-        },
-      ],
-      { cancelable: false },
-    );
-    return true;
-  }
-
-  function promptLegacyDownload(build: NativeAppBuildInfo, url: string) {
-    if (!appUpdateMutualExclusion.tryOwnPrompt("native")) {
-      return false;
-    }
-    const versionText = [build.appVersion, build.appBuildVersion ? `(${build.appBuildVersion})` : null]
-      .filter(Boolean)
-      .join(" ");
-
-    Alert.alert(
-      i18n.t("settings:dialogs.legacyNativeUpdateReadyTitle"),
-      i18n.t("settings:dialogs.legacyNativeUpdateReadyMessage", { version: versionText || build.easBuildId }),
-      [
-        {
-          text: i18n.t("settings:dialogs.nativeUpdateLaterAction"),
-          style: "cancel",
-          onPress: () => appUpdateMutualExclusion.releasePrompt("native"),
-        },
-        {
-          text: i18n.t("settings:dialogs.legacyNativeUpdateDownloadAction"),
-          onPress: () => {
-            if (appUpdateMutualExclusion.isOtaRequiredGateActive()) {
-              appUpdateMutualExclusion.releasePrompt("native");
-              return;
-            }
-            appUpdateMutualExclusion.activateNativeInstaller();
-            void Linking.openURL(url).catch((error) => {
-              appUpdateMutualExclusion.clearNativeInstaller();
-              promptedBuildIdRef.current = null;
-              console.warn("[updates] open APK download link failed", error);
-            });
+            void openDownloadedApk(build, fileUri, nativeInstaller);
           },
         },
       ],
@@ -201,23 +213,7 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
       const nativeInstallerEnabled = await getNativeAppInstallerEnabled();
 
       if (!nativeInstallerEnabled) {
-        const currentBuildVersion = await getLegacyCurrentBuildVersion();
-        const result = await checkLegacyNativeAppUpdate({
-          apiClient,
-          platform: Platform.OS,
-          getCurrentBuildVersion: () => currentBuildVersion,
-          getBuildProfile: () => buildProfile,
-          getDownloadUrl: (build) => getStableNativeAppDownloadUrl(apiClient.defaults.baseURL, build.buildProfile || buildProfile),
-        });
-
-        if (result.status !== "available" || promptedBuildIdRef.current === result.build.easBuildId) {
-          return;
-        }
-
-        // 旧 runtime 没有新原生模块，只提示用户跳转浏览器下载最新 APK。
-        if (promptLegacyDownload(result.build, result.url)) {
-          promptedBuildIdRef.current = result.build.easBuildId;
-        }
+        // 显式关闭时完全停用自动 APK 更新；人工下载只允许从后台受控入口发起。
         return;
       }
 
@@ -225,17 +221,39 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
         import("expo-file-system/legacy"),
         import("expo-application"),
       ]);
+      const nativeInstaller = HBAppInstaller;
+      const configuredTrustedOrigins = await getConfiguredNativeAppInstallerOrigins();
+      const downloadDirectory = nativeInstaller
+        ? await nativeInstaller.getDownloadDirectory()
+        : (FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? null);
       const result = await checkAndDownloadNativeAppUpdate({
         apiClient,
         platform: Platform.OS,
         getCurrentBuildVersion: () => Application.nativeBuildVersion,
+        getCurrentPackageName: () => Application.applicationId,
         getBuildProfile: () => buildProfile,
-        getDownloadDirectory: () => FileSystem.cacheDirectory ?? FileSystem.documentDirectory ?? null,
+        getDownloadDirectory: () => downloadDirectory,
         getDownloadUrl: (build) => getBuildBoundNativeAppDownloadUrl(apiClient.defaults.baseURL, build, buildProfile),
         getFileInfo: FileSystem.getInfoAsync,
         downloadFile: FileSystem.downloadAsync,
         deleteFile: (fileUri) => FileSystem.deleteAsync(fileUri, { idempotent: true }),
+        moveFile: (from, to) => FileSystem.moveAsync({ from, to }),
+        readFileChunk: async (fileUri, position, length) => {
+          const value = await FileSystem.readAsStringAsync(fileUri, {
+            encoding: FileSystem.EncodingType.Base64,
+            position,
+            length,
+          });
+          return toByteArray(value);
+        },
+        readTextFile: FileSystem.readAsStringAsync,
+        writeTextFile: (fileUri, value) => FileSystem.writeAsStringAsync(fileUri, value),
         readDirectory: FileSystem.readDirectoryAsync,
+        getTrustedOrigins: () => getNativeAppInstallerTrustedOrigins(
+          apiClient.defaults.baseURL,
+          configuredTrustedOrigins,
+        ),
+        nativeInstaller,
       });
 
       if (result.status !== "downloaded" || promptedBuildIdRef.current === result.build.easBuildId) {
@@ -243,7 +261,8 @@ export function useAutomaticNativeAppUpdate(options: { enabled: boolean }) {
       }
 
       // 同一个安装包一次运行只提示一次；下次打开 App 仍会继续提醒未安装的新包。
-      if (promptInstall(result.build, result.fileUri)) {
+      const promptNativeInstaller = result.verification === "native" ? nativeInstaller : null;
+      if (promptInstall(result.build, result.fileUri, promptNativeInstaller)) {
         promptedBuildIdRef.current = result.build.easBuildId;
       }
     } catch (error) {

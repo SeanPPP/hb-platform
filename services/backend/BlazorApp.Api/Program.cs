@@ -639,6 +639,9 @@ builder.Services.AddScoped<SeedDataService>(); // 种子数据初始化服务
 builder.Services.AddScoped<IDataInitializationService, DataInitializationService>(); // 数据初始化服务
 builder.Services.Configure<InvoiceEmailOptions>(builder.Configuration.GetSection("InvoiceEmail"));
 builder.Services.Configure<EasWebhookOptions>(builder.Configuration.GetSection("EasWebhook"));
+builder.Services.Configure<MobileAppBuildOptions>(
+    builder.Configuration.GetSection(MobileAppBuildOptions.SectionName)
+);
 builder.Services.Configure<AppUpdatePolicyOptions>(
     builder.Configuration.GetSection("AppUpdatePolicy")
 );
