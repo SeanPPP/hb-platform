@@ -333,7 +333,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       return;
     }
     showMessage(t("messages.loginRequired"));
-    router.navigate("/(tabs)/settings");
+    router.navigate("/(shell)/settings");
   }, [isAuthenticated, router, showMessage, t, user]);
 
   const todayQuery = useQuery({
@@ -751,7 +751,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
       return;
     }
 
-    router.navigate("/(tabs)/settings");
+    router.navigate("/(shell)/settings");
   }, [router]);
 
   const refresh = useCallback(async () => {
@@ -1387,7 +1387,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
             primaryAction={{
               label: t("common:actions.goToSettings"),
               icon: "cog-outline",
-              onPress: () => router.navigate("/(tabs)/settings"),
+              onPress: () => router.navigate("/(shell)/settings"),
             }}
           />
         ) : null}
@@ -1399,7 +1399,7 @@ export function AttendanceScreen({ mode = "combined" }: AttendanceScreenProps) {
             primaryAction={{
               label: t("common:actions.goToSettings"),
               icon: "cog-outline",
-              onPress: () => router.navigate("/(tabs)/settings"),
+              onPress: () => router.navigate("/(shell)/settings"),
             }}
           />
         ) : null}

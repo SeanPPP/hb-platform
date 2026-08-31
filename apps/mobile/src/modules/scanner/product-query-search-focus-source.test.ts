@@ -9,7 +9,7 @@ const searchPanelSource = readFileSync(
   "utf8"
 );
 const productQuerySource = readFileSync(
-  resolve(currentDir, "../../../app/(tabs)/product-query.tsx"),
+  resolve(currentDir, "../../../app/(shell)/product-query.tsx"),
   "utf8"
 );
 

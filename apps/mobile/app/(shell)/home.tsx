@@ -710,7 +710,7 @@ export default function Home() {
           <IconButton
             icon="cart-outline"
             size={18}
-            onPress={() => router.push("/(tabs)/cart")}
+            onPress={() => router.push("/(shell)/cart")}
             style={styles.cartButton}
           />
           {cartSummary?.totalQuantity ? <Badge style={styles.badge}>{cartSummary.totalQuantity}</Badge> : null}

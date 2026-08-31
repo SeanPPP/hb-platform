@@ -235,7 +235,8 @@ export function WorkbenchScreen() {
       ) {
         return;
       }
-      router.navigate(path as Parameters<typeof router.navigate>[0]);
+      // 工作台功能是 Shell Stack 的二级页面，push 后才能使用原生手势逐级返回。
+      router.push(path as Parameters<typeof router.push>[0]);
     },
     [itemsByRoute, navigationErrorMessage, navigationLoading, router]
   );

@@ -324,7 +324,8 @@ export default function Login() {
           isDeviceMode: false,
           isWarehouseStaffOnly: useAuthStore.getState().access.isWarehouseStaffOnly,
           routeNames: getVisibleRouteNames(),
-        }) as Parameters<typeof router.replace>[0]
+        }) as Parameters<typeof router.replace>[0],
+        { withAnchor: true }
       );
     } catch (err) {
       if (!isReviewLoginAttempt) {
@@ -363,7 +364,8 @@ export default function Login() {
           resolveDefaultTabRoute({
             isDeviceMode: true,
             routeNames: getVisibleRouteNames(),
-          }) as Parameters<typeof router.replace>[0]
+          }) as Parameters<typeof router.replace>[0],
+          { withAnchor: true }
         );
         return;
       }

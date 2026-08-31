@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ActivityIndicator, View } from "react-native";
-import { Tabs, usePathname, useRouter } from "expo-router";
-import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { Stack, usePathname, useRouter } from "expo-router";
 import { PrimaryTabBar } from "@/components/navigation";
-import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
 import { useAppNavigationStore } from "@/modules/navigation/store";
@@ -14,6 +12,7 @@ import {
   getVisibleTabRouteNames,
   resolvePreferredDefaultTabRoute,
   resolveTabRouteCorrection,
+  TAB_PATHS,
 } from "@/modules/navigation/default-route";
 import { prepareStoredDeviceSession } from "@/modules/auth/device-login-session";
 import {
@@ -24,10 +23,14 @@ import {
 import { getEmployeeProfileReviewRequestsApi } from "@/modules/employee-profile-review/api";
 import { AppNavigationAccessProvider } from "@/modules/navigation/access-context";
 
-export default function TabsLayout() {
+export const unstable_settings = {
+  initialRouteName: "workbench",
+};
+
+export default function ShellLayout() {
   const router = useRouter();
   const pathname = usePathname();
-  const { t } = useAppTranslation("common");
+  const currentRouteName = pathname.split("/").filter(Boolean).pop();
   const userGuid = useAuthStore((state) => state.user?.userGUID);
   const currentUser = useAuthStore((state) => state.user);
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
@@ -263,8 +266,6 @@ export default function TabsLayout() {
   });
   const shouldWaitForNavigation =
     (hasUserSession || isDeviceMode) && (!navigationReady || navigationLoading);
-  const isRouteVisible = (routeName: string) =>
-    visibleRouteNames.size === 0 ? routeName === "settings" : visibleRouteNames.has(routeName);
   const preferredDefaultRoute = resolvePreferredDefaultTabRoute({
     isDeviceMode,
     isWarehouseStaffOnly,
@@ -288,7 +289,6 @@ export default function TabsLayout() {
     const preferredDefaultStillUnavailable = Boolean(
       awaitingPreferredDefaultRoute.current && !preferredDefaultRoute
     );
-    const currentRouteName = pathname.split("/").filter(Boolean).pop();
     const nextPath = resolveTabRouteCorrection({
       currentRouteName,
       hasAppliedDefaultRoute: awaitingPreferredDefaultRoute.current
@@ -316,12 +316,19 @@ export default function TabsLayout() {
       awaitingPreferredDefaultRoute.current = false;
       hasAppliedDefaultRoute.current = true;
     }
-    router.navigate(nextPath as Parameters<typeof router.navigate>[0]);
+    if (nextPath === TAB_PATHS.workbench) {
+      // 深链会自动把工作台放在栈底；回工作台时弹到锚点，避免 replace 生成重复根页。
+      router.dismissTo(nextPath as Parameters<typeof router.dismissTo>[0]);
+      return;
+    }
+
+    // 其他权限纠偏和默认入口使用 replace，确保被撤权页面不会留在返回历史中。
+    router.replace(nextPath as Parameters<typeof router.replace>[0], { withAnchor: true });
   }, [
     isDeviceMode,
     isWarehouseStaffOnly,
     orderedVisibleRouteNames,
-    pathname,
+    currentRouteName,
     preferredDefaultRoute,
     router,
     shouldAwaitPreferredDefaultRouteRecovery,
@@ -359,247 +366,17 @@ export default function TabsLayout() {
         isWarehouseStaffOnly,
       }}
     >
-      <Tabs
-        screenOptions={{ headerShown: false }}
-        tabBar={(props) => <PrimaryTabBar {...props} />}
-      >
-        <Tabs.Screen
-          name="workbench"
-          options={{
-            href: undefined,
-            title: t("tabs.workbench"),
-            tabBarIcon: ({ color, size }) => (
-              <MaterialCommunityIcons
-                name="view-dashboard-outline"
-                color={color}
-                size={size}
-              />
-            ),
-          }}
-        />
-      <Tabs.Screen
-        name="home"
-        options={{
-          href: isRouteVisible("home") ? undefined : null,
-          title: t("tabs.home"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="home" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="orders"
-        options={{
-          href: isRouteVisible("orders") ? undefined : null,
-          title: t("tabs.orders"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons
-              name="clipboard-list"
-              color={color}
-              size={size}
-            />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="cart"
-        options={{
-          href: isRouteVisible("cart") ? undefined : null,
-          title: t("tabs.cart"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="cart-outline" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="warehouse"
-        options={{
-          href: isRouteVisible("warehouse") ? undefined : null,
-          title: t("tabs.warehouse"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="warehouse" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="domestic-purchase"
-        options={{
-          href: isRouteVisible("domestic-purchase") ? undefined : null,
-          title: t("tabs.domesticPurchase"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="shopping-outline" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="local-supplier-invoices"
-        options={{
-          href: isRouteVisible("local-supplier-invoices") ? undefined : null,
-          title: t("tabs.localSupplierInvoices"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="receipt-text-outline" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="installment-orders"
-        options={{
-          href: isRouteVisible("installment-orders") ? undefined : null,
-          title: t("tabs.installmentOrders"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="cash-clock" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="advertisements"
-        options={{
-          href: isRouteVisible("advertisements") ? undefined : null,
-          title: t("tabs.advertisements"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="bullhorn-outline" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="promotions"
-        options={{
-          href: isRouteVisible("promotions") ? undefined : null,
-          title: t("tabs.promotions"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="ticket-percent-outline" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="reports"
-        options={{
-          href: isRouteVisible("reports") ? undefined : null,
-          title: t("tabs.reports"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="chart-line" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="store-vouchers"
-        options={{
-          href: isRouteVisible("store-vouchers") ? undefined : null,
-          title: t("tabs.storeVouchers"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="ticket-percent-outline" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="seasonal-cards"
-        options={{
-          href: isRouteVisible("seasonal-cards") ? undefined : null,
-          title: t("tabs.seasonalCards"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="cards-outline" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="attendance"
-        options={{
-          href: null,
-          title: t("tabs.attendance"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="calendar-clock" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="attendance-personal"
-        options={{
-          href: isRouteVisible("attendance-personal") ? undefined : null,
-          title: t("tabs.attendancePersonal"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="account-clock-outline" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="attendance-management"
-        options={{
-          href: isRouteVisible("attendance-management") ? undefined : null,
-          title: t("tabs.attendanceManagement"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="calendar-edit" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="product-query"
-        options={{
-          href: isRouteVisible("product-query") ? undefined : null,
-          title: t("tabs.productQuery"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="barcode-scan" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="users"
-        options={{
-          href: isRouteVisible("users") ? undefined : null,
-          title: t("tabs.users"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="account-group-outline" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="employee-profile"
-        options={{
-          href: isRouteVisible("employee-profile") ? undefined : null,
-          title: t("tabs.employeeProfile"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="card-account-details-outline" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="employee-profile-review"
-        options={{
-          href: isRouteVisible(EMPLOYEE_PROFILE_REVIEW_ROUTE) ? undefined : null,
-          title: t("tabs.employeeProfileReview"),
-          tabBarBadge:
-            pendingReviewQuery.data?.total && pendingReviewQuery.data.total > 0
-              ? pendingReviewQuery.data.total
-              : undefined,
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="account-check-outline" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="device-management"
-        options={{
-          href: isRouteVisible("device-management") ? undefined : null,
-          title: t("tabs.deviceManagement"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="cellphone-cog" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="settings"
-        options={{
-          href: isRouteVisible("settings") ? undefined : null,
-          title: t("tabs.settings"),
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons
-              name="account-circle-outline"
-              color={color}
-              size={size}
-            />
-          ),
-        }}
-      />
-      </Tabs>
+      <View style={{ flex: 1 }}>
+        <View style={{ flex: 1 }}>
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              gestureEnabled: true,
+            }}
+          />
+        </View>
+        <PrimaryTabBar activeRouteName={currentRouteName} />
+      </View>
     </AppNavigationAccessProvider>
   );
 }

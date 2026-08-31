@@ -29,6 +29,23 @@ export interface PrimaryNavigationItem {
   locked: boolean;
 }
 
+export type PrimaryNavigationAction = "none" | "dismiss-to" | "navigate";
+
+export function resolvePrimaryNavigationAction(
+  activeRouteName: string | undefined,
+  item: PrimaryNavigationItem
+): PrimaryNavigationAction {
+  if (item.locked || activeRouteName === item.targetRouteName) {
+    return "none";
+  }
+
+  if (item.key === "workbench" || item.active) {
+    return "dismiss-to";
+  }
+
+  return "navigate";
+}
+
 interface BuildPrimaryNavigationOptions {
   activeRouteName?: string;
   visibleRouteNames: Iterable<string>;

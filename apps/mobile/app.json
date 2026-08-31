@@ -166,10 +166,11 @@
     },
     "android": {
       "package": "com.hbweb.expo",
-      "versionCode": 2,
+      "versionCode": 16,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#E53935",
+        "monochromeImage": "./assets/adaptive-icon-monochrome.png"
       },
       "permissions": [
         "CAMERA",

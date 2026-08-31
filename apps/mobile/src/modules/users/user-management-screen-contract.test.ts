@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(
-  resolve(currentDirectory, "../../../app/(tabs)/users.tsx"),
+  resolve(currentDirectory, "../../../app/(shell)/users/index.tsx"),
   "utf8"
 );
 

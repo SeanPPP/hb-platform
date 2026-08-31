@@ -25,7 +25,7 @@ assertEqual(
     isDeviceMode: true,
     routeNames: ["home", "orders", "product-query", "device-management", "settings"],
   }),
-  "/(tabs)/product-query",
+  "/(shell)/product-query",
   "device-bound login defaults to product query"
 );
 
@@ -43,7 +43,7 @@ assertEqual(
     isDeviceMode: true,
     routeNames: ["workbench", "product-query", "settings"],
   }),
-  "/(tabs)/product-query",
+  "/(shell)/product-query",
   "设备菜单恢复后必须重新识别扫码查询首选入口"
 );
 
@@ -53,7 +53,7 @@ assertEqual(
     isWarehouseStaffOnly: true,
     routeNames: ["workbench", "warehouse", "settings"],
   }),
-  "/(tabs)/warehouse",
+  "/(shell)/warehouse",
   "纯仓库员工有仓库权限时必须默认进入仓库"
 );
 
@@ -63,13 +63,13 @@ assertEqual(
     isWarehouseStaffOnly: true,
     routeNames: ["workbench", "settings"],
   }),
-  "/(tabs)/workbench",
+  "/(shell)/workbench",
   "纯仓库员工没有仓库入口时回退到工作台，而不是推断仓库权限"
 );
 
 assertEqual(
   TAB_PATHS.workbench,
-  "/(tabs)/workbench",
+  "/(shell)/workbench",
   "工作台必须注册为本地固定 Tab 路径"
 );
 
@@ -78,7 +78,7 @@ assertEqual(
     isDeviceMode: false,
     routeNames: warehouseManagerWithoutMenu.appMenu,
   }),
-  "/(tabs)/workbench",
+  "/(shell)/workbench",
   "账号会话即使无业务菜单也必须进入 fail-closed 工作台"
 );
 
@@ -87,7 +87,7 @@ assertEqual(
     isDeviceMode: false,
     routeNames: ["home", "attendance", "settings"],
   }),
-  "/(tabs)/workbench",
+  "/(shell)/workbench",
   "账号登录默认进入工作台"
 );
 
@@ -96,7 +96,7 @@ assertEqual(
     isDeviceMode: false,
     routeNames: ["home", "attendance-personal", "attendance-management", "settings"],
   }),
-  "/(tabs)/workbench",
+  "/(shell)/workbench",
   "管理员菜单也不得把账号登录默认页改为打卡"
 );
 
@@ -133,7 +133,7 @@ assertEqual(
 
 assertEqual(
   TAB_PATHS["employee-profile-review"],
-  "/(tabs)/employee-profile-review",
+  "/(shell)/employee-profile-review",
   "employee profile review route is registered as a valid tab path"
 );
 
@@ -144,7 +144,7 @@ assertEqual(
     isDeviceMode: true,
     routeNames: ["employee-profile-review", "settings"],
   }),
-  "/(tabs)/workbench",
+  "/(shell)/workbench",
   "设备模式离开敏感资料审核后必须回到工作台安全壳"
 );
 
@@ -189,7 +189,7 @@ assertEqual(
     isDeviceMode: false,
     routeNames: ["settings"],
   }),
-  "/(tabs)/workbench",
+  "/(shell)/workbench",
   "没有可见业务项的账号会话仍进入 fail-closed 工作台"
 );
 
@@ -198,7 +198,7 @@ assertEqual(
     isDeviceMode: false,
     routeNames: ["home", "settings"],
   }),
-  "/(tabs)/workbench",
+  "/(shell)/workbench",
   "工作台是账号模式本地固定入口，不依赖后端菜单返回"
 );
 
@@ -207,7 +207,7 @@ assertEqual(
     isDeviceMode: true,
     routeNames: ["device-management", "reports", "settings"],
   }),
-  "/(tabs)/workbench",
+  "/(shell)/workbench",
   "设备模式没有扫码权限时不得回退到设备管理或报表，必须进入工作台安全壳"
 );
 
@@ -216,7 +216,7 @@ assertEqual(
     isDeviceMode: false,
     routeNames: ["device-management", "settings"],
   }),
-  "/(tabs)/workbench",
+  "/(shell)/workbench",
   "账号会话不得因菜单排序回退到设备管理页"
 );
 
@@ -227,7 +227,7 @@ assertEqual(
     isDeviceMode: true,
     routeNames: ["device-management", "settings"],
   }),
-  "/(tabs)/workbench",
+  "/(shell)/workbench",
   "设备模式离开设备管理后必须回到工作台安全壳"
 );
 
@@ -238,7 +238,7 @@ assertEqual(
     isDeviceMode: true,
     routeNames: ["reports", "settings"],
   }),
-  "/(tabs)/workbench",
+  "/(shell)/workbench",
   "设备模式离开报表后必须回到工作台安全壳"
 );
 
@@ -247,7 +247,7 @@ assertEqual(
     isDeviceMode: true,
     routeNames: [],
   }),
-  "/(tabs)/workbench",
+  "/(shell)/workbench",
   "空菜单必须进入工作台安全壳，由工作台展示 fail-closed 状态"
 );
 
@@ -258,7 +258,7 @@ assertEqual(
     isDeviceMode: false,
     routeNames: ["home", "attendance", "settings"],
   }),
-  "/(tabs)/workbench",
+  "/(shell)/workbench",
   "启动时旧 home 地址必须校正到工作台"
 );
 
@@ -269,7 +269,7 @@ assertEqual(
     isDeviceMode: false,
     routeNames: ["home", "attendance", "settings"],
   }),
-  "/(tabs)/attendance-personal",
+  "/(shell)/attendance-personal",
   "旧考勤路径必须固定重定向到个人考勤，而不是当前默认工作台"
 );
 
@@ -308,43 +308,43 @@ assertEqual(
 
 assertEqual(
   TAB_PATHS["local-supplier-invoices"],
-  "/(tabs)/local-supplier-invoices",
+  "/(shell)/local-supplier-invoices",
   "local supplier invoices route is registered as a valid tab path"
 );
 
 assertEqual(
   TAB_PATHS["installment-orders"],
-  "/(tabs)/installment-orders",
+  "/(shell)/installment-orders",
   "installment orders route is registered as a valid tab path"
 );
 
 assertEqual(
   TAB_PATHS.advertisements,
-  "/(tabs)/advertisements",
+  "/(shell)/advertisements",
   "advertisements route is registered as a valid tab path"
 );
 
 assertEqual(
   TAB_PATHS.promotions,
-  "/(tabs)/promotions",
+  "/(shell)/promotions",
   "promotions route is registered as a valid tab path"
 );
 
 assertEqual(
   TAB_PATHS.reports,
-  "/(tabs)/reports",
+  "/(shell)/reports",
   "reports route is registered as a valid tab path"
 );
 
 assertEqual(
   TAB_PATHS["store-vouchers"],
-  "/(tabs)/store-vouchers",
+  "/(shell)/store-vouchers",
   "store vouchers route is registered as a valid tab path"
 );
 
 assertEqual(
   TAB_PATHS["seasonal-cards"],
-  "/(tabs)/seasonal-cards",
+  "/(shell)/seasonal-cards",
   "seasonal cards route is registered as a valid tab path"
 );
 

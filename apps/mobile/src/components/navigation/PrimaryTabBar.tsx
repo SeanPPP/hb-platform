@@ -1,17 +1,25 @@
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
-import type { BottomTabBarProps } from "@react-navigation/bottom-tabs";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAppNavigationAccess } from "@/modules/navigation/access-context";
-import { buildPrimaryNavigation } from "@/modules/navigation/primary-navigation";
+import { TAB_PATHS } from "@/modules/navigation/default-route";
+import {
+  buildPrimaryNavigation,
+  resolvePrimaryNavigationAction,
+} from "@/modules/navigation/primary-navigation";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { HB_COLORS } from "@/shared/theme/tokens";
 
-export function PrimaryTabBar({ state, navigation }: BottomTabBarProps) {
+interface PrimaryTabBarProps {
+  activeRouteName?: string;
+}
+
+export function PrimaryTabBar({ activeRouteName }: PrimaryTabBarProps) {
+  const router = useRouter();
   const insets = useSafeAreaInsets();
   const { t } = useAppTranslation("common");
   const { orderedVisibleRouteNames, isDeviceMode } = useAppNavigationAccess();
-  const activeRouteName = state.routes[state.index]?.name;
   const items = buildPrimaryNavigation({
     activeRouteName,
     visibleRouteNames: orderedVisibleRouteNames,
@@ -28,9 +36,7 @@ export function PrimaryTabBar({ state, navigation }: BottomTabBarProps) {
       ]}
     >
       {items.map((item) => {
-        const targetRoute = state.routes.find(
-          (route) => route.name === item.targetRouteName
-        );
+        const targetPath = TAB_PATHS[item.targetRouteName];
         const label = t(item.labelKey);
         const iconColor = item.locked
           ? HB_COLORS.outline
@@ -44,17 +50,16 @@ export function PrimaryTabBar({ state, navigation }: BottomTabBarProps) {
             : HB_COLORS.textSecondary;
 
         const onPress = () => {
-          if (item.locked || !targetRoute) {
+          if (item.locked || !targetPath) {
             return;
           }
 
-          const event = navigation.emit({
-            type: "tabPress",
-            target: targetRoute.key,
-            canPreventDefault: true,
-          });
-          if (!item.active && !event.defaultPrevented) {
-            navigation.navigate(targetRoute.name, targetRoute.params);
+          const action = resolvePrimaryNavigationAction(activeRouteName, item);
+          if (action === "dismiss-to") {
+            // 工作台与同一一级上下文的子页都回固定根页，离页仍受 usePreventRemove 保护。
+            router.dismissTo(targetPath as Parameters<typeof router.dismissTo>[0]);
+          } else if (action === "navigate") {
+            router.navigate(targetPath as Parameters<typeof router.navigate>[0]);
           }
         };
 
@@ -71,14 +76,6 @@ export function PrimaryTabBar({ state, navigation }: BottomTabBarProps) {
             }}
             disabled={item.locked}
             onPress={onPress}
-            onLongPress={() => {
-              if (!item.locked && targetRoute) {
-                navigation.emit({
-                  type: "tabLongPress",
-                  target: targetRoute.key,
-                });
-              }
-            }}
             style={({ pressed }) => [
               styles.item,
               pressed && !item.locked ? styles.itemPressed : null,

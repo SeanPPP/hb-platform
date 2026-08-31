@@ -10,57 +10,57 @@ const mobileRoot = resolve(moduleDir, "../../..");
 const EXISTING_REAL_PAGE_FILES = [
   "app/(auth)/login.tsx",
   "app/privacy.tsx",
-  "app/(tabs)/home.tsx",
-  "app/(tabs)/cart.tsx",
-  "app/(tabs)/orders.tsx",
-  "app/preorders/index.tsx",
-  "app/preorders/[activationGuid].tsx",
-  "app/(tabs)/installment-orders.tsx",
-  "app/(tabs)/store-vouchers.tsx",
-  "app/(tabs)/seasonal-cards.tsx",
-  "app/(tabs)/warehouse.tsx",
-  "app/containers/index.tsx",
-  "app/containers/[containerGuid]/index.tsx",
-  "app/(tabs)/product-query.tsx",
-  "app/(tabs)/domestic-purchase.tsx",
-  "app/(tabs)/local-supplier-invoices.tsx",
-  "app/(tabs)/advertisements.tsx",
-  "app/(tabs)/promotions.tsx",
-  "app/(tabs)/reports.tsx",
-  "app/(tabs)/attendance-personal.tsx",
-  "app/(tabs)/attendance-management.tsx",
-  "app/(tabs)/users.tsx",
-  "app/staff/[userGuid].tsx",
-  "app/users/[userGuid]/access.tsx",
-  "app/users/[userGuid]/pos-terminal-permissions.tsx",
-  "app/(tabs)/device-management.tsx",
-  "app/(tabs)/employee-profile.tsx",
-  "app/(tabs)/employee-profile-review.tsx",
-  "app/employee-profile-review/[requestId].tsx",
-  "app/(tabs)/settings.tsx",
+  "app/(shell)/home.tsx",
+  "app/(shell)/cart.tsx",
+  "app/(shell)/orders.tsx",
+  "app/(shell)/preorders/index.tsx",
+  "app/(shell)/preorders/[activationGuid].tsx",
+  "app/(shell)/installment-orders.tsx",
+  "app/(shell)/store-vouchers.tsx",
+  "app/(shell)/seasonal-cards.tsx",
+  "app/(shell)/warehouse.tsx",
+  "app/(shell)/containers/index.tsx",
+  "app/(shell)/containers/[containerGuid]/index.tsx",
+  "app/(shell)/product-query.tsx",
+  "app/(shell)/domestic-purchase.tsx",
+  "app/(shell)/local-supplier-invoices.tsx",
+  "app/(shell)/advertisements.tsx",
+  "app/(shell)/promotions.tsx",
+  "app/(shell)/reports.tsx",
+  "app/(shell)/attendance-personal.tsx",
+  "app/(shell)/attendance-management.tsx",
+  "app/(shell)/users/index.tsx",
+  "app/(shell)/staff/[userGuid].tsx",
+  "app/(shell)/users/[userGuid]/access.tsx",
+  "app/(shell)/users/[userGuid]/pos-terminal-permissions.tsx",
+  "app/(shell)/device-management.tsx",
+  "app/(shell)/employee-profile.tsx",
+  "app/(shell)/employee-profile-review/index.tsx",
+  "app/(shell)/employee-profile-review/[requestId].tsx",
+  "app/(shell)/settings.tsx",
 ] as const;
 
 const EXISTING_TAB_PATHS = {
-  home: "/(tabs)/home",
-  orders: "/(tabs)/orders",
-  cart: "/(tabs)/cart",
-  warehouse: "/(tabs)/warehouse",
-  "domestic-purchase": "/(tabs)/domestic-purchase",
-  "local-supplier-invoices": "/(tabs)/local-supplier-invoices",
-  "installment-orders": "/(tabs)/installment-orders",
-  advertisements: "/(tabs)/advertisements",
-  promotions: "/(tabs)/promotions",
-  reports: "/(tabs)/reports",
-  "store-vouchers": "/(tabs)/store-vouchers",
-  "seasonal-cards": "/(tabs)/seasonal-cards",
-  "attendance-personal": "/(tabs)/attendance-personal",
-  "attendance-management": "/(tabs)/attendance-management",
-  "product-query": "/(tabs)/product-query",
-  users: "/(tabs)/users",
-  "employee-profile": "/(tabs)/employee-profile",
-  "employee-profile-review": "/(tabs)/employee-profile-review",
-  "device-management": "/(tabs)/device-management",
-  settings: "/(tabs)/settings",
+  home: "/(shell)/home",
+  orders: "/(shell)/orders",
+  cart: "/(shell)/cart",
+  warehouse: "/(shell)/warehouse",
+  "domestic-purchase": "/(shell)/domestic-purchase",
+  "local-supplier-invoices": "/(shell)/local-supplier-invoices",
+  "installment-orders": "/(shell)/installment-orders",
+  advertisements: "/(shell)/advertisements",
+  promotions: "/(shell)/promotions",
+  reports: "/(shell)/reports",
+  "store-vouchers": "/(shell)/store-vouchers",
+  "seasonal-cards": "/(shell)/seasonal-cards",
+  "attendance-personal": "/(shell)/attendance-personal",
+  "attendance-management": "/(shell)/attendance-management",
+  "product-query": "/(shell)/product-query",
+  users: "/(shell)/users",
+  "employee-profile": "/(shell)/employee-profile",
+  "employee-profile-review": "/(shell)/employee-profile-review",
+  "device-management": "/(shell)/device-management",
+  settings: "/(shell)/settings",
 } as const;
 
 async function assertFileExists(relativePath: string) {
@@ -74,7 +74,20 @@ async function run() {
     "导航改版前的 30 个真实业务页面必须全部保留"
   );
   await Promise.all(EXISTING_REAL_PAGE_FILES.map(assertFileExists));
-  await assertFileExists("app/(tabs)/workbench.tsx");
+  await assertFileExists("app/(shell)/workbench.tsx");
+  await assertFileExists("app/(shell)/containers/_layout.tsx");
+  await assertFileExists("app/(shell)/users/_layout.tsx");
+
+  assert.equal(
+    EXISTING_REAL_PAGE_FILES.filter((path) => path.startsWith("app/(shell)/")).length,
+    28,
+    "除认证和隐私政策外，所有真实业务页面（含详情）都必须位于 Shell Stack"
+  );
+  await assert.rejects(
+    () => access(resolve(mobileRoot, "app/(tabs)")),
+    { code: "ENOENT" },
+    "迁移完成后不得遗留旧 Tabs 目录"
+  );
 
   for (const [routeName, expectedPath] of Object.entries(EXISTING_TAB_PATHS)) {
     assert.equal(
@@ -86,7 +99,7 @@ async function run() {
 
   assert.equal(
     TAB_PATHS.workbench,
-    "/(tabs)/workbench",
+    "/(shell)/workbench",
     "工作台是唯一允许新增的 Tab 路由"
   );
   assert.equal(
@@ -95,22 +108,26 @@ async function run() {
     "生产路由表不得包含已移除的任务中心"
   );
 
-  const [tabsLayout, appIndex, legacyAttendance, navigationSources, zhCommon, enCommon] =
+  const [shellLayout, rootLayout, appIndex, legacyAttendance, navigationSources, zhCommon, enCommon] =
     await Promise.all([
-      readFile(resolve(mobileRoot, "app/(tabs)/_layout.tsx"), "utf8"),
+      readFile(resolve(mobileRoot, "app/(shell)/_layout.tsx"), "utf8"),
+      readFile(resolve(mobileRoot, "app/_layout.tsx"), "utf8"),
       readFile(resolve(mobileRoot, "app/index.tsx"), "utf8"),
-      readFile(resolve(mobileRoot, "app/(tabs)/attendance.tsx"), "utf8"),
+      readFile(resolve(mobileRoot, "app/(shell)/attendance.tsx"), "utf8"),
       readFile(resolve(mobileRoot, "src/modules/navigation/default-route.ts"), "utf8"),
       readFile(resolve(mobileRoot, "src/locales/zh/common.json"), "utf8"),
       readFile(resolve(mobileRoot, "src/locales/en/common.json"), "utf8"),
     ]);
 
-  assert.match(tabsLayout, /<Tabs\.Screen\s+name="workbench"/);
-  assert.match(tabsLayout, /<Tabs\.Screen\s+name="home"/);
-  assert.match(appIndex, /\/?\(tabs\)\/workbench/);
-  assert.match(legacyAttendance, /\/?\(tabs\)\/attendance-personal/);
+  assert.match(shellLayout, /initialRouteName:\s*"workbench"/);
+  assert.match(shellLayout, /<Stack\b/);
+  assert.doesNotMatch(shellLayout, /\bTabs\b/);
+  assert.match(rootLayout, /<Stack\.Screen\s+name="\(shell\)"/);
+  assert.doesNotMatch(rootLayout, /<Stack\.Screen\s+name="\(tabs\)"/);
+  assert.match(appIndex, /\/?\(shell\)\/workbench/);
+  assert.match(legacyAttendance, /\/?\(shell\)\/attendance-personal/);
   assert.doesNotMatch(navigationSources, /task-center/);
-  assert.doesNotMatch(tabsLayout, /name="task-center"/);
+  assert.doesNotMatch(shellLayout, /name="task-center"/);
 
   const zhTabs = JSON.parse(zhCommon).tabs;
   const enTabs = JSON.parse(enCommon).tabs;

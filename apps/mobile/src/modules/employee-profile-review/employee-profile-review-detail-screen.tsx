@@ -155,7 +155,7 @@ export function EmployeeProfileReviewDetailScreen() {
     photoErrorRefetchGuard.current = createIdentityPhotoErrorRefetchGuard();
   }, []);
 
-  const leaveDetail = useCallback(async (target: "/(tabs)/settings" | "/(tabs)/employee-profile-review") => {
+  const leaveDetail = useCallback(async (target: "/(shell)/settings" | "/(shell)/employee-profile-review") => {
     if (mountedRef.current) {
       // 离开前立即清除已揭示状态，缓存取消在途请求后再彻底移除。
       setIsLeavingSensitiveDetail(true);
@@ -163,6 +163,11 @@ export function EmployeeProfileReviewDetailScreen() {
     }
     await clearDetailCache();
     if (mountedRef.current) {
+      if (target === "/(shell)/employee-profile-review" && router.canGoBack()) {
+        // 列表与详情已在同一嵌套 Stack；返回复用现有列表，避免 replace 生成重复列表。
+        router.back();
+        return;
+      }
       router.replace(target);
     }
   }, [clearDetailCache, clearSensitiveUiState, router]);
@@ -189,7 +194,7 @@ export function EmployeeProfileReviewDetailScreen() {
                 pressed && styles.headerBackButtonPressed,
                 isLeavingSensitiveDetail && styles.headerBackButtonDisabled,
               ]}
-              onPress={() => void leaveDetail("/(tabs)/employee-profile-review")}
+              onPress={() => void leaveDetail("/(shell)/employee-profile-review")}
             >
               <MaterialCommunityIcons
                 name="chevron-left"
@@ -217,7 +222,7 @@ export function EmployeeProfileReviewDetailScreen() {
   const resumeDetailAfterForeground = useCallback(async () => {
     const generation = ++resumeGenerationRef.current;
     if (!validRequestId || !reviewAccess.allowed) {
-      await leaveDetail("/(tabs)/settings");
+      await leaveDetail("/(shell)/settings");
       return;
     }
     setPrivacyRefreshFailed(false);
@@ -247,7 +252,7 @@ export function EmployeeProfileReviewDetailScreen() {
         return;
       }
       if (getReviewFailureKind(error) === "forbidden") {
-        await leaveDetail("/(tabs)/settings");
+        await leaveDetail("/(shell)/settings");
         return;
       }
       if (
@@ -294,7 +299,7 @@ export function EmployeeProfileReviewDetailScreen() {
   useEffect(() => {
     if (navigationReady && (!reviewAccess.allowed || !validRequestId)) {
       // 权限失效、设备模式、iOS 审核会话或非法参数都不得触发详情 API。
-      void leaveDetail("/(tabs)/settings");
+      void leaveDetail("/(shell)/settings");
     }
   }, [leaveDetail, navigationReady, reviewAccess.allowed, validRequestId]);
 
@@ -303,7 +308,7 @@ export function EmployeeProfileReviewDetailScreen() {
   useEffect(() => {
     if (detailAccessForbidden) {
       // 详情 GET 的 403 与审核 mutation 一样立即销毁完整值并退出。
-      void leaveDetail("/(tabs)/settings");
+      void leaveDetail("/(shell)/settings");
     }
   }, [detailAccessForbidden, leaveDetail]);
 
@@ -360,7 +365,7 @@ export function EmployeeProfileReviewDetailScreen() {
       const listRefresh = queryClient.invalidateQueries({
         queryKey: ["employeeProfileReview", "requests"],
       });
-      await leaveDetail("/(tabs)/employee-profile-review");
+      await leaveDetail("/(shell)/employee-profile-review");
       await listRefresh;
     },
     onError: async (error) => {
@@ -371,7 +376,7 @@ export function EmployeeProfileReviewDetailScreen() {
       }
       const kind = getReviewFailureKind(error);
       if (kind === "forbidden") {
-        await leaveDetail("/(tabs)/settings");
+        await leaveDetail("/(shell)/settings");
         return;
       }
       if (!mountedRef.current) {

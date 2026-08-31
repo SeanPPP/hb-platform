@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildPrimaryNavigation } from "./primary-navigation";
+import {
+  buildPrimaryNavigation,
+  resolvePrimaryNavigationAction,
+} from "./primary-navigation";
 import { buildWorkbenchSections } from "./workbench";
 
 const localeRoot = resolve(
@@ -150,6 +153,76 @@ assert.equal(
   "个人资料页必须高亮我的"
 );
 
+const primaryItemsForNavigationActions = buildPrimaryNavigation({
+  activeRouteName: "workbench",
+  visibleRouteNames: fullMenu,
+});
+
+function primaryItem(key: "workbench" | "scan" | "attendance" | "reports" | "me") {
+  const item = primaryItemsForNavigationActions.find((candidate) => candidate.key === key);
+  assert.ok(item, `必须存在 ${key} 一级入口`);
+  return item;
+}
+
+assert.equal(
+  resolvePrimaryNavigationAction("workbench", primaryItem("workbench")),
+  "none",
+  "已在工作台根页时重复点击不得产生重复导航"
+);
+assert.equal(
+  resolvePrimaryNavigationAction("orders", primaryItem("workbench")),
+  "dismiss-to",
+  "工作台二级业务页点击工作台必须清理子栈并回到工作台根页"
+);
+assert.equal(
+  resolvePrimaryNavigationAction("reports", primaryItem("workbench")),
+  "dismiss-to",
+  "报表页点击工作台必须清理报表栈并回到工作台根页"
+);
+assert.equal(
+  resolvePrimaryNavigationAction(
+    "attendance-management",
+    buildPrimaryNavigation({
+      activeRouteName: "attendance-management",
+      visibleRouteNames: fullMenu,
+    }).find((item) => item.key === "attendance")!
+  ),
+  "dismiss-to",
+  "考勤管理作为打卡上下文子页时必须返回个人考勤根页"
+);
+assert.equal(
+  resolvePrimaryNavigationAction(
+    "employee-profile",
+    buildPrimaryNavigation({
+      activeRouteName: "employee-profile",
+      visibleRouteNames: fullMenu,
+    }).find((item) => item.key === "me")!
+  ),
+  "dismiss-to",
+  "个人资料作为我的上下文子页时必须返回设置根页"
+);
+assert.equal(
+  resolvePrimaryNavigationAction("orders", primaryItem("scan")),
+  "navigate",
+  "跨一级入口时必须导航到目标首页，而不能错误地清理当前业务栈"
+);
+assert.equal(
+  resolvePrimaryNavigationAction("orders", primaryItem("reports")),
+  "navigate",
+  "业务页进入报表必须导航到现有报表根页"
+);
+assert.equal(
+  resolvePrimaryNavigationAction(
+    "reports",
+    buildPrimaryNavigation({
+      activeRouteName: "reports",
+      visibleRouteNames: fullMenu,
+    }).find((item) => item.key === "reports")!
+  ),
+  "none",
+  "已在报表根页时重复点击不得产生重复导航"
+);
+
 const devicePrimaryItems = compactPrimaryItems(
   "product-query",
   [...fullMenu, "attendance-personal"],
@@ -166,6 +239,18 @@ assert.deepEqual(
     locked: true,
   },
   "设备模式即使收到个人考勤菜单，也必须锁定打卡入口"
+);
+assert.equal(
+  resolvePrimaryNavigationAction(
+    "product-query",
+    buildPrimaryNavigation({
+      activeRouteName: "product-query",
+      visibleRouteNames: fullMenu,
+      isDeviceMode: true,
+    }).find((item) => item.key === "attendance")!
+  ),
+  "none",
+  "锁定的打卡入口不得返回任何可执行导航动作"
 );
 assert.equal(
   devicePrimaryItems[3]?.locked,

@@ -11,31 +11,41 @@ async function readMobileSource(relativePath: string) {
 }
 
 async function run() {
-  const [tabsLayout, primaryTabBar, primaryNavigation, workbenchRoute, workbenchScreen, attendancePersonal, attendanceManagement, legacyAttendance] =
+  const [shellLayout, primaryTabBar, primaryNavigation, workbenchRoute, workbenchScreen, attendancePersonal, attendanceManagement, legacyAttendance, containerLayout, userLayout] =
     await Promise.all([
-      readMobileSource("app/(tabs)/_layout.tsx"),
+      readMobileSource("app/(shell)/_layout.tsx"),
       readMobileSource("src/components/navigation/PrimaryTabBar.tsx"),
       readMobileSource("src/modules/navigation/primary-navigation.ts"),
-      readMobileSource("app/(tabs)/workbench.tsx"),
+      readMobileSource("app/(shell)/workbench.tsx"),
       readMobileSource("src/modules/workbench/workbench-screen.tsx"),
-      readMobileSource("app/(tabs)/attendance-personal.tsx"),
-      readMobileSource("app/(tabs)/attendance-management.tsx"),
-      readMobileSource("app/(tabs)/attendance.tsx"),
+      readMobileSource("app/(shell)/attendance-personal.tsx"),
+      readMobileSource("app/(shell)/attendance-management.tsx"),
+      readMobileSource("app/(shell)/attendance.tsx"),
+      readMobileSource("app/(shell)/containers/_layout.tsx"),
+      readMobileSource("app/(shell)/users/_layout.tsx"),
     ]);
 
-  assert.match(tabsLayout, /<Tabs\.Screen\s+name="workbench"/);
-  assert.match(tabsLayout, /<Tabs\.Screen\s+name="home"/);
-  assert.match(tabsLayout, /<Tabs\.Screen\s+name="attendance-personal"/);
-  assert.match(tabsLayout, /<Tabs\.Screen\s+name="attendance-management"/);
-  assert.doesNotMatch(tabsLayout, /<Tabs\.Screen\s+name="task-center"/);
-  assert.match(tabsLayout, /PrimaryTabBar/);
-  assert.match(tabsLayout, /awaitingPreferredDefaultRoute/);
-  assert.match(tabsLayout, /resolvePreferredDefaultTabRoute/);
-  assert.doesNotMatch(tabsLayout, /ScrollableTabBar|tab-grouping/);
+  assert.match(shellLayout, /initialRouteName:\s*"workbench"/);
+  assert.match(shellLayout, /<Stack\b/);
+  assert.match(shellLayout, /gestureEnabled:\s*true/);
+  assert.doesNotMatch(shellLayout, /\bTabs\b/);
+  assert.doesNotMatch(shellLayout, /task-center/);
+  assert.match(shellLayout, /PrimaryTabBar/);
+  assert.match(shellLayout, /awaitingPreferredDefaultRoute/);
+  assert.match(shellLayout, /resolvePreferredDefaultTabRoute/);
+  assert.match(shellLayout, /nextPath === TAB_PATHS\.workbench/);
+  assert.match(shellLayout, /router\.dismissTo\(nextPath/);
+  assert.match(shellLayout, /withAnchor:\s*true/);
+  assert.doesNotMatch(shellLayout, /ScrollableTabBar|tab-grouping/);
+  assert.match(containerLayout, /gestureEnabled:\s*true/);
+  assert.match(userLayout, /gestureEnabled:\s*true/);
 
   assert.match(primaryTabBar, /buildPrimaryNavigation/);
+  assert.match(primaryTabBar, /resolvePrimaryNavigationAction/);
   assert.match(primaryTabBar, /locked/);
   assert.match(primaryTabBar, /accessibilityRole="button"/);
+  assert.match(primaryTabBar, /router\.dismissTo/);
+  assert.match(primaryTabBar, /router\.navigate/);
   assert.match(
     primaryTabBar,
     /numberOfLines=\{2\}/,
@@ -71,16 +81,23 @@ async function run() {
   assert.match(primaryNavigation, /key:\s*"me"/);
   assert.match(primaryNavigation, /targetRouteName:\s*"attendance-personal"/);
   assert.match(primaryNavigation, /targetRouteName:\s*"reports"/);
+  assert.match(primaryNavigation, /"none"\s*\|\s*"dismiss-to"\s*\|\s*"navigate"/);
+  assert.match(primaryNavigation, /resolvePrimaryNavigationAction/);
   assert.match(primaryNavigation, /isDeviceMode/);
   assert.match(primaryNavigation, /locked:/);
   assert.doesNotMatch(primaryNavigation, /task-center/);
 
   assert.match(workbenchRoute, /<WorkbenchScreen\s*\/>/);
   assert.match(workbenchScreen, /buildWorkbenchSections/);
-  assert.match(workbenchScreen, /router\.(navigate|push)/);
+  assert.match(workbenchScreen, /router\.push/);
+  assert.doesNotMatch(
+    workbenchScreen,
+    /router\.navigate/,
+    "工作台功能必须 push 到 Shell Stack，才能由原生手势逐级返回"
+  );
   assert.match(attendancePersonal, /<AttendanceScreen\s+mode="personal"/);
   assert.match(attendanceManagement, /<AttendanceScreen\s+mode="management"/);
-  assert.match(legacyAttendance, /\/?\(tabs\)\/attendance-personal/);
+  assert.match(legacyAttendance, /\/?\(shell\)\/attendance-personal/);
 }
 
 void run();

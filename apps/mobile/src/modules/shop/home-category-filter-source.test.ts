@@ -9,7 +9,7 @@ function assertEqual<T>(actual: T, expected: T, label: string) {
 }
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
-const homeSource = readFileSync(resolve(currentDir, "../../../app/(tabs)/home.tsx"), "utf8");
+const homeSource = readFileSync(resolve(currentDir, "../../../app/(shell)/home.tsx"), "utf8");
 const selectCategoryCallbackSource =
   homeSource.match(/const handleSelectCategoryFilter = useCallback\(\(categoryGUID\?: string\) => \{[\s\S]*?\n  \}, \[\]\);/)?.[0] ??
   "";
