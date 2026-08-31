@@ -197,6 +197,7 @@
     <Compile Include="MobileAppBuildServiceTests.cs" />
     <Compile Include="MobileAppBuildAppKeyIsolationTests.cs" />
     <Compile Include="MobileAppDeviceStatusServiceTests.cs" />
+    <Compile Include="AppOtaReleaseSqlParameterTests.cs" />
     <Compile Include="AppUpdatePolicyServiceTests.cs" />
     <Compile Include="AppUpdatePolicySchemaMigratorSqlServerIntegrationTests.cs" />
     <Compile Include="PosHandheldUpdateDecisionServiceTests.cs" />

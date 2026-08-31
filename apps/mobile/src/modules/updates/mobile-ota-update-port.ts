@@ -31,48 +31,38 @@ export type MobileOtaDownloadResult =
         | "update-id-mismatch"
         | "manifest-invalid"
         | "channel-override-failed"
-        | "channel-clear-failed"
+        | "channel-restore-failed"
         | "update-check-failed"
         | "cancelled";
     }>;
 
 export class MobileOtaUpdatePort {
-  private readyTargetIdentity: string | null = null;
-  private startupClearFailed = false;
+  private readyTarget: Readonly<{
+    identity: string;
+    previousChannel: string;
+    targetChannel: string;
+  }> | null = null;
+  private currentChannel: string;
 
   public constructor(private readonly options: Readonly<{
     enabled: boolean;
     runtimeVersion: string | null;
+    currentChannel: string;
     updates: MobileOtaUpdatesRuntimePort;
   }>) {
-    if (!options.enabled) return;
-    try {
-      // request header override 由原生层持久化；冷启动先清除上次异常退出的目标 channel。
-      options.updates.setUpdateRequestHeadersOverride(null);
-    } catch {
-      this.startupClearFailed = true;
-    }
+    this.currentChannel = options.currentChannel;
   }
 
   public async download(
     decision: MobileOtaUpdateDecision,
     guard: Readonly<{ isCurrent(): boolean }> = { isCurrent: () => true },
   ): Promise<MobileOtaDownloadResult> {
-    this.readyTargetIdentity = null;
+    this.readyTarget = null;
     if (decision.state === "none" || !decision.releaseChannel || !decision.updateId) {
       return Object.freeze({ state: "unavailable", reason: "no-update" });
     }
     if (!this.options.enabled) {
       return Object.freeze({ state: "unavailable", reason: "updates-disabled" });
-    }
-    if (this.startupClearFailed) {
-      try {
-        // 原生 header 清理可能是瞬时失败；每次用户重试都先恢复安全基线。
-        this.options.updates.setUpdateRequestHeadersOverride(null);
-        this.startupClearFailed = false;
-      } catch {
-        return Object.freeze({ state: "rejected", reason: "channel-clear-failed" });
-      }
     }
     if (
       !this.options.runtimeVersion
@@ -86,12 +76,15 @@ export class MobileOtaUpdatePort {
 
     let result: MobileOtaDownloadResult | null = null;
     let ready = false;
-    let clearFailed = false;
+    let overrideAttempted = false;
+    const previousChannel = this.currentChannel;
     try {
+      overrideAttempted = true;
       try {
         this.options.updates.setUpdateRequestHeadersOverride({
           "expo-channel-name": decision.releaseChannel,
         });
+        this.currentChannel = decision.releaseChannel;
       } catch {
         result = Object.freeze({
           state: "rejected",
@@ -133,37 +126,64 @@ export class MobileOtaUpdatePort {
       }
     } catch {
       result = Object.freeze({ state: "rejected", reason: "update-check-failed" });
-    } finally {
-      try {
-        this.options.updates.setUpdateRequestHeadersOverride(null);
-      } catch {
-        clearFailed = true;
-        this.startupClearFailed = true;
-      }
     }
 
-    if (clearFailed) {
-      return Object.freeze({ state: "rejected", reason: "channel-clear-failed" });
+    try {
+      if (overrideAttempted) {
+        // 下载后先恢复当前 channel；用户选择“稍后”时，冷启动不能提前采用可选目标。
+        this.options.updates.setUpdateRequestHeadersOverride({
+          "expo-channel-name": previousChannel,
+        });
+        this.currentChannel = previousChannel;
+      }
+    } catch {
+      return Object.freeze({ state: "rejected", reason: "channel-restore-failed" });
     }
+
     if (result) return result;
     if (!ready) {
       return Object.freeze({ state: "rejected", reason: "manifest-invalid" });
     }
-    this.readyTargetIdentity = targetIdentity(decision);
+
+    // Expo 会把下载时的 request headers 写入 update；确认 reload 时再恢复该目标 channel。
+    this.readyTarget = Object.freeze({
+      identity: targetIdentity(decision),
+      previousChannel,
+      targetChannel: decision.releaseChannel,
+    });
     return Object.freeze({ state: "downloaded", reason: null });
   }
 
   public isReady(decision: MobileOtaUpdateDecision) {
-    return this.readyTargetIdentity === targetIdentity(decision);
+    return this.readyTarget?.identity === targetIdentity(decision);
   }
 
   public async reload() {
-    if (!this.readyTargetIdentity) {
+    const readyTarget = this.readyTarget;
+    if (!readyTarget) {
       throw new Error("Mobile OTA update is not ready to reload");
     }
     // 同一下载最多触发一次 reload；失败后必须重新校验策略和已下载目标。
-    this.readyTargetIdentity = null;
-    await this.options.updates.reloadAsync();
+    this.readyTarget = null;
+    try {
+      this.options.updates.setUpdateRequestHeadersOverride({
+        "expo-channel-name": readyTarget.targetChannel,
+      });
+      this.currentChannel = readyTarget.targetChannel;
+      await this.options.updates.reloadAsync();
+    } catch (error) {
+      try {
+        this.options.updates.setUpdateRequestHeadersOverride({
+          "expo-channel-name": readyTarget.previousChannel,
+        });
+        this.currentChannel = readyTarget.previousChannel;
+      } catch {
+        throw new Error("Mobile OTA reload and channel restore both failed", {
+          cause: error,
+        });
+      }
+      throw error;
+    }
   }
 }
 
