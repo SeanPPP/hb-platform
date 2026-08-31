@@ -11,6 +11,8 @@ internal sealed class SchemaMigrationCoordinator
 {
     internal const string MainMigrationId = "20260827.001-hbweb-baseline";
     internal const string PosmMigrationId = "20260827.001-hbweb-posm-baseline";
+    internal const string MobileDeviceActivationMigrationId =
+        "20260831.001-mobile-device-activation";
 
     internal static readonly IReadOnlyList<SchemaMigrationStep> MainMigrationSteps =
     [
@@ -28,11 +30,18 @@ internal sealed class SchemaMigrationCoordinator
             static (runtime, cancellationToken) =>
                 runtime.ApplyPosmBaselineAsync(cancellationToken)
         ),
+        new(
+            MobileDeviceActivationMigrationId,
+            static (runtime, cancellationToken) =>
+                runtime.ApplyMobileDeviceActivationAsync(cancellationToken)
+        ),
     ];
 
     private const string MainScope = "Main";
     private const string PosmScope = "POSM";
     private const string DeviceActivationSignatureId = "device-activation-schema-signature";
+    private const string MobileDeviceActivationSignatureId =
+        "mobile-device-activation-schema-signature";
 
     private readonly ISchemaMigrationRuntime _runtime;
     private readonly ILogger<SchemaMigrationCoordinator> _logger;
@@ -281,7 +290,7 @@ internal sealed class SchemaMigrationCoordinator
 
     private async Task<SchemaOperationResult> CheckCoreAsync(CancellationToken cancellationToken)
     {
-        // 常规启动门禁固定为三批只读 SQL：两个账本各一批，设备激活签名一批。
+        // 常规启动门禁固定为四批只读 SQL：两个账本、POS 激活签名、Mobile 绑定签名各一批。
         var mainApplied = await CheckLedgerAsync(
             SchemaDatabase.Main,
             MainScope,
@@ -297,6 +306,7 @@ internal sealed class SchemaMigrationCoordinator
             cancellationToken
         );
         await VerifyDeviceActivationSchemaAsync(cancellationToken);
+        await VerifyMobileDeviceActivationSchemaAsync(cancellationToken);
 
         if (!mainApplied)
         {
@@ -382,6 +392,40 @@ internal sealed class SchemaMigrationCoordinator
             LogResult(
                 PosmScope,
                 DeviceActivationSignatureId,
+                stopwatch.ElapsedMilliseconds,
+                "Failed",
+                exception switch
+                {
+                    OperationCanceledException => SchemaDiagnosticCodes.Cancelled,
+                    DeviceActivationSchemaMismatchException =>
+                        SchemaDiagnosticCodes.DeviceActivationIncompatible,
+                    _ => SchemaDiagnosticCodes.DatabaseFailure,
+                }
+            );
+            throw;
+        }
+    }
+
+    private async Task VerifyMobileDeviceActivationSchemaAsync(
+        CancellationToken cancellationToken)
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            await _runtime.VerifyMobileDeviceActivationSchemaAsync(cancellationToken);
+            LogResult(
+                PosmScope,
+                MobileDeviceActivationSignatureId,
+                stopwatch.ElapsedMilliseconds,
+                "Ready",
+                SchemaDiagnosticCodes.Ready
+            );
+        }
+        catch (Exception exception)
+        {
+            LogResult(
+                PosmScope,
+                MobileDeviceActivationSignatureId,
                 stopwatch.ElapsedMilliseconds,
                 "Failed",
                 exception switch

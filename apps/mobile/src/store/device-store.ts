@@ -9,6 +9,12 @@ import {
 import { stopAttendanceLocationTracking } from "@/modules/attendance/location-tracking-control";
 import { collectLoginDeviceLocation } from "@/modules/attendance/required-location";
 import { DeviceStorage } from "@/modules/device/storage";
+import { DeviceAccountStorage } from "@/modules/device-activation/device-account-storage-runtime";
+import {
+  exchangeMobileDeviceSessionApi,
+  unbindMobileDeviceAccountApi,
+} from "@/modules/device-activation/device-activation-api";
+import type { StoredMobileDeviceAccountBinding } from "@/modules/device-activation/types";
 import type {
   DeviceProfile,
   DeviceValidationRequest,
@@ -22,13 +28,16 @@ import {
 
 interface DeviceState {
   session: PersistedDeviceSession | null;
+  accountBinding: StoredMobileDeviceAccountBinding | null;
   isReady: boolean;
   isLoading: boolean;
   hydrate: () => Promise<PersistedDeviceSession | null>;
+  refreshAccountBinding: () => Promise<StoredMobileDeviceAccountBinding | null>;
   register: (payload: { storeCode: string; storeName?: string | null }) => Promise<PersistedDeviceSession>;
   syncFromProfile: (profile: DeviceProfile, options?: { storeName?: string | null }) => Promise<PersistedDeviceSession>;
   validate: (auditPayload?: Partial<DeviceValidationRequest>) => Promise<boolean>;
   unbind: () => Promise<void>;
+  unbindAccountBinding: (reason?: string) => Promise<void>;
   clear: () => Promise<void>;
 }
 
@@ -38,24 +47,41 @@ function getCurrentDeviceSystem() {
 
 export const useDeviceStore = create<DeviceState>((set, get) => ({
   session: null,
+  accountBinding: null,
   isReady: false,
   isLoading: false,
 
   async hydrate() {
     if (isIosReviewAuthenticatedSessionActive()) {
       // 审核账号不读取普通设备绑定，也不让历史设备会话切换认证模式。
-      set({ session: null, isReady: true, isLoading: false });
+      set({ session: null, accountBinding: null, isReady: true, isLoading: false });
       return null;
     }
-    const session = await DeviceStorage.getSession();
+    const [session, accountBinding] = await Promise.all([
+      DeviceStorage.getSession(),
+      DeviceAccountStorage.loadBinding(),
+    ]);
     console.info("[device-session] hydrate", {
       hasSession: Boolean(session),
       hardwareId: session?.hardwareId ?? null,
       storeCode: session?.storeCode ?? null,
       status: session?.status ?? null,
     });
-    set({ session, isReady: true });
+    set({ session, accountBinding, isReady: true });
     return session;
+  },
+
+  async refreshAccountBinding() {
+    if (isIosReviewAuthenticatedSessionActive()) {
+      set({ accountBinding: null });
+      return null;
+    }
+    const [accountBinding, session] = await Promise.all([
+      DeviceAccountStorage.loadBinding(),
+      DeviceStorage.getSession(),
+    ]);
+    set({ accountBinding, session, isReady: true });
+    return accountBinding;
   },
 
   async register(payload) {
@@ -115,9 +141,15 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
         resolvedFromExisting: true,
       };
     }
+    const previousSession = await DeviceStorage.getSession();
     const session: PersistedDeviceSession = {
       hardwareId: profile.hardwareId,
-      authCode: profile.authCode,
+      // 设备资料接口不再回传授权码；同一硬件继续使用本机安全存储中的旧凭据。
+      authCode:
+        profile.authCode ||
+        (previousSession?.hardwareId === profile.hardwareId
+          ? previousSession.authCode
+          : ""),
       storeCode: profile.storeCode ?? "",
       storeName: options?.storeName ?? profile.storeName ?? null,
       systemDeviceNumber: profile.systemDeviceNumber || null,
@@ -242,6 +274,46 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
         authCode: currentSession.authCode,
       });
       await get().clear();
+    } catch (error) {
+      set({ isLoading: false, isReady: true });
+      throw error;
+    }
+  },
+
+  async unbindAccountBinding(reason) {
+    if (isIosReviewSessionActive()) {
+      set({ accountBinding: null, isReady: true, isLoading: false });
+      return;
+    }
+    set({ isLoading: true });
+    try {
+      const binding = get().accountBinding ?? (await DeviceAccountStorage.loadBinding());
+      if (!binding) {
+        await DeviceAccountStorage.clearPending();
+        set({ accountBinding: null, isReady: true, isLoading: false });
+        return;
+      }
+      const token = await exchangeMobileDeviceSessionApi({
+        hardwareId: binding.hardwareId,
+        credential: binding.credential,
+        apiHost: binding.apiHost,
+      });
+      await unbindMobileDeviceAccountApi(
+        reason,
+        token.accessToken,
+        binding.apiHost,
+      );
+      await Promise.all([
+        DeviceAccountStorage.clearBinding(),
+        DeviceAccountStorage.clearPending(),
+        DeviceStorage.clearSession(),
+      ]);
+      set({
+        session: null,
+        accountBinding: null,
+        isReady: true,
+        isLoading: false,
+      });
     } catch (error) {
       set({ isLoading: false, isReady: true });
       throw error;

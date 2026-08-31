@@ -116,6 +116,7 @@
     <Compile Include="LocalPurchaseDashboardSqlServerIntegrationTests.cs" />
     <Compile Include="ClientIpResolverTests.cs" />
     <Compile Include="AuthServiceTests.cs" />
+    <Compile Include="AuthSessionValidatorMobileDeviceTests.cs" />
     <Compile Include="AuthSessionControllerTests.cs" />
     <Compile Include="StoreVoucherReactRouteTests.cs" />
     <Compile Include="ReactStoreOrderAuthorizationTests.cs" />

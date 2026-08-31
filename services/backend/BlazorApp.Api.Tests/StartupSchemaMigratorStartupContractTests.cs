@@ -10,7 +10,6 @@ public sealed class StartupSchemaMigratorStartupContractTests
         var program = await File.ReadAllTextAsync(
             Path.Combine(FindRepoRoot(), "services/backend/BlazorApp.Api/Program.cs")
         );
-
         Assert.Contains("SchemaCommand.Parse(args)", program, StringComparison.Ordinal);
         Assert.Contains("SchemaCommandMode.Check", program, StringComparison.Ordinal);
         Assert.Contains("await coordinator.CheckAsync", program, StringComparison.Ordinal);
@@ -19,6 +18,63 @@ public sealed class StartupSchemaMigratorStartupContractTests
         Assert.DoesNotContain(
             "await StartupSchemaMigrator.EnsureAsync(dbContext.Db, app.Logger);",
             program,
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
+    public async Task StartupSchemaMigrator_POSM启动兜底包含Mobile设备绑定Schema()
+    {
+        var migratorSource = await File.ReadAllTextAsync(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Api/Data/StartupSchemaMigrator.cs"
+            )
+        );
+
+        Assert.Contains("EnsurePosmAsync", migratorSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "MobileDeviceActivationSchema.EnsureSql",
+            migratorSource,
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
+    public async Task Program_绑定Mobile设备开通分阶段闸门配置()
+    {
+        var program = await File.ReadAllTextAsync(
+            Path.Combine(FindRepoRoot(), "services/backend/BlazorApp.Api/Program.cs")
+        );
+        var normalizedProgram = System.Text.RegularExpressions.Regex.Replace(
+            program,
+            @"\s+",
+            string.Empty
+        );
+
+        Assert.Contains(
+            "MobileDeviceActivationOptions.SectionName",
+            program,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "AddRateLimiter(MobileDeviceActivationRateLimits.Configure)",
+            program,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "AddScoped<IMobileDeviceActivationService,MobileDeviceActivationService>()",
+            normalizedProgram,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "AddScoped<IMobileDeviceActivationCodeManagementService,MobileDeviceActivationCodeManagementService>()",
+            normalizedProgram,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "AddScoped<IMobileDeviceAccountTokenIssuer,MobileDeviceAccountTokenIssuer>()",
+            normalizedProgram,
             StringComparison.Ordinal
         );
     }

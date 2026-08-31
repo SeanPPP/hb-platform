@@ -252,6 +252,16 @@ test('Backend PR 的真实 Schema SQL 独立执行并纳入 required 门禁', ()
   assert.match(runner, /FullyQualifiedName~BlazorApp\.Api\.Tests\.SchemaMigrationSqlServerIntegrationTests/)
   assert.match(runner, /schema-migration-sql\.trx/)
   assert.match(runner, /'PR schema migration SQL tests'\s+\\\n\s+10/)
+  assert.match(
+    runner,
+    /services\/backend\/BlazorApp\.MobileDeviceActivation\.Tests\/BlazorApp\.MobileDeviceActivation\.Tests\.csproj/,
+  )
+  assert.match(
+    runner,
+    /FullyQualifiedName~BlazorApp\.MobileDeviceActivation\.Tests\.MobileDeviceActivationSchemaSqlServerIntegrationTests/,
+  )
+  assert.match(runner, /mobile-device-activation-schema-sql\.trx/)
+  assert.match(runner, /'PR Mobile device activation schema SQL test'\s+\\\n\s+1/)
   assert.doesNotMatch(runner, /docker ps --filter/)
 })
 

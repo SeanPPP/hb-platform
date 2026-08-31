@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Services.MobileDeviceActivation;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.POSM;
 using SqlSugar;
@@ -16,16 +17,20 @@ namespace BlazorApp.Api.Services
         private readonly POSMSqlSugarContext _posmContext;
         private readonly ILogger<DeviceRegistrationService> _logger;
         private readonly Func<DateTime> _now;
+        private readonly IMobileDeviceActivationService _mobileDeviceActivationService;
 
         public DeviceRegistrationService(
             POSMSqlSugarContext posmContext,
             ILogger<DeviceRegistrationService> logger,
+            IMobileDeviceActivationService mobileDeviceActivationService,
             Func<DateTime>? nowProvider = null
         )
         {
             _posmContext = posmContext;
             _logger = logger;
             _now = nowProvider ?? (() => DateTime.Now);
+            _mobileDeviceActivationService = mobileDeviceActivationService
+                ?? throw new ArgumentNullException(nameof(mobileDeviceActivationService));
         }
 
         /// <summary>
@@ -76,6 +81,42 @@ namespace BlazorApp.Api.Services
                 _logger.LogError(ex, "根据硬件识别码获取设备信息失败: {HardwareId}", hardwareId);
                 throw;
             }
+        }
+
+        private async Task<POSM_设备注册信息表?> ResolveDeviceForAuthenticationAsync(
+            string identifier)
+        {
+            var exactHardwareMatches = await _posmContext.DeviceRegistrationDb.GetListAsync(
+                device => device.设备硬件识别码 == identifier);
+            if (exactHardwareMatches.Count > 0)
+            {
+                if (exactHardwareMatches.Count == 1)
+                {
+                    return exactHardwareMatches[0];
+                }
+
+                _logger.LogWarning(
+                    "设备认证发现重复硬件标识，拒绝无序选择: {Identifier}, Count: {Count}",
+                    identifier,
+                    exactHardwareMatches.Count);
+                return null;
+            }
+
+            var systemNumberMatches = await _posmContext.DeviceRegistrationDb.GetListAsync(
+                device => device.系统设备编号 == identifier);
+            if (systemNumberMatches.Count == 1)
+            {
+                return systemNumberMatches[0];
+            }
+
+            if (systemNumberMatches.Count > 1)
+            {
+                _logger.LogWarning(
+                    "设备认证发现系统设备编号映射多个记录，拒绝别名歧义: {Identifier}, Count: {Count}",
+                    identifier,
+                    systemNumberMatches.Count);
+            }
+            return null;
         }
 
         /// <summary>
@@ -370,10 +411,39 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                var device = await GetDeviceByHardwareIdAsync(hardwareId);
-                return device != null
-                    && device.设备授权码 == authCode
-                    && device.设备状态 == (int)DeviceStatus.启用;
+                // 先按请求中的硬件标识查询绑定历史，避免同一 hardware 的旧 POS/其他记录
+                // 被无序取中后绕过 Mobile 动态门禁。
+                var bindingValidation = await _mobileDeviceActivationService
+                    .ValidateBoundDeviceCredentialAsync(hardwareId, authCode);
+                if (bindingValidation.RequiresBoundCredential)
+                {
+                    return bindingValidation.IsValid;
+                }
+
+                var device = await ResolveDeviceForAuthenticationAsync(hardwareId);
+                if (device == null || device.设备状态 != (int)DeviceStatus.启用)
+                {
+                    return false;
+                }
+
+                if (!string.Equals(
+                        device.设备硬件识别码,
+                        hardwareId,
+                        StringComparison.Ordinal))
+                {
+                    // 兼容历史调用方以系统设备编号查询；解析到规范 hardware 后仍须再过绑定门禁。
+                    bindingValidation = await _mobileDeviceActivationService
+                        .ValidateBoundDeviceCredentialAsync(
+                            device.设备硬件识别码,
+                            authCode);
+                    if (bindingValidation.RequiresBoundCredential)
+                    {
+                        return bindingValidation.IsValid;
+                    }
+                }
+
+                // POS/WPF 与尚未升级的新旧 Mobile 继续使用原有精确授权码合同。
+                return device.设备授权码 == authCode;
             }
             catch (Exception ex)
             {
@@ -449,7 +519,15 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                var device = await GetDeviceByHardwareIdAsync(hardwareId);
+                var bindingValidation = await _mobileDeviceActivationService
+                    .ValidateBoundDeviceCredentialAsync(hardwareId, authCode);
+                if (bindingValidation.RequiresBoundCredential)
+                {
+                    // 绑定历史永久接管该 hardware；动态凭据无论成功失败都不回传内部授权码。
+                    return (bindingValidation.IsValid, null);
+                }
+
+                var device = await ResolveDeviceForAuthenticationAsync(hardwareId);
 
                 // 设备不存在
                 if (device == null)
@@ -467,6 +545,22 @@ namespace BlazorApp.Api.Services
                         device.设备状态
                     );
                     return (false, null);
+                }
+
+                if (!string.Equals(
+                        device.设备硬件识别码,
+                        hardwareId,
+                        StringComparison.Ordinal))
+                {
+                    bindingValidation = await _mobileDeviceActivationService
+                        .ValidateBoundDeviceCredentialAsync(
+                            device.设备硬件识别码,
+                            authCode);
+                    if (bindingValidation.RequiresBoundCredential)
+                    {
+                        // 新 Mobile 绑定的原始凭据只做动态校验；设备表内部码永不返回客户端。
+                        return (bindingValidation.IsValid, null);
+                    }
                 }
 
                 // 授权码匹配

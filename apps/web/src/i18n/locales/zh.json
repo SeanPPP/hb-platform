@@ -3192,7 +3192,16 @@
         "title": "设备开通码",
         "view": "设备开通码",
         "noteTitle": "一次性设备开通",
-        "noteDescription": "开通码只绑定一个分店和一个平台，扫码确认后立即消费。二维码原文只在创建结果中显示一次。",
+        "noteDescription": "开通码只绑定一个设备类型、分店和平台；移动端开通码还会绑定指定账号。扫码确认后立即消费，二维码原文只在创建结果中显示一次。",
+        "deviceType": "设备类型",
+        "deviceTypes": {
+          "POS": "POS",
+          "Mobile": "移动端"
+        },
+        "targetAccount": "绑定账号",
+        "targetAccountRequired": "请选择要绑定的账号",
+        "loadAccountsFailed": "加载可绑定账号失败",
+        "mobileAccountScopeHint": "移动端设备绑定后将以该账号身份登录，并实时继承该账号的权限和可访问分店。",
         "filterByStatus": "按状态筛选",
         "create": "创建开通码",
         "createTitle": "创建一次性设备开通码",

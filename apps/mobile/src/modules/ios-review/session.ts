@@ -1,7 +1,7 @@
 import { iosReviewDataStore, resetReviewData } from "./data-store";
 import { resetIosReviewAppRouteState } from "./app-routes";
 
-export type AuthSessionKind = "account" | "device" | "iosReview";
+export type AuthSessionKind = "account" | "device" | "deviceAccount" | "iosReview";
 
 export interface IosReviewMarkerStorage {
   getItemAsync(key: string): Promise<string | null>;

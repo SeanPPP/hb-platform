@@ -3,6 +3,7 @@ using BlazorApp.Api.Controllers;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.MobileDeviceActivation;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models.POSM;
 using BlazorApp.Shared.Options;
@@ -89,6 +90,36 @@ namespace BlazorApp.Api.Tests
             );
             Assert.Equal("AUTH-001", data.AuthCode);
             Assert.Equal(1, data.Status);
+        }
+
+        [Fact]
+        public async Task RegisterDevice_MobileActivationRequired_ReturnsActivationRequiredWithoutWrites()
+        {
+            var service = new Mock<IDeviceRegistrationService>(MockBehavior.Strict);
+            var controller = new DeviceRegistrationController(
+                service.Object,
+                Mock.Of<ILogger<DeviceRegistrationController>>(),
+                Mock.Of<IMapper>(),
+                Mock.Of<IStoreService>(),
+                mobileDeviceActivationOptions: Options.Create(new MobileDeviceActivationOptions
+                {
+                    EnforceForNewRegistrations = true,
+                }));
+
+            var result = await controller.RegisterDevice(new DeviceRegistrationRequestDto
+            {
+                HardwareId = "hbmobile-new",
+                DeviceType = "Mobile",
+                DeviceSystem = "Android",
+                StoreCode = "S001",
+            });
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            Assert.False((bool)ok.Value!.GetType().GetProperty("success")!.GetValue(ok.Value)!);
+            Assert.Equal(
+                "ACTIVATION_CODE_REQUIRED",
+                ok.Value.GetType().GetProperty("reasonCode")!.GetValue(ok.Value));
+            service.VerifyNoOtherCalls();
         }
 
         [Fact]
@@ -226,6 +257,9 @@ namespace BlazorApp.Api.Tests
         {
             var service = new Mock<IDeviceRegistrationService>();
             service
+                .Setup(x => x.ValidateDeviceAuthCodeAsync("hbmobile-existing", "AUTH-001"))
+                .ReturnsAsync(true);
+            service
                 .Setup(x => x.GetDeviceByHardwareIdAsync("hbmobile-existing"))
                 .ReturnsAsync(
                     new POSM_设备注册信息表
@@ -276,6 +310,9 @@ namespace BlazorApp.Api.Tests
                 mapper.Object,
                 storeService.Object
             );
+            controller.ControllerContext.HttpContext = new DefaultHttpContext();
+            controller.Request.Headers["X-Device-Id"] = "hbmobile-existing";
+            controller.Request.Headers["X-Auth-Code"] = "AUTH-001";
 
             var result = await controller.GetDeviceByHardwareId("hbmobile-existing");
 
@@ -284,6 +321,72 @@ namespace BlazorApp.Api.Tests
             var data = Assert.IsType<DeviceDataDto>(dataProperty!.GetValue(ok.Value));
             Assert.Equal("1004", data.StoreCode);
             Assert.Equal("Sunnybank", data.StoreName);
+            Assert.Equal(string.Empty, data.AuthCode);
+        }
+
+        [Fact]
+        public async Task GetDeviceByHardwareId_ReturnsUnauthorized_WhenDeviceHeadersAreMissing()
+        {
+            var service = new Mock<IDeviceRegistrationService>(MockBehavior.Strict);
+            var controller = new DeviceRegistrationController(
+                service.Object,
+                Mock.Of<ILogger<DeviceRegistrationController>>(),
+                Mock.Of<IMapper>(),
+                Mock.Of<IStoreService>()
+            );
+            controller.ControllerContext.HttpContext = new DefaultHttpContext();
+
+            var result = await controller.GetDeviceByHardwareId("hbmobile-existing");
+
+            Assert.IsType<UnauthorizedObjectResult>(result);
+            service.VerifyNoOtherCalls();
+        }
+
+        [Fact]
+        public async Task GetDeviceByHardwareId_ReturnsUnauthorized_WhenHeaderHardwareIdDoesNotMatchRoute()
+        {
+            var service = new Mock<IDeviceRegistrationService>(MockBehavior.Strict);
+            var controller = new DeviceRegistrationController(
+                service.Object,
+                Mock.Of<ILogger<DeviceRegistrationController>>(),
+                Mock.Of<IMapper>(),
+                Mock.Of<IStoreService>()
+            );
+            controller.ControllerContext.HttpContext = new DefaultHttpContext();
+            controller.Request.Headers["X-Device-Id"] = "another-device";
+            controller.Request.Headers["X-Auth-Code"] = "AUTH-001";
+
+            var result = await controller.GetDeviceByHardwareId("hbmobile-existing");
+
+            Assert.IsType<UnauthorizedObjectResult>(result);
+            service.VerifyNoOtherCalls();
+        }
+
+        [Fact]
+        public async Task GetDeviceByHardwareId_ReturnsUnauthorized_WhenDeviceAuthIsInvalid()
+        {
+            var service = new Mock<IDeviceRegistrationService>(MockBehavior.Strict);
+            service
+                .Setup(x => x.ValidateDeviceAuthCodeAsync("hbmobile-existing", "WRONG"))
+                .ReturnsAsync(false);
+            var controller = new DeviceRegistrationController(
+                service.Object,
+                Mock.Of<ILogger<DeviceRegistrationController>>(),
+                Mock.Of<IMapper>(),
+                Mock.Of<IStoreService>()
+            );
+            controller.ControllerContext.HttpContext = new DefaultHttpContext();
+            controller.Request.Headers["X-Device-Id"] = "hbmobile-existing";
+            controller.Request.Headers["X-Auth-Code"] = "WRONG";
+
+            var result = await controller.GetDeviceByHardwareId("hbmobile-existing");
+
+            Assert.IsType<UnauthorizedObjectResult>(result);
+            service.Verify(
+                x => x.ValidateDeviceAuthCodeAsync("hbmobile-existing", "WRONG"),
+                Times.Once
+            );
+            service.VerifyNoOtherCalls();
         }
 
         [Fact]
@@ -383,6 +486,333 @@ namespace BlazorApp.Api.Tests
             });
 
             _db.CodeFirst.InitTables<POSM_设备注册信息表>();
+        }
+
+        [Fact]
+        public void Constructor_MissingMobileActivationDependency_FailsClosed()
+        {
+            var context = (POSMSqlSugarContext)RuntimeHelpers.GetUninitializedObject(
+                typeof(POSMSqlSugarContext)
+            );
+
+            Assert.Throws<ArgumentNullException>(() => new DeviceRegistrationService(
+                context,
+                NullLogger<DeviceRegistrationService>.Instance,
+                null!,
+                null
+            ));
+        }
+
+        [Fact]
+        public async Task ValidateDeviceAuthCodeAsync_ExistingAuthorizationCode_RemainsValid()
+        {
+            const string hardwareId = "hbmobile-legacy";
+            await _db.Insertable(CreateDevice(
+                hardwareId,
+                "PDA_1004_1429",
+                "1004")).ExecuteCommandAsync();
+            var activationService = new Mock<IMobileDeviceActivationService>(MockBehavior.Strict);
+            activationService
+                .Setup(service => service.ValidateBoundDeviceCredentialAsync(
+                    hardwareId,
+                    "AUTH-001",
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MobileDeviceCredentialValidationResult(false, false));
+
+            var isValid = await CreateService(
+                mobileDeviceActivationService: activationService.Object
+            ).ValidateDeviceAuthCodeAsync(
+                hardwareId,
+                "AUTH-001");
+
+            Assert.True(isValid);
+            activationService.VerifyAll();
+        }
+
+        [Fact]
+        public async Task ValidateDeviceAuthCodeAsync_ActiveMobileBindingCredential_IsValid()
+        {
+            const string hardwareId = "hbmobile-bound";
+            const string credential = "mobile-device-account-credential";
+            var device = CreateDevice(hardwareId, "MOB_1004_ABC12345", "1004");
+            device.设备授权码 = "SERVER-INTERNAL-AUTH-CODE";
+            await _db.Insertable(device).ExecuteCommandAsync();
+            var activationService = new Mock<IMobileDeviceActivationService>(MockBehavior.Strict);
+            activationService
+                .Setup(service => service.ValidateBoundDeviceCredentialAsync(
+                    hardwareId,
+                    credential,
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MobileDeviceCredentialValidationResult(true, true));
+
+            var isValid = await CreateService(
+                mobileDeviceActivationService: activationService.Object
+            ).ValidateDeviceAuthCodeAsync(
+                hardwareId,
+                credential);
+
+            Assert.True(isValid);
+            activationService.VerifyAll();
+        }
+
+        [Fact]
+        public async Task ValidateDeviceAuthCodeAsync_MobileBindingCredential_FailsClosedWhenBridgeRejects()
+        {
+            const string hardwareId = "hbmobile-bound-rejected";
+            const string credential = "mobile-device-account-credential";
+            var device = CreateDevice(hardwareId, "MOB_1004_DEF67890", "1004");
+            device.设备授权码 = "SERVER-INTERNAL-AUTH-CODE";
+            await _db.Insertable(device).ExecuteCommandAsync();
+            var activationService = new Mock<IMobileDeviceActivationService>(MockBehavior.Strict);
+            activationService
+                .Setup(service => service.ValidateBoundDeviceCredentialAsync(
+                    hardwareId,
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MobileDeviceCredentialValidationResult(true, false));
+            var service = CreateService(
+                mobileDeviceActivationService: activationService.Object);
+
+            Assert.False(await service.ValidateDeviceAuthCodeAsync(hardwareId, "wrong-credential"));
+            Assert.False(await service.ValidateDeviceAuthCodeAsync(hardwareId, credential));
+            activationService.Verify(
+                service => service.ValidateBoundDeviceCredentialAsync(
+                    hardwareId,
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()),
+                Times.Exactly(2));
+            activationService.VerifyNoOtherCalls();
+        }
+
+        [Fact]
+        public async Task ValidateDeviceAuthCodeAsync_ActiveMobileBinding_NeverAcceptsInternalAuthorizationCode()
+        {
+            const string hardwareId = "hbmobile-bound-internal-code";
+            const string internalAuthCode = "SERVER-INTERNAL-AUTH-CODE";
+            var device = CreateDevice(hardwareId, "MOB_1004_13572468", "1004");
+            device.设备授权码 = internalAuthCode;
+            await _db.Insertable(device).ExecuteCommandAsync();
+            var activationService = new Mock<IMobileDeviceActivationService>(MockBehavior.Strict);
+            activationService
+                .Setup(service => service.ValidateBoundDeviceCredentialAsync(
+                    hardwareId,
+                    internalAuthCode,
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MobileDeviceCredentialValidationResult(true, false));
+
+            var isValid = await CreateService(
+                mobileDeviceActivationService: activationService.Object
+            ).ValidateDeviceAuthCodeAsync(hardwareId, internalAuthCode);
+
+            Assert.False(isValid);
+            activationService.VerifyAll();
+        }
+
+        [Fact]
+        public async Task ValidateDeviceAuthCodeAsync_BindingHistoryOwnsHardwareBeforeLegacyRecordLookup()
+        {
+            const string hardwareId = "shared-cross-type-hardware";
+            const string internalAuthCode = "POS-INTERNAL-AUTH-CODE";
+            var legacyDevice = CreateDevice(
+                hardwareId,
+                "POS_1004_87654321",
+                "1004",
+                "Windows");
+            legacyDevice.设备类型 = "POS";
+            legacyDevice.设备授权码 = internalAuthCode;
+            await _db.Insertable(legacyDevice).ExecuteCommandAsync();
+            var activationService = new Mock<IMobileDeviceActivationService>(MockBehavior.Strict);
+            activationService
+                .Setup(service => service.ValidateBoundDeviceCredentialAsync(
+                    hardwareId,
+                    internalAuthCode,
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MobileDeviceCredentialValidationResult(true, false));
+
+            var isValid = await CreateService(
+                mobileDeviceActivationService: activationService.Object
+            ).ValidateDeviceAuthCodeAsync(hardwareId, internalAuthCode);
+
+            Assert.False(isValid);
+            activationService.VerifyAll();
+        }
+
+        [Fact]
+        public async Task ValidateDeviceAuthCodeAsync_DuplicateSystemNumberAliasFailsClosed()
+        {
+            const string systemDeviceNumber = "SHARED-SYSTEM-ALIAS";
+            const string legacyHardwareId = "legacy-alias-hardware";
+            const string internalAuthCode = "LEGACY-INTERNAL-AUTH-CODE";
+            var legacyDevice = CreateDevice(
+                legacyHardwareId,
+                systemDeviceNumber,
+                "1004",
+                "Windows");
+            legacyDevice.设备类型 = "POS";
+            legacyDevice.设备授权码 = internalAuthCode;
+            await _db.Insertable(legacyDevice).ExecuteCommandAsync();
+            await _db.Insertable(CreateDevice(
+                "revoked-bound-alias-hardware",
+                systemDeviceNumber,
+                "1004")).ExecuteCommandAsync();
+            var activationService = new Mock<IMobileDeviceActivationService>(MockBehavior.Strict);
+            activationService
+                .Setup(service => service.ValidateBoundDeviceCredentialAsync(
+                    systemDeviceNumber,
+                    internalAuthCode,
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MobileDeviceCredentialValidationResult(false, false));
+            activationService
+                .Setup(service => service.ValidateBoundDeviceCredentialAsync(
+                    legacyHardwareId,
+                    internalAuthCode,
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MobileDeviceCredentialValidationResult(false, false));
+
+            var isValid = await CreateService(
+                mobileDeviceActivationService: activationService.Object
+            ).ValidateDeviceAuthCodeAsync(systemDeviceNumber, internalAuthCode);
+
+            Assert.False(isValid);
+        }
+
+        [Fact]
+        public async Task ValidateAndUpdateDeviceAuthCodeAsync_ActiveMobileBinding_NeverReturnsInternalAuthorizationCode()
+        {
+            const string hardwareId = "hbmobile-bound-no-code-replay";
+            const string internalAuthCode = "SERVER-INTERNAL-AUTH-CODE";
+            var device = CreateDevice(hardwareId, "MOB_1004_24681357", "1004");
+            device.设备授权码 = internalAuthCode;
+            await _db.Insertable(device).ExecuteCommandAsync();
+            var activationService = new Mock<IMobileDeviceActivationService>(MockBehavior.Strict);
+            activationService
+                .Setup(service => service.ValidateBoundDeviceCredentialAsync(
+                    hardwareId,
+                    "wrong-credential",
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MobileDeviceCredentialValidationResult(true, false));
+
+            var result = await CreateService(
+                mobileDeviceActivationService: activationService.Object
+            ).ValidateAndUpdateDeviceAuthCodeAsync(hardwareId, "wrong-credential");
+
+            Assert.False(result.IsValid);
+            Assert.Null(result.NewAuthCode);
+            activationService.VerifyAll();
+        }
+
+        [Fact]
+        public async Task ValidateAndUpdateDeviceAuthCodeAsync_RevokedBindingHistoryNeverReturnsLegacyCode()
+        {
+            const string hardwareId = "revoked-binding-cross-type-hardware";
+            const string internalAuthCode = "POS-INTERNAL-AUTH-CODE";
+            var legacyDevice = CreateDevice(
+                hardwareId,
+                "POS_1004_99887766",
+                "1004",
+                "Windows");
+            legacyDevice.设备类型 = "POS";
+            legacyDevice.设备授权码 = internalAuthCode;
+            await _db.Insertable(legacyDevice).ExecuteCommandAsync();
+            var activationService = new Mock<IMobileDeviceActivationService>(MockBehavior.Strict);
+            activationService
+                .Setup(service => service.ValidateBoundDeviceCredentialAsync(
+                    hardwareId,
+                    internalAuthCode,
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MobileDeviceCredentialValidationResult(true, false));
+
+            var result = await CreateService(
+                mobileDeviceActivationService: activationService.Object
+            ).ValidateAndUpdateDeviceAuthCodeAsync(hardwareId, internalAuthCode);
+
+            Assert.False(result.IsValid);
+            Assert.Null(result.NewAuthCode);
+            activationService.VerifyAll();
+        }
+
+        [Fact]
+        public async Task ValidateAndUpdateDeviceAuthCodeAsync_ExactHardwareWinsOverAnotherDeviceAlias()
+        {
+            const string requestedHardwareId = "exact-hardware-priority";
+            const string exactAuthCode = "EXACT-HARDWARE-AUTH-CODE";
+            var aliasDevice = CreateDevice(
+                "different-hardware",
+                requestedHardwareId,
+                "1004",
+                "Windows");
+            aliasDevice.设备类型 = "POS";
+            aliasDevice.设备授权码 = "ALIAS-AUTH-CODE";
+            await _db.Insertable(aliasDevice).ExecuteCommandAsync();
+            var exactDevice = CreateDevice(
+                requestedHardwareId,
+                "POS_1004_EXACT000",
+                "1004",
+                "Windows");
+            exactDevice.设备类型 = "POS";
+            exactDevice.设备授权码 = exactAuthCode;
+            await _db.Insertable(exactDevice).ExecuteCommandAsync();
+            var activationService = new Mock<IMobileDeviceActivationService>(MockBehavior.Strict);
+            activationService
+                .Setup(service => service.ValidateBoundDeviceCredentialAsync(
+                    requestedHardwareId,
+                    exactAuthCode,
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MobileDeviceCredentialValidationResult(false, false));
+            activationService
+                .Setup(service => service.ValidateBoundDeviceCredentialAsync(
+                    "different-hardware",
+                    exactAuthCode,
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MobileDeviceCredentialValidationResult(false, false));
+
+            var result = await CreateService(
+                mobileDeviceActivationService: activationService.Object
+            ).ValidateAndUpdateDeviceAuthCodeAsync(requestedHardwareId, exactAuthCode);
+
+            Assert.True(result.IsValid);
+            Assert.Null(result.NewAuthCode);
+        }
+
+        [Fact]
+        public async Task ValidateAndUpdateDeviceAuthCodeAsync_ActiveMobileBinding_AcceptsOnlyDynamicCredential()
+        {
+            const string hardwareId = "hbmobile-bound-valid-credential";
+            const string credential = "mobile-device-account-credential";
+            var device = CreateDevice(hardwareId, "MOB_1004_11223344", "1004");
+            device.设备授权码 = "SERVER-INTERNAL-AUTH-CODE";
+            await _db.Insertable(device).ExecuteCommandAsync();
+            var activationService = new Mock<IMobileDeviceActivationService>(MockBehavior.Strict);
+            activationService
+                .Setup(service => service.ValidateBoundDeviceCredentialAsync(
+                    hardwareId,
+                    credential,
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MobileDeviceCredentialValidationResult(true, true));
+
+            var result = await CreateService(
+                mobileDeviceActivationService: activationService.Object
+            ).ValidateAndUpdateDeviceAuthCodeAsync(hardwareId, credential);
+
+            Assert.True(result.IsValid);
+            Assert.Null(result.NewAuthCode);
+            activationService.VerifyAll();
+        }
+
+        [Fact]
+        public async Task ValidateAndUpdateDeviceAuthCodeAsync_PosDevice_PreservesLatestAuthorizationCodeRecovery()
+        {
+            const string hardwareId = "pos-device-existing";
+            var device = CreateDevice(hardwareId, "POS_1004_12345678", "1004", "Windows");
+            device.设备类型 = "POS";
+            device.设备授权码 = "POS-AUTH-001";
+            await _db.Insertable(device).ExecuteCommandAsync();
+
+            var result = await CreateService()
+                .ValidateAndUpdateDeviceAuthCodeAsync(hardwareId, "OUTDATED-POS-CODE");
+
+            Assert.True(result.IsValid);
+            Assert.Equal("POS-AUTH-001", result.NewAuthCode);
         }
 
         [Fact]
@@ -724,7 +1154,9 @@ namespace BlazorApp.Api.Tests
             };
         }
 
-        private DeviceRegistrationService CreateService(DateTime? now = null)
+        private DeviceRegistrationService CreateService(
+            DateTime? now = null,
+            IMobileDeviceActivationService? mobileDeviceActivationService = null)
         {
             var context = (POSMSqlSugarContext)RuntimeHelpers.GetUninitializedObject(
                 typeof(POSMSqlSugarContext)
@@ -738,8 +1170,21 @@ namespace BlazorApp.Api.Tests
             return new DeviceRegistrationService(
                 context,
                 NullLogger<DeviceRegistrationService>.Instance,
+                mobileDeviceActivationService ?? CreateLegacyMobileActivationService(),
                 now.HasValue ? () => now.Value : null
             );
+        }
+
+        private static IMobileDeviceActivationService CreateLegacyMobileActivationService()
+        {
+            var activationService = new Mock<IMobileDeviceActivationService>(MockBehavior.Strict);
+            activationService
+                .Setup(service => service.ValidateBoundDeviceCredentialAsync(
+                    It.IsAny<string>(),
+                    It.IsAny<string>(),
+                    It.IsAny<CancellationToken>()))
+                .ReturnsAsync(new MobileDeviceCredentialValidationResult(false, false));
+            return activationService.Object;
         }
     }
 }

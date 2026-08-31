@@ -40,6 +40,7 @@ export default function ShellLayout() {
   const clearLocalAuthSession = useAuthStore((state) => state.clearLocalSession);
   const setSessionKind = useAuthStore((state) => state.setSessionKind);
   const deviceSession = useDeviceStore((state) => state.session);
+  const accountBinding = useDeviceStore((state) => state.accountBinding);
   const deviceHydrated = useDeviceStore((state) => state.isReady);
   const validateDevice = useDeviceStore((state) => state.validate);
   const navigationItems = useAppNavigationStore((state) => state.items);
@@ -52,13 +53,18 @@ export default function ShellLayout() {
   const canCreateOrder = useAuthStore((state) => state.access.canCreateOrder);
   const isWarehouseStaffOnly = useAuthStore((state) => state.access.isWarehouseStaffOnly);
   const hasRestored = useRef(false);
+  const shellMounted = useRef(true);
   const hasAppliedDefaultRoute = useRef(false);
   const awaitingPreferredDefaultRoute = useRef(false);
   const [heartbeatReady, setHeartbeatReady] = useState(false);
   const [heartbeatUsesDeviceSession, setHeartbeatUsesDeviceSession] = useState(false);
+  const [boundAccountRestorePending, setBoundAccountRestorePending] = useState(false);
   const hasUserSession = Boolean(isAuthenticated && userGuid);
   const hasStoredDeviceSession = Boolean(
     deviceSession?.hardwareId && deviceSession.authCode && deviceSession.storeCode
+  );
+  const hasStoredDeviceAccountBinding = Boolean(
+    accountBinding?.hardwareId && accountBinding.credential
   );
   const isIosReviewSession = sessionKind === "iosReview";
   useAppDeviceStatusHeartbeat({
@@ -68,6 +74,13 @@ export default function ShellLayout() {
       (hasUserSession || hasStoredDeviceSession),
     useDeviceSession: heartbeatUsesDeviceSession,
   });
+
+  useEffect(() => {
+    shellMounted.current = true;
+    return () => {
+      shellMounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (hasRestored.current) {
@@ -115,6 +128,27 @@ export default function ShellLayout() {
       }
 
       setHeartbeatReady(true);
+      return;
+    }
+
+    if (hasStoredDeviceAccountBinding) {
+      hasRestored.current = true;
+      setBoundAccountRestorePending(true);
+
+      async function ensureDeviceAccountSession() {
+        const restored = await restoreSession();
+        if (!shellMounted.current) {
+          return;
+        }
+        setBoundAccountRestorePending(false);
+        setHeartbeatUsesDeviceSession(restored && hasStoredDeviceSession);
+        setHeartbeatReady(restored);
+        if (!restored) {
+          router.replace("/(auth)/login");
+        }
+      }
+
+      void ensureDeviceAccountSession();
       return;
     }
 
@@ -205,6 +239,7 @@ export default function ShellLayout() {
     deviceHydrated,
     deviceSession,
     hasStoredDeviceSession,
+    hasStoredDeviceAccountBinding,
     hasUserSession,
     isIosReviewSession,
     restoreSession,
@@ -213,7 +248,9 @@ export default function ShellLayout() {
     validateDevice,
   ]);
 
-  const isDeviceMode = Boolean(hasStoredDeviceSession && !hasUserSession);
+  const isDeviceMode = Boolean(
+    hasStoredDeviceSession && !hasStoredDeviceAccountBinding && !hasUserSession
+  );
   const accountRouteNames = useMemo(
     () =>
       filterAccountTabRouteNames(
@@ -337,6 +374,7 @@ export default function ShellLayout() {
   ]);
 
   if (
+    boundAccountRestorePending ||
     shouldWaitForNavigation ||
     ((!deviceHydrated || !hasRestored.current) &&
       (isLoading || (isDeviceMode ? true : !isAuthenticated && !userGuid)))
