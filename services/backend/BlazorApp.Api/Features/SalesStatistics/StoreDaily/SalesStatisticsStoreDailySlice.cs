@@ -105,7 +105,9 @@ namespace BlazorApp.Api.Services
     {
         try
         {
-            var previousDay = DateTime.Now.AddDays(-1).Date;
+            var previousDay = SalesStatisticsBusinessDate
+                .Resolve(DateTimeOffset.UtcNow)
+                .AddDays(-1);
 
             _logger.LogInformation("开始全量刷新前一天数据: {Date}", previousDay);
 
@@ -129,7 +131,7 @@ namespace BlazorApp.Api.Services
     {
         try
         {
-            var currentDay = DateTime.Now.Date;
+            var currentDay = SalesStatisticsBusinessDate.Resolve(DateTimeOffset.UtcNow);
 
             _logger.LogInformation("开始全量刷新当天数据: {Date}", currentDay);
 

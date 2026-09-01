@@ -77,6 +77,15 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
+    public void ResolveBusinessDate_UTC仍为前一天时应返回悉尼当天()
+    {
+        var utcNow = new DateTimeOffset(2026, 9, 1, 22, 30, 0, TimeSpan.Zero);
+        var businessDate = SalesStatisticsBusinessDate.Resolve(utcNow);
+
+        Assert.Equal(new DateTime(2026, 9, 2), businessDate);
+    }
+
+    [Fact]
     public async Task LoadStoreCostsInBatchesAsync_超过批量上限应拆分查询且完整返回()
     {
         var productCodes = Enumerable.Range(
