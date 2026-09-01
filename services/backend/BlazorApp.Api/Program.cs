@@ -375,6 +375,9 @@ builder.Services.AddCors(options =>
 // Mobile 开通、重绑与设备会话交换按可信客户端 IP 独立限流。
 builder.Services.AddRateLimiter(MobileDeviceActivationRateLimits.Configure);
 
+// 浏览器扩展一次性授权按父会话限流，匿名兑换按可信客户端 IP 限流。
+builder.Services.AddRateLimiter(BrowserExtensionSessionGrantRateLimits.Configure);
+
 // --------------------- JWT认证配置 ---------------------
 // 🔐 配置JSON Web Token（JWT）身份验证
 // JWT是一种无状态的、基于令牌的认证机制，适合前后端分离架构
@@ -630,6 +633,7 @@ builder.Services.AddAutoMapper(cfg => { }, typeof(MappingProfile).Assembly);
 // 适合包含状态或需要事务管理的业务服务
 builder.Services.AddScoped<IAuthService, AuthService>(); // 认证服务
 builder.Services.AddScoped<IAuthSessionValidator, AuthSessionValidator>(); // access token 会话有效性校验
+builder.Services.AddScoped<BrowserExtensionSessionGrantService>(); // 网站 Cookie 会话与扩展短期令牌交换
 builder.Services.AddScoped<IMobileDeviceActivationService, MobileDeviceActivationService>();
 builder.Services.AddScoped<
     IMobileDeviceActivationCodeManagementService,
@@ -1077,8 +1081,11 @@ app.UseMiddleware<PerformanceMetricsEndpointExclusionMiddleware>();
 // 必须在授权中间件之前执行
 app.UseAuthentication();
 
-// Mobile 会话交换及匿名开通接口的独立限流必须在端点映射前启用。
+// Mobile 会话交换、匿名开通及浏览器扩展授权的独立限流必须在端点映射前启用。
 app.UseRateLimiter();
+
+// 浏览器扩展短期 JWT 只允许访问订货助手 API。
+app.UseMiddleware<BrowserExtensionTokenScopeMiddleware>();
 
 // 🛡️ 授权中间件：基于用户身份和角色检查访问权限
 // 处理[Authorize]特性标记的控制器和方法

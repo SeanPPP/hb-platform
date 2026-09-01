@@ -10,6 +10,8 @@ internal sealed record SchemaMigrationStep(
 internal sealed class SchemaMigrationCoordinator
 {
     internal const string MainMigrationId = "20260827.001-hbweb-baseline";
+    internal const string BrowserExtensionSessionGrantMigrationId =
+        "20260830.001-browser-extension-session-grant";
     internal const string PosmMigrationId = "20260827.001-hbweb-posm-baseline";
     internal const string MobileDeviceActivationMigrationId =
         "20260831.001-mobile-device-activation";
@@ -20,6 +22,11 @@ internal sealed class SchemaMigrationCoordinator
             MainMigrationId,
             static (runtime, cancellationToken) =>
                 runtime.ApplyMainBaselineAsync(cancellationToken)
+        ),
+        new(
+            BrowserExtensionSessionGrantMigrationId,
+            static (runtime, cancellationToken) =>
+                runtime.ApplyBrowserExtensionSessionGrantAsync(cancellationToken)
         ),
     ];
 

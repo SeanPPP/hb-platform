@@ -27,9 +27,9 @@ test('已保存语言优先，非法保存值回退系统语言', () => {
 });
 
 test('t 语言区分与回退', () => {
-  assert.equal(typeof t('zh', 'login'), 'string');
-  assert.equal(typeof t('en', 'login'), 'string');
-  assert.notEqual(t('zh', 'login'), t('en', 'login'));
+  assert.equal(typeof t('zh', 'sessionConnectedTitle'), 'string');
+  assert.equal(typeof t('en', 'sessionConnectedTitle'), 'string');
+  assert.notEqual(t('zh', 'sessionConnectedTitle'), t('en', 'sessionConnectedTitle'));
   assert.equal(t('zh', 'missing.key.xyz'), 'missing.key.xyz');
 });
 
@@ -44,6 +44,25 @@ test('后端接口设置提供完整中英文文案', () => {
     'apiSwitched',
     'apiInvalid',
     'apiPermissionDenied',
+  ]) {
+    assert.equal(typeof t('zh', key), 'string', `zh.${key}`);
+    assert.equal(typeof t('en', key), 'string', `en.${key}`);
+    assert.notEqual(t('zh', key), key, `zh.${key}`);
+    assert.notEqual(t('en', key), key, `en.${key}`);
+  }
+});
+
+test('网站会话状态与操作提供完整中英文文案', () => {
+  for (const key of [
+    'sessionCheckingTitle',
+    'sessionCheckingDescription',
+    'sessionNeedsWebsiteTitle',
+    'sessionNeedsWebsiteDescription',
+    'sessionConnectedTitle',
+    'openShop',
+    'recheckSession',
+    'disconnectExtension',
+    'apiOriginMismatch',
   ]) {
     assert.equal(typeof t('zh', key), 'string', `zh.${key}`);
     assert.equal(typeof t('en', key), 'string', `en.${key}`);
