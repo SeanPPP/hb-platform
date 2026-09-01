@@ -30,6 +30,7 @@ import {
   mergeContainerDetailColumnOrder,
   isContainerDetailColumnOrderCustomized,
   buildContainerDetailSaveFailureKeys,
+  buildContainerDetailSuccessfulEnglishNameUpdates,
   reconcilePendingContainerDetailSaveFailureKeys,
   settleScopedContainerDetailSave,
   shouldInvalidateContainerDetailLoadAfterSave,
@@ -87,6 +88,7 @@ import {
   matchesContainerDetailSelectedTags,
   matchesContainerDetailTagFilter,
   normalizeContainerDetailPushToHqPayload,
+  normalizeContainerDetailEnglishNameForSave,
   resolveContainerDetailOemPrice,
   DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
@@ -1036,6 +1038,17 @@ const clearedRows = applyContainerDetailEnglishNameUpdates(rows, [
 assertEqual(clearedRows[0].英文名称, undefined, '清除后本地行明细级英文名称应为空')
 assertEqual(clearedRows[0].商品信息?.英文名称, undefined, '清除后本地行商品信息英文名称应为空')
 
+assertEqual(
+  normalizeContainerDetailEnglishNameForSave('  christmas wool ball  '),
+  'Christmas Wool Ball',
+  '保存英文名称时应去除首尾空白并逐词大写首个拉丁字母',
+)
+assertEqual(
+  normalizeContainerDetailEnglishNameForSave("  six-color  card\twith\nx'mas X'MAS TPR mIXed  "),
+  "Six-color  Card\tWith\nX'mas X'MAS TPR MIXed",
+  '保存英文名称时应保留内部空白、连字符、撇号、缩写和词内大小写',
+)
+
 let pendingDetailPatches: PendingContainerDetailPatchMap = {}
 pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
   hguid: 'detail-1',
@@ -1047,7 +1060,7 @@ pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
 })
 pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
   hguid: 'detail-2',
-  英文名称: '  Valid English Name  ',
+  英文名称: '  valid english name  ',
 })
 pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
   hguid: 'detail-3',
@@ -1142,6 +1155,69 @@ assertDeepEqual(
   },
   '保存计划应按明细去重统计，并把空白英文名称保留为本地校验错误',
 )
+
+assertDeepEqual(
+  clearSavedPendingContainerDetailFields(
+    {
+      'title-case-detail': {
+        hguid: 'title-case-detail',
+        英文名称: 'christmas wool ball',
+      },
+    },
+    [{ hguid: 'title-case-detail', 英文名称: 'Christmas Wool Ball' }],
+    [],
+  ),
+  {},
+  '成功提交的逐词大写英文名称应按同一规范清除原始小写草稿',
+)
+
+const successfulEnglishNameUpdates = buildContainerDetailSuccessfulEnglishNameUpdates(
+  {
+    'save-success': { hguid: 'save-success', 英文名称: 'christmas wool ball' },
+    'edited-during-save': { hguid: 'edited-during-save', 英文名称: 'newer english name' },
+    'cleared-during-save': { hguid: 'cleared-during-save', ClearEnglishName: true },
+    'field-failure': { hguid: 'field-failure', 英文名称: 'failed english name' },
+    'row-failure': { hguid: 'row-failure', 英文名称: 'missing detail' },
+  },
+  [
+    { hguid: 'save-success', 英文名称: 'Christmas Wool Ball' },
+    { hguid: 'edited-during-save', 英文名称: 'Old English Name' },
+    { hguid: 'cleared-during-save', 英文名称: 'Old English Name' },
+    { hguid: 'field-failure', 英文名称: 'Failed English Name' },
+    { hguid: 'row-failure', 英文名称: 'Missing Detail' },
+  ],
+  [
+    {
+      hguid: 'field-failure',
+      field: '英文名称',
+      code: 'CONTAINS_CHINESE',
+      message: '英文名称不能包含中文',
+    },
+    {
+      hguid: 'row-failure',
+      field: '*',
+      code: 'DETAIL_NOT_FOUND',
+      message: '货柜明细不存在',
+    },
+  ],
+)
+assertDeepEqual(
+  successfulEnglishNameUpdates,
+  [{ hguid: 'save-success', 英文名称: 'Christmas Wool Ball' }],
+  '成功回显应排除字段失败、整行失败及保存期间产生的新名称或清空意图',
+)
+
+const savedEnglishNameRows = applyContainerDetailEnglishNameUpdates(
+  [{
+    id: 51,
+    hguid: 'save-success',
+    英文名称: 'christmas wool ball',
+    商品信息: { 英文名称: 'christmas wool ball' },
+  }],
+  successfulEnglishNameUpdates,
+)
+assertEqual(savedEnglishNameRows[0].英文名称, 'Christmas Wool Ball', '成功回显应更新明细级英文名称')
+assertEqual(savedEnglishNameRows[0].商品信息?.英文名称, 'Christmas Wool Ball', '成功回显应同步商品信息英文名称')
 
 const remainingPendingDetailPatches = clearSavedPendingContainerDetailFields(
   pendingDetailPatches,
@@ -3800,6 +3876,15 @@ assertEqual(
     pageSource.includes("t('containers.messages.detailsSaved'"),
   true,
   '保存明细应统一提交价格和英文名称，并按后端字段校验结果仅清除已保存内容',
+)
+assertEqual(
+  pageSource.includes('buildContainerDetailSuccessfulEnglishNameUpdates(') &&
+    pageSource.includes('pendingDetailPatchesRef.current,') &&
+    pageSource.includes('plan.detailUpdates,') &&
+    pageSource.includes('result.validationErrors,') &&
+    pageSource.includes('applyContainerDetailEnglishNameUpdates(items, successfulEnglishNameUpdates)'),
+  true,
+  '保存成功后应按最新草稿和字段级错误筛选逐词大写回显，不能覆盖并发编辑',
 )
 assertEqual(
     pageSource.includes("Modal.confirm({") &&

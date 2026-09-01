@@ -127,6 +127,7 @@ import {
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailMatchStatusUpdates,
   buildContainerDetailSaveFailureKeys,
+  buildContainerDetailSuccessfulEnglishNameUpdates,
   buildPendingContainerDetailSavePlan,
   buildContainerDetailTagStats,
   buildContainerDetailFloatRateUpdates,
@@ -1981,6 +1982,15 @@ export default function ContainerDetailPage() {
         containerDetailReconcileGenerationRef.current += 1
         setDetailLoading(false)
         setDetailLoadingMore(false)
+      }
+      const successfulEnglishNameUpdates = buildContainerDetailSuccessfulEnglishNameUpdates(
+        pendingDetailPatchesRef.current,
+        plan.detailUpdates,
+        result.validationErrors,
+      )
+      if (successfulEnglishNameUpdates.length > 0) {
+        // 保存期间允许继续编辑；旧响应不能覆盖新名称或新的清空意图。
+        setRows((items) => applyContainerDetailEnglishNameUpdates(items, successfulEnglishNameUpdates))
       }
       updatePendingDetailPatches((current) => (
         clearSavedPendingContainerDetailFields(current, plan.detailUpdates, result.validationErrors)
