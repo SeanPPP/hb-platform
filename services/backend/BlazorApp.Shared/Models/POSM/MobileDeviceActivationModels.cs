@@ -128,7 +128,9 @@ public static class MobileDeviceActivationSchema
             @LockOwner = N'Transaction',
             @LockTimeout = 30000;
         IF @Result < 0
-            THROW 51400, 'Could not acquire mobile device activation schema lock.', 1;
+        BEGIN
+            ;THROW 51400, 'Could not acquire mobile device activation schema lock.', 1;
+        END;
 
         IF OBJECT_ID(N'[dbo].[POSM_MobileDeviceActivationGrant]', N'U') IS NULL
         BEGIN
@@ -263,7 +265,9 @@ public static class MobileDeviceActivationSchema
 
         -- 两张表由本领域独占；若历史部署中存在同名但不兼容结构，启动迁移必须失败关闭。
         IF @GrantObjectId IS NULL OR @BindingObjectId IS NULL
-            THROW 51401, 'Existing mobile device activation schema is incompatible: required table missing.', 1;
+        BEGIN
+            ;THROW 51401, 'Existing mobile device activation schema is incompatible: required table missing.', 1;
+        END;
 
         -- 完整列清单同时锁定类型、字节长度、nullability 与 datetime2 scale，防止同名错型漂移。
         IF EXISTS (
@@ -318,11 +322,15 @@ public static class MobileDeviceActivationSchema
                OR actual.[max_length] <> expected.[MaxLength]
                OR actual.[is_nullable] <> expected.[IsNullable]
                OR (expected.[Scale] >= 0 AND actual.[scale] <> expected.[Scale]))
-            THROW 51402, 'Existing mobile device activation schema is incompatible: column manifest mismatch.', 1;
+        BEGIN
+            ;THROW 51402, 'Existing mobile device activation schema is incompatible: column manifest mismatch.', 1;
+        END;
 
         IF COL_LENGTH(N'[dbo].[POSM_MobileDeviceActivationGrant]', N'ActivationCode') IS NOT NULL
            OR COL_LENGTH(N'[dbo].[POSM_MobileDeviceAccountBinding]', N'Credential') IS NOT NULL
-            THROW 51404, 'Existing mobile device activation schema is incompatible: plaintext secret column detected.', 1;
+        BEGIN
+            ;THROW 51404, 'Existing mobile device activation schema is incompatible: plaintext secret column detected.', 1;
+        END;
 
         -- 主键必须保持命名、clustered、唯一、启用且仅包含领域标识列。
         IF EXISTS (
@@ -360,7 +368,9 @@ public static class MobileDeviceActivationSchema
                       WHERE extra_key.[object_id] = index_info.[object_id]
                         AND extra_key.[index_id] = index_info.[index_id]
                         AND extra_key.[key_ordinal] > 1)))
-            THROW 51405, 'Existing mobile device activation schema is incompatible: primary key shape.', 1;
+        BEGIN
+            ;THROW 51405, 'Existing mobile device activation schema is incompatible: primary key shape.', 1;
+        END;
 
         IF NOT EXISTS (
             SELECT 1
@@ -375,7 +385,9 @@ public static class MobileDeviceActivationSchema
               AND default_info.[name] = N'DF_POSM_MobileDeviceAccountBinding_Version'
               AND column_info.[name] = N'Version'
               AND normalized.[Definition] = N'1')
-            THROW 51406, 'Existing mobile device activation schema is incompatible: binding version default.', 1;
+        BEGIN
+            ;THROW 51406, 'Existing mobile device activation schema is incompatible: binding version default.', 1;
+        END;
 
         -- 规范化后只接受已知的完整表达式；额外 OR 1=1 或删改任一状态条件都会失败关闭。
         IF EXISTS (
@@ -427,7 +439,10 @@ public static class MobileDeviceActivationSchema
                     expected.[Definition1],
                     expected.[Definition2],
                     expected.[Definition3])
-            THROW 51408, 'Existing mobile device activation schema is incompatible: check constraint missing or untrusted.', 1;
+        )
+        BEGIN
+            ;THROW 51408, 'Existing mobile device activation schema is incompatible: check constraint missing or untrusted.', 1;
+        END;
 
         IF NOT EXISTS (
             SELECT 1
@@ -452,7 +467,9 @@ public static class MobileDeviceActivationSchema
                   WHERE extra_key.[object_id] = index_info.[object_id]
                     AND extra_key.[index_id] = index_info.[index_id]
                     AND extra_key.[key_ordinal] > 1))
-            THROW 51409, 'Existing mobile device activation schema is incompatible: grant secret index.', 1;
+        BEGIN
+            ;THROW 51409, 'Existing mobile device activation schema is incompatible: grant secret index.', 1;
+        END;
 
         IF NOT EXISTS (
             SELECT 1
@@ -480,7 +497,9 @@ public static class MobileDeviceActivationSchema
                   WHERE extra_key.[object_id] = index_info.[object_id]
                     AND extra_key.[index_id] = index_info.[index_id]
                     AND extra_key.[key_ordinal] > 1))
-            THROW 51410, 'Existing mobile device activation schema is incompatible: active hardware index.', 1;
+        BEGIN
+            ;THROW 51410, 'Existing mobile device activation schema is incompatible: active hardware index.', 1;
+        END;
 
         IF NOT EXISTS (
             SELECT 1
@@ -508,7 +527,9 @@ public static class MobileDeviceActivationSchema
                   WHERE extra_key.[object_id] = index_info.[object_id]
                     AND extra_key.[index_id] = index_info.[index_id]
                     AND extra_key.[key_ordinal] > 1))
-            THROW 51411, 'Existing mobile device activation schema is incompatible: active registration index.', 1;
+        BEGIN
+            ;THROW 51411, 'Existing mobile device activation schema is incompatible: active registration index.', 1;
+        END;
         -- MOBILE_DEVICE_ACTIVATION_VERIFY_END
 
         COMMIT TRANSACTION;

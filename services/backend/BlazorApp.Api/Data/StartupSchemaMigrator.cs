@@ -1,20 +1,12 @@
 using Microsoft.Extensions.Logging;
-using BlazorApp.Shared.Models.POSM;
 using SqlSugar;
 
 namespace BlazorApp.Api.Data
 {
     public static class StartupSchemaMigrator
     {
-        public static async Task EnsurePosmAsync(ISqlSugarClient posmDb, ILogger logger)
-        {
-            await InstallmentOrderSchemaMigrator.EnsureAsync(posmDb, logger);
-            if (posmDb.CurrentConnectionConfig.DbType == DbType.SqlServer)
-            {
-                // 兼容尚未切换到显式迁移命令的启动入口；SQL 自身带事务锁且可重复执行。
-                await posmDb.Ado.ExecuteCommandAsync(MobileDeviceActivationSchema.EnsureSql);
-            }
-        }
+        public static Task EnsurePosmAsync(ISqlSugarClient posmDb, ILogger logger) =>
+            InstallmentOrderSchemaMigrator.EnsureAsync(posmDb, logger);
 
         public static async Task EnsureAsync(ISqlSugarClient db, ILogger logger)
         {

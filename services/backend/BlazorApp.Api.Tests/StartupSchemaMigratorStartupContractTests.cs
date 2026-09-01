@@ -23,7 +23,7 @@ public sealed class StartupSchemaMigratorStartupContractTests
     }
 
     [Fact]
-    public async Task StartupSchemaMigrator_POSM启动兜底包含Mobile设备绑定Schema()
+    public async Task StartupSchemaMigrator_POSM旧启动兜底不包含Mobile设备绑定Schema()
     {
         var migratorSource = await File.ReadAllTextAsync(
             Path.Combine(
@@ -33,11 +33,31 @@ public sealed class StartupSchemaMigratorStartupContractTests
         );
 
         Assert.Contains("EnsurePosmAsync", migratorSource, StringComparison.Ordinal);
-        Assert.Contains(
+        Assert.DoesNotContain(
             "MobileDeviceActivationSchema.EnsureSql",
             migratorSource,
             StringComparison.Ordinal
         );
+    }
+
+    [Fact]
+    public async Task Mobile设备绑定Schema_条件抛错必须使用独立THROW语句()
+    {
+        var schemaSource = await File.ReadAllTextAsync(
+            Path.Combine(
+                FindRepoRoot(),
+                "services/backend/BlazorApp.Shared/Models/POSM/MobileDeviceActivationModels.cs"
+            )
+        );
+
+        Assert.Equal(
+            10,
+            System.Text.RegularExpressions.Regex.Matches(
+                schemaSource,
+                @"(?m)^\s*;THROW 514\d{2},"
+            ).Count
+        );
+        Assert.DoesNotMatch(@"(?m)^\s*THROW 514\d{2},", schemaSource);
     }
 
     [Fact]
