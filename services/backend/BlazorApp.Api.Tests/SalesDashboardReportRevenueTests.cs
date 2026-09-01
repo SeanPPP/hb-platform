@@ -626,6 +626,60 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     }
 
     [Fact]
+    public async Task GetExecutiveBranchPerformanceAsync_慢补算完成后切换缓存代际并绕过旧快照()
+    {
+        var date = new DateTime(2026, 7, 9);
+        await SeedStoreAsync("S1", "Store A");
+        await SeedStoreAsync("S2", "Store B");
+        await SeedStoreSalesStatisticAsync(date, "S1", "Store A", 10m, 1);
+        await SeedPosmOrderWithPaymentAsync("generation-source-1", date.AddHours(10), "S1", 10m, 1);
+
+        using var cache = new MemoryCache(new MemoryCacheOptions());
+        using var scope = CreateIsolatedServiceScope(cache);
+        var service = scope.Service;
+        var range = new DateRangeDto { StartDate = date, EndDate = date };
+
+        // 先生成 10 分钟缓存，其中 S2 仍是零值；后续补算必须通过代际切换绕过这份旧快照。
+        var cached = await service.GetExecutiveBranchPerformanceAsync(range);
+        Assert.False(cached.StatisticsPending);
+        Assert.Contains(cached.Items, row => row.BranchCode == "S2" && row.Revenue == 0m);
+
+        await SeedPosmOrderWithPaymentAsync("generation-source-2", date.AddHours(11), "S2", 80m, 1);
+        cache.Remove($"SalesSourceCoverage_POSM_{date:yyyyMMdd}_{date:yyyyMMdd}_ALL");
+
+        var refreshStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var releaseRefresh = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        var refreshCoordinatorFinished = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously
+        );
+        service.StoreStatisticsRefreshCompletedTestInterceptor = () =>
+            refreshCoordinatorFinished.TrySetResult(true);
+        service.StoreStatisticsRefreshTestInterceptor = async refreshDate =>
+        {
+            refreshStarted.TrySetResult(true);
+            await releaseRefresh.Task;
+            await SeedStoreSalesStatisticAsync(refreshDate, "S2", "Store B", 80m, 1);
+        };
+
+        var pending = await service.GetExecutiveBranchPerformanceAsync(range);
+        await refreshStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(pending.StatisticsPending);
+        Assert.Contains(pending.Items, row => row.BranchCode == "S2" && row.Revenue == 0m);
+
+        releaseRefresh.TrySetResult(true);
+        await refreshCoordinatorFinished.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        var refreshed = await service.GetExecutiveBranchPerformanceAsync(range);
+
+        Assert.False(refreshed.StatisticsPending);
+        Assert.Contains(refreshed.Items, row => row.BranchCode == "S2" && row.Revenue == 80m);
+    }
+
+    [Fact]
     public async Task GetExecutiveBranchPerformanceAsync_快速补算少写分店时仍标记待完成且不缓存()
     {
         var date = new DateTime(2026, 7, 7);
@@ -2981,6 +3035,79 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             new List<string> { "CN-ERROR" },
             new DateTime(2026, 7, 1),
             new DateTime(2026, 7, 1),
+            branchCodes: new List<string> { "S1" }
+        );
+
+        var objectResult = Assert.IsType<ObjectResult>(response);
+        Assert.Equal(500, objectResult.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetSupplierSalesRank_主查询失败时返回服务器错误而非Fresh空结果()
+    {
+        var date = new DateTime(2026, 7, 1);
+        await EnsureProductStatisticRefreshStateAsync(date);
+        await _localDb.Ado.ExecuteCommandAsync("DROP TABLE ProductStoreDailySalesStatistic");
+        var controller = CreateController(CreateService(), CreateUserService(new[] { "S1" }));
+
+        var response = await controller.GetSupplierSalesRank(
+            date,
+            date,
+            branchCodes: new List<string> { "S1" }
+        );
+
+        var objectResult = Assert.IsType<ObjectResult>(response);
+        Assert.Equal(500, objectResult.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetChinaSupplierSalesRank_主查询失败时返回服务器错误而非Fresh空结果()
+    {
+        var date = new DateTime(2026, 7, 1);
+        await EnsureProductStatisticRefreshStateAsync(date);
+        await _localDb.Ado.ExecuteCommandAsync("DROP TABLE ProductStoreDailySalesStatistic");
+        var controller = CreateController(CreateService(), CreateUserService(new[] { "S1" }));
+
+        var response = await controller.GetChinaSupplierSalesRankAsync(
+            date,
+            date,
+            branchCodes: new List<string> { "S1" }
+        );
+
+        var objectResult = Assert.IsType<ObjectResult>(response);
+        Assert.Equal(500, objectResult.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetEnhancedSalesProductDetails_主查询失败时返回服务器错误而非Fresh空结果()
+    {
+        var date = new DateTime(2026, 7, 1);
+        await EnsureProductStatisticRefreshStateAsync(date);
+        await _localDb.Ado.ExecuteCommandAsync("DROP TABLE ProductStoreDailySalesStatistic");
+        var controller = CreateController(CreateService(), CreateUserService(new[] { "S1" }));
+
+        var response = await controller.GetEnhancedSalesProductDetails(
+            date,
+            date,
+            branchCodes: new List<string> { "S1" }
+        );
+
+        var objectResult = Assert.IsType<ObjectResult>(response);
+        Assert.Equal(500, objectResult.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetProductSalesByAllBranches_主查询失败时返回服务器错误而非Fresh空结果()
+    {
+        var date = new DateTime(2026, 7, 1);
+        await EnsureProductStatisticRefreshStateAsync(date);
+        await _localDb.Ado.ExecuteCommandAsync("DROP TABLE ProductStoreDailySalesStatistic");
+        var controller = CreateController(CreateService(), CreateUserService(new[] { "S1" }));
+
+        var response = await controller.GetProductSalesByAllBranches(
+            date,
+            date,
+            productCode: "P-ERROR",
             branchCodes: new List<string> { "S1" }
         );
 

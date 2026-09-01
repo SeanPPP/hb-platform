@@ -1,6 +1,17 @@
 using System.Runtime.ExceptionServices;
+using BlazorApp.Shared.Constants;
 
 namespace BlazorApp.Api.Services;
+
+/// <summary>销售统计统一按悉尼业务日解析日期，避免 UTC 容器在澳洲上午仍刷新前一天。</summary>
+internal static class SalesStatisticsBusinessDate
+{
+    private static readonly TimeZoneInfo BusinessTimeZone =
+        TimeZoneInfo.FindSystemTimeZoneById(StoreTimeZonePolicy.Sydney);
+
+    internal static DateTime Resolve(DateTimeOffset utcNow) =>
+        TimeZoneInfo.ConvertTime(utcNow, BusinessTimeZone).Date;
+}
 
 /// <summary>跨切片共享的事务执行器；始终保留最初的业务或提交异常。</summary>
 internal static class SalesStatisticsTransactionExecutor
