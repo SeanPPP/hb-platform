@@ -12,6 +12,7 @@
         WindowStyle="None"
         ResizeMode="NoResize"
         ShowInTaskbar="False"
+        Icon="pack://application:,,,/Resources/AppIcon.ico"
         AllowsTransparency="True"
         Background="Transparent"
         FontFamily="{StaticResource PosFontFamily}"
