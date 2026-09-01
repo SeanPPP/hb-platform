@@ -47,6 +47,24 @@ public sealed class CartSwipeRevealBehaviorTests
     }
 
     [Theory]
+    [InlineData(0d, 0d, 0)]
+    [InlineData(2.99d, 0d, 0)]
+    [InlineData(-3d, 0d, 1)]
+    [InlineData(8d, 1d, 1)]
+    [InlineData(1d, 8d, 2)]
+    [InlineData(13d, 12d, 1)]
+    [InlineData(3d, 3d, 2)]
+    [InlineData(12d, 13d, 2)]
+    [InlineData(40d, 40d, 2)]
+    public void Resolve_touch_axis_locks_at_vertical_first_prepan_boundary(
+        double horizontal,
+        double vertical,
+        int expected)
+    {
+        Assert.Equal((CartSwipeGestureAxis)expected, CartSwipeRevealBehavior.ResolveTouchAxis(horizontal, vertical));
+    }
+
+    [Theory]
     [InlineData(0d, -30d, 88d, -30d)]
     [InlineData(-30d, -80d, 88d, -88d)]
     [InlineData(-88d, 20d, 88d, -68d)]
@@ -86,6 +104,28 @@ public sealed class CartSwipeRevealBehaviorTests
                 clientAreaAnimationEnabled,
                 currentOffset,
                 targetOffset));
+    }
+
+    [Theory]
+    [InlineData(false, true, true, true, false)]
+    [InlineData(true, false, true, true, false)]
+    [InlineData(true, true, false, true, false)]
+    [InlineData(true, true, true, false, false)]
+    [InlineData(true, true, true, true, true)]
+    public void Lost_touch_capture_completes_only_for_the_owned_device_and_owner(
+        bool isTouchGesture,
+        bool hasCapture,
+        bool matchesTouchDevice,
+        bool isOwnerOriginalSource,
+        bool expected)
+    {
+        Assert.Equal(
+            expected,
+            CartSwipeRevealBehavior.ShouldCompleteLostTouchCapture(
+                isTouchGesture,
+                hasCapture,
+                matchesTouchDevice,
+                isOwnerOriginalSource));
     }
 
     [Fact]
