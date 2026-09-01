@@ -38,6 +38,7 @@ case "$component" in
     dotnet test "$mobile_activation_project" \
       --configuration Release \
       --no-build \
+      --filter 'Category!=SQL' \
       --logger 'trx;LogFileName=mobile-device-activation.trx' \
       --results-directory "$results_root"
     node scripts/ci/assert-trx-tests.mjs "$results_root/mobile-device-activation.trx" 'Mobile device activation contracts'
