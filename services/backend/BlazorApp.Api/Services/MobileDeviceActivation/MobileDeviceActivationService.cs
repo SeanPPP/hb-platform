@@ -1354,18 +1354,33 @@ public sealed class MobileDeviceActivationService : IMobileDeviceActivationServi
 
     private async Task<MobileDeviceRegistrationState?> LoadRegistrationStateAsync(
         int registrationId,
-        CancellationToken cancellationToken) =>
-        await _posmDb.Queryable<POSM_设备注册信息表>()
+        CancellationToken cancellationToken)
+    {
+        // SqlSugar 先投影到可无参构造的行模型，避免位置 record 中的空值表达式被误解析为列名。
+        var row = await _posmDb.Queryable<POSM_设备注册信息表>()
             .Where(device => device.ID == registrationId)
-            .Select(device => new MobileDeviceRegistrationState(
-                device.ID,
-                device.设备硬件识别码,
-                device.系统设备编号,
-                device.分店代码 ?? string.Empty,
-                device.设备系统,
-                device.设备类型,
-                device.设备状态))
+            .Select(device => new MobileDeviceRegistrationStateRow
+            {
+                DeviceRegistrationId = device.ID,
+                HardwareId = device.设备硬件识别码,
+                DeviceCode = device.系统设备编号,
+                StoreCode = device.分店代码,
+                DeviceSystem = device.设备系统,
+                DeviceType = device.设备类型,
+                DeviceStatus = device.设备状态,
+            })
             .FirstAsync(cancellationToken);
+        return row is null
+            ? null
+            : new MobileDeviceRegistrationState(
+                row.DeviceRegistrationId,
+                row.HardwareId,
+                row.DeviceCode,
+                row.StoreCode ?? string.Empty,
+                row.DeviceSystem,
+                row.DeviceType,
+                row.DeviceStatus);
+    }
 
     private async Task<List<string>> LoadActiveRolesAsync(
         string userGuid,
@@ -1541,6 +1556,17 @@ public sealed class MobileDeviceActivationService : IMobileDeviceActivationServi
         public string StoreCode { get; set; } = string.Empty;
         public string StoreName { get; set; } = string.Empty;
         public bool IsPrimary { get; set; }
+    }
+
+    private sealed class MobileDeviceRegistrationStateRow
+    {
+        public int DeviceRegistrationId { get; set; }
+        public string HardwareId { get; set; } = string.Empty;
+        public string DeviceCode { get; set; } = string.Empty;
+        public string? StoreCode { get; set; }
+        public string DeviceSystem { get; set; } = string.Empty;
+        public string DeviceType { get; set; } = string.Empty;
+        public int DeviceStatus { get; set; }
     }
 
 }

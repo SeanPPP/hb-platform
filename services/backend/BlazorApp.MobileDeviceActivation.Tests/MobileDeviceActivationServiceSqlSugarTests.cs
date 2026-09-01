@@ -4,6 +4,7 @@ using BlazorApp.Api.Data;
 using BlazorApp.Api.Services.MobileDeviceActivation;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.POSM;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using SqlSugar;
@@ -13,6 +14,54 @@ namespace BlazorApp.MobileDeviceActivation.Tests;
 
 public sealed class MobileDeviceActivationServiceSqlSugarTests
 {
+    [Theory]
+    [InlineData(null, "")]
+    [InlineData("1042", "1042")]
+    public async Task LoadRegistrationStateAsync_MapsStoreWithoutProjectionError(
+        string? storeCode,
+        string expectedStoreCode)
+    {
+        var databaseName = $"mobile-registration-state-{Guid.NewGuid():N}";
+        var connectionString = $"Data Source={databaseName};Mode=Memory;Cache=Shared";
+        await using var anchorConnection = new SqliteConnection(connectionString);
+        await anchorConnection.OpenAsync();
+        using var db = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = connectionString,
+            DbType = DbType.Sqlite,
+            IsAutoCloseConnection = true,
+            InitKeyType = InitKeyType.Attribute,
+        });
+        db.CodeFirst.InitTables<POSM_设备注册信息表>();
+
+        var registrationId = await db.Insertable(new POSM_设备注册信息表
+        {
+            设备硬件识别码 = "hardware-test-only",
+            系统设备编号 = "device-test-only",
+            分店代码 = storeCode,
+            设备系统 = "Android",
+            设备类型 = "Mobile",
+            设备状态 = 1,
+            设备授权码 = "authorization-test-only",
+        }).ExecuteReturnIdentityAsync();
+
+        var service = CreateService(db);
+        var state = Assert.IsType<MobileDeviceRegistrationState>(
+            await InvokePrivateAsync(
+                service,
+                "LoadRegistrationStateAsync",
+                registrationId,
+                CancellationToken.None));
+
+        Assert.Equal(registrationId, state.DeviceRegistrationId);
+        Assert.Equal("hardware-test-only", state.HardwareId);
+        Assert.Equal("device-test-only", state.DeviceCode);
+        Assert.Equal(expectedStoreCode, state.StoreCode);
+        Assert.Equal("Android", state.DeviceSystem);
+        Assert.Equal("Mobile", state.DeviceType);
+        Assert.Equal(1, state.DeviceStatus);
+    }
+
     [Fact]
     public async Task AssignmentQueries_ReturnActiveTargetRolesAndStores_WithoutAliasErrors()
     {
