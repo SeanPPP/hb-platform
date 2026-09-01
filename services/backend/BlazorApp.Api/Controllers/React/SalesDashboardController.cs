@@ -4,6 +4,7 @@ using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -326,7 +327,14 @@ namespace BlazorApp.Api.Controllers.React
                 // 统一用安全范围解析，避免普通用户解析失败时退化为全分店。
                 var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(new
+                    {
+                        success = true,
+                        data = new List<ExecutiveBranchPerformanceDto>(),
+                        statisticsPending = false,
+                        statisticsExpectedBranchCount = 0,
+                        statisticsSnapshotBranchCount = 0,
+                    });
 
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
@@ -384,7 +392,10 @@ namespace BlazorApp.Api.Controllers.React
                 // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
                 var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(CreateProductReportResponse(
+                        new List<SupplierSalesRankDto>(),
+                        CreateNoAccessProductStatisticStatus()
+                    ));
 
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
@@ -395,15 +406,24 @@ namespace BlazorApp.Api.Controllers.React
                     CompareEndDate = compareEndDate,
                     CompareMode = compareMode,
                 };
+                var statisticStatus = await _service.GetProductReportStatisticStatusAsync(dateRange);
+                if (!IsProductStatisticFresh(statisticStatus))
+                {
+                    return Ok(CreateProductReportResponse(
+                        new List<SupplierSalesRankDto>(),
+                        statisticStatus
+                    ));
+                }
 
                 // 调用服务获取供应商销售排行
                 var result = await _service.GetSupplierSalesRankAsync(
                     dateRange,
                     branchScope.BranchCodes,
                     topN,
-                    supplierCode
+                    supplierCode,
+                    statisticStatus
                 );
-                return Ok(new { success = true, data = result });
+                return Ok(CreateProductReportResponse(result, statisticStatus));
             }
             catch (Exception ex)
             {
@@ -443,7 +463,10 @@ namespace BlazorApp.Api.Controllers.React
                 // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
                 var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(CreateProductReportResponse(
+                        new List<ChinaSupplierSalesRankDto>(),
+                        CreateNoAccessProductStatisticStatus()
+                    ));
 
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
@@ -454,15 +477,24 @@ namespace BlazorApp.Api.Controllers.React
                     CompareEndDate = compareEndDate,
                     CompareMode = compareMode,
                 };
+                var statisticStatus = await _service.GetProductReportStatisticStatusAsync(dateRange);
+                if (!IsProductStatisticFresh(statisticStatus))
+                {
+                    return Ok(CreateProductReportResponse(
+                        new List<ChinaSupplierSalesRankDto>(),
+                        statisticStatus
+                    ));
+                }
 
                 // 调用服务获取中国供应商销售排行
                 var result = await _service.GetChinaSupplierSalesRankAsync(
                     dateRange,
                     branchScope.BranchCodes,
                     topN,
-                    supplierCode
+                    supplierCode,
+                    statisticStatus
                 );
-                return Ok(new { success = true, data = result });
+                return Ok(CreateProductReportResponse(result, statisticStatus));
             }
             catch (Exception ex)
             {
@@ -506,7 +538,10 @@ namespace BlazorApp.Api.Controllers.React
                 // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
                 var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(CreateProductReportResponse(
+                        new List<SupplierStoreSalesDto>(),
+                        CreateNoAccessProductStatisticStatus()
+                    ));
 
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
@@ -517,14 +552,23 @@ namespace BlazorApp.Api.Controllers.React
                     CompareEndDate = compareEndDate,
                     CompareMode = compareMode,
                 };
+                var statisticStatus = await _service.GetProductReportStatisticStatusAsync(dateRange);
+                if (!IsProductStatisticFresh(statisticStatus))
+                {
+                    return Ok(CreateProductReportResponse(
+                        new List<SupplierStoreSalesDto>(),
+                        statisticStatus
+                    ));
+                }
 
                 // 调用服务获取供应商分店销售数据
                 var result = await _service.GetSupplierStoreSalesAsync(
                     dateRange,
                     supplierCodes,
-                    branchScope.BranchCodes
+                    branchScope.BranchCodes,
+                    statisticStatus
                 );
-                return Ok(new { success = true, data = result });
+                return Ok(CreateProductReportResponse(result, statisticStatus));
             }
             catch (Exception ex)
             {
@@ -642,7 +686,10 @@ namespace BlazorApp.Api.Controllers.React
                 // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
                 var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(CreateProductReportResponse(
+                        new List<ChinaSupplierStoreSalesDto>(),
+                        CreateNoAccessProductStatisticStatus()
+                    ));
 
                 var dateRange = new DateRangeDto
                 {
@@ -652,13 +699,22 @@ namespace BlazorApp.Api.Controllers.React
                     CompareEndDate = compareEndDate,
                     CompareMode = compareMode,
                 };
+                var statisticStatus = await _service.GetProductReportStatisticStatusAsync(dateRange);
+                if (!IsProductStatisticFresh(statisticStatus))
+                {
+                    return Ok(CreateProductReportResponse(
+                        new List<ChinaSupplierStoreSalesDto>(),
+                        statisticStatus
+                    ));
+                }
 
                 var result = await _service.GetChinaSupplierStoreSalesAsync(
                     dateRange,
                     supplierCodes,
-                    branchScope.BranchCodes
+                    branchScope.BranchCodes,
+                    statisticStatus
                 );
-                return Ok(new { success = true, data = result });
+                return Ok(CreateProductReportResponse(result, statisticStatus));
             }
             catch (Exception ex)
             {
@@ -690,16 +746,25 @@ namespace BlazorApp.Api.Controllers.React
                 // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
                 var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(CreateProductReportResponse(
+                        new List<AustralianSupplierStoreSalesDetailDto>(),
+                        CreateNoAccessProductStatisticStatus()
+                    ));
 
                 var dateRange = new DateRangeDto { StartDate = startDate, EndDate = endDate };
+                var statisticStatus = await _service.GetProductReportStatisticStatusAsync(dateRange);
+                if (!IsProductStatisticFresh(statisticStatus))
+                    return Ok(CreateProductReportResponse(
+                        new List<AustralianSupplierStoreSalesDetailDto>(),
+                        statisticStatus
+                    ));
 
                 var result = await _service.GetAustralianSupplierStoreSalesDetailsAsync(
                     dateRange,
                     branchScope.BranchCodes,
                     supplierCodes
                 );
-                return Ok(new { success = true, data = result });
+                return Ok(CreateProductReportResponse(result, statisticStatus));
             }
             catch (Exception ex)
             {
@@ -731,16 +796,25 @@ namespace BlazorApp.Api.Controllers.React
                 // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
                 var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(CreateProductReportResponse(
+                        new List<ChinaSupplierStoreSalesDetailDto>(),
+                        CreateNoAccessProductStatisticStatus()
+                    ));
 
                 var dateRange = new DateRangeDto { StartDate = startDate, EndDate = endDate };
+                var statisticStatus = await _service.GetProductReportStatisticStatusAsync(dateRange);
+                if (!IsProductStatisticFresh(statisticStatus))
+                    return Ok(CreateProductReportResponse(
+                        new List<ChinaSupplierStoreSalesDetailDto>(),
+                        statisticStatus
+                    ));
 
                 var result = await _service.GetChinaSupplierStoreSalesDetailsAsync(
                     dateRange,
                     branchScope.BranchCodes,
                     supplierCodes
                 );
-                return Ok(new { success = true, data = result });
+                return Ok(CreateProductReportResponse(result, statisticStatus));
             }
             catch (Exception ex)
             {
@@ -877,19 +951,10 @@ namespace BlazorApp.Api.Controllers.React
                 var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
                 if (!branchScope.HasAccess)
                 {
-                    return Ok(
-                        new
-                        {
-                            success = true,
-                            data = new PagedSalesProductDetailWithDiscountDto
-                            {
-                                Data = new List<SalesProductDetailWithDiscountDto>(),
-                                Total = 0,
-                                PageIndex = pageIndex,
-                                PageSize = pageSize,
-                            },
-                        }
-                    );
+                    return Ok(CreateProductReportResponse(
+                        CreateEmptyEnhancedSalesProductDetails(pageIndex, pageSize),
+                        CreateNoAccessProductStatisticStatus()
+                    ));
                 }
 
                 // 构建日期范围DTO
@@ -901,6 +966,14 @@ namespace BlazorApp.Api.Controllers.React
                     CompareEndDate = compareEndDate,
                     CompareMode = compareMode,
                 };
+                var statisticStatus = await _service.GetProductReportStatisticStatusAsync(dateRange);
+                if (!IsProductStatisticFresh(statisticStatus))
+                {
+                    return Ok(CreateProductReportResponse(
+                        CreateEmptyEnhancedSalesProductDetails(pageIndex, pageSize),
+                        statisticStatus
+                    ));
+                }
 
                 // 调用服务获取增强版销售商品明细
                 var result = await _service.GetEnhancedSalesProductDetailsAsync(
@@ -910,9 +983,10 @@ namespace BlazorApp.Api.Controllers.React
                     chinaSupplierCodes,
                     pageIndex,
                     pageSize,
-                    productSearch
+                    productSearch,
+                    statisticStatus
                 );
-                return Ok(new { success = true, data = result });
+                return Ok(CreateProductReportResponse(result, statisticStatus));
             }
             catch (Exception ex)
             {
@@ -1004,7 +1078,10 @@ namespace BlazorApp.Api.Controllers.React
                 // 商品报告入口统一用安全范围解析，避免普通用户解析失败时退化为全分店。
                 var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(CreateProductReportResponse(
+                        new List<ProductBranchSalesDto>(),
+                        CreateNoAccessProductStatisticStatus()
+                    ));
 
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
@@ -1015,14 +1092,23 @@ namespace BlazorApp.Api.Controllers.React
                     CompareEndDate = compareEndDate,
                     CompareMode = compareMode,
                 };
+                var statisticStatus = await _service.GetProductReportStatisticStatusAsync(dateRange);
+                if (!IsProductStatisticFresh(statisticStatus))
+                {
+                    return Ok(CreateProductReportResponse(
+                        new List<ProductBranchSalesDto>(),
+                        statisticStatus
+                    ));
+                }
 
                 // 调用服务获取商品在各分店的销售数据
                 var result = await _service.GetProductSalesByAllBranchesAsync(
                     dateRange,
                     productCode,
-                    branchScope.BranchCodes
+                    branchScope.BranchCodes,
+                    statisticStatus
                 );
-                return Ok(new { success = true, data = result });
+                return Ok(CreateProductReportResponse(result, statisticStatus));
             }
             catch (Exception ex)
             {
@@ -1091,6 +1177,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="compareMode">对比模式</param>
         /// <param name="topN">返回前N条记录</param>
         /// <param name="branchCodes">分店代码列表（可选）</param>
+        /// <param name="includeProductStatisticMetadata">是否附带商品报表统计完整性元数据</param>
         /// <returns>分店业绩排名列表</returns>
         [HttpGet("executive-branch-performance")]
         [Authorize(Policy = Permissions.Reports.ProductMovementView)]
@@ -1101,14 +1188,41 @@ namespace BlazorApp.Api.Controllers.React
             [FromQuery] DateTime? compareEndDate = null,
             [FromQuery] CompareMode compareMode = CompareMode.ByDate,
             [FromQuery] int? topN = null,
-            [FromQuery] List<string>? branchCodes = null
+            [FromQuery] List<string>? branchCodes = null,
+            [FromQuery] bool includeProductStatisticMetadata = false
         )
         {
             try
             {
                 var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                {
+                    if (includeProductStatisticMetadata)
+                    {
+                        var statisticStatus = CreateNoAccessProductStatisticStatus();
+                        return Ok(new
+                        {
+                            success = true,
+                            data = new List<ExecutiveBranchPerformanceDto>(),
+                            statisticsPending = false,
+                            statisticsExpectedBranchCount = 0,
+                            statisticsSnapshotBranchCount = 0,
+                            statisticStatus.StatisticStatus,
+                            statisticStatus.StatisticMessage,
+                            statisticStatus.StatisticUpdatedAt,
+                            statisticStatus.CacheVersion,
+                        });
+                    }
+
+                    return Ok(new
+                    {
+                        success = true,
+                        data = new List<ExecutiveBranchPerformanceDto>(),
+                        statisticsPending = false,
+                        statisticsExpectedBranchCount = 0,
+                        statisticsSnapshotBranchCount = 0,
+                    });
+                }
 
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
@@ -1126,7 +1240,33 @@ namespace BlazorApp.Api.Controllers.React
                     topN,
                     branchScope.BranchCodes
                 );
-                return Ok(new { success = true, data = result });
+                if (includeProductStatisticMetadata)
+                {
+                    // 仅商品移动端显式请求时读取商品统计状态，避免普通营业额排行多一次统计表查询。
+                    var statisticStatus = await _service.GetProductReportStatisticStatusAsync(dateRange);
+                    return Ok(new
+                    {
+                        success = true,
+                        data = result.Items,
+                        result.StatisticsPending,
+                        result.StatisticsExpectedBranchCount,
+                        result.StatisticsSnapshotBranchCount,
+                        statisticStatus.StatisticStatus,
+                        statisticStatus.StatisticMessage,
+                        statisticStatus.StatisticUpdatedAt,
+                        statisticStatus.CacheVersion,
+                    });
+                }
+
+                // 保持 data 数组兼容既有 Web 调用方；完整性元数据放在同一 API 包络根级。
+                return Ok(new
+                {
+                    success = true,
+                    data = result.Items,
+                    result.StatisticsPending,
+                    result.StatisticsExpectedBranchCount,
+                    result.StatisticsSnapshotBranchCount,
+                });
             }
             catch (Exception ex)
             {
@@ -1161,7 +1301,14 @@ namespace BlazorApp.Api.Controllers.React
             {
                 var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(new
+                    {
+                        success = true,
+                        data = new List<ExecutiveHourlyTrafficDto>(),
+                        statisticsPending = false,
+                        statisticsExpectedItemCount = 0,
+                        statisticsSnapshotItemCount = 0,
+                    });
 
                 // 构建日期范围DTO
                 var dateRange = new DateRangeDto
@@ -1178,7 +1325,15 @@ namespace BlazorApp.Api.Controllers.React
                     dateRange,
                     branchScope.BranchCodes
                 );
-                return Ok(new { success = true, data = result });
+                // 维持 data 数组兼容，完整性元数据只在外层新增。
+                return Ok(new
+                {
+                    success = true,
+                    data = result.Items,
+                    result.StatisticsPending,
+                    result.StatisticsExpectedItemCount,
+                    result.StatisticsSnapshotItemCount,
+                });
             }
             catch (Exception ex)
             {
@@ -1213,7 +1368,14 @@ namespace BlazorApp.Api.Controllers.React
             {
                 var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(new
+                    {
+                        success = true,
+                        data = new List<BranchDailyPerformanceDto>(),
+                        statisticsPending = false,
+                        statisticsExpectedItemCount = 0,
+                        statisticsSnapshotItemCount = 0,
+                    });
 
                 var dateRange = new DateRangeDto
                 {
@@ -1228,7 +1390,14 @@ namespace BlazorApp.Api.Controllers.React
                     dateRange,
                     branchScope.BranchCodes
                 );
-                return Ok(new { success = true, data = result });
+                return Ok(new
+                {
+                    success = true,
+                    data = result.Items,
+                    result.StatisticsPending,
+                    result.StatisticsExpectedItemCount,
+                    result.StatisticsSnapshotItemCount,
+                });
             }
             catch (Exception ex)
             {
@@ -1442,7 +1611,7 @@ namespace BlazorApp.Api.Controllers.React
 
                 var branchScope = await ResolveProductSalesAnalysisBranchCodesAsync();
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(CreateNoAccessProductSalesAnalysisResponse(new ProductSalesAnalysisOptionsDto()));
 
                 var result = await _service.GetProductSalesAnalysisOptionsAsync(filter, branchScope.BranchCodes);
                 return Ok(result);
@@ -1471,7 +1640,9 @@ namespace BlazorApp.Api.Controllers.React
 
                 var branchScope = await ResolveProductSalesAnalysisBranchCodesAsync();
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(CreateNoAccessProductSalesAnalysisResponse(
+                        new ProductSalesAnalysisPagedDto<ProductSalesProductRowDto>()
+                    ));
 
                 var result = await _service.GetProductSalesAnalysisCandidatesAsync(request, branchScope.BranchCodes);
                 return Ok(result);
@@ -1501,7 +1672,9 @@ namespace BlazorApp.Api.Controllers.React
 
                 var branchScope = await ResolveProductSalesAnalysisBranchCodesAsync();
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(CreateNoAccessProductSalesAnalysisResponse(
+                        new ProductSalesAnalysisPagedDto<ProductSalesProductRowDto>()
+                    ));
 
                 var result = await _service.GetProductSalesAnalysisSummaryAsync(
                     request,
@@ -1535,7 +1708,7 @@ namespace BlazorApp.Api.Controllers.React
 
                 var branchScope = await ResolveProductSalesAnalysisBranchCodesAsync();
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(CreateNoAccessProductSalesAnalysisResponse(new List<ProductSalesDailyDto>()));
 
                 var result = await _service.GetProductSalesAnalysisProductDailyAsync(
                     request,
@@ -1569,7 +1742,7 @@ namespace BlazorApp.Api.Controllers.React
 
                 var branchScope = await ResolveProductSalesAnalysisBranchCodesAsync();
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(CreateNoAccessProductSalesAnalysisResponse(new List<ProductSalesBranchDto>()));
 
                 var result = await _service.GetProductSalesAnalysisBranchesAsync(
                     request,
@@ -1603,7 +1776,7 @@ namespace BlazorApp.Api.Controllers.React
 
                 var branchScope = await ResolveProductSalesAnalysisBranchCodesAsync();
                 if (!branchScope.HasAccess)
-                    return Ok(new { success = true, data = new List<object>() });
+                    return Ok(CreateNoAccessProductSalesAnalysisResponse(new List<ProductSalesBranchDailyDto>()));
 
                 var result = await _service.GetProductSalesAnalysisBranchDailyAsync(
                     request,
@@ -1621,6 +1794,70 @@ namespace BlazorApp.Api.Controllers.React
                 _logger.LogError(ex, "GetProductSalesAnalysisBranchDaily failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
+        }
+
+        private static ProductReportResponseDto<T> CreateProductReportResponse<T>(
+            T data,
+            ProductReportStatisticStatusDto status
+        )
+        {
+            return new ProductReportResponseDto<T>
+            {
+                Data = data,
+                StatisticStatus = status.StatisticStatus,
+                StatisticMessage = status.StatisticMessage,
+                StatisticUpdatedAt = status.StatisticUpdatedAt,
+                CacheVersion = status.CacheVersion,
+            };
+        }
+
+        private static ProductSalesAnalysisResponse<T> CreateNoAccessProductSalesAnalysisResponse<T>(T data)
+        {
+            var status = CreateNoAccessProductStatisticStatus();
+            return new ProductSalesAnalysisResponse<T>
+            {
+                Data = data,
+                StatisticStatus = status.StatisticStatus,
+                StatisticMessage = status.StatisticMessage,
+                StatisticUpdatedAt = status.StatisticUpdatedAt,
+                CacheVersion = status.CacheVersion,
+            };
+        }
+
+        private static PagedSalesProductDetailWithDiscountDto CreateEmptyEnhancedSalesProductDetails(
+            int pageIndex,
+            int pageSize
+        )
+        {
+            return new PagedSalesProductDetailWithDiscountDto
+            {
+                Data = new List<SalesProductDetailWithDiscountDto>(),
+                Total = 0,
+                PageIndex = pageIndex,
+                PageSize = pageSize,
+            };
+        }
+
+        private static ProductReportStatisticStatusDto CreateNoAccessProductStatisticStatus()
+        {
+            // 不调用统计读侧，既不泄露数据也不把无授权范围误报为待补算；
+            // 对当前权限范围而言，空集合是完整快照，使用 Fresh 让客户端可以终止加载。
+            return new ProductReportStatisticStatusDto
+            {
+                StatisticStatus = SalesStatisticRefreshStatus.Fresh,
+                StatisticMessage = "当前账号没有可访问的分店范围",
+                StatisticUpdatedAt = DateTime.UtcNow,
+                CacheVersion = "no-access",
+            };
+        }
+
+        private static bool IsProductStatisticFresh(ProductReportStatisticStatusDto status)
+        {
+            return string.Equals(
+                status.StatisticStatus,
+                SalesStatisticRefreshStatus.Fresh,
+                StringComparison.OrdinalIgnoreCase
+            );
         }
     }
 }
