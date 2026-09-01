@@ -36,6 +36,13 @@ export interface PendingContainerDetailSavePlan {
   clearEnglishNameCount: number
 }
 
+export function normalizeContainerDetailEnglishNameForSave(englishName: string) {
+  // 只把空白视为分词边界，保留连字符、撇号、缩写和词内既有大小写。
+  return englishName.trim().replace(/\S+/gu, (word) => (
+    word.replace(/\p{Script=Latin}/u, (letter) => letter.toUpperCase())
+  ))
+}
+
 function hasPendingContainerDetailFields(patch: PendingContainerDetailPatch) {
   return patch.进口价格 != null
     || patch.贴牌价格 != null
@@ -115,7 +122,7 @@ export function buildPendingContainerDetailSavePlan(
       if (patch.ClearEnglishName === true) {
         update.ClearEnglishName = true
       } else if (patch.英文名称 !== undefined) {
-        const englishName = patch.英文名称.trim()
+        const englishName = normalizeContainerDetailEnglishNameForSave(patch.英文名称)
         if (englishName) {
           update.英文名称 = englishName
         } else {
@@ -165,10 +172,46 @@ function removeSavedPendingField<K extends keyof PendingContainerDetailPatch>(
 ) {
   if (!(field in submittedPatch)) return
   if (field === '英文名称') {
-    if (currentPatch.英文名称?.trim() === submittedPatch.英文名称) delete currentPatch.英文名称
+    if (
+      currentPatch.英文名称 !== undefined
+      && normalizeContainerDetailEnglishNameForSave(currentPatch.英文名称) === submittedPatch.英文名称
+    ) {
+      delete currentPatch.英文名称
+    }
     return
   }
   if (currentPatch[field] === submittedPatch[field]) delete currentPatch[field]
+}
+
+export function buildContainerDetailSuccessfulEnglishNameUpdates(
+  currentPatches: PendingContainerDetailPatchMap,
+  submittedUpdates: UpdateContainerDetailRequest[],
+  validationErrors: ContainerDetailSaveValidationError[],
+): Array<Pick<UpdateContainerDetailRequest, 'hguid' | '英文名称'>> {
+  return submittedUpdates.flatMap((submittedUpdate) => {
+    const submittedEnglishName = submittedUpdate.英文名称
+    if (
+      submittedEnglishName === undefined
+      || hasValidationError(
+        validationErrors,
+        submittedUpdate.hguid,
+        CONTAINER_DETAIL_ENGLISH_NAME_FIELD,
+      )
+    ) {
+      return []
+    }
+
+    const currentPatch = currentPatches[submittedUpdate.hguid]
+    if (currentPatch?.ClearEnglishName === true) return []
+    if (
+      currentPatch?.英文名称 !== undefined
+      && normalizeContainerDetailEnglishNameForSave(currentPatch.英文名称) !== submittedEnglishName
+    ) {
+      return []
+    }
+
+    return [{ hguid: submittedUpdate.hguid, 英文名称: submittedEnglishName }]
+  })
 }
 
 export function clearSavedPendingContainerDetailFields(
