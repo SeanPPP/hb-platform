@@ -111,8 +111,15 @@
     "title": "Reports",
     "sections": {
       "revenue": "Revenue Report",
-      "product": "Product Report"
+      "product": "Product Report",
+      "summary": "All-store summary",
+      "branchRanking": "Store ranking",
+      "hourlyDetail": "Hourly revenue",
+      "dailyDetail": "Daily revenue",
+      "branchSummary": "Store summary"
     },
+    "branchCount": "{{count}} stores",
+    "detailCount": "{{count}} rows",
     "freshness": {
       "lastUpdated": "Latest statistics: {{time}}",
       "running": "Updating",
@@ -123,6 +130,7 @@
     "periods": {
       "day": "Day",
       "date": "Date",
+      "time": "Time",
       "week": "Week",
       "month": "Month"
     },
@@ -137,7 +145,13 @@
     },
     "actions": {
       "previous": "Previous",
-      "next": "Next"
+      "next": "Next",
+      "selectBranch": "Select store",
+      "selectBranchNamed": "Select {{branch}}",
+      "searchBranch": "Search store ranking",
+      "searchBranchPlaceholder": "Search store name or code",
+      "clearSearch": "Clear search",
+      "closeSearch": "Close search"
     },
     "shortcuts": {
       "today": "Today",
@@ -158,6 +172,8 @@
     },
     "states": {
       "empty": "No revenue data",
+      "refreshingStatistics": "Refreshing statistics automatically...",
+      "statisticsIncomplete": "Statistics are still being prepared. Please retry.",
       "errorTitle": "Failed to load revenue data"
     },
     "accessibility": {
@@ -190,8 +206,10 @@
     },
     "sections": {
       "suppliers": "Suppliers",
-      "products": "Product Details"
+      "products": "Product Details",
+      "pageSummary": "Page Product Summary"
     },
+    "pageSummaryCaption": "Rows {{start}}-{{end}} of {{total}}",
     "columns": {
       "itemNumber": "Item",
       "image": "Image",
@@ -199,7 +217,8 @@
       "name": "Name",
       "quantity": "Qty",
       "amount": "Amount",
-      "averagePrice": "Avg"
+      "averagePrice": "Avg",
+      "rowNumber": "#"
     },
     "metrics": {
       "revenue": "Revenue",
@@ -208,12 +227,15 @@
       "chinaShare": "China share",
       "orders": "Txns",
       "aov": "AOV",
+      "grossProfit": "Gross profit",
+      "grossMarginRate": "Gross margin",
       "growthRate": "Growth",
       "newGrowth": "New",
       "compare": "LY"
     },
     "actions": {
       "branchDetail": "Branches",
+      "filterProducts": "Filter",
       "clearSupplier": "Clear supplier",
       "searchProduct": "Search",
       "clearProductSearch": "Clear search",
@@ -226,6 +248,7 @@
       "emptyProducts": "No product details",
       "emptySupplierBranches": "No supplier branch data",
       "emptyProductSearch": "No matching product details",
+      "costPending": "Cost pending",
       "loading": "Loading...",
       "error": "Failed to load. Please try again."
     },

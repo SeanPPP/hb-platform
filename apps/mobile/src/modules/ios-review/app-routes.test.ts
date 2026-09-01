@@ -13,9 +13,20 @@ import {
 import { normalizeDeviceManagementListResponse } from "../device-management/api";
 import {
   normalizeProductBranchRows,
+  normalizeProductBranchReportSnapshot,
+  normalizeProductPage,
+  normalizeProductReportProductPageSnapshot,
+  normalizeProductReportTotalRevenue,
+  normalizeSupplierBranchReportSnapshot,
+  normalizeSupplierReportSnapshot,
   normalizeSupplierBranchRows,
   normalizeSupplierRows,
 } from "../product-report/api";
+import {
+  normalizeDailyRevenueSnapshot,
+  normalizeExecutiveBranchPerformance,
+  normalizeHourlyRevenueSnapshot,
+} from "../reports/api";
 import { normalizeStatisticsFreshness } from "../reports/statistics-freshness";
 import {
   normalizePromotionsResponse,
@@ -315,7 +326,7 @@ async function run() {
   assert.equal(menu.length, 19, "审核菜单必须覆盖全部 19 个业务入口");
 
   const stores = await request("GET", "/Users/guid/review-user/stores");
-  assert.equal(stores.length, 3);
+  assert.equal(stores.length, 28, "审核门店接口必须覆盖 28 店报表规模");
   assert.equal(
     stores.every((store: { storeGUID?: string }) => Boolean(store.storeGUID)),
     true,
@@ -1065,12 +1076,507 @@ async function run() {
   await request("POST", "/mobile/device-management/review-device-001/activate");
   assert.equal((await getNormalizedDevices())[0]?.status, 1);
 
+  type ReviewRevenueMetrics = {
+    revenue: number;
+    revenueLY: number;
+    transactions: number;
+    transactionsLY: number;
+  };
+  const sumReviewRevenueMetrics = (
+    items: ReviewRevenueMetrics[],
+  ): ReviewRevenueMetrics => items.reduce(
+    (totals, item) => ({
+      revenue: totals.revenue + item.revenue,
+      revenueLY: totals.revenueLY + item.revenueLY,
+      transactions: totals.transactions + item.transactions,
+      transactionsLY: totals.transactionsLY + item.transactionsLY,
+    }),
+    { revenue: 0, revenueLY: 0, transactions: 0, transactionsLY: 0 },
+  );
+  const assertReviewRevenueMetricsConserved = (
+    actual: ReviewRevenueMetrics,
+    expected: ReviewRevenueMetrics,
+    label: string,
+  ) => {
+    assert.ok(
+      Math.abs(actual.revenue - expected.revenue) <= 0.01,
+      `${label}：营业额误差必须不超过 0.01`,
+    );
+    assert.ok(
+      Math.abs(actual.revenueLY - expected.revenueLY) <= 0.01,
+      `${label}：同期营业额误差必须不超过 0.01`,
+    );
+    assert.equal(actual.transactions, expected.transactions, `${label}：交易数必须守恒`);
+    assert.equal(
+      actual.transactionsLY,
+      expected.transactionsLY,
+      `${label}：同期交易数必须守恒`,
+    );
+  };
+
+  const reviewExecutivePayload = await request(
+    "GET",
+    "/react/v1/dashboard/executive-branch-performance",
+  );
+  const reviewExecutiveSnapshot = normalizeExecutiveBranchPerformance(reviewExecutivePayload);
+  assert.equal(reviewExecutiveSnapshot.isComplete, true, "审核 mock 必须声明营业额分店快照完整计数");
+  assert.equal(reviewExecutiveSnapshot.rows.length, 28, "审核营业额排行必须返回 28 家连续分店");
+  assert.equal(
+    new Set(reviewExecutiveSnapshot.rows.map((row) => row.branchCode)).size,
+    28,
+    "审核营业额排行的 28 家分店代码必须唯一，页面才能按索引显示连续行号",
+  );
+  assert.equal(
+    reviewExecutiveSnapshot.rows.every(
+      (row, index, rows) => index === 0 || rows[index - 1]!.revenue >= row.revenue,
+    ),
+    true,
+    "审核营业额排行必须与真实后端一致，按营业额降序返回",
+  );
+  assert.equal(
+    normalizeProductReportTotalRevenue(reviewExecutivePayload).isComplete,
+    true,
+    "审核 mock 的总额必须同时声明商品统计完整性元数据",
+  );
+  const selectedStoreExecutiveSnapshot = normalizeExecutiveBranchPerformance(
+    await request(
+      "GET",
+      "/react/v1/dashboard/executive-branch-performance",
+      undefined,
+      { branchCodes: ["REV002"] },
+    ),
+  );
+  assert.deepEqual(
+    selectedStoreExecutiveSnapshot.rows.map((row) => row.branchCode),
+    ["REV002"],
+    "商品报告选择单店后总额数据源必须只返回该授权分店",
+  );
+  const reviewHourlyPayload = await request(
+    "GET",
+    "/react/v1/dashboard/executive-hourly-traffic",
+    undefined,
+    { startDate: "2026-07-16", endDate: "2026-07-16" },
+  );
+  const reviewHourlySnapshot = normalizeHourlyRevenueSnapshot(
+    reviewHourlyPayload,
+  );
+  assert.equal(
+    reviewHourlySnapshot.isComplete,
+    true,
+    "审核 mock 分时表必须声明完整项目计数",
+  );
+  assert.equal(
+    reviewHourlySnapshot.rows.length,
+    14,
+    "单日分时表必须覆盖 08:00 至 21:00 的 14 个营业时段",
+  );
+  assert.deepEqual(
+    reviewHourlySnapshot.rows.map((row) => row.hour),
+    Array.from({ length: 14 }, (_, index) => index + 8),
+  );
+  assert.equal(reviewHourlyPayload.statisticsExpectedItemCount, 14);
+  assert.equal(reviewHourlyPayload.statisticsSnapshotItemCount, 14);
+
+  const selectedStoreHourlyPayload = await request(
+    "GET",
+    "/react/v1/dashboard/executive-hourly-traffic",
+    undefined,
+    {
+      startDate: "2026-07-16",
+      endDate: "2026-07-16",
+      branchCodes: ["REV002"],
+    },
+  );
+  assert.equal(
+    normalizeHourlyRevenueSnapshot(selectedStoreHourlyPayload).rows.length,
+    14,
+    "选择单店仍须返回完整营业时段",
+  );
+  assert.ok(
+    selectedStoreHourlyPayload.items.reduce(
+      (total: number, row: { revenue: number }) => total + row.revenue,
+      0,
+    )
+      < reviewHourlyPayload.items.reduce(
+        (total: number, row: { revenue: number }) => total + row.revenue,
+        0,
+    ),
+    "分时表选择单店后只能汇总该店，不能泄漏其余 27 店营业额",
+  );
+  const anotherStoreHourlyPayload = await request(
+    "GET",
+    "/react/v1/dashboard/executive-hourly-traffic",
+    undefined,
+    {
+      startDate: "2026-07-16",
+      endDate: "2026-07-16",
+      branchCodes: ["REV001"],
+    },
+  );
+  assert.notDeepEqual(
+    selectedStoreHourlyPayload.items.map(
+      (row: { revenue: number }) => row.revenue,
+    ),
+    anotherStoreHourlyPayload.items.map(
+      (row: { revenue: number }) => row.revenue,
+    ),
+    "相同分店数量但不同 branchCodes 必须得到各自的分时数据",
+  );
+  const unknownStoreHourlyPayload = await request(
+    "GET",
+    "/react/v1/dashboard/executive-hourly-traffic",
+    undefined,
+    {
+      startDate: "2026-07-16",
+      endDate: "2026-07-16",
+      branchCodes: ["NOT-A-REVIEW-STORE"],
+    },
+  );
+  assert.equal(
+    unknownStoreHourlyPayload.items.every(
+      (row: { revenue: number; transactions: number }) =>
+        row.revenue === 0 && row.transactions === 0,
+    ),
+    true,
+    "分时表无匹配分店时必须返回零汇总，不能回退到全店数据",
+  );
+
+  const reviewDailyPayload = await request(
+    "GET",
+    "/react/v1/dashboard/branch-daily-performance",
+    undefined,
+    {
+      startDate: "2026-07-13",
+      endDate: "2026-07-19",
+      branchCodes: ["REV001", "REV003"],
+    },
+  );
+  const reviewDailySnapshot = normalizeDailyRevenueSnapshot(reviewDailyPayload);
+  assert.equal(
+    reviewDailySnapshot.isComplete,
+    true,
+    "审核 mock 逐日表必须声明完整项目计数",
+  );
+  assert.equal(
+    reviewDailySnapshot.rows.length,
+    14,
+    "周范围必须逐日生成 7 天 × 2 家已选分店",
+  );
+  assert.deepEqual(
+    [...new Set(reviewDailyPayload.items.map((row: { date: string }) => row.date))],
+    [
+      "2026-07-13",
+      "2026-07-14",
+      "2026-07-15",
+      "2026-07-16",
+      "2026-07-17",
+      "2026-07-18",
+      "2026-07-19",
+    ],
+    "逐日表必须覆盖 startDate 到 endDate 的每一个自然日",
+  );
+  assert.deepEqual(
+    [
+      ...new Set(
+        reviewDailyPayload.items.map(
+          (row: { branchCode: string }) => row.branchCode,
+        ),
+      ),
+    ],
+    ["REV001", "REV003"],
+    "逐日表不能泄漏未选择分店",
+  );
+  assert.equal(reviewDailyPayload.statisticsExpectedItemCount, 14);
+  assert.equal(reviewDailyPayload.statisticsSnapshotItemCount, 14);
+
+  const allStoreDailyPayload = await request(
+    "GET",
+    "/react/v1/dashboard/branch-daily-performance",
+    undefined,
+    { startDate: "2026-07-16", endDate: "2026-07-16" },
+  );
+  assert.equal(allStoreDailyPayload.items.length, IOS_REVIEW_STORES.length);
+  assert.equal(
+    new Set(
+      allStoreDailyPayload.items.map(
+        (row: { branchCode: string }) => row.branchCode,
+      ),
+    ).size,
+    IOS_REVIEW_STORES.length,
+    "未筛选时逐日表必须保留全部 28 家唯一分店",
+  );
+  assert.equal(
+    allStoreDailyPayload.statisticsExpectedItemCount,
+    allStoreDailyPayload.items.length,
+  );
+  assert.equal(
+    allStoreDailyPayload.statisticsSnapshotItemCount,
+    allStoreDailyPayload.items.length,
+  );
+
+  const reviewMonthlyDailyPayload = await request(
+    "GET",
+    "/react/v1/dashboard/branch-daily-performance",
+    undefined,
+    {
+      startDate: "2026-07-01",
+      endDate: "2026-07-31",
+      branchCodes: ["REV002"],
+    },
+  );
+  assert.equal(
+    normalizeDailyRevenueSnapshot(reviewMonthlyDailyPayload).isComplete,
+    true,
+  );
+  assert.equal(
+    reviewMonthlyDailyPayload.items.length,
+    31,
+    "月范围必须覆盖完整日期，不得只返回当天 fixture",
+  );
+  assert.equal(reviewMonthlyDailyPayload.items[0]?.date, "2026-07-01");
+  assert.equal(reviewMonthlyDailyPayload.items.at(-1)?.date, "2026-07-31");
+  assert.equal(
+    reviewMonthlyDailyPayload.items.every(
+      (row: { branchCode: string }) => row.branchCode === "REV002",
+    ),
+    true,
+    "月范围也不能泄漏未选择分店",
+  );
+  assert.equal(reviewMonthlyDailyPayload.statisticsExpectedItemCount, 31);
+  assert.equal(reviewMonthlyDailyPayload.statisticsSnapshotItemCount, 31);
+
+  const allStoreMonthlyDailyPayload = await request(
+    "GET",
+    "/react/v1/dashboard/branch-daily-performance",
+    undefined,
+    { startDate: "2026-07-01", endDate: "2026-07-31" },
+  );
+  assert.equal(
+    allStoreMonthlyDailyPayload.items.length,
+    31 * IOS_REVIEW_STORES.length,
+    "未筛选月范围必须完整生成 31 天 × 28 家分店",
+  );
+  assert.equal(
+    allStoreMonthlyDailyPayload.statisticsExpectedItemCount,
+    allStoreMonthlyDailyPayload.items.length,
+  );
+  assert.equal(
+    allStoreMonthlyDailyPayload.statisticsSnapshotItemCount,
+    allStoreMonthlyDailyPayload.items.length,
+  );
+
+  const assertExecutiveMatchesDaily = async (
+    label: string,
+    params: Record<string, unknown>,
+  ) => {
+    const executivePayload = await request(
+      "GET",
+      "/react/v1/dashboard/executive-branch-performance",
+      undefined,
+      params,
+    );
+    const dailyPayload = await request(
+      "GET",
+      "/react/v1/dashboard/branch-daily-performance",
+      undefined,
+      params,
+    );
+    assert.equal(
+      normalizeExecutiveBranchPerformance(executivePayload).isComplete,
+      true,
+      `${label}：分店排行必须保持完整性元数据`,
+    );
+    assert.equal(
+      normalizeDailyRevenueSnapshot(dailyPayload).isComplete,
+      true,
+      `${label}：逐日明细必须保持完整性元数据`,
+    );
+    for (const executiveRow of executivePayload.items as (
+      ReviewRevenueMetrics & { branchCode: string }
+    )[]) {
+      const dailyRows = (dailyPayload.items as (
+        ReviewRevenueMetrics & { branchCode: string }
+      )[]).filter((row) => row.branchCode === executiveRow.branchCode);
+      assert.ok(dailyRows.length > 0, `${label}：每家排行分店都必须有逐日明细`);
+      assertReviewRevenueMetricsConserved(
+        executiveRow,
+        sumReviewRevenueMetrics(dailyRows),
+        `${label}/${executiveRow.branchCode}`,
+      );
+    }
+  };
+  for (const reportCase of [
+    {
+      label: "单日全店",
+      params: { startDate: "2026-07-17", endDate: "2026-07-17" },
+    },
+    {
+      label: "单日单店",
+      params: {
+        startDate: "2026-07-17",
+        endDate: "2026-07-17",
+        branchCodes: ["REV002"],
+      },
+    },
+    {
+      label: "周范围全店",
+      params: { startDate: "2026-07-13", endDate: "2026-07-19" },
+    },
+    {
+      label: "周范围单店",
+      params: {
+        startDate: "2026-07-13",
+        endDate: "2026-07-19",
+        branchCodes: ["REV002"],
+      },
+    },
+    {
+      label: "月范围全店",
+      params: { startDate: "2026-07-01", endDate: "2026-07-31" },
+    },
+    {
+      label: "月范围单店",
+      params: {
+        startDate: "2026-07-01",
+        endDate: "2026-07-31",
+        branchCodes: ["REV002"],
+      },
+    },
+  ]) {
+    await assertExecutiveMatchesDaily(reportCase.label, reportCase.params);
+  }
+
+  const assertHourlyMatchesExecutive = async (
+    label: string,
+    params: Record<string, unknown>,
+  ) => {
+    const executivePayload = await request(
+      "GET",
+      "/react/v1/dashboard/executive-branch-performance",
+      undefined,
+      params,
+    );
+    const hourlyPayload = await request(
+      "GET",
+      "/react/v1/dashboard/executive-hourly-traffic",
+      undefined,
+      params,
+    );
+    assert.equal(hourlyPayload.items.length, 14, `${label}：必须保留 14 个营业时段`);
+    assertReviewRevenueMetricsConserved(
+      sumReviewRevenueMetrics(hourlyPayload.items),
+      sumReviewRevenueMetrics(executivePayload.items),
+      label,
+    );
+  };
+  await assertHourlyMatchesExecutive("单日全店分时守恒", {
+    startDate: "2026-07-17",
+    endDate: "2026-07-17",
+  });
+  await assertHourlyMatchesExecutive("单日单店分时守恒", {
+    startDate: "2026-07-17",
+    endDate: "2026-07-17",
+    branchCodes: ["REV002"],
+  });
+
+  const supplierPayload = await request("GET", "/react/v1/dashboard/supplier-sales-rank");
+  const supplierSnapshot = normalizeSupplierReportSnapshot(supplierPayload);
+  assert.equal(supplierSnapshot.isComplete, true, "审核 mock 供应商排行必须声明 Fresh 统计批次");
   const supplierRows = normalizeSupplierRows(
-    await request("GET", "/react/v1/dashboard/supplier-sales-rank"),
+    supplierPayload,
+  );
+  assert.equal(supplierRows.length, 8, "审核 mock 供应商排行至少需要 8 行可验收数据");
+  assert.equal(
+    new Set(supplierRows.map((row) => row.supplierCode)).size,
+    8,
+    "审核 mock 供应商代码必须唯一",
+  );
+  assert.equal(
+    supplierRows.every((row) => row.storeCount === IOS_REVIEW_STORES.length),
+    true,
+    "每个审核供应商都必须覆盖真实的 28 家分店",
+  );
+  assert.equal(
+    supplierPayload.items.every((item: Record<string, unknown>) =>
+      [
+        "totalAmount",
+        "costAmount",
+        "grossProfit",
+        "grossMarginRate",
+        "orderCount",
+        "averageTransaction",
+        "compareTotalAmount",
+        "compareCostAmount",
+        "compareGrossProfit",
+        "compareGrossMarginRate",
+        "compareOrderCount",
+        "compareAverageTransaction",
+      ].every((key) => typeof item[key] === "number"),
+    ),
+    true,
+    "供应商排行必须显式提供营业额、成本、毛利、毛利率、订单数、客单价及同期字段",
   );
   assert.equal(supplierRows[0]?.revenue, 1250);
   assert.equal(supplierRows[0]?.totalQuantity, 36);
   assert.equal(supplierRows[0]?.orderCount, 8);
+  assert.notEqual(supplierRows[0]?.grossProfit, null);
+  assert.notEqual(supplierRows[0]?.compareGrossProfit, null);
+  const selectedStoreSupplierPayload = await request(
+    "GET",
+    "/react/v1/dashboard/supplier-sales-rank",
+    undefined,
+    { branchCodes: ["REV002"] },
+  );
+  const selectedStoreSupplierRows = normalizeSupplierRows(selectedStoreSupplierPayload);
+  assert.equal(
+    selectedStoreSupplierRows.every((row) => row.storeCount === 1),
+    true,
+    "供应商表选择单店后必须显示 1 家覆盖门店",
+  );
+  assert.ok(
+    selectedStoreSupplierRows[0]!.revenue < supplierRows[0]!.revenue,
+    "供应商表选择单店后金额必须按该店范围缩小",
+  );
+  const anotherStoreSupplierPayload = await request(
+    "GET",
+    "/react/v1/dashboard/supplier-sales-rank",
+    undefined,
+    { branchCodes: ["REV001"] },
+  );
+  assert.notEqual(
+    anotherStoreSupplierPayload.items[0]?.totalAmount,
+    selectedStoreSupplierPayload.items[0]?.totalAmount,
+    "供应商表必须按具体分店 fixture 计算，REV001 与 REV002 不能只有相同的数量比例",
+  );
+  const unknownStoreSupplierPayload = await request(
+    "GET",
+    "/react/v1/dashboard/supplier-sales-rank",
+    undefined,
+    { branchCodes: ["NOT-A-REVIEW-STORE"] },
+  );
+  assert.equal(
+    unknownStoreSupplierPayload.items.every(
+      (item: Record<string, number>) =>
+        item.storeCount === 0
+        && [
+          "totalAmount",
+          "costAmount",
+          "grossProfit",
+          "grossMarginRate",
+          "compareTotalAmount",
+          "compareCostAmount",
+          "compareGrossProfit",
+          "compareGrossMarginRate",
+          "totalQuantity",
+          "orderCount",
+          "compareOrderCount",
+          "averageTransaction",
+          "compareAverageTransaction",
+        ].every((key) => item[key] === 0),
+    ),
+    true,
+    "供应商表未知分店必须返回零指标，不能回退或泄漏全店数据",
+  );
 
   const freshness = normalizeStatisticsFreshness(
     await request("GET", "/react/v1/dashboard/statistics-freshness"),
@@ -1388,19 +1894,252 @@ async function run() {
     "Rejected",
   );
 
+  const supplierBranchPayload = await request("GET", "/react/v1/dashboard/supplier-store-sales");
+  assert.equal(
+    normalizeSupplierBranchReportSnapshot(supplierBranchPayload).isComplete,
+    true,
+    "审核 mock 供应商分店下钻必须声明 Fresh 统计批次",
+  );
   const supplierBranchRows = normalizeSupplierBranchRows(
-    await request("GET", "/react/v1/dashboard/supplier-store-sales"),
+    supplierBranchPayload,
+  );
+  assert.equal(supplierBranchRows.length, IOS_REVIEW_STORES.length);
+  assert.equal(
+    new Set(supplierBranchRows.map((row) => row.branchCode)).size,
+    IOS_REVIEW_STORES.length,
+    "供应商分店下钻必须保留 28 个唯一分店代码",
+  );
+  assert.equal(
+    supplierBranchPayload.items.every((item: Record<string, unknown>) =>
+      [
+        "costAmount",
+        "grossProfit",
+        "grossMarginRate",
+        "compareCostAmount",
+        "compareGrossProfit",
+        "compareGrossMarginRate",
+      ].every((key) => typeof item[key] === "number"),
+    ),
+    true,
+    "供应商分店下钻必须提供当前期与同期成本、毛利原始字段",
   );
   assert.equal(supplierBranchRows[0]?.supplierCode, "REV-SUP-001");
   assert.equal(supplierBranchRows[0]?.revenue, 720);
   assert.equal(supplierBranchRows[0]?.totalQuantity, 24);
   assert.equal(supplierBranchRows[0]?.orderCount, 6);
+  assert.notEqual(supplierBranchRows[0]?.grossProfit, null);
+  assert.notEqual(supplierBranchRows[0]?.compareGrossProfit, null);
 
+  const productPayload = await request(
+    "GET",
+    "/react/v1/dashboard/enhanced-sales-product-details",
+    undefined,
+    { pageNumber: 1, pageSize: 20 },
+  );
+  assert.equal(
+    normalizeProductReportProductPageSnapshot(productPayload).isComplete,
+    true,
+    "审核 mock 商品列表必须声明 Fresh 统计批次",
+  );
+  const firstProductPage = normalizeProductPage(productPayload);
+  assert.equal(firstProductPage.rows.length, 20, "审核商品第一页必须严格返回 20 行");
+  assert.equal(firstProductPage.total, 24, "审核商品报告必须提供 24 行总量");
+  assert.equal(firstProductPage.pageIndex, 1);
+  assert.equal(firstProductPage.pageSize, 20);
+  const secondProductPayload = await request(
+    "GET",
+    "/react/v1/dashboard/enhanced-sales-product-details",
+    undefined,
+    { pageNumber: 2, pageSize: 20 },
+  );
+  const secondProductPage = normalizeProductPage(secondProductPayload);
+  assert.equal(
+    normalizeProductReportProductPageSnapshot(secondProductPayload).isComplete,
+    true,
+    "审核商品第二页也必须保留完整性元数据",
+  );
+  assert.equal(secondProductPage.rows.length, 4, "审核商品第二页必须返回剩余 4 行");
+  assert.equal(secondProductPage.total, 24);
+  assert.equal(secondProductPage.pageIndex, 2);
+  assert.equal(secondProductPage.pageSize, 20);
+  const allProductRows = [...firstProductPage.rows, ...secondProductPage.rows];
+  assert.equal(
+    new Set(allProductRows.map((row) => row.productCode)).size,
+    24,
+    "两页商品代码必须保持 24 个唯一值且不能重复",
+  );
+  const searchedProductPayload = await request(
+    "GET",
+    "/react/v1/dashboard/enhanced-sales-product-details",
+    undefined,
+    { productSearch: "RPT-00024", pageIndex: 1, pageSize: 20 },
+  );
+  const searchedProductPage = normalizeProductPage(searchedProductPayload);
+  assert.equal(searchedProductPage.total, 1, "商品搜索必须真正过滤 Review 报表结果");
+  assert.equal(searchedProductPage.rows[0]?.itemNumber, "RPT-00024");
+
+  const supplierFilteredProductPayload = await request(
+    "GET",
+    "/react/v1/dashboard/enhanced-sales-product-details",
+    undefined,
+    { localSupplierCodes: ["REV-SUP-002"], pageIndex: 1, pageSize: 20 },
+  );
+  assert.equal(
+    normalizeProductPage(supplierFilteredProductPayload).total,
+    3,
+    "选择供应商后 Review 商品列表必须只保留该供应商的商品",
+  );
+
+  const chinaScopedProductPayload = await request(
+    "GET",
+    "/react/v1/dashboard/enhanced-sales-product-details",
+    undefined,
+    { supplierScope: "china", pageIndex: 1, pageSize: 20 },
+  );
+  const chinaScopedProductPage = normalizeProductPage(chinaScopedProductPayload);
+  assert.equal(
+    chinaScopedProductPage.total,
+    8,
+    "中国供应商页未选择具体供应商时，Review 商品列表也必须限定为中国供应商商品",
+  );
+  assert.ok(
+    chinaScopedProductPage.rows.every((row) => Number(row.itemNumber.slice(4)) <= 8),
+    "中国供应商范围不得混入澳洲供应商商品 fixture",
+  );
+
+  const branchFilteredProductPayload = await request(
+    "GET",
+    "/react/v1/dashboard/enhanced-sales-product-details",
+    undefined,
+    { branchCodes: ["REV002"], pageIndex: 1, pageSize: 20 },
+  );
+  assert.ok(
+    branchFilteredProductPayload.items[0].salesAmount < productPayload.items[0].salesAmount,
+    "选择单店后 Review 商品金额必须按该店范围缩小",
+  );
+  const anotherBranchFilteredProductPayload = await request(
+    "GET",
+    "/react/v1/dashboard/enhanced-sales-product-details",
+    undefined,
+    { branchCodes: ["REV001"], pageIndex: 1, pageSize: 20 },
+  );
+  assert.notEqual(
+    anotherBranchFilteredProductPayload.items[0]?.salesAmount,
+    branchFilteredProductPayload.items[0]?.salesAmount,
+    "商品表必须按具体分店 fixture 计算，REV001 与 REV002 的单店金额不能相同",
+  );
+  const unknownBranchFilteredProductPayload = await request(
+    "GET",
+    "/react/v1/dashboard/enhanced-sales-product-details",
+    undefined,
+    {
+      branchCodes: ["NOT-A-REVIEW-STORE"],
+      pageIndex: 1,
+      pageSize: 20,
+    },
+  );
+  assert.equal(
+    unknownBranchFilteredProductPayload.items.every(
+      (item: Record<string, number>) => [
+        "quantity",
+        "compareQuantity",
+        "salesAmount",
+        "compareSalesAmount",
+        "costAmount",
+        "compareCostAmount",
+        "grossProfit",
+        "compareGrossProfit",
+        "grossMarginRate",
+        "compareGrossMarginRate",
+        "averageUnitPrice",
+        "compareAverageUnitPrice",
+        "orderCount",
+        "compareOrderCount",
+      ].every((key) => item[key] === 0),
+    ),
+    true,
+    "商品表未知分店必须返回零指标，不能回退或泄漏全店数据",
+  );
+  const allRawProductRows = [
+    ...productPayload.items,
+    ...secondProductPayload.items,
+  ] as Record<string, unknown>[];
+  assert.equal(
+    allRawProductRows.every((item) =>
+      [
+        "salesAmount",
+        "quantity",
+        "compareSalesAmount",
+        "compareQuantity",
+      ].every((key) => typeof item[key] === "number"),
+    ),
+    true,
+    "商品报告必须显式提供销售额、销量及同期字段",
+  );
+  assert.equal(
+    allRawProductRows.filter(
+      (item) =>
+        item.costAmount === null &&
+        item.grossProfit === null &&
+        item.grossMarginRate === null,
+    ).length,
+    1,
+    "商品报告必须保留且仅保留一个当前期成本缺失商品，用于验收空值状态",
+  );
+  assert.equal(
+    allRawProductRows
+      .filter((item) => item.costAmount !== null)
+      .every((item) =>
+        [
+          "costAmount",
+          "grossProfit",
+          "grossMarginRate",
+          "compareCostAmount",
+          "compareGrossProfit",
+          "compareGrossMarginRate",
+        ].every((key) => typeof item[key] === "number"),
+      ),
+    true,
+    "其余商品必须显式提供当前期与同期成本、毛利、毛利率字段",
+  );
+  assert.equal(
+    allProductRows.filter((row) => row.grossProfit === null).length,
+    1,
+    "成本缺失状态必须能通过真实 normalizer 到达页面",
+  );
+  const productBranchPayload = await request("GET", "/react/v1/dashboard/product-sales-by-branches");
+  assert.equal(
+    normalizeProductBranchReportSnapshot(productBranchPayload).isComplete,
+    true,
+    "审核 mock 商品分店下钻必须声明 Fresh 统计批次",
+  );
   const productBranchRows = normalizeProductBranchRows(
-    await request("GET", "/react/v1/dashboard/product-sales-by-branches"),
+    productBranchPayload,
+  );
+  assert.equal(productBranchRows.length, IOS_REVIEW_STORES.length);
+  assert.equal(
+    new Set(productBranchRows.map((row) => row.branchCode)).size,
+    IOS_REVIEW_STORES.length,
+    "商品分店下钻必须保留 28 个唯一分店代码",
+  );
+  assert.equal(
+    productBranchPayload.items.every((item: Record<string, unknown>) =>
+      [
+        "costAmount",
+        "grossProfit",
+        "grossMarginRate",
+        "compareCostAmount",
+        "compareGrossProfit",
+        "compareGrossMarginRate",
+      ].every((key) => typeof item[key] === "number"),
+    ),
+    true,
+    "商品分店下钻必须提供当前期与同期成本、毛利原始字段",
   );
   assert.equal(productBranchRows[0]?.quantity, 12);
   assert.equal(productBranchRows[0]?.salesAmount, 240);
+  assert.notEqual(productBranchRows[0]?.grossProfit, null);
+  assert.notEqual(productBranchRows[0]?.compareGrossProfit, null);
 
   const scan = await request(
     "POST",
