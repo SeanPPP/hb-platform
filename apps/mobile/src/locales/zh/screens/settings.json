@@ -2,7 +2,40 @@
   "title": "设置",
   "groups": {
     "app": "应用设置",
-    "printers": "打印机"
+    "printers": "打印机",
+    "devices": "设备与连接",
+    "preferences": "偏好与安全",
+    "support": "应用与支持"
+  },
+  "overview": {
+    "diagnostics": "诊断",
+    "deviceServicesReady": "设备配置可用",
+    "deviceServicesAttention": "部分设备配置需要处理",
+    "connectionSummary": "当前分店：{{store}}",
+    "ready": "正常",
+    "attention": "需处理",
+    "accountMode": "账户模式",
+    "deviceMode": "设备模式",
+    "languageZhShort": "中文",
+    "languageEnShort": "EN",
+    "currentDevice": "当前设备",
+    "configured": "已配置",
+    "notConfigured": "未配置",
+    "connected": "已连接",
+    "manageDevice": "管理当前设备",
+    "managePrinters": "管理打印机",
+    "privacySummary": "隐私政策与数据说明",
+    "aboutDiagnostics": "关于与诊断",
+    "aboutDescription": "版本、运行信息与故障排查",
+    "buildFooter": "版本 {{version}} · {{channel}}",
+    "dangerZone": "危险操作",
+    "printerDetailsDescription": "分别管理标签打印机和小票打印机，蓝牙操作会自动串行执行。"
+  },
+  "diagnostics": {
+    "title": "关于与诊断",
+    "description": "只读查看当前版本、配置与设备状态，用于快速排查问题。",
+    "connectionSummary": "以下内容来自本机当前状态，不执行网络健康检查。",
+    "runtimeDetails": "版本与运行信息"
   },
   "account": {
     "title": "当前账号",

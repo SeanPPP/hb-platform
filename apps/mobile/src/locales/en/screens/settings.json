@@ -2,7 +2,40 @@
   "title": "Settings",
   "groups": {
     "app": "App settings",
-    "printers": "Printers"
+    "printers": "Printers",
+    "devices": "Devices and connections",
+    "preferences": "Preferences and security",
+    "support": "App and support"
+  },
+  "overview": {
+    "diagnostics": "Diagnostics",
+    "deviceServicesReady": "Device configuration available",
+    "deviceServicesAttention": "Some device settings need attention",
+    "connectionSummary": "Current store: {{store}}",
+    "ready": "Ready",
+    "attention": "Attention",
+    "accountMode": "Account mode",
+    "deviceMode": "Device mode",
+    "languageZhShort": "中文",
+    "languageEnShort": "EN",
+    "currentDevice": "Current device",
+    "configured": "Configured",
+    "notConfigured": "Not configured",
+    "connected": "Connected",
+    "manageDevice": "Manage current device",
+    "managePrinters": "Manage printers",
+    "privacySummary": "Privacy policy and data information",
+    "aboutDiagnostics": "About and diagnostics",
+    "aboutDescription": "Version, runtime information, and troubleshooting",
+    "buildFooter": "Version {{version}} · {{channel}}",
+    "dangerZone": "Danger zone",
+    "printerDetailsDescription": "Manage label and receipt printers separately. Bluetooth operations run one at a time."
+  },
+  "diagnostics": {
+    "title": "About and diagnostics",
+    "description": "View the current version, configuration, and device state for troubleshooting.",
+    "connectionSummary": "This snapshot uses local device state and does not run a network health check.",
+    "runtimeDetails": "Version and runtime information"
   },
   "account": {
     "title": "Current account",
