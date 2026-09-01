@@ -149,6 +149,10 @@
       "name": "管理设备注册",
       "description": "页面 /system/device-registration - 审核、维护或管理设备注册"
     },
+    "DeviceRegistration.MobileActivationCodes.Manage": {
+      "name": "管理移动端设备开通码",
+      "description": "页面 /system/device-registration - 为指定账号创建和撤销一次性 Mobile 设备开通码"
+    },
     "DeviceRegistration.View": {
       "name": "查看设备注册",
       "description": "页面 /system/device-registration - 查看 POS 设备注册列表与状态"

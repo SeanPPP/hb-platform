@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Alert, ScrollView, StyleSheet, View } from "react-native";
 import { useRouter } from "expo-router";
-import { Button, HelperText, Menu, Modal, Portal, SegmentedButtons, Surface, Switch, Text, TextInput } from "react-native-paper";
+import { Button, HelperText, Modal, Portal, SegmentedButtons, Surface, Switch, Text, TextInput } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   clearSavedReceiptPrinter,
@@ -24,9 +24,7 @@ import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import type { AppLanguage } from "@/shared/i18n/types";
 import { useAuthStore } from "@/store/auth-store";
 import { useDeviceStore } from "@/store/device-store";
-import { useStores } from "@/modules/shop/use-stores";
 import { resolveSettingsAuthMode, shouldShowProfileAction } from "@/modules/device/settings-mode";
-import { resolveDeviceStoreDisplayName } from "@/modules/device/store-display";
 import { isIosReviewSessionActive } from "@/modules/ios-review/session";
 import { isRequiredLocationError } from "@/modules/attendance/required-location";
 import { buildAppUpdateInfoRows, formatAppPackageVersion } from "@/modules/updates/app-update-info";
@@ -41,6 +39,8 @@ import {
   normalizeApiHost,
   setStoredApiHost,
 } from "@/shared/api/config";
+import { DeviceActivationDialog } from "@/modules/device-activation/DeviceActivationDialog";
+import type { MobileDeviceActivationMode } from "@/modules/device-activation/types";
 
 function resolveDeviceStatusText(
   status: number | undefined,
@@ -177,21 +177,22 @@ export default function Settings() {
   const router = useRouter();
   const { t, language } = useAppTranslation(["settings", "common"]);
   const user = useAuthStore((state) => state.user);
-  const access = useAuthStore((state) => state.access);
   const logout = useAuthStore((state) => state.logout);
+  const loginDeviceAccount = useAuthStore((state) => state.loginDeviceAccount);
+  const sessionKind = useAuthStore((state) => state.sessionKind);
   const deviceSession = useDeviceStore((state) => state.session);
-  const registerDevice = useDeviceStore((state) => state.register);
+  const accountBinding = useDeviceStore((state) => state.accountBinding);
+  const refreshAccountBinding = useDeviceStore((state) => state.refreshAccountBinding);
   const validateDevice = useDeviceStore((state) => state.validate);
   const unbindDevice = useDeviceStore((state) => state.unbind);
+  const unbindAccountBinding = useDeviceStore((state) => state.unbindAccountBinding);
   const deviceLoading = useDeviceStore((state) => state.isLoading);
-  const { stores, selectedStore, selectStore } = useStores();
   const savedPrinter = usePrinterStore((state) => state.savedPrinter);
   const printerStatus = usePrinterStore((state) => state.status);
   const autoReconnectPaused = usePrinterStore((state) => state.autoReconnectPaused);
   const savedReceiptPrinter = useReceiptPrinterStore((state) => state.savedPrinter);
   const receiptPrinterStatus = useReceiptPrinterStore((state) => state.status);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [storeMenuVisible, setStoreMenuVisible] = useState(false);
   const [rawPrinters, setRawPrinters] = useState<PrinterDevice[]>([]);
   const [printerBusy, setPrinterBusy] = useState(false);
   const [printerScanCompleted, setPrinterScanCompleted] = useState(false);
@@ -204,25 +205,15 @@ export default function Settings() {
   const [apiHost, setApiHost] = useState(getCurrentApiHost());
   const [apiHostDraft, setApiHostDraft] = useState(getCurrentApiHost());
   const [apiHostModalVisible, setApiHostModalVisible] = useState(false);
+  const [activationVisible, setActivationVisible] = useState(false);
+  const [activationMode, setActivationMode] = useState<MobileDeviceActivationMode>("redeem");
 
-  const canRegisterDevice = access.canManageDeviceRegistration;
   const settingsAuthMode = resolveSettingsAuthMode({
     hasUser: Boolean(user),
     hasDeviceSession: Boolean(deviceSession),
   });
-  const isDeviceMode = settingsAuthMode === "device";
   const showProfileAction = shouldShowProfileAction(settingsAuthMode);
-  const canViewDeviceCard =
-    canRegisterDevice || access.canViewDeviceRegistration || Boolean(deviceSession);
-
-  const effectiveStore = selectedStore
-    ? selectedStore
-    : deviceSession?.storeCode
-      ? {
-          storeCode: deviceSession.storeCode,
-          storeName: deviceSession.storeName || deviceSession.storeCode,
-        }
-      : null;
+  const canViewDeviceCard = Boolean(user || deviceSession || accountBinding);
 
   const deviceStatusText = resolveDeviceStatusText(
     deviceSession?.status,
@@ -230,25 +221,13 @@ export default function Settings() {
     t,
     language
   );
-  const deviceReady = deviceSession?.status === 1 && Boolean(deviceSession.storeCode);
-
-  const sortedStores = useMemo(
-    () =>
-      stores.slice().sort((left, right) =>
-        (left.storeName || left.storeCode).localeCompare(
-          right.storeName || right.storeCode,
-          undefined,
-          { sensitivity: "base" }
-        )
-      ),
-    [stores]
-  );
-  const deviceStoreDisplayName = resolveDeviceStoreDisplayName({
-    deviceStoreCode: deviceSession?.storeCode ?? effectiveStore?.storeCode,
-    deviceStoreName: deviceSession?.storeName ?? effectiveStore?.storeName,
-    stores: sortedStores,
-    fallback: t("device.selectStore"),
-  });
+  const deviceReady = Boolean(accountBinding) ||
+    (deviceSession?.status === 1 && Boolean(deviceSession.storeCode));
+  const deviceStoreDisplayName =
+    accountBinding?.binding.storeName ||
+    deviceSession?.storeName ||
+    deviceSession?.storeCode ||
+    t("common:na");
   const updateInfoRows = useMemo(() => buildAppUpdateInfoRows(updateInfo), [updateInfo]);
   const appPackageVersion = useMemo(
     () => formatAppPackageVersion(updateInfo, t("updates.unknown")),
@@ -371,7 +350,7 @@ export default function Settings() {
     ]);
   };
 
-  const handleDeviceUnbind = (mode: "unbind" | "rebind") => {
+  const handleDeviceUnbind = () => {
     if (isIosReviewSessionActive()) {
       Alert.alert(
         "App Review Demo",
@@ -380,18 +359,26 @@ export default function Settings() {
       return;
     }
     Alert.alert(
-      mode === "rebind" ? t("dialogs.rebindDeviceTitle") : t("dialogs.unbindDeviceTitle"),
-      mode === "rebind" ? t("dialogs.rebindDeviceMessage") : t("dialogs.unbindDeviceMessage"),
+      t("dialogs.unbindDeviceTitle"),
+      t("dialogs.unbindDeviceMessage"),
       [
         { text: t("common:actions.cancel"), style: "cancel" },
         {
-          text: mode === "rebind" ? t("device.rebind") : t("device.unbind"),
+          text: t("device.unbind"),
           style: "destructive",
           onPress: async () => {
             setIsSubmitting(true);
             try {
-              await unbindDevice();
-              router.replace("/(auth)/login");
+              if (accountBinding) {
+                await unbindAccountBinding("user-requested");
+                if (sessionKind === "deviceAccount") {
+                  await logout();
+                  router.replace("/(auth)/login");
+                }
+              } else {
+                await unbindDevice();
+                router.replace("/(auth)/login");
+              }
             } catch (error) {
               Alert.alert(
                 t("dialogs.unbindDeviceFailedTitle"),
@@ -404,6 +391,24 @@ export default function Settings() {
         },
       ]
     );
+  };
+
+  const openDeviceActivation = () => {
+    setActivationMode(accountBinding ? "rebind" : "redeem");
+    setActivationVisible(true);
+  };
+
+  const handleActivationCompleted = async () => {
+    try {
+      await refreshAccountBinding();
+      await loginDeviceAccount();
+    } catch {
+      Alert.alert(
+        t("dialogs.bindingLoginFailedTitle"),
+        t("dialogs.bindingLoginFailedMessage"),
+      );
+      router.replace("/(auth)/login");
+    }
   };
 
   const handleLanguageChange = async (nextLanguage: AppLanguage) => {
@@ -482,38 +487,6 @@ export default function Settings() {
     } finally {
       setUpdateInfo(getCurrentAppUpdateInfo());
       setUpdateBusy(false);
-    }
-  };
-
-  const handleRegisterDevice = async () => {
-    if (!effectiveStore?.storeCode) {
-      Alert.alert(t("dialogs.selectStoreTitle"), t("dialogs.selectStoreMessage"));
-      return;
-    }
-
-    setIsSubmitting(true);
-    try {
-      const session = await registerDevice({
-        storeCode: effectiveStore.storeCode,
-        storeName: effectiveStore.storeName,
-      });
-
-      Alert.alert(
-        session.resolvedFromExisting
-          ? t("dialogs.registerExistingTitle")
-          : t("dialogs.registerSuccessTitle"),
-        t(session.resolvedFromExisting ? "dialogs.registerExistingMessage" : "dialogs.registerSuccessMessage", {
-          store: session.storeName || session.storeCode,
-          status: resolveDeviceStatusText(session.status, session.statusDescription, t, language),
-        })
-      );
-    } catch (error) {
-      Alert.alert(
-        t("dialogs.registerFailedTitle"),
-        getErrorMessage(error, "dialogs.registerFailedMessage")
-      );
-    } finally {
-      setIsSubmitting(false);
     }
   };
 
@@ -815,70 +788,51 @@ export default function Settings() {
         </CompactSection>
 
         {canViewDeviceCard ? (
-          <CompactSection title={t("device.title")}>
+          <CompactSection title={t("device.title")} description={t("device.description")}>
             <View style={styles.statusBlock}>
-              <CompactRow label={t("device.statusLabel")} value={deviceStatusText} />
+              <CompactRow
+                label={t("device.statusLabel")}
+                value={accountBinding ? t("deviceStatus.bound") : deviceStatusText}
+              />
               <View style={styles.sectionDivider} />
               <CompactRow label={t("device.storeLabelCompact")} value={deviceStoreDisplayName} />
               <View style={styles.sectionDivider} />
               <CompactRow
                 label={t("device.deviceNumberLabel")}
-                value={deviceSession?.systemDeviceNumber || t("common:na")}
+                value={accountBinding?.binding.deviceCode || deviceSession?.systemDeviceNumber || t("common:na")}
               />
+              {accountBinding ? (
+                <>
+                  <View style={styles.sectionDivider} />
+                  <CompactRow
+                    label={t("device.accountLabel")}
+                    value={accountBinding.binding.targetFullName || accountBinding.binding.targetUsername}
+                  />
+                  <View style={styles.sectionDivider} />
+                  <CompactRow
+                    label={t("device.systemLabel")}
+                    value={accountBinding.binding.deviceSystem}
+                  />
+                </>
+              ) : null}
             </View>
 
-            {canRegisterDevice ? (
-              <View style={styles.storePickerWrap}>
-                <Text variant="labelLarge" style={styles.storePickerLabel}>
-                  {t("device.storeLabel")}
-                </Text>
-                <Menu
-                  visible={storeMenuVisible}
-                  onDismiss={() => setStoreMenuVisible(false)}
-                  anchor={
-                    <Button
-                      mode="outlined"
-                      icon="chevron-down"
-                      contentStyle={styles.dropdownButtonContent}
-                      style={styles.dropdownButton}
-                      onPress={() => setStoreMenuVisible(true)}
-                    >
-                      {effectiveStore?.storeName || t("device.selectStore")}
-                    </Button>
-                  }
-                >
-                  {sortedStores.map((store) => (
-                    <Menu.Item
-                      key={store.storeCode}
-                      title={store.storeName || store.storeCode}
-                      onPress={() => {
-                        void selectStore(store);
-                        setStoreMenuVisible(false);
-                      }}
-                    />
-                  ))}
-                </Menu>
-              </View>
-            ) : null}
+            <Button
+              mode="contained"
+              icon="qrcode-scan"
+              onPress={openDeviceActivation}
+              loading={isSubmitting || deviceLoading}
+              disabled={isSubmitting || deviceLoading}
+              style={styles.primaryButton}
+            >
+              {accountBinding
+                ? t("device.rebindByScan")
+                : deviceSession
+                  ? t("device.upgradeByScan")
+                  : t("device.bindByScan")}
+            </Button>
 
-            {canRegisterDevice ? (
-              <>
-                <HelperText type="info" visible={!effectiveStore}>
-                  {t("device.helper")}
-                </HelperText>
-                <Button
-                  mode="contained"
-                  onPress={handleRegisterDevice}
-                  loading={isSubmitting || deviceLoading}
-                  disabled={isSubmitting || deviceLoading || !effectiveStore}
-                  style={styles.primaryButton}
-                >
-                  {deviceSession ? t("device.registerAgain") : t("device.register")}
-                </Button>
-              </>
-            ) : null}
-
-            {deviceSession ? (
+            {deviceSession && !accountBinding ? (
               <Button
                 mode="outlined"
                 onPress={handleRefreshDevice}
@@ -890,29 +844,18 @@ export default function Settings() {
               </Button>
             ) : null}
 
-            {deviceSession && isDeviceMode ? (
+            {deviceSession || accountBinding ? (
               <View style={styles.deviceDangerActions}>
                 <Button
                   mode="outlined"
                   icon="link-off"
                   textColor="#A8071A"
-                  onPress={() => handleDeviceUnbind("unbind")}
+                  onPress={handleDeviceUnbind}
                   loading={isSubmitting || deviceLoading}
                   disabled={isSubmitting || deviceLoading}
                   style={styles.deviceDangerButton}
                 >
                   {t("device.unbind")}
-                </Button>
-                <Button
-                  mode="contained"
-                  buttonColor="#A8071A"
-                  icon="refresh"
-                  onPress={() => handleDeviceUnbind("rebind")}
-                  loading={isSubmitting || deviceLoading}
-                  disabled={isSubmitting || deviceLoading}
-                  style={styles.deviceDangerButton}
-                >
-                  {t("device.rebind")}
                 </Button>
               </View>
             ) : null}
@@ -1133,6 +1076,12 @@ export default function Settings() {
           </Button>
         ) : null}
       </ScrollView>
+      <DeviceActivationDialog
+        visible={activationVisible}
+        mode={activationMode}
+        onDismiss={() => setActivationVisible(false)}
+        onCompleted={handleActivationCompleted}
+      />
       <Portal>
         <Modal
           visible={apiHostModalVisible}
@@ -1250,19 +1199,6 @@ const styles = StyleSheet.create({
     borderRadius: 999,
   },
   statusBlock: { gap: 6, marginTop: 4 },
-  storePickerWrap: {
-    marginTop: 2,
-  },
-  storePickerLabel: {
-    marginBottom: 6,
-  },
-  dropdownButton: {
-    alignSelf: "stretch",
-  },
-  dropdownButtonContent: {
-    flexDirection: "row-reverse",
-    justifyContent: "space-between",
-  },
   primaryButton: { marginTop: 4 },
   filterRow: {
     flexDirection: "row",

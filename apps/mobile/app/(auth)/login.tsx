@@ -30,6 +30,8 @@ import { useDeviceStore } from "@/store/device-store";
 import { getDeviceProfileApi } from "@/modules/device/api";
 import { DeviceStorage } from "@/modules/device/storage";
 import type { DeviceProfile } from "@/modules/device/types";
+import { DeviceActivationDialog } from "@/modules/device-activation/DeviceActivationDialog";
+import type { MobileDeviceActivationMode } from "@/modules/device-activation/types";
 import {
   getFriendlyDeviceLoginErrorDescriptor,
   getFriendlyLoginErrorDescriptor,
@@ -61,7 +63,7 @@ import {
 const REMEMBERED_USERNAME_KEY = "remembered_username";
 const BRAND_RED = "#E53935";
 const BRAND_BG = "#F5F5F5";
-type LoginMode = "device" | "user";
+type LoginMode = "device" | "deviceAccount" | "user";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 const IS_SMALL_SCREEN = SCREEN_HEIGHT < 640;
@@ -118,6 +120,7 @@ export default function Login() {
   const router = useRouter();
   const { t } = useAppTranslation(["login", "common"]);
   const loginFn = useAuthStore((s) => s.login);
+  const loginDeviceAccount = useAuthStore((s) => s.loginDeviceAccount);
   const clearAccountSessionForDeviceLogin = useAuthStore(
     (s) => s.clearAccountSessionForDeviceLogin
   );
@@ -132,6 +135,9 @@ export default function Login() {
   const setSessionKind = useAuthStore((s) => s.setSessionKind);
   const syncDeviceFromProfile = useDeviceStore((s) => s.syncFromProfile);
   const validateDevice = useDeviceStore((s) => s.validate);
+  const legacyDeviceSession = useDeviceStore((s) => s.session);
+  const accountBinding = useDeviceStore((s) => s.accountBinding);
+  const refreshAccountBinding = useDeviceStore((s) => s.refreshAccountBinding);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -148,6 +154,8 @@ export default function Login() {
   const [apiHost, setApiHost] = useState(getCurrentApiHost());
   const [apiHostDraft, setApiHostDraft] = useState(getCurrentApiHost());
   const [apiHostModalVisible, setApiHostModalVisible] = useState(false);
+  const [activationVisible, setActivationVisible] = useState(false);
+  const [activationMode, setActivationMode] = useState<MobileDeviceActivationMode>("redeem");
   const reviewBuildEnabled = isIosReviewBuildEnabled(getIosReviewBuildContext());
   const shouldRunLoginSideEffects = Boolean(
     rememberReady &&
@@ -206,6 +214,17 @@ export default function Login() {
   }, [shouldRunLoginSideEffects]);
 
   useEffect(() => {
+    if (accountBinding) {
+      // 绑定晚于旧设备探测返回时，先使在途结果失效，禁止界面降级回固定设备登录。
+      deviceLookupGeneration.current += 1;
+      setDetectedHardwareId(accountBinding.hardwareId);
+      setRegisteredDevice(null);
+      setLoginMode("deviceAccount");
+      setDeviceLookupLoading(false);
+    }
+  }, [accountBinding]);
+
+  useEffect(() => {
     if (!rememberReady) return;
     if (!rememberUsername) {
       void AppAsyncStorage.removeItem(REMEMBERED_USERNAME_KEY);
@@ -233,6 +252,13 @@ export default function Login() {
 
   async function identifyRegisteredDevice() {
     const requestGeneration = ++deviceLookupGeneration.current;
+    if (accountBinding) {
+      setDetectedHardwareId(accountBinding.hardwareId);
+      setRegisteredDevice(null);
+      setLoginMode("deviceAccount");
+      setDeviceLookupLoading(false);
+      return;
+    }
     const session = await DeviceStorage.getSession();
     if (requestGeneration !== deviceLookupGeneration.current) {
       return;
@@ -240,7 +266,7 @@ export default function Login() {
     if (!session?.systemDeviceNumber || !session.hardwareId) {
       setDetectedHardwareId("");
       setRegisteredDevice(null);
-      setLoginMode("user");
+      setLoginMode(accountBinding ? "deviceAccount" : "user");
       setDeviceLookupLoading(false);
       return;
     }
@@ -253,13 +279,13 @@ export default function Login() {
         return;
       }
       setRegisteredDevice(profile);
-      setLoginMode("device");
+      setLoginMode(accountBinding ? "deviceAccount" : "device");
     } catch (err) {
       if (requestGeneration !== deviceLookupGeneration.current) {
         return;
       }
       setRegisteredDevice(null);
-      setLoginMode("user");
+      setLoginMode(accountBinding ? "deviceAccount" : "user");
 
       if (isAxiosError(err) && err.response?.status === 404) {
         return;
@@ -386,6 +412,56 @@ export default function Login() {
     }
   }
 
+  async function handleDeviceAccountLogin() {
+    setError("");
+    setDeviceLoginLoading(true);
+    try {
+      await waitForLocalSessionClear();
+      beginStandardAuth("deviceAccount");
+      await loginDeviceAccount();
+      router.replace(
+        resolveDefaultTabRoute({
+          isDeviceMode: false,
+          isWarehouseStaffOnly: useAuthStore.getState().access.isWarehouseStaffOnly,
+          routeNames: getVisibleRouteNames(),
+        }) as Parameters<typeof router.replace>[0],
+        { withAnchor: true },
+      );
+    } catch {
+      rearmIosReviewPreAuth();
+      setError(t("activation.sessionFailed"));
+      setSnackbarVisible(true);
+    } finally {
+      setDeviceLoginLoading(false);
+    }
+  }
+
+  const openActivation = (mode: MobileDeviceActivationMode) => {
+    // 开通入口是审核构建允许真实网络的显式用户动作；输入和页面浏览仍保持零网络。
+    beginStandardAuth("deviceAccount");
+    setActivationMode(mode);
+    setActivationVisible(true);
+  };
+
+  const handleActivationCompleted = async () => {
+    try {
+      await refreshAccountBinding();
+      await loginDeviceAccount();
+      router.replace(
+        resolveDefaultTabRoute({
+          isDeviceMode: false,
+          isWarehouseStaffOnly: useAuthStore.getState().access.isWarehouseStaffOnly,
+          routeNames: getVisibleRouteNames(),
+        }) as Parameters<typeof router.replace>[0],
+        { withAnchor: true },
+      );
+    } catch {
+      rearmIosReviewPreAuth();
+      setError(t("activation.sessionFailed"));
+      setSnackbarVisible(true);
+    }
+  };
+
   const deviceStatusText = resolveDeviceStatusText(
     registeredDevice?.status,
     registeredDevice?.statusDescription
@@ -393,7 +469,7 @@ export default function Login() {
   const canUseDeviceLogin = Boolean(
     registeredDevice?.status === 1 &&
       registeredDevice.storeCode &&
-      registeredDevice.authCode
+      legacyDeviceSession?.authCode
   );
   const openApiHostSettings = () => {
     setApiHostDraft(apiHost);
@@ -419,13 +495,17 @@ export default function Login() {
   };
   const handleSelectDeviceMode = () => {
     const selectionGeneration = ++deviceLookupGeneration.current;
-    setLoginMode("device");
+    const selectedSessionKind = accountBinding ? "deviceAccount" : "device";
+    setLoginMode(selectedSessionKind);
     // 设备模式按钮是审核构建解除网络守卫的显式动作，但仍等待旧会话清理结束。
     void waitForLocalSessionClear().then(() => {
       if (selectionGeneration !== deviceLookupGeneration.current) {
         return;
       }
-      beginStandardAuth("device");
+      beginStandardAuth(selectedSessionKind);
+      if (selectedSessionKind === "deviceAccount") {
+        return;
+      }
       void identifyRegisteredDevice();
     });
   };
@@ -482,17 +562,17 @@ export default function Login() {
         {/* ── 表单区 ── */}
         <View style={styles.formSection}>
           <View style={styles.formCard}>
-            {registeredDevice ? (
+            {registeredDevice || accountBinding ? (
               <View style={styles.loginModeRow}>
                 <Button
                   compact
-                  mode={loginMode === "device" ? "contained" : "outlined"}
-                  buttonColor={loginMode === "device" ? BRAND_RED : undefined}
-                  textColor={loginMode === "device" ? "#FFFFFF" : BRAND_RED}
+                  mode={loginMode !== "user" ? "contained" : "outlined"}
+                  buttonColor={loginMode !== "user" ? BRAND_RED : undefined}
+                  textColor={loginMode !== "user" ? "#FFFFFF" : BRAND_RED}
                   onPress={handleSelectDeviceMode}
                   style={styles.loginModeButton}
                 >
-                  {t("device.mode")}
+                  {accountBinding ? t("activation.deviceAccountTitle") : t("device.mode")}
                 </Button>
                 <Button
                   compact
@@ -511,7 +591,48 @@ export default function Login() {
               <Text style={styles.deviceLookupText}>{t("device.lookupInProgress")}</Text>
             ) : null}
 
-            {registeredDevice && loginMode === "device" ? (
+            {accountBinding && loginMode === "deviceAccount" ? (
+              <View style={styles.deviceCard}>
+                <Text style={styles.deviceTitle}>{t("activation.deviceAccountTitle")}</Text>
+                <Text style={styles.deviceDescription}>
+                  {t("activation.deviceAccountDescription")}
+                </Text>
+                <View style={styles.deviceInfoBox}>
+                  <Text style={styles.deviceInfoText}>
+                    {t("activation.bindingAccount", {
+                      value:
+                        accountBinding.binding.targetFullName ||
+                        accountBinding.binding.targetUsername,
+                    })}
+                  </Text>
+                  <Text style={styles.deviceInfoText}>
+                    {t("device.store", { value: accountBinding.binding.storeName })}
+                  </Text>
+                  <Text style={styles.deviceInfoText}>
+                    {t("device.deviceNumber", { value: accountBinding.binding.deviceCode })}
+                  </Text>
+                </View>
+                <Button
+                  mode="contained"
+                  onPress={handleDeviceAccountLogin}
+                  loading={deviceLoginLoading}
+                  disabled={deviceLoginLoading}
+                  buttonColor={BRAND_RED}
+                  textColor="#FFFFFF"
+                  style={styles.button}
+                  contentStyle={styles.buttonContent}
+                  labelStyle={styles.buttonLabel}
+                >
+                  {t("activation.deviceAccountLogin")}
+                </Button>
+                <Button mode="text" textColor={BRAND_RED} onPress={() => openActivation("rebind")}>
+                  {t("activation.rebind")}
+                </Button>
+                <Button mode="text" textColor={BRAND_RED} onPress={handleSelectUserMode}>
+                  {t("device.switchToUser")}
+                </Button>
+              </View>
+            ) : registeredDevice && loginMode === "device" ? (
               <View style={styles.deviceCard}>
                 <Text style={styles.deviceTitle}>{t("device.title")}</Text>
                 <Text style={styles.deviceDescription}>{t("device.description")}</Text>
@@ -553,6 +674,9 @@ export default function Login() {
                 </Button>
                 <Button mode="text" textColor={BRAND_RED} onPress={handleSelectUserMode}>
                   {t("device.switchToUser")}
+                </Button>
+                <Button mode="text" icon="qrcode-scan" textColor={BRAND_RED} onPress={() => openActivation("redeem")}>
+                  {t("activation.upgrade")}
                 </Button>
                 <Button mode="text" icon="cog-outline" textColor={BRAND_RED} onPress={openApiHostSettings}>
                   {t("apiHost.settingsButton")}
@@ -633,6 +757,14 @@ export default function Login() {
                       {t("device.mode")}
                     </Button>
                   ) : null}
+                  <Button
+                    mode="text"
+                    icon="qrcode-scan"
+                    textColor={BRAND_RED}
+                    onPress={() => openActivation(accountBinding ? "rebind" : "redeem")}
+                  >
+                    {accountBinding ? t("activation.rebind") : t("activation.open")}
+                  </Button>
                   <Button mode="text" icon="cog-outline" textColor={BRAND_RED} onPress={openApiHostSettings}>
                     {t("apiHost.settingsButton")}
                   </Button>
@@ -709,6 +841,18 @@ export default function Login() {
           </View>
         </Modal>
       </Portal>
+
+      <DeviceActivationDialog
+        visible={activationVisible}
+        mode={activationMode}
+        onDismiss={(reason) => {
+          setActivationVisible(false);
+          if (reason === "cancelled") {
+            rearmIosReviewPreAuth();
+          }
+        }}
+        onCompleted={handleActivationCompleted}
+      />
 
       <Snackbar
         visible={snackbarVisible}

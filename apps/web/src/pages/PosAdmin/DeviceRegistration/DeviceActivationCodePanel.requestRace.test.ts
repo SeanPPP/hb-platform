@@ -65,5 +65,25 @@ const source = readFileSync(
 assertIncludes(source, 'createLatestRequestGuard()', '设备开通码列表应创建最新请求守卫')
 assertIncludes(source, 'runLatestGuardedRequest(listRequestGuardRef.current', '列表加载应统一经过最新请求守卫')
 assertIncludes(source, 'listRequestGuardRef.current.invalidate()', '页面卸载时应淘汰未完成请求')
+assertIncludes(
+  source,
+  'setRefreshVersion((version) => version + 1)',
+  '撤销完成后应由当前 POS/Mobile 筛选触发刷新，不能调用旧闭包覆盖列表',
+)
+assertIncludes(
+  source,
+  'onStart: () => {\n          setMobileAccounts([])',
+  '新分店账号请求开始时必须立即清空上一分店账号',
+)
+assertIncludes(
+  source,
+  'disabled={!createStoreCode || accountsLoading}',
+  '新分店账号加载完成前必须禁用账号选择，不能提交旧选项',
+)
+assertIncludes(
+  source,
+  "onChange={(value) => {\n                createForm.setFieldValue('targetUserGuid', undefined)\n                setMobileAccounts([])",
+  '切换分店的同一事件内必须同步清空旧账号选项',
+)
 
 console.log('DeviceActivationCodePanel.requestRace.test.ts: ok')

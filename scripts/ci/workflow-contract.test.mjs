@@ -252,6 +252,16 @@ test('Backend PR 的真实 Schema SQL 独立执行并纳入 required 门禁', ()
   assert.match(runner, /FullyQualifiedName~BlazorApp\.Api\.Tests\.SchemaMigrationSqlServerIntegrationTests/)
   assert.match(runner, /schema-migration-sql\.trx/)
   assert.match(runner, /'PR schema migration SQL tests'\s+\\\n\s+10/)
+  assert.match(
+    runner,
+    /services\/backend\/BlazorApp\.MobileDeviceActivation\.Tests\/BlazorApp\.MobileDeviceActivation\.Tests\.csproj/,
+  )
+  assert.match(
+    runner,
+    /FullyQualifiedName~BlazorApp\.MobileDeviceActivation\.Tests\.MobileDeviceActivationSchemaSqlServerIntegrationTests/,
+  )
+  assert.match(runner, /mobile-device-activation-schema-sql\.trx/)
+  assert.match(runner, /'PR Mobile device activation schema SQL test'\s+\\\n\s+1/)
   assert.doesNotMatch(runner, /docker ps --filter/)
 })
 
@@ -370,11 +380,17 @@ test('托管 runner 隔离 WPF 分片，并避免原生多架构与 Android 内�
 
   // Android 保留既有四项 task，CI 构建只编译代表性的 arm64 ABI。
   assert.match(android, /bash\(\) \{[\s\S]*?command bash "\$@" --parallel --build-cache '-Dorg\.gradle\.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g'/)
+  assert.match(android, /"\$\{1:-\}" == 'apps\/pos-handheld\/android\/gradlew'/)
   assert.match(androidRunner, /-PreactNativeArchitectures=arm64-v8a/)
-  assert.match(androidRunner, /cd apps\/pos-handheld\/android/)
-  assert.match(androidRunner, /require\.resolve\('@sentry\/react-native\/package\.json'\)/)
-  assert.match(androidRunner, /bash \.\/gradlew/)
-  assert.doesNotMatch(androidRunner, /-p apps\/pos-handheld\/android/)
+  assert.match(
+    androidRunner,
+    /bash apps\/pos-handheld\/android\/gradlew \\\n\s+-p apps\/pos-handheld\/android/,
+  )
+  assert.doesNotMatch(androidRunner, /bash \.\/gradlew/)
+  assert.match(
+    androidRunner,
+    /\(\s*\n\s*cd apps\/pos-handheld\/android\s*\n\s*node --print "require\.resolve\('@sentry\/react-native\/package\.json'\)"[^\n]*\n\s*\)/,
+  )
   for (const task of [
     ':hb-app-installer:testDebugUnitTest',
     ':hb-attendance-security:testDebugUnitTest',

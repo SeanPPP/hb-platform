@@ -229,6 +229,9 @@ export default function DeviceRegistrationPage() {
   const canManageActivationCodes = access.hasPermission(
     P.DeviceRegistration.ActivationCodesManage,
   )
+  const canManageMobileActivationCodes = access.canManageMobileDeviceActivationCodes
+  const canManageAnyActivationCodes =
+    canManageActivationCodes || canManageMobileActivationCodes
   const canViewLegacyDeviceRegistration =
     access.isAdmin ||
     access.hasPermission(P.DeviceRegistration.View) ||
@@ -828,7 +831,7 @@ export default function DeviceRegistrationPage() {
                       { label: t('posAdmin.devices.viewAppUsage'), value: 'appUsage' as const },
                     ]
                   : []),
-                ...(canManageActivationCodes
+                ...(canManageAnyActivationCodes
                   ? [{
                       label: t('posAdmin.devices.activation.view'),
                       value: 'activationCodes' as const,
@@ -928,7 +931,10 @@ export default function DeviceRegistrationPage() {
         }
       >
         {viewMode === 'activationCodes' ? (
-          <DeviceActivationCodePanel canManage={canManageActivationCodes} />
+          <DeviceActivationCodePanel
+            canManage={canManageActivationCodes}
+            canManageMobile={canManageMobileActivationCodes}
+          />
         ) : viewMode === 'appUsage' ? (
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
             <Typography.Text type="secondary">

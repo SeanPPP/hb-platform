@@ -19,6 +19,7 @@ using BlazorApp.Api.Services; // 业务服务层
 using BlazorApp.Api.Services.Attendance;
 using BlazorApp.Api.Services.Background; // 后台定时服务
 using BlazorApp.Api.Services.Logging;
+using BlazorApp.Api.Services.MobileDeviceActivation;
 using BlazorApp.Api.Services.OperationAudits;
 using BlazorApp.Api.Services.Performance;
 using BlazorApp.Api.Services.Pricing; // 自动定价服务
@@ -29,6 +30,7 @@ using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer; // JWT Bearer认证
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.IdentityModel.Tokens; // JWT令牌验证
 
 // ===================== 应用程序入口点 =====================
@@ -370,6 +372,9 @@ builder.Services.AddCors(options =>
     );
 });
 
+// Mobile 开通、重绑与设备会话交换按可信客户端 IP 独立限流。
+builder.Services.AddRateLimiter(MobileDeviceActivationRateLimits.Configure);
+
 // --------------------- JWT认证配置 ---------------------
 // 🔐 配置JSON Web Token（JWT）身份验证
 // JWT是一种无状态的、基于令牌的认证机制，适合前后端分离架构
@@ -561,6 +566,11 @@ builder.Services.AddScoped<POSMSqlSugarContext>(); // POSM数据库上下文（�
 builder.Services.AddScoped<SchemaMigrationCoordinator>();
 builder.Services.Configure<BlazorApp.Shared.Options.DeviceActivationOptions>(
     builder.Configuration.GetSection(BlazorApp.Shared.Options.DeviceActivationOptions.SectionName));
+builder.Services.Configure<BlazorApp.Shared.Options.MobileDeviceActivationOptions>(
+    builder.Configuration.GetSection(
+        BlazorApp.Shared.Options.MobileDeviceActivationOptions.SectionName
+    )
+);
 builder.Services.AddScoped<HBSalesRecordSqlSugarContext>(); // HBSalesRecord数据库上下文（每请求一个实例）
 builder.Services.AddScoped<OperationAuditQueryService>(sp =>
     new OperationAuditQueryService(
@@ -620,6 +630,12 @@ builder.Services.AddAutoMapper(cfg => { }, typeof(MappingProfile).Assembly);
 // 适合包含状态或需要事务管理的业务服务
 builder.Services.AddScoped<IAuthService, AuthService>(); // 认证服务
 builder.Services.AddScoped<IAuthSessionValidator, AuthSessionValidator>(); // access token 会话有效性校验
+builder.Services.AddScoped<IMobileDeviceActivationService, MobileDeviceActivationService>();
+builder.Services.AddScoped<
+    IMobileDeviceActivationCodeManagementService,
+    MobileDeviceActivationCodeManagementService
+>();
+builder.Services.AddScoped<IMobileDeviceAccountTokenIssuer, MobileDeviceAccountTokenIssuer>();
 builder.Services.AddSingleton<IClientIpResolver, ClientIpResolver>(); // 登录公网 IP 解析
 builder.Services.AddScoped<IServiceApiTokenService, ServiceApiTokenService>(); // 后台自动化 service API token
 builder.Services.AddScoped<IUserService, UserService>(); // 用户管理服务
@@ -1060,6 +1076,9 @@ app.UseMiddleware<PerformanceMetricsEndpointExclusionMiddleware>();
 // 🔐 认证中间件：验证JWT令牌，设置HttpContext.User
 // 必须在授权中间件之前执行
 app.UseAuthentication();
+
+// Mobile 会话交换及匿名开通接口的独立限流必须在端点映射前启用。
+app.UseRateLimiter();
 
 // 🛡️ 授权中间件：基于用户身份和角色检查访问权限
 // 处理[Authorize]特性标记的控制器和方法

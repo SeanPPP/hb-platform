@@ -27,9 +27,12 @@ case "$component" in
   pos-handheld-android)
     npm ci --no-audit --no-fund
     npm run prebuild:android --workspace=@hb/pos-handheld -- --clean
-    cd apps/pos-handheld/android
-    node --print "require.resolve('@sentry/react-native/package.json')" >/dev/null
-    bash ./gradlew \
+    (
+      cd apps/pos-handheld/android
+      node --print "require.resolve('@sentry/react-native/package.json')" >/dev/null
+    )
+    bash apps/pos-handheld/android/gradlew \
+      -p apps/pos-handheld/android \
       :hb-app-installer:testDebugUnitTest \
       :hb-attendance-security:testDebugUnitTest \
       :app:assembleDebug \

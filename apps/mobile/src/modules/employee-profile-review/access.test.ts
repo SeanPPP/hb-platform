@@ -10,7 +10,7 @@ function access(
   roleNames: string[],
   permissions: string[] = [],
   menuRouteNames: string[] = ["employee-profile-review"],
-  sessionKind: "account" | "device" | "iosReview" = "account"
+  sessionKind: "account" | "device" | "deviceAccount" | "iosReview" = "account"
 ) {
   return getEmployeeProfileReviewAccess({
     roleNames,
@@ -60,6 +60,16 @@ assert.equal(
 assert.equal(
   access(["Admin"], [EMPLOYEE_PROFILE_REVIEW_PERMISSION], ["employee-profile-review"], "device").reason,
   "device"
+);
+assert.equal(
+  access(
+    ["Admin"],
+    [EMPLOYEE_PROFILE_REVIEW_PERMISSION],
+    ["employee-profile-review"],
+    "deviceAccount"
+  ).allowed,
+  true,
+  "设备账号必须按目标账号的实时权限判断"
 );
 assert.equal(access(["User"], [EMPLOYEE_PROFILE_REVIEW_PERMISSION]).reason, "role");
 
