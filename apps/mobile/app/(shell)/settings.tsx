@@ -1,7 +1,27 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Alert, ScrollView, StyleSheet, View } from "react-native";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import {
+  AccessibilityInfo,
+  Alert,
+  findNodeHandle,
+  InteractionManager,
+  Modal as NativeModal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+} from "react-native";
 import { useRouter } from "expo-router";
-import { Button, HelperText, Modal, Portal, SegmentedButtons, Surface, Switch, Text, TextInput } from "react-native-paper";
+import {
+  Button,
+  HelperText,
+  Icon,
+  IconButton,
+  SegmentedButtons,
+  Surface,
+  Switch,
+  Text,
+  TextInput,
+} from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   clearSavedReceiptPrinter,
@@ -41,6 +61,7 @@ import {
 } from "@/shared/api/config";
 import { DeviceActivationDialog } from "@/modules/device-activation/DeviceActivationDialog";
 import type { MobileDeviceActivationMode } from "@/modules/device-activation/types";
+import { HB_COLORS, HB_RADIUS, HB_SPACING } from "@/shared/theme/tokens";
 
 function resolveDeviceStatusText(
   status: number | undefined,
@@ -71,14 +92,15 @@ function resolveDeviceStatusText(
 interface CompactSectionProps {
   title: string;
   description?: string;
+  testID?: string;
   children: ReactNode;
 }
 
-function CompactSection({ title, description, children }: CompactSectionProps) {
+function CompactSection({ title, description, testID, children }: CompactSectionProps) {
   return (
-    <Surface style={styles.card} elevation={1}>
+    <View style={styles.section} testID={testID}>
       <View style={styles.sectionHeader}>
-        <Text variant="titleMedium" style={styles.sectionTitle}>
+        <Text variant="labelLarge" style={styles.sectionTitle}>
           {title}
         </Text>
         {description ? (
@@ -87,8 +109,117 @@ function CompactSection({ title, description, children }: CompactSectionProps) {
           </Text>
         ) : null}
       </View>
-      {children}
-    </Surface>
+      <Surface style={styles.card} elevation={0}>
+        {children}
+      </Surface>
+    </View>
+  );
+}
+
+type StatusTone = "success" | "warning" | "danger" | "neutral";
+
+interface StatusPillProps {
+  label: string;
+  tone?: StatusTone;
+}
+
+function StatusPill({ label, tone = "neutral" }: StatusPillProps) {
+  const toneStyle = {
+    success: styles.statusPillSuccess,
+    warning: styles.statusPillWarning,
+    danger: styles.statusPillDanger,
+    neutral: styles.statusPillNeutral,
+  }[tone];
+  const textToneStyle = {
+    success: styles.statusPillTextSuccess,
+    warning: styles.statusPillTextWarning,
+    danger: styles.statusPillTextDanger,
+    neutral: styles.statusPillTextNeutral,
+  }[tone];
+
+  return (
+    <View style={[styles.statusPill, toneStyle]}>
+      <Text variant="labelSmall" style={[styles.statusPillText, textToneStyle]} numberOfLines={1}>
+        {label}
+      </Text>
+    </View>
+  );
+}
+
+interface AccessibleSettingsModalProps {
+  visible: boolean;
+  title: string;
+  description?: string;
+  dismissLabel: string;
+  testID: string;
+  onDismiss: () => void;
+  children: ReactNode;
+}
+
+function AccessibleSettingsModal({
+  visible,
+  title,
+  description,
+  dismissLabel,
+  testID,
+  onDismiss,
+  children,
+}: AccessibleSettingsModalProps) {
+  const headingRef = useRef<View>(null);
+
+  const focusHeading = () => {
+    InteractionManager.runAfterInteractions(() => {
+      const headingHandle = findNodeHandle(headingRef.current);
+      if (headingHandle) {
+        AccessibilityInfo.setAccessibilityFocus(headingHandle);
+      }
+    });
+  };
+
+  return (
+    <NativeModal
+      visible={visible}
+      transparent
+      animationType="fade"
+      statusBarTranslucent
+      onShow={focusHeading}
+      onRequestClose={onDismiss}
+    >
+      <View style={styles.modalBackdrop} accessibilityViewIsModal>
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={onDismiss}
+          accessibilityRole="button"
+          accessibilityLabel={dismissLabel}
+        />
+        <View testID={testID} style={styles.sheetModal}>
+          <View style={styles.sheetHeader}>
+            <View
+              ref={headingRef}
+              accessible
+              accessibilityRole="header"
+              accessibilityLabel={description ? `${title}. ${description}` : title}
+              style={styles.compactRowText}
+            >
+              <Text variant="titleLarge" style={styles.sheetTitle} accessible={false}>
+                {title}
+              </Text>
+              {description ? (
+                <Text variant="bodySmall" style={styles.meta} accessible={false}>
+                  {description}
+                </Text>
+              ) : null}
+            </View>
+            <IconButton
+              icon="close"
+              onPress={onDismiss}
+              accessibilityLabel={dismissLabel}
+            />
+          </View>
+          {children}
+        </View>
+      </View>
+    </NativeModal>
   );
 }
 
@@ -96,12 +227,38 @@ interface CompactRowProps {
   label: string;
   value?: string;
   meta?: string;
+  icon?: string;
+  status?: string;
+  statusTone?: StatusTone;
   action?: ReactNode;
+  onPress?: () => void;
+  accessibilityLabel?: string;
+  disabled?: boolean;
+  testID?: string;
+  actionRef?: RefObject<View | null>;
 }
 
-function CompactRow({ label, value, meta, action }: CompactRowProps) {
-  return (
-    <View style={styles.compactRow}>
+function CompactRow({
+  label,
+  value,
+  meta,
+  icon,
+  status,
+  statusTone,
+  action,
+  onPress,
+  accessibilityLabel,
+  disabled,
+  testID,
+  actionRef,
+}: CompactRowProps) {
+  const rowContent = (
+    <View style={styles.compactRow} testID={onPress ? undefined : testID}>
+      {icon ? (
+        <View style={styles.rowIconBox}>
+          <Icon source={icon} size={21} color={HB_COLORS.action} />
+        </View>
+      ) : null}
       <View style={styles.compactRowText}>
         <Text variant="bodyMedium" style={styles.compactRowLabel}>
           {label}
@@ -117,8 +274,42 @@ function CompactRow({ label, value, meta, action }: CompactRowProps) {
           </Text>
         ) : null}
       </View>
-      {action ? <View style={styles.compactRowAction}>{action}</View> : null}
+      {status || action || onPress ? (
+        <View style={styles.compactRowEnd}>
+          {status ? <StatusPill label={status} tone={statusTone} /> : null}
+          {action ? <View style={styles.compactRowAction}>{action}</View> : null}
+          {onPress ? (
+            <View style={styles.rowChevron} accessible={false}>
+              <Icon source="chevron-right" size={22} color={HB_COLORS.textSecondary} />
+            </View>
+          ) : null}
+        </View>
+      ) : null}
     </View>
+  );
+
+  if (!onPress) {
+    return rowContent;
+  }
+
+  return (
+    <Pressable
+      ref={actionRef}
+      onPress={onPress}
+      disabled={disabled}
+      testID={testID}
+      accessibilityRole="button"
+      accessibilityLabel={[
+        accessibilityLabel || label,
+        value,
+        meta,
+        status,
+      ].filter(Boolean).join(". ")}
+      accessibilityState={{ disabled: Boolean(disabled) }}
+      style={({ pressed }) => pressed && styles.compactRowPressed}
+    >
+      {rowContent}
+    </Pressable>
   );
 }
 
@@ -205,8 +396,52 @@ export default function Settings() {
   const [apiHost, setApiHost] = useState(getCurrentApiHost());
   const [apiHostDraft, setApiHostDraft] = useState(getCurrentApiHost());
   const [apiHostModalVisible, setApiHostModalVisible] = useState(false);
+  const [diagnosticsVisible, setDiagnosticsVisible] = useState(false);
+  const [deviceSettingsVisible, setDeviceSettingsVisible] = useState(false);
+  const [printerSettingsVisible, setPrinterSettingsVisible] = useState(false);
   const [activationVisible, setActivationVisible] = useState(false);
   const [activationMode, setActivationMode] = useState<MobileDeviceActivationMode>("redeem");
+  const modalReturnFocusHandleRef = useRef<number | null>(null);
+  const diagnosticsHeaderTriggerRef = useRef<View>(null);
+  const diagnosticsAboutTriggerRef = useRef<View>(null);
+  const deviceTriggerRef = useRef<View>(null);
+  const labelPrinterTriggerRef = useRef<View>(null);
+  const receiptPrinterTriggerRef = useRef<View>(null);
+  const apiHostTriggerRef = useRef<View>(null);
+
+  const rememberModalTrigger = (triggerRef: RefObject<View | null>) => {
+    modalReturnFocusHandleRef.current = findNodeHandle(triggerRef.current);
+  };
+
+  const restoreModalTriggerFocus = () => {
+    const triggerHandle = modalReturnFocusHandleRef.current;
+    if (!triggerHandle) {
+      return;
+    }
+    InteractionManager.runAfterInteractions(() => {
+      AccessibilityInfo.setAccessibilityFocus(triggerHandle);
+    });
+  };
+
+  const dismissDeviceSettings = () => {
+    setDeviceSettingsVisible(false);
+    restoreModalTriggerFocus();
+  };
+
+  const dismissPrinterSettings = () => {
+    setPrinterSettingsVisible(false);
+    restoreModalTriggerFocus();
+  };
+
+  const dismissDiagnostics = () => {
+    setDiagnosticsVisible(false);
+    restoreModalTriggerFocus();
+  };
+
+  const dismissApiHostSettings = () => {
+    setApiHostModalVisible(false);
+    restoreModalTriggerFocus();
+  };
 
   const settingsAuthMode = resolveSettingsAuthMode({
     hasUser: Boolean(user),
@@ -228,6 +463,10 @@ export default function Settings() {
     deviceSession?.storeName ||
     deviceSession?.storeCode ||
     t("common:na");
+  const deviceDisplayName =
+    accountBinding?.binding.deviceCode ||
+    deviceSession?.systemDeviceNumber ||
+    t("overview.notConfigured");
   const updateInfoRows = useMemo(() => buildAppUpdateInfoRows(updateInfo), [updateInfo]);
   const appPackageVersion = useMemo(
     () => formatAppPackageVersion(updateInfo, t("updates.unknown")),
@@ -331,6 +570,48 @@ export default function Settings() {
     }
   }
 
+  const labelPrinterStatusText = resolvePrinterStatusText(
+    printerStatus,
+    autoReconnectPaused,
+    "printer",
+    t
+  );
+  const receiptPrinterStatusText = resolvePrinterStatusText(
+    receiptPrinterStatus,
+    false,
+    "receiptPrinter",
+    t
+  );
+  const deviceStatusTone: StatusTone = accountBinding || deviceReady
+    ? "success"
+    : deviceSession?.status === 0 || deviceSession?.status === 2
+      ? "danger"
+      : "warning";
+  const labelPrinterStatusTone: StatusTone = isPrinterConnected
+    ? "success"
+    : printerStatus === "error"
+      ? "danger"
+      : isPrinterConnecting || isPrinterReconnecting
+        ? "warning"
+        : "neutral";
+  const receiptPrinterStatusTone: StatusTone = receiptPrinterStatus === "connected"
+    ? "success"
+    : receiptPrinterStatus === "error"
+      ? "danger"
+      : receiptPrinterStatus === "connecting" || receiptPrinterStatus === "reconnecting"
+        ? "warning"
+        : "neutral";
+  const connectionNeedsAttention =
+    (canViewDeviceCard && !deviceReady) ||
+    printerStatus === "error" ||
+    receiptPrinterStatus === "error";
+  const currentApiHostPreset = API_HOST_PRESETS.find(
+    (preset) => normalizeApiHost(apiHost) === preset.host
+  );
+  const apiHostDisplayName = currentApiHostPreset
+    ? t(`apiHost.presets.${currentApiHostPreset.key}`)
+    : apiHost;
+
   const handleLogout = () => {
     Alert.alert(t("dialogs.logoutTitle"), t("dialogs.logoutMessage"), [
       { text: t("common:actions.cancel"), style: "cancel" },
@@ -420,7 +701,23 @@ export default function Settings() {
     await setAppLanguage(nextLanguage);
   };
 
+  const openDiagnostics = (triggerRef: RefObject<View | null>) => {
+    rememberModalTrigger(triggerRef);
+    setDiagnosticsVisible(true);
+  };
+
+  const openDeviceSettings = () => {
+    rememberModalTrigger(deviceTriggerRef);
+    setDeviceSettingsVisible(true);
+  };
+
+  const openPrinterSettings = (triggerRef: RefObject<View | null>) => {
+    rememberModalTrigger(triggerRef);
+    setPrinterSettingsVisible(true);
+  };
+
   const openApiHostSettings = () => {
+    rememberModalTrigger(apiHostTriggerRef);
     setApiHostDraft(apiHost);
     setApiHostModalVisible(true);
   };
@@ -437,7 +734,7 @@ export default function Settings() {
         // 审核模式不持久化 API Host，所有业务请求仍由本地 adapter 处理。
         setApiHost(normalizedHost);
         setApiHostDraft(normalizedHost);
-        setApiHostModalVisible(false);
+        dismissApiHostSettings();
         Alert.alert(
           "App Review Demo",
           "Server settings are temporary in offline demo mode. / 离线演示中的服务器设置仅当前会话有效。",
@@ -448,7 +745,7 @@ export default function Settings() {
       const host = await setStoredApiHost(normalizedHost);
       setApiHost(host);
       setApiHostDraft(host);
-      setApiHostModalVisible(false);
+      dismissApiHostSettings();
       Alert.alert(t("apiHost.savedTitle"), t("apiHost.savedMessage", { host }));
     } catch (error) {
       Alert.alert(
@@ -668,62 +965,150 @@ export default function Settings() {
 
   return (
     <SafeAreaView edges={["top", "left", "right"]} style={styles.container}>
-      <ScrollView contentContainerStyle={styles.content}>
-        <Text variant="headlineSmall" style={styles.title}>
-          {t("title")}
-        </Text>
+      <ScrollView
+        testID="settings-overview"
+        contentContainerStyle={styles.content}
+        contentInsetAdjustmentBehavior="automatic"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.header}>
+          <Text variant="headlineMedium" style={styles.title}>
+            {t("title")}
+          </Text>
+          <Button
+            ref={diagnosticsHeaderTriggerRef}
+            compact
+            mode="text"
+            testID="settings-diagnostics"
+            icon="stethoscope"
+            onPress={() => openDiagnostics(diagnosticsHeaderTriggerRef)}
+            accessibilityLabel={t("overview.diagnostics")}
+            contentStyle={styles.headerActionContent}
+          >
+            {t("overview.diagnostics")}
+          </Button>
+        </View>
 
-        <CompactSection title={t("account.title")}>
+        <CompactSection
+          title={t("groups.devices")}
+          testID="settings-group-device-connections"
+        >
+          <View style={styles.connectionSummary}>
+            <View
+              style={[
+                styles.connectionSummaryIcon,
+                connectionNeedsAttention && styles.connectionSummaryIconWarning,
+              ]}
+            >
+              <Icon
+                source={connectionNeedsAttention ? "alert-circle-outline" : "check-circle-outline"}
+                size={24}
+                color={connectionNeedsAttention ? HB_COLORS.warning : HB_COLORS.success}
+              />
+            </View>
+            <View style={styles.connectionSummaryText}>
+              <Text variant="titleSmall" style={styles.compactRowLabel}>
+                {t(
+                  connectionNeedsAttention
+                    ? "overview.deviceServicesAttention"
+                    : "overview.deviceServicesReady"
+                )}
+              </Text>
+              <Text variant="bodySmall" style={styles.meta} numberOfLines={1}>
+                {t("overview.connectionSummary", { store: deviceStoreDisplayName })}
+              </Text>
+            </View>
+            <StatusPill
+              label={t(connectionNeedsAttention ? "overview.attention" : "overview.ready")}
+              tone={connectionNeedsAttention ? "warning" : "success"}
+            />
+          </View>
+
+          <View style={styles.sectionDivider} />
           <CompactRow
-            label={user?.fullName || user?.username || t("common:notLoggedIn")}
-            value={user?.email || t("account.guestEmail")}
+            icon="account-circle-outline"
+            label={t("account.title")}
+            value={user?.fullName || user?.username || t("common:notLoggedIn")}
             meta={
-              user?.roleNames?.length
-                ? t("account.roles", { roles: user.roleNames.join(" / ") })
-                : t("account.deviceMode")
+              user?.email ||
+              (showProfileAction ? t("account.guestEmail") : t("account.deviceModeHelper"))
             }
-            action={
-              showProfileAction ? (
-                <Button
-                  compact
-                  mode="outlined"
-                  icon="account-circle-outline"
-                  onPress={() => {
-                    router.push("/(shell)/employee-profile" as unknown as Parameters<typeof router.push>[0]);
-                  }}
-                >
-                  {t("account.profileButton")}
-                </Button>
-              ) : null
+            status={t(showProfileAction ? "overview.accountMode" : "overview.deviceMode")}
+            statusTone="neutral"
+            onPress={
+              showProfileAction
+                ? () => {
+                    router.push(
+                      "/(shell)/employee-profile" as unknown as Parameters<typeof router.push>[0]
+                    );
+                  }
+                : undefined
             }
+            accessibilityLabel={t("account.profileButton")}
           />
-          {!showProfileAction ? (
-            <Text variant="bodySmall" style={styles.meta}>
-              {t("account.deviceModeHelper")}
-            </Text>
-          ) : null}
+
+          <View style={styles.sectionDivider} />
+          <CompactRow
+            icon="cellphone-cog"
+            label={t("overview.currentDevice")}
+            value={deviceDisplayName}
+            meta={deviceStoreDisplayName}
+            status={accountBinding ? t("deviceStatus.bound") : deviceStatusText}
+            statusTone={deviceStatusTone}
+            actionRef={deviceTriggerRef}
+            onPress={openDeviceSettings}
+            accessibilityLabel={t("overview.manageDevice")}
+          />
+
+          <View style={styles.sectionDivider} />
+          <CompactRow
+            icon="printer-outline"
+            label={t("printer.title")}
+            value={savedPrinter?.name || savedPrinter?.address || t("overview.notConfigured")}
+            meta={labelPrinterStatusText}
+            status={t(
+              isPrinterConnected
+                ? "overview.connected"
+                : savedPrinter
+                  ? "overview.configured"
+                  : "overview.notConfigured"
+            )}
+            statusTone={labelPrinterStatusTone}
+            actionRef={labelPrinterTriggerRef}
+            onPress={() => openPrinterSettings(labelPrinterTriggerRef)}
+            accessibilityLabel={t("overview.managePrinters")}
+          />
+
+          <View style={styles.sectionDivider} />
+          <CompactRow
+            icon="receipt-text-outline"
+            label={t("receiptPrinter.title")}
+            value={
+              savedReceiptPrinter?.name ||
+              savedReceiptPrinter?.address ||
+              t("overview.notConfigured")
+            }
+            meta={receiptPrinterStatusText}
+            status={t(
+              receiptPrinterStatus === "connected"
+                ? "overview.connected"
+                : savedReceiptPrinter
+                  ? "overview.configured"
+                  : "overview.notConfigured"
+            )}
+            statusTone={receiptPrinterStatusTone}
+            actionRef={receiptPrinterTriggerRef}
+            onPress={() => openPrinterSettings(receiptPrinterTriggerRef)}
+            accessibilityLabel={t("overview.managePrinters")}
+          />
         </CompactSection>
 
         <CompactSection
-          title={t("privacy.title")}
-          description={t(
-            showProfileAction
-              ? "privacy.employeeDescription"
-              : "privacy.deviceDescription"
-          )}
+          title={t("groups.preferences")}
+          testID="settings-group-preferences-security"
         >
-          <Button
-            compact
-            mode="outlined"
-            icon="shield-check-outline"
-            onPress={() => router.push("/privacy")}
-          >
-            {t("privacy.openPolicy")}
-          </Button>
-        </CompactSection>
-
-        <CompactSection title={t("groups.app")}>
           <CompactRow
+            icon="translate"
             label={t("common:language.title")}
             action={
               <SegmentedButtons
@@ -732,12 +1117,12 @@ export default function Settings() {
                 buttons={[
                   {
                     value: "zh",
-                    label: t("common:language.zh"),
+                    label: t("overview.languageZhShort"),
                     accessibilityLabel: t("common:language.zh"),
                   },
                   {
                     value: "en",
-                    label: t("common:language.en"),
+                    label: t("overview.languageEnShort"),
                     accessibilityLabel: t("common:language.en"),
                   },
                 ]}
@@ -747,24 +1132,32 @@ export default function Settings() {
           />
           <View style={styles.sectionDivider} />
           <CompactRow
-            label={t("apiHost.title")}
-            value={apiHost}
-            action={
-              <Button compact mode="outlined" icon="server-network" onPress={openApiHostSettings}>
-                {t("apiHost.change")}
-              </Button>
-            }
+            icon="shield-check-outline"
+            label={t("privacy.title")}
+            value={t("overview.privacySummary")}
+            meta={t(
+              showProfileAction
+                ? "privacy.employeeDescription"
+                : "privacy.deviceDescription"
+            )}
+            onPress={() => router.push("/privacy")}
+            accessibilityLabel={t("privacy.openPolicy")}
           />
-          <View style={styles.sectionDivider} />
+        </CompactSection>
+
+        <CompactSection
+          title={t("groups.support")}
+          testID="settings-group-app-support"
+        >
           <CompactRow
+            icon="cloud-download-outline"
             label={t("updates.title")}
             value={appPackageVersion}
             meta={`${t("updates.channel")}: ${updateInfo.channel ?? t("updates.noChannel")}`}
             action={
               <Button
                 compact
-                mode="outlined"
-                icon="cloud-download-outline"
+                mode="text"
                 onPress={handleCheckUpdates}
                 loading={updateBusy}
                 disabled={updateBusy}
@@ -773,308 +1166,48 @@ export default function Settings() {
               </Button>
             }
           />
-          <View style={styles.updateInfoCompactList}>
-            {updateInfoRows.map((row) => (
-              <View key={row.key} style={styles.updateInfoRow}>
-                <Text variant="bodySmall" style={styles.updateInfoLabel}>
-                  {t(row.labelKey)}
-                </Text>
-                <Text variant="bodySmall" style={styles.updateInfoValue} numberOfLines={1}>
-                  {row.value ?? t(row.valueKey ?? "updates.unknown")}
-                </Text>
-              </View>
-            ))}
-          </View>
-        </CompactSection>
-
-        {canViewDeviceCard ? (
-          <CompactSection title={t("device.title")} description={t("device.description")}>
-            <View style={styles.statusBlock}>
-              <CompactRow
-                label={t("device.statusLabel")}
-                value={accountBinding ? t("deviceStatus.bound") : deviceStatusText}
-              />
-              <View style={styles.sectionDivider} />
-              <CompactRow label={t("device.storeLabelCompact")} value={deviceStoreDisplayName} />
-              <View style={styles.sectionDivider} />
-              <CompactRow
-                label={t("device.deviceNumberLabel")}
-                value={accountBinding?.binding.deviceCode || deviceSession?.systemDeviceNumber || t("common:na")}
-              />
-              {accountBinding ? (
-                <>
-                  <View style={styles.sectionDivider} />
-                  <CompactRow
-                    label={t("device.accountLabel")}
-                    value={accountBinding.binding.targetFullName || accountBinding.binding.targetUsername}
-                  />
-                  <View style={styles.sectionDivider} />
-                  <CompactRow
-                    label={t("device.systemLabel")}
-                    value={accountBinding.binding.deviceSystem}
-                  />
-                </>
-              ) : null}
-            </View>
-
-            <Button
-              mode="contained"
-              icon="qrcode-scan"
-              onPress={openDeviceActivation}
-              loading={isSubmitting || deviceLoading}
-              disabled={isSubmitting || deviceLoading}
-              style={styles.primaryButton}
-            >
-              {accountBinding
-                ? t("device.rebindByScan")
-                : deviceSession
-                  ? t("device.upgradeByScan")
-                  : t("device.bindByScan")}
-            </Button>
-
-            {deviceSession && !accountBinding ? (
-              <Button
-                mode="outlined"
-                onPress={handleRefreshDevice}
-                loading={isSubmitting || deviceLoading}
-                disabled={isSubmitting || deviceLoading}
-                style={styles.secondaryButton}
-              >
-                {t("device.refreshStatus")}
-              </Button>
-            ) : null}
-
-            {deviceSession || accountBinding ? (
-              <View style={styles.deviceDangerActions}>
-                <Button
-                  mode="outlined"
-                  icon="link-off"
-                  textColor="#A8071A"
-                  onPress={handleDeviceUnbind}
-                  loading={isSubmitting || deviceLoading}
-                  disabled={isSubmitting || deviceLoading}
-                  style={styles.deviceDangerButton}
-                >
-                  {t("device.unbind")}
-                </Button>
-              </View>
-            ) : null}
-
-            {deviceReady ? (
-              <Text variant="bodySmall" style={styles.successText}>
-                {t("device.ready")}
-              </Text>
-            ) : null}
-          </CompactSection>
-        ) : null}
-
-        <CompactSection title={t("groups.printers")}>
-          <View style={styles.printerSection}>
-            <View style={styles.printerSectionHeader}>
-              <View style={styles.compactRowText}>
-                <Text variant="titleSmall" style={styles.sectionTitle}>
-                  {t("printer.title")}
-                </Text>
-                <Text variant="bodySmall" style={styles.compactRowValue} numberOfLines={1}>
-                  {savedPrinter
-                    ? t("printer.selected", { printer: savedPrinter.name || savedPrinter.address })
-                    : t("printer.notSelected")}
-                </Text>
-                <Text variant="bodySmall" style={styles.meta}>
-                  {resolvePrinterStatusText(printerStatus, autoReconnectPaused, "printer", t)}
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.primaryPrinterActions}>
-              <Button
-                compact
-                mode="contained"
-                icon="magnify"
-                onPress={handleScanPrinters}
-                loading={printerBusy && !isPrinterConnecting}
-                disabled={printerNativeBusy}
-                style={styles.primaryActionButton}
-              >
-                {printerBusy && !isPrinterConnecting ? t("printer.scanning") : t("printer.scan")}
-              </Button>
-              {savedPrinter ? (
-                isPrinterConnected ? (
-                  <Button
-                    compact
-                    mode="outlined"
-                    icon="link-off"
-                    onPress={handleDisconnectPrinter}
-                    disabled={printerNativeBusy}
-                    style={styles.primaryActionButton}
-                  >
-                    {t("printer.disconnect")}
-                  </Button>
-                ) : (
-                  <Button
-                    compact
-                    mode="outlined"
-                    icon="bluetooth-connect"
-                    onPress={handleConnectSavedPrinter}
-                    loading={printerBusy && (isPrinterConnecting || isPrinterReconnecting)}
-                    disabled={printerNativeBusy}
-                    style={styles.primaryActionButton}
-                  >
-                    {printerBusy && (isPrinterConnecting || isPrinterReconnecting)
-                      ? t("printer.connecting")
-                      : t("printer.connect")}
-                  </Button>
-                )
-              ) : null}
-            </View>
-
-            <View style={styles.filterRow}>
-              <Text variant="bodySmall">{t("printer.filterXPOnly")}</Text>
-              <Switch value={filterXPOnly} onValueChange={setFilterXPOnly} disabled={printerNativeBusy} />
-            </View>
-
-            {printerScanCompleted ? (
-              visiblePrinters.length ? (
-                <>
-                  <Text variant="labelMedium" style={styles.listLabel}>
-                    {t("printer.available")}
-                  </Text>
-                  <PrinterDeviceList
-                    devices={visiblePrinters}
-                    selectedAddress={savedPrinter?.address}
-                    bondedLabel={t("printer.bonded")}
-                    actionLabel={t("printer.connect")}
-                    disabled={printerNativeBusy}
-                    onSelect={(printer) => void handleConnectPrinter(printer)}
-                  />
-                </>
-              ) : (
-                <HelperText type="info" visible>
-                  {rawPrinters.length && filterXPOnly ? t("printer.emptyFiltered") : t("printer.empty")}
-                </HelperText>
-              )
-            ) : null}
-
-            <View style={styles.printerActions}>
-              <Button
-                compact
-                mode="outlined"
-                icon="printer-check"
-                onPress={handleTestPrinter}
-                disabled={printerNativeBusy || !savedPrinter || !isPrinterConnected}
-              >
-                {t("printer.test")}
-              </Button>
-              <Button
-                compact
-                mode="text"
-                icon="delete-outline"
-                onPress={handleClearPrinter}
-                disabled={printerNativeBusy || !savedPrinter}
-              >
-                {t("printer.clear")}
-              </Button>
-            </View>
-          </View>
-
           <View style={styles.sectionDivider} />
-
-          <View style={styles.printerSection}>
-            <View style={styles.printerSectionHeader}>
-              <View style={styles.compactRowText}>
-                <Text variant="titleSmall" style={styles.sectionTitle}>
-                  {t("receiptPrinter.title")}
-                </Text>
-                <Text variant="bodySmall" style={styles.compactRowValue} numberOfLines={1}>
-                  {savedReceiptPrinter
-                    ? t("receiptPrinter.selected", {
-                        printer: savedReceiptPrinter.name || savedReceiptPrinter.address,
-                      })
-                    : t("receiptPrinter.notSelected")}
-                </Text>
-                <Text variant="bodySmall" style={styles.meta}>
-                  {resolvePrinterStatusText(receiptPrinterStatus, false, "receiptPrinter", t)}
-                </Text>
-              </View>
-            </View>
-
-            <View style={styles.primaryPrinterActions}>
-              <Button
-                compact
-                mode="contained"
-                icon="magnify"
-                onPress={handleScanReceiptPrinters}
-                loading={receiptPrinterBusy && !isReceiptPrinterTesting}
-                disabled={printerNativeBusy}
-                style={styles.primaryActionButton}
-              >
-                {receiptPrinterBusy && !isReceiptPrinterTesting
-                  ? t("receiptPrinter.scanning")
-                  : t("receiptPrinter.scan")}
-              </Button>
-              <Button
-                compact
-                mode="outlined"
-                icon="receipt-text-outline"
-                onPress={handleTestReceiptPrinter}
-                loading={receiptPrinterBusy && isReceiptPrinterTesting}
-                disabled={printerNativeBusy || !savedReceiptPrinter}
-                style={styles.primaryActionButton}
-              >
-                {receiptPrinterBusy && isReceiptPrinterTesting
-                  ? t("receiptPrinter.testing")
-                  : t("receiptPrinter.test")}
-              </Button>
-            </View>
-
-            {receiptPrinterScanCompleted ? (
-              visibleReceiptPrinters.length ? (
-                <>
-                  <Text variant="labelMedium" style={styles.listLabel}>
-                    {t("receiptPrinter.available")}
-                  </Text>
-                  <PrinterDeviceList
-                    devices={visibleReceiptPrinters}
-                    selectedAddress={savedReceiptPrinter?.address}
-                    bondedLabel={t("printer.bonded")}
-                    actionLabel={t("receiptPrinter.save")}
-                    disabled={printerNativeBusy}
-                    onSelect={(printer) => void handleSaveReceiptPrinter(printer)}
-                  />
-                </>
-              ) : (
-                <HelperText type="info" visible>
-                  {t("receiptPrinter.empty")}
-                </HelperText>
-              )
-            ) : null}
-
-            <View style={styles.printerActions}>
-              <Button
-                compact
-                mode="text"
-                icon="delete-outline"
-                onPress={handleClearReceiptPrinter}
-                disabled={printerNativeBusy || !savedReceiptPrinter}
-              >
-                {t("receiptPrinter.clear")}
-              </Button>
-            </View>
-          </View>
+          <CompactRow
+            icon="server-network"
+            label={t("apiHost.title")}
+            value={apiHostDisplayName}
+            meta={apiHost}
+            actionRef={apiHostTriggerRef}
+            onPress={openApiHostSettings}
+            accessibilityLabel={t("apiHost.change")}
+          />
+          <View style={styles.sectionDivider} />
+          <CompactRow
+            icon="information-outline"
+            label={t("overview.aboutDiagnostics")}
+            value={t("overview.aboutDescription")}
+            actionRef={diagnosticsAboutTriggerRef}
+            onPress={() => openDiagnostics(diagnosticsAboutTriggerRef)}
+            accessibilityLabel={t("overview.diagnostics")}
+          />
         </CompactSection>
 
         {user ? (
           <Button
-            mode="contained"
-            buttonColor="#FF4D4F"
+            mode="outlined"
+            icon="logout"
+            textColor={HB_COLORS.danger}
             onPress={handleLogout}
             loading={isSubmitting}
             disabled={isSubmitting}
             style={styles.logoutButton}
+            contentStyle={styles.destructiveButtonContent}
           >
             {t("account.logoutToLogin")}
           </Button>
         ) : null}
+
+        <Text variant="bodySmall" style={styles.buildFooter}>
+          {t("overview.buildFooter", {
+            version: appPackageVersion,
+            channel: updateInfo.channel ?? t("updates.noChannel"),
+          })}
+        </Text>
       </ScrollView>
       <DeviceActivationDialog
         visible={activationVisible}
@@ -1082,16 +1215,426 @@ export default function Settings() {
         onDismiss={() => setActivationVisible(false)}
         onCompleted={handleActivationCompleted}
       />
-      <Portal>
-        <Modal
-          visible={apiHostModalVisible}
-          onDismiss={() => setApiHostModalVisible(false)}
-          contentContainerStyle={styles.modal}
+      <AccessibleSettingsModal
+        visible={deviceSettingsVisible}
+        title={t("device.title")}
+        description={t("device.description")}
+        dismissLabel={t("common:actions.close")}
+        testID="settings-device-details"
+        onDismiss={dismissDeviceSettings}
+      >
+            <ScrollView
+              style={styles.sheetScroll}
+              contentContainerStyle={styles.sheetContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.statusBlock}>
+                <CompactRow
+                  label={t("device.statusLabel")}
+                  value={accountBinding ? t("deviceStatus.bound") : deviceStatusText}
+                  status={accountBinding ? t("deviceStatus.bound") : deviceStatusText}
+                  statusTone={deviceStatusTone}
+                />
+                <View style={styles.sectionDivider} />
+                <CompactRow label={t("device.storeLabelCompact")} value={deviceStoreDisplayName} />
+                <View style={styles.sectionDivider} />
+                <CompactRow label={t("device.deviceNumberLabel")} value={deviceDisplayName} />
+                {accountBinding ? (
+                  <>
+                    <View style={styles.sectionDivider} />
+                    <CompactRow
+                      label={t("device.accountLabel")}
+                      value={
+                        accountBinding.binding.targetFullName ||
+                        accountBinding.binding.targetUsername
+                      }
+                    />
+                    <View style={styles.sectionDivider} />
+                    <CompactRow
+                      label={t("device.systemLabel")}
+                      value={accountBinding.binding.deviceSystem}
+                    />
+                  </>
+                ) : null}
+              </View>
+
+              <Button
+                mode="contained"
+                icon="qrcode-scan"
+                onPress={() => {
+                  setDeviceSettingsVisible(false);
+                  openDeviceActivation();
+                }}
+                loading={isSubmitting || deviceLoading}
+                disabled={isSubmitting || deviceLoading}
+                style={styles.primaryButton}
+              >
+                {accountBinding
+                  ? t("device.rebindByScan")
+                  : deviceSession
+                    ? t("device.upgradeByScan")
+                    : t("device.bindByScan")}
+              </Button>
+
+              {deviceSession && !accountBinding ? (
+                <Button
+                  mode="outlined"
+                  onPress={handleRefreshDevice}
+                  loading={isSubmitting || deviceLoading}
+                  disabled={isSubmitting || deviceLoading}
+                >
+                  {t("device.refreshStatus")}
+                </Button>
+              ) : null}
+
+              {deviceReady ? (
+                <View style={styles.successBox}>
+                  <Icon source="check-circle-outline" size={20} color={HB_COLORS.success} />
+                  <Text variant="bodySmall" style={styles.successText}>
+                    {t("device.ready")}
+                  </Text>
+                </View>
+              ) : null}
+
+              {deviceSession || accountBinding ? (
+                <View style={styles.dangerZone}>
+                  <Text variant="labelLarge" style={styles.dangerTitle}>
+                    {t("overview.dangerZone")}
+                  </Text>
+                  <Text variant="bodySmall" style={styles.dangerDescription}>
+                    {t("dialogs.unbindDeviceMessage")}
+                  </Text>
+                  <Button
+                    mode="outlined"
+                    icon="link-off"
+                    textColor={HB_COLORS.danger}
+                    onPress={handleDeviceUnbind}
+                    loading={isSubmitting || deviceLoading}
+                    disabled={isSubmitting || deviceLoading}
+                    style={styles.deviceDangerButton}
+                  >
+                    {t("device.unbind")}
+                  </Button>
+                </View>
+              ) : null}
+            </ScrollView>
+      </AccessibleSettingsModal>
+
+      <AccessibleSettingsModal
+        visible={printerSettingsVisible}
+        title={t("groups.printers")}
+        description={t("overview.printerDetailsDescription")}
+        dismissLabel={t("common:actions.close")}
+        testID="settings-printer-details"
+        onDismiss={dismissPrinterSettings}
+      >
+            <ScrollView
+              style={styles.sheetScroll}
+              contentContainerStyle={styles.sheetContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.printerSection}>
+                <View style={styles.printerSectionHeader}>
+                  <View style={styles.compactRowText}>
+                    <Text variant="titleMedium" style={styles.sheetSubheading}>
+                      {t("printer.title")}
+                    </Text>
+                    <Text variant="bodySmall" style={styles.compactRowValue} numberOfLines={1}>
+                      {savedPrinter
+                        ? t("printer.selected", {
+                            printer: savedPrinter.name || savedPrinter.address,
+                          })
+                        : t("printer.notSelected")}
+                    </Text>
+                  </View>
+                  <StatusPill label={labelPrinterStatusText} tone={labelPrinterStatusTone} />
+                </View>
+
+                <View style={styles.primaryPrinterActions}>
+                  <Button
+                    compact
+                    mode="contained"
+                    icon="magnify"
+                    onPress={handleScanPrinters}
+                    loading={printerBusy && !isPrinterConnecting}
+                    disabled={printerNativeBusy}
+                    style={styles.primaryActionButton}
+                  >
+                    {printerBusy && !isPrinterConnecting
+                      ? t("printer.scanning")
+                      : t("printer.scan")}
+                  </Button>
+                  {savedPrinter ? (
+                    isPrinterConnected ? (
+                      <Button
+                        compact
+                        mode="outlined"
+                        icon="link-off"
+                        onPress={handleDisconnectPrinter}
+                        disabled={printerNativeBusy}
+                        style={styles.primaryActionButton}
+                      >
+                        {t("printer.disconnect")}
+                      </Button>
+                    ) : (
+                      <Button
+                        compact
+                        mode="outlined"
+                        icon="bluetooth-connect"
+                        onPress={handleConnectSavedPrinter}
+                        loading={printerBusy && (isPrinterConnecting || isPrinterReconnecting)}
+                        disabled={printerNativeBusy}
+                        style={styles.primaryActionButton}
+                      >
+                        {printerBusy && (isPrinterConnecting || isPrinterReconnecting)
+                          ? t("printer.connecting")
+                          : t("printer.connect")}
+                      </Button>
+                    )
+                  ) : null}
+                </View>
+
+                <View style={styles.filterRow}>
+                  <Text variant="bodyMedium">{t("printer.filterXPOnly")}</Text>
+                  <Switch
+                    value={filterXPOnly}
+                    onValueChange={setFilterXPOnly}
+                    disabled={printerNativeBusy}
+                  />
+                </View>
+
+                {printerScanCompleted ? (
+                  visiblePrinters.length ? (
+                    <>
+                      <Text variant="labelMedium" style={styles.listLabel}>
+                        {t("printer.available")}
+                      </Text>
+                      <PrinterDeviceList
+                        devices={visiblePrinters}
+                        selectedAddress={savedPrinter?.address}
+                        bondedLabel={t("printer.bonded")}
+                        actionLabel={t("printer.connect")}
+                        disabled={printerNativeBusy}
+                        onSelect={(printer) => void handleConnectPrinter(printer)}
+                      />
+                    </>
+                  ) : (
+                    <HelperText type="info" visible>
+                      {rawPrinters.length && filterXPOnly
+                        ? t("printer.emptyFiltered")
+                        : t("printer.empty")}
+                    </HelperText>
+                  )
+                ) : null}
+
+                <View style={styles.printerActions}>
+                  <Button
+                    compact
+                    mode="outlined"
+                    icon="printer-check"
+                    onPress={handleTestPrinter}
+                    disabled={printerNativeBusy || !savedPrinter || !isPrinterConnected}
+                  >
+                    {t("printer.test")}
+                  </Button>
+                  <Button
+                    compact
+                    mode="text"
+                    icon="delete-outline"
+                    textColor={HB_COLORS.danger}
+                    onPress={handleClearPrinter}
+                    disabled={printerNativeBusy || !savedPrinter}
+                  >
+                    {t("printer.clear")}
+                  </Button>
+                </View>
+              </View>
+
+              <View style={styles.printerRoleDivider} />
+
+              <View style={styles.printerSection}>
+                <View style={styles.printerSectionHeader}>
+                  <View style={styles.compactRowText}>
+                    <Text variant="titleMedium" style={styles.sheetSubheading}>
+                      {t("receiptPrinter.title")}
+                    </Text>
+                    <Text variant="bodySmall" style={styles.compactRowValue} numberOfLines={1}>
+                      {savedReceiptPrinter
+                        ? t("receiptPrinter.selected", {
+                            printer: savedReceiptPrinter.name || savedReceiptPrinter.address,
+                          })
+                        : t("receiptPrinter.notSelected")}
+                    </Text>
+                  </View>
+                  <StatusPill
+                    label={receiptPrinterStatusText}
+                    tone={receiptPrinterStatusTone}
+                  />
+                </View>
+
+                <View style={styles.primaryPrinterActions}>
+                  <Button
+                    compact
+                    mode="contained"
+                    icon="magnify"
+                    onPress={handleScanReceiptPrinters}
+                    loading={receiptPrinterBusy && !isReceiptPrinterTesting}
+                    disabled={printerNativeBusy}
+                    style={styles.primaryActionButton}
+                  >
+                    {receiptPrinterBusy && !isReceiptPrinterTesting
+                      ? t("receiptPrinter.scanning")
+                      : t("receiptPrinter.scan")}
+                  </Button>
+                  <Button
+                    compact
+                    mode="outlined"
+                    icon="receipt-text-outline"
+                    onPress={handleTestReceiptPrinter}
+                    loading={receiptPrinterBusy && isReceiptPrinterTesting}
+                    disabled={printerNativeBusy || !savedReceiptPrinter}
+                    style={styles.primaryActionButton}
+                  >
+                    {receiptPrinterBusy && isReceiptPrinterTesting
+                      ? t("receiptPrinter.testing")
+                      : t("receiptPrinter.test")}
+                  </Button>
+                </View>
+
+                {receiptPrinterScanCompleted ? (
+                  visibleReceiptPrinters.length ? (
+                    <>
+                      <Text variant="labelMedium" style={styles.listLabel}>
+                        {t("receiptPrinter.available")}
+                      </Text>
+                      <PrinterDeviceList
+                        devices={visibleReceiptPrinters}
+                        selectedAddress={savedReceiptPrinter?.address}
+                        bondedLabel={t("printer.bonded")}
+                        actionLabel={t("receiptPrinter.save")}
+                        disabled={printerNativeBusy}
+                        onSelect={(printer) => void handleSaveReceiptPrinter(printer)}
+                      />
+                    </>
+                  ) : (
+                    <HelperText type="info" visible>
+                      {t("receiptPrinter.empty")}
+                    </HelperText>
+                  )
+                ) : null}
+
+                <View style={styles.printerActions}>
+                  <Button
+                    compact
+                    mode="text"
+                    icon="delete-outline"
+                    textColor={HB_COLORS.danger}
+                    onPress={handleClearReceiptPrinter}
+                    disabled={printerNativeBusy || !savedReceiptPrinter}
+                  >
+                    {t("receiptPrinter.clear")}
+                  </Button>
+                </View>
+              </View>
+            </ScrollView>
+      </AccessibleSettingsModal>
+
+      <AccessibleSettingsModal
+        visible={diagnosticsVisible}
+        title={t("diagnostics.title")}
+        description={t("diagnostics.description")}
+        dismissLabel={t("common:actions.close")}
+        testID="settings-diagnostics-details"
+        onDismiss={dismissDiagnostics}
+      >
+            <ScrollView
+              style={styles.sheetScroll}
+              contentContainerStyle={styles.sheetContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.diagnosticsSummary}>
+                <Icon
+                  source={connectionNeedsAttention ? "alert-circle-outline" : "check-circle-outline"}
+                  size={24}
+                  color={connectionNeedsAttention ? HB_COLORS.warning : HB_COLORS.success}
+                />
+                <View style={styles.compactRowText}>
+                  <Text variant="titleSmall" style={styles.compactRowLabel}>
+                    {t(
+                      connectionNeedsAttention
+                        ? "overview.deviceServicesAttention"
+                        : "overview.deviceServicesReady"
+                    )}
+                  </Text>
+                  <Text variant="bodySmall" style={styles.meta}>
+                    {t("diagnostics.connectionSummary")}
+                  </Text>
+                </View>
+              </View>
+
+              <View style={styles.diagnosticList}>
+                <CompactRow
+                  label={t("device.statusLabel")}
+                  value={accountBinding ? t("deviceStatus.bound") : deviceStatusText}
+                />
+                <View style={styles.sectionDivider} />
+                <CompactRow label={t("device.storeLabelCompact")} value={deviceStoreDisplayName} />
+                <View style={styles.sectionDivider} />
+                <CompactRow label={t("printer.title")} value={labelPrinterStatusText} />
+                <View style={styles.sectionDivider} />
+                <CompactRow label={t("receiptPrinter.title")} value={receiptPrinterStatusText} />
+                <View style={styles.sectionDivider} />
+                <CompactRow label={t("apiHost.title")} value={apiHost} />
+              </View>
+
+              <View style={styles.diagnosticsSection}>
+                <Text variant="labelLarge" style={styles.sheetSubheading}>
+                  {t("diagnostics.runtimeDetails")}
+                </Text>
+                <View style={styles.updateInfoCompactList}>
+                  {updateInfoRows.map((row) => (
+                    <View key={row.key} style={styles.updateInfoRow}>
+                      <Text variant="bodySmall" style={styles.updateInfoLabel}>
+                        {t(row.labelKey)}
+                      </Text>
+                      <Text variant="bodySmall" style={styles.updateInfoValue} numberOfLines={1}>
+                        {row.value ?? t(row.valueKey ?? "updates.unknown")}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+
+              <View style={styles.modalActions}>
+                <Button mode="text" onPress={dismissDiagnostics}>
+                  {t("common:actions.close")}
+                </Button>
+                <Button
+                  mode="contained"
+                  icon="cloud-download-outline"
+                  onPress={handleCheckUpdates}
+                  loading={updateBusy}
+                  disabled={updateBusy}
+                >
+                  {t("updates.check")}
+                </Button>
+              </View>
+            </ScrollView>
+      </AccessibleSettingsModal>
+
+      <AccessibleSettingsModal
+        visible={apiHostModalVisible}
+        title={t("apiHost.modalTitle")}
+        description={t("apiHost.modalDescription")}
+        dismissLabel={t("common:actions.close")}
+        testID="settings-api-host-details"
+        onDismiss={dismissApiHostSettings}
+      >
+        <ScrollView
+          style={styles.sheetScroll}
+          contentContainerStyle={styles.apiHostContent}
+          showsVerticalScrollIndicator={false}
         >
-          <Text variant="titleMedium">{t("apiHost.modalTitle")}</Text>
-          <Text variant="bodyMedium" style={styles.meta}>
-            {t("apiHost.modalDescription")}
-          </Text>
           <View style={styles.apiHostCurrentBox}>
             <Text variant="labelMedium" style={styles.meta}>
               {t("apiHost.current")}
@@ -1126,153 +1669,410 @@ export default function Settings() {
             autoCorrect={false}
           />
           <View style={styles.modalActions}>
-            <Button mode="text" onPress={() => setApiHostModalVisible(false)}>
+            <Button mode="text" onPress={dismissApiHostSettings}>
               {t("common:actions.cancel")}
             </Button>
             <Button mode="contained" onPress={handleSaveApiHost}>
               {t("common:actions.save")}
             </Button>
           </View>
-        </Modal>
-      </Portal>
+        </ScrollView>
+      </AccessibleSettingsModal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F5F7FA" },
-  content: { paddingHorizontal: 10, paddingTop: 4, paddingBottom: 10, gap: 8 },
-  title: { textAlign: "center", marginBottom: 0 },
-  card: { padding: 12, borderRadius: 8, gap: 8 },
-  sectionHeader: { gap: 2 },
-  sectionTitle: { fontWeight: "700" },
-  compactRow: {
+  container: {
+    flex: 1,
+    backgroundColor: HB_COLORS.background,
+  },
+  content: {
+    width: "100%",
+    maxWidth: 680,
+    alignSelf: "center",
+    paddingHorizontal: HB_SPACING.md,
+    paddingTop: HB_SPACING.xs,
+    paddingBottom: HB_SPACING.lg,
+    gap: HB_SPACING.lg,
+  },
+  header: {
+    minHeight: 48,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 10,
+    gap: HB_SPACING.sm,
+  },
+  title: {
+    color: HB_COLORS.textPrimary,
+    fontWeight: "800",
+    letterSpacing: -0.4,
+  },
+  headerActionContent: {
+    minHeight: 44,
+  },
+  section: {
+    gap: HB_SPACING.xs,
+  },
+  sectionHeader: {
+    gap: HB_SPACING.xxs,
+    paddingHorizontal: HB_SPACING.xxs,
+  },
+  sectionTitle: {
+    color: HB_COLORS.textSecondary,
+    fontWeight: "700",
+    letterSpacing: 0.2,
+  },
+  card: {
+    overflow: "hidden",
+    borderRadius: HB_RADIUS.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HB_COLORS.outlineMuted,
+    backgroundColor: HB_COLORS.surface,
+  },
+  connectionSummary: {
+    minHeight: 76,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: HB_SPACING.sm,
+    paddingHorizontal: HB_SPACING.md,
+    paddingVertical: HB_SPACING.sm,
+  },
+  connectionSummaryIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ECFDF3",
+  },
+  connectionSummaryIconWarning: {
+    backgroundColor: "#FFFAEB",
+  },
+  connectionSummaryText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  compactRow: {
+    minHeight: 68,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: HB_SPACING.sm,
+    paddingHorizontal: HB_SPACING.md,
+    paddingVertical: HB_SPACING.sm,
+  },
+  compactRowPressed: {
+    backgroundColor: HB_COLORS.surfaceMuted,
+  },
+  rowIconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: HB_RADIUS.control,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#EAF2FF",
   },
   compactRowText: {
     flex: 1,
-    gap: 2,
     minWidth: 0,
+    gap: 2,
   },
   compactRowLabel: {
+    color: HB_COLORS.textPrimary,
     fontWeight: "600",
   },
   compactRowValue: {
-    color: "#394150",
+    color: HB_COLORS.textSecondary,
+  },
+  compactRowEnd: {
+    flexShrink: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: HB_SPACING.xxs,
   },
   compactRowAction: {
     flexShrink: 0,
   },
+  rowChevron: {
+    width: 44,
+    height: 44,
+    margin: -HB_SPACING.xs,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  statusPill: {
+    maxWidth: 136,
+    minHeight: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 999,
+    paddingHorizontal: HB_SPACING.xs,
+    paddingVertical: 3,
+  },
+  statusPillSuccess: {
+    backgroundColor: "#ECFDF3",
+  },
+  statusPillWarning: {
+    backgroundColor: "#FFFAEB",
+  },
+  statusPillDanger: {
+    backgroundColor: "#FEF3F2",
+  },
+  statusPillNeutral: {
+    backgroundColor: HB_COLORS.surfaceMuted,
+  },
+  statusPillText: {
+    fontWeight: "700",
+  },
+  statusPillTextSuccess: {
+    color: HB_COLORS.success,
+  },
+  statusPillTextWarning: {
+    color: HB_COLORS.warning,
+  },
+  statusPillTextDanger: {
+    color: HB_COLORS.danger,
+  },
+  statusPillTextNeutral: {
+    color: HB_COLORS.textSecondary,
+  },
   languageSelector: {
-    width: 190,
+    width: 158,
   },
   sectionDivider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: "#E5E7EB",
+    backgroundColor: HB_COLORS.outlineMuted,
   },
-  value: { marginTop: 8, fontWeight: "600" },
-  meta: { color: "#666" },
-  updateInfoCompactList: { gap: 4, marginTop: 2 },
+  value: {
+    marginTop: HB_SPACING.xs,
+    color: HB_COLORS.textPrimary,
+    fontWeight: "600",
+  },
+  meta: {
+    color: HB_COLORS.textSecondary,
+  },
+  updateInfoCompactList: {
+    gap: HB_SPACING.xs,
+  },
   updateInfoRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    gap: 12,
+    gap: HB_SPACING.sm,
   },
-  updateInfoLabel: { color: "#666", flexShrink: 0 },
-  updateInfoValue: { flex: 1, textAlign: "right", fontWeight: "600" },
+  updateInfoLabel: {
+    color: HB_COLORS.textSecondary,
+    flexShrink: 0,
+  },
+  updateInfoValue: {
+    flex: 1,
+    color: HB_COLORS.textPrimary,
+    textAlign: "right",
+    fontWeight: "600",
+  },
   apiHostCurrentBox: {
-    gap: 4,
-    borderRadius: 12,
-    backgroundColor: "#F7F8FA",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    gap: HB_SPACING.xxs,
+    borderRadius: HB_RADIUS.surface,
+    backgroundColor: HB_COLORS.surfaceMuted,
+    paddingHorizontal: HB_SPACING.sm,
+    paddingVertical: HB_SPACING.sm,
   },
   apiHostPresetList: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: HB_SPACING.xs,
   },
   apiHostPresetButton: {
     borderRadius: 999,
   },
-  statusBlock: { gap: 6, marginTop: 4 },
-  primaryButton: { marginTop: 4 },
+  statusBlock: {
+    overflow: "hidden",
+    borderRadius: HB_RADIUS.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HB_COLORS.outlineMuted,
+    backgroundColor: HB_COLORS.surfaceMuted,
+  },
+  primaryButton: {
+    marginTop: HB_SPACING.xxs,
+  },
   filterRow: {
+    minHeight: 48,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 2,
+    gap: HB_SPACING.sm,
+    paddingHorizontal: HB_SPACING.sm,
+    borderRadius: HB_RADIUS.control,
+    backgroundColor: HB_COLORS.surfaceMuted,
   },
   primaryPrinterActions: {
     flexDirection: "row",
-    gap: 8,
-    marginTop: 2,
+    gap: HB_SPACING.xs,
   },
   primaryActionButton: {
     flex: 1,
   },
   printerSection: {
-    gap: 8,
+    gap: HB_SPACING.sm,
   },
   printerSectionHeader: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     justifyContent: "space-between",
-    gap: 8,
+    gap: HB_SPACING.sm,
+  },
+  printerRoleDivider: {
+    height: StyleSheet.hairlineWidth,
+    marginVertical: HB_SPACING.xxs,
+    backgroundColor: HB_COLORS.outline,
   },
   listLabel: {
-    color: "#4B5563",
+    color: HB_COLORS.textSecondary,
   },
   printerList: {
-    gap: 6,
+    gap: HB_SPACING.xs,
   },
   printerRow: {
+    minHeight: 60,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    gap: 10,
-    borderRadius: 8,
-    backgroundColor: "#F7F8FA",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+    gap: HB_SPACING.sm,
+    borderRadius: HB_RADIUS.control,
+    backgroundColor: HB_COLORS.surfaceMuted,
+    paddingHorizontal: HB_SPACING.sm,
+    paddingVertical: HB_SPACING.xs,
   },
   printerMeta: {
     flex: 1,
-    gap: 2,
     minWidth: 0,
+    gap: 2,
   },
   printerName: {
+    color: HB_COLORS.textPrimary,
     fontWeight: "600",
   },
   printerActions: {
     flexDirection: "row",
-    gap: 8,
-    marginTop: 2,
+    flexWrap: "wrap",
+    gap: HB_SPACING.xs,
   },
-  deviceDangerActions: {
+  successBox: {
     flexDirection: "row",
-    gap: 8,
-    marginTop: 2,
+    alignItems: "center",
+    gap: HB_SPACING.xs,
+    borderRadius: HB_RADIUS.control,
+    backgroundColor: "#ECFDF3",
+    padding: HB_SPACING.sm,
+  },
+  successText: {
+    flex: 1,
+    color: HB_COLORS.success,
+  },
+  dangerZone: {
+    gap: HB_SPACING.xs,
+    borderRadius: HB_RADIUS.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#FECDCA",
+    backgroundColor: "#FEF3F2",
+    padding: HB_SPACING.sm,
+  },
+  dangerTitle: {
+    color: HB_COLORS.danger,
+    fontWeight: "700",
+  },
+  dangerDescription: {
+    color: HB_COLORS.textSecondary,
   },
   deviceDangerButton: {
-    flex: 1,
+    borderColor: HB_COLORS.danger,
+    alignSelf: "flex-start",
   },
-  modal: {
-    backgroundColor: "#FFFFFF",
-    margin: 18,
-    borderRadius: 8,
-    padding: 18,
-    gap: 12,
+  modalBackdrop: {
+    flex: 1,
+    justifyContent: "center",
+    paddingHorizontal: HB_SPACING.md,
+    backgroundColor: "rgba(15, 23, 42, 0.48)",
+  },
+  sheetModal: {
+    width: "100%",
+    maxHeight: "90%",
+    maxWidth: 680,
+    alignSelf: "center",
+    overflow: "hidden",
+    borderRadius: HB_RADIUS.sheet,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HB_COLORS.outlineMuted,
+    backgroundColor: HB_COLORS.surface,
+  },
+  sheetHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: HB_SPACING.sm,
+    paddingHorizontal: HB_SPACING.md,
+    paddingTop: HB_SPACING.md,
+    paddingBottom: HB_SPACING.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: HB_COLORS.outlineMuted,
+  },
+  sheetTitle: {
+    color: HB_COLORS.textPrimary,
+    fontWeight: "800",
+  },
+  sheetSubheading: {
+    color: HB_COLORS.textPrimary,
+    fontWeight: "700",
+  },
+  sheetScroll: {
+    flexShrink: 1,
+  },
+  sheetContent: {
+    gap: HB_SPACING.md,
+    padding: HB_SPACING.md,
+    paddingBottom: HB_SPACING.lg,
+  },
+  diagnosticsSummary: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: HB_SPACING.sm,
+    borderRadius: HB_RADIUS.surface,
+    backgroundColor: HB_COLORS.surfaceMuted,
+    padding: HB_SPACING.sm,
+  },
+  diagnosticList: {
+    overflow: "hidden",
+    borderRadius: HB_RADIUS.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: HB_COLORS.outlineMuted,
+    backgroundColor: HB_COLORS.surface,
+  },
+  diagnosticsSection: {
+    gap: HB_SPACING.xs,
+    borderRadius: HB_RADIUS.surface,
+    backgroundColor: HB_COLORS.surfaceMuted,
+    padding: HB_SPACING.sm,
+  },
+  apiHostContent: {
+    padding: HB_SPACING.md,
+    paddingBottom: HB_SPACING.lg,
+    gap: HB_SPACING.sm,
   },
   modalActions: {
     flexDirection: "row",
+    flexWrap: "wrap",
     justifyContent: "flex-end",
-    gap: 8,
+    gap: HB_SPACING.xs,
   },
-  secondaryButton: { marginTop: 8 },
-  logoutButton: { marginTop: 2, marginBottom: 6 },
-  successText: { color: "#1677FF", marginTop: 8 },
+  logoutButton: {
+    borderColor: HB_COLORS.danger,
+    borderRadius: HB_RADIUS.control,
+  },
+  destructiveButtonContent: {
+    minHeight: 48,
+  },
+  buildFooter: {
+    color: HB_COLORS.textSecondary,
+    textAlign: "center",
+    marginTop: -HB_SPACING.xs,
+  },
 });
