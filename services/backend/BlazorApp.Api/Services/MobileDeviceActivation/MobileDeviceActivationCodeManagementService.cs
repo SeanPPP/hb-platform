@@ -173,7 +173,7 @@ public sealed class MobileDeviceActivationCodeManagementService :
                 && !user.IsDeleted
                 && !userStore.IsDeleted
                 && userStore.StoreGUID == store.StoreGUID)
-            .Select((user, _) => new
+            .Select((user, userStore) => new
             {
                 user.UserGUID,
                 user.Username,
