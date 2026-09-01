@@ -24,6 +24,14 @@ namespace BlazorApp.Api.Interfaces.React
             string? supplierCode = null
         );
 
+        Task<List<SupplierSalesRankDto>> GetSupplierSalesRankAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes,
+            int topN,
+            string? supplierCode,
+            ProductReportStatisticStatusDto statisticStatus
+        );
+
         Task<List<ChinaSupplierSalesRankDto>> GetChinaSupplierSalesRankAsync(
             DateRangeDto dateRange,
             List<string>? branchCodes = null,
@@ -31,10 +39,25 @@ namespace BlazorApp.Api.Interfaces.React
             string? supplierCode = null
         );
 
+        Task<List<ChinaSupplierSalesRankDto>> GetChinaSupplierSalesRankAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes,
+            int topN,
+            string? supplierCode,
+            ProductReportStatisticStatusDto statisticStatus
+        );
+
         Task<List<SupplierStoreSalesDto>> GetSupplierStoreSalesAsync(
             DateRangeDto dateRange,
             List<string> supplierCodes,
             List<string>? branchCodes = null
+        );
+
+        Task<List<SupplierStoreSalesDto>> GetSupplierStoreSalesAsync(
+            DateRangeDto dateRange,
+            List<string> supplierCodes,
+            List<string>? branchCodes,
+            ProductReportStatisticStatusDto statisticStatus
         );
 
         Task<List<StoreSupplierSalesDto>> GetStoreSupplierSalesAsync(
@@ -61,16 +84,48 @@ namespace BlazorApp.Api.Interfaces.React
             string? productSearch = null
         );
 
+        Task<PagedSalesProductDetailWithDiscountDto> GetEnhancedSalesProductDetailsAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes,
+            List<string>? localSupplierCodes,
+            List<string>? chinaSupplierCodes,
+            int pageIndex,
+            int pageSize,
+            string? productSearch,
+            ProductReportStatisticStatusDto statisticStatus
+        );
+
         Task<List<ProductBranchSalesDto>> GetProductSalesByAllBranchesAsync(
             DateRangeDto dateRange,
             string productCode,
             List<string>? branchCodes = null
         );
 
+        Task<List<ProductBranchSalesDto>> GetProductSalesByAllBranchesAsync(
+            DateRangeDto dateRange,
+            string productCode,
+            List<string>? branchCodes,
+            ProductReportStatisticStatusDto statisticStatus
+        );
+
         Task<List<ChinaSupplierStoreSalesDto>> GetChinaSupplierStoreSalesAsync(
             DateRangeDto dateRange,
             List<string> supplierCodes,
             List<string>? branchCodes = null
+        );
+
+        Task<List<ChinaSupplierStoreSalesDto>> GetChinaSupplierStoreSalesAsync(
+            DateRangeDto dateRange,
+            List<string> supplierCodes,
+            List<string>? branchCodes,
+            ProductReportStatisticStatusDto statisticStatus
+        );
+
+        /// <summary>
+        /// 获取商品日分店统计完整性与缓存版本；不会触发聚合。
+        /// </summary>
+        Task<ProductReportStatisticStatusDto> GetProductReportStatisticStatusAsync(
+            DateRangeDto dateRange
         );
 
         Task<
@@ -94,8 +149,8 @@ namespace BlazorApp.Api.Interfaces.React
         /// <param name="dateRange">日期范围</param>
         /// <param name="topN">返回前N条记录；为空返回全部</param>
         /// <param name="branchCodes">分店代码列表（可选）</param>
-        /// <returns>分店业绩排名列表</returns>
-        Task<List<ExecutiveBranchPerformanceDto>> GetExecutiveBranchPerformanceAsync(
+        /// <returns>分店业绩排名及统计完整性状态</returns>
+        Task<ExecutiveBranchPerformanceResultDto> GetExecutiveBranchPerformanceAsync(
             DateRangeDto dateRange,
             int? topN = null,
             List<string>? branchCodes = null
@@ -107,8 +162,8 @@ namespace BlazorApp.Api.Interfaces.React
         /// </summary>
         /// <param name="dateRange">日期范围</param>
         /// <param name="branchCodes">分店代码列表（可选）</param>
-        /// <returns>每小时流量密度列表</returns>
-        Task<List<ExecutiveHourlyTrafficDto>> GetExecutiveHourlyTrafficAsync(
+        /// <returns>每小时流量密度及统计完整性状态</returns>
+        Task<ExecutiveReportResultDto<ExecutiveHourlyTrafficDto>> GetExecutiveHourlyTrafficAsync(
             DateRangeDto dateRange,
             List<string>? branchCodes = null
         );
@@ -119,8 +174,8 @@ namespace BlazorApp.Api.Interfaces.React
         /// </summary>
         /// <param name="dateRange">日期范围</param>
         /// <param name="branchCodes">分店代码列表（可选）</param>
-        /// <returns>分店每日营业额列表</returns>
-        Task<List<BranchDailyPerformanceDto>> GetBranchDailyPerformanceAsync(
+        /// <returns>分店每日营业额及统计完整性状态</returns>
+        Task<ExecutiveReportResultDto<BranchDailyPerformanceDto>> GetBranchDailyPerformanceAsync(
             DateRangeDto dateRange,
             List<string>? branchCodes = null
         );
