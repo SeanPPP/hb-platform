@@ -36,6 +36,8 @@ internal interface ISchemaMigrationRuntime
 
     Task ApplyMainBaselineAsync(CancellationToken cancellationToken);
 
+    Task ApplyBrowserExtensionSessionGrantAsync(CancellationToken cancellationToken);
+
     Task ApplyPosmBaselineAsync(CancellationToken cancellationToken);
 
     Task ApplyMobileDeviceActivationAsync(CancellationToken cancellationToken);
@@ -169,6 +171,18 @@ internal sealed class SqlServerSchemaMigrationRuntime : ISchemaMigrationRuntime
 
     public Task ApplyMainBaselineAsync(CancellationToken cancellationToken) =>
         ApplyBaselineAsync(SchemaDatabase.Main, cancellationToken);
+
+    public Task ApplyBrowserExtensionSessionGrantAsync(
+        CancellationToken cancellationToken
+    ) => RunStrictBaselineAsync(
+        _mainDbContext.Db,
+        () => BrowserExtensionSessionGrantSchemaMigrator.EnsureAsync(
+            _mainDbContext.Db,
+            NullLogger.Instance
+        ),
+        cancellationToken,
+        "main-browser-extension-session-grant"
+    );
 
     public async Task ApplyPosmBaselineAsync(CancellationToken cancellationToken)
     {

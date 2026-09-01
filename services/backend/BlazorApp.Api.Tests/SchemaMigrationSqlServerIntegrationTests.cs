@@ -67,6 +67,11 @@ public sealed class SchemaMigrationSqlServerIntegrationTests
             SchemaMigrationCoordinator.MainMigrationId
         );
         await AssertHistoryTableAsync(
+            databases.MainConnectionString,
+            SqlServerSchemaMigrationRuntime.MainHistoryTable,
+            SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId
+        );
+        await AssertHistoryTableAsync(
             databases.PosmConnectionString,
             SqlServerSchemaMigrationRuntime.PosmHistoryTable,
             SchemaMigrationCoordinator.PosmMigrationId

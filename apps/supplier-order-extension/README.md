@@ -5,9 +5,9 @@ Chrome / Edge / macOS Safari Manifest V3 扩展，在已配置的供应商列表
 ## 目录
 
 - `src/`：扩展源码（不含构建产物与凭据）
-- `src/lib/`：可测试的纯逻辑模块（版本、transform、profile 校验、微批、节点状态、分页/混排、握手、鉴权判定、single-flight refresh、i18n）
-- `src/background/service-worker.js`：统一请求、令牌存储、single-flight refresh、消息路由、动态内容脚本注册
-- `src/content/shop-bridge.js`：`/shop` 页面桥接（PING/OPEN）
+- `src/lib/`：可测试的纯逻辑模块（版本、transform、profile 校验、微批、节点状态、分页/混排、握手、PKCE 网站会话交接、i18n）
+- `src/background/service-worker.js`：统一请求、短期令牌存储、single-flight 网站会话授权、消息路由、动态内容脚本注册
+- `src/content/shop-bridge.js`：`/shop` 页面桥接（PING/OPEN/网站会话授权）
 - `src/content/list.js`：供应商列表页注入
 - `src/sidepanel/`：侧栏 UI
 - `test/`：Node 原生测试
@@ -47,33 +47,28 @@ Safari 使用相邻的独立 Xcode 宿主项目，构建、签名和启用步骤
 
 加载后：
 
-1. 点击扩展图标打开侧栏，在“后端接口”中选择“远端 /”或“本地 5002”；也可以填写自定义 HTTPS origin。
-2. 登录 HB 账号。
+1. 先在 `https://hotbargain.vip/shop` 登录 HB 账号，再从网页或扩展图标打开助手；扩展会直接识别当前网站账号，不再要求输入账号密码。
+2. 正式助手固定连接构建时的 `HB_WEB_ORIGIN` / `HB_API_ORIGIN`；网站会话自动授权要求两者同源。
 3. 若当前用户返回了 `stores`，选择门店；否则手动输入门店编码并保存。
 4. 在“供应商”列表对 DATS origin 点击“授权”（需用户手势，仅申请该供应商 origin 的可选权限）。
 5. 打开 `https://www.dats.com.au/` 的列表页，商品卡片下方会出现按钮；点击按钮在侧栏定位到该 `supplierCode/itemNumber`。
 
-后端接口快捷设置：
-
-- “远端 /”恢复到构建时的 `HB_API_ORIGIN`，正式构建默认为 `https://hotbargain.vip`。
-- “本地 5002”使用 `http://localhost:5002`，首次选择时浏览器会请求 localhost 可选权限。
-- 自定义地址只接受 HTTPS origin；本机调试额外允许 `localhost` 或 `127.0.0.1` HTTP，不能包含路径、查询、片段或用户名密码。
-- 接口地址发生变化时，扩展会清除当前 access/refresh token 和供应商配置缓存，必须在新环境重新登录，避免跨环境传递凭据。
+正式商店界面不再提供本地或自定义 API 切换，避免在无密码模式下进入无法同源授权的死路径。开发/测试构建如需其他环境，必须在构建时把 `HB_WEB_ORIGIN` 与 `HB_API_ORIGIN` 同时设为该环境的同一 origin。
 
 ## 权限边界
 
 - `host_permissions` 仅包含 HB API 正式源；`/shop` 桥接脚本仅注入 HB Web 正式源。
+- manifest 不申请 `cookies` 权限；内容脚本只在受信顶层 `/shop` 页面以现有 HttpOnly 网站 Cookie 请求一次性授权码，不读取、复制或保存 Cookie。
 - `optional_host_permissions` 默认覆盖 HTTPS 供应商；TXK 因现站仅提供 HTTP，额外只允许精确的 `http://txkorders.inzantsales.com/*`，仍需在侧栏由用户逐供应商授权。
 - 配置只解释声明式 selector / attribute / text，以及内置固定 transform（包括 GFA 的下划线转斜线、TXK 的固定 SKU 前缀提取）；绝不 `eval` / `Function` / 后台任意正则 / 远程 JS。
-- access token 存 `chrome.storage.session`，refresh token 存 `chrome.storage.local`，不保存密码。
+- PKCE verifier 与一次性授权码只通过扩展内部 runtime 消息传递；短期 access token 只存 `chrome.storage.session`。扩展不保存账号、密码或 refresh token，也不会退出网站会话；仅受信同源 `/shop` 内容脚本在 access cookie 过期时调用一次网站 session refresh，且不读取或保存 refresh cookie。
 
 ## 三浏览器构建
 
-`build.mjs` 生成 `dist/chrome`、`dist/edge` 与 `dist/safari`，三个 manifest 的 `version` 相同（当前 1.2.0）。Web 与 API 同源时只需设置 API 源；分离部署时分别设置：
+`build.mjs` 生成 `dist/chrome`、`dist/edge` 与 `dist/safari`，三个 manifest 的 `version` 相同（当前 1.3.0）。Web 与 API 同源时只需设置 API 源；构建仍允许分别声明 Web/API 来源，但网站会话自动授权只在两者同源时启用：
 
 ```bash
-HB_API_ORIGIN=https://staging.example.com npm run build
-HB_WEB_ORIGIN=https://staff.example.com HB_API_ORIGIN=https://api.example.com npm run build
+HB_WEB_ORIGIN=https://staging.example.com HB_API_ORIGIN=https://staging.example.com npm run build
 ```
 
 构建会做 manifest JSON 语法校验，并在最后校验三个包版本一致；Safari manifest 额外锁定最低 Safari 16.4。
@@ -83,7 +78,7 @@ HB_WEB_ORIGIN=https://staff.example.com HB_API_ORIGIN=https://api.example.com np
 参考 `services/backend/BlazorApp.Api/appsettings.BrowserExtension.example.json` 配置最新版、最低支持版、三个浏览器商店链接和声明式供应商 profile。部署时也可使用 ASP.NET Core 环境变量，例如：
 
 ```bash
-BrowserExtension__LatestVersion=1.2.0
+BrowserExtension__LatestVersion=1.3.0
 BrowserExtension__MinimumVersion=1.1.0
 BrowserExtension__ChromeStoreUrl=https://chromewebstore.google.com/detail/...
 BrowserExtension__EdgeStoreUrl=https://microsoftedge.microsoft.com/addons/detail/...
@@ -131,4 +126,4 @@ BrowserExtension__SafariStoreUrl=https://apps.apple.com/app/...
 npm test
 ```
 
-覆盖：semver/版本状态、profile 校验与安全 transform、微批去重与分页上限、动态节点状态纯逻辑、分页/筛选/混排、握手校验、鉴权判定、single-flight refresh、i18n。
+覆盖：semver/版本状态、profile 校验与安全 transform、微批去重与分页上限、动态节点状态纯逻辑、分页/筛选/混排、握手校验、PKCE/S256、同源 `/shop` 校验、single-flight 网站会话交接、401 清理、三浏览器源码/manifest 安全契约与 i18n。

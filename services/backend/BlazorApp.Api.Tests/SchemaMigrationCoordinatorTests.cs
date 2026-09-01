@@ -79,6 +79,7 @@ public sealed class SchemaMigrationCoordinatorTests
 
         Assert.NotNull(stepExecutor);
         Assert.Contains("ApplyMainBaselineAsync", runtimeMethods);
+        Assert.Contains("ApplyBrowserExtensionSessionGrantAsync", runtimeMethods);
         Assert.Contains("ApplyPosmBaselineAsync", runtimeMethods);
         Assert.Contains("ApplyMobileDeviceActivationAsync", runtimeMethods);
         Assert.Contains("VerifyMobileDeviceActivationSchemaAsync", runtimeMethods);
@@ -314,6 +315,10 @@ public sealed class SchemaMigrationCoordinatorTests
     {
         var runtime = new FakeSchemaMigrationRuntime();
         runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.MainMigrationId);
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId
+        );
         runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
         runtime.MarkApplied(
             SchemaDatabase.Posm,
@@ -331,10 +336,42 @@ public sealed class SchemaMigrationCoordinatorTests
     }
 
     [Fact]
+    public async Task MigrateAsync_旧主库Baseline已应用_仍执行并记账浏览器扩展Grant迁移()
+    {
+        var runtime = new FakeSchemaMigrationRuntime();
+        runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.MainMigrationId);
+        runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
+        runtime.MarkApplied(
+            SchemaDatabase.Posm,
+            SchemaMigrationCoordinator.MobileDeviceActivationMigrationId
+        );
+
+        var result = await CreateCoordinator(runtime).MigrateAsync(CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.DoesNotContain(
+            $"Apply:Main:{SchemaMigrationCoordinator.MainMigrationId}",
+            runtime.Events
+        );
+        Assert.Contains(
+            $"Apply:Main:{SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId}",
+            runtime.Events
+        );
+        Assert.Contains(
+            $"Record:Main:{SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId}",
+            runtime.Events
+        );
+    }
+
+    [Fact]
     public async Task MigrateAsync_旧PosmBaseline已应用_仍执行并记账Mobile设备绑定迁移()
     {
         var runtime = new FakeSchemaMigrationRuntime();
         runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.MainMigrationId);
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId
+        );
         runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
 
         var result = await CreateCoordinator(runtime).MigrateAsync(CancellationToken.None);
@@ -462,6 +499,7 @@ public sealed class SchemaMigrationCoordinatorTests
                 "EnsureProviders",
                 "Preflight",
                 "Check:Main:20260827.001-hbweb-baseline",
+                "Check:Main:20260830.001-browser-extension-session-grant",
                 "Check:Posm:20260827.001-hbweb-posm-baseline",
                 "Check:Posm:20260831.001-mobile-device-activation",
                 "Verify",
@@ -657,6 +695,14 @@ public sealed class SchemaMigrationCoordinatorTests
                 SchemaMigrationCoordinator.MainMigrationId,
                 cancellationToken
             );
+
+        public Task ApplyBrowserExtensionSessionGrantAsync(
+            CancellationToken cancellationToken
+        ) => ApplyAsync(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId,
+            cancellationToken
+        );
 
         public Task ApplyPosmBaselineAsync(CancellationToken cancellationToken) =>
             ApplyAsync(

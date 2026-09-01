@@ -34,6 +34,7 @@ namespace BlazorApp.Api.Data
             await EnsureAttendanceQrSchemaAsync(db, logger);
             await EnsureAttendanceWorkSessionSchemaAsync(db, logger);
             await EnsureServiceApiTokenSchemaAsync(db, logger);
+            await BrowserExtensionSessionGrantSchemaMigrator.EnsureAsync(db, logger);
             await EnsureWpfAppReleaseSchemaAsync(db, logger);
             await EnsureWarehouseOrderCartOwnerSchemaAsync(db, logger);
             await EnsureEmployeeProfileImageSchemaAsync(db, logger);

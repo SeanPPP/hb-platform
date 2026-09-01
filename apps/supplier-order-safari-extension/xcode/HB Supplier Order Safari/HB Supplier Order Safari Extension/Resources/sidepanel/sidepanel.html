@@ -12,7 +12,7 @@
       <button id="localeBtn" type="button">EN</button>
     </header>
     <main>
-      <section id="apiSection" class="api-settings">
+      <section id="apiSection" class="api-settings" hidden>
         <div class="section-heading">
           <label id="apiTitle" for="apiOriginInput">后端接口</label>
           <small id="apiOriginHint"></small>
@@ -27,15 +27,29 @@
         </div>
       </section>
 
-      <section id="authSection" hidden>
-        <input id="username" type="text" autocomplete="username" />
-        <input id="password" type="password" autocomplete="current-password" />
-        <button id="loginBtn" type="button">登录</button>
+      <section id="authSection" class="website-session" aria-labelledby="authStatusTitle">
+        <div class="website-session-status">
+          <span id="authStatusDot" class="session-dot" aria-hidden="true"></span>
+          <div class="website-session-copy">
+            <strong id="authStatusTitle">正在检查网站登录状态</strong>
+            <p id="authStatusDescription">请保持 HB SHOP 登录状态。</p>
+          </div>
+        </div>
+        <div class="website-session-actions">
+          <button id="openShopBtn" type="button">打开 HB SHOP</button>
+          <button id="recheckBtn" type="button">重新检查</button>
+        </div>
       </section>
 
-      <section id="userSection" hidden>
-        <div id="userInfo"></div>
-        <button id="logoutBtn" type="button">退出</button>
+      <section id="userSection" class="website-session connected" hidden>
+        <div class="website-session-status">
+          <span class="session-dot" aria-hidden="true"></span>
+          <div class="website-session-copy">
+            <strong id="connectedTitle">已连接网站账号</strong>
+            <div id="userInfo"></div>
+          </div>
+        </div>
+        <button id="disconnectBtn" type="button">断开扩展</button>
       </section>
 
       <section id="storeSection" hidden>

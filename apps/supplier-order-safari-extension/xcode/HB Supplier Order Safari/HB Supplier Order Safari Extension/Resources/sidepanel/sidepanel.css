@@ -13,6 +13,10 @@ body {
   min-width: 280px;
   min-height: 100dvh;
 }
+
+#apiSection[hidden] {
+  display: none;
+}
 header {
   display: flex;
   align-items: center;
@@ -48,6 +52,62 @@ section {
 .api-settings {
   padding-bottom: 12px;
   border-bottom: 1px solid #e5e5e5;
+}
+.website-session {
+  padding: 10px;
+  border: 1px solid #dedede;
+  border-radius: 8px;
+  background: #fff;
+}
+.website-session-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.session-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: #8a8a8a;
+}
+.website-session.checking .session-dot {
+  background: #1c5bd8;
+}
+.website-session.connected .session-dot {
+  background: #26863c;
+}
+.website-session.needs-website .session-dot {
+  background: #b26a00;
+}
+.website-session-copy {
+  min-width: 0;
+}
+.website-session-copy strong,
+#userInfo {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.website-session-copy p {
+  margin: 2px 0 0;
+  color: #616161;
+  font-size: 12px;
+  line-height: 1.4;
+}
+#userInfo {
+  margin-top: 2px;
+  color: #616161;
+  font-size: 12px;
+}
+.website-session-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 10px;
+}
+#disconnectBtn {
+  margin-top: 10px;
 }
 .api-presets {
   display: grid;

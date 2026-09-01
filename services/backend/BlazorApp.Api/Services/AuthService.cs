@@ -20,6 +20,11 @@ namespace BlazorApp.Api.Services
         string GenerateJwtToken(User user);
         string GenerateJwtToken(User user, List<string>? permissions);
         Task<TokenResponse> GenerateTokensAsync(User user, string ipAddress, string userAgent);
+        Task<BrowserExtensionTokenResponse?> IssueBrowserExtensionAccessTokenAsync(
+            string userGuid,
+            string parentSessionId,
+            DateTime issuedAtUtc
+        );
         Task<TokenResponse?> RefreshTokensAsync(
             string accessToken,
             string refreshToken,
@@ -360,6 +365,67 @@ namespace BlazorApp.Api.Services
         }
 
         /// <summary>
+        /// 为已通过一次性 PKCE grant 验证的网站父会话签发最长五分钟的扩展访问令牌。
+        /// 此路径不创建或返回刷新令牌，也不会旋转现有网站会话。
+        /// </summary>
+        public async Task<BrowserExtensionTokenResponse?> IssueBrowserExtensionAccessTokenAsync(
+            string userGuid,
+            string parentSessionId,
+            DateTime issuedAtUtc
+        )
+        {
+            var now = issuedAtUtc.Kind == DateTimeKind.Utc
+                ? issuedAtUtc
+                : issuedAtUtc.ToUniversalTime();
+            var parentSessionActive = await _dbContext.Db.Queryable<RefreshToken>()
+                .AnyAsync(token =>
+                    token.RefreshTokenGUID == parentSessionId
+                    && token.UserGUID == userGuid
+                    && !token.IsRevoked
+                    && !token.IsDeleted
+                    && token.ExpiresAt >= now
+                );
+            if (!parentSessionActive)
+            {
+                return null;
+            }
+
+            var user = await _dbContext.Db.Queryable<User>()
+                .Includes(item => item.Roles)
+                .FirstAsync(item =>
+                    item.UserGUID == userGuid
+                    && item.IsActive
+                    && !item.IsDeleted
+                );
+            if (user == null)
+            {
+                return null;
+            }
+
+            var jwtSettings = _configuration.GetSection("Jwt").Get<Models.JwtSettings>();
+            if (jwtSettings == null)
+            {
+                return null;
+            }
+
+            var expiresAtUtc = now.AddMinutes(5);
+            return new BrowserExtensionTokenResponse
+            {
+                AccessToken = GenerateAccessToken(
+                    user,
+                    jwtSettings,
+                    parentSessionId,
+                    expiresAtUtc,
+                    "browser_extension"
+                ),
+                AccessTokenExpiry = expiresAtUtc,
+                UserGuid = user.UserGUID,
+                Username = user.Username,
+                FullName = user.FullName ?? user.Username,
+            };
+        }
+
+        /// <summary>
         /// 刷新令牌方法
         /// 🔄 使用过期的访问令牌和有效的刷新令牌获取新的令牌对
         /// 实现无感知的令牌刷新，提升用户体验
@@ -429,10 +495,24 @@ namespace BlazorApp.Api.Services
                 return null; // RefreshToken无效、不匹配或已过期
             }
 
-            // 🗑️ 撤销旧的刷新令牌（安全措施）
-            // 每次刷新都会生成新的刷新令牌，旧的立即失效
-            storedRefreshToken.IsRevoked = true;
-            await _dbContext.Db.Updateable(storedRefreshToken).ExecuteCommandAsync();
+            // 🗑️ 以数据库 CAS 原子消费旧刷新令牌；并发刷新只有一个请求可以继续签发新会话。
+            var revokedAt = DateTime.UtcNow;
+            var revokedRows = await _dbContext.Db.Updateable<RefreshToken>()
+                .SetColumns(token => token.IsRevoked == true)
+                .SetColumns(token => token.UpdatedAt == revokedAt)
+                .Where(token =>
+                    token.RefreshTokenGUID == storedRefreshToken.RefreshTokenGUID
+                    && token.Token == refreshToken
+                    && token.UserGUID == userGuidString
+                    && !token.IsRevoked
+                    && !token.IsDeleted
+                    && token.ExpiresAt >= revokedAt
+                )
+                .ExecuteCommandAsync();
+            if (revokedRows != 1)
+            {
+                return null;
+            }
 
             // 👤 获取用户完整信息（包括角色）
             var user = await _dbContext
@@ -595,11 +675,15 @@ namespace BlazorApp.Api.Services
         /// <param name="user">用户对象</param>
         /// <param name="jwtSettings">JWT配置设置</param>
         /// <param name="sessionId">刷新令牌会话 ID，用于 JWT 中绑定当前会话</param>
+        /// <param name="expiresAtUtc">可选的显式 UTC 过期时间；默认保持 15 分钟。</param>
+        /// <param name="tokenUse">可选令牌用途声明。</param>
         /// <returns>JWT访问令牌字符串</returns>
         private string GenerateAccessToken(
             User user,
             Models.JwtSettings jwtSettings,
-            string? sessionId = null
+            string? sessionId = null,
+            DateTime? expiresAtUtc = null,
+            string? tokenUse = null
         )
         {
             // 🔑 创建对称安全密钥
@@ -623,6 +707,11 @@ namespace BlazorApp.Api.Services
             {
                 // sessionId 绑定 RefreshToken 记录，使被挤下线的 access token 下一次请求立即失效。
                 claims.Add(new Claim("sessionId", sessionId));
+            }
+
+            if (!string.IsNullOrWhiteSpace(tokenUse))
+            {
+                claims.Add(new Claim("token_use", tokenUse));
             }
 
             // 👥 添加用户角色声明（与GenerateJwtToken保持一致）
@@ -653,12 +742,15 @@ namespace BlazorApp.Api.Services
                 }
             }
 
+            // 现有登录与刷新调用不传 expiresAtUtc，继续保持原来的 15 分钟行为。
+            var tokenExpiresAtUtc = expiresAtUtc ?? DateTime.UtcNow.AddMinutes(15);
+
             // 🏗️ 创建JWT安全令牌对象
             var token = new JwtSecurityToken(
                 issuer: jwtSettings.Issuer, // 签发者
                 audience: jwtSettings.Audience, // 受众
                 claims: claims, // 声明列表
-                expires: DateTime.UtcNow.AddMinutes(15), // 过期时间：15分钟（短令牌）
+                expires: tokenExpiresAtUtc,
                 signingCredentials: credentials // 签名凭据
             );
 

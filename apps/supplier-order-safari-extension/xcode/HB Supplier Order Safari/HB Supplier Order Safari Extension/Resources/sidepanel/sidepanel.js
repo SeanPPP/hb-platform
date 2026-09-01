@@ -1,9 +1,10 @@
-// 侧栏：登录/退出、门店选择、供应商授权、采购周期混排/筛选/分页、zh/en 切换
+// 侧栏：网站会话连接、门店选择、供应商授权、采购周期混排/筛选/分页、zh/en 切换
 import { resolveInitialLocale, t } from '../lib/i18n.js';
 import { normalizeApiOrigin, toApiHostPattern } from '../lib/api-origin.js';
 import { createGenerationGuard } from '../lib/dats-state.js';
 import { selectVisibleSupplierEntries } from '../lib/supplier-list.js';
 import { getPendingLocateChange } from '../lib/storage-compat.js';
+import { createSingleFlight } from '../lib/session-handoff.js';
 import {
   buildProductImageCandidates,
   formatAverageSellingPrice,
@@ -34,6 +35,8 @@ function getPreferredLanguages() {
 
 let locale = resolveInitialLocale(null, getPreferredLanguages());
 let user = null;
+let authState = 'checking';
+let authReason = null;
 let profiles = [];
 let storeOptions = [];
 let selectedStoreCode = null;
@@ -77,11 +80,11 @@ function applyI18n() {
   document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
   document.title = t(locale, 'title');
   el('pageTitle').textContent = t(locale, 'title');
-  el('loginBtn').textContent = t(locale, 'login');
-  el('logoutBtn').textContent = t(locale, 'logout');
+  el('openShopBtn').textContent = t(locale, 'openShop');
+  el('recheckBtn').textContent = t(locale, 'recheckSession');
+  el('connectedTitle').textContent = t(locale, 'sessionConnectedTitle');
+  el('disconnectBtn').textContent = t(locale, 'disconnectExtension');
   el('storeSaveBtn').textContent = t(locale, 'save');
-  el('username').placeholder = t(locale, 'username');
-  el('password').placeholder = t(locale, 'password');
   el('apiTitle').textContent = t(locale, 'apiTitle');
   el('apiRemoteBtn').textContent = t(locale, 'apiRemote');
   el('apiLocalBtn').textContent = t(locale, 'apiLocal');
@@ -89,8 +92,6 @@ function applyI18n() {
   el('apiOriginInput').placeholder = t(locale, 'apiPlaceholder');
   el('apiOriginInput').setAttribute('aria-label', t(locale, 'apiTitle'));
   el('apiOriginHint').textContent = t(locale, 'apiHint');
-  el('username').setAttribute('aria-label', t(locale, 'username'));
-  el('password').setAttribute('aria-label', t(locale, 'password'));
   el('storeLabel').textContent = t(locale, 'store');
   el('storeEmpty').textContent = t(locale, 'noPosStore');
   el('supplierTitle').textContent = t(locale, 'supplier');
@@ -124,13 +125,34 @@ function renderApiSettings() {
 }
 
 function renderAuth() {
-  const loggedIn = !!user;
-  el('authSection').hidden = loggedIn;
-  el('userSection').hidden = !loggedIn;
-  el('storeSection').hidden = !loggedIn;
-  el('supplierSection').hidden = !loggedIn;
-  if (loggedIn) {
-    el('userInfo').textContent = (user.username || user.name || user.displayName) || t(locale, 'title');
+  const connected = authState === 'connected' && !!user;
+  const authSection = el('authSection');
+  authSection.hidden = connected;
+  authSection.classList.toggle('checking', authState === 'checking');
+  authSection.classList.toggle('needs-website', authState === 'needsWebsite');
+  el('userSection').hidden = !connected;
+  el('storeSection').hidden = !connected;
+  el('supplierSection').hidden = !connected;
+  el('openShopBtn').disabled = authState === 'checking';
+  el('recheckBtn').disabled = authState === 'checking';
+
+  if (authState === 'checking') {
+    el('authStatusTitle').textContent = t(locale, 'sessionCheckingTitle');
+    el('authStatusDescription').textContent = t(locale, 'sessionCheckingDescription');
+  } else {
+    el('authStatusTitle').textContent = t(locale, 'sessionNeedsWebsiteTitle');
+    el('authStatusDescription').textContent = authReason === 'API_ORIGIN_MISMATCH'
+      ? t(locale, 'apiOriginMismatch')
+      : t(locale, 'sessionNeedsWebsiteDescription');
+  }
+
+  if (connected) {
+    el('userInfo').textContent = (
+      user.fullName
+      || user.username
+      || user.name
+      || user.displayName
+    ) || t(locale, 'title');
   }
 }
 
@@ -636,6 +658,58 @@ async function loadItem(item) {
   renderItem();
 }
 
+function resetAuthenticatedData() {
+  itemRequestGeneration.advance();
+  rankingRequestGeneration.advance();
+  activeSupplierRequestGeneration.advance();
+  user = null;
+  profiles = [];
+  storeOptions = [];
+  timeline = [];
+  rankingData = null;
+  currentSupplier = null;
+  manuallySelectedSupplierCode = null;
+  lastDetectedSupplierCode = null;
+  rankingPage = 1;
+  if (activeSupplierRefreshTimer != null) {
+    clearTimeout(activeSupplierRefreshTimer);
+    activeSupplierRefreshTimer = null;
+  }
+}
+
+const connectFromWebsiteSession = createSingleFlight(async ({ loadView = false } = {}) => {
+  authState = 'checking';
+  authReason = null;
+  setStatus('');
+  render();
+
+  const response = await send({ type: 'CURRENT' });
+  if (!response?.ok || !response.user) {
+    resetAuthenticatedData();
+    authState = 'needsWebsite';
+    authReason = response?.reason || 'WEBSITE_SESSION_REQUIRED';
+    setStatus(authReason === 'API_ORIGIN_MISMATCH'
+      ? t(locale, 'apiOriginMismatch')
+      : response?.error || '');
+    render();
+    return false;
+  }
+
+  user = response.user;
+  authState = 'connected';
+  await loadProfiles();
+  await loadStores();
+  await loadActiveSupplier();
+  setStatus('');
+  render();
+
+  if (loadView) {
+    if (currentItem) await loadItem(currentItem);
+    else if (activeView === 'ranking') await loadRanking();
+  }
+  return true;
+});
+
 async function init() {
   const stored = await chrome.storage.local.get(['locale', 'selectedStoreCode']);
   locale = resolveInitialLocale(stored.locale, getPreferredLanguages());
@@ -652,22 +726,13 @@ async function init() {
     localApiOrigin = apiConfig.localApiOrigin;
   }
 
-  const cur = await send({ type: 'CURRENT' });
-  if (cur && cur.ok && cur.user) {
-    user = cur.user;
-  }
-
-  await loadProfiles();
-  if (user) {
-    await loadStores();
-    await loadActiveSupplier();
-  }
+  const connected = await connectFromWebsiteSession();
 
   const { pendingLocate } = await chrome.storage.session.get('pendingLocate');
-  if (pendingLocate) {
+  if (connected && pendingLocate) {
     await chrome.storage.session.remove('pendingLocate');
     await loadItem(pendingLocate);
-  } else if (user && activeView === 'ranking') {
+  } else if (connected && activeView === 'ranking') {
     await loadRanking();
   }
 
@@ -705,24 +770,16 @@ async function applyApiOrigin(value) {
 
   apiOrigin = response.apiOrigin;
   if (response.changed) {
-    itemRequestGeneration.advance();
-    rankingRequestGeneration.advance();
-    activeSupplierRequestGeneration.advance();
-    user = null;
-    profiles = [];
-    storeOptions = [];
-    timeline = [];
-    rankingData = null;
-    currentSupplier = null;
-    manuallySelectedSupplierCode = null;
-    lastDetectedSupplierCode = null;
-    rankingPage = 1;
-    el('password').value = '';
+    resetAuthenticatedData();
+    authState = 'checking';
+    authReason = null;
     setStatus(t(locale, 'apiSwitched'));
+    render();
+    await connectFromWebsiteSession({ loadView: true });
   } else {
     setStatus(t(locale, 'apiSaved'));
+    render();
   }
-  render();
 }
 
 el('localeBtn').addEventListener('click', async () => {
@@ -749,52 +806,31 @@ el('apiOriginInput').addEventListener('keydown', (event) => {
   void applyApiOrigin(el('apiOriginInput').value);
 });
 
-el('loginBtn').addEventListener('click', async () => {
-  const username = el('username').value.trim();
-  const password = el('password').value;
-  if (!username || !password) {
-    setStatus(t(locale, 'emptyCredentials'));
+el('openShopBtn').addEventListener('click', async () => {
+  authState = 'checking';
+  authReason = null;
+  setStatus('');
+  render();
+  const response = await send({ type: 'OPEN_HB_SHOP' });
+  if (response?.connected) {
+    await connectFromWebsiteSession({ loadView: true });
     return;
   }
-  setStatus(t(locale, 'loading'));
-  const res = await send({ type: 'LOGIN', username, password });
-  if (res && res.ok) {
-    user = res.user || null;
-    el('password').value = '';
-    const cur = await send({ type: 'CURRENT' });
-    if (cur && cur.ok && cur.user) {
-      user = cur.user;
-    }
-    await loadProfiles();
-    await loadStores();
-    await loadActiveSupplier();
-    setStatus('');
-    if (currentItem) await loadItem(currentItem);
-    else if (activeView === 'ranking') await loadRanking();
-  } else {
-    setStatus((res && res.error) || t(locale, 'error'));
-  }
+  authState = 'needsWebsite';
+  authReason = response?.reason || 'WEBSITE_TAB_REQUIRED';
+  setStatus(response?.ok ? '' : response?.error || t(locale, 'error'));
   render();
 });
 
-el('logoutBtn').addEventListener('click', async () => {
-  itemRequestGeneration.advance();
-  rankingRequestGeneration.advance();
-  activeSupplierRequestGeneration.advance();
-  user = null;
-  if (activeSupplierRefreshTimer != null) {
-    clearTimeout(activeSupplierRefreshTimer);
-    activeSupplierRefreshTimer = null;
-  }
-  await send({ type: 'LOGOUT' });
-  activeSupplierRequestGeneration.advance();
-  storeOptions = [];
-  timeline = [];
-  rankingData = null;
-  currentSupplier = null;
-  manuallySelectedSupplierCode = null;
-  lastDetectedSupplierCode = null;
-  rankingPage = 1;
+el('recheckBtn').addEventListener('click', () => {
+  void connectFromWebsiteSession({ loadView: true });
+});
+
+el('disconnectBtn').addEventListener('click', async () => {
+  await send({ type: 'DISCONNECT' });
+  resetAuthenticatedData();
+  authState = 'needsWebsite';
+  authReason = 'WEBSITE_SESSION_REQUIRED';
   setStatus('');
   render();
 });
@@ -888,6 +924,17 @@ el('nextBtn').addEventListener('click', () => {
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
+  const tokenChange = areaName === 'session' ? changes.websiteAccessToken : null;
+  if (tokenChange?.newValue && authState !== 'connected') {
+    void connectFromWebsiteSession({ loadView: true });
+  } else if (tokenChange?.oldValue && !tokenChange.newValue) {
+    resetAuthenticatedData();
+    authState = 'needsWebsite';
+    authReason = 'WEBSITE_SESSION_REQUIRED';
+    setStatus('');
+    render();
+  }
+
   const item = getPendingLocateChange(changes, areaName);
   if (!item) return;
   void chrome.storage.session
