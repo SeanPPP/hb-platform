@@ -1325,7 +1325,7 @@ public sealed class MobileDeviceActivationService : IMobileDeviceActivationServi
                 && store.StoreCode == storeCode
                 && store.IsActive
                 && !store.IsDeleted)
-            .Select((user, _, store) => new ActivationTargetRow
+            .Select((user, userStore, store) => new ActivationTargetRow
             {
                 UserGuid = user.UserGUID,
                 Username = user.Username,
@@ -1348,7 +1348,7 @@ public sealed class MobileDeviceActivationService : IMobileDeviceActivationServi
                 && !userStore.IsDeleted
                 && store.IsActive
                 && !store.IsDeleted)
-            .Select((userStore, _) => userStore.StoreGUID)
+            .Select((userStore, store) => userStore.StoreGUID)
             .Distinct()
             .CountAsync(cancellationToken);
 
@@ -1377,28 +1377,40 @@ public sealed class MobileDeviceActivationService : IMobileDeviceActivationServi
                 && !userRole.IsDeleted
                 && role.IsActive
                 && !role.IsDeleted)
-            .Select((_, role) => role.RoleName)
+            .Select((userRole, role) => role.RoleName)
             .Distinct()
             .ToListAsync(cancellationToken);
 
     private async Task<List<MobileDeviceSessionStoreDto>> LoadAssignedStoresAsync(
         string userGuid,
-        CancellationToken cancellationToken) =>
-        await _mainDb.Queryable<UserStore>()
+        CancellationToken cancellationToken)
+    {
+        // SqlSugar 多表投影先落到可无参构造的行模型，再在内存中创建只读 DTO。
+        var rows = await _mainDb.Queryable<UserStore>()
             .InnerJoin<Store>((userStore, store) => userStore.StoreGUID == store.StoreGUID)
             .Where((userStore, store) =>
                 userStore.UserGUID == userGuid
                 && !userStore.IsDeleted
                 && store.IsActive
                 && !store.IsDeleted)
-            .OrderBy((userStore, _) => userStore.IsPrimary ? 0 : 1)
-            .OrderBy((_, store) => store.StoreCode)
-            .Select((userStore, store) => new MobileDeviceSessionStoreDto(
-                store.StoreGUID,
-                store.StoreCode,
-                store.StoreName,
-                userStore.IsPrimary))
+            .OrderBy((userStore, store) => userStore.IsPrimary ? 0 : 1)
+            .OrderBy((userStore, store) => store.StoreCode)
+            .Select((userStore, store) => new MobileDeviceSessionStoreRow
+            {
+                StoreGuid = store.StoreGUID,
+                StoreCode = store.StoreCode,
+                StoreName = store.StoreName,
+                IsPrimary = userStore.IsPrimary,
+            })
             .ToListAsync(cancellationToken);
+        return rows
+            .Select(row => new MobileDeviceSessionStoreDto(
+                row.StoreGuid,
+                row.StoreCode,
+                row.StoreName,
+                row.IsPrimary))
+            .ToList();
+    }
 
     private static bool IsCurrentBinding(
         MobileDeviceAccountBinding binding,
@@ -1521,6 +1533,14 @@ public sealed class MobileDeviceActivationService : IMobileDeviceActivationServi
         public string? FullName { get; set; }
         public string StoreCode { get; set; } = string.Empty;
         public string StoreName { get; set; } = string.Empty;
+    }
+
+    private sealed class MobileDeviceSessionStoreRow
+    {
+        public string StoreGuid { get; set; } = string.Empty;
+        public string StoreCode { get; set; } = string.Empty;
+        public string StoreName { get; set; } = string.Empty;
+        public bool IsPrimary { get; set; }
     }
 
 }
