@@ -74,10 +74,29 @@ public sealed class InnoInstallerScriptTests
     }
 
     [Fact]
-    public void Wpf_app_icon_matches_startup_brand_frame()
+    public void Wpf_brand_icon_is_centralized_for_executable_installer_shortcuts_and_uninstall_entry()
     {
+        var project = ReadRepoFile("apps/pos-wpf/src/Hbpos.Client.Wpf/Hbpos.Client.Wpf.csproj");
+        var installer = ReadRepoFile("apps/pos-wpf/installer/inno/Hbpos.Client.Wpf.iss");
+
+        Assert.Contains("<ApplicationIcon>Resources\\AppIcon.ico</ApplicationIcon>", project);
+        Assert.Contains("<Resource Include=\"Resources\\AppIcon.ico\" />", project);
+        Assert.Contains("<Resource Include=\"Resources\\AppBrandIcon.png\" />", project);
+        Assert.Contains("SetupIconFile=..\\..\\src\\Hbpos.Client.Wpf\\Resources\\AppIcon.ico", installer);
+        Assert.Contains("UninstallDisplayIcon={app}\\{#AppExeName}", installer);
+        Assert.Equal(
+            2,
+            installer.Split(
+                "IconFilename: \"{app}\\AppIcon-{#AppVersion}.ico\"",
+                StringSplitOptions.None).Length - 1);
+    }
+
+    [Fact]
+    public void Wpf_app_icon_matches_ios_pos_brand_artwork()
+    {
+        var repoRoot = FindRepoRoot();
         var iconBytes = File.ReadAllBytes(Path.Combine(
-            FindRepoRoot(),
+            repoRoot,
             "apps",
             "pos-wpf",
             "src",
@@ -89,19 +108,34 @@ public sealed class InnoInstallerScriptTests
             .Select(index =>
             {
                 var entryOffset = 6 + (index * 16);
-                var width = iconBytes[entryOffset] == 0 ? 256 : iconBytes[entryOffset];
                 return new
                 {
-                    Width = width,
+                    Width = iconBytes[entryOffset] == 0 ? 256 : iconBytes[entryOffset],
+                    Height = iconBytes[entryOffset + 1] == 0 ? 256 : iconBytes[entryOffset + 1],
                     ResourceLength = BitConverter.ToUInt32(iconBytes, entryOffset + 8),
                     ResourceOffset = BitConverter.ToUInt32(iconBytes, entryOffset + 12)
                 };
             })
             .ToArray();
 
-        Assert.Equal(new[] { 16, 24, 32, 48, 64, 128, 256 }, entries.Select(entry => entry.Width));
+        var expectedFrameSizes = new[] { 16, 24, 32, 48, 64, 128, 256 };
+        Assert.Equal(expectedFrameSizes, entries.Select(entry => entry.Width).Order());
+        Assert.Equal(expectedFrameSizes, entries.Select(entry => entry.Height).Order());
 
         var largestFrame = Assert.Single(entries, entry => entry.Width == 256);
+        var inAppBrandImage = File.ReadAllBytes(Path.Combine(
+            repoRoot,
+            "apps",
+            "pos-wpf",
+            "src",
+            "Hbpos.Client.Wpf",
+            "Resources",
+            "AppBrandIcon.png"));
+        Assert.Equal(
+            iconBytes
+                .Skip(checked((int)largestFrame.ResourceOffset))
+                .Take(checked((int)largestFrame.ResourceLength)),
+            inAppBrandImage);
         using var frameStream = new MemoryStream(
             iconBytes,
             checked((int)largestFrame.ResourceOffset),
@@ -111,18 +145,120 @@ public sealed class InnoInstallerScriptTests
 
         Assert.Equal(256, bitmap.Width);
         Assert.Equal(256, bitmap.Height);
-        AssertColorNear(Color.FromArgb(0, 0, 0, 0), bitmap.GetPixel(0, 0));
-        AssertColorNear(Color.FromArgb(255, 232, 240, 254), bitmap.GetPixel(32, 128));
-        AssertColorNear(Color.FromArgb(255, 232, 240, 254), bitmap.GetPixel(128, 24));
-        AssertColorNear(Color.FromArgb(255, 238, 88, 53), bitmap.GetPixel(64, 64));
+        Assert.Equal(0, bitmap.GetPixel(0, 0).A);
+        Assert.Equal(0, bitmap.GetPixel(bitmap.Width - 1, 0).A);
+        Assert.Equal(0, bitmap.GetPixel(0, bitmap.Height - 1).A);
+        Assert.Equal(0, bitmap.GetPixel(bitmap.Width - 1, bitmap.Height - 1).A);
+
+        var bounds = FindOpaqueBounds(bitmap);
+        Assert.InRange(bounds.Left, 10, 16);
+        Assert.InRange(bounds.Top, 10, 16);
+        Assert.InRange(bitmap.Width - 1 - bounds.Right, 10, 16);
+        Assert.InRange(bitmap.Height - 1 - bounds.Bottom, 10, 16);
+        Assert.InRange(Math.Abs(bounds.Left - (bitmap.Width - 1 - bounds.Right)), 0, 1);
+        Assert.InRange(Math.Abs(bounds.Top - (bitmap.Height - 1 - bounds.Bottom)), 0, 1);
+
+        using var iosIcon = new Bitmap(Path.Combine(repoRoot, "apps", "pos-ipad", "assets", "icon.png"));
+        var palette = new[]
+        {
+            Color.FromArgb(255, 230, 90, 47),
+            Color.FromArgb(255, 255, 249, 245),
+            Color.FromArgb(255, 16, 37, 58)
+        };
+        var paletteCounts = new int[palette.Length];
+        var comparablePixels = 0;
+        var matchingPixels = 0;
+
+        for (var y = bounds.Top; y <= bounds.Bottom; y++)
+        {
+            for (var x = bounds.Left; x <= bounds.Right; x++)
+            {
+                var windowsPixel = bitmap.GetPixel(x, y);
+                if (windowsPixel.A < 250)
+                {
+                    continue;
+                }
+
+                var windowsClass = ClassifyBrandColor(windowsPixel, palette);
+                if (windowsClass is null)
+                {
+                    continue;
+                }
+
+                paletteCounts[windowsClass.Value]++;
+                var normalizedX = (double)(x - bounds.Left) / (bounds.Right - bounds.Left);
+                var normalizedY = (double)(y - bounds.Top) / (bounds.Bottom - bounds.Top);
+                var iosX = (int)Math.Round(normalizedX * (iosIcon.Width - 1));
+                var iosY = (int)Math.Round(normalizedY * (iosIcon.Height - 1));
+                var iosClass = ClassifyBrandColor(iosIcon.GetPixel(iosX, iosY), palette);
+                if (iosClass is null)
+                {
+                    continue;
+                }
+
+                comparablePixels++;
+                if (windowsClass == iosClass)
+                {
+                    matchingPixels++;
+                }
+            }
+        }
+
+        Assert.All(paletteCounts, count => Assert.True(count >= 100, "Each iOS brand color must be present in the Windows icon."));
+        Assert.True(comparablePixels >= 40_000, "The normalized comparison must cover the complete brand artwork.");
+        var agreement = (double)matchingPixels / comparablePixels;
+        Assert.True(
+            agreement >= 0.98,
+            $"The Windows icon must match the normalized iOS artwork by at least 98%; actual {agreement:P2}.");
     }
 
-    private static void AssertColorNear(Color expected, Color actual, int tolerance = 4)
+    private static (int Left, int Top, int Right, int Bottom) FindOpaqueBounds(Bitmap bitmap)
     {
-        Assert.InRange(actual.A, Math.Max(0, expected.A - tolerance), Math.Min(255, expected.A + tolerance));
-        Assert.InRange(actual.R, Math.Max(0, expected.R - tolerance), Math.Min(255, expected.R + tolerance));
-        Assert.InRange(actual.G, Math.Max(0, expected.G - tolerance), Math.Min(255, expected.G + tolerance));
-        Assert.InRange(actual.B, Math.Max(0, expected.B - tolerance), Math.Min(255, expected.B + tolerance));
+        var left = bitmap.Width;
+        var top = bitmap.Height;
+        var right = -1;
+        var bottom = -1;
+
+        for (var y = 0; y < bitmap.Height; y++)
+        {
+            for (var x = 0; x < bitmap.Width; x++)
+            {
+                if (bitmap.GetPixel(x, y).A <= 16)
+                {
+                    continue;
+                }
+
+                left = Math.Min(left, x);
+                top = Math.Min(top, y);
+                right = Math.Max(right, x);
+                bottom = Math.Max(bottom, y);
+            }
+        }
+
+        Assert.True(right >= left && bottom >= top, "The Windows icon must contain opaque artwork.");
+        return (left, top, right, bottom);
+    }
+
+    private static int? ClassifyBrandColor(Color pixel, IReadOnlyList<Color> palette)
+    {
+        const int maximumSquaredDistance = 900;
+        var closestIndex = -1;
+        var closestDistance = int.MaxValue;
+
+        for (var index = 0; index < palette.Count; index++)
+        {
+            var red = pixel.R - palette[index].R;
+            var green = pixel.G - palette[index].G;
+            var blue = pixel.B - palette[index].B;
+            var distance = (red * red) + (green * green) + (blue * blue);
+            if (distance < closestDistance)
+            {
+                closestDistance = distance;
+                closestIndex = index;
+            }
+        }
+
+        return closestDistance <= maximumSquaredDistance ? closestIndex : null;
     }
 
     private static string ReadRepoFile(string relativePath)

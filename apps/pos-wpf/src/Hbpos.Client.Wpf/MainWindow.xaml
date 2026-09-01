@@ -234,26 +234,17 @@
                 MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
             <Grid Margin="16,0,8,0">
                 <StackPanel HorizontalAlignment="Left" Orientation="Horizontal" VerticalAlignment="Center" Panel.ZIndex="2">
-                    <Border Width="32"
-                            Height="32"
-                            Margin="0,0,10,0"
-                            Background="#FFFF5A1F"
-                            BorderBrush="#FFE64813"
-                            BorderThickness="1"
-                            CornerRadius="7"
-                            SnapsToDevicePixels="True"
-                            UseLayoutRounding="True"
-                            AutomationProperties.AutomationId="HeaderBrandMark">
-                        <TextBlock Text="HB"
-                                   FontFamily="{StaticResource PosFontFamily}"
-                                   FontSize="16"
-                                   FontWeight="Black"
-                                   Foreground="White"
-                                   HorizontalAlignment="Center"
-                                   VerticalAlignment="Center"
-                                   TextOptions.TextFormattingMode="Display"
-                                   TextOptions.TextRenderingMode="ClearType" />
-                    </Border>
+                    <Image Width="32"
+                           Height="32"
+                           Margin="0,0,10,0"
+                           Source="pack://application:,,,/Resources/AppBrandIcon.png"
+                           Stretch="Uniform"
+                           RenderOptions.BitmapScalingMode="HighQuality"
+                           SnapsToDevicePixels="True"
+                           UseLayoutRounding="True"
+                           IsHitTestVisible="False"
+                           AutomationProperties.AutomationId="HeaderBrandMark"
+                           AutomationProperties.Name="{loc:Loc AppName}" />
                     <TextBlock Text="{loc:Loc AppName}"
                                FontWeight="Black"
                                FontSize="17"
