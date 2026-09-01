@@ -8,6 +8,7 @@ import {
   buildPrimaryNavigation,
   resolvePrimaryNavigationAction,
 } from "@/modules/navigation/primary-navigation";
+import { markReportHubNavigationStart } from "@/modules/reports/report-load-performance";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { HB_COLORS } from "@/shared/theme/tokens";
 
@@ -47,6 +48,13 @@ export function PrimaryTabBar({ activeRouteName }: PrimaryTabBarProps) {
           }
 
           const action = resolvePrimaryNavigationAction(activeRouteName, item);
+          if (action === "none") {
+            return;
+          }
+          if (item.targetRouteName === "reports") {
+            // 报告路由常驻且可能停留在商品页签，实际活动页签会认领并整组消费这次点击。
+            markReportHubNavigationStart();
+          }
           if (action === "dismiss-to") {
             // 工作台与同一一级上下文的子页都回固定根页，离页仍受 usePreventRemove 保护。
             router.dismissTo(targetPath as Parameters<typeof router.dismissTo>[0]);

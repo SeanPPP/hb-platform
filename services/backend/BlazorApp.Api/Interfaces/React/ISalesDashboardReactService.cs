@@ -81,7 +81,8 @@ namespace BlazorApp.Api.Interfaces.React
             List<string>? chinaSupplierCodes = null,
             int pageIndex = 1,
             int pageSize = 100,
-            string? productSearch = null
+            string? productSearch = null,
+            bool chinaSupplierScope = false
         );
 
         Task<PagedSalesProductDetailWithDiscountDto> GetEnhancedSalesProductDetailsAsync(
@@ -92,7 +93,8 @@ namespace BlazorApp.Api.Interfaces.React
             int pageIndex,
             int pageSize,
             string? productSearch,
-            ProductReportStatisticStatusDto statisticStatus
+            ProductReportStatisticStatusDto statisticStatus,
+            bool chinaSupplierScope = false
         );
 
         Task<List<ProductBranchSalesDto>> GetProductSalesByAllBranchesAsync(
