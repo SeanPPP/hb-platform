@@ -925,6 +925,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="pageIndex">页码（从1开始）</param>
         /// <param name="pageSize">每页记录数</param>
         /// <param name="productSearch">货号或条码查询（可选）</param>
+        /// <param name="supplierScope">供应商范围；china 表示全部中国供应商（可选）</param>
         /// <returns>分页增强版销售商品明细</returns>
         [HttpGet("enhanced-sales-product-details")]
         [Authorize(Policy = Permissions.Reports.ProductMovementView)]
@@ -939,7 +940,8 @@ namespace BlazorApp.Api.Controllers.React
             [FromQuery] List<string>? chinaSupplierCodes = null,
             [FromQuery] int pageIndex = 1,
             [FromQuery] int pageSize = 100,
-            [FromQuery] string? productSearch = null
+            [FromQuery] string? productSearch = null,
+            [FromQuery] string? supplierScope = null
         )
         {
             try
@@ -976,6 +978,11 @@ namespace BlazorApp.Api.Controllers.React
                 }
 
                 // 调用服务获取增强版销售商品明细
+                var chinaSupplierScope = string.Equals(
+                    supplierScope?.Trim(),
+                    "china",
+                    StringComparison.OrdinalIgnoreCase
+                );
                 var result = await _service.GetEnhancedSalesProductDetailsAsync(
                     dateRange,
                     branchScope.BranchCodes,
@@ -984,7 +991,8 @@ namespace BlazorApp.Api.Controllers.React
                     pageIndex,
                     pageSize,
                     productSearch,
-                    statisticStatus
+                    statisticStatus,
+                    chinaSupplierScope
                 );
                 return Ok(CreateProductReportResponse(result, statisticStatus));
             }

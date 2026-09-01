@@ -40,6 +40,7 @@ interface MonthDatePickerCardProps extends MonthDatePickerProps {
 interface MonthDatePickerFieldProps extends MonthDatePickerProps {
   label?: string;
   placeholder?: string;
+  compact?: boolean;
 }
 
 function pad2(value: number) {
@@ -246,6 +247,7 @@ export function MonthDatePickerField({
   maxDate,
   label,
   placeholder,
+  compact = false,
   onChange,
   style,
 }: MonthDatePickerFieldProps) {
@@ -290,16 +292,19 @@ export function MonthDatePickerField({
         <Surface
           style={[
             styles.fieldSurface,
+            compact ? styles.fieldSurfaceCompact : null,
             disabled ? styles.fieldSurfaceDisabled : null,
           ]}
           elevation={0}
         >
           <View style={styles.fieldTextBlock}>
-            <Text variant="labelMedium" style={styles.fieldLabel}>
-              {label ?? t("fields.workDate")}
-            </Text>
+            {!compact ? (
+              <Text variant="labelMedium" style={styles.fieldLabel}>
+                {label ?? t("fields.workDate")}
+              </Text>
+            ) : null}
             <Text
-              variant="bodyLarge"
+              variant={compact ? "bodyMedium" : "bodyLarge"}
               style={selectedValue ? styles.fieldValue : styles.fieldPlaceholder}
             >
               {selectedValue || placeholder || t("fields.workDate")}
@@ -309,6 +314,7 @@ export function MonthDatePickerField({
             icon="calendar-month-outline"
             size={20}
             disabled={disabled}
+            style={compact ? styles.fieldIconCompact : undefined}
           />
         </Surface>
       </Pressable>
@@ -387,6 +393,15 @@ const styles = StyleSheet.create({
   fieldSurfaceDisabled: {
     backgroundColor: "#F3F4F6",
     opacity: 0.7,
+  },
+  fieldSurfaceCompact: {
+    minHeight: 44,
+    paddingLeft: 12,
+  },
+  fieldIconCompact: {
+    width: 44,
+    height: 44,
+    margin: 0,
   },
   fieldTextBlock: {
     flex: 1,

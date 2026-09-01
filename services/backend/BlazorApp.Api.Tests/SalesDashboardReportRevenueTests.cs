@@ -45,6 +45,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     private readonly SqlSugarClient _posmDb;
     private readonly SqlSugarScope _hbSalesDb;
     private readonly HashSet<DateTime> _seededProductStatisticDates = new();
+    private int _nextHbSalesRecordId;
 
     [Fact]
     public void 报表统计缺口刷新最多等待二百五十毫秒()
@@ -110,6 +111,10 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         await SeedStoreSalesStatisticAsync(new DateTime(2026, 7, 1), "S2", "分店二", 999m, 20);
         await SeedStoreSalesStatisticAsync(new DateTime(2025, 7, 1), "S1", "分店一", 80m, 4);
         await SeedStoreSalesStatisticAsync(new DateTime(2025, 7, 2), "S1", "分店一", 200m, 8);
+        await SeedSalesOrderAsync("daily-current-1", new DateTime(2026, 7, 1, 9, 0, 0), "S1");
+        await SeedSalesOrderAsync("daily-current-2", new DateTime(2026, 7, 2, 9, 0, 0), "S1");
+        await SeedHbSalesOrderAsync("daily-compare-1", new DateTime(2025, 7, 1, 9, 0, 0), "S1", 80m, 1m);
+        await SeedHbSalesOrderAsync("daily-compare-2", new DateTime(2025, 7, 2, 9, 0, 0), "S1", 200m, 1m);
         var service = CreateService();
 
         var result = await service.GetBranchDailyPerformanceAsync(
@@ -144,6 +149,34 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
                 Assert.Equal(8, row.OrderCountLY);
             }
         );
+    }
+
+    [Fact]
+    public async Task GetBranchDailyPerformanceAsync_同期独有分店日期也返回并将本期补零()
+    {
+        var currentDate = new DateTime(2026, 7, 1);
+        var compareDate = new DateTime(2025, 7, 1);
+        await SeedStoreSalesStatisticAsync(compareDate, "S2", "分店二", 80m, 4);
+        await SeedHbSalesOrderAsync("daily-compare-only", compareDate.AddHours(9), "S2", 80m, 1m);
+        var service = CreateService();
+
+        var result = await service.GetBranchDailyPerformanceAsync(
+            new DateRangeDto
+            {
+                StartDate = currentDate,
+                EndDate = currentDate,
+                CompareStartDate = compareDate,
+                CompareEndDate = compareDate,
+            }
+        );
+
+        var row = Assert.Single(result.Items);
+        Assert.Equal(currentDate, row.Date);
+        Assert.Equal("S2", row.BranchCode);
+        Assert.Equal(0m, row.Revenue);
+        Assert.Equal(80m, row.RevenueLY);
+        Assert.Equal(0, row.OrderCount);
+        Assert.Equal(4, row.OrderCountLY);
     }
 
     [Fact]
@@ -211,6 +244,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     {
         var date = new DateTime(2026, 7, 10);
         await SeedStoreSalesStatisticAsync(date, "S1", "分店一", 100m, 5);
+        await SeedSalesOrderAsync("daily-cache-version", date.AddHours(9), "S1");
         await SeedStatisticsTaskLogAsync(
             ScheduledTaskStatus.Success,
             new DateTime(2026, 7, 10, 0, 29, 0, DateTimeKind.Utc),
@@ -243,6 +277,10 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         await SeedStoreSalesStatisticAsync(new DateTime(2026, 7, 2), "S1", "Store B", 150m, 5);
         await SeedStoreSalesStatisticAsync(new DateTime(2025, 7, 1), "S1", "Store Old", 80m, 4);
         await SeedStoreSalesStatisticAsync(new DateTime(2025, 7, 2), "S1", "Store Old", 70m, 3);
+        await SeedSalesOrderAsync("rank-current-1", new DateTime(2026, 7, 1, 9, 0, 0), "S1");
+        await SeedSalesOrderAsync("rank-current-2", new DateTime(2026, 7, 2, 9, 0, 0), "S1");
+        await SeedHbSalesOrderAsync("rank-compare-1", new DateTime(2025, 7, 1, 9, 0, 0), "S1", 80m, 1m);
+        await SeedHbSalesOrderAsync("rank-compare-2", new DateTime(2025, 7, 2, 9, 0, 0), "S1", 70m, 1m);
         var service = CreateService();
 
         var result = await service.GetExecutiveBranchPerformanceAsync(
@@ -271,8 +309,8 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     {
         await SeedStoreAsync("S1", "Store A");
         await SeedStoreSalesStatisticAsync(new DateTime(2026, 7, 4), "S1", "Store A", 120m, 6);
-        await SeedPosmOrderWithPaymentAsync("old-1", new DateTime(2025, 7, 5, 10, 15, 0), "S1", 40m, 2);
-        await SeedPosmOrderWithPaymentAsync("old-2", new DateTime(2025, 7, 5, 11, 30, 0), "S1", 60m, 3);
+        await SeedHbSalesOrderAsync("old-1", new DateTime(2025, 7, 5, 10, 15, 0), "S1", 40m, 2m);
+        await SeedHbSalesOrderAsync("old-2", new DateTime(2025, 7, 5, 11, 30, 0), "S1", 60m, 3m);
         var service = CreateService();
 
         var result = await service.GetExecutiveBranchPerformanceAsync(
@@ -340,6 +378,13 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             await SeedStoreSalesStatisticAsync(compareDate, branchCode, $"Store {branchCode}", amount / 2, 1);
             await SeedPosmOrderWithPaymentAsync($"zero-current-{branchCode}", date.AddHours(9), branchCode, amount, 1);
             await SeedPosmOrderWithPaymentAsync($"zero-compare-{branchCode}", compareDate.AddHours(9), branchCode, amount / 2, 1);
+            await SeedHbSalesOrderAsync(
+                $"zero-hbsales-compare-{branchCode}",
+                compareDate.AddHours(9),
+                branchCode,
+                amount / 2,
+                1m
+            );
         }
 
         var refreshDates = new List<DateTime>();
@@ -373,6 +418,144 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         Assert.Equal(0, zeroSalesBranch.OrderCount);
         Assert.Equal(0m, zeroSalesBranch.RevenueLY);
         Assert.Equal(0, zeroSalesBranch.OrderCountLY);
+    }
+
+    [Fact]
+    public async Task GetExecutiveBranchPerformanceAsync_全分店以启用门店目录补齐二十八家零销售行()
+    {
+        var date = new DateTime(2026, 7, 16);
+        var branchCodes = Enumerable.Range(1, 28).Select(index => $"S{index:00}").ToList();
+        foreach (var branchCode in branchCodes)
+            await SeedStoreAsync(branchCode, $"Store {branchCode}");
+
+        await SeedPosmOrderWithPaymentAsync("all-store-active-directory", date.AddHours(9), "S01", 88m, 1);
+        await SeedStoreSalesStatisticAsync(date, "S01", "Store S01", 88m, 1);
+        var service = CreateService();
+
+        var result = await service.GetExecutiveBranchPerformanceAsync(
+            new DateRangeDto { StartDate = date, EndDate = date }
+        );
+
+        Assert.False(result.StatisticsPending);
+        Assert.Equal(28, result.Items.Count);
+        Assert.Equal(28, result.StatisticsExpectedBranchCount);
+        Assert.Equal(28, result.StatisticsSnapshotBranchCount);
+        Assert.Equal(88m, Assert.Single(result.Items, row => row.BranchCode == "S01").Revenue);
+        Assert.All(
+            result.Items.Where(row => row.BranchCode != "S01"),
+            row => Assert.Equal(0m, row.Revenue)
+        );
+    }
+
+    [Fact]
+    public async Task GetExecutiveBranchPerformanceAsync_全分店统计同数但分店身份陈旧时仍触发重算()
+    {
+        var date = new DateTime(2026, 7, 17);
+        await SeedStoreAsync("S01", "Store S01");
+        await SeedStoreAsync("S02", "Store S02");
+        await SeedStoreAsync("S99", "Store S99");
+        await SeedPosmOrderWithPaymentAsync("identity-current-s01", date.AddHours(9), "S01", 10m, 1);
+        await SeedPosmOrderWithPaymentAsync("identity-current-s02", date.AddHours(10), "S02", 20m, 1);
+        await SeedStoreSalesStatisticAsync(date, "S01", "Store S01", 10m, 1);
+        await SeedStoreSalesStatisticAsync(date, "S99", "Store S99", 20m, 1);
+
+        var refreshDates = new List<DateTime>();
+        var service = CreateService();
+        service.StoreStatisticsRefreshTestInterceptor = refreshDate =>
+        {
+            refreshDates.Add(refreshDate.Date);
+            return Task.CompletedTask;
+        };
+
+        var result = await service.GetExecutiveBranchPerformanceAsync(
+            new DateRangeDto { StartDate = date, EndDate = date }
+        );
+
+        Assert.Contains(date, refreshDates);
+        Assert.True(result.StatisticsPending);
+    }
+
+    [Fact]
+    public async Task GetExecutiveBranchPerformanceAsync_二零二五年仅POSM来源身份也视为完整()
+    {
+        var date = new DateTime(2025, 7, 18);
+        await SeedStoreAsync("S01", "Store S01");
+        await SeedPosmOrderWithPaymentAsync("posm-only-source", date.AddHours(9), "S01", 88m, 1);
+        await SeedStoreSalesStatisticAsync(date, "S01", "Store S01", 88m, 1);
+
+        var refreshDates = new List<DateTime>();
+        var service = CreateService();
+        service.StoreStatisticsRefreshTestInterceptor = refreshDate =>
+        {
+            refreshDates.Add(refreshDate.Date);
+            return Task.CompletedTask;
+        };
+
+        var result = await service.GetExecutiveBranchPerformanceAsync(
+            new DateRangeDto { StartDate = date, EndDate = date },
+            branchCodes: new List<string> { "S01" }
+        );
+
+        Assert.Empty(refreshDates);
+        Assert.False(result.StatisticsPending);
+        Assert.Equal(88m, Assert.Single(result.Items).Revenue);
+    }
+
+    [Fact]
+    public async Task GetExecutiveBranchPerformanceAsync_二零二五年仅HBSales来源身份也视为完整()
+    {
+        var date = new DateTime(2025, 7, 19);
+        await SeedStoreAsync("S02", "Store S02");
+        await SeedHbSalesOrderAsync("hb-only-source", date.AddHours(9), "S02", 66m, 1m);
+        await SeedStoreSalesStatisticAsync(date, "S02", "Store S02", 66m, 1);
+
+        var refreshDates = new List<DateTime>();
+        var service = CreateService();
+        service.StoreStatisticsRefreshTestInterceptor = refreshDate =>
+        {
+            refreshDates.Add(refreshDate.Date);
+            return Task.CompletedTask;
+        };
+
+        var result = await service.GetExecutiveBranchPerformanceAsync(
+            new DateRangeDto { StartDate = date, EndDate = date },
+            branchCodes: new List<string> { "S02" }
+        );
+
+        Assert.Empty(refreshDates);
+        Assert.False(result.StatisticsPending);
+        Assert.Equal(66m, Assert.Single(result.Items).Revenue);
+    }
+
+    [Fact]
+    public async Task GetExecutiveBranchPerformanceAsync_二零二五年POSM与HBSales来源身份取并集()
+    {
+        var date = new DateTime(2025, 7, 20);
+        await SeedStoreAsync("S01", "Store S01");
+        await SeedStoreAsync("S02", "Store S02");
+        await SeedPosmOrderWithPaymentAsync("union-posm-source", date.AddHours(9), "S01", 88m, 1);
+        await SeedHbSalesOrderAsync("union-hb-source", date.AddHours(10), "S02", 66m, 1m);
+        await SeedStoreSalesStatisticAsync(date, "S01", "Store S01", 88m, 1);
+        await SeedStoreSalesStatisticAsync(date, "S02", "Store S02", 66m, 1);
+
+        var refreshDates = new List<DateTime>();
+        var service = CreateService();
+        service.StoreStatisticsRefreshTestInterceptor = refreshDate =>
+        {
+            refreshDates.Add(refreshDate.Date);
+            return Task.CompletedTask;
+        };
+
+        var result = await service.GetExecutiveBranchPerformanceAsync(
+            new DateRangeDto { StartDate = date, EndDate = date },
+            branchCodes: new List<string> { "S01", "S02" }
+        );
+
+        Assert.Empty(refreshDates);
+        Assert.False(result.StatisticsPending);
+        Assert.Equal(2, result.Items.Count);
+        Assert.Contains(result.Items, row => row.BranchCode == "S01" && row.Revenue == 88m);
+        Assert.Contains(result.Items, row => row.BranchCode == "S02" && row.Revenue == 66m);
     }
 
     [Fact]
@@ -421,12 +604,13 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         await refreshFinished.Task.WaitAsync(TimeSpan.FromSeconds(2));
         await refreshCoordinatorFinished.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
-        var partialRow = Assert.Single(partial.Items);
+        var partialRow = Assert.Single(partial.Items, row => row.BranchCode == "S1");
         Assert.Equal("S1", partialRow.BranchCode);
         Assert.Equal(10m, partialRow.Revenue);
+        Assert.Contains(partial.Items, row => row.BranchCode == "S2" && row.Revenue == 0m);
         Assert.True(partial.StatisticsPending);
         Assert.Equal(2, partial.StatisticsExpectedBranchCount);
-        Assert.Equal(1, partial.StatisticsSnapshotBranchCount);
+        Assert.Equal(2, partial.StatisticsSnapshotBranchCount);
 
         var completed = await service.GetExecutiveBranchPerformanceAsync(range);
 
@@ -467,10 +651,10 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
 
         Assert.True(first.StatisticsPending);
         Assert.Equal(2, first.StatisticsExpectedBranchCount);
-        Assert.Equal(1, first.StatisticsSnapshotBranchCount);
+        Assert.Equal(2, first.StatisticsSnapshotBranchCount);
         Assert.True(second.StatisticsPending);
         Assert.Equal(2, second.StatisticsExpectedBranchCount);
-        Assert.Equal(1, second.StatisticsSnapshotBranchCount);
+        Assert.Equal(2, second.StatisticsSnapshotBranchCount);
     }
 
     [Fact]
@@ -543,6 +727,10 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         await SeedHourlySalesStatisticAsync(new DateTime(2026, 7, 2), 9, "S1", "Store B", 50m, 2);
         await SeedHourlySalesStatisticAsync(new DateTime(2025, 7, 1), 9, "S1", "Store Old", 80m, 3);
         await SeedHourlySalesStatisticAsync(new DateTime(2025, 7, 2), 9, "S1", "Store Old", 20m, 1);
+        await SeedSalesOrderAsync("hourly-group-current-1", new DateTime(2026, 7, 1, 9, 0, 0), "S1");
+        await SeedSalesOrderAsync("hourly-group-current-2", new DateTime(2026, 7, 2, 9, 0, 0), "S1");
+        await SeedSalesOrderAsync("hourly-group-compare-1", new DateTime(2025, 7, 1, 9, 0, 0), "S1");
+        await SeedSalesOrderAsync("hourly-group-compare-2", new DateTime(2025, 7, 2, 9, 0, 0), "S1");
         var service = CreateService();
 
         var result = await service.GetExecutiveHourlyTrafficAsync(
@@ -568,12 +756,44 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     }
 
     [Fact]
+    public async Task GetExecutiveHourlyTrafficAsync_同期独有分店小时也返回并将本期补零()
+    {
+        var currentDate = new DateTime(2026, 7, 1);
+        var compareDate = new DateTime(2025, 7, 1);
+        await SeedHourlySalesStatisticAsync(compareDate, 9, "S2", "Store B", 80m, 4);
+        await SeedSalesOrderAsync("hourly-compare-only", compareDate.AddHours(9), "S2");
+        var service = CreateService();
+
+        var result = await service.GetExecutiveHourlyTrafficAsync(
+            new DateRangeDto
+            {
+                StartDate = currentDate,
+                EndDate = currentDate,
+                CompareStartDate = compareDate,
+                CompareEndDate = compareDate,
+            }
+        );
+
+        var row = Assert.Single(result.Items);
+        Assert.Equal("09:00", row.Hour);
+        Assert.Equal("S2", row.BranchCode);
+        Assert.Equal(0m, row.Revenue);
+        Assert.Equal(80m, row.RevenueLY);
+        Assert.Equal(0, row.OrderCount);
+        Assert.Equal(4, row.OrderCountLY);
+        Assert.Equal(0, row.Percentage);
+        Assert.False(row.IsPeak);
+    }
+
+    [Fact]
     public async Task GetExecutiveHourlyTrafficAsync_全分店查询排除All汇总行()
     {
         await SeedHourlySalesStatisticAsync(new DateTime(2026, 7, 4), 10, "ALL", "All Stores", 300m, 10);
         await SeedHourlySalesStatisticAsync(new DateTime(2026, 7, 4), 10, "S1", "Store A", 120m, 4);
         await SeedHourlySalesStatisticAsync(new DateTime(2025, 7, 5), 10, "ALL", "All Stores", 200m, 8);
         await SeedHourlySalesStatisticAsync(new DateTime(2025, 7, 5), 10, "S1", "Store A", 80m, 2);
+        await SeedSalesOrderAsync("hourly-all-current", new DateTime(2026, 7, 4, 10, 0, 0), "S1");
+        await SeedSalesOrderAsync("hourly-all-compare", new DateTime(2025, 7, 5, 10, 0, 0), "S1");
         var service = CreateService();
 
         var result = await service.GetExecutiveHourlyTrafficAsync(
@@ -627,6 +847,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         await SeedHourlySalesStatisticAsync(new DateTime(2025, 7, 5), 10, "S1", "Store A", 80m, 2);
         await SeedPosmOrderWithPaymentAsync("current-hour-1", new DateTime(2026, 7, 4, 10, 10, 0), "S1", 50m, 1);
         await SeedPosmOrderWithPaymentAsync("current-hour-2", new DateTime(2026, 7, 4, 10, 40, 0), "S1", 70m, 1);
+        await SeedSalesOrderAsync("current-hour-compare", new DateTime(2025, 7, 5, 10, 0, 0), "S1");
         var service = CreateService();
 
         var result = await service.GetExecutiveHourlyTrafficAsync(
@@ -747,7 +968,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
 
         Assert.False(first.StatisticsPending);
         Assert.False(second.StatisticsPending);
-        Assert.Equal(2, coverageReadCount);
+        Assert.Equal(1, coverageReadCount);
     }
 
     [Fact]
@@ -794,7 +1015,210 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
 
         Assert.False(first.StatisticsPending);
         Assert.False(second.StatisticsPending);
+        Assert.Equal(1, coverageReadCount);
+    }
+
+    [Fact]
+    public async Task GetBranchDailyPerformanceAsync_POSM分店为空时按设备映射核验来源身份()
+    {
+        var date = new DateTime(2026, 7, 15);
+        await SeedStoreAsync("S1", "Store A");
+        await SeedDeviceAsync("DEVICE-S1", "S1");
+        await SeedSalesOrderAsync("daily-device-fallback", date.AddHours(9), null, "device-s1");
+        await SeedStoreSalesStatisticAsync(date, "S1", "Store A", 77m, 1);
+
+        var refreshDates = new List<DateTime>();
+        var service = CreateService();
+        service.StoreStatisticsRefreshTestInterceptor = refreshDate =>
+        {
+            refreshDates.Add(refreshDate.Date);
+            return Task.CompletedTask;
+        };
+
+        var result = await service.GetBranchDailyPerformanceAsync(
+            new DateRangeDto { StartDate = date, EndDate = date },
+            new List<string> { "S1" }
+        );
+
+        Assert.Empty(refreshDates);
+        Assert.False(result.StatisticsPending);
+        Assert.Equal(77m, Assert.Single(result.Items).Revenue);
+    }
+
+    [Fact]
+    public async Task GetExecutiveHourlyTrafficAsync_POSM分店为空时按设备映射核验来源身份()
+    {
+        var date = new DateTime(2026, 7, 16);
+        await SeedStoreAsync("S1", "Store A");
+        await SeedDeviceAsync("DEVICE-S1", "S1");
+        await SeedSalesOrderAsync("hourly-device-fallback", date.AddHours(9), null, "device-s1");
+        await SeedHourlySalesStatisticAsync(date, 9, "S1", "Store A", 66m, 1);
+
+        var refreshDates = new List<DateTime>();
+        var service = CreateService();
+        service.HourlyStatisticsRefreshTestInterceptor = refreshDate =>
+        {
+            refreshDates.Add(refreshDate.Date);
+            return Task.CompletedTask;
+        };
+
+        var result = await service.GetExecutiveHourlyTrafficAsync(
+            new DateRangeDto { StartDate = date, EndDate = date },
+            new List<string> { "S1" }
+        );
+
+        Assert.Empty(refreshDates);
+        Assert.False(result.StatisticsPending);
+        Assert.Equal(66m, Assert.Single(result.Items).Revenue);
+    }
+
+    [Fact]
+    public async Task 营业额排行分时日表共享当前与同期POSM覆盖快照()
+    {
+        var currentDate = new DateTime(2026, 7, 19);
+        var compareDate = new DateTime(2024, 7, 19);
+        await SeedStoreAsync("S1", "Store A");
+        await SeedPosmOrderWithPaymentAsync("shared-current", currentDate.AddHours(9), "S1", 88m, 1);
+        await SeedPosmOrderWithPaymentAsync("shared-compare", compareDate.AddHours(9), "S1", 66m, 1);
+        await SeedStoreSalesStatisticAsync(currentDate, "S1", "Store A", 88m, 1);
+        await SeedStoreSalesStatisticAsync(compareDate, "S1", "Store A", 66m, 1);
+        await SeedHourlySalesStatisticAsync(currentDate, 9, "S1", "Store A", 88m, 1);
+        await SeedHourlySalesStatisticAsync(compareDate, 9, "S1", "Store A", 66m, 1);
+
+        var coverageReadCount = 0;
+        var service = CreateService();
+        service.PosmStoreSalesCoverageReadTestInterceptor = () => coverageReadCount += 1;
+        var range = new DateRangeDto
+        {
+            StartDate = currentDate,
+            EndDate = currentDate,
+            CompareStartDate = compareDate,
+            CompareEndDate = compareDate,
+        };
+
+        await service.GetExecutiveBranchPerformanceAsync(range, branchCodes: new List<string> { "S1" });
+        await service.GetExecutiveHourlyTrafficAsync(range, new List<string> { "S1" });
+        await service.GetBranchDailyPerformanceAsync(range, new List<string> { "S1" });
+
         Assert.Equal(2, coverageReadCount);
+    }
+
+    [Fact]
+    public async Task POSM覆盖快照并发首读仅执行一次底层查询()
+    {
+        var date = new DateTime(2026, 7, 20);
+        await SeedStoreAsync("S1", "Store A");
+        await SeedPosmOrderWithPaymentAsync("single-flight", date.AddHours(9), "S1", 88m, 1);
+        await SeedHourlySalesStatisticAsync(date, 9, "S1", "Store A", 88m, 1);
+
+        using var sharedCache = new MemoryCache(new MemoryCacheOptions());
+        using var firstScope = CreateIsolatedServiceScope(sharedCache);
+        using var secondScope = CreateIsolatedServiceScope(sharedCache);
+        var coverageReadCount = 0;
+        Action countRead = () =>
+        {
+            Interlocked.Increment(ref coverageReadCount);
+            Thread.Sleep(100);
+        };
+        firstScope.Service.PosmStoreSalesCoverageReadTestInterceptor = countRead;
+        secondScope.Service.PosmStoreSalesCoverageReadTestInterceptor = countRead;
+        var range = new DateRangeDto { StartDate = date, EndDate = date };
+
+        var firstTask = Task.Run(() => firstScope.Service.GetExecutiveHourlyTrafficAsync(range, new List<string> { "S1" }));
+        var secondTask = Task.Run(() => secondScope.Service.GetExecutiveHourlyTrafficAsync(range, new List<string> { "S1" }));
+        var results = await Task.WhenAll(firstTask, secondTask);
+
+        Assert.All(results, result => Assert.False(result.StatisticsPending));
+        Assert.Equal(1, coverageReadCount);
+    }
+
+    [Fact]
+    public async Task POSM覆盖读取失败不写入短缓存()
+    {
+        var date = new DateTime(2026, 7, 21);
+        await SeedStoreSalesStatisticAsync(date, "S1", "Store A", 88m, 1);
+        var coverageReadCount = 0;
+        var service = CreateService();
+        service.PosmStoreSalesCoverageReadTestInterceptor = () =>
+        {
+            coverageReadCount += 1;
+            throw new InvalidOperationException("模拟来源读取失败");
+        };
+        var range = new DateRangeDto { StartDate = date, EndDate = date };
+
+        var first = await service.GetBranchDailyPerformanceAsync(range, new List<string> { "S1" });
+        var second = await service.GetBranchDailyPerformanceAsync(range, new List<string> { "S1" });
+
+        Assert.True(first.StatisticsPending);
+        Assert.True(second.StatisticsPending);
+        Assert.Equal(4, coverageReadCount);
+    }
+
+    [Fact]
+    public async Task GetBranchDailyPerformanceAsync_来源当日为空但门店统计残留时重算且Pending()
+    {
+        var date = new DateTime(2026, 7, 22);
+        await SeedStoreSalesStatisticAsync(date, "S1", "Store A", 88m, 1);
+        var refreshDates = new List<DateTime>();
+        var service = CreateService();
+        service.StoreStatisticsRefreshTestInterceptor = refreshDate =>
+        {
+            refreshDates.Add(refreshDate.Date);
+            return Task.CompletedTask;
+        };
+
+        var result = await service.GetBranchDailyPerformanceAsync(
+            new DateRangeDto { StartDate = date, EndDate = date },
+            new List<string> { "S1" }
+        );
+
+        Assert.Contains(date, refreshDates);
+        Assert.True(result.StatisticsPending);
+    }
+
+    [Fact]
+    public async Task GetExecutiveHourlyTrafficAsync_来源当日为空但分时统计残留时重算且Pending()
+    {
+        var date = new DateTime(2026, 7, 23);
+        await SeedHourlySalesStatisticAsync(date, 9, "S1", "Store A", 88m, 1);
+        var refreshDates = new List<DateTime>();
+        var service = CreateService();
+        service.HourlyStatisticsRefreshTestInterceptor = refreshDate =>
+        {
+            refreshDates.Add(refreshDate.Date);
+            return Task.CompletedTask;
+        };
+
+        var result = await service.GetExecutiveHourlyTrafficAsync(
+            new DateRangeDto { StartDate = date, EndDate = date },
+            new List<string> { "S1" }
+        );
+
+        Assert.Contains(date, refreshDates);
+        Assert.True(result.StatisticsPending);
+    }
+
+    [Fact]
+    public async Task GetExecutiveBranchPerformanceAsync_来源为空但排行残留时二次身份校验仍Pending且不缓存()
+    {
+        var date = new DateTime(2026, 7, 24);
+        await SeedStoreAsync("S1", "Store A");
+        await SeedStoreSalesStatisticAsync(date, "S1", "Store A", 88m, 1);
+        var refreshCount = 0;
+        var service = CreateService();
+        service.StoreStatisticsRefreshTestInterceptor = _ =>
+        {
+            refreshCount += 1;
+            return Task.CompletedTask;
+        };
+        var range = new DateRangeDto { StartDate = date, EndDate = date };
+
+        var first = await service.GetExecutiveBranchPerformanceAsync(range);
+        var second = await service.GetExecutiveBranchPerformanceAsync(range);
+
+        Assert.True(first.StatisticsPending);
+        Assert.True(second.StatisticsPending);
+        Assert.Equal(2, refreshCount);
     }
 
     [Fact]
@@ -805,8 +1229,22 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         await SeedStoreSalesStatisticAsync(new DateTime(2025, 7, 5), "S1", "Store A", 80m, 4);
         await SeedHourlySalesStatisticAsync(new DateTime(2026, 7, 4), 10, "S1", "Store A", 60m, 3);
         await SeedHourlySalesStatisticAsync(new DateTime(2025, 7, 5), 10, "S1", "Store A", 40m, 2);
+        await SeedSalesOrderAsync("independence-current", new DateTime(2026, 7, 4, 10, 0, 0), "S1");
+        await SeedSalesOrderAsync("independence-compare", new DateTime(2025, 7, 5, 10, 0, 0), "S1");
         await _localDb.Ado.ExecuteCommandAsync("DROP TABLE ProductStoreDailySalesStatistic");
         var service = CreateService();
+        var storeRefreshDates = new List<DateTime>();
+        var hourlyRefreshDates = new List<DateTime>();
+        service.StoreStatisticsRefreshTestInterceptor = date =>
+        {
+            storeRefreshDates.Add(date.Date);
+            return Task.CompletedTask;
+        };
+        service.HourlyStatisticsRefreshTestInterceptor = date =>
+        {
+            hourlyRefreshDates.Add(date.Date);
+            return Task.CompletedTask;
+        };
         var dateRange = new DateRangeDto
         {
             StartDate = new DateTime(2026, 7, 4),
@@ -841,6 +1279,8 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         var dailyRow = Assert.Single(daily);
         Assert.Equal(6, dailyRow.OrderCount);
         Assert.Equal(4, dailyRow.OrderCountLY);
+        Assert.Empty(storeRefreshDates);
+        Assert.Empty(hourlyRefreshDates);
     }
 
     [Fact]
@@ -1902,6 +2342,105 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     }
 
     [Fact]
+    public async Task GetEnhancedSalesProductDetailsAsync_中国范围空供应商代码只返回全部中国货()
+    {
+        await SeedChinaSupplierAsync("CN1", "中国供应商一");
+        await SeedChinaSupplierAsync("CN2", "中国供应商二");
+        await SeedSupplierMappingAsync("P-CN-LEGACY", "200", "CN1");
+        await SeedProductStoreDailySalesAsync(
+            new DateTime(2026, 7, 1),
+            "S1",
+            "200",
+            "P-CN-LEGACY",
+            "中国旧统计商品",
+            60m,
+            6,
+            3
+        );
+        await SeedProductStoreDailySalesAsync(
+            new DateTime(2026, 7, 1),
+            "S1",
+            "CN2",
+            "P-CN-DIRECT",
+            "中国直接统计商品",
+            40m,
+            4,
+            2
+        );
+        await SeedProductStoreDailySalesAsync(
+            new DateTime(2026, 7, 1),
+            "S1",
+            "AUS1",
+            "P-AUS",
+            "纯澳洲商品",
+            999m,
+            9,
+            9
+        );
+        var service = CreateService();
+
+        var result = await service.GetEnhancedSalesProductDetailsAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 1),
+                EndDate = new DateTime(2026, 7, 1),
+            },
+            branchCodes: new List<string> { "S1" },
+            pageSize: 20,
+            chinaSupplierScope: true
+        );
+
+        Assert.Equal(2, result.Total);
+        Assert.Contains(result.Data, row => row.ProductCode == "P-CN-LEGACY");
+        Assert.Contains(result.Data, row => row.ProductCode == "P-CN-DIRECT");
+        Assert.DoesNotContain(result.Data, row => row.ProductCode == "P-AUS");
+
+        var narrowedResult = await service.GetEnhancedSalesProductDetailsAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 1),
+                EndDate = new DateTime(2026, 7, 1),
+            },
+            branchCodes: new List<string> { "S1" },
+            chinaSupplierCodes: new List<string> { "CN1" },
+            pageSize: 20,
+            chinaSupplierScope: true
+        );
+
+        Assert.Equal("P-CN-LEGACY", Assert.Single(narrowedResult.Data).ProductCode);
+    }
+
+    [Fact]
+    public async Task GetEnhancedSalesProductDetailsAsync_中国范围无供应商目录时不退化为全部商品()
+    {
+        await SeedProductStoreDailySalesAsync(
+            new DateTime(2026, 7, 1),
+            "S1",
+            "AUS1",
+            "P-AUS",
+            "纯澳洲商品",
+            999m,
+            9,
+            9
+        );
+        var service = CreateService();
+
+        var result = await service.GetEnhancedSalesProductDetailsAsync(
+            new DateRangeDto
+            {
+                StartDate = new DateTime(2026, 7, 1),
+                EndDate = new DateTime(2026, 7, 1),
+            },
+            branchCodes: new List<string> { "S1" },
+            pageSize: 20,
+            chinaSupplierScope: true
+        );
+
+        Assert.Empty(result.Data);
+        Assert.Equal(0, result.Total);
+    }
+
+    [Fact]
     public async Task GetEnhancedSalesProductDetailsAsync_澳洲200筛选搜索中国货商品()
     {
         await SeedChinaSupplierAsync("CN1", "中国供应商一");
@@ -2224,6 +2763,19 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         await InsertIndividuallyAsync(branchCodes.Select(branchCode => CreateStoreSalesStatistic(
             endDate, branchCode, branchCode, 100m, 1
         )));
+        await InsertPosmInBatchesAsync(
+            new[] { startDate, endDate }.SelectMany(date =>
+                branchCodes.Select(branchCode => new SalesOrder
+                {
+                    OrderGuid = $"edge-{date:yyyyMMdd}-{branchCode}",
+                    OrderTime = date.AddHours(9),
+                    BranchCode = branchCode,
+                    Status = 1,
+                    ActualAmount = 0m,
+                    TotalAmount = 0m,
+                })
+            )
+        );
 
         var service = CreateService();
         var result = await service.GetBranchDailyPerformanceAsync(
@@ -2288,6 +2840,37 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         {
             SalesDashboardCacheKeys.SetLogger(NullLogger.Instance);
         }
+    }
+
+    [Fact]
+    public void EnhancedProductDetail_中国供应商范围参与缓存键()
+    {
+        var dateRange = new DateRangeDto
+        {
+            StartDate = new DateTime(2026, 7, 1),
+            EndDate = new DateTime(2026, 7, 1),
+        };
+
+        var allProducts = SalesDashboardCacheKeys.EnhancedProductDetail(
+            dateRange,
+            new List<string> { "S1" },
+            localSupplierCodes: null,
+            chinaSupplierCodes: null,
+            pageIndex: 1,
+            pageSize: 20,
+            chinaSupplierScope: false
+        );
+        var chinaProducts = SalesDashboardCacheKeys.EnhancedProductDetail(
+            dateRange,
+            new List<string> { "S1" },
+            localSupplierCodes: null,
+            chinaSupplierCodes: null,
+            pageIndex: 1,
+            pageSize: 20,
+            chinaSupplierScope: true
+        );
+
+        Assert.NotEqual(allProducts, chinaProducts);
     }
 
     [Fact]
@@ -2698,7 +3281,8 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
                 It.IsAny<List<string>?>(),
                 It.IsAny<int>(),
                 It.IsAny<int>(),
-                It.IsAny<string?>()
+                It.IsAny<string?>(),
+                It.IsAny<bool>()
             ),
             Times.Never
         );
@@ -2709,6 +3293,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     {
         List<string>? capturedBranchCodes = null;
         string? capturedProductSearch = null;
+        var capturedChinaSupplierScope = false;
         var serviceMock = new Mock<ISalesDashboardReactService>();
         serviceMock
             .Setup(service => service.GetProductReportStatisticStatusAsync(It.IsAny<DateRangeDto>()))
@@ -2726,13 +3311,15 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
                 It.IsAny<int>(),
                 It.IsAny<int>(),
                 It.IsAny<string?>(),
-                It.IsAny<ProductReportStatisticStatusDto>()
+                It.IsAny<ProductReportStatisticStatusDto>(),
+                It.IsAny<bool>()
             ))
-            .Callback<DateRangeDto, List<string>?, List<string>?, List<string>?, int, int, string?, ProductReportStatisticStatusDto>(
-                (_, branchCodes, _, _, _, _, productSearch, _) =>
+            .Callback<DateRangeDto, List<string>?, List<string>?, List<string>?, int, int, string?, ProductReportStatisticStatusDto, bool>(
+                (_, branchCodes, _, _, _, _, productSearch, _, chinaSupplierScope) =>
                 {
                     capturedBranchCodes = branchCodes;
                     capturedProductSearch = productSearch;
+                    capturedChinaSupplierScope = chinaSupplierScope;
                 }
             )
             .ReturnsAsync(new PagedSalesProductDetailWithDiscountDto());
@@ -2743,11 +3330,13 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             new DateTime(2026, 7, 1),
             pageIndex: 1,
             pageSize: 50,
-            productSearch: "HB001"
+            productSearch: "HB001",
+            supplierScope: " China "
         );
 
         Assert.Equal(new[] { "S1", "S3" }, capturedBranchCodes);
         Assert.Equal("HB001", capturedProductSearch);
+        Assert.True(capturedChinaSupplierScope);
     }
 
     [Fact]
@@ -2851,6 +3440,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         var closingHourlyStatistics = new List<HourlySalesStatistic>();
         var closingProductStatistics = new List<ProductStoreDailySalesStatistic>();
         var closingProductRefreshStates = new List<SalesStatisticRefreshState>();
+        var salesSourceOrders = new List<SalesOrder>();
 
         for (var dayOffset = 0; dayOffset < monthDays; dayOffset++)
         {
@@ -2885,6 +3475,24 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
                     10_800m + (branchIndex * 90m) + dayOffset,
                     110 + branchIndex
                 ));
+                salesSourceOrders.Add(new SalesOrder
+                {
+                    OrderGuid = $"perf-current-{dayOffset:D2}-{branchCode}",
+                    OrderTime = currentDate.AddHours(9),
+                    BranchCode = branchCode,
+                    Status = 1,
+                    ActualAmount = 0m,
+                    TotalAmount = 0m,
+                });
+                salesSourceOrders.Add(new SalesOrder
+                {
+                    OrderGuid = $"perf-compare-{dayOffset:D2}-{branchCode}",
+                    OrderTime = compareDate.AddHours(9),
+                    BranchCode = branchCode,
+                    Status = 1,
+                    ActualAmount = 0m,
+                    TotalAmount = 0m,
+                });
 
                 for (var hour = 8; hour < 22; hour++)
                 {
@@ -2966,6 +3574,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         await InsertIndividuallyAsync(closingHourlyStatistics);
         await InsertIndividuallyAsync(closingProductStatistics);
         await InsertIndividuallyAsync(closingProductRefreshStates);
+        await InsertPosmInBatchesAsync(salesSourceOrders);
 
         return new TwentyEightStorePerformanceFixture(
             new DateRangeDto
@@ -3316,6 +3925,14 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         foreach (var batch in rows.Chunk(500))
         {
             await _localDb.Insertable(batch.ToList()).ExecuteCommandAsync();
+        }
+    }
+
+    private async Task InsertPosmInBatchesAsync<T>(IEnumerable<T> rows) where T : class, new()
+    {
+        foreach (var batch in rows.Chunk(500))
+        {
+            await _posmDb.Insertable(batch.ToList()).ExecuteCommandAsync();
         }
     }
 
@@ -3725,16 +4342,36 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         }).ExecuteCommandAsync();
     }
 
-    private async Task SeedSalesOrderAsync(string orderGuid, DateTime orderTime, string branchCode)
+    private async Task SeedSalesOrderAsync(
+        string orderGuid,
+        DateTime orderTime,
+        string? branchCode,
+        string? deviceCode = null
+    )
     {
         await _posmDb.Insertable(new SalesOrder
         {
             OrderGuid = orderGuid,
             OrderTime = orderTime,
             BranchCode = branchCode,
+            DeviceCode = deviceCode,
             Status = 1,
             ActualAmount = 0m,
             TotalAmount = 0m,
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedDeviceAsync(string deviceCode, string branchCode)
+    {
+        await _posmDb.Insertable(new POSM_设备注册信息表
+        {
+            系统设备编号 = deviceCode,
+            设备硬件识别码 = $"{deviceCode}-hardware",
+            分店代码 = branchCode,
+            设备类型 = "POS",
+            设备系统 = "Windows",
+            设备状态 = 1,
+            设备授权码 = $"{deviceCode}-auth",
         }).ExecuteCommandAsync();
     }
 
@@ -3793,6 +4430,39 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             0m
         );
         await SeedPaymentDetailAsync($"payment-{orderGuid}", orderGuid, amount);
+    }
+
+    private async Task SeedHbSalesOrderAsync(
+        string orderNumber,
+        DateTime checkoutAt,
+        string branchCode,
+        decimal amount,
+        decimal quantity
+    )
+    {
+        var id = Interlocked.Increment(ref _nextHbSalesRecordId);
+        await _hbSalesDb.Insertable(new SalesOrderMain
+        {
+            ID = id,
+            B分店代码 = branchCode,
+            B销售单号 = orderNumber,
+            B单据类型 = "1",
+            B结账日期 = checkoutAt.Date,
+            B结账时间 = checkoutAt.TimeOfDay,
+            B合计金额 = amount,
+        }).ExecuteCommandAsync();
+        await _hbSalesDb.Insertable(new SalesOrderDetailRecord
+        {
+            ID = id,
+            B分店代码 = branchCode,
+            B分店代码_ID = branchCode,
+            B销售单号 = orderNumber,
+            B结账日期 = checkoutAt.Date,
+            B结账时间 = checkoutAt.TimeOfDay,
+            B产品编号 = $"product-{orderNumber}",
+            B数量 = quantity,
+            B合计金额 = amount,
+        }).ExecuteCommandAsync();
     }
 
     private async Task SeedProductAsync(string productCode, string itemNumber, string barcode)
@@ -3907,7 +4577,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         );
     }
 
-    private IsolatedReportServiceScope CreateIsolatedServiceScope()
+    private IsolatedReportServiceScope CreateIsolatedServiceScope(IMemoryCache? cache = null)
     {
         // 并行首屏的每个请求都要有独立 SqliteConnection、SqlSugar client 和 MemoryCache，
         // 避免共享测试夹具连接产生线程安全假象。
@@ -3938,7 +4608,7 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             posmContext,
             Mock.Of<IMapper>(),
             NullLogger<SalesDashboardReactService>.Instance,
-            new MemoryCache(new MemoryCacheOptions()),
+            cache ?? new MemoryCache(new MemoryCacheOptions()),
             services.GetRequiredService<IServiceScopeFactory>()
         );
         return new IsolatedReportServiceScope(
