@@ -37,6 +37,17 @@ import {
 import { resetReviewData } from "@/modules/ios-review/data-store";
 import { createIosReviewUser } from "@/modules/ios-review/identity";
 import { IOS_REVIEW_MENU_ITEMS } from "@/modules/ios-review/menu";
+import { DeviceAccountStorage } from "@/modules/device-activation/device-account-storage-runtime";
+import { exchangeMobileDeviceSessionApi } from "@/modules/device-activation/device-activation-api";
+import { establishDeviceAccountSession } from "@/modules/device-activation/device-account-session";
+import { loadDeviceAccountBindingForLogin } from "@/modules/device-activation/device-account-login";
+import { recoverStoredMobileDeviceActivation } from "@/modules/device-activation/device-activation-runtime";
+import {
+  clearAuthSessionMarker,
+  getAuthSessionMarker,
+  setAuthSessionMarker,
+} from "@/modules/device-activation/auth-session-marker";
+import { deriveEffectiveAuthSessionKind } from "@/modules/device-activation/device-account-request-policy";
 
 export function getIosReviewBuildContext(): IosReviewBuildContext {
   return {
@@ -78,16 +89,17 @@ interface AuthState {
   access: AccessControl;
   sessionKind: AuthSessionKind;
   iosReviewOfflineGuardActive: boolean;
-  standardAuthIntent: "account" | "device" | null;
+  standardAuthIntent: "account" | "device" | "deviceAccount" | null;
   isAuthenticated: boolean;
   isLoading: boolean;
   login: (payload: LoginRequest) => Promise<void>;
+  loginDeviceAccount: () => Promise<void>;
   logout: () => Promise<void>;
   hydrateIosReviewSession: () => Promise<boolean>;
   restoreSession: () => Promise<boolean>;
   clearLocalSession: () => Promise<void>;
   clearAccountSessionForDeviceLogin: () => Promise<void>;
-  beginStandardAuth: (kind?: "account" | "device") => void;
+  beginStandardAuth: (kind?: "account" | "device" | "deviceAccount") => void;
   rearmIosReviewPreAuth: () => void;
   performLocalSessionClear: () => Promise<void>;
   setSessionKind: (kind: AuthSessionKind) => void;
@@ -138,6 +150,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         });
         // 审核会话只保留独立 marker，先清除可能残留的真实账号令牌。
         await SecureStorage.clearAll();
+        await clearAuthSessionMarker();
         queryClient.clear();
         useCartStore.getState().reset();
         resetReviewData();
@@ -175,6 +188,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       const user = await getCurrentUserApi();
       await SecureStorage.setUser(user);
+      await setAuthSessionMarker("account");
 
       set({
         user,
@@ -200,8 +214,64 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
   },
 
+  async loginDeviceAccount() {
+    await waitForLocalSessionClear();
+    get().beginStandardAuth("deviceAccount");
+    set({ isLoading: true });
+    try {
+      const binding = await loadDeviceAccountBindingForLogin({
+        recoverPendingActivation: recoverStoredMobileDeviceActivation,
+        loadBinding: DeviceAccountStorage.loadBinding,
+      });
+
+      clearSensitiveQueryCache(queryClient);
+      useCartStore.getState().reset();
+      useAppNavigationStore.getState().reset();
+      await SecureStorage.clearAll();
+      await clearAuthSessionMarker();
+
+      const user = await establishDeviceAccountSession(binding, {
+        exchange: exchangeMobileDeviceSessionApi,
+        saveAccessToken: SecureStorage.setToken,
+        removeRefreshToken: SecureStorage.removeRefreshToken,
+        loadCurrentUser: getCurrentUserApi,
+        saveCurrentUser: SecureStorage.setUser,
+        markDeviceAccountSession: () => setAuthSessionMarker("deviceAccount"),
+        loadNavigationMenu: () => useAppNavigationStore.getState().fetchMenu(),
+      });
+
+      set({
+        user,
+        access: buildAccess(user),
+        sessionKind: "deviceAccount",
+        iosReviewOfflineGuardActive: false,
+        standardAuthIntent: null,
+        isAuthenticated: true,
+        isLoading: false,
+      });
+    } catch (error) {
+      await SecureStorage.clearAll().catch(() => undefined);
+      await clearAuthSessionMarker().catch(() => undefined);
+      get().rearmIosReviewPreAuth();
+      set({
+        user: null,
+        access: buildAccess(null),
+        sessionKind: "account",
+        isAuthenticated: false,
+        isLoading: false,
+      });
+      throw error;
+    }
+  },
+
   async logout() {
     if (get().sessionKind === "iosReview") {
+      await get().clearLocalSession();
+      return;
+    }
+
+    if (get().sessionKind === "deviceAccount") {
+      // 设备账号没有 refresh token；退出只清账号会话，保留设备绑定供再次登录。
       await get().clearLocalSession();
       return;
     }
@@ -233,16 +303,28 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const restored = await restoreIosReviewSession();
     if (!restored) {
       // 仅本地检查既有普通 token/device；存在候选会话时才允许原恢复链路触网。
-      const [storedToken, storedDevice] = await Promise.all([
+      const [storedToken, storedDevice, storedDeviceAccount, storedSessionKind] = await Promise.all([
         SecureStorage.getToken().catch(() => null),
         DeviceStorage.getSession().catch(() => null),
+        DeviceAccountStorage.loadBinding().catch(() => null),
+        getAuthSessionMarker().catch(() => null),
       ]);
       const hasStoredDeviceSession = Boolean(
         storedDevice?.hardwareId && storedDevice.authCode && storedDevice.storeCode
+      ) && !storedDeviceAccount;
+      const hasStoredDeviceAccountSession = Boolean(
+        storedToken &&
+          storedSessionKind === "deviceAccount" &&
+          storedDeviceAccount?.hardwareId &&
+          storedDeviceAccount.credential
       );
       if (storedToken || hasStoredDeviceSession) {
         get().beginStandardAuth(
-          hasStoredDeviceSession ? "device" : "account"
+          hasStoredDeviceAccountSession
+            ? "deviceAccount"
+            : hasStoredDeviceSession
+              ? "device"
+              : "account"
         );
       } else {
         set({ iosReviewOfflineGuardActive: true });
@@ -262,6 +344,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       console.warn("[ios-review] 恢复会话时停止遗留后台定位失败", error);
     });
     await SecureStorage.clearAll();
+    await clearAuthSessionMarker();
     const user = createIosReviewUser();
     setIosReviewMenu();
     set({
@@ -288,7 +371,22 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         return false;
       }
 
-      const token = await SecureStorage.getToken();
+      const [token, refreshToken, storedSessionKind, deviceAccountBinding] = await Promise.all([
+        SecureStorage.getToken(),
+        SecureStorage.getRefreshToken(),
+        getAuthSessionMarker(),
+        DeviceAccountStorage.loadBinding().catch(() => null),
+      ]);
+      const effectiveSessionKind = deriveEffectiveAuthSessionKind({
+        persistedKind: storedSessionKind,
+        hasAccessToken: Boolean(token),
+        hasRefreshToken: Boolean(refreshToken),
+        hasBinding: Boolean(deviceAccountBinding),
+      });
+      if (effectiveSessionKind === "deviceAccount" && deviceAccountBinding) {
+        await get().loginDeviceAccount();
+        return true;
+      }
       if (!token) {
         // 已保存设备验证失败后可能已放行全局 gate；无账号可恢复时必须重新 fail-closed。
         get().rearmIosReviewPreAuth();
@@ -298,6 +396,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       const user = await getCurrentUserApi();
       await SecureStorage.setUser(user);
+      await setAuthSessionMarker("account");
 
       set({
         user,
@@ -376,6 +475,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       await SecureStorage.clearAll().catch((error) => {
         console.warn("[auth] 清理真实账号令牌失败", error);
       });
+      await clearAuthSessionMarker().catch((error) => {
+        console.warn("[auth] 清理认证会话类型失败", error);
+      });
       await AppAsyncStorage.removeItem(STORE_SELECTION_STORAGE_KEY).catch(
         (error) => {
           console.warn("[auth] 清理门店选择失败", error);
@@ -410,6 +512,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     useCartStore.getState().reset();
     useAppNavigationStore.getState().reset();
     await SecureStorage.clearAll();
+    await clearAuthSessionMarker();
     await AppAsyncStorage.removeItem(STORE_SELECTION_STORAGE_KEY);
     set({
       user: null,
@@ -444,7 +547,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   setSessionKind(kind) {
     set({
       sessionKind: kind,
-      ...(kind === "device"
+      ...(kind === "device" || kind === "deviceAccount"
         ? {
             iosReviewOfflineGuardActive: false,
             standardAuthIntent: null,

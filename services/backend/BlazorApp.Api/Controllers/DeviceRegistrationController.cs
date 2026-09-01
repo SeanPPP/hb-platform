@@ -20,6 +20,8 @@ namespace BlazorApp.Api.Controllers
     {
         private const string BearerPrefix = "Bearer ";
         private const string DeviceHardwareIdHeader = "X-HBPOS-Hardware-Id";
+        private const string MobileDeviceIdHeader = "X-Device-Id";
+        private const string MobileDeviceAuthCodeHeader = "X-Auth-Code";
 
         private readonly IDeviceRegistrationService _deviceService;
         private readonly ILogger<DeviceRegistrationController> _logger;
@@ -27,6 +29,7 @@ namespace BlazorApp.Api.Controllers
         private readonly IStoreService _storeService;
         private readonly UserLoginDeviceAuditService? _loginDeviceAuditService;
         private readonly DeviceActivationOptions _deviceActivationOptions;
+        private readonly MobileDeviceActivationOptions _mobileDeviceActivationOptions;
 
         public DeviceRegistrationController(
             IDeviceRegistrationService deviceService,
@@ -34,7 +37,8 @@ namespace BlazorApp.Api.Controllers
             IMapper mapper,
             IStoreService storeService,
             UserLoginDeviceAuditService? loginDeviceAuditService = null,
-            IOptions<DeviceActivationOptions>? deviceActivationOptions = null
+            IOptions<DeviceActivationOptions>? deviceActivationOptions = null,
+            IOptions<MobileDeviceActivationOptions>? mobileDeviceActivationOptions = null
         )
         {
             _deviceService = deviceService;
@@ -43,6 +47,8 @@ namespace BlazorApp.Api.Controllers
             _storeService = storeService;
             _loginDeviceAuditService = loginDeviceAuditService;
             _deviceActivationOptions = deviceActivationOptions?.Value ?? new DeviceActivationOptions();
+            _mobileDeviceActivationOptions =
+                mobileDeviceActivationOptions?.Value ?? new MobileDeviceActivationOptions();
         }
 
         /// <summary>
@@ -216,6 +222,30 @@ namespace BlazorApp.Api.Controllers
         {
             try
             {
+                var headerHardwareId = Request.Headers[MobileDeviceIdHeader].FirstOrDefault();
+                var authCode = Request.Headers[MobileDeviceAuthCodeHeader].FirstOrDefault();
+                if (
+                    string.IsNullOrWhiteSpace(headerHardwareId)
+                    || string.IsNullOrWhiteSpace(authCode)
+                    || !string.Equals(
+                        headerHardwareId,
+                        hardwareId,
+                        StringComparison.Ordinal
+                    )
+                )
+                {
+                    return Unauthorized(new { success = false, message = "设备授权信息缺失或不匹配" });
+                }
+
+                var isAuthorized = await _deviceService.ValidateDeviceAuthCodeAsync(
+                    headerHardwareId,
+                    authCode
+                );
+                if (!isAuthorized)
+                {
+                    return Unauthorized(new { success = false, message = "设备授权无效" });
+                }
+
                 var device = await _deviceService.GetDeviceByHardwareIdAsync(hardwareId);
                 if (device == null)
                 {
@@ -224,6 +254,8 @@ namespace BlazorApp.Api.Controllers
 
                 // 使用AutoMapper转换为前端期望的格式
                 var deviceData = _mapper.Map<DeviceDataDto>(device);
+                // 凭据只能由注册/换绑响应下发；普通资料查询不得再次回传设备授权码。
+                deviceData.AuthCode = string.Empty;
                 await PopulateStoreNameAsync(deviceData);
 
                 return Ok(new { success = true, data = deviceData });
@@ -392,6 +424,23 @@ namespace BlazorApp.Api.Controllers
                 )
                 {
                     return BadRequest(new { success = false, message = "必填字段不能为空" });
+                }
+
+                if (
+                    _mobileDeviceActivationOptions.EnforceForNewRegistrations
+                    && string.Equals(
+                        request.DeviceType.Trim(),
+                        "Mobile",
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    return Ok(new
+                    {
+                        success = false,
+                        message = "需要一次性移动端设备开通码",
+                        reasonCode = "ACTIVATION_CODE_REQUIRED",
+                    });
                 }
 
                 if (string.Equals(request.DeviceType.Trim(), "POS", StringComparison.OrdinalIgnoreCase)

@@ -62,14 +62,16 @@
     "check": "检查更新"
   },
   "device": {
-    "title": "设备注册",
-    "description": "只有店长账号可以发起设备注册。注册提交后，需要后台确认启用；启用后这台设备再次打开 App 时可直接进入系统。",
+    "title": "设备绑定",
+    "description": "使用后台生成的一次性开通码，将本设备绑定到指定账号。重新扫码在服务端原子切换绑定，失败或取消不会解除当前绑定。",
     "status": "设备状态：{{status}}",
     "statusLabel": "设备状态",
     "store": "绑定分店：{{store}}",
     "storeLabelCompact": "绑定分店",
     "deviceNumber": "设备编号：{{value}}",
     "deviceNumberLabel": "设备编号",
+    "accountLabel": "绑定账号",
+    "systemLabel": "设备系统",
     "storeLabel": "对应分店",
     "selectStore": "请选择分店",
     "helper": "请先选择一个分店，再注册当前设备。",
@@ -78,6 +80,9 @@
     "refreshStatus": "刷新设备状态",
     "unbind": "解绑本机设备",
     "rebind": "重新绑定",
+    "rebindByScan": "重新扫码绑定",
+    "bindByScan": "扫码绑定设备",
+    "upgradeByScan": "扫码升级账号绑定",
     "ready": "当前设备已启用，后续重新打开 App 时无需再次登录。"
   },
   "printer": {
@@ -123,6 +128,7 @@
     "available": "可用设备"
   },
   "deviceStatus": {
+    "bound": "已绑定",
     "pending": "待确认",
     "disabled": "禁用",
     "enabled": "启用",
@@ -154,6 +160,8 @@
     "rebindDeviceMessage": "重新绑定会先解绑当前设备，然后回到登录页重新走设备注册流程。确定继续吗？",
     "unbindDeviceFailedTitle": "解绑失败",
     "unbindDeviceFailedMessage": "设备解绑失败，请稍后重试。",
+    "bindingLoginFailedTitle": "绑定已保存",
+    "bindingLoginFailedMessage": "设备绑定已完成，但暂时无法载入目标账号权限。请返回登录页后使用绑定账号重试。",
     "printerScanFailedTitle": "扫描失败",
     "printerConnectFailedTitle": "连接失败",
     "printerTestFailedTitle": "测试打印失败",

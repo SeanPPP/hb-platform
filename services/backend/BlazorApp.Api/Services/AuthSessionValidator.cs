@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using BlazorApp.Api.Data;
+using BlazorApp.Api.Services.MobileDeviceActivation;
 using BlazorApp.Shared.Models;
 
 namespace BlazorApp.Api.Services
@@ -9,12 +10,41 @@ namespace BlazorApp.Api.Services
         Task<bool> IsAccessSessionActiveAsync(string userGuid, ClaimsPrincipal principal);
     }
 
-    public sealed class AuthSessionValidator(SqlSugarContext dbContext) : IAuthSessionValidator
+    public sealed class AuthSessionValidator(
+        SqlSugarContext dbContext,
+        IMobileDeviceActivationService? mobileDeviceActivationService = null
+    ) : IAuthSessionValidator
     {
         public async Task<bool> IsAccessSessionActiveAsync(string userGuid, ClaimsPrincipal principal)
         {
+            if (string.IsNullOrWhiteSpace(userGuid))
+            {
+                return false;
+            }
+
+            if (string.Equals(
+                    principal.FindFirst("token_use")?.Value,
+                    MobileDeviceAccountTokenIssuer.TokenUse,
+                    StringComparison.Ordinal))
+            {
+                if (mobileDeviceActivationService == null
+                    || !MobileDeviceBindingContextResolver.TryResolve(principal, out var binding)
+                    || !string.Equals(binding.UserGuid, userGuid, StringComparison.Ordinal))
+                {
+                    return false;
+                }
+
+                var validation = await mobileDeviceActivationService.ValidateTokenBindingAsync(
+                    binding,
+                    CancellationToken.None);
+
+                // 设备账号令牌不依赖 RefreshToken，但每次请求都必须实时命中同一有效绑定。
+                return validation.IsValid
+                    && string.Equals(validation.UserGuid, userGuid, StringComparison.Ordinal);
+            }
+
             var sessionId = principal.FindFirst("sessionId")?.Value;
-            if (string.IsNullOrWhiteSpace(userGuid) || string.IsNullOrWhiteSpace(sessionId))
+            if (string.IsNullOrWhiteSpace(sessionId))
             {
                 return false;
             }

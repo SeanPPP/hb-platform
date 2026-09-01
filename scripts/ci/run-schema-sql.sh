@@ -62,3 +62,18 @@ node scripts/ci/assert-trx-tests.mjs \
   "$results_root/schema-migration-sql.trx" \
   'PR schema migration SQL tests' \
   10
+
+# Mobile 绑定表使用独立测试项目；在同一专用 SQL Server lane 强制实跑，不能以 skip 假绿。
+mobile_activation_project="services/backend/BlazorApp.MobileDeviceActivation.Tests/BlazorApp.MobileDeviceActivation.Tests.csproj"
+dotnet restore "$mobile_activation_project"
+dotnet build "$mobile_activation_project" --configuration Release --no-restore
+dotnet test "$mobile_activation_project" \
+  --configuration Release \
+  --no-build \
+  --filter 'FullyQualifiedName~BlazorApp.MobileDeviceActivation.Tests.MobileDeviceActivationSchemaSqlServerIntegrationTests' \
+  --logger 'trx;LogFileName=mobile-device-activation-schema-sql.trx' \
+  --results-directory "$results_root"
+node scripts/ci/assert-trx-tests.mjs \
+  "$results_root/mobile-device-activation-schema-sql.trx" \
+  'PR Mobile device activation schema SQL test' \
+  1

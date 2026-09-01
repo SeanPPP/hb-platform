@@ -38,7 +38,11 @@ internal interface ISchemaMigrationRuntime
 
     Task ApplyPosmBaselineAsync(CancellationToken cancellationToken);
 
+    Task ApplyMobileDeviceActivationAsync(CancellationToken cancellationToken);
+
     Task VerifyDeviceActivationSchemaAsync(CancellationToken cancellationToken);
+
+    Task VerifyMobileDeviceActivationSchemaAsync(CancellationToken cancellationToken);
 }
 
 internal interface ISchemaMigrationSession : IAsyncDisposable
@@ -173,6 +177,15 @@ internal sealed class SqlServerSchemaMigrationRuntime : ISchemaMigrationRuntime
         await VerifyDeviceActivationSchemaAsync(cancellationToken);
     }
 
+    public Task ApplyMobileDeviceActivationAsync(CancellationToken cancellationToken) =>
+        RunStrictBaselineAsync(
+            _posmDbContext.Db,
+            () => new MobileDeviceActivationSchemaMigrator(_posmDbContext)
+                .MigrateAsync(cancellationToken),
+            cancellationToken,
+            "posm-mobile-device-activation"
+        );
+
     internal async Task ApplyBaselineAsync(
         SchemaDatabase database,
         CancellationToken cancellationToken
@@ -290,6 +303,24 @@ internal sealed class SqlServerSchemaMigrationRuntime : ISchemaMigrationRuntime
             );
         }
         catch (SqlException exception) when (exception.Number is >= 51100 and <= 51199)
+        {
+            throw new DeviceActivationSchemaMismatchException();
+        }
+    }
+
+    public async Task VerifyMobileDeviceActivationSchemaAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SqlServerSchemaMigrationStore.ExecuteReadOnlyBatchAsync(
+                _posmDatabase.ConnectionString,
+                MobileDeviceActivationSchema.VerifySql,
+                _commandTimeoutSeconds,
+                cancellationToken
+            );
+        }
+        catch (SqlException exception) when (exception.Number is >= 51400 and <= 51499)
         {
             throw new DeviceActivationSchemaMismatchException();
         }

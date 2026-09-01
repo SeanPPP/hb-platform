@@ -3192,7 +3192,16 @@
         "title": "Device Activation Codes",
         "view": "Activation Codes",
         "noteTitle": "One-time device activation",
-        "noteDescription": "Each code is bound to one store and platform and is consumed after confirmation. The QR payload is shown only once after creation.",
+        "noteDescription": "Each code is bound to one device type, store, and platform. Mobile codes also bind a selected account. Codes are consumed after confirmation, and the QR payload is shown only once after creation.",
+        "deviceType": "Device Type",
+        "deviceTypes": {
+          "POS": "POS",
+          "Mobile": "Mobile"
+        },
+        "targetAccount": "Bound Account",
+        "targetAccountRequired": "Select an account to bind",
+        "loadAccountsFailed": "Failed to load bindable accounts",
+        "mobileAccountScopeHint": "After binding, the Mobile device signs in as this account and inherits its current permissions and accessible stores.",
         "filterByStatus": "Filter by Status",
         "create": "Create Code",
         "createTitle": "Create One-time Device Activation Code",

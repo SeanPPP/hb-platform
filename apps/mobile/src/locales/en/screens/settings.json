@@ -62,14 +62,16 @@
     "check": "Check for updates"
   },
   "device": {
-    "title": "Device registration",
-    "description": "Only store manager accounts can submit device registrations. After submission, an admin must enable the device before this device can enter the app directly on the next launch.",
+    "title": "Device binding",
+    "description": "Use a one-time administrator-issued activation code to bind this device to a selected account. Scanned rebinds switch atomically, so cancelling or failing keeps the current binding.",
     "status": "Status: {{status}}",
     "statusLabel": "Device status",
     "store": "Store: {{store}}",
     "storeLabelCompact": "Bound store",
     "deviceNumber": "Device no.: {{value}}",
     "deviceNumberLabel": "Device no.",
+    "accountLabel": "Bound account",
+    "systemLabel": "Device system",
     "storeLabel": "Assigned store",
     "selectStore": "Select a store",
     "helper": "Select a store before registering this device.",
@@ -78,6 +80,9 @@
     "refreshStatus": "Refresh device status",
     "unbind": "Unbind this device",
     "rebind": "Rebind device",
+    "rebindByScan": "Scan to rebind",
+    "bindByScan": "Scan to bind device",
+    "upgradeByScan": "Scan to upgrade account binding",
     "ready": "This device is enabled. Next time the app opens, it can enter directly."
   },
   "printer": {
@@ -123,6 +128,7 @@
     "available": "Available devices"
   },
   "deviceStatus": {
+    "bound": "Bound",
     "pending": "Pending",
     "disabled": "Disabled",
     "enabled": "Enabled",
@@ -154,6 +160,8 @@
     "rebindDeviceMessage": "Rebinding first unbinds the current device, then returns to login so you can register it again. Continue?",
     "unbindDeviceFailedTitle": "Unbind failed",
     "unbindDeviceFailedMessage": "Failed to unbind the device. Please try again later.",
+    "bindingLoginFailedTitle": "Binding saved",
+    "bindingLoginFailedMessage": "The device was bound, but the target account session could not be loaded. Return to login and try the bound account again.",
     "printerScanFailedTitle": "Scan failed",
     "printerConnectFailedTitle": "Connection failed",
     "printerTestFailedTitle": "Test print failed",
