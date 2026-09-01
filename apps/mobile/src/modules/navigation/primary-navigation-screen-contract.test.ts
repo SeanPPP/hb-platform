@@ -11,11 +11,13 @@ async function readMobileSource(relativePath: string) {
 }
 
 async function run() {
-  const [shellLayout, primaryTabBar, primaryNavigation, workbenchRoute, workbenchScreen, storePickerModal, attendancePersonal, attendanceManagement, legacyAttendance, containerLayout, userLayout] =
+  const [shellLayout, primaryTabBar, primaryNavigation, enCommon, zhCommon, workbenchRoute, workbenchScreen, storePickerModal, attendancePersonal, attendanceManagement, legacyAttendance, containerLayout, userLayout] =
     await Promise.all([
       readMobileSource("app/(shell)/_layout.tsx"),
       readMobileSource("src/components/navigation/PrimaryTabBar.tsx"),
       readMobileSource("src/modules/navigation/primary-navigation.ts"),
+      readMobileSource("src/locales/en/common.json"),
+      readMobileSource("src/locales/zh/common.json"),
       readMobileSource("app/(shell)/workbench.tsx"),
       readMobileSource("src/modules/workbench/workbench-screen.tsx"),
       readMobileSource("src/components/ui/StorePickerModal.tsx"),
@@ -43,24 +45,27 @@ async function run() {
 
   assert.match(primaryTabBar, /buildPrimaryNavigation/);
   assert.match(primaryTabBar, /resolvePrimaryNavigationAction/);
-  assert.match(primaryTabBar, /locked/);
+  assert.doesNotMatch(primaryTabBar, /\blocked\b/);
+  assert.doesNotMatch(primaryTabBar, /lock-outline/);
+  assert.doesNotMatch(primaryTabBar, /disabled=|disabled:/);
   assert.match(primaryTabBar, /accessibilityRole="button"/);
+  assert.match(primaryTabBar, /selected:\s*item\.active/);
   assert.match(primaryTabBar, /router\.dismissTo/);
   assert.match(primaryTabBar, /router\.navigate/);
   assert.match(
     primaryTabBar,
     /numberOfLines=\{2\}/,
-    "五列窄屏必须允许放大后的一级导航标签换行"
+    "动态底栏在窄屏上必须允许放大后的一级导航标签换行"
   );
   assert.match(
     primaryTabBar,
     /paddingHorizontal:\s*2/,
-    "五列一级导航需要保留足够的标签可用宽度"
+    "动态一级导航需要保留足够的标签可用宽度"
   );
   assert.doesNotMatch(
     primaryTabBar,
     /buildNavigationDisplayTabs/,
-    "固定五入口不得回退到旧的动态门店折叠导航"
+    "按权限动态显示的主入口不得回退到旧的门店折叠导航"
   );
   assert.doesNotMatch(primaryTabBar, /task-center/);
 
@@ -85,8 +90,10 @@ async function run() {
   assert.match(primaryNavigation, /"none"\s*\|\s*"dismiss-to"\s*\|\s*"navigate"/);
   assert.match(primaryNavigation, /resolvePrimaryNavigationAction/);
   assert.match(primaryNavigation, /isDeviceMode/);
-  assert.match(primaryNavigation, /locked:/);
+  assert.doesNotMatch(primaryNavigation, /\blocked\b/);
   assert.doesNotMatch(primaryNavigation, /task-center/);
+  assert.doesNotMatch(enCommon, /"lockedLabel"/);
+  assert.doesNotMatch(zhCommon, /"lockedLabel"/);
 
   assert.match(workbenchRoute, /<WorkbenchScreen\s*\/>/);
   assert.match(workbenchScreen, /buildWorkbenchSections/);
