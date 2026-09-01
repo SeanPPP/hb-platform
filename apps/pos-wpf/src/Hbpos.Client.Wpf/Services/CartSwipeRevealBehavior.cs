@@ -21,6 +21,7 @@ internal enum CartSwipeGestureAxis
 public static class CartSwipeRevealBehavior
 {
     private const double DirectionThreshold = 12d;
+    private const double TouchDirectionThreshold = 3d;
     private const double HorizontalDominance = 1.2d;
     private const double DefaultRevealWidth = 88d;
     private const string SwipeContentPartName = "PART_SwipeContent";
@@ -77,6 +78,26 @@ public static class CartSwipeRevealBehavior
             : CartSwipeGestureAxis.Vertical;
     }
 
+    internal static CartSwipeGestureAxis ResolveTouchAxis(double horizontal, double vertical)
+    {
+        if (!double.IsFinite(horizontal) || !double.IsFinite(vertical))
+        {
+            return CartSwipeGestureAxis.Vertical;
+        }
+
+        var absoluteHorizontal = Math.Abs(horizontal);
+        var absoluteVertical = Math.Abs(vertical);
+        if (absoluteHorizontal < TouchDirectionThreshold && absoluteVertical < TouchDirectionThreshold)
+        {
+            return CartSwipeGestureAxis.Pending;
+        }
+
+        // 与 ScrollViewer.VerticalFirst 的轴优先边界保持一致，避免横向略占优时出现手势死区。
+        return absoluteHorizontal >= TouchDirectionThreshold && absoluteHorizontal > absoluteVertical
+            ? CartSwipeGestureAxis.Horizontal
+            : CartSwipeGestureAxis.Vertical;
+    }
+
     internal static double ClampOffset(double currentOffset, double delta, double revealWidth)
     {
         if (!double.IsFinite(revealWidth) || revealWidth <= 0d)
@@ -103,6 +124,16 @@ public static class CartSwipeRevealBehavior
         double.IsFinite(currentOffset) &&
         double.IsFinite(targetOffset) &&
         Math.Abs(currentOffset - targetOffset) >= double.Epsilon;
+
+    internal static bool ShouldCompleteLostTouchCapture(
+        bool isTouchGesture,
+        bool hasCapture,
+        bool matchesTouchDevice,
+        bool isOwnerOriginalSource) =>
+        isTouchGesture &&
+        hasCapture &&
+        matchesTouchDevice &&
+        isOwnerOriginalSource;
 
     internal static void SetRevealState(
         DataGrid dataGrid,
@@ -501,7 +532,12 @@ public static class CartSwipeRevealBehavior
 
         private void OnLostTouchCapture(object? sender, TouchEventArgs args)
         {
-            if (_pointerKind is PointerKind.Touch && ReferenceEquals(_touchDevice, args.TouchDevice))
+            // LostTouchCapture 会冒泡，内部 ScrollViewer 的捕获切换不能提前结算当前左滑手势。
+            if (ShouldCompleteLostTouchCapture(
+                    _pointerKind is PointerKind.Touch,
+                    _hasCapture,
+                    ReferenceEquals(_touchDevice, args.TouchDevice),
+                    ReferenceEquals(args.OriginalSource, _owner)))
             {
                 CompleteGesture(animate: true, releaseCapture: false);
             }
@@ -636,7 +672,9 @@ public static class CartSwipeRevealBehavior
             var vertical = point.Y - _startPoint.Y;
             if (_axis is CartSwipeGestureAxis.Pending)
             {
-                _axis = ResolveAxis(horizontal, vertical);
+                _axis = _pointerKind is PointerKind.Touch
+                    ? ResolveTouchAxis(horizontal, vertical)
+                    : ResolveAxis(horizontal, vertical);
                 if (_axis is CartSwipeGestureAxis.Pending)
                 {
                     return false;

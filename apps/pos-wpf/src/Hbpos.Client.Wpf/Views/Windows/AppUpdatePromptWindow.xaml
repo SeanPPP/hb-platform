@@ -6,7 +6,6 @@
         Title="{loc:Loc appUpdate.prompt.title}"
         Width="1200"
         Height="760"
-        MinWidth="720"
         MinHeight="560"
         WindowStartupLocation="CenterOwner"
         WindowStyle="None"
@@ -45,7 +44,6 @@
           Background="#6B0F172A">
         <Border x:Name="AppUpdateDialogCard"
                 MaxWidth="900"
-                MinWidth="700"
                 MaxHeight="640"
                 Margin="32,24"
                 Padding="28"

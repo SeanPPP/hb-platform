@@ -45,6 +45,29 @@ public sealed class AppUpdatePromptWindowLayoutTests
     }
 
     [Fact]
+    public void Update_prompt_can_shrink_horizontally_without_clipping_on_1366x768_touch_displays()
+    {
+        var document = LoadPromptXaml();
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var window = Assert.IsType<XElement>(document.Root);
+        var card = Assert.Single(window
+            .Elements(presentation + "Grid")
+            .Elements(presentation + "Border")
+            .Where(element => (string?)element.Attribute(x + "Name") == "AppUpdateDialogCard"));
+
+        var horizontalMinimums = new[]
+        {
+            (Element: "Window", Value: (string?)window.Attribute("MinWidth")),
+            (Element: "AppUpdateDialogCard", Value: (string?)card.Attribute("MinWidth"))
+        }.Where(item => item.Value is not null).ToArray();
+
+        Assert.Empty(horizontalMinimums);
+        Assert.Equal("Stretch", (string?)card.Attribute("HorizontalAlignment"));
+        Assert.Equal("900", (string?)card.Attribute("MaxWidth"));
+    }
+
+    [Fact]
     public void Update_prompt_exposes_versions_release_notes_safety_and_safe_default_actions()
     {
         var document = LoadPromptXaml();

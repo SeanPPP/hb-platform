@@ -531,7 +531,7 @@ public sealed class PosTerminalViewLayoutTests
         var cartGrid = Assert.Single(view.Descendants(presentation + "DataGrid").Where(element =>
             (string?)element.Attribute("AutomationProperties.AutomationId") == "CartItemsGrid"));
         Assert.Equal("True", (string?)cartGrid.Attribute(services + "CartSwipeRevealBehavior.IsEnabled"));
-        Assert.Equal("VerticalOnly", (string?)cartGrid.Attribute("ScrollViewer.PanningMode"));
+        Assert.Equal("VerticalFirst", (string?)cartGrid.Attribute("ScrollViewer.PanningMode"));
 
         var cartColumns = Assert.Single(cartGrid.Elements(presentation + "DataGrid.Columns"))
             .Elements()

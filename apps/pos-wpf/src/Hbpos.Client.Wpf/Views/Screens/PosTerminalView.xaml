@@ -797,7 +797,7 @@
                           VirtualizingPanel.ScrollUnit="Pixel"
                           ScrollViewer.CanContentScroll="True"
                           ScrollViewer.VerticalScrollBarVisibility="Visible"
-                          ScrollViewer.PanningMode="VerticalOnly"
+                          ScrollViewer.PanningMode="VerticalFirst"
                           ScrollViewer.PanningDeceleration="0.0008"
                           ScrollViewer.PanningRatio="1.0"
                           services:CartSwipeRevealBehavior.IsEnabled="True"

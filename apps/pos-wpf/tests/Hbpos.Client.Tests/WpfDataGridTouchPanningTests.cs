@@ -111,6 +111,10 @@ public sealed class WpfDataGridTouchPanningTests
         var location = FormatLocation(dataGrid);
         var localPanningMode = (string?)dataGrid.Element.Attribute("ScrollViewer.PanningMode");
         var verticalScrollBarVisibility = (string?)dataGrid.Element.Attribute("ScrollViewer.VerticalScrollBarVisibility");
+        var swipeRevealEnabled = string.Equals(
+            (string?)dataGrid.Element.Attribute(Services + "CartSwipeRevealBehavior.IsEnabled"),
+            "True",
+            StringComparison.Ordinal);
         var styleKey = ParseStaticResource((string?)dataGrid.Element.Attribute("Style"));
         var inheritsTouchStyle = styleKey is not null &&
                                  StyleInheritsFrom(
@@ -141,6 +145,18 @@ public sealed class WpfDataGridTouchPanningTests
 
         VerifyPixelScrollingAndFeedback(dataGrid, inheritsTouchStyle, failures);
         VerifyOptionalPanningOverrides(dataGrid, failures);
+
+        if (swipeRevealEnabled)
+        {
+            if (!string.Equals(localPanningMode, "VerticalFirst", StringComparison.Ordinal))
+            {
+                failures.Add($"{location} 启用了左滑操作，但未使用 VerticalFirst 区分横向手势与纵向滚动。");
+                return;
+            }
+
+            VerifyPanningParameters(dataGrid.Element, location, failures, attachedProperty: true);
+            return;
+        }
 
         if (localPanningMode is not null &&
             !string.Equals(localPanningMode, "VerticalOnly", StringComparison.Ordinal))
