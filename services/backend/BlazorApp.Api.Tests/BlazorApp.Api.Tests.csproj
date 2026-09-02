@@ -219,6 +219,9 @@
     <Compile Include="ContainerHqSyncServiceTests.cs" />
     <Compile Include="HqProductTranslationReactServiceTests.cs" />
     <Compile Include="ContainerReactServiceBatchUpdateDetailsTests.cs" />
+    <Compile Include="ContainerMutationLockTests.cs" />
+    <Compile Include="ContainerMutationLockSqlServerIntegrationTests.cs" />
+    <Compile Include="ContainerMutationWriterContractTests.cs" />
     <Compile Include="ContainerCreateDuplicateTests.cs" />
     <Compile Include="LegacyContainerProductChangeHistoryTests.cs" />
     <Compile Include="ContainerReactServiceDetailQueryTests.cs" />

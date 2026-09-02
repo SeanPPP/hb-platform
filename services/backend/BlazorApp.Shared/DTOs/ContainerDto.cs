@@ -578,6 +578,11 @@ namespace BlazorApp.Shared.DTOs
         public bool? IsActive { get; set; }
 
         /// <summary>
+        /// 货柜明细备注；null 表示不修改，空字符串表示清空。
+        /// </summary>
+        public string? 备注 { get; set; }
+
+        /// <summary>
         /// 跳过商品主数据和关联价格表同步，仅更新货柜明细
         /// </summary>
         public bool? SkipRelatedProductSync { get; set; }

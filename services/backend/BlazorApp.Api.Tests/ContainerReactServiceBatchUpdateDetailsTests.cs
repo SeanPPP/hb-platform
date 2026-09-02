@@ -2895,6 +2895,72 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         Assert.Equal(0, totalUpdated);
     }
 
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_全部明细不存在_应返回字段级错误且不抛异常()
+    {
+        var service = CreateService();
+        var updates = new List<UpdateContainerDetailDto>
+        {
+            new() { HGUID = "D-MISSING-ONLY", 英文名称 = "Missing Detail" },
+        };
+
+        var detailedResult = await service.BatchUpdateDetailsDetailedAsync(updates);
+        var totalUpdated = await service.BatchUpdateDetailsAsync(updates);
+
+        Assert.Equal(1, detailedResult.TotalRequested);
+        Assert.Equal(0, detailedResult.TotalUpdated);
+        var error = Assert.Single(detailedResult.ValidationErrors);
+        Assert.Equal("D-MISSING-ONLY", error.HGUID);
+        Assert.Equal("*", error.Field);
+        Assert.Equal("DETAIL_NOT_FOUND", error.Code);
+        Assert.Equal(0, totalUpdated);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_仅修改备注_应持久化且支持清空()
+    {
+        await SeedDetailAsync("D-REMARK-ONLY", productCode: null);
+        var service = CreateService();
+
+        var updateResult = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-REMARK-ONLY",
+                    备注 = "连续编辑备注",
+                    SkipRelatedProductSync = true,
+                },
+            }
+        );
+        var updatedDetail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(detail => detail.DetailCode == "D-REMARK-ONLY");
+
+        Assert.Equal(1, updateResult.TotalUpdated);
+        Assert.Empty(updateResult.ValidationErrors);
+        Assert.Equal("连续编辑备注", updatedDetail.Remarks);
+
+        var clearResult = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-REMARK-ONLY",
+                    备注 = string.Empty,
+                    SkipRelatedProductSync = true,
+                },
+            }
+        );
+        var clearedDetail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(detail => detail.DetailCode == "D-REMARK-ONLY");
+
+        Assert.Equal(1, clearResult.TotalUpdated);
+        Assert.Empty(clearResult.ValidationErrors);
+        Assert.Equal(string.Empty, clearedDetail.Remarks);
+    }
+
     public void Dispose()
     {
         _localDb.Dispose();

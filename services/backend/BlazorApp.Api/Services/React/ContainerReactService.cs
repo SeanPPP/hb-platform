@@ -73,7 +73,10 @@ namespace BlazorApp.Api.Services.React
         /// <summary>
         /// 按货柜明细重新汇总主表统计字段
         /// </summary>
-        private async Task RefreshContainerSummariesAsync(IEnumerable<string?> containerCodes)
+        private async Task RefreshContainerSummariesAsync(
+            ContainerMutationLockScope? mutationLock,
+            IEnumerable<string?> containerCodes
+        )
         {
             var codes = containerCodes
                 .Where(code => !string.IsNullOrWhiteSpace(code))
@@ -84,6 +87,12 @@ namespace BlazorApp.Api.Services.React
             {
                 return;
             }
+
+            if (mutationLock == null)
+            {
+                throw new ContainerMutationScopeChangedException(codes);
+            }
+            mutationLock.EnsureCovers(_context.Db, codes);
 
             var containers = await _context
                 .Db.Queryable<Container>()
@@ -648,117 +657,160 @@ namespace BlazorApp.Api.Services.React
         {
             try
             {
-                // 查找货柜
-                var container = await _context
-                    .Db.Queryable<Container>()
-                    .Where(x => x.ContainerCode == containerGuid)
-                    .FirstAsync();
-
-                if (container == null)
+                var deadlockRetryCount = 0;
+                while (true)
                 {
-                    _logger.LogWarning("货柜不存在: {ContainerGuid}", containerGuid);
-                    return false;
-                }
-
-                var nextContainerNumber = !string.IsNullOrWhiteSpace(dto.货柜编号)
-                    ? dto.货柜编号.Trim()
-                    : container.ContainerNumber;
-                var nextLoadingDate = dto.装柜日期 ?? container.LoadingDate;
-                var currentContainerNumber = container.ContainerNumber?.Trim();
-                var containerNumberChanged = !string.Equals(
-                    nextContainerNumber,
-                    currentContainerNumber,
-                    StringComparison.Ordinal
-                );
-                var loadingDateChanged = nextLoadingDate?.Date != container.LoadingDate?.Date;
-
-                // 仅在编号或装柜日期实际变化时做去重，避免历史脏数据阻断状态/备注等无关保存。
-                var shouldCheckDuplicate = containerNumberChanged || loadingDateChanged;
-                if (shouldCheckDuplicate && !string.IsNullOrWhiteSpace(nextContainerNumber))
-                {
-                    var duplicateQuery = _context
-                        .Db.Queryable<Container>()
-                        .Where(x =>
-                            x.ContainerCode != containerGuid && x.ContainerNumber == nextContainerNumber
-                        );
-                    duplicateQuery = nextLoadingDate.HasValue
-                        ? duplicateQuery.Where(x =>
-                            x.LoadingDate >= nextLoadingDate.Value.Date
-                            && x.LoadingDate < nextLoadingDate.Value.Date.AddDays(1)
-                        )
-                        : duplicateQuery.Where(x => x.LoadingDate == null);
-
-                    if (await duplicateQuery.AnyAsync())
+                    await _context.Db.Ado.BeginTranAsync();
+                    try
                     {
-                        var loadingDateText = nextLoadingDate?.ToString("yyyy-MM-dd") ?? "未设置";
-                        throw new InvalidOperationException($"货柜编号 {nextContainerNumber} 在装柜日期 {loadingDateText} 已存在");
+                        // 编号 + 装柜日期去重跨越所有货柜；独占总闸关闭不同货柜并发改成同一组合的窗口。
+                        await ContainerMutationLock.AcquireAllAsync(_context.Db);
+
+                        // 货柜头和明细汇总写同一主表行；持独占总闸后再读取，避免覆盖并发汇总。
+                        var container = await _context
+                            .Db.Queryable<Container>()
+                            .Where(x => x.ContainerCode == containerGuid && !x.IsDeleted)
+                            .FirstAsync();
+
+                        if (container == null)
+                        {
+                            await _context.Db.Ado.CommitTranAsync();
+                            _logger.LogWarning("货柜不存在: {ContainerGuid}", containerGuid);
+                            return false;
+                        }
+
+                        var nextContainerNumber = !string.IsNullOrWhiteSpace(dto.货柜编号)
+                            ? dto.货柜编号.Trim()
+                            : container.ContainerNumber;
+                        var nextLoadingDate = dto.装柜日期 ?? container.LoadingDate;
+                        var currentContainerNumber = container.ContainerNumber?.Trim();
+                        var containerNumberChanged = !string.Equals(
+                            nextContainerNumber,
+                            currentContainerNumber,
+                            StringComparison.Ordinal
+                        );
+                        var loadingDateChanged = nextLoadingDate?.Date != container.LoadingDate?.Date;
+
+                        // 仅在编号或装柜日期实际变化时做去重，避免历史脏数据阻断状态/备注等无关保存。
+                        var shouldCheckDuplicate = containerNumberChanged || loadingDateChanged;
+                        if (shouldCheckDuplicate && !string.IsNullOrWhiteSpace(nextContainerNumber))
+                        {
+                            var duplicateQuery = _context
+                                .Db.Queryable<Container>()
+                                .Where(x =>
+                                    x.ContainerCode != containerGuid
+                                    && x.ContainerNumber == nextContainerNumber
+                                );
+                            duplicateQuery = nextLoadingDate.HasValue
+                                ? duplicateQuery.Where(x =>
+                                    x.LoadingDate >= nextLoadingDate.Value.Date
+                                    && x.LoadingDate < nextLoadingDate.Value.Date.AddDays(1)
+                                )
+                                : duplicateQuery.Where(x => x.LoadingDate == null);
+
+                            if (await duplicateQuery.AnyAsync())
+                            {
+                                var loadingDateText =
+                                    nextLoadingDate?.ToString("yyyy-MM-dd") ?? "未设置";
+                                throw new InvalidOperationException(
+                                    $"货柜编号 {nextContainerNumber} 在装柜日期 {loadingDateText} 已存在"
+                                );
+                            }
+                        }
+
+                        // 根据 DTO 的中文字段逐个更新，避免前端未传字段覆盖已有基础信息。
+                        if (!string.IsNullOrWhiteSpace(nextContainerNumber))
+                        {
+                            container.ContainerNumber = nextContainerNumber;
+                        }
+
+                        if (dto.装柜日期.HasValue)
+                        {
+                            container.LoadingDate = dto.装柜日期.Value;
+                        }
+
+                        if (dto.预计到岸日期.HasValue)
+                        {
+                            container.EstimatedArrivalDate = dto.预计到岸日期.Value;
+                        }
+
+                        if (dto.实际到货日期.HasValue)
+                        {
+                            container.ActualArrivalDate = dto.实际到货日期.Value;
+                        }
+
+                        if (dto.汇率.HasValue)
+                        {
+                            container.ExchangeRate = dto.汇率.Value;
+                        }
+
+                        if (dto.运费.HasValue)
+                        {
+                            container.ShippingFee = dto.运费.Value;
+                        }
+
+                        if (dto.备注 != null)
+                        {
+                            container.Remarks = dto.备注;
+                        }
+
+                        if (dto.状态.HasValue)
+                        {
+                            container.Status = dto.状态.Value;
+                        }
+
+                        // 保存并限制更新列，避免覆盖并发流程维护的汇总字段。
+                        var rowsAffected = await _context
+                            .Db.Updateable(container)
+                            .UpdateColumns(x => new
+                            {
+                                x.ContainerNumber,
+                                x.LoadingDate,
+                                x.EstimatedArrivalDate,
+                                x.ActualArrivalDate,
+                                x.ExchangeRate,
+                                x.ShippingFee,
+                                x.Remarks,
+                                x.Status,
+                            })
+                            .Where(x => x.ContainerCode == containerGuid && !x.IsDeleted)
+                            .ExecuteCommandAsync();
+
+                        await _context.Db.Ado.CommitTranAsync();
+                        _logger.LogInformation(
+                            "更新货柜信息成功: {ContainerGuid}, 影响行数: {RowsAffected}",
+                            containerGuid,
+                            rowsAffected
+                        );
+                        return rowsAffected > 0;
+                    }
+                    catch (Exception exception)
+                    {
+                        await RollbackContainerMutationTransactionSafelyAsync(exception);
+                        if (
+                            !ContainerMutationLock.ShouldRetryDeadlock(
+                                exception,
+                                deadlockRetryCount
+                            )
+                        )
+                        {
+                            throw;
+                        }
+
+                        deadlockRetryCount++;
+                        var delayMilliseconds = Random.Shared.Next(100, 301);
+                        _logger.LogWarning(
+                            exception,
+                            "更新货柜信息遇到 SQL Server 1205，{DelayMilliseconds}ms 后完整重试一次",
+                            delayMilliseconds
+                        );
+                        await Task.Delay(delayMilliseconds);
                     }
                 }
-
-                // 根据 DTO 的中文字段逐个更新，避免前端未传字段覆盖已有基础信息。
-                if (!string.IsNullOrWhiteSpace(nextContainerNumber))
-                {
-                    container.ContainerNumber = nextContainerNumber;
-                }
-
-                if (dto.装柜日期.HasValue)
-                {
-                    container.LoadingDate = dto.装柜日期.Value;
-                }
-
-                if (dto.预计到岸日期.HasValue)
-                {
-                    container.EstimatedArrivalDate = dto.预计到岸日期.Value;
-                }
-
-                if (dto.实际到货日期.HasValue)
-                {
-                    container.ActualArrivalDate = dto.实际到货日期.Value;
-                }
-
-                if (dto.汇率.HasValue)
-                {
-                    container.ExchangeRate = dto.汇率.Value;
-                }
-
-                if (dto.运费.HasValue)
-                {
-                    container.ShippingFee = dto.运费.Value;
-                }
-
-                if (dto.备注 != null)
-                {
-                    container.Remarks = dto.备注;
-                }
-
-                if (dto.状态.HasValue)
-                {
-                    container.Status = dto.状态.Value;
-                }
-
-                // 保存并限制更新列，避免覆盖其他字段
-                var rowsAffected = await _context
-                    .Db.Updateable(container)
-                    .UpdateColumns(x => new
-                    {
-                        x.ContainerNumber,
-                        x.LoadingDate,
-                        x.EstimatedArrivalDate,
-                        x.ActualArrivalDate,
-                        x.ExchangeRate,
-                        x.ShippingFee,
-                        x.Remarks,
-                        x.Status,
-                    })
-                    .Where(x => x.ContainerCode == containerGuid)
-                    .ExecuteCommandAsync();
-
-                _logger.LogInformation(
-                    "更新货柜信息成功: {ContainerGuid}, 影响行数: {RowsAffected}",
-                    containerGuid,
-                    rowsAffected
-                );
-                return rowsAffected > 0;
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -1582,6 +1634,15 @@ namespace BlazorApp.Api.Services.React
             await _context.Db.Ado.BeginTranAsync();
             try
             {
+                // 该人工操作会全局改写旧商品编码，使用独占总闸关闭新货柜插入同编码的 phantom 窗口。
+                var mutationLock = await ContainerMutationLock.AcquireAllAsync(_context.Db);
+                var transactionalContainerCodes = await _context
+                    .Db.Queryable<ContainerDetail>()
+                    .Where(d => d.ProductCode == oldProductCode && !d.IsDeleted)
+                    .Select(d => d.ContainerCode)
+                    .ToListAsync();
+                mutationLock.EnsureCovers(_context.Db, transactionalContainerCodes);
+
                 // 事务内复查核心前置条件，避免确认弹窗打开后数据被并发改动仍继续级联改码。
                 var transactionalDetail = await _context
                     .Db.Queryable<ContainerDetail>()
@@ -1773,9 +1834,14 @@ namespace BlazorApp.Api.Services.React
                     UpdatedDomesticProductCreationLogs = updatedDomesticProductCreationLogs,
                 };
             }
-            catch
+            catch (ContainerMutationScopeChangedException exception)
             {
-                await _context.Db.Ado.RollbackTranAsync();
+                await RollbackContainerMutationTransactionSafelyAsync(exception);
+                throw new ContainerMutationLockException("scope-changed", -1, exception);
+            }
+            catch (Exception exception)
+            {
+                await RollbackContainerMutationTransactionSafelyAsync(exception);
                 throw;
             }
         }
@@ -1835,6 +1901,107 @@ namespace BlazorApp.Api.Services.React
             bool countValidNoOps,
             bool repairMissingStoreRelations,
             string? containerGuid
+        )
+        {
+            if (updates == null || updates.Count == 0)
+            {
+                return await BatchUpdateDetailsAttemptAsync(
+                    updates ?? new List<UpdateContainerDetailDto>(),
+                    countValidNoOps,
+                    repairMissingStoreRelations,
+                    containerGuid,
+                    mutationLock: null
+                );
+            }
+
+            // 锁前只读取候选货柜编号；所有会计算或回写的数据必须在持锁事务中重新读取。
+            List<string> candidateContainerCodes = string.IsNullOrWhiteSpace(containerGuid)
+                ? await _context.Db.Queryable<ContainerDetail>()
+                    .Where(detail =>
+                        updates.Select(update => update.HGUID).Contains(detail.DetailCode)
+                        && !detail.IsDeleted
+                    )
+                    .Select(detail => detail.ContainerCode)
+                    .ToListAsync()
+                : new List<string> { containerGuid! };
+            var deadlockRetryCount = 0;
+            var scopeChangeRetryCount = 0;
+            while (true)
+            {
+                await _context.Db.Ado.BeginTranAsync();
+                try
+                {
+                    // 旧入口的 HGUID 可能全部不存在；此时使用独占总闸完成锁内复查。
+                    // 若明细在候选查询后出现，仍可保证更新受业务锁保护。
+                    var mutationLock = candidateContainerCodes.Count == 0
+                        ? await ContainerMutationLock.AcquireAllAsync(_context.Db)
+                        : await ContainerMutationLock.AcquireContainersAsync(
+                            _context.Db,
+                            candidateContainerCodes
+                        );
+                    var result = await BatchUpdateDetailsAttemptAsync(
+                        updates,
+                        countValidNoOps,
+                        repairMissingStoreRelations,
+                        containerGuid,
+                        mutationLock
+                    );
+                    await _context.Db.Ado.CommitTranAsync();
+                    return result;
+                }
+                catch (ContainerMutationScopeChangedException exception)
+                {
+                    await RollbackContainerMutationTransactionSafelyAsync(exception);
+                    if (scopeChangeRetryCount++ > 0)
+                    {
+                        throw new ContainerMutationLockException("scope-changed", -1, exception);
+                    }
+                    candidateContainerCodes = exception.ActualContainerCodes.ToList();
+                }
+                catch (Exception exception)
+                {
+                    await RollbackContainerMutationTransactionSafelyAsync(exception);
+                    if (!ContainerMutationLock.ShouldRetryDeadlock(exception, deadlockRetryCount))
+                    {
+                        throw;
+                    }
+                    deadlockRetryCount++;
+                    await Task.Delay(Random.Shared.Next(100, 301));
+                }
+            }
+        }
+
+        private async Task RollbackContainerMutationTransactionSafelyAsync(
+            Exception originalException
+        )
+        {
+            if (_context.Db.Ado.Transaction == null)
+            {
+                return;
+            }
+
+            try
+            {
+                await _context.Db.Ado.RollbackTranAsync();
+            }
+            catch (Exception rollbackException)
+            {
+                // SQL Server 死锁会先回滚事务；清理失败不得覆盖原始并发异常。
+                ContainerMutationLock.ResetFailedTransaction(_context.Db);
+                _logger.LogWarning(
+                    rollbackException,
+                    "[React] 回滚货柜变更事务失败，保留原始异常: {OriginalMessage}",
+                    originalException.Message
+                );
+            }
+        }
+
+        private async Task<ContainerDetailBatchUpdateResultDto> BatchUpdateDetailsAttemptAsync(
+            List<UpdateContainerDetailDto> updates,
+            bool countValidNoOps,
+            bool repairMissingStoreRelations,
+            string? containerGuid,
+            ContainerMutationLockScope? mutationLock
         )
         {
             try
@@ -1923,6 +2090,21 @@ namespace BlazorApp.Api.Services.React
                         .Where(detail => detail.ContainerCode != containerGuid)
                         .Select(detail => detail.DetailCode)
                         .ToHashSet();
+
+                var actualContainerCodes = details
+                    .Select(detail => detail.ContainerCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .ToList();
+                if (actualContainerCodes.Count > 0)
+                {
+                    if (mutationLock == null)
+                    {
+                        throw new ContainerMutationScopeChangedException(
+                            ContainerMutationLock.NormalizeContainerCodes(actualContainerCodes)
+                        );
+                    }
+                    mutationLock.EnsureCovers(_context.Db, actualContainerCodes);
+                }
 
                 // 构建明细编码到明细实体的映射，便于快速查找
                 var detailMap = details.ToDictionary(d => d.DetailCode, d => d);
@@ -2033,6 +2215,7 @@ namespace BlazorApp.Api.Services.React
                 var totalAmountWrites = new HashSet<string>();
                 var activeWrites = new HashSet<string>();
                 var categoryWrites = new HashSet<string>();
+                var remarkWrites = new HashSet<string>();
 
                 foreach (var update in existingDetailUpdates)
                 {
@@ -2048,7 +2231,8 @@ namespace BlazorApp.Api.Services.React
                         || update.合计装柜体积.HasValue
                         || update.合计装柜金额.HasValue
                         || HasAcceptedActive(update)
-                        || update.ProductCategoryGUID != null;
+                        || update.ProductCategoryGUID != null
+                        || update.备注 != null;
                     if (countValidNoOps && hasDirectDetailIntent)
                     {
                         // 有效目标上的同值保存也是成功，避免前端把 no-op 误判为静默跳过。
@@ -2135,6 +2319,15 @@ namespace BlazorApp.Api.Services.React
                     {
                         detail.IsActive = update.IsActive.Value;
                         activeWrites.Add(update.HGUID);
+                        changed = true;
+                    }
+                    if (
+                        update.备注 != null
+                        && !string.Equals(detail.Remarks, update.备注, StringComparison.Ordinal)
+                    )
+                    {
+                        detail.Remarks = update.备注;
+                        remarkWrites.Add(update.HGUID);
                         changed = true;
                     }
                     if (update.ProductCategoryGUID != null)
@@ -2654,7 +2847,7 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
-                // 开启事务，确保多表更新的原子性
+                // 多表写入必须处于调用方已取锁的同一事务中。
                 if (
                     changedDetails.Count > 0
                     || changedProducts.Count > 0
@@ -2668,8 +2861,14 @@ namespace BlazorApp.Api.Services.React
                     )
                 )
                 {
-                    await _context.Db.Ado.BeginTranAsync();
-                    try
+                    if (_context.Db.Ado.Transaction == null || mutationLock == null)
+                    {
+                        throw new InvalidOperationException(
+                            "货柜明细写入必须由持锁调用方在事务内执行"
+                        );
+                    }
+
+                    // 缩小批量写阶段的局部变量作用域，事务仍由外层持锁调用方管理。
                     {
                         var rejectedImportPriceHguids = new HashSet<string>(
                             StringComparer.OrdinalIgnoreCase
@@ -2838,9 +3037,9 @@ namespace BlazorApp.Api.Services.React
                                 .GroupBy(row => row.DetailCode)
                                 .Select(group => group.Last())
                                 .ToList();
-                            // 最坏情况每行会占 25 个参数（12 个字段的键和值加明细键）；80 行为
-                            // 2,000 个参数，预留货柜范围参数后仍低于 SQL Server 的 2,100 上限。
-                            foreach (var changedDetailRows in allChangedDetailRows.Chunk(80))
+                            // 最坏情况每行会占 27 个参数（13 个字段的键和值加明细键）；75 行为
+                            // 2,025 个参数，预留货柜范围参数后仍低于 SQL Server 的 2,100 上限。
+                            foreach (var changedDetailRows in allChangedDetailRows.Chunk(75))
                             {
                                 var sqlParameters = new List<SugarParameter>();
                                 var setClauses = new List<string>();
@@ -2952,6 +3151,12 @@ namespace BlazorApp.Api.Services.React
                                 categoryWrites,
                                 row => row.TargetWarehouseCategoryGUID
                             );
+                            AddDetailColumnCase(
+                                "Remarks",
+                                "Remarks",
+                                remarkWrites,
+                                row => row.Remarks
+                            );
 
                             if (setClauses.Count > 0)
                             {
@@ -2986,6 +3191,7 @@ namespace BlazorApp.Api.Services.React
 
                             // 明细合计变化后，同事务刷新货柜主表汇总，保证列表和详情头部一致。
                             await RefreshContainerSummariesAsync(
+                                mutationLock,
                                 changedDetails.Select(detail => detail.ContainerCode)
                             );
                         }
@@ -3179,13 +3385,6 @@ namespace BlazorApp.Api.Services.React
                                 ActorName = auditActorName,
                             }
                         );
-
-                        await _context.Db.Ado.CommitTranAsync();
-                    }
-                    catch
-                    {
-                        await _context.Db.Ado.RollbackTranAsync();
-                        throw;
                     }
                 }
 
@@ -3457,21 +3656,85 @@ namespace BlazorApp.Api.Services.React
             return Math.Round(price, 2, MidpointRounding.AwayFromZero);
         }
 
-        private async Task<List<ContainerDetail>> GetScopedDetailsAsync(
+        private async Task<int> ExecuteScopedBatchUpdateUnderContainerLockAsync(
             string containerGuid,
-            ContainerDetailBatchScopeDto request
+            ContainerDetailBatchScopeDto request,
+            Func<Container?, List<ContainerDetail>, List<UpdateContainerDetailDto>> buildUpdates,
+            string operation
         )
         {
-            var hguids = await ResolveContainerDetailBatchScopeHguidsAsync(containerGuid, request);
-            if (hguids.Count == 0)
+            var deadlockRetryCount = 0;
+            while (true)
             {
-                return new List<ContainerDetail>();
-            }
+                await _context.Db.Ado.BeginTranAsync();
+                try
+                {
+                    var mutationLock = await ContainerMutationLock.AcquireContainersAsync(
+                        _context.Db,
+                        new[] { containerGuid }
+                    );
 
-            return await _context
-                .Db.Queryable<ContainerDetail>()
-                .Where(detail => hguids.Contains(detail.DetailCode))
-                .ToListAsync();
+                    // 作用范围、货柜成本字段和明细计算输入必须在同一把货柜锁内重新解析。
+                    var container = await _context
+                        .Db.Queryable<Container>()
+                        .Where(item => item.ContainerCode == containerGuid && !item.IsDeleted)
+                        .FirstAsync();
+                    var hguids = await ResolveContainerDetailBatchScopeHguidsAsync(
+                        containerGuid,
+                        request
+                    );
+                    var details = hguids.Count == 0
+                        ? new List<ContainerDetail>()
+                        : await _context
+                            .Db.Queryable<ContainerDetail>()
+                            .Where(detail =>
+                                hguids.Contains(detail.DetailCode)
+                                && detail.ContainerCode == containerGuid
+                                && !detail.IsDeleted
+                            )
+                            .ToListAsync();
+                    mutationLock.EnsureCovers(
+                        _context.Db,
+                        details.Select(detail => detail.ContainerCode)
+                    );
+
+                    var updates = buildUpdates(container, details);
+                    var updateResult = await BatchUpdateDetailsAttemptAsync(
+                        updates,
+                        countValidNoOps: false,
+                        repairMissingStoreRelations: false,
+                        containerGuid: containerGuid,
+                        mutationLock: mutationLock
+                    );
+
+                    await _context.Db.Ado.CommitTranAsync();
+                    return updateResult.TotalUpdated;
+                }
+                catch (Exception exception)
+                {
+                    await RollbackContainerMutationTransactionSafelyAsync(exception);
+                    if (
+                        !ContainerMutationLock.ShouldRetryDeadlock(
+                            exception,
+                            deadlockRetryCount
+                        )
+                    )
+                    {
+                        _logger.LogError(exception, "[React] {Operation}失败", operation);
+                        throw;
+                    }
+
+                    deadlockRetryCount++;
+                    var delayMilliseconds = Random.Shared.Next(100, 301);
+                    _logger.LogWarning(
+                        exception,
+                        "[React] {Operation}遇到 SQL Server 1205，{DelayMilliseconds}ms 后完整重试一次",
+                        operation,
+                        delayMilliseconds
+                    );
+                    await Task.Delay(delayMilliseconds);
+                }
+            }
         }
 
         private static void EnsureContainerCostInputs(Container container)
@@ -3496,39 +3759,41 @@ namespace BlazorApp.Api.Services.React
                 return 0;
             }
 
-            var container = await _context
-                .Db.Queryable<Container>()
-                .FirstAsync(c => c.ContainerCode == containerGuid);
-            if (container == null)
-            {
-                return 0;
-            }
-            // 批量调浮率会同步重算运输成本和进口价格，必须先确保主表成本字段可用。
-            EnsureContainerCostInputs(container);
-
-            var details = await GetScopedDetailsAsync(containerGuid, request);
-            var updates = details
-                .Select(detail =>
+            return await ExecuteScopedBatchUpdateUnderContainerLockAsync(
+                containerGuid,
+                request,
+                (container, details) =>
                 {
-                    var transportCost = CalculateScopedTransportCost(detail, container);
-                    return new UpdateContainerDetailDto
+                    if (container == null)
                     {
-                        HGUID = detail.DetailCode,
-                        调整浮率 = request.FloatRate,
-                        运输成本 = transportCost,
-                        进口价格 = CalculateScopedImportPrice(
-                            detail,
-                            container,
-                            request.FloatRate.Value,
-                            transportCost
-                        ),
-                        // 系统按浮率重算的进货价只落货柜明细，不覆盖人工确认后的仓库进货价。
-                        SkipRelatedProductSync = true,
-                    };
-                })
-                .ToList();
+                        return new List<UpdateContainerDetailDto>();
+                    }
 
-            return await BatchUpdateDetailsAsync(updates);
+                    // 批量调浮率会同步重算运输成本和进口价格，必须使用锁后主表成本字段。
+                    EnsureContainerCostInputs(container);
+                    return details
+                        .Select(detail =>
+                        {
+                            var transportCost = CalculateScopedTransportCost(detail, container);
+                            return new UpdateContainerDetailDto
+                            {
+                                HGUID = detail.DetailCode,
+                                调整浮率 = request.FloatRate,
+                                运输成本 = transportCost,
+                                进口价格 = CalculateScopedImportPrice(
+                                    detail,
+                                    container,
+                                    request.FloatRate.Value,
+                                    transportCost
+                                ),
+                                // 系统按浮率重算的进货价只落货柜明细，不覆盖人工确认后的仓库进货价。
+                                SkipRelatedProductSync = true,
+                            };
+                        })
+                        .ToList();
+                },
+                "按筛选范围批量调浮率"
+            );
         }
 
         public async Task<int> ApplyPricesByScopeAsync(
@@ -3541,25 +3806,33 @@ namespace BlazorApp.Api.Services.React
                 return 0;
             }
 
-            var details = await GetScopedDetailsAsync(containerGuid, request);
-            var updates = details
-                .Select(detail =>
+            return await ExecuteScopedBatchUpdateUnderContainerLockAsync(
+                containerGuid,
+                request,
+                (_, details) =>
                 {
-                    var update = new UpdateContainerDetailDto { HGUID = detail.DetailCode };
-                    // 批量改价只同步用户实际提交的字段，避免旧零售价被当成本次改价写回主档。
-                    if (request.ImportPrice.HasValue)
-                    {
-                        update.进口价格 = request.ImportPrice.Value;
-                    }
-                    if (request.OemPrice.HasValue)
-                    {
-                        update.贴牌价格 = request.OemPrice.Value;
-                    }
-                    return update;
-                })
-                .ToList();
-
-            return await BatchUpdateDetailsAsync(updates);
+                    return details
+                        .Select(detail =>
+                        {
+                            var update = new UpdateContainerDetailDto
+                            {
+                                HGUID = detail.DetailCode,
+                            };
+                            // 批量改价只同步用户实际提交的字段，避免旧零售价被当成本次改价写回主档。
+                            if (request.ImportPrice.HasValue)
+                            {
+                                update.进口价格 = request.ImportPrice.Value;
+                            }
+                            if (request.OemPrice.HasValue)
+                            {
+                                update.贴牌价格 = request.OemPrice.Value;
+                            }
+                            return update;
+                        })
+                        .ToList();
+                },
+                "按筛选范围批量改价"
+            );
         }
 
         public async Task<int> RecalculateCostsByScopeAsync(
@@ -3569,43 +3842,47 @@ namespace BlazorApp.Api.Services.React
         {
             const decimal minimumRecalculateFloatRate = 1.30m;
 
-            var container = await _context
-                .Db.Queryable<Container>()
-                .FirstAsync(c => c.ContainerCode == containerGuid);
-            if (container == null)
-            {
-                return 0;
-            }
-            // 重算成本由服务端兜底执行，避免前端绕过校验时写入旧成本。
-            EnsureContainerCostInputs(container);
-
-            var details = await GetScopedDetailsAsync(containerGuid, request);
-            var updates = details
-                .Select(detail =>
+            return await ExecuteScopedBatchUpdateUnderContainerLockAsync(
+                containerGuid,
+                request,
+                (container, details) =>
                 {
-                    // 重算成本时不能再把空浮率按 1 处理；统一托底到 1.30 并写回明细。
-                    var floatRate = detail.AdjustmentRate.HasValue && detail.AdjustmentRate.Value >= minimumRecalculateFloatRate
-                        ? detail.AdjustmentRate.Value
-                        : minimumRecalculateFloatRate;
-                    var transportCost = CalculateScopedTransportCost(detail, container);
-                    return new UpdateContainerDetailDto
+                    if (container == null)
                     {
-                        HGUID = detail.DetailCode,
-                        调整浮率 = floatRate,
-                        运输成本 = transportCost,
-                        进口价格 = CalculateScopedImportPrice(
-                            detail,
-                            container,
-                            floatRate,
-                            transportCost
-                        ),
-                        // 运费/汇率触发的成本重算只更新货柜明细，仓库价格等到人工保存明细再同步。
-                        SkipRelatedProductSync = true,
-                    };
-                })
-                .ToList();
+                        return new List<UpdateContainerDetailDto>();
+                    }
 
-            return await BatchUpdateDetailsAsync(updates);
+                    // 重算成本由服务端兜底执行，且只使用持锁后重读的主表和明细输入。
+                    EnsureContainerCostInputs(container);
+                    return details
+                        .Select(detail =>
+                        {
+                            // 重算成本时不能再把空浮率按 1 处理；统一托底到 1.30 并写回明细。
+                            var floatRate =
+                                detail.AdjustmentRate.HasValue
+                                && detail.AdjustmentRate.Value >= minimumRecalculateFloatRate
+                                    ? detail.AdjustmentRate.Value
+                                    : minimumRecalculateFloatRate;
+                            var transportCost = CalculateScopedTransportCost(detail, container);
+                            return new UpdateContainerDetailDto
+                            {
+                                HGUID = detail.DetailCode,
+                                调整浮率 = floatRate,
+                                运输成本 = transportCost,
+                                进口价格 = CalculateScopedImportPrice(
+                                    detail,
+                                    container,
+                                    floatRate,
+                                    transportCost
+                                ),
+                                // 运费/汇率触发的成本重算只更新货柜明细，仓库价格等到人工保存明细再同步。
+                                SkipRelatedProductSync = true,
+                            };
+                        })
+                        .ToList();
+                },
+                "按筛选范围重算成本"
+            );
         }
 
         public async Task<int> BackfillLastPricesByScopeAsync(
@@ -3613,81 +3890,105 @@ namespace BlazorApp.Api.Services.React
             ContainerDetailBatchScopeDto request
         )
         {
-            var hguids = await ResolveContainerDetailBatchScopeHguidsAsync(containerGuid, request);
-            if (hguids.Count == 0)
+            await _context.Db.Ado.BeginTranAsync();
+            try
             {
-                return 0;
-            }
-
-            var details = await _context
-                .Db.Queryable<ContainerDetail>()
-                .Where(detail => hguids.Contains(detail.DetailCode))
-                .ToListAsync();
-            var productCodes = details
-                .Select(detail => detail.ProductCode)
-                .Where(code => !string.IsNullOrWhiteSpace(code))
-                .Select(code => code!)
-                .Distinct()
-                .ToList();
-            if (productCodes.Count == 0)
-            {
-                return 0;
-            }
-
-            var warehouseProducts = await _context
-                .Db.Queryable<WarehouseProduct>()
-                .Where(product => productCodes.Contains(product.ProductCode))
-                .ToListAsync();
-            var warehouseMap = warehouseProducts
-                .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
-                .ToDictionary(product => product.ProductCode!);
-
-            var changedDetails = new List<ContainerDetail>();
-            foreach (var detail in details)
-            {
-                if (
-                    string.IsNullOrWhiteSpace(detail.ProductCode)
-                    || !warehouseMap.TryGetValue(detail.ProductCode, out var warehouseProduct)
-                )
+                var mutationLock = await ContainerMutationLock.AcquireContainersAsync(
+                    _context.Db,
+                    new[] { containerGuid }
+                );
+                var hguids = await ResolveContainerDetailBatchScopeHguidsAsync(
+                    containerGuid,
+                    request
+                );
+                if (hguids.Count == 0)
                 {
-                    continue;
+                    await _context.Db.Ado.CommitTranAsync();
+                    return 0;
                 }
 
-                var changed = false;
-                if (!detail.LastImportPrice.HasValue && warehouseProduct.ImportPrice.HasValue)
+                // 选中明细必须在持锁后重读并再次收敛到路由货柜，避免旧筛选结果跨柜写入。
+                var details = await _context
+                    .Db.Queryable<ContainerDetail>()
+                    .Where(detail =>
+                        hguids.Contains(detail.DetailCode)
+                        && detail.ContainerCode == containerGuid
+                        && !detail.IsDeleted
+                    )
+                    .ToListAsync();
+                mutationLock.EnsureCovers(_context.Db, details.Select(detail => detail.ContainerCode));
+
+                var productCodes = details
+                    .Select(detail => detail.ProductCode)
+                    .Where(code => !string.IsNullOrWhiteSpace(code))
+                    .Select(code => code!)
+                    .Distinct()
+                    .ToList();
+                if (productCodes.Count == 0)
                 {
-                    // 回填只补空快照，绝不覆盖历史货柜已经保存的上次价格。
-                    detail.LastImportPrice = warehouseProduct.ImportPrice;
-                    changed = true;
-                }
-                if (!detail.LastOEMPrice.HasValue && warehouseProduct.OEMPrice.HasValue)
-                {
-                    detail.LastOEMPrice = warehouseProduct.OEMPrice;
-                    changed = true;
+                    await _context.Db.Ado.CommitTranAsync();
+                    return 0;
                 }
 
-                if (changed)
+                var warehouseProducts = await _context
+                    .Db.Queryable<WarehouseProduct>()
+                    .Where(product => productCodes.Contains(product.ProductCode))
+                    .ToListAsync();
+                var warehouseMap = warehouseProducts
+                    .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                    .ToDictionary(product => product.ProductCode!);
+
+                var changedDetails = new List<ContainerDetail>();
+                foreach (var detail in details)
                 {
-                    changedDetails.Add(detail);
+                    if (
+                        string.IsNullOrWhiteSpace(detail.ProductCode)
+                        || !warehouseMap.TryGetValue(detail.ProductCode, out var warehouseProduct)
+                    )
+                    {
+                        continue;
+                    }
+
+                    var changed = false;
+                    if (!detail.LastImportPrice.HasValue && warehouseProduct.ImportPrice.HasValue)
+                    {
+                        // 回填只补空快照，绝不覆盖历史货柜已经保存的上次价格。
+                        detail.LastImportPrice = warehouseProduct.ImportPrice;
+                        changed = true;
+                    }
+                    if (!detail.LastOEMPrice.HasValue && warehouseProduct.OEMPrice.HasValue)
+                    {
+                        detail.LastOEMPrice = warehouseProduct.OEMPrice;
+                        changed = true;
+                    }
+
+                    if (changed)
+                    {
+                        changedDetails.Add(detail);
+                    }
                 }
+
+                if (changedDetails.Count > 0)
+                {
+                    await _context
+                        .Db.Updateable(changedDetails)
+                        .UpdateColumns(detail => new
+                        {
+                            detail.LastImportPrice,
+                            detail.LastOEMPrice,
+                        })
+                        .WhereColumns(detail => new { detail.DetailCode })
+                        .ExecuteCommandAsync();
+                }
+
+                await _context.Db.Ado.CommitTranAsync();
+                return changedDetails.Count;
             }
-
-            if (changedDetails.Count == 0)
+            catch (Exception exception)
             {
-                return 0;
+                await RollbackContainerMutationTransactionSafelyAsync(exception);
+                throw;
             }
-
-            await _context
-                .Db.Updateable(changedDetails)
-                .UpdateColumns(detail => new
-                {
-                    detail.LastImportPrice,
-                    detail.LastOEMPrice,
-                })
-                .WhereColumns(detail => new { detail.DetailCode })
-                .ExecuteCommandAsync();
-
-            return changedDetails.Count;
         }
 
         /// <summary>
@@ -3701,56 +4002,74 @@ namespace BlazorApp.Api.Services.React
                 var loadingDate = dto.装柜日期?.Date;
                 _logger.LogInformation("[React] 开始创建货柜: {ContainerNumber}", containerNumber);
 
-                // 货柜编号允许重复，只限制同一编号在同一装柜日期重复创建。
-                var existsQuery = _context
-                    .Db.Queryable<Container>()
-                    .Where(x => x.ContainerNumber == containerNumber);
-                existsQuery = loadingDate.HasValue
-                    ? existsQuery.Where(x =>
-                        x.LoadingDate >= loadingDate.Value
-                        && x.LoadingDate < loadingDate.Value.AddDays(1)
-                    )
-                    : existsQuery.Where(x => x.LoadingDate == null);
-                var exists = await existsQuery.AnyAsync();
-
-                if (exists)
+                await _context.Db.Ado.BeginTranAsync();
+                try
                 {
-                    var loadingDateText = loadingDate?.ToString("yyyy-MM-dd") ?? "未设置";
-                    throw new InvalidOperationException($"货柜编号 {containerNumber} 在装柜日期 {loadingDateText} 已存在");
+                    // 创建前的跨柜去重检查和插入必须处于同一独占总闸事务内。
+                    await ContainerMutationLock.AcquireAllAsync(_context.Db);
+
+                    // 货柜编号允许重复，只限制同一编号在同一装柜日期重复创建。
+                    var existsQuery = _context
+                        .Db.Queryable<Container>()
+                        .Where(x => x.ContainerNumber == containerNumber);
+                    existsQuery = loadingDate.HasValue
+                        ? existsQuery.Where(x =>
+                            x.LoadingDate >= loadingDate.Value
+                            && x.LoadingDate < loadingDate.Value.AddDays(1)
+                        )
+                        : existsQuery.Where(x => x.LoadingDate == null);
+                    var exists = await existsQuery.AnyAsync();
+
+                    if (exists)
+                    {
+                        var loadingDateText = loadingDate?.ToString("yyyy-MM-dd") ?? "未设置";
+                        throw new InvalidOperationException(
+                            $"货柜编号 {containerNumber} 在装柜日期 {loadingDateText} 已存在"
+                        );
+                    }
+
+                    var container = new Container
+                    {
+                        ContainerCode = Guid.NewGuid().ToString(),
+                        ContainerNumber = containerNumber,
+                        LoadingDate = loadingDate,
+                        EstimatedArrivalDate = dto.预计到岸日期,
+                        ActualArrivalDate = null,
+                        ExchangeRate = dto.汇率,
+                        ShippingFee = dto.运费,
+                        Remarks = dto.备注,
+                        Status = 0,
+                        TotalPieces = 0,
+                        TotalQuantity = 0,
+                        TotalAmount = 0,
+                        TotalVolume = 0,
+                        CostFloatRate = null,
+                        CreatedAt = DateTime.Now,
+                        UpdatedAt = DateTime.Now,
+                        IsDeleted = false,
+                    };
+
+                    var result = await _context
+                        .Db.Insertable(container)
+                        .ExecuteReturnEntityAsync();
+                    await _context.Db.Ado.CommitTranAsync();
+
+                    _logger.LogInformation(
+                        "[React] 创建货柜成功: {ContainerCode}, 货柜编号: {ContainerNumber}",
+                        result.ContainerCode,
+                        result.ContainerNumber
+                    );
+                    return result.ContainerCode;
                 }
-
-                // 创建新货柜实体
-                var container = new Container
+                catch (Exception exception)
                 {
-                    ContainerCode = Guid.NewGuid().ToString(),
-                    ContainerNumber = containerNumber,
-                    LoadingDate = loadingDate,
-                    EstimatedArrivalDate = dto.预计到岸日期,
-                    ActualArrivalDate = null,
-                    ExchangeRate = dto.汇率,
-                    ShippingFee = dto.运费,
-                    Remarks = dto.备注,
-                    Status = 0, // 默认状态：已装柜/草稿
-                    TotalPieces = 0,
-                    TotalQuantity = 0,
-                    TotalAmount = 0,
-                    TotalVolume = 0,
-                    CostFloatRate = null,
-                    CreatedAt = DateTime.Now,
-                    UpdatedAt = DateTime.Now,
-                    IsDeleted = false,
-                };
-
-                // 插入数据库并返回实体
-                var result = await _context.Db.Insertable(container).ExecuteReturnEntityAsync();
-
-                _logger.LogInformation(
-                    "[React] 创建货柜成功: {ContainerCode}, 货柜编号: {ContainerNumber}",
-                    result.ContainerCode,
-                    result.ContainerNumber
-                );
-
-                return result.ContainerCode;
+                    await RollbackContainerMutationTransactionSafelyAsync(exception);
+                    throw;
+                }
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                throw;
             }
             catch (InvalidOperationException)
             {
@@ -3857,8 +4176,8 @@ namespace BlazorApp.Api.Services.React
             try
             {
                 // 查找货柜
-                var container = await FindContainerByIdAsync(containerId);
-                if (container == null)
+                var candidateContainer = await FindContainerByIdAsync(containerId);
+                if (candidateContainer == null)
                 {
                     _logger.LogWarning("货柜不存在: {ContainerId}", containerId);
                     // 货柜不存在，全部标记为失败
@@ -3872,12 +4191,32 @@ namespace BlazorApp.Api.Services.React
                     return result;
                 }
 
-                // 判断是否为覆盖模式（override = 替换，其他 = 累加）
-                var isOverride = string.Equals(
-                    resolution,
-                    "override",
-                    StringComparison.OrdinalIgnoreCase
-                );
+                await _context.Db.Ado.BeginTranAsync();
+                try
+                {
+                    var mutationLock = await ContainerMutationLock.AcquireContainersAsync(
+                        _context.Db,
+                        new[] { candidateContainer.ContainerCode }
+                    );
+                    var container = await FindContainerByIdAsync(containerId);
+                    if (container == null)
+                    {
+                        throw new ContainerMutationLockException(
+                            "container-disappeared",
+                            -1
+                        );
+                    }
+                    mutationLock.EnsureCovers(
+                        _context.Db,
+                        new[] { container.ContainerCode }
+                    );
+
+                    // 判断是否为覆盖模式（override = 替换，其他 = 累加）
+                    var isOverride = string.Equals(
+                        resolution,
+                        "override",
+                        StringComparison.OrdinalIgnoreCase
+                    );
 
                 // 【修复 N+1 查询问题】预加载货柜明细数据，避免在循环中逐个查询
                 var productCodes = items
@@ -3885,9 +4224,6 @@ namespace BlazorApp.Api.Services.React
                     .Select(i => i.ProductCode)
                     .Distinct()
                     .ToList();
-                Dictionary<string, ContainerDetail> detailDict;
-                try
-                {
                     var existingDetails = await _context
                         .Db.Queryable<ContainerDetail>()
                         .Where(x =>
@@ -3896,15 +4232,9 @@ namespace BlazorApp.Api.Services.React
                             && productCodes.Contains(x.ProductCode)
                         )
                         .ToListAsync();
-                    detailDict = existingDetails
+                    var detailDict = existingDetails
                         .Where(d => !string.IsNullOrWhiteSpace(d.ProductCode))
                         .ToDictionary(d => d.ProductCode!, d => d);
-                }
-                catch (Exception exPreload)
-                {
-                    _logger.LogError(exPreload, "预加载货柜明细数据失败");
-                    detailDict = new Dictionary<string, ContainerDetail>();
-                }
 
                 var warehouseProductMap = new Dictionary<string, WarehouseProduct>();
                 if (productCodes.Count > 0)
@@ -4041,6 +4371,7 @@ namespace BlazorApp.Api.Services.React
                         }
                     }
                     catch (Exception exItem)
+                        when (!ContainerMutationLock.TryResolveConflict(exItem, out _))
                     {
                         _logger.LogError(
                             exItem,
@@ -4057,36 +4388,28 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
 
-                // 可选：更新主表汇总字段（TotalPieces/TotalQuantity/TotalVolume/TotalAmount）
-                try
-                {
-                    var detailsAll = await _context
-                        .Db.Queryable<ContainerDetail>()
-                        .Where(x => x.ContainerCode == container.ContainerCode)
-                        .ToListAsync();
-
-                    container.TotalPieces = detailsAll.Sum(d => d.LoadingPieces ?? 0m);
-                    container.TotalQuantity = detailsAll.Sum(d => d.LoadingQuantity ?? 0m);
-                    container.TotalVolume = detailsAll.Sum(d => d.TotalVolume ?? 0m);
-                    container.TotalAmount = detailsAll.Sum(d => d.TotalAmount ?? 0m);
-
-                    await _context
-                        .Db.Updateable(container)
-                        .UpdateColumns(x => new
-                        {
-                            x.TotalPieces,
-                            x.TotalQuantity,
-                            x.TotalVolume,
-                            x.TotalAmount,
-                        })
-                        .ExecuteCommandAsync();
+                    // 明细写入与汇总必须在同一货柜事务内，汇总失败时整批回滚。
+                    await RefreshContainerSummariesAsync(
+                        mutationLock,
+                        new[] { container.ContainerCode }
+                    );
+                    await _context.Db.Ado.CommitTranAsync();
+                    return result;
                 }
-                catch (Exception exSum)
+                catch (ContainerMutationScopeChangedException exception)
                 {
-                    _logger.LogWarning(exSum, "更新主表汇总字段失败，但不影响分配结果");
+                    await RollbackContainerMutationTransactionSafelyAsync(exception);
+                    throw new ContainerMutationLockException("scope-changed", -1, exception);
                 }
-
-                return result;
+                catch (Exception exception)
+                {
+                    await RollbackContainerMutationTransactionSafelyAsync(exception);
+                    throw;
+                }
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -4112,105 +4435,71 @@ namespace BlazorApp.Api.Services.React
 
                 _logger.LogInformation("[React] 开始批量删除货柜明细，数量: {Count}", hguids.Count);
 
-                // 查询要删除的明细以及涉及的货柜编码（用于后续更新汇总）
-                var detailsToDelete = await _context
+                // 锁前只解析候选货柜；删除目标和汇总数据必须在持锁事务内重新读取。
+                var candidateContainerCodes = await _context
                     .Db.Queryable<ContainerDetail>()
                     .Where(d => hguids.Contains(d.DetailCode))
-                    .Select(d => new { d.DetailCode, d.ContainerCode })
+                    .Select(d => d.ContainerCode)
                     .ToListAsync();
 
-                if (!detailsToDelete.Any())
+                if (!candidateContainerCodes.Any())
                 {
                     _logger.LogWarning("[React] 未找到待删除的明细");
                     return 0;
                 }
 
-                // 收集涉及的货柜编码
-                var containerCodes = detailsToDelete
-                    .Select(x => x.ContainerCode)
-                    .Where(c => c != null)
-                    .Distinct()
-                    .ToList();
-
-                // 执行删除操作
-                var deletedRows = await _context
-                    .Db.Deleteable<ContainerDetail>()
-                    .Where(d => hguids.Contains(d.DetailCode))
-                    .ExecuteCommandAsync();
-
-                // 【修复 N+1 查询问题】批量获取所有涉及的货柜和明细数据，避免循环查询
-                // 1. 批量获取所有货柜
-                var containers = await _context
-                    .Db.Queryable<Container>()
-                    .Where(c => containerCodes.Contains(c.ContainerCode))
-                    .ToListAsync();
-                var containerDict = containers.ToDictionary(c => c.ContainerCode);
-
-                // 2. 批量获取所有货柜明细（用于汇总计算）
-                var allDetails = await _context
-                    .Db.Queryable<ContainerDetail>()
-                    .Where(x => containerCodes.Contains(x.ContainerCode))
-                    .ToListAsync();
-                var detailsByContainer = allDetails
-                    .GroupBy(d => d.ContainerCode)
-                    .ToDictionary(g => g.Key, g => g.ToList());
-
-                // 3. 在内存中计算汇总值并逐个更新（保持原有的异常处理粒度）
-                foreach (var code in containerCodes)
+                await _context.Db.Ado.BeginTranAsync();
+                try
                 {
-                    try
+                    var mutationLock = await ContainerMutationLock.AcquireContainersAsync(
+                        _context.Db,
+                        candidateContainerCodes
+                    );
+                    var detailsToDelete = await _context
+                        .Db.Queryable<ContainerDetail>()
+                        .Where(d => hguids.Contains(d.DetailCode))
+                        .Select(d => new { d.DetailCode, d.ContainerCode })
+                        .ToListAsync();
+                    if (!detailsToDelete.Any())
                     {
-                        // 从字典中获取货柜（内存操作，无数据库查询）
-                        if (!containerDict.TryGetValue(code, out var container))
-                            continue;
-
-                        // 从字典中获取明细（内存操作，无数据库查询）
-                        if (detailsByContainer.TryGetValue(code, out var detailsAll))
-                        {
-                            // 计算汇总值
-                            container.TotalPieces = detailsAll.Sum(d => d.LoadingPieces ?? 0m);
-                            container.TotalQuantity = detailsAll.Sum(d => d.LoadingQuantity ?? 0m);
-                            container.TotalVolume = detailsAll.Sum(d => d.TotalVolume ?? 0m);
-                            container.TotalAmount = detailsAll.Sum(d => d.TotalAmount ?? 0m);
-                        }
-                        else
-                        {
-                            // 如果没有明细，所有汇总字段归零
-                            container.TotalPieces = 0m;
-                            container.TotalQuantity = 0m;
-                            container.TotalVolume = 0m;
-                            container.TotalAmount = 0m;
-                        }
-
-                        // 保存汇总更新
-                        await _context
-                            .Db.Updateable(container)
-                            .UpdateColumns(x => new
-                            {
-                                x.TotalPieces,
-                                x.TotalQuantity,
-                                x.TotalVolume,
-                                x.TotalAmount,
-                            })
-                            .ExecuteCommandAsync();
+                        await _context.Db.Ado.CommitTranAsync();
+                        return 0;
                     }
-                    catch (Exception exSum)
-                    {
-                        // 汇总更新失败不影响删除结果，仅记录警告
-                        _logger.LogWarning(
-                            exSum,
-                            "更新货柜 {ContainerCode} 汇总字段失败，但不影响删除结果",
-                            code
-                        );
-                    }
+
+                    var containerCodes = detailsToDelete
+                        .Select(detail => detail.ContainerCode)
+                        .ToList();
+                    mutationLock.EnsureCovers(_context.Db, containerCodes);
+
+                    var deletedRows = await _context
+                        .Db.Deleteable<ContainerDetail>()
+                        .Where(d => hguids.Contains(d.DetailCode))
+                        .ExecuteCommandAsync();
+
+                    await RefreshContainerSummariesAsync(mutationLock, containerCodes);
+                    await _context.Db.Ado.CommitTranAsync();
+
+                    _logger.LogInformation(
+                        "[React] 批量删除货柜明细完成，成功删除: {Deleted}/{Total}",
+                        deletedRows,
+                        hguids.Count
+                    );
+                    return deletedRows;
                 }
-
-                _logger.LogInformation(
-                    "[React] 批量删除货柜明细完成，成功删除: {Deleted}/{Total}",
-                    deletedRows,
-                    hguids.Count
-                );
-                return deletedRows;
+                catch (ContainerMutationScopeChangedException exception)
+                {
+                    await RollbackContainerMutationTransactionSafelyAsync(exception);
+                    throw new ContainerMutationLockException("scope-changed", -1, exception);
+                }
+                catch (Exception exception)
+                {
+                    await RollbackContainerMutationTransactionSafelyAsync(exception);
+                    throw;
+                }
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                throw;
             }
             catch (Exception ex)
             {

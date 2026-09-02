@@ -152,6 +152,7 @@ try {
       hguid: 'D-CLEAR-EN',
       ClearEnglishName: true,
       中包数: 12,
+      备注: '连续编辑后的备注',
       ProductCategoryGUID: 'CAT-TARGET',
       SkipRelatedProductSync: true,
     },
@@ -166,8 +167,8 @@ try {
   assertEqual(capturedInit?.method, 'POST', 'batchUpdateDetails should use POST')
   assertDeepEqual(
     JSON.parse(String(capturedInit?.body)),
-    [{ HGUID: 'D-CLEAR-EN', ClearEnglishName: true, ProductCategoryGUID: 'CAT-TARGET', 中包数: 12, SkipRelatedProductSync: true }],
-    'batchUpdateDetails 应发送显式字段，货柜范围由路径约束',
+    [{ HGUID: 'D-CLEAR-EN', ClearEnglishName: true, ProductCategoryGUID: 'CAT-TARGET', 中包数: 12, 备注: '连续编辑后的备注', SkipRelatedProductSync: true }],
+    'batchUpdateDetails 应发送备注等显式字段，货柜范围由路径约束',
   )
   assertDeepEqual(
     detailUpdateResult.validationErrors,
