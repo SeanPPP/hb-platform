@@ -30,7 +30,7 @@ assertEqual(
   !restoreDraftSource.includes('detailRowsContainerGuidRef.current = containerGuid')
     && restoreDraftSource.includes("detailRowsContainerGuidRef.current = ''")
     && restoreDraftSource.includes('setRows([])')
-    && resetDetailSource.includes('if (isContainerChange)')
+    && resetDetailSource.includes('if (!isContainerChange) return')
     && resetDetailSource.includes('setRows([])')
     && pageSource.includes('scopeContainerDetailRowsToContainer(rows, detailRowsContainerGuidRef.current, containerGuid)'),
   true,
@@ -89,11 +89,16 @@ assertEqual(
     && pageSource.includes('setColumnFilters({})')
     && pageSource.includes('createContainerDetailDraftLocateResetPlan')
     && pageSource.includes('shouldConsumePendingContainerDetailLocate')
-    && pageSource.includes('failedDetailAppendRequestKeyRef.current')
-    && pageSource.includes('自动追加失败后保留定位意图但不循环重试')
+    && pageSource.includes('const locateFirstPendingDetailField = (scanFromFirstPage = true) =>')
+    && pageSource.includes("&& detailLoadMode === 'paged'")
+    && pageSource.includes('&& scanFromFirstPage')
+    && pageSource.includes('&& detailPageNumber !== 1')
+    && pageSource.includes('pageNumber: 1')
+    && pageSource.includes('void loadNextDetailChunk()')
+    && pageSource.includes('void locateFirstPendingDetailField(false)')
     && pageSource.includes('未找到未保存项，可能已被删除或保存'),
   true,
-  '定位草稿应先自动清除筛选并连续加载，耗尽数据后才提示可能已删除',
+  '定位草稿应先清除筛选，再从第 1 页逐页查找，耗尽数据后才提示可能已删除',
 )
 assertEqual(
   pageSource.includes('降级提示是 sticky')

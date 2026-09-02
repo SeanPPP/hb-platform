@@ -466,14 +466,14 @@ async function main() {
         containerDetailSource.includes('lastLoadedContainerDetailSuccessRef') &&
         containerDetailSource.includes('const loadData = async (showLoading = true)') &&
         containerDetailSource.includes('shouldSkipDetailAutoReload({') &&
-        containerDetailSource.includes('const activeLoadQueryKey = detailQueryKey') &&
-        containerDetailSource.includes('requestedDetailQueryKey: activeLoadQueryKey') &&
-        containerDetailSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
+        containerDetailSource.includes("const activeLoadQueryKey = detailLoadMode === 'probe'") &&
+        containerDetailSource.includes('lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
+        containerDetailSource.includes('lastLoadedContainerDetailSuccessRef.current.queryKey === activeLoadQueryKey') &&
         containerDetailSource.includes('void loadHeader(shouldShowInitialLoading)') &&
-        containerDetailSource.includes("loadDetailChunk(1, 'reset')") &&
+        containerDetailSource.includes("void loadDetailRows(detailLoadMode === 'paged' ? 'paged' : 'probe')") &&
         containerDetailSource.includes('loadedContainerGuidRef.current = containerGuid') &&
         containerDetailSource.includes('visibleContainerGuidRef.current = containerGuid') &&
-        /lastLoadedContainerDetailSuccessRef\.current = \{\s*containerGuid,\s*queryKey: detailQueryKey,\s*generation: currentReconcileGeneration,\s*\}/.test(containerDetailSource),
+        /lastLoadedContainerDetailSuccessRef\.current = \{\s*containerGuid,\s*queryKey: pagedDetailQueryKey,\s*generation: currentRequestId,\s*\}/.test(containerDetailSource),
       '货柜详情缺少 KeepAlive active 守卫或明细查询条件缓存保护',
     )
     assert(

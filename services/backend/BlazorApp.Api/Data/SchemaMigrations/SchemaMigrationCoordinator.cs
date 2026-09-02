@@ -12,6 +12,8 @@ internal sealed class SchemaMigrationCoordinator
     internal const string MainMigrationId = "20260827.001-hbweb-baseline";
     internal const string BrowserExtensionSessionGrantMigrationId =
         "20260830.001-browser-extension-session-grant";
+    internal const string ContainerDetailQueryIndexesMigrationId =
+        "20260902.001-container-detail-query-indexes";
     internal const string PosmMigrationId = "20260827.001-hbweb-posm-baseline";
     internal const string MobileDeviceActivationMigrationId =
         "20260831.001-mobile-device-activation";
@@ -27,6 +29,11 @@ internal sealed class SchemaMigrationCoordinator
             BrowserExtensionSessionGrantMigrationId,
             static (runtime, cancellationToken) =>
                 runtime.ApplyBrowserExtensionSessionGrantAsync(cancellationToken)
+        ),
+        new(
+            ContainerDetailQueryIndexesMigrationId,
+            static (runtime, cancellationToken) =>
+                runtime.ApplyContainerDetailQueryIndexesAsync(cancellationToken)
         ),
     ];
 
@@ -49,6 +56,8 @@ internal sealed class SchemaMigrationCoordinator
     private const string DeviceActivationSignatureId = "device-activation-schema-signature";
     private const string MobileDeviceActivationSignatureId =
         "mobile-device-activation-schema-signature";
+    private const string ContainerDetailQueryIndexesSignatureId =
+        "container-detail-query-indexes-schema-signature";
 
     private readonly ISchemaMigrationRuntime _runtime;
     private readonly ILogger<SchemaMigrationCoordinator> _logger;
@@ -127,6 +136,13 @@ internal sealed class SchemaMigrationCoordinator
                 SchemaDiagnosticCodes.DeviceActivationIncompatible
             );
         }
+        catch (ContainerDetailQueryIndexSchemaMismatchException)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.SchemaNotReady,
+                SchemaDiagnosticCodes.ContainerDetailQueryIndexesIncompatible
+            );
+        }
         catch (SchemaProviderNotSupportedException)
         {
             LogResult(
@@ -170,6 +186,13 @@ internal sealed class SchemaMigrationCoordinator
             return SchemaOperationResult.Failure(
                 SchemaExitCodes.SchemaNotReady,
                 SchemaDiagnosticCodes.DeviceActivationIncompatible
+            );
+        }
+        catch (ContainerDetailQueryIndexSchemaMismatchException)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.SchemaNotReady,
+                SchemaDiagnosticCodes.ContainerDetailQueryIndexesIncompatible
             );
         }
         catch (SchemaProviderNotSupportedException)
@@ -297,7 +320,7 @@ internal sealed class SchemaMigrationCoordinator
 
     private async Task<SchemaOperationResult> CheckCoreAsync(CancellationToken cancellationToken)
     {
-        // 常规启动门禁固定为四批只读 SQL：两个账本、POS 激活签名、Mobile 绑定签名各一批。
+        // 常规启动门禁只读检查账本，并仅对已登记的查询索引迁移核验精确签名。
         var mainApplied = await CheckLedgerAsync(
             SchemaDatabase.Main,
             MainScope,
@@ -312,6 +335,11 @@ internal sealed class SchemaMigrationCoordinator
             SchemaDiagnosticCodes.PosmMigrationMissing,
             cancellationToken
         );
+        if (mainApplied)
+        {
+            // 缺少迁移账本时保留 Missing 诊断；索引不存在并不等于已登记迁移发生签名漂移。
+            await VerifyContainerDetailQueryIndexesAsync(cancellationToken);
+        }
         await VerifyDeviceActivationSchemaAsync(cancellationToken);
         await VerifyMobileDeviceActivationSchemaAsync(cancellationToken);
 
@@ -378,6 +406,41 @@ internal sealed class SchemaMigrationCoordinator
         }
 
         return allApplied;
+    }
+
+    private async Task VerifyContainerDetailQueryIndexesAsync(
+        CancellationToken cancellationToken
+    )
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            await _runtime.VerifyContainerDetailQueryIndexesAsync(cancellationToken);
+            LogResult(
+                MainScope,
+                ContainerDetailQueryIndexesSignatureId,
+                stopwatch.ElapsedMilliseconds,
+                "Ready",
+                SchemaDiagnosticCodes.Ready
+            );
+        }
+        catch (Exception exception)
+        {
+            LogResult(
+                MainScope,
+                ContainerDetailQueryIndexesSignatureId,
+                stopwatch.ElapsedMilliseconds,
+                "Failed",
+                exception switch
+                {
+                    OperationCanceledException => SchemaDiagnosticCodes.Cancelled,
+                    ContainerDetailQueryIndexSchemaMismatchException =>
+                        SchemaDiagnosticCodes.ContainerDetailQueryIndexesIncompatible,
+                    _ => SchemaDiagnosticCodes.DatabaseFailure,
+                }
+            );
+            throw;
+        }
     }
 
     private async Task VerifyDeviceActivationSchemaAsync(CancellationToken cancellationToken)

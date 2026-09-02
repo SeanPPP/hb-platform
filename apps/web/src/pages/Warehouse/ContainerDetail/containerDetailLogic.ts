@@ -1,10 +1,14 @@
-import type { ContainerDetail, ContainerDetailQuery, ContainerMain, UpdateContainerDetailRequest } from '../../../types/container'
+import type { ContainerDetail, ContainerDetailQuery, ContainerDetailQueryResult, ContainerMain, UpdateContainerDetailRequest } from '../../../types/container'
 import type { PushProductsToHqItem, PushProductsToHqResult } from '../../../types/posProduct'
 
 export type ContainerDetailProductTypeFilter = 'normal' | 'set' | 'multi' | 'setChild'
 export type ContainerDetailTagFilter = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport' | 'active' | 'inactive' | ContainerDetailProductTypeFilter
 
-export type ContainerDetailTagStats = Record<ContainerDetailTagFilter, number>
+export type ContainerDetailTagStats = Record<ContainerDetailTagFilter, number> & {
+  productCodeMatched: number
+  supplierItemMatched: number
+  unmatched: number
+}
 type ContainerDetailSelectableTagFilter = Exclude<ContainerDetailTagFilter, 'all'>
 export type ContainerDetailNewProductFilter = 'new' | 'existing'
 export type ContainerDetailMatchTypeFilter = 'productCode' | 'supplierItem' | 'unmatched'
@@ -14,6 +18,87 @@ export const CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY = '__ALL_CONTAINER_DETAIL_
 export const CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY = '__UNCATEGORIZED_CONTAINER_DETAIL_CATEGORIES__'
 export const DEFAULT_CONTAINER_DETAIL_FLOAT_RATE = 1.3
 export const CONTAINER_DETAIL_ENGLISH_NAME_FIELD = '英文名称'
+export const CONTAINER_DETAIL_INITIAL_PAGE_SIZE = 100
+export const CONTAINER_DETAIL_FULL_LOAD_LIMIT = 200
+export const CONTAINER_DETAIL_DEFAULT_PAGE_SIZE = 100
+export const CONTAINER_DETAIL_PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1000] as const
+export type ContainerDetailLoadMode = 'probe' | 'full' | 'paged'
+
+export function resolveContainerDetailInitialPage(
+  result: Pick<ContainerDetailQueryResult, 'items' | 'itemsTotal'>,
+) {
+  if (result.itemsTotal <= CONTAINER_DETAIL_FULL_LOAD_LIMIT) {
+    return {
+      mode: 'full' as const,
+      items: result.items,
+      itemsTotal: result.itemsTotal,
+      requiresFullLoad: result.items.length < result.itemsTotal,
+    }
+  }
+
+  return {
+    mode: 'paged' as const,
+    // 大货柜直接复用首屏 100 行，避免再请求同一个第 1 页。
+    items: result.items,
+    itemsTotal: result.itemsTotal,
+    requiresFullLoad: false,
+  }
+}
+
+export function resolveContainerDetailFullPage(
+  result: Pick<ContainerDetailQueryResult, 'items' | 'itemsTotal' | 'hasMore'>,
+  fullLoadLimit = CONTAINER_DETAIL_FULL_LOAD_LIMIT,
+) {
+  if (result.hasMore) {
+    return {
+      mode: 'paged' as const,
+      items: result.items.slice(0, CONTAINER_DETAIL_DEFAULT_PAGE_SIZE),
+      // 关闭 total 的二次请求只会返回 hasMore；至少保留一个可翻页的可信下界。
+      itemsTotal: Math.max(result.itemsTotal, fullLoadLimit + 1),
+    }
+  }
+
+  return {
+    mode: 'full' as const,
+    items: result.items,
+    itemsTotal: Math.max(result.itemsTotal, result.items.length),
+  }
+}
+
+export function canReuseContainerDetailInitialPage({
+  filters,
+  selectedTags,
+  sortState,
+  pageSize,
+}: {
+  filters: ContainerDetailColumnFilters
+  selectedTags: ContainerDetailTagFilter[]
+  sortState: ContainerDetailSortState
+  pageSize: number
+}) {
+  if (
+    pageSize !== CONTAINER_DETAIL_DEFAULT_PAGE_SIZE
+    || sortState.field !== 'itemNumber'
+    || sortState.order !== 'ascend'
+  ) return false
+
+  const query = buildContainerDetailQuery({
+    containerGuid: '__probe__',
+    filters,
+    selectedTags,
+    sortState,
+    pageNumber: 1,
+    pageSize,
+  })
+  const scopeKeys = Object.keys(query).filter((key) => ![
+    'containerGuid',
+    'pageNumber',
+    'pageSize',
+    'sortBy',
+    'sortOrder',
+  ].includes(key))
+  return scopeKeys.length === 0
+}
 
 export type PendingContainerDetailPatch = Pick<UpdateContainerDetailRequest, 'hguid'> &
   Partial<Pick<UpdateContainerDetailRequest, '进口价格' | '贴牌价格' | '英文名称' | 'ClearEnglishName'>>
@@ -1054,10 +1139,6 @@ export function getContainerDetailBatchCategoryProductCodes(rows: ContainerDetai
 }
 
 export function getContainerDetailMatchType(row: ContainerDetail): ContainerDetailMatchTypeFilter {
-  if (hasContainerDetailProductCodeConflict(row)) {
-    return 'supplierItem'
-  }
-
   const raw = row.matchType ?? row.MatchType
   const normalized = raw?.trim().toLowerCase()
   if (normalized === 'productcode' || normalized === 'product_code' || normalized === '商品编码') {
@@ -1076,7 +1157,8 @@ export function getContainerDetailMatchType(row: ContainerDetail): ContainerDeta
 }
 
 export function getContainerDetailProductType(row: ContainerDetail) {
-  // 商品类型以国内商品表关联信息为准，货柜明细快照字段仅作为历史数据兜底。
+  // 套装子商品只记录在货柜明细快照中，必须优先识别；其他类型仍以国内商品表为准。
+  if (row.商品类型 === '套装子商品') return '套装子商品'
   return row.商品信息?.商品类型 || row.商品类型 || '普通商品'
 }
 
@@ -1371,6 +1453,9 @@ export function buildContainerDetailTagStats(rows: ContainerDetail[]): Container
     set: 0,
     multi: 0,
     setChild: 0,
+    productCodeMatched: 0,
+    supplierItemMatched: 0,
+    unmatched: 0,
   }
 
   rows.forEach((row) => {
@@ -1383,6 +1468,10 @@ export function buildContainerDetailTagStats(rows: ContainerDetail[]): Container
     if (matchesContainerDetailTagFilter(row, 'inactive')) stats.inactive += 1
     const productType = getContainerDetailProductTypeFilterKey(row)
     stats[productType] += 1
+    const matchType = getContainerDetailMatchType(row)
+    if (matchType === 'productCode') stats.productCodeMatched += 1
+    else if (matchType === 'supplierItem') stats.supplierItemMatched += 1
+    else stats.unmatched += 1
   })
 
   return stats
@@ -1453,8 +1542,13 @@ function getColumnSortValue(row: ContainerDetail, field: ContainerDetailSortFiel
       return getContainerDetailProductName(row)
     case 'englishName':
       return getContainerDetailEnglishName(row)
-    case 'productType':
-      return getContainerDetailProductTypeFilterKey(row)
+    case 'productType': {
+      const productType = getContainerDetailProductTypeFilterKey(row)
+      if (productType === 'set') return 1
+      if (productType === 'multi') return 2
+      if (productType === 'setChild') return 3
+      return 0
+    }
     case 'newProduct':
       return row.是否新商品 ? 1 : 0
     case 'matchType':
@@ -1596,9 +1690,11 @@ export function applyContainerDetailLocalExportValues(
 export interface BuildContainerDetailQueryOptions {
   containerGuid: string
   filters: ContainerDetailColumnFilters
+  selectedTags?: ContainerDetailTagFilter[]
   sortState?: ContainerDetailSortState
   pageNumber: number
   pageSize: number
+  includeItems?: boolean
   includeTotal?: boolean
   includeStats?: boolean
 }
@@ -1650,9 +1746,11 @@ function assignNumberRange(
 export function buildContainerDetailQuery({
   containerGuid,
   filters,
+  selectedTags,
   sortState,
   pageNumber,
   pageSize,
+  includeItems,
   includeTotal,
   includeStats,
 }: BuildContainerDetailQueryOptions): ContainerDetailQuery {
@@ -1662,7 +1760,10 @@ export function buildContainerDetailQuery({
     pageSize,
   }
 
-  // total/tagStats 是货柜明细追加页的主要固定开销；只有调用方明确指定时才传给后端。
+  // items/total/tagStats 可独立关闭；分页首屏先返回行，统计再由轻量请求补齐。
+  if (includeItems != null) {
+    query.includeItems = includeItems
+  }
   if (includeTotal != null) {
     query.includeTotal = includeTotal
   }
@@ -1679,6 +1780,11 @@ export function buildContainerDetailQuery({
   assignNonEmptyArray(query, 'newProductStates', filters.newProductStates)
   assignNonEmptyArray(query, 'matchTypes', filters.matchTypes)
   assignNonEmptyArray(query, 'warehouseStatus', filters.warehouseStatus)
+  assignNonEmptyArray(
+    query,
+    'selectedTags',
+    selectedTags?.filter((tag) => tag !== 'all'),
+  )
 
   assignNumberRange(query, 'containerPiecesMin', 'containerPiecesMax', filters.containerPieces)
   assignNumberRange(query, 'middlePackQuantityMin', 'middlePackQuantityMax', filters.middlePackQuantity)

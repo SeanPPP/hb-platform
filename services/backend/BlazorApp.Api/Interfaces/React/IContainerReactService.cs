@@ -32,7 +32,10 @@ namespace BlazorApp.Api.Interfaces.React
         /// <summary>
         /// 按服务端筛选、排序和内部分页查询货柜商品明细（React）
         /// </summary>
-        Task<ContainerDetailQueryResultDto> QueryContainerDetailsAsync(ContainerDetailQueryDto request);
+        Task<ContainerDetailQueryResultDto> QueryContainerDetailsAsync(
+            ContainerDetailQueryDto request,
+            CancellationToken cancellationToken = default
+        );
 
         /// <summary>
         /// 获取国内套装多码价格明细（货柜明细弹窗专用）。

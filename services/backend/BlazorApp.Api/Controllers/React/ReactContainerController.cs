@@ -443,7 +443,8 @@ namespace BlazorApp.Api.Controllers.React
         [Authorize(Policy = Permissions.Container.View)]
         public async Task<IActionResult> QueryContainerProducts(
             string containerGuid,
-            [FromBody] ContainerDetailQueryDto? request
+            [FromBody] ContainerDetailQueryDto? request,
+            CancellationToken cancellationToken = default
         )
         {
             try
@@ -456,7 +457,10 @@ namespace BlazorApp.Api.Controllers.React
                 request ??= new ContainerDetailQueryDto();
                 request.ContainerGuid = containerGuid;
 
-                var result = await _containerReactService.QueryContainerDetailsAsync(request);
+                var result = await _containerReactService.QueryContainerDetailsAsync(
+                    request,
+                    cancellationToken
+                );
 
                 return Ok(
                     new
@@ -466,6 +470,10 @@ namespace BlazorApp.Api.Controllers.React
                         message = "获取货柜商品明细成功",
                     }
                 );
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -485,7 +493,8 @@ namespace BlazorApp.Api.Controllers.React
         [Authorize(Policy = Permissions.Container.View)]
         public async Task<IActionResult> ExportContainerProducts(
             string containerGuid,
-            [FromBody] ReactContainerDetailsExportRequest? request
+            [FromBody] ReactContainerDetailsExportRequest? request,
+            CancellationToken cancellationToken = default
         )
         {
             try
@@ -507,7 +516,11 @@ namespace BlazorApp.Api.Controllers.React
                     return NotFound(new { success = false, message = "货柜不存在" });
                 }
 
-                var details = await LoadReactContainerExportDetailsAsync(containerGuid, request);
+                var details = await LoadReactContainerExportDetailsAsync(
+                    containerGuid,
+                    request,
+                    cancellationToken
+                );
                 if (details.Count == 0)
                 {
                     return BadRequest(new { success = false, message = "没有找到要导出的明细数据" });
@@ -540,6 +553,10 @@ namespace BlazorApp.Api.Controllers.React
 
                 return File(fileBytes, contentType, fileName);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(
@@ -553,7 +570,8 @@ namespace BlazorApp.Api.Controllers.React
 
         private async Task<List<ContainerDetailDto>> LoadReactContainerExportDetailsAsync(
             string containerGuid,
-            ReactContainerDetailsExportRequest request
+            ReactContainerDetailsExportRequest request,
+            CancellationToken cancellationToken
         )
         {
             var query = request.Query ?? new ContainerDetailQueryDto();
@@ -572,7 +590,10 @@ namespace BlazorApp.Api.Controllers.React
 
             while (true)
             {
-                var result = await _containerReactService.QueryContainerDetailsAsync(query);
+                var result = await _containerReactService.QueryContainerDetailsAsync(
+                    query,
+                    cancellationToken
+                );
                 var items = selectedHguids.Count == 0
                     ? result.Items
                     : result.Items

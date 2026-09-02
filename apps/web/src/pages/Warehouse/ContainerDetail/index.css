@@ -127,6 +127,10 @@
   align-items: center;
 }
 
+.container-detail-table .ant-table-pagination {
+  margin: 8px 0 0;
+}
+
 /* 商品图保持缩略图比例，点击后由 AntD Image 打开放大预览。 */
 .container-detail-product-image {
   border-radius: 4px;

@@ -38,6 +38,10 @@ internal interface ISchemaMigrationRuntime
 
     Task ApplyBrowserExtensionSessionGrantAsync(CancellationToken cancellationToken);
 
+    Task ApplyContainerDetailQueryIndexesAsync(CancellationToken cancellationToken);
+
+    Task VerifyContainerDetailQueryIndexesAsync(CancellationToken cancellationToken);
+
     Task ApplyPosmBaselineAsync(CancellationToken cancellationToken);
 
     Task ApplyMobileDeviceActivationAsync(CancellationToken cancellationToken);
@@ -59,6 +63,8 @@ internal interface ISchemaMigrationSession : IAsyncDisposable
 internal sealed class SchemaProviderNotSupportedException : Exception;
 
 internal sealed class DeviceActivationSchemaMismatchException : Exception;
+
+internal sealed class ContainerDetailQueryIndexSchemaMismatchException : Exception;
 
 internal sealed class SchemaBaselineSqlFailureException(string stepId) : Exception
 {
@@ -183,6 +189,39 @@ internal sealed class SqlServerSchemaMigrationRuntime : ISchemaMigrationRuntime
         cancellationToken,
         "main-browser-extension-session-grant"
     );
+
+    public async Task ApplyContainerDetailQueryIndexesAsync(
+        CancellationToken cancellationToken
+    )
+    {
+        await SqlServerSchemaMigrationStore.ExecuteBatchAsync(
+            _mainDatabase.ConnectionString,
+            ContainerDetailQueryIndexSchema.ApplySql,
+            _commandTimeoutSeconds,
+            cancellationToken
+        );
+        // 精确签名在记录 migration ledger 前通过，同名错误索引不能被误标为已完成。
+        await VerifyContainerDetailQueryIndexesAsync(cancellationToken);
+    }
+
+    public async Task VerifyContainerDetailQueryIndexesAsync(
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            await SqlServerSchemaMigrationStore.ExecuteReadOnlyBatchAsync(
+                _mainDatabase.ConnectionString,
+                ContainerDetailQueryIndexSchema.VerifySql,
+                _commandTimeoutSeconds,
+                cancellationToken
+            );
+        }
+        catch (SqlException exception) when (exception.Number is >= 51530 and <= 51539)
+        {
+            throw new ContainerDetailQueryIndexSchemaMismatchException();
+        }
+    }
 
     public async Task ApplyPosmBaselineAsync(CancellationToken cancellationToken)
     {

@@ -188,6 +188,7 @@ public class ReactContainerControllerSyncContractTests
     public async Task QueryContainerProducts_应使用路由货柜GUID并返回标准响应()
     {
         ContainerDetailQueryDto? actualRequest = null;
+        var actualCancellationToken = default(CancellationToken);
         var expectedResult = new ContainerDetailQueryResultDto
         {
             Items = new List<ContainerDetailDto> { new() { HGUID = "DETAIL-1" } },
@@ -201,10 +202,18 @@ public class ReactContainerControllerSyncContractTests
         };
         var containerService = new Mock<IContainerReactService>();
         containerService
-            .Setup(service => service.QueryContainerDetailsAsync(It.IsAny<ContainerDetailQueryDto>()))
-            .Callback<ContainerDetailQueryDto>(request => actualRequest = request)
+            .Setup(service => service.QueryContainerDetailsAsync(
+                It.IsAny<ContainerDetailQueryDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback<ContainerDetailQueryDto, CancellationToken>((request, cancellationToken) =>
+            {
+                actualRequest = request;
+                actualCancellationToken = cancellationToken;
+            })
             .ReturnsAsync(expectedResult);
         var controller = CreateController(containerService: containerService.Object);
+        using var cancellation = new CancellationTokenSource();
 
         var response = await controller.QueryContainerProducts(
             "ROUTE-GUID",
@@ -215,12 +224,14 @@ public class ReactContainerControllerSyncContractTests
                 PageSize = 50,
                 IncludeTotal = false,
                 IncludeStats = false,
-            }
+            },
+            cancellation.Token
         );
 
         var ok = Assert.IsType<OkObjectResult>(response);
         Assert.NotNull(actualRequest);
         Assert.Equal("ROUTE-GUID", actualRequest!.ContainerGuid);
+        Assert.Equal(cancellation.Token, actualCancellationToken);
         Assert.False(actualRequest.IncludeTotal);
         Assert.False(actualRequest.IncludeStats);
         AssertPayload(ok.Value, true, "获取货柜商品明细成功", expectedResult);
@@ -515,8 +526,11 @@ public class ReactContainerControllerSyncContractTests
             .Setup(service => service.GetContainerDetailAsync("ROUTE-GUID"))
             .ReturnsAsync(CreateContainer());
         containerService
-            .Setup(service => service.QueryContainerDetailsAsync(It.IsAny<ContainerDetailQueryDto>()))
-            .Callback<ContainerDetailQueryDto>(request =>
+            .Setup(service => service.QueryContainerDetailsAsync(
+                It.IsAny<ContainerDetailQueryDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback<ContainerDetailQueryDto, CancellationToken>((request, _) =>
                 requests.Add((request.ContainerGuid, request.PageNumber, request.PageSize))
             )
             .ReturnsAsync(
@@ -571,8 +585,11 @@ public class ReactContainerControllerSyncContractTests
             .Setup(service => service.GetContainerDetailAsync("ROUTE-GUID"))
             .ReturnsAsync(CreateContainer());
         containerService
-            .Setup(service => service.QueryContainerDetailsAsync(It.IsAny<ContainerDetailQueryDto>()))
-            .Callback<ContainerDetailQueryDto>(request =>
+            .Setup(service => service.QueryContainerDetailsAsync(
+                It.IsAny<ContainerDetailQueryDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback<ContainerDetailQueryDto, CancellationToken>((request, _) =>
                 requestedIncludeFlags.Add((request.IncludeTotal, request.IncludeStats))
             )
             .ReturnsAsync(
