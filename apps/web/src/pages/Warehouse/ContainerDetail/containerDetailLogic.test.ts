@@ -2277,7 +2277,10 @@ const requiredContainerI18nKeys = [
   'containers.actions.alignDomesticProductCode',
   'containers.actions.previewImage',
   'containers.actions.exportAllExcelWithImages',
+  'containers.actions.retryAutoSave',
   'containers.text.loadedRows',
+  'containers.text.autoSavingFields',
+  'containers.text.autoSaveFailedFields',
   'containers.text.warehouseInventoriesCreated',
   'containers.text.warehouseInventoriesUpdated',
   'containers.text.skippedNewProducts',
@@ -2299,6 +2302,9 @@ const requiredContainerI18nKeys = [
   'containers.messages.selectedRowsHidden',
   'containers.messages.savePendingDetailsFirst',
   'containers.messages.detailSaveFailed',
+  'containers.messages.detailNotFound',
+  'containers.messages.detailSaveContextMissing',
+  'containers.messages.productNameRequired',
   'containers.messages.noPendingDetails',
   'containers.messages.detailsSaved',
   'containers.messages.detailFieldsNotSaved',
@@ -3515,7 +3521,8 @@ assertEqual(
 assertEqual(
   pageSource.includes('pendingDetailSavePromisesRef') &&
     pageSource.includes('failedDetailSaveKeysRef') &&
-    pageSource.includes('buildContainerDetailSaveFailureKeys(saveKey, patch)') &&
+    pageSource.includes('autoSaveQueueRef') &&
+    pageSource.includes('await flushContainerDetailAutoSaves()') &&
     pageSource.includes('blurActiveContainerDetailEditableCell()') &&
     pageSource.includes('flushPendingDetailSaves') &&
     pageSource.includes('failedDetailSaveKeysRef.current.size > 0') &&
@@ -4047,8 +4054,8 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes("const CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS = ['englishName', 'packingQuantity', 'unitVolume', 'middlePackQuantity', 'floatRate', 'importPrice', 'oemPrice', 'remark'] as const") &&
-    pageSource.includes("patchRow(rowKey(row), { 中包数: value == null ? undefined : Number(value) })") &&
-    pageSource.includes("saveRowPatch(row, { 中包数: event.target.value ? Number(event.target.value) : undefined })"),
+    pageSource.includes("patchAutoSaveRow(row, { 中包数: value == null ? undefined : Number(value) })") &&
+    pageSource.includes("saveRowPatch(row, { 中包数: Number(event.target.value) })"),
   true,
   '中包数列应作为可编辑数字列保存到货柜明细更新接口',
 )
@@ -4073,8 +4080,8 @@ assertEqual(
   '单件体积行内输入和只读显示应保留 3 位小数',
 )
 assertEqual(
-  pageSource.includes("patchRow(rowKey(row), { 单件装箱数: row.单件装箱数 })") &&
-    pageSource.includes("patchRow(rowKey(row), { 单件体积: row.单件体积 })") &&
+  pageSource.includes("restoreAutoSaveEditBaseline(row, '单件装箱数')") &&
+    pageSource.includes("restoreAutoSaveEditBaseline(row, '单件体积')") &&
     pageSource.includes('const savePackageMetricPatch = async (row: ContainerDetail, patch: Partial<ContainerDetail>) => {') &&
     pageSource.includes('showCostRecalculateWarning(getContainerDetailCostMissingFields(container))') &&
     pageSource.includes('update.SkipRelatedProductSync = true') &&
@@ -4082,6 +4089,72 @@ assertEqual(
     pageSource.includes("savePackageMetricPatch(row, { 单件体积: Number(event.target.value) })"),
   true,
   '单件装箱数和单件体积清空时应回滚当前值，系统重算进货价不能同步仓库表',
+)
+assertEqual(
+  pageSource.includes('const autoSaveEditBaselineRef = useRef<Map<string, unknown>>(new Map())') &&
+    pageSource.includes("onFocus={() => captureAutoSaveEditBaseline(row, '中包数', row.中包数)}") &&
+    pageSource.includes("if (!event.target.value.trim()) {\n                restoreAutoSaveEditBaseline(row, '中包数')") &&
+    !pageSource.includes("saveRowPatch(row, { 中包数: event.target.value ? Number(event.target.value) : undefined })"),
+  true,
+  '中包数清空时必须恢复聚焦前值且不入队，避免 undefined 被 JSON 省略后误判保存成功',
+)
+assertEqual(
+  pageSource.includes('createContainerDetailAutoSaveQueue({') &&
+    pageSource.includes('buildContainerDetailAutoSaveContextKey(containerGuid, draftIdentity)') &&
+    pageSource.includes('buildContainerDetailAutoSaveUpdate(latestRow, intent.patch, contextSnapshot.container)') &&
+    pageSource.includes('autoSaveContextSnapshotsRef.current.get(contextKey)') &&
+    pageSource.includes('contextSnapshot.containerGuid,') &&
+    pageSource.includes('await flushContainerDetailAutoSaves()') &&
+    pageSource.includes('autoSaveSnapshot.failureCount > 0') &&
+    pageSource.includes('aria-invalid={Boolean(saveFailure)}') &&
+    pageSource.includes("t('containers.actions.retryAutoSave', '重试')"),
+  true,
+  '行内即时保存应按货柜上下文串行合并，并通过 PR #49 的 scoped 路由发送最新快照及展示失败重试状态',
+)
+assertEqual(
+  pageSource.includes('isContainerDetailAutoSaveContextCurrent(') &&
+    pageSource.includes('lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
+    pageSource.includes('visibleContainerGuidRef.current === containerGuid') &&
+    pageSource.includes('if (!autoSaveContextSnapshotsRef.current.has(nextAutoSaveContextKey))') &&
+    pageSource.includes('autoSaveQueueRef.current?.discardContext(previousAutoSaveContextKey)') &&
+    pageSource.includes('const lifecycleAction = resolveContainerDetailAutoSaveLifecycleAction(active, contextKey)') &&
+    pageSource.includes("if (lifecycleAction === 'discard') {") &&
+    pageSource.includes("if (lifecycleAction !== 'attach') return") &&
+    pageSource.includes('autoSaveQueueRef.current?.attachContext(contextKey)') &&
+    pageSource.includes("resolveContainerDetailAutoSaveLifecycleAction(containerDetailTabActiveRef.current, contextKey) !== 'attach'"),
+  true,
+  'A→B→A 切页只可由 active KeepAlive 实例 attach；inactive 应 detach 且迟到 blur 不得抢占队列',
+)
+assertEqual(
+  pageSource.includes('const loadedItemsWithDraft = applyPendingContainerDetailPatches(') &&
+    pageSource.includes('const shouldOverlayCurrentAutoSaves = isContainerDetailAutoSaveContextCurrent(') &&
+    pageSource.includes('autoSaveQueueRef.current?.getUnsettledPatches(currentAutoSaveContextKey)') &&
+    pageSource.includes('return applyContainerDetailAutoSavePatches(') &&
+    pageSource.indexOf('const loadedItemsWithDraft = applyPendingContainerDetailPatches(')
+      < pageSource.indexOf('return applyContainerDetailAutoSavePatches('),
+  true,
+  '查询响应应先叠加手动草稿，再只用当前上下文的 pending/running/failure 最新值覆盖服务器响应',
+)
+assertEqual(
+  pageSource.includes('onBatchSuccess: (contextKey) => {') &&
+    pageSource.includes('detailAppendRequestRef.current?.controller') &&
+    pageSource.includes('detailReadAheadRequestRef.current?.controller') &&
+    pageSource.includes('activeItemLoads.forEach((controller) => controller.abort())') &&
+    pageSource.includes('containerDetailLoadRequestIdRef.current += 1'),
+  true,
+  '自动保存成功应在清除 running overlay 前废弃当前货柜的旧查询，防止迟到回包覆盖新值',
+)
+assertEqual(
+  !pageSource.includes('autoSaveQueueRef.current?.clearFailures('),
+  true,
+  '自动保存失败必须保留到新 revision 入队或显式重试，输入中途不得提前解除依赖阻塞',
+)
+assertEqual(
+  pageSource.includes("if (!productName) {") &&
+    pageSource.includes("t('containers.messages.productNameRequired', '商品名称不能为空')") &&
+    pageSource.includes('onChange={(event) => setEditingProductNameValue(event.target.value)}'),
+  true,
+  '商品名称空白提交不得入队，编辑缓冲或 Escape 不得提前清除原保存失败状态',
 )
 assertEqual(
   containerDetailLogicSource.includes('export type PendingContainerDetailPatch =') &&
@@ -4313,7 +4386,8 @@ assertEqual(
   '本页批量翻译、批量修改和批量清除英文名称都应进入保存明细队列，不能立即落库',
 )
 assertEqual(
-  pageSource.includes('applyPendingContainerDetailPatches(result.items, pendingDetailPatchesRef.current)') &&
+  pageSource.includes('const loadedItems = overlayPendingDetailChanges(result.items)') &&
+    pageSource.includes('items,\n      pendingDetailPatchesRef.current,') &&
     pageSource.includes('pendingDetailDraftIdentityRef.current === draftIdentity') &&
     pageSource.includes('pendingDetailDraftIdentityRef.current = draftIdentity') &&
     pageSource.includes('applyPendingDetailDraftState(restoredDraft, false)') &&
@@ -4362,9 +4436,10 @@ assertEqual(
   '图片和编号列不应添加无意义列头过滤配置',
 )
 assertEqual(
-  pageSource.includes('buildContainerDetailFloatRateUpdates([row], container, value)'),
+  pageSource.includes('const latestRow = rowsRef.current.find((item) => item.hguid === row.hguid) ?? row') &&
+    pageSource.includes('调整浮率: value ?? latestRow.调整浮率 ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE'),
   true,
-  '单行保存浮率应使用原始行计算变化，不能提前覆盖浮率导致不写库',
+  '单行保存浮率应从最新行快照构造队列意图，不能被连续输入的旧闭包覆盖',
 )
 assertEqual(
   pageSource.includes('recalculateContainerCostsByScope(containerGuid, buildDetailBatchScope())'),

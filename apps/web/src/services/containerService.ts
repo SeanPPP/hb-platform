@@ -368,6 +368,7 @@ export async function batchUpdateDetails(
     装柜数量: item.装柜数量,
     合计装柜体积: item.合计装柜体积,
     合计装柜金额: item.合计装柜金额,
+    备注: item.备注,
     IsActive: item.IsActive,
     SkipRelatedProductSync: item.SkipRelatedProductSync,
   }))

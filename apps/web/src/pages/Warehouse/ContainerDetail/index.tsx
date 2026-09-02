@@ -130,7 +130,6 @@ import {
   buildContainerDetailSuccessfulEnglishNameUpdates,
   buildPendingContainerDetailSavePlan,
   buildContainerDetailTagStats,
-  buildContainerDetailFloatRateUpdates,
   buildContainerDetailHqPushSelection,
   calculateContainerDetailImportPrice,
   calculateContainerDetailTotalAmount,
@@ -256,6 +255,19 @@ import {
   type ContainerDetailDraftState,
   type ContainerDetailDraftStorage,
 } from './containerDetailDraft'
+import {
+  applyContainerDetailAutoSavePatches,
+  buildContainerDetailAutoSaveContextKey,
+  createContainerDetailAutoSaveQueue,
+  isContainerDetailAutoSaveContextCurrent,
+  resolveContainerDetailAutoSaveLifecycleAction,
+  type ContainerDetailAutoSaveFailure,
+  type ContainerDetailAutoSaveField,
+  type ContainerDetailAutoSaveIntent,
+  type ContainerDetailAutoSavePatch,
+  type ContainerDetailAutoSaveQueue,
+  type ContainerDetailAutoSaveSnapshot,
+} from './containerDetailAutoSaveQueue'
 import useContainerSetCode from './useContainerSetCode'
 import {
   collectCategoryExpandedKeys,
@@ -331,6 +343,43 @@ function formatCurrency(value?: number, symbol = '$', digits = 2) {
 
 function rowKey(row: ContainerDetail) {
   return row.hguid || String(row.id)
+}
+
+function buildContainerDetailAutoSaveUpdate(
+  row: ContainerDetail,
+  patch: ContainerDetailAutoSavePatch,
+  container: Pick<ContainerMain, '汇率' | '运费' | '总体积'> | null,
+): UpdateContainerDetailRequest {
+  const nextRow = mergeContainerDetailPatch(row, patch)
+  const update: UpdateContainerDetailRequest = { hguid: row.hguid, ...patch }
+  const updatesPackageMetric = '单件装箱数' in patch || '单件体积' in patch
+  const updatesCost = updatesPackageMetric || '调整浮率' in patch
+
+  if (updatesPackageMetric && nextRow.装柜件数 != null && nextRow.单件装箱数 != null) {
+    update.装柜数量 = Number((nextRow.装柜件数 * nextRow.单件装箱数).toFixed(2))
+  }
+
+  if (updatesPackageMetric) {
+    const volumeRow = mergeContainerDetailPatch(nextRow, update as Partial<ContainerDetail>)
+    update.合计装柜体积 = calculateContainerDetailTotalVolume(volumeRow)
+    update.合计装柜金额 = calculateContainerDetailTotalAmount(volumeRow)
+  }
+
+  if (updatesCost) {
+    const pricedRow = mergeContainerDetailPatch(nextRow, update as Partial<ContainerDetail>)
+    const transportCost = calculateContainerDetailTransportCost(pricedRow, container)
+    update.运输成本 = transportCost
+    update.进口价格 = calculateContainerDetailImportPrice(
+      { ...pricedRow, 运输成本: transportCost },
+      container,
+      pricedRow.调整浮率 ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
+      transportCost,
+    )
+    // 包装、体积或浮率联动的进货价只更新货柜明细，不能覆盖仓库人工价。
+    update.SkipRelatedProductSync = true
+  }
+
+  return update
 }
 
 function getContainerDetailDraftStorage(): ContainerDetailDraftStorage | null {
@@ -764,6 +813,13 @@ export default function ContainerDetailPage() {
   const [createProductsLoading, setCreateProductsLoading] = useState(false)
   const [submitContainerLoading, setSubmitContainerLoading] = useState(false)
   const [pendingDetailSaveCount, setPendingDetailSaveCount] = useState(0)
+  const [autoSaveSnapshot, setAutoSaveSnapshot] = useState<ContainerDetailAutoSaveSnapshot>({
+    pendingFieldCount: 0,
+    runningFieldCount: 0,
+    failureCount: 0,
+    unsavedFieldCount: 0,
+    failures: [],
+  })
   const [pendingWarehouseStatusCodes, setPendingWarehouseStatusCodes] = useState<Set<string>>(() => new Set())
   // 套装码弹窗状态 — 由 useContainerSetCode hook 管理
   const {
@@ -797,6 +853,10 @@ export default function ContainerDetailPage() {
   const reloadCurrentDetailRef = useRef<() => Promise<void>>(async () => undefined)
   const currentContainerGuidRef = useRef(containerGuid)
   currentContainerGuidRef.current = containerGuid
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+  const containerRef = useRef(container)
+  containerRef.current = container
   const pendingDetailPatchesRef = useRef<PendingContainerDetailPatchMap>({})
   const pendingDetailFailuresRef = useRef<ContainerDetailDraftFailureMap>({})
   const pendingDetailFieldVersionsRef = useRef<Record<string, string>>({})
@@ -804,13 +864,19 @@ export default function ContainerDetailPage() {
   const isDetailDraftMemoryOnlyRef = useRef(false)
   const detailRowsContainerGuidRef = useRef(containerGuid)
   const pendingDetailDraftIdentityRef = useRef('')
+  const autoSaveContextKeyRef = useRef('')
+  const autoSaveSnapshotRef = useRef(autoSaveSnapshot)
+  autoSaveSnapshotRef.current = autoSaveSnapshot
   const restoredDetailDraftNoticeKeyRef = useRef('')
   const pendingDetailSavePromisesRef = useRef<Set<Promise<unknown>>>(new Set())
   const failedDetailSaveKeysRef = useRef<Set<string>>(new Set())
   const failedPendingDetailSaveKeysRef = useRef<Set<string>>(new Set())
   const ignoreProductNameBlurRef = useRef(false)
+  const autoSaveEditBaselineRef = useRef<Map<string, unknown>>(new Map())
   const detailTableRef = useRef<TableRef | null>(null)
   const lastDetailTableScrollTopRef = useRef(0)
+  const containerDetailTabActiveRef = useRef(active)
+  containerDetailTabActiveRef.current = active
   const wasContainerDetailTabActiveRef = useRef(active)
   const detailTableRestoreFrameRef = useRef<number | null>(null)
   const editableCellRefs = useRef<Map<string, ContainerDetailFocusableCell>>(new Map())
@@ -820,6 +886,71 @@ export default function ContainerDetailPage() {
     queryKey: string
     generation: number
   } | null>(null)
+  const autoSaveSendBatchRef = useRef<(
+    contextKey: string,
+    intents: ContainerDetailAutoSaveIntent[],
+  ) => Promise<Awaited<ReturnType<typeof batchUpdateDetails>> | void>>(async () => undefined)
+  const autoSaveSnapshotHandlerRef = useRef<(
+    contextKey: string,
+    snapshot: ContainerDetailAutoSaveSnapshot,
+  ) => void>(() => undefined)
+  const autoSaveContextSnapshotsRef = useRef<Map<string, {
+    containerGuid: string
+    rows: ContainerDetail[]
+    container: Pick<ContainerMain, '汇率' | '运费' | '总体积'> | null
+  }>>(new Map())
+  const autoSaveQueueRef = useRef<ContainerDetailAutoSaveQueue | null>(null)
+  if (!autoSaveQueueRef.current) {
+    autoSaveQueueRef.current = createContainerDetailAutoSaveQueue({
+      sendBatch: (contextKey, intents) => autoSaveSendBatchRef.current(contextKey, intents),
+      onBatchSuccess: (contextKey) => {
+        if (contextKey !== autoSaveContextKeyRef.current) return
+        const activeItemLoads = new Set([
+          detailAbortControllerRef.current,
+          detailAppendRequestRef.current?.controller,
+          detailReadAheadRequestRef.current?.controller,
+        ].filter((controller): controller is AbortController => Boolean(controller)))
+        if (![...activeItemLoads].some((controller) => !controller.signal.aborted)) return
+        // running patch 仍在覆盖页面时先废弃旧 item query；各请求的 finally 继续负责正常结束 loading。
+        activeItemLoads.forEach((controller) => controller.abort())
+        detailReadAheadRequestRef.current = null
+        containerDetailLoadRequestIdRef.current += 1
+        containerDetailReconcileGenerationRef.current += 1
+      },
+      onSnapshotChange: (contextKey, snapshot) => autoSaveSnapshotHandlerRef.current(contextKey, snapshot),
+      onContextDisposed: (contextKey) => autoSaveContextSnapshotsRef.current.delete(contextKey),
+      getRequestErrorMessage: (error) => (
+        error instanceof Error && error.message
+          ? error.message
+          : t('containers.messages.detailSaveFailed', '货柜明细保存失败，请稍后重试')
+      ),
+    })
+  }
+  autoSaveSnapshotHandlerRef.current = (contextKey, snapshot) => {
+    if (contextKey !== autoSaveContextKeyRef.current) return
+    autoSaveSnapshotRef.current = snapshot
+    setAutoSaveSnapshot(snapshot)
+    setPendingDetailSaveCount(
+      snapshot.pendingFieldCount
+      + snapshot.runningFieldCount
+      + pendingDetailSavePromisesRef.current.size,
+    )
+  }
+  if (
+    isContainerDetailAutoSaveContextCurrent(
+      autoSaveContextKeyRef.current,
+      containerGuid,
+      pendingDetailDraftIdentityRef.current,
+    )
+    && lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
+    && visibleContainerGuidRef.current === containerGuid
+  ) {
+    autoSaveContextSnapshotsRef.current.set(autoSaveContextKeyRef.current, {
+      containerGuid,
+      rows,
+      container,
+    })
+  }
   const [headerEditing, setHeaderEditing] = useState(false)
   const [headerForm, setHeaderForm] = useState<{
     货柜编号?: string
@@ -947,6 +1078,8 @@ export default function ContainerDetailPage() {
     // 草稿命名空间变化后，旧货柜/旧用户的行必须立即失效，等当前请求成功后再叠加新草稿。
     detailRowsContainerGuidRef.current = ''
     lastLoadedContainerDetailSuccessRef.current = null
+    rowsRef.current = []
+    autoSaveEditBaselineRef.current.clear()
     setRows([])
     setSelectedRowKeys([])
     const restoredDraft = readContainerDetailDraft(
@@ -954,7 +1087,29 @@ export default function ContainerDetailPage() {
       currentUserGuid,
       containerGuid,
     )
+    const previousAutoSaveContextKey = autoSaveContextKeyRef.current
     pendingDetailDraftIdentityRef.current = draftIdentity
+    const nextAutoSaveContextKey = buildContainerDetailAutoSaveContextKey(containerGuid, draftIdentity)
+    if (previousAutoSaveContextKey && previousAutoSaveContextKey !== nextAutoSaveContextKey) {
+      autoSaveQueueRef.current?.discardContext(previousAutoSaveContextKey)
+    }
+    autoSaveContextKeyRef.current = nextAutoSaveContextKey
+    if (!autoSaveContextSnapshotsRef.current.has(nextAutoSaveContextKey)) {
+      autoSaveContextSnapshotsRef.current.set(nextAutoSaveContextKey, {
+        containerGuid,
+        rows: [],
+        container: null,
+      })
+    }
+    const resetAutoSaveSnapshot: ContainerDetailAutoSaveSnapshot = {
+      pendingFieldCount: 0,
+      runningFieldCount: 0,
+      failureCount: 0,
+      unsavedFieldCount: 0,
+      failures: [],
+    }
+    autoSaveSnapshotRef.current = resetAutoSaveSnapshot
+    setAutoSaveSnapshot(resetAutoSaveSnapshot)
     pendingDetailSavePromisesRef.current.clear()
     failedDetailSaveKeysRef.current = new Set()
     setPendingDetailSaveCount(0)
@@ -979,9 +1134,31 @@ export default function ContainerDetailPage() {
 
   useEffect(() => {
     restorePendingDetailDraft()
+    const contextKey = autoSaveContextKeyRef.current
+    const lifecycleAction = resolveContainerDetailAutoSaveLifecycleAction(active, contextKey)
+    if (lifecycleAction === 'discard') {
+      autoSaveQueueRef.current?.discardContext(contextKey)
+      return
+    }
+    if (lifecycleAction !== 'attach') return
+
+    const nextAutoSaveSnapshot = autoSaveQueueRef.current?.attachContext(contextKey)
+    if (!nextAutoSaveSnapshot) return
+    autoSaveSnapshotRef.current = nextAutoSaveSnapshot
+    setAutoSaveSnapshot(nextAutoSaveSnapshot)
+    setPendingDetailSaveCount(
+      nextAutoSaveSnapshot.pendingFieldCount
+      + nextAutoSaveSnapshot.runningFieldCount
+      + pendingDetailSavePromisesRef.current.size,
+    )
     // 身份或货柜变化时必须先切换草稿命名空间，再由后续加载覆盖服务端行。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, currentUserGuid, containerGuid])
+
+  useEffect(() => () => {
+    const contextKey = autoSaveContextKeyRef.current
+    if (contextKey) autoSaveQueueRef.current?.discardContext(contextKey)
+  }, [])
 
   const applyExternalPendingDetailDraftState = (nextDraft: ContainerDetailDraftState) => {
     const currentDraft: ContainerDetailDraftState = {
@@ -1249,6 +1426,33 @@ export default function ContainerDetailPage() {
     }
   }
 
+  const overlayPendingDetailChanges = (items: ContainerDetail[]) => {
+    const loadedItemsWithDraft = applyPendingContainerDetailPatches(
+      items,
+      pendingDetailPatchesRef.current,
+    )
+    const currentAutoSaveContextKey = autoSaveContextKeyRef.current
+    const shouldOverlayCurrentAutoSaves = isContainerDetailAutoSaveContextCurrent(
+      currentAutoSaveContextKey,
+      containerGuid,
+      pendingDetailDraftIdentityRef.current,
+    )
+    const contextSnapshot = shouldOverlayCurrentAutoSaves
+      ? autoSaveContextSnapshotsRef.current.get(currentAutoSaveContextKey)
+      : undefined
+    return applyContainerDetailAutoSavePatches(
+      loadedItemsWithDraft,
+      shouldOverlayCurrentAutoSaves
+        ? autoSaveQueueRef.current?.getUnsettledPatches(currentAutoSaveContextKey) ?? {}
+        : {},
+      (row, patch) => buildContainerDetailAutoSaveUpdate(
+        row,
+        patch,
+        contextSnapshot?.container ?? containerRef.current,
+      ) as Partial<ContainerDetail>,
+    )
+  }
+
   const getDetailAppendRequestKey = (pageNumber: number) => (
     `${containerGuid}:${detailQueryKey}:${pageNumber}`
   )
@@ -1408,8 +1612,12 @@ export default function ContainerDetailPage() {
       ) {
         failedDetailAppendRequestKeyRef.current = null
       }
-      const loadedItems = applyPendingContainerDetailPatches(result.items, pendingDetailPatchesRef.current)
-      setRows((items) => mode === 'reset' ? loadedItems : mergeContainerDetailLoadedItems(items, loadedItems))
+      const loadedItems = overlayPendingDetailChanges(result.items)
+      setRows((items) => {
+        const nextRows = mode === 'reset' ? loadedItems : mergeContainerDetailLoadedItems(items, loadedItems)
+        rowsRef.current = nextRows
+        return nextRows
+      })
       if (result.totalComputed !== false) {
         setDetailItemsTotal(result.itemsTotal)
       }
@@ -2066,6 +2274,21 @@ export default function ContainerDetailPage() {
     () => countPendingContainerDetailFields(pendingDetailPatches),
     [pendingDetailPatches],
   )
+  const autoSaveFailureMap = useMemo(() => new Map(
+    autoSaveSnapshot.failures.map((failure) => [`${failure.hguid}:${failure.field}`, failure] as const),
+  ), [autoSaveSnapshot.failures])
+
+  const getAutoSaveFailure = (
+    row: ContainerDetail,
+    field: ContainerDetailAutoSaveField,
+  ): ContainerDetailAutoSaveFailure | undefined => (
+    row.hguid ? autoSaveFailureMap.get(`${row.hguid}:${field}`) : undefined
+  )
+
+  const retryFailedAutoSaves = () => {
+    const contextKey = autoSaveContextKeyRef.current
+    if (contextKey) autoSaveQueueRef.current?.retryFailed(contextKey)
+  }
 
   const ensureNoPendingDetails = () => {
     if (!pendingDetailPatchCount) return true
@@ -2075,7 +2298,51 @@ export default function ContainerDetailPage() {
   }
 
   const patchRow = (key: string, patch: Partial<ContainerDetail>) => {
-    setRows((items) => items.map((item) => (rowKey(item) === key ? mergeContainerDetailPatch(item, patch) : item)))
+    const nextRows = rowsRef.current.map((item) => (
+      rowKey(item) === key ? mergeContainerDetailPatch(item, patch) : item
+    ))
+    rowsRef.current = nextRows
+    if (autoSaveContextKeyRef.current) {
+      autoSaveContextSnapshotsRef.current.set(autoSaveContextKeyRef.current, {
+        containerGuid,
+        rows: nextRows,
+        container: containerRef.current,
+      })
+    }
+    setRows(nextRows)
+  }
+
+  const patchAutoSaveRow = (
+    row: ContainerDetail,
+    patch: ContainerDetailAutoSavePatch,
+  ) => {
+    patchRow(rowKey(row), patch)
+  }
+
+  const captureAutoSaveEditBaseline = (
+    row: ContainerDetail,
+    field: ContainerDetailAutoSaveField,
+    value: unknown,
+  ) => {
+    const key = `${rowKey(row)}:${field}`
+    if (!autoSaveEditBaselineRef.current.has(key)) {
+      autoSaveEditBaselineRef.current.set(key, value)
+    }
+  }
+
+  const restoreAutoSaveEditBaseline = (
+    row: ContainerDetail,
+    field: ContainerDetailAutoSaveField,
+  ) => {
+    const key = `${rowKey(row)}:${field}`
+    if (!autoSaveEditBaselineRef.current.has(key)) return
+    const value = autoSaveEditBaselineRef.current.get(key)
+    autoSaveEditBaselineRef.current.delete(key)
+    patchRow(rowKey(row), { [field]: value } as Partial<ContainerDetail>)
+  }
+
+  const clearAutoSaveEditBaseline = (row: ContainerDetail, field: ContainerDetailAutoSaveField) => {
+    autoSaveEditBaselineRef.current.delete(`${rowKey(row)}:${field}`)
   }
 
   const queuePendingDetailUpdates = (updates: PendingContainerDetailPatch[]) => {
@@ -2348,15 +2615,30 @@ export default function ContainerDetailPage() {
         currentContainerGuidRef.current === saveContainerGuid
         && pendingDetailDraftIdentityRef.current === saveDraftIdentity
       ) {
-        setPendingDetailSaveCount(pendingDetailSavePromisesRef.current.size)
+        setPendingDetailSaveCount(
+          pendingDetailSavePromisesRef.current.size
+          + autoSaveSnapshotRef.current.pendingFieldCount
+          + autoSaveSnapshotRef.current.runningFieldCount,
+        )
       }
     })
     pendingDetailSavePromisesRef.current.add(trackedPromise)
-    setPendingDetailSaveCount(pendingDetailSavePromisesRef.current.size)
+    setPendingDetailSaveCount(
+      pendingDetailSavePromisesRef.current.size
+      + autoSaveSnapshotRef.current.pendingFieldCount
+      + autoSaveSnapshotRef.current.runningFieldCount,
+    )
     return trackedPromise
   }
 
+  const flushContainerDetailAutoSaves = async () => {
+    const contextKey = autoSaveContextKeyRef.current
+    if (!contextKey) return
+    await autoSaveQueueRef.current?.drain(contextKey)
+  }
+
   const flushPendingDetailSaves = async () => {
+    await flushContainerDetailAutoSaves()
     const pendingSaves = Array.from(pendingDetailSavePromisesRef.current)
     if (pendingSaves.length) {
       await Promise.all(pendingSaves)
@@ -2369,7 +2651,28 @@ export default function ContainerDetailPage() {
     }
   }
 
+  const drainAutoSavesBeforeAction = async () => {
+    blurActiveContainerDetailEditableCell()
+    try {
+      await flushContainerDetailAutoSaves()
+      return true
+    } catch (error) {
+      handleDetailSaveError(error)
+      return false
+    }
+  }
+
+  const refreshContainerDetail = async () => {
+    if (!await drainAutoSavesBeforeAction()) return
+    await loadData()
+  }
+
   const waitForPendingDetailSavesForExport = async () => {
+    try {
+      await flushContainerDetailAutoSaves()
+    } catch {
+      // 导出允许保留自动保存失败的页面值，下面仍继续等待其他在途保存。
+    }
     const pendingSaves = Array.from(pendingDetailSavePromisesRef.current)
     if (pendingSaves.length) {
       // 导出会选择性叠加页面内存值；保存失败不应阻断用户取得当前数据快照。
@@ -2377,15 +2680,62 @@ export default function ContainerDetailPage() {
     }
   }
 
-  const saveRowPatch = async (row: ContainerDetail, patch: Partial<ContainerDetail>) => {
-    if (!access.canEditContainer || !row.hguid) return
-    const saveKey = rowKey(row)
-    patchRow(saveKey, patch)
-    // 商品名称最终写回 DomesticProduct；创建新商品前必须等待这里落库，避免后台 job 读取旧中文名。
-    await trackDetailSavePromise(
-      buildContainerDetailSaveFailureKeys(saveKey, patch),
-      batchUpdateDetails(containerGuid, [{ hguid: row.hguid, ...patch } as UpdateContainerDetailRequest]),
+  const buildAutoSaveUpdatesFromLatestRows = (
+    intents: ContainerDetailAutoSaveIntent[],
+    contextSnapshot: {
+      rows: ContainerDetail[]
+      container: Pick<ContainerMain, '汇率' | '运费' | '总体积'> | null
+    },
+  ) => (
+    intents.map((intent) => {
+      const latestRow = contextSnapshot.rows.find((item) => item.hguid === intent.hguid)
+      if (!latestRow) {
+        throw new Error(t('containers.messages.detailNotFound', '货柜明细不存在或已被删除'))
+      }
+      return buildContainerDetailAutoSaveUpdate(latestRow, intent.patch, contextSnapshot.container)
+    })
+  )
+
+  autoSaveSendBatchRef.current = async (contextKey, intents) => {
+    const contextSnapshot = autoSaveContextSnapshotsRef.current.get(contextKey)
+    if (!contextSnapshot) {
+      throw new Error(t('containers.messages.detailSaveContextMissing', '货柜明细保存上下文已失效'))
+    }
+    // 只在该批真正出队时读取对应上下文快照，避免连续编辑或切页后发送旧派生值。
+    return batchUpdateDetails(
+      contextSnapshot.containerGuid,
+      buildAutoSaveUpdatesFromLatestRows(intents, contextSnapshot),
     )
+  }
+
+  const enqueueAutoSavePatch = (row: ContainerDetail, patch: ContainerDetailAutoSavePatch) => {
+    const contextKey = autoSaveContextKeyRef.current
+    if (
+      !access.canEditContainer
+      || !row.hguid
+      || resolveContainerDetailAutoSaveLifecycleAction(containerDetailTabActiveRef.current, contextKey) !== 'attach'
+    ) return
+    const latestRow = rowsRef.current.find((item) => item.hguid === row.hguid) ?? row
+    const optimisticUpdate = buildContainerDetailAutoSaveUpdate(latestRow, patch, containerRef.current)
+    const nextRows = rowsRef.current.map((item) => (
+      item.hguid === optimisticUpdate.hguid
+        ? mergeContainerDetailPatch(item, optimisticUpdate as Partial<ContainerDetail>)
+        : item
+    ))
+    rowsRef.current = nextRows
+    autoSaveContextSnapshotsRef.current.set(contextKey, {
+      containerGuid,
+      rows: nextRows,
+      container: containerRef.current,
+    })
+    setRows(nextRows)
+    autoSaveQueueRef.current?.enqueue(contextKey, row.hguid, patch)
+  }
+
+  const saveRowPatch = async (row: ContainerDetail, patch: ContainerDetailAutoSavePatch) => {
+    if (!access.canEditContainer || !row.hguid) return
+    // 商品名称最终写回 DomesticProduct；提交/创建商品前会 drain 此队列，确保后台读取最新值。
+    enqueueAutoSavePatch(row, patch)
   }
 
   const buildPendingDetailSavePlan = (): PendingContainerDetailPageSavePlan | null => {
@@ -2648,6 +2998,7 @@ export default function ContainerDetailPage() {
 
   const savePendingDetails = async () => {
     if (!access.canEditContainer) return
+    if (!await drainAutoSavesBeforeAction()) return
     // 保存前先锁定本次提交范围，确认弹窗和实际落库共用同一份计划。
     const savePlan = buildPendingDetailSavePlan()
     if (!savePlan) return
@@ -2673,6 +3024,10 @@ export default function ContainerDetailPage() {
     const productName = editingProductNameValue.trim()
     ignoreProductNameBlurRef.current = true
     cancelEditingProductName()
+    if (!productName) {
+      message.warning(t('containers.messages.productNameRequired', '商品名称不能为空'))
+      return
+    }
     await saveRowPatch(row, { 商品名称: productName })
   }
 
@@ -2685,16 +3040,24 @@ export default function ContainerDetailPage() {
   }
 
   const applyDetailUpdatesToRows = (updates: UpdateContainerDetailRequest[]) => {
-    setRows((items) =>
-      items.map((item) => {
-        const match = updates.find((update) => update.hguid === item.hguid)
-        return match ? mergeContainerDetailPatch(item, match as Partial<ContainerDetail>) : item
-      }),
-    )
+    const nextRows = rowsRef.current.map((item) => {
+      const match = updates.find((update) => update.hguid === item.hguid)
+      return match ? mergeContainerDetailPatch(item, match as Partial<ContainerDetail>) : item
+    })
+    rowsRef.current = nextRows
+    if (autoSaveContextKeyRef.current) {
+      autoSaveContextSnapshotsRef.current.set(autoSaveContextKeyRef.current, {
+        containerGuid,
+        rows: nextRows,
+        container: containerRef.current,
+      })
+    }
+    setRows(nextRows)
   }
 
   const saveHeader = async () => {
     if (!containerGuid || !access.canEditContainer) return
+    if (!await drainAutoSavesBeforeAction()) return
     const nextContainerNumber = headerForm.货柜编号?.trim()
     if (!nextContainerNumber) {
       message.error(t('containers.placeholders.enterContainerNumber', '请输入货柜编号'))
@@ -2761,11 +3124,10 @@ export default function ContainerDetailPage() {
       return
     }
 
-    const updates = buildContainerDetailFloatRateUpdates([row], container, value)
-    const update = updates[0]
-    if (!update) return
-    applyDetailUpdatesToRows(updates)
-    await trackDetailSavePromise(buildContainerDetailSaveFailureKeys(rowKey(row), update), batchUpdateDetails(containerGuid, updates))
+    const latestRow = rowsRef.current.find((item) => item.hguid === row.hguid) ?? row
+    enqueueAutoSavePatch(row, {
+      调整浮率: value ?? latestRow.调整浮率 ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
+    })
   }
 
   const savePackageMetricPatch = async (row: ContainerDetail, patch: Partial<ContainerDetail>) => {
@@ -2774,31 +3136,7 @@ export default function ContainerDetailPage() {
     if (showCostRecalculateWarning(getContainerDetailCostMissingFields(container))) {
       return
     }
-    const nextRow = mergeContainerDetailPatch(row, patch)
-    const update: UpdateContainerDetailRequest = { hguid: row.hguid, ...patch }
-
-    if (nextRow.装柜件数 != null && nextRow.单件装箱数 != null) {
-      update.装柜数量 = Number((nextRow.装柜件数 * nextRow.单件装箱数).toFixed(2))
-    }
-
-    const volumeRow = mergeContainerDetailPatch(row, update as Partial<ContainerDetail>)
-    update.合计装柜体积 = calculateContainerDetailTotalVolume(volumeRow)
-    update.合计装柜金额 = calculateContainerDetailTotalAmount(volumeRow)
-
-    const pricedRow = mergeContainerDetailPatch(row, update as Partial<ContainerDetail>)
-    const transportCost = calculateContainerDetailTransportCost(pricedRow, container)
-    update.运输成本 = transportCost
-    update.进口价格 = calculateContainerDetailImportPrice(
-      { ...pricedRow, 运输成本: transportCost },
-      container,
-      pricedRow.调整浮率 ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
-      transportCost,
-    )
-    // 包装/体积联动出的进货价属于系统重算，只更新货柜明细，不覆盖仓库进货价。
-    update.SkipRelatedProductSync = true
-
-    applyDetailUpdatesToRows([update])
-    await trackDetailSavePromise(buildContainerDetailSaveFailureKeys(rowKey(row), update), batchUpdateDetails(containerGuid, [update]))
+    enqueueAutoSavePatch(row, patch as ContainerDetailAutoSavePatch)
   }
 
   const openBatchFloatRateModal = async () => {
@@ -2823,6 +3161,7 @@ export default function ContainerDetailPage() {
     if (showCostRecalculateWarning(getContainerDetailCostMissingFields(container))) {
       return
     }
+    if (!await drainAutoSavesBeforeAction()) return
     setBatchFloatRateSaving(true)
     try {
       const result = await applyContainerFloatRateByScope(containerGuid, buildDetailBatchScope(batchModalScopeRows), batchFloatRate)
@@ -2842,6 +3181,7 @@ export default function ContainerDetailPage() {
     if (!access.canEditContainer) return
     const scopedRows = await confirmBatchRows(t('containers.actions.matchDomesticData'))
     if (!scopedRows) return
+    if (!await drainAutoSavesBeforeAction()) return
     setMatchDomesticDataLoading(true)
     try {
       if (!scopedRows.length) {
@@ -2940,6 +3280,7 @@ export default function ContainerDetailPage() {
       okText: t('containers.actions.alignDomesticProductCode', '对齐编码'),
       cancelText: t('common.cancel'),
       onOk: async () => {
+        if (!await drainAutoSavesBeforeAction()) return
         setAligningDomesticProductDetailHguid(detailHguid)
         try {
           const result = await alignDomesticProductCode({
@@ -2985,6 +3326,7 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.enterImportOrOemPrice'))
       return
     }
+    if (!await drainAutoSavesBeforeAction()) return
     setBatchPricesSaving(true)
     try {
       const result = await applyContainerPricesByScope(containerGuid, buildDetailBatchScope(batchModalScopeRows), {
@@ -3037,6 +3379,7 @@ export default function ContainerDetailPage() {
       )
       return
     }
+    if (!await drainAutoSavesBeforeAction()) return
     const result = await bulkSetStatus(productCodes, isActive)
     const failureMessage = getContainerDetailWarehouseActionFailureMessage(result, t('containers.messages.batchActiveFailed'))
     if (failureMessage) {
@@ -3182,6 +3525,7 @@ export default function ContainerDetailPage() {
       message.warning(t('warehouse.categories.selectTargetCategory', '请选择目标分类'))
       return
     }
+    if (!await drainAutoSavesBeforeAction()) return
 
     setRowCategorySaving(true)
     try {
@@ -3228,6 +3572,7 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.noProductsForCategoryAssign', '当前目标明细没有可分类的已有商品'))
       return
     }
+    if (!await drainAutoSavesBeforeAction()) return
 
     setBatchCategorySaving(true)
     try {
@@ -3337,6 +3682,7 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.missingContainerNumberForHqTranslation'))
       return
     }
+    if (!await drainAutoSavesBeforeAction()) return
 
     setHqTranslating(true)
     message.loading({
@@ -3520,6 +3866,7 @@ export default function ContainerDetailPage() {
 
     const updateFields = await confirmPushToHqUpdateFields(selection.items.length)
     if (!updateFields) return
+    if (!await drainAutoSavesBeforeAction()) return
 
     try {
       // 写 HQ 是跨库操作，使用即时锁防止连续点击造成重复提交。
@@ -3807,6 +4154,7 @@ export default function ContainerDetailPage() {
       defaultContainerExistingProductUpdateFields,
     )
     if (!confirmed) return
+    if (!await drainAutoSavesBeforeAction()) return
     const { rows: scopedRows, fields: updateFields } = confirmed
     const candidates = scopedRows.filter((row) => !row.是否新商品)
     if (!candidates.length) {
@@ -3916,6 +4264,7 @@ export default function ContainerDetailPage() {
       okText: t('containers.actions.confirmDelete'),
       okButtonProps: { danger: true },
       onOk: async () => {
+        if (!await drainAutoSavesBeforeAction()) return
         const hguids = selectedRows.map((row) => row.hguid).filter((value): value is string => Boolean(value))
         await batchDeleteDetails(hguids)
         setRows((items) => items.filter((item) => !hguids.includes(item.hguid)))
@@ -4250,6 +4599,7 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.selectedProductsMissingCode'))
       return
     }
+    if (!await drainAutoSavesBeforeAction()) return
 
     const previousStatuses = rows
       .filter((item) => getContainerDetailProductCode(item) === productCode)
@@ -4447,8 +4797,9 @@ export default function ContainerDetailPage() {
       align: 'right',
       ...makeSortProps('packingQuantity'),
       ...numberFilterProps('packingQuantity'),
-      render: (_value, row) =>
-        access.canEditContainer ? (
+      render: (_value, row) => {
+        const saveFailure = getAutoSaveFailure(row, '单件装箱数')
+        return access.canEditContainer ? (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'packingQuantity', cell)}
             value={row.单件装箱数}
@@ -4458,17 +4809,23 @@ export default function ContainerDetailPage() {
             step={1}
             controls={false}
             style={{ width: 72 }}
-            onChange={(value) => patchRow(rowKey(row), { 单件装箱数: value == null ? undefined : Number(value) })}
+            status={saveFailure ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure)}
+            title={saveFailure?.message}
+            onFocus={() => captureAutoSaveEditBaseline(row, '单件装箱数', row.单件装箱数)}
+            onChange={(value) => patchAutoSaveRow(row, { 单件装箱数: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
               if (!event.target.value.trim()) {
-                patchRow(rowKey(row), { 单件装箱数: row.单件装箱数 })
+                restoreAutoSaveEditBaseline(row, '单件装箱数')
                 return
               }
+              clearAutoSaveEditBaseline(row, '单件装箱数')
               void savePackageMetricPatch(row, { 单件装箱数: Number(event.target.value) }).catch(handleDetailSaveError)
             }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'packingQuantity', event)}
           />
-        ) : renderNumericCell(formatNumber(row.单件装箱数, 0)),
+        ) : renderNumericCell(formatNumber(row.单件装箱数, 0))
+      },
     },
     {
       title: renderColumnTitle('containerQuantity', t('containers.fields.containerQuantity')),
@@ -4486,8 +4843,9 @@ export default function ContainerDetailPage() {
       align: 'right',
       ...makeSortProps('unitVolume'),
       ...numberFilterProps('unitVolume'),
-      render: (_value, row) =>
-        access.canEditContainer ? (
+      render: (_value, row) => {
+        const saveFailure = getAutoSaveFailure(row, '单件体积')
+        return access.canEditContainer ? (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'unitVolume', cell)}
             value={row.单件体积}
@@ -4496,17 +4854,23 @@ export default function ContainerDetailPage() {
             precision={3}
             controls={false}
             style={{ width: 72 }}
-            onChange={(value) => patchRow(rowKey(row), { 单件体积: value == null ? undefined : Number(value) })}
+            status={saveFailure ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure)}
+            title={saveFailure?.message}
+            onFocus={() => captureAutoSaveEditBaseline(row, '单件体积', row.单件体积)}
+            onChange={(value) => patchAutoSaveRow(row, { 单件体积: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
               if (!event.target.value.trim()) {
-                patchRow(rowKey(row), { 单件体积: row.单件体积 })
+                restoreAutoSaveEditBaseline(row, '单件体积')
                 return
               }
+              clearAutoSaveEditBaseline(row, '单件体积')
               void savePackageMetricPatch(row, { 单件体积: Number(event.target.value) }).catch(handleDetailSaveError)
             }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'unitVolume', event)}
           />
-        ) : renderNumericCell(formatNumber(row.单件体积, 3)),
+        ) : renderNumericCell(formatNumber(row.单件体积, 3))
+      },
     },
     {
       title: renderColumnTitle('domesticPrice', t('containers.fields.domesticPrice')),
@@ -4541,8 +4905,9 @@ export default function ContainerDetailPage() {
       align: 'right',
       ...makeSortProps('floatRate'),
       ...numberFilterProps('floatRate'),
-      render: (_value, row) =>
-        access.canEditContainer ? (
+      render: (_value, row) => {
+        const saveFailure = getAutoSaveFailure(row, '调整浮率')
+        return access.canEditContainer ? (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'floatRate', cell)}
             value={row.调整浮率}
@@ -4550,14 +4915,24 @@ export default function ContainerDetailPage() {
             precision={2}
             controls={false}
             style={{ width: 78 }}
-            onChange={(value) => patchRow(rowKey(row), { 调整浮率: value == null ? undefined : Number(value) })}
+            status={saveFailure ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure)}
+            title={saveFailure?.message}
+            onFocus={() => captureAutoSaveEditBaseline(row, '调整浮率', row.调整浮率)}
+            onChange={(value) => patchAutoSaveRow(row, { 调整浮率: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
-              const value = event.target.value ? Number(event.target.value) : undefined
+              if (!event.target.value.trim()) {
+                restoreAutoSaveEditBaseline(row, '调整浮率')
+                return
+              }
+              clearAutoSaveEditBaseline(row, '调整浮率')
+              const value = Number(event.target.value)
               void saveFloatRatePatch(row, value).catch(handleDetailSaveError)
             }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'floatRate', event)}
           />
-        ) : renderNumericCell(formatNumber(row.调整浮率, 2)),
+        ) : renderNumericCell(formatNumber(row.调整浮率, 2))
+      },
     },
     {
       title: renderColumnTitle('middlePackQuantity', t('containers.fields.middlePackQuantity', '中包数')),
@@ -4566,8 +4941,9 @@ export default function ContainerDetailPage() {
       align: 'right',
       ...makeSortProps('middlePackQuantity'),
       ...numberFilterProps('middlePackQuantity'),
-      render: (_value, row) =>
-        access.canEditContainer ? (
+      render: (_value, row) => {
+        const saveFailure = getAutoSaveFailure(row, '中包数')
+        return access.canEditContainer ? (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'middlePackQuantity', cell)}
             value={row.中包数}
@@ -4576,11 +4952,23 @@ export default function ContainerDetailPage() {
             precision={0}
             controls={false}
             style={{ width: 68 }}
-            onChange={(value) => patchRow(rowKey(row), { 中包数: value == null ? undefined : Number(value) })}
-            onBlur={(event) => void saveRowPatch(row, { 中包数: event.target.value ? Number(event.target.value) : undefined }).catch(handleDetailSaveError)}
+            status={saveFailure ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure)}
+            title={saveFailure?.message}
+            onFocus={() => captureAutoSaveEditBaseline(row, '中包数', row.中包数)}
+            onChange={(value) => patchAutoSaveRow(row, { 中包数: value == null ? undefined : Number(value) })}
+            onBlur={(event) => {
+              if (!event.target.value.trim()) {
+                restoreAutoSaveEditBaseline(row, '中包数')
+                return
+              }
+              clearAutoSaveEditBaseline(row, '中包数')
+              void saveRowPatch(row, { 中包数: Number(event.target.value) }).catch(handleDetailSaveError)
+            }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'middlePackQuantity', event)}
           />
-        ) : renderNumericCell(row.中包数 ?? '--'),
+        ) : renderNumericCell(row.中包数 ?? '--')
+      },
     },
     {
       title: renderColumnTitle('warehouseImportPrice', t('containers.fields.warehouseImportPrice', '实时进货价')),
@@ -4758,6 +5146,7 @@ export default function ContainerDetailPage() {
       ...textFilterProps('productName', t('containers.placeholders.filterProductName', '商品名称过滤')),
       render: (_, row) => {
         const key = rowKey(row)
+        const saveFailure = getAutoSaveFailure(row, '商品名称')
         if (access.canEditContainer && editingProductNameRowKey === key) {
           return (
             <Input.TextArea
@@ -4766,6 +5155,9 @@ export default function ContainerDetailPage() {
               value={editingProductNameValue}
               autoSize={{ minRows: 1, maxRows: 2 }}
               style={{ resize: 'none' }}
+              status={saveFailure ? 'error' : undefined}
+              aria-invalid={Boolean(saveFailure)}
+              title={saveFailure?.message}
               onChange={(event) => setEditingProductNameValue(event.target.value)}
               onBlur={() => handleProductNameEditBlur(row)}
               onKeyDown={(event) => {
@@ -4785,7 +5177,12 @@ export default function ContainerDetailPage() {
 
         return (
           <div
-            className={access.canEditContainer ? 'container-detail-product-name-editable' : undefined}
+            className={[
+              access.canEditContainer ? 'container-detail-product-name-editable' : '',
+              saveFailure ? 'container-detail-auto-save-failed' : '',
+            ].filter(Boolean).join(' ') || undefined}
+            aria-invalid={Boolean(saveFailure)}
+            title={saveFailure?.message}
             onDoubleClick={() => startEditingProductName(row)}
           >
             <TwoLineText value={getContainerDetailProductName(row)} />
@@ -4835,16 +5232,21 @@ export default function ContainerDetailPage() {
       width: 160,
       ...makeSortProps('remark'),
       ...textFilterProps('remark', t('containers.placeholders.filterRemark', '备注过滤')),
-      render: (_, row) =>
-        access.canEditContainer ? (
+      render: (_, row) => {
+        const saveFailure = getAutoSaveFailure(row, '备注')
+        return access.canEditContainer ? (
           <Input
             ref={(cell) => setEditableCellRef(rowKey(row), 'remark', cell)}
             value={row.备注 ?? ''}
-            onChange={(event) => patchRow(rowKey(row), { 备注: event.target.value })}
+            status={saveFailure ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure)}
+            title={saveFailure?.message}
+            onChange={(event) => patchAutoSaveRow(row, { 备注: event.target.value })}
             onBlur={(event) => void saveRowPatch(row, { 备注: event.target.value }).catch(handleDetailSaveError)}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'remark', event)}
           />
-        ) : row.备注 || '--',
+        ) : row.备注 || '--'
+      },
     },
   ]
 
@@ -5202,7 +5604,7 @@ export default function ContainerDetailPage() {
             <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
               <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/warehouse/containers')}>{t('containers.actions.backToList')}</Button>
               <Space wrap>
-                <Button icon={<ReloadOutlined />} onClick={() => void loadData()}>{t('common.refresh')}</Button>
+                <Button icon={<ReloadOutlined />} onClick={() => void refreshContainerDetail()}>{t('common.refresh')}</Button>
                 {access.canEditContainer ? (
                   headerEditing ? (
                     <Button type="primary" icon={<SaveOutlined />} loading={savingHeader} onClick={() => void saveHeader()}>{t('containers.actions.saveContainer')}</Button>
@@ -5435,6 +5837,32 @@ export default function ContainerDetailPage() {
                       >
                         {t('containers.actions.saveDetails', '保存明细')}{pendingDetailPatchCount ? ` (${pendingDetailPatchCount})` : ''}
                       </Button>
+                      {autoSaveSnapshot.unsavedFieldCount > 0 ? (
+                        <Space
+                          size={4}
+                          className="container-detail-auto-save-meta"
+                          aria-live="polite"
+                        >
+                          <Typography.Text type={autoSaveSnapshot.failureCount > 0 ? 'danger' : 'secondary'}>
+                            {autoSaveSnapshot.failureCount > 0
+                              ? t(
+                                  'containers.text.autoSaveFailedFields',
+                                  '{{count}} 项未保存',
+                                  { count: autoSaveSnapshot.failureCount },
+                                )
+                              : t(
+                                  'containers.text.autoSavingFields',
+                                  '正在保存 {{count}} 项',
+                                  { count: autoSaveSnapshot.unsavedFieldCount },
+                                )}
+                          </Typography.Text>
+                          {autoSaveSnapshot.failureCount > 0 ? (
+                            <Button size="small" type="link" danger onClick={retryFailedAutoSaves}>
+                              {t('containers.actions.retryAutoSave', '重试')}
+                            </Button>
+                          ) : null}
+                        </Space>
+                      ) : null}
                       {pendingDetailFieldCount > 0 ? (
                         <Space size={4} className="container-detail-draft-meta">
                           <Typography.Text type={Object.keys(pendingDetailFailures).length > 0 ? 'danger' : 'warning'}>

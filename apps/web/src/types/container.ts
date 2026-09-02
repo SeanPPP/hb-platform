@@ -287,6 +287,7 @@ export interface UpdateContainerDetailRequest {
   进口价格?: number
   运输成本?: number
   商品名称?: string
+  备注?: string
   英文名称?: string
   ClearEnglishName?: boolean
   ProductCategoryGUID?: string
