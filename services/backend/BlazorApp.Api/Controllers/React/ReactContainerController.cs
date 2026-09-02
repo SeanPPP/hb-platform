@@ -857,7 +857,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
-        /// 批量更新货柜明细（React专用）
+        /// 批量更新货柜明细（旧客户端兼容部分成功入口）
         /// </summary>
         /// <param name="updates">明细更新列表</param>
         /// <returns>更新结果</returns>
@@ -888,6 +888,47 @@ namespace BlazorApp.Api.Controllers.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量更新货柜明细失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 在路由指定货柜范围内批量更新明细（Web 专用部分成功入口）。
+        /// </summary>
+        [HttpPost("{containerGuid:guid}/batch-update-details")]
+        [Authorize(Policy = Permissions.Container.Edit)]
+        public async Task<IActionResult> BatchUpdateDetailsScoped(
+            string containerGuid,
+            [FromBody] List<UpdateContainerDetailDto> updates
+        )
+        {
+            try
+            {
+                if (updates == null || !updates.Any())
+                {
+                    return BadRequest(new { success = false, message = "更新列表不能为空" });
+                }
+
+                var result = await _containerReactService.BatchUpdateDetailsDetailedAsync(
+                    containerGuid,
+                    updates
+                );
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        message = $"成功更新 {result.TotalUpdated} 条明细",
+                        data = result,
+                    }
+                );
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "批量更新货柜明细失败, ContainerGuid: {ContainerGuid}",
+                    containerGuid
+                );
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }

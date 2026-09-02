@@ -1,10 +1,82 @@
 using BlazorApp.Api.Services.React;
+using SqlSugar;
 using Xunit;
 
 namespace BlazorApp.Api.Tests;
 
 public sealed class SetChildPurchasePriceMutationLockTests
 {
+    [Fact]
+    public void CanContinuePartialLockFailure_仅安全的锁请求失败可在原事务继续()
+    {
+        Assert.True(
+            SetChildPurchasePriceMutationLock.CanContinuePartialLockFailure(
+                new SetChildPurchasePriceLockException(
+                    "timeout",
+                    -1,
+                    new TimeoutException()
+                )
+            )
+        );
+        Assert.True(
+            SetChildPurchasePriceMutationLock.CanContinuePartialLockFailure(
+                new SetChildPurchasePriceLockException("cancelled", -2)
+            )
+        );
+        Assert.True(
+            SetChildPurchasePriceMutationLock.CanContinuePartialLockFailure(
+                new SetChildPurchasePriceLockException("direct-applock-deadlock", -3)
+            )
+        );
+        Assert.False(
+            SetChildPurchasePriceMutationLock.CanContinuePartialLockFailure(
+                new SetChildPurchasePriceLockException(
+                    "sql-deadlock",
+                    -3,
+                    new InvalidOperationException("模拟 SqlException 1205 包装")
+                )
+            )
+        );
+        Assert.False(
+            SetChildPurchasePriceMutationLock.CanContinuePartialLockFailure(
+                new SetChildPurchasePriceLockException("invalid", -999)
+            )
+        );
+    }
+
+    [Fact]
+    public async Task AcquireProductsPartiallyAsync_SQLite返回覆盖全部成功商品的单一锁范围()
+    {
+        using var db = new SqlSugarClient(
+            new ConnectionConfig
+            {
+                ConnectionString = "DataSource=:memory:",
+                DbType = DbType.Sqlite,
+                IsAutoCloseConnection = false,
+                InitKeyType = InitKeyType.Attribute,
+            }
+        );
+        await db.Ado.BeginTranAsync();
+        try
+        {
+            var result = await SetChildPurchasePriceMutationLock.AcquireProductsPartiallyAsync(
+                db,
+                new[] { " b ", "A", "a" }
+            );
+
+            Assert.Empty(result.BusyProductCodes);
+            result.LockScope.EnsureCovers(db, new[] { "A", "B" });
+            Assert.Throws<InvalidOperationException>(() =>
+            {
+                result.LockScope.EnsureCovers(db, new[] { "C" });
+            });
+        }
+        finally
+        {
+            await db.Ado.RollbackTranAsync();
+        }
+    }
+
     [Fact]
     public void TryResolveConflict_识别事务包装后的业务锁异常()
     {

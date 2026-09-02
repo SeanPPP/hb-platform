@@ -1790,23 +1790,51 @@ namespace BlazorApp.Api.Services.React
         /// </summary>
         public async Task<int> BatchUpdateDetailsAsync(List<UpdateContainerDetailDto> updates)
         {
-            var result = await BatchUpdateDetailsCoreAsync(updates, countValidNoOps: false);
+            var result = await BatchUpdateDetailsCoreAsync(
+                updates,
+                countValidNoOps: false,
+                repairMissingStoreRelations: false,
+                containerGuid: null
+            );
             return result.TotalUpdated;
         }
 
         /// <summary>
-        /// 批量更新货柜明细，并返回 React 页面所需的部分成功和字段级错误。
+        /// 兼容旧客户端的无货柜范围部分成功入口。
         /// </summary>
         public Task<ContainerDetailBatchUpdateResultDto> BatchUpdateDetailsDetailedAsync(
             List<UpdateContainerDetailDto> updates
         )
         {
-            return BatchUpdateDetailsCoreAsync(updates, countValidNoOps: true);
+            return BatchUpdateDetailsCoreAsync(
+                updates,
+                countValidNoOps: true,
+                repairMissingStoreRelations: true,
+                containerGuid: null
+            );
+        }
+
+        /// <summary>
+        /// 在指定货柜范围内批量更新明细，并返回 React 页面所需的部分成功和字段级错误。
+        /// </summary>
+        public Task<ContainerDetailBatchUpdateResultDto> BatchUpdateDetailsDetailedAsync(
+            string containerGuid,
+            List<UpdateContainerDetailDto> updates
+        )
+        {
+            return BatchUpdateDetailsCoreAsync(
+                updates,
+                countValidNoOps: true,
+                repairMissingStoreRelations: true,
+                containerGuid
+            );
         }
 
         private async Task<ContainerDetailBatchUpdateResultDto> BatchUpdateDetailsCoreAsync(
             List<UpdateContainerDetailDto> updates,
-            bool countValidNoOps
+            bool countValidNoOps,
+            bool repairMissingStoreRelations,
+            string? containerGuid
         )
         {
             try
@@ -1823,17 +1851,78 @@ namespace BlazorApp.Api.Services.React
                     return result;
                 }
 
-                _logger.LogInformation(
-                    "[React] 开始批量更新货柜明细，数量: {Count}",
-                    updates.Count
-                );
+                var duplicateHguids = updates
+                    .Where(update => !string.IsNullOrWhiteSpace(update.HGUID))
+                    .GroupBy(update => update.HGUID, StringComparer.OrdinalIgnoreCase)
+                    .Where(group => group.Count() > 1)
+                    .Select(group => group.Key)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                if (duplicateHguids.Count > 0)
+                {
+                    if (!countValidNoOps)
+                    {
+                        // 严格内部入口没有字段级返回载体，重复明细必须整体拒绝，不能按请求顺序覆盖。
+                        throw new InvalidOperationException("批量更新请求包含重复货柜明细");
+                    }
+
+                    // React/移动端部分成功入口将重复明细整行拒绝；其余唯一明细仍可独立保存。
+                    foreach (var hguid in duplicateHguids.OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
+                    {
+                        result.ValidationErrors.Add(
+                            new ContainerDetailBatchUpdateValidationErrorDto
+                            {
+                                HGUID = hguid,
+                                Field = "*",
+                                Code = "DUPLICATE_DETAIL_UPDATE",
+                                Message = "同一请求不能重复提交同一货柜明细",
+                            }
+                        );
+                    }
+                    updates = updates
+                        .Where(update => !duplicateHguids.Contains(update.HGUID))
+                        .ToList();
+                    _logger.LogInformation(
+                        "[React] 开始批量更新货柜明细，请求: {RequestedCount}，有效: {ValidCount}，重复拒绝: {DuplicateCount}",
+                        result.TotalRequested,
+                        updates.Count,
+                        duplicateHguids.Count
+                    );
+                    if (updates.Count == 0)
+                    {
+                        _logger.LogInformation(
+                            "[React] 批量更新货柜明细完成，成功更新: {TotalUpdated}/{Total}",
+                            0,
+                            result.TotalRequested
+                        );
+                        return result;
+                    }
+                }
+                else
+                {
+                    _logger.LogInformation(
+                        "[React] 开始批量更新货柜明细，请求: {RequestedCount}，有效: {ValidCount}，重复拒绝: {DuplicateCount}",
+                        result.TotalRequested,
+                        updates.Count,
+                        0
+                    );
+                }
 
                 // 第一步：查询需要更新的明细记录
                 var hguids = updates.Select(u => u.HGUID).Distinct().ToList();
-                var details = await _context
-                    .Db.Queryable<ContainerDetail>()
+                var allExistingDetails = await _context.Db.Queryable<ContainerDetail>()
                     .Where(d => hguids.Contains(d.DetailCode) && !d.IsDeleted)
                     .ToListAsync();
+                var details = string.IsNullOrWhiteSpace(containerGuid)
+                    ? allExistingDetails
+                    : allExistingDetails
+                        .Where(detail => detail.ContainerCode == containerGuid)
+                        .ToList();
+                var outOfScopeHguids = string.IsNullOrWhiteSpace(containerGuid)
+                    ? new HashSet<string>()
+                    : allExistingDetails
+                        .Where(detail => detail.ContainerCode != containerGuid)
+                        .Select(detail => detail.DetailCode)
+                        .ToHashSet();
 
                 // 构建明细编码到明细实体的映射，便于快速查找
                 var detailMap = details.ToDictionary(d => d.DetailCode, d => d);
@@ -1849,8 +1938,12 @@ namespace BlazorApp.Api.Services.React
                         {
                             HGUID = update.HGUID,
                             Field = "*",
-                            Code = "DETAIL_NOT_FOUND",
-                            Message = "货柜明细不存在",
+                            Code = outOfScopeHguids.Contains(update.HGUID)
+                                ? "DETAIL_OUTSIDE_CONTAINER"
+                                : "DETAIL_NOT_FOUND",
+                            Message = outOfScopeHguids.Contains(update.HGUID)
+                                ? "货柜明细不属于当前货柜"
+                                : "货柜明细不存在",
                         }
                     );
                 }
@@ -1860,20 +1953,101 @@ namespace BlazorApp.Api.Services.React
                     existingDetailUpdates
                 );
 
+                // OEM 与上下架同时写明细和商品主档；同一规范化商品必须先合并意图，
+                // 冲突时只拒绝该字段，不能让请求顺序决定最终主档值。
+                var rejectedOemPriceHguids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var rejectedActiveHguids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var productGroup in existingDetailUpdates
+                    .Where(update =>
+                        !string.IsNullOrWhiteSpace(detailMap[update.HGUID].ProductCode)
+                    )
+                    .GroupBy(
+                        update => detailMap[update.HGUID].ProductCode!.Trim(),
+                        StringComparer.OrdinalIgnoreCase
+                    ))
+                {
+                    var oemUpdates = productGroup
+                        .Where(update => update.贴牌价格.HasValue)
+                        .ToList();
+                    if (oemUpdates.Select(update => update.贴牌价格!.Value).Distinct().Count() > 1)
+                    {
+                        foreach (var update in oemUpdates)
+                        {
+                            if (!rejectedOemPriceHguids.Add(update.HGUID))
+                            {
+                                continue;
+                            }
+                            result.ValidationErrors.Add(
+                                new ContainerDetailBatchUpdateValidationErrorDto
+                                {
+                                    HGUID = update.HGUID,
+                                    Field = "贴牌价格",
+                                    Code = "CONFLICTING_PRODUCT_OEM_PRICE",
+                                    Message = "同一商品的贴牌价格更新意图冲突",
+                                }
+                            );
+                        }
+                    }
+
+                    var activeUpdates = productGroup
+                        .Where(update => update.IsActive.HasValue)
+                        .ToList();
+                    if (activeUpdates.Select(update => update.IsActive!.Value).Distinct().Count() > 1)
+                    {
+                        foreach (var update in activeUpdates)
+                        {
+                            if (!rejectedActiveHguids.Add(update.HGUID))
+                            {
+                                continue;
+                            }
+                            result.ValidationErrors.Add(
+                                new ContainerDetailBatchUpdateValidationErrorDto
+                                {
+                                    HGUID = update.HGUID,
+                                    Field = "IsActive",
+                                    Code = "CONFLICTING_PRODUCT_ACTIVE_STATE",
+                                    Message = "同一商品的上下架更新意图冲突",
+                                }
+                            );
+                        }
+                    }
+                }
+
+                bool HasAcceptedOemPrice(UpdateContainerDetailDto update) =>
+                    update.贴牌价格.HasValue
+                    && !rejectedOemPriceHguids.Contains(update.HGUID);
+
+                bool HasAcceptedActive(UpdateContainerDetailDto update) =>
+                    update.IsActive.HasValue
+                    && !rejectedActiveHguids.Contains(update.HGUID);
+
+                var adjustmentRateWrites = new HashSet<string>();
+                var domesticPriceWrites = new HashSet<string>();
+                var importPriceWrites = new HashSet<string>();
+                var transportCostWrites = new HashSet<string>();
+                var oemPriceWrites = new HashSet<string>();
+                var packingQuantityWrites = new HashSet<string>();
+                var unitVolumeWrites = new HashSet<string>();
+                var loadingQuantityWrites = new HashSet<string>();
+                var totalVolumeWrites = new HashSet<string>();
+                var totalAmountWrites = new HashSet<string>();
+                var activeWrites = new HashSet<string>();
+                var categoryWrites = new HashSet<string>();
+
                 foreach (var update in existingDetailUpdates)
                 {
                     var hasDirectDetailIntent =
                         update.调整浮率.HasValue
                         || update.国内价格.HasValue
-                        || update.进口价格.HasValue
+                        || (!repairMissingStoreRelations && update.进口价格.HasValue)
                         || update.运输成本.HasValue
-                        || update.贴牌价格.HasValue
+                        || HasAcceptedOemPrice(update)
                         || update.单件装箱数.HasValue
                         || update.单件体积.HasValue
                         || update.装柜数量.HasValue
                         || update.合计装柜体积.HasValue
                         || update.合计装柜金额.HasValue
-                        || update.IsActive.HasValue
+                        || HasAcceptedActive(update)
                         || update.ProductCategoryGUID != null;
                     if (countValidNoOps && hasDirectDetailIntent)
                     {
@@ -1896,56 +2070,71 @@ namespace BlazorApp.Api.Services.React
                     if (update.调整浮率.HasValue && detail.AdjustmentRate != update.调整浮率.Value)
                     {
                         detail.AdjustmentRate = update.调整浮率.Value;
+                        adjustmentRateWrites.Add(update.HGUID);
                         changed = true;
                     }
                     if (update.国内价格.HasValue && detail.DomesticPrice != update.国内价格.Value)
                     {
                         detail.DomesticPrice = update.国内价格.Value;
+                        domesticPriceWrites.Add(update.HGUID);
                         changed = true;
                     }
-                    if (update.进口价格.HasValue && detail.ImportPrice != update.进口价格.Value)
+                    if (
+                        !repairMissingStoreRelations
+                        && update.进口价格.HasValue
+                        && detail.ImportPrice != update.进口价格.Value
+                    )
                     {
                         detail.ImportPrice = update.进口价格.Value;
+                        importPriceWrites.Add(update.HGUID);
                         changed = true;
                     }
                     if (update.运输成本.HasValue && detail.TransportCost != update.运输成本.Value)
                     {
                         detail.TransportCost = update.运输成本.Value;
+                        transportCostWrites.Add(update.HGUID);
                         changed = true;
                     }
-                    if (update.贴牌价格.HasValue && detail.OEMPrice != update.贴牌价格.Value)
+                    if (HasAcceptedOemPrice(update) && detail.OEMPrice != update.贴牌价格!.Value)
                     {
                         detail.OEMPrice = update.贴牌价格.Value;
+                        oemPriceWrites.Add(update.HGUID);
                         changed = true;
                     }
                     if (update.单件装箱数.HasValue && detail.PackingQuantity != update.单件装箱数.Value)
                     {
                         detail.PackingQuantity = update.单件装箱数.Value;
+                        packingQuantityWrites.Add(update.HGUID);
                         changed = true;
                     }
                     if (update.单件体积.HasValue && detail.UnitVolume != update.单件体积.Value)
                     {
                         detail.UnitVolume = update.单件体积.Value;
+                        unitVolumeWrites.Add(update.HGUID);
                         changed = true;
                     }
                     if (update.装柜数量.HasValue && detail.LoadingQuantity != update.装柜数量.Value)
                     {
                         detail.LoadingQuantity = update.装柜数量.Value;
+                        loadingQuantityWrites.Add(update.HGUID);
                         changed = true;
                     }
                     if (update.合计装柜体积.HasValue && detail.TotalVolume != update.合计装柜体积.Value)
                     {
                         detail.TotalVolume = update.合计装柜体积.Value;
+                        totalVolumeWrites.Add(update.HGUID);
                         changed = true;
                     }
                     if (update.合计装柜金额.HasValue && detail.TotalAmount != update.合计装柜金额.Value)
                     {
                         detail.TotalAmount = update.合计装柜金额.Value;
+                        totalAmountWrites.Add(update.HGUID);
                         changed = true;
                     }
-                    if (update.IsActive.HasValue && detail.IsActive != update.IsActive.Value)
+                    if (HasAcceptedActive(update) && detail.IsActive != update.IsActive!.Value)
                     {
                         detail.IsActive = update.IsActive.Value;
+                        activeWrites.Add(update.HGUID);
                         changed = true;
                     }
                     if (update.ProductCategoryGUID != null)
@@ -1958,6 +2147,7 @@ namespace BlazorApp.Api.Services.React
                         {
                             // 目标分类先落在货柜明细上；未匹配新商品创建时会继承它。
                             detail.TargetWarehouseCategoryGUID = nextCategoryGuid;
+                            categoryWrites.Add(update.HGUID);
                             changed = true;
                         }
                     }
@@ -2200,8 +2390,8 @@ namespace BlazorApp.Api.Services.React
                         && localProductMap.ContainsKey(x.Detail.ProductCode)
                         && (
                             x.Update.进口价格.HasValue
-                            || x.Update.贴牌价格.HasValue
-                            || x.Update.IsActive.HasValue
+                            || HasAcceptedOemPrice(x.Update)
+                            || HasAcceptedActive(x.Update)
                         )
                     )
                     .Select(x => new { x.Update, x.Detail })
@@ -2209,8 +2399,15 @@ namespace BlazorApp.Api.Services.React
 
                 foreach (var item in existingProductUpdates)
                 {
-                    // 明细价格本身未变化时，也要把本次保存请求计入并同步到关联价格表。
-                    updatedRequestGuids.Add(item.Update.HGUID);
+                    // React 详细保存会在锁内确认进口价是否可提交；其它字段可先按原契约计数。
+                    if (
+                        !repairMissingStoreRelations
+                        || HasAcceptedOemPrice(item.Update)
+                        || HasAcceptedActive(item.Update)
+                    )
+                    {
+                        updatedRequestGuids.Add(item.Update.HGUID);
+                    }
                 }
 
                 var productNameUpdates = relatedSyncDetailUpdates
@@ -2465,42 +2662,327 @@ namespace BlazorApp.Api.Services.React
                     || changedMiddlePackWarehouseProducts.Count > 0
                     || changedLocalCategoryProducts.Count > 0
                     || existingProductUpdates.Count > 0
+                    || (
+                        repairMissingStoreRelations
+                        && existingDetailUpdates.Any(update => update.进口价格.HasValue)
+                    )
                 )
                 {
                     await _context.Db.Ado.BeginTranAsync();
                     try
                     {
+                        var rejectedImportPriceHguids = new HashSet<string>(
+                            StringComparer.OrdinalIgnoreCase
+                        );
+                        var repairPurchasePrices = new Dictionary<string, decimal>(
+                            StringComparer.OrdinalIgnoreCase
+                        );
+
+                        void RejectImportPriceForProduct(
+                            string productCode,
+                            string code,
+                            string message
+                        )
+                        {
+                            foreach (var item in existingProductUpdates.Where(item =>
+                                item.Update.进口价格.HasValue
+                                && string.Equals(
+                                    item.Detail.ProductCode?.Trim(),
+                                    productCode,
+                                    StringComparison.OrdinalIgnoreCase
+                                )
+                            ))
+                            {
+                                if (!rejectedImportPriceHguids.Add(item.Update.HGUID))
+                                {
+                                    continue;
+                                }
+                                result.ValidationErrors.Add(
+                                    new ContainerDetailBatchUpdateValidationErrorDto
+                                    {
+                                        HGUID = item.Update.HGUID,
+                                        Field = "进口价格",
+                                        Code = code,
+                                        Message = message,
+                                    }
+                                );
+                            }
+                        }
+
+                        if (repairMissingStoreRelations)
+                        {
+                            foreach (var group in existingProductUpdates
+                                .Where(item =>
+                                    item.Update.进口价格.HasValue
+                                    && !string.IsNullOrWhiteSpace(item.Detail.ProductCode)
+                                )
+                                .GroupBy(
+                                    item => item.Detail.ProductCode!.Trim(),
+                                    StringComparer.OrdinalIgnoreCase
+                                ))
+                            {
+                                var distinctPrices = group
+                                    .Select(item => item.Update.进口价格!.Value)
+                                    .Distinct()
+                                    .ToList();
+                                if (distinctPrices.Count == 1)
+                                {
+                                    repairPurchasePrices[group.Key] = distinctPrices[0];
+                                    continue;
+                                }
+
+                                RejectImportPriceForProduct(
+                                    group.Key,
+                                    "CONFLICTING_PRODUCT_IMPORT_PRICE",
+                                    "同一商品的进口价格更新意图冲突"
+                                );
+                            }
+                        }
+
                         SetChildPurchasePriceLockScope? setChildPurchasePriceLock = null;
-                        if (productCodes.Count > 0)
+                        SetChildPurchasePriceLockScope? detailedImportLock = null;
+                        if (repairMissingStoreRelations)
+                        {
+                            if (repairPurchasePrices.Count > 0)
+                            {
+                                var partialLock = await SetChildPurchasePriceMutationLock
+                                    .AcquireProductsPartiallyAsync(
+                                        _context.Db,
+                                        repairPurchasePrices.Keys
+                                    );
+                                detailedImportLock = partialLock.LockScope;
+                                foreach (var productCode in partialLock.BusyProductCodes)
+                                {
+                                    RejectImportPriceForProduct(
+                                        productCode,
+                                        SetChildPurchasePriceMutationLock.BusyErrorCode,
+                                        "套装子项成本正在被其他操作更新，请稍后重试"
+                                    );
+                                    repairPurchasePrices.Remove(productCode);
+                                }
+                            }
+                        }
+                        else if (productCodes.Count > 0)
                         {
                             setChildPurchasePriceLock = await SetChildPurchasePriceMutationLock
                                 .AcquireProductsAsync(_context.Db, productCodes);
                         }
-                        // 快照必须在同一事务内、任何业务写入前读取，避免并发写入污染 before 状态。
+
+                        // 快照必须在同一事务内、任何业务写入前读取；需成本同步的商品已先取得业务锁。
                         var beforeSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
+
+                        if (repairMissingStoreRelations)
+                        {
+                            if (repairPurchasePrices.Count > 0)
+                            {
+                                if (detailedImportLock == null)
+                                {
+                                    throw new InvalidOperationException(
+                                        "详细保存缺少套装子项成本批量业务锁"
+                                    );
+                                }
+                                var repair = await new SetChildPurchasePriceService(
+                                    _context.Db
+                                ).RepairMissingStoreRelationsLockedAsync(
+                                    detailedImportLock,
+                                    repairPurchasePrices,
+                                    string.IsNullOrWhiteSpace(auditActorName)
+                                        ? "System"
+                                        : auditActorName
+                                );
+                                result.AutoRepairedStoreGroupCount +=
+                                    repair.AutoRepairedStoreGroupCount;
+                                result.AutoRepairedRelationCount += repair.AutoRepairedRelationCount;
+
+                                foreach (var failure in repair.Failures.Values)
+                                {
+                                    RejectImportPriceForProduct(
+                                        failure.ProductCode,
+                                        failure.Code,
+                                        failure.Message
+                                    );
+                                }
+                            }
+
+                            // 进口价在结构检查后才写入实体，失败商品不会被后续宽列更新意外带入数据库。
+                            foreach (var update in existingDetailUpdates.Where(update =>
+                                update.进口价格.HasValue
+                                && !rejectedImportPriceHguids.Contains(update.HGUID)
+                            ))
+                            {
+                                var detail = detailMap[update.HGUID];
+                                if (detail.ImportPrice != update.进口价格!.Value)
+                                {
+                                    detail.ImportPrice = update.进口价格.Value;
+                                    importPriceWrites.Add(update.HGUID);
+                                    if (!changedDetails.Any(row => row.DetailCode == detail.DetailCode))
+                                    {
+                                        changedDetails.Add(detail);
+                                    }
+                                }
+                                if (countValidNoOps)
+                                {
+                                    updatedRequestGuids.Add(update.HGUID);
+                                }
+                            }
+                        }
+
+                        bool HasAcceptedImportPrice(UpdateContainerDetailDto update) =>
+                            update.进口价格.HasValue
+                            && !rejectedImportPriceHguids.Contains(update.HGUID);
 
                         // 第二步：更新货柜明细表
                         if (changedDetails.Count > 0)
                         {
-                            await _context
-                                .Db.Updateable(changedDetails)
-                                .UpdateColumns(x => new
+                            var allChangedDetailRows = changedDetails
+                                .GroupBy(row => row.DetailCode)
+                                .Select(group => group.Last())
+                                .ToList();
+                            // 最坏情况每行会占 25 个参数（12 个字段的键和值加明细键）；80 行为
+                            // 2,000 个参数，预留货柜范围参数后仍低于 SQL Server 的 2,100 上限。
+                            foreach (var changedDetailRows in allChangedDetailRows.Chunk(80))
+                            {
+                                var sqlParameters = new List<SugarParameter>();
+                                var setClauses = new List<string>();
+
+                            // 每个业务列仅为本次已接受字段生成 CASE 分支：单条参数化 SQL 避免 N+1，
+                            // 同时绝不将事务前读到的其它列值宽写回，保护并发编辑的不同字段。
+                            void AddDetailColumnCase(
+                                string columnName,
+                                string parameterPrefix,
+                                HashSet<string> writeCodes,
+                                Func<ContainerDetail, object?> valueSelector
+                            )
+                            {
+                                var rows = changedDetailRows
+                                    .Where(row => writeCodes.Contains(row.DetailCode))
+                                    .ToList();
+                                if (rows.Count == 0)
                                 {
-                                    x.AdjustmentRate,
-                                    x.DomesticPrice,
-                                    x.ImportPrice,
-                                    x.TransportCost,
-                                    x.OEMPrice,
-                                    x.PackingQuantity,
-                                    x.UnitVolume,
-                                    x.LoadingQuantity,
-                                    x.TotalVolume,
-                                    x.TotalAmount,
-                                    x.IsActive,
-                                    x.TargetWarehouseCategoryGUID,
-                                })
-                                .WhereColumns(x => new { x.DetailCode })
-                                .ExecuteCommandAsync();
+                                    return;
+                                }
+
+                                var cases = new List<string>();
+                                for (var index = 0; index < rows.Count; index++)
+                                {
+                                    var keyParameter = $"@{parameterPrefix}Key{index}";
+                                    var valueParameter = $"@{parameterPrefix}Value{index}";
+                                    sqlParameters.Add(
+                                        new SugarParameter(keyParameter, rows[index].DetailCode)
+                                    );
+                                    sqlParameters.Add(
+                                        new SugarParameter(valueParameter, valueSelector(rows[index]))
+                                    );
+                                    cases.Add($"WHEN DetailCode = {keyParameter} THEN {valueParameter}");
+                                }
+                                setClauses.Add(
+                                    $"{columnName} = CASE {string.Join(" ", cases)} ELSE {columnName} END"
+                                );
+                            }
+
+                            AddDetailColumnCase(
+                                "AdjustmentRate",
+                                "AdjustmentRate",
+                                adjustmentRateWrites,
+                                row => row.AdjustmentRate
+                            );
+                            AddDetailColumnCase(
+                                "DomesticPrice",
+                                "DomesticPrice",
+                                domesticPriceWrites,
+                                row => row.DomesticPrice
+                            );
+                            AddDetailColumnCase(
+                                "ImportPrice",
+                                "ImportPrice",
+                                importPriceWrites,
+                                row => row.ImportPrice
+                            );
+                            AddDetailColumnCase(
+                                "TransportCost",
+                                "TransportCost",
+                                transportCostWrites,
+                                row => row.TransportCost
+                            );
+                            AddDetailColumnCase(
+                                "OEMPrice",
+                                "OEMPrice",
+                                oemPriceWrites,
+                                row => row.OEMPrice
+                            );
+                            AddDetailColumnCase(
+                                "PackingQuantity",
+                                "PackingQuantity",
+                                packingQuantityWrites,
+                                row => row.PackingQuantity
+                            );
+                            AddDetailColumnCase(
+                                "UnitVolume",
+                                "UnitVolume",
+                                unitVolumeWrites,
+                                row => row.UnitVolume
+                            );
+                            AddDetailColumnCase(
+                                "LoadingQuantity",
+                                "LoadingQuantity",
+                                loadingQuantityWrites,
+                                row => row.LoadingQuantity
+                            );
+                            AddDetailColumnCase(
+                                "TotalVolume",
+                                "TotalVolume",
+                                totalVolumeWrites,
+                                row => row.TotalVolume
+                            );
+                            AddDetailColumnCase(
+                                "TotalAmount",
+                                "TotalAmount",
+                                totalAmountWrites,
+                                row => row.TotalAmount
+                            );
+                            AddDetailColumnCase(
+                                "IsActive",
+                                "IsActive",
+                                activeWrites,
+                                row => row.IsActive
+                            );
+                            AddDetailColumnCase(
+                                "TargetWarehouseCategoryGUID",
+                                "TargetWarehouseCategoryGUID",
+                                categoryWrites,
+                                row => row.TargetWarehouseCategoryGUID
+                            );
+
+                            if (setClauses.Count > 0)
+                            {
+                                var detailCodeParameters = new List<string>();
+                                for (var index = 0; index < changedDetailRows.Length; index++)
+                                {
+                                    var detailParameter = $"@DetailCode{index}";
+                                    detailCodeParameters.Add(detailParameter);
+                                    sqlParameters.Add(
+                                        new SugarParameter(
+                                            detailParameter,
+                                            changedDetailRows[index].DetailCode
+                                        )
+                                    );
+                                }
+                                var scopeClause = string.Empty;
+                                if (!string.IsNullOrWhiteSpace(containerGuid))
+                                {
+                                    scopeClause = " AND ContainerCode = @ContainerGuid";
+                                    sqlParameters.Add(
+                                        new SugarParameter("@ContainerGuid", containerGuid)
+                                    );
+                                }
+                                var sql =
+                                    $"UPDATE ContainerDetail SET {string.Join(", ", setClauses)} "
+                                    + $"WHERE DetailCode IN ({string.Join(", ", detailCodeParameters)}) "
+                                    + "AND (IsDeleted = 0 OR IsDeleted IS NULL)"
+                                    + scopeClause;
+                                await _context.Db.Ado.ExecuteCommandAsync(sql, sqlParameters);
+                            }
+                            }
 
                             // 明细合计变化后，同事务刷新货柜主表汇总，保证列表和详情头部一致。
                             await RefreshContainerSummariesAsync(
@@ -2589,207 +3071,87 @@ namespace BlazorApp.Api.Services.React
 
                         if (existingProductUpdates.Count > 0)
                         {
-                            // 4.1 批量更新 WarehouseProduct 表（进口价格、零售价、上下架状态）
-                            // 使用 CASE WHEN 语句批量更新，避免 N+1 查询问题
-                            var warehouseUpdates = existingProductUpdates
-                                .Where(x =>
-                                    x.Update.进口价格.HasValue
-                                    || x.Update.贴牌价格.HasValue
-                                    || x.Update.IsActive.HasValue
+                            // 先按商品编码合并已接受意图，避免同商品的多条货柜明细重复占用 SQL 参数。
+                            // OEM/上下架/进口价的冲突已在前面逐字段拒绝，此处每个商品最多保留一个确定值。
+                            var productSyncPlans = existingProductUpdates
+                                .GroupBy(
+                                    item => item.Detail.ProductCode!.Trim(),
+                                    StringComparer.OrdinalIgnoreCase
+                                )
+                                .Select(group =>
+                                {
+                                    var importItem = group.LastOrDefault(item =>
+                                        HasAcceptedImportPrice(item.Update)
+                                    );
+                                    var oemItem = group.LastOrDefault(item =>
+                                        HasAcceptedOemPrice(item.Update)
+                                    );
+                                    var activeItem = group.LastOrDefault(item =>
+                                        HasAcceptedActive(item.Update)
+                                    );
+                                    return new ContainerProductSyncPlan(
+                                        group.Key,
+                                        importItem?.Update.进口价格,
+                                        oemItem?.Update.贴牌价格,
+                                        activeItem?.Update.IsActive
+                                    );
+                                })
+                                .Where(plan =>
+                                    plan.ImportPrice.HasValue
+                                    || plan.OEMPrice.HasValue
+                                    || plan.IsActive.HasValue
                                 )
                                 .ToList();
 
-                            if (warehouseUpdates.Count > 0)
-                            {
-                                var importCases = new List<string>();
-                                var oemCases = new List<string>();
-                                var activeCases = new List<string>();
-                                var pList = new List<SugarParameter>();
+                            await UpdateWarehouseProductsForContainerDetailAsync(
+                                productSyncPlans,
+                                now,
+                                auditActorName
+                            );
+                            await UpdateProductsForContainerDetailAsync(
+                                productSyncPlans,
+                                now,
+                                auditActorName
+                            );
+                            await UpdateStoreRetailPricesForContainerDetailAsync(productSyncPlans);
 
-                                for (int i = 0; i < warehouseUpdates.Count; i++)
-                                {
-                                    var item = warehouseUpdates[i];
-                                    pList.Add(
-                                        new SugarParameter($"@Pc{i}", item.Detail.ProductCode)
-                                    );
-
-                                    if (item.Update.进口价格.HasValue)
-                                    {
-                                        pList.Add(
-                                            new SugarParameter(
-                                                $"@Imp{i}",
-                                                item.Update.进口价格.Value
-                                            )
-                                        );
-                                        importCases.Add($"WHEN ProductCode = @Pc{i} THEN @Imp{i}");
-                                    }
-                                    if (item.Update.贴牌价格.HasValue)
-                                    {
-                                        pList.Add(
-                                            new SugarParameter(
-                                                $"@OEM{i}",
-                                                item.Update.贴牌价格.Value
-                                            )
-                                        );
-                                        oemCases.Add($"WHEN ProductCode = @Pc{i} THEN @OEM{i}");
-                                    }
-                                    if (item.Update.IsActive.HasValue)
-                                    {
-                                        pList.Add(
-                                            new SugarParameter(
-                                                $"@Act{i}",
-                                                item.Update.IsActive.Value ? 1 : 0
-                                            )
-                                        );
-                                        activeCases.Add($"WHEN ProductCode = @Pc{i} THEN @Act{i}");
-                                    }
-                                }
-
-                                var setClause = new List<string>();
-                                pList.Add(new SugarParameter("@UpdatedAt", now));
-                                pList.Add(new SugarParameter("@UpdatedBy", auditActorName));
-                                setClause.Add("UpdatedAt = @UpdatedAt");
-                                setClause.Add("UpdatedBy = @UpdatedBy");
-
-                                var inClause = string.Join(
-                                    ", ",
-                                    Enumerable
-                                        .Range(0, warehouseUpdates.Count)
-                                        .Select(i => $"@Pc{i}")
-                                );
-                                if (importCases.Count > 0)
-                                    setClause.Add(
-                                        $"ImportPrice = CASE {string.Join(" ", importCases)} ELSE ImportPrice END"
-                                    );
-                                if (oemCases.Count > 0)
-                                    setClause.Add(
-                                        $"OEMPrice = CASE {string.Join(" ", oemCases)} ELSE OEMPrice END"
-                                    );
-                                if (activeCases.Count > 0)
-                                    setClause.Add(
-                                        $"IsActive = CASE {string.Join(" ", activeCases)} ELSE IsActive END"
-                                    );
-
-                                if (setClause.Count > 0)
-                                {
-                                    var sql =
-                                        $"UPDATE WarehouseProduct SET {string.Join(", ", setClause)} WHERE ProductCode IN ({inClause}) AND (IsDeleted = 0 OR IsDeleted IS NULL)";
-                                    await _context.Db.Ado.ExecuteCommandAsync(sql, pList);
-                                }
-                            }
-
-                            // 4.2 批量更新 Product 表（进口价格 -> 进货价，零售价 -> 零售价）
-                            // 使用 CASE WHEN 语句批量更新，避免 N+1 查询问题
-                            var importPriceUpdates = existingProductUpdates
-                                .Where(x => x.Update.进口价格.HasValue)
+                            var importPriceUpdates = productSyncPlans
+                                .Where(plan => plan.ImportPrice.HasValue)
                                 .ToList();
-                            var oemPriceUpdates = existingProductUpdates
-                                .Where(x => x.Update.贴牌价格.HasValue)
-                                .ToList();
-                            if (importPriceUpdates.Count > 0 || oemPriceUpdates.Count > 0)
-                            {
-                                var purchaseCaseBuilder = new System.Text.StringBuilder();
-                                var retailCaseBuilder = new System.Text.StringBuilder();
-                                var pList = new List<SugarParameter>();
-                                var priceProductCodes = existingProductUpdates
-                                    .Where(x => x.Update.进口价格.HasValue || x.Update.贴牌价格.HasValue)
-                                    .Select(x => x.Detail.ProductCode)
-                                    .Where(code => !string.IsNullOrWhiteSpace(code))
-                                    .Distinct()
-                                    .ToList();
-                                for (int i = 0; i < priceProductCodes.Count; i++)
-                                {
-                                    pList.Add(new SugarParameter($"@Pc{i}", priceProductCodes[i]));
-                                }
-                                for (int i = 0; i < importPriceUpdates.Count; i++)
-                                {
-                                    purchaseCaseBuilder.Append($" WHEN ProductCode = @PurchasePc{i} THEN @PurchasePrice{i}");
-                                    pList.Add(new SugarParameter($"@PurchasePc{i}", importPriceUpdates[i].Detail.ProductCode));
-                                    pList.Add(new SugarParameter($"@PurchasePrice{i}", importPriceUpdates[i].Update.进口价格!.Value));
-                                }
-                                for (int i = 0; i < oemPriceUpdates.Count; i++)
-                                {
-                                    retailCaseBuilder.Append($" WHEN ProductCode = @RetailPc{i} THEN @RetailPrice{i}");
-                                    pList.Add(new SugarParameter($"@RetailPc{i}", oemPriceUpdates[i].Detail.ProductCode));
-                                    pList.Add(new SugarParameter($"@RetailPrice{i}", oemPriceUpdates[i].Update.贴牌价格!.Value));
-                                }
-                                pList.Add(new SugarParameter("@ProductUpdatedAt", now));
-                                pList.Add(new SugarParameter("@ProductUpdatedBy", auditActorName));
-                                var inClause = string.Join(
-                                    ", ",
-                                    Enumerable
-                                        .Range(0, priceProductCodes.Count)
-                                        .Select(i => $"@Pc{i}")
-                                );
-                                var setClause = new List<string>();
-                                if (importPriceUpdates.Count > 0)
-                                    setClause.Add($"PurchasePrice = CASE {purchaseCaseBuilder} ELSE PurchasePrice END");
-                                if (oemPriceUpdates.Count > 0)
-                                    setClause.Add($"RetailPrice = CASE {retailCaseBuilder} ELSE RetailPrice END");
-                                setClause.Add("UpdatedAt = @ProductUpdatedAt");
-                                setClause.Add("UpdatedBy = @ProductUpdatedBy");
-                                var sql =
-                                    $"UPDATE Product SET {string.Join(", ", setClause)} WHERE ProductCode IN ({inClause}) AND (IsDeleted = 0 OR IsDeleted IS NULL)";
-                                await _context.Db.Ado.ExecuteCommandAsync(sql, pList);
-                            }
-
-                            // 4.3 分店零售价表只同步进货价；零售价不从货柜明细回填分店零售价。
                             if (importPriceUpdates.Count > 0)
                             {
-                                var purchaseCaseBuilder = new System.Text.StringBuilder();
-                                var pList = new List<SugarParameter>();
-                                var storePriceProductCodes = importPriceUpdates
-                                    .Select(x => x.Detail.ProductCode)
-                                    .Where(code => !string.IsNullOrWhiteSpace(code))
-                                    .Distinct()
-                                    .ToList();
-                                for (int i = 0; i < storePriceProductCodes.Count; i++)
-                                {
-                                    pList.Add(new SugarParameter($"@Pc{i}", storePriceProductCodes[i]));
-                                }
-                                for (int i = 0; i < importPriceUpdates.Count; i++)
-                                {
-                                    purchaseCaseBuilder.Append($" WHEN ProductCode = @PurchasePc{i} THEN @PurchasePrice{i}");
-                                    pList.Add(new SugarParameter($"@PurchasePc{i}", importPriceUpdates[i].Detail.ProductCode));
-                                    pList.Add(new SugarParameter($"@PurchasePrice{i}", importPriceUpdates[i].Update.进口价格!.Value));
-                                }
-                                var inClause = string.Join(
-                                    ", ",
-                                    Enumerable
-                                        .Range(0, storePriceProductCodes.Count)
-                                        .Select(i => $"@Pc{i}")
-                                );
-                                var sql =
-                                    $"UPDATE StoreRetailPrice SET PurchasePrice = CASE {purchaseCaseBuilder} ELSE PurchasePrice END WHERE ProductCode IN ({inClause}) AND (IsDeleted = 0 OR IsDeleted IS NULL)";
-                                await _context.Db.Ado.ExecuteCommandAsync(sql, pList);
-                            }
-
-                            if (importPriceUpdates.Count > 0 && setChildPurchasePriceLock != null)
-                            {
                                 var costProductCodes = importPriceUpdates
-                                    .Select(item => item.Detail.ProductCode)
-                                    .Where(code => !string.IsNullOrWhiteSpace(code))
-                                    .Select(code => code!)
+                                    .Select(item => item.ProductCode)
                                     .Distinct(StringComparer.OrdinalIgnoreCase)
                                     .ToList();
-                                var recalculation = await new SetChildPurchasePriceService(
+                                var purchasePriceService = new SetChildPurchasePriceService(
                                     _context.Db
-                                ).RecalculateLockedAsync(
-                                    setChildPurchasePriceLock,
-                                    costProductCodes,
-                                    storeCodes: null,
-                                    updatedBy: string.IsNullOrWhiteSpace(auditActorName)
-                                        ? "System"
-                                        : auditActorName
                                 );
-                                if (
-                                    recalculation.ProductSetCode.SkippedGroupCount > 0
-                                    || recalculation.StoreMultiCodeProduct.SkippedGroupCount > 0
-                                )
+                                var recalculationActor = string.IsNullOrWhiteSpace(auditActorName)
+                                    ? "System"
+                                    : auditActorName;
+                                if (repairMissingStoreRelations)
                                 {
-                                    throw new InvalidOperationException(
-                                        recalculation.Errors.FirstOrDefault()?.Reason
-                                            ?? "套装与多码商品成本无法完整校正"
+                                    if (detailedImportLock == null)
+                                    {
+                                        throw new InvalidOperationException(
+                                            "详细保存缺少套装子项成本批量业务锁"
+                                        );
+                                    }
+                                    await purchasePriceService.RecalculateLockedAsync(
+                                        detailedImportLock,
+                                        costProductCodes,
+                                        storeCodes: null,
+                                        updatedBy: recalculationActor
+                                    );
+                                }
+                                else if (setChildPurchasePriceLock != null)
+                                {
+                                    await purchasePriceService.RecalculateLockedAsync(
+                                        setChildPurchasePriceLock,
+                                        costProductCodes,
+                                        storeCodes: null,
+                                        updatedBy: recalculationActor
                                     );
                                 }
                             }
@@ -2833,7 +3195,7 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogInformation(
                     "[React] 批量更新货柜明细完成，成功更新: {TotalUpdated}/{Total}",
                     totalUpdated,
-                    updates.Count
+                    result.TotalRequested
                 );
 
                 return result;
@@ -2844,6 +3206,173 @@ namespace BlazorApp.Api.Services.React
                 throw;
             }
         }
+
+        private const int ContainerProductCaseBatchSize = 400;
+
+        /// <summary>
+        /// 将一商品一意图的同步计划以参数化 CASE 分块写入 WarehouseProduct。
+        /// 400 行最坏为 1,602 参数（编码、三字段值、审计），低于 SQL Server 2,100 上限。
+        /// </summary>
+        private async Task UpdateWarehouseProductsForContainerDetailAsync(
+            IReadOnlyCollection<ContainerProductSyncPlan> plans,
+            DateTime now,
+            string? updatedBy
+        )
+        {
+            foreach (var batch in plans.Chunk(ContainerProductCaseBatchSize))
+            {
+                var parameters = new List<SugarParameter>();
+                var importCases = new List<string>();
+                var oemCases = new List<string>();
+                var activeCases = new List<string>();
+                var productCodeParameters = new List<string>();
+                for (var index = 0; index < batch.Length; index++)
+                {
+                    var plan = batch[index];
+                    var productParameter = $"@ProductCode{index}";
+                    productCodeParameters.Add(productParameter);
+                    parameters.Add(new SugarParameter(productParameter, plan.ProductCode));
+                    if (plan.ImportPrice.HasValue)
+                    {
+                        var valueParameter = $"@ImportPrice{index}";
+                        parameters.Add(new SugarParameter(valueParameter, plan.ImportPrice.Value));
+                        importCases.Add($"WHEN ProductCode = {productParameter} THEN {valueParameter}");
+                    }
+                    if (plan.OEMPrice.HasValue)
+                    {
+                        var valueParameter = $"@OEMPrice{index}";
+                        parameters.Add(new SugarParameter(valueParameter, plan.OEMPrice.Value));
+                        oemCases.Add($"WHEN ProductCode = {productParameter} THEN {valueParameter}");
+                    }
+                    if (plan.IsActive.HasValue)
+                    {
+                        var valueParameter = $"@IsActive{index}";
+                        parameters.Add(
+                            new SugarParameter(valueParameter, plan.IsActive.Value ? 1 : 0)
+                        );
+                        activeCases.Add($"WHEN ProductCode = {productParameter} THEN {valueParameter}");
+                    }
+                }
+                parameters.Add(new SugarParameter("@UpdatedAt", now));
+                parameters.Add(new SugarParameter("@UpdatedBy", updatedBy));
+                var setClauses = new List<string>
+                {
+                    "UpdatedAt = @UpdatedAt",
+                    "UpdatedBy = @UpdatedBy",
+                };
+                if (importCases.Count > 0)
+                    setClauses.Add(
+                        $"ImportPrice = CASE {string.Join(" ", importCases)} ELSE ImportPrice END"
+                    );
+                if (oemCases.Count > 0)
+                    setClauses.Add($"OEMPrice = CASE {string.Join(" ", oemCases)} ELSE OEMPrice END");
+                if (activeCases.Count > 0)
+                    setClauses.Add($"IsActive = CASE {string.Join(" ", activeCases)} ELSE IsActive END");
+                var sql =
+                    $"UPDATE WarehouseProduct SET {string.Join(", ", setClauses)} "
+                    + $"WHERE ProductCode IN ({string.Join(", ", productCodeParameters)}) "
+                    + "AND (IsDeleted = 0 OR IsDeleted IS NULL)";
+                await _context.Db.Ado.ExecuteCommandAsync(sql, parameters);
+            }
+        }
+
+        /// <summary>
+        /// 仅同步货柜明细允许回写的本地主档价格，按商品编码分块避免参数超限。
+        /// </summary>
+        private async Task UpdateProductsForContainerDetailAsync(
+            IReadOnlyCollection<ContainerProductSyncPlan> plans,
+            DateTime now,
+            string? updatedBy
+        )
+        {
+            foreach (var batch in plans
+                .Where(plan => plan.ImportPrice.HasValue || plan.OEMPrice.HasValue)
+                .Chunk(ContainerProductCaseBatchSize))
+            {
+                var parameters = new List<SugarParameter>();
+                var purchaseCases = new List<string>();
+                var retailCases = new List<string>();
+                var productCodeParameters = new List<string>();
+                for (var index = 0; index < batch.Length; index++)
+                {
+                    var plan = batch[index];
+                    var productParameter = $"@ProductCode{index}";
+                    productCodeParameters.Add(productParameter);
+                    parameters.Add(new SugarParameter(productParameter, plan.ProductCode));
+                    if (plan.ImportPrice.HasValue)
+                    {
+                        var valueParameter = $"@PurchasePrice{index}";
+                        parameters.Add(new SugarParameter(valueParameter, plan.ImportPrice.Value));
+                        purchaseCases.Add($"WHEN ProductCode = {productParameter} THEN {valueParameter}");
+                    }
+                    if (plan.OEMPrice.HasValue)
+                    {
+                        var valueParameter = $"@RetailPrice{index}";
+                        parameters.Add(new SugarParameter(valueParameter, plan.OEMPrice.Value));
+                        retailCases.Add($"WHEN ProductCode = {productParameter} THEN {valueParameter}");
+                    }
+                }
+                parameters.Add(new SugarParameter("@UpdatedAt", now));
+                parameters.Add(new SugarParameter("@UpdatedBy", updatedBy));
+                var setClauses = new List<string>
+                {
+                    "UpdatedAt = @UpdatedAt",
+                    "UpdatedBy = @UpdatedBy",
+                };
+                if (purchaseCases.Count > 0)
+                    setClauses.Add(
+                        $"PurchasePrice = CASE {string.Join(" ", purchaseCases)} ELSE PurchasePrice END"
+                    );
+                if (retailCases.Count > 0)
+                    setClauses.Add(
+                        $"RetailPrice = CASE {string.Join(" ", retailCases)} ELSE RetailPrice END"
+                    );
+                var sql =
+                    $"UPDATE Product SET {string.Join(", ", setClauses)} "
+                    + $"WHERE ProductCode IN ({string.Join(", ", productCodeParameters)}) "
+                    + "AND (IsDeleted = 0 OR IsDeleted IS NULL)";
+                await _context.Db.Ado.ExecuteCommandAsync(sql, parameters);
+            }
+        }
+
+        /// <summary>
+        /// 分店零售价仅接收进口价对应的进货价；每批 400 个商品保持参数预算安全。
+        /// </summary>
+        private async Task UpdateStoreRetailPricesForContainerDetailAsync(
+            IReadOnlyCollection<ContainerProductSyncPlan> plans
+        )
+        {
+            foreach (var batch in plans
+                .Where(plan => plan.ImportPrice.HasValue)
+                .Chunk(ContainerProductCaseBatchSize))
+            {
+                var parameters = new List<SugarParameter>();
+                var purchaseCases = new List<string>();
+                var productCodeParameters = new List<string>();
+                for (var index = 0; index < batch.Length; index++)
+                {
+                    var plan = batch[index];
+                    var productParameter = $"@ProductCode{index}";
+                    var valueParameter = $"@PurchasePrice{index}";
+                    productCodeParameters.Add(productParameter);
+                    parameters.Add(new SugarParameter(productParameter, plan.ProductCode));
+                    parameters.Add(new SugarParameter(valueParameter, plan.ImportPrice!.Value));
+                    purchaseCases.Add($"WHEN ProductCode = {productParameter} THEN {valueParameter}");
+                }
+                var sql =
+                    $"UPDATE StoreRetailPrice SET PurchasePrice = CASE {string.Join(" ", purchaseCases)} ELSE PurchasePrice END "
+                    + $"WHERE ProductCode IN ({string.Join(", ", productCodeParameters)}) "
+                    + "AND (IsDeleted = 0 OR IsDeleted IS NULL)";
+                await _context.Db.Ado.ExecuteCommandAsync(sql, parameters);
+            }
+        }
+
+        private sealed record ContainerProductSyncPlan(
+            string ProductCode,
+            decimal? ImportPrice,
+            decimal? OEMPrice,
+            bool? IsActive
+        );
 
         private async Task<List<string>> ResolveContainerDetailBatchScopeHguidsAsync(
             string containerGuid,

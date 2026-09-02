@@ -218,6 +218,19 @@ export interface ContainerDetailBatchActionResult {
   totalRequested?: number
 }
 
+export interface ContainerDetailBatchUpdateResult {
+  totalUpdated: number
+  totalRequested: number
+  validationErrors: Array<{
+    hguid: string
+    field: string
+    code: string
+    message: string
+  }>
+  autoRepairedStoreGroupCount?: number
+  autoRepairedRelationCount?: number
+}
+
 export interface ContainerQueryRequest {
   dateType?: string
   startDate?: string
