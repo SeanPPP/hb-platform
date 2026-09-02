@@ -17,6 +17,8 @@ internal static class SchemaDiagnosticCodes
     public const string MainMigrationMissing = "SCHEMA_MAIN_MIGRATION_MISSING";
     public const string PosmMigrationMissing = "SCHEMA_POSM_MIGRATION_MISSING";
     public const string DeviceActivationIncompatible = "SCHEMA_DEVICE_ACTIVATION_INCOMPATIBLE";
+    public const string ContainerDetailQueryIndexesIncompatible =
+        "SCHEMA_CONTAINER_DETAIL_QUERY_INDEXES_INCOMPATIBLE";
     public const string ProviderUnsupported = "SCHEMA_PROVIDER_UNSUPPORTED";
     public const string DatabaseFailure = "SCHEMA_DATABASE_FAILURE";
     public const string MigrationFailure = "SCHEMA_MIGRATION_FAILURE";

@@ -10,6 +10,10 @@ import {
   CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY,
   ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   CONTAINER_DETAIL_EXPORT_COLUMNS,
+  CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+  CONTAINER_DETAIL_FULL_LOAD_LIMIT,
+  CONTAINER_DETAIL_INITIAL_PAGE_SIZE,
+  CONTAINER_DETAIL_PAGE_SIZE_OPTIONS,
   CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY,
   applyPendingContainerDetailPatches,
   applyContainerDetailEnglishNameUpdates,
@@ -27,6 +31,7 @@ import {
   buildPendingContainerDetailSavePlan,
   countSuccessfullySavedContainerDetailRows,
   canUseContainerDetailLocalTagFilters,
+  canReuseContainerDetailInitialPage,
   clearSavedPendingContainerDetailFields,
   mergeContainerDetailColumnOrder,
   isContainerDetailColumnOrderCustomized,
@@ -85,6 +90,8 @@ import {
   getContainerDetailExportColumns,
   applyContainerDetailLocalExportValues,
   prepareContainerDetailWholeExportRows,
+  resolveContainerDetailFullPage,
+  resolveContainerDetailInitialPage,
   getNextContainerDetailEditableCell,
   getNextUpdateFieldSelection,
   isContainerDetailSortField,
@@ -914,9 +921,10 @@ assertEqual(
     id: 104,
     hguid: 'type-detail-fallback',
     商品类型: '套装子商品',
+    商品信息: { 商品类型: '普通商品' },
   }),
   '套装子商品',
-  '国内商品表类型缺失时应回退货柜明细商品类型',
+  '套装子商品应优先读取明细快照，避免全量与分页模式分类不一致',
 )
 
 const categoryRows: ContainerDetail[] = [
@@ -1671,10 +1679,10 @@ assertEqual(
 )
 
 const tagRows: ContainerDetail[] = [
-  { id: 31, hguid: 'tag-31', 是否新商品: true, 贴牌价格: 0, 进口价格: 1, warehouseIsActive: true },
-  { id: 32, hguid: 'tag-32', 是否新商品: true, 贴牌价格: 0, warehouseOEMPrice: 2, 进口价格: 0, warehouseIsActive: false, 商品信息: { 商品类型: '套装商品' } },
-  { id: 33, hguid: 'tag-33', 是否新商品: false, 贴牌价格: 3, 进口价格: 4, warehouseIsActive: true, 商品信息: { 商品类型: '多码商品' } },
-  { id: 34, hguid: 'tag-34', 是否新商品: false, 贴牌价格: 0, 进口价格: undefined, warehouseIsActive: undefined, 商品类型: '套装子商品' },
+  { id: 31, hguid: 'tag-31', 是否新商品: true, 贴牌价格: 0, 进口价格: 1, warehouseIsActive: true, matchType: 'productCode' },
+  { id: 32, hguid: 'tag-32', 是否新商品: true, 贴牌价格: 0, warehouseOEMPrice: 2, 进口价格: 0, warehouseIsActive: false, matchType: 'supplierItem', 商品信息: { 商品类型: '套装商品' } },
+  { id: 33, hguid: 'tag-33', 是否新商品: false, 贴牌价格: 3, 进口价格: 4, warehouseIsActive: true, matchType: 'unmatched', 商品信息: { 商品类型: '多码商品' } },
+  { id: 34, hguid: 'tag-34', 是否新商品: false, 贴牌价格: 0, 进口价格: undefined, warehouseIsActive: undefined, matchType: 'productCode', 商品类型: '套装子商品', 商品信息: { 商品类型: '普通商品' } },
 ]
 
 assertDeepEqual(
@@ -1691,6 +1699,9 @@ assertDeepEqual(
     set: 1,
     multi: 1,
     setChild: 1,
+    productCodeMatched: 2,
+    supplierItemMatched: 1,
+    unmatched: 1,
   },
   '统计栏应按当前基础结果统计全部、新商品、已有商品、缺零售价、进口价异常、上下架和商品类型数量',
 )
@@ -1773,7 +1784,7 @@ const columnStateRows: ContainerDetail[] = [
     贴牌价格: 2.01,
     warehouseOEMPrice: 2.01,
     warehouseIsActive: undefined,
-    商品信息: { 货号: '8104032', 条形码: '8052533140328', 商品名称: '三角支架', 英文名称: 'Triangle Bracket' },
+    商品信息: { 货号: '8104032', 条形码: '8052533140328', 商品名称: '三角支架', 英文名称: 'Triangle Bracket', 商品类型: '普通商品' },
   },
 ]
 
@@ -1812,6 +1823,120 @@ assertDeepEqual(
 assertDeepEqual(columnState({}, { field: 'transportCost', order: 'ascend' }), ['column-203', 'column-201', 'column-202'], '数字排序应把空值排在最后')
 assertDeepEqual(columnState({}, { field: 'warehouseStatus', order: 'descend' }), ['column-201', 'column-202', 'column-203'], '仓库状态排序应支持上架优先且同值保持原始顺序')
 assertDeepEqual(columnState({}, { field: 'matchType', order: 'ascend' }), ['column-201', 'column-203', 'column-202'], '匹配方式排序应按商品编码、供应商货号、未匹配稳定排序')
+assertDeepEqual(
+  applyContainerDetailColumnState([
+    { id: 221, hguid: 'type-sort-child', 商品类型: '套装子商品', 商品信息: { 商品类型: '普通商品' } },
+    { id: 222, hguid: 'type-sort-multi', 商品信息: { 商品类型: '多码商品' } },
+    { id: 223, hguid: 'type-sort-normal', 商品信息: { 商品类型: '普通商品' } },
+    { id: 224, hguid: 'type-sort-set', 商品信息: { 商品类型: '套装商品' } },
+  ], {}, { field: 'productType', order: 'ascend' }).map((row) => row.hguid),
+  ['type-sort-normal', 'type-sort-set', 'type-sort-multi', 'type-sort-child'],
+  '商品类型排序应与服务端使用相同的普通、套装、多码、套装子商品顺序',
+)
+
+assertDeepEqual(
+  {
+    initialPageSize: CONTAINER_DETAIL_INITIAL_PAGE_SIZE,
+    fullLoadLimit: CONTAINER_DETAIL_FULL_LOAD_LIMIT,
+    defaultPageSize: CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+    options: CONTAINER_DETAIL_PAGE_SIZE_OPTIONS,
+  },
+  {
+    initialPageSize: 100,
+    fullLoadLimit: 200,
+    defaultPageSize: 100,
+    options: [50, 100, 200, 500, 1000],
+  },
+  '首屏、全量阈值与分页档位应保持产品契约',
+)
+
+const initialPageRows = Array.from({ length: 100 }, (_, index): ContainerDetail => ({
+  id: index + 1,
+  hguid: `initial-${index + 1}`,
+}))
+assertDeepEqual(
+  resolveContainerDetailInitialPage({ items: initialPageRows, itemsTotal: 100 }),
+  {
+    mode: 'full',
+    items: initialPageRows,
+    itemsTotal: 100,
+    requiresFullLoad: false,
+  },
+  '100 条应直接使用首屏完整结果，不发起第二次明细请求',
+)
+assertDeepEqual(
+  resolveContainerDetailInitialPage({ items: initialPageRows, itemsTotal: 101 }),
+  {
+    mode: 'full',
+    items: initialPageRows,
+    itemsTotal: 101,
+    requiresFullLoad: true,
+  },
+  '101 条应继续读取完整集，且仍不显示分页',
+)
+assertDeepEqual(
+  resolveContainerDetailInitialPage({ items: initialPageRows, itemsTotal: 200 }),
+  {
+    mode: 'full',
+    items: initialPageRows,
+    itemsTotal: 200,
+    requiresFullLoad: true,
+  },
+  '200 条应继续拉取完整集',
+)
+assertDeepEqual(
+  resolveContainerDetailInitialPage({ items: initialPageRows, itemsTotal: 201 }),
+  {
+    mode: 'paged',
+    items: initialPageRows,
+    itemsTotal: 201,
+    requiresFullLoad: false,
+  },
+  '201 条应直接复用首屏进入服务端分页',
+)
+
+const concurrentFullRows = Array.from({ length: 200 }, (_, index): ContainerDetail => ({
+  id: index + 1,
+  hguid: `concurrent-${index + 1}`,
+}))
+assertDeepEqual(
+  resolveContainerDetailFullPage({ items: concurrentFullRows, itemsTotal: 0, hasMore: true }, 200),
+  {
+    mode: 'paged',
+    items: concurrentFullRows.slice(0, 100),
+    itemsTotal: 201,
+  },
+  '首屏探测 200 后并发增长到 201 条时，二次请求必须回退分页且只显示正确首页 100 条',
+)
+assertDeepEqual(
+  resolveContainerDetailFullPage({ items: concurrentFullRows, itemsTotal: 0, hasMore: false }, 200),
+  {
+    mode: 'full',
+    items: concurrentFullRows,
+    itemsTotal: 200,
+  },
+  '二次请求确认无更多数据时应保持全量模式',
+)
+assertEqual(
+  canReuseContainerDetailInitialPage({
+    filters: {},
+    selectedTags: [],
+    sortState: { field: 'itemNumber', order: 'ascend' },
+    pageSize: 100,
+  }),
+  true,
+  '无筛选的默认首页可直接复用',
+)
+assertEqual(
+  canReuseContainerDetailInitialPage({
+    filters: {},
+    selectedTags: ['active'],
+    sortState: { field: 'itemNumber', order: 'ascend' },
+    pageSize: 100,
+  }),
+  false,
+  '存在标签筛选时不得复用无筛选首页',
+)
 
 assertDeepEqual(
   buildContainerDetailQuery({
@@ -2281,6 +2406,9 @@ const requiredContainerI18nKeys = [
   'containers.text.loadedRows',
   'containers.text.autoSavingFields',
   'containers.text.autoSaveFailedFields',
+  'containers.text.fullRows',
+  'containers.text.pageRows',
+  'containers.text.paginationTotal',
   'containers.text.warehouseInventoriesCreated',
   'containers.text.warehouseInventoriesUpdated',
   'containers.text.skippedNewProducts',
@@ -2936,20 +3064,20 @@ assertEqual(
   '匹配国内数据检测请求应使用行供应商编码且不再提交条码兜底',
 )
 assertEqual(
-  pageSource.includes('void reconcileLoadedMatchStatus(result.items, currentReconcileGeneration)') &&
-    pageSource.includes('products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))') &&
-    pageSource.includes('buildContainerDetailMatchStatusUpdates(rowsNeedingMatchStatus, detected)') &&
-    pageSource.includes('加载态只校正表格展示状态，不写库'),
+  !pageSource.includes('reconcileLoadedMatchStatus') &&
+    !pageSource.includes('buildContainerDetailMatchStatusUpdates(rowsNeedingMatchStatus, detected)') &&
+    (pageSource.match(/await detectProducts\(/g) ?? []).length === 1,
   true,
-  '页面加载后应对当前懒加载块只读校正匹配状态，避免旧错误 MatchType 留在表格中且避免写库',
+  '普通页面加载应直接使用后端权威 MatchType，只有显式匹配国内数据操作可以调用 detectProducts',
 )
 assertEqual(
-  pageSource.includes('const containerDetailReconcileGenerationRef = useRef(0)') &&
-    pageSource.includes('const currentReconcileGeneration = containerDetailReconcileGenerationRef.current') &&
-    pageSource.includes('if (containerDetailReconcileGenerationRef.current !== reconcileGeneration)') &&
-    !pageSource.includes('containerDetailLoadRequestIdRef.current !== requestId)'),
+  pageSource.includes('const currentRequestId = containerDetailLoadRequestIdRef.current + 1') &&
+    pageSource.includes('const isCurrentRequest = () => (') &&
+    pageSource.includes('!controller.signal.aborted') &&
+    pageSource.includes('containerDetailLoadRequestIdRef.current === currentRequestId') &&
+    pageSource.includes('currentContainerGuidRef.current === containerGuid'),
   true,
-  '追加页之间应共享匹配校正 generation；只有重置、切换或离开页面才能使旧校正结果失效',
+  '翻页、筛选和排序请求应以 AbortSignal、requestId 和货柜 GUID 共同阻止旧响应覆盖',
 )
 assertEqual(
   pageSource.includes('SkipRelatedProductSync: true'),
@@ -2990,9 +3118,11 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('[active, activeLoadQueryKey, currentUserGuid]') &&
-    pageSource.includes('标签不进入 detailQueryKey；非标签远程筛选或当前用户变化时重置懒加载结果。'),
+    pageSource.includes('selectedTags: selectedTagFilters') &&
+    pageSource.includes("detailLoadMode === 'full'") &&
+    pageSource.includes("detailLoadMode === 'paged'"),
   true,
-  '远程重载 effect 应监听 active 和 base 查询 key，标签切换不应触发 reset reload',
+  '全量模式标签应在本地处理；分页模式标签必须进入远程 scope 并触发受控重载',
 )
 assertEqual(
   pageSource.includes("{ value: 'all', label: t('containers.filters.allTags'), color: 'blue' }"),
@@ -3899,9 +4029,12 @@ assertEqual(
   '货柜明细表格应使用列头过滤和排序后的 displayRows',
 )
 assertEqual(
-  pageSource.includes('applyContainerDetailColumnState(filteredRows, {}, sortState)'),
+  pageSource.includes("detailLoadMode === 'full'") &&
+    pageSource.includes('applyCurrentClientFilters(baseFilteredRows)') &&
+    pageSource.includes('sortState,') &&
+    pageSource.includes('const pagedDetailQuery = useMemo(() => buildContainerDetailQuery({'),
   true,
-  '货柜明细列头排序应在前端对当前已加载可见行排序',
+  '货柜明细列头排序应在全量模式本地执行，在分页模式进入后端查询',
 )
 assertEqual(
   pageSource.includes('getCategoryTree') &&
@@ -3915,12 +4048,12 @@ assertEqual(
 assertEqual(
   !pageSource.includes('const [itemNumberFilter, setItemNumberFilter]') &&
     !pageSource.includes('const [categoryFilterValue, setCategoryFilterValue]') &&
-    pageSource.includes('baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))') &&
-    pageSource.includes("applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)") &&
+    pageSource.includes('sourceRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))') &&
+    pageSource.includes('applyContainerDetailColumnState(nextTagFilteredRows, columnFilters, sortState)') &&
     !pageSource.includes('applyContainerDetailCategoryFilter(textFilteredRows, categoryFilterValue, categoryLookup)') &&
-    !pageSource.includes('categoryFilterValue, sortState'),
+    pageSource.includes('selectedTags: selectedTagFilters'),
   true,
-  '顶部过滤条移除后，标签快览和列头文字过滤仍应在前端过滤已加载行，分类和排序不应进入远程加载查询依赖',
+  '顶部过滤条移除后，全量模式应本地过滤，分页模式应把完整列筛选和标签交给后端',
 )
 assertEqual(
   !pageSource.includes("placeholder={t('containers.filters.allCategories'") &&
@@ -3939,30 +4072,31 @@ assertEqual(
 )
 assertEqual(
   (() => {
-    const baseQueryStart = pageSource.indexOf('const baseDetailQuery = useMemo(() => buildContainerDetailQuery({')
-    const queryEnd = pageSource.indexOf('const baseDetailQueryKey', baseQueryStart)
-    const baseQuerySource = pageSource.slice(baseQueryStart, queryEnd)
-    return baseQueryStart >= 0 &&
-      queryEnd > baseQueryStart &&
-      !pageSource.includes('const scopedDetailQuery = useMemo(() => buildContainerDetailQuery({') &&
-      !pageSource.includes('const scopedFullDetailQuery = useMemo(() => buildContainerDetailQuery({') &&
-      !baseQuerySource.includes('selectedTags') &&
-      baseQuerySource.includes('filters: remoteColumnFilters') &&
-      pageSource.includes('const detailQuery = baseDetailQuery') &&
-      pageSource.includes('const detailQueryKey = baseDetailQueryKey') &&
-      pageSource.includes('const activeLoadQueryKey = detailQueryKey')
+    const initialStart = pageSource.indexOf('const initialDetailQuery = useMemo(() => buildContainerDetailQuery({')
+    const fullStart = pageSource.indexOf('const fullDetailQuery = useMemo(() => buildContainerDetailQuery({')
+    const pagedStart = pageSource.indexOf('const pagedDetailQuery = useMemo(() => buildContainerDetailQuery({')
+    const statsStart = pageSource.indexOf('const pagedDetailStatsQuery = useMemo(() => buildContainerDetailQuery({')
+    return initialStart >= 0 &&
+      fullStart > initialStart &&
+      pagedStart > fullStart &&
+      statsStart > pagedStart &&
+      pageSource.includes('pageSize: CONTAINER_DETAIL_INITIAL_PAGE_SIZE') &&
+      pageSource.includes('pageSize: CONTAINER_DETAIL_FULL_LOAD_LIMIT') &&
+      pageSource.includes('pageSize: detailPageSize') &&
+      pageSource.includes('selectedTags: selectedTagFilters')
   })(),
   true,
-  '明细加载查询应只保留无标签 base 查询，标签切换不应进入远程查询 key',
+  '明细加载应区分首屏 100、完整 200、服务端分页和延迟统计四类查询',
 )
 assertEqual(
-  pageSource.includes("const shouldComputeDetailMeta = mode === 'reset'") &&
-    pageSource.includes('includeTotal: shouldComputeDetailMeta') &&
-    pageSource.includes('includeStats: shouldComputeDetailMeta') &&
+  pageSource.includes('includeItems: false') &&
+    pageSource.includes('schedulePagedDetailStats') &&
+    pageSource.includes('includeTotal: true') &&
+    pageSource.includes('includeStats: true') &&
     pageSource.includes('if (result.totalComputed !== false) {') &&
     pageSource.includes('if (result.statsComputed !== false) {'),
   true,
-  '货柜明细首屏才应请求 total/tagStats，追加页不应覆盖首屏统计',
+  '分页行请求完成后应以 includeItems=false 的独立请求补 total 和 TagStats',
 )
 assertEqual(
   (() => {
@@ -4015,21 +4149,21 @@ assertEqual(
 )
 assertEqual(
   !pageSource.includes('itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber') &&
-    pageSource.includes('const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => omitContainerDetailTextFilters(columnFilters), [columnFilters])'),
+    !pageSource.includes('omitContainerDetailTextFilters(columnFilters)') &&
+    pageSource.includes('filters: columnFilters'),
   true,
-  '顶部货号和列头文字筛选不应合并进远程查询条件',
+  '分页模式应把列头文字筛选纳入远程查询，保证全局结果而不是只过滤当前页',
 )
 assertEqual(
-  pageSource.includes('baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))') &&
-    pageSource.includes("applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)") &&
-    pageSource.includes('hasLoadedFullBaseDetailQuery ? localBaseTagStats : remoteTagStats') &&
+  pageSource.includes("const tagStats = detailLoadMode === 'full' ? localBaseTagStats : remoteTagStats") &&
+    pageSource.includes('selectedTags: selectedTagFilters') &&
     pageSource.includes('return await fetchAllRowsForCurrentQuery()') &&
     pageSource.includes('setBatchModalScopeRows(scopedRows)') &&
     pageSource.includes('buildDetailBatchScope(batchModalScopeRows)') &&
     pageSource.includes('selectedHguids: getRowsHguids(scopeRows)') &&
-    pageSource.includes('...baseDetailQuery,'),
+    pageSource.includes('return overlayPendingDetailChanges(allRows)'),
   true,
-  '标签应始终进入前端过滤链路，批量作用域和全量拉取应使用 base 查询后在前端收敛 HGUID',
+  '分页标签和批量全量作用域应由后端全局筛选，随后叠加当前草稿并收敛 HGUID',
 )
 assertEqual(
   pageSource.includes('columnFilters') && pageSource.includes('sortState'),
@@ -4137,9 +4271,9 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('onBatchSuccess: (contextKey) => {') &&
-    pageSource.includes('detailAppendRequestRef.current?.controller') &&
-    pageSource.includes('detailReadAheadRequestRef.current?.controller') &&
-    pageSource.includes('activeItemLoads.forEach((controller) => controller.abort())') &&
+    pageSource.includes('const activeItemLoad = detailAbortControllerRef.current') &&
+    pageSource.includes('if (!activeItemLoad || activeItemLoad.signal.aborted) return') &&
+    pageSource.includes('activeItemLoad.abort()') &&
     pageSource.includes('containerDetailLoadRequestIdRef.current += 1'),
   true,
   '自动保存成功应在清除 running overlay 前废弃当前货柜的旧查询，防止迟到回包覆盖新值',
@@ -4386,8 +4520,13 @@ assertEqual(
   '本页批量翻译、批量修改和批量清除英文名称都应进入保存明细队列，不能立即落库',
 )
 assertEqual(
-  pageSource.includes('const loadedItems = overlayPendingDetailChanges(result.items)') &&
+  pageSource.includes('const overlayPendingDetailChanges = (items: ContainerDetail[]) => {') &&
     pageSource.includes('items,\n      pendingDetailPatchesRef.current,') &&
+    pageSource.includes('applyContainerDetailAutoSavePatches(') &&
+    pageSource.includes('const publishLoadedDetailRows = (items: ContainerDetail[]) => {') &&
+    pageSource.includes('rowsRef.current = loadedItems') &&
+    pageSource.includes('rows: loadedItems,') &&
+    pageSource.includes('publishLoadedDetailRows(result.items)') &&
     pageSource.includes('pendingDetailDraftIdentityRef.current === draftIdentity') &&
     pageSource.includes('pendingDetailDraftIdentityRef.current = draftIdentity') &&
     pageSource.includes('applyPendingDetailDraftState(restoredDraft, false)') &&
@@ -4447,9 +4586,9 @@ assertEqual(
   '货柜明细页不应再暴露独立重算成本 scope 写回入口',
 )
 assertEqual(
-  pageSource.includes("await loadDetailChunk(1, 'reset')"),
+  pageSource.includes('await reloadCurrentDetailRef.current()'),
   true,
-  '重算成本写回成功后应重载当前查询首块',
+  '重算成本写回成功后应重载当前查询范围',
 )
 assertEqual(pageSource.includes("t('containers.messages.missingFreightForCost'"), true, '缺少运费时应通过 i18n 提示且不写库')
 assertEqual(pageSource.includes("t('containers.messages.missingTotalVolumeForCost'"), true, '缺少总体积时应通过 i18n 提示且不写库')
@@ -4760,12 +4899,20 @@ assertEqual(
   '货柜明细表格应按当前显示顺序给偶数视觉行添加隔行色 class',
 )
 assertEqual(
-  pageSource.includes('const CONTAINER_DETAIL_PAGE_SIZE = 50') &&
-    pageSource.includes('pagination={false}') &&
+  containerDetailLogicSource.includes('export const CONTAINER_DETAIL_INITIAL_PAGE_SIZE = 100') &&
+    containerDetailLogicSource.includes('export const CONTAINER_DETAIL_FULL_LOAD_LIMIT = 200') &&
+    containerDetailLogicSource.includes('export const CONTAINER_DETAIL_DEFAULT_PAGE_SIZE = 100') &&
+    containerDetailLogicSource.includes('export const CONTAINER_DETAIL_PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1000]') &&
+    pageSource.includes("pagination={detailLoadMode === 'paged' ? {") &&
+    pageSource.includes('current: detailPageNumber') &&
+    pageSource.includes('pageSize: detailPageSize') &&
+    pageSource.includes('total: detailItemsTotal') &&
+    pageSource.includes('showSizeChanger: true') &&
+    pageSource.includes('pageSizeOptions: [...CONTAINER_DETAIL_PAGE_SIZE_OPTIONS]') &&
     pageSource.includes('virtual') &&
     pageSource.includes('onScroll={handleDetailTableScroll}'),
   true,
-  '货柜明细应关闭可见分页器，使用 50 条内部懒加载块和虚拟滚动',
+  '货柜明细 200 条以内应保留完整虚拟列表，超过 200 条才显示默认 100 条及 50/100/200/500/1000 分页档位',
 )
 const stickyControlsStart = pageSource.indexOf('className="container-detail-sticky-controls"')
 const detailTableStart = pageSource.indexOf('className="container-detail-table"', stickyControlsStart)
@@ -4818,90 +4965,99 @@ assertEqual(
   '货柜明细 Tab 切回时应重挂载 AntD 虚拟表格并恢复滚动位置，避免 KeepAlive 隐藏后 body 空白',
 )
 assertEqual(
-  pageSource.includes('lastDetailTableScrollTopRef.current = target.scrollTop') &&
-    pageSource.includes('shouldLoadNextContainerDetailChunk({') &&
-    pageSource.includes('void loadNextDetailChunk()'),
+  (() => {
+    const scrollStart = pageSource.indexOf('const handleDetailTableScroll = (event: UIEvent<HTMLDivElement>) => {')
+    const scrollEnd = pageSource.indexOf('const handleWarehouseStatusChange', scrollStart)
+    const scrollSource = pageSource.slice(scrollStart, scrollEnd)
+    return scrollStart >= 0 &&
+      scrollEnd > scrollStart &&
+      scrollSource.includes('lastDetailTableScrollTopRef.current = target.scrollTop') &&
+      !scrollSource.includes('shouldLoadNextContainerDetailChunk') &&
+      !scrollSource.includes('loadNextDetailChunk')
+  })(),
   true,
-  '货柜明细表格滚动处理应保存滚动位置，并在进入预加载区时加载下一块',
+  '货柜明细表格滚动只应保存位置，不应再自动追加下一块',
 )
 assertEqual(
-  pageSource.includes('const detailAppendRequestRef = useRef<') &&
-    pageSource.includes('const detailResetRequestRef = useRef<') &&
-    pageSource.includes('startContainerDetailAppendRequest(') &&
-    pageSource.includes('cancelContainerDetailAppendRequest(detailAppendRequestRef.current)') &&
-    pageSource.includes('finishContainerDetailAppendRequest(') &&
-    pageSource.includes('detailAppendRequestRef.current = appendStart.request') &&
-    pageSource.includes('|| detailResetRequestRef.current'),
+  pageSource.includes('const detailAbortControllerRef = useRef<AbortController | null>(null)') &&
+    pageSource.includes('const detailResetRequestRef = useRef<AbortController | null>(null)') &&
+    pageSource.includes('const containerDetailLoadRequestIdRef = useRef(0)') &&
+    pageSource.includes('detailAbortControllerRef.current?.abort()') &&
+    !pageSource.includes('const detailAppendRequestRef = useRef<') &&
+    !pageSource.includes('startContainerDetailAppendRequest(') &&
+    !pageSource.includes('finishContainerDetailAppendRequest('),
   true,
-  '货柜明细追加加载应同步防重入、避让重置请求，并只允许请求所有者释放 token',
+  '货柜明细分页请求应使用单一 AbortController 和 request id 防止旧请求覆盖当前页',
 )
 assertEqual(
-  pageSource.includes('const detailReadAheadRequestRef = useRef<') &&
-    pageSource.includes('const startDetailReadAhead = (pageNumber: number) =>') &&
-    pageSource.includes('startContainerDetailReadAheadRequest(') &&
-    pageSource.includes('resetReadAheadRequest = startDetailReadAhead(pageNumber + 1)') &&
-    pageSource.includes('detailReadAheadRequestRef.current?.key === requestKey') &&
-    pageSource.includes('await readAheadRequest.promise') &&
-    pageSource.includes('startDetailReadAhead(result.pageNumber + 1)') &&
-    pageSource.includes('startDetailReadAhead(detailPageNumber + 1)') &&
-    pageSource.includes('cancelContainerDetailReadAheadRequest(detailReadAheadRequestRef.current)'),
+  !pageSource.includes('const detailReadAheadRequestRef = useRef<') &&
+    !pageSource.includes('const startDetailReadAhead = (pageNumber: number) =>') &&
+    !pageSource.includes('startContainerDetailReadAheadRequest(') &&
+    !pageSource.includes('cancelContainerDetailReadAheadRequest('),
   true,
-  '货柜明细应只保留下一页前读缓存，滚动消费后接续预取并在失效时取消',
+  '显式分页不应保留旧的前读缓存和滚动追加请求',
 )
 assertEqual(
   (() => {
-    const readAheadStart = pageSource.indexOf('const startDetailReadAhead = (pageNumber: number) =>')
-    const readAheadEnd = pageSource.indexOf('const loadDetailChunk = async', readAheadStart)
-    const readAheadSource = pageSource.slice(readAheadStart, readAheadEnd)
-    return readAheadStart >= 0 &&
-      readAheadEnd > readAheadStart &&
-      readAheadSource.includes('pageSize: CONTAINER_DETAIL_PAGE_SIZE') &&
-      readAheadSource.includes('includeTotal: false') &&
-      readAheadSource.includes('includeStats: false')
+    const initialQueryStart = pageSource.indexOf('const initialDetailQuery = useMemo(() => buildContainerDetailQuery({')
+    const pagedQueryStart = pageSource.indexOf('const pagedDetailQuery = useMemo(() => buildContainerDetailQuery({')
+    const querySource = pageSource.slice(initialQueryStart, pagedQueryStart)
+    return initialQueryStart >= 0 &&
+      pagedQueryStart > initialQueryStart &&
+      querySource.includes('pageSize: CONTAINER_DETAIL_INITIAL_PAGE_SIZE') &&
+      querySource.includes('includeTotal: true') &&
+      querySource.includes('includeStats: false') &&
+      querySource.includes('pageSize: CONTAINER_DETAIL_FULL_LOAD_LIMIT') &&
+      querySource.includes('includeTotal: false')
   })(),
   true,
-  '前读页必须保持 50 条，并跳过 total 与标签统计',
+  '首屏探测应读取 100 条和总数，只有 101 至 200 条时再读取最多 200 条完整集',
 )
 assertEqual(
   (() => {
-    const firstPageStart = pageSource.indexOf('const resultPromise = queryContainerProducts(')
-    const secondPageStart = pageSource.indexOf(
-      'resetReadAheadRequest = startDetailReadAhead(pageNumber + 1)',
-      firstPageStart,
-    )
-    const firstPageAwait = pageSource.indexOf('result = await resultPromise', secondPageStart)
-    return firstPageStart >= 0 &&
-      secondPageStart > firstPageStart &&
-      firstPageAwait > secondPageStart
+    const loadStart = pageSource.indexOf("if (requestedMode === 'probe') {")
+    const pagedLoadStart = pageSource.indexOf('const result = await queryContainerProducts(', loadStart)
+    const loadSource = pageSource.slice(loadStart, pagedLoadStart)
+    return loadStart >= 0 &&
+      pagedLoadStart > loadStart &&
+      loadSource.includes('initialDetailQuery') &&
+      loadSource.includes('resolveContainerDetailInitialPage(initialResult)') &&
+      loadSource.includes('fullDetailQuery') &&
+      loadSource.includes('resolveContainerDetailFullPage(') &&
+      loadSource.includes("if (fullResolution.mode === 'paged')")
   })(),
   true,
-  '重置查询应先启动首屏请求，再并发第 2 页并等待首屏结果',
+  '探测流程应先判定总量，再处理并发增长到 201 条以上时切换分页的边界',
 )
 assertEqual(
-  pageSource.includes("void loadNextDetailChunk('auto')") &&
-    pageSource.includes("source === 'auto' && failedDetailAppendRequestKeyRef.current === requestKey") &&
-    pageSource.includes('detailResetRequestRef.current = null') &&
-    pageSource.includes('setDetailLoadingMore(false)'),
+  pageSource.includes('const schedulePagedDetailStats = (') &&
+    pageSource.includes('window.setTimeout(() => {') &&
+    pageSource.includes('detailStatsAbortControllerRef.current?.abort()') &&
+    pageSource.includes('includeItems: false') &&
+    pageSource.includes('schedulePagedDetailStats(pagedDetailStatsQuery, pagedDetailStatsKey)') &&
+    !pageSource.includes('setDetailLoadingMore('),
   true,
-  '标签自动补齐失败后应停止自动重试，清理时应同步释放加载状态',
+  '分页行请求应独立延迟加载 total 和标签统计，并可取消过期统计请求',
 )
-const detailQueryAutoReloadIndex = pageSource.indexOf('requestedDetailQueryKey: activeLoadQueryKey')
-const detailLoadEffectIndex = pageSource.lastIndexOf('useEffect(() => {', detailQueryAutoReloadIndex)
+const detailLoadEffectIndex = pageSource.indexOf('useEffect(() => {', pageSource.indexOf('void loadHeader(shouldShowInitialLoading)'))
 const detailLoadCancellationIndex = pageSource.indexOf(
   'const cancelDetailLoads = () =>',
   detailLoadEffectIndex,
 )
-const skipDetailAutoReloadIndex = pageSource.lastIndexOf(
-  'if (shouldSkipDetailAutoReload({',
-  detailQueryAutoReloadIndex,
+const fullModeCacheIndex = pageSource.indexOf("if (detailLoadMode === 'full')", detailLoadEffectIndex)
+const detailLoadCacheIndex = pageSource.indexOf(
+  'lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid',
+  fullModeCacheIndex,
 )
 assertEqual(
   detailLoadEffectIndex >= 0 &&
     detailLoadCancellationIndex >= detailLoadEffectIndex &&
-    detailLoadCancellationIndex < skipDetailAutoReloadIndex &&
-    pageSource.indexOf('return cancelDetailLoads', skipDetailAutoReloadIndex) >= 0,
+    detailLoadCancellationIndex < fullModeCacheIndex &&
+    detailLoadCacheIndex > fullModeCacheIndex &&
+    pageSource.indexOf('return cancelDetailLoads', fullModeCacheIndex) >= 0 &&
+    pageSource.indexOf('return cancelDetailLoads', detailLoadCacheIndex) >= 0,
   true,
-  'KeepAlive 命中缓存跳过重载时也必须注册追加请求取消函数',
+  '完整模式或 KeepAlive 命中成功查询缓存时也必须注册当前明细请求取消函数',
 )
 assertEqual(
   pageStyleSource.includes('.container-detail-table .ant-table-thead > tr > th'),
@@ -5057,8 +5213,11 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('if (headerLoadRequestIdRef.current !== currentRequestId)') &&
-    pageSource.includes('if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId)') &&
-    pageSource.includes('return'),
+    pageSource.includes('const isCurrentRequest = () => (') &&
+    pageSource.includes('!controller.signal.aborted') &&
+    pageSource.includes('containerDetailLoadRequestIdRef.current === currentRequestId') &&
+    pageSource.includes('currentContainerGuidRef.current === containerGuid') &&
+    pageSource.includes('if (!isCurrentRequest()) return'),
   true,
   '货柜详情过期请求完成或失败后应直接忽略，不能写入 state 或弹失败提示',
 )
@@ -5085,11 +5244,11 @@ assertEqual(
   pageSource.includes('const lastLoadedContainerDetailSuccessRef = useRef<{') &&
     pageSource.includes('containerGuid: string\n    queryKey: string\n    generation: number') &&
     pageSource.includes('lastLoadedContainerDetailSuccessRef.current = {') &&
-    pageSource.includes('queryKey: detailQueryKey,') &&
-    pageSource.includes('generation: currentReconcileGeneration,') &&
-    pageSource.includes('const loadedDetailQueryKey = lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
-    pageSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
-    !pageSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailQueryKeyRef.current'),
+    pageSource.includes('queryKey: pagedDetailQueryKey,') &&
+    pageSource.includes('generation: currentRequestId,') &&
+    pageSource.includes('lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
+    pageSource.includes('lastLoadedContainerDetailSuccessRef.current.queryKey === activeLoadQueryKey') &&
+    !pageSource.includes('lastLoadedContainerDetailQueryKeyRef'),
   true,
   '明细自动跳过判断只能使用明细成功加载记录，不能沿用头部加载状态或旧查询 key',
 )

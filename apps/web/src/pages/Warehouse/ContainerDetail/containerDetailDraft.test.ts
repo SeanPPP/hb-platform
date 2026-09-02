@@ -477,6 +477,18 @@ assertEqual(
     pendingQueryKey: 'container:unfiltered',
     activeQueryKey: 'container:unfiltered',
     loadedQueryKey: 'container:unfiltered',
+    pendingGeneration: 3,
+    loadedGeneration: 4,
+    isResetLoading: false,
+  }),
+  true,
+  '取消旧分页请求可能额外推进代次，较新的成功结果仍应消费定位标记',
+)
+assertEqual(
+  shouldConsumePendingContainerDetailLocate({
+    pendingQueryKey: 'container:unfiltered',
+    activeQueryKey: 'container:unfiltered',
+    loadedQueryKey: 'container:unfiltered',
     pendingGeneration: 4,
     loadedGeneration: 3,
     isResetLoading: false,

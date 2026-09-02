@@ -52,7 +52,7 @@ import {
   notification,
 } from 'antd'
 import type { ColumnsType, TableRef } from 'antd/es/table'
-import type { FilterDropdownProps, SorterResult } from 'antd/es/table/interface'
+import type { FilterDropdownProps, SorterResult, TablePaginationConfig } from 'antd/es/table/interface'
 import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
@@ -110,14 +110,13 @@ import {
 import { useAuthStore } from '../../../store/auth'
 import { useTabsStore } from '../../../store/tabs'
 import { P } from '../../../types/permissions'
-import type { ContainerDetail, ContainerDetailBatchScope, ContainerDetailQueryResult, ContainerDomesticSetCodeItem, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest, UpdateContainerRequest } from '../../../types/container'
+import type { ContainerDetail, ContainerDetailBatchScope, ContainerDomesticSetCodeItem, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest, UpdateContainerRequest } from '../../../types/container'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import {
   applyPendingContainerDetailPatches,
   applyContainerDetailEnglishNameUpdates,
   applyContainerDetailColumnState,
-  applyContainerDetailLoadedTextFilters,
   applyContainerDetailWarehouseStatusByProductCodes,
   buildContainerDetailQuery,
   buildContainerDetailClearEnglishNameUpdates,
@@ -125,7 +124,6 @@ import {
   buildContainerDetailEnglishNameUpdates,
   buildContainerDetailExportRows,
   buildContainerDetailMatchedDomesticDataUpdates,
-  buildContainerDetailMatchStatusUpdates,
   buildContainerDetailSaveFailureKeys,
   buildContainerDetailSuccessfulEnglishNameUpdates,
   buildPendingContainerDetailSavePlan,
@@ -136,9 +134,11 @@ import {
   calculateContainerDetailTotalVolume,
   calculateContainerDetailTransportCost,
   calculateContainerDetailUnitTransportCost,
-  cancelContainerDetailAppendRequest,
-  cancelContainerDetailReadAheadRequest,
-  canUseContainerDetailLocalTagFilters,
+  canReuseContainerDetailInitialPage,
+  CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+  CONTAINER_DETAIL_FULL_LOAD_LIMIT,
+  CONTAINER_DETAIL_INITIAL_PAGE_SIZE,
+  CONTAINER_DETAIL_PAGE_SIZE_OPTIONS,
   DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
   getContainerDetailCostMissingFields,
   getContainerDetailBatchCategoryProductCodes,
@@ -149,8 +149,6 @@ import {
   extractPushToHqErrorResult,
   findContainerDetailRowsMissingCreateProductRetailPrice,
   findContainerDetailRowsMissingProductName,
-  finishContainerDetailAppendRequest,
-  finishContainerDetailReadAheadRequest,
   getContainerDetailEditableColumnKeysInOrder,
   getContainerDetailExportColumns,
   applyContainerDetailLocalExportValues,
@@ -184,13 +182,11 @@ import {
   mergeContainerDetailPatch,
   mergePendingContainerDetailPatch,
   matchesContainerDetailSelectedTags,
-  omitContainerDetailTextFilters,
   prepareContainerDetailWholeExportRows,
   rollbackContainerDetailWarehouseStatuses,
   settleScopedContainerDetailSave,
-  shouldLoadNextContainerDetailChunk,
-  startContainerDetailAppendRequest,
-  startContainerDetailReadAheadRequest,
+  resolveContainerDetailFullPage,
+  resolveContainerDetailInitialPage,
   CONTAINER_DETAIL_EXPORT_COLUMNS,
   ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
@@ -198,9 +194,8 @@ import {
   type ContainerDetailEditableCellDirection,
   type ContainerDetailColumnFilters,
   type ContainerDetailCostMissingField,
-  type ContainerDetailAppendRequest,
-  type ContainerDetailReadAheadRequest,
   type ContainerDetailExportColumnKey,
+  type ContainerDetailLoadMode,
   type ContainerDetailMatchTypeFilter,
   type ContainerDetailNewProductFilter,
   type ContainerDetailNumberRangeFilter,
@@ -570,7 +565,6 @@ function TwoLineText({ value }: { value?: string }) {
 const CONTAINER_DETAIL_TABLE_SCROLL_X = 2440
 const CONTAINER_DETAIL_TABLE_SCROLL_Y = 620
 const CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH = 56
-const CONTAINER_DETAIL_PAGE_SIZE = 50
 const CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.containerDetail.columnOrder.v3'
 const CONTAINER_DETAIL_COLUMN_WIDTH_STORAGE_KEY = 'hbweb_rv.containerDetail.columnWidths.v1'
 const CONTAINER_DETAIL_MIN_COLUMN_WIDTH = 48
@@ -595,6 +589,9 @@ const EMPTY_CONTAINER_DETAIL_TAG_STATS = {
   set: 0,
   multi: 0,
   setChild: 0,
+  productCodeMatched: 0,
+  supplierItemMatched: 0,
+  unmatched: 0,
 }
 
 type ContainerDetailEditableColumnKey = typeof CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS[number]
@@ -751,10 +748,20 @@ export default function ContainerDetailPage() {
   const containerDetailReconcileGenerationRef = useRef(0)
   const [loading, setLoading] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
-  const [detailLoadingMore, setDetailLoadingMore] = useState(false)
   const [detailItemsTotal, setDetailItemsTotal] = useState(0)
-  const [detailHasMore, setDetailHasMore] = useState(false)
-  const [detailPageNumber, setDetailPageNumber] = useState(1)
+  const [detailPagingState, setDetailPagingState] = useState<{
+    containerGuid: string
+    mode: ContainerDetailLoadMode
+    pageNumber: number
+    pageSize: number
+    scopeKey: string
+  }>(() => ({
+    containerGuid,
+    mode: 'probe',
+    pageNumber: 1,
+    pageSize: CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+    scopeKey: '',
+  }))
   const [remoteTagStats, setRemoteTagStats] = useState<ContainerDetailTagStats>(EMPTY_CONTAINER_DETAIL_TAG_STATS)
   const [savingHeader, setSavingHeader] = useState(false)
   const [container, setContainer] = useState<ContainerMain | null>(null)
@@ -846,10 +853,11 @@ export default function ContainerDetailPage() {
   const createProductsLoadingRef = useRef(false)
   const submitContainerLoadingRef = useRef(false)
   const detailAbortControllerRef = useRef<AbortController | null>(null)
-  const detailAppendRequestRef = useRef<ContainerDetailAppendRequest | null>(null)
-  const detailReadAheadRequestRef = useRef<ContainerDetailReadAheadRequest<ContainerDetailQueryResult> | null>(null)
   const detailResetRequestRef = useRef<AbortController | null>(null)
-  const failedDetailAppendRequestKeyRef = useRef<string | null>(null)
+  const detailStatsAbortControllerRef = useRef<AbortController | null>(null)
+  const detailStatsRequestIdRef = useRef(0)
+  const detailStatsTimerRef = useRef<number | null>(null)
+  const lastLoadedDetailStatsKeyRef = useRef<string | null>(null)
   const reloadCurrentDetailRef = useRef<() => Promise<void>>(async () => undefined)
   const currentContainerGuidRef = useRef(containerGuid)
   currentContainerGuidRef.current = containerGuid
@@ -905,15 +913,10 @@ export default function ContainerDetailPage() {
       sendBatch: (contextKey, intents) => autoSaveSendBatchRef.current(contextKey, intents),
       onBatchSuccess: (contextKey) => {
         if (contextKey !== autoSaveContextKeyRef.current) return
-        const activeItemLoads = new Set([
-          detailAbortControllerRef.current,
-          detailAppendRequestRef.current?.controller,
-          detailReadAheadRequestRef.current?.controller,
-        ].filter((controller): controller is AbortController => Boolean(controller)))
-        if (![...activeItemLoads].some((controller) => !controller.signal.aborted)) return
+        const activeItemLoad = detailAbortControllerRef.current
+        if (!activeItemLoad || activeItemLoad.signal.aborted) return
         // running patch 仍在覆盖页面时先废弃旧 item query；各请求的 finally 继续负责正常结束 loading。
-        activeItemLoads.forEach((controller) => controller.abort())
-        detailReadAheadRequestRef.current = null
+        activeItemLoad.abort()
         containerDetailLoadRequestIdRef.current += 1
         containerDetailReconcileGenerationRef.current += 1
       },
@@ -1203,6 +1206,10 @@ export default function ContainerDetailPage() {
     updateTabTitle(containerDetailTabKey, containerDetailTabTitle)
   }, [active, containerDetailTabKey, containerDetailTabTitle, updateTabTitle])
 
+  const layoutDetailLoadMode: ContainerDetailLoadMode = detailPagingState.containerGuid === containerGuid
+    ? detailPagingState.mode
+    : 'probe'
+
   useEffect(() => {
     let frameId: number | null = null
 
@@ -1210,9 +1217,15 @@ export default function ContainerDetailPage() {
       const toolbarHeight = Math.ceil(toolbarElement?.getBoundingClientRect().height ?? 0)
       const tableHeaderHeight = Math.ceil(tableRegionElement?.querySelector('.ant-table-thead')?.getBoundingClientRect().height ?? 0)
       const tableFooterHeight = Math.ceil(tableRegionElement?.querySelector('.ant-table-footer')?.getBoundingClientRect().height ?? 0)
+      const tablePaginationElement = tableRegionElement?.querySelector('.ant-table-pagination') as HTMLElement | null
+      const paginationStyle = tablePaginationElement ? window.getComputedStyle(tablePaginationElement) : null
+      const paginationMarginHeight = paginationStyle
+        ? (Number.parseFloat(paginationStyle.marginTop) || 0) + (Number.parseFloat(paginationStyle.marginBottom) || 0)
+        : 0
+      const paginationHeight = Math.ceil((tablePaginationElement?.getBoundingClientRect().height ?? 0) + paginationMarginHeight)
       const tableBodyElement = tableRegionElement?.querySelector('.ant-table-body') as HTMLElement | null
       const horizontalScrollbarHeight = tableBodyElement ? Math.max(0, tableBodyElement.offsetHeight - tableBodyElement.clientHeight) : 0
-      const tableChromeHeight = tableHeaderHeight + tableFooterHeight + horizontalScrollbarHeight
+      const tableChromeHeight = tableHeaderHeight + tableFooterHeight + paginationHeight + horizontalScrollbarHeight
 
       setDetailLayoutMetrics((current) => {
         if (
@@ -1254,7 +1267,7 @@ export default function ContainerDetailPage() {
       observer.disconnect()
       window.removeEventListener('resize', scheduleMeasure)
     }
-  }, [gridContentElement, tableRegionElement, toolbarElement, detailTableRenderKey, exporting, exportProgress])
+  }, [gridContentElement, tableRegionElement, toolbarElement, detailTableRenderKey, exporting, exportProgress, layoutDetailLoadMode])
 
   useEffect(() => {
     setCategoryLoading(true)
@@ -1325,57 +1338,78 @@ export default function ContainerDetailPage() {
     }
   }
 
-  const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => omitContainerDetailTextFilters(columnFilters), [columnFilters])
-
-  const baseDetailQuery = useMemo(() => buildContainerDetailQuery({
+  const hasCurrentDetailPagingState = detailPagingState.containerGuid === containerGuid
+  const detailLoadMode = hasCurrentDetailPagingState ? detailPagingState.mode : 'probe'
+  const detailPageSize = hasCurrentDetailPagingState
+    ? detailPagingState.pageSize
+    : CONTAINER_DETAIL_DEFAULT_PAGE_SIZE
+  const pagedDetailScopeKey = useMemo(() => JSON.stringify({
     containerGuid,
-    filters: remoteColumnFilters,
+    filters: columnFilters,
+    selectedTags: selectedTagFilters,
+    sortState,
+    pageSize: detailPageSize,
+  }), [columnFilters, containerGuid, detailPageSize, selectedTagFilters, sortState])
+  const detailPageNumber = hasCurrentDetailPagingState
+    && detailPagingState.scopeKey === pagedDetailScopeKey
+    ? detailPagingState.pageNumber
+    : 1
+  const detailHasMore = detailLoadMode === 'paged'
+    && detailPageNumber * detailPageSize < detailItemsTotal
+
+  const initialDetailQuery = useMemo(() => buildContainerDetailQuery({
+    containerGuid,
+    filters: {},
+    sortState: DEFAULT_CONTAINER_DETAIL_SORT,
     pageNumber: 1,
-    pageSize: CONTAINER_DETAIL_PAGE_SIZE,
-  }), [containerGuid, remoteColumnFilters])
-
-  const baseDetailQueryKey = useMemo(() => JSON.stringify(baseDetailQuery), [baseDetailQuery])
-  const loadedDetailQueryKey = lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
-    ? lastLoadedContainerDetailSuccessRef.current?.queryKey
-    : null
-  const hasLoadedFullBaseDetailQuery = canUseContainerDetailLocalTagFilters({
-    loadedQueryKey: loadedDetailQueryKey,
-    baseQueryKey: baseDetailQueryKey,
-    loadedRowsLength: rows.length,
-    itemsTotal: detailItemsTotal,
-    hasMore: detailHasMore,
-    loading: detailLoading,
-    loadingMore: detailLoadingMore,
-  })
-  // 标签过滤不再进入后端查询；未全量加载时由前端继续补齐 base 查询后再过滤。
-  const detailQuery = baseDetailQuery
-  const detailQueryKey = baseDetailQueryKey
-  // 远程加载 effect 只依赖这个稳定 key，避免视口状态变化触发重复拉取。
-  const activeLoadQueryKey = detailQueryKey
-
-  const reconcileLoadedMatchStatus = async (products: ContainerDetail[], reconcileGeneration: number) => {
-    const rowsNeedingMatchStatus = products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))
-    const detectionItems = buildContainerDetailDetectionItems(rowsNeedingMatchStatus)
-    if (!detectionItems.length) return
-
-    try {
-      const detected = await detectProducts(detectionItems)
-      if (containerDetailReconcileGenerationRef.current !== reconcileGeneration) {
-        return
-      }
-      const updates = buildContainerDetailMatchStatusUpdates(rowsNeedingMatchStatus, detected)
-      if (!updates.length) return
-      // 加载态只校正表格展示状态，不写库，避免打开页面时产生业务字段副作用。
-      setRows((items) =>
-        items.map((item) => {
-          const match = updates.find((update) => update.hguid === item.hguid)
-          return match ? mergeContainerDetailPatch(item, match as Partial<ContainerDetail>) : item
-        }),
-      )
-    } catch (error) {
-      console.error('货柜明细匹配状态校正失败', error)
-    }
-  }
+    pageSize: CONTAINER_DETAIL_INITIAL_PAGE_SIZE,
+    includeTotal: true,
+    includeStats: false,
+  }), [containerGuid])
+  const fullDetailQuery = useMemo(() => buildContainerDetailQuery({
+    containerGuid,
+    filters: {},
+    sortState: DEFAULT_CONTAINER_DETAIL_SORT,
+    pageNumber: 1,
+    pageSize: CONTAINER_DETAIL_FULL_LOAD_LIMIT,
+    includeTotal: false,
+    includeStats: false,
+  }), [containerGuid])
+  const pagedDetailQuery = useMemo(() => buildContainerDetailQuery({
+    containerGuid,
+    filters: columnFilters,
+    selectedTags: selectedTagFilters,
+    sortState,
+    pageNumber: detailPageNumber,
+    pageSize: detailPageSize,
+    includeTotal: false,
+    includeStats: false,
+  }), [columnFilters, containerGuid, detailPageNumber, detailPageSize, selectedTagFilters, sortState])
+  const pagedDetailStatsQuery = useMemo(() => buildContainerDetailQuery({
+    containerGuid,
+    filters: columnFilters,
+    selectedTags: selectedTagFilters,
+    pageNumber: 1,
+    pageSize: detailPageSize,
+    includeItems: false,
+    includeTotal: true,
+    includeStats: true,
+  }), [columnFilters, containerGuid, detailPageSize, selectedTagFilters])
+  const pagedDetailQueryKey = useMemo(() => JSON.stringify(pagedDetailQuery), [pagedDetailQuery])
+  const pagedDetailStatsKey = useMemo(() => JSON.stringify(pagedDetailStatsQuery), [pagedDetailStatsQuery])
+  const initialDetailQueryKey = useMemo(() => JSON.stringify(initialDetailQuery), [initialDetailQuery])
+  const fullDetailQueryKey = useMemo(() => `full:${containerGuid}`, [containerGuid])
+  const activeLoadQueryKey = detailLoadMode === 'probe'
+    ? initialDetailQueryKey
+    : detailLoadMode === 'paged'
+      ? pagedDetailQueryKey
+      : fullDetailQueryKey
+  const pagedDetailScopeKeyRef = useRef(pagedDetailScopeKey)
+  pagedDetailScopeKeyRef.current = pagedDetailScopeKey
+  const pagedDetailQueryKeyRef = useRef(pagedDetailQueryKey)
+  pagedDetailQueryKeyRef.current = pagedDetailQueryKey
+  const pagedDetailStatsKeyRef = useRef(pagedDetailStatsKey)
+  pagedDetailStatsKeyRef.current = pagedDetailStatsKey
 
   const loadHeader = async (showLoading = true) => {
     if (!containerGuid) {
@@ -1453,254 +1487,288 @@ export default function ContainerDetailPage() {
     )
   }
 
-  const getDetailAppendRequestKey = (pageNumber: number) => (
-    `${containerGuid}:${detailQueryKey}:${pageNumber}`
-  )
-
-  const startDetailReadAhead = (pageNumber: number) => {
-    if (!containerGuid) return null
-
-    const start = startContainerDetailReadAheadRequest(
-      detailReadAheadRequestRef.current,
-      getDetailAppendRequestKey(pageNumber),
-      pageNumber,
-      (signal) => queryContainerProducts(
+  const publishLoadedDetailRows = (items: ContainerDetail[]) => {
+    const loadedItems = overlayPendingDetailChanges(items)
+    rowsRef.current = loadedItems
+    const currentAutoSaveContextKey = autoSaveContextKeyRef.current
+    if (isContainerDetailAutoSaveContextCurrent(
+      currentAutoSaveContextKey,
+      containerGuid,
+      pendingDetailDraftIdentityRef.current,
+    )) {
+      autoSaveContextSnapshotsRef.current.set(currentAutoSaveContextKey, {
         containerGuid,
-        {
-          ...detailQuery,
-          pageNumber,
-          pageSize: CONTAINER_DETAIL_PAGE_SIZE,
-          includeTotal: false,
-          includeStats: false,
-        },
-        signal,
-      ),
-    )
-    detailReadAheadRequestRef.current = start.request
-    return start.request
+        rows: loadedItems,
+        container: containerRef.current,
+      })
+    }
+    setRows(loadedItems)
   }
 
-  const loadDetailChunk = async (pageNumber: number, mode: 'reset' | 'append' = 'reset') => {
+  const cancelScheduledDetailStats = () => {
+    if (detailStatsTimerRef.current !== null) {
+      window.clearTimeout(detailStatsTimerRef.current)
+      detailStatsTimerRef.current = null
+    }
+    detailStatsAbortControllerRef.current?.abort()
+    detailStatsAbortControllerRef.current = null
+    detailStatsRequestIdRef.current += 1
+  }
+
+  const schedulePagedDetailStats = (
+    query: typeof pagedDetailStatsQuery,
+    statsKey: string,
+  ) => {
+    if (lastLoadedDetailStatsKeyRef.current === statsKey) return
+    cancelScheduledDetailStats()
+    const requestId = detailStatsRequestIdRef.current
+    detailStatsTimerRef.current = window.setTimeout(() => {
+      detailStatsTimerRef.current = null
+      const controller = new AbortController()
+      detailStatsAbortControllerRef.current = controller
+      void queryContainerProducts(containerGuid, query, controller.signal)
+        .then((result) => {
+          if (
+            controller.signal.aborted
+            || detailStatsRequestIdRef.current !== requestId
+            || pagedDetailStatsKeyRef.current !== statsKey
+            || currentContainerGuidRef.current !== containerGuid
+          ) return
+          if (result.totalComputed !== false) {
+            setDetailItemsTotal(result.itemsTotal)
+          }
+          if (result.statsComputed !== false) {
+            setRemoteTagStats({ ...EMPTY_CONTAINER_DETAIL_TAG_STATS, ...result.tagStats })
+          }
+          lastLoadedDetailStatsKeyRef.current = statsKey
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted) {
+            console.error('货柜明细统计加载失败', error)
+          }
+        })
+        .finally(() => {
+          if (detailStatsAbortControllerRef.current === controller) {
+            detailStatsAbortControllerRef.current = null
+          }
+        })
+    }, 0)
+  }
+
+  const prepareDetailLoad = (controller: AbortController, requestId: number) => {
+    cancelScheduledDetailStats()
+    detailAbortControllerRef.current?.abort()
+    detailAbortControllerRef.current = controller
+    detailResetRequestRef.current = controller
+    containerDetailReconcileGenerationRef.current = requestId
+    lastDetailTableScrollTopRef.current = 0
+    setDetailLoading(true)
+    restorePendingDetailDraft()
+
+    const isContainerChange = detailRowsContainerGuidRef.current !== containerGuid
+    if (!isContainerChange) return
+
+    detailRowsContainerGuidRef.current = containerGuid
+    lastLoadedDetailStatsKeyRef.current = null
+    setRemoteTagStats(EMPTY_CONTAINER_DETAIL_TAG_STATS)
+    setDetailItemsTotal(0)
+    pendingDetailSavePromisesRef.current.clear()
+    failedDetailSaveKeysRef.current = new Set()
+    failedPendingDetailSaveKeysRef.current = new Set()
+    setPendingDetailSaveCount(0)
+    setDetailSaveSubmitting(false)
+    const currentDraftIdentity = currentUserGuid
+      ? buildContainerDetailDraftStorageKey(currentUserGuid, containerGuid)
+      : ''
+    if (!currentDraftIdentity || pendingDetailDraftIdentityRef.current !== currentDraftIdentity) {
+      // 当前用户身份尚未就绪时只清空内存，不删除任何用户的本地草稿。
+      applyPendingDetailDraftState({ pendingPatches: {}, failures: {} }, false)
+    }
+    // 只有切换货柜才清空旧行；同货柜翻页、筛选、排序或刷新失败时继续保留已显示快照。
+    setRows([])
+    setSelectedRowKeys([])
+  }
+
+  const loadDetailRows = async (requestedMode: 'probe' | 'paged') => {
     if (!containerGuid) return
-    if (mode === 'append' && (
-      detailLoading
-      || detailLoadingMore
-      || !detailHasMore
-      || detailResetRequestRef.current
-    )) return
-
-    const requestKey = getDetailAppendRequestKey(pageNumber)
-    const readAheadRequest = mode === 'append'
-      && detailReadAheadRequestRef.current?.key === requestKey
-      ? detailReadAheadRequestRef.current
-      : null
-    const appendStart = mode === 'append'
-      ? startContainerDetailAppendRequest(
-          detailAppendRequestRef.current,
-          requestKey,
-          readAheadRequest?.controller,
-        )
-      : null
-    if (appendStart && !appendStart.started) return
-    if (appendStart?.started) {
-      detailAppendRequestRef.current = appendStart.request
-      detailReadAheadRequestRef.current = finishContainerDetailReadAheadRequest(
-        detailReadAheadRequestRef.current,
-        readAheadRequest,
-      )
-    }
-
-    if (mode === 'reset') {
-      cancelContainerDetailAppendRequest(detailAppendRequestRef.current)
-      detailAppendRequestRef.current = null
-      cancelContainerDetailReadAheadRequest(detailReadAheadRequestRef.current)
-      detailReadAheadRequestRef.current = null
-      // 仅重置查询时使旧匹配校正失效；连续追加页共享同一代，避免快翻页丢失中间页结果。
-      containerDetailReconcileGenerationRef.current += 1
-      failedDetailAppendRequestKeyRef.current = null
-      setDetailLoadingMore(false)
-    }
-
+    const initialPageScopeKey = pagedDetailScopeKey
+    const initialPageWasReusable = canReuseContainerDetailInitialPage({
+      filters: columnFilters,
+      selectedTags: selectedTagFilters,
+      sortState,
+      pageSize: detailPageSize,
+    })
     const currentRequestId = containerDetailLoadRequestIdRef.current + 1
     containerDetailLoadRequestIdRef.current = currentRequestId
-    const currentReconcileGeneration = containerDetailReconcileGenerationRef.current
-    const appendRequest = appendStart?.request ?? null
-    const controller = appendRequest?.controller ?? new AbortController()
-    const resetRequest = mode === 'reset' ? controller : null
-    let resetReadAheadRequest: ContainerDetailReadAheadRequest<ContainerDetailQueryResult> | null = null
+    const controller = new AbortController()
+    prepareDetailLoad(controller, currentRequestId)
 
-    if (mode === 'reset') {
-      detailAbortControllerRef.current?.abort()
-      detailAbortControllerRef.current = controller
-      detailResetRequestRef.current = resetRequest
-      lastLoadedContainerDetailSuccessRef.current = null
-      lastDetailTableScrollTopRef.current = 0
-      setDetailLoading(true)
-      restorePendingDetailDraft()
-      const isContainerChange = detailRowsContainerGuidRef.current !== containerGuid
-      if (isContainerChange) {
-        detailRowsContainerGuidRef.current = containerGuid
-        pendingDetailSavePromisesRef.current.clear()
-        failedDetailSaveKeysRef.current = new Set()
-        failedPendingDetailSaveKeysRef.current = new Set()
-        setPendingDetailSaveCount(0)
-        setDetailSaveSubmitting(false)
-        const currentDraftIdentity = currentUserGuid
-          ? buildContainerDetailDraftStorageKey(currentUserGuid, containerGuid)
-          : ''
-        if (!currentDraftIdentity || pendingDetailDraftIdentityRef.current !== currentDraftIdentity) {
-          // 当前用户身份尚未就绪时只清空内存，不删除任何用户的本地草稿。
-          applyPendingDetailDraftState({ pendingPatches: {}, failures: {} }, false)
-        }
-      }
-      // 同一货柜刷新、筛选或重算时保留草稿；切换货柜时恢复新 key 下的草稿。
-      if (isContainerChange || Object.keys(pendingDetailPatchesRef.current).length === 0) {
-        // 切柜必须立即移除旧行；新货柜加载失败时不能继续编辑或保存旧 HGUID。
-        setRows([])
-      }
-      setSelectedRowKeys([])
-    } else {
-      setDetailLoadingMore(true)
-    }
+    const isCurrentRequest = () => (
+      !controller.signal.aborted
+      && containerDetailLoadRequestIdRef.current === currentRequestId
+      && currentContainerGuidRef.current === containerGuid
+    )
 
     try {
-      const shouldComputeDetailMeta = mode === 'reset'
-      let result: ContainerDetailQueryResult
-      if (readAheadRequest) {
-        const outcome = await readAheadRequest.promise
-        if (outcome.status === 'failure') {
-          throw outcome.error
-        }
-        result = outcome.result
-      } else {
-        const resultPromise = queryContainerProducts(
+      if (requestedMode === 'probe') {
+        const initialResult = await queryContainerProducts(
           containerGuid,
-          {
-            ...detailQuery,
-            pageNumber,
-            pageSize: CONTAINER_DETAIL_PAGE_SIZE,
-            includeTotal: shouldComputeDetailMeta,
-            includeStats: shouldComputeDetailMeta,
-          },
+          initialDetailQuery,
           controller.signal,
         )
-        if (mode === 'reset') {
-          // 先启动首屏，再并发预取第 2 页；保证首屏优先，同时隐藏下一批网络等待。
-          resetReadAheadRequest = startDetailReadAhead(pageNumber + 1)
+        if (!isCurrentRequest()) return
+
+        const resolution = resolveContainerDetailInitialPage(initialResult)
+        setDetailItemsTotal(resolution.itemsTotal)
+
+        if (resolution.mode === 'paged') {
+          const canReuseInitialPage = initialPageWasReusable
+            && pagedDetailScopeKeyRef.current === initialPageScopeKey
+          setDetailPagingState({
+            containerGuid,
+            mode: 'paged',
+            pageNumber: 1,
+            pageSize: CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+            scopeKey: pagedDetailScopeKeyRef.current,
+          })
+          if (canReuseInitialPage) {
+            publishLoadedDetailRows(resolution.items)
+            lastLoadedContainerDetailSuccessRef.current = {
+              containerGuid,
+              queryKey: pagedDetailQueryKeyRef.current,
+              generation: currentRequestId,
+            }
+            schedulePagedDetailStats(pagedDetailStatsQuery, pagedDetailStatsKeyRef.current)
+          }
+          return
         }
-        result = await resultPromise
-      }
-      if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId) {
+
+        publishLoadedDetailRows(resolution.items)
+        if (!resolution.requiresFullLoad) {
+          setDetailPagingState({
+            containerGuid,
+            mode: 'full',
+            pageNumber: 1,
+            pageSize: CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+            scopeKey: '',
+          })
+          lastLoadedContainerDetailSuccessRef.current = {
+            containerGuid,
+            queryKey: fullDetailQueryKey,
+            generation: currentRequestId,
+          }
+          return
+        }
+
+        const fullResult = await queryContainerProducts(
+          containerGuid,
+          fullDetailQuery,
+          controller.signal,
+        )
+        if (!isCurrentRequest()) return
+        const fullResolution = resolveContainerDetailFullPage(
+          fullResult,
+          CONTAINER_DETAIL_FULL_LOAD_LIMIT,
+        )
+        setDetailItemsTotal(fullResolution.itemsTotal)
+
+        if (fullResolution.mode === 'paged') {
+          const canReuseInitialPage = initialPageWasReusable
+            && pagedDetailScopeKeyRef.current === initialPageScopeKey
+          setDetailPagingState({
+            containerGuid,
+            mode: 'paged',
+            pageNumber: 1,
+            pageSize: CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+            scopeKey: pagedDetailScopeKeyRef.current,
+          })
+          if (canReuseInitialPage) {
+            publishLoadedDetailRows(fullResolution.items)
+            lastLoadedContainerDetailSuccessRef.current = {
+              containerGuid,
+              queryKey: pagedDetailQueryKeyRef.current,
+              generation: currentRequestId,
+            }
+            schedulePagedDetailStats(pagedDetailStatsQuery, pagedDetailStatsKeyRef.current)
+          }
+          return
+        }
+
+        publishLoadedDetailRows(fullResolution.items)
+        setDetailPagingState({
+          containerGuid,
+          mode: 'full',
+          pageNumber: 1,
+          pageSize: CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+          scopeKey: '',
+        })
+        lastLoadedContainerDetailSuccessRef.current = {
+          containerGuid,
+          queryKey: fullDetailQueryKey,
+          generation: currentRequestId,
+        }
         return
       }
 
-      if (
-        mode === 'reset'
-        && !result.hasMore
-        && resetReadAheadRequest
-        && detailReadAheadRequestRef.current === resetReadAheadRequest
-      ) {
-        cancelContainerDetailReadAheadRequest(resetReadAheadRequest)
-        detailReadAheadRequestRef.current = finishContainerDetailReadAheadRequest(
-          detailReadAheadRequestRef.current,
-          resetReadAheadRequest,
-        )
-      }
-      if (
-        appendRequest
-        && failedDetailAppendRequestKeyRef.current === appendRequest.key
-      ) {
-        failedDetailAppendRequestKeyRef.current = null
-      }
-      const loadedItems = overlayPendingDetailChanges(result.items)
-      setRows((items) => {
-        const nextRows = mode === 'reset' ? loadedItems : mergeContainerDetailLoadedItems(items, loadedItems)
-        rowsRef.current = nextRows
-        return nextRows
+      const result = await queryContainerProducts(
+        containerGuid,
+        pagedDetailQuery,
+        controller.signal,
+      )
+      if (!isCurrentRequest()) return
+      publishLoadedDetailRows(result.items)
+      setDetailPagingState({
+        containerGuid,
+        mode: 'paged',
+        pageNumber: pagedDetailQuery.pageNumber,
+        pageSize: pagedDetailQuery.pageSize,
+        scopeKey: pagedDetailScopeKey,
       })
-      if (result.totalComputed !== false) {
-        setDetailItemsTotal(result.itemsTotal)
+      lastLoadedContainerDetailSuccessRef.current = {
+        containerGuid,
+        queryKey: pagedDetailQueryKey,
+        generation: currentRequestId,
       }
-      setDetailPageNumber(result.pageNumber)
-      setDetailHasMore(result.hasMore)
-      if (result.statsComputed !== false) {
-        setRemoteTagStats({ ...EMPTY_CONTAINER_DETAIL_TAG_STATS, ...result.tagStats })
-      }
-      if (mode === 'reset') {
-        lastLoadedContainerDetailSuccessRef.current = {
-          containerGuid,
-          queryKey: detailQueryKey,
-          generation: currentReconcileGeneration,
-        }
-      } else if (result.hasMore) {
-        startDetailReadAhead(result.pageNumber + 1)
-      }
-      void reconcileLoadedMatchStatus(result.items, currentReconcileGeneration)
+      schedulePagedDetailStats(pagedDetailStatsQuery, pagedDetailStatsKey)
     } catch (error) {
-      if (
-        resetReadAheadRequest
-        && detailReadAheadRequestRef.current === resetReadAheadRequest
-      ) {
-        cancelContainerDetailReadAheadRequest(resetReadAheadRequest)
-        detailReadAheadRequestRef.current = finishContainerDetailReadAheadRequest(
-          detailReadAheadRequestRef.current,
-          resetReadAheadRequest,
-        )
-      }
-      if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId) {
-        return
-      }
-      if (appendRequest) {
-        failedDetailAppendRequestKeyRef.current = appendRequest.key
-      }
+      if (!isCurrentRequest()) return
       console.error(error)
       message.error(error instanceof Error ? error.message : t('containers.messages.loadDetailFailed'))
     } finally {
-      const ownsAppendRequest = Boolean(
-        appendRequest
-        && detailAppendRequestRef.current === appendRequest,
-      )
-      detailAppendRequestRef.current = finishContainerDetailAppendRequest(
-        detailAppendRequestRef.current,
-        appendRequest,
-      )
-      if (ownsAppendRequest) {
-        setDetailLoadingMore(false)
-      }
-
-      const ownsResetRequest = Boolean(
-        resetRequest
-        && detailResetRequestRef.current === resetRequest,
-      )
-      if (ownsResetRequest) {
+      if (detailResetRequestRef.current === controller) {
         detailResetRequestRef.current = null
+        detailAbortControllerRef.current = null
         setDetailLoading(false)
       }
     }
   }
 
-  const loadNextDetailChunk = async (source: 'user' | 'auto' = 'user') => {
-    if (detailLoading || detailLoadingMore || !detailHasMore) return
-    const nextPageNumber = detailPageNumber + 1
-    const requestKey = getDetailAppendRequestKey(nextPageNumber)
-    if (source === 'auto' && failedDetailAppendRequestKeyRef.current === requestKey) {
-      return
-    }
-    if (source === 'user' && failedDetailAppendRequestKeyRef.current === requestKey) {
-      failedDetailAppendRequestKeyRef.current = null
-    }
-    await loadDetailChunk(nextPageNumber, 'append')
+  const loadNextDetailChunk = async () => {
+    if (detailLoadMode !== 'paged' || detailLoading || !detailHasMore) return
+    setDetailPagingState({
+      containerGuid,
+      mode: 'paged',
+      pageNumber: detailPageNumber + 1,
+      pageSize: detailPageSize,
+      scopeKey: pagedDetailScopeKey,
+    })
+  }
+
+  const reloadCurrentDetail = async () => {
+    lastLoadedContainerDetailSuccessRef.current = null
+    lastLoadedDetailStatsKeyRef.current = null
+    await loadDetailRows(detailLoadMode === 'paged' ? 'paged' : 'probe')
   }
 
   const loadData = async (showLoading = true) => {
     await Promise.all([
       loadHeader(showLoading),
-      loadDetailChunk(1, 'reset'),
+      reloadCurrentDetail(),
     ])
   }
 
   // 保存期间筛选条件可能变化；始终通过 ref 调用最新 render 的查询闭包。
-  reloadCurrentDetailRef.current = () => loadDetailChunk(1, 'reset')
+  reloadCurrentDetailRef.current = reloadCurrentDetail
 
   useEffect(() => {
     if (!active || !currentUserGuid) return
@@ -1728,54 +1796,46 @@ export default function ContainerDetailPage() {
     if (!active || !currentUserGuid) return
 
     const cancelDetailLoads = () => {
+      containerDetailLoadRequestIdRef.current += 1
       containerDetailReconcileGenerationRef.current += 1
       detailAbortControllerRef.current?.abort()
       detailAbortControllerRef.current = null
       detailResetRequestRef.current = null
       setDetailLoading(false)
-      cancelContainerDetailAppendRequest(detailAppendRequestRef.current)
-      detailAppendRequestRef.current = null
-      cancelContainerDetailReadAheadRequest(detailReadAheadRequestRef.current)
-      detailReadAheadRequestRef.current = null
-      setDetailLoadingMore(false)
     }
 
-    if (shouldSkipDetailAutoReload({
-      requestedDetailId: containerGuid,
-      loadedDetailId: loadedContainerGuidRef.current,
-      visibleDetailId: visibleContainerGuidRef.current,
-      requestedDetailQueryKey: activeLoadQueryKey,
-      loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
-        ? lastLoadedContainerDetailSuccessRef.current?.queryKey
-        : null,
-    })) {
-      if (detailHasMore) {
-        startDetailReadAhead(detailPageNumber + 1)
-      }
+    if (detailLoadMode === 'full') {
       return cancelDetailLoads
     }
+    if (
+      lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
+      && lastLoadedContainerDetailSuccessRef.current.queryKey === activeLoadQueryKey
+    ) return cancelDetailLoads
 
-    void loadDetailChunk(1, 'reset')
+    void loadDetailRows(detailLoadMode === 'paged' ? 'paged' : 'probe')
     return cancelDetailLoads
-    // 标签不进入 detailQueryKey；非标签远程筛选或当前用户变化时重置懒加载结果。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, activeLoadQueryKey, currentUserGuid])
 
   useEffect(() => {
-    // 标签只在前端过滤；切换标签时主动清空选择，保持批量操作范围清晰。
-    failedDetailAppendRequestKeyRef.current = null
+    // 筛选或排序改变当前结果范围；分页模式同步回第 1 页，草稿不随范围变化清空。
     setSelectedRowKeys([])
-  }, [selectedTagFilters])
-
-  useEffect(() => {
-    if (!active || !selectedTagFilters.length || !detailHasMore || detailLoading || detailLoadingMore) {
-      return
+    if (detailLoadMode === 'paged' && (
+      detailPagingState.containerGuid !== containerGuid
+      || detailPagingState.scopeKey !== pagedDetailScopeKey
+    )) {
+      setDetailPagingState((current) => ({
+        ...current,
+        containerGuid,
+        mode: 'paged',
+        pageNumber: 1,
+        pageSize: detailPageSize,
+        scopeKey: pagedDetailScopeKey,
+      }))
     }
+  }, [columnFilters, containerGuid, detailLoadMode, detailPageSize, detailPagingState.containerGuid, detailPagingState.scopeKey, pagedDetailScopeKey, selectedTagFilters, sortState])
 
-    // 标签需要针对当前 base 查询的完整结果生效，点选标签后后台补齐剩余懒加载块。
-    void loadNextDetailChunk('auto')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, selectedTagFilters, detailHasMore, detailLoading, detailLoadingMore, detailPageNumber, activeLoadQueryKey])
+  useEffect(() => () => cancelScheduledDetailStats(), [])
 
   useEffect(() => {
     const wasActive = wasContainerDetailTabActiveRef.current
@@ -1808,31 +1868,30 @@ export default function ContainerDetailPage() {
     [containerGuid, rows],
   )
 
-  const tagFilteredRows = useMemo(() => {
-    return baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))
-  }, [baseFilteredRows, selectedTagFilters])
-
-  const textFilteredRows = useMemo(() => {
-    // 顶部筛选条已移除，文字筛选统一走列头筛选，避免同一条件出现两个入口。
-    return applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)
-  }, [columnFilters, tagFilteredRows])
-
-  const localBaseTagStats = useMemo(() => buildContainerDetailTagStats(baseFilteredRows), [baseFilteredRows])
-  const filteredRows = textFilteredRows
-
-  const displayRows = useMemo(
-    () => {
-      // 列头排序只调整当前已加载且已过滤的行，避免点击列头触发远程重载。
-      return applyContainerDetailColumnState(filteredRows, {}, sortState)
-    },
-    [filteredRows, sortState],
+  const locallyColumnFilteredRows = useMemo(
+    () => applyContainerDetailColumnState(baseFilteredRows, columnFilters),
+    [baseFilteredRows, columnFilters],
+  )
+  // 与后端统计口径一致：应用列筛选，但统计时排除 SelectedTags 自身。
+  const localBaseTagStats = useMemo(
+    () => buildContainerDetailTagStats(locallyColumnFilteredRows),
+    [locallyColumnFilteredRows],
   )
 
   const applyCurrentClientFilters = (sourceRows: ContainerDetail[]) => {
     const nextTagFilteredRows = sourceRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))
-    const nextTextFilteredRows = applyContainerDetailLoadedTextFilters(nextTagFilteredRows, '', columnFilters)
-    return applyContainerDetailColumnState(nextTextFilteredRows, {}, sortState)
+    return applyContainerDetailColumnState(nextTagFilteredRows, columnFilters, sortState)
   }
+
+  const displayRows = useMemo(
+    () => detailLoadMode === 'full'
+      ? applyCurrentClientFilters(baseFilteredRows)
+      : baseFilteredRows,
+    // 分页模式完全信任后端的全局筛选和排序；本地只叠加未保存草稿。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseFilteredRows, columnFilters, detailLoadMode, selectedTagFilters, sortState],
+  )
+  const filteredRows = displayRows
 
   const setEditableCellRef = (
     rowKeyValue: string,
@@ -1904,14 +1963,7 @@ export default function ContainerDetailPage() {
     })
   }
 
-  const tagStats: ContainerDetailTagStats = useMemo(() => ({
-    ...(hasLoadedFullBaseDetailQuery ? localBaseTagStats : remoteTagStats),
-    // 商品类型统计后端不返回，始终由当前已加载 base 明细补充；全量加载完成后即为准确统计。
-    normal: localBaseTagStats.normal,
-    set: localBaseTagStats.set,
-    multi: localBaseTagStats.multi,
-    setChild: localBaseTagStats.setChild,
-  }), [hasLoadedFullBaseDetailQuery, localBaseTagStats, remoteTagStats])
+  const tagStats = detailLoadMode === 'full' ? localBaseTagStats : remoteTagStats
 
   const tagStatOptions = useMemo<Array<{ value: ContainerDetailTagFilter; label: string; color?: string }>>(() => [
     { value: 'all', label: t('containers.filters.allTags'), color: 'blue' },
@@ -1987,7 +2039,7 @@ export default function ContainerDetailPage() {
       containerGuid,
       filters: {},
       pageNumber: 1,
-      pageSize: CONTAINER_DETAIL_PAGE_SIZE,
+      pageSize: CONTAINER_DETAIL_FULL_LOAD_LIMIT,
     }),
   })
 
@@ -2013,25 +2065,32 @@ export default function ContainerDetailPage() {
   }
 
   const fetchAllRowsForCurrentQuery = async () => {
+    if (detailLoadMode !== 'paged') {
+      return displayRows
+    }
+
     const allRows: ContainerDetail[] = []
     let pageNumber = 1
     let hasMore = true
 
     while (hasMore) {
-      // 导出和批量写操作先拉取非标签远程筛选的完整结果，再在前端套用标签、文字筛选和排序。
-      const result = await queryContainerProducts(containerGuid, {
-        ...baseDetailQuery,
+      // 分页模式的导出和批量作用域仍由后端完整筛选，不能误缩到当前页。
+      const result = await queryContainerProducts(containerGuid, buildContainerDetailQuery({
+        containerGuid,
+        filters: columnFilters,
+        selectedTags: selectedTagFilters,
+        sortState,
         pageNumber,
         pageSize: 500,
         includeTotal: false,
         includeStats: false,
-      })
+      }))
       allRows.push(...result.items)
       hasMore = result.hasMore
       pageNumber += 1
     }
 
-    return applyCurrentClientFilters(allRows)
+    return overlayPendingDetailChanges(allRows)
   }
 
   const fetchAllRowsForWholeContainer = async () => {
@@ -2379,13 +2438,9 @@ export default function ContainerDetailPage() {
     if (typeof value === 'object' && value !== null) return Object.values(value).some((item) => item != null && item !== '')
     return value != null && value !== ''
   })
-  const hasRemoteDetailDraftFilter = Object.values(remoteColumnFilters).some((value) => {
-    if (Array.isArray(value)) return value.length > 0
-    if (typeof value === 'object' && value !== null) return Object.values(value).some((item) => item != null && item !== '')
-    return value != null && value !== ''
-  })
+  const hasRemoteDetailDraftFilter = detailLoadMode === 'paged' && hasDetailDraftFilter
 
-  const locateFirstPendingDetailField = () => {
+  const locateFirstPendingDetailField = (scanFromFirstPage = true) => {
     const pendingLocate = pendingDraftLocateAfterAppendRef.current
     const hasMatchedPendingReset = shouldConsumePendingContainerDetailLocate({
       pendingQueryKey: pendingLocate?.queryKey ?? '',
@@ -2407,7 +2462,7 @@ export default function ContainerDetailPage() {
       // 上一次无筛选 reset 失败时，只有用户再次点击定位才主动重试，避免后台循环请求。
       pendingLocate.queryKey = ''
       pendingLocate.generation = containerDetailReconcileGenerationRef.current + 1
-      void loadDetailChunk(1, 'reset')
+      void reloadCurrentDetailRef.current()
       return
     }
     if (hasDetailDraftFilter) {
@@ -2453,14 +2508,36 @@ export default function ContainerDetailPage() {
       if (target) break
     }
 
-    if (!target && !hasDetailDraftFilter && detailHasMore) {
-      // 未启用筛选时草稿可能在未加载的后续页；连续追加后再用最新行集重试。
+    if (
+      !target
+      && detailLoadMode === 'paged'
+      && scanFromFirstPage
+      && detailPageNumber !== 1
+    ) {
+      // 用户可能从任意页点击定位；先回到第 1 页，避免只向后查找而漏掉前页草稿。
       pendingDraftLocateAfterAppendRef.current = {
-        awaitingUnfilteredReset: false,
-        queryKey: activeLoadQueryKey,
-        generation: containerDetailReconcileGenerationRef.current,
+        awaitingUnfilteredReset: true,
+        queryKey: '',
+        generation: containerDetailReconcileGenerationRef.current + 1,
       }
-      void loadNextDetailChunk('user')
+      setDetailPagingState({
+        containerGuid,
+        mode: 'paged',
+        pageNumber: 1,
+        pageSize: detailPageSize,
+        scopeKey: pagedDetailScopeKey,
+      })
+      return
+    }
+
+    if (!target && !hasDetailDraftFilter && detailHasMore) {
+      // 未启用筛选时草稿可能在后续页；等待下一页成功返回后再继续查找。
+      pendingDraftLocateAfterAppendRef.current = {
+        awaitingUnfilteredReset: true,
+        queryKey: '',
+        generation: containerDetailReconcileGenerationRef.current + 1,
+      }
+      void loadNextDetailChunk()
       return
     }
 
@@ -2486,7 +2563,7 @@ export default function ContainerDetailPage() {
 
   useEffect(() => {
     const pendingLocate = pendingDraftLocateAfterAppendRef.current
-    if (!pendingLocate || detailLoading || detailLoadingMore) return
+    if (!pendingLocate || detailLoading) return
     if (pendingLocate.awaitingUnfilteredReset) {
       if (hasDetailDraftFilter) return
       if (containerDetailReconcileGenerationRef.current < pendingLocate.generation) return
@@ -2507,18 +2584,11 @@ export default function ContainerDetailPage() {
       }
       pendingLocate.awaitingUnfilteredReset = false
     }
-    if (
-      failedDetailAppendRequestKeyRef.current
-      === getDetailAppendRequestKey(detailPageNumber + 1)
-    ) {
-      // 自动追加失败后保留定位意图但不循环重试；用户再次点击“定位”时才重新发起请求。
-      return
-    }
     pendingDraftLocateAfterAppendRef.current = null
-    void locateFirstPendingDetailField()
-    // rows 变化后必须重新读取当前分页与筛选状态，直到找到目标或数据耗尽。
+    void locateFirstPendingDetailField(false)
+    // rows 变化后必须重新读取当前分页与筛选状态，直到找到目标或分页耗尽。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, detailLoading, detailLoadingMore, detailHasMore, detailPageNumber, hasDetailDraftFilter, activeLoadQueryKey, containerGuid])
+  }, [rows, detailLoading, detailHasMore, detailPageNumber, hasDetailDraftFilter, activeLoadQueryKey, containerGuid])
 
   const clearPendingDetailDraft = () => {
     if (!pendingDetailFieldCount || detailSaveSubmitting) return
@@ -2875,7 +2945,6 @@ export default function ContainerDetailPage() {
         containerDetailLoadRequestIdRef.current += 1
         containerDetailReconcileGenerationRef.current += 1
         setDetailLoading(false)
-        setDetailLoadingMore(false)
       }
       const successfulEnglishNameUpdates = buildContainerDetailSuccessfulEnglishNameUpdates(
         pendingDetailPatchesRef.current,
@@ -3165,7 +3234,7 @@ export default function ContainerDetailPage() {
     setBatchFloatRateSaving(true)
     try {
       const result = await applyContainerFloatRateByScope(containerGuid, buildDetailBatchScope(batchModalScopeRows), batchFloatRate)
-      await loadDetailChunk(1, 'reset')
+      await reloadCurrentDetailRef.current()
       setBatchFloatRateModalOpen(false)
       setBatchModalTargetCount(0)
       setBatchModalScopeRows([])
@@ -3223,7 +3292,7 @@ export default function ContainerDetailPage() {
       }
       applyDetailUpdatesToRows(updates)
       if (!selectedRowKeys.length) {
-        await loadDetailChunk(1, 'reset')
+        await reloadCurrentDetailRef.current()
       }
       const pricePatchCount = updates.filter((update) => update.国内价格 != null || update.贴牌价格 != null).length
       message.success(t('containers.messages.domesticDataMatched', { count: updates.length, priceCount: pricePatchCount }))
@@ -3295,7 +3364,7 @@ export default function ContainerDetailPage() {
               newCode: result.newProductCode || localProductCode,
             }),
           )
-          await loadDetailChunk(1, 'reset')
+          await reloadCurrentDetailRef.current()
         } catch (error) {
           message.error(error instanceof Error ? error.message : t('containers.messages.alignDomesticProductCodeFailed', '对齐国内商品编码失败'))
           throw error
@@ -3333,7 +3402,7 @@ export default function ContainerDetailPage() {
         importPrice: batchImportPrice,
         oemPrice: batchOemPrice,
       })
-      await loadDetailChunk(1, 'reset')
+      await reloadCurrentDetailRef.current()
       setBatchPricesModalOpen(false)
       setBatchModalTargetCount(0)
       setBatchModalScopeRows([])
@@ -4563,28 +4632,37 @@ export default function ContainerDetailPage() {
     filtered: Boolean((columnFilters[key] as string[] | undefined)?.length),
   })
 
-  const handleTableChange = (_pagination: unknown, _filters: Record<string, unknown>, sorter: SorterResult<ContainerDetail> | SorterResult<ContainerDetail>[]) => {
+  const handleTableChange = (pagination: TablePaginationConfig, _filters: Record<string, unknown>, sorter: SorterResult<ContainerDetail> | SorterResult<ContainerDetail>[]) => {
     const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
     const nextSortField = nextSorter?.columnKey ?? nextSorter?.field
+    const nextSortState: ContainerDetailSortState = isContainerDetailSortField(nextSortField)
+      && (nextSorter.order === 'ascend' || nextSorter.order === 'descend')
+      ? { field: nextSortField, order: nextSorter.order }
+      : DEFAULT_CONTAINER_DETAIL_SORT
+    const sortChanged = nextSortState.field !== sortState.field || nextSortState.order !== sortState.order
 
-    if (isContainerDetailSortField(nextSortField) && (nextSorter.order === 'ascend' || nextSorter.order === 'descend')) {
-      setSortState({ field: nextSortField, order: nextSorter.order })
-      return
+    if (sortChanged) {
+      setSortState(nextSortState)
     }
 
-    setSortState(DEFAULT_CONTAINER_DETAIL_SORT)
+    if (detailLoadMode !== 'paged') return
+
+    const nextPageSize = pagination.pageSize ?? detailPageSize
+    const pageSizeChanged = nextPageSize !== detailPageSize
+    setSelectedRowKeys([])
+    setDetailPagingState({
+      containerGuid,
+      mode: 'paged',
+      pageNumber: sortChanged || pageSizeChanged ? 1 : pagination.current ?? 1,
+      pageSize: nextPageSize,
+      // 新 pageSize/排序会生成新 scopeKey；先置空可保证本 render 就按第 1 页请求。
+      scopeKey: sortChanged || pageSizeChanged ? '' : pagedDetailScopeKey,
+    })
   }
 
   const handleDetailTableScroll = (event: UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget
     lastDetailTableScrollTopRef.current = target.scrollTop
-    if (shouldLoadNextContainerDetailChunk({
-      scrollTop: target.scrollTop,
-      clientHeight: target.clientHeight,
-      scrollHeight: target.scrollHeight,
-    })) {
-      void loadNextDetailChunk()
-    }
   }
 
   const handleWarehouseStatusChange = async (row: ContainerDetail, isActive: boolean) => {
@@ -5800,12 +5878,14 @@ export default function ContainerDetailPage() {
                     </Space>
                     <Space wrap size={[8, 4]} className="container-detail-action-meta">
                       <Typography.Text type="secondary" className="container-detail-loaded-count">
-                        {t('containers.text.loadedRows', '已加载 {{loaded}} / 共 {{total}} 条', {
-                          loaded: rows.length,
-                          total: detailItemsTotal,
-                        })}
+                        {detailLoadMode === 'full'
+                          ? t('containers.text.fullRows', '已完整加载 {{count}} 条', { count: rows.length })
+                          : t('containers.text.pageRows', '当前页 {{loaded}} / 共 {{total}} 条', {
+                              loaded: rows.length,
+                              total: detailItemsTotal,
+                            })}
                         {filteredRows.length !== rows.length ? ` ${t('containers.text.visibleRows', '当前可见 {{count}} 条', { count: filteredRows.length })}` : ''}
-                        {detailLoadingMore ? ` ${t('common.loading', '加载中')}` : ''}
+                        {detailLoading ? ` ${t('common.loading', '加载中')}` : ''}
                       </Typography.Text>
                       {hasActiveColumnState ? (
                         <Button size="small" className="container-detail-compact-button" onClick={() => {
@@ -5877,7 +5957,7 @@ export default function ContainerDetailPage() {
                               {t('containers.text.localDraftMemoryOnly', '仅当前页面内存保存，刷新或关闭页面会丢失')}
                             </Typography.Text>
                           ) : null}
-                          <Button size="small" type="link" onClick={locateFirstPendingDetailField}>
+                          <Button size="small" type="link" onClick={() => locateFirstPendingDetailField()}>
                             {t('containers.actions.locateUnsavedDetail', '定位未保存项')}
                           </Button>
                           <Button
@@ -5925,7 +6005,7 @@ export default function ContainerDetailPage() {
                       components={{ header: { cell: DraggableHeaderCell } }}
                       columns={columns}
                       dataSource={displayRows}
-                      loading={detailLoading && rows.length === 0}
+                      loading={detailLoading}
                       rowSelection={{
                         selectedRowKeys,
                         onChange: setSelectedRowKeys,
@@ -5933,7 +6013,16 @@ export default function ContainerDetailPage() {
                         // 紧凑表格中默认选择列过窄，显式留出复选框点击空间。
                         columnWidth: CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH,
                       }}
-                      pagination={false}
+                      pagination={detailLoadMode === 'paged' ? {
+                        current: detailPageNumber,
+                        pageSize: detailPageSize,
+                        total: detailItemsTotal,
+                        size: 'small',
+                        showSizeChanger: true,
+                        pageSizeOptions: [...CONTAINER_DETAIL_PAGE_SIZE_OPTIONS],
+                        showTotal: (total) => t('containers.text.paginationTotal', '共 {{total}} 条', { total }),
+                        position: ['bottomRight'],
+                      } : false}
                       virtual
                       scroll={{ x: tableScrollX, y: tableScrollY }}
                       onChange={handleTableChange}

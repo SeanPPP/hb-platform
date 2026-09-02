@@ -198,7 +198,8 @@ namespace BlazorApp.Api.Services.React
         }
 
         private ISugarQueryable<ContainerDetail, WarehouseProduct, DomesticProduct, Product> BuildContainerDetailQuery(
-            ContainerDetailQueryDto request
+            ContainerDetailQueryDto request,
+            bool includeSelectedTags = true
         )
         {
             var itemNumber = NormalizeKeyword(request.ItemNumber);
@@ -244,10 +245,15 @@ namespace BlazorApp.Api.Services.React
             {
                 var productTypes = request.ProductTypes;
                 query = query.Where((cd, wp, dp, lp) =>
-                    (productTypes.Contains("normal") && dp.ProductType == 0)
-                    || (productTypes.Contains("set") && dp.ProductType == 1)
-                    || (productTypes.Contains("multi") && dp.ProductType == 2)
-                    // 套装子项仍取货柜明细历史快照字段，国内商品表中不会作为独立商品类型维护。
+                    // 套装子项只存在于货柜明细快照中；命中后不得再同时归入国内商品类型。
+                    (
+                        (cd.ProductType == null || cd.ProductType != "套装子商品")
+                        && (
+                            (productTypes.Contains("normal") && dp.ProductType == 0)
+                            || (productTypes.Contains("set") && dp.ProductType == 1)
+                            || (productTypes.Contains("multi") && dp.ProductType == 2)
+                        )
+                    )
                     || (productTypes.Contains("setChild") && cd.ProductType == "套装子商品")
                 );
             }
@@ -259,15 +265,6 @@ namespace BlazorApp.Api.Services.React
                     || (states.Contains("existing") && lp.ProductCode != null)
                 );
             }
-            if (HasAny(request.MatchTypes))
-            {
-                var matchTypes = request.MatchTypes;
-                query = query.Where((cd, wp, dp, lp) =>
-                    (matchTypes.Contains("productCode") && lp.ProductCode != null)
-                    || (matchTypes.Contains("unmatched") && lp.ProductCode == null)
-                    || (matchTypes.Contains("supplierItem") && lp.ProductCode == null && dp.HBProductNo != null)
-                );
-            }
             if (HasAny(request.WarehouseStatus))
             {
                 var statuses = request.WarehouseStatus;
@@ -276,7 +273,7 @@ namespace BlazorApp.Api.Services.React
                     || (statuses.Contains("inactive") && wp.IsActive != true)
                 );
             }
-            if (HasAny(request.SelectedTags))
+            if (includeSelectedTags && HasAny(request.SelectedTags))
             {
                 var tags = request.SelectedTags;
                 if (tags.Contains("new") || tags.Contains("existing"))
@@ -285,6 +282,25 @@ namespace BlazorApp.Api.Services.React
                     query = query.Where((cd, wp, dp, lp) =>
                         (tags.Contains("new") && lp.ProductCode == null)
                         || (tags.Contains("existing") && lp.ProductCode != null)
+                    );
+                }
+                if (
+                    tags.Contains("normal")
+                    || tags.Contains("set")
+                    || tags.Contains("multi")
+                    || tags.Contains("setChild")
+                )
+                {
+                    query = query.Where((cd, wp, dp, lp) =>
+                        (
+                            (cd.ProductType == null || cd.ProductType != "套装子商品")
+                            && (
+                                (tags.Contains("normal") && dp.ProductType == 0)
+                                || (tags.Contains("set") && dp.ProductType == 1)
+                                || (tags.Contains("multi") && dp.ProductType == 2)
+                            )
+                        )
+                        || (tags.Contains("setChild") && cd.ProductType == "套装子商品")
                     );
                 }
                 if (tags.Contains("noOemPrice") || tags.Contains("abnormalImport"))
@@ -422,7 +438,18 @@ namespace BlazorApp.Api.Services.React
                 "barcode" => query.OrderBy((cd, wp, dp, lp) => dp.Barcode, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "productName" => query.OrderBy((cd, wp, dp, lp) => dp.ProductName, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "englishName" => query.OrderBy((cd, wp, dp, lp) => lp.ProductName ?? dp.EnglishProductName, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
-                "productType" => query.OrderBy((cd, wp, dp, lp) => dp.ProductType, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "productType" => query.OrderBy(
+                    (cd, wp, dp, lp) =>
+                        cd.ProductType == "套装子商品"
+                            ? 3
+                            : dp.ProductType == 1
+                                ? 1
+                                : dp.ProductType == 2
+                                    ? 2
+                                    : 0,
+                    orderType
+                ).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+                "newProduct" => query.OrderBy((cd, wp, dp, lp) => lp.ProductCode == null, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "containerPieces" => query.OrderBy((cd, wp, dp, lp) => cd.LoadingPieces, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "middlePackQuantity" => query.OrderBy((cd, wp, dp, lp) => wp.MinOrderQuantity ?? dp.MiddlePackQuantity, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "containerQuantity" => query.OrderBy((cd, wp, dp, lp) => cd.LoadingQuantity, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
@@ -439,6 +466,377 @@ namespace BlazorApp.Api.Services.React
                 "warehouseStatus" => query.OrderBy((cd, wp, dp, lp) => wp.IsActive, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 "remark" => query.OrderBy((cd, wp, dp, lp) => cd.Remarks, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
                 _ => query.OrderBy((cd, wp, dp, lp) => dp.HBProductNo, orderType).OrderBy((cd, wp, dp, lp) => cd.DetailCode),
+            };
+        }
+
+        private const string ContainerDetailProductCodeMatch = "productCode";
+        private const string ContainerDetailSupplierItemMatch = "supplierItem";
+        private const string ContainerDetailUnmatched = "unmatched";
+        private const string ContainerDetailMatchConflictReason =
+            "国内商品编码与本地主档商品编码不一致";
+        private const int ContainerDetailMatchCandidateBatchSize = 400;
+
+        private sealed class ContainerDetailMatchSeed
+        {
+            public string DetailCode { get; set; } = string.Empty;
+            public string? ProductCode { get; set; }
+            public string? ItemNumber { get; set; }
+            public string? SupplierCode { get; set; }
+            public string? DirectWarehouseProductCode { get; set; }
+            public string? DirectDomesticProductCode { get; set; }
+            public bool DirectDomesticIsDeleted { get; set; }
+            public bool IsNew { get; set; }
+            public int? DomesticProductType { get; set; }
+            public string? DetailProductType { get; set; }
+            public decimal? DetailOemPrice { get; set; }
+            public decimal? DetailImportPrice { get; set; }
+            public bool? WarehouseIsActive { get; set; }
+            public string MatchType { get; set; } = ContainerDetailUnmatched;
+            public string? LocalProductCode { get; set; }
+            public string? DomesticProductCode { get; set; }
+            public bool HasProductCodeConflict { get; set; }
+            public string? ConflictReason { get; set; }
+        }
+
+        private sealed class ContainerDetailLocalMatchCandidate
+        {
+            public string? ProductCode { get; set; }
+            public string? ItemNumber { get; set; }
+            public string? SupplierCode { get; set; }
+        }
+
+        private sealed class ContainerDetailDomesticMatchCandidate
+        {
+            public string? ProductCode { get; set; }
+            public string? ItemNumber { get; set; }
+            public string? SupplierCode { get; set; }
+        }
+
+        private static string? NormalizeContainerDetailMatchKey(string? value)
+        {
+            var normalized = value?.Trim().ToUpperInvariant();
+            return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+        }
+
+        private static string? BuildContainerDetailSupplierItemKey(
+            string? supplierCode,
+            string? itemNumber
+        )
+        {
+            var normalizedSupplierCode = NormalizeContainerDetailMatchKey(supplierCode);
+            var normalizedItemNumber = NormalizeContainerDetailMatchKey(itemNumber);
+            return normalizedSupplierCode != null && normalizedItemNumber != null
+                ? $"{normalizedSupplierCode}:{normalizedItemNumber}"
+                : null;
+        }
+
+        private static bool IsContainerDetailMatchSort(ContainerDetailQueryDto request) =>
+            string.Equals(request.SortBy?.Trim(), "matchType", StringComparison.OrdinalIgnoreCase);
+
+        private static bool IsContainerDetailSortDescending(ContainerDetailQueryDto request) =>
+            string.Equals(request.SortOrder, "descend", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(request.SortOrder, "desc", StringComparison.OrdinalIgnoreCase);
+
+        private async Task<List<ContainerDetailMatchSeed>> ResolveContainerDetailMatchesAsync(
+            ISugarQueryable<ContainerDetail, WarehouseProduct, DomesticProduct, Product> query,
+            ContainerDetailQueryDto request,
+            CancellationToken cancellationToken,
+            bool preserveRequestedOrder = true
+        )
+        {
+            var orderedQuery = preserveRequestedOrder && !IsContainerDetailMatchSort(request)
+                ? ApplyContainerDetailSort(query, request)
+                : query.OrderBy((cd, wp, dp, lp) => cd.DetailCode);
+            var seeds = await orderedQuery
+                .Select((cd, wp, dp, lp) => new ContainerDetailMatchSeed
+                {
+                    DetailCode = cd.DetailCode,
+                    ProductCode = cd.ProductCode,
+                    ItemNumber = dp.HBProductNo,
+                    SupplierCode = lp.LocalSupplierCode,
+                    DirectWarehouseProductCode = wp.ProductCode,
+                    DirectDomesticProductCode = dp.ProductCode,
+                    DirectDomesticIsDeleted = dp.IsDeleted,
+                    IsNew = lp.ProductCode == null,
+                    DomesticProductType = dp.ProductType,
+                    DetailProductType = cd.ProductType,
+                    DetailOemPrice = cd.OEMPrice,
+                    DetailImportPrice = cd.ImportPrice,
+                    WarehouseIsActive = wp.IsActive,
+                })
+                .ToListAsync(cancellationToken);
+            if (seeds.Count == 0)
+            {
+                return seeds;
+            }
+
+            var localCandidates = new List<ContainerDetailLocalMatchCandidate>();
+            foreach (var batch in seeds
+                .Where(seed =>
+                    !string.IsNullOrWhiteSpace(seed.ItemNumber)
+                    && string.IsNullOrWhiteSpace(seed.DirectWarehouseProductCode)
+                )
+                .Chunk(ContainerDetailMatchCandidateBatchSize))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var itemNumbers = batch
+                    .Select(seed => seed.ItemNumber!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var supplierCodes = batch
+                    .Select(seed => NormalizeContainerDetailMatchKey(seed.SupplierCode) ?? "200")
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                localCandidates.AddRange(
+                    await _context.Db.Queryable<WarehouseProduct>()
+                        .LeftJoin<Product>((warehouse, product) =>
+                            warehouse.ProductCode == product.ProductCode
+                        )
+                        .Where((warehouse, product) =>
+                            product.ItemNumber != null
+                            && itemNumbers.Contains(product.ItemNumber)
+                            && product.LocalSupplierCode != null
+                            && supplierCodes.Contains(product.LocalSupplierCode)
+                        )
+                        .Select((warehouse, product) => new ContainerDetailLocalMatchCandidate
+                        {
+                            ProductCode = warehouse.ProductCode,
+                            ItemNumber = product.ItemNumber,
+                            SupplierCode = product.LocalSupplierCode,
+                        })
+                        .ToListAsync(cancellationToken)
+                );
+            }
+
+            var localBySupplierItem = localCandidates
+                .Where(candidate => !string.IsNullOrWhiteSpace(candidate.ProductCode))
+                .OrderBy(candidate => candidate.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(candidate => candidate.ProductCode, StringComparer.Ordinal)
+                .Select(candidate => new
+                {
+                    Key = BuildContainerDetailSupplierItemKey(
+                        candidate.SupplierCode,
+                        candidate.ItemNumber
+                    ),
+                    Candidate = candidate,
+                })
+                .Where(candidate => candidate.Key != null)
+                .GroupBy(candidate => candidate.Key!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.First().Candidate,
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            var domesticCandidates = new List<ContainerDetailDomesticMatchCandidate>();
+            foreach (var batch in seeds
+                .Where(seed =>
+                    !string.IsNullOrWhiteSpace(seed.ItemNumber)
+                    && (
+                        string.IsNullOrWhiteSpace(seed.DirectDomesticProductCode)
+                        || seed.DirectDomesticIsDeleted
+                    )
+                )
+                .Chunk(ContainerDetailMatchCandidateBatchSize))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var itemNumbers = batch
+                    .Select(seed => seed.ItemNumber!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var supplierCodes = batch
+                    .Select(seed => NormalizeContainerDetailMatchKey(seed.SupplierCode) ?? "200")
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                domesticCandidates.AddRange(
+                    await _context.Db.Queryable<DomesticProduct>()
+                        .Where(product =>
+                            !product.IsDeleted
+                            && product.HBProductNo != null
+                            && itemNumbers.Contains(product.HBProductNo)
+                            && product.SupplierCode != null
+                            && supplierCodes.Contains(product.SupplierCode)
+                        )
+                        .Select(product => new ContainerDetailDomesticMatchCandidate
+                        {
+                            ProductCode = product.ProductCode,
+                            ItemNumber = product.HBProductNo,
+                            SupplierCode = product.SupplierCode,
+                        })
+                        .ToListAsync(cancellationToken)
+                );
+            }
+            var domesticBySupplierItem = domesticCandidates
+                .OrderBy(candidate => candidate.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(candidate => candidate.ProductCode, StringComparer.Ordinal)
+                .Select(candidate => new
+                {
+                    Key = BuildContainerDetailSupplierItemKey(
+                        candidate.SupplierCode,
+                        candidate.ItemNumber
+                    ),
+                    Candidate = candidate,
+                })
+                .Where(candidate => candidate.Key != null)
+                .GroupBy(candidate => candidate.Key!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.First().Candidate,
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            foreach (var seed in seeds)
+            {
+                var supplierCode = NormalizeContainerDetailMatchKey(seed.SupplierCode) ?? "200";
+                var supplierItemKey = BuildContainerDetailSupplierItemKey(
+                    supplierCode,
+                    seed.ItemNumber
+                );
+                var directCodeMatch = !string.IsNullOrWhiteSpace(
+                    seed.DirectWarehouseProductCode
+                );
+                var localCandidate = supplierItemKey != null
+                    && localBySupplierItem.TryGetValue(supplierItemKey, out var localByItem)
+                        ? localByItem
+                        : null;
+                seed.LocalProductCode = directCodeMatch
+                    ? seed.DirectWarehouseProductCode
+                    : localCandidate?.ProductCode;
+
+                var hasDirectDomestic = !string.IsNullOrWhiteSpace(
+                    seed.DirectDomesticProductCode
+                ) && !seed.DirectDomesticIsDeleted;
+                var domesticCandidate = supplierItemKey != null
+                    && domesticBySupplierItem.TryGetValue(
+                        supplierItemKey,
+                        out var domesticByItem
+                    )
+                        ? domesticByItem
+                        : null;
+                seed.DomesticProductCode = hasDirectDomestic
+                    ? seed.DirectDomesticProductCode
+                    : domesticCandidate?.ProductCode ?? seed.ProductCode;
+                seed.HasProductCodeConflict =
+                    !string.IsNullOrWhiteSpace(seed.LocalProductCode)
+                    && !string.IsNullOrWhiteSpace(seed.DomesticProductCode)
+                    && !string.Equals(
+                        seed.LocalProductCode.Trim(),
+                        seed.DomesticProductCode.Trim(),
+                        StringComparison.OrdinalIgnoreCase
+                    );
+                seed.ConflictReason = seed.HasProductCodeConflict
+                    ? ContainerDetailMatchConflictReason
+                    : null;
+                seed.MatchType = seed.HasProductCodeConflict
+                    ? ContainerDetailSupplierItemMatch
+                    : directCodeMatch
+                        ? ContainerDetailProductCodeMatch
+                        : localCandidate != null
+                            ? ContainerDetailSupplierItemMatch
+                            : ContainerDetailUnmatched;
+            }
+
+            return seeds;
+        }
+
+        private static bool MatchesContainerDetailMatchTypes(
+            ContainerDetailMatchSeed seed,
+            IReadOnlyCollection<string>? matchTypes
+        ) =>
+            !HasAny(matchTypes)
+            || matchTypes!.Any(matchType =>
+                string.Equals(matchType, seed.MatchType, StringComparison.OrdinalIgnoreCase)
+            );
+
+        private static string ResolveContainerDetailProductTypeKey(
+            ContainerDetailMatchSeed seed
+        )
+        {
+            // 与 SQL 查询及前端保持同一优先级：套装子商品快照优先，其余读取国内商品类型。
+            if (seed.DetailProductType == "套装子商品")
+            {
+                return "setChild";
+            }
+
+            return seed.DomesticProductType switch
+            {
+                1 => "set",
+                2 => "multi",
+                _ => "normal",
+            };
+        }
+
+        private static bool MatchesContainerDetailSelectedTags(
+            ContainerDetailMatchSeed seed,
+            IReadOnlyCollection<string>? selectedTags
+        )
+        {
+            if (!HasAny(selectedTags))
+            {
+                return true;
+            }
+
+            var tags = selectedTags!;
+            var productTypeKey = ResolveContainerDetailProductTypeKey(seed);
+            var matchesNewState =
+                !(tags.Contains("new") || tags.Contains("existing"))
+                || (tags.Contains("new") && seed.IsNew)
+                || (tags.Contains("existing") && !seed.IsNew);
+            var matchesProductType =
+                !(
+                    tags.Contains("normal")
+                    || tags.Contains("set")
+                    || tags.Contains("multi")
+                    || tags.Contains("setChild")
+                )
+                || tags.Contains(productTypeKey);
+            var noOemPrice =
+                seed.IsNew && (!seed.DetailOemPrice.HasValue || seed.DetailOemPrice <= 0);
+            var abnormalImport =
+                !seed.DetailImportPrice.HasValue || seed.DetailImportPrice <= 0;
+            var matchesPriceState =
+                !(tags.Contains("noOemPrice") || tags.Contains("abnormalImport"))
+                || (tags.Contains("noOemPrice") && noOemPrice)
+                || (tags.Contains("abnormalImport") && abnormalImport);
+            var matchesWarehouseStatus =
+                !(tags.Contains("active") || tags.Contains("inactive"))
+                || (tags.Contains("active") && seed.WarehouseIsActive == true)
+                || (tags.Contains("inactive") && seed.WarehouseIsActive != true);
+            return matchesNewState
+                && matchesProductType
+                && matchesPriceState
+                && matchesWarehouseStatus;
+        }
+
+        private static ContainerDetailTagStatsDto BuildContainerDetailTagStats(
+            IReadOnlyCollection<ContainerDetailMatchSeed> seeds
+        )
+        {
+            return new ContainerDetailTagStatsDto
+            {
+                All = seeds.Count,
+                New = seeds.Count(seed => seed.IsNew),
+                Existing = seeds.Count(seed => !seed.IsNew),
+                Normal = seeds.Count(seed => ResolveContainerDetailProductTypeKey(seed) == "normal"),
+                Set = seeds.Count(seed => ResolveContainerDetailProductTypeKey(seed) == "set"),
+                Multi = seeds.Count(seed => ResolveContainerDetailProductTypeKey(seed) == "multi"),
+                SetChild = seeds.Count(seed => ResolveContainerDetailProductTypeKey(seed) == "setChild"),
+                NoOemPrice = seeds.Count(seed =>
+                    seed.IsNew
+                    && (!seed.DetailOemPrice.HasValue || seed.DetailOemPrice <= 0)
+                ),
+                AbnormalImport = seeds.Count(seed =>
+                    !seed.DetailImportPrice.HasValue || seed.DetailImportPrice <= 0
+                ),
+                Active = seeds.Count(seed => seed.WarehouseIsActive == true),
+                Inactive = seeds.Count(seed => seed.WarehouseIsActive != true),
+                ProductCodeMatched = seeds.Count(seed =>
+                    seed.MatchType == ContainerDetailProductCodeMatch
+                ),
+                SupplierItemMatched = seeds.Count(seed =>
+                    seed.MatchType == ContainerDetailSupplierItemMatch
+                ),
+                Unmatched = seeds.Count(seed => seed.MatchType == ContainerDetailUnmatched),
             };
         }
 
@@ -911,121 +1309,94 @@ namespace BlazorApp.Api.Services.React
         /// 按服务端筛选、排序和内部分页查询货柜商品明细
         /// </summary>
         public async Task<ContainerDetailQueryResultDto> QueryContainerDetailsAsync(
-            ContainerDetailQueryDto request
+            ContainerDetailQueryDto request,
+            CancellationToken cancellationToken = default
         )
         {
             try
             {
+                cancellationToken.ThrowIfCancellationRequested();
+                var pageNumber = Math.Max(1, request.PageNumber);
+                var pageSize = Math.Clamp(request.PageSize <= 0 ? 100 : request.PageSize, 1, 1000);
+                var totalComputed = request.IncludeTotal || request.IncludeStats;
                 if (string.IsNullOrWhiteSpace(request.ContainerGuid))
                 {
-                    var emptyTotalComputed = request.IncludeTotal || request.IncludeStats;
                     return new ContainerDetailQueryResultDto
                     {
-                        PageNumber = Math.Max(1, request.PageNumber),
-                        PageSize = Math.Clamp(request.PageSize, 1, 500),
-                        TotalComputed = emptyTotalComputed,
+                        PageNumber = pageNumber,
+                        PageSize = pageSize,
+                        TotalComputed = totalComputed,
                         StatsComputed = request.IncludeStats,
                     };
                 }
 
-                var pageNumber = Math.Max(1, request.PageNumber);
-                var pageSize = Math.Clamp(request.PageSize <= 0 ? 50 : request.PageSize, 1, 500);
-                var query = BuildContainerDetailQuery(request);
-                var total = 0;
-                var stats = new ContainerDetailTagStatsDto();
-                var totalComputed = request.IncludeTotal || request.IncludeStats;
-
-                if (request.IncludeStats)
+                var requiresGlobalMatchScope =
+                    HasAny(request.MatchTypes) || IsContainerDetailMatchSort(request);
+                if (!requiresGlobalMatchScope)
                 {
-                    // 标签统计里 All 已经是同口径总数；请求统计时同步视为 total 已计算，避免响应契约出现歧义组合。
-                    stats = await QueryContainerDetailTagStatsAsync(query);
-                    total = stats.All;
-                }
-                else if (request.IncludeTotal)
-                {
-                    total = await query.Clone().CountAsync();
+                    return await QueryContainerDetailsFastPathAsync(
+                        request,
+                        pageNumber,
+                        pageSize,
+                        totalComputed,
+                        cancellationToken
+                    );
                 }
 
-                var takeSize = totalComputed ? pageSize : pageSize + 1;
-                var loadedItems = await ApplyContainerDetailSort(query.Clone(), request)
-                    .Select(
-                        (cd, wp, dp, lp) =>
-                            new ContainerDetailDto
-                            {
-                                HGUID = cd.DetailCode,
-                                主表GUID = cd.ContainerCode,
-                                商品编码 = cd.ProductCode,
-                                LocalSupplierCode = lp.LocalSupplierCode,
-                                ProductCategoryGUID = cd.TargetWarehouseCategoryGUID ?? lp.WarehouseCategoryGUID,
-                                装柜类型 = cd.LoadingType,
-                                商品类型 = cd.ProductType,
-                                套装数量 = cd.SetQuantity,
-                                装柜件数 = cd.LoadingPieces,
-                                中包数 = wp.MinOrderQuantity ?? dp.MiddlePackQuantity,
-                                装柜数量 = cd.LoadingQuantity,
-                                国内价格 = cd.DomesticPrice,
-                                调整浮率 = cd.AdjustmentRate,
-                                进口价格 = cd.ImportPrice,
-                                贴牌价格 = cd.OEMPrice,
-                                单件装箱数 = cd.PackingQuantity,
-                                单件体积 = cd.UnitVolume,
-                                合计装柜金额 = cd.TotalAmount,
-                                合计装柜体积 = cd.TotalVolume,
-                                运输成本 = cd.TransportCost,
-                                备注 = cd.Remarks,
-                                是否新商品 = lp.ProductCode == null,
-                                LastImportPrice = cd.LastImportPrice,
-                                LastOEMPrice = cd.LastOEMPrice,
-                                // Last* 保留货柜明细快照；Warehouse* 展示仓库商品实时价。
-                                WarehouseImportPrice = wp.ImportPrice,
-                                WarehouseOEMPrice = wp.OEMPrice,
-                                ReadonlyOemPrice = lp.ProductCode == null ? dp.OEMPrice : wp.OEMPrice,
-                                WarehouseIsActive = wp.IsActive,
-                                商品信息 = new ContainerProductInfoDto
-                                {
-                                    商品编码 = dp.ProductCode,
-                                    LocalSupplierCode = lp.LocalSupplierCode,
-                                    ProductCategoryGUID = cd.TargetWarehouseCategoryGUID ?? lp.WarehouseCategoryGUID,
-                                    货号 = dp.HBProductNo,
-                                    商品名称 = dp.ProductName,
-                                    // 已有商品按本地主档商品名称展示英文列；未建主档时才回退国内英文名。
-                                    英文名称 = lp.ProductName ?? dp.EnglishProductName,
-                                    商品图片 = dp.ProductImage,
-                                    条形码 = dp.Barcode,
-                                    商品规格 = dp.ProductSpecification,
-                                    单件装箱数 = cd.PackingQuantity,
-                                    单件体积 = cd.UnitVolume,
-                                    // SqlSugar 投影内不能调用 C# helper，这里映射需与 MapDomesticProductTypeLabel 保持一致。
-                                    商品类型 = dp.ProductType == 1 ? "套装商品" : dp.ProductType == 2 ? "多码商品" : "普通商品",
-                                    套装数量 = cd.SetQuantity,
-                                },
-                            }
-                    )
-                    .Skip((pageNumber - 1) * pageSize)
-                    .Take(takeSize)
-                    .ToListAsync();
+                // 匹配方式无法用 ProductCode 是否存在近似替代；在全局窄投影中解析后再分页。
+                var identityQuery = BuildContainerDetailQuery(request, includeSelectedTags: false);
+                var resolved = await ResolveContainerDetailMatchesAsync(
+                    identityQuery,
+                    request,
+                    cancellationToken,
+                    preserveRequestedOrder: request.IncludeItems
+                );
+                var statsScope = resolved
+                    .Where(seed => MatchesContainerDetailMatchTypes(seed, request.MatchTypes))
+                    .ToList();
+                var itemsScope = statsScope
+                    .Where(seed => MatchesContainerDetailSelectedTags(seed, request.SelectedTags))
+                    .ToList();
+                if (IsContainerDetailMatchSort(request))
+                {
+                    var descending = IsContainerDetailSortDescending(request);
+                    itemsScope = descending
+                        ? itemsScope
+                            .OrderByDescending(seed => GetContainerDetailMatchSortRank(seed.MatchType))
+                            .ThenBy(seed => seed.DetailCode, StringComparer.Ordinal)
+                            .ToList()
+                        : itemsScope
+                            .OrderBy(seed => GetContainerDetailMatchSortRank(seed.MatchType))
+                            .ThenBy(seed => seed.DetailCode, StringComparer.Ordinal)
+                            .ToList();
+                }
 
-                // 追加页不再计算 total；多取一条即可判断是否还有下一页，返回前截回正常页大小。
-                var hasMore = totalComputed
-                    ? pageNumber * pageSize < total
-                    : loadedItems.Count > pageSize;
-                var items = totalComputed
-                    ? loadedItems
-                    : loadedItems.Take(pageSize).ToList();
-
-                await FillContainerDetailCategoryNamesAsync(items);
-                FillContainerDetailProductImages(items);
+                var effectiveCount = itemsScope.Count;
+                var pageSeeds = request.IncludeItems
+                    ? itemsScope.Skip((pageNumber - 1) * pageSize).Take(pageSize).ToList()
+                    : new List<ContainerDetailMatchSeed>();
+                var items = await LoadContainerDetailPageAsync(
+                    request,
+                    pageSeeds,
+                    cancellationToken
+                );
                 return new ContainerDetailQueryResultDto
                 {
                     Items = items,
-                    ItemsTotal = totalComputed ? total : 0,
+                    ItemsTotal = totalComputed ? effectiveCount : 0,
                     PageNumber = pageNumber,
                     PageSize = pageSize,
-                    HasMore = hasMore,
+                    HasMore = pageNumber * (long)pageSize < effectiveCount,
                     TotalComputed = totalComputed,
                     StatsComputed = request.IncludeStats,
-                    TagStats = request.IncludeStats ? stats : new ContainerDetailTagStatsDto(),
+                    TagStats = request.IncludeStats
+                        ? BuildContainerDetailTagStats(statsScope)
+                        : new ContainerDetailTagStatsDto(),
                 };
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -1038,8 +1409,211 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
-        private async Task<ContainerDetailTagStatsDto> QueryContainerDetailTagStatsAsync(
+        private async Task<ContainerDetailQueryResultDto> QueryContainerDetailsFastPathAsync(
+            ContainerDetailQueryDto request,
+            int pageNumber,
+            int pageSize,
+            bool totalComputed,
+            CancellationToken cancellationToken
+        )
+        {
+            var itemsQuery = BuildContainerDetailQuery(request);
+            var stats = new ContainerDetailTagStatsDto();
+            var total = 0;
+            if (request.IncludeStats)
+            {
+                stats = await QueryContainerDetailTagStatsAsync(
+                    BuildContainerDetailQuery(request, includeSelectedTags: false),
+                    cancellationToken
+                );
+                total = HasAny(request.SelectedTags)
+                    ? await itemsQuery.Clone().CountAsync(cancellationToken)
+                    : stats.All;
+            }
+            else if (request.IncludeTotal)
+            {
+                total = await itemsQuery.Clone().CountAsync(cancellationToken);
+            }
+
+            if (!request.IncludeItems)
+            {
+                return new ContainerDetailQueryResultDto
+                {
+                    ItemsTotal = totalComputed ? total : 0,
+                    PageNumber = pageNumber,
+                    PageSize = pageSize,
+                    HasMore = totalComputed && pageNumber * (long)pageSize < total,
+                    TotalComputed = totalComputed,
+                    StatsComputed = request.IncludeStats,
+                    TagStats = request.IncludeStats ? stats : new ContainerDetailTagStatsDto(),
+                };
+            }
+
+            var takeSize = totalComputed ? pageSize : pageSize + 1;
+            var loadedItems = await ProjectContainerDetailDtos(
+                    ApplyContainerDetailSort(itemsQuery.Clone(), request)
+                )
+                .Skip((pageNumber - 1) * pageSize)
+                .Take(takeSize)
+                .ToListAsync(cancellationToken);
+            var hasMore = totalComputed
+                ? pageNumber * (long)pageSize < total
+                : loadedItems.Count > pageSize;
+            var items = totalComputed
+                ? loadedItems
+                : loadedItems.Take(pageSize).ToList();
+
+            var pageHguids = items.Select(item => item.HGUID).ToList();
+            if (pageHguids.Count > 0)
+            {
+                // 普通分页只对当前页补充匹配信息，避免统计请求扫描整柜候选商品。
+                var pageMatches = await ResolveContainerDetailMatchesAsync(
+                    BuildContainerDetailQuery(request, includeSelectedTags: false)
+                        .Where((cd, wp, dp, lp) => pageHguids.Contains(cd.DetailCode)),
+                    request,
+                    cancellationToken
+                );
+                ApplyContainerDetailMatches(items, pageMatches);
+            }
+            await FillContainerDetailCategoryNamesAsync(items, cancellationToken);
+            FillContainerDetailProductImages(items);
+            return new ContainerDetailQueryResultDto
+            {
+                Items = items,
+                ItemsTotal = totalComputed ? total : 0,
+                PageNumber = pageNumber,
+                PageSize = pageSize,
+                HasMore = hasMore,
+                TotalComputed = totalComputed,
+                StatsComputed = request.IncludeStats,
+                TagStats = request.IncludeStats ? stats : new ContainerDetailTagStatsDto(),
+            };
+        }
+
+        private async Task<List<ContainerDetailDto>> LoadContainerDetailPageAsync(
+            ContainerDetailQueryDto request,
+            IReadOnlyCollection<ContainerDetailMatchSeed> pageSeeds,
+            CancellationToken cancellationToken
+        )
+        {
+            if (pageSeeds.Count == 0)
+            {
+                return new List<ContainerDetailDto>();
+            }
+
+            var pageHguids = pageSeeds.Select(seed => seed.DetailCode).ToList();
+            var loaded = await ProjectContainerDetailDtos(
+                    BuildContainerDetailQuery(request, includeSelectedTags: false)
+                        .Where((cd, wp, dp, lp) => pageHguids.Contains(cd.DetailCode))
+                )
+                .ToListAsync(cancellationToken);
+            ApplyContainerDetailMatches(loaded, pageSeeds);
+            var loadedByHguid = loaded
+                .Where(item => !string.IsNullOrWhiteSpace(item.HGUID))
+                .GroupBy(item => item.HGUID!, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+            var ordered = pageHguids
+                .Where(loadedByHguid.ContainsKey)
+                .Select(hguid => loadedByHguid[hguid])
+                .ToList();
+            await FillContainerDetailCategoryNamesAsync(ordered, cancellationToken);
+            FillContainerDetailProductImages(ordered);
+            return ordered;
+        }
+
+        private static void ApplyContainerDetailMatches(
+            IReadOnlyCollection<ContainerDetailDto> items,
+            IEnumerable<ContainerDetailMatchSeed> matches
+        )
+        {
+            var matchByHguid = matches
+                .GroupBy(match => match.DetailCode, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+            foreach (var item in items)
+            {
+                if (
+                    string.IsNullOrWhiteSpace(item.HGUID)
+                    || !matchByHguid.TryGetValue(item.HGUID, out var match)
+                )
+                {
+                    continue;
+                }
+
+                item.MatchType = match.MatchType;
+                item.LocalProductCode = match.LocalProductCode;
+                item.DomesticProductCode = match.DomesticProductCode;
+                item.HasProductCodeConflict = match.HasProductCodeConflict;
+                item.ConflictReason = match.ConflictReason;
+            }
+        }
+
+        private static int GetContainerDetailMatchSortRank(string matchType) =>
+            matchType switch
+            {
+                ContainerDetailProductCodeMatch => 0,
+                ContainerDetailSupplierItemMatch => 1,
+                _ => 2,
+            };
+
+        private static ISugarQueryable<ContainerDetailDto> ProjectContainerDetailDtos(
             ISugarQueryable<ContainerDetail, WarehouseProduct, DomesticProduct, Product> query
+        )
+        {
+            return query.Select(
+                (cd, wp, dp, lp) =>
+                    new ContainerDetailDto
+                    {
+                        HGUID = cd.DetailCode,
+                        主表GUID = cd.ContainerCode,
+                        商品编码 = cd.ProductCode,
+                        LocalSupplierCode = lp.LocalSupplierCode,
+                        ProductCategoryGUID = cd.TargetWarehouseCategoryGUID ?? lp.WarehouseCategoryGUID,
+                        装柜类型 = cd.LoadingType,
+                        商品类型 = cd.ProductType,
+                        套装数量 = cd.SetQuantity,
+                        装柜件数 = cd.LoadingPieces,
+                        中包数 = wp.MinOrderQuantity ?? dp.MiddlePackQuantity,
+                        装柜数量 = cd.LoadingQuantity,
+                        国内价格 = cd.DomesticPrice,
+                        调整浮率 = cd.AdjustmentRate,
+                        进口价格 = cd.ImportPrice,
+                        贴牌价格 = cd.OEMPrice,
+                        单件装箱数 = cd.PackingQuantity,
+                        单件体积 = cd.UnitVolume,
+                        合计装柜金额 = cd.TotalAmount,
+                        合计装柜体积 = cd.TotalVolume,
+                        运输成本 = cd.TransportCost,
+                        备注 = cd.Remarks,
+                        是否新商品 = lp.ProductCode == null,
+                        LastImportPrice = cd.LastImportPrice,
+                        LastOEMPrice = cd.LastOEMPrice,
+                        WarehouseImportPrice = wp.ImportPrice,
+                        WarehouseOEMPrice = wp.OEMPrice,
+                        ReadonlyOemPrice = lp.ProductCode == null ? dp.OEMPrice : wp.OEMPrice,
+                        WarehouseIsActive = wp.IsActive,
+                        商品信息 = new ContainerProductInfoDto
+                        {
+                            商品编码 = dp.ProductCode,
+                            LocalSupplierCode = lp.LocalSupplierCode,
+                            ProductCategoryGUID = cd.TargetWarehouseCategoryGUID ?? lp.WarehouseCategoryGUID,
+                            货号 = dp.HBProductNo,
+                            商品名称 = dp.ProductName,
+                            英文名称 = lp.ProductName ?? dp.EnglishProductName,
+                            商品图片 = dp.ProductImage,
+                            条形码 = dp.Barcode,
+                            商品规格 = dp.ProductSpecification,
+                            单件装箱数 = cd.PackingQuantity,
+                            单件体积 = cd.UnitVolume,
+                            商品类型 = dp.ProductType == 1 ? "套装商品" : dp.ProductType == 2 ? "多码商品" : "普通商品",
+                            套装数量 = cd.SetQuantity,
+                        },
+                    }
+            );
+        }
+
+        private async Task<ContainerDetailTagStatsDto> QueryContainerDetailTagStatsAsync(
+            ISugarQueryable<ContainerDetail, WarehouseProduct, DomesticProduct, Product> query,
+            CancellationToken cancellationToken
         )
         {
             var stats = await query.Clone()
@@ -1048,12 +1622,16 @@ namespace BlazorApp.Api.Services.React
                     All = SqlFunc.AggregateCount(cd.DetailCode),
                     New = SqlFunc.AggregateCount(SqlFunc.IIF(lp.ProductCode == null, cd.DetailCode, null)),
                     Existing = SqlFunc.AggregateCount(SqlFunc.IIF(lp.ProductCode != null, cd.DetailCode, null)),
+                    Normal = SqlFunc.AggregateCount(SqlFunc.IIF((cd.ProductType == null || cd.ProductType != "套装子商品") && dp.ProductType == 0, cd.DetailCode, null)),
+                    Set = SqlFunc.AggregateCount(SqlFunc.IIF((cd.ProductType == null || cd.ProductType != "套装子商品") && dp.ProductType == 1, cd.DetailCode, null)),
+                    Multi = SqlFunc.AggregateCount(SqlFunc.IIF((cd.ProductType == null || cd.ProductType != "套装子商品") && dp.ProductType == 2, cd.DetailCode, null)),
+                    SetChild = SqlFunc.AggregateCount(SqlFunc.IIF(cd.ProductType == "套装子商品", cd.DetailCode, null)),
                     NoOemPrice = SqlFunc.AggregateCount(SqlFunc.IIF(lp.ProductCode == null && (cd.OEMPrice == null || cd.OEMPrice <= 0), cd.DetailCode, null)),
                     AbnormalImport = SqlFunc.AggregateCount(SqlFunc.IIF(cd.ImportPrice == null || cd.ImportPrice <= 0, cd.DetailCode, null)),
                     Active = SqlFunc.AggregateCount(SqlFunc.IIF(wp.IsActive == true, cd.DetailCode, null)),
                     Inactive = SqlFunc.AggregateCount(SqlFunc.IIF(wp.IsActive != true, cd.DetailCode, null)),
                 })
-                .FirstAsync();
+                .FirstAsync(cancellationToken);
 
             return stats == null
                 ? new ContainerDetailTagStatsDto()
@@ -1062,6 +1640,10 @@ namespace BlazorApp.Api.Services.React
                     All = stats.All,
                     New = stats.New,
                     Existing = stats.Existing,
+                    Normal = stats.Normal,
+                    Set = stats.Set,
+                    Multi = stats.Multi,
+                    SetChild = stats.SetChild,
                     NoOemPrice = stats.NoOemPrice,
                     AbnormalImport = stats.AbnormalImport,
                     Active = stats.Active,
@@ -1086,7 +1668,10 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
-        private async Task FillContainerDetailCategoryNamesAsync(List<ContainerDetailDto> items)
+        private async Task FillContainerDetailCategoryNamesAsync(
+            List<ContainerDetailDto> items,
+            CancellationToken cancellationToken = default
+        )
         {
             var categoryGuids = items
                 .Select(item => item.ProductCategoryGUID)
@@ -1112,7 +1697,7 @@ namespace BlazorApp.Api.Services.React
                     category.CategoryGUID,
                     category.CategoryName,
                 })
-                .ToListAsync();
+                .ToListAsync(cancellationToken);
 
             var categoryByGuid = categories
                 .Select(category => new
@@ -3602,9 +4187,26 @@ namespace BlazorApp.Api.Services.React
 
             // 未勾选时以当前服务端筛选条件为作用范围，避免前端为了批量操作补拉整柜明细。
             request.Query.ContainerGuid = containerGuid;
-            return await BuildContainerDetailQuery(request.Query)
-                .Select((cd, wp, dp, lp) => cd.DetailCode)
-                .ToListAsync();
+            if (!HasAny(request.Query.MatchTypes))
+            {
+                return await BuildContainerDetailQuery(request.Query)
+                    .Select((cd, wp, dp, lp) => cd.DetailCode)
+                    .ToListAsync();
+            }
+
+            var resolved = await ResolveContainerDetailMatchesAsync(
+                BuildContainerDetailQuery(request.Query, includeSelectedTags: false),
+                request.Query,
+                CancellationToken.None,
+                preserveRequestedOrder: false
+            );
+            return resolved
+                .Where(seed =>
+                    MatchesContainerDetailMatchTypes(seed, request.Query.MatchTypes)
+                    && MatchesContainerDetailSelectedTags(seed, request.Query.SelectedTags)
+                )
+                .Select(seed => seed.DetailCode)
+                .ToList();
         }
 
         private static decimal? CalculateScopedTransportCost(

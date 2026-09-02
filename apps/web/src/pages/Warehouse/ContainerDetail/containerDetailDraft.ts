@@ -163,7 +163,8 @@ export function shouldConsumePendingContainerDetailLocate(input: {
     input.pendingQueryKey
     && input.pendingQueryKey === input.activeQueryKey
     && input.loadedQueryKey === input.activeQueryKey
-    && input.pendingGeneration === input.loadedGeneration
+    && input.loadedGeneration != null
+    && input.loadedGeneration >= input.pendingGeneration
     && !input.isResetLoading,
   )
 }

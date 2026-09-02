@@ -190,7 +190,7 @@ assert(
   '货柜明细表头首次加载 effect 应只依赖 active、containerGuid 和 currentUserGuid，避免横竖屏切换重新加载',
 )
 assert(
-  /void loadDetailChunk\(1, 'reset'\)[\s\S]{0,520}\}, \[active, activeLoadQueryKey, currentUserGuid\]\)/.test(containerDetailSource),
+  /void loadDetailRows\(detailLoadMode === 'paged' \? 'paged' : 'probe'\)[\s\S]{0,220}\}, \[active, activeLoadQueryKey, currentUserGuid\]\)/.test(containerDetailSource),
   '货柜明细远程分页加载 effect 应只依赖 active、activeLoadQueryKey 和 currentUserGuid，避免横竖屏切换重新加载',
 )
 
