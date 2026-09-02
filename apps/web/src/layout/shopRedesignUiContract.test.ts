@@ -8,6 +8,7 @@ const read = (relativePath: string) => readFileSync(path.join(root, relativePath
 
 const indexHtml = read('index.html')
 const layout = read('src/layout/ShopLayout.tsx')
+const shopHome = read('src/pages/ShopHome/index.tsx')
 const scanBar = read('src/components/ShopScanBar.tsx')
 const productCard = read('src/pages/ShopHome/components/ProductCard.tsx')
 const bestSellers = read('src/pages/ShopHome/components/BestSellersSection.tsx')
@@ -85,6 +86,18 @@ assert.match(desktopNav, /aria-current=\{isOrdersPage \? 'page' : undefined\}/, 
 
 assert.ok(layout.includes('className="shop-ordering-toolbar"'), '桌面必须有独立白色交易工具栏')
 assert.ok(layout.includes('className="shop-ordering-search"'), '交易工具栏必须保留商品搜索')
+const fetchProductsStart = shopHome.indexOf('const fetchProducts = async () => {')
+const fetchProductsEnd = shopHome.indexOf('void fetchProducts()', fetchProductsStart)
+assert.ok(fetchProductsStart >= 0 && fetchProductsEnd > fetchProductsStart, 'ShopHome 必须保留商品列表请求流程')
+const fetchProductsSource = shopHome.slice(fetchProductsStart, fetchProductsEnd)
+assert.ok(
+  fetchProductsSource.includes('itemNumber: keyword || undefined,'),
+  '商城关键词必须搜索货号与条码',
+)
+assert.ok(
+  fetchProductsSource.includes('productName: keyword || undefined,'),
+  '商城关键词必须同时按商品名称进行不区分大小写的包含搜索',
+)
 assert.ok(layout.includes('className="shop-ordering-scan"'), '交易工具栏必须提供扫码入口')
 assert.ok(layout.includes('className="shop-ordering-store"'), '交易工具栏必须保留门店选择')
 assert.ok(layout.includes('className="shop-ordering-cart"'), '交易工具栏必须保留购物车摘要')
