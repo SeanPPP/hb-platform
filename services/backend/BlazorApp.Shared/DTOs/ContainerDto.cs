@@ -590,6 +590,8 @@ namespace BlazorApp.Shared.DTOs
     {
         public int TotalUpdated { get; set; }
         public int TotalRequested { get; set; }
+        public int AutoRepairedStoreGroupCount { get; set; }
+        public int AutoRepairedRelationCount { get; set; }
         public List<ContainerDetailBatchUpdateValidationErrorDto> ValidationErrors { get; set; } =
             new();
     }

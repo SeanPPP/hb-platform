@@ -335,6 +335,16 @@
   width: 118px;
 }
 
+.container-detail-draft-meta {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.container-detail-draft-meta .ant-btn-link {
+  height: 22px;
+  padding: 0 4px;
+}
+
 .container-detail-table-region {
   flex: 1 1 auto;
   min-width: 0;

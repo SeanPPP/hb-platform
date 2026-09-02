@@ -2973,7 +2973,7 @@ assertEqual(
 assertEqual(
   pageSource.includes("onChange={(event) => markPendingDetailPatch(row, { 英文名称: event.target.value })}") &&
     !pageSource.includes("onBlur={(event) => void saveRowPatch(row, { 英文名称: event.target.value })") &&
-    pageSource.includes("status={validationError ? 'error' : undefined}"),
+    pageSource.includes("status={validationError || saveFailure ? 'error' : undefined}"),
   true,
   '单行英文名称应进入保存明细队列，不再失焦自动保存，并为中文或空白草稿显示错误状态',
 )
@@ -2983,8 +2983,8 @@ assertEqual(
   '筛选条件变化时应清空已选明细，避免隐藏选中行后批量操作退回作用于当前全部可见行',
 )
 assertEqual(
-  pageSource.includes('[active, activeLoadQueryKey]') &&
-    pageSource.includes('标签不进入 detailQueryKey；只有非标签远程筛选变化才重置懒加载结果。'),
+  pageSource.includes('[active, activeLoadQueryKey, currentUserGuid]') &&
+    pageSource.includes('标签不进入 detailQueryKey；非标签远程筛选或当前用户变化时重置懒加载结果。'),
   true,
   '远程重载 effect 应监听 active 和 base 查询 key，标签切换不应触发 reset reload',
 )
@@ -4100,13 +4100,14 @@ assertEqual(
     containerDetailLogicSource.includes('if (patch.贴牌价格 != null) update.贴牌价格 = patch.贴牌价格') &&
     containerDetailLogicSource.includes('update.英文名称 = englishName') &&
     containerDetailLogicSource.includes('update.ClearEnglishName = true') &&
-    pageSource.includes('batchUpdateDetails(plan.detailUpdates),') &&
+    pageSource.includes('batchUpdateDetails(saveContainerGuid, plan.detailUpdates),') &&
     pageSource.includes('failedPendingDetailSaveKeysRef.current,') &&
     !pageSource.includes('await batchUpdateWarehouseProducts(plan.warehouseUpdates)') &&
     !pageSource.includes("t('containers.messages.missingWarehouseProductCodeForRetailPrice'") &&
     pageSource.includes('const confirmed = await confirmSavePendingDetails(savePlan)') &&
     pageSource.includes('await executePendingDetailSavePlan(savePlan)') &&
-    pageSource.includes('clearSavedPendingContainerDetailFields(current, plan.detailUpdates, result.validationErrors)') &&
+    pageSource.includes('settleContainerDetailDraftSaveSuccess(') &&
+    pageSource.includes('clearContainerDetailDraftFieldsIfVersionMatches(') &&
     pageSource.includes("t('containers.messages.detailsSaved'"),
   true,
   '保存明细应统一提交价格和英文名称，并按后端字段校验结果仅清除已保存内容',
@@ -4313,8 +4314,10 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('applyPendingContainerDetailPatches(result.items, pendingDetailPatchesRef.current)') &&
-    pageSource.includes('pendingDetailContainerGuidRef.current !== containerGuid') &&
-    !pageSource.includes('setPendingDetailPatches({})'),
+    pageSource.includes('pendingDetailDraftIdentityRef.current === draftIdentity') &&
+    pageSource.includes('pendingDetailDraftIdentityRef.current = draftIdentity') &&
+    pageSource.includes('applyPendingDetailDraftState(restoredDraft, false)') &&
+    pageSource.includes('}, [active, currentUserGuid, containerGuid])'),
   true,
   '同一货柜刷新或筛选重载应重新覆盖未保存草稿，仅切换货柜时清空旧草稿',
 )
@@ -4332,10 +4335,11 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('failedPendingDetailSaveKeysRef') &&
-    pageSource.includes('reconcilePendingContainerDetailSaveFailureKeys(') &&
+    pageSource.includes('failedPendingDetailSaveKeysRef.current = new Set(Object.keys(failures))') &&
     pageSource.includes('failedPendingDetailSaveKeysRef.current.size > 0') &&
     pageSource.includes('pendingDetailSavePromisesRef.current.clear()') &&
-    pageSource.includes('currentContainerGuidRef.current === saveContainerGuid'),
+    pageSource.includes('currentContainerGuidRef.current === saveContainerGuid') &&
+    pageSource.includes('pendingDetailDraftIdentityRef.current === saveDraftIdentity'),
   true,
   '统一保存失败状态应按当前草稿字段及货柜作用域清理，不能污染后续意图或新货柜',
 )
@@ -4601,7 +4605,7 @@ assertEqual(
     rowCategoryModalSource.includes('open={rowCategoryOpen}') &&
     rowCategoryModalSource.includes('selectedKey={rowTargetCategoryGuid}') &&
     rowCategoryModalSource.includes('onOk={() => void handleRowCategorySave()}') &&
-    pageSource.includes('await batchUpdateDetails([{ hguid: rowCategoryEditingRow.hguid, ProductCategoryGUID: rowTargetCategoryGuid }])') &&
+    pageSource.includes('await batchUpdateDetails(containerGuid, [{ hguid: rowCategoryEditingRow.hguid, ProductCategoryGUID: rowTargetCategoryGuid }])') &&
     pageSource.includes('rowKey(item) !== rowKey(rowCategoryEditingRow)') &&
     pageSource.includes('setRowCategoryOpen(false)'),
   true,
@@ -5003,8 +5007,11 @@ assertEqual(
   '货柜详情应有中文注释说明移动端 route element 复用时 GUID 必须跟随当前 URL',
 )
 assertEqual(
-  pageSource.includes('const lastLoadedContainerDetailSuccessRef = useRef<{ containerGuid: string; queryKey: string } | null>(null)') &&
-    pageSource.includes('lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }') &&
+  pageSource.includes('const lastLoadedContainerDetailSuccessRef = useRef<{') &&
+    pageSource.includes('containerGuid: string\n    queryKey: string\n    generation: number') &&
+    pageSource.includes('lastLoadedContainerDetailSuccessRef.current = {') &&
+    pageSource.includes('queryKey: detailQueryKey,') &&
+    pageSource.includes('generation: currentReconcileGeneration,') &&
     pageSource.includes('const loadedDetailQueryKey = lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
     pageSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
     !pageSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailQueryKeyRef.current'),

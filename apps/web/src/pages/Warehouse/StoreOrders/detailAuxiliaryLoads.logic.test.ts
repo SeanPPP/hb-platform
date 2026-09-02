@@ -460,7 +460,7 @@ async function main() {
       containerDetailSource.includes("import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'") &&
         containerDetailSource.includes('useKeepAliveContext') &&
         containerDetailSource.includes('const { active } = useKeepAliveContext()') &&
-        containerDetailSource.includes('if (!active) return') &&
+        containerDetailSource.includes('if (!active || !currentUserGuid) return') &&
         containerDetailSource.includes('loadedContainerGuidRef') &&
         containerDetailSource.includes('visibleContainerGuidRef') &&
         containerDetailSource.includes('lastLoadedContainerDetailSuccessRef') &&
@@ -473,7 +473,7 @@ async function main() {
         containerDetailSource.includes("loadDetailChunk(1, 'reset')") &&
         containerDetailSource.includes('loadedContainerGuidRef.current = containerGuid') &&
         containerDetailSource.includes('visibleContainerGuidRef.current = containerGuid') &&
-        containerDetailSource.includes('lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }'),
+        /lastLoadedContainerDetailSuccessRef\.current = \{\s*containerGuid,\s*queryKey: detailQueryKey,\s*generation: currentReconcileGeneration,\s*\}/.test(containerDetailSource),
       '货柜详情缺少 KeepAlive active 守卫或明细查询条件缓存保护',
     )
     assert(
