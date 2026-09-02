@@ -320,7 +320,11 @@ namespace BlazorApp.Api.Services.React
         private const int PRODUCT_SALES_ANALYSIS_CODE_BATCH_SIZE = 500;
         private const string CHINA_LOCAL_SUPPLIER_CODE = "200";
         private const string CHINA_LOCAL_SUPPLIER_FALLBACK_NAME = "hotbargain";
+        private const string REPORT_STATISTICS_CACHE_GENERATION_KEY =
+            "SalesDashboard:ReportStatisticsCacheGeneration";
         private static readonly ConcurrentDictionary<string, byte> REPORT_STATISTICS_REFRESHING_KEYS = new();
+        private static readonly ConditionalWeakTable<IMemoryCache, object>
+            REPORT_STATISTICS_CACHE_GENERATION_LOCKS = new();
         private static readonly ConditionalWeakTable<
             IMemoryCache,
             ConcurrentDictionary<
@@ -334,6 +338,11 @@ namespace BlazorApp.Api.Services.React
             NotNeeded,
             Completed,
             Pending,
+        }
+
+        private sealed class ReportStatisticsCacheGenerationState
+        {
+            public long Value;
         }
 
         public SalesDashboardReactService(
@@ -1117,7 +1126,7 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetSupplierSalesRankAsync failed");
-                return new List<SupplierSalesRankDto>();
+                throw;
             }
         }
 
@@ -1388,7 +1397,7 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetChinaSupplierSalesRankAsync failed");
-                return new List<ChinaSupplierSalesRankDto>();
+                throw;
             }
         }
 
@@ -2525,13 +2534,7 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetEnhancedSalesProductDetailsAsync failed");
-                return new PagedSalesProductDetailWithDiscountDto
-                {
-                    Data = new List<SalesProductDetailWithDiscountDto>(),
-                    Total = 0,
-                    PageIndex = pageIndex,
-                    PageSize = pageSize,
-                };
+                throw;
             }
         }
 
@@ -2732,7 +2735,7 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetProductSalesByAllBranchesAsync failed");
-                return new List<ProductBranchSalesDto>();
+                throw;
             }
         }
 
@@ -3070,7 +3073,7 @@ namespace BlazorApp.Api.Services.React
 
                 if (!ValidateDatabaseConnection<AustralianSupplierStoreSalesDetail>())
                 {
-                    return new List<AustralianSupplierStoreSalesDetailDto>();
+                    throw new InvalidOperationException("澳洲供应商分店销售明细表不可用");
                 }
 
                 var startDate = dateRange.StartDate.Date;
@@ -3110,7 +3113,7 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetAustralianSupplierStoreSalesDetailsAsync failed");
-                return new List<AustralianSupplierStoreSalesDetailDto>();
+                throw;
             }
         }
 
@@ -3135,7 +3138,7 @@ namespace BlazorApp.Api.Services.React
 
                 if (!ValidateDatabaseConnection<ChinaSupplierStoreSalesDetail>())
                 {
-                    return new List<ChinaSupplierStoreSalesDetailDto>();
+                    throw new InvalidOperationException("中国供应商分店销售明细表不可用");
                 }
 
                 var startDate = dateRange.StartDate.Date;
@@ -3175,7 +3178,7 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetChinaSupplierStoreSalesDetailsAsync failed");
-                return new List<ChinaSupplierStoreSalesDetailDto>();
+                throw;
             }
         }
 
@@ -4220,7 +4223,52 @@ namespace BlazorApp.Api.Services.React
         private async Task<string> GetStatisticsCacheVersionAsync()
         {
             var freshness = await GetStatisticsFreshnessAsync();
-            return freshness.LastSuccessfulAtUtc?.Ticks.ToString() ?? "none";
+            var scheduledVersion = freshness.LastSuccessfulAtUtc?.Ticks.ToString() ?? "none";
+            var generation = Volatile.Read(ref GetReportStatisticsCacheGenerationState().Value);
+            return $"{scheduledVersion}:g{generation}";
+        }
+
+        private ReportStatisticsCacheGenerationState GetReportStatisticsCacheGenerationState()
+        {
+            if (
+                _cache.TryGetValue<ReportStatisticsCacheGenerationState>(
+                    REPORT_STATISTICS_CACHE_GENERATION_KEY,
+                    out var state
+                )
+                && state != null
+            )
+            {
+                return state;
+            }
+
+            // 同一个 IMemoryCache 代表同一个应用实例；加锁只覆盖首次建代际对象，后续递增无锁。
+            var gate = REPORT_STATISTICS_CACHE_GENERATION_LOCKS.GetValue(_cache, _ => new object());
+            lock (gate)
+            {
+                if (
+                    _cache.TryGetValue<ReportStatisticsCacheGenerationState>(
+                        REPORT_STATISTICS_CACHE_GENERATION_KEY,
+                        out state
+                    )
+                    && state != null
+                )
+                {
+                    return state;
+                }
+
+                state = new ReportStatisticsCacheGenerationState();
+                _cache.Set(
+                    REPORT_STATISTICS_CACHE_GENERATION_KEY,
+                    state,
+                    new MemoryCacheEntryOptions().SetPriority(CacheItemPriority.NeverRemove)
+                );
+                return state;
+            }
+        }
+
+        private long AdvanceReportStatisticsCacheGeneration()
+        {
+            return Interlocked.Increment(ref GetReportStatisticsCacheGenerationState().Value);
         }
 
         /// <summary>
@@ -5153,6 +5201,16 @@ namespace BlazorApp.Api.Services.React
                 }
                 finally
                 {
+                    if (allSucceeded)
+                    {
+                        var generation = AdvanceReportStatisticsCacheGeneration();
+                        _logger.LogInformation(
+                            "{Label}统计自动重算完成，营业额报表缓存切换至代际 {Generation}",
+                            label,
+                            generation
+                        );
+                    }
+
                     foreach (var item in pendingItems)
                     {
                         REPORT_STATISTICS_REFRESHING_KEYS.TryRemove(item.Key, out _);
