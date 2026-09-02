@@ -155,6 +155,7 @@ import {
   finishContainerDetailReadAheadRequest,
   getContainerDetailEditableColumnKeysInOrder,
   getContainerDetailExportColumns,
+  applyContainerDetailLocalExportValues,
   getContainerDetailBarcode,
   getContainerDetailCategoryGuid,
   getContainerDetailEnglishName,
@@ -186,6 +187,7 @@ import {
   mergePendingContainerDetailPatch,
   matchesContainerDetailSelectedTags,
   omitContainerDetailTextFilters,
+  prepareContainerDetailWholeExportRows,
   reconcilePendingContainerDetailSaveFailureKeys,
   rollbackContainerDetailWarehouseStatuses,
   settleScopedContainerDetailSave,
@@ -193,6 +195,7 @@ import {
   startContainerDetailAppendRequest,
   startContainerDetailReadAheadRequest,
   CONTAINER_DETAIL_EXPORT_COLUMNS,
+  ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS,
   type ContainerDetailEditableCellDirection,
@@ -251,6 +254,7 @@ type NumberColumnFilterKey = 'containerPieces' | 'middlePackQuantity' | 'contain
 type EnumColumnFilterKey = 'productTypes' | 'newProductStates' | 'matchTypes' | 'warehouseStatus'
 type PendingContainerDetailPageSavePlan = PendingContainerDetailSavePlan & { saveKeys: string[] }
 type ContainerDetailExportFormat = 'excel' | 'pdf'
+type ContainerDetailExportScope = 'selectionOrFiltered' | 'wholeContainer'
 type ContainerExistingProductUpdateField =
   | 'domesticPrice'
   | 'importPrice'
@@ -484,6 +488,12 @@ const CONTAINER_DETAIL_MIN_COLUMN_WIDTH = 48
 const CONTAINER_DETAIL_MAX_COLUMN_WIDTH = 420
 const DEFAULT_CONTAINER_DETAIL_SORT: ContainerDetailSortState = { field: 'itemNumber', order: 'ascend' }
 const CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS = ['englishName', 'packingQuantity', 'unitVolume', 'middlePackQuantity', 'floatRate', 'importPrice', 'oemPrice', 'remark'] as const
+const WHOLE_CONTAINER_DETAIL_EXPORT_LABEL_KEYS: Partial<Record<ContainerDetailExportColumnKey, string>> = {
+  index: 'containers.columns.index',
+  productName: 'containers.fields.productName',
+  containerPieces: 'containers.fields.containerPieces',
+  containerQuantity: 'containers.fields.containerQuantity',
+}
 const EMPTY_CONTAINER_DETAIL_TAG_STATS = {
   all: 0,
   new: 0,
@@ -696,6 +706,7 @@ export default function ContainerDetailPage() {
   const [editingProductNameValue, setEditingProductNameValue] = useState('')
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
+  const [exportProgressMessage, setExportProgressMessage] = useState('')
   const [exportColumnModalOpen, setExportColumnModalOpen] = useState(false)
   const [exportFormat, setExportFormat] = useState<ContainerDetailExportFormat>('excel')
   const [selectedExportColumnKeys, setSelectedExportColumnKeys] = useState<ContainerDetailExportColumnKey[]>(DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS)
@@ -1608,6 +1619,50 @@ export default function ContainerDetailPage() {
     return allRows
   }
 
+  const updateExportProgressState = (progress: number, progressMessage: string) => {
+    setExportProgress(Math.max(0, Math.min(100, progress)))
+    setExportProgressMessage(progressMessage)
+  }
+
+  const fetchAllRowsForWholeContainerExport = async () => {
+    let allRows: ContainerDetail[] = []
+    let pageNumber = 1
+    let hasMore = true
+    let expectedTotal: number | undefined
+
+    while (hasMore) {
+      const result = await queryContainerProducts(containerGuid, buildContainerDetailQuery({
+        containerGuid,
+        filters: {},
+        sortState,
+        pageNumber,
+        pageSize: 500,
+        includeTotal: pageNumber === 1,
+        includeStats: false,
+      }))
+      allRows = mergeContainerDetailLoadedItems(allRows, result.items)
+      if (pageNumber === 1 && result.totalComputed !== false) {
+        expectedTotal = result.itemsTotal
+      }
+      hasMore = result.hasMore
+      const dataProgress = hasMore
+        ? Math.min(9, expectedTotal ? Math.ceil((allRows.length / Math.max(expectedTotal, 1)) * 10) : pageNumber)
+        : 10
+      updateExportProgressState(
+        dataProgress,
+        t('containers.messages.exportLoadingAllDetails', '正在加载整柜明细'),
+      )
+      pageNumber += 1
+    }
+
+    const rowsWithLocalEdits = applyContainerDetailLocalExportValues(allRows, baseFilteredRows)
+    return prepareContainerDetailWholeExportRows(
+      rowsWithLocalEdits,
+      pendingDetailPatchesRef.current,
+      sortState,
+    )
+  }
+
   const confirmSubmitContainer = (submitRows: ContainerDetail[]) => new Promise<boolean>((resolve) => {
     const createCount = submitRows.filter((row) => row.是否新商品).length
     const updateCount = submitRows.length - createCount
@@ -1858,6 +1913,14 @@ export default function ContainerDetailPage() {
       || failedPendingDetailSaveKeysRef.current.size > 0
     ) {
       throw new Error(getDetailSaveFailedMessage())
+    }
+  }
+
+  const waitForPendingDetailSavesForExport = async () => {
+    const pendingSaves = Array.from(pendingDetailSavePromisesRef.current)
+    if (pendingSaves.length) {
+      // 导出会选择性叠加页面内存值；保存失败不应阻断用户取得当前数据快照。
+      await Promise.allSettled(pendingSaves)
     }
   }
 
@@ -3322,24 +3385,67 @@ export default function ContainerDetailPage() {
     })
   })
 
+  const confirmExportWholeContainer = () => new Promise<boolean>((resolve) => {
+    Modal.confirm({
+      title: t('containers.modals.exportWholeContainerTitle', '全部导出（含图片）'),
+      content: t(
+        'containers.modals.exportWholeContainerContent',
+        '将忽略当前勾选和筛选，导出本货柜全部明细及商品图片，并保留当前排序。数据较多时需要一些时间，是否继续？',
+      ),
+      okText: t('common.confirm', '确认'),
+      cancelText: t('common.cancel'),
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    })
+  })
+
   const exportDetails = async (
     columnKeys: ContainerDetailExportColumnKey[] = DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
     format: ContainerDetailExportFormat = 'excel',
+    exportScope: ContainerDetailExportScope = 'selectionOrFiltered',
   ) => {
-    if (!ensureTargetRowsVisible()) return
-    if (!selectedRowKeys.length) {
+    if (exportScope !== 'wholeContainer' && !ensureTargetRowsVisible()) return
+    if (exportScope === 'wholeContainer') {
+      const confirmed = await confirmExportWholeContainer()
+      if (!confirmed) return
+    } else if (!selectedRowKeys.length) {
       const confirmed = await confirmExportAllRows()
       if (!confirmed) return
     }
-    const exportRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()
-    if (!exportRows.length) {
-      message.warning(t('containers.messages.noDataToExport'))
-      return
-    }
     setExporting(true)
+    updateExportProgressState(
+      1,
+      exportScope === 'wholeContainer'
+        ? t('containers.messages.exportLoadingAllDetails', '正在加载整柜明细')
+        : format === 'pdf'
+          ? t('containers.messages.exportPreparingImages', '正在准备商品图片')
+          : t('containers.messages.exportWritingWorkbook', '正在写入 Excel 表格'),
+    )
     try {
+      // 下拉菜单点击会先触发输入框 blur；先等待自动保存结束，失败值仍由后续页面快照选择性叠加。
+      if (exportScope === 'wholeContainer') {
+        await waitForPendingDetailSavesForExport()
+      }
+      const exportRows = exportScope === 'wholeContainer'
+        ? await fetchAllRowsForWholeContainerExport()
+        : selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()
+      if (!exportRows.length) {
+        message.warning(t('containers.messages.noDataToExport'))
+        return
+      }
       const exportColumns = getContainerDetailExportColumns(columnKeys)
-      const items: ContainerDetailExportItem[] = buildContainerDetailExportRows(exportRows)
+      const items: ContainerDetailExportItem[] = buildContainerDetailExportRows(
+        exportRows,
+        {
+          getProductTypeLabel: (value) => getProductTypeLabel(value, t),
+          getMatchTypeLabel: (value) => getMatchTypeLabel(value, t),
+          newProductLabel: t('containers.tags.newProduct', '新商品'),
+          existingProductLabel: t('containers.tags.existingProduct', '已有商品'),
+          activeLabel: t('common.activeUpper', '上架'),
+          inactiveLabel: t('common.inactiveUpper', '下架'),
+          missingNumericValue: exportScope === 'wholeContainer' ? '' : 0,
+        },
+      )
       const baseSummaryRows: NonNullable<ContainerExportOptions['summary']>['rows'] = [
         [
           { label: t('containers.fields.containerNumber'), value: container?.货柜编号 || '--' },
@@ -3377,7 +3483,12 @@ export default function ContainerDetailPage() {
         : baseSummaryRows
       const exportOptions: ContainerExportOptions = {
         columns: exportColumns.map((column) => ({
-          header: t(column.labelKey, column.fallbackLabel),
+          header: t(
+            exportScope === 'wholeContainer'
+              ? WHOLE_CONTAINER_DETAIL_EXPORT_LABEL_KEYS[column.key] ?? column.labelKey
+              : column.labelKey,
+            column.fallbackLabel,
+          ),
           key: column.key,
           width: column.width,
           valueType: column.valueType,
@@ -3388,23 +3499,48 @@ export default function ContainerDetailPage() {
           rows: summaryRows,
         },
         fileName: `${container?.货柜编号 || t('containers.detailTitle')}_${t('containers.export.detailSuffix')}`,
-        onProgress: (progress: number) => setExportProgress(progress),
+        productImageDownloadFailedText: t('containers.export.productImageDownloadFailed', '图片下载失败'),
+        productImageMissingText: t('containers.export.productImageMissing', '无图片'),
+        onProgress: (progress: number) => {
+          const hasImageColumns = exportColumns.some((column) => column.key === 'productImage' || column.key === 'barcodeImage')
+          const progressMessage = progress >= 100
+            ? t('containers.messages.exportComplete', '导出完成')
+            : format === 'pdf' && progress >= 70
+              ? t('containers.messages.exportGeneratingPdf', '正在生成 PDF 文件')
+            : progress >= 95
+              ? t('containers.messages.exportGeneratingFile', '正在生成 Excel 文件')
+              : progress >= 70 || !hasImageColumns
+                ? t('containers.messages.exportWritingWorkbook', '正在写入 Excel 表格')
+                : t('containers.messages.exportPreparingImages', '正在准备商品图片')
+          updateExportProgressState(progress, progressMessage)
+        },
       }
+      let failedProductImageCount = 0
       if (format === 'pdf') {
         await exportContainerDetailsToPdf(items, exportOptions)
       } else {
-        await exportContainerDetailsToExcel(items, exportOptions)
+        const result = await exportContainerDetailsToExcel(items, exportOptions)
+        failedProductImageCount = result.failedProductImageCount
       }
-      message.success(
-        format === 'pdf'
-          ? t('containers.messages.detailsPdfExported', '已导出 {{count}} 条明细 PDF', { count: items.length })
-          : t('containers.messages.detailsExported', { count: items.length }),
-      )
+      if (format === 'excel' && failedProductImageCount > 0) {
+        message.warning(t(
+          'containers.messages.detailsExportedWithImageFailures',
+          '已导出 {{count}} 条明细，其中 {{failed}} 张商品图片下载失败',
+          { count: items.length, failed: failedProductImageCount },
+        ))
+      } else {
+        message.success(
+          format === 'pdf'
+            ? t('containers.messages.detailsPdfExported', '已导出 {{count}} 条明细 PDF', { count: items.length })
+            : t('containers.messages.detailsExported', { count: items.length }),
+        )
+      }
     } catch {
       message.error(t('containers.messages.detailsExportFailed', '导出失败，请稍后重试'))
     } finally {
       setExporting(false)
       setExportProgress(0)
+      setExportProgressMessage('')
     }
   }
 
@@ -4551,6 +4687,8 @@ export default function ContainerDetailPage() {
                           items: [
                             { key: 'excel', label: t('containers.actions.exportExcel', '导出 Excel') },
                             { key: 'pdf', label: t('containers.actions.exportPdf', '导出 PDF') },
+                            { type: 'divider' },
+                            { key: 'allExcelWithImages', label: t('containers.actions.exportAllExcelWithImages', '全部导出（含图片）') },
                           ],
                           onClick: ({ key }) => {
                             if (key === 'excel') {
@@ -4558,6 +4696,9 @@ export default function ContainerDetailPage() {
                             }
                             if (key === 'pdf') {
                               void exportDetails(DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS, 'pdf')
+                            }
+                            if (key === 'allExcelWithImages') {
+                              void exportDetails(ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS, 'excel', 'wholeContainer')
                             }
                           },
                         }}
@@ -4719,7 +4860,12 @@ export default function ContainerDetailPage() {
                     onSetTagFilters={setTagFiltersFromSelect}
                   />
 
-                  {exporting ? <Progress percent={exportProgress} size="small" /> : null}
+                  {exporting ? (
+                    <div className="container-detail-export-progress">
+                      <Typography.Text type="secondary">{exportProgressMessage}</Typography.Text>
+                      <Progress percent={exportProgress} size="small" />
+                    </div>
+                  ) : null}
                 </div>
               </div>
 

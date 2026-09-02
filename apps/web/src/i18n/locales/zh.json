@@ -198,6 +198,7 @@
       "exportFormat": "导出格式",
       "exportExcel": "导出 Excel",
       "exportPdf": "导出 PDF",
+      "exportAllExcelWithImages": "全部导出（含图片）",
       "resetColumns": "重置列",
       "selectExportColumns": "选择导出列",
       "exportSelectedColumns": "按所选列导出",
@@ -368,6 +369,8 @@
       "hqTranslationResultTitle": "HQ 数据翻译结果",
       "exportAllDetailsTitle": "导出全部匹配商品",
       "exportAllDetailsContent": "未选择商品，将按当前筛选和排序导出全部匹配商品，共 {{count}} 条。是否继续？",
+      "exportWholeContainerTitle": "全部导出（含图片）",
+      "exportWholeContainerContent": "将忽略当前勾选和筛选，导出本货柜全部明细及商品图片，并保留当前排序。数据较多时需要一些时间，是否继续？",
       "exportColumnsTitle": "选择导出列"
     },
     "messages": {
@@ -474,8 +477,15 @@
       "detailsDeleted": "已删除 {{count}} 条明细",
       "noDataToExport": "没有可导出的数据",
       "detailsExported": "已导出 {{count}} 条明细",
+      "detailsExportedWithImageFailures": "已导出 {{count}} 条明细，其中 {{failed}} 张商品图片下载失败",
       "detailsPdfExported": "已导出 {{count}} 条明细 PDF",
-      "detailsExportFailed": "导出失败，请稍后重试"
+      "detailsExportFailed": "导出失败，请稍后重试",
+      "exportLoadingAllDetails": "正在加载整柜明细",
+      "exportPreparingImages": "正在准备商品图片",
+      "exportWritingWorkbook": "正在写入 Excel 表格",
+      "exportGeneratingFile": "正在生成 Excel 文件",
+      "exportGeneratingPdf": "正在生成 PDF 文件",
+      "exportComplete": "导出完成"
     },
     "productTypes": {
       "normal": "普通商品",
@@ -532,6 +542,8 @@
       "unitVolumeColumn": "单件体积",
       "totalVolumeColumn": "总体积",
       "retailPriceColumn": "零售价",
+      "productImageDownloadFailed": "图片下载失败",
+      "productImageMissing": "无图片",
       "summaryTitle": "货柜主表信息"
     },
     "setCode": {

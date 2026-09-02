@@ -8,6 +8,7 @@ import {
 } from '../Products/categoryPath'
 import {
   CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY,
+  ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   CONTAINER_DETAIL_EXPORT_COLUMNS,
   CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY,
   applyPendingContainerDetailPatches,
@@ -82,6 +83,8 @@ import {
   getContainerDetailWarehouseActionFailureMessage,
   getContainerDetailEditableColumnKeysInOrder,
   getContainerDetailExportColumns,
+  applyContainerDetailLocalExportValues,
+  prepareContainerDetailWholeExportRows,
   getNextContainerDetailEditableCell,
   getNextUpdateFieldSelection,
   isContainerDetailSortField,
@@ -160,6 +163,42 @@ assertEqual(
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS.some((key) => key === 'barcodeImage' || key === 'productImage'),
   false,
   '货柜明细默认导出列不应包含图片列，避免默认导出变慢',
+)
+assertDeepEqual(
+  ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
+  [
+    'index',
+    'productImage',
+    'itemNumber',
+    'barcode',
+    'englishName',
+    'oemPrice',
+    'productName',
+    'categoryName',
+    'containerPieces',
+    'packingQuantity',
+    'containerQuantity',
+    'unitVolume',
+    'domesticPrice',
+    'transportCost',
+    'unitTransportCost',
+    'floatRate',
+    'middlePackQuantity',
+    'importPrice',
+    'lastImportPrice',
+    'lastOEMPrice',
+    'productType',
+    'newProduct',
+    'matchType',
+    'warehouseStatus',
+    'remark',
+  ],
+  '全部导出应固定包含当前明细表全部业务列，并只嵌入商品图片',
+)
+assertEqual(
+  ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS.includes('barcodeImage'),
+  false,
+  '全部导出应保留条码文本，不额外生成条码图片',
 )
 
 const updateFieldOptions = ['importPrice', 'oemPrice', 'storeRetailPrice'] as const
@@ -520,7 +559,9 @@ const exportRow = buildContainerDetailExportRow({
   是否新商品: true,
   matchType: 'productCode',
   装柜件数: 3,
+  单件装箱数: 240,
   装柜数量: 720,
+  中包数: 12,
   国内价格: 2.3,
   调整浮率: 1.2,
   运输成本: 0.08,
@@ -533,6 +574,8 @@ const exportRow = buildContainerDetailExportRow({
   单件体积: 0.1188,
   合计装柜体积: 0.3564,
   warehouseIsActive: true,
+  categoryName: '收纳',
+  categoryPath: '家居 > 收纳',
   备注: '优先上架',
   商品信息: {
     货号: 'HB291-005',
@@ -543,6 +586,13 @@ const exportRow = buildContainerDetailExportRow({
     商品类型: '套装商品',
     零售价格: 9.99,
   },
+}, 0, {
+  getProductTypeLabel: (value) => `类型:${value}`,
+  getMatchTypeLabel: (value) => `匹配:${value}`,
+  newProductLabel: '新商品',
+  existingProductLabel: '已有商品',
+  activeLabel: '上架',
+  inactiveLabel: '下架',
 })
 assertDeepEqual(
   {
@@ -552,13 +602,25 @@ assertDeepEqual(
     productImage: exportRow.productImage,
     productName: exportRow.productName,
     englishName: exportRow.englishName,
+    categoryName: exportRow.categoryName,
     containerPieces: exportRow.containerPieces,
+    packingQuantity: exportRow.packingQuantity,
     containerQuantity: exportRow.containerQuantity,
     unitVolume: exportRow.unitVolume,
     totalVolume: exportRow.totalVolume,
+    transportCost: exportRow.transportCost,
+    unitTransportCost: exportRow.unitTransportCost,
+    floatRate: exportRow.floatRate,
+    middlePackQuantity: exportRow.middlePackQuantity,
+    importPrice: exportRow.importPrice,
     lastImportPrice: exportRow.lastImportPrice,
     lastOEMPrice: exportRow.lastOEMPrice,
     oemPrice: exportRow.oemPrice,
+    productType: exportRow.productType,
+    newProduct: exportRow.newProduct,
+    matchType: exportRow.matchType,
+    warehouseStatus: exportRow.warehouseStatus,
+    remark: exportRow.remark,
   },
   {
     itemNumber: 'HB291-005',
@@ -567,15 +629,119 @@ assertDeepEqual(
     productImage: 'https://cdn.example.com/info-image.jpg',
     productName: '明细名称',
     englishName: 'Detail Name',
+    categoryName: '家居 > 收纳',
     containerPieces: 3,
+    packingQuantity: 240,
     containerQuantity: 720,
     unitVolume: 0.1188,
     totalVolume: 0.3564,
+    transportCost: 0.08,
+    unitTransportCost: 19.2,
+    floatRate: 1.2,
+    middlePackQuantity: 12,
+    importPrice: 0.67,
     lastImportPrice: 0.52,
     lastOEMPrice: 4.8,
     oemPrice: 3.5,
+    productType: '类型:套装商品',
+    newProduct: '新商品',
+    matchType: '匹配:productCode',
+    warehouseStatus: '上架',
+    remark: '优先上架',
   },
-  '货柜明细导出行应按 Excel 模板读取页面展示字段、体积字段和实时仓库价，且新商品零售价应使用明细业务价',
+  '货柜明细导出行应完整读取页面业务字段、分类路径和本地化枚举值，且新商品零售价应使用明细业务价',
+)
+
+const wholeExportRows = prepareContainerDetailWholeExportRows(
+  [
+    { id: 201, hguid: 'whole-export-b', 英文名称: 'Bravo', 进口价格: 2 },
+    { id: 202, hguid: 'whole-export-a', 英文名称: 'Zulu', 进口价格: 3 },
+  ],
+  {
+    'whole-export-a': { hguid: 'whole-export-a', 英文名称: 'Alpha', 进口价格: 0 },
+  },
+  { field: 'englishName', order: 'ascend' },
+)
+assertDeepEqual(
+  wholeExportRows.map((row) => ({ hguid: row.hguid, englishName: row.英文名称, importPrice: row.进口价格 })),
+  [
+    { hguid: 'whole-export-a', englishName: 'Alpha', importPrice: 0 },
+    { hguid: 'whole-export-b', englishName: 'Bravo', importPrice: 2 },
+  ],
+  '全部导出应忽略页面筛选，合并未保存草稿后按当前排序输出，并保留有效的 0 值',
+)
+const wholeExportLocalRows = applyContainerDetailLocalExportValues(
+  [{
+    id: 204,
+    hguid: 'whole-export-local',
+    商品名称: '服务端新名称',
+    商品图片: 'https://cdn.example.com/fresh.jpg',
+    国内价格: 99,
+    单件装箱数: 10,
+    单件体积: 0.1,
+    装柜数量: 20,
+    运输成本: 1,
+    进口价格: 2,
+    备注: '服务端备注',
+  }],
+  [{
+    id: 204,
+    hguid: 'whole-export-local',
+    商品名称: '页面编辑名称',
+    商品图片: 'https://cdn.example.com/stale.jpg',
+    国内价格: 1,
+    单件装箱数: 24,
+    单件体积: 0.2,
+    调整浮率: 1.3,
+    中包数: 6,
+    装柜数量: 48,
+    合计装柜体积: 0.4,
+    合计装柜金额: 9.6,
+    运输成本: 0.5,
+    进口价格: 0.9,
+    备注: '页面未保存备注',
+  }],
+)
+assertDeepEqual(
+  {
+    productName: wholeExportLocalRows[0].商品名称,
+    packingQuantity: wholeExportLocalRows[0].单件装箱数,
+    unitVolume: wholeExportLocalRows[0].单件体积,
+    floatRate: wholeExportLocalRows[0].调整浮率,
+    middlePackQuantity: wholeExportLocalRows[0].中包数,
+    containerQuantity: wholeExportLocalRows[0].装柜数量,
+    totalVolume: wholeExportLocalRows[0].合计装柜体积,
+    totalAmount: wholeExportLocalRows[0].合计装柜金额,
+    transportCost: wholeExportLocalRows[0].运输成本,
+    importPrice: wholeExportLocalRows[0].进口价格,
+    remark: wholeExportLocalRows[0].备注,
+    productImage: wholeExportLocalRows[0].商品图片,
+    domesticPrice: wholeExportLocalRows[0].国内价格,
+  },
+  {
+    productName: '页面编辑名称',
+    packingQuantity: 24,
+    unitVolume: 0.2,
+    floatRate: 1.3,
+    middlePackQuantity: 6,
+    containerQuantity: 48,
+    totalVolume: 0.4,
+    totalAmount: 9.6,
+    transportCost: 0.5,
+    importPrice: 0.9,
+    remark: '页面未保存备注',
+    productImage: 'https://cdn.example.com/fresh.jpg',
+    domesticPrice: 99,
+  },
+  '全部导出只应覆盖页面可编辑及联动字段，图片和国内价等非编辑字段必须保留新服务端快照',
+)
+assertEqual(
+  buildContainerDetailExportRows(
+    [{ id: 203, hguid: 'whole-export-missing' }],
+    { missingNumericValue: '' },
+  )[0].domesticPrice,
+  '',
+  '全部导出应将缺失数值保留为空白，而不是伪造为 0',
 )
 
 assertEqual(
@@ -676,15 +842,26 @@ assertDeepEqual(
       productImage: '',
       productName: '',
       englishName: '',
+      categoryName: '',
       containerPieces: 0,
+      packingQuantity: 0,
       containerQuantity: 0,
       unitVolume: 0,
       totalVolume: 0,
       middlePackQuantity: 0,
       domesticPrice: 0,
+      transportCost: 0,
+      unitTransportCost: 0,
+      floatRate: 0,
+      importPrice: 0,
       lastImportPrice: 0,
       lastOEMPrice: 0,
       oemPrice: 0,
+      productType: '普通商品',
+      newProduct: '已有商品',
+      matchType: 'unmatched',
+      warehouseStatus: '下架',
+      remark: '',
     },
   ],
   '货柜明细导出行缺失字段时应使用稳定空值或 0，避免 Excel 导出报错',
@@ -2099,6 +2276,7 @@ const requiredContainerI18nKeys = [
   'containers.actions.matchDomesticData',
   'containers.actions.alignDomesticProductCode',
   'containers.actions.previewImage',
+  'containers.actions.exportAllExcelWithImages',
   'containers.text.loadedRows',
   'containers.text.warehouseInventoriesCreated',
   'containers.text.warehouseInventoriesUpdated',
@@ -2116,6 +2294,8 @@ const requiredContainerI18nKeys = [
   'containers.modals.savePendingDetailsNewRetailHint',
   'containers.modals.savePendingDetailsInvalidEnglishHint',
   'containers.modals.savePendingDetailsRetryHint',
+  'containers.modals.exportWholeContainerTitle',
+  'containers.modals.exportWholeContainerContent',
   'containers.messages.selectedRowsHidden',
   'containers.messages.savePendingDetailsFirst',
   'containers.messages.detailSaveFailed',
@@ -2147,6 +2327,13 @@ const requiredContainerI18nKeys = [
   'containers.messages.createProductFailed',
   'containers.messages.purchasePricesUpdateFailed',
   'containers.messages.newProductCannotToggleWarehouseStatus',
+  'containers.messages.detailsExportedWithImageFailures',
+  'containers.messages.exportLoadingAllDetails',
+  'containers.messages.exportPreparingImages',
+  'containers.messages.exportWritingWorkbook',
+  'containers.messages.exportGeneratingFile',
+  'containers.messages.exportGeneratingPdf',
+  'containers.messages.exportComplete',
   'containers.messages.newProductsSkippedForWarehouseStatus',
   'containers.modals.batchUpdateFloatRateTitle',
   'containers.modals.batchUpdatePricesTitle',
@@ -2157,6 +2344,8 @@ const requiredContainerI18nKeys = [
   'containers.modals.alignDomesticProductCodeConflictHint',
   'containers.modals.rowCategoryTitle',
   'containers.export.summaryTitle',
+  'containers.export.productImageDownloadFailed',
+  'containers.export.productImageMissing',
   ...containerDetailExportLabelKeys,
   'containers.setCode.pricesTitle',
   'containers.setCode.missingProductCode',
@@ -2234,6 +2423,17 @@ assertDeepEqual(
     'Current Purchase Price',
     'Current Retail Price',
     'RRP',
+    'Category',
+    'QTY/CTN',
+    'TP-cost/ unit',
+    'TP-cost/ CTN',
+    'Float Rate',
+    'Import Price',
+    'Type',
+    'New Product',
+    'Match Type',
+    'Warehouse Status',
+    'Remark',
   ],
   '英文模式导出列选择弹窗和 Excel 表头应全部使用英文 locale，不能回退到中文 fallback',
 )
@@ -3773,6 +3973,40 @@ assertEqual(
   '后台批量拉全量明细时应跳过 total/tagStats 并依赖 hasMore',
 )
 assertEqual(
+  pageSource.includes("key: 'allExcelWithImages'") &&
+    pageSource.includes("t('containers.actions.exportAllExcelWithImages'") &&
+    pageSource.includes("void exportDetails(ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS, 'excel', 'wholeContainer')"),
+  true,
+  '导出菜单应提供独立的全部导出入口，并固定使用全业务列及商品图片',
+)
+assertEqual(
+  pageSource.includes("index: 'containers.columns.index'") &&
+    pageSource.includes("productName: 'containers.fields.productName'") &&
+    pageSource.includes("containerPieces: 'containers.fields.containerPieces'") &&
+    pageSource.includes("containerQuantity: 'containers.fields.containerQuantity'"),
+  true,
+  '全部导出的历史模板列应改用当前明细表头文案，避免显示序号、中文名称等旧名称',
+)
+assertEqual(
+  (() => {
+    const exportStart = pageSource.indexOf('const exportDetails = async (')
+    const exportEnd = pageSource.indexOf('const clearColumnFilter', exportStart)
+    const exportSource = pageSource.slice(exportStart, exportEnd)
+    return exportStart >= 0 &&
+      exportEnd > exportStart &&
+      exportSource.includes("exportScope === 'wholeContainer'") &&
+      exportSource.indexOf('await waitForPendingDetailSavesForExport()') >= 0 &&
+      exportSource.indexOf('await waitForPendingDetailSavesForExport()') < exportSource.indexOf('fetchAllRowsForWholeContainerExport()') &&
+      !exportSource.includes('await flushPendingDetailSaves()') &&
+      !pageSource.includes('mergeContainerDetailLoadedItems(allRows, baseFilteredRows)') &&
+      pageSource.includes('applyContainerDetailLocalExportValues(allRows, baseFilteredRows)') &&
+      pageSource.includes('pendingDetailPatchesRef.current') &&
+      pageSource.includes('prepareContainerDetailWholeExportRows')
+  })(),
+  true,
+  '全部导出应等待页面自动保存结束但不被保存失败阻断，再分页读取整柜、选择性叠加本地值和草稿并保留当前排序',
+)
+assertEqual(
   !pageSource.includes('itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber') &&
     pageSource.includes('const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => omitContainerDetailTextFilters(columnFilters), [columnFilters])'),
   true,
@@ -4468,7 +4702,8 @@ assertEqual(
     stickyControlsSource.includes('className="container-detail-action-meta"') &&
     stickyControlsSource.includes('className="container-detail-bulk-row"') &&
     stickyControlsSource.includes('<ContainerTagFilters') &&
-    stickyControlsSource.includes('{exporting ? <Progress percent={exportProgress} size="small" /> : null}'),
+    stickyControlsSource.includes('className="container-detail-export-progress"') &&
+    stickyControlsSource.includes('<Progress percent={exportProgress} size="small" />'),
   true,
   '货柜明细操作按钮、状态信息、批量操作、统计标签和导出进度应在表格前的紧凑 sticky 控制区内',
 )
