@@ -320,6 +320,17 @@
   width: 100%;
 }
 
+.container-detail-export-progress {
+  display: grid;
+  gap: 2px;
+  width: min(100%, 420px);
+}
+
+.container-detail-export-progress .ant-typography {
+  font-size: 12px;
+  line-height: 1.2;
+}
+
 .container-detail-bulk-input {
   width: 118px;
 }
