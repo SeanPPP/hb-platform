@@ -72,9 +72,10 @@ public sealed class ReceiptReturnsWorkflowServiceTests
         };
         var service = CreateService(remote);
 
+        // 外层只负责检测真正挂死；共享 Windows CI 高负载下定时器调度可能明显晚于业务的 2 秒 deadline。
         var result = await service
             .LookupOrderAsync(CreateOnlineSession(), Guid.NewGuid().ToString("D"))
-            .WaitAsync(TimeSpan.FromSeconds(5));
+            .WaitAsync(TimeSpan.FromSeconds(30));
 
         await cancellationObserved.Task.WaitAsync(TimeSpan.FromSeconds(1));
         Assert.Null(result.Order);

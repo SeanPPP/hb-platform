@@ -6,6 +6,7 @@ import type {
   ComingSoonHomeContainerSummary,
   ComingSoonHomeProduct,
   ContainerDetailBatchActionResult,
+  ContainerDetailBatchUpdateResult,
   ContainerDetailBatchScope,
   ContainerDomesticSetCodeItem,
   ContainerDetail,
@@ -343,23 +344,57 @@ export async function updateContainer(containerGuid: string, data: UpdateContain
 }
 
 export async function batchUpdateDetails(
+  containerGuid: string,
   updates: UpdateContainerDetailRequest[],
-): Promise<{
-  totalUpdated: number
-  totalRequested: number
-  validationErrors: Array<{
-    hguid: string
-    field: string
-    code: string
-    message: string
-  }>
-}> {
+): Promise<ContainerDetailBatchUpdateResult> {
+  const normalizedContainerGuid = containerGuid.trim()
+  if (!normalizedContainerGuid) {
+    throw new Error('货柜 GUID 不能为空')
+  }
+  const serializedUpdates = updates.map((item) => ({
+    HGUID: item.hguid,
+    调整浮率: item.调整浮率,
+    国内价格: item.国内价格,
+    进口价格: item.进口价格,
+    运输成本: item.运输成本,
+    商品名称: item.商品名称,
+    英文名称: item.英文名称,
+    ClearEnglishName: item.ClearEnglishName,
+    ProductCategoryGUID: item.ProductCategoryGUID,
+    贴牌价格: item.贴牌价格,
+    单件装箱数: item.单件装箱数,
+    中包数: item.中包数,
+    单件体积: item.单件体积,
+    装柜数量: item.装柜数量,
+    合计装柜体积: item.合计装柜体积,
+    合计装柜金额: item.合计装柜金额,
+    备注: item.备注,
+    IsActive: item.IsActive,
+    SkipRelatedProductSync: item.SkipRelatedProductSync,
+  }))
+  const submittedFieldsByHguid = new Map<string, Set<string>>()
+  serializedUpdates.forEach((update) => {
+    if (submittedFieldsByHguid.has(update.HGUID)) {
+      throw new Error('批量更新货柜明细包含重复 HGUID，未保存草稿已保留')
+    }
+    const fields = new Set(Object.entries(update).flatMap(([field, value]) => {
+      if (field === 'HGUID' || field === 'SkipRelatedProductSync' || value === undefined) return []
+      if (field === 'ClearEnglishName') return value === true ? ['英文名称'] : []
+      return [field]
+    }))
+    if (!fields.size) {
+      throw new Error('批量更新货柜明细没有可保存字段，未保存草稿已保留')
+    }
+    submittedFieldsByHguid.set(update.HGUID, fields)
+  })
   const response = await request<{
     success?: boolean
     message?: string
     data?: {
       totalUpdated?: number
       totalRequested?: number
+      autoRepairedStoreGroupCount?: number
+      autoRepairedRelationCount?: number
       validationErrors?: Array<{
         hguid?: string
         field?: string
@@ -367,42 +402,92 @@ export async function batchUpdateDetails(
         message?: string
       }>
     }
-  }>(`${API_BASE}/batch-update-details`, {
+  }>(`${API_BASE}/${encodeURIComponent(normalizedContainerGuid)}/batch-update-details`, {
     method: 'POST',
-    data: updates.map((item) => ({
-      HGUID: item.hguid,
-      调整浮率: item.调整浮率,
-      国内价格: item.国内价格,
-      进口价格: item.进口价格,
-      运输成本: item.运输成本,
-      商品名称: item.商品名称,
-      英文名称: item.英文名称,
-      ClearEnglishName: item.ClearEnglishName,
-      ProductCategoryGUID: item.ProductCategoryGUID,
-      贴牌价格: item.贴牌价格,
-      单件装箱数: item.单件装箱数,
-      中包数: item.中包数,
-      单件体积: item.单件体积,
-      装柜数量: item.装柜数量,
-      合计装柜体积: item.合计装柜体积,
-      合计装柜金额: item.合计装柜金额,
-      IsActive: item.IsActive,
-      SkipRelatedProductSync: item.SkipRelatedProductSync,
-    })),
+    data: serializedUpdates,
   })
 
-  ensureSuccess(response.success, response.message, '批量更新货柜明细失败')
+  if (response.success !== true) {
+    throw new Error(response.message || '批量更新货柜明细失败')
+  }
+
+  const data = response.data
+  const totalUpdated = data?.totalUpdated
+  const totalRequested = data?.totalRequested
+  if (!data
+    || typeof totalUpdated !== 'number'
+    || typeof totalRequested !== 'number'
+    || !Number.isInteger(totalUpdated)
+    || !Number.isInteger(totalRequested)
+    || totalUpdated < 0
+    || totalRequested !== updates.length
+    || totalUpdated > totalRequested
+    || !Array.isArray(data.validationErrors)
+  ) {
+    // 2xx 但结果不完整时不能按成功处理，否则会错误清除本地草稿。
+    throw new Error('批量更新货柜明细返回数据不完整，未保存草稿已保留')
+  }
+  const updateHguids = new Set(serializedUpdates.map((item) => item.HGUID))
+  const validationErrorKeys = new Set<string>()
+  const validationErrors = data.validationErrors.map((error) => {
+    if (
+      !error
+      || typeof error.hguid !== 'string'
+      || !updateHguids.has(error.hguid)
+      || typeof error.field !== 'string'
+      || !error.field.trim()
+      || typeof error.code !== 'string'
+      || !error.code.trim()
+      || typeof error.message !== 'string'
+      || !error.message.trim()
+      || (error.field !== '*' && !submittedFieldsByHguid.get(error.hguid)?.has(error.field))
+    ) {
+      throw new Error('批量更新货柜明细返回校验错误不完整，未保存草稿已保留')
+    }
+    const errorKey = `${error.hguid}:${error.field}`
+    if (validationErrorKeys.has(errorKey)) {
+      throw new Error('批量更新货柜明细返回校验错误冲突，未保存草稿已保留')
+    }
+    validationErrorKeys.add(errorKey)
+    return {
+      hguid: error.hguid,
+      field: error.field,
+      code: error.code,
+      message: error.message,
+    }
+  })
+  const assertOptionalCount = (value: unknown) => (
+    value === undefined || (Number.isInteger(value) && (value as number) >= 0)
+  )
+  if (!assertOptionalCount(data.autoRepairedStoreGroupCount) || !assertOptionalCount(data.autoRepairedRelationCount)) {
+    throw new Error('批量更新货柜明细返回修复统计不完整，未保存草稿已保留')
+  }
+
+  const failedFieldsByHguid = new Map<string, Set<string>>()
+  const fullFailureHguids = new Set<string>()
+  validationErrors.forEach((error) => {
+    if (error.field === '*') {
+      fullFailureHguids.add(error.hguid)
+      return
+    }
+    const fields = failedFieldsByHguid.get(error.hguid) ?? new Set<string>()
+    fields.add(error.field)
+    failedFieldsByHguid.set(error.hguid, fields)
+  })
+  const successfulHguidCount = Array.from(submittedFieldsByHguid.entries()).filter(([hguid, fields]) => (
+    !fullFailureHguids.has(hguid)
+    && Array.from(fields).some((field) => !failedFieldsByHguid.get(hguid)?.has(field))
+  )).length
+  if (successfulHguidCount !== totalUpdated) {
+    throw new Error('批量更新货柜明细返回成功计数不一致，未保存草稿已保留')
+  }
+
   return {
-    totalUpdated: response.data?.totalUpdated ?? updates.length,
-    totalRequested: response.data?.totalRequested ?? updates.length,
-    validationErrors: (response.data?.validationErrors ?? [])
-      .filter((error) => Boolean(error.hguid && error.field && error.code && error.message))
-      .map((error) => ({
-        hguid: error.hguid!,
-        field: error.field!,
-        code: error.code!,
-        message: error.message!,
-      })),
+    totalUpdated,
+    totalRequested,
+    autoRepairedStoreGroupCount: data.autoRepairedStoreGroupCount,
+    autoRepairedRelationCount: data.autoRepairedRelationCount,
+    validationErrors,
   }
 }
 

@@ -961,6 +961,19 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
 
         Assert.Equal(new[] { "HB137-482" }, setChildResult.Items.Select(x => x.商品信息?.货号).ToArray());
 
+        var normalForSetChildResult = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-PRODUCT-TYPE",
+                PageNumber = 1,
+                PageSize = 50,
+                ItemNumber = "HB137-482",
+                ProductTypes = new List<string> { "normal" },
+            }
+        );
+
+        Assert.Empty(normalForSetChildResult.Items);
+
         var normalForSetItemResult = await service.QueryContainerDetailsAsync(
             new ContainerDetailQueryDto
             {
@@ -986,7 +999,7 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
         );
 
         Assert.Equal(
-            new[] { "D-TYPE-NORMAL", "D-TYPE-SET-CHILD", "D-TYPE-SET", "D-TYPE-MULTI" },
+            new[] { "D-TYPE-NORMAL", "D-TYPE-SET", "D-TYPE-MULTI", "D-TYPE-SET-CHILD" },
             sortedResult.Items.Select(x => x.HGUID).ToArray()
         );
     }
@@ -1078,6 +1091,472 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
 
         Assert.Equal(new[] { "HB102" }, result.Items.Select(x => x.商品信息?.货号).ToArray());
         Assert.Equal(1, result.ItemsTotal);
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_默认页大小100且请求可上限1000并只返回统计()
+    {
+        await SeedContainerAsync("C-PAGE-CONTRACT", "OOLU6966452");
+        await SeedDetailAsync(
+            "D-PAGE-CONTRACT",
+            "C-PAGE-CONTRACT",
+            "P-PAGE-CONTRACT",
+            "HB-PAGE-CONTRACT"
+        );
+        var service = CreateService();
+
+        Assert.Equal(100, new ContainerDetailQueryDto().PageSize);
+
+        var result = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-PAGE-CONTRACT",
+                PageSize = 5000,
+                IncludeItems = false,
+                IncludeStats = true,
+            }
+        );
+
+        Assert.Equal(1000, result.PageSize);
+        Assert.Empty(result.Items);
+        Assert.Equal(1, result.ItemsTotal);
+        Assert.Equal(1, result.TagStats.All);
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_匹配方式应全局筛选排序分页并返回冲突字段()
+    {
+        await SeedContainerAsync("C-MATCH", "OOLU-MATCH");
+        await SeedMatchScopeAsync("C-MATCH");
+        var service = CreateService();
+
+        var firstPage = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-MATCH",
+                PageNumber = 1,
+                PageSize = 1,
+                SortBy = "matchType",
+                SortOrder = "ascend",
+            }
+        );
+        var secondPage = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-MATCH",
+                PageNumber = 2,
+                PageSize = 1,
+                SortBy = "matchType",
+                SortOrder = "ascend",
+            }
+        );
+        var thirdPage = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-MATCH",
+                PageNumber = 3,
+                PageSize = 1,
+                SortBy = "matchType",
+                SortOrder = "ascend",
+            }
+        );
+        var supplierOnly = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-MATCH",
+                PageSize = 1,
+                MatchTypes = new List<string> { "supplierItem" },
+            }
+        );
+
+        Assert.Equal("D-MATCH-DIRECT", Assert.Single(firstPage.Items).HGUID);
+        Assert.Equal("productCode", firstPage.Items[0].MatchType);
+        Assert.Equal("D-MATCH-SUPPLIER", Assert.Single(secondPage.Items).HGUID);
+        Assert.Equal("supplierItem", secondPage.Items[0].MatchType);
+        Assert.True(secondPage.Items[0].HasProductCodeConflict);
+        Assert.Equal("LOCAL-CANDIDATE", secondPage.Items[0].LocalProductCode);
+        Assert.Equal("DOM-CANDIDATE", secondPage.Items[0].DomesticProductCode);
+        Assert.Equal("D-MATCH-NONE", Assert.Single(thirdPage.Items).HGUID);
+        Assert.Equal("unmatched", thirdPage.Items[0].MatchType);
+
+        Assert.Equal(1, supplierOnly.ItemsTotal);
+        Assert.Equal("D-MATCH-SUPPLIER", Assert.Single(supplierOnly.Items).HGUID);
+        Assert.Equal(0, supplierOnly.TagStats.ProductCodeMatched);
+        Assert.Equal(1, supplierOnly.TagStats.SupplierItemMatched);
+        Assert.Equal(0, supplierOnly.TagStats.Unmatched);
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_标签统计应排除SelectedTags并保留完整分类()
+    {
+        await SeedContainerAsync("C-TYPE-FACET", "OOLU-TYPE-FACET");
+        await SeedDetailAsync("D-TYPE-NORMAL", "C-TYPE-FACET", "P-TYPE-NORMAL", "HB-NORMAL");
+        await SeedDetailAsync("D-TYPE-SET", "C-TYPE-FACET", "P-TYPE-SET", "HB-SET", domesticProductType: 1);
+        await SeedDetailAsync("D-TYPE-MULTI", "C-TYPE-FACET", "P-TYPE-MULTI", "HB-MULTI", domesticProductType: 2);
+        await SeedDetailAsync(
+            "D-TYPE-CHILD",
+            "C-TYPE-FACET",
+            "P-TYPE-CHILD",
+            "HB-CHILD",
+            detailProductType: "套装子商品"
+        );
+        var service = CreateService();
+
+        var result = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-TYPE-FACET",
+                SelectedTags = new List<string> { "set" },
+                IncludeItems = false,
+                IncludeStats = true,
+            }
+        );
+
+        Assert.Empty(result.Items);
+        Assert.Equal(1, result.ItemsTotal);
+        Assert.Equal(4, result.TagStats.All);
+        Assert.Equal(1, result.TagStats.Normal);
+        Assert.Equal(1, result.TagStats.Set);
+        Assert.Equal(1, result.TagStats.Multi);
+        Assert.Equal(1, result.TagStats.SetChild);
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_应将取消信号传递到查询()
+    {
+        await SeedContainerAsync("C-CANCEL", "OOLU-CANCEL");
+        await SeedDetailAsync("D-CANCEL", "C-CANCEL", "P-CANCEL", "HB-CANCEL");
+        var service = CreateService();
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.QueryContainerDetailsAsync(
+                new ContainerDetailQueryDto { ContainerGuid = "C-CANCEL" },
+                cancellation.Token
+            )
+        );
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_普通分页应只为当前页解析匹配候选()
+    {
+        await SeedContainerAsync("C-MATCH-FAST", "OOLU-MATCH-FAST");
+        await SeedMatchScopeAsync("C-MATCH-FAST");
+        var service = CreateService();
+        var statements = new List<string>();
+        var parameterValues = new List<string>();
+        _localDb.Aop.OnLogExecuting = (statement, parameters) =>
+        {
+            statements.Add(statement);
+            parameterValues.AddRange(
+                parameters
+                    .Select(parameter => parameter.Value?.ToString())
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Select(value => value!)
+            );
+        };
+
+        try
+        {
+            var result = await service.QueryContainerDetailsAsync(
+                new ContainerDetailQueryDto
+                {
+                    ContainerGuid = "C-MATCH-FAST",
+                    PageNumber = 1,
+                    PageSize = 1,
+                    SortBy = "itemNumber",
+                    SortOrder = "ascend",
+                    IncludeStats = false,
+                }
+            );
+
+            var item = Assert.Single(result.Items);
+            Assert.Equal("D-MATCH-SUPPLIER", item.HGUID);
+            Assert.Equal("supplierItem", item.MatchType);
+            var queryTrace = string.Join('\n', statements.Concat(parameterValues));
+            Assert.Contains("ITEM-CANDIDATE", queryTrace, StringComparison.Ordinal);
+            Assert.DoesNotContain("ITEM-DIRECT", queryTrace, StringComparison.Ordinal);
+            Assert.DoesNotContain("ITEM-NONE", queryTrace, StringComparison.Ordinal);
+        }
+        finally
+        {
+            _localDb.Aop.OnLogExecuting = null;
+        }
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_仅统计公共标签时不应解析全量匹配候选()
+    {
+        await SeedContainerAsync("C-STATS-FAST", "OOLU-STATS-FAST");
+        await SeedMatchScopeAsync("C-STATS-FAST");
+        var service = CreateService();
+        var statements = new List<string>();
+        var parameterValues = new List<string>();
+        _localDb.Aop.OnLogExecuting = (statement, parameters) =>
+        {
+            statements.Add(statement);
+            parameterValues.AddRange(
+                parameters
+                    .Select(parameter => parameter.Value?.ToString())
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Select(value => value!)
+            );
+        };
+
+        try
+        {
+            var result = await service.QueryContainerDetailsAsync(
+                new ContainerDetailQueryDto
+                {
+                    ContainerGuid = "C-STATS-FAST",
+                    PageNumber = 1,
+                    PageSize = 1,
+                    SortBy = "itemNumber",
+                    SortOrder = "ascend",
+                    IncludeStats = true,
+                }
+            );
+
+            Assert.Equal(3, result.ItemsTotal);
+            Assert.Equal(3, result.TagStats.All);
+            Assert.Equal(2, result.TagStats.New);
+            Assert.Equal(1, result.TagStats.Existing);
+            var item = Assert.Single(result.Items);
+            Assert.Equal("D-MATCH-SUPPLIER", item.HGUID);
+            Assert.Equal("supplierItem", item.MatchType);
+            var queryTrace = string.Join('\n', statements.Concat(parameterValues));
+            Assert.Contains("ITEM-CANDIDATE", queryTrace, StringComparison.Ordinal);
+            Assert.DoesNotContain("ITEM-DIRECT", queryTrace, StringComparison.Ordinal);
+            Assert.DoesNotContain("ITEM-NONE", queryTrace, StringComparison.Ordinal);
+        }
+        finally
+        {
+            _localDb.Aop.OnLogExecuting = null;
+        }
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_匹配候选应限定供应商并要求仓库商品()
+    {
+        await SeedContainerAsync("C-MATCH-EDGE", "OOLU-MATCH-EDGE");
+        await _localDb.Insertable(
+            new List<ContainerDetail>
+            {
+                new()
+                {
+                    DetailCode = "D-MATCH-REAL-SUPPLIER",
+                    ContainerCode = "C-MATCH-EDGE",
+                    ProductCode = "DOM-REAL-SUPPLIER",
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    DetailCode = "D-MATCH-DELETED-WP",
+                    ContainerCode = "C-MATCH-EDGE",
+                    ProductCode = "P-DELETED-WP",
+                    IsDeleted = false,
+                },
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new List<DomesticProduct>
+            {
+                new()
+                {
+                    ProductCode = "DOM-REAL-SUPPLIER",
+                    SupplierCode = "SUP-REAL",
+                    HBProductNo = "ITEM-SHARED",
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    ProductCode = "P-DELETED-WP",
+                    SupplierCode = "200",
+                    HBProductNo = "ITEM-DIRECT",
+                    IsDeleted = false,
+                },
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new List<Product>
+            {
+                new()
+                {
+                    UUID = "LOCAL-DOM-REAL",
+                    ProductCode = "DOM-REAL-SUPPLIER",
+                    ItemNumber = "ITEM-SHARED",
+                    LocalSupplierCode = "SUP-REAL",
+                },
+                new()
+                {
+                    UUID = "LOCAL-RIGHT",
+                    ProductCode = "LOCAL-RIGHT",
+                    ItemNumber = "ITEM-SHARED",
+                    LocalSupplierCode = "SUP-REAL",
+                    IsDeleted = true,
+                },
+                new()
+                {
+                    UUID = "LOCAL-WRONG-SUPPLIER",
+                    ProductCode = "LOCAL-WRONG-SUPPLIER",
+                    ItemNumber = "ITEM-SHARED",
+                    LocalSupplierCode = "SUP-OTHER",
+                },
+                new()
+                {
+                    UUID = "LOCAL-WITHOUT-WAREHOUSE",
+                    ProductCode = "LOCAL-WITHOUT-WAREHOUSE",
+                    ItemNumber = "ITEM-SHARED",
+                    LocalSupplierCode = "SUP-REAL",
+                },
+                new()
+                {
+                    UUID = "LOCAL-DELETED-WP-DIRECT",
+                    ProductCode = "P-DELETED-WP",
+                },
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new List<WarehouseProduct>
+            {
+                new() { ProductCode = "LOCAL-RIGHT", IsDeleted = true },
+                new() { ProductCode = "LOCAL-WRONG-SUPPLIER", IsDeleted = false },
+                new() { ProductCode = "P-DELETED-WP", IsDeleted = true },
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.QueryContainerDetailsAsync(
+            new ContainerDetailQueryDto
+            {
+                ContainerGuid = "C-MATCH-EDGE",
+                SortBy = "matchType",
+                SortOrder = "ascend",
+            }
+        );
+
+        var supplier = result.Items.Single(item => item.HGUID == "D-MATCH-REAL-SUPPLIER");
+        Assert.Equal("supplierItem", supplier.MatchType);
+        Assert.Equal("LOCAL-RIGHT", supplier.LocalProductCode);
+        Assert.True(supplier.HasProductCodeConflict);
+        var direct = result.Items.Single(item => item.HGUID == "D-MATCH-DELETED-WP");
+        Assert.Equal("productCode", direct.MatchType);
+        Assert.False(direct.HasProductCodeConflict);
+    }
+
+    [Fact]
+    public async Task QueryContainerDetailsAsync_重复候选应稳定选择最小商品编码()
+    {
+        await SeedContainerAsync("C-MATCH-DETERMINISTIC", "OOLU-MATCH-DETERMINISTIC");
+        await _localDb.Insertable(
+            new ContainerDetail
+            {
+                DetailCode = "D-MATCH-DETERMINISTIC",
+                ContainerCode = "C-MATCH-DETERMINISTIC",
+                ProductCode = "DOM-SEED",
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new List<DomesticProduct>
+            {
+                new()
+                {
+                    ProductCode = "DOM-SEED",
+                    SupplierCode = "200",
+                    HBProductNo = "ITEM-DUPLICATE",
+                    IsDeleted = true,
+                },
+                new()
+                {
+                    ProductCode = "Z-DOMESTIC-CANDIDATE",
+                    SupplierCode = "200",
+                    HBProductNo = "ITEM-DUPLICATE",
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    ProductCode = "A-DOMESTIC-CANDIDATE",
+                    SupplierCode = "200",
+                    HBProductNo = "ITEM-DUPLICATE",
+                    IsDeleted = false,
+                },
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new List<Product>
+            {
+                new()
+                {
+                    UUID = "LOCAL-Z",
+                    ProductCode = "Z-LOCAL-CANDIDATE",
+                    ItemNumber = "ITEM-DUPLICATE",
+                    LocalSupplierCode = "200",
+                },
+                new()
+                {
+                    UUID = "LOCAL-A",
+                    ProductCode = "A-LOCAL-CANDIDATE",
+                    ItemNumber = "ITEM-DUPLICATE",
+                    LocalSupplierCode = "200",
+                },
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new List<WarehouseProduct>
+            {
+                new() { ProductCode = "Z-LOCAL-CANDIDATE" },
+                new() { ProductCode = "A-LOCAL-CANDIDATE" },
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateService();
+
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            var result = await service.QueryContainerDetailsAsync(
+                new ContainerDetailQueryDto
+                {
+                    ContainerGuid = "C-MATCH-DETERMINISTIC",
+                    SortBy = "matchType",
+                    SortOrder = "ascend",
+                }
+            );
+
+            var item = Assert.Single(result.Items);
+            Assert.Equal("A-LOCAL-CANDIDATE", item.LocalProductCode);
+            Assert.Equal("A-DOMESTIC-CANDIDATE", item.DomesticProductCode);
+            Assert.Equal("supplierItem", item.MatchType);
+            Assert.True(item.HasProductCodeConflict);
+        }
+    }
+
+    [Fact]
+    public async Task ApplyPricesByScopeAsync_匹配方式筛选应与列表作用域一致()
+    {
+        await SeedContainerAsync("C-MATCH-BATCH", "OOLU-MATCH-BATCH");
+        await SeedMatchScopeAsync("C-MATCH-BATCH");
+        var service = CreateService();
+
+        var updated = await service.ApplyPricesByScopeAsync(
+            "C-MATCH-BATCH",
+            new ContainerDetailApplyPricesRequestDto
+            {
+                OemPrice = 9.99m,
+                Query = new ContainerDetailQueryDto
+                {
+                    MatchTypes = new List<string> { "supplierItem" },
+                },
+            }
+        );
+
+        var rows = await _localDb.Queryable<ContainerDetail>()
+            .Where(row => row.ContainerCode == "C-MATCH-BATCH")
+            .ToListAsync();
+        Assert.Equal(1, updated);
+        Assert.Equal(9.99m, rows.Single(row => row.DetailCode == "D-MATCH-SUPPLIER").OEMPrice);
+        Assert.Equal(1m, rows.Single(row => row.DetailCode == "D-MATCH-DIRECT").OEMPrice);
+        Assert.Equal(1m, rows.Single(row => row.DetailCode == "D-MATCH-NONE").OEMPrice);
     }
 
     public void Dispose()
@@ -1205,6 +1684,98 @@ public sealed class ContainerReactServiceDetailQueryTests : IDisposable
                 }
             ).ExecuteCommandAsync();
         }
+    }
+
+    private async Task SeedMatchScopeAsync(string containerCode)
+    {
+        await _localDb.Insertable(
+            new List<ContainerDetail>
+            {
+                new()
+                {
+                    DetailCode = "D-MATCH-DIRECT",
+                    ContainerCode = containerCode,
+                    ProductCode = "P-DIRECT",
+                    OEMPrice = 1m,
+                    ImportPrice = 1m,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    DetailCode = "D-MATCH-SUPPLIER",
+                    ContainerCode = containerCode,
+                    ProductCode = "DOM-CANDIDATE",
+                    OEMPrice = 1m,
+                    ImportPrice = 1m,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    DetailCode = "D-MATCH-NONE",
+                    ContainerCode = containerCode,
+                    ProductCode = "DOM-NONE",
+                    OEMPrice = 1m,
+                    ImportPrice = 1m,
+                    IsDeleted = false,
+                },
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new List<DomesticProduct>
+            {
+                new()
+                {
+                    ProductCode = "P-DIRECT",
+                    SupplierCode = "200",
+                    HBProductNo = "ITEM-DIRECT",
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    ProductCode = "DOM-CANDIDATE",
+                    SupplierCode = "200",
+                    HBProductNo = "ITEM-CANDIDATE",
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    ProductCode = "DOM-NONE",
+                    SupplierCode = "200",
+                    HBProductNo = "ITEM-NONE",
+                    IsDeleted = false,
+                },
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new List<Product>
+            {
+                new()
+                {
+                    UUID = "LOCAL-P-DIRECT",
+                    ProductCode = "P-DIRECT",
+                    ItemNumber = "ITEM-DIRECT",
+                    LocalSupplierCode = "200",
+                    ProductName = "直接编码商品",
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    UUID = "LOCAL-CANDIDATE-UUID",
+                    ProductCode = "LOCAL-CANDIDATE",
+                    ItemNumber = "ITEM-CANDIDATE",
+                    LocalSupplierCode = "200",
+                    ProductName = "供应商货号候选",
+                    IsDeleted = false,
+                },
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new List<WarehouseProduct>
+            {
+                new() { ProductCode = "P-DIRECT", IsDeleted = false },
+                new() { ProductCode = "LOCAL-CANDIDATE", IsDeleted = false },
+            }
+        ).ExecuteCommandAsync();
     }
 
     private async Task SeedWarehouseCategoryAsync(string categoryGuid, string categoryName)

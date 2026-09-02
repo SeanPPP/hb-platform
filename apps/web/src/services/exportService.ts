@@ -69,12 +69,23 @@ export interface ContainerExportOptions {
   pdfRenderScale?: number
   pdfImageFormat?: 'PNG' | 'JPEG'
   pdfImageQuality?: number
+  productImageDownloadFailedText?: string
+  productImageMissingText?: string
 }
 
-interface ContainerExportPreparedImages {
+export interface ContainerExportPreparedImages {
   barcodeImageMap: Map<string, string>
-  productImageMap: Map<number, string>
+  productImageMap: Map<string, string>
+  productImageSizeMap: Map<string, { width: number; height: number }>
+  productImageKeyByRow: Map<number, string>
   failedProductImageRows: Set<number>
+  missingProductImageRows: Set<number>
+}
+
+export interface ContainerDetailExcelExportResult {
+  embeddedProductImageCount: number
+  failedProductImageCount: number
+  missingProductImageCount: number
 }
 
 export interface ContainerDetailPdfLayout {
@@ -152,6 +163,45 @@ function drawImageToCanvas(img: HTMLImageElement): string {
   const ctx = canvas.getContext('2d')!
   ctx.drawImage(img, 0, 0)
   return canvas.toDataURL('image/png')
+}
+
+export function calculateContainerExportImageSize(width: number, height: number, maxSize = 160) {
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : 1
+  const safeHeight = Number.isFinite(height) && height > 0 ? height : 1
+  const scale = Math.min(1, maxSize / safeWidth, maxSize / safeHeight)
+  return {
+    width: Math.max(1, Math.round(safeWidth * scale)),
+    height: Math.max(1, Math.round(safeHeight * scale)),
+  }
+}
+
+async function resizeContainerDetailProductImage(dataUrl: string): Promise<{
+  dataUrl: string
+  width: number
+  height: number
+} | null> {
+  try {
+    const img = await loadImageViaElement(dataUrl)
+    const size = calculateContainerExportImageSize(
+      img.naturalWidth || img.width,
+      img.naturalHeight || img.height,
+    )
+    const canvas = document.createElement('canvas')
+    canvas.width = size.width
+    canvas.height = size.height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return { dataUrl, ...size }
+    ctx.fillStyle = '#ffffff'
+    ctx.fillRect(0, 0, size.width, size.height)
+    ctx.drawImage(img, 0, 0, size.width, size.height)
+    // 商品缩略图限制在 160×160，并使用适度 JPEG 压缩控制整柜工作簿体积。
+    return {
+      dataUrl: canvas.toDataURL('image/jpeg', 0.82),
+      ...size,
+    }
+  } catch {
+    return null
+  }
 }
 
 function normalizeImageDownloadUrl(url: string) {
@@ -752,7 +802,7 @@ function getProductGradeExportNumberFormat(valueType?: 'moneyRmb' | 'moneyAud') 
 export async function exportContainerDetailsToExcel(
   items: ContainerDetailExportItem[],
   options: ContainerExportOptions = {},
-): Promise<void> {
+): Promise<ContainerDetailExcelExportResult> {
   const { default: ExcelJS } = await import('exceljs')
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet('货柜明细')
@@ -764,20 +814,20 @@ export async function exportContainerDetailsToExcel(
   const preparedImages = hasImageColumns
     ? await prepareContainerDetailExportImages(
         items,
-        withContainerExportProgressRange(options, 10, 55),
+        withContainerExportProgressRange(options, 10, 70),
         { includeBarcodeImages, includeProductImages },
       )
     : createEmptyContainerExportPreparedImages()
   if (hasImageColumns) {
-    options.onProgress?.(55, '图片准备完成，正在写入货柜明细...')
+    options.onProgress?.(70, '图片准备完成，正在写入货柜明细...')
   }
 
   const worksheetInfo = populateContainerDetailsWorksheet(
     worksheet,
     items,
-    hasImageColumns ? withContainerExportProgressRange(options, 55, 90) : options,
+    hasImageColumns ? withContainerExportProgressRange(options, 70, 92) : options,
   )
-  addContainerDetailWorksheetImages(workbook, worksheet, items, worksheetInfo, preparedImages)
+  const imageResult = addContainerDetailWorksheetImages(workbook, worksheet, items, worksheetInfo, preparedImages, options)
   options.onProgress?.(95, '正在生成 Excel 文件...')
   const buffer = await workbook.xlsx.writeBuffer()
 
@@ -793,6 +843,7 @@ export async function exportContainerDetailsToExcel(
   document.body.removeChild(link)
   URL.revokeObjectURL(url)
   options.onProgress?.(100, '导出完成')
+  return imageResult
 }
 
 export function mapContainerExportProgress(progress: number, start: number, end: number) {
@@ -821,7 +872,10 @@ function createEmptyContainerExportPreparedImages(): ContainerExportPreparedImag
   return {
     barcodeImageMap: new Map(),
     productImageMap: new Map(),
+    productImageSizeMap: new Map(),
+    productImageKeyByRow: new Map(),
     failedProductImageRows: new Set(),
+    missingProductImageRows: new Set(),
   }
 }
 
@@ -996,8 +1050,11 @@ async function prepareContainerDetailExportImages(
   imageOptions: { includeBarcodeImages: boolean; includeProductImages: boolean },
 ): Promise<ContainerExportPreparedImages> {
   const barcodeImageMap = new Map<string, string>()
-  const productImageMap = new Map<number, string>()
+  const productImageMap = new Map<string, string>()
+  const productImageSizeMap = new Map<string, { width: number; height: number }>()
+  const productImageKeyByRow = new Map<number, string>()
   const failedProductImageRows = new Set<number>()
+  const missingProductImageRows = new Set<number>()
 
   if (imageOptions.includeBarcodeImages) {
     const barcodes = Array.from(new Set(items.map((item) => String(item.barcodeImage || item.barcode || '').trim()).filter(Boolean)))
@@ -1010,13 +1067,22 @@ async function prepareContainerDetailExportImages(
   }
 
   if (imageOptions.includeProductImages) {
-    const imageEntries = items
-      .map((item, index) => ({
-        index,
-        itemNumber: String(item.itemNumber || item.index || index + 1),
-        url: String(item.productImage || '').trim(),
-      }))
-      .filter((entry) => Boolean(entry.url))
+    const imageRowsByKey = new Map<string, number[]>()
+    items.forEach((item, index) => {
+      const imageKey = String(item.productImage || '').trim()
+      if (!imageKey) {
+        missingProductImageRows.add(index)
+        return
+      }
+      productImageKeyByRow.set(index, imageKey)
+      const rowIndexes = imageRowsByKey.get(imageKey) ?? []
+      rowIndexes.push(index)
+      imageRowsByKey.set(imageKey, rowIndexes)
+    })
+    const imageEntries = Array.from(imageRowsByKey.entries()).map(([url, rowIndexes]) => ({
+      url,
+      rowIndexes,
+    }))
 
     if (imageEntries.length) {
       options.onProgress?.(35, '正在下载商品图片...')
@@ -1028,14 +1094,22 @@ async function prepareContainerDetailExportImages(
           batch.map(async (entry) => {
             const { data, reason } = await fetchImageAsBase64WithRetry(entry.url)
             if (!data && reason) {
-              failedProductImageRows.add(entry.index)
+              entry.rowIndexes.forEach((rowIndex) => failedProductImageRows.add(rowIndex))
             }
-            return { index: entry.index, data }
+            const resizedImage = data ? await resizeContainerDetailProductImage(data) : null
+            if (data && !resizedImage) {
+              entry.rowIndexes.forEach((rowIndex) => failedProductImageRows.add(rowIndex))
+            }
+            return { imageKey: entry.url, image: resizedImage }
           }),
         )
         results.forEach((result) => {
-          if (result.data) {
-            productImageMap.set(result.index, result.data)
+          if (result.image) {
+            productImageMap.set(result.imageKey, result.image.dataUrl)
+            productImageSizeMap.set(result.imageKey, {
+              width: result.image.width,
+              height: result.image.height,
+            })
           }
         })
         downloaded += batch.length
@@ -1047,16 +1121,26 @@ async function prepareContainerDetailExportImages(
     }
   }
 
-  return { barcodeImageMap, productImageMap, failedProductImageRows }
+  return {
+    barcodeImageMap,
+    productImageMap,
+    productImageSizeMap,
+    productImageKeyByRow,
+    failedProductImageRows,
+    missingProductImageRows,
+  }
 }
 
-function addContainerDetailWorksheetImages(
+export function addContainerDetailWorksheetImages(
   workbook: ExcelWorkbook,
   worksheet: ExcelWorksheet,
   items: ContainerDetailExportItem[],
   worksheetInfo: ReturnType<typeof populateContainerDetailsWorksheet>,
   preparedImages: ContainerExportPreparedImages,
-) {
+  options: Pick<ContainerExportOptions, 'productImageDownloadFailedText' | 'productImageMissingText'> = {},
+): ContainerDetailExcelExportResult {
+  const productImageIdByKey = new Map<string, number>()
+  let embeddedProductImageCount = 0
   items.forEach((item, index) => {
     const rowNumber = worksheetInfo.dataStartRowNumber + index
     const row = worksheet.getRow(rowNumber)
@@ -1078,25 +1162,44 @@ function addContainerDetailWorksheetImages(
     }
 
     if (worksheetInfo.productImageColIndex >= 0) {
-      const imageData = preparedImages.productImageMap.get(index)
+      const imageKey = preparedImages.productImageKeyByRow.get(index)
+      const imageData = imageKey ? preparedImages.productImageMap.get(imageKey) : undefined
       const cell = row.getCell(worksheetInfo.productImageColIndex + 1)
-      if (imageData) {
-        const ext = imageData.includes('image/jpeg') ? 'jpeg' : 'png'
-        const imageId = workbook.addImage({
-          base64: imageData.split(',')[1],
-          extension: ext,
-        })
+      // 图片列只保留嵌入资源或状态提示，避免把原始/签名 URL 暴露到工作簿单元格。
+      cell.value = null
+      if (imageKey && imageData) {
+        let imageId = productImageIdByKey.get(imageKey)
+        if (imageId == null) {
+          const ext = imageData.includes('image/jpeg') ? 'jpeg' : 'png'
+          imageId = workbook.addImage({
+            base64: imageData.split(',')[1],
+            extension: ext,
+          })
+          productImageIdByKey.set(imageKey, imageId)
+        }
+        const sourceSize = preparedImages.productImageSizeMap.get(imageKey) ?? { width: 72, height: 72 }
+        const displaySize = calculateContainerExportImageSize(sourceSize.width, sourceSize.height, 72)
         worksheet.addImage(imageId, {
-          tl: { col: worksheetInfo.productImageColIndex, row: rowNumber - 1 },
-          br: { col: worksheetInfo.productImageColIndex + 1, row: rowNumber },
+          tl: { col: worksheetInfo.productImageColIndex + 0.04, row: rowNumber - 1 + 0.04 },
+          ext: displaySize,
           editAs: 'oneCell',
         } as any)
+        embeddedProductImageCount += 1
       } else if (preparedImages.failedProductImageRows.has(index)) {
-        cell.value = '图片下载失败'
+        cell.value = options.productImageDownloadFailedText ?? '图片下载失败'
         cell.font = { color: { argb: 'FFFF0000' }, size: 9 }
+      } else if (preparedImages.missingProductImageRows.has(index)) {
+        cell.value = options.productImageMissingText ?? '无图片'
+        cell.font = { color: { argb: 'FF8C8C8C' }, size: 9 }
       }
     }
   })
+
+  return {
+    embeddedProductImageCount,
+    failedProductImageCount: preparedImages.failedProductImageRows.size,
+    missingProductImageCount: preparedImages.missingProductImageRows.size,
+  }
 }
 
 function buildContainerDetailPdfRoot(
@@ -1298,7 +1401,8 @@ function buildContainerDetailPdfCellHtml(
   }
 
   if (column.key === 'productImage') {
-    const imageData = preparedImages.productImageMap.get(rowIndex)
+    const imageKey = preparedImages.productImageKeyByRow.get(rowIndex)
+    const imageData = imageKey ? preparedImages.productImageMap.get(imageKey) : undefined
     if (imageData) {
       return `<td><img class="container-detail-export-pdf-product-image" src="${escapeContainerDetailPdfAttribute(imageData)}" /></td>`
     }

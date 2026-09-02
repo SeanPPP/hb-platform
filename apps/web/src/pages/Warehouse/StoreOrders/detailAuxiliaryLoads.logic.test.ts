@@ -460,20 +460,20 @@ async function main() {
       containerDetailSource.includes("import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'") &&
         containerDetailSource.includes('useKeepAliveContext') &&
         containerDetailSource.includes('const { active } = useKeepAliveContext()') &&
-        containerDetailSource.includes('if (!active) return') &&
+        containerDetailSource.includes('if (!active || !currentUserGuid) return') &&
         containerDetailSource.includes('loadedContainerGuidRef') &&
         containerDetailSource.includes('visibleContainerGuidRef') &&
         containerDetailSource.includes('lastLoadedContainerDetailSuccessRef') &&
         containerDetailSource.includes('const loadData = async (showLoading = true)') &&
         containerDetailSource.includes('shouldSkipDetailAutoReload({') &&
-        containerDetailSource.includes('const activeLoadQueryKey = detailQueryKey') &&
-        containerDetailSource.includes('requestedDetailQueryKey: activeLoadQueryKey') &&
-        containerDetailSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
+        containerDetailSource.includes("const activeLoadQueryKey = detailLoadMode === 'probe'") &&
+        containerDetailSource.includes('lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
+        containerDetailSource.includes('lastLoadedContainerDetailSuccessRef.current.queryKey === activeLoadQueryKey') &&
         containerDetailSource.includes('void loadHeader(shouldShowInitialLoading)') &&
-        containerDetailSource.includes("loadDetailChunk(1, 'reset')") &&
+        containerDetailSource.includes("void loadDetailRows(detailLoadMode === 'paged' ? 'paged' : 'probe')") &&
         containerDetailSource.includes('loadedContainerGuidRef.current = containerGuid') &&
         containerDetailSource.includes('visibleContainerGuidRef.current = containerGuid') &&
-        containerDetailSource.includes('lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }'),
+        /lastLoadedContainerDetailSuccessRef\.current = \{\s*containerGuid,\s*queryKey: pagedDetailQueryKey,\s*generation: currentRequestId,\s*\}/.test(containerDetailSource),
       '货柜详情缺少 KeepAlive active 守卫或明细查询条件缓存保护',
     )
     assert(

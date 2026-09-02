@@ -245,6 +245,16 @@ namespace BlazorApp.Shared.DTOs
         /// 仓库商品是否上架
         /// </summary>
         public bool? WarehouseIsActive { get; set; }
+
+        /// <summary>
+        /// 服务端权威匹配方式：productCode | supplierItem | unmatched。
+        /// </summary>
+        public string MatchType { get; set; } = "unmatched";
+
+        public string? LocalProductCode { get; set; }
+        public string? DomesticProductCode { get; set; }
+        public bool HasProductCodeConflict { get; set; }
+        public string? ConflictReason { get; set; }
     }
 
     /// <summary>
@@ -370,13 +380,13 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
-    /// 货柜明细服务端查询请求（前端无可见分页，内部按块懒加载）
+    /// 货柜明细服务端查询请求（小货柜整表加载，大货柜按需分页）
     /// </summary>
     public class ContainerDetailQueryDto
     {
         public string ContainerGuid { get; set; } = string.Empty;
         public int PageNumber { get; set; } = 1;
-        public int PageSize { get; set; } = 50;
+        public int PageSize { get; set; } = 100;
         public string? ItemNumber { get; set; }
         public string? Barcode { get; set; }
         public string? ProductName { get; set; }
@@ -428,6 +438,7 @@ namespace BlazorApp.Shared.DTOs
         public List<string> SelectedTags { get; set; } = new();
         public string? SortBy { get; set; }
         public string? SortOrder { get; set; }
+        public bool IncludeItems { get; set; } = true;
         public bool IncludeTotal { get; set; } = true;
         public bool IncludeStats { get; set; } = true;
     }
@@ -440,10 +451,17 @@ namespace BlazorApp.Shared.DTOs
         public int All { get; set; }
         public int New { get; set; }
         public int Existing { get; set; }
+        public int Normal { get; set; }
+        public int Set { get; set; }
+        public int Multi { get; set; }
+        public int SetChild { get; set; }
         public int NoOemPrice { get; set; }
         public int AbnormalImport { get; set; }
         public int Active { get; set; }
         public int Inactive { get; set; }
+        public int ProductCodeMatched { get; set; }
+        public int SupplierItemMatched { get; set; }
+        public int Unmatched { get; set; }
     }
 
     /// <summary>
@@ -578,6 +596,11 @@ namespace BlazorApp.Shared.DTOs
         public bool? IsActive { get; set; }
 
         /// <summary>
+        /// 货柜明细备注；null 表示不修改，空字符串表示清空。
+        /// </summary>
+        public string? 备注 { get; set; }
+
+        /// <summary>
         /// 跳过商品主数据和关联价格表同步，仅更新货柜明细
         /// </summary>
         public bool? SkipRelatedProductSync { get; set; }
@@ -590,6 +613,8 @@ namespace BlazorApp.Shared.DTOs
     {
         public int TotalUpdated { get; set; }
         public int TotalRequested { get; set; }
+        public int AutoRepairedStoreGroupCount { get; set; }
+        public int AutoRepairedRelationCount { get; set; }
         public List<ContainerDetailBatchUpdateValidationErrorDto> ValidationErrors { get; set; } =
             new();
     }

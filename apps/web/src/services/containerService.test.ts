@@ -132,6 +132,8 @@ try {
       data: {
         totalUpdated: 1,
         totalRequested: 1,
+        autoRepairedStoreGroupCount: 2,
+        autoRepairedRelationCount: 3,
         validationErrors: [{
           hguid: 'D-CLEAR-EN',
           field: '英文名称',
@@ -150,22 +152,23 @@ try {
       hguid: 'D-CLEAR-EN',
       ClearEnglishName: true,
       中包数: 12,
+      备注: '连续编辑后的备注',
       ProductCategoryGUID: 'CAT-TARGET',
       SkipRelatedProductSync: true,
     },
   ]
-  const detailUpdateResult = await batchUpdateDetails(detailUpdates)
+  const detailUpdateResult = await batchUpdateDetails('container-123', detailUpdates)
 
   assertEqual(
     capturedUrl,
-    '/api/react/v1/containers/batch-update-details',
-    'batchUpdateDetails should keep the React detail update URL unchanged',
+    '/api/react/v1/containers/container-123/batch-update-details',
+    'batchUpdateDetails 应将货柜 GUID 放入受限更新路由',
   )
   assertEqual(capturedInit?.method, 'POST', 'batchUpdateDetails should use POST')
   assertDeepEqual(
     JSON.parse(String(capturedInit?.body)),
-    [{ HGUID: 'D-CLEAR-EN', ClearEnglishName: true, ProductCategoryGUID: 'CAT-TARGET', 中包数: 12, SkipRelatedProductSync: true }],
-    'batchUpdateDetails should send explicit fields including the related-product sync guard',
+    [{ HGUID: 'D-CLEAR-EN', ClearEnglishName: true, ProductCategoryGUID: 'CAT-TARGET', 中包数: 12, 备注: '连续编辑后的备注', SkipRelatedProductSync: true }],
+    'batchUpdateDetails 应发送备注等显式字段，货柜范围由路径约束',
   )
   assertDeepEqual(
     detailUpdateResult.validationErrors,
@@ -176,6 +179,118 @@ try {
       message: '英文名称不能包含中文',
     }],
     'batchUpdateDetails should preserve structured validation errors for field-level retry',
+  )
+  assertDeepEqual(
+    {
+      autoRepairedStoreGroupCount: detailUpdateResult.autoRepairedStoreGroupCount,
+      autoRepairedRelationCount: detailUpdateResult.autoRepairedRelationCount,
+    },
+    { autoRepairedStoreGroupCount: 2, autoRepairedRelationCount: 3 },
+    'batchUpdateDetails should preserve optional set and multi-code auto-repair statistics',
+  )
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    data: {
+      totalUpdated: 1,
+      totalRequested: 1,
+      validationErrors: [],
+    },
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })) as typeof fetch
+  await assertRejects(
+    () => batchUpdateDetails('container-123', [{ hguid: 'D-CLEAR-EN', 进口价格: 4.2 }]),
+    '批量更新货柜明细失败',
+    '2xx 缺少 success 标记不得按保存成功处理或清除草稿',
+  )
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    success: true,
+    data: {
+      totalUpdated: 1,
+      totalRequested: 1,
+      validationErrors: [{ hguid: 'OTHER-DETAIL', field: '进口价格', code: 'INVALID', message: '错误货柜明细' }],
+    },
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })) as typeof fetch
+  await assertRejects(
+    () => batchUpdateDetails('container-123', [{ hguid: 'D-CLEAR-EN', 进口价格: 4.2 }]),
+    '批量更新货柜明细返回校验错误不完整，未保存草稿已保留',
+    '2xx 包含不属于请求的 HGUID 时不得清除草稿',
+  )
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    success: true,
+    data: {
+      totalUpdated: 0,
+      totalRequested: 1,
+      validationErrors: [{ hguid: 'D-CLEAR-EN', field: '贴牌价格', code: 'INVALID', message: '未提交字段' }],
+    },
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })) as typeof fetch
+  await assertRejects(
+    () => batchUpdateDetails('container-123', [{ hguid: 'D-CLEAR-EN', ClearEnglishName: true }]),
+    '批量更新货柜明细返回校验错误不完整，未保存草稿已保留',
+    '2xx 返回未提交字段的错误不得部分清除草稿',
+  )
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    success: true,
+    data: {
+      totalUpdated: 0,
+      totalRequested: 1,
+      validationErrors: [
+        { hguid: 'D-CLEAR-EN', field: '英文名称', code: 'A', message: '冲突一' },
+        { hguid: 'D-CLEAR-EN', field: '英文名称', code: 'B', message: '冲突二' },
+      ],
+    },
+  }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  })) as typeof fetch
+  await assertRejects(
+    () => batchUpdateDetails('container-123', [{ hguid: 'D-CLEAR-EN', ClearEnglishName: true }]),
+    '批量更新货柜明细返回校验错误冲突，未保存草稿已保留',
+    '同一字段出现冲突重复错误时必须 fail-closed',
+  )
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    success: true,
+    data: { totalUpdated: 0, totalRequested: 1, validationErrors: [] },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch
+  await assertRejects(
+    () => batchUpdateDetails('container-123', [{ hguid: 'D-EMPTY-SUCCESS', 进口价格: 4.2 }]),
+    '批量更新货柜明细返回成功计数不一致，未保存草稿已保留',
+    '2xx 空错误且 totalUpdated 为零不得清除实际提交字段的草稿',
+  )
+
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    success: true,
+    data: {
+      totalUpdated: 1,
+      totalRequested: 1,
+      validationErrors: [{ hguid: 'D-PARTIAL', field: '英文名称', code: 'INVALID', message: '英文名失败' }],
+    },
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch
+  await batchUpdateDetails('container-123', [{ hguid: 'D-PARTIAL', 进口价格: 4.2, ClearEnglishName: true }])
+
+  await assertRejects(
+    () => batchUpdateDetails('container-123', [{ hguid: 'D-CLIENT-ONLY', SkipRelatedProductSync: true }]),
+    '批量更新货柜明细没有可保存字段，未保存草稿已保留',
+    '仅客户端控制字段或 undefined 不得计入服务端成功行',
+  )
+  await assertRejects(
+    () => batchUpdateDetails('container-123', [
+      { hguid: 'D-DUPLICATE', 进口价格: 4.2 },
+      { hguid: 'D-DUPLICATE', 贴牌价格: 8.8 },
+    ]),
+    '批量更新货柜明细包含重复 HGUID，未保存草稿已保留',
+    '重复出站 HGUID 必须 fail-closed，不能让成功计数含糊',
   )
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

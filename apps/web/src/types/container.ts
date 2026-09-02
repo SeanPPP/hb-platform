@@ -109,8 +109,8 @@ export interface ContainerDetail {
   ConflictReason?: string
 }
 
-export type ContainerDetailQueryTag = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport' | 'active' | 'inactive'
 export type ContainerDetailQueryProductType = 'normal' | 'set' | 'multi' | 'setChild'
+export type ContainerDetailQueryTag = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport' | 'active' | 'inactive' | ContainerDetailQueryProductType
 export type ContainerDetailQueryNewProductState = 'new' | 'existing'
 export type ContainerDetailQueryMatchType = 'productCode' | 'supplierItem' | 'unmatched'
 export type ContainerDetailQueryWarehouseStatus = 'active' | 'inactive'
@@ -158,6 +158,7 @@ export interface ContainerDetailQuery {
   selectedTags?: ContainerDetailQueryTag[]
   sortBy?: string
   sortOrder?: ContainerDetailQuerySortOrder
+  includeItems?: boolean
   includeTotal?: boolean
   includeStats?: boolean
 }
@@ -170,6 +171,13 @@ export interface ContainerDetailTagStats {
   abnormalImport: number
   active: number
   inactive: number
+  normal: number
+  set: number
+  multi: number
+  setChild: number
+  productCodeMatched: number
+  supplierItemMatched: number
+  unmatched: number
 }
 
 export interface ContainerDetailQueryResult {
@@ -216,6 +224,19 @@ export interface ContainerDetailBatchScope {
 export interface ContainerDetailBatchActionResult {
   totalUpdated: number
   totalRequested?: number
+}
+
+export interface ContainerDetailBatchUpdateResult {
+  totalUpdated: number
+  totalRequested: number
+  validationErrors: Array<{
+    hguid: string
+    field: string
+    code: string
+    message: string
+  }>
+  autoRepairedStoreGroupCount?: number
+  autoRepairedRelationCount?: number
 }
 
 export interface ContainerQueryRequest {
@@ -274,6 +295,7 @@ export interface UpdateContainerDetailRequest {
   进口价格?: number
   运输成本?: number
   商品名称?: string
+  备注?: string
   英文名称?: string
   ClearEnglishName?: boolean
   ProductCategoryGUID?: string

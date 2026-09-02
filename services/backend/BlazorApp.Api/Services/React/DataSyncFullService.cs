@@ -11,6 +11,7 @@ using BlazorApp.Shared.Models.POSM;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Caching.Memory;
 using SqlSugar;
+using System.Runtime.ExceptionServices;
 
 namespace BlazorApp.Api.Services.React
 {
@@ -2547,11 +2548,11 @@ namespace BlazorApp.Api.Services.React
 
         /// <summary>
         /// 全量同步货柜详情：HQ 详情表 → 本地 ContainerDetail（不派生主表 Container）。
-        /// 支持主表GUID筛选；Channel Pipeline 并发读写。
+        /// 支持主表GUID筛选；HQ 读取并发、本地事务单 writer 写入。
         ///
         /// 架构：
-        ///   生产者(N×SemaphoreSlim=4) ──→ Channel&lt;List&lt;T&gt;&gt; ──→ 消费者(6并发)
-        ///         HQ 分页查询               有界背压(12)           分块 BulkCopy
+        ///   生产者(N×SemaphoreSlim=4) ──→ Channel&lt;List&lt;T&gt;&gt; ──→ 单事务 writer(1)
+        ///         HQ 分页查询               有界背压(8)            分块 BulkCopy
         /// </summary>
         public async Task<SyncResult> SyncContainerDetailsFromHqAsync(
             List<string>? masterGuids = null
@@ -2571,21 +2572,28 @@ namespace BlazorApp.Api.Services.React
                 },
                 TaskTrigger.Manual
             );
+            ISqlSugarClient? mutationLockDb = null;
+            var mutationLockTransactionStarted = false;
             try
             {
                 _hqContext.CheckConnection();
                 Console.WriteLine("✅ [货柜详情同步] HQ连接检查通过");
 
+                // 全量替换必须把总锁、TRUNCATE 和全部写入绑定到同一个客户端事务；
+                // HQ 读取可以并行，但本地库只能由一个 writer 顺序写入。
+                mutationLockDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
+                await mutationLockDb.Ado.BeginTranAsync();
+                mutationLockTransactionStarted = true;
+                await ContainerMutationLock.AcquireAllAsync(mutationLockDb);
+
                 var deleteStart = DateTime.Now;
-                using var syncLocalDb = SqlSugarContext.CreateConcurrentConnection(_configuration);
-                await syncLocalDb.Ado.ExecuteCommandAsync("TRUNCATE TABLE ContainerDetail");
+                await mutationLockDb.Ado.ExecuteCommandAsync("TRUNCATE TABLE ContainerDetail");
                 Console.WriteLine(
                     $"🗑️ [货柜详情同步] 本地 ContainerDetail 表已清空，耗时 {(DateTime.Now - deleteStart).TotalSeconds:F1}s"
                 );
 
                 const int batchSize = 50000;
                 const int producerConcurrency = 4;
-                const int consumerConcurrency = 6;
                 const int chunkSize = 20000;
                 const int writePageSize = 10000;
 
@@ -2602,67 +2610,47 @@ namespace BlazorApp.Api.Services.React
                     $"📊 [货柜详情同步] HQ总数据量: {totalCount:N0} 条, 分页数: {pageCount}, 每批: {batchSize:N0} 条"
                 );
                 Console.WriteLine(
-                    $"⚙️ [货柜详情同步] 生产者并发: {producerConcurrency}, 消费者并发: {consumerConcurrency}, 分块: {chunkSize:N0}, 写入分页: {writePageSize:N0}"
+                    $"⚙️ [货柜详情同步] 生产者并发: {producerConcurrency}, 本地单写入器: 1, 分块: {chunkSize:N0}, 写入分页: {writePageSize:N0}"
                 );
 
                 var channel = System.Threading.Channels.Channel.CreateBounded<
                     List<ContainerDetail>
-                >(capacity: consumerConcurrency * 2);
+                >(capacity: producerConcurrency * 2);
 
                 var totalAdded = 0;
-                var totalErrors = 0;
-                var fetchErrors = 0;
-
-                var consumers = new List<Task>();
-                for (int i = 0; i < consumerConcurrency; i++)
+                using var writerFailure = new CancellationTokenSource();
+                mutationLockDb.Ado.CommandTimeOut = _configuration.GetValue<int>(
+                    "Database:BulkCopyCommandTimeoutSeconds",
+                    600
+                );
+                var writer = Task.Run(async () =>
                 {
-                    var consumerIdx = i;
-                    var c = Task.Run(async () =>
+                    try
                     {
-                        using var consumerDb = SqlSugarContext.CreateConcurrentConnection(
-                            _configuration
-                        );
-                        consumerDb.Ado.CommandTimeOut = _configuration.GetValue<int>(
-                            "Database:BulkCopyCommandTimeoutSeconds",
-                            600
-                        );
-
-                        await foreach (var batch in channel.Reader.ReadAllAsync())
+                        await foreach (
+                            var batch in channel.Reader.ReadAllAsync(writerFailure.Token)
+                        )
                         {
                             for (int offset = 0; offset < batch.Count; offset += chunkSize)
                             {
-                                var chunk = batch.Skip(offset).Take(chunkSize).ToList();
-                                try
-                                {
-                                    await consumerDb
-                                        .Fastest<ContainerDetail>()
-                                        .AS("ContainerDetail")
-                                        .PageSize(writePageSize)
-                                        .BulkCopyAsync(chunk);
-                                    System.Threading.Interlocked.Add(ref totalAdded, chunk.Count);
-                                }
-                                catch (Exception ex)
-                                {
-                                    _logger.LogError(
-                                        ex,
-                                        "[ReactSync] 货柜详情消费者{Idx}写入失败（批大小:{Size}）",
-                                        consumerIdx,
-                                        chunk.Count
-                                    );
-                                    System.Threading.Interlocked.Add(ref totalErrors, chunk.Count);
-                                    Console.WriteLine(
-                                        $"❌ [货柜详情同步] 消费者{consumerIdx}写入失败: {chunk.Count} 条, 错误: {ex.Message}"
-                                    );
-                                    await Task.Delay(1500);
-                                }
+                                var localBatch = batch.Skip(offset).Take(chunkSize).ToList();
+                                await mutationLockDb
+                                    .Fastest<ContainerDetail>()
+                                    .AS("ContainerDetail")
+                                    .PageSize(writePageSize)
+                                    .BulkCopyAsync(localBatch);
+                                totalAdded += localBatch.Count;
                             }
                         }
-                    });
-                    consumers.Add(c);
-                }
-                Console.WriteLine(
-                    $"🚀 [货柜详情同步] 已启动 {consumerConcurrency} 个消费者，等待数据..."
-                );
+                    }
+                    catch (Exception ex)
+                    {
+                        // writer 失败时主动关闭管道并取消仍在等待背压的生产者，避免事务卡死。
+                        channel.Writer.TryComplete(ex);
+                        writerFailure.Cancel();
+                        throw;
+                    }
+                });
 
                 var semaphore = new SemaphoreSlim(producerConcurrency, producerConcurrency);
                 _logger.LogInformation(
@@ -2671,7 +2659,7 @@ namespace BlazorApp.Api.Services.React
                     pageCount,
                     batchSize,
                     producerConcurrency,
-                    consumerConcurrency
+                    1
                 );
 
                 var producers = new List<Task>();
@@ -2680,9 +2668,13 @@ namespace BlazorApp.Api.Services.React
                     var pageIndex = page;
                     var p = Task.Run(async () =>
                     {
-                        await semaphore.WaitAsync();
+                        var semaphoreAcquired = false;
                         try
                         {
+                            await semaphore.WaitAsync(writerFailure.Token);
+                            semaphoreAcquired = true;
+                            writerFailure.Token.ThrowIfCancellationRequested();
+
                             var skip = (pageIndex - 1) * batchSize;
                             using var hqDb = HqSqlSugarContext.CreateConcurrentConnection(
                                 _configuration
@@ -2712,7 +2704,7 @@ namespace BlazorApp.Api.Services.React
                                     .Map<List<ContainerDetail>>(hqBatch)
                                     .Where(x => !string.IsNullOrWhiteSpace(x.ContainerCode))
                                     .ToList();
-                                await channel.Writer.WriteAsync(localBatch);
+                                await channel.Writer.WriteAsync(localBatch, writerFailure.Token);
                             }
                         }
                         catch (Exception ex)
@@ -2722,35 +2714,86 @@ namespace BlazorApp.Api.Services.React
                                 "[ReactSync] 货柜详情第{Page}批查询/映射失败",
                                 pageIndex
                             );
-                            System.Threading.Interlocked.Increment(ref fetchErrors);
                             Console.WriteLine(
                                 $"❌ [货柜详情同步] 第{pageIndex}批查询失败: {ex.Message}"
                             );
+                            // 读取或映射失败不能静默跳过，否则 TRUNCATE 后会提交不完整数据。
+                            throw;
                         }
                         finally
                         {
-                            semaphore.Release();
+                            if (semaphoreAcquired)
+                            {
+                                semaphore.Release();
+                            }
                         }
                     });
                     producers.Add(p);
                 }
 
-                await Task.WhenAll(producers);
-                Console.WriteLine("📥 [货柜详情同步] 所有生产者已完成，关闭 Channel");
-                channel.Writer.Complete();
-                await Task.WhenAll(consumers);
-                Console.WriteLine("📤 [货柜详情同步] 所有消费者已完成");
+                Exception? producerFailure = null;
+                Exception? writerException = null;
+                try
+                {
+                    await Task.WhenAll(producers);
+                    Console.WriteLine("📥 [货柜详情同步] 所有生产者已完成，关闭 Channel");
+                }
+                catch (Exception ex)
+                {
+                    producerFailure = ex;
+                    writerFailure.Cancel();
+                    channel.Writer.TryComplete(ex);
+                }
+                finally
+                {
+                    // 无论生产者成功或失败，都结束 writer；失败路径由外层统一回滚事务。
+                    channel.Writer.TryComplete();
+                    try
+                    {
+                        await writer;
+                    }
+                    catch (Exception ex)
+                    {
+                        writerException = ex;
+                    }
+                }
+
+                // writer 的真实写入异常优先于其触发的生产者取消异常，确保死锁/锁超时仍可被外层识别。
+                if (writerException != null
+                    && (
+                        producerFailure == null
+                        || (
+                            writerException is not OperationCanceledException
+                            && writerException
+                                is not System.Threading.Channels.ChannelClosedException
+                        )
+                    )
+                )
+                {
+                    ExceptionDispatchInfo.Capture(writerException).Throw();
+                }
+
+                if (producerFailure != null)
+                {
+                    ExceptionDispatchInfo.Capture(producerFailure).Throw();
+                }
+
+                if (writerException != null)
+                {
+                    ExceptionDispatchInfo.Capture(writerException).Throw();
+                }
+                Console.WriteLine("📤 [货柜详情同步] 本地单写入器已完成");
+
+                await mutationLockDb.Ado.CommitTranAsync();
+                mutationLockTransactionStarted = false;
 
                 result.AddedCount = totalAdded;
-                result.ErrorCount = totalErrors + fetchErrors;
-                result.IsSuccess = (totalErrors == 0 && fetchErrors == 0);
-                result.Message =
-                    (totalErrors == 0 && fetchErrors == 0)
-                        ? "ContainerDetail 同步成功"
-                        : "ContainerDetail 同步完成，但存在错误";
+                result.ErrorCount = 0;
+                result.IsSuccess = true;
+                result.Message = "ContainerDetail 同步成功";
 
                 Console.WriteLine(
-                    $"📊 [货柜详情同步] 同步完成: 新增 {totalAdded:N0} 条, 写入错误 {totalErrors:N0} 条, 查询错误 {fetchErrors} 批"
+                    $"📊 [货柜详情同步] 同步完成: 新增 {totalAdded:N0} 条"
                 );
                 Console.WriteLine(
                     $"⏱️ [货柜详情同步] 总耗时: {DateTime.Now - result.StartTime:hh\\:mm\\:ss}"
@@ -2758,14 +2801,28 @@ namespace BlazorApp.Api.Services.React
             }
             catch (Exception ex)
             {
+                if (mutationLockTransactionStarted && mutationLockDb?.Ado.Transaction != null)
+                {
+                    await RollbackContainerMutationTransactionSafelyAsync(mutationLockDb, ex);
+                    mutationLockTransactionStarted = false;
+                }
                 _logger.LogError(ex, "[ReactSync] ContainerDetail 同步异常");
                 result.IsSuccess = false;
                 result.Message = "ContainerDetail 同步异常";
+                if (ContainerMutationLock.TryResolveConflict(ex, out _))
+                {
+                    result.ErrorCode = ContainerMutationLock.BusyErrorCode;
+                }
                 Console.WriteLine($"💥 [货柜详情同步] 同步异常: {ex.Message}");
                 await _taskLogService.LogTaskFailureAsync(taskLog.Id, ex.Message);
             }
             finally
             {
+                if (mutationLockTransactionStarted && mutationLockDb?.Ado.Transaction != null)
+                {
+                    await mutationLockDb.Ado.RollbackTranAsync();
+                }
+                mutationLockDb?.Dispose();
                 result.EndTime = DateTime.Now;
                 result.Duration = result.EndTime - result.StartTime;
             }
@@ -2798,6 +2855,7 @@ namespace BlazorApp.Api.Services.React
                 await _localContext.Db.Ado.BeginTranAsync();
                 try
                 {
+                    await ContainerMutationLock.AcquireAllAsync(_localContext.Db);
                     await _localContext
                         .Db.Deleteable<Container>()
                         .AS("Container")
@@ -2836,6 +2894,7 @@ namespace BlazorApp.Api.Services.React
                             added += localBatch.Count;
                         }
                         catch (Exception ex)
+                            when (!ContainerMutationLock.TryResolveConflict(ex, out _))
                         {
                             _logger.LogError(
                                 ex,
@@ -2860,7 +2919,10 @@ namespace BlazorApp.Api.Services.React
                 }
                 catch (Exception exTran)
                 {
-                    await _localContext.Db.Ado.RollbackTranAsync();
+                    await RollbackContainerMutationTransactionSafelyAsync(
+                        _localContext.Db,
+                        exTran
+                    );
                     throw new Exception("Container 同步事务失败", exTran);
                 }
             }
@@ -2869,6 +2931,10 @@ namespace BlazorApp.Api.Services.React
                 _logger.LogError(ex, "[ReactSync] Container 同步异常");
                 result.IsSuccess = false;
                 result.Message = "Container 同步异常";
+                if (ContainerMutationLock.TryResolveConflict(ex, out _))
+                {
+                    result.ErrorCode = ContainerMutationLock.BusyErrorCode;
+                }
                 await _taskLogService.LogTaskFailureAsync(taskLog.Id, ex.Message);
             }
             finally
@@ -2881,6 +2947,33 @@ namespace BlazorApp.Api.Services.React
                 await _taskLogService.LogTaskSuccessAsync(taskLog.Id);
             }
             return result;
+        }
+
+        private async Task RollbackContainerMutationTransactionSafelyAsync(
+            ISqlSugarClient db,
+            Exception originalException
+        )
+        {
+            if (db.Ado.Transaction == null)
+            {
+                return;
+            }
+
+            try
+            {
+                await db.Ado.RollbackTranAsync();
+            }
+            catch (Exception rollbackException)
+            {
+                // 回滚失败不能覆盖 1205 或应用锁繁忙，否则控制器无法返回 409。
+                // SQL Server 终止事务后，SqlSugar 可能仍持有失效事务；复位后才能安全释放连接。
+                ContainerMutationLock.ResetFailedTransaction(db);
+                _logger.LogWarning(
+                    rollbackException,
+                    "货柜同步事务回滚失败，保留原始异常 {OriginalExceptionType}",
+                    originalException.GetType().Name
+                );
+            }
         }
 
         /// <summary>

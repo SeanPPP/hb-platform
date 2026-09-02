@@ -52,7 +52,7 @@ import {
   notification,
 } from 'antd'
 import type { ColumnsType, TableRef } from 'antd/es/table'
-import type { FilterDropdownProps, SorterResult } from 'antd/es/table/interface'
+import type { FilterDropdownProps, SorterResult, TablePaginationConfig } from 'antd/es/table/interface'
 import type { TFunction } from 'i18next'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
@@ -110,14 +110,13 @@ import {
 import { useAuthStore } from '../../../store/auth'
 import { useTabsStore } from '../../../store/tabs'
 import { P } from '../../../types/permissions'
-import type { ContainerDetail, ContainerDetailBatchScope, ContainerDetailQueryResult, ContainerDomesticSetCodeItem, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest, UpdateContainerRequest } from '../../../types/container'
+import type { ContainerDetail, ContainerDetailBatchScope, ContainerDomesticSetCodeItem, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest, UpdateContainerRequest } from '../../../types/container'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import {
   applyPendingContainerDetailPatches,
   applyContainerDetailEnglishNameUpdates,
   applyContainerDetailColumnState,
-  applyContainerDetailLoadedTextFilters,
   applyContainerDetailWarehouseStatusByProductCodes,
   buildContainerDetailQuery,
   buildContainerDetailClearEnglishNameUpdates,
@@ -125,21 +124,21 @@ import {
   buildContainerDetailEnglishNameUpdates,
   buildContainerDetailExportRows,
   buildContainerDetailMatchedDomesticDataUpdates,
-  buildContainerDetailMatchStatusUpdates,
   buildContainerDetailSaveFailureKeys,
   buildContainerDetailSuccessfulEnglishNameUpdates,
   buildPendingContainerDetailSavePlan,
   buildContainerDetailTagStats,
-  buildContainerDetailFloatRateUpdates,
   buildContainerDetailHqPushSelection,
   calculateContainerDetailImportPrice,
   calculateContainerDetailTotalAmount,
   calculateContainerDetailTotalVolume,
   calculateContainerDetailTransportCost,
   calculateContainerDetailUnitTransportCost,
-  cancelContainerDetailAppendRequest,
-  cancelContainerDetailReadAheadRequest,
-  canUseContainerDetailLocalTagFilters,
+  canReuseContainerDetailInitialPage,
+  CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+  CONTAINER_DETAIL_FULL_LOAD_LIMIT,
+  CONTAINER_DETAIL_INITIAL_PAGE_SIZE,
+  CONTAINER_DETAIL_PAGE_SIZE_OPTIONS,
   DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
   getContainerDetailCostMissingFields,
   getContainerDetailBatchCategoryProductCodes,
@@ -147,14 +146,12 @@ import {
   calculateContainerDetailTableScrollY,
   countContainerDetailInvalidTranslationResults,
   countSuccessfullySavedContainerDetailRows,
-  clearSavedPendingContainerDetailFields,
   extractPushToHqErrorResult,
   findContainerDetailRowsMissingCreateProductRetailPrice,
   findContainerDetailRowsMissingProductName,
-  finishContainerDetailAppendRequest,
-  finishContainerDetailReadAheadRequest,
   getContainerDetailEditableColumnKeysInOrder,
   getContainerDetailExportColumns,
+  applyContainerDetailLocalExportValues,
   getContainerDetailBarcode,
   getContainerDetailCategoryGuid,
   getContainerDetailEnglishName,
@@ -185,22 +182,20 @@ import {
   mergeContainerDetailPatch,
   mergePendingContainerDetailPatch,
   matchesContainerDetailSelectedTags,
-  omitContainerDetailTextFilters,
-  reconcilePendingContainerDetailSaveFailureKeys,
+  prepareContainerDetailWholeExportRows,
   rollbackContainerDetailWarehouseStatuses,
   settleScopedContainerDetailSave,
-  shouldLoadNextContainerDetailChunk,
-  startContainerDetailAppendRequest,
-  startContainerDetailReadAheadRequest,
+  resolveContainerDetailFullPage,
+  resolveContainerDetailInitialPage,
   CONTAINER_DETAIL_EXPORT_COLUMNS,
+  ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS,
   type ContainerDetailEditableCellDirection,
   type ContainerDetailColumnFilters,
   type ContainerDetailCostMissingField,
-  type ContainerDetailAppendRequest,
-  type ContainerDetailReadAheadRequest,
   type ContainerDetailExportColumnKey,
+  type ContainerDetailLoadMode,
   type ContainerDetailMatchTypeFilter,
   type ContainerDetailNewProductFilter,
   type ContainerDetailNumberRangeFilter,
@@ -231,6 +226,43 @@ import {
   type ContainerCategoryChange,
 } from './containerCategoryManageLogic'
 import ContainerTagFilters from './ContainerTagFilters'
+import {
+  buildContainerDetailDraftStorageKey,
+  captureContainerDetailDraftFieldVersions,
+  captureSuccessfullySavedContainerDetailDraftFieldVersions,
+  clearContainerDetailDraftFieldsIfVersionMatches,
+  createContainerDetailDraftLocateResetPlan,
+  clearContainerDetailDraftFailuresForPatches,
+  countPendingContainerDetailFields,
+  getContainerDetailDraftFieldFailure,
+  getContainerDetailDraftExternalApplyMode,
+  markContainerDetailDraftSaveFailure,
+  mergeContainerDetailDraftNewerFields,
+  readContainerDetailDraft,
+  reconcileContainerDetailDraftFailures,
+  refreshContainerDetailDraftFieldVersions,
+  scopeContainerDetailRowsToContainer,
+  settleContainerDetailDraftSaveSuccess,
+  shouldConsumePendingContainerDetailLocate,
+  shouldRetryPendingContainerDetailLocateReset,
+  writeContainerDetailDraft,
+  type ContainerDetailDraftFailureMap,
+  type ContainerDetailDraftState,
+  type ContainerDetailDraftStorage,
+} from './containerDetailDraft'
+import {
+  applyContainerDetailAutoSavePatches,
+  buildContainerDetailAutoSaveContextKey,
+  createContainerDetailAutoSaveQueue,
+  isContainerDetailAutoSaveContextCurrent,
+  resolveContainerDetailAutoSaveLifecycleAction,
+  type ContainerDetailAutoSaveFailure,
+  type ContainerDetailAutoSaveField,
+  type ContainerDetailAutoSaveIntent,
+  type ContainerDetailAutoSavePatch,
+  type ContainerDetailAutoSaveQueue,
+  type ContainerDetailAutoSaveSnapshot,
+} from './containerDetailAutoSaveQueue'
 import useContainerSetCode from './useContainerSetCode'
 import {
   collectCategoryExpandedKeys,
@@ -249,8 +281,18 @@ import { MeasuredTable } from '../../../components/MeasuredTable'
 type TextColumnFilterKey = 'itemNumber' | 'barcode' | 'productName' | 'englishName' | 'remark'
 type NumberColumnFilterKey = 'containerPieces' | 'middlePackQuantity' | 'containerQuantity' | 'packingQuantity' | 'unitVolume' | 'domesticPrice' | 'floatRate' | 'transportCost' | 'unitTransportCost' | 'warehouseImportPrice' | 'lastOEMPrice' | 'importPrice' | 'oemPrice'
 type EnumColumnFilterKey = 'productTypes' | 'newProductStates' | 'matchTypes' | 'warehouseStatus'
-type PendingContainerDetailPageSavePlan = PendingContainerDetailSavePlan & { saveKeys: string[] }
+type PendingContainerDetailPageSavePlan = PendingContainerDetailSavePlan & {
+  saveKeys: string[]
+  draftContext: ContainerDetailDraftContext
+  draftFieldVersionSnapshot: Record<string, string>
+}
+type ContainerDetailDraftContext = {
+  userGuid: string
+  containerGuid: string
+  draftIdentity: string
+}
 type ContainerDetailExportFormat = 'excel' | 'pdf'
+type ContainerDetailExportScope = 'selectionOrFiltered' | 'wholeContainer'
 type ContainerExistingProductUpdateField =
   | 'domesticPrice'
   | 'importPrice'
@@ -296,6 +338,52 @@ function formatCurrency(value?: number, symbol = '$', digits = 2) {
 
 function rowKey(row: ContainerDetail) {
   return row.hguid || String(row.id)
+}
+
+function buildContainerDetailAutoSaveUpdate(
+  row: ContainerDetail,
+  patch: ContainerDetailAutoSavePatch,
+  container: Pick<ContainerMain, '汇率' | '运费' | '总体积'> | null,
+): UpdateContainerDetailRequest {
+  const nextRow = mergeContainerDetailPatch(row, patch)
+  const update: UpdateContainerDetailRequest = { hguid: row.hguid, ...patch }
+  const updatesPackageMetric = '单件装箱数' in patch || '单件体积' in patch
+  const updatesCost = updatesPackageMetric || '调整浮率' in patch
+
+  if (updatesPackageMetric && nextRow.装柜件数 != null && nextRow.单件装箱数 != null) {
+    update.装柜数量 = Number((nextRow.装柜件数 * nextRow.单件装箱数).toFixed(2))
+  }
+
+  if (updatesPackageMetric) {
+    const volumeRow = mergeContainerDetailPatch(nextRow, update as Partial<ContainerDetail>)
+    update.合计装柜体积 = calculateContainerDetailTotalVolume(volumeRow)
+    update.合计装柜金额 = calculateContainerDetailTotalAmount(volumeRow)
+  }
+
+  if (updatesCost) {
+    const pricedRow = mergeContainerDetailPatch(nextRow, update as Partial<ContainerDetail>)
+    const transportCost = calculateContainerDetailTransportCost(pricedRow, container)
+    update.运输成本 = transportCost
+    update.进口价格 = calculateContainerDetailImportPrice(
+      { ...pricedRow, 运输成本: transportCost },
+      container,
+      pricedRow.调整浮率 ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
+      transportCost,
+    )
+    // 包装、体积或浮率联动的进货价只更新货柜明细，不能覆盖仓库人工价。
+    update.SkipRelatedProductSync = true
+  }
+
+  return update
+}
+
+function getContainerDetailDraftStorage(): ContainerDetailDraftStorage | null {
+  if (typeof window === 'undefined') return null
+  try {
+    return window.localStorage
+  } catch {
+    return null
+  }
 }
 
 const containerStatusOptions = [
@@ -477,13 +565,18 @@ function TwoLineText({ value }: { value?: string }) {
 const CONTAINER_DETAIL_TABLE_SCROLL_X = 2440
 const CONTAINER_DETAIL_TABLE_SCROLL_Y = 620
 const CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH = 56
-const CONTAINER_DETAIL_PAGE_SIZE = 50
 const CONTAINER_DETAIL_COLUMN_ORDER_STORAGE_KEY = 'hbweb_rv.containerDetail.columnOrder.v3'
 const CONTAINER_DETAIL_COLUMN_WIDTH_STORAGE_KEY = 'hbweb_rv.containerDetail.columnWidths.v1'
 const CONTAINER_DETAIL_MIN_COLUMN_WIDTH = 48
 const CONTAINER_DETAIL_MAX_COLUMN_WIDTH = 420
 const DEFAULT_CONTAINER_DETAIL_SORT: ContainerDetailSortState = { field: 'itemNumber', order: 'ascend' }
 const CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS = ['englishName', 'packingQuantity', 'unitVolume', 'middlePackQuantity', 'floatRate', 'importPrice', 'oemPrice', 'remark'] as const
+const WHOLE_CONTAINER_DETAIL_EXPORT_LABEL_KEYS: Partial<Record<ContainerDetailExportColumnKey, string>> = {
+  index: 'containers.columns.index',
+  productName: 'containers.fields.productName',
+  containerPieces: 'containers.fields.containerPieces',
+  containerQuantity: 'containers.fields.containerQuantity',
+}
 const EMPTY_CONTAINER_DETAIL_TAG_STATS = {
   all: 0,
   new: 0,
@@ -496,6 +589,9 @@ const EMPTY_CONTAINER_DETAIL_TAG_STATS = {
   set: 0,
   multi: 0,
   setChild: 0,
+  productCodeMatched: 0,
+  supplierItemMatched: 0,
+  unmatched: 0,
 }
 
 type ContainerDetailEditableColumnKey = typeof CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS[number]
@@ -637,20 +733,35 @@ export default function ContainerDetailPage() {
   const containerGuid = route?.params.containerGuid || ''
   const viewport = useContainerDetailViewport()
   const access = useAuthStore((state) => state.access)
+  const currentUserGuid = useAuthStore((state) => state.currentUser?.userGUID ?? '')
   const updateTabTitle = useTabsStore((state) => state.updateTabTitle)
   // 记录当前货柜已完成首次加载，保活 Tab 恢复时保留旧内容并静默刷新。
   const loadedContainerGuidRef = useRef<string | null>(null)
   const visibleContainerGuidRef = useRef<string | null>(null)
-  const lastLoadedContainerDetailSuccessRef = useRef<{ containerGuid: string; queryKey: string } | null>(null)
+  const lastLoadedContainerDetailSuccessRef = useRef<{
+    containerGuid: string
+    queryKey: string
+    generation: number
+  } | null>(null)
   const headerLoadRequestIdRef = useRef(0)
   const containerDetailLoadRequestIdRef = useRef(0)
   const containerDetailReconcileGenerationRef = useRef(0)
   const [loading, setLoading] = useState(false)
   const [detailLoading, setDetailLoading] = useState(false)
-  const [detailLoadingMore, setDetailLoadingMore] = useState(false)
   const [detailItemsTotal, setDetailItemsTotal] = useState(0)
-  const [detailHasMore, setDetailHasMore] = useState(false)
-  const [detailPageNumber, setDetailPageNumber] = useState(1)
+  const [detailPagingState, setDetailPagingState] = useState<{
+    containerGuid: string
+    mode: ContainerDetailLoadMode
+    pageNumber: number
+    pageSize: number
+    scopeKey: string
+  }>(() => ({
+    containerGuid,
+    mode: 'probe',
+    pageNumber: 1,
+    pageSize: CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+    scopeKey: '',
+  }))
   const [remoteTagStats, setRemoteTagStats] = useState<ContainerDetailTagStats>(EMPTY_CONTAINER_DETAIL_TAG_STATS)
   const [savingHeader, setSavingHeader] = useState(false)
   const [container, setContainer] = useState<ContainerMain | null>(null)
@@ -661,6 +772,7 @@ export default function ContainerDetailPage() {
     productName?: string
   } | null>(null)
   const [pendingDetailPatches, setPendingDetailPatches] = useState<PendingContainerDetailPatchMap>({})
+  const [pendingDetailFailures, setPendingDetailFailures] = useState<ContainerDetailDraftFailureMap>({})
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
   const [selectedTagFilters, setSelectedTagFilters] = useState<ContainerDetailTagFilter[]>([])
   const [categories, setCategories] = useState<WarehouseCategoryNode[]>([])
@@ -696,6 +808,7 @@ export default function ContainerDetailPage() {
   const [editingProductNameValue, setEditingProductNameValue] = useState('')
   const [exporting, setExporting] = useState(false)
   const [exportProgress, setExportProgress] = useState(0)
+  const [exportProgressMessage, setExportProgressMessage] = useState('')
   const [exportColumnModalOpen, setExportColumnModalOpen] = useState(false)
   const [exportFormat, setExportFormat] = useState<ContainerDetailExportFormat>('excel')
   const [selectedExportColumnKeys, setSelectedExportColumnKeys] = useState<ContainerDetailExportColumnKey[]>(DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS)
@@ -707,6 +820,13 @@ export default function ContainerDetailPage() {
   const [createProductsLoading, setCreateProductsLoading] = useState(false)
   const [submitContainerLoading, setSubmitContainerLoading] = useState(false)
   const [pendingDetailSaveCount, setPendingDetailSaveCount] = useState(0)
+  const [autoSaveSnapshot, setAutoSaveSnapshot] = useState<ContainerDetailAutoSaveSnapshot>({
+    pendingFieldCount: 0,
+    runningFieldCount: 0,
+    failureCount: 0,
+    unsavedFieldCount: 0,
+    failures: [],
+  })
   const [pendingWarehouseStatusCodes, setPendingWarehouseStatusCodes] = useState<Set<string>>(() => new Set())
   // 套装码弹窗状态 — 由 useContainerSetCode hook 管理
   const {
@@ -733,25 +853,107 @@ export default function ContainerDetailPage() {
   const createProductsLoadingRef = useRef(false)
   const submitContainerLoadingRef = useRef(false)
   const detailAbortControllerRef = useRef<AbortController | null>(null)
-  const detailAppendRequestRef = useRef<ContainerDetailAppendRequest | null>(null)
-  const detailReadAheadRequestRef = useRef<ContainerDetailReadAheadRequest<ContainerDetailQueryResult> | null>(null)
   const detailResetRequestRef = useRef<AbortController | null>(null)
-  const failedDetailAppendRequestKeyRef = useRef<string | null>(null)
+  const detailStatsAbortControllerRef = useRef<AbortController | null>(null)
+  const detailStatsRequestIdRef = useRef(0)
+  const detailStatsTimerRef = useRef<number | null>(null)
+  const lastLoadedDetailStatsKeyRef = useRef<string | null>(null)
   const reloadCurrentDetailRef = useRef<() => Promise<void>>(async () => undefined)
   const currentContainerGuidRef = useRef(containerGuid)
   currentContainerGuidRef.current = containerGuid
+  const rowsRef = useRef(rows)
+  rowsRef.current = rows
+  const containerRef = useRef(container)
+  containerRef.current = container
   const pendingDetailPatchesRef = useRef<PendingContainerDetailPatchMap>({})
-  const pendingDetailContainerGuidRef = useRef(containerGuid)
+  const pendingDetailFailuresRef = useRef<ContainerDetailDraftFailureMap>({})
+  const pendingDetailFieldVersionsRef = useRef<Record<string, string>>({})
+  const [isDetailDraftMemoryOnly, setIsDetailDraftMemoryOnly] = useState(false)
+  const isDetailDraftMemoryOnlyRef = useRef(false)
+  const detailRowsContainerGuidRef = useRef(containerGuid)
+  const pendingDetailDraftIdentityRef = useRef('')
+  const autoSaveContextKeyRef = useRef('')
+  const autoSaveSnapshotRef = useRef(autoSaveSnapshot)
+  autoSaveSnapshotRef.current = autoSaveSnapshot
+  const restoredDetailDraftNoticeKeyRef = useRef('')
   const pendingDetailSavePromisesRef = useRef<Set<Promise<unknown>>>(new Set())
   const failedDetailSaveKeysRef = useRef<Set<string>>(new Set())
   const failedPendingDetailSaveKeysRef = useRef<Set<string>>(new Set())
   const ignoreProductNameBlurRef = useRef(false)
+  const autoSaveEditBaselineRef = useRef<Map<string, unknown>>(new Map())
   const detailTableRef = useRef<TableRef | null>(null)
   const lastDetailTableScrollTopRef = useRef(0)
+  const containerDetailTabActiveRef = useRef(active)
+  containerDetailTabActiveRef.current = active
   const wasContainerDetailTabActiveRef = useRef(active)
   const detailTableRestoreFrameRef = useRef<number | null>(null)
   const editableCellRefs = useRef<Map<string, ContainerDetailFocusableCell>>(new Map())
   const pendingEditableCellFocusKeyRef = useRef<string | null>(null)
+  const pendingDraftLocateAfterAppendRef = useRef<{
+    awaitingUnfilteredReset: boolean
+    queryKey: string
+    generation: number
+  } | null>(null)
+  const autoSaveSendBatchRef = useRef<(
+    contextKey: string,
+    intents: ContainerDetailAutoSaveIntent[],
+  ) => Promise<Awaited<ReturnType<typeof batchUpdateDetails>> | void>>(async () => undefined)
+  const autoSaveSnapshotHandlerRef = useRef<(
+    contextKey: string,
+    snapshot: ContainerDetailAutoSaveSnapshot,
+  ) => void>(() => undefined)
+  const autoSaveContextSnapshotsRef = useRef<Map<string, {
+    containerGuid: string
+    rows: ContainerDetail[]
+    container: Pick<ContainerMain, '汇率' | '运费' | '总体积'> | null
+  }>>(new Map())
+  const autoSaveQueueRef = useRef<ContainerDetailAutoSaveQueue | null>(null)
+  if (!autoSaveQueueRef.current) {
+    autoSaveQueueRef.current = createContainerDetailAutoSaveQueue({
+      sendBatch: (contextKey, intents) => autoSaveSendBatchRef.current(contextKey, intents),
+      onBatchSuccess: (contextKey) => {
+        if (contextKey !== autoSaveContextKeyRef.current) return
+        const activeItemLoad = detailAbortControllerRef.current
+        if (!activeItemLoad || activeItemLoad.signal.aborted) return
+        // running patch 仍在覆盖页面时先废弃旧 item query；各请求的 finally 继续负责正常结束 loading。
+        activeItemLoad.abort()
+        containerDetailLoadRequestIdRef.current += 1
+        containerDetailReconcileGenerationRef.current += 1
+      },
+      onSnapshotChange: (contextKey, snapshot) => autoSaveSnapshotHandlerRef.current(contextKey, snapshot),
+      onContextDisposed: (contextKey) => autoSaveContextSnapshotsRef.current.delete(contextKey),
+      getRequestErrorMessage: (error) => (
+        error instanceof Error && error.message
+          ? error.message
+          : t('containers.messages.detailSaveFailed', '货柜明细保存失败，请稍后重试')
+      ),
+    })
+  }
+  autoSaveSnapshotHandlerRef.current = (contextKey, snapshot) => {
+    if (contextKey !== autoSaveContextKeyRef.current) return
+    autoSaveSnapshotRef.current = snapshot
+    setAutoSaveSnapshot(snapshot)
+    setPendingDetailSaveCount(
+      snapshot.pendingFieldCount
+      + snapshot.runningFieldCount
+      + pendingDetailSavePromisesRef.current.size,
+    )
+  }
+  if (
+    isContainerDetailAutoSaveContextCurrent(
+      autoSaveContextKeyRef.current,
+      containerGuid,
+      pendingDetailDraftIdentityRef.current,
+    )
+    && lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
+    && visibleContainerGuidRef.current === containerGuid
+  ) {
+    autoSaveContextSnapshotsRef.current.set(autoSaveContextKeyRef.current, {
+      containerGuid,
+      rows,
+      container,
+    })
+  }
   const [headerEditing, setHeaderEditing] = useState(false)
   const [headerForm, setHeaderForm] = useState<{
     货柜编号?: string
@@ -771,20 +973,226 @@ export default function ContainerDetailPage() {
     }),
   )
 
-  const updatePendingDetailPatches = (
-    updater: (current: PendingContainerDetailPatchMap) => PendingContainerDetailPatchMap,
+  const applyPendingDetailDraftState = (
+    nextState: ContainerDetailDraftState,
+    persist = true,
+    changedPatches: PendingContainerDetailPatch[] = [],
+    reloadRemovedFieldBaseline = false,
   ) => {
-    const next = updater(pendingDetailPatchesRef.current)
-    pendingDetailPatchesRef.current = next
-    const currentFailureKeys = failedPendingDetailSaveKeysRef.current
-    const reconciledFailureKeys = reconcilePendingContainerDetailSaveFailureKeys(
-      currentFailureKeys,
-      next,
+    const previousPendingPatches = pendingDetailPatchesRef.current
+    const previousFailures = pendingDetailFailuresRef.current
+    const previousFieldVersions = pendingDetailFieldVersionsRef.current
+    const failures = reconcileContainerDetailDraftFailures(
+      nextState.failures,
+      nextState.pendingPatches,
     )
-    currentFailureKeys.clear()
-    reconciledFailureKeys.forEach((key) => currentFailureKeys.add(key))
-    setPendingDetailPatches(next)
+    const fieldVersions = refreshContainerDetailDraftFieldVersions(
+      nextState.pendingPatches,
+      nextState.fieldVersions ?? pendingDetailFieldVersionsRef.current,
+      changedPatches,
+    )
+    pendingDetailPatchesRef.current = nextState.pendingPatches
+    pendingDetailFailuresRef.current = failures
+    pendingDetailFieldVersionsRef.current = fieldVersions
+    failedPendingDetailSaveKeysRef.current = new Set(Object.keys(failures))
+    setPendingDetailPatches(nextState.pendingPatches)
+    setPendingDetailFailures(failures)
+    if (persist) {
+      const removedFieldVersions = changedPatches.reduce<Record<string, string>>((next, patch) => {
+        const currentPatch = nextState.pendingPatches[patch.hguid]
+        const addIfRemoved = (field: string, removed: boolean) => {
+          const key = `${patch.hguid}:${field}`
+          if (removed && previousFieldVersions[key]) next[key] = previousFieldVersions[key]
+        }
+        if ('进口价格' in patch) addIfRemoved('进口价格', currentPatch?.进口价格 == null)
+        if ('贴牌价格' in patch) addIfRemoved('贴牌价格', currentPatch?.贴牌价格 == null)
+        if ('英文名称' in patch || patch.ClearEnglishName === true) {
+          addIfRemoved('英文名称', currentPatch?.英文名称 === undefined && currentPatch?.ClearEnglishName !== true)
+        }
+        return next
+      }, {})
+      const persisted = writeContainerDetailDraft(
+        getContainerDetailDraftStorage(),
+        currentUserGuid,
+        containerGuid,
+        { pendingPatches: nextState.pendingPatches, failures, fieldVersions },
+        undefined,
+        false,
+        changedPatches,
+        removedFieldVersions,
+      )
+      // 降级提示是 sticky：一次字段写入失败后，不能因另一个字段写成功就掩盖刷新丢失风险。
+      if (!persisted) {
+        isDetailDraftMemoryOnlyRef.current = true
+        setIsDetailDraftMemoryOnly(true)
+        if (Object.keys(removedFieldVersions).length > 0) {
+          // 删除持久化失败时必须回滚被清空字段；否则刷新会复活旧值而当前页面却失去恢复入口。
+          const recoveredPatches = { ...nextState.pendingPatches }
+          const recoveredFailures = { ...failures }
+          const recoveredVersions = { ...fieldVersions }
+          Object.keys(removedFieldVersions).forEach((fieldKey) => {
+            const separatorIndex = fieldKey.lastIndexOf(':')
+            const hguid = fieldKey.slice(0, separatorIndex)
+            const field = fieldKey.slice(separatorIndex + 1)
+            const previousPatch = previousPendingPatches[hguid]
+            if (!previousPatch) return
+            const patch = { ...(recoveredPatches[hguid] ?? { hguid }) }
+            if (field === '进口价格') patch.进口价格 = previousPatch.进口价格
+            if (field === '贴牌价格') patch.贴牌价格 = previousPatch.贴牌价格
+            if (field === '英文名称') {
+              patch.英文名称 = previousPatch.英文名称
+              patch.ClearEnglishName = previousPatch.ClearEnglishName
+            }
+            recoveredPatches[hguid] = patch
+            if (previousFieldVersions[fieldKey]) recoveredVersions[fieldKey] = previousFieldVersions[fieldKey]
+            const previousFailure = previousFailures[fieldKey]
+            if (previousFailure) recoveredFailures[fieldKey] = previousFailure
+            const previousRowFailureKey = `${hguid}:*`
+            const previousRowFailure = previousFailures[previousRowFailureKey]
+            if (previousRowFailure) recoveredFailures[previousRowFailureKey] = previousRowFailure
+          })
+          const reconciledRecoveredFailures = reconcileContainerDetailDraftFailures(recoveredFailures, recoveredPatches)
+          pendingDetailPatchesRef.current = recoveredPatches
+          pendingDetailFailuresRef.current = reconciledRecoveredFailures
+          pendingDetailFieldVersionsRef.current = recoveredVersions
+          failedPendingDetailSaveKeysRef.current = new Set(Object.keys(reconciledRecoveredFailures))
+          setPendingDetailPatches(recoveredPatches)
+          setPendingDetailFailures(reconciledRecoveredFailures)
+          setRows((items) => applyPendingContainerDetailPatches(items, recoveredPatches))
+        }
+      } else {
+        if (reloadRemovedFieldBaseline && Object.keys(removedFieldVersions).length > 0) {
+          // 清空草稿字段表示取消该本地编辑；回读服务端基线并在加载完成时重新叠加同批剩余草稿。
+          void reloadCurrentDetailRef.current()
+        }
+        if (countPendingContainerDetailFields(nextState.pendingPatches) === 0) {
+          isDetailDraftMemoryOnlyRef.current = false
+          setIsDetailDraftMemoryOnly(false)
+        }
+      }
+    }
   }
+
+  const restorePendingDetailDraft = () => {
+    if (!currentUserGuid || !containerGuid) return
+    const draftIdentity = buildContainerDetailDraftStorageKey(currentUserGuid, containerGuid)
+    if (pendingDetailDraftIdentityRef.current === draftIdentity) return
+
+    // 草稿命名空间变化后，旧货柜/旧用户的行必须立即失效，等当前请求成功后再叠加新草稿。
+    detailRowsContainerGuidRef.current = ''
+    lastLoadedContainerDetailSuccessRef.current = null
+    rowsRef.current = []
+    autoSaveEditBaselineRef.current.clear()
+    setRows([])
+    setSelectedRowKeys([])
+    const restoredDraft = readContainerDetailDraft(
+      getContainerDetailDraftStorage(),
+      currentUserGuid,
+      containerGuid,
+    )
+    const previousAutoSaveContextKey = autoSaveContextKeyRef.current
+    pendingDetailDraftIdentityRef.current = draftIdentity
+    const nextAutoSaveContextKey = buildContainerDetailAutoSaveContextKey(containerGuid, draftIdentity)
+    if (previousAutoSaveContextKey && previousAutoSaveContextKey !== nextAutoSaveContextKey) {
+      autoSaveQueueRef.current?.discardContext(previousAutoSaveContextKey)
+    }
+    autoSaveContextKeyRef.current = nextAutoSaveContextKey
+    if (!autoSaveContextSnapshotsRef.current.has(nextAutoSaveContextKey)) {
+      autoSaveContextSnapshotsRef.current.set(nextAutoSaveContextKey, {
+        containerGuid,
+        rows: [],
+        container: null,
+      })
+    }
+    const resetAutoSaveSnapshot: ContainerDetailAutoSaveSnapshot = {
+      pendingFieldCount: 0,
+      runningFieldCount: 0,
+      failureCount: 0,
+      unsavedFieldCount: 0,
+      failures: [],
+    }
+    autoSaveSnapshotRef.current = resetAutoSaveSnapshot
+    setAutoSaveSnapshot(resetAutoSaveSnapshot)
+    pendingDetailSavePromisesRef.current.clear()
+    failedDetailSaveKeysRef.current = new Set()
+    setPendingDetailSaveCount(0)
+    setDetailSaveSubmitting(false)
+    applyPendingDetailDraftState(restoredDraft, false)
+    isDetailDraftMemoryOnlyRef.current = false
+    setIsDetailDraftMemoryOnly(false)
+
+    if (
+      active
+      && restoredDraft.restored
+      && restoredDetailDraftNoticeKeyRef.current !== draftIdentity
+    ) {
+      restoredDetailDraftNoticeKeyRef.current = draftIdentity
+      message.info(t(
+        'containers.messages.localDraftRestored',
+        '已恢复 {{count}} 项本地未保存草稿',
+        { count: countPendingContainerDetailFields(restoredDraft.pendingPatches) },
+      ))
+    }
+  }
+
+  useEffect(() => {
+    restorePendingDetailDraft()
+    const contextKey = autoSaveContextKeyRef.current
+    const lifecycleAction = resolveContainerDetailAutoSaveLifecycleAction(active, contextKey)
+    if (lifecycleAction === 'discard') {
+      autoSaveQueueRef.current?.discardContext(contextKey)
+      return
+    }
+    if (lifecycleAction !== 'attach') return
+
+    const nextAutoSaveSnapshot = autoSaveQueueRef.current?.attachContext(contextKey)
+    if (!nextAutoSaveSnapshot) return
+    autoSaveSnapshotRef.current = nextAutoSaveSnapshot
+    setAutoSaveSnapshot(nextAutoSaveSnapshot)
+    setPendingDetailSaveCount(
+      nextAutoSaveSnapshot.pendingFieldCount
+      + nextAutoSaveSnapshot.runningFieldCount
+      + pendingDetailSavePromisesRef.current.size,
+    )
+    // 身份或货柜变化时必须先切换草稿命名空间，再由后续加载覆盖服务端行。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, currentUserGuid, containerGuid])
+
+  useEffect(() => () => {
+    const contextKey = autoSaveContextKeyRef.current
+    if (contextKey) autoSaveQueueRef.current?.discardContext(contextKey)
+  }, [])
+
+  const applyExternalPendingDetailDraftState = (nextDraft: ContainerDetailDraftState) => {
+    const currentDraft: ContainerDetailDraftState = {
+      pendingPatches: pendingDetailPatchesRef.current,
+      failures: pendingDetailFailuresRef.current,
+      fieldVersions: pendingDetailFieldVersionsRef.current,
+    }
+    const applyMode = getContainerDetailDraftExternalApplyMode(currentDraft, nextDraft)
+    applyPendingDetailDraftState(nextDraft, false)
+    if (applyMode === 'reload') {
+      // 外部清空字段时受控单元格必须回读服务端值；reload 自带货柜/查询代次保护。
+      void reloadCurrentDetailRef.current()
+      return
+    }
+    setRows((items) => applyPendingContainerDetailPatches(items, nextDraft.pendingPatches))
+  }
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !currentUserGuid || !containerGuid) return
+    const draftPrefix = `${buildContainerDetailDraftStorageKey(currentUserGuid, containerGuid)}:`
+    const onStorage = (event: StorageEvent) => {
+      if (event.storageArea !== window.localStorage || !event.key?.startsWith(draftPrefix)) return
+      // 本页存在未落盘字段时不能用 storage 的旧快照替换内存，避免直接丢失当前编辑。
+      if (isDetailDraftMemoryOnlyRef.current) return
+      // 另一标签页更新同一字段时重新合并字段记录，禁止用当前标签的旧快照覆盖它。
+      applyExternalPendingDetailDraftState(readContainerDetailDraft(window.localStorage, currentUserGuid, containerGuid))
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUserGuid, containerGuid])
 
   const containerDetailTabTitle = container?.货柜编号 ? t('containers.detailTitleWithNumber', { number: container.货柜编号 }) : undefined
   const containerDetailTabKey = containerGuid ? `/warehouse/container/detail/${containerGuid}` : undefined
@@ -798,6 +1206,10 @@ export default function ContainerDetailPage() {
     updateTabTitle(containerDetailTabKey, containerDetailTabTitle)
   }, [active, containerDetailTabKey, containerDetailTabTitle, updateTabTitle])
 
+  const layoutDetailLoadMode: ContainerDetailLoadMode = detailPagingState.containerGuid === containerGuid
+    ? detailPagingState.mode
+    : 'probe'
+
   useEffect(() => {
     let frameId: number | null = null
 
@@ -805,9 +1217,15 @@ export default function ContainerDetailPage() {
       const toolbarHeight = Math.ceil(toolbarElement?.getBoundingClientRect().height ?? 0)
       const tableHeaderHeight = Math.ceil(tableRegionElement?.querySelector('.ant-table-thead')?.getBoundingClientRect().height ?? 0)
       const tableFooterHeight = Math.ceil(tableRegionElement?.querySelector('.ant-table-footer')?.getBoundingClientRect().height ?? 0)
+      const tablePaginationElement = tableRegionElement?.querySelector('.ant-table-pagination') as HTMLElement | null
+      const paginationStyle = tablePaginationElement ? window.getComputedStyle(tablePaginationElement) : null
+      const paginationMarginHeight = paginationStyle
+        ? (Number.parseFloat(paginationStyle.marginTop) || 0) + (Number.parseFloat(paginationStyle.marginBottom) || 0)
+        : 0
+      const paginationHeight = Math.ceil((tablePaginationElement?.getBoundingClientRect().height ?? 0) + paginationMarginHeight)
       const tableBodyElement = tableRegionElement?.querySelector('.ant-table-body') as HTMLElement | null
       const horizontalScrollbarHeight = tableBodyElement ? Math.max(0, tableBodyElement.offsetHeight - tableBodyElement.clientHeight) : 0
-      const tableChromeHeight = tableHeaderHeight + tableFooterHeight + horizontalScrollbarHeight
+      const tableChromeHeight = tableHeaderHeight + tableFooterHeight + paginationHeight + horizontalScrollbarHeight
 
       setDetailLayoutMetrics((current) => {
         if (
@@ -849,7 +1267,7 @@ export default function ContainerDetailPage() {
       observer.disconnect()
       window.removeEventListener('resize', scheduleMeasure)
     }
-  }, [gridContentElement, tableRegionElement, toolbarElement, detailTableRenderKey, exporting, exportProgress])
+  }, [gridContentElement, tableRegionElement, toolbarElement, detailTableRenderKey, exporting, exportProgress, layoutDetailLoadMode])
 
   useEffect(() => {
     setCategoryLoading(true)
@@ -920,57 +1338,78 @@ export default function ContainerDetailPage() {
     }
   }
 
-  const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => omitContainerDetailTextFilters(columnFilters), [columnFilters])
-
-  const baseDetailQuery = useMemo(() => buildContainerDetailQuery({
+  const hasCurrentDetailPagingState = detailPagingState.containerGuid === containerGuid
+  const detailLoadMode = hasCurrentDetailPagingState ? detailPagingState.mode : 'probe'
+  const detailPageSize = hasCurrentDetailPagingState
+    ? detailPagingState.pageSize
+    : CONTAINER_DETAIL_DEFAULT_PAGE_SIZE
+  const pagedDetailScopeKey = useMemo(() => JSON.stringify({
     containerGuid,
-    filters: remoteColumnFilters,
+    filters: columnFilters,
+    selectedTags: selectedTagFilters,
+    sortState,
+    pageSize: detailPageSize,
+  }), [columnFilters, containerGuid, detailPageSize, selectedTagFilters, sortState])
+  const detailPageNumber = hasCurrentDetailPagingState
+    && detailPagingState.scopeKey === pagedDetailScopeKey
+    ? detailPagingState.pageNumber
+    : 1
+  const detailHasMore = detailLoadMode === 'paged'
+    && detailPageNumber * detailPageSize < detailItemsTotal
+
+  const initialDetailQuery = useMemo(() => buildContainerDetailQuery({
+    containerGuid,
+    filters: {},
+    sortState: DEFAULT_CONTAINER_DETAIL_SORT,
     pageNumber: 1,
-    pageSize: CONTAINER_DETAIL_PAGE_SIZE,
-  }), [containerGuid, remoteColumnFilters])
-
-  const baseDetailQueryKey = useMemo(() => JSON.stringify(baseDetailQuery), [baseDetailQuery])
-  const loadedDetailQueryKey = lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
-    ? lastLoadedContainerDetailSuccessRef.current?.queryKey
-    : null
-  const hasLoadedFullBaseDetailQuery = canUseContainerDetailLocalTagFilters({
-    loadedQueryKey: loadedDetailQueryKey,
-    baseQueryKey: baseDetailQueryKey,
-    loadedRowsLength: rows.length,
-    itemsTotal: detailItemsTotal,
-    hasMore: detailHasMore,
-    loading: detailLoading,
-    loadingMore: detailLoadingMore,
-  })
-  // 标签过滤不再进入后端查询；未全量加载时由前端继续补齐 base 查询后再过滤。
-  const detailQuery = baseDetailQuery
-  const detailQueryKey = baseDetailQueryKey
-  // 远程加载 effect 只依赖这个稳定 key，避免视口状态变化触发重复拉取。
-  const activeLoadQueryKey = detailQueryKey
-
-  const reconcileLoadedMatchStatus = async (products: ContainerDetail[], reconcileGeneration: number) => {
-    const rowsNeedingMatchStatus = products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))
-    const detectionItems = buildContainerDetailDetectionItems(rowsNeedingMatchStatus)
-    if (!detectionItems.length) return
-
-    try {
-      const detected = await detectProducts(detectionItems)
-      if (containerDetailReconcileGenerationRef.current !== reconcileGeneration) {
-        return
-      }
-      const updates = buildContainerDetailMatchStatusUpdates(rowsNeedingMatchStatus, detected)
-      if (!updates.length) return
-      // 加载态只校正表格展示状态，不写库，避免打开页面时产生业务字段副作用。
-      setRows((items) =>
-        items.map((item) => {
-          const match = updates.find((update) => update.hguid === item.hguid)
-          return match ? mergeContainerDetailPatch(item, match as Partial<ContainerDetail>) : item
-        }),
-      )
-    } catch (error) {
-      console.error('货柜明细匹配状态校正失败', error)
-    }
-  }
+    pageSize: CONTAINER_DETAIL_INITIAL_PAGE_SIZE,
+    includeTotal: true,
+    includeStats: false,
+  }), [containerGuid])
+  const fullDetailQuery = useMemo(() => buildContainerDetailQuery({
+    containerGuid,
+    filters: {},
+    sortState: DEFAULT_CONTAINER_DETAIL_SORT,
+    pageNumber: 1,
+    pageSize: CONTAINER_DETAIL_FULL_LOAD_LIMIT,
+    includeTotal: false,
+    includeStats: false,
+  }), [containerGuid])
+  const pagedDetailQuery = useMemo(() => buildContainerDetailQuery({
+    containerGuid,
+    filters: columnFilters,
+    selectedTags: selectedTagFilters,
+    sortState,
+    pageNumber: detailPageNumber,
+    pageSize: detailPageSize,
+    includeTotal: false,
+    includeStats: false,
+  }), [columnFilters, containerGuid, detailPageNumber, detailPageSize, selectedTagFilters, sortState])
+  const pagedDetailStatsQuery = useMemo(() => buildContainerDetailQuery({
+    containerGuid,
+    filters: columnFilters,
+    selectedTags: selectedTagFilters,
+    pageNumber: 1,
+    pageSize: detailPageSize,
+    includeItems: false,
+    includeTotal: true,
+    includeStats: true,
+  }), [columnFilters, containerGuid, detailPageSize, selectedTagFilters])
+  const pagedDetailQueryKey = useMemo(() => JSON.stringify(pagedDetailQuery), [pagedDetailQuery])
+  const pagedDetailStatsKey = useMemo(() => JSON.stringify(pagedDetailStatsQuery), [pagedDetailStatsQuery])
+  const initialDetailQueryKey = useMemo(() => JSON.stringify(initialDetailQuery), [initialDetailQuery])
+  const fullDetailQueryKey = useMemo(() => `full:${containerGuid}`, [containerGuid])
+  const activeLoadQueryKey = detailLoadMode === 'probe'
+    ? initialDetailQueryKey
+    : detailLoadMode === 'paged'
+      ? pagedDetailQueryKey
+      : fullDetailQueryKey
+  const pagedDetailScopeKeyRef = useRef(pagedDetailScopeKey)
+  pagedDetailScopeKeyRef.current = pagedDetailScopeKey
+  const pagedDetailQueryKeyRef = useRef(pagedDetailQueryKey)
+  pagedDetailQueryKeyRef.current = pagedDetailQueryKey
+  const pagedDetailStatsKeyRef = useRef(pagedDetailStatsKey)
+  pagedDetailStatsKeyRef.current = pagedDetailStatsKey
 
   const loadHeader = async (showLoading = true) => {
     if (!containerGuid) {
@@ -1021,241 +1460,318 @@ export default function ContainerDetailPage() {
     }
   }
 
-  const getDetailAppendRequestKey = (pageNumber: number) => (
-    `${containerGuid}:${detailQueryKey}:${pageNumber}`
-  )
-
-  const startDetailReadAhead = (pageNumber: number) => {
-    if (!containerGuid) return null
-
-    const start = startContainerDetailReadAheadRequest(
-      detailReadAheadRequestRef.current,
-      getDetailAppendRequestKey(pageNumber),
-      pageNumber,
-      (signal) => queryContainerProducts(
-        containerGuid,
-        {
-          ...detailQuery,
-          pageNumber,
-          pageSize: CONTAINER_DETAIL_PAGE_SIZE,
-          includeTotal: false,
-          includeStats: false,
-        },
-        signal,
-      ),
+  const overlayPendingDetailChanges = (items: ContainerDetail[]) => {
+    const loadedItemsWithDraft = applyPendingContainerDetailPatches(
+      items,
+      pendingDetailPatchesRef.current,
     )
-    detailReadAheadRequestRef.current = start.request
-    return start.request
+    const currentAutoSaveContextKey = autoSaveContextKeyRef.current
+    const shouldOverlayCurrentAutoSaves = isContainerDetailAutoSaveContextCurrent(
+      currentAutoSaveContextKey,
+      containerGuid,
+      pendingDetailDraftIdentityRef.current,
+    )
+    const contextSnapshot = shouldOverlayCurrentAutoSaves
+      ? autoSaveContextSnapshotsRef.current.get(currentAutoSaveContextKey)
+      : undefined
+    return applyContainerDetailAutoSavePatches(
+      loadedItemsWithDraft,
+      shouldOverlayCurrentAutoSaves
+        ? autoSaveQueueRef.current?.getUnsettledPatches(currentAutoSaveContextKey) ?? {}
+        : {},
+      (row, patch) => buildContainerDetailAutoSaveUpdate(
+        row,
+        patch,
+        contextSnapshot?.container ?? containerRef.current,
+      ) as Partial<ContainerDetail>,
+    )
   }
 
-  const loadDetailChunk = async (pageNumber: number, mode: 'reset' | 'append' = 'reset') => {
+  const publishLoadedDetailRows = (items: ContainerDetail[]) => {
+    const loadedItems = overlayPendingDetailChanges(items)
+    rowsRef.current = loadedItems
+    const currentAutoSaveContextKey = autoSaveContextKeyRef.current
+    if (isContainerDetailAutoSaveContextCurrent(
+      currentAutoSaveContextKey,
+      containerGuid,
+      pendingDetailDraftIdentityRef.current,
+    )) {
+      autoSaveContextSnapshotsRef.current.set(currentAutoSaveContextKey, {
+        containerGuid,
+        rows: loadedItems,
+        container: containerRef.current,
+      })
+    }
+    setRows(loadedItems)
+  }
+
+  const cancelScheduledDetailStats = () => {
+    if (detailStatsTimerRef.current !== null) {
+      window.clearTimeout(detailStatsTimerRef.current)
+      detailStatsTimerRef.current = null
+    }
+    detailStatsAbortControllerRef.current?.abort()
+    detailStatsAbortControllerRef.current = null
+    detailStatsRequestIdRef.current += 1
+  }
+
+  const schedulePagedDetailStats = (
+    query: typeof pagedDetailStatsQuery,
+    statsKey: string,
+  ) => {
+    if (lastLoadedDetailStatsKeyRef.current === statsKey) return
+    cancelScheduledDetailStats()
+    const requestId = detailStatsRequestIdRef.current
+    detailStatsTimerRef.current = window.setTimeout(() => {
+      detailStatsTimerRef.current = null
+      const controller = new AbortController()
+      detailStatsAbortControllerRef.current = controller
+      void queryContainerProducts(containerGuid, query, controller.signal)
+        .then((result) => {
+          if (
+            controller.signal.aborted
+            || detailStatsRequestIdRef.current !== requestId
+            || pagedDetailStatsKeyRef.current !== statsKey
+            || currentContainerGuidRef.current !== containerGuid
+          ) return
+          if (result.totalComputed !== false) {
+            setDetailItemsTotal(result.itemsTotal)
+          }
+          if (result.statsComputed !== false) {
+            setRemoteTagStats({ ...EMPTY_CONTAINER_DETAIL_TAG_STATS, ...result.tagStats })
+          }
+          lastLoadedDetailStatsKeyRef.current = statsKey
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted) {
+            console.error('货柜明细统计加载失败', error)
+          }
+        })
+        .finally(() => {
+          if (detailStatsAbortControllerRef.current === controller) {
+            detailStatsAbortControllerRef.current = null
+          }
+        })
+    }, 0)
+  }
+
+  const prepareDetailLoad = (controller: AbortController, requestId: number) => {
+    cancelScheduledDetailStats()
+    detailAbortControllerRef.current?.abort()
+    detailAbortControllerRef.current = controller
+    detailResetRequestRef.current = controller
+    containerDetailReconcileGenerationRef.current = requestId
+    lastDetailTableScrollTopRef.current = 0
+    setDetailLoading(true)
+    restorePendingDetailDraft()
+
+    const isContainerChange = detailRowsContainerGuidRef.current !== containerGuid
+    if (!isContainerChange) return
+
+    detailRowsContainerGuidRef.current = containerGuid
+    lastLoadedDetailStatsKeyRef.current = null
+    setRemoteTagStats(EMPTY_CONTAINER_DETAIL_TAG_STATS)
+    setDetailItemsTotal(0)
+    pendingDetailSavePromisesRef.current.clear()
+    failedDetailSaveKeysRef.current = new Set()
+    failedPendingDetailSaveKeysRef.current = new Set()
+    setPendingDetailSaveCount(0)
+    setDetailSaveSubmitting(false)
+    const currentDraftIdentity = currentUserGuid
+      ? buildContainerDetailDraftStorageKey(currentUserGuid, containerGuid)
+      : ''
+    if (!currentDraftIdentity || pendingDetailDraftIdentityRef.current !== currentDraftIdentity) {
+      // 当前用户身份尚未就绪时只清空内存，不删除任何用户的本地草稿。
+      applyPendingDetailDraftState({ pendingPatches: {}, failures: {} }, false)
+    }
+    // 只有切换货柜才清空旧行；同货柜翻页、筛选、排序或刷新失败时继续保留已显示快照。
+    setRows([])
+    setSelectedRowKeys([])
+  }
+
+  const loadDetailRows = async (requestedMode: 'probe' | 'paged') => {
     if (!containerGuid) return
-    if (mode === 'append' && (
-      detailLoading
-      || detailLoadingMore
-      || !detailHasMore
-      || detailResetRequestRef.current
-    )) return
-
-    const requestKey = getDetailAppendRequestKey(pageNumber)
-    const readAheadRequest = mode === 'append'
-      && detailReadAheadRequestRef.current?.key === requestKey
-      ? detailReadAheadRequestRef.current
-      : null
-    const appendStart = mode === 'append'
-      ? startContainerDetailAppendRequest(
-          detailAppendRequestRef.current,
-          requestKey,
-          readAheadRequest?.controller,
-        )
-      : null
-    if (appendStart && !appendStart.started) return
-    if (appendStart?.started) {
-      detailAppendRequestRef.current = appendStart.request
-      detailReadAheadRequestRef.current = finishContainerDetailReadAheadRequest(
-        detailReadAheadRequestRef.current,
-        readAheadRequest,
-      )
-    }
-
-    if (mode === 'reset') {
-      cancelContainerDetailAppendRequest(detailAppendRequestRef.current)
-      detailAppendRequestRef.current = null
-      cancelContainerDetailReadAheadRequest(detailReadAheadRequestRef.current)
-      detailReadAheadRequestRef.current = null
-      // 仅重置查询时使旧匹配校正失效；连续追加页共享同一代，避免快翻页丢失中间页结果。
-      containerDetailReconcileGenerationRef.current += 1
-      failedDetailAppendRequestKeyRef.current = null
-      setDetailLoadingMore(false)
-    }
-
+    const initialPageScopeKey = pagedDetailScopeKey
+    const initialPageWasReusable = canReuseContainerDetailInitialPage({
+      filters: columnFilters,
+      selectedTags: selectedTagFilters,
+      sortState,
+      pageSize: detailPageSize,
+    })
     const currentRequestId = containerDetailLoadRequestIdRef.current + 1
     containerDetailLoadRequestIdRef.current = currentRequestId
-    const currentReconcileGeneration = containerDetailReconcileGenerationRef.current
-    const appendRequest = appendStart?.request ?? null
-    const controller = appendRequest?.controller ?? new AbortController()
-    const resetRequest = mode === 'reset' ? controller : null
-    let resetReadAheadRequest: ContainerDetailReadAheadRequest<ContainerDetailQueryResult> | null = null
+    const controller = new AbortController()
+    prepareDetailLoad(controller, currentRequestId)
 
-    if (mode === 'reset') {
-      detailAbortControllerRef.current?.abort()
-      detailAbortControllerRef.current = controller
-      detailResetRequestRef.current = resetRequest
-      lastLoadedContainerDetailSuccessRef.current = null
-      lastDetailTableScrollTopRef.current = 0
-      setDetailLoading(true)
-      const isContainerChange = pendingDetailContainerGuidRef.current !== containerGuid
-      if (isContainerChange) {
-        pendingDetailContainerGuidRef.current = containerGuid
-        pendingDetailSavePromisesRef.current.clear()
-        failedDetailSaveKeysRef.current = new Set()
-        failedPendingDetailSaveKeysRef.current = new Set()
-        setPendingDetailSaveCount(0)
-        setDetailSaveSubmitting(false)
-        updatePendingDetailPatches(() => ({}))
-      }
-      // 同一货柜刷新、筛选或重算时保留本地草稿；切换货柜才清空旧货柜状态。
-      if (isContainerChange || Object.keys(pendingDetailPatchesRef.current).length === 0) {
-        setRows([])
-      }
-      setSelectedRowKeys([])
-    } else {
-      setDetailLoadingMore(true)
-    }
+    const isCurrentRequest = () => (
+      !controller.signal.aborted
+      && containerDetailLoadRequestIdRef.current === currentRequestId
+      && currentContainerGuidRef.current === containerGuid
+    )
 
     try {
-      const shouldComputeDetailMeta = mode === 'reset'
-      let result: ContainerDetailQueryResult
-      if (readAheadRequest) {
-        const outcome = await readAheadRequest.promise
-        if (outcome.status === 'failure') {
-          throw outcome.error
-        }
-        result = outcome.result
-      } else {
-        const resultPromise = queryContainerProducts(
+      if (requestedMode === 'probe') {
+        const initialResult = await queryContainerProducts(
           containerGuid,
-          {
-            ...detailQuery,
-            pageNumber,
-            pageSize: CONTAINER_DETAIL_PAGE_SIZE,
-            includeTotal: shouldComputeDetailMeta,
-            includeStats: shouldComputeDetailMeta,
-          },
+          initialDetailQuery,
           controller.signal,
         )
-        if (mode === 'reset') {
-          // 先启动首屏，再并发预取第 2 页；保证首屏优先，同时隐藏下一批网络等待。
-          resetReadAheadRequest = startDetailReadAhead(pageNumber + 1)
+        if (!isCurrentRequest()) return
+
+        const resolution = resolveContainerDetailInitialPage(initialResult)
+        setDetailItemsTotal(resolution.itemsTotal)
+
+        if (resolution.mode === 'paged') {
+          const canReuseInitialPage = initialPageWasReusable
+            && pagedDetailScopeKeyRef.current === initialPageScopeKey
+          setDetailPagingState({
+            containerGuid,
+            mode: 'paged',
+            pageNumber: 1,
+            pageSize: CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+            scopeKey: pagedDetailScopeKeyRef.current,
+          })
+          if (canReuseInitialPage) {
+            publishLoadedDetailRows(resolution.items)
+            lastLoadedContainerDetailSuccessRef.current = {
+              containerGuid,
+              queryKey: pagedDetailQueryKeyRef.current,
+              generation: currentRequestId,
+            }
+            schedulePagedDetailStats(pagedDetailStatsQuery, pagedDetailStatsKeyRef.current)
+          }
+          return
         }
-        result = await resultPromise
-      }
-      if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId) {
+
+        publishLoadedDetailRows(resolution.items)
+        if (!resolution.requiresFullLoad) {
+          setDetailPagingState({
+            containerGuid,
+            mode: 'full',
+            pageNumber: 1,
+            pageSize: CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+            scopeKey: '',
+          })
+          lastLoadedContainerDetailSuccessRef.current = {
+            containerGuid,
+            queryKey: fullDetailQueryKey,
+            generation: currentRequestId,
+          }
+          return
+        }
+
+        const fullResult = await queryContainerProducts(
+          containerGuid,
+          fullDetailQuery,
+          controller.signal,
+        )
+        if (!isCurrentRequest()) return
+        const fullResolution = resolveContainerDetailFullPage(
+          fullResult,
+          CONTAINER_DETAIL_FULL_LOAD_LIMIT,
+        )
+        setDetailItemsTotal(fullResolution.itemsTotal)
+
+        if (fullResolution.mode === 'paged') {
+          const canReuseInitialPage = initialPageWasReusable
+            && pagedDetailScopeKeyRef.current === initialPageScopeKey
+          setDetailPagingState({
+            containerGuid,
+            mode: 'paged',
+            pageNumber: 1,
+            pageSize: CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+            scopeKey: pagedDetailScopeKeyRef.current,
+          })
+          if (canReuseInitialPage) {
+            publishLoadedDetailRows(fullResolution.items)
+            lastLoadedContainerDetailSuccessRef.current = {
+              containerGuid,
+              queryKey: pagedDetailQueryKeyRef.current,
+              generation: currentRequestId,
+            }
+            schedulePagedDetailStats(pagedDetailStatsQuery, pagedDetailStatsKeyRef.current)
+          }
+          return
+        }
+
+        publishLoadedDetailRows(fullResolution.items)
+        setDetailPagingState({
+          containerGuid,
+          mode: 'full',
+          pageNumber: 1,
+          pageSize: CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+          scopeKey: '',
+        })
+        lastLoadedContainerDetailSuccessRef.current = {
+          containerGuid,
+          queryKey: fullDetailQueryKey,
+          generation: currentRequestId,
+        }
         return
       }
 
-      if (
-        mode === 'reset'
-        && !result.hasMore
-        && resetReadAheadRequest
-        && detailReadAheadRequestRef.current === resetReadAheadRequest
-      ) {
-        cancelContainerDetailReadAheadRequest(resetReadAheadRequest)
-        detailReadAheadRequestRef.current = finishContainerDetailReadAheadRequest(
-          detailReadAheadRequestRef.current,
-          resetReadAheadRequest,
-        )
+      const result = await queryContainerProducts(
+        containerGuid,
+        pagedDetailQuery,
+        controller.signal,
+      )
+      if (!isCurrentRequest()) return
+      publishLoadedDetailRows(result.items)
+      setDetailPagingState({
+        containerGuid,
+        mode: 'paged',
+        pageNumber: pagedDetailQuery.pageNumber,
+        pageSize: pagedDetailQuery.pageSize,
+        scopeKey: pagedDetailScopeKey,
+      })
+      lastLoadedContainerDetailSuccessRef.current = {
+        containerGuid,
+        queryKey: pagedDetailQueryKey,
+        generation: currentRequestId,
       }
-      if (
-        appendRequest
-        && failedDetailAppendRequestKeyRef.current === appendRequest.key
-      ) {
-        failedDetailAppendRequestKeyRef.current = null
-      }
-      const loadedItems = applyPendingContainerDetailPatches(result.items, pendingDetailPatchesRef.current)
-      setRows((items) => mode === 'reset' ? loadedItems : mergeContainerDetailLoadedItems(items, loadedItems))
-      if (result.totalComputed !== false) {
-        setDetailItemsTotal(result.itemsTotal)
-      }
-      setDetailPageNumber(result.pageNumber)
-      setDetailHasMore(result.hasMore)
-      if (result.statsComputed !== false) {
-        setRemoteTagStats({ ...EMPTY_CONTAINER_DETAIL_TAG_STATS, ...result.tagStats })
-      }
-      if (mode === 'reset') {
-        lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }
-      } else if (result.hasMore) {
-        startDetailReadAhead(result.pageNumber + 1)
-      }
-      void reconcileLoadedMatchStatus(result.items, currentReconcileGeneration)
+      schedulePagedDetailStats(pagedDetailStatsQuery, pagedDetailStatsKey)
     } catch (error) {
-      if (
-        resetReadAheadRequest
-        && detailReadAheadRequestRef.current === resetReadAheadRequest
-      ) {
-        cancelContainerDetailReadAheadRequest(resetReadAheadRequest)
-        detailReadAheadRequestRef.current = finishContainerDetailReadAheadRequest(
-          detailReadAheadRequestRef.current,
-          resetReadAheadRequest,
-        )
-      }
-      if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId) {
-        return
-      }
-      if (appendRequest) {
-        failedDetailAppendRequestKeyRef.current = appendRequest.key
-      }
+      if (!isCurrentRequest()) return
       console.error(error)
       message.error(error instanceof Error ? error.message : t('containers.messages.loadDetailFailed'))
     } finally {
-      const ownsAppendRequest = Boolean(
-        appendRequest
-        && detailAppendRequestRef.current === appendRequest,
-      )
-      detailAppendRequestRef.current = finishContainerDetailAppendRequest(
-        detailAppendRequestRef.current,
-        appendRequest,
-      )
-      if (ownsAppendRequest) {
-        setDetailLoadingMore(false)
-      }
-
-      const ownsResetRequest = Boolean(
-        resetRequest
-        && detailResetRequestRef.current === resetRequest,
-      )
-      if (ownsResetRequest) {
+      if (detailResetRequestRef.current === controller) {
         detailResetRequestRef.current = null
+        detailAbortControllerRef.current = null
         setDetailLoading(false)
       }
     }
   }
 
-  const loadNextDetailChunk = async (source: 'user' | 'auto' = 'user') => {
-    if (detailLoading || detailLoadingMore || !detailHasMore) return
-    const nextPageNumber = detailPageNumber + 1
-    const requestKey = getDetailAppendRequestKey(nextPageNumber)
-    if (source === 'auto' && failedDetailAppendRequestKeyRef.current === requestKey) {
-      return
-    }
-    if (source === 'user' && failedDetailAppendRequestKeyRef.current === requestKey) {
-      failedDetailAppendRequestKeyRef.current = null
-    }
-    await loadDetailChunk(nextPageNumber, 'append')
+  const loadNextDetailChunk = async () => {
+    if (detailLoadMode !== 'paged' || detailLoading || !detailHasMore) return
+    setDetailPagingState({
+      containerGuid,
+      mode: 'paged',
+      pageNumber: detailPageNumber + 1,
+      pageSize: detailPageSize,
+      scopeKey: pagedDetailScopeKey,
+    })
+  }
+
+  const reloadCurrentDetail = async () => {
+    lastLoadedContainerDetailSuccessRef.current = null
+    lastLoadedDetailStatsKeyRef.current = null
+    await loadDetailRows(detailLoadMode === 'paged' ? 'paged' : 'probe')
   }
 
   const loadData = async (showLoading = true) => {
     await Promise.all([
       loadHeader(showLoading),
-      loadDetailChunk(1, 'reset'),
+      reloadCurrentDetail(),
     ])
   }
 
   // 保存期间筛选条件可能变化；始终通过 ref 调用最新 render 的查询闭包。
-  reloadCurrentDetailRef.current = () => loadDetailChunk(1, 'reset')
+  reloadCurrentDetailRef.current = reloadCurrentDetail
 
   useEffect(() => {
-    if (!active) return
+    if (!active || !currentUserGuid) return
 
     if (shouldSkipDetailAutoReload({
       requestedDetailId: containerGuid,
@@ -1274,60 +1790,52 @@ export default function ContainerDetailPage() {
     })
     void loadHeader(shouldShowInitialLoading)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, containerGuid])
+  }, [active, containerGuid, currentUserGuid])
 
   useEffect(() => {
-    if (!active) return
+    if (!active || !currentUserGuid) return
 
     const cancelDetailLoads = () => {
+      containerDetailLoadRequestIdRef.current += 1
       containerDetailReconcileGenerationRef.current += 1
       detailAbortControllerRef.current?.abort()
       detailAbortControllerRef.current = null
       detailResetRequestRef.current = null
       setDetailLoading(false)
-      cancelContainerDetailAppendRequest(detailAppendRequestRef.current)
-      detailAppendRequestRef.current = null
-      cancelContainerDetailReadAheadRequest(detailReadAheadRequestRef.current)
-      detailReadAheadRequestRef.current = null
-      setDetailLoadingMore(false)
     }
 
-    if (shouldSkipDetailAutoReload({
-      requestedDetailId: containerGuid,
-      loadedDetailId: loadedContainerGuidRef.current,
-      visibleDetailId: visibleContainerGuidRef.current,
-      requestedDetailQueryKey: activeLoadQueryKey,
-      loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
-        ? lastLoadedContainerDetailSuccessRef.current?.queryKey
-        : null,
-    })) {
-      if (detailHasMore) {
-        startDetailReadAhead(detailPageNumber + 1)
-      }
+    if (detailLoadMode === 'full') {
       return cancelDetailLoads
     }
+    if (
+      lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
+      && lastLoadedContainerDetailSuccessRef.current.queryKey === activeLoadQueryKey
+    ) return cancelDetailLoads
 
-    void loadDetailChunk(1, 'reset')
+    void loadDetailRows(detailLoadMode === 'paged' ? 'paged' : 'probe')
     return cancelDetailLoads
-    // 标签不进入 detailQueryKey；只有非标签远程筛选变化才重置懒加载结果。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, activeLoadQueryKey])
+  }, [active, activeLoadQueryKey, currentUserGuid])
 
   useEffect(() => {
-    // 标签只在前端过滤；切换标签时主动清空选择，保持批量操作范围清晰。
-    failedDetailAppendRequestKeyRef.current = null
+    // 筛选或排序改变当前结果范围；分页模式同步回第 1 页，草稿不随范围变化清空。
     setSelectedRowKeys([])
-  }, [selectedTagFilters])
-
-  useEffect(() => {
-    if (!active || !selectedTagFilters.length || !detailHasMore || detailLoading || detailLoadingMore) {
-      return
+    if (detailLoadMode === 'paged' && (
+      detailPagingState.containerGuid !== containerGuid
+      || detailPagingState.scopeKey !== pagedDetailScopeKey
+    )) {
+      setDetailPagingState((current) => ({
+        ...current,
+        containerGuid,
+        mode: 'paged',
+        pageNumber: 1,
+        pageSize: detailPageSize,
+        scopeKey: pagedDetailScopeKey,
+      }))
     }
+  }, [columnFilters, containerGuid, detailLoadMode, detailPageSize, detailPagingState.containerGuid, detailPagingState.scopeKey, pagedDetailScopeKey, selectedTagFilters, sortState])
 
-    // 标签需要针对当前 base 查询的完整结果生效，点选标签后后台补齐剩余懒加载块。
-    void loadNextDetailChunk('auto')
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, selectedTagFilters, detailHasMore, detailLoading, detailLoadingMore, detailPageNumber, activeLoadQueryKey])
+  useEffect(() => () => cancelScheduledDetailStats(), [])
 
   useEffect(() => {
     const wasActive = wasContainerDetailTabActiveRef.current
@@ -1355,35 +1863,35 @@ export default function ContainerDetailPage() {
     }
   }, [active, containerGuid, rows.length])
 
-  const baseFilteredRows = useMemo(() => {
-    return rows
-  }, [rows])
+  const baseFilteredRows = useMemo(
+    () => scopeContainerDetailRowsToContainer(rows, detailRowsContainerGuidRef.current, containerGuid),
+    [containerGuid, rows],
+  )
 
-  const tagFilteredRows = useMemo(() => {
-    return baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))
-  }, [baseFilteredRows, selectedTagFilters])
-
-  const textFilteredRows = useMemo(() => {
-    // 顶部筛选条已移除，文字筛选统一走列头筛选，避免同一条件出现两个入口。
-    return applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)
-  }, [columnFilters, tagFilteredRows])
-
-  const localBaseTagStats = useMemo(() => buildContainerDetailTagStats(baseFilteredRows), [baseFilteredRows])
-  const filteredRows = textFilteredRows
-
-  const displayRows = useMemo(
-    () => {
-      // 列头排序只调整当前已加载且已过滤的行，避免点击列头触发远程重载。
-      return applyContainerDetailColumnState(filteredRows, {}, sortState)
-    },
-    [filteredRows, sortState],
+  const locallyColumnFilteredRows = useMemo(
+    () => applyContainerDetailColumnState(baseFilteredRows, columnFilters),
+    [baseFilteredRows, columnFilters],
+  )
+  // 与后端统计口径一致：应用列筛选，但统计时排除 SelectedTags 自身。
+  const localBaseTagStats = useMemo(
+    () => buildContainerDetailTagStats(locallyColumnFilteredRows),
+    [locallyColumnFilteredRows],
   )
 
   const applyCurrentClientFilters = (sourceRows: ContainerDetail[]) => {
     const nextTagFilteredRows = sourceRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))
-    const nextTextFilteredRows = applyContainerDetailLoadedTextFilters(nextTagFilteredRows, '', columnFilters)
-    return applyContainerDetailColumnState(nextTextFilteredRows, {}, sortState)
+    return applyContainerDetailColumnState(nextTagFilteredRows, columnFilters, sortState)
   }
+
+  const displayRows = useMemo(
+    () => detailLoadMode === 'full'
+      ? applyCurrentClientFilters(baseFilteredRows)
+      : baseFilteredRows,
+    // 分页模式完全信任后端的全局筛选和排序；本地只叠加未保存草稿。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [baseFilteredRows, columnFilters, detailLoadMode, selectedTagFilters, sortState],
+  )
+  const filteredRows = displayRows
 
   const setEditableCellRef = (
     rowKeyValue: string,
@@ -1455,14 +1963,7 @@ export default function ContainerDetailPage() {
     })
   }
 
-  const tagStats: ContainerDetailTagStats = useMemo(() => ({
-    ...(hasLoadedFullBaseDetailQuery ? localBaseTagStats : remoteTagStats),
-    // 商品类型统计后端不返回，始终由当前已加载 base 明细补充；全量加载完成后即为准确统计。
-    normal: localBaseTagStats.normal,
-    set: localBaseTagStats.set,
-    multi: localBaseTagStats.multi,
-    setChild: localBaseTagStats.setChild,
-  }), [hasLoadedFullBaseDetailQuery, localBaseTagStats, remoteTagStats])
+  const tagStats = detailLoadMode === 'full' ? localBaseTagStats : remoteTagStats
 
   const tagStatOptions = useMemo<Array<{ value: ContainerDetailTagFilter; label: string; color?: string }>>(() => [
     { value: 'all', label: t('containers.filters.allTags'), color: 'blue' },
@@ -1538,7 +2039,7 @@ export default function ContainerDetailPage() {
       containerGuid,
       filters: {},
       pageNumber: 1,
-      pageSize: CONTAINER_DETAIL_PAGE_SIZE,
+      pageSize: CONTAINER_DETAIL_FULL_LOAD_LIMIT,
     }),
   })
 
@@ -1564,25 +2065,32 @@ export default function ContainerDetailPage() {
   }
 
   const fetchAllRowsForCurrentQuery = async () => {
+    if (detailLoadMode !== 'paged') {
+      return displayRows
+    }
+
     const allRows: ContainerDetail[] = []
     let pageNumber = 1
     let hasMore = true
 
     while (hasMore) {
-      // 导出和批量写操作先拉取非标签远程筛选的完整结果，再在前端套用标签、文字筛选和排序。
-      const result = await queryContainerProducts(containerGuid, {
-        ...baseDetailQuery,
+      // 分页模式的导出和批量作用域仍由后端完整筛选，不能误缩到当前页。
+      const result = await queryContainerProducts(containerGuid, buildContainerDetailQuery({
+        containerGuid,
+        filters: columnFilters,
+        selectedTags: selectedTagFilters,
+        sortState,
         pageNumber,
         pageSize: 500,
         includeTotal: false,
         includeStats: false,
-      })
+      }))
       allRows.push(...result.items)
       hasMore = result.hasMore
       pageNumber += 1
     }
 
-    return applyCurrentClientFilters(allRows)
+    return overlayPendingDetailChanges(allRows)
   }
 
   const fetchAllRowsForWholeContainer = async () => {
@@ -1606,6 +2114,50 @@ export default function ContainerDetailPage() {
     }
 
     return allRows
+  }
+
+  const updateExportProgressState = (progress: number, progressMessage: string) => {
+    setExportProgress(Math.max(0, Math.min(100, progress)))
+    setExportProgressMessage(progressMessage)
+  }
+
+  const fetchAllRowsForWholeContainerExport = async () => {
+    let allRows: ContainerDetail[] = []
+    let pageNumber = 1
+    let hasMore = true
+    let expectedTotal: number | undefined
+
+    while (hasMore) {
+      const result = await queryContainerProducts(containerGuid, buildContainerDetailQuery({
+        containerGuid,
+        filters: {},
+        sortState,
+        pageNumber,
+        pageSize: 500,
+        includeTotal: pageNumber === 1,
+        includeStats: false,
+      }))
+      allRows = mergeContainerDetailLoadedItems(allRows, result.items)
+      if (pageNumber === 1 && result.totalComputed !== false) {
+        expectedTotal = result.itemsTotal
+      }
+      hasMore = result.hasMore
+      const dataProgress = hasMore
+        ? Math.min(9, expectedTotal ? Math.ceil((allRows.length / Math.max(expectedTotal, 1)) * 10) : pageNumber)
+        : 10
+      updateExportProgressState(
+        dataProgress,
+        t('containers.messages.exportLoadingAllDetails', '正在加载整柜明细'),
+      )
+      pageNumber += 1
+    }
+
+    const rowsWithLocalEdits = applyContainerDetailLocalExportValues(allRows, baseFilteredRows)
+    return prepareContainerDetailWholeExportRows(
+      rowsWithLocalEdits,
+      pendingDetailPatchesRef.current,
+      sortState,
+    )
   }
 
   const confirmSubmitContainer = (submitRows: ContainerDetail[]) => new Promise<boolean>((resolve) => {
@@ -1777,6 +2329,25 @@ export default function ContainerDetailPage() {
   const canAlignDomesticProductCode = access.canEditContainer && (access.isAdmin || access.hasPermission(P.Products.Edit))
   const pendingDetailPatchList = useMemo(() => Object.values(pendingDetailPatches), [pendingDetailPatches])
   const pendingDetailPatchCount = pendingDetailPatchList.length
+  const pendingDetailFieldCount = useMemo(
+    () => countPendingContainerDetailFields(pendingDetailPatches),
+    [pendingDetailPatches],
+  )
+  const autoSaveFailureMap = useMemo(() => new Map(
+    autoSaveSnapshot.failures.map((failure) => [`${failure.hguid}:${failure.field}`, failure] as const),
+  ), [autoSaveSnapshot.failures])
+
+  const getAutoSaveFailure = (
+    row: ContainerDetail,
+    field: ContainerDetailAutoSaveField,
+  ): ContainerDetailAutoSaveFailure | undefined => (
+    row.hguid ? autoSaveFailureMap.get(`${row.hguid}:${field}`) : undefined
+  )
+
+  const retryFailedAutoSaves = () => {
+    const contextKey = autoSaveContextKeyRef.current
+    if (contextKey) autoSaveQueueRef.current?.retryFailed(contextKey)
+  }
 
   const ensureNoPendingDetails = () => {
     if (!pendingDetailPatchCount) return true
@@ -1786,16 +2357,283 @@ export default function ContainerDetailPage() {
   }
 
   const patchRow = (key: string, patch: Partial<ContainerDetail>) => {
-    setRows((items) => items.map((item) => (rowKey(item) === key ? mergeContainerDetailPatch(item, patch) : item)))
+    const nextRows = rowsRef.current.map((item) => (
+      rowKey(item) === key ? mergeContainerDetailPatch(item, patch) : item
+    ))
+    rowsRef.current = nextRows
+    if (autoSaveContextKeyRef.current) {
+      autoSaveContextSnapshotsRef.current.set(autoSaveContextKeyRef.current, {
+        containerGuid,
+        rows: nextRows,
+        container: containerRef.current,
+      })
+    }
+    setRows(nextRows)
+  }
+
+  const patchAutoSaveRow = (
+    row: ContainerDetail,
+    patch: ContainerDetailAutoSavePatch,
+  ) => {
+    patchRow(rowKey(row), patch)
+  }
+
+  const captureAutoSaveEditBaseline = (
+    row: ContainerDetail,
+    field: ContainerDetailAutoSaveField,
+    value: unknown,
+  ) => {
+    const key = `${rowKey(row)}:${field}`
+    if (!autoSaveEditBaselineRef.current.has(key)) {
+      autoSaveEditBaselineRef.current.set(key, value)
+    }
+  }
+
+  const restoreAutoSaveEditBaseline = (
+    row: ContainerDetail,
+    field: ContainerDetailAutoSaveField,
+  ) => {
+    const key = `${rowKey(row)}:${field}`
+    if (!autoSaveEditBaselineRef.current.has(key)) return
+    const value = autoSaveEditBaselineRef.current.get(key)
+    autoSaveEditBaselineRef.current.delete(key)
+    patchRow(rowKey(row), { [field]: value } as Partial<ContainerDetail>)
+  }
+
+  const clearAutoSaveEditBaseline = (row: ContainerDetail, field: ContainerDetailAutoSaveField) => {
+    autoSaveEditBaselineRef.current.delete(`${rowKey(row)}:${field}`)
   }
 
   const queuePendingDetailUpdates = (updates: PendingContainerDetailPatch[]) => {
-    updatePendingDetailPatches((current) => (
-      updates.reduce(
+    applyPendingDetailDraftState({
+      pendingPatches: updates.reduce(
         (next, update) => mergePendingContainerDetailPatch(next, update),
-        current,
-      )
-    ))
+        pendingDetailPatchesRef.current,
+      ),
+      // 用户修正后只清除对应字段的旧错误，其他字段失败仍保留。
+      failures: clearContainerDetailDraftFailuresForPatches(
+        pendingDetailFailuresRef.current,
+        updates,
+      ),
+    }, true, updates, true)
+  }
+
+  const getCurrentDetailDraftContext = (): ContainerDetailDraftContext => ({
+    userGuid: currentUserGuid,
+    containerGuid,
+    draftIdentity: pendingDetailDraftIdentityRef.current,
+  })
+
+  const isCurrentDetailDraftContext = (context: ContainerDetailDraftContext) => (
+    Boolean(context.userGuid)
+    && context.userGuid === currentUserGuid
+    && context.containerGuid === currentContainerGuidRef.current
+    && context.containerGuid === containerGuid
+    && context.draftIdentity === pendingDetailDraftIdentityRef.current
+    && context.draftIdentity === buildContainerDetailDraftStorageKey(currentUserGuid, containerGuid)
+  )
+
+  const hasDetailDraftFilter = selectedTagFilters.length > 0 || Object.values(columnFilters).some((value) => {
+    if (Array.isArray(value)) return value.length > 0
+    if (typeof value === 'object' && value !== null) return Object.values(value).some((item) => item != null && item !== '')
+    return value != null && value !== ''
+  })
+  const hasRemoteDetailDraftFilter = detailLoadMode === 'paged' && hasDetailDraftFilter
+
+  const locateFirstPendingDetailField = (scanFromFirstPage = true) => {
+    const pendingLocate = pendingDraftLocateAfterAppendRef.current
+    const hasMatchedPendingReset = shouldConsumePendingContainerDetailLocate({
+      pendingQueryKey: pendingLocate?.queryKey ?? '',
+      activeQueryKey: activeLoadQueryKey,
+      loadedQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
+        ? lastLoadedContainerDetailSuccessRef.current.queryKey
+        : undefined,
+      pendingGeneration: pendingLocate?.generation ?? -1,
+      loadedGeneration: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
+        ? lastLoadedContainerDetailSuccessRef.current.generation
+        : undefined,
+      isResetLoading: detailLoading,
+    })
+    if (pendingLocate && shouldRetryPendingContainerDetailLocateReset({
+      hasLocalFilter: hasDetailDraftFilter,
+      awaitingUnfilteredReset: Boolean(pendingLocate?.awaitingUnfilteredReset),
+      hasMatchedReset: hasMatchedPendingReset,
+    })) {
+      // 上一次无筛选 reset 失败时，只有用户再次点击定位才主动重试，避免后台循环请求。
+      pendingLocate.queryKey = ''
+      pendingLocate.generation = containerDetailReconcileGenerationRef.current + 1
+      void reloadCurrentDetailRef.current()
+      return
+    }
+    if (hasDetailDraftFilter) {
+      // 定位草稿优先恢复完整数据集；仅在实际数据耗尽后才可判断商品已删除。
+      pendingDraftLocateAfterAppendRef.current = createContainerDetailDraftLocateResetPlan({
+        hasRemoteFilter: hasRemoteDetailDraftFilter,
+        activeQueryKey: activeLoadQueryKey,
+        generation: containerDetailReconcileGenerationRef.current,
+      })
+      setSelectedTagFilters([])
+      setColumnFilters({})
+      return
+    }
+    const fields: Array<{ field: string; columnKey: ContainerDetailEditableColumnKey }> = [
+      { field: '进口价格', columnKey: 'importPrice' },
+      { field: '贴牌价格', columnKey: 'oemPrice' },
+      { field: '英文名称', columnKey: 'englishName' },
+    ]
+    let target: { rowKey: string; columnKey: ContainerDetailEditableColumnKey } | null = null
+    for (const failedOnly of [true, false]) {
+      for (const row of displayRows) {
+        const key = rowKey(row)
+        const pendingPatch = pendingDetailPatchesRef.current[row.hguid]
+        if (!pendingPatch) continue
+        for (const candidate of fields) {
+          const hasField = candidate.field === '进口价格'
+            ? pendingPatch.进口价格 != null
+            : candidate.field === '贴牌价格'
+              ? pendingPatch.贴牌价格 != null
+              : pendingPatch.英文名称 !== undefined || pendingPatch.ClearEnglishName === true
+          const hasFailure = Boolean(getContainerDetailDraftFieldFailure(
+            pendingDetailFailuresRef.current,
+            row.hguid,
+            candidate.field,
+          ))
+          if (hasField && (!failedOnly || hasFailure)) {
+            target = { rowKey: key, columnKey: candidate.columnKey }
+            break
+          }
+        }
+        if (target) break
+      }
+      if (target) break
+    }
+
+    if (
+      !target
+      && detailLoadMode === 'paged'
+      && scanFromFirstPage
+      && detailPageNumber !== 1
+    ) {
+      // 用户可能从任意页点击定位；先回到第 1 页，避免只向后查找而漏掉前页草稿。
+      pendingDraftLocateAfterAppendRef.current = {
+        awaitingUnfilteredReset: true,
+        queryKey: '',
+        generation: containerDetailReconcileGenerationRef.current + 1,
+      }
+      setDetailPagingState({
+        containerGuid,
+        mode: 'paged',
+        pageNumber: 1,
+        pageSize: detailPageSize,
+        scopeKey: pagedDetailScopeKey,
+      })
+      return
+    }
+
+    if (!target && !hasDetailDraftFilter && detailHasMore) {
+      // 未启用筛选时草稿可能在后续页；等待下一页成功返回后再继续查找。
+      pendingDraftLocateAfterAppendRef.current = {
+        awaitingUnfilteredReset: true,
+        queryKey: '',
+        generation: containerDetailReconcileGenerationRef.current + 1,
+      }
+      void loadNextDetailChunk()
+      return
+    }
+
+    if (!target) {
+      message.warning(t(
+        'containers.messages.pendingDetailNotFound',
+        '未找到未保存项，可能已被删除或保存',
+      ))
+      return
+    }
+
+    const cellKey = buildContainerDetailEditableCellKey(target.rowKey, target.columnKey)
+    pendingEditableCellFocusKeyRef.current = cellKey
+    detailTableRef.current?.scrollTo?.({ key: target.rowKey })
+    window.requestAnimationFrame(() => {
+      const cell = editableCellRefs.current.get(cellKey)
+      if (!cell) return
+      pendingEditableCellFocusKeyRef.current = null
+      cell.focus()
+      cell.select?.()
+    })
+  }
+
+  useEffect(() => {
+    const pendingLocate = pendingDraftLocateAfterAppendRef.current
+    if (!pendingLocate || detailLoading) return
+    if (pendingLocate.awaitingUnfilteredReset) {
+      if (hasDetailDraftFilter) return
+      if (containerDetailReconcileGenerationRef.current < pendingLocate.generation) return
+      pendingLocate.queryKey = activeLoadQueryKey
+      if (!shouldConsumePendingContainerDetailLocate({
+        pendingQueryKey: pendingLocate.queryKey,
+        activeQueryKey: activeLoadQueryKey,
+        loadedQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
+          ? lastLoadedContainerDetailSuccessRef.current.queryKey
+          : undefined,
+        pendingGeneration: pendingLocate.generation,
+        loadedGeneration: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
+          ? lastLoadedContainerDetailSuccessRef.current.generation
+          : undefined,
+        isResetLoading: detailLoading,
+      })) {
+        return
+      }
+      pendingLocate.awaitingUnfilteredReset = false
+    }
+    pendingDraftLocateAfterAppendRef.current = null
+    void locateFirstPendingDetailField(false)
+    // rows 变化后必须重新读取当前分页与筛选状态，直到找到目标或分页耗尽。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, detailLoading, detailHasMore, detailPageNumber, hasDetailDraftFilter, activeLoadQueryKey, containerGuid])
+
+  const clearPendingDetailDraft = () => {
+    if (!pendingDetailFieldCount || detailSaveSubmitting) return
+    const draftContext = getCurrentDetailDraftContext()
+    const draftFieldVersionSnapshot = captureContainerDetailDraftFieldVersions(
+      pendingDetailFieldVersionsRef.current,
+      Object.values(pendingDetailPatchesRef.current),
+    )
+    Modal.confirm({
+      title: t('containers.modals.clearLocalDraftTitle', '确认清空本地草稿'),
+      content: t(
+        'containers.modals.clearLocalDraftContent',
+        '将丢弃当前货柜 {{count}} 项未保存修改，此操作无法撤销。',
+        { count: pendingDetailFieldCount },
+      ),
+      okText: t('containers.actions.clearDraft', '清空草稿'),
+      okButtonProps: { danger: true },
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        if (!isCurrentDetailDraftContext(draftContext)) {
+          message.warning(t('containers.messages.draftContextChanged', '用户或货柜已切换，已取消本次草稿操作'))
+          return
+        }
+        const cleared = clearContainerDetailDraftFieldsIfVersionMatches(
+          getContainerDetailDraftStorage(),
+          draftContext.userGuid,
+          draftContext.containerGuid,
+          draftFieldVersionSnapshot,
+        )
+        if (!cleared.persisted) {
+          isDetailDraftMemoryOnlyRef.current = true
+          setIsDetailDraftMemoryOnly(true)
+          throw new Error(t('containers.messages.localDraftClearFailed', '本地草稿清空失败，已保留当前修改'))
+        }
+        const remainingDraft = readContainerDetailDraft(
+          getContainerDetailDraftStorage(),
+          draftContext.userGuid,
+          draftContext.containerGuid,
+        )
+        applyPendingDetailDraftState(remainingDraft, false)
+        setRows([])
+        await reloadCurrentDetailRef.current()
+        message.success(t('containers.messages.localDraftCleared', '已清空本地草稿'))
+      },
+    })
   }
 
   const markPendingDetailPatch = (
@@ -1828,9 +2666,13 @@ export default function ContainerDetailPage() {
     promise: Promise<T>,
     failureKeys = failedDetailSaveKeysRef.current,
     saveContainerGuid = containerGuid,
+    saveDraftIdentity = pendingDetailDraftIdentityRef.current,
   ) => {
     const trackedPromise = promise.catch((error) => {
-      if (currentContainerGuidRef.current === saveContainerGuid) {
+      if (
+        currentContainerGuidRef.current === saveContainerGuid
+        && pendingDetailDraftIdentityRef.current === saveDraftIdentity
+      ) {
         saveKeys.forEach((saveKey) => failureKeys.add(saveKey))
       }
       throw error
@@ -1839,16 +2681,34 @@ export default function ContainerDetailPage() {
       return value
     }).finally(() => {
       pendingDetailSavePromisesRef.current.delete(trackedPromise)
-      if (currentContainerGuidRef.current === saveContainerGuid) {
-        setPendingDetailSaveCount(pendingDetailSavePromisesRef.current.size)
+      if (
+        currentContainerGuidRef.current === saveContainerGuid
+        && pendingDetailDraftIdentityRef.current === saveDraftIdentity
+      ) {
+        setPendingDetailSaveCount(
+          pendingDetailSavePromisesRef.current.size
+          + autoSaveSnapshotRef.current.pendingFieldCount
+          + autoSaveSnapshotRef.current.runningFieldCount,
+        )
       }
     })
     pendingDetailSavePromisesRef.current.add(trackedPromise)
-    setPendingDetailSaveCount(pendingDetailSavePromisesRef.current.size)
+    setPendingDetailSaveCount(
+      pendingDetailSavePromisesRef.current.size
+      + autoSaveSnapshotRef.current.pendingFieldCount
+      + autoSaveSnapshotRef.current.runningFieldCount,
+    )
     return trackedPromise
   }
 
+  const flushContainerDetailAutoSaves = async () => {
+    const contextKey = autoSaveContextKeyRef.current
+    if (!contextKey) return
+    await autoSaveQueueRef.current?.drain(contextKey)
+  }
+
   const flushPendingDetailSaves = async () => {
+    await flushContainerDetailAutoSaves()
     const pendingSaves = Array.from(pendingDetailSavePromisesRef.current)
     if (pendingSaves.length) {
       await Promise.all(pendingSaves)
@@ -1861,15 +2721,91 @@ export default function ContainerDetailPage() {
     }
   }
 
-  const saveRowPatch = async (row: ContainerDetail, patch: Partial<ContainerDetail>) => {
-    if (!access.canEditContainer || !row.hguid) return
-    const saveKey = rowKey(row)
-    patchRow(saveKey, patch)
-    // 商品名称最终写回 DomesticProduct；创建新商品前必须等待这里落库，避免后台 job 读取旧中文名。
-    await trackDetailSavePromise(
-      buildContainerDetailSaveFailureKeys(saveKey, patch),
-      batchUpdateDetails([{ hguid: row.hguid, ...patch } as UpdateContainerDetailRequest]),
+  const drainAutoSavesBeforeAction = async () => {
+    blurActiveContainerDetailEditableCell()
+    try {
+      await flushContainerDetailAutoSaves()
+      return true
+    } catch (error) {
+      handleDetailSaveError(error)
+      return false
+    }
+  }
+
+  const refreshContainerDetail = async () => {
+    if (!await drainAutoSavesBeforeAction()) return
+    await loadData()
+  }
+
+  const waitForPendingDetailSavesForExport = async () => {
+    try {
+      await flushContainerDetailAutoSaves()
+    } catch {
+      // 导出允许保留自动保存失败的页面值，下面仍继续等待其他在途保存。
+    }
+    const pendingSaves = Array.from(pendingDetailSavePromisesRef.current)
+    if (pendingSaves.length) {
+      // 导出会选择性叠加页面内存值；保存失败不应阻断用户取得当前数据快照。
+      await Promise.allSettled(pendingSaves)
+    }
+  }
+
+  const buildAutoSaveUpdatesFromLatestRows = (
+    intents: ContainerDetailAutoSaveIntent[],
+    contextSnapshot: {
+      rows: ContainerDetail[]
+      container: Pick<ContainerMain, '汇率' | '运费' | '总体积'> | null
+    },
+  ) => (
+    intents.map((intent) => {
+      const latestRow = contextSnapshot.rows.find((item) => item.hguid === intent.hguid)
+      if (!latestRow) {
+        throw new Error(t('containers.messages.detailNotFound', '货柜明细不存在或已被删除'))
+      }
+      return buildContainerDetailAutoSaveUpdate(latestRow, intent.patch, contextSnapshot.container)
+    })
+  )
+
+  autoSaveSendBatchRef.current = async (contextKey, intents) => {
+    const contextSnapshot = autoSaveContextSnapshotsRef.current.get(contextKey)
+    if (!contextSnapshot) {
+      throw new Error(t('containers.messages.detailSaveContextMissing', '货柜明细保存上下文已失效'))
+    }
+    // 只在该批真正出队时读取对应上下文快照，避免连续编辑或切页后发送旧派生值。
+    return batchUpdateDetails(
+      contextSnapshot.containerGuid,
+      buildAutoSaveUpdatesFromLatestRows(intents, contextSnapshot),
     )
+  }
+
+  const enqueueAutoSavePatch = (row: ContainerDetail, patch: ContainerDetailAutoSavePatch) => {
+    const contextKey = autoSaveContextKeyRef.current
+    if (
+      !access.canEditContainer
+      || !row.hguid
+      || resolveContainerDetailAutoSaveLifecycleAction(containerDetailTabActiveRef.current, contextKey) !== 'attach'
+    ) return
+    const latestRow = rowsRef.current.find((item) => item.hguid === row.hguid) ?? row
+    const optimisticUpdate = buildContainerDetailAutoSaveUpdate(latestRow, patch, containerRef.current)
+    const nextRows = rowsRef.current.map((item) => (
+      item.hguid === optimisticUpdate.hguid
+        ? mergeContainerDetailPatch(item, optimisticUpdate as Partial<ContainerDetail>)
+        : item
+    ))
+    rowsRef.current = nextRows
+    autoSaveContextSnapshotsRef.current.set(contextKey, {
+      containerGuid,
+      rows: nextRows,
+      container: containerRef.current,
+    })
+    setRows(nextRows)
+    autoSaveQueueRef.current?.enqueue(contextKey, row.hguid, patch)
+  }
+
+  const saveRowPatch = async (row: ContainerDetail, patch: ContainerDetailAutoSavePatch) => {
+    if (!access.canEditContainer || !row.hguid) return
+    // 商品名称最终写回 DomesticProduct；提交/创建商品前会 drain 此队列，确保后台读取最新值。
+    enqueueAutoSavePatch(row, patch)
   }
 
   const buildPendingDetailSavePlan = (): PendingContainerDetailPageSavePlan | null => {
@@ -1884,6 +2820,11 @@ export default function ContainerDetailPage() {
     return {
       ...plan,
       saveKeys,
+      draftContext: getCurrentDetailDraftContext(),
+      draftFieldVersionSnapshot: captureContainerDetailDraftFieldVersions(
+        pendingDetailFieldVersionsRef.current,
+        plan.detailUpdates,
+      ),
     }
   }
 
@@ -1935,25 +2876,45 @@ export default function ContainerDetailPage() {
       ),
       okText: t('containers.actions.saveDetails', '保存明细'),
       cancelText: t('common.cancel'),
-      onOk: () => resolve(true),
+      onOk: () => {
+        if (!isCurrentDetailDraftContext(plan.draftContext)) {
+          message.warning(t('containers.messages.draftContextChanged', '用户或货柜已切换，已取消本次保存'))
+          resolve(false)
+          return
+        }
+        resolve(true)
+      },
       onCancel: () => resolve(false),
     })
   })
 
   const executePendingDetailSavePlan = async (plan: PendingContainerDetailPageSavePlan) => {
-    const saveContainerGuid = containerGuid
+    if (!isCurrentDetailDraftContext(plan.draftContext)) {
+      message.warning(t('containers.messages.draftContextChanged', '用户或货柜已切换，已取消本次保存'))
+      return
+    }
+    const saveContainerGuid = plan.draftContext.containerGuid
+    const saveDraftIdentity = plan.draftContext.draftIdentity
     const detailRequestIdAtSaveStart = containerDetailLoadRequestIdRef.current
     const detailControllerAtSaveStart = detailAbortControllerRef.current
+    let saveResponseApplied = false
     setDetailSaveSubmitting(true)
     try {
       const saveRequest = plan.detailUpdates.length
         ? trackDetailSavePromise(
             plan.saveKeys,
-            batchUpdateDetails(plan.detailUpdates),
+            batchUpdateDetails(saveContainerGuid, plan.detailUpdates),
             failedPendingDetailSaveKeysRef.current,
             saveContainerGuid,
+            saveDraftIdentity,
           )
-        : Promise.resolve({ totalUpdated: 0, totalRequested: 0, validationErrors: [] })
+        : Promise.resolve({
+            totalUpdated: 0,
+            totalRequested: 0,
+            validationErrors: [],
+            autoRepairedStoreGroupCount: undefined,
+            autoRepairedRelationCount: undefined,
+          })
       const scopedSave = await settleScopedContainerDetailSave(
         saveRequest,
         {
@@ -1968,7 +2929,10 @@ export default function ContainerDetailPage() {
         }),
       )
       const result = scopedSave.result
-      if (!scopedSave.isCurrentContainer) {
+      if (
+        !scopedSave.isCurrentContainer
+        || pendingDetailDraftIdentityRef.current !== saveDraftIdentity
+      ) {
         return
       }
       const validationErrors: ContainerDetailSaveValidationError[] = [
@@ -1981,7 +2945,6 @@ export default function ContainerDetailPage() {
         containerDetailLoadRequestIdRef.current += 1
         containerDetailReconcileGenerationRef.current += 1
         setDetailLoading(false)
-        setDetailLoadingMore(false)
       }
       const successfulEnglishNameUpdates = buildContainerDetailSuccessfulEnglishNameUpdates(
         pendingDetailPatchesRef.current,
@@ -1992,9 +2955,50 @@ export default function ContainerDetailPage() {
         // 保存期间允许继续编辑；旧响应不能覆盖新名称或新的清空意图。
         setRows((items) => applyContainerDetailEnglishNameUpdates(items, successfulEnglishNameUpdates))
       }
-      updatePendingDetailPatches((current) => (
-        clearSavedPendingContainerDetailFields(current, plan.detailUpdates, result.validationErrors)
-      ))
+      const settledDraftState = settleContainerDetailDraftSaveSuccess(
+        {
+          pendingPatches: pendingDetailPatchesRef.current,
+          failures: pendingDetailFailuresRef.current,
+          fieldVersions: pendingDetailFieldVersionsRef.current,
+        },
+        plan.detailUpdates,
+        validationErrors,
+      )
+      const removedSavedDrafts = clearContainerDetailDraftFieldsIfVersionMatches(
+        getContainerDetailDraftStorage(),
+        plan.draftContext.userGuid,
+        saveContainerGuid,
+        captureSuccessfullySavedContainerDetailDraftFieldVersions(
+          plan.draftFieldVersionSnapshot,
+          plan.detailUpdates,
+          validationErrors,
+        ),
+      )
+      if (!removedSavedDrafts.persisted) {
+        isDetailDraftMemoryOnlyRef.current = true
+        setIsDetailDraftMemoryOnly(true)
+        // 删除失败时保留内存补丁；不能让已保存响应清空不可恢复的本地编辑。
+        saveResponseApplied = true
+        return
+      }
+      if (removedSavedDrafts.hasNewerFieldVersion) {
+        // 另一标签页在本次保存后已写入新版本，重新读取并优先恢复它，不能复活旧值。
+        const restoredDraft = readContainerDetailDraft(
+          getContainerDetailDraftStorage(),
+          plan.draftContext.userGuid,
+          saveContainerGuid,
+        )
+        applyExternalPendingDetailDraftState(mergeContainerDetailDraftNewerFields(
+          settledDraftState,
+          restoredDraft,
+          removedSavedDrafts.newerFieldVersionKeys,
+        ))
+        saveResponseApplied = true
+        return
+      }
+      // 条件删除失败时保留内存状态，不能用一次普通写入伪装成“草稿已清除”。
+      applyPendingDetailDraftState(settledDraftState, removedSavedDrafts.persisted, plan.pendingPatches)
+      saveResponseApplied = true
       if (plan.detailUpdates.length > 0 && scopedSave.shouldReloadCurrentDetail) {
         // 后发查询可能在事务提交前读取旧快照，保存完成后用当前筛选条件立即替换。
         await reloadCurrentDetailRef.current()
@@ -2006,7 +3010,15 @@ export default function ContainerDetailPage() {
       )
 
       if (savedRowCount > 0) {
-        message.success(t('containers.messages.detailsSaved', '已保存 {{count}} 条明细', { count: savedRowCount }))
+        const repairedGroupCount = result.autoRepairedStoreGroupCount ?? 0
+        const repairedRelationCount = result.autoRepairedRelationCount ?? 0
+        message.success(repairedGroupCount > 0 || repairedRelationCount > 0
+          ? t(
+              'containers.messages.detailsSavedWithAutoRepair',
+              '已保存 {{count}} 条明细；自动补齐 {{groupCount}} 个门店组、{{relationCount}} 条套装/多码关系',
+              { count: savedRowCount, groupCount: repairedGroupCount, relationCount: repairedRelationCount },
+            )
+          : t('containers.messages.detailsSaved', '已保存 {{count}} 条明细', { count: savedRowCount }))
       }
       if (validationErrors.length > 0) {
         const failedRowCount = new Set(validationErrors.map((error) => error.hguid)).size
@@ -2018,11 +3030,36 @@ export default function ContainerDetailPage() {
         ))
       }
     } catch (error) {
-      if (currentContainerGuidRef.current === saveContainerGuid) {
+      if (
+        currentContainerGuidRef.current === saveContainerGuid
+        && pendingDetailDraftIdentityRef.current === saveDraftIdentity
+      ) {
+        if (!saveResponseApplied) {
+          const draftFailureMessage = t(
+            'containers.messages.detailDraftPreservedAfterFailure',
+            '服务器保存失败，未保存字段已保留在本地草稿',
+          )
+          const failedDraftState = markContainerDetailDraftSaveFailure(
+            {
+              pendingPatches: pendingDetailPatchesRef.current,
+              failures: pendingDetailFailuresRef.current,
+            },
+            plan.detailUpdates,
+            draftFailureMessage,
+          )
+          applyPendingDetailDraftState(settleContainerDetailDraftSaveSuccess(
+            failedDraftState,
+            [],
+            plan.localValidationErrors,
+          ), true, plan.pendingPatches)
+        }
         handleDetailSaveError(error)
       }
     } finally {
-      if (currentContainerGuidRef.current === saveContainerGuid) {
+      if (
+        currentContainerGuidRef.current === saveContainerGuid
+        && pendingDetailDraftIdentityRef.current === saveDraftIdentity
+      ) {
         setDetailSaveSubmitting(false)
       }
     }
@@ -2030,6 +3067,7 @@ export default function ContainerDetailPage() {
 
   const savePendingDetails = async () => {
     if (!access.canEditContainer) return
+    if (!await drainAutoSavesBeforeAction()) return
     // 保存前先锁定本次提交范围，确认弹窗和实际落库共用同一份计划。
     const savePlan = buildPendingDetailSavePlan()
     if (!savePlan) return
@@ -2055,6 +3093,10 @@ export default function ContainerDetailPage() {
     const productName = editingProductNameValue.trim()
     ignoreProductNameBlurRef.current = true
     cancelEditingProductName()
+    if (!productName) {
+      message.warning(t('containers.messages.productNameRequired', '商品名称不能为空'))
+      return
+    }
     await saveRowPatch(row, { 商品名称: productName })
   }
 
@@ -2067,16 +3109,24 @@ export default function ContainerDetailPage() {
   }
 
   const applyDetailUpdatesToRows = (updates: UpdateContainerDetailRequest[]) => {
-    setRows((items) =>
-      items.map((item) => {
-        const match = updates.find((update) => update.hguid === item.hguid)
-        return match ? mergeContainerDetailPatch(item, match as Partial<ContainerDetail>) : item
-      }),
-    )
+    const nextRows = rowsRef.current.map((item) => {
+      const match = updates.find((update) => update.hguid === item.hguid)
+      return match ? mergeContainerDetailPatch(item, match as Partial<ContainerDetail>) : item
+    })
+    rowsRef.current = nextRows
+    if (autoSaveContextKeyRef.current) {
+      autoSaveContextSnapshotsRef.current.set(autoSaveContextKeyRef.current, {
+        containerGuid,
+        rows: nextRows,
+        container: containerRef.current,
+      })
+    }
+    setRows(nextRows)
   }
 
   const saveHeader = async () => {
     if (!containerGuid || !access.canEditContainer) return
+    if (!await drainAutoSavesBeforeAction()) return
     const nextContainerNumber = headerForm.货柜编号?.trim()
     if (!nextContainerNumber) {
       message.error(t('containers.placeholders.enterContainerNumber', '请输入货柜编号'))
@@ -2143,11 +3193,10 @@ export default function ContainerDetailPage() {
       return
     }
 
-    const updates = buildContainerDetailFloatRateUpdates([row], container, value)
-    const update = updates[0]
-    if (!update) return
-    applyDetailUpdatesToRows(updates)
-    await trackDetailSavePromise(buildContainerDetailSaveFailureKeys(rowKey(row), update), batchUpdateDetails(updates))
+    const latestRow = rowsRef.current.find((item) => item.hguid === row.hguid) ?? row
+    enqueueAutoSavePatch(row, {
+      调整浮率: value ?? latestRow.调整浮率 ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
+    })
   }
 
   const savePackageMetricPatch = async (row: ContainerDetail, patch: Partial<ContainerDetail>) => {
@@ -2156,31 +3205,7 @@ export default function ContainerDetailPage() {
     if (showCostRecalculateWarning(getContainerDetailCostMissingFields(container))) {
       return
     }
-    const nextRow = mergeContainerDetailPatch(row, patch)
-    const update: UpdateContainerDetailRequest = { hguid: row.hguid, ...patch }
-
-    if (nextRow.装柜件数 != null && nextRow.单件装箱数 != null) {
-      update.装柜数量 = Number((nextRow.装柜件数 * nextRow.单件装箱数).toFixed(2))
-    }
-
-    const volumeRow = mergeContainerDetailPatch(row, update as Partial<ContainerDetail>)
-    update.合计装柜体积 = calculateContainerDetailTotalVolume(volumeRow)
-    update.合计装柜金额 = calculateContainerDetailTotalAmount(volumeRow)
-
-    const pricedRow = mergeContainerDetailPatch(row, update as Partial<ContainerDetail>)
-    const transportCost = calculateContainerDetailTransportCost(pricedRow, container)
-    update.运输成本 = transportCost
-    update.进口价格 = calculateContainerDetailImportPrice(
-      { ...pricedRow, 运输成本: transportCost },
-      container,
-      pricedRow.调整浮率 ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
-      transportCost,
-    )
-    // 包装/体积联动出的进货价属于系统重算，只更新货柜明细，不覆盖仓库进货价。
-    update.SkipRelatedProductSync = true
-
-    applyDetailUpdatesToRows([update])
-    await trackDetailSavePromise(buildContainerDetailSaveFailureKeys(rowKey(row), update), batchUpdateDetails([update]))
+    enqueueAutoSavePatch(row, patch as ContainerDetailAutoSavePatch)
   }
 
   const openBatchFloatRateModal = async () => {
@@ -2205,10 +3230,11 @@ export default function ContainerDetailPage() {
     if (showCostRecalculateWarning(getContainerDetailCostMissingFields(container))) {
       return
     }
+    if (!await drainAutoSavesBeforeAction()) return
     setBatchFloatRateSaving(true)
     try {
       const result = await applyContainerFloatRateByScope(containerGuid, buildDetailBatchScope(batchModalScopeRows), batchFloatRate)
-      await loadDetailChunk(1, 'reset')
+      await reloadCurrentDetailRef.current()
       setBatchFloatRateModalOpen(false)
       setBatchModalTargetCount(0)
       setBatchModalScopeRows([])
@@ -2224,6 +3250,7 @@ export default function ContainerDetailPage() {
     if (!access.canEditContainer) return
     const scopedRows = await confirmBatchRows(t('containers.actions.matchDomesticData'))
     if (!scopedRows) return
+    if (!await drainAutoSavesBeforeAction()) return
     setMatchDomesticDataLoading(true)
     try {
       if (!scopedRows.length) {
@@ -2261,11 +3288,11 @@ export default function ContainerDetailPage() {
       ))
       if (writableUpdates.length) {
         // 匹配方式只用于当前表格展示，批量保存接口只提交它支持的业务字段。
-        await batchUpdateDetails(writableUpdates)
+        await batchUpdateDetails(containerGuid, writableUpdates)
       }
       applyDetailUpdatesToRows(updates)
       if (!selectedRowKeys.length) {
-        await loadDetailChunk(1, 'reset')
+        await reloadCurrentDetailRef.current()
       }
       const pricePatchCount = updates.filter((update) => update.国内价格 != null || update.贴牌价格 != null).length
       message.success(t('containers.messages.domesticDataMatched', { count: updates.length, priceCount: pricePatchCount }))
@@ -2322,6 +3349,7 @@ export default function ContainerDetailPage() {
       okText: t('containers.actions.alignDomesticProductCode', '对齐编码'),
       cancelText: t('common.cancel'),
       onOk: async () => {
+        if (!await drainAutoSavesBeforeAction()) return
         setAligningDomesticProductDetailHguid(detailHguid)
         try {
           const result = await alignDomesticProductCode({
@@ -2336,7 +3364,7 @@ export default function ContainerDetailPage() {
               newCode: result.newProductCode || localProductCode,
             }),
           )
-          await loadDetailChunk(1, 'reset')
+          await reloadCurrentDetailRef.current()
         } catch (error) {
           message.error(error instanceof Error ? error.message : t('containers.messages.alignDomesticProductCodeFailed', '对齐国内商品编码失败'))
           throw error
@@ -2367,13 +3395,14 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.enterImportOrOemPrice'))
       return
     }
+    if (!await drainAutoSavesBeforeAction()) return
     setBatchPricesSaving(true)
     try {
       const result = await applyContainerPricesByScope(containerGuid, buildDetailBatchScope(batchModalScopeRows), {
         importPrice: batchImportPrice,
         oemPrice: batchOemPrice,
       })
-      await loadDetailChunk(1, 'reset')
+      await reloadCurrentDetailRef.current()
       setBatchPricesModalOpen(false)
       setBatchModalTargetCount(0)
       setBatchModalScopeRows([])
@@ -2419,6 +3448,7 @@ export default function ContainerDetailPage() {
       )
       return
     }
+    if (!await drainAutoSavesBeforeAction()) return
     const result = await bulkSetStatus(productCodes, isActive)
     const failureMessage = getContainerDetailWarehouseActionFailureMessage(result, t('containers.messages.batchActiveFailed'))
     if (failureMessage) {
@@ -2564,11 +3594,12 @@ export default function ContainerDetailPage() {
       message.warning(t('warehouse.categories.selectTargetCategory', '请选择目标分类'))
       return
     }
+    if (!await drainAutoSavesBeforeAction()) return
 
     setRowCategorySaving(true)
     try {
       // 单行目标分类只提交当前明细 GUID，不影响批量分类入口和其他已加载行。
-      await batchUpdateDetails([{ hguid: rowCategoryEditingRow.hguid, ProductCategoryGUID: rowTargetCategoryGuid }])
+      await batchUpdateDetails(containerGuid, [{ hguid: rowCategoryEditingRow.hguid, ProductCategoryGUID: rowTargetCategoryGuid }])
       const categoryPatch = buildContainerDetailCategoryPatch(
         rowCategoryEditingRow,
         rowTargetCategoryGuid,
@@ -2610,6 +3641,7 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.noProductsForCategoryAssign', '当前目标明细没有可分类的已有商品'))
       return
     }
+    if (!await drainAutoSavesBeforeAction()) return
 
     setBatchCategorySaving(true)
     try {
@@ -2719,6 +3751,7 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.missingContainerNumberForHqTranslation'))
       return
     }
+    if (!await drainAutoSavesBeforeAction()) return
 
     setHqTranslating(true)
     message.loading({
@@ -2902,6 +3935,7 @@ export default function ContainerDetailPage() {
 
     const updateFields = await confirmPushToHqUpdateFields(selection.items.length)
     if (!updateFields) return
+    if (!await drainAutoSavesBeforeAction()) return
 
     try {
       // 写 HQ 是跨库操作，使用即时锁防止连续点击造成重复提交。
@@ -3189,6 +4223,7 @@ export default function ContainerDetailPage() {
       defaultContainerExistingProductUpdateFields,
     )
     if (!confirmed) return
+    if (!await drainAutoSavesBeforeAction()) return
     const { rows: scopedRows, fields: updateFields } = confirmed
     const candidates = scopedRows.filter((row) => !row.是否新商品)
     if (!candidates.length) {
@@ -3298,6 +4333,7 @@ export default function ContainerDetailPage() {
       okText: t('containers.actions.confirmDelete'),
       okButtonProps: { danger: true },
       onOk: async () => {
+        if (!await drainAutoSavesBeforeAction()) return
         const hguids = selectedRows.map((row) => row.hguid).filter((value): value is string => Boolean(value))
         await batchDeleteDetails(hguids)
         setRows((items) => items.filter((item) => !hguids.includes(item.hguid)))
@@ -3322,24 +4358,67 @@ export default function ContainerDetailPage() {
     })
   })
 
+  const confirmExportWholeContainer = () => new Promise<boolean>((resolve) => {
+    Modal.confirm({
+      title: t('containers.modals.exportWholeContainerTitle', '全部导出（含图片）'),
+      content: t(
+        'containers.modals.exportWholeContainerContent',
+        '将忽略当前勾选和筛选，导出本货柜全部明细及商品图片，并保留当前排序。数据较多时需要一些时间，是否继续？',
+      ),
+      okText: t('common.confirm', '确认'),
+      cancelText: t('common.cancel'),
+      onOk: () => resolve(true),
+      onCancel: () => resolve(false),
+    })
+  })
+
   const exportDetails = async (
     columnKeys: ContainerDetailExportColumnKey[] = DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
     format: ContainerDetailExportFormat = 'excel',
+    exportScope: ContainerDetailExportScope = 'selectionOrFiltered',
   ) => {
-    if (!ensureTargetRowsVisible()) return
-    if (!selectedRowKeys.length) {
+    if (exportScope !== 'wholeContainer' && !ensureTargetRowsVisible()) return
+    if (exportScope === 'wholeContainer') {
+      const confirmed = await confirmExportWholeContainer()
+      if (!confirmed) return
+    } else if (!selectedRowKeys.length) {
       const confirmed = await confirmExportAllRows()
       if (!confirmed) return
     }
-    const exportRows = selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()
-    if (!exportRows.length) {
-      message.warning(t('containers.messages.noDataToExport'))
-      return
-    }
     setExporting(true)
+    updateExportProgressState(
+      1,
+      exportScope === 'wholeContainer'
+        ? t('containers.messages.exportLoadingAllDetails', '正在加载整柜明细')
+        : format === 'pdf'
+          ? t('containers.messages.exportPreparingImages', '正在准备商品图片')
+          : t('containers.messages.exportWritingWorkbook', '正在写入 Excel 表格'),
+    )
     try {
+      // 下拉菜单点击会先触发输入框 blur；先等待自动保存结束，失败值仍由后续页面快照选择性叠加。
+      if (exportScope === 'wholeContainer') {
+        await waitForPendingDetailSavesForExport()
+      }
+      const exportRows = exportScope === 'wholeContainer'
+        ? await fetchAllRowsForWholeContainerExport()
+        : selectedRowKeys.length ? targetRows : await fetchAllRowsForCurrentQuery()
+      if (!exportRows.length) {
+        message.warning(t('containers.messages.noDataToExport'))
+        return
+      }
       const exportColumns = getContainerDetailExportColumns(columnKeys)
-      const items: ContainerDetailExportItem[] = buildContainerDetailExportRows(exportRows)
+      const items: ContainerDetailExportItem[] = buildContainerDetailExportRows(
+        exportRows,
+        {
+          getProductTypeLabel: (value) => getProductTypeLabel(value, t),
+          getMatchTypeLabel: (value) => getMatchTypeLabel(value, t),
+          newProductLabel: t('containers.tags.newProduct', '新商品'),
+          existingProductLabel: t('containers.tags.existingProduct', '已有商品'),
+          activeLabel: t('common.activeUpper', '上架'),
+          inactiveLabel: t('common.inactiveUpper', '下架'),
+          missingNumericValue: exportScope === 'wholeContainer' ? '' : 0,
+        },
+      )
       const baseSummaryRows: NonNullable<ContainerExportOptions['summary']>['rows'] = [
         [
           { label: t('containers.fields.containerNumber'), value: container?.货柜编号 || '--' },
@@ -3377,7 +4456,12 @@ export default function ContainerDetailPage() {
         : baseSummaryRows
       const exportOptions: ContainerExportOptions = {
         columns: exportColumns.map((column) => ({
-          header: t(column.labelKey, column.fallbackLabel),
+          header: t(
+            exportScope === 'wholeContainer'
+              ? WHOLE_CONTAINER_DETAIL_EXPORT_LABEL_KEYS[column.key] ?? column.labelKey
+              : column.labelKey,
+            column.fallbackLabel,
+          ),
           key: column.key,
           width: column.width,
           valueType: column.valueType,
@@ -3388,23 +4472,48 @@ export default function ContainerDetailPage() {
           rows: summaryRows,
         },
         fileName: `${container?.货柜编号 || t('containers.detailTitle')}_${t('containers.export.detailSuffix')}`,
-        onProgress: (progress: number) => setExportProgress(progress),
+        productImageDownloadFailedText: t('containers.export.productImageDownloadFailed', '图片下载失败'),
+        productImageMissingText: t('containers.export.productImageMissing', '无图片'),
+        onProgress: (progress: number) => {
+          const hasImageColumns = exportColumns.some((column) => column.key === 'productImage' || column.key === 'barcodeImage')
+          const progressMessage = progress >= 100
+            ? t('containers.messages.exportComplete', '导出完成')
+            : format === 'pdf' && progress >= 70
+              ? t('containers.messages.exportGeneratingPdf', '正在生成 PDF 文件')
+            : progress >= 95
+              ? t('containers.messages.exportGeneratingFile', '正在生成 Excel 文件')
+              : progress >= 70 || !hasImageColumns
+                ? t('containers.messages.exportWritingWorkbook', '正在写入 Excel 表格')
+                : t('containers.messages.exportPreparingImages', '正在准备商品图片')
+          updateExportProgressState(progress, progressMessage)
+        },
       }
+      let failedProductImageCount = 0
       if (format === 'pdf') {
         await exportContainerDetailsToPdf(items, exportOptions)
       } else {
-        await exportContainerDetailsToExcel(items, exportOptions)
+        const result = await exportContainerDetailsToExcel(items, exportOptions)
+        failedProductImageCount = result.failedProductImageCount
       }
-      message.success(
-        format === 'pdf'
-          ? t('containers.messages.detailsPdfExported', '已导出 {{count}} 条明细 PDF', { count: items.length })
-          : t('containers.messages.detailsExported', { count: items.length }),
-      )
+      if (format === 'excel' && failedProductImageCount > 0) {
+        message.warning(t(
+          'containers.messages.detailsExportedWithImageFailures',
+          '已导出 {{count}} 条明细，其中 {{failed}} 张商品图片下载失败',
+          { count: items.length, failed: failedProductImageCount },
+        ))
+      } else {
+        message.success(
+          format === 'pdf'
+            ? t('containers.messages.detailsPdfExported', '已导出 {{count}} 条明细 PDF', { count: items.length })
+            : t('containers.messages.detailsExported', { count: items.length }),
+        )
+      }
     } catch {
       message.error(t('containers.messages.detailsExportFailed', '导出失败，请稍后重试'))
     } finally {
       setExporting(false)
       setExportProgress(0)
+      setExportProgressMessage('')
     }
   }
 
@@ -3523,28 +4632,37 @@ export default function ContainerDetailPage() {
     filtered: Boolean((columnFilters[key] as string[] | undefined)?.length),
   })
 
-  const handleTableChange = (_pagination: unknown, _filters: Record<string, unknown>, sorter: SorterResult<ContainerDetail> | SorterResult<ContainerDetail>[]) => {
+  const handleTableChange = (pagination: TablePaginationConfig, _filters: Record<string, unknown>, sorter: SorterResult<ContainerDetail> | SorterResult<ContainerDetail>[]) => {
     const nextSorter = Array.isArray(sorter) ? sorter[0] : sorter
     const nextSortField = nextSorter?.columnKey ?? nextSorter?.field
+    const nextSortState: ContainerDetailSortState = isContainerDetailSortField(nextSortField)
+      && (nextSorter.order === 'ascend' || nextSorter.order === 'descend')
+      ? { field: nextSortField, order: nextSorter.order }
+      : DEFAULT_CONTAINER_DETAIL_SORT
+    const sortChanged = nextSortState.field !== sortState.field || nextSortState.order !== sortState.order
 
-    if (isContainerDetailSortField(nextSortField) && (nextSorter.order === 'ascend' || nextSorter.order === 'descend')) {
-      setSortState({ field: nextSortField, order: nextSorter.order })
-      return
+    if (sortChanged) {
+      setSortState(nextSortState)
     }
 
-    setSortState(DEFAULT_CONTAINER_DETAIL_SORT)
+    if (detailLoadMode !== 'paged') return
+
+    const nextPageSize = pagination.pageSize ?? detailPageSize
+    const pageSizeChanged = nextPageSize !== detailPageSize
+    setSelectedRowKeys([])
+    setDetailPagingState({
+      containerGuid,
+      mode: 'paged',
+      pageNumber: sortChanged || pageSizeChanged ? 1 : pagination.current ?? 1,
+      pageSize: nextPageSize,
+      // 新 pageSize/排序会生成新 scopeKey；先置空可保证本 render 就按第 1 页请求。
+      scopeKey: sortChanged || pageSizeChanged ? '' : pagedDetailScopeKey,
+    })
   }
 
   const handleDetailTableScroll = (event: UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget
     lastDetailTableScrollTopRef.current = target.scrollTop
-    if (shouldLoadNextContainerDetailChunk({
-      scrollTop: target.scrollTop,
-      clientHeight: target.clientHeight,
-      scrollHeight: target.scrollHeight,
-    })) {
-      void loadNextDetailChunk()
-    }
   }
 
   const handleWarehouseStatusChange = async (row: ContainerDetail, isActive: boolean) => {
@@ -3559,6 +4677,7 @@ export default function ContainerDetailPage() {
       message.warning(t('containers.messages.selectedProductsMissingCode'))
       return
     }
+    if (!await drainAutoSavesBeforeAction()) return
 
     const previousStatuses = rows
       .filter((item) => getContainerDetailProductCode(item) === productCode)
@@ -3689,11 +4808,16 @@ export default function ContainerDetailPage() {
         if (!access.canEditContainer) return <TwoLineText value={getContainerDetailEnglishName(row)} />
         const pendingPatch = row.hguid ? pendingDetailPatches[row.hguid] : undefined
         const validationError = getPendingContainerDetailEnglishNameError(pendingPatch)
-        const validationMessage = validationError === 'CONTAINS_CHINESE'
+        const saveFailure = getContainerDetailDraftFieldFailure(
+          pendingDetailFailures,
+          row.hguid,
+          '英文名称',
+        )
+        const validationMessage = saveFailure?.message ?? (validationError === 'CONTAINS_CHINESE'
           ? t('containers.messages.englishNameContainsChinese', '英文名称不能包含中文')
           : validationError === 'EMPTY_ENGLISH_NAME'
             ? t('containers.messages.emptyEnglishNameNotSaved', '空白英文名称不会保存，如需清空请使用“清除英文名称”')
-            : undefined
+            : undefined)
         return (
           <Input.TextArea
             ref={(cell) => setEditableCellRef(rowKey(row), 'englishName', cell)}
@@ -3701,8 +4825,11 @@ export default function ContainerDetailPage() {
             value={getContainerDetailEnglishName(row) ?? ''}
             autoSize={{ minRows: 1, maxRows: 2 }}
             style={{ resize: 'none' }}
-            status={validationError ? 'error' : undefined}
-            aria-invalid={Boolean(validationError)}
+            status={validationError || saveFailure ? 'error' : undefined}
+            aria-invalid={Boolean(validationError || saveFailure)}
+            aria-label={validationMessage
+              ? `${t('containers.fields.englishName')}：${validationMessage}`
+              : t('containers.fields.englishName')}
             title={validationMessage}
             onChange={(event) => markPendingDetailPatch(row, { 英文名称: event.target.value })}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'englishName', event)}
@@ -3748,8 +4875,9 @@ export default function ContainerDetailPage() {
       align: 'right',
       ...makeSortProps('packingQuantity'),
       ...numberFilterProps('packingQuantity'),
-      render: (_value, row) =>
-        access.canEditContainer ? (
+      render: (_value, row) => {
+        const saveFailure = getAutoSaveFailure(row, '单件装箱数')
+        return access.canEditContainer ? (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'packingQuantity', cell)}
             value={row.单件装箱数}
@@ -3759,17 +4887,23 @@ export default function ContainerDetailPage() {
             step={1}
             controls={false}
             style={{ width: 72 }}
-            onChange={(value) => patchRow(rowKey(row), { 单件装箱数: value == null ? undefined : Number(value) })}
+            status={saveFailure ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure)}
+            title={saveFailure?.message}
+            onFocus={() => captureAutoSaveEditBaseline(row, '单件装箱数', row.单件装箱数)}
+            onChange={(value) => patchAutoSaveRow(row, { 单件装箱数: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
               if (!event.target.value.trim()) {
-                patchRow(rowKey(row), { 单件装箱数: row.单件装箱数 })
+                restoreAutoSaveEditBaseline(row, '单件装箱数')
                 return
               }
+              clearAutoSaveEditBaseline(row, '单件装箱数')
               void savePackageMetricPatch(row, { 单件装箱数: Number(event.target.value) }).catch(handleDetailSaveError)
             }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'packingQuantity', event)}
           />
-        ) : renderNumericCell(formatNumber(row.单件装箱数, 0)),
+        ) : renderNumericCell(formatNumber(row.单件装箱数, 0))
+      },
     },
     {
       title: renderColumnTitle('containerQuantity', t('containers.fields.containerQuantity')),
@@ -3787,8 +4921,9 @@ export default function ContainerDetailPage() {
       align: 'right',
       ...makeSortProps('unitVolume'),
       ...numberFilterProps('unitVolume'),
-      render: (_value, row) =>
-        access.canEditContainer ? (
+      render: (_value, row) => {
+        const saveFailure = getAutoSaveFailure(row, '单件体积')
+        return access.canEditContainer ? (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'unitVolume', cell)}
             value={row.单件体积}
@@ -3797,17 +4932,23 @@ export default function ContainerDetailPage() {
             precision={3}
             controls={false}
             style={{ width: 72 }}
-            onChange={(value) => patchRow(rowKey(row), { 单件体积: value == null ? undefined : Number(value) })}
+            status={saveFailure ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure)}
+            title={saveFailure?.message}
+            onFocus={() => captureAutoSaveEditBaseline(row, '单件体积', row.单件体积)}
+            onChange={(value) => patchAutoSaveRow(row, { 单件体积: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
               if (!event.target.value.trim()) {
-                patchRow(rowKey(row), { 单件体积: row.单件体积 })
+                restoreAutoSaveEditBaseline(row, '单件体积')
                 return
               }
+              clearAutoSaveEditBaseline(row, '单件体积')
               void savePackageMetricPatch(row, { 单件体积: Number(event.target.value) }).catch(handleDetailSaveError)
             }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'unitVolume', event)}
           />
-        ) : renderNumericCell(formatNumber(row.单件体积, 3)),
+        ) : renderNumericCell(formatNumber(row.单件体积, 3))
+      },
     },
     {
       title: renderColumnTitle('domesticPrice', t('containers.fields.domesticPrice')),
@@ -3842,8 +4983,9 @@ export default function ContainerDetailPage() {
       align: 'right',
       ...makeSortProps('floatRate'),
       ...numberFilterProps('floatRate'),
-      render: (_value, row) =>
-        access.canEditContainer ? (
+      render: (_value, row) => {
+        const saveFailure = getAutoSaveFailure(row, '调整浮率')
+        return access.canEditContainer ? (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'floatRate', cell)}
             value={row.调整浮率}
@@ -3851,14 +4993,24 @@ export default function ContainerDetailPage() {
             precision={2}
             controls={false}
             style={{ width: 78 }}
-            onChange={(value) => patchRow(rowKey(row), { 调整浮率: value == null ? undefined : Number(value) })}
+            status={saveFailure ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure)}
+            title={saveFailure?.message}
+            onFocus={() => captureAutoSaveEditBaseline(row, '调整浮率', row.调整浮率)}
+            onChange={(value) => patchAutoSaveRow(row, { 调整浮率: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
-              const value = event.target.value ? Number(event.target.value) : undefined
+              if (!event.target.value.trim()) {
+                restoreAutoSaveEditBaseline(row, '调整浮率')
+                return
+              }
+              clearAutoSaveEditBaseline(row, '调整浮率')
+              const value = Number(event.target.value)
               void saveFloatRatePatch(row, value).catch(handleDetailSaveError)
             }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'floatRate', event)}
           />
-        ) : renderNumericCell(formatNumber(row.调整浮率, 2)),
+        ) : renderNumericCell(formatNumber(row.调整浮率, 2))
+      },
     },
     {
       title: renderColumnTitle('middlePackQuantity', t('containers.fields.middlePackQuantity', '中包数')),
@@ -3867,8 +5019,9 @@ export default function ContainerDetailPage() {
       align: 'right',
       ...makeSortProps('middlePackQuantity'),
       ...numberFilterProps('middlePackQuantity'),
-      render: (_value, row) =>
-        access.canEditContainer ? (
+      render: (_value, row) => {
+        const saveFailure = getAutoSaveFailure(row, '中包数')
+        return access.canEditContainer ? (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'middlePackQuantity', cell)}
             value={row.中包数}
@@ -3877,11 +5030,23 @@ export default function ContainerDetailPage() {
             precision={0}
             controls={false}
             style={{ width: 68 }}
-            onChange={(value) => patchRow(rowKey(row), { 中包数: value == null ? undefined : Number(value) })}
-            onBlur={(event) => void saveRowPatch(row, { 中包数: event.target.value ? Number(event.target.value) : undefined }).catch(handleDetailSaveError)}
+            status={saveFailure ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure)}
+            title={saveFailure?.message}
+            onFocus={() => captureAutoSaveEditBaseline(row, '中包数', row.中包数)}
+            onChange={(value) => patchAutoSaveRow(row, { 中包数: value == null ? undefined : Number(value) })}
+            onBlur={(event) => {
+              if (!event.target.value.trim()) {
+                restoreAutoSaveEditBaseline(row, '中包数')
+                return
+              }
+              clearAutoSaveEditBaseline(row, '中包数')
+              void saveRowPatch(row, { 中包数: Number(event.target.value) }).catch(handleDetailSaveError)
+            }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'middlePackQuantity', event)}
           />
-        ) : renderNumericCell(row.中包数 ?? '--'),
+        ) : renderNumericCell(row.中包数 ?? '--')
+      },
     },
     {
       title: renderColumnTitle('warehouseImportPrice', t('containers.fields.warehouseImportPrice', '实时进货价')),
@@ -3899,8 +5064,13 @@ export default function ContainerDetailPage() {
       align: 'right',
       ...makeSortProps('importPrice'),
       ...numberFilterProps('importPrice'),
-      render: (_value, row) =>
-        access.canEditContainer
+      render: (_value, row) => {
+        const saveFailure = getContainerDetailDraftFieldFailure(
+          pendingDetailFailures,
+          row.hguid,
+          '进口价格',
+        )
+        return access.canEditContainer
           ? renderImportPriceCell(row, (
             <InputNumber
               ref={(cell) => setEditableCellRef(rowKey(row), 'importPrice', cell)}
@@ -3911,11 +5081,18 @@ export default function ContainerDetailPage() {
               precision={2}
               controls={false}
               style={{ width: 78 }}
+              status={saveFailure ? 'error' : undefined}
+              aria-invalid={Boolean(saveFailure)}
+              aria-label={saveFailure
+                ? `${t('containers.fields.importPrice')}：${saveFailure.message}`
+                : t('containers.fields.importPrice')}
+              title={saveFailure?.message}
               onChange={(value) => markPendingDetailPatch(row, { 进口价格: value == null ? undefined : Number(value) })}
               onKeyDown={(event) => handleEditableCellKeyDown(row, 'importPrice', event)}
             />
           ))
-          : renderImportPriceCell(row),
+          : renderImportPriceCell(row)
+      },
     },
     {
       title: renderColumnTitle('oemPrice', t('containers.fields.oemPrice')),
@@ -3924,8 +5101,13 @@ export default function ContainerDetailPage() {
       align: 'right',
       ...makeSortProps('oemPrice'),
       ...numberFilterProps('oemPrice'),
-      render: (_value, row) =>
-        access.canEditContainer ? (
+      render: (_value, row) => {
+        const saveFailure = getContainerDetailDraftFieldFailure(
+          pendingDetailFailures,
+          row.hguid,
+          '贴牌价格',
+        )
+        return access.canEditContainer ? (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'oemPrice', cell)}
             value={getContainerDetailVisibleOemPrice(row)}
@@ -3935,10 +5117,17 @@ export default function ContainerDetailPage() {
             precision={2}
             controls={false}
             style={{ width: 78 }}
+            status={saveFailure ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure)}
+            aria-label={saveFailure
+              ? `${t('containers.fields.oemPrice')}：${saveFailure.message}`
+              : t('containers.fields.oemPrice')}
+            title={saveFailure?.message}
             onChange={(value) => markPendingDetailPatch(row, { 贴牌价格: value == null ? undefined : Number(value) })}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'oemPrice', event)}
           />
-        ) : renderOemPriceCell(row),
+        ) : renderOemPriceCell(row)
+      },
     },
     {
       title: renderColumnTitle('lastOEMPrice', t('containers.fields.lastOEMPrice', '实时零售价')),
@@ -4035,6 +5224,7 @@ export default function ContainerDetailPage() {
       ...textFilterProps('productName', t('containers.placeholders.filterProductName', '商品名称过滤')),
       render: (_, row) => {
         const key = rowKey(row)
+        const saveFailure = getAutoSaveFailure(row, '商品名称')
         if (access.canEditContainer && editingProductNameRowKey === key) {
           return (
             <Input.TextArea
@@ -4043,6 +5233,9 @@ export default function ContainerDetailPage() {
               value={editingProductNameValue}
               autoSize={{ minRows: 1, maxRows: 2 }}
               style={{ resize: 'none' }}
+              status={saveFailure ? 'error' : undefined}
+              aria-invalid={Boolean(saveFailure)}
+              title={saveFailure?.message}
               onChange={(event) => setEditingProductNameValue(event.target.value)}
               onBlur={() => handleProductNameEditBlur(row)}
               onKeyDown={(event) => {
@@ -4062,7 +5255,12 @@ export default function ContainerDetailPage() {
 
         return (
           <div
-            className={access.canEditContainer ? 'container-detail-product-name-editable' : undefined}
+            className={[
+              access.canEditContainer ? 'container-detail-product-name-editable' : '',
+              saveFailure ? 'container-detail-auto-save-failed' : '',
+            ].filter(Boolean).join(' ') || undefined}
+            aria-invalid={Boolean(saveFailure)}
+            title={saveFailure?.message}
             onDoubleClick={() => startEditingProductName(row)}
           >
             <TwoLineText value={getContainerDetailProductName(row)} />
@@ -4112,16 +5310,21 @@ export default function ContainerDetailPage() {
       width: 160,
       ...makeSortProps('remark'),
       ...textFilterProps('remark', t('containers.placeholders.filterRemark', '备注过滤')),
-      render: (_, row) =>
-        access.canEditContainer ? (
+      render: (_, row) => {
+        const saveFailure = getAutoSaveFailure(row, '备注')
+        return access.canEditContainer ? (
           <Input
             ref={(cell) => setEditableCellRef(rowKey(row), 'remark', cell)}
             value={row.备注 ?? ''}
-            onChange={(event) => patchRow(rowKey(row), { 备注: event.target.value })}
+            status={saveFailure ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure)}
+            title={saveFailure?.message}
+            onChange={(event) => patchAutoSaveRow(row, { 备注: event.target.value })}
             onBlur={(event) => void saveRowPatch(row, { 备注: event.target.value }).catch(handleDetailSaveError)}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'remark', event)}
           />
-        ) : row.备注 || '--',
+        ) : row.备注 || '--'
+      },
     },
   ]
 
@@ -4479,7 +5682,7 @@ export default function ContainerDetailPage() {
             <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
               <Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/warehouse/containers')}>{t('containers.actions.backToList')}</Button>
               <Space wrap>
-                <Button icon={<ReloadOutlined />} onClick={() => void loadData()}>{t('common.refresh')}</Button>
+                <Button icon={<ReloadOutlined />} onClick={() => void refreshContainerDetail()}>{t('common.refresh')}</Button>
                 {access.canEditContainer ? (
                   headerEditing ? (
                     <Button type="primary" icon={<SaveOutlined />} loading={savingHeader} onClick={() => void saveHeader()}>{t('containers.actions.saveContainer')}</Button>
@@ -4551,6 +5754,8 @@ export default function ContainerDetailPage() {
                           items: [
                             { key: 'excel', label: t('containers.actions.exportExcel', '导出 Excel') },
                             { key: 'pdf', label: t('containers.actions.exportPdf', '导出 PDF') },
+                            { type: 'divider' },
+                            { key: 'allExcelWithImages', label: t('containers.actions.exportAllExcelWithImages', '全部导出（含图片）') },
                           ],
                           onClick: ({ key }) => {
                             if (key === 'excel') {
@@ -4558,6 +5763,9 @@ export default function ContainerDetailPage() {
                             }
                             if (key === 'pdf') {
                               void exportDetails(DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS, 'pdf')
+                            }
+                            if (key === 'allExcelWithImages') {
+                              void exportDetails(ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS, 'excel', 'wholeContainer')
                             }
                           },
                         }}
@@ -4670,12 +5878,14 @@ export default function ContainerDetailPage() {
                     </Space>
                     <Space wrap size={[8, 4]} className="container-detail-action-meta">
                       <Typography.Text type="secondary" className="container-detail-loaded-count">
-                        {t('containers.text.loadedRows', '已加载 {{loaded}} / 共 {{total}} 条', {
-                          loaded: rows.length,
-                          total: detailItemsTotal,
-                        })}
+                        {detailLoadMode === 'full'
+                          ? t('containers.text.fullRows', '已完整加载 {{count}} 条', { count: rows.length })
+                          : t('containers.text.pageRows', '当前页 {{loaded}} / 共 {{total}} 条', {
+                              loaded: rows.length,
+                              total: detailItemsTotal,
+                            })}
                         {filteredRows.length !== rows.length ? ` ${t('containers.text.visibleRows', '当前可见 {{count}} 条', { count: filteredRows.length })}` : ''}
-                        {detailLoadingMore ? ` ${t('common.loading', '加载中')}` : ''}
+                        {detailLoading ? ` ${t('common.loading', '加载中')}` : ''}
                       </Typography.Text>
                       {hasActiveColumnState ? (
                         <Button size="small" className="container-detail-compact-button" onClick={() => {
@@ -4707,6 +5917,60 @@ export default function ContainerDetailPage() {
                       >
                         {t('containers.actions.saveDetails', '保存明细')}{pendingDetailPatchCount ? ` (${pendingDetailPatchCount})` : ''}
                       </Button>
+                      {autoSaveSnapshot.unsavedFieldCount > 0 ? (
+                        <Space
+                          size={4}
+                          className="container-detail-auto-save-meta"
+                          aria-live="polite"
+                        >
+                          <Typography.Text type={autoSaveSnapshot.failureCount > 0 ? 'danger' : 'secondary'}>
+                            {autoSaveSnapshot.failureCount > 0
+                              ? t(
+                                  'containers.text.autoSaveFailedFields',
+                                  '{{count}} 项未保存',
+                                  { count: autoSaveSnapshot.failureCount },
+                                )
+                              : t(
+                                  'containers.text.autoSavingFields',
+                                  '正在保存 {{count}} 项',
+                                  { count: autoSaveSnapshot.unsavedFieldCount },
+                                )}
+                          </Typography.Text>
+                          {autoSaveSnapshot.failureCount > 0 ? (
+                            <Button size="small" type="link" danger onClick={retryFailedAutoSaves}>
+                              {t('containers.actions.retryAutoSave', '重试')}
+                            </Button>
+                          ) : null}
+                        </Space>
+                      ) : null}
+                      {pendingDetailFieldCount > 0 ? (
+                        <Space size={4} className="container-detail-draft-meta">
+                          <Typography.Text type={Object.keys(pendingDetailFailures).length > 0 ? 'danger' : 'warning'}>
+                            {t(
+                              'containers.text.unsavedDetailFields',
+                              '{{count}} 项未保存',
+                              { count: pendingDetailFieldCount },
+                            )}
+                          </Typography.Text>
+                          {isDetailDraftMemoryOnly ? (
+                            <Typography.Text type="danger">
+                              {t('containers.text.localDraftMemoryOnly', '仅当前页面内存保存，刷新或关闭页面会丢失')}
+                            </Typography.Text>
+                          ) : null}
+                          <Button size="small" type="link" onClick={() => locateFirstPendingDetailField()}>
+                            {t('containers.actions.locateUnsavedDetail', '定位未保存项')}
+                          </Button>
+                          <Button
+                            size="small"
+                            type="link"
+                            danger
+                            disabled={detailSaveSubmitting}
+                            onClick={clearPendingDetailDraft}
+                          >
+                            {t('containers.actions.clearDraft', '清空草稿')}
+                          </Button>
+                        </Space>
+                      ) : null}
                     </Space>
                   ) : null}
 
@@ -4719,7 +5983,12 @@ export default function ContainerDetailPage() {
                     onSetTagFilters={setTagFiltersFromSelect}
                   />
 
-                  {exporting ? <Progress percent={exportProgress} size="small" /> : null}
+                  {exporting ? (
+                    <div className="container-detail-export-progress">
+                      <Typography.Text type="secondary">{exportProgressMessage}</Typography.Text>
+                      <Progress percent={exportProgress} size="small" />
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
@@ -4736,7 +6005,7 @@ export default function ContainerDetailPage() {
                       components={{ header: { cell: DraggableHeaderCell } }}
                       columns={columns}
                       dataSource={displayRows}
-                      loading={detailLoading && rows.length === 0}
+                      loading={detailLoading}
                       rowSelection={{
                         selectedRowKeys,
                         onChange: setSelectedRowKeys,
@@ -4744,7 +6013,16 @@ export default function ContainerDetailPage() {
                         // 紧凑表格中默认选择列过窄，显式留出复选框点击空间。
                         columnWidth: CONTAINER_DETAIL_SELECTION_COLUMN_WIDTH,
                       }}
-                      pagination={false}
+                      pagination={detailLoadMode === 'paged' ? {
+                        current: detailPageNumber,
+                        pageSize: detailPageSize,
+                        total: detailItemsTotal,
+                        size: 'small',
+                        showSizeChanger: true,
+                        pageSizeOptions: [...CONTAINER_DETAIL_PAGE_SIZE_OPTIONS],
+                        showTotal: (total) => t('containers.text.paginationTotal', '共 {{total}} 条', { total }),
+                        position: ['bottomRight'],
+                      } : false}
                       virtual
                       scroll={{ x: tableScrollX, y: tableScrollY }}
                       onChange={handleTableChange}

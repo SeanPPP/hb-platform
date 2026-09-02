@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 
 namespace BlazorApp.Api.Controllers
@@ -22,6 +23,30 @@ namespace BlazorApp.Api.Controllers
         {
             _containerService = containerService;
             _logger = logger;
+        }
+
+        private IActionResult CreateContainerMutationConflictResponse(
+            Exception exception,
+            string operation
+        )
+        {
+            ContainerMutationLock.TryResolveConflict(exception, out var conflict);
+            Response.Headers.RetryAfter = "1";
+            _logger.LogWarning(
+                exception,
+                "{Operation}遇到货柜并发冲突, ResultCode: {ResultCode}",
+                operation,
+                conflict?.ResultCode
+            );
+            return StatusCode(
+                StatusCodes.Status409Conflict,
+                new
+                {
+                    success = false,
+                    code = ContainerMutationLock.BusyErrorCode,
+                    message = "同一货柜正在保存，请稍后重试",
+                }
+            );
         }
 
         #region 货柜主表操作
@@ -97,6 +122,10 @@ namespace BlazorApp.Api.Controllers
                 var containerCode = await _containerService.CreateContainerAsync(containerDto);
                 return Ok(new { success = true, data = new { containerCode }, message = "创建成功" });
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "创建货柜");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "创建货柜失败");
@@ -139,6 +168,10 @@ namespace BlazorApp.Api.Controllers
 
                 return Ok(new { success = true, message = "更新成功" });
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "更新货柜");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新货柜失败, ContainerCode: {ContainerCode}", containerCode);
@@ -170,6 +203,10 @@ namespace BlazorApp.Api.Controllers
 
                 return Ok(new { success = true, message = "删除成功" });
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "删除货柜");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "删除货柜失败, ContainerCode: {ContainerCode}", containerCode);
@@ -195,6 +232,10 @@ namespace BlazorApp.Api.Controllers
 
                 var result = await _containerService.BatchDeleteContainersAsync(containerCodes);
                 return Ok(new { success = result.Success, data = result });
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "批量删除货柜");
             }
             catch (Exception ex)
             {
@@ -283,6 +324,10 @@ namespace BlazorApp.Api.Controllers
                 var detailCode = await _containerService.CreateContainerDetailAsync(detailDto);
                 return Ok(new { success = true, data = new { detailCode }, message = "创建成功" });
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "创建货柜明细");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "创建货柜明细失败");
@@ -325,6 +370,10 @@ namespace BlazorApp.Api.Controllers
 
                 return Ok(new { success = true, message = "更新成功" });
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "更新货柜明细");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新货柜明细失败, DetailCode: {DetailCode}", detailCode);
@@ -356,6 +405,10 @@ namespace BlazorApp.Api.Controllers
 
                 return Ok(new { success = true, message = "删除成功" });
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "删除货柜明细");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "删除货柜明细失败, DetailCode: {DetailCode}", detailCode);
@@ -381,6 +434,10 @@ namespace BlazorApp.Api.Controllers
 
                 var result = await _containerService.BatchAddContainerDetailsAsync(request);
                 return Ok(new { success = result.Success, data = result });
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "批量添加货柜明细");
             }
             catch (Exception ex)
             {
@@ -408,6 +465,10 @@ namespace BlazorApp.Api.Controllers
                 var result = await _containerService.BatchDeleteContainerDetailsAsync(detailCodes);
                 return Ok(new { success = result.Success, data = result });
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "批量删除货柜明细");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量删除货柜明细失败");
@@ -433,6 +494,10 @@ namespace BlazorApp.Api.Controllers
 
                 var result = await _containerService.BatchUpdateContainerDetailsAsync(details);
                 return Ok(new { success = result.Success, data = result });
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "批量更新货柜明细");
             }
             catch (Exception ex)
             {
@@ -469,6 +534,10 @@ namespace BlazorApp.Api.Controllers
 
                 return Ok(new { success = true, message = "重新计算成功" });
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "重新计算货柜汇总");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "重新计算货柜汇总信息失败, ContainerCode: {ContainerCode}", containerCode);
@@ -499,6 +568,10 @@ namespace BlazorApp.Api.Controllers
                 }
 
                 return Ok(new { success = true, message = "运输成本分摊成功" });
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "分摊货柜运输成本");
             }
             catch (Exception ex)
             {

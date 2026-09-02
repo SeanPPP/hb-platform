@@ -1,6 +1,7 @@
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
@@ -203,6 +204,30 @@ namespace BlazorApp.Api.Controllers.React
             return false;
         }
 
+        private IActionResult CreateContainerMutationConflictResponse(
+            Exception exception,
+            string operation
+        )
+        {
+            ContainerMutationLock.TryResolveConflict(exception, out var conflict);
+            Response.Headers.RetryAfter = "1";
+            _logger.LogWarning(
+                exception,
+                "{Operation}遇到货柜并发冲突, ResultCode: {ResultCode}",
+                operation,
+                conflict?.ResultCode
+            );
+            return StatusCode(
+                StatusCodes.Status409Conflict,
+                new
+                {
+                    success = false,
+                    code = ContainerMutationLock.BusyErrorCode,
+                    message = "同一货柜正在保存，请稍后重试",
+                }
+            );
+        }
+
         /// <summary>
         /// 获取货柜列表（React专用）
         /// </summary>
@@ -353,6 +378,10 @@ namespace BlazorApp.Api.Controllers.React
                     return NotFound(new { success = false, message = "货柜不存在或更新失败" });
                 }
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "更新货柜信息");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(
@@ -414,7 +443,8 @@ namespace BlazorApp.Api.Controllers.React
         [Authorize(Policy = Permissions.Container.View)]
         public async Task<IActionResult> QueryContainerProducts(
             string containerGuid,
-            [FromBody] ContainerDetailQueryDto? request
+            [FromBody] ContainerDetailQueryDto? request,
+            CancellationToken cancellationToken = default
         )
         {
             try
@@ -427,7 +457,10 @@ namespace BlazorApp.Api.Controllers.React
                 request ??= new ContainerDetailQueryDto();
                 request.ContainerGuid = containerGuid;
 
-                var result = await _containerReactService.QueryContainerDetailsAsync(request);
+                var result = await _containerReactService.QueryContainerDetailsAsync(
+                    request,
+                    cancellationToken
+                );
 
                 return Ok(
                     new
@@ -437,6 +470,10 @@ namespace BlazorApp.Api.Controllers.React
                         message = "获取货柜商品明细成功",
                     }
                 );
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -456,7 +493,8 @@ namespace BlazorApp.Api.Controllers.React
         [Authorize(Policy = Permissions.Container.View)]
         public async Task<IActionResult> ExportContainerProducts(
             string containerGuid,
-            [FromBody] ReactContainerDetailsExportRequest? request
+            [FromBody] ReactContainerDetailsExportRequest? request,
+            CancellationToken cancellationToken = default
         )
         {
             try
@@ -478,7 +516,11 @@ namespace BlazorApp.Api.Controllers.React
                     return NotFound(new { success = false, message = "货柜不存在" });
                 }
 
-                var details = await LoadReactContainerExportDetailsAsync(containerGuid, request);
+                var details = await LoadReactContainerExportDetailsAsync(
+                    containerGuid,
+                    request,
+                    cancellationToken
+                );
                 if (details.Count == 0)
                 {
                     return BadRequest(new { success = false, message = "没有找到要导出的明细数据" });
@@ -511,6 +553,10 @@ namespace BlazorApp.Api.Controllers.React
 
                 return File(fileBytes, contentType, fileName);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(
@@ -524,7 +570,8 @@ namespace BlazorApp.Api.Controllers.React
 
         private async Task<List<ContainerDetailDto>> LoadReactContainerExportDetailsAsync(
             string containerGuid,
-            ReactContainerDetailsExportRequest request
+            ReactContainerDetailsExportRequest request,
+            CancellationToken cancellationToken
         )
         {
             var query = request.Query ?? new ContainerDetailQueryDto();
@@ -543,7 +590,10 @@ namespace BlazorApp.Api.Controllers.React
 
             while (true)
             {
-                var result = await _containerReactService.QueryContainerDetailsAsync(query);
+                var result = await _containerReactService.QueryContainerDetailsAsync(
+                    query,
+                    cancellationToken
+                );
                 var items = selectedHguids.Count == 0
                     ? result.Items
                     : result.Items
@@ -857,7 +907,7 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
-        /// 批量更新货柜明细（React专用）
+        /// 批量更新货柜明细（旧客户端兼容部分成功入口）
         /// </summary>
         /// <param name="updates">明细更新列表</param>
         /// <returns>更新结果</returns>
@@ -885,9 +935,58 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "批量更新货柜明细");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量更新货柜明细失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 在路由指定货柜范围内批量更新明细（Web 专用部分成功入口）。
+        /// </summary>
+        [HttpPost("{containerGuid:guid}/batch-update-details")]
+        [Authorize(Policy = Permissions.Container.Edit)]
+        public async Task<IActionResult> BatchUpdateDetailsScoped(
+            string containerGuid,
+            [FromBody] List<UpdateContainerDetailDto> updates
+        )
+        {
+            try
+            {
+                if (updates == null || !updates.Any())
+                {
+                    return BadRequest(new { success = false, message = "更新列表不能为空" });
+                }
+
+                var result = await _containerReactService.BatchUpdateDetailsDetailedAsync(
+                    containerGuid,
+                    updates
+                );
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        message = $"成功更新 {result.TotalUpdated} 条明细",
+                        data = result,
+                    }
+                );
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "批量更新货柜明细");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "批量更新货柜明细失败, ContainerGuid: {ContainerGuid}",
+                    containerGuid
+                );
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
@@ -913,6 +1012,10 @@ namespace BlazorApp.Api.Controllers.React
                         data = result,
                     }
                 );
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "对齐国内商品编码");
             }
             catch (InvalidOperationException ex)
             {
@@ -955,6 +1058,10 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "按筛选范围批量调浮率");
+            }
             catch (InvalidOperationException ex)
             {
                 return BadRequest(new { success = false, message = ex.Message });
@@ -996,6 +1103,10 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "按筛选范围批量改价");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "按筛选范围批量改价失败");
@@ -1028,6 +1139,10 @@ namespace BlazorApp.Api.Controllers.React
                         data = new { totalUpdated },
                     }
                 );
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "按筛选范围重算成本");
             }
             catch (InvalidOperationException ex)
             {
@@ -1066,6 +1181,10 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "按筛选范围回填上次价格");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "按筛选范围回填上次价格失败");
@@ -1103,6 +1222,10 @@ namespace BlazorApp.Api.Controllers.React
                         data = new { totalDeleted, totalRequested = request.Hguids.Count },
                     }
                 );
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "批量删除货柜明细");
             }
             catch (Exception ex)
             {
@@ -1172,6 +1295,10 @@ namespace BlazorApp.Api.Controllers.React
                         data = new { containerGuid },
                     }
                 );
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "创建货柜");
             }
             catch (InvalidOperationException ex)
             {
@@ -1275,6 +1402,10 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "批量分配商品到货柜");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量分配商品到货柜失败");
@@ -1358,8 +1489,14 @@ namespace BlazorApp.Api.Controllers.React
         /// <summary>
         /// 将核心同步结果映射为 HTTP 语义，保证 data 始终是 SyncResult。
         /// </summary>
-        private static IActionResult CreateSyncFailureResponse(SyncResult result)
+        private IActionResult CreateSyncFailureResponse(SyncResult result)
         {
+            if (result.ErrorCode == ContainerMutationLock.BusyErrorCode)
+            {
+                Response.Headers.RetryAfter = "1";
+                return Conflict(CreateSyncResponse(false, result.Message, result));
+            }
+
             return result.ErrorCode switch
             {
                 ContainerHqSyncErrorCodes.Conflict => new ConflictObjectResult(
