@@ -25,6 +25,9 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private PaymentNavigationActions _navigationActions;
     private readonly IOperationAuditLogger? _operationAuditLogger;
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
+    private readonly ICardTerminalSetupService? _cardTerminalSetupService;
+    private Guid? _persistedLinklyCloudTerminalId;
+    private bool _isLinklyCloudBackendTerminalMode;
 
     internal PaymentNavigationActions NavigationActions => _navigationActions;
     private readonly PaymentTenderController _tenderController = new();
@@ -110,6 +113,15 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private bool _isPaymentInteractionLocked;
 
     [ObservableProperty]
+    private bool _isLinklyCloudTerminalRefreshing;
+
+    [ObservableProperty]
+    private LinklyCloudTerminalSummary? _selectedLinklyCloudTerminal;
+
+    [ObservableProperty]
+    private string _linklyCloudTerminalStatusText = string.Empty;
+
+    [ObservableProperty]
     private PaymentEntryMode _paymentMode;
 
     [ObservableProperty]
@@ -159,7 +171,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         IOperationAuthorizationService? operationAuthorizationService = null,
         Func<CardPaymentHandoffRequest, Task<CardPaymentHandoffCandidate?>>? prepareCardPaymentHandoffAsync = null,
         Func<CardPaymentHandoffCandidate, CardPaymentHandoffRequest, Task<bool>>? handoffCardPaymentAsync = null,
-        Action? openCardRecoveryCenter = null)
+        Action? openCardRecoveryCenter = null,
+        ICardTerminalSetupService? cardTerminalSetupService = null)
         : this(
             cart,
             new CashPaymentWorkflowService(checkout, orderRepository, syncQueueRepository),
@@ -178,7 +191,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
             operationAuthorizationService,
             prepareCardPaymentHandoffAsync,
             handoffCardPaymentAsync,
-            openCardRecoveryCenter)
+            openCardRecoveryCenter,
+            cardTerminalSetupService)
     {
     }
 
@@ -200,7 +214,8 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         IOperationAuthorizationService? operationAuthorizationService = null,
         Func<CardPaymentHandoffRequest, Task<CardPaymentHandoffCandidate?>>? prepareCardPaymentHandoffAsync = null,
         Func<CardPaymentHandoffCandidate, CardPaymentHandoffRequest, Task<bool>>? handoffCardPaymentAsync = null,
-        Action? openCardRecoveryCenter = null)
+        Action? openCardRecoveryCenter = null,
+        ICardTerminalSetupService? cardTerminalSetupService = null)
     {
         _cart = cart;
         _cartWasEmpty = cart.IsEmpty;
@@ -213,6 +228,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         _enforcePermissions = enforcePermissionsWhenNoCashier;
         _operationAuditLogger = operationAuditLogger;
         _operationAuthorizationService = operationAuthorizationService;
+        _cardTerminalSetupService = cardTerminalSetupService;
         if (session.CashierSession is not null)
         {
             _cashierSessionContext.SetCurrent(session.CashierSession);
@@ -311,11 +327,208 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         return cancellationTask;
     }
 
+    public async Task RefreshLinklyCloudTerminalsAsync()
+    {
+        if (_cardTerminalSetupService is null || IsLinklyCloudTerminalRefreshing)
+        {
+            return;
+        }
+
+        IsLinklyCloudTerminalRefreshing = true;
+        // 首次进入付款页时尚不知道服务端是否 Active；先阻止卡支付，配置与目录均确认后再放行。
+        _isLinklyCloudBackendTerminalMode = true;
+        RaiseLinklyCloudTerminalProperties();
+        try
+        {
+            var configuration = await _cardTerminalSetupService.LoadConfigurationAsync();
+            var isCloudBackendConfigured =
+                CardTerminalSettings.NormalizeLinklyConnectionMode(configuration.LinklyConnectionMode) ==
+                LinklyConnectionMode.CloudBackendAsync;
+            if (!isCloudBackendConfigured)
+            {
+                ClearLinklyCloudTerminalDirectory();
+                return;
+            }
+
+            var directory = await _cardTerminalSetupService.ListLinklyCloudBackendTerminalsAsync(
+                configuration.Environment);
+            if (!string.Equals(directory.Mode, "Active", StringComparison.OrdinalIgnoreCase))
+            {
+                // Legacy/Draft 继续使用既有共享凭据流程；只有 Active 才启用一对一终端选择。
+                ClearLinklyCloudTerminalDirectory();
+                return;
+            }
+
+            LinklyCloudTerminals.Clear();
+            foreach (var terminal in directory.Terminals
+                         .Where(item => item.IsReady)
+                         .OrderBy(item => item.LaneNo)
+                         .ThenBy(item => item.DisplayName))
+            {
+                LinklyCloudTerminals.Add(terminal);
+            }
+
+            _persistedLinklyCloudTerminalId = directory.SelectedTerminalId;
+            LinklyCloudSelectionRevision = directory.SelectionRevision;
+            SelectedLinklyCloudTerminal = directory.SelectedTerminalId is Guid selectedTerminalId
+                ? LinklyCloudTerminals.FirstOrDefault(item => item.TerminalId == selectedTerminalId)
+                : null;
+
+            // 单台 Ready 终端无需额外点击；仍通过版本化 API 持久化为本 POS 的选择。
+            if (SelectedLinklyCloudTerminal is null &&
+                LinklyCloudTerminals.Count == 1 &&
+                LinklyCloudTerminals[0] is { } onlyTerminal)
+            {
+                var selection = await _cardTerminalSetupService.SelectLinklyCloudBackendTerminalAsync(
+                    configuration.Environment,
+                    onlyTerminal.TerminalId,
+                    directory.SelectionRevision);
+                ApplyLinklyCloudSelection(onlyTerminal, selection.Revision);
+            }
+
+            LinklyCloudTerminalStatusText = LinklyCloudTerminals.Count == 0
+                ? TerminalText("payment.linklyTerminal.noneReady", "No ready Linkly Cloud terminal is available.")
+                : SelectedLinklyCloudTerminalText;
+            RaiseLinklyCloudTerminalProperties();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            LinklyCloudTerminalStatusText = ex.Message;
+            ConsoleLog.WriteError(
+                "Payment",
+                $"load linkly cloud terminal directory failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
+        finally
+        {
+            IsLinklyCloudTerminalRefreshing = false;
+            RaiseLinklyCloudTerminalProperties();
+        }
+    }
+
+    public async Task SelectLinklyCloudTerminalAsync(LinklyCloudTerminalSummary? terminal)
+    {
+        if (_cardTerminalSetupService is null || terminal is null || !_isLinklyCloudBackendTerminalMode)
+        {
+            return;
+        }
+
+        if (terminal.TerminalId == _persistedLinklyCloudTerminalId)
+        {
+            SelectedLinklyCloudTerminal = terminal;
+            LinklyCloudTerminalStatusText = SelectedLinklyCloudTerminalText;
+            return;
+        }
+
+        if (!CanSwitchLinklyCloudTerminal || !terminal.IsReady)
+        {
+            RestorePersistedLinklyCloudTerminal();
+            LinklyCloudTerminalStatusText = TerminalText(
+                "payment.linklyTerminal.switchBlocked",
+                "The terminal cannot be switched while a card payment is active or unresolved.");
+            return;
+        }
+
+        IsLinklyCloudTerminalRefreshing = true;
+        try
+        {
+            var configuration = await _cardTerminalSetupService.LoadConfigurationAsync();
+            var selection = await _cardTerminalSetupService.SelectLinklyCloudBackendTerminalAsync(
+                configuration.Environment,
+                terminal.TerminalId,
+                LinklyCloudSelectionRevision);
+            ApplyLinklyCloudSelection(terminal, selection.Revision);
+            LinklyCloudTerminalStatusText = string.Format(
+                CultureInfo.CurrentCulture,
+                TerminalText("payment.linklyTerminal.selected", "Payments will use {0}."),
+                terminal.DisplayName);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            RestorePersistedLinklyCloudTerminal();
+            LinklyCloudTerminalStatusText = ex.Message;
+            ConsoleLog.WriteError(
+                "Payment",
+                $"select linkly cloud terminal failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
+        finally
+        {
+            IsLinklyCloudTerminalRefreshing = false;
+            RaiseLinklyCloudTerminalProperties();
+        }
+    }
+
+    private void ApplyLinklyCloudSelection(LinklyCloudTerminalSummary terminal, long revision)
+    {
+        _persistedLinklyCloudTerminalId = terminal.TerminalId;
+        LinklyCloudSelectionRevision = revision;
+        SelectedLinklyCloudTerminal = terminal;
+        RaiseLinklyCloudTerminalProperties();
+    }
+
+    private void RestorePersistedLinklyCloudTerminal()
+    {
+        SelectedLinklyCloudTerminal = _persistedLinklyCloudTerminalId is Guid terminalId
+            ? LinklyCloudTerminals.FirstOrDefault(item => item.TerminalId == terminalId)
+            : null;
+    }
+
+    private void ClearLinklyCloudTerminalDirectory()
+    {
+        _isLinklyCloudBackendTerminalMode = false;
+        LinklyCloudTerminals.Clear();
+        SelectedLinklyCloudTerminal = null;
+        _persistedLinklyCloudTerminalId = null;
+        LinklyCloudSelectionRevision = null;
+        LinklyCloudTerminalStatusText = string.Empty;
+        RaiseLinklyCloudTerminalProperties();
+    }
+
+    private void RaiseLinklyCloudTerminalProperties()
+    {
+        OnPropertyChanged(nameof(LinklyCloudSelectionRevision));
+        OnPropertyChanged(nameof(IsLinklyCloudTerminalSelectorVisible));
+        OnPropertyChanged(nameof(CanSwitchLinklyCloudTerminal));
+        OnPropertyChanged(nameof(SelectedLinklyCloudTerminalText));
+        NotifyPaymentCommandStates();
+    }
+
+    private string TerminalText(string key, string fallback)
+    {
+        var translated = _localization?.T(key);
+        return string.IsNullOrWhiteSpace(translated) || string.Equals(translated, key, StringComparison.Ordinal)
+            ? fallback
+            : translated;
+    }
+
     internal bool IsShuttingDown => Volatile.Read(ref _shutdownStarted) == 1;
 
     public ObservableCollection<CartLine> CartLines { get; } = [];
 
     public ObservableCollection<PaymentTender> PaymentTenders { get; } = [];
+
+    public ObservableCollection<LinklyCloudTerminalSummary> LinklyCloudTerminals { get; } = [];
+
+    public long? LinklyCloudSelectionRevision { get; private set; }
+
+    public bool IsLinklyCloudTerminalSelectorVisible =>
+        _isLinklyCloudBackendTerminalMode && LinklyCloudTerminals.Count > 0;
+
+    public bool CanSwitchLinklyCloudTerminal =>
+        IsLinklyCloudTerminalSelectorVisible &&
+        LinklyCloudTerminals.Count > 1 &&
+        !IsLinklyCloudTerminalRefreshing &&
+        !IsCardPaymentInProgress &&
+        IsPaymentInteractionEnabled;
+
+    public string SelectedLinklyCloudTerminalText => SelectedLinklyCloudTerminal is null
+        ? TerminalText("payment.linklyTerminal.none", "No terminal selected")
+        : string.Format(
+            CultureInfo.CurrentCulture,
+            TerminalText("payment.linklyTerminal.display", "Lane {0} · {1}"),
+            SelectedLinklyCloudTerminal.LaneNo,
+            SelectedLinklyCloudTerminal.DisplayName);
 
     public IReadOnlyList<QuickCashOption> QuickCashAmounts => BuildQuickCashAmounts();
 
@@ -569,13 +782,26 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     partial void OnIsCardPaymentInProgressChanged(bool value)
     {
+        OnPropertyChanged(nameof(CanSwitchLinklyCloudTerminal));
         NotifyPaymentCommandStates();
     }
 
     partial void OnIsPaymentInteractionLockedChanged(bool value)
     {
         OnPropertyChanged(nameof(IsPaymentInteractionEnabled));
+        OnPropertyChanged(nameof(CanSwitchLinklyCloudTerminal));
         NotifyPaymentCommandStates();
+    }
+
+    partial void OnIsLinklyCloudTerminalRefreshingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanSwitchLinklyCloudTerminal));
+        NotifyPaymentCommandStates();
+    }
+
+    partial void OnSelectedLinklyCloudTerminalChanged(LinklyCloudTerminalSummary? value)
+    {
+        OnPropertyChanged(nameof(SelectedLinklyCloudTerminalText));
     }
 
     partial void OnSessionChanged(PosSessionState value)
@@ -667,6 +893,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
         }
 
         OnPropertyChanged(nameof(StatusMessage));
+        _ = RefreshLinklyCloudTerminalsAsync();
     }
 
     private void OnCartTransactionChanged(object? sender, EventArgs e)
@@ -682,6 +909,7 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
 
     internal void OnCardResultUnknownRecoveryChanged(bool required)
     {
+        OnPropertyChanged(nameof(CanSwitchLinklyCloudTerminal));
         if (required)
         {
             _unknownCardResultCartEpoch ??= _cartTransactionEpoch;
@@ -2467,6 +2695,13 @@ public partial class PaymentViewModel : ObservableObject, IDisposable
     private bool CanAddTender(PaymentMethodKind method, bool allowDefaultAmount)
     {
         if (method == PaymentMethodKind.Card && _requiresAlternativeRefundMethod)
+        {
+            return false;
+        }
+
+        if (method == PaymentMethodKind.Card &&
+            _isLinklyCloudBackendTerminalMode &&
+            (IsLinklyCloudTerminalRefreshing || SelectedLinklyCloudTerminal is null))
         {
             return false;
         }

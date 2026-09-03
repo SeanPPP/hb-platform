@@ -94,6 +94,11 @@ test("bootstrap 仅在合法且可用的 Linkly 环境创建 operator，并一�
       },
     }),
   );
+  assert.ok(bootstrap.linklyPaymentSelection);
+  assert.equal(
+    bootstrap.linklyTerminals?.port,
+    bootstrap.linklyPaymentSelection,
+  );
   assert.equal(
     bootstrap.voucherApprovedPurchaseRelease.status,
     "available",

@@ -85,6 +85,7 @@ public sealed class ReactBrowserExtensionController : ControllerBase
     }
 
     [HttpPost("supplier-top-sales")]
+    [BrowserExtensionInvalidRequestFilter]
     public async Task<IActionResult> GetSupplierTopSales(
         [FromBody] BrowserExtensionSupplierTopSalesRequestDto request
     )

@@ -6,6 +6,17 @@ namespace BlazorApp.Api.Tests;
 public sealed class PaymentTerminalSettingsSchemaMigratorTests
 {
     [Fact]
+    public void Schema_lock_matches_pos_api_shared_linkly_lock()
+    {
+        var sql = PaymentTerminalSettingsSchemaMigrator.SchemaLockSql;
+
+        Assert.Contains("sys.sp_getapplock", sql);
+        Assert.Contains("Hbpos.LinklyCloud.Schema.v2", sql);
+        Assert.Contains("@LockOwner = N'Transaction'", sql);
+        Assert.Contains("@LockTimeout = 60000", sql);
+    }
+
+    [Fact]
     public void Scripts_ContainPaymentTerminalTablesAndEnvironmentConstraints()
     {
         var sql = string.Join("\n", PaymentTerminalSettingsSchemaMigrator.SqlScriptsForTests);
@@ -38,5 +49,69 @@ public sealed class PaymentTerminalSettingsSchemaMigratorTests
 
         Assert.Contains("SET [Environment] = N'Production'", sql);
         Assert.Contains("ALTER COLUMN [Environment] NVARCHAR(32) NOT NULL", sql);
+    }
+
+    [Fact]
+    public void Scripts_CreateIdempotentLinklyMultiTerminalSchemaWithoutCopyingLegacyCredentials()
+    {
+        var sql = string.Join("\n", PaymentTerminalSettingsSchemaMigrator.SqlScriptsForTests);
+
+        Assert.Contains("POSM_LinklyCloudTerminal", sql);
+        Assert.Contains("POSM_LinklyCloudDeviceSelection", sql);
+        Assert.Contains("POSM_LinklyCloudConfigurationMode", sql);
+        Assert.Contains("POSM_LinklyCloudBackendSession", sql);
+        Assert.Contains("[TerminalId] UNIQUEIDENTIFIER NULL", sql);
+        Assert.Contains("[ClientAcknowledgedAt] DATETIME2(7) NULL", sql);
+        Assert.Contains("IX_POSM_LinklyCloudBackendSession_TerminalRecovery", sql);
+        Assert.Contains("IX_POSM_LinklyCloudBackendSession_DeviceRecovery", sql);
+        Assert.Contains("[PairingAttemptId] UNIQUEIDENTIFIER NULL", sql);
+        Assert.Contains("[PairingLeaseExpiresAt] DATETIME2(7) NULL", sql);
+        Assert.Contains("UX_POSM_LinklyCloudTerminal_Scope_LaneNo", sql);
+        Assert.Contains("UX_POSM_LinklyCloudTerminal_Scope_Username", sql);
+        Assert.Contains("UX_POSM_LinklyCloudTerminal_Scope_DisplayName", sql);
+        Assert.Contains("UX_POSM_LinklyCloudDeviceSelection_Scope_Terminal", sql);
+        Assert.Contains("GROUP BY [Environment], [StoreCode], [TerminalId]", sql);
+        Assert.Contains("HAVING COUNT(*) > 1", sql);
+        Assert.Contains("THROW 51004", sql);
+        Assert.Contains("CK_POSM_LinklyCloudTerminal_PairingState", sql);
+        Assert.Contains("CK_POSM_LinklyCloudConfigurationMode_Mode", sql);
+        Assert.Contains("IF OBJECT_ID", sql);
+        Assert.DoesNotContain("INSERT INTO [dbo].[POSM_LinklyCloudTerminal]", sql);
+        Assert.DoesNotContain("FROM [dbo].[POSM_LinklyCloudCredential]", sql);
+        Assert.DoesNotContain("DELETE FROM [dbo].[POSM_LinklyCloudDeviceSelection]", sql);
+    }
+
+    [Fact]
+    public void Scripts_add_idempotent_legacy_pairing_lease_to_configuration_scope()
+    {
+        var sql = string.Join("\n", PaymentTerminalSettingsSchemaMigrator.SqlScriptsForTests);
+
+        Assert.Contains("[LegacyPairingAttemptId] UNIQUEIDENTIFIER NULL", sql);
+        Assert.Contains("[LegacyPairingLeaseExpiresAt] DATETIME2(7) NULL", sql);
+        Assert.Contains(
+            "COL_LENGTH(N'dbo.POSM_LinklyCloudConfigurationMode', N'LegacyPairingAttemptId') IS NULL",
+            sql);
+        Assert.Contains(
+            "COL_LENGTH(N'dbo.POSM_LinklyCloudConfigurationMode', N'LegacyPairingLeaseExpiresAt') IS NULL",
+            sql);
+    }
+
+    [Fact]
+    public void Scripts_protect_new_terminal_credentials_and_require_reentry_for_legacy_rows()
+    {
+        var sql = string.Join("\n", PaymentTerminalSettingsSchemaMigrator.SqlScriptsForTests);
+
+        Assert.Contains("[Password] NVARCHAR(2048) NOT NULL", sql);
+        Assert.Contains("[Secret] NVARCHAR(2048) NULL", sql);
+        Assert.Contains("[CredentialProtectionVersion] TINYINT NOT NULL", sql);
+        Assert.Contains("DEFAULT (1)", sql);
+        Assert.Contains("DEFAULT (0) WITH VALUES", sql);
+        Assert.Contains("ALTER COLUMN [Password] NVARCHAR(2048) NOT NULL", sql);
+        Assert.Contains("ALTER COLUMN [Secret] NVARCHAR(2048) NULL", sql);
+        Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudTerminal', N'Password') < 4096", sql);
+        Assert.Contains("COL_LENGTH(N'dbo.POSM_LinklyCloudTerminal', N'Secret') < 4096", sql);
+        Assert.Contains("CK_POSM_LinklyCloudTerminal_CredentialProtectionVersion", sql);
+        Assert.DoesNotContain("UPDATE [dbo].[POSM_LinklyCloudTerminal] SET [Password]", sql);
+        Assert.DoesNotContain("UPDATE [dbo].[POSM_LinklyCloudTerminal] SET [Secret]", sql);
     }
 }

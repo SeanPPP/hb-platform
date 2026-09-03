@@ -11,6 +11,7 @@ import { DEFAULT_PROFILES } from '../lib/profiles-default.js';
 import { migrateProfileConfig } from '../lib/profile-cache.js';
 import { matchProfile, validateProfiles } from '../lib/profiles.js';
 import { createAssistantPanelController } from '../lib/assistant-panel.js';
+import { normalizeRankingDays, normalizeTopSalesRequest } from '../lib/ranking.js';
 import {
   createAccessRequestExecutor,
   createSingleFlight,
@@ -384,13 +385,18 @@ async function handleRelease() {
   return { ok: true, release: res.data };
 }
 
-async function handleSummaryBatch({ storeCode, supplierCode, itemNumbers }) {
+async function handleSummaryBatch({ storeCode, supplierCode, itemNumbers, salesRankingDays }) {
   if (!storeCode || !supplierCode || !Array.isArray(itemNumbers)) {
     return { ok: false, error: '参数缺失' };
   }
   const res = await apiRequest('/api/react/v1/browser-extension/product-purchase-cycle-summary/batch', {
     method: 'POST',
-    body: JSON.stringify({ storeCode, supplierCode, itemNumbers }),
+    body: JSON.stringify({
+      storeCode,
+      supplierCode,
+      itemNumbers,
+      salesRankingDays: normalizeRankingDays(salesRankingDays),
+    }),
   });
   if (!res.success) return { ok: false, error: res.message || res.errorCode || '摘要获取失败' };
   return { ok: true, data: res.data };
@@ -414,12 +420,21 @@ async function handleStores() {
   return { ok: true, data: res.data };
 }
 
-async function handleSupplierTopSales({ supplierCode, days }) {
+async function handleSupplierTopSales({ supplierCode, days, topPercent, page, pageSize }) {
   if (!supplierCode) return { ok: false, error: '供应商代码缺失' };
-  const normalizedDays = Number(days) === 90 ? 90 : 60;
+  let pagination;
+  try {
+    pagination = normalizeTopSalesRequest({ topPercent, page, pageSize });
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
   const res = await apiRequest('/api/react/v1/browser-extension/supplier-top-sales', {
     method: 'POST',
-    body: JSON.stringify({ supplierCode, days: normalizedDays }),
+    body: JSON.stringify({
+      supplierCode,
+      days: normalizeRankingDays(days),
+      ...(pagination || {}),
+    }),
   });
   if (!res.success) return { ok: false, error: res.message || res.errorCode || '热销排行获取失败' };
   return { ok: true, data: res.data, apiOrigin: await getApiOrigin() };

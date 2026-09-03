@@ -6,6 +6,18 @@ namespace Hbpos.Api.Tests;
 public sealed class LinklyCloudCredentialServiceTests
 {
     [Fact]
+    public void Repository_legacy_credential_upsert_locks_mode_and_rejects_active()
+    {
+        var sql = SqlSugarLinklyCloudCredentialRepository.UpsertSql;
+
+        Assert.Contains("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("POSM_LinklyCloudConfigurationMode", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("WITH (UPDLOCK, HOLDLOCK)", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("THROW 51005", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("COMMIT TRANSACTION", sql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public async Task GetByStoreCodeAsync_UsesTrimmedStoreCodeAndMapsCredential()
     {
         string? requestedStoreCode = null;

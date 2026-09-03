@@ -65,7 +65,7 @@ Safari 使用相邻的独立 Xcode 宿主项目，构建、签名和启用步骤
 
 ## 三浏览器构建
 
-`build.mjs` 生成 `dist/chrome`、`dist/edge` 与 `dist/safari`，三个 manifest 的 `version` 相同（当前 1.3.0）。Web 与 API 同源时只需设置 API 源；构建仍允许分别声明 Web/API 来源，但网站会话自动授权只在两者同源时启用：
+`build.mjs` 生成 `dist/chrome`、`dist/edge` 与 `dist/safari`，三个 manifest 的 `version` 相同（当前 1.4.0）。Web 与 API 同源时只需设置 API 源；构建仍允许分别声明 Web/API 来源，但网站会话自动授权只在两者同源时启用：
 
 ```bash
 HB_WEB_ORIGIN=https://staging.example.com HB_API_ORIGIN=https://staging.example.com npm run build
@@ -78,7 +78,7 @@ HB_WEB_ORIGIN=https://staging.example.com HB_API_ORIGIN=https://staging.example.
 参考 `services/backend/BlazorApp.Api/appsettings.BrowserExtension.example.json` 配置最新版、最低支持版、三个浏览器商店链接和声明式供应商 profile。部署时也可使用 ASP.NET Core 环境变量，例如：
 
 ```bash
-BrowserExtension__LatestVersion=1.3.0
+BrowserExtension__LatestVersion=1.4.0
 BrowserExtension__MinimumVersion=1.1.0
 BrowserExtension__ChromeStoreUrl=https://chromewebstore.google.com/detail/...
 BrowserExtension__EdgeStoreUrl=https://microsoftedge.microsoft.com/addons/detail/...

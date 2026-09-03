@@ -4,7 +4,11 @@ import test from "node:test";
 import {
   LinklyCloudBackendApi,
   LinklyCloudBackendProvider,
+  LinklyPaymentTerminalSelectionCoordinator,
   type LinklyCloudBackendSession,
+  type LinklyPaymentTerminalSelectionExpectation,
+  type LinklyTerminalSelectionPort,
+  type LinklyTerminalSelectionSnapshot,
 } from "./linkly-cloud-backend";
 
 import { HbposApiError, type HbposTransport, type HbposTransportRequest } from "@/core/api/hbpos-api";
@@ -12,6 +16,7 @@ import type { PaymentAttempt } from "@hb/pos-domain/core/contracts/payment";
 
 const session = (overrides: Partial<LinklyCloudBackendSession> = {}): LinklyCloudBackendSession => ({
   environment: "Sandbox", storeCode: "S1", deviceCode: "IPAD1", sessionId: "session-1", status: "InProgress",
+  terminalId: null, terminalDisplayName: null,
   txnRef: "TXN-1", responseCode: null, responseText: null, recoveryAction: null, displayText: null,
   cancelKeyFlag: false, okKeyFlag: false, acceptYesKeyFlag: false, declineNoKeyFlag: false, authoriseKeyFlag: false,
   inputType: null, graphicCode: null, displayLines: [], receiptText: null, recoveryCount: 0, receiptPrintedAt: null,
@@ -43,7 +48,342 @@ class FakeTransport implements HbposTransport {
 function ok(data: unknown): { status: number; data: { success: true; data: unknown } } { return { status: 200, data: { success: true, data } }; }
 function none(): { status: number; data: { success: false; errorCode: string } } { return { status: 404, data: { success: false, errorCode: "LINKLY_CLOUD_BACKEND_SESSION_NOT_FOUND" } }; }
 
+const terminalSelection = (
+  overrides: Partial<LinklyTerminalSelectionSnapshot> = {},
+): LinklyTerminalSelectionSnapshot => ({
+  environment: "Sandbox",
+  mode: "Active",
+  selectedTerminalId: "terminal-1",
+  selectionRevision: 3,
+  terminals: [
+    {
+      terminalId: "terminal-1",
+      laneNo: 1,
+      displayName: "Front",
+      pairingState: "Ready",
+      isBusy: false,
+      isReady: true,
+      lastHealthStatus: "Ready",
+      lastHealthAt: "2026-09-02T00:00:00.000Z",
+    },
+  ],
+  ...overrides,
+});
+
+class FakeTerminalSelectionPort implements LinklyTerminalSelectionPort {
+  public constructor(public snapshot = terminalSelection()) {}
+
+  public readTerminals(): Promise<LinklyTerminalSelectionSnapshot> {
+    return Promise.resolve(this.snapshot);
+  }
+
+  public selectTerminal(
+    environment: string,
+    terminalId: string,
+    expectedRevision: number,
+  ): Promise<LinklyTerminalSelectionSnapshot> {
+    this.snapshot = terminalSelection({
+      environment,
+      selectedTerminalId: terminalId,
+      selectionRevision: expectedRevision + 1,
+    });
+    return Promise.resolve(this.snapshot);
+  }
+}
+
+function providerOptions(
+  terminalSelectionPort: LinklyTerminalSelectionPort =
+    new FakeTerminalSelectionPort(),
+) {
+  return {
+    environment: "Sandbox",
+    terminalSelection: terminalSelectionPort,
+  } as const;
+}
+
 const recoveryUid = "3b241101-e2bb-4255-8caf-4136c566a962";
+
+const confirmedTerminal = (
+  overrides: Partial<LinklyPaymentTerminalSelectionExpectation> = {},
+): LinklyPaymentTerminalSelectionExpectation => ({
+  environment: "Sandbox",
+  mode: "Active",
+  terminalId: "terminal-1",
+  selectionRevision: 3,
+  ...overrides,
+} as LinklyPaymentTerminalSelectionExpectation);
+
+test("Linkly 新支付只使用 UI 已确认终端快照；权威选择漂移时零交易 POST", async () => {
+  const matchingTransport = new FakeTransport();
+  matchingTransport.responses.push(
+    ok(terminalSelection()),
+    none(),
+    ok(session({ status: "Completed", transactionSuccess: false })),
+  );
+  const matchingApi = new LinklyCloudBackendApi(matchingTransport);
+  const matchingSelection = new LinklyPaymentTerminalSelectionCoordinator(matchingApi);
+  const matchingProvider = new LinklyCloudBackendProvider(matchingApi, {
+    environment: "Sandbox",
+    terminalSelection: matchingSelection,
+  });
+
+  const matchingResult = await matchingSelection.runWithSelection(
+    "order-1",
+    confirmedTerminal(),
+    () => matchingProvider.submit(attempt()),
+  );
+
+  assert.equal(matchingResult.state, "Declined");
+  assert.deepEqual(
+    matchingTransport.requests.find(
+      (request) =>
+        request.method === "POST" &&
+        request.url === "/api/v1/linkly/cloud-backend/transactions",
+    )?.data,
+    {
+      environment: "Sandbox",
+      terminalId: "terminal-1",
+      selectionRevision: 3,
+      txnType: "P",
+      amtPurchase: 1234,
+    },
+  );
+
+  const changedTransport = new FakeTransport();
+  changedTransport.responses.push(ok(terminalSelection({
+    selectedTerminalId: "terminal-2",
+    selectionRevision: 4,
+    terminals: [{
+      ...terminalSelection().terminals[0]!,
+      terminalId: "terminal-2",
+      laneNo: 2,
+      displayName: "Back",
+    }],
+  })));
+  const changedApi = new LinklyCloudBackendApi(changedTransport);
+  const changedSelection = new LinklyPaymentTerminalSelectionCoordinator(changedApi);
+  const changedProvider = new LinklyCloudBackendProvider(changedApi, {
+    environment: "Sandbox",
+    terminalSelection: changedSelection,
+  });
+
+  const changedResult = await changedSelection.runWithSelection(
+    "order-1",
+    confirmedTerminal(),
+    () => changedProvider.submit(attempt()),
+  );
+
+  assert.equal(changedResult.state, "Declined");
+  assert.equal(
+    changedResult.responseCode,
+    "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+  );
+  assert.equal(
+    changedTransport.requests.filter(
+      (request) =>
+        request.method === "POST" &&
+        request.url === "/api/v1/linkly/cloud-backend/transactions",
+    ).length,
+    0,
+  );
+});
+
+test("Linkly 退款进入已确认终端绑定后，权威选择漂移时零交易 POST", async () => {
+  const transport = new FakeTransport();
+  transport.responses.push(
+    ok(terminalSelection({
+      selectedTerminalId: "terminal-2",
+      selectionRevision: 4,
+      terminals: [{
+        ...terminalSelection().terminals[0]!,
+        terminalId: "terminal-2",
+        laneNo: 2,
+        displayName: "Back",
+      }],
+    })),
+    none(),
+    ok(session({ status: "Completed", transactionSuccess: false })),
+  );
+  const api = new LinklyCloudBackendApi(transport);
+  const selection = new LinklyPaymentTerminalSelectionCoordinator(api);
+  const provider = new LinklyCloudBackendProvider(api, {
+    environment: "Sandbox",
+    terminalSelection: selection,
+  });
+
+  const result = await selection.runWithSelection(
+    "order-1",
+    confirmedTerminal(),
+    () => provider.refund(attempt({
+      operation: "refund",
+      amount: { currency: "AUD", cents: -1234 },
+      references: {
+        checkoutId: null,
+        paymentId: null,
+        sessionId: null,
+        txnRef: "TXN-1",
+        rfn: "RFN-1",
+        voucherReservationToken: null,
+      },
+    })),
+  );
+
+  assert.equal(result.state, "Declined");
+  assert.equal(
+    result.responseCode,
+    "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+  );
+  assert.equal(
+    transport.requests.filter(
+      (request) =>
+        request.method === "POST" &&
+        request.url === "/api/v1/linkly/cloud-backend/transactions",
+    ).length,
+    0,
+  );
+});
+
+test("Linkly 新交易携带持久选择的 terminalId 与 selectionRevision，并解析会话终端显示名", async () => {
+  const transport = new FakeTransport();
+  transport.responses.push(
+    none(),
+    ok({
+      ...session({ status: "Completed", transactionSuccess: false }),
+      terminalId: "terminal-1",
+      terminalDisplayName: "Front",
+    }),
+  );
+  const provider = new LinklyCloudBackendProvider(
+    new LinklyCloudBackendApi(transport),
+    {
+      environment: "Sandbox",
+      terminalSelection: new FakeTerminalSelectionPort(),
+    },
+  );
+
+  const result = await provider.submit(attempt());
+
+  assert.equal(result.state, "Declined");
+  assert.deepEqual(transport.requests[1]?.data, {
+    environment: "Sandbox",
+    terminalId: "terminal-1",
+    selectionRevision: 3,
+    txnType: "P",
+    amtPurchase: 1234,
+  });
+  const api = new LinklyCloudBackendApi(transport);
+  transport.responses.push(ok({
+    ...session(),
+    terminalId: "terminal-1",
+    terminalDisplayName: "Front",
+  }));
+  const bound = await api.status("Sandbox", "session-1");
+  assert.equal(bound.terminalId, "terminal-1");
+  assert.equal(bound.terminalDisplayName, "Front");
+});
+
+test("Linkly 未选择、忙碌或未配对终端时 fail closed 且不发送付款", async () => {
+  for (const [snapshot, code] of [
+    [terminalSelection({ selectedTerminalId: null }), "LINKLY_TERMINAL_SELECTION_REQUIRED"],
+    [terminalSelection({ terminals: [{ ...terminalSelection().terminals[0]!, isBusy: true }] }), "LINKLY_TERMINAL_BUSY"],
+    [terminalSelection({ terminals: [{ ...terminalSelection().terminals[0]!, pairingState: "Unpaired", isReady: false }] }), "LINKLY_TERMINAL_NOT_READY"],
+  ] as const) {
+    const transport = new FakeTransport();
+    const provider = new LinklyCloudBackendProvider(
+      new LinklyCloudBackendApi(transport),
+      {
+        environment: "Sandbox",
+        terminalSelection: new FakeTerminalSelectionPort(snapshot),
+      },
+    );
+
+    const result = await provider.submit(attempt());
+
+    assert.equal(result.state, "Declined");
+    assert.equal(result.responseCode, code);
+    assert.equal(transport.requests.length, 0);
+  }
+});
+
+test("Linkly Legacy 与 Draft 模式保持旧交易载荷且不因空终端列表锁卡", async () => {
+  for (const mode of ["Legacy", "Draft"] as const) {
+    const transport = new FakeTransport();
+    transport.responses.push(
+      none(),
+      ok(session({ status: "Completed", transactionSuccess: false })),
+    );
+    const provider = new LinklyCloudBackendProvider(
+      new LinklyCloudBackendApi(transport),
+      providerOptions(
+        new FakeTerminalSelectionPort(
+          terminalSelection({
+            mode,
+            selectedTerminalId: null,
+            terminals: [],
+          }),
+        ),
+      ),
+    );
+
+    const result = await provider.submit(attempt());
+
+    assert.equal(result.state, "Declined");
+    assert.deepEqual(transport.requests[1]?.data, {
+      environment: "Sandbox",
+      txnType: "P",
+      amtPurchase: 1234,
+    });
+  }
+});
+
+test("Linkly 兼容旧服务缺 mode 与 Draft 的 null revision，且均保持旧交易载荷", async () => {
+  for (const rawMode of [undefined, "Draft"] as const) {
+    const transport = new FakeTransport();
+    transport.responses.push(
+      ok({
+        environment: "Sandbox",
+        ...(rawMode === undefined ? {} : { mode: rawMode }),
+        selectedTerminalId: null,
+        selectionRevision: null,
+        terminals: [],
+      }),
+      none(),
+      ok(session({ status: "Completed", transactionSuccess: false })),
+    );
+    const api = new LinklyCloudBackendApi(transport);
+    const provider = new LinklyCloudBackendProvider(api, {
+      environment: "Sandbox",
+      terminalSelection: api,
+    });
+
+    const result = await provider.submit(attempt());
+
+    assert.equal(result.state, "Declined");
+    assert.deepEqual(transport.requests[2]?.data, {
+      environment: "Sandbox",
+      txnType: "P",
+      amtPurchase: 1234,
+    });
+  }
+});
+
+test("Linkly Active 新设备尚未选择终端时把 null revision 规范为零", async () => {
+  const transport = new FakeTransport();
+  transport.responses.push(ok({
+    environment: "Sandbox",
+    mode: "Active",
+    selectedTerminalId: null,
+    selectionRevision: null,
+    terminals: terminalSelection().terminals,
+  }));
+  const api = new LinklyCloudBackendApi(transport);
+
+  const result = await api.readTerminals("Sandbox");
+
+  assert.equal(result.mode, "Active");
+  assert.equal(result.selectedTerminalId, null);
+  assert.equal(result.selectionRevision, 0);
+});
 
 function transactionNotification(input: Readonly<{
   uid: string;
@@ -70,7 +410,7 @@ test("Linkly API 只经 Hbpos.Api 调用 create/status/active/resumable/recover/
   transport.responses.push(ok(session()), ok(session()), none(), ok(session()), ok(session()), ok(session()), ok(session()), ok(session()));
   const api = new LinklyCloudBackendApi(transport);
 
-  await api.create({ environment: "Sandbox", txnType: "P", amtPurchase: 1234, purchaseAnalysisData: null });
+  await api.create({ environment: "Sandbox", terminalId: "terminal-1", selectionRevision: 3, txnType: "P", amtPurchase: 1234, purchaseAnalysisData: null });
   await api.status("Sandbox", "session-1");
   assert.equal(await api.active("Sandbox"), null);
   await api.resumable("Sandbox");
@@ -92,6 +432,50 @@ test("Linkly API 只经 Hbpos.Api 调用 create/status/active/resumable/recover/
   assert.equal(transport.requests[2]?.params?.environment, "Sandbox");
 });
 
+test("Linkly 终端选择 API 仅解析安全字段，PUT 后重读列表为权威", async () => {
+  const transport = new FakeTransport();
+  const raw = {
+    ...terminalSelection(),
+    terminals: [
+      {
+        ...terminalSelection().terminals[0],
+        username: "must-not-read",
+        secret: "must-not-read",
+        posId: "must-not-read",
+      },
+    ],
+  };
+  transport.responses.push(
+    ok(raw),
+    ok({
+      environment: "Sandbox",
+      selectedTerminalId: "terminal-1",
+      selectionRevision: 4,
+    }),
+    ok({ ...raw, selectionRevision: 4 }),
+  );
+  const api = new LinklyCloudBackendApi(transport);
+
+  const listed = await api.readTerminals("Sandbox");
+  const selected = await api.selectTerminal("Sandbox", "terminal-1", 3);
+
+  assert.deepEqual(listed, terminalSelection());
+  assert.equal(selected.selectionRevision, 4);
+  assert.deepEqual(
+    transport.requests.map((request) => `${request.method} ${request.url}`),
+    [
+      "GET /api/v1/linkly/cloud-backend/terminals",
+      "PUT /api/v1/linkly/cloud-backend/terminal-selection",
+      "GET /api/v1/linkly/cloud-backend/terminals",
+    ],
+  );
+  assert.deepEqual(transport.requests[1]?.data, {
+    environment: "Sandbox",
+    terminalId: "terminal-1",
+    expectedRevision: 3,
+  });
+});
+
 test("成功、拒绝和显式取消映射为支付结果，保留 SessionId/TxnRef/RFN", async () => {
   const transport = new FakeTransport();
   transport.responses.push(
@@ -104,7 +488,7 @@ test("成功、拒绝和显式取消映射为支付结果，保留 SessionId/Txn
     ok(session({ status: "Completed", transactionSuccess: false, responseCode: "DECLINED" })),
     ok(session({ status: "Cancelled", transactionSuccess: false })),
   );
-  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), { environment: "Sandbox" });
+  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
 
   const approved = await provider.submit(attempt());
   const declined = await provider.submit(attempt({ attemptId: "attempt-2", idempotencyKey: "idem-2" }));
@@ -122,9 +506,9 @@ test("新支付遇到其他 active session 或 create 409 时拒绝本次，不�
   transport.responses.push(
     ok(session({ sessionId: "other-session", txnRef: "OTHER-TXN", status: "Pending" })),
     none(),
-    new HbposApiError("another transaction is active", { kind: "http", status: 409, code: "LINKLY_CLOUD_BACKEND_ACTIVE_SESSION" }),
+    new HbposApiError("another transaction is active", { kind: "http", status: 409, code: "LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION" }),
   );
-  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), { environment: "Sandbox" });
+  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
 
   const active = await provider.submit(attempt());
   const conflict = await provider.submit(attempt({ attemptId: "attempt-409", idempotencyKey: "idem-409" }));
@@ -136,6 +520,82 @@ test("新支付遇到其他 active session 或 create 409 时拒绝本次，不�
     assert.equal(result.references.txnRef, null);
   }
   assert.equal(transport.requests.filter((request) => request.method === "POST" && request.url === "/api/v1/linkly/cloud-backend/transactions").length, 1);
+});
+
+test("create 409 只精确分类 active transaction；selection conflict 独立且其他 409 原样失败", async () => {
+  const selectionTransport = new FakeTransport();
+  selectionTransport.responses.push(
+    none(),
+    new HbposApiError("selection changed", {
+      kind: "http",
+      status: 409,
+      code: "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+    }),
+  );
+  const selectionProvider = new LinklyCloudBackendProvider(
+    new LinklyCloudBackendApi(selectionTransport),
+    providerOptions(),
+  );
+
+  const selectionResult = await selectionProvider.submit(attempt());
+
+  assert.equal(selectionResult.state, "Declined");
+  assert.equal(
+    selectionResult.responseCode,
+    "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+  );
+  assert.equal(
+    selectionTransport.requests.filter(
+      (request) =>
+        request.method === "POST" &&
+        request.url === "/api/v1/linkly/cloud-backend/transactions",
+    ).length,
+    1,
+  );
+
+  const otherTransport = new FakeTransport();
+  const otherConflict = new HbposApiError("unrelated conflict", {
+    kind: "http",
+    status: 409,
+    code: "LINKLY_CLOUD_OTHER_CONFLICT",
+  });
+  otherTransport.responses.push(none(), otherConflict);
+  const otherProvider = new LinklyCloudBackendProvider(
+    new LinklyCloudBackendApi(otherTransport),
+    providerOptions(),
+  );
+
+  await assert.rejects(() => otherProvider.submit(attempt()), otherConflict);
+});
+
+test("create 前终端变为不可用时把精确 409 映射为 Declined，且绝不恢复或重放", async () => {
+  const transport = new FakeTransport();
+  transport.responses.push(
+    none(),
+    new HbposApiError("terminal became unavailable", {
+      kind: "http",
+      status: 409,
+      code: "LINKLY_CLOUD_TERMINAL_NOT_READY",
+    }),
+  );
+  const provider = new LinklyCloudBackendProvider(
+    new LinklyCloudBackendApi(transport),
+    providerOptions(),
+  );
+
+  const result = await provider.submit(attempt());
+
+  assert.equal(result.state, "Declined");
+  assert.equal(result.responseCode, "LINKLY_TERMINAL_NOT_READY");
+  assert.equal(
+    transport.requests.filter(
+      (request) =>
+        request.method === "POST" &&
+        request.url === "/api/v1/linkly/cloud-backend/transactions",
+    ).length,
+    1,
+  );
+  assert.equal(transport.requests.length, 2);
 });
 
 test("旧 attempt 缺少有效 UID 时保持 Unknown，不查询或认领 claim 范围的旧交易", async () => {
@@ -156,7 +616,7 @@ test("旧 attempt 缺少有效 UID 时保持 Unknown，不查询或认领 claim 
       }),
     }),
   );
-  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), { environment: "Sandbox" });
+  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
 
   const result = await provider.submit(attempt());
 
@@ -194,7 +654,7 @@ test("create 响应丢失后以持久化 UID 强匹配 active，再 status/recov
   );
   const provider = new LinklyCloudBackendProvider(
     new LinklyCloudBackendApi(transport),
-    { environment: "Sandbox" },
+    providerOptions(),
   );
 
   const result = await provider.submit(attempt({ idempotencyKey: recoveryUid }));
@@ -230,7 +690,7 @@ test("进程重启后的新 provider 用耐久 attempt UID 按 active→resumabl
   );
   const firstProvider = new LinklyCloudBackendProvider(
     new LinklyCloudBackendApi(firstTransport),
-    { environment: "Sandbox" },
+    providerOptions(),
   );
   const persistedAttempt = attempt({ idempotencyKey: recoveryUid });
 
@@ -260,7 +720,7 @@ test("进程重启后的新 provider 用耐久 attempt UID 按 active→resumabl
   restartedTransport.responses.push(none(), ok(resumable), ok(resumable));
   const restartedProvider = new LinklyCloudBackendProvider(
     new LinklyCloudBackendApi(restartedTransport),
-    { environment: "Sandbox" },
+    providerOptions(),
   );
 
   const recovered = await restartedProvider.recover({
@@ -311,7 +771,7 @@ test("退款响应丢失用独立 UID 和原 RFN 强匹配，不混淆金额方�
   );
   const provider = new LinklyCloudBackendProvider(
     new LinklyCloudBackendApi(transport),
-    { environment: "Sandbox" },
+    providerOptions(),
   );
 
   const result = await provider.refund(attempt({
@@ -356,7 +816,7 @@ test("active/resumable 仅同额同类型但 UID 不匹配时拒绝误绑定", a
   transport.responses.push(ok(weakCandidate), ok(weakCandidate));
   const provider = new LinklyCloudBackendProvider(
     new LinklyCloudBackendApi(transport),
-    { environment: "Sandbox" },
+    providerOptions(),
   );
 
   const result = await provider.recover(attempt({
@@ -424,7 +884,7 @@ test("UID 相同但交易类型、金额、TxnRef 或通知身份不唯一时仍
     transport.responses.push(ok(candidate), ok(candidate));
     const provider = new LinklyCloudBackendProvider(
       new LinklyCloudBackendApi(transport),
-      { environment: "Sandbox" },
+      providerOptions(),
     );
 
     const result = await provider.recover(attempt({
@@ -469,7 +929,7 @@ test("交易通知含大小写重复的 UID 字段时视为关联证据冲突", 
   transport.responses.push(ok(ambiguousUid), ok(ambiguousUid), ok(ambiguousUid));
   const provider = new LinklyCloudBackendProvider(
     new LinklyCloudBackendApi(transport),
-    { environment: "Sandbox" },
+    providerOptions(),
   );
 
   const result = await provider.recover(attempt({
@@ -507,7 +967,7 @@ test("候选绑定后 status 的门店或设备作用域变化时失败关闭且
     })));
     const provider = new LinklyCloudBackendProvider(
       new LinklyCloudBackendApi(transport),
-      { environment: "Sandbox" },
+      providerOptions(),
     );
 
     const result = await provider.recover(attempt({
@@ -540,7 +1000,7 @@ test("Unknown 可通过既有 SessionId 恢复；旧 attempt 无 UID 时零网�
       cardTransaction: cardTransaction({ txnRef: "TXN-REFUND", rfn: "RFN-1" }),
     }),
   );
-  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), { environment: "Sandbox" });
+  const provider = new LinklyCloudBackendProvider(new LinklyCloudBackendApi(transport), providerOptions());
 
   const unresolved = await provider.recover(attempt({ state: "Unknown" }));
   assert.equal(transport.requests.length, 0);
@@ -557,7 +1017,14 @@ test("Unknown 可通过既有 SessionId 恢复；旧 attempt 无 UID 时零网�
   assert.equal(missingRfn.state, "Declined");
   assert.equal(refunded.state, "Approved");
   const refundRequest = transport.requests.find((request) => request.method === "POST" && request.url === "/api/v1/linkly/cloud-backend/transactions" && (request.data as { txnType?: string }).txnType === "R");
-  assert.deepEqual(refundRequest?.data, { environment: "Sandbox", txnType: "R", amtPurchase: 1234, purchaseAnalysisData: { RFN: "RFN-1" } });
+  assert.deepEqual(refundRequest?.data, {
+    environment: "Sandbox",
+    terminalId: "terminal-1",
+    selectionRevision: 3,
+    txnType: "R",
+    amtPurchase: 1234,
+    purchaseAnalysisData: { RFN: "RFN-1" },
+  });
 });
 
 test("refund 零、正数和 MIN_SAFE 金额均在 Linkly 请求前 fail closed", async () => {
@@ -565,7 +1032,7 @@ test("refund 零、正数和 MIN_SAFE 金额均在 Linkly 请求前 fail closed"
     const transport = new FakeTransport();
     const provider = new LinklyCloudBackendProvider(
       new LinklyCloudBackendApi(transport),
-      { environment: "Sandbox" },
+      providerOptions(),
     );
 
     await assert.rejects(
@@ -610,7 +1077,7 @@ async function recoverFromSession(backendSession: unknown) {
   transport.responses.push(ok(backendSession));
   const provider = new LinklyCloudBackendProvider(
     new LinklyCloudBackendApi(transport),
-    { environment: "Sandbox" },
+    providerOptions(),
   );
   const paymentAttempt = attempt({
     state: "Unknown",
@@ -735,7 +1202,7 @@ test("已批准购买只从结构化 cardTransaction 生成受保护同步证据
   );
   const provider = new LinklyCloudBackendProvider(
     new LinklyCloudBackendApi(transport),
-    { environment: "Sandbox" },
+    providerOptions(),
   );
 
   const result = await provider.submit(attempt());
@@ -783,7 +1250,7 @@ test("已批准退款绑定原 RFN，金额证据保持正数且 operation 为 r
   );
   const provider = new LinklyCloudBackendProvider(
     new LinklyCloudBackendApi(transport),
-    { environment: "Sandbox" },
+    providerOptions(),
   );
 
   const result = await provider.refund(attempt({
@@ -828,7 +1295,7 @@ test("批准结果缺少或损坏 cardTransaction 时失败关闭为 Unknown", a
     );
     const provider = new LinklyCloudBackendProvider(
       new LinklyCloudBackendApi(transport),
-      { environment: "Sandbox" },
+      providerOptions(),
     );
 
     const result = await provider.submit(attempt());
@@ -925,7 +1392,7 @@ test("批准证据金额、SessionId、TxnRef 或退款 RFN 不一致时失败�
     }
     const provider = new LinklyCloudBackendProvider(
       new LinklyCloudBackendApi(transport),
-      { environment: "Sandbox" },
+      providerOptions(),
     );
 
     const result = item.paymentAttempt.operation === "refund"
@@ -950,7 +1417,7 @@ test("recover 只有在 Session/Txn/金额证据完全一致时恢复 Approved",
   }));
   const provider = new LinklyCloudBackendProvider(
     new LinklyCloudBackendApi(transport),
-    { environment: "Sandbox" },
+    providerOptions(),
   );
 
   const result = await provider.recover(attempt({
@@ -987,7 +1454,7 @@ test("Pending、Declined 和 Cancelled 即使 DTO 存在也不携带 evidence", 
     }));
     const provider = new LinklyCloudBackendProvider(
       new LinklyCloudBackendApi(transport),
-      { environment: "Sandbox" },
+      providerOptions(),
     );
 
     const result = await provider.recover(attempt({

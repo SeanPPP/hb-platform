@@ -1,5 +1,10 @@
 import type { PaymentAttemptService } from "../../features/payments";
-import { LinklyCloudBackendApi } from "../../features/payments/linkly";
+import {
+  LinklyCloudBackendApi,
+  LinklyPaymentTerminalSelectionCoordinator,
+  type LinklyPaymentTerminalSelectionBindingPort,
+  type LinklyTerminalSelectionPort,
+} from "../../features/payments/linkly";
 import type { PaymentProviderRegistryPort } from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 import {
   LinklyOperatorRuntime,
@@ -45,6 +50,11 @@ export type PaymentProviderRuntimeBootstrap = Readonly<{
   providers: RuntimePaymentProviderRegistry;
   /** 设置页读取真实配置能力；新交易必须只读取上面的受选择过滤 registry。 */
   configurationAvailability: PaymentProviderAvailabilityPort;
+  linklyTerminals?: Readonly<{
+    environment: string;
+    port: LinklyTerminalSelectionPort;
+  }> | null;
+  linklyPaymentSelection?: LinklyPaymentTerminalSelectionBindingPort | null;
   bindVoucherContextProvider(provider: VoucherPaymentContextProvider): void;
   createLinklyOperator(input: Readonly<{
     attempts: PaymentAttemptService;
@@ -70,6 +80,13 @@ export async function createPaymentProviderRuntimeBootstrap(input: Readonly<{
 }>): Promise<PaymentProviderRuntimeBootstrapWithVoucherRelease> {
   const sources = createPaymentConfigurationSources(input.extra);
   const voucherContext = new DeferredVoucherContextProvider();
+  const linklyEnvironment = configuredLinklyEnvironment(input.extra);
+  const linklyApiCandidate = linklyEnvironment
+    ? new LinklyCloudBackendApi(input.transport)
+    : null;
+  const linklySelectionCandidate = linklyApiCandidate
+    ? new LinklyPaymentTerminalSelectionCoordinator(linklyApiCandidate)
+    : null;
   const providers = await createConfiguredPaymentProviderRegistry({
     transport: input.transport,
     squareConfiguration: sources.square,
@@ -77,8 +94,17 @@ export async function createPaymentProviderRuntimeBootstrap(input: Readonly<{
     voucherConfiguration: sources.voucher,
     voucherProtectedTokens: input.voucherProtectedTokens,
     voucherContextProvider: voucherContext.provide,
+    ...(linklySelectionCandidate
+      ? { linklyTerminalSelection: linklySelectionCandidate }
+      : {}),
   });
-  const linklyEnvironment = configuredLinklyEnvironment(input.extra);
+  const linklyApi =
+    linklyEnvironment && providers.getAvailability("linkly-cloud").available
+      ? linklyApiCandidate
+      : null;
+  const linklyPaymentSelection = linklyApi
+    ? linklySelectionCandidate
+    : null;
   const runtimeProviders = new SelectedCardProviderRegistry(
     providers,
     configuredCardProvider(input.extra),
@@ -87,6 +113,14 @@ export async function createPaymentProviderRuntimeBootstrap(input: Readonly<{
   return {
     providers: runtimeProviders,
     configurationAvailability: providers,
+    linklyTerminals:
+      linklyEnvironment && linklyPaymentSelection
+        ? Object.freeze({
+            environment: linklyEnvironment,
+            port: linklyPaymentSelection,
+          })
+        : null,
+    linklyPaymentSelection,
     voucherApprovedPurchaseRelease:
       providers.getVoucherApprovedPurchaseReleasePort(),
     bindVoucherContextProvider: (provider) => voucherContext.bind(provider),
@@ -97,13 +131,13 @@ export async function createPaymentProviderRuntimeBootstrap(input: Readonly<{
     }) => {
       if (
         !linklyEnvironment ||
-        !providers.getAvailability("linkly-cloud").available
+        !linklyApi
       ) {
         return null;
       }
       const options: LinklyOperatorRuntimeOptions = {
         attempts,
-        api: new LinklyCloudBackendApi(input.transport),
+        api: linklyApi,
         configuration: { environment: linklyEnvironment },
         trustedSession,
         permissions,

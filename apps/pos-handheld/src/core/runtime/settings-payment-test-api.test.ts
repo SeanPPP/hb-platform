@@ -136,6 +136,47 @@ test("Linkly 测试调用 Backend Async logon-test 且只接受 succeeded", asyn
   ]);
 });
 
+test("Linkly Active logon-test 携带当前终端和选择 revision", async () => {
+  const transport = new QueueTransport([
+    {
+      success: true,
+      data: { succeeded: true, responseCode: "00" },
+    },
+  ]);
+  const subject = new HbposSettingsPaymentTestApi(transport);
+  const signal = new AbortController().signal;
+
+  await subject.test(
+    "linkly",
+    {
+      provider: "linkly",
+      square: null,
+      linkly: { environment: "Production" },
+    },
+    signal,
+    {
+      environment: "Production",
+      mode: "Active",
+      selectedTerminalId: "terminal-2",
+      selectionRevision: 11,
+      terminals: [],
+    },
+  );
+
+  assert.deepEqual(transport.requests, [
+    {
+      method: "POST",
+      url: "/api/v1/linkly/cloud-backend/logon-test",
+      params: {
+        environment: "Production",
+        terminalId: "terminal-2",
+        selectionRevision: 11,
+      },
+      signal,
+    },
+  ]);
+});
+
 test("支付测试不接受未提供的 provider 配置", async () => {
   const subject = new HbposSettingsPaymentTestApi(
     new QueueTransport([]),

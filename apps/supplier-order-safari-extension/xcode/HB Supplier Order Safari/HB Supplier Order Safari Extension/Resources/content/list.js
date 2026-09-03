@@ -297,9 +297,294 @@
     }
   });
 
+  // src/lib/ranking.js
+  var ranking_exports = {};
+  __export(ranking_exports, {
+    beginRankingLoad: () => beginRankingLoad,
+    buildDefaultProductImageUrl: () => buildDefaultProductImageUrl,
+    buildProductImageCandidates: () => buildProductImageCandidates,
+    formatAverageSellingPrice: () => formatAverageSellingPrice,
+    formatSalesRankBand: () => formatSalesRankBand,
+    normalizeRankingDays: () => normalizeRankingDays,
+    normalizeRankingPageSize: () => normalizeRankingPageSize,
+    normalizeSalesRankBand: () => normalizeSalesRankBand,
+    normalizeStoreOptions: () => normalizeStoreOptions,
+    normalizeSupplierOptions: () => normalizeSupplierOptions,
+    normalizeTopSalesPage: () => normalizeTopSalesPage,
+    normalizeTopSalesRequest: () => normalizeTopSalesRequest,
+    paginateRanking: () => paginateRanking,
+    resolveRankingRetryTarget: () => resolveRankingRetryTarget,
+    resolveRankingViewState: () => resolveRankingViewState,
+    restoreRankingLoad: () => restoreRankingLoad,
+    shouldPreserveManualSupplier: () => shouldPreserveManualSupplier,
+    transitionRankingPagination: () => transitionRankingPagination
+  });
+  function normalizeStoreOptions(data) {
+    const stores = data && Array.isArray(data.stores) ? data.stores : [];
+    const seen = /* @__PURE__ */ new Set();
+    const result = [];
+    for (const store of stores) {
+      if (!store || typeof store !== "object") continue;
+      const code = String(store.storeCode ?? store.code ?? "").trim();
+      if (!code || seen.has(code.toUpperCase())) continue;
+      seen.add(code.toUpperCase());
+      const name = String(store.storeName ?? store.name ?? code).trim() || code;
+      result.push({ code, name });
+    }
+    return result;
+  }
+  function normalizeRankingDays(value) {
+    return Number(value) === 90 ? 90 : 60;
+  }
+  function normalizeRankingPageSize(value) {
+    const numericValue = Number(value);
+    return RANKING_PAGE_SIZES.has(numericValue) ? numericValue : DEFAULT_RANKING_PAGE_SIZE;
+  }
+  function normalizeSalesRankBand(value) {
+    const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+    return SALES_RANK_BANDS.has(normalized) ? normalized : null;
+  }
+  function formatSalesRankBand(value) {
+    const normalized = normalizeSalesRankBand(value);
+    if (!normalized) return "";
+    return `TOP ${normalized.slice(4)}%`;
+  }
+  function transitionRankingPagination(state, action) {
+    const pageSize = normalizeRankingPageSize(state?.pageSize);
+    if (action?.type === "page-size") {
+      return { page: 1, pageSize: normalizeRankingPageSize(action.pageSize) };
+    }
+    if (action?.type === "context") return { page: 1, pageSize };
+    const requestedPage = Number(action?.page);
+    const page = Number.isFinite(requestedPage) ? Math.max(1, Math.trunc(requestedPage)) : 1;
+    return { page, pageSize };
+  }
+  function beginRankingLoad({
+    page = 1,
+    pageSize = DEFAULT_RANKING_PAGE_SIZE,
+    data = null,
+    legacyItems = null
+  } = {}, { clear = false } = {}) {
+    const requestedPage = Math.max(1, Math.trunc(Number(page)) || 1);
+    const requestedPageSize = normalizeRankingPageSize(pageSize);
+    const checkpoint = {
+      page: Number.isInteger(data?.page) && data.page >= 1 ? data.page : requestedPage,
+      // pageSize 是用户偏好；请求失败时保留新选择，旧页数据仅作为可见回退内容。
+      pageSize: requestedPageSize,
+      data,
+      legacyItems
+    };
+    return {
+      checkpoint,
+      state: {
+        page: requestedPage,
+        pageSize: requestedPageSize,
+        data: clear ? null : data,
+        legacyItems: clear ? null : legacyItems,
+        loading: true,
+        error: null
+      }
+    };
+  }
+  function restoreRankingLoad(checkpoint, error) {
+    return {
+      page: Math.max(1, Math.trunc(Number(checkpoint?.page)) || 1),
+      pageSize: normalizeRankingPageSize(checkpoint?.pageSize),
+      data: checkpoint?.data ?? null,
+      legacyItems: checkpoint?.legacyItems ?? null,
+      loading: false,
+      error: String(error && error.message || error || "")
+    };
+  }
+  function resolveRankingRetryTarget(target, { supplierCode, days } = {}) {
+    const targetSupplierCode = String(target?.supplierCode || "").trim().toUpperCase();
+    const currentSupplierCode = String(supplierCode || "").trim().toUpperCase();
+    const targetDays = Number(target?.days);
+    const page = Number(target?.page);
+    const pageSize = Number(target?.pageSize);
+    if (!targetSupplierCode || targetSupplierCode !== currentSupplierCode || ![60, 90].includes(targetDays) || targetDays !== normalizeRankingDays(days) || !Number.isInteger(page) || page < 1 || normalizeRankingPageSize(pageSize) !== pageSize) {
+      return null;
+    }
+    return { page, pageSize };
+  }
+  function resolveRankingViewState({
+    hasSupplier,
+    loading,
+    error,
+    totalRankedCount
+  } = {}) {
+    if (!hasSupplier) return "no-supplier";
+    if (loading) return "loading";
+    if (error) return "error";
+    if (totalRankedCount === 0) return "empty";
+    if (Number(totalRankedCount) > 0) return "content";
+    return "idle";
+  }
+  function normalizeTopSalesRequest({ topPercent, page, pageSize } = {}) {
+    const providedCount = [topPercent, page, pageSize].filter((value) => value != null).length;
+    if (providedCount === 0) return null;
+    const numericTopPercent = Number(topPercent);
+    const numericPage = Number(page);
+    const numericPageSize = Number(pageSize);
+    if (providedCount !== 3 || numericTopPercent !== 30 || !Number.isInteger(numericPage) || numericPage < 1 || normalizeRankingPageSize(numericPageSize) !== numericPageSize) {
+      throw new Error("\u65E0\u6548\u7684\u70ED\u9500\u699C\u5206\u9875\u53C2\u6570");
+    }
+    return {
+      topPercent: numericTopPercent,
+      page: numericPage,
+      pageSize: numericPageSize
+    };
+  }
+  function normalizeSupplierOptions(profiles) {
+    const seen = /* @__PURE__ */ new Set();
+    const result = [];
+    for (const profile of Array.isArray(profiles) ? profiles : []) {
+      if (!profile || typeof profile !== "object") continue;
+      const code = String(profile.supplierCode ?? "").trim();
+      const key = code.toUpperCase();
+      if (!code || seen.has(key)) continue;
+      seen.add(key);
+      const name = String(profile.displayName ?? code).trim() || code;
+      result.push({ code, name });
+    }
+    return result;
+  }
+  function shouldPreserveManualSupplier({
+    manualSupplierCode,
+    detectedSupplierCode,
+    previousDetectedSupplierCode
+  }) {
+    if (!String(manualSupplierCode || "").trim()) return false;
+    const detectedCode = String(detectedSupplierCode || "").trim();
+    const previousCode = String(previousDetectedSupplierCode || "").trim();
+    return !detectedCode || detectedCode.toUpperCase() === previousCode.toUpperCase();
+  }
+  function paginateRanking(items, requestedPage, pageSize = DEFAULT_RANKING_PAGE_SIZE) {
+    const source = Array.isArray(items) ? items : [];
+    const normalizedPageSize = normalizeRankingPageSize(pageSize);
+    const totalPages = Math.max(1, Math.ceil(source.length / normalizedPageSize));
+    const numericPage = Number.isFinite(Number(requestedPage)) ? Math.trunc(Number(requestedPage)) : 1;
+    const page = Math.min(totalPages, Math.max(1, numericPage));
+    const start = (page - 1) * normalizedPageSize;
+    return {
+      items: source.slice(start, start + normalizedPageSize),
+      page,
+      totalPages,
+      totalItems: source.length,
+      pageSize: normalizedPageSize
+    };
+  }
+  function normalizeTopSalesPage(raw, {
+    requestedPage = 1,
+    requestedPageSize = DEFAULT_RANKING_PAGE_SIZE,
+    requestedSupplierCode = null,
+    requestedDays = null
+  } = {}) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || !Array.isArray(raw.items)) {
+      throw new Error("\u65E0\u6548\u7684\u70ED\u9500\u699C\u5206\u9875\u54CD\u5E94");
+    }
+    const data = raw;
+    const source = data.items;
+    const topPercent = data.topPercent;
+    const responsePage = data.page;
+    const responsePageSize = data.pageSize;
+    const responseTotalPages = data.totalPages;
+    const totalProductCount = data.totalProductCount;
+    const expectedSupplierCode = String(requestedSupplierCode || "").trim().toUpperCase();
+    const responseSupplierCode = String(data.supplierCode || "").trim().toUpperCase();
+    const hasMatchingContext = (!expectedSupplierCode || responseSupplierCode === expectedSupplierCode) && (requestedDays == null || data.days === normalizeRankingDays(requestedDays));
+    const isLegacy = (topPercent == null || topPercent === 10) && responsePage == null && responsePageSize == null && responseTotalPages == null;
+    if (isLegacy) {
+      const expectedLegacyTotal = Number.isInteger(totalProductCount) && totalProductCount >= 0 ? Math.ceil(totalProductCount * 0.1) : -1;
+      const legacyTotal = data.totalRankedCount == null ? source.length : data.totalRankedCount;
+      const hasValidRanks = source.every(
+        (item, index) => item && typeof item === "object" && item.rank === index + 1 && (item.salesRankBand == null || item.salesRankBand === "top-10")
+      );
+      if (!hasMatchingContext || expectedLegacyTotal < 0 || !Number.isInteger(legacyTotal) || legacyTotal !== expectedLegacyTotal || source.length !== expectedLegacyTotal || !hasValidRanks) {
+        throw new Error("\u65E0\u6548\u7684\u70ED\u9500\u699C\u5206\u9875\u54CD\u5E94");
+      }
+      const paged = paginateRanking(source, requestedPage, requestedPageSize);
+      return {
+        mode: "legacy",
+        topPercent: 10,
+        items: paged.items,
+        totalRankedCount: paged.totalItems,
+        page: paged.page,
+        pageSize: paged.pageSize,
+        totalPages: paged.totalPages
+      };
+    }
+    if (topPercent !== 30 || !hasMatchingContext || !Number.isInteger(totalProductCount) || totalProductCount < 0 || !Number.isInteger(data.totalRankedCount) || data.totalRankedCount < 0 || !Number.isInteger(responsePage) || responsePage < 1 || !Number.isInteger(responsePageSize) || normalizeRankingPageSize(responsePageSize) !== responsePageSize || !Number.isInteger(responseTotalPages) || responseTotalPages < 0 || normalizeRankingPageSize(requestedPageSize) !== Number(requestedPageSize) || responsePageSize !== Number(requestedPageSize) || !Number.isInteger(Number(requestedPage)) || Number(requestedPage) < 1) {
+      throw new Error("\u65E0\u6548\u7684\u70ED\u9500\u699C\u5206\u9875\u54CD\u5E94");
+    }
+    const totalRankedCount = data.totalRankedCount;
+    const expectedTotalRankedCount = Math.ceil(totalProductCount * 0.3);
+    const expectedTotalPages = totalRankedCount === 0 ? 0 : Math.ceil(totalRankedCount / responsePageSize);
+    const expectedPage = expectedTotalPages === 0 ? 1 : Math.min(Number(requestedPage), expectedTotalPages);
+    const expectedItemCount = totalRankedCount === 0 ? 0 : Math.min(responsePageSize, totalRankedCount - (responsePage - 1) * responsePageSize);
+    const firstExpectedRank = (responsePage - 1) * responsePageSize + 1;
+    const hasValidItems = source.length === expectedItemCount && source.every(
+      (item, index) => item && typeof item === "object" && item.rank === firstExpectedRank + index && item.salesRankBand === (item.rank <= Math.ceil(totalProductCount * 0.1) ? "top-10" : item.rank <= Math.ceil(totalProductCount * 0.2) ? "top-20" : "top-30")
+    );
+    if (totalRankedCount !== expectedTotalRankedCount || responseTotalPages !== expectedTotalPages || responsePage !== expectedPage || !hasValidItems) {
+      throw new Error("\u65E0\u6548\u7684\u70ED\u9500\u699C\u5206\u9875\u54CD\u5E94");
+    }
+    return {
+      mode: "server",
+      topPercent: 30,
+      items: source,
+      totalRankedCount,
+      page: responsePage,
+      pageSize: responsePageSize,
+      totalPages: responseTotalPages
+    };
+  }
+  function formatAverageSellingPrice(value) {
+    if (value == null || value === "") return "\u2014";
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) return "\u2014";
+    return new Intl.NumberFormat("en-AU", {
+      style: "currency",
+      currency: "AUD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    }).format(numericValue);
+  }
+  function buildDefaultProductImageUrl(itemNumber, productCode) {
+    const imageKey = String(itemNumber || productCode || "").trim();
+    return imageKey ? `${DEFAULT_PRODUCT_IMAGE_BASE_URL}/${encodeURIComponent(imageKey)}.jpg` : "";
+  }
+  function toAbsoluteUrl(value, apiOrigin) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    try {
+      return new URL(raw, `${String(apiOrigin || "").replace(/\/$/, "")}/`).href;
+    } catch {
+      return "";
+    }
+  }
+  function buildProductImageCandidates(item, apiOrigin) {
+    const candidates = [
+      toAbsoluteUrl(item && item.imageUrl, apiOrigin),
+      buildDefaultProductImageUrl(item && item.itemNumber),
+      buildDefaultProductImageUrl(item && item.productCode)
+    ].filter(Boolean);
+    return [...new Set(candidates)];
+  }
+  var DEFAULT_PRODUCT_IMAGE_BASE_URL, DEFAULT_RANKING_PAGE_SIZE, RANKING_PAGE_SIZES, SALES_RANK_BANDS;
+  var init_ranking = __esm({
+    "src/lib/ranking.js"() {
+      DEFAULT_PRODUCT_IMAGE_BASE_URL = "https://hotbargain-yw-2023-1300114625.cos.ap-shanghai.myqcloud.com/YW200";
+      DEFAULT_RANKING_PAGE_SIZE = 50;
+      RANKING_PAGE_SIZES = /* @__PURE__ */ new Set([50, 100, 200]);
+      SALES_RANK_BANDS = /* @__PURE__ */ new Set(["top-10", "top-20", "top-30"]);
+    }
+  });
+
   // src/lib/dats-state.js
   var dats_state_exports = {};
   __export(dats_state_exports, {
+    buildSummaryCacheKey: () => buildSummaryCacheKey,
     computeButtonState: () => computeButtonState,
     createGenerationGuard: () => createGenerationGuard,
     createNodeStateRegistry: () => createNodeStateRegistry,
@@ -341,27 +626,46 @@
     if (!item) return { kind: "none", reason: "noMatch" };
     if (item.error) return { kind: "error", reason: "error" };
     if (item.hasMatch === false) return { kind: "none", reason: "noMatch" };
-    if (item.hasPurchase === false) return { kind: "none", reason: "noPurchase" };
+    const salesRankBand = normalizeSalesRankBand(item.salesRankBand);
+    const salesRankingDays = salesRankBand ? normalizeRankingDays(item.salesRankingDays) : null;
+    if (item.hasPurchase === false) {
+      return {
+        kind: "none",
+        reason: "noPurchase",
+        ...salesRankBand ? { salesRankBand, salesRankingDays } : {}
+      };
+    }
     return {
       kind: "ok",
       lastOrderDate: item.lastOrderDate,
       lastOrderQuantity: item.lastOrderQuantity,
-      salesToDate: item.salesToDate
+      salesToDate: item.salesToDate,
+      ...salesRankBand ? { salesRankBand, salesRankingDays } : {}
     };
   }
-  function normalizeSummaryItem(raw) {
+  function buildSummaryCacheKey(storeCode, itemNumber, salesRankingDays) {
+    const normalizedStoreCode = String(storeCode || "none").trim() || "none";
+    const normalizedItemNumber = String(itemNumber || "").trim();
+    return `${normalizedStoreCode}:${normalizeRankingDays(salesRankingDays)}:${normalizedItemNumber}`;
+  }
+  function normalizeSummaryItem(raw, { salesRankingAvailable = false } = {}) {
     if (!raw || typeof raw !== "object") return { hasMatch: false };
     if (raw.error) return { error: raw.error };
     const matchStatus = typeof raw.matchStatus === "string" ? raw.matchStatus.toLowerCase() : null;
     const hasMatch = matchStatus ? matchStatus !== "unmatched" : raw.hasMatch !== false;
     const hasPurchase = matchStatus ? matchStatus === "matched" : raw.hasPurchase != null ? raw.hasPurchase : raw.lastOrderDate != null || raw.latestPurchaseDate != null || raw.lastOrderQuantity != null || raw.latestPurchaseQuantity != null || raw.orderCount > 0;
-    return {
+    const normalized = {
       hasMatch,
       hasPurchase: !!hasPurchase,
       lastOrderDate: raw.latestPurchaseDate ?? raw.lastOrderDate ?? raw.lastOrderDateStr ?? null,
       lastOrderQuantity: raw.latestPurchaseQuantity ?? raw.lastOrderQuantity ?? raw.lastOrderQty ?? null,
       salesToDate: raw.salesSinceLatestPurchase ?? raw.salesToDate ?? raw.salesQty ?? null
     };
+    const salesRankBand = normalizeSalesRankBand(raw.salesRankBand);
+    if (salesRankingAvailable === true && hasMatch && salesRankBand) {
+      normalized.salesRankBand = salesRankBand;
+    }
+    return normalized;
   }
   function normalizeSummaryMap(rawData) {
     const out = {};
@@ -373,8 +677,9 @@
       return out;
     }
     if (Array.isArray(rawData.items)) {
+      const options = { salesRankingAvailable: rawData.salesRankingAvailable === true };
       for (const item of rawData.items) {
-        if (item && item.itemNumber) out[item.itemNumber] = normalizeSummaryItem(item);
+        if (item && item.itemNumber) out[item.itemNumber] = normalizeSummaryItem(item, options);
       }
       return out;
     }
@@ -389,6 +694,7 @@
   var init_dats_state = __esm({
     "src/lib/dats-state.js"() {
       init_profiles();
+      init_ranking();
     }
   });
 
@@ -461,8 +767,8 @@
           storeSaved: "\u5DF2\u4FDD\u5B58\u95E8\u5E97",
           noPosStore: "\u6682\u65E0\u5DF2\u542F\u7528 POS \u7684\u5173\u8054\u95E8\u5E97",
           historyTab: "\u5546\u54C1\u8BB0\u5F55",
-          rankingTab: "\u70ED\u9500 TOP 10%",
-          rankingTitle: "\u4F9B\u5E94\u5546\u70ED\u9500 TOP 10%",
+          rankingTab: "\u70ED\u9500 TOP {percent}%",
+          rankingTitle: "\u4F9B\u5E94\u5546\u70ED\u9500 TOP {percent}%",
           rankingSupplier: "\u6392\u540D\u4F9B\u5E94\u5546",
           rankingChooseSupplier: "\u9009\u62E9\u4F9B\u5E94\u5546",
           rankingPeriod: "\u7EDF\u8BA1\u5468\u671F",
@@ -470,6 +776,13 @@
           rankingScope: "\u5168\u516C\u53F8 {stores} \u5BB6\u542F\u7528 POS \u95E8\u5E97 \xB7 {products} \u4E2A\u6709\u9500\u91CF\u5546\u54C1",
           rankingNoSupplier: "\u8BF7\u6253\u5F00\u53D7\u652F\u6301\u7684\u4F9B\u5E94\u5546\u5546\u54C1\u5217\u8868\u9875",
           rankingNoData: "\u8BE5\u4F9B\u5E94\u5546\u5728\u6240\u9009\u5468\u671F\u5185\u6682\u65E0\u9500\u552E\u6570\u636E",
+          rankingPageSize: "\u6BCF\u9875",
+          rankingPageSummary: "\u7B2C {page} / {totalPages} \u9875 \xB7 \u5171 {total} \u4E2A\u5546\u54C1",
+          rankingLoading: "\u6B63\u5728\u52A0\u8F7D\u70ED\u9500\u699C\u2026",
+          rankingLoadFailed: "\u70ED\u9500\u699C\u52A0\u8F7D\u5931\u8D25",
+          rankingRetry: "\u91CD\u8BD5",
+          rankingLegacyHint: "\u5F53\u524D\u670D\u52A1\u6682\u4EC5\u63D0\u4F9B TOP 10%\uFF0C\u5347\u7EA7\u540E\u53EF\u67E5\u770B TOP 30%\u3002",
+          rankingPageChanged: "\u5DF2\u663E\u793A\u7B2C {page} / {totalPages} \u9875",
           copy: "\u590D\u5236",
           copied: "\u5DF2\u590D\u5236",
           averageSellingPrice: "\u5747\u4EF7",
@@ -492,7 +805,8 @@
           noPurchase: "\u65E0\u91C7\u8D2D",
           noStore: "\u8BF7\u5148\u9009\u62E9\u95E8\u5E97",
           lastOrder: "\u4E0A\u6B21\u8BA2\u8D27",
-          salesToDate: "\u81F3\u4ECA\u9500\u91CF"
+          salesToDate: "\u81F3\u4ECA\u9500\u91CF",
+          salesRankBand: "\u8FD1 {days} \u5929\u9500\u91CF\uFF1A{band}"
         },
         en: {
           title: "HB Supplier Ordering Assistant",
@@ -530,8 +844,8 @@
           storeSaved: "Store saved",
           noPosStore: "No related store has an enabled POS",
           historyTab: "Item history",
-          rankingTab: "Top 10% sellers",
-          rankingTitle: "Supplier top 10% sellers",
+          rankingTab: "Top {percent}% sellers",
+          rankingTitle: "Supplier top {percent}% sellers",
           rankingSupplier: "Ranking supplier",
           rankingChooseSupplier: "Choose supplier",
           rankingPeriod: "Period",
@@ -539,6 +853,13 @@
           rankingScope: "{stores} enabled POS stores company-wide \xB7 {products} selling products",
           rankingNoSupplier: "Open a supported supplier product list",
           rankingNoData: "No sales data for this supplier in the selected period",
+          rankingPageSize: "Per page",
+          rankingPageSummary: "Page {page} of {totalPages} \xB7 {total} products",
+          rankingLoading: "Loading ranking\u2026",
+          rankingLoadFailed: "Could not load the ranking",
+          rankingRetry: "Retry",
+          rankingLegacyHint: "This service currently provides TOP 10% only. Upgrade it to view TOP 30%.",
+          rankingPageChanged: "Showing page {page} of {totalPages}",
           copy: "Copy",
           copied: "Copied",
           averageSellingPrice: "Avg price",
@@ -561,7 +882,8 @@
           noPurchase: "No purchase",
           noStore: "Select a store first",
           lastOrder: "Last order",
-          salesToDate: "Sales to date"
+          salesToDate: "Sales to date",
+          salesRankBand: "Sales in the last {days} days: {band}"
         }
       };
     }
@@ -632,7 +954,8 @@
       stateMod,
       i18nMod,
       recoveryMod,
-      storageCompatMod
+      storageCompatMod,
+      rankingMod
     ] = await Promise.all([
       Promise.resolve().then(() => (init_profiles(), profiles_exports)),
       Promise.resolve().then(() => (init_batch(), batch_exports)),
@@ -640,7 +963,8 @@
       Promise.resolve().then(() => (init_dats_state(), dats_state_exports)),
       Promise.resolve().then(() => (init_i18n(), i18n_exports)),
       Promise.resolve().then(() => (init_list_recovery(), list_recovery_exports)),
-      Promise.resolve().then(() => (init_storage_compat(), storage_compat_exports))
+      Promise.resolve().then(() => (init_storage_compat(), storage_compat_exports)),
+      Promise.resolve().then(() => (init_ranking(), ranking_exports))
     ]);
     const { matchProfile: matchProfile2 } = profilesMod;
     const { createBatchQueue: createBatchQueue2 } = batchMod;
@@ -650,6 +974,7 @@
       createNodeStateRegistry: createNodeStateRegistry2,
       shouldInjectList: shouldInjectList2,
       computeButtonState: computeButtonState2,
+      buildSummaryCacheKey: buildSummaryCacheKey2,
       normalizeSummaryMap: normalizeSummaryMap2
     } = stateMod;
     const { normalizeLocale: normalizeLocale2, t: t2 } = i18nMod;
@@ -660,14 +985,27 @@
       shouldRequestVisibleSummary: shouldRequestVisibleSummary2
     } = recoveryMod;
     const { matchesStorageArea: matchesStorageArea2 } = storageCompatMod;
+    const { formatSalesRankBand: formatSalesRankBand2, normalizeRankingDays: normalizeRankingDays2 } = rankingMod;
     const origin = location.origin;
-    const stored = await chrome.storage.local.get(["supplierProfiles", "selectedStoreCode", "locale"]);
+    const stored = await chrome.storage.local.get([
+      "supplierProfiles",
+      "selectedStoreCode",
+      "locale",
+      "salesRankingDays"
+    ]);
     const { supplierProfiles } = stored;
     let selectedStoreCode = stored.selectedStoreCode || null;
     let locale = normalizeLocale2(stored.locale);
+    let salesRankingDays = normalizeRankingDays2(stored.salesRankingDays);
     const profiles = supplierProfiles && supplierProfiles.profiles || [];
     const profile = matchProfile2(profiles, { origin, pathname: location.pathname });
     if (!profile) return;
+    function formatMessage(key, values = {}) {
+      return Object.entries(values).reduce(
+        (message, [name, value]) => message.replaceAll(`{${name}}`, String(value)),
+        t2(locale, key)
+      );
+    }
     const cardSelector = profile.cardSelector;
     const itemCfg = profile.itemNumber;
     const mountSelector = profile.mountSelector;
@@ -687,6 +1025,7 @@
     let visibilityObserver = null;
     let scanTimer = null;
     let scanInterval = null;
+    let gfaLayoutStyle = null;
     function readItemNumber(card) {
       let el = card;
       if (itemCfg.selector) {
@@ -696,6 +1035,36 @@
       }
       const raw = itemCfg.source === "attribute" ? el.getAttribute(itemCfg.attribute) : el.textContent;
       return applyTransforms2(raw, itemCfg.transforms);
+    }
+    function ensureGfaLayoutStyle() {
+      if (gfaLayoutStyle?.isConnected) return;
+      const existing = document.querySelector("style[data-hb-sro-gfa-layout]");
+      if (existing) {
+        gfaLayoutStyle = existing;
+        return;
+      }
+      gfaLayoutStyle = document.createElement("style");
+      gfaLayoutStyle.setAttribute("data-hb-sro-gfa-layout", "");
+      gfaLayoutStyle.textContent = `
+.list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content {
+  height: auto !important;
+  min-height: 100px;
+}
+.list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content > a[href*="/product/view?id="] > .list-content {
+  height: auto !important;
+}
+.list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content > a[href*="/product/view?id="] > .list-content .list-detail {
+  height: auto !important;
+}
+@media (max-width: 500px) {
+  .list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content {
+    padding-bottom: 46px !important;
+  }
+  .list-row[data-product] > .content > [data-hb-sro-host] {
+    margin-right: 0 !important;
+  }
+}`;
+      (document.head || document.documentElement).appendChild(gfaLayoutStyle);
     }
     function mountHost(card) {
       let mountEl = card;
@@ -709,7 +1078,9 @@
       }
       const host = document.createElement("div");
       host.setAttribute("data-hb-sro-host", "");
-      host.style.cssText = "display:block;margin:4px 0;";
+      const isGfaFixedHeightRow = profile.supplierCode === "236" && card.matches(".list-row[data-product]");
+      if (isGfaFixedHeightRow) ensureGfaLayoutStyle();
+      host.style.cssText = isGfaFixedHeightRow ? "display:block;margin:4px 235px 0 0;position:relative;z-index:2;pointer-events:none;" : "display:block;margin:4px 0;";
       mountEl.insertAdjacentElement(pos, host);
       return host;
     }
@@ -717,11 +1088,14 @@
       const root = host.attachShadow({ mode: "closed" });
       const style = document.createElement("style");
       style.textContent = [
-        ".hb-btn{all:unset;box-sizing:border-box;display:inline-block;max-width:100%;padding:4px 8px;border-radius:4px;border:1px solid #d5d5d5;background:#fafafa;color:#333;cursor:pointer;font:12px/1.5 system-ui,sans-serif;white-space:normal;overflow-wrap:anywhere;}",
+        ".hb-btn{all:unset;box-sizing:border-box;display:inline-block;max-width:100%;padding:4px 8px;border-radius:4px;border:1px solid #d5d5d5;background:#fafafa;color:#333;cursor:pointer;font:12px/1.5 system-ui,sans-serif;white-space:normal;overflow-wrap:anywhere;pointer-events:auto;}",
         ".hb-btn:focus-visible{outline:2px solid #2563eb;outline-offset:2px;}",
         ".hb-order{color:#c62828;font-weight:600;}",
         ".hb-sales{color:#1565c0;font-weight:600;}",
-        ".hb-muted{color:#757575;}"
+        ".hb-muted{color:#757575;}",
+        ".hb-rank-line{display:block;width:max-content;max-width:100%;box-sizing:border-box;margin-top:2px;padding:1px 6px;border:1px solid #b8d8ff;border-radius:999px;background:#eaf3ff;color:#1565c0;font-size:10px;font-weight:700;line-height:1.5;overflow-wrap:anywhere;white-space:normal;}",
+        ".hb-rank-line-top-20{border-color:#c7e3ca;background:#eef7ef;color:#2e7d32;}",
+        ".hb-rank-line-top-30{border-color:#ddd0ef;background:#f5f1fb;color:#6f3cc3;}"
       ].join("");
       const btn = document.createElement("button");
       btn.type = "button";
@@ -756,6 +1130,17 @@
         btn.appendChild(document.createTextNode(" \xB7 "));
         btn.appendChild(sales);
       }
+      const rankLabel = formatSalesRankBand2(state.salesRankBand);
+      if ((state.kind === "ok" || state.reason === "noPurchase") && rankLabel) {
+        const rankLine = document.createElement("span");
+        rankLine.className = "hb-rank-line";
+        rankLine.classList.add(`hb-rank-line-${state.salesRankBand}`);
+        rankLine.textContent = formatMessage("salesRankBand", {
+          days: state.salesRankingDays,
+          band: rankLabel
+        });
+        btn.appendChild(rankLine);
+      }
     }
     function shortStatus(state) {
       if (state.kind === "error") return t2(locale, "error");
@@ -769,11 +1154,15 @@
       const requestedGeneration = entry.generation;
       const requestedItemNumber = entry.itemNumber;
       const requestedCard = entry.card;
-      batch.enqueue(`${selectedStoreCode || "none"}:${requestedItemNumber}`, requestedItemNumber).then((summary) => {
+      const requestedRankingDays = salesRankingDays;
+      batch.enqueue(
+        buildSummaryCacheKey2(selectedStoreCode, requestedItemNumber, salesRankingDays),
+        requestedItemNumber
+      ).then((summary) => {
         if (!active || !generation.isCurrent(requestedGeneration) || registry.get(requestedCard) !== entry || entry.itemNumber !== requestedItemNumber || !requestedCard.isConnected) {
           return;
         }
-        const state = summary && summary.storeMissing ? { kind: "noStore" } : computeButtonState2(summary);
+        const state = summary && summary.storeMissing ? { kind: "noStore" } : computeButtonState2({ ...summary, salesRankingDays: requestedRankingDays });
         resetSummaryRetry2(entry);
         entry.state = state;
         renderButton(entry, state);
@@ -785,32 +1174,36 @@
         renderButton(entry, state);
       });
     }
-    const batch = createBatchQueue2({
-      maxSize: 100,
-      delayMs: 150,
-      cacheTtlMs: 6e4,
-      flush: async (entries) => {
-        if (!selectedStoreCode) {
-          const out2 = {};
-          for (const e of entries) out2[e.key] = { storeMissing: true };
-          return out2;
+    function createSummaryBatch(storeCode, rankingDays) {
+      return createBatchQueue2({
+        maxSize: 100,
+        delayMs: 150,
+        cacheTtlMs: 6e4,
+        flush: async (entries) => {
+          if (!storeCode) {
+            const out2 = {};
+            for (const e of entries) out2[e.key] = { storeMissing: true };
+            return out2;
+          }
+          const itemNumbers = entries.map((e) => e.item);
+          const resp = await chrome.runtime.sendMessage({
+            type: "SUMMARY_BATCH",
+            storeCode,
+            supplierCode: profile.supplierCode,
+            itemNumbers,
+            salesRankingDays: rankingDays
+          });
+          if (!resp || !resp.ok) {
+            throw new Error(resp && resp.error || "summary request failed");
+          }
+          const map = normalizeSummaryMap2(resp && resp.data);
+          const out = {};
+          for (const e of entries) out[e.key] = map[e.item] || { hasMatch: false };
+          return out;
         }
-        const itemNumbers = entries.map((e) => e.item);
-        const resp = await chrome.runtime.sendMessage({
-          type: "SUMMARY_BATCH",
-          storeCode: selectedStoreCode,
-          supplierCode: profile.supplierCode,
-          itemNumbers
-        });
-        if (!resp || !resp.ok) {
-          throw new Error(resp && resp.error || "summary request failed");
-        }
-        const map = normalizeSummaryMap2(resp && resp.data);
-        const out = {};
-        for (const e of entries) out[e.key] = map[e.item] || { hasMatch: false };
-        return out;
-      }
-    });
+      });
+    }
+    let batch = createSummaryBatch(selectedStoreCode, salesRankingDays);
     function attachEntryButton(entry) {
       entry.host?.remove();
       entry.card.querySelector("[data-hb-sro-host]")?.remove();
@@ -969,9 +1362,17 @@
     window.addEventListener("popstate", handleNavigation);
     window.addEventListener("hashchange", handleNavigation);
     function refreshForStore(storeCode) {
+      refreshSummaryContext({ storeCode });
+    }
+    function refreshSummaryContext({
+      storeCode = selectedStoreCode,
+      rankingDays = salesRankingDays
+    } = {}) {
       selectedStoreCode = storeCode || null;
+      salesRankingDays = normalizeRankingDays2(rankingDays);
       generation.advance();
       batch.clearCache();
+      batch = createSummaryBatch(selectedStoreCode, salesRankingDays);
       for (const card of trackedCards) {
         const entry = registry.get(card);
         if (!entry || !card.isConnected) continue;
@@ -998,8 +1399,13 @@
     }
     chrome.storage.onChanged.addListener((changes, areaName) => {
       if (!matchesStorageArea2(areaName, "local") || !active) return;
-      if (changes.selectedStoreCode) {
+      if (changes.selectedStoreCode && !changes.salesRankingDays) {
         refreshForStore(changes.selectedStoreCode.newValue);
+      } else if (changes.selectedStoreCode || changes.salesRankingDays) {
+        refreshSummaryContext({
+          storeCode: changes.selectedStoreCode ? changes.selectedStoreCode.newValue : selectedStoreCode,
+          rankingDays: changes.salesRankingDays ? changes.salesRankingDays.newValue : salesRankingDays
+        });
       }
       if (changes.locale) {
         locale = normalizeLocale2(changes.locale.newValue);

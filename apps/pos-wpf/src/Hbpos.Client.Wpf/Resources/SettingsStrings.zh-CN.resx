@@ -251,4 +251,15 @@
   <data name="settings.serverAddress.blocked.deviceActivation" xml:space="preserve"><value>请先完成待恢复的设备开通，再切换服务器。</value></data>
   <data name="settings.serverAddress.blocked.sync" xml:space="preserve"><value>请先处理所有待上传、失败或同步中的订单，再切换服务器。</value></data>
   <data name="settings.serverAddress.blocked.audit" xml:space="preserve"><value>请等待操作审计记录上传完成，再切换服务器。</value></data>
+  <data name="settings.linkly.cloudBackend.credentialsManagedByWeb" xml:space="preserve"><value>Cloud 用户名和密码由 Web 管理后台统一维护；当前 POS 只接收不含凭据的安全终端列表。</value></data>
+  <data name="settings.linkly.cloudBackend.terminal" xml:space="preserve"><value>刷卡机</value></data>
+  <data name="settings.linkly.cloudBackend.refresh" xml:space="preserve"><value>刷新</value></data>
+  <data name="settings.linkly.cloudBackend.noTerminal" xml:space="preserve"><value>当前分店和环境没有可用的 Linkly Cloud 刷卡机。</value></data>
+  <data name="settings.linkly.cloudBackend.terminalDisplay" xml:space="preserve"><value>Lane {0} · {1}</value></data>
+  <data name="settings.linkly.cloudBackend.terminalRequired" xml:space="preserve"><value>请先选择一台 Linkly Cloud 刷卡机。</value></data>
+  <data name="settings.linkly.cloudBackend.pairCodeSixDigits" xml:space="preserve"><value>请输入所选刷卡机上显示的 6 位数字配对码。</value></data>
+  <data name="settings.linkly.cloudBackend.terminalBusy" xml:space="preserve"><value>该刷卡机正在交易，暂时不能切换。</value></data>
+  <data name="settings.linkly.cloudBackend.pairBeforeSelect" xml:space="preserve"><value>请先完成该刷卡机配对，再将其设为付款终端。</value></data>
+  <data name="settings.linkly.cloudBackend.selected" xml:space="preserve"><value>已为当前 POS 选择 {0}。</value></data>
+  <data name="settings.linkly.cloudBackend.pairedButNotSelected" xml:space="preserve"><value>刷卡机已配对但未选中；请重新选择后再收款。</value></data>
 </root>
