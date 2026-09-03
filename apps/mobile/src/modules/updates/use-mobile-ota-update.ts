@@ -10,6 +10,7 @@ import {
 import {
   checkMobileOtaUpdate,
   readCachedMobileOtaRequiredDecision,
+  tryClaimMobileOtaOptionalPrompt,
   type MobileOtaManualCheckResult,
   type MobileOtaUpdateContext,
   type MobileOtaUpdateDecision,
@@ -152,13 +153,13 @@ export function useMobileOtaUpdate(options: UseMobileOtaUpdateOptions) {
 
   function promptOptionalRestart(decision: MobileOtaUpdateDecision) {
     const identity = decisionTargetIdentity(decision);
-    if (
-      optionalPromptTargetRef.current === identity
-      || !appUpdateMutualExclusion.tryOwnPrompt("ota")
-    ) {
+    if (!tryClaimMobileOtaOptionalPrompt(
+      optionalPromptTargetRef,
+      identity,
+      () => appUpdateMutualExclusion.tryOwnPrompt("ota"),
+    )) {
       return;
     }
-    optionalPromptTargetRef.current = identity;
     Alert.alert(
       i18n.t("settings:dialogs.mobileOtaAvailableTitle"),
       decision.releaseMessage

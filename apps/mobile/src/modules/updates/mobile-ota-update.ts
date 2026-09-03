@@ -7,6 +7,25 @@ export type MobileOtaManualCheckResult = Readonly<{
   status: "update-ready" | "required" | "not-available" | "disabled" | "failed";
 }>;
 
+export function tryClaimMobileOtaOptionalPrompt(
+  targetRef: { current: string | null },
+  identity: string,
+  tryOwnPrompt: () => boolean,
+) {
+  if (targetRef.current === identity) {
+    return false;
+  }
+
+  const previousIdentity = targetRef.current;
+  // 提示锁会同步通知订阅者；必须先登记目标，避免回调再次认领同一提示。
+  targetRef.current = identity;
+  if (!tryOwnPrompt()) {
+    targetRef.current = previousIdentity;
+    return false;
+  }
+  return true;
+}
+
 export type MobileOtaUpdateDecision = Readonly<{
   state: MobileOtaUpdateState;
   policyVersion: string;
