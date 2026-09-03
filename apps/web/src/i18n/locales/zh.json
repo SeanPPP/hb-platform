@@ -403,6 +403,7 @@
       "loadDetailFailed": "加载货柜明细失败",
       "headerSaveSuccess": "货柜信息已保存",
       "headerSaveAndCostsRecalculated": "货柜信息已保存，已重算 {{count}} 条明细成本",
+      "headerSavedCostsRecalculateCancelled": "货柜信息已保存，成本重算已取消",
       "headerSavedCostsRecalculateFailed": "货柜信息已保存，但成本重算失败：{{message}}",
       "headerSaveFailed": "保存货柜信息失败",
       "columnOrderReset": "列设置已恢复默认",

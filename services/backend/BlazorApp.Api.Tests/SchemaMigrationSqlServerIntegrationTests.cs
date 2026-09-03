@@ -50,7 +50,7 @@ public sealed class SchemaMigrationSqlServerIntegrationTests
         Assert.Equal(SchemaExitCodes.SchemaNotReady, emptyDatabaseCheck.ExitCode);
 
         var migrated = await coordinator.MigrateAsync(CancellationToken.None);
-        Assert.True(migrated.Success);
+        Assert.True(migrated.Success, migrated.DiagnosticCode);
         Assert.Equal(SchemaExitCodes.Success, migrated.ExitCode);
 
         var checkedResult = await coordinator.CheckAsync(CancellationToken.None);

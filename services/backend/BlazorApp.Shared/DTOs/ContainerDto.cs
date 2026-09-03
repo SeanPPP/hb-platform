@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
+using System.Text.Json;
 
 namespace BlazorApp.Shared.DTOs
 {
@@ -103,6 +105,11 @@ namespace BlazorApp.Shared.DTOs
         /// 全局唯一标识
         /// </summary>
         public string? HGUID { get; set; }
+
+        /// <summary>
+        /// 当前服务端可编辑字段的乐观并发令牌。客户端保存时必须原样带回对应字段。
+        /// </summary>
+        public Dictionary<string, string> ServerFieldTokens { get; set; } = new();
 
         /// <summary>
         /// 主表GUID
@@ -245,6 +252,34 @@ namespace BlazorApp.Shared.DTOs
         /// 仓库商品是否上架
         /// </summary>
         public bool? WarehouseIsActive { get; set; }
+
+        // 以下字段只用于在同一查询快照中签发并发令牌，绝不序列化给客户端。
+        [JsonIgnore]
+        public decimal? ServerTokenDomesticMiddlePackQuantity { get; set; }
+
+        [JsonIgnore]
+        public string? ServerTokenTargetCategoryGuid { get; set; }
+
+        [JsonIgnore]
+        public string? ServerTokenLocalCategoryGuid { get; set; }
+
+        [JsonIgnore]
+        public string? ServerTokenLocalProductName { get; set; }
+
+        [JsonIgnore]
+        public string? ServerTokenLocalEnglishName { get; set; }
+
+        [JsonIgnore]
+        public string? ServerTokenDomesticEnglishName { get; set; }
+
+        [JsonIgnore]
+        public decimal? ServerTokenLocalPurchasePrice { get; set; }
+
+        [JsonIgnore]
+        public decimal? ServerTokenLocalRetailPrice { get; set; }
+
+        [JsonIgnore]
+        public bool? ServerTokenDetailIsActive { get; set; }
 
         /// <summary>
         /// 服务端权威匹配方式：productCode | supplierItem | unmatched。
@@ -486,6 +521,41 @@ namespace BlazorApp.Shared.DTOs
     {
         public List<string> SelectedHguids { get; set; } = new();
         public ContainerDetailQueryDto? Query { get; set; }
+        public string? PreviewToken { get; set; }
+    }
+
+    public class ContainerDetailBatchPreviewRequestDto
+    {
+        public string Operation { get; set; } = string.Empty;
+        public ContainerDetailBatchScopeDto Scope { get; set; } = new();
+        public Dictionary<string, JsonElement> Parameters { get; set; } = new();
+    }
+
+    public class ContainerDetailBatchPreviewResultDto
+    {
+        public int AffectedCount { get; set; }
+        public List<string> FieldSummary { get; set; } = new();
+        public string PreviewToken { get; set; } = string.Empty;
+        public DateTime ExpiresAt { get; set; }
+    }
+
+    public class ContainerDetailPresenceHeartbeatDto
+    {
+        public string ClientSessionId { get; set; } = string.Empty;
+        public string State { get; set; } = "viewing";
+    }
+
+    public class ContainerDetailPresenceUserDto
+    {
+        public string UserGuid { get; set; } = string.Empty;
+        public string UserName { get; set; } = string.Empty;
+        public DateTime LastActiveAt { get; set; }
+    }
+
+    public class ContainerDetailPresenceDto
+    {
+        public List<ContainerDetailPresenceUserDto> Viewers { get; set; } = new();
+        public List<ContainerDetailPresenceUserDto> Editors { get; set; } = new();
     }
 
     /// <summary>
@@ -506,6 +576,22 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// 按筛选范围批量上下架。IsActive 必填，且执行必须携带预览令牌。
+    /// </summary>
+    public class ContainerDetailSetStatusRequestDto : ContainerDetailBatchScopeDto
+    {
+        public bool? IsActive { get; set; }
+    }
+
+    /// <summary>
+    /// 按筛选范围批量分配分类；CategoryGuid 为 null 表示清除分类。
+    /// </summary>
+    public class ContainerDetailAssignCategoryRequestDto : ContainerDetailBatchScopeDto
+    {
+        public string? CategoryGuid { get; set; }
+    }
+
+    /// <summary>
     /// 更新货柜明细DTO
     /// </summary>
     public class UpdateContainerDetailDto
@@ -514,6 +600,16 @@ namespace BlazorApp.Shared.DTOs
         /// 明细GUID
         /// </summary>
         public string HGUID { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 开始编辑时读取到的字段令牌；仅校验本次实际提交的字段。
+        /// </summary>
+        public Dictionary<string, string> ExpectedServerFieldTokens { get; set; } = new();
+
+        /// <summary>
+        /// 用户确认“保留我的值”时携带的服务器当前令牌。
+        /// </summary>
+        public Dictionary<string, string> OverrideAcknowledgements { get; set; } = new();
 
         /// <summary>
         /// 调整浮率
@@ -554,6 +650,11 @@ namespace BlazorApp.Shared.DTOs
         /// 目标仓库分类GUID
         /// </summary>
         public string? ProductCategoryGUID { get; set; }
+
+        /// <summary>
+        /// 清空目标仓库分类；与 null 的“未提交字段”语义分开，供批量分类操作安全表达。
+        /// </summary>
+        public bool? ClearProductCategory { get; set; }
 
         /// <summary>
         /// 零售价
@@ -617,6 +718,7 @@ namespace BlazorApp.Shared.DTOs
         public int AutoRepairedRelationCount { get; set; }
         public List<ContainerDetailBatchUpdateValidationErrorDto> ValidationErrors { get; set; } =
             new();
+        public List<ContainerDetailFieldConflictDto> Conflicts { get; set; } = new();
     }
 
     /// <summary>
@@ -628,6 +730,20 @@ namespace BlazorApp.Shared.DTOs
         public string Field { get; set; } = string.Empty;
         public string Code { get; set; } = string.Empty;
         public string Message { get; set; } = string.Empty;
+    }
+
+    /// <summary>
+    /// 单个字段的乐观并发冲突；其它字段仍可正常提交。
+    /// </summary>
+    public class ContainerDetailFieldConflictDto
+    {
+        public string HGUID { get; set; } = string.Empty;
+        public string Field { get; set; } = string.Empty;
+        public string Code { get; set; } = string.Empty;
+        public string Message { get; set; } = string.Empty;
+        public object? ServerValue { get; set; }
+        public object? SubmittedValue { get; set; }
+        public string CurrentServerFieldToken { get; set; } = string.Empty;
     }
 
     /// <summary>

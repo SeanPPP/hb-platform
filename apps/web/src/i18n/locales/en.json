@@ -403,6 +403,7 @@
       "loadDetailFailed": "Failed to load container details",
       "headerSaveSuccess": "Container information saved",
       "headerSaveAndCostsRecalculated": "Container information saved. Recalculated costs for {{count}} details.",
+      "headerSavedCostsRecalculateCancelled": "Container information saved. Cost recalculation was cancelled.",
       "headerSavedCostsRecalculateFailed": "Container information saved, but cost recalculation failed: {{message}}",
       "headerSaveFailed": "Failed to save container information",
       "columnOrderReset": "Column settings reset to default",

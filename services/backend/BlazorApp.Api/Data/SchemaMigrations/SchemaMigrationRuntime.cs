@@ -40,6 +40,10 @@ internal interface ISchemaMigrationRuntime
 
     Task ApplyContainerDetailQueryIndexesAsync(CancellationToken cancellationToken);
 
+    Task ApplyContainerDetailCollaborationAsync(CancellationToken cancellationToken);
+
+    Task VerifyContainerDetailCollaborationAsync(CancellationToken cancellationToken);
+
     Task VerifyContainerDetailQueryIndexesAsync(CancellationToken cancellationToken);
 
     Task ApplyPosmBaselineAsync(CancellationToken cancellationToken);
@@ -65,6 +69,8 @@ internal sealed class SchemaProviderNotSupportedException : Exception;
 internal sealed class DeviceActivationSchemaMismatchException : Exception;
 
 internal sealed class ContainerDetailQueryIndexSchemaMismatchException : Exception;
+
+internal sealed class ContainerDetailCollaborationSchemaMismatchException : Exception;
 
 internal sealed class SchemaBaselineSqlFailureException(string stepId) : Exception
 {
@@ -202,6 +208,38 @@ internal sealed class SqlServerSchemaMigrationRuntime : ISchemaMigrationRuntime
         );
         // 精确签名在记录 migration ledger 前通过，同名错误索引不能被误标为已完成。
         await VerifyContainerDetailQueryIndexesAsync(cancellationToken);
+    }
+
+    public async Task ApplyContainerDetailCollaborationAsync(CancellationToken cancellationToken)
+    {
+        await RunStrictBaselineAsync(
+            _mainDbContext.Db,
+            () => ContainerDetailCollaborationSchemaMigrator.EnsureAsync(
+                _mainDbContext.Db,
+                NullLogger.Instance
+            ),
+            cancellationToken,
+            "main-container-detail-collaboration"
+        );
+        // 成功建表后必须先验证精确签名，协调器才可写入 migration ledger。
+        await VerifyContainerDetailCollaborationAsync(cancellationToken);
+    }
+
+    public async Task VerifyContainerDetailCollaborationAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SqlServerSchemaMigrationStore.ExecuteReadOnlyBatchAsync(
+                _mainDatabase.ConnectionString,
+                ContainerDetailCollaborationSchemaMigrator.VerifySql,
+                _commandTimeoutSeconds,
+                cancellationToken
+            );
+        }
+        catch (SqlException exception) when (exception.Number is >= 51540 and <= 51553)
+        {
+            throw new ContainerDetailCollaborationSchemaMismatchException();
+        }
     }
 
     public async Task VerifyContainerDetailQueryIndexesAsync(

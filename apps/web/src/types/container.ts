@@ -107,6 +107,8 @@ export interface ContainerDetail {
   HasProductCodeConflict?: boolean
   conflictReason?: string
   ConflictReason?: string
+  /** 服务端字段指纹；仅用于检测其他用户的同字段修改，不能从本地生成。 */
+  serverFieldTokens?: Record<string, string>
 }
 
 export type ContainerDetailQueryProductType = 'normal' | 'set' | 'multi' | 'setChild'
@@ -226,6 +228,30 @@ export interface ContainerDetailBatchActionResult {
   totalRequested?: number
 }
 
+export interface ContainerDetailActionPreviewRequest {
+  operation: string
+  scope: ContainerDetailBatchScope
+  parameters?: Record<string, unknown>
+}
+
+export interface ContainerDetailActionPreview {
+  previewToken: string
+  affectedCount: number
+  fieldSummary: string[]
+  expiresAt: string
+}
+
+export interface ContainerDetailEditingUser {
+  userGuid: string
+  userName: string
+  lastActiveAt: string
+}
+
+export interface ContainerDetailEditingPresence {
+  viewers: ContainerDetailEditingUser[]
+  editors: ContainerDetailEditingUser[]
+}
+
 export interface ContainerDetailBatchUpdateResult {
   totalUpdated: number
   totalRequested: number
@@ -237,6 +263,15 @@ export interface ContainerDetailBatchUpdateResult {
   }>
   autoRepairedStoreGroupCount?: number
   autoRepairedRelationCount?: number
+  conflicts: Array<{
+    hguid: string
+    field: string
+    serverValue: unknown
+    submittedValue: unknown
+    currentServerFieldToken: string
+    code: 'CONCURRENT_FIELD_UPDATE'
+    message?: string
+  }>
 }
 
 export interface ContainerQueryRequest {
@@ -318,6 +353,10 @@ export interface UpdateContainerDetailRequest {
   HasProductCodeConflict?: boolean
   conflictReason?: string
   ConflictReason?: string
+  /** 用户开始编辑时服务器返回的字段基线令牌。 */
+  expectedServerFieldTokens?: Record<string, string>
+  /** 用户明确选择保留我的值时，确认覆盖的服务器当前令牌。 */
+  overrideAcknowledgements?: Record<string, string>
 }
 
 export interface AlignDomesticProductCodeRequest {

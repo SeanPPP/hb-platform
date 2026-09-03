@@ -86,6 +86,9 @@ export interface ContainerDetail {
   HasProductCodeConflict?: boolean;
   conflictReason?: string;
   ConflictReason?: string;
+  /** 服务器为每个可编辑字段签发的并发基线令牌。 */
+  serverFieldTokens?: Record<string, string>;
+  ServerFieldTokens?: Record<string, string>;
 }
 
 export interface DetectionItem {
@@ -241,6 +244,24 @@ export interface ContainerDetailBatchActionResult {
   totalDeleted?: number;
 }
 
+export interface ContainerDetailBatchPreview {
+  previewToken: string;
+  affectedCount: number;
+  fieldSummary: string[];
+  expiresAt?: string;
+}
+
+export interface ContainerDetailPresenceUser {
+  userGuid: string;
+  userName: string;
+  lastActiveAt?: string;
+}
+
+export interface ContainerDetailPresence {
+  viewers: ContainerDetailPresenceUser[];
+  editors: ContainerDetailPresenceUser[];
+}
+
 export interface ContainerDetailSaveValidationError {
   hguid: string;
   field: string;
@@ -248,10 +269,21 @@ export interface ContainerDetailSaveValidationError {
   message: string;
 }
 
+export interface ContainerDetailConcurrentConflict {
+  hguid: string;
+  field: string;
+  code: "CONCURRENT_FIELD_UPDATE";
+  message: string;
+  serverValue: unknown;
+  submittedValue: unknown;
+  currentServerFieldToken: string;
+}
+
 export interface ContainerDetailBatchUpdateResult {
   totalUpdated: number;
   totalRequested: number;
   validationErrors: ContainerDetailSaveValidationError[];
+  conflicts: ContainerDetailConcurrentConflict[];
 }
 
 export interface CreateContainerRequest {
@@ -292,6 +324,8 @@ export interface UpdateContainerDetailRequest {
   合计装柜金额?: number;
   IsActive?: boolean;
   SkipRelatedProductSync?: boolean;
+  expectedServerFieldTokens?: Record<string, string>;
+  overrideAcknowledgements?: Record<string, string>;
 }
 
 export interface SyncResult {

@@ -327,6 +327,10 @@ public sealed class SchemaMigrationCoordinatorTests
             SchemaDatabase.Main,
             SchemaMigrationCoordinator.ContainerDetailQueryIndexesMigrationId
         );
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.ContainerDetailCollaborationMigrationId
+        );
         runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
         runtime.MarkApplied(
             SchemaDatabase.Posm,
@@ -369,6 +373,44 @@ public sealed class SchemaMigrationCoordinatorTests
             $"Record:Main:{SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId}",
             runtime.Events
         );
+    }
+
+    [Fact]
+    public async Task MigrateAsync_所有既有主库步骤已记账_仍执行并记账货柜协作迁移()
+    {
+        var runtime = new FakeSchemaMigrationRuntime();
+        runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.MainMigrationId);
+        runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId);
+        runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.ContainerDetailQueryIndexesMigrationId);
+        runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
+        runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.MobileDeviceActivationMigrationId);
+
+        var result = await CreateCoordinator(runtime).MigrateAsync(CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Contains($"Apply:Main:{SchemaMigrationCoordinator.ContainerDetailCollaborationMigrationId}", runtime.Events);
+        Assert.Contains($"Record:Main:{SchemaMigrationCoordinator.ContainerDetailCollaborationMigrationId}", runtime.Events);
+    }
+
+    [Fact]
+    public async Task CheckAsync_协作账本已登记但签名缺失_返回稳定不兼容诊断()
+    {
+        var runtime = new FakeSchemaMigrationRuntime
+        {
+            ContainerDetailCollaborationVerifyException =
+                new ContainerDetailCollaborationSchemaMismatchException(),
+        };
+        foreach (var step in SchemaMigrationCoordinator.MainMigrationSteps)
+            runtime.MarkApplied(SchemaDatabase.Main, step.MigrationId);
+        foreach (var step in SchemaMigrationCoordinator.PosmMigrationSteps)
+            runtime.MarkApplied(SchemaDatabase.Posm, step.MigrationId);
+
+        var result = await CreateCoordinator(runtime).CheckAsync(CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(SchemaExitCodes.SchemaNotReady, result.ExitCode);
+        Assert.Equal(SchemaDiagnosticCodes.ContainerDetailCollaborationIncompatible, result.DiagnosticCode);
+        Assert.Contains("VerifyContainerDetailCollaboration", runtime.Events);
     }
 
     [Fact]
@@ -522,6 +564,7 @@ public sealed class SchemaMigrationCoordinatorTests
                 "Check:Main:20260827.001-hbweb-baseline",
                 "Check:Main:20260830.001-browser-extension-session-grant",
                 "Check:Main:20260902.001-container-detail-query-indexes",
+                "Check:Main:20260903.001-container-detail-collaboration",
                 "Check:Posm:20260827.001-hbweb-posm-baseline",
                 "Check:Posm:20260831.001-mobile-device-activation",
                 "Verify",
@@ -675,6 +718,7 @@ public sealed class SchemaMigrationCoordinatorTests
         public Exception? VerifyException { get; init; }
         public Exception? MobileVerifyException { get; init; }
         public Exception? ContainerDetailIndexesVerifyException { get; init; }
+        public Exception? ContainerDetailCollaborationVerifyException { get; init; }
 
         public void MarkApplied(SchemaDatabase database, string migrationId) =>
             _applied.Add((database, migrationId));
@@ -743,6 +787,25 @@ public sealed class SchemaMigrationCoordinatorTests
             SchemaMigrationCoordinator.ContainerDetailQueryIndexesMigrationId,
             cancellationToken
         );
+
+        public Task ApplyContainerDetailCollaborationAsync(
+            CancellationToken cancellationToken
+        ) => ApplyAsync(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.ContainerDetailCollaborationMigrationId,
+            cancellationToken
+        );
+
+        public Task VerifyContainerDetailCollaborationAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Events.Add("VerifyContainerDetailCollaboration");
+            if (ContainerDetailCollaborationVerifyException is not null)
+            {
+                throw ContainerDetailCollaborationVerifyException;
+            }
+            return Task.CompletedTask;
+        }
 
         public Task ApplyPosmBaselineAsync(CancellationToken cancellationToken) =>
             ApplyAsync(
