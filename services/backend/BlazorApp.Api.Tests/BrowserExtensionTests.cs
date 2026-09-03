@@ -261,6 +261,75 @@ public sealed class BrowserExtensionSqlBuilderTests
     }
 
     [Fact]
+    public void GfaQueries_MatchNormalizedPageCodeAgainstProductCodeOnlyForSupplier236()
+    {
+        var today = new DateOnly(2026, 9, 3);
+        var gfaSummary = BrowserExtensionPurchaseCycleSqlBuilder.BuildSummary(
+            "1024",
+            "236",
+            new[] { "HO/BPK2FL" },
+            today
+        );
+        var otherSummary = BrowserExtensionPurchaseCycleSqlBuilder.BuildSummary(
+            "1024",
+            "240",
+            new[] { "HO/BPK2FL" },
+            today
+        );
+        var gfaPurchases = BrowserExtensionPurchaseCycleSqlBuilder.BuildPurchaseLines(
+            "1024",
+            "236",
+            "HO/BPK2FL",
+            today.AddMonths(-12),
+            today
+        );
+        var otherPurchases = BrowserExtensionPurchaseCycleSqlBuilder.BuildPurchaseLines(
+            "1024",
+            "240",
+            "HO/BPK2FL",
+            today.AddMonths(-12),
+            today
+        );
+        var compactSummarySql = System.Text.RegularExpressions.Regex.Replace(gfaSummary.Sql, @"\s+", " ");
+        var compactPurchaseSql = System.Text.RegularExpressions.Regex.Replace(gfaPurchases.Sql, @"\s+", " ");
+
+        Assert.Contains("@MatchByProductCode = 1", gfaSummary.Sql);
+        Assert.Contains(
+            "@MatchByProductCode = 0 AND UPPER(LTRIM(RTRIM(p.ItemNumber))) = requested.ItemNumber",
+            compactSummarySql
+        );
+        Assert.Contains(
+            "UPPER(LTRIM(RTRIM(COALESCE(p.ProductCode, N'')))) = requested.ItemNumber",
+            gfaSummary.Sql
+        );
+        Assert.Contains("@MatchByProductCode = 1", gfaPurchases.Sql);
+        Assert.Contains(
+            "@MatchByProductCode = 0 AND UPPER(LTRIM(RTRIM(p.ItemNumber))) = @ItemNumber",
+            compactPurchaseSql
+        );
+        Assert.Contains(
+            "UPPER(LTRIM(RTRIM(COALESCE(NULLIF(d.ProductCode, N''), p.ProductCode, N'')))) = @ItemNumber",
+            gfaPurchases.Sql
+        );
+        Assert.Equal(
+            true,
+            Assert.Single(gfaSummary.Parameters, parameter => parameter.ParameterName == "@MatchByProductCode").Value
+        );
+        Assert.Equal(
+            false,
+            Assert.Single(otherSummary.Parameters, parameter => parameter.ParameterName == "@MatchByProductCode").Value
+        );
+        Assert.Equal(
+            true,
+            Assert.Single(gfaPurchases.Parameters, parameter => parameter.ParameterName == "@MatchByProductCode").Value
+        );
+        Assert.Equal(
+            false,
+            Assert.Single(otherPurchases.Parameters, parameter => parameter.ParameterName == "@MatchByProductCode").Value
+        );
+    }
+
+    [Fact]
     public void SalesQuery_FiltersBySupplierStoreAndProductCodes()
     {
         var query = BrowserExtensionPurchaseCycleSqlBuilder.BuildSales(
