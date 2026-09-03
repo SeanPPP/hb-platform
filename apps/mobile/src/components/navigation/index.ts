@@ -1,1 +1,1 @@
-export { ScrollableTabBar } from "./ScrollableTabBar";
+export { PrimaryTabBar } from "./PrimaryTabBar";

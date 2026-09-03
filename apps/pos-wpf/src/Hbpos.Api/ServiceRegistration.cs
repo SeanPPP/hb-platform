@@ -34,6 +34,19 @@ public static class ServiceRegistration
         var attendanceKeysPath = ResolveDataProtectionKeysPath(
             configuredAttendanceKeysPath,
             "AttendanceQrDataProtectionKeys");
+        var configuredLinklyCredentialKeysPath =
+            configuration?["LinklyCloudCredentialDataProtection:KeysPath"];
+        if (string.Equals(environmentName, "Production", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(configuredLinklyCredentialKeysPath))
+        {
+            // 关键逻辑：Admin 与 POS 必须共享专用 ring，生产环境禁止回退到容器临时目录。
+            throw new InvalidOperationException(
+                "Production requires LinklyCloudCredentialDataProtection:KeysPath.");
+        }
+
+        var linklyCredentialKeysPath = ResolveDataProtectionKeysPath(
+            configuredLinklyCredentialKeysPath,
+            "LinklyCloudCredentialDataProtectionKeys");
 
         Directory.CreateDirectory(globalKeysPath);
         // 关键逻辑：POS 自身票据使用独立持久 ring，不能挂载主 backend 的全局 ring。
@@ -42,6 +55,11 @@ public static class ServiceRegistration
             .PersistKeysToFileSystem(new DirectoryInfo(globalKeysPath));
         // 关键逻辑：考勤密钥使用单独目录及固定应用名/purpose，仅与主 backend 的考勤 ring 共享。
         services.AddSingleton(AttendanceQrKeyDataProtection.CreateProtector(attendanceKeysPath));
+        // 关键逻辑：只共享 Linkly 凭据专用 ring，不向 POS 暴露主 backend 的全局密钥。
+        services.AddSingleton<BlazorApp.Shared.Security.ILinklyCloudTerminalCredentialProtector>(
+            Hbpos.Api.Security.LinklyCloudTerminalCredentialDataProtection.CreateProtector(
+                Hbpos.Api.Security.LinklyCloudTerminalCredentialDataProtection.CreateProvider(
+                    linklyCredentialKeysPath)));
         services.AddSingleton<ICashierAuthorizationTicketService, CashierAuthorizationTicketService>();
         services.AddMemoryCache();
         services.AddScoped<IEmergencyLoginPublicKeyRepository, SqlSugarEmergencyLoginPublicKeyRepository>();
@@ -163,6 +181,8 @@ public static class ServiceRegistration
         services.AddScoped<ILinklyCloudCredentialSchemaInitializer, SqlSugarLinklyCloudCredentialSchemaInitializer>();
         services.AddScoped<ILinklyCloudBackendAsyncRepository, SqlSugarLinklyCloudBackendAsyncRepository>();
         services.AddScoped<ILinklyCloudBackendTerminalCredentialRepository, SqlSugarLinklyCloudBackendTerminalCredentialRepository>();
+        services.AddScoped<ILinklyCloudTerminalRepository, SqlSugarLinklyCloudTerminalRepository>();
+        services.AddScoped<ILinklyCloudTerminalService, LinklyCloudTerminalService>();
         services.AddHttpClient<ILinklyCloudBackendAsyncTransport, HttpLinklyCloudBackendAsyncTransport>(client =>
         {
             client.Timeout = LinklyCloudBackendTimeoutPolicy.HttpTimeout;

@@ -19,6 +19,8 @@ namespace BlazorApp.Api.Services
         public const string CosMirrorStatusSucceeded = "succeeded";
         public const string CosMirrorStatusFailed = "failed";
         public const string CosMirrorStatusUnsafe = "unsafe";
+        public const long PublicAndroidArtifactMaxBytes = 300L * 1024 * 1024;
+        private const int PublicAndroidArtifactCandidateScanLimit = 32;
         private const int CosMirrorErrorMaxLength = 1000;
 
         public MobileAppBuildService(
@@ -179,6 +181,36 @@ namespace BlazorApp.Api.Services
             return ApiResponse<MobileAppBuildDto?>.OK(entity == null ? null : MapToDto(entity));
         }
 
+        public async Task<ApiResponse<MobileAppBuildDto?>> GetLatestPublicMobileAndroidAsync(
+            string profile
+        )
+        {
+            var normalizedProfile = NormalizeProfile(profile);
+            var candidates = await _db
+                .Queryable<MobileAppBuild>()
+                .Where(x =>
+                    x.AppKey == MobileAppKeys.Mobile
+                    && x.Platform == "android"
+                    && x.Status == "finished"
+                    && x.BuildProfile == normalizedProfile
+                    && x.CosMirrorStatus == CosMirrorStatusSucceeded
+                    && !string.IsNullOrEmpty(x.CosArtifactUrl)
+                    && x.ArtifactSize != null
+                    && x.ArtifactSize > 0
+                    && x.ArtifactSize <= PublicAndroidArtifactMaxBytes
+                    && !string.IsNullOrEmpty(x.ArtifactSha256)
+                    && SqlFunc.Length(x.ArtifactSha256) == 64
+                )
+                .OrderByDescending(x => x.CompletedAt)
+                .OrderByDescending(x => x.ReceivedAt)
+                .Take(PublicAndroidArtifactCandidateScanLimit)
+                .ToListAsync();
+
+            // 匿名启动请求只扫描固定上限；逐字节十六进制检查防止错误摘要意外穿透安装链路。
+            var entity = candidates.FirstOrDefault(IsCompletePublicMobileAndroidArtifact);
+            return ApiResponse<MobileAppBuildDto?>.OK(entity == null ? null : MapToDto(entity));
+        }
+
         public Task<ApiResponse<MobileAppBuildDto?>> GetByBuildIdAsync(
             string easBuildId,
             string profile
@@ -226,6 +258,40 @@ namespace BlazorApp.Api.Services
                 .FirstAsync();
 
             return ApiResponse<MobileAppBuildDto?>.OK(entity == null ? null : MapToDto(entity));
+        }
+
+        public async Task<ApiResponse<MobileAppBuildDto?>> GetPublicMobileAndroidByBuildIdAsync(
+            string easBuildId,
+            string profile
+        )
+        {
+            var normalizedBuildId = NormalizeRequiredText(easBuildId);
+            if (string.IsNullOrWhiteSpace(normalizedBuildId))
+            {
+                return ApiResponse<MobileAppBuildDto?>.OK(null);
+            }
+
+            var normalizedProfile = NormalizeProfile(profile);
+            var entity = await _db
+                .Queryable<MobileAppBuild>()
+                .Where(x =>
+                    x.AppKey == MobileAppKeys.Mobile
+                    && x.EasBuildId == normalizedBuildId
+                    && x.Platform == "android"
+                    && x.Status == "finished"
+                    && x.BuildProfile == normalizedProfile
+                    && x.CosMirrorStatus == CosMirrorStatusSucceeded
+                    && !string.IsNullOrEmpty(x.CosArtifactUrl)
+                    && x.ArtifactSize != null
+                    && x.ArtifactSize > 0
+                    && x.ArtifactSize <= PublicAndroidArtifactMaxBytes
+                    && !string.IsNullOrEmpty(x.ArtifactSha256)
+                )
+                .FirstAsync();
+
+            return ApiResponse<MobileAppBuildDto?>.OK(
+                entity != null && IsCompletePublicMobileAndroidArtifact(entity) ? MapToDto(entity) : null
+            );
         }
 
         public async Task<ApiResponse<PagedResult<MobileAppBuildDto>>> GetHistoryAsync(
@@ -900,6 +966,25 @@ namespace BlazorApp.Api.Services
                 ExpirationDate = entity.ExpirationDate,
                 ReceivedAt = entity.ReceivedAt,
             };
+        }
+
+        private static bool IsCompletePublicMobileAndroidArtifact(MobileAppBuild entity)
+        {
+            if (
+                !string.Equals(entity.CosMirrorStatus, CosMirrorStatusSucceeded, StringComparison.Ordinal)
+                || string.IsNullOrWhiteSpace(entity.CosArtifactUrl)
+                || entity.ArtifactSize is not > 0 or > PublicAndroidArtifactMaxBytes
+                || entity.ArtifactSha256 is not { Length: 64 } sha256
+            )
+            {
+                return false;
+            }
+
+            return sha256.All(character =>
+                (character >= '0' && character <= '9')
+                || (character >= 'a' && character <= 'f')
+                || (character >= 'A' && character <= 'F')
+            );
         }
 
         private static string ResolveDownloadUrl(MobileAppBuild entity)

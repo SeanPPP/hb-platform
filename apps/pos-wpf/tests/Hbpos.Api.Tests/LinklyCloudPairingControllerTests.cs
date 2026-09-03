@@ -9,6 +9,7 @@ using Hbpos.Contracts.Linkly;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Hbpos.Api.Tests;
 
@@ -93,6 +94,49 @@ public sealed class LinklyCloudPairingControllerTests
         Assert.Equal(0, pairing.Calls);
     }
 
+    [Fact]
+    public async Task PairCloudBackend_active_mode_returns_stable_conflict_without_legacy_pairing_call()
+    {
+        var pairing = new CapturingLinklyCloudPairingService();
+        var modeService = new FixedLinklyCloudTerminalModeService("Active");
+        var controller = CreateController(
+            pairing,
+            modeService,
+            new Claim(DeviceAuthConstants.StoreCodeClaim, "S01"),
+            new Claim(DeviceAuthConstants.DeviceCodeClaim, "POS-01"));
+
+        var result = await controller.PairCloudBackend(
+            new LinklyCloudBackendPairRequest("Sandbox", "123456"),
+            CancellationToken.None);
+
+        var conflict = Assert.IsType<ConflictObjectResult>(result.Result);
+        var envelope = Assert.IsType<ApiResult<LinklyCloudBackendTerminalCredentialResponse>>(conflict.Value);
+        Assert.False(envelope.Success);
+        Assert.Equal("LINKLY_CLOUD_LEGACY_MODE_DISABLED", envelope.ErrorCode);
+        Assert.Equal(0, pairing.Calls);
+        Assert.Equal(1, modeService.ModeCalls);
+    }
+
+    [Theory]
+    [InlineData("Legacy")]
+    [InlineData("Draft")]
+    public async Task PairCloudBackend_non_active_modes_keep_legacy_pairing_compatible(string mode)
+    {
+        var pairing = new CapturingLinklyCloudPairingService();
+        var controller = CreateController(
+            pairing,
+            new FixedLinklyCloudTerminalModeService(mode),
+            new Claim(DeviceAuthConstants.StoreCodeClaim, "S01"),
+            new Claim(DeviceAuthConstants.DeviceCodeClaim, "POS-01"));
+
+        var result = await controller.PairCloudBackend(
+            new LinklyCloudBackendPairRequest("Sandbox", "123456"),
+            CancellationToken.None);
+
+        Assert.IsType<OkObjectResult>(result.Result);
+        Assert.Equal(1, pairing.Calls);
+    }
+
     [Theory]
     [MemberData(nameof(PairingErrorCases))]
     public async Task PairCloudBackend_maps_pairing_errors_to_stable_http_results(
@@ -119,6 +163,10 @@ public sealed class LinklyCloudPairingControllerTests
 
     public static IEnumerable<object[]> PairingErrorCases()
     {
+        yield return [
+            new LinklyCloudLegacyModeDisabledException(),
+            StatusCodes.Status409Conflict,
+            "LINKLY_CLOUD_LEGACY_MODE_DISABLED"];
         yield return [
             new LinklyCloudPairingValidationException("pairCode must contain exactly 6 digits."),
             StatusCodes.Status400BadRequest,
@@ -181,12 +229,27 @@ public sealed class LinklyCloudPairingControllerTests
         ILinklyCloudPairingService pairing,
         params Claim[] claims)
     {
+        return CreateController(
+            pairing,
+            new FixedLinklyCloudTerminalModeService("Legacy"),
+            claims);
+    }
+
+    private static LinklyController CreateController(
+        ILinklyCloudPairingService pairing,
+        ILinklyCloudTerminalService terminalService,
+        params Claim[] claims)
+    {
+        var requestServices = new ServiceCollection()
+            .AddSingleton(terminalService)
+            .BuildServiceProvider();
         var controller = new LinklyController(null!, null!, pairing)
         {
             ControllerContext = new ControllerContext
             {
                 HttpContext = new DefaultHttpContext
                 {
+                    RequestServices = requestServices,
                     User = new ClaimsPrincipal(new ClaimsIdentity(claims, "pairing-test"))
                 }
             }

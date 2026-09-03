@@ -4,8 +4,11 @@ import type {
   AlignDomesticProductCodeRequest,
   AlignDomesticProductCodeResult,
   ContainerDetailBatchActionResult,
+  ContainerDetailBatchPreview,
   ContainerDetailBatchUpdateResult,
   ContainerDetailBatchScope,
+  ContainerDetailConcurrentConflict,
+  ContainerDetailPresence,
   ContainerDetailSaveValidationError,
   ContainerDetailQuery,
   ContainerDetailQueryResult,
@@ -112,6 +115,75 @@ function normalizeDetailValidationErrors(data: unknown): ContainerDetailSaveVali
   });
 }
 
+function normalizeDetailConflicts(data: unknown): ContainerDetailConcurrentConflict[] {
+  const payload = unwrapData(data);
+  if (!payload || typeof payload !== "object") return [];
+  const record = payload as Record<string, unknown>;
+  const rawConflicts = record.conflicts ?? record.Conflicts;
+  if (!Array.isArray(rawConflicts)) return [];
+
+  return rawConflicts.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const conflict = item as Record<string, unknown>;
+    const hguid = conflict.hguid ?? conflict.HGUID;
+    const field = conflict.field ?? conflict.Field;
+    const code = conflict.code ?? conflict.Code;
+    const message = conflict.message ?? conflict.Message;
+    const currentServerFieldToken = conflict.currentServerFieldToken ?? conflict.CurrentServerFieldToken;
+    if (
+      typeof hguid !== "string" || !hguid.trim()
+      || typeof field !== "string" || !field.trim()
+      || code !== "CONCURRENT_FIELD_UPDATE"
+      || typeof message !== "string" || !message.trim()
+      || typeof currentServerFieldToken !== "string" || !currentServerFieldToken.trim()
+    ) return [];
+    return [{
+      hguid: hguid.trim(),
+      field: field.trim(),
+      code,
+      message: message.trim(),
+      serverValue: conflict.serverValue ?? conflict.ServerValue,
+      submittedValue: conflict.submittedValue ?? conflict.SubmittedValue,
+      currentServerFieldToken: currentServerFieldToken.trim(),
+    }];
+  });
+}
+
+function normalizeDetailPresence(data: unknown): ContainerDetailPresence {
+  const payload = unwrapData(data);
+  const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+  const normalizeUsers = (value: unknown) => Array.isArray(value) ? value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const user = item as Record<string, unknown>;
+    const userGuid = user.userGuid ?? user.UserGuid;
+    const userName = user.userName ?? user.UserName ?? user.displayName ?? user.DisplayName ?? user.username ?? user.Username;
+    const lastActiveAt = user.lastActiveAt ?? user.LastActiveAt;
+    if (typeof userGuid !== "string" || !userGuid.trim() || typeof userName !== "string" || !userName.trim()) return [];
+    return [{ userGuid: userGuid.trim(), userName: userName.trim(), ...(typeof lastActiveAt === "string" ? { lastActiveAt } : {}) }];
+  }) : [];
+  return {
+    viewers: normalizeUsers(record.viewers ?? record.Viewers),
+    editors: normalizeUsers(record.editors ?? record.Editors),
+  };
+}
+
+function normalizeBatchPreview(data: unknown): ContainerDetailBatchPreview {
+  const payload = unwrapData(data);
+  const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+  const previewToken = record.previewToken ?? record.PreviewToken;
+  if (typeof previewToken !== "string" || !previewToken.trim()) throw new Error("批量预览未返回有效令牌");
+  const affectedRaw = record.affectedCount ?? record.AffectedCount ?? 0;
+  const affectedCount = typeof affectedRaw === "number" && Number.isFinite(affectedRaw) ? affectedRaw : Number(affectedRaw) || 0;
+  const summary = record.fieldSummary ?? record.FieldSummary;
+  const expiresAt = record.expiresAt ?? record.ExpiresAt;
+  return {
+    previewToken: previewToken.trim(),
+    affectedCount,
+    fieldSummary: Array.isArray(summary) ? summary.filter((item): item is string => typeof item === "string") : [],
+    ...(typeof expiresAt === "string" ? { expiresAt } : {}),
+  };
+}
+
 function mapDetailUpdate(item: UpdateContainerDetailRequest) {
   return {
     HGUID: item.hguid,
@@ -131,6 +203,8 @@ function mapDetailUpdate(item: UpdateContainerDetailRequest) {
     合计装柜金额: item.合计装柜金额,
     IsActive: item.IsActive,
     SkipRelatedProductSync: item.SkipRelatedProductSync,
+    ExpectedServerFieldTokens: item.expectedServerFieldTokens,
+    OverrideAcknowledgements: item.overrideAcknowledgements,
   };
 }
 
@@ -268,48 +342,100 @@ export async function updateContainer(containerGuid: string, data: UpdateContain
 }
 
 export async function batchUpdateDetails(
+  containerGuid: string,
   updates: UpdateContainerDetailRequest[],
 ): Promise<ContainerDetailBatchUpdateResult> {
-  const response = await apiClient.post(`${CONTAINERS_PATH}/batch-update-details`, updates.map(mapDetailUpdate));
-  ensureSuccess(response.data, "批量更新货柜明细失败");
-  return {
-    totalUpdated: pickNumber(response.data, "totalUpdated", updates.length),
-    totalRequested: pickNumber(response.data, "totalRequested", updates.length),
-    validationErrors: normalizeDetailValidationErrors(response.data),
-  };
+  try {
+    const response = await apiClient.post(
+      `${CONTAINERS_PATH}/${encodeURIComponent(containerGuid)}/batch-update-details`,
+      updates.map(mapDetailUpdate),
+    );
+    ensureSuccess(response.data, "批量更新货柜明细失败");
+    return {
+      totalUpdated: pickNumber(response.data, "totalUpdated", updates.length),
+      totalRequested: pickNumber(response.data, "totalRequested", updates.length),
+      validationErrors: normalizeDetailValidationErrors(response.data),
+      conflicts: normalizeDetailConflicts(response.data),
+    };
+  } catch (error) {
+    const response = (error as { response?: { status?: number; data?: unknown } })?.response;
+    const payload = response?.data && typeof response.data === "object" ? unwrapData(response.data) as Record<string, unknown> : undefined;
+    const code = payload?.code ?? payload?.Code;
+    if (response?.status === 428 && code === "CONCURRENCY_TOKEN_REQUIRED") {
+      const upgradeError = new Error(typeof payload?.message === "string" ? payload.message : "请升级应用后再编辑货柜明细") as Error & { code?: string };
+      upgradeError.code = "CONCURRENCY_TOKEN_REQUIRED";
+      throw upgradeError;
+    }
+    throw error;
+  }
 }
 
-export async function batchDeleteDetails(hguids: string[]) {
-  const response = await apiClient.post(`${CONTAINERS_PATH}/batch-delete-details`, { hguids });
-  ensureSuccess(response.data, "批量删除货柜明细失败");
-  return {
-    totalDeleted: pickNumber(response.data, "totalDeleted", hguids.length),
-    totalRequested: pickNumber(response.data, "totalRequested", hguids.length),
-  };
+export async function previewContainerDetailBatchAction(
+  containerGuid: string,
+  data: { operation: string; scope: ContainerDetailBatchScope; parameters?: Record<string, unknown> },
+) {
+  const response = await apiClient.post(
+    `${CONTAINERS_PATH}/${encodeURIComponent(containerGuid)}/actions/preview`,
+    data,
+  );
+  ensureSuccess(response.data, "批量预览失败");
+  return normalizeBatchPreview(response.data);
+}
+
+export async function batchDeleteDetails(
+  containerGuid: string,
+  scope: ContainerDetailBatchScope,
+  previewToken: string,
+) {
+  return postContainerAction(containerGuid, "delete-details", { ...scope, previewToken });
 }
 
 export async function applyFloatRate(
   containerGuid: string,
   scope: ContainerDetailBatchScope,
   floatRate: number,
+  previewToken: string,
 ) {
-  return postContainerAction(containerGuid, "apply-float-rate", { ...scope, floatRate });
+  return postContainerAction(containerGuid, "apply-float-rate", { ...scope, floatRate, previewToken });
 }
 
 export async function applyPrices(
   containerGuid: string,
   scope: ContainerDetailBatchScope,
   prices: { importPrice?: number | null; oemPrice?: number | null },
+  previewToken: string,
 ) {
-  return postContainerAction(containerGuid, "apply-prices", { ...scope, ...prices });
+  return postContainerAction(containerGuid, "apply-prices", { ...scope, ...prices, previewToken });
 }
 
-export async function recalculate(containerGuid: string, scope: ContainerDetailBatchScope) {
-  return postContainerAction(containerGuid, "recalculate-costs", scope);
+export async function recalculate(containerGuid: string, scope: ContainerDetailBatchScope, previewToken: string) {
+  return postContainerAction(containerGuid, "recalculate-costs", { ...scope, previewToken });
 }
 
-export async function backfill(containerGuid: string, scope: ContainerDetailBatchScope) {
-  return postContainerAction(containerGuid, "backfill-last-prices", scope);
+export async function backfill(containerGuid: string, scope: ContainerDetailBatchScope, previewToken: string) {
+  return postContainerAction(containerGuid, "backfill-last-prices", { ...scope, previewToken });
+}
+
+export async function getContainerDetailPresence(containerGuid: string): Promise<ContainerDetailPresence> {
+  const response = await apiClient.get(`${CONTAINERS_PATH}/${encodeURIComponent(containerGuid)}/editing-presence`);
+  ensureSuccess(response.data, "获取协作状态失败");
+  return normalizeDetailPresence(response.data);
+}
+
+export async function heartbeatContainerDetailPresence(
+  containerGuid: string,
+  data: { clientSessionId: string; state: "viewing" | "editing" },
+): Promise<ContainerDetailPresence> {
+  const response = await apiClient.post(
+    `${CONTAINERS_PATH}/${encodeURIComponent(containerGuid)}/editing-presence/heartbeat`,
+    data,
+  );
+  ensureSuccess(response.data, "更新协作状态失败");
+  return normalizeDetailPresence(response.data);
+}
+
+export async function leaveContainerDetailPresence(containerGuid: string, clientSessionId: string) {
+  await apiClient.post(`${CONTAINERS_PATH}/${encodeURIComponent(containerGuid)}/editing-presence/leave`, { clientSessionId });
 }
 
 export async function syncContainersFromHq(startDate?: string): Promise<SyncResult> {

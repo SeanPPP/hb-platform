@@ -5,6 +5,7 @@ using System.Security.Claims;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using BlazorApp.Shared.Constants;
 using Hbpos.Api;
 using Hbpos.Api.Auth;
 using Hbpos.Api.Services;
@@ -24,6 +25,34 @@ namespace Hbpos.Api.Tests;
 
 public sealed class LinklyCloudPairingAuthorizationHttpTests
 {
+    public static IEnumerable<object[]> HealthPermissionCases()
+    {
+        yield return
+        [
+            new[] { Permissions.PosTerminal.Settings.PaymentTerminal },
+            HttpStatusCode.OK
+        ];
+        yield return
+        [
+            new[]
+            {
+                Permissions.PosTerminal.Payment.TakeCard,
+                Permissions.PosTerminal.Payment.Confirm
+            },
+            HttpStatusCode.OK
+        ];
+        yield return
+        [
+            new[] { Permissions.PosTerminal.Payment.TakeCard },
+            HttpStatusCode.Forbidden
+        ];
+        yield return
+        [
+            new[] { Permissions.PosTerminal.Payment.Confirm },
+            HttpStatusCode.Forbidden
+        ];
+    }
+
     [Fact]
     public async Task Pair_without_authorization_returns_401()
     {
@@ -105,6 +134,53 @@ public sealed class LinklyCloudPairingAuthorizationHttpTests
         Assert.Equal(0, pairing.Calls);
     }
 
+    [Theory]
+    [MemberData(nameof(HealthPermissionCases))]
+    public async Task Health_allows_settings_or_complete_card_permissions(
+        string[] grantedPermissions,
+        HttpStatusCode expectedStatusCode)
+    {
+        await using var factory = new LinklyCloudPairingAuthorizationApiFactory(
+            new CapturingLinklyCloudPairingService(),
+            paymentSettingsGranted: false,
+            grantedPermissions);
+        using var client = factory.CreateClient();
+        AddDeviceAuthentication(client);
+        client.DefaultRequestHeaders.Add(CashierAuthorizationConstants.HeaderName, "valid");
+
+        using var response = await client.GetAsync(
+            "/api/v1/linkly/cloud-backend/health?environment=Sandbox");
+
+        Assert.Equal(expectedStatusCode, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Complete_card_permissions_do_not_grant_pair_or_logon_management_access()
+    {
+        var pairing = new CapturingLinklyCloudPairingService();
+        await using var factory = new LinklyCloudPairingAuthorizationApiFactory(
+            pairing,
+            paymentSettingsGranted: false,
+            [
+                Permissions.PosTerminal.Payment.TakeCard,
+                Permissions.PosTerminal.Payment.Confirm
+            ]);
+        using var client = factory.CreateClient();
+        AddDeviceAuthentication(client);
+        client.DefaultRequestHeaders.Add(CashierAuthorizationConstants.HeaderName, "valid");
+
+        using var pairResponse = await client.PostAsJsonAsync(
+            "/api/v1/linkly/cloud-backend/pair",
+            new LinklyCloudBackendPairRequest("Sandbox", "123456"));
+        using var logonResponse = await client.PostAsync(
+            "/api/v1/linkly/cloud-backend/logon-test?environment=Sandbox",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.Forbidden, pairResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, logonResponse.StatusCode);
+        Assert.Equal(0, pairing.Calls);
+    }
+
     private static void AddDeviceAuthentication(HttpClient client)
     {
         client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
@@ -112,7 +188,8 @@ public sealed class LinklyCloudPairingAuthorizationHttpTests
 
     private sealed class LinklyCloudPairingAuthorizationApiFactory(
         CapturingLinklyCloudPairingService pairing,
-        bool paymentSettingsGranted) : WebApplicationFactory<Program>
+        bool paymentSettingsGranted,
+        IReadOnlyCollection<string>? grantedPermissions = null) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
@@ -143,12 +220,25 @@ public sealed class LinklyCloudPairingAuthorizationHttpTests
                 services.RemoveAll<ILinklyCloudCredentialService>();
                 services.AddSingleton<ILinklyCloudCredentialService>(new NoOpLinklyCloudCredentialService());
                 services.RemoveAll<ILinklyCloudBackendAsyncService>();
-                services.AddSingleton<ILinklyCloudBackendAsyncService>(new NoOpLinklyCloudBackendAsyncService());
+                services.AddSingleton<ILinklyCloudBackendAsyncService>(
+                    new NoOpLinklyCloudBackendAsyncService(
+                        new LinklyCloudBackendHealthResponse(
+                            "Sandbox",
+                            "S01",
+                            "POS-01",
+                            true,
+                            null,
+                            [])));
+                services.RemoveAll<ILinklyCloudTerminalService>();
+                services.AddSingleton<ILinklyCloudTerminalService>(
+                    new FixedLinklyCloudTerminalModeService("Legacy"));
 
                 services.RemoveAll<ICashierAuthorizationTicketService>();
                 services.AddSingleton<ICashierAuthorizationTicketService>(new PairingTicketService());
                 services.RemoveAll<ICashierService>();
-                services.AddSingleton<ICashierService>(new PairingCashierService(paymentSettingsGranted));
+                services.AddSingleton<ICashierService>(new PairingCashierService(
+                    paymentSettingsGranted,
+                    grantedPermissions));
                 services.RemoveAll<IPosIpadAppReviewAuthorizationBoundary>();
                 services.AddSingleton<IPosIpadAppReviewAuthorizationBoundary>(
                     new NonReviewDeviceAuthorizationBoundary());
@@ -217,7 +307,9 @@ public sealed class LinklyCloudPairingAuthorizationHttpTests
                 : null;
     }
 
-    private sealed class PairingCashierService(bool paymentSettingsGranted) : ICashierService
+    private sealed class PairingCashierService(
+        bool paymentSettingsGranted,
+        IReadOnlyCollection<string>? grantedPermissions) : ICashierService
     {
         public Task<CashierSessionDto?> BarcodeLoginAsync(
             CashierBarcodeLoginRequest request,
@@ -227,7 +319,10 @@ public sealed class LinklyCloudPairingAuthorizationHttpTests
             string userGuid,
             string storeCode,
             IReadOnlyCollection<string> permissionCodes,
-            CancellationToken cancellationToken) => Task.FromResult(paymentSettingsGranted);
+            CancellationToken cancellationToken) => Task.FromResult(
+                grantedPermissions is null
+                    ? paymentSettingsGranted
+                    : permissionCodes.Any(grantedPermissions.Contains));
 
         public Task<CashierSessionDto?> RefreshSessionAsync(
             CashierAuthorizationTicket ticket,

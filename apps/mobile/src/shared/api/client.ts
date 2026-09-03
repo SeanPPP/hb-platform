@@ -15,6 +15,18 @@ import {
   iosReviewAxiosAdapter,
 } from "@/modules/ios-review/transport";
 import { isIosReviewSessionActive } from "@/modules/ios-review/session";
+import {
+  clearAuthSessionMarker,
+  getAuthSessionMarker,
+} from "@/modules/device-activation/auth-session-marker";
+import { DeviceAccountStorage } from "@/modules/device-activation/device-account-storage-runtime";
+import { exchangeStoredDeviceAccountToken } from "@/modules/device-activation/device-account-token";
+import {
+  deriveEffectiveAuthSessionKind,
+  isRelativeApiClientUrl,
+  removeRequestHeader,
+  resolveDeviceAccountRequestPolicy,
+} from "@/modules/device-activation/device-account-request-policy";
 
 export const apiClient = axios.create({
   baseURL: DEFAULT_API_BASE_URL,
@@ -36,8 +48,13 @@ let refreshQueue: Array<{
   reject: (e: Error) => void;
 }> = [];
 
-function isLoginRequest(config?: InternalAxiosRequestConfig | null) {
-  return Boolean(config?.url?.includes("/auth/login"));
+function isAuthenticationRequest(config?: InternalAxiosRequestConfig | null) {
+  const url = config?.url ?? "";
+  return (
+    url.includes("/auth/login") ||
+    url.includes("/auth/refresh") ||
+    url.includes("/mobile/v1/device-session/exchange")
+  );
 }
 
 function shouldSkipAuthRedirect(config?: InternalAxiosRequestConfig | null) {
@@ -48,6 +65,15 @@ function shouldSkipAuthRedirect(config?: InternalAxiosRequestConfig | null) {
   const rawSkipHeader = config.headers?.["X-Skip-Auth-Redirect"];
   const skipHeaderValue = Array.isArray(rawSkipHeader) ? rawSkipHeader[0] : rawSkipHeader;
   return skipHeaderValue === "1";
+}
+
+function shouldSkipAuthRecovery(config?: InternalAxiosRequestConfig | null) {
+  if (!config) {
+    return false;
+  }
+  const rawValue = config.headers?.["X-Skip-Auth-Recovery"];
+  const value = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+  return value === "1";
 }
 
 function shouldSkipCenterLog(config?: InternalAxiosRequestConfig | null) {
@@ -133,6 +159,7 @@ async function invalidateLocalSession(message?: string) {
     console.warn("[attendance-location] 会话失效时停止后台定位失败", error);
   });
   await SecureStorage.clearAll();
+  await clearAuthSessionMarker();
   emitUnauthenticatedSession({ message });
 }
 
@@ -157,24 +184,98 @@ apiClient.interceptors.request.use(
       config.adapter = iosReviewAxiosAdapter;
       config.baseURL = undefined;
       if (config.headers) {
-        delete config.headers.Authorization;
-        delete config.headers["X-Device-Id"];
-        delete config.headers["X-Auth-Code"];
+        removeRequestHeader(config.headers, "Authorization");
+        removeRequestHeader(config.headers, "X-Device-Id");
+        removeRequestHeader(config.headers, "X-Auth-Code");
       }
       return config;
     }
 
-    config.baseURL = await syncApiBaseUrl();
-    const token = await SecureStorage.getToken();
-    if (token && config.headers) {
-      config.headers.Authorization = `Bearer ${token}`;
+    if (!isRelativeApiClientUrl(config.url)) {
+      throw new Error("ABSOLUTE_API_URL_NOT_ALLOWED");
+    }
+
+    const rawApiHost = config.headers?.["X-Client-Api-Host"];
+    const apiHost = Array.isArray(rawApiHost) ? rawApiHost[0] : rawApiHost;
+    const rawSkipAuthentication = config.headers?.["X-Client-Skip-Authentication"];
+    const skipAuthentication =
+      (Array.isArray(rawSkipAuthentication)
+        ? rawSkipAuthentication[0]
+        : rawSkipAuthentication) === "1";
+    if (config.headers) {
+      removeRequestHeader(config.headers, "X-Client-Api-Host");
+      removeRequestHeader(config.headers, "X-Client-Skip-Authentication");
+    }
+    const requestedApiHost =
+      typeof apiHost === "string" && apiHost
+        ? apiHost
+        : await getStoredApiHost();
+    if (skipAuthentication) {
+      const requestPolicy = resolveDeviceAccountRequestPolicy({
+        requestedApiHost,
+        bindingApiHost: null,
+        sessionKind: null,
+        skipAuthentication: true,
+      });
+      config.baseURL = buildApiBaseUrl(requestPolicy.apiHost);
+      if (config.headers) {
+        removeRequestHeader(config.headers, "Authorization");
+        removeRequestHeader(config.headers, "X-Device-Id");
+        removeRequestHeader(config.headers, "X-Auth-Code");
+      }
       return config;
     }
 
-    const deviceSession = await DeviceStorage.getSession();
+    const [token, refreshToken, persistedSessionKind, accountBinding] = await Promise.all([
+      SecureStorage.getToken(),
+      SecureStorage.getRefreshToken(),
+      getAuthSessionMarker(),
+      DeviceAccountStorage.loadBinding().catch(() => null),
+    ]);
+    const sessionKind = deriveEffectiveAuthSessionKind({
+      persistedKind: persistedSessionKind,
+      hasAccessToken: Boolean(token),
+      hasRefreshToken: Boolean(refreshToken),
+      hasBinding: Boolean(accountBinding),
+    });
+    const requestPolicy = resolveDeviceAccountRequestPolicy({
+      requestedApiHost,
+      bindingApiHost: accountBinding?.apiHost,
+      sessionKind,
+      skipAuthentication: false,
+    });
+    config.baseURL = buildApiBaseUrl(requestPolicy.apiHost);
+    if (!apiHost && requestPolicy.apiHost === requestedApiHost) {
+      apiClient.defaults.baseURL = config.baseURL;
+    }
+
+    if (!requestPolicy.allowDeviceHeaders && config.headers) {
+      // 即使调用方显式传入，绑定凭据也不能跨 host 发送。
+      removeRequestHeader(config.headers, "X-Device-Id");
+      removeRequestHeader(config.headers, "X-Auth-Code");
+    }
+    if (!requestPolicy.allowBearerToken) {
+      if (config.headers) {
+        removeRequestHeader(config.headers, "Authorization");
+      }
+      throw new Error("DEVICE_ACCOUNT_BINDING_NOT_FOUND");
+    }
+
+    if (token && config.headers) {
+      if (!config.headers.has("Authorization")) {
+        config.headers.set("Authorization", `Bearer ${token}`);
+      }
+      if (sessionKind !== "deviceAccount") {
+        return config;
+      }
+    }
+
+    const deviceSession = requestPolicy.allowDeviceHeaders
+      ? await DeviceStorage.getSession()
+      : null;
     if (deviceSession?.hardwareId && deviceSession.authCode && config.headers) {
-      config.headers["X-Device-Id"] = deviceSession.hardwareId;
-      config.headers["X-Auth-Code"] = deviceSession.authCode;
+      config.headers.set("X-Device-Id", deviceSession.hardwareId);
+      config.headers.set("X-Auth-Code", deviceSession.authCode);
     }
     return config;
   },
@@ -185,9 +286,12 @@ apiClient.interceptors.response.use(
   async (response) => {
     if (
       isUnauthenticatedApiPayload(response.data) &&
-      !isLoginRequest(response.config as InternalAxiosRequestConfig)
+      !isAuthenticationRequest(response.config as InternalAxiosRequestConfig)
     ) {
       const message = extractApiErrorMessage(response.data, "Unauthorized");
+      if (shouldSkipAuthRecovery(response.config as InternalAxiosRequestConfig)) {
+        throw new Error(message);
+      }
       if (shouldSkipAuthRedirect(response.config as InternalAxiosRequestConfig)) {
         await invalidateLocalSession(message);
       } else {
@@ -211,8 +315,13 @@ apiClient.interceptors.response.use(
   async (error: AxiosError) => {
     const original = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
     const skipAuthRedirect = shouldSkipAuthRedirect(original);
+    const skipAuthRecovery = shouldSkipAuthRecovery(original);
 
-    if (error.response?.status === 401 && original?._retry && !isLoginRequest(original)) {
+    if (error.response?.status === 401 && skipAuthRecovery) {
+      return Promise.reject(preserveApiClientError(error));
+    }
+
+    if (error.response?.status === 401 && original?._retry && !isAuthenticationRequest(original)) {
       const message = extractApiErrorMessage(error, error.message);
       if (!skipAuthRedirect) {
         await redirectToLoginAfterUnauthenticated(message);
@@ -223,12 +332,12 @@ apiClient.interceptors.response.use(
       return Promise.reject(preserveApiClientError(error));
     }
 
-    if (error.response?.status === 401 && !original?._retry && !isLoginRequest(original)) {
+    if (error.response?.status === 401 && !original?._retry && !isAuthenticationRequest(original)) {
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           refreshQueue.push({
             resolve: (t) => {
-              original.headers.Authorization = `Bearer ${t}`;
+              original.headers.set("Authorization", `Bearer ${t}`);
               resolve(apiClient(original));
             },
             reject,
@@ -238,18 +347,40 @@ apiClient.interceptors.response.use(
       original._retry = true;
       isRefreshing = true;
       try {
-        const baseURL = await syncApiBaseUrl();
-        const rt = await SecureStorage.getRefreshToken();
-        if (!rt) throw new Error("No refresh token");
-        const res = await axios.post(`${baseURL}/auth/refresh`, {
-          refreshToken: rt,
+        const [persistedSessionKind, accountBinding, currentToken, refreshToken] =
+          await Promise.all([
+            getAuthSessionMarker(),
+            DeviceAccountStorage.loadBinding().catch(() => null),
+            SecureStorage.getToken(),
+            SecureStorage.getRefreshToken(),
+          ]);
+        const sessionKind = deriveEffectiveAuthSessionKind({
+          persistedKind: persistedSessionKind,
+          hasAccessToken: Boolean(currentToken),
+          hasRefreshToken: Boolean(refreshToken),
+          hasBinding: Boolean(accountBinding),
         });
-        const { accessToken, refreshToken: newRt } = res.data.data ?? res.data;
-        await SecureStorage.setToken(accessToken);
-        await SecureStorage.setRefreshToken(newRt);
+        let accessToken: string;
+        if (sessionKind === "deviceAccount") {
+          const exchanged = await exchangeStoredDeviceAccountToken();
+          accessToken = exchanged.accessToken;
+          await SecureStorage.setToken(accessToken);
+          await SecureStorage.removeRefreshToken();
+        } else {
+          const baseURL = await syncApiBaseUrl();
+          const rt = await SecureStorage.getRefreshToken();
+          if (!rt) throw new Error("No refresh token");
+          const res = await axios.post(`${baseURL}/auth/refresh`, {
+            refreshToken: rt,
+          });
+          const refreshed = res.data.data ?? res.data;
+          accessToken = refreshed.accessToken;
+          await SecureStorage.setToken(accessToken);
+          await SecureStorage.setRefreshToken(refreshed.refreshToken);
+        }
         refreshQueue.forEach((cb) => cb.resolve(accessToken));
         refreshQueue = [];
-        original.headers.Authorization = `Bearer ${accessToken}`;
+        original.headers.set("Authorization", `Bearer ${accessToken}`);
         return apiClient(original);
       } catch (refreshErr) {
         refreshQueue.forEach((cb) => cb.reject(refreshErr as Error));

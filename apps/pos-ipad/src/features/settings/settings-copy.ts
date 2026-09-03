@@ -148,6 +148,11 @@ export const settingsEnglishCopy = {
   "linkly.statusPaired": "Paired",
   "linkly.statusUnpaired": "Not paired",
   "linkly.statusUnavailable": "Unavailable",
+  "linkly.statusBusy": "Busy with another transaction",
+  "linkly.statusNeedsRepair": "Pairing needs repair",
+  "linkly.statusUnknown": "Status unknown",
+  "linkly.terminals": "Linkly Cloud terminals",
+  "linkly.noTerminals": "No Linkly Cloud terminals are available.",
   "linkly.refresh": "Refresh status",
   "linkly.pairCode": "6-digit Pair Code",
   "linkly.pairCodeHint":
@@ -346,6 +351,9 @@ export const settingsEnglishCopy = {
   "status.linkly-pair-unknown":
     "Pairing result unknown; status refreshed and no retry was sent",
   "status.linkly-paired": "Linkly terminal paired; status refreshed",
+  "status.linkly-terminal-selected": "Linkly terminal selection saved",
+  "status.linkly-terminal-switch-failed":
+    "Linkly terminal could not be selected",
   "status.linkly-setup-required":
     "Linkly backend must be ready and logon test must pass first",
   "status.payment-settings-invalid":
@@ -537,6 +545,11 @@ export const settingsChineseCopy = {
   "linkly.statusPaired": "已配对",
   "linkly.statusUnpaired": "未配对",
   "linkly.statusUnavailable": "不可用",
+  "linkly.statusBusy": "正在处理其他交易",
+  "linkly.statusNeedsRepair": "配对需要修复",
+  "linkly.statusUnknown": "状态未知",
+  "linkly.terminals": "Linkly 云端刷卡机",
+  "linkly.noTerminals": "当前没有可用的 Linkly 云端刷卡机。",
   "linkly.refresh": "刷新状态",
   "linkly.pairCode": "6 位配对码",
   "linkly.pairCodeHint": "输入终端显示的六位数字配对码。",
@@ -721,6 +734,8 @@ export const settingsChineseCopy = {
   "status.linkly-pair-unknown":
     "配对结果未知；已刷新状态，且未自动重试",
   "status.linkly-paired": "Linkly 终端已配对；状态已刷新",
+  "status.linkly-terminal-selected": "Linkly 刷卡机选择已保存",
+  "status.linkly-terminal-switch-failed": "无法选择该 Linkly 刷卡机",
   "status.linkly-setup-required":
     "Linkly 后端必须先就绪且登录测试通过",
   "status.payment-settings-invalid": "可用支付通道的公开配置不完整",

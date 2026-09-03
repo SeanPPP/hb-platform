@@ -2,6 +2,7 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using SqlSugar;
@@ -199,6 +200,10 @@ namespace BlazorApp.Api.Services
             try
             {
                 await _context.Db.Ado.BeginTranAsync();
+                await ContainerMutationLock.AcquireContainersAsync(
+                    _context.Db,
+                    new[] { containerDto.ContainerCode }
+                );
 
                 var container = _mapper.Map<Container>(containerDto);
                 container.CreatedAt = DateTime.UtcNow;
@@ -213,7 +218,7 @@ namespace BlazorApp.Api.Services
             }
             catch (Exception ex)
             {
-                await _context.Db.Ado.RollbackTranAsync();
+                await RollbackContainerMutationTransactionSafelyAsync(ex);
                 _logger.LogError(ex, "创建货柜失败");
                 throw;
             }
@@ -227,6 +232,10 @@ namespace BlazorApp.Api.Services
             try
             {
                 await _context.Db.Ado.BeginTranAsync();
+                await ContainerMutationLock.AcquireContainersAsync(
+                    _context.Db,
+                    new[] { containerDto.ContainerCode }
+                );
 
                 var existingContainer = await _context.ContainerDb.GetByIdAsync(containerDto.ContainerCode);
                 if (existingContainer == null || existingContainer.IsDeleted)
@@ -247,7 +256,7 @@ namespace BlazorApp.Api.Services
             }
             catch (Exception ex)
             {
-                await _context.Db.Ado.RollbackTranAsync();
+                await RollbackContainerMutationTransactionSafelyAsync(ex);
                 _logger.LogError(ex, "更新货柜失败, ContainerCode: {ContainerCode}", containerDto.ContainerCode);
                 throw;
             }
@@ -261,6 +270,10 @@ namespace BlazorApp.Api.Services
             try
             {
                 await _context.Db.Ado.BeginTranAsync();
+                await ContainerMutationLock.AcquireContainersAsync(
+                    _context.Db,
+                    new[] { containerCode }
+                );
 
                 // 软删除货柜
                 var success = await _context.Db.Updateable<Container>()
@@ -284,7 +297,7 @@ namespace BlazorApp.Api.Services
             }
             catch (Exception ex)
             {
-                await _context.Db.Ado.RollbackTranAsync();
+                await RollbackContainerMutationTransactionSafelyAsync(ex);
                 _logger.LogError(ex, "删除货柜失败, ContainerCode: {ContainerCode}", containerCode);
                 throw;
             }
@@ -297,10 +310,17 @@ namespace BlazorApp.Api.Services
         {
             var response = new BatchOperationResponse();
             var errors = new List<string>();
+            if (containerCodes == null || containerCodes.Count == 0)
+            {
+                response.Success = true;
+                response.Message = "没有需要删除的货柜";
+                return response;
+            }
 
             try
             {
                 await _context.Db.Ado.BeginTranAsync();
+                await ContainerMutationLock.AcquireContainersAsync(_context.Db, containerCodes);
 
                 foreach (var containerCode in containerCodes)
                 {
@@ -328,6 +348,7 @@ namespace BlazorApp.Api.Services
                         }
                     }
                     catch (Exception ex)
+                        when (!ContainerMutationLock.TryResolveConflict(ex, out _))
                     {
                         errors.Add($"删除货柜 {containerCode} 失败: {ex.Message}");
                         response.FailedCount++;
@@ -344,7 +365,7 @@ namespace BlazorApp.Api.Services
             }
             catch (Exception ex)
             {
-                await _context.Db.Ado.RollbackTranAsync();
+                await RollbackContainerMutationTransactionSafelyAsync(ex);
                 _logger.LogError(ex, "批量删除货柜失败");
                 throw;
             }
@@ -481,6 +502,10 @@ namespace BlazorApp.Api.Services
             try
             {
                 await _context.Db.Ado.BeginTranAsync();
+                await ContainerMutationLock.AcquireContainersAsync(
+                    _context.Db,
+                    new[] { detailDto.ContainerCode }
+                );
 
                 var detail = _mapper.Map<ContainerDetail>(detailDto);
                 detail.CreatedAt = DateTime.UtcNow;
@@ -492,7 +517,7 @@ namespace BlazorApp.Api.Services
                 var result = await _context.ContainerDetailDb.InsertReturnEntityAsync(detail);
 
                 // 重新计算货柜汇总信息
-                await RecalculateContainerSummaryAsync(detail.ContainerCode);
+                await RecalculateContainerSummaryCoreAsync(detail.ContainerCode);
 
                 await _context.Db.Ado.CommitTranAsync();
 
@@ -501,7 +526,7 @@ namespace BlazorApp.Api.Services
             }
             catch (Exception ex)
             {
-                await _context.Db.Ado.RollbackTranAsync();
+                await RollbackContainerMutationTransactionSafelyAsync(ex);
                 _logger.LogError(ex, "创建货柜明细失败");
                 throw;
             }
@@ -514,7 +539,20 @@ namespace BlazorApp.Api.Services
         {
             try
             {
+                var candidateContainerCode = await _context.Db.Queryable<ContainerDetail>()
+                    .Where(detail => detail.DetailCode == detailDto.DetailCode && !detail.IsDeleted)
+                    .Select(detail => detail.ContainerCode)
+                    .FirstAsync();
+                if (string.IsNullOrWhiteSpace(candidateContainerCode))
+                {
+                    return false;
+                }
+
                 await _context.Db.Ado.BeginTranAsync();
+                var mutationLock = await ContainerMutationLock.AcquireContainersAsync(
+                    _context.Db,
+                    new[] { candidateContainerCode, detailDto.ContainerCode }
+                );
 
                 var existingDetail = await _context.ContainerDetailDb.GetByIdAsync(detailDto.DetailCode);
                 if (existingDetail == null || existingDetail.IsDeleted)
@@ -522,6 +560,10 @@ namespace BlazorApp.Api.Services
                     await _context.Db.Ado.RollbackTranAsync();
                     return false;
                 }
+                mutationLock.EnsureCovers(
+                    new[] { existingDetail.ContainerCode, detailDto.ContainerCode }
+                );
+                var originalContainerCode = existingDetail.ContainerCode;
 
                 _mapper.Map(detailDto, existingDetail);
                 existingDetail.UpdatedAt = DateTime.UtcNow;
@@ -534,7 +576,12 @@ namespace BlazorApp.Api.Services
                 if (success)
                 {
                     // 重新计算货柜汇总信息
-                    await RecalculateContainerSummaryAsync(existingDetail.ContainerCode);
+                    await BatchRecalculateContainerSummaryCoreAsync(
+                        new[] { originalContainerCode, existingDetail.ContainerCode }
+                            .Where(code => !string.IsNullOrWhiteSpace(code))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList()
+                    );
                 }
 
                 await _context.Db.Ado.CommitTranAsync();
@@ -544,7 +591,7 @@ namespace BlazorApp.Api.Services
             }
             catch (Exception ex)
             {
-                await _context.Db.Ado.RollbackTranAsync();
+                await RollbackContainerMutationTransactionSafelyAsync(ex);
                 _logger.LogError(ex, "更新货柜明细失败, DetailCode: {DetailCode}", detailDto.DetailCode);
                 throw;
             }
@@ -557,7 +604,20 @@ namespace BlazorApp.Api.Services
         {
             try
             {
+                var candidateContainerCode = await _context.Db.Queryable<ContainerDetail>()
+                    .Where(detail => detail.DetailCode == detailCode)
+                    .Select(detail => detail.ContainerCode)
+                    .FirstAsync();
+                if (string.IsNullOrWhiteSpace(candidateContainerCode))
+                {
+                    return false;
+                }
+
                 await _context.Db.Ado.BeginTranAsync();
+                var mutationLock = await ContainerMutationLock.AcquireContainersAsync(
+                    _context.Db,
+                    new[] { candidateContainerCode }
+                );
 
                 var detail = await _context.ContainerDetailDb.GetByIdAsync(detailCode);
                 if (detail == null)
@@ -565,6 +625,7 @@ namespace BlazorApp.Api.Services
                     await _context.Db.Ado.RollbackTranAsync();
                     return false;
                 }
+                mutationLock.EnsureCovers(new[] { detail.ContainerCode });
 
                 // 软删除
                 var success = await _context.Db.Updateable<ContainerDetail>()
@@ -575,7 +636,7 @@ namespace BlazorApp.Api.Services
                 if (success)
                 {
                     // 重新计算货柜汇总信息
-                    await RecalculateContainerSummaryAsync(detail.ContainerCode);
+                    await RecalculateContainerSummaryCoreAsync(detail.ContainerCode);
                 }
 
                 await _context.Db.Ado.CommitTranAsync();
@@ -585,7 +646,7 @@ namespace BlazorApp.Api.Services
             }
             catch (Exception ex)
             {
-                await _context.Db.Ado.RollbackTranAsync();
+                await RollbackContainerMutationTransactionSafelyAsync(ex);
                 _logger.LogError(ex, "删除货柜明细失败, DetailCode: {DetailCode}", detailCode);
                 throw;
             }
@@ -612,11 +673,16 @@ namespace BlazorApp.Api.Services
                 }
 
                 await _context.Db.Ado.BeginTranAsync();
+                await ContainerMutationLock.AcquireContainersAsync(
+                    _context.Db,
+                    new[] { request.ContainerCode }
+                );
 
                 // 验证货柜是否存在
                 var container = await _context.ContainerDb.GetByIdAsync(request.ContainerCode);
                 if (container == null || container.IsDeleted)
                 {
+                    await _context.Db.Ado.RollbackTranAsync();
                     response.Success = false;
                     response.Message = "货柜不存在或已删除";
                     return response;
@@ -746,8 +812,8 @@ namespace BlazorApp.Api.Services
                 // 重新计算货柜汇总信息
                 if (response.SuccessCount > 0)
                 {
-                    await RecalculateContainerSummaryAsync(request.ContainerCode);
-                    await AllocateTransportCostAsync(request.ContainerCode);
+                    await RecalculateContainerSummaryCoreAsync(request.ContainerCode);
+                    await AllocateTransportCostCoreAsync(request.ContainerCode);
                 }
 
                 await _context.Db.Ado.CommitTranAsync();
@@ -760,7 +826,7 @@ namespace BlazorApp.Api.Services
             }
             catch (Exception ex)
             {
-                await _context.Db.Ado.RollbackTranAsync();
+                await RollbackContainerMutationTransactionSafelyAsync(ex);
                 _logger.LogError(ex, "批量添加货柜明细失败");
                 throw;
             }
@@ -777,13 +843,35 @@ namespace BlazorApp.Api.Services
 
             try
             {
+                var candidateContainerCodes = await _context.Db.Queryable<ContainerDetail>()
+                    .Where(detail => detailCodes.Contains(detail.DetailCode!) && !detail.IsDeleted)
+                    .Where(detail => detail.ContainerCode != null)
+                    .Select(detail => detail.ContainerCode!)
+                    .ToListAsync();
                 await _context.Db.Ado.BeginTranAsync();
+                ContainerMutationLockScope? mutationLock = null;
+                if (candidateContainerCodes.Count > 0)
+                {
+                    mutationLock = await ContainerMutationLock.AcquireContainersAsync(
+                        _context.Db,
+                        candidateContainerCodes
+                    );
+                }
 
                 // 批量查询所有需要删除的明细
                 var existingDetails = await _context.ContainerDetailDb
                     .AsQueryable()
                     .Where(d => detailCodes.Contains(d.DetailCode!) && !d.IsDeleted)
                     .ToListAsync();
+                if (mutationLock == null && existingDetails.Count > 0)
+                {
+                    throw new ContainerMutationScopeChangedException(
+                        ContainerMutationLock.NormalizeContainerCodes(
+                            existingDetails.Select(detail => detail.ContainerCode)
+                        )
+                    );
+                }
+                mutationLock?.EnsureCovers(existingDetails.Select(detail => detail.ContainerCode));
 
                 // 检查哪些明细不存在
                 var existingDetailCodes = existingDetails.Select(d => d.DetailCode).ToHashSet();
@@ -826,9 +914,12 @@ namespace BlazorApp.Api.Services
                 }
 
                 // 重新计算相关货柜的汇总信息
-                foreach (var containerCode in containerCodes)
+                foreach (var containerCode in containerCodes.OrderBy(
+                    containerCode => containerCode,
+                    StringComparer.Ordinal
+                ))
                 {
-                    await RecalculateContainerSummaryAsync(containerCode);
+                    await RecalculateContainerSummaryCoreAsync(containerCode);
                 }
 
                 await _context.Db.Ado.CommitTranAsync();
@@ -841,7 +932,7 @@ namespace BlazorApp.Api.Services
             }
             catch (Exception ex)
             {
-                await _context.Db.Ado.RollbackTranAsync();
+                await RollbackContainerMutationTransactionSafelyAsync(ex);
                 _logger.LogError(ex, "批量删除货柜明细失败");
                 throw;
             }
@@ -865,13 +956,40 @@ namespace BlazorApp.Api.Services
 
             try
             {
+                var detailCodes = details.Select(d => d.DetailCode).ToList();
+                var candidateContainerCodes = await _context.Db.Queryable<ContainerDetail>()
+                    .Where(d => d.DetailCode != null && detailCodes.Contains(d.DetailCode) && !d.IsDeleted)
+                    .Where(d => d.ContainerCode != null)
+                    .Select(d => d.ContainerCode!)
+                    .ToListAsync();
+                candidateContainerCodes.AddRange(
+                    details
+                        .Select(detail => detail.ContainerCode)
+                        .Where(containerCode => !string.IsNullOrWhiteSpace(containerCode))
+                );
                 await _context.Db.Ado.BeginTranAsync();
+                ContainerMutationLockScope? mutationLock = null;
+                if (candidateContainerCodes.Count > 0)
+                {
+                    mutationLock = await ContainerMutationLock.AcquireContainersAsync(
+                        _context.Db,
+                        candidateContainerCodes
+                    );
+                }
 
                 // 第一步：批量查询所有需要更新的明细
-                var detailCodes = details.Select(d => d.DetailCode).ToList();
                 var existingDetails = await _context.Db.Queryable<ContainerDetail>()
                     .Where(d => d.DetailCode != null && detailCodes.Contains(d.DetailCode) && !d.IsDeleted)
                     .ToListAsync();
+                if (mutationLock == null && existingDetails.Count > 0)
+                {
+                    throw new ContainerMutationScopeChangedException(
+                        ContainerMutationLock.NormalizeContainerCodes(
+                            existingDetails.Select(detail => detail.ContainerCode)
+                        )
+                    );
+                }
+                mutationLock?.EnsureCovers(existingDetails.Select(detail => detail.ContainerCode));
 
                 var existingDetailDict = existingDetails.ToDictionary(d => d.DetailCode);
 
@@ -895,6 +1013,7 @@ namespace BlazorApp.Api.Services
 
                         // 映射数据
                         _mapper.Map(detailDto, existingDetail);
+                        containerCodes.Add(existingDetail.ContainerCode);
                         existingDetail.UpdatedAt = updateTime;
                         existingDetail.UpdateCalculatedFields();
 
@@ -910,6 +1029,9 @@ namespace BlazorApp.Api.Services
                 // 第三步：执行批量更新
                 if (validDetailsToUpdate.Any())
                 {
+                    mutationLock?.EnsureCovers(
+                        validDetailsToUpdate.Select(detail => detail.ContainerCode)
+                    );
                     try
                     {
                         // 使用SqlSugar的批量更新功能
@@ -926,6 +1048,7 @@ namespace BlazorApp.Api.Services
                         }
                     }
                     catch (Exception ex)
+                        when (!ContainerMutationLock.TryResolveConflict(ex, out _))
                     {
                         _logger.LogError(ex, "批量更新货柜明细失败");
                         response.FailedCount += validDetailsToUpdate.Count;
@@ -936,15 +1059,7 @@ namespace BlazorApp.Api.Services
                 // 第四步：批量重新计算相关货柜的汇总信息
                 if (containerCodes.Any())
                 {
-                    try
-                    {
-                        await BatchRecalculateContainerSummaryAsync(containerCodes.ToList());
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogWarning(ex, "批量重新计算货柜汇总信息失败，但明细更新已成功");
-                        errors.Add($"货柜汇总信息更新失败: {ex.Message}");
-                    }
+                    await BatchRecalculateContainerSummaryCoreAsync(containerCodes.ToList());
                 }
 
                 await _context.Db.Ado.CommitTranAsync();
@@ -957,7 +1072,7 @@ namespace BlazorApp.Api.Services
             }
             catch (Exception ex)
             {
-                await _context.Db.Ado.RollbackTranAsync();
+                await RollbackContainerMutationTransactionSafelyAsync(ex);
                 _logger.LogError(ex, "批量更新货柜明细失败");
                 throw;
             }
@@ -972,61 +1087,22 @@ namespace BlazorApp.Api.Services
         /// </summary>
         public async Task<bool> BatchRecalculateContainerSummaryAsync(List<string> containerCodes)
         {
-            if (containerCodes == null || containerCodes.Count == 0)
+            var validContainerCodes = (containerCodes ?? new List<string>())
+                .Where(containerCode => !string.IsNullOrWhiteSpace(containerCode))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(containerCode => containerCode, StringComparer.Ordinal)
+                .ToList();
+            if (validContainerCodes.Count == 0)
             {
                 return true;
             }
 
-            var validContainerCodes = containerCodes;
-
             try
             {
-                // 批量查询所有容器的明细数据
-                var allDetails = await _context.Db.Queryable<ContainerDetail>()
-                    .Where(cd =>
-                        cd.ContainerCode != null
-                        && validContainerCodes.Contains(cd.ContainerCode!)
-                        && !cd.IsDeleted
-                    )
-                    .ToListAsync();
-
-                // 按容器分组并计算汇总数据
-                var containerSummaries = allDetails
-                    .GroupBy(d => d.ContainerCode)
-                    .Select(g => new
-                    {
-                        ContainerCode = g.Key,
-                        TotalPieces = g.Sum(d => d.LoadingPieces ?? 0),
-                        TotalQuantity = g.Sum(d => d.LoadingQuantity ?? 0),
-                        TotalAmount = g.Sum(d => d.TotalAmount ?? 0),
-                        TotalVolume = g.Sum(d => (d.LoadingPieces.HasValue && d.UnitVolume.HasValue)
-                            ? Math.Round(d.LoadingPieces.Value * d.UnitVolume.Value, 3)
-                            : (d.TotalVolume ?? 0))
-                    })
-                    .ToList();
-
-                // 批量更新容器汇总信息
-                var updateTime = DateTime.UtcNow;
-                var updateTasks = containerSummaries.Select(summary =>
-                    _context.Db.Updateable<Container>()
-                        .SetColumns(c => new Container
-                        {
-                            TotalPieces = summary.TotalPieces,
-                            TotalQuantity = summary.TotalQuantity,
-                            TotalAmount = summary.TotalAmount,
-                            TotalVolume = summary.TotalVolume,
-                            UpdatedAt = updateTime
-                        })
-                        .Where(c => c.ContainerCode == summary.ContainerCode)
-                        .ExecuteCommandAsync()
+                return await ExecuteLockedContainerMutationAsync(
+                    validContainerCodes,
+                    () => BatchRecalculateContainerSummaryCoreAsync(validContainerCodes)
                 );
-
-                var results = await Task.WhenAll(updateTasks);
-                var successCount = results.Count(r => r > 0);
-                var totalCount = containerCodes?.Count ?? 0;
-                _logger.LogInformation("批量重新计算货柜汇总信息完成，成功更新 {SuccessCount}/{TotalCount} 个货柜",
-                    successCount, totalCount);
-                return successCount == totalCount;
             }
             catch (Exception ex)
             {
@@ -1043,28 +1119,10 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                var details = await _context.Db.Queryable<ContainerDetail>()
-                    .Where(cd => cd.ContainerCode == containerCode && !cd.IsDeleted)
-                    .ToListAsync();
-
-                var totalPieces = details.Sum(d => d.LoadingPieces ?? 0);
-                var totalQuantity = details.Sum(d => d.LoadingQuantity ?? 0);
-                var totalAmount = details.Sum(d => d.TotalAmount ?? 0);
-                var totalVolume = details.Sum(d => d.TotalVolume ?? 0);
-
-                var success = await _context.Db.Updateable<Container>()
-                    .SetColumns(c => new Container
-                    {
-                        TotalPieces = totalPieces,
-                        TotalQuantity = totalQuantity,
-                        TotalAmount = totalAmount,
-                        TotalVolume = totalVolume,
-                        UpdatedAt = DateTime.UtcNow
-                    })
-                    .Where(c => c.ContainerCode == containerCode)
-                    .ExecuteCommandAsync() > 0;
-
-                return success;
+                return await ExecuteLockedContainerMutationAsync(
+                    new[] { containerCode },
+                    () => RecalculateContainerSummaryCoreAsync(containerCode)
+                );
             }
             catch (Exception ex)
             {
@@ -1080,50 +1138,187 @@ namespace BlazorApp.Api.Services
         {
             try
             {
-                // 获取货柜信息
-                var container = await _context.ContainerDb.GetByIdAsync(containerCode);
-                if (container == null || !container.ShippingFee.HasValue || container.ShippingFee.Value <= 0)
-                {
-                    return true; // 没有运费需要分摊
-                }
-
-                // 获取明细
-                var details = await _context.Db.Queryable<ContainerDetail>()
-                    .Where(cd => cd.ContainerCode == containerCode && !cd.IsDeleted)
-                    .ToListAsync();
-
-                if (!details.Any())
-                {
-                    return true;
-                }
-
-                var totalVolume = details.Sum(d => d.TotalVolume ?? 0);
-                if (totalVolume <= 0)
-                {
-                    return true; // 没有体积，无法分摊
-                }
-
-                // 按体积比例分摊运费
-                foreach (var detail in details)
-                {
-                    if (detail.TotalVolume.HasValue && detail.TotalVolume.Value > 0)
-                    {
-                        var volumeRatio = detail.TotalVolume.Value / totalVolume;
-                        detail.TransportCost = Math.Round(container.ShippingFee.Value * volumeRatio, 2);
-                        detail.UpdatedAt = DateTime.UtcNow;
-                    }
-                }
-
-                // 批量更新
-                var updateResult = await _context.Db.Updateable(details).ExecuteCommandAsync();
-
-                return updateResult > 0;
+                return await ExecuteLockedContainerMutationAsync(
+                    new[] { containerCode },
+                    () => AllocateTransportCostCoreAsync(containerCode)
+                );
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "分摊运输成本失败, ContainerCode: {ContainerCode}", containerCode);
                 throw;
             }
+        }
+
+        private async Task<T> ExecuteLockedContainerMutationAsync<T>(
+            IReadOnlyCollection<string> containerCodes,
+            Func<Task<T>> action
+        )
+        {
+            if (_context.Db.Ado.Transaction != null)
+            {
+                throw new InvalidOperationException("独立货柜汇总写入口不能复用调用方事务");
+            }
+
+            await _context.Db.Ado.BeginTranAsync();
+            try
+            {
+                await ContainerMutationLock.AcquireContainersAsync(_context.Db, containerCodes);
+                var result = await action();
+                await _context.Db.Ado.CommitTranAsync();
+                return result;
+            }
+            catch (Exception ex)
+            {
+                await RollbackContainerMutationTransactionSafelyAsync(ex);
+                throw;
+            }
+        }
+
+        private async Task RollbackContainerMutationTransactionSafelyAsync(
+            Exception originalException
+        )
+        {
+            if (_context.Db.Ado.Transaction == null)
+            {
+                return;
+            }
+
+            try
+            {
+                await _context.Db.Ado.RollbackTranAsync();
+            }
+            catch (Exception rollbackException)
+            {
+                // 回滚异常只能作为附加诊断，不能覆盖 1205 或应用锁繁忙等原始并发异常。
+                ContainerMutationLock.ResetFailedTransaction(_context.Db);
+                _logger.LogWarning(
+                    rollbackException,
+                    "货柜写事务回滚失败，保留原始异常 {OriginalExceptionType}",
+                    originalException.GetType().Name
+                );
+            }
+        }
+
+        private async Task<bool> BatchRecalculateContainerSummaryCoreAsync(
+            IReadOnlyCollection<string> validContainerCodes
+        )
+        {
+            var allDetails = await _context.Db.Queryable<ContainerDetail>()
+                .Where(cd =>
+                    cd.ContainerCode != null
+                    && validContainerCodes.Contains(cd.ContainerCode!)
+                    && !cd.IsDeleted
+                )
+                .ToListAsync();
+            var detailsByContainer = allDetails.ToLookup(
+                detail => detail.ContainerCode,
+                StringComparer.OrdinalIgnoreCase
+            );
+            var updateTime = DateTime.UtcNow;
+            var successCount = 0;
+            // 同一 SqlSugar 事务连接不得并发执行命令；按已排序的货柜键稳定更新。
+            foreach (var containerCode in validContainerCodes.OrderBy(
+                code => code,
+                StringComparer.Ordinal
+            ))
+            {
+                var details = detailsByContainer[containerCode];
+                var totalPieces = details.Sum(d => d.LoadingPieces ?? 0);
+                var totalQuantity = details.Sum(d => d.LoadingQuantity ?? 0);
+                var totalAmount = details.Sum(d => d.TotalAmount ?? 0);
+                var totalVolume = details.Sum(d =>
+                    d.LoadingPieces.HasValue && d.UnitVolume.HasValue
+                        ? Math.Round(d.LoadingPieces.Value * d.UnitVolume.Value, 3)
+                        : d.TotalVolume ?? 0
+                );
+                var affectedRows = await _context.Db.Updateable<Container>()
+                    .SetColumns(c => new Container
+                    {
+                        TotalPieces = totalPieces,
+                        TotalQuantity = totalQuantity,
+                        TotalAmount = totalAmount,
+                        TotalVolume = totalVolume,
+                        UpdatedAt = updateTime,
+                    })
+                    .Where(c => c.ContainerCode == containerCode)
+                    .ExecuteCommandAsync();
+                if (affectedRows > 0)
+                {
+                    successCount++;
+                }
+            }
+
+            _logger.LogInformation(
+                "批量重新计算货柜汇总信息完成，成功更新 {SuccessCount}/{TotalCount} 个货柜",
+                successCount,
+                validContainerCodes.Count
+            );
+            return successCount == validContainerCodes.Count;
+        }
+
+        private async Task<bool> RecalculateContainerSummaryCoreAsync(string containerCode)
+        {
+            var details = await _context.Db.Queryable<ContainerDetail>()
+                .Where(cd => cd.ContainerCode == containerCode && !cd.IsDeleted)
+                .ToListAsync();
+            var totalPieces = details.Sum(d => d.LoadingPieces ?? 0);
+            var totalQuantity = details.Sum(d => d.LoadingQuantity ?? 0);
+            var totalAmount = details.Sum(d => d.TotalAmount ?? 0);
+            var totalVolume = details.Sum(d => d.TotalVolume ?? 0);
+            return await _context.Db.Updateable<Container>()
+                .SetColumns(c => new Container
+                {
+                    TotalPieces = totalPieces,
+                    TotalQuantity = totalQuantity,
+                    TotalAmount = totalAmount,
+                    TotalVolume = totalVolume,
+                    UpdatedAt = DateTime.UtcNow,
+                })
+                .Where(c => c.ContainerCode == containerCode)
+                .ExecuteCommandAsync() > 0;
+        }
+
+        private async Task<bool> AllocateTransportCostCoreAsync(string containerCode)
+        {
+            // 获取货柜信息
+            var container = await _context.ContainerDb.GetByIdAsync(containerCode);
+            if (container == null || !container.ShippingFee.HasValue || container.ShippingFee.Value <= 0)
+            {
+                return true; // 没有运费需要分摊
+            }
+
+            // 获取明细
+            var details = await _context.Db.Queryable<ContainerDetail>()
+                .Where(cd => cd.ContainerCode == containerCode && !cd.IsDeleted)
+                .ToListAsync();
+
+            if (!details.Any())
+            {
+                return true;
+            }
+
+            var totalVolume = details.Sum(d => d.TotalVolume ?? 0);
+            if (totalVolume <= 0)
+            {
+                return true; // 没有体积，无法分摊
+            }
+
+            // 按体积比例分摊运费
+            foreach (var detail in details)
+            {
+                if (detail.TotalVolume.HasValue && detail.TotalVolume.Value > 0)
+                {
+                    var volumeRatio = detail.TotalVolume.Value / totalVolume;
+                    detail.TransportCost = Math.Round(container.ShippingFee.Value * volumeRatio, 2);
+                    detail.UpdatedAt = DateTime.UtcNow;
+                }
+            }
+
+            // 批量更新
+            var updateResult = await _context.Db.Updateable(details).ExecuteCommandAsync();
+
+            return updateResult > 0;
         }
 
         /// <summary>

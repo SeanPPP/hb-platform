@@ -109,6 +109,10 @@ namespace BlazorApp.Shared.DTOs
         public string ArtifactUrl { get; set; } = string.Empty;
 
         public string? CosArtifactUrl { get; set; }
+
+        public string? ArtifactSha256 { get; set; }
+
+        public long? ArtifactSize { get; set; }
     }
 
     public class MobileAppBuildQueryDto

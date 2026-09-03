@@ -336,6 +336,35 @@ test("Sandbox 金额超限的 Declined attempt 保留稳定错误码供支付页
   assert.equal(attempts.recoverInputs.length, 0);
 });
 
+test("Linkly 终端选择冲突的 Declined attempt 保留稳定错误码供支付页刷新确认", async () => {
+  const truth = new MemoryTruth(orderTruth(5_000));
+  const attempts = new FakeAttempts();
+  const declined = paymentAttempt({
+    attemptId: "attempt-linkly-selection-conflict",
+    provider: "linkly-cloud",
+    state: "Declined",
+    lastErrorCode: "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+  });
+  attempts.attempts.set(declined.attemptId, declined);
+  const coordinator = createCoordinator({
+    truth,
+    attempts,
+    completion: new FakeCompletion(truth),
+  });
+
+  const result = await coordinator.recoverOnlineAttempt({
+    orderGuid: "order-1",
+    attemptId: declined.attemptId,
+  });
+
+  assert.equal(result.status, "declined");
+  assert.equal(
+    result.errorCode,
+    "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+  );
+  assert.equal(attempts.recoverInputs.length, 0);
+});
+
 test("Approved completion 异常返回 recovery-required，不能宣称 partial 或 completed", async () => {
   const truth = new MemoryTruth(orderTruth(500));
   const attempts = new FakeAttempts();

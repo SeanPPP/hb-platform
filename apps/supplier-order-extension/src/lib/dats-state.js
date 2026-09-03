@@ -1,4 +1,5 @@
 import { matchesListPage } from './profiles.js';
+import { normalizeRankingDays, normalizeSalesRankBand } from './ranking.js';
 
 // 列表注入的纯状态逻辑：代次守卫、节点登记（WeakMap）、列表/详情判断、按钮状态
 export function createGenerationGuard(initial = 0) {
@@ -41,17 +42,32 @@ export function computeButtonState(item) {
   if (!item) return { kind: 'none', reason: 'noMatch' };
   if (item.error) return { kind: 'error', reason: 'error' };
   if (item.hasMatch === false) return { kind: 'none', reason: 'noMatch' };
-  if (item.hasPurchase === false) return { kind: 'none', reason: 'noPurchase' };
+  const salesRankBand = normalizeSalesRankBand(item.salesRankBand);
+  const salesRankingDays = salesRankBand ? normalizeRankingDays(item.salesRankingDays) : null;
+  if (item.hasPurchase === false) {
+    return {
+      kind: 'none',
+      reason: 'noPurchase',
+      ...(salesRankBand ? { salesRankBand, salesRankingDays } : {}),
+    };
+  }
   return {
     kind: 'ok',
     lastOrderDate: item.lastOrderDate,
     lastOrderQuantity: item.lastOrderQuantity,
     salesToDate: item.salesToDate,
+    ...(salesRankBand ? { salesRankBand, salesRankingDays } : {}),
   };
 }
 
+export function buildSummaryCacheKey(storeCode, itemNumber, salesRankingDays) {
+  const normalizedStoreCode = String(storeCode || 'none').trim() || 'none';
+  const normalizedItemNumber = String(itemNumber || '').trim();
+  return `${normalizedStoreCode}:${normalizeRankingDays(salesRankingDays)}:${normalizedItemNumber}`;
+}
+
 // 将服务端返回的单个摘要项归一化为 computeButtonState 所需的标准结构
-export function normalizeSummaryItem(raw) {
+export function normalizeSummaryItem(raw, { salesRankingAvailable = false } = {}) {
   if (!raw || typeof raw !== 'object') return { hasMatch: false };
   if (raw.error) return { error: raw.error };
   const matchStatus = typeof raw.matchStatus === 'string' ? raw.matchStatus.toLowerCase() : null;
@@ -66,7 +82,7 @@ export function normalizeSummaryItem(raw) {
         || raw.lastOrderQuantity != null
         || raw.latestPurchaseQuantity != null
         || raw.orderCount > 0;
-  return {
+  const normalized = {
     hasMatch,
     hasPurchase: !!hasPurchase,
     lastOrderDate: raw.latestPurchaseDate ?? raw.lastOrderDate ?? raw.lastOrderDateStr ?? null,
@@ -74,6 +90,11 @@ export function normalizeSummaryItem(raw) {
       raw.latestPurchaseQuantity ?? raw.lastOrderQuantity ?? raw.lastOrderQty ?? null,
     salesToDate: raw.salesSinceLatestPurchase ?? raw.salesToDate ?? raw.salesQty ?? null,
   };
+  const salesRankBand = normalizeSalesRankBand(raw.salesRankBand);
+  if (salesRankingAvailable === true && hasMatch && salesRankBand) {
+    normalized.salesRankBand = salesRankBand;
+  }
+  return normalized;
 }
 
 // 将批量摘要响应（对象/数组/items 数组）归一化为 itemNumber -> 标准摘要
@@ -87,8 +108,9 @@ export function normalizeSummaryMap(rawData) {
     return out;
   }
   if (Array.isArray(rawData.items)) {
+    const options = { salesRankingAvailable: rawData.salesRankingAvailable === true };
     for (const item of rawData.items) {
-      if (item && item.itemNumber) out[item.itemNumber] = normalizeSummaryItem(item);
+      if (item && item.itemNumber) out[item.itemNumber] = normalizeSummaryItem(item, options);
     }
     return out;
   }

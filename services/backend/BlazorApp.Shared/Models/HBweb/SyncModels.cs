@@ -74,7 +74,7 @@ namespace BlazorApp.Shared.Models
         public int ErrorCount { get; set; }
 
         /// <summary>
-        /// 因套装子项成本锁竞争而失败的错误数量；必须包含在 ErrorCount 内。
+        /// 因可重试业务锁竞争而失败的错误数量；必须包含在 ErrorCount 内。
         /// </summary>
         public int BusyErrorCount { get; set; }
 

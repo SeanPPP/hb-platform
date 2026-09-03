@@ -875,23 +875,24 @@ function nullableTextMatches(record, key, expected) {
 }
 
 function utcTimestampMatches(actual, expected) {
-  const toUtcMilliseconds = (value) => {
-    if (
-      typeof value !== "string"
-      || value !== value.trim()
-      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})?$/i.test(value)
-    ) {
-      return null;
-    }
-    const zoned = /(?:Z|[+-]\d{2}:\d{2})$/i.test(value) ? value : `${value}Z`;
-    const milliseconds = Date.parse(zoned);
-    return Number.isFinite(milliseconds) ? milliseconds : null;
+  const toUtcTicks = (value) => {
+    if (typeof value !== "string" || value !== value.trim()) return null;
+    const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,7}))?(Z|[+-]\d{2}:\d{2})?$/i.exec(value);
+    if (!match) return null;
+
+    const [, wholeSecond, fraction = "", zone = "Z"] = match;
+    const milliseconds = Date.parse(`${wholeSecond}.000${zone}`);
+    if (!Number.isFinite(milliseconds)) return null;
+
+    // JavaScript Date 只保留毫秒；使用 100ns ticks 保留 SQL datetime2(7) 的完整精度。
+    const fractionalTicks = BigInt(fraction.padEnd(7, "0"));
+    return BigInt(milliseconds) * 10_000n + fractionalTicks;
   };
-  const actualMilliseconds = toUtcMilliseconds(actual);
-  const expectedMilliseconds = toUtcMilliseconds(expected);
-  return actualMilliseconds !== null
-    && expectedMilliseconds !== null
-    && actualMilliseconds === expectedMilliseconds;
+  const actualTicks = toUtcTicks(actual);
+  const expectedTicks = toUtcTicks(expected);
+  return actualTicks !== null
+    && expectedTicks !== null
+    && actualTicks === expectedTicks;
 }
 
 export async function readAccessTokenFromStdin(stream = process.stdin) {

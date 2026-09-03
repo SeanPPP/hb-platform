@@ -1065,9 +1065,15 @@ async function createExpoPosRuntimeServicesCore(): Promise<ExpoPosRuntimeService
             provider: "square" | "linkly",
             configuration: SettingsPaymentSettingsInput,
             signal: AbortSignal,
+            terminals?: import("../../features/settings/settings-presenter").SettingsLinklyTerminalSelectionSnapshot | null,
           ) => {
             throwIfRuntimeAborted(signal);
-            await paymentTestApi.test(provider, configuration, signal);
+            await paymentTestApi.test(
+              provider,
+              configuration,
+              signal,
+              terminals,
+            );
             throwIfRuntimeAborted(signal);
           },
           save: (configuration) =>

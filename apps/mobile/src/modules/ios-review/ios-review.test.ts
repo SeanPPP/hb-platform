@@ -187,15 +187,26 @@ configureIosReviewBuildGate(false);
 const reviewUser = createIosReviewUser();
 assert.deepEqual(reviewUser.roleNames, ["Admin"]);
 assert.equal(reviewUser.username, IOS_REVIEW_USERNAME);
-assert.equal(reviewUser.stores.length, 3);
+assert.equal(reviewUser.stores.length, 28, "审核账号必须覆盖 25–30 店的真实报表规模");
 assert.deepEqual(
-  reviewUser.stores.map((store) => store.storeCode),
-  ["REV001", "REV002", "REVWH"]
+  reviewUser.stores.slice(0, 3).map((store) => store.storeCode),
+  ["REV001", "REV002", "REVWH"],
+  "既有三家演示门店的顺序与代码必须保持兼容",
 );
 assert.equal(
   IOS_REVIEW_STORES.every((store) => Boolean(store.storeGUID)),
   true,
   "每个演示门店都必须有稳定 storeGUID"
+);
+assert.equal(
+  new Set(IOS_REVIEW_STORES.map((store) => store.storeGUID)).size,
+  IOS_REVIEW_STORES.length,
+  "28 家演示门店必须使用唯一 storeGUID",
+);
+assert.equal(
+  new Set(IOS_REVIEW_STORES.map((store) => store.storeCode)).size,
+  IOS_REVIEW_STORES.length,
+  "28 家演示门店必须使用唯一门店代码",
 );
 assert.equal(
   IOS_REVIEW_PERMISSION_CODES.includes("Users.ManagePosTerminalPermissions"),

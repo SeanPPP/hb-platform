@@ -17,13 +17,13 @@ const enSource = readFileSync('src/i18n/locales/en.json', 'utf8')
 
 assert(
   routeSource.includes(
-    "import WarehouseProductFlowAnalysisPage from '../pages/ExecutiveSalesIntelligence/WarehouseProductFlowAnalysis'",
+    "const WarehouseProductFlowAnalysisPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/WarehouseProductFlowAnalysis'))",
   ),
   '路由应导入仓库商品流转分析页面',
 )
 assert(
   routeSource.includes(
-    "import LocalProductSalesAnalysisPage from '../pages/ExecutiveSalesIntelligence/LocalProductSalesAnalysis'",
+    "const LocalProductSalesAnalysisPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/LocalProductSalesAnalysis'))",
   ),
   '路由应导入澳洲本地商品分析页面',
 )

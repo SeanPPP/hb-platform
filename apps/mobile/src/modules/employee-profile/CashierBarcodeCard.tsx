@@ -157,7 +157,7 @@ export function CashierBarcodeCard({
         t(`cashierBarcode.printErrors.${classifyCashierBarcodePrintError(error)}`),
         [
           { text: t("common:actions.cancel"), style: "cancel" },
-          { text: t("cashierBarcode.openPrinterSettings"), onPress: () => router.navigate("/(tabs)/settings") },
+          { text: t("cashierBarcode.openPrinterSettings"), onPress: () => router.navigate("/(shell)/settings") },
         ]
       );
     },

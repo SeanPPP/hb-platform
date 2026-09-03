@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
-const tabsDir = resolve(currentDir, "../../../app/(tabs)");
+const tabsDir = resolve(currentDir, "../../../app/(shell)");
 
 function readTabSource(fileName: string): string {
   return readFileSync(resolve(tabsDir, fileName), "utf8");

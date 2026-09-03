@@ -20,6 +20,7 @@ on:
       - "scripts/performance/**"
       - "scripts/test-all.sh"
       - "quality-baseline-budget.json"
+      - "web-bundle-budget.json"
       - "global.json"
   push:
     branches: [main]
@@ -39,6 +40,7 @@ on:
       - "scripts/performance/**"
       - "scripts/test-all.sh"
       - "quality-baseline-budget.json"
+      - "web-bundle-budget.json"
       - "global.json"
   schedule:
     # Brisbane 无夏令时：UTC 16:00 = 次日 02:00 Australia/Brisbane。
@@ -170,6 +172,10 @@ jobs:
           --dist apps/web/dist
           --output .artifacts/quality-baseline/web-bundle.json
           --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: 执行 Web bundle 硬门禁
+        if: ${{ always() && matrix.lane == 'web' && steps.web_bundle.outcome == 'success' }}
+        run: npm --prefix apps/web run verify:bundle -- --summary "$GITHUB_STEP_SUMMARY"
 
       - name: 记录 lane 结束、用时和结论
         if: ${{ always() }}

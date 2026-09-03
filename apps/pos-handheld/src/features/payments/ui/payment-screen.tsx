@@ -27,6 +27,7 @@ import {
 } from "./payment-copy";
 import {
   LINKLY_SAFE_OPERATOR_KEYS,
+  canSwitchLinklyTerminal,
   canSelectPaymentMethod,
   canSubmitPaymentMethod,
   type PaymentPresenterState,
@@ -1335,6 +1336,111 @@ function ProviderBlockers({
   );
 }
 
+function LinklyTerminalSelector({
+  presenter,
+  state,
+  t,
+}: Readonly<{
+  presenter: PaymentScreenPresenter;
+  state: PaymentPresenterState;
+  t: Translate;
+}>) {
+  const configured = state.providers.some(
+    (provider) => provider.provider === "linkly-cloud" && provider.available,
+  );
+  const resource = state.linklyTerminals;
+  if (!configured || !resource || resource.kind === "unavailable") return null;
+  if (resource.kind === "loading") {
+    return (
+      <View style={styles.linklyTerminalPanel} testID="payment-linkly-terminal-loading">
+        <Text style={styles.linklyTerminalHint}>{t("linkly.terminalsLoading")}</Text>
+      </View>
+    );
+  }
+  const snapshot = resource.snapshot;
+  if (!snapshot || resource.kind === "failed") {
+    return (
+      <View style={styles.linklyTerminalPanel} testID="payment-linkly-terminal-empty">
+        <Text style={styles.linklyTerminalError}>{t("linkly.terminalsFailed")}</Text>
+      </View>
+    );
+  }
+  if (snapshot.mode !== "Active") return null;
+  if (snapshot.terminals.length === 0) {
+    return (
+      <View style={styles.linklyTerminalPanel} testID="payment-linkly-terminal-empty">
+        <Text style={styles.linklyTerminalError}>{t("linkly.noTerminals")}</Text>
+      </View>
+    );
+  }
+  if (snapshot.terminals.length === 1) {
+    const terminal = snapshot.terminals[0]!;
+    return (
+      <View style={styles.linklyTerminalPanel} testID="payment-linkly-terminal-current">
+        <Text style={styles.linklyTerminalTitle}>{t("linkly.currentTerminal")}</Text>
+        <Text style={styles.linklyTerminalName}>
+          {`${terminal.displayName} · Lane ${terminal.laneNo}`}
+        </Text>
+      </View>
+    );
+  }
+
+  const switchAllowed = canSwitchLinklyTerminal(state);
+  return (
+    <View style={styles.linklyTerminalPanel} testID="payment-linkly-terminal-selector">
+      <Text style={styles.linklyTerminalTitle}>{t("linkly.currentTerminal")}</Text>
+      <View style={styles.linklyTerminalGrid}>
+        {snapshot.terminals.map((terminal) => {
+          const selected = terminal.terminalId === snapshot.selectedTerminalId;
+          const disabled =
+            !switchAllowed ||
+            !terminal.isReady ||
+            terminal.pairingState !== "Ready";
+          const status = terminal.isBusy
+            ? t("linkly.terminalBusy")
+            : terminal.pairingState === "NeedsRepair"
+              ? t("linkly.terminalNeedsRepair")
+              : terminal.pairingState === "Unpaired"
+                ? t("linkly.terminalUnpaired")
+                : terminal.isReady && terminal.pairingState === "Ready"
+                  ? selected
+                    ? t("linkly.terminalSelected")
+                    : t("linkly.terminalReady")
+                  : t("linkly.terminalUnknown");
+          return (
+            <PosPressable
+              accessibilityLabel={`${terminal.displayName}. Lane ${terminal.laneNo}. ${status}`}
+              accessibilityRole="button"
+              accessibilityState={{ disabled, selected }}
+              disabled={disabled}
+              key={terminal.terminalId}
+              onPress={() => {
+                void presenter.selectLinklyTerminal?.(terminal.terminalId);
+              }}
+              sound="tap"
+              style={({ pressed }) => [
+                styles.linklyTerminalButton,
+                selected && styles.linklyTerminalButtonSelected,
+                disabled && styles.disabled,
+                pressed && !disabled && styles.pressed,
+              ]}
+              testID={`payment-linkly-terminal-${terminal.terminalId}`}
+            >
+              <Text style={styles.linklyTerminalName}>
+                {`${terminal.displayName} · Lane ${terminal.laneNo}`}
+              </Text>
+              <Text style={styles.linklyTerminalHint}>{status}</Text>
+            </PosPressable>
+          );
+        })}
+      </View>
+      {resource.kind === "switching" ? (
+        <Text style={styles.linklyTerminalHint}>{t("linkly.terminalSwitching")}</Text>
+      ) : null}
+    </View>
+  );
+}
+
 function RecoveryActions({
   onCancelPreparedCash,
   presenter,
@@ -1548,6 +1654,7 @@ function PaymentSummary({
           ))}
         </View>
         <ProviderBlockers state={state} t={t} />
+        <LinklyTerminalSelector presenter={presenter} state={state} t={t} />
         <View style={styles.summarySectionRule} />
         <Text style={styles.sectionTitle}>{t("summary.title")}</Text>
         <SummaryAmount
@@ -2918,6 +3025,60 @@ const styles = StyleSheet.create({
   providerBlockerText: {
     color: posColors.mutedInk,
     fontSize: 12,
+    lineHeight: 17,
+  },
+  linklyTerminalPanel: {
+    backgroundColor: posColors.blueSoft,
+    borderColor: posColors.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: 10,
+    padding: 10,
+  },
+  linklyTerminalTitle: {
+    color: posColors.ink,
+    fontSize: 13,
+    fontWeight: "800",
+    lineHeight: 18,
+  },
+  linklyTerminalGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginTop: 8,
+  },
+  linklyTerminalButton: {
+    backgroundColor: posColors.surface,
+    borderColor: posColors.border,
+    borderRadius: 7,
+    borderWidth: 1,
+    flexBasis: "46%",
+    flexGrow: 1,
+    justifyContent: "center",
+    minHeight: PAYMENT_MIN_TOUCH_TARGET,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  linklyTerminalButtonSelected: {
+    borderColor: posColors.blue,
+  },
+  linklyTerminalName: {
+    color: posColors.ink,
+    fontSize: 13,
+    fontWeight: "800",
+    lineHeight: 18,
+  },
+  linklyTerminalHint: {
+    color: posColors.mutedInk,
+    fontSize: 11,
+    fontWeight: "600",
+    lineHeight: 16,
+    marginTop: 2,
+  },
+  linklyTerminalError: {
+    color: posColors.red,
+    fontSize: 12,
+    fontWeight: "700",
     lineHeight: 17,
   },
   form: {

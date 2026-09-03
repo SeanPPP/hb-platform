@@ -16,6 +16,32 @@ assert.deepEqual(
   "成功响应应保持现有解包语义",
 );
 
+const productStatisticEnvelope = {
+  success: true,
+  data: [],
+  statisticStatus: "Pending",
+  statisticMessage: "商品统计尚未准备完成。",
+  cacheVersion: "v42",
+};
+assert.deepEqual(
+  unwrapApiEnvelope(productStatisticEnvelope),
+  productStatisticEnvelope,
+  "商品统计包络必须保留根级状态，不能把 Pending 空数组误解为业务空数据",
+);
+
+const revenueStatisticEnvelope = {
+  success: true,
+  data: [{ branchCode: "S01" }],
+  statisticsPending: true,
+  statisticsExpectedBranchCount: 28,
+  statisticsSnapshotBranchCount: 1,
+};
+assert.deepEqual(
+  unwrapApiEnvelope(revenueStatisticEnvelope),
+  revenueStatisticEnvelope,
+  "营业额包络必须保留分店统计完整性元数据",
+);
+
 assert.deepEqual(
   unwrapApiEnvelope({ value: 1, message: "普通对象" }),
   { value: 1, message: "普通对象" },

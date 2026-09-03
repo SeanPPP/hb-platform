@@ -198,6 +198,7 @@ PublishScripts/
 **/App_Data/DataProtectionKeys/
 data-protection-keys/
 **/App_Data/AttendanceQrDataProtectionKeys/
+**/App_Data/LinklyCloudCredentialDataProtectionKeys/
 attendance-qr-data-protection-keys/
 
 # NuGet Packages

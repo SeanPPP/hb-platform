@@ -13,9 +13,12 @@ case "$component" in
     ;;
   backend)
     project="services/backend/BlazorApp.Api.Tests/BlazorApp.Api.Tests.csproj"
+    mobile_activation_project="services/backend/BlazorApp.MobileDeviceActivation.Tests/BlazorApp.MobileDeviceActivation.Tests.csproj"
     node scripts/ci/backend-test-inventory.mjs
     dotnet restore "$project"
+    dotnet restore "$mobile_activation_project"
     dotnet build "$project" --configuration Release --no-restore
+    dotnet build "$mobile_activation_project" --configuration Release --no-restore
     dotnet test "$project" \
       --configuration Release \
       --no-build \
@@ -31,6 +34,14 @@ case "$component" in
       --logger 'trx;LogFileName=backend-contract.trx' \
       --results-directory "$results_root"
     node scripts/ci/assert-trx-tests.mjs "$results_root/backend-contract.trx" 'Backend API contract'
+
+    dotnet test "$mobile_activation_project" \
+      --configuration Release \
+      --no-build \
+      --filter 'Category!=SQL' \
+      --logger 'trx;LogFileName=mobile-device-activation.trx' \
+      --results-directory "$results_root"
+    node scripts/ci/assert-trx-tests.mjs "$results_root/mobile-device-activation.trx" 'Mobile device activation contracts'
     ;;
   pos-api)
     project="apps/pos-wpf/tests/Hbpos.Api.Tests/Hbpos.Api.Tests.csproj"

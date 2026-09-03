@@ -361,6 +361,12 @@ export function createProductionPaymentRuntime(
       providers: input.bootstrap!.providers,
       trustedSession: guard,
       permissions: guard,
+      ...(input.bootstrap!.linklyPaymentSelection
+        ? {
+            linklyPaymentSelection:
+              input.bootstrap!.linklyPaymentSelection,
+          }
+        : {}),
       voucherPreparation: {
         async preparePurchase(request) {
           await guard.assertActive();
@@ -404,6 +410,9 @@ export function createProductionPaymentRuntime(
           runtime: context.runtime,
           ...(context.linkly
             ? { linklyOperator: context.linkly }
+            : {}),
+          ...(input.bootstrap!.linklyTerminals
+            ? { linklyTerminals: input.bootstrap!.linklyTerminals }
             : {}),
           entry: normalizeEntry(entry, input.activeCart.getSnapshot()),
           createActionId: input.createId,

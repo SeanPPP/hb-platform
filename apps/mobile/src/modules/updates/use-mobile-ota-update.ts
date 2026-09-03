@@ -332,6 +332,7 @@ export function useMobileOtaUpdate(options: UseMobileOtaUpdateOptions) {
         portRef.current = new MobileOtaUpdatePort({
           enabled: true,
           runtimeVersion: context.runtimeVersion,
+          currentChannel: context.updateChannel,
           updates: {
             setUpdateRequestHeadersOverride: (headers) =>
               Updates.setUpdateRequestHeadersOverride(headers),

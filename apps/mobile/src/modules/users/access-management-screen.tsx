@@ -522,7 +522,7 @@ export default function AccessManagementScreen() {
 
   const handleBack = useCallback(() => {
     if (router.canGoBack()) router.back();
-    else router.replace("/(tabs)/users");
+    else router.replace("/(shell)/users");
   }, [router]);
 
   const handleOperationError = useCallback(

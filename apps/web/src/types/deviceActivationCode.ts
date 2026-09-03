@@ -23,6 +23,9 @@ export interface DeviceActivationCodeSummary {
   consumptionKind?: DeviceActivationConsumptionKind | null
   previousStoreCode?: string | null
   previousDeviceCode?: string | null
+  targetUserGuid?: string | null
+  targetUsername?: string | null
+  targetFullName?: string | null
 }
 
 export interface DeviceActivationCodePagedResult {
@@ -43,6 +46,20 @@ export interface DeviceActivationCodeCreatePayload {
 export interface DeviceActivationCodeCreateResponse {
   grant: DeviceActivationCodeSummary
   activationCode: string
+}
+
+export interface MobileDeviceActivationCodeCreatePayload {
+  storeCode: string
+  deviceSystem: Extract<DeviceActivationSystem, 'Android' | 'iOS'>
+  targetUserGuid: string
+  validForMinutes: 30 | 120 | 1440
+  reason: string
+}
+
+export interface MobileDeviceActivationManageableAccount {
+  userGuid: string
+  username: string
+  fullName?: string | null
 }
 
 export type DeviceActivationManageableStore = StoreOption

@@ -177,7 +177,7 @@ const pageSource = readFileSync(
   'utf8',
 )
 assertEqual(
-  routeSource.includes("import SystemPerformanceBaselinePage from '../pages/System/PerformanceBaseline'") &&
+  routeSource.includes("const SystemPerformanceBaselinePage = lazy(() => import('../pages/System/PerformanceBaseline'))") &&
     routeSource.includes("path: '/system/performance-baseline'") &&
     routeSource.includes("title: 'menu.performanceBaseline'") &&
     routeSource.includes("accessKey: 'canViewPerformanceBaseline'") &&

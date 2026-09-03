@@ -29,7 +29,7 @@ async function run() {
       readMobileSource("app/(auth)/login.tsx"),
       readMobileSource("src/shared/api/client.ts"),
       readMobileSource("app/_layout.tsx"),
-      readMobileSource("app/(tabs)/_layout.tsx"),
+      readMobileSource("app/(shell)/_layout.tsx"),
       readMobileSource("src/modules/printer/use-printer-auto-connect.ts"),
       readMobileSource("src/modules/ios-review/IosReviewBanner.tsx"),
       readMobileSource("src/store/device-store.ts"),

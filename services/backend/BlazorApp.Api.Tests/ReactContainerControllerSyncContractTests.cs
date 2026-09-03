@@ -188,6 +188,7 @@ public class ReactContainerControllerSyncContractTests
     public async Task QueryContainerProducts_应使用路由货柜GUID并返回标准响应()
     {
         ContainerDetailQueryDto? actualRequest = null;
+        var actualCancellationToken = default(CancellationToken);
         var expectedResult = new ContainerDetailQueryResultDto
         {
             Items = new List<ContainerDetailDto> { new() { HGUID = "DETAIL-1" } },
@@ -201,10 +202,18 @@ public class ReactContainerControllerSyncContractTests
         };
         var containerService = new Mock<IContainerReactService>();
         containerService
-            .Setup(service => service.QueryContainerDetailsAsync(It.IsAny<ContainerDetailQueryDto>()))
-            .Callback<ContainerDetailQueryDto>(request => actualRequest = request)
+            .Setup(service => service.QueryContainerDetailsAsync(
+                It.IsAny<ContainerDetailQueryDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback<ContainerDetailQueryDto, CancellationToken>((request, cancellationToken) =>
+            {
+                actualRequest = request;
+                actualCancellationToken = cancellationToken;
+            })
             .ReturnsAsync(expectedResult);
         var controller = CreateController(containerService: containerService.Object);
+        using var cancellation = new CancellationTokenSource();
 
         var response = await controller.QueryContainerProducts(
             "ROUTE-GUID",
@@ -215,12 +224,14 @@ public class ReactContainerControllerSyncContractTests
                 PageSize = 50,
                 IncludeTotal = false,
                 IncludeStats = false,
-            }
+            },
+            cancellation.Token
         );
 
         var ok = Assert.IsType<OkObjectResult>(response);
         Assert.NotNull(actualRequest);
         Assert.Equal("ROUTE-GUID", actualRequest!.ContainerGuid);
+        Assert.Equal(cancellation.Token, actualCancellationToken);
         Assert.False(actualRequest.IncludeTotal);
         Assert.False(actualRequest.IncludeStats);
         AssertPayload(ok.Value, true, "获取货柜商品明细成功", expectedResult);
@@ -307,6 +318,7 @@ public class ReactContainerControllerSyncContractTests
     [InlineData(nameof(ReactContainerController.UpdateContainer), Permissions.Container.Edit)]
     [InlineData(nameof(ReactContainerController.UpdateDomesticSetCodePrices), Permissions.Container.Edit)]
     [InlineData(nameof(ReactContainerController.BatchUpdateDetails), Permissions.Container.Edit)]
+    [InlineData(nameof(ReactContainerController.BatchUpdateDetailsScoped), Permissions.Container.Edit)]
     [InlineData(nameof(ReactContainerController.ApplyFloatRateByScope), Permissions.Container.Edit)]
     [InlineData(nameof(ReactContainerController.ApplyPricesByScope), Permissions.Container.Edit)]
     [InlineData(nameof(ReactContainerController.RecalculateCostsByScope), Permissions.Container.Edit)]
@@ -320,17 +332,18 @@ public class ReactContainerControllerSyncContractTests
     }
 
     [Fact]
-    public async Task BatchUpdateDetails_返回服务层部分成功明细且不修改请求()
+    public async Task BatchUpdateDetailsScoped_传递货柜范围并返回服务层部分成功明细且不修改请求()
     {
         List<UpdateContainerDetailDto>? actualUpdates = null;
         var containerService = new Mock<IContainerReactService>();
         containerService
             .Setup(service =>
                 service.BatchUpdateDetailsDetailedAsync(
+                    "CONTAINER-GUID",
                     It.IsAny<List<UpdateContainerDetailDto>>()
                 )
             )
-            .Callback<List<UpdateContainerDetailDto>>(updates => actualUpdates = updates)
+            .Callback<string, List<UpdateContainerDetailDto>>((_, updates) => actualUpdates = updates)
             .ReturnsAsync(
                 new ContainerDetailBatchUpdateResultDto
                 {
@@ -350,7 +363,8 @@ public class ReactContainerControllerSyncContractTests
             );
         var controller = CreateController(containerService: containerService.Object);
 
-        var response = await controller.BatchUpdateDetails(
+        var response = await controller.BatchUpdateDetailsScoped(
+            "CONTAINER-GUID",
             new List<UpdateContainerDetailDto>
             {
                 new()
@@ -375,6 +389,7 @@ public class ReactContainerControllerSyncContractTests
         containerService.Verify(
             service =>
                 service.BatchUpdateDetailsDetailedAsync(
+                    "CONTAINER-GUID",
                     It.IsAny<List<UpdateContainerDetailDto>>()
                 ),
             Times.Once
@@ -399,6 +414,110 @@ public class ReactContainerControllerSyncContractTests
     }
 
     [Fact]
+    public async Task BatchUpdateDetailsScoped_重复明细字段错误保持部分成功响应契约()
+    {
+        var containerService = new Mock<IContainerReactService>();
+        containerService
+            .Setup(service =>
+                service.BatchUpdateDetailsDetailedAsync(
+                    "CONTAINER-GUID",
+                    It.IsAny<List<UpdateContainerDetailDto>>()
+                )
+            )
+            .ReturnsAsync(
+                new ContainerDetailBatchUpdateResultDto
+                {
+                    TotalRequested = 2,
+                    TotalUpdated = 0,
+                    ValidationErrors =
+                    {
+                        new ContainerDetailBatchUpdateValidationErrorDto
+                        {
+                            HGUID = "DETAIL-DUPLICATE",
+                            Field = "*",
+                            Code = "DUPLICATE_DETAIL_UPDATE",
+                            Message = "同一请求不能重复提交同一货柜明细",
+                        },
+                    },
+                }
+            );
+        var controller = CreateController(containerService: containerService.Object);
+
+        var response = await controller.BatchUpdateDetailsScoped(
+            "CONTAINER-GUID",
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "DETAIL-DUPLICATE", 国内价格 = 2m },
+                new() { HGUID = "DETAIL-DUPLICATE", 国内价格 = 3m },
+            }
+        );
+
+        var ok = Assert.IsType<OkObjectResult>(response);
+        var data = GetPropertyValue<object>(ok.Value!, "data");
+        Assert.Equal(2, GetPropertyValue<int>(data, "totalRequested"));
+        Assert.Equal(0, GetPropertyValue<int>(data, "totalUpdated"));
+        var error = Assert.Single(
+            Assert.IsAssignableFrom<IEnumerable<object>>(
+                GetPropertyValue<object>(data, "validationErrors")
+            )
+        );
+        Assert.Equal("DETAIL-DUPLICATE", GetPropertyValue<string>(error, "hguid"));
+        Assert.Equal("*", GetPropertyValue<string>(error, "field"));
+        Assert.Equal("DUPLICATE_DETAIL_UPDATE", GetPropertyValue<string>(error, "code"));
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetails_旧无范围路由继续调用部分成功兼容入口()
+    {
+        var containerService = new Mock<IContainerReactService>();
+        containerService
+            .Setup(service => service.BatchUpdateDetailsDetailedAsync(It.IsAny<List<UpdateContainerDetailDto>>()))
+            .ReturnsAsync(new ContainerDetailBatchUpdateResultDto
+            {
+                TotalUpdated = 1,
+                TotalRequested = 1,
+                ValidationErrors =
+                {
+                    new ContainerDetailBatchUpdateValidationErrorDto
+                    {
+                        HGUID = "DETAIL-LEGACY",
+                        Field = "英文名称",
+                        Code = "CONTAINS_CHINESE",
+                        Message = "英文名称不能包含中文",
+                    },
+                },
+            });
+        var controller = CreateController(containerService: containerService.Object);
+
+        var response = await controller.BatchUpdateDetails(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "DETAIL-LEGACY", 进口价格 = 4.56m },
+            }
+        );
+
+        var ok = Assert.IsType<OkObjectResult>(response);
+        containerService.Verify(
+            service => service.BatchUpdateDetailsDetailedAsync(It.IsAny<List<UpdateContainerDetailDto>>()),
+            Times.Once
+        );
+        containerService.Verify(
+            service => service.BatchUpdateDetailsDetailedAsync(
+                It.IsAny<string>(),
+                It.IsAny<List<UpdateContainerDetailDto>>()
+            ),
+            Times.Never
+        );
+        var data = GetPropertyValue<object>(ok.Value!, "data");
+        Assert.Equal(1, GetPropertyValue<int>(data, "totalUpdated"));
+        Assert.Single(
+            Assert.IsAssignableFrom<IEnumerable<object>>(
+                GetPropertyValue<object>(data, "validationErrors")
+            )
+        );
+    }
+
+    [Fact]
     public async Task ExportContainerProducts_SelectedHguids_应返回Excel文件()
     {
         var requests = new List<(string ContainerGuid, int PageNumber, int PageSize)>();
@@ -407,8 +526,11 @@ public class ReactContainerControllerSyncContractTests
             .Setup(service => service.GetContainerDetailAsync("ROUTE-GUID"))
             .ReturnsAsync(CreateContainer());
         containerService
-            .Setup(service => service.QueryContainerDetailsAsync(It.IsAny<ContainerDetailQueryDto>()))
-            .Callback<ContainerDetailQueryDto>(request =>
+            .Setup(service => service.QueryContainerDetailsAsync(
+                It.IsAny<ContainerDetailQueryDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback<ContainerDetailQueryDto, CancellationToken>((request, _) =>
                 requests.Add((request.ContainerGuid, request.PageNumber, request.PageSize))
             )
             .ReturnsAsync(
@@ -463,8 +585,11 @@ public class ReactContainerControllerSyncContractTests
             .Setup(service => service.GetContainerDetailAsync("ROUTE-GUID"))
             .ReturnsAsync(CreateContainer());
         containerService
-            .Setup(service => service.QueryContainerDetailsAsync(It.IsAny<ContainerDetailQueryDto>()))
-            .Callback<ContainerDetailQueryDto>(request =>
+            .Setup(service => service.QueryContainerDetailsAsync(
+                It.IsAny<ContainerDetailQueryDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback<ContainerDetailQueryDto, CancellationToken>((request, _) =>
                 requestedIncludeFlags.Add((request.IncludeTotal, request.IncludeStats))
             )
             .ReturnsAsync(

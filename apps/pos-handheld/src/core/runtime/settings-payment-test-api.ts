@@ -1,4 +1,7 @@
-import type { SettingsPaymentSettingsInput } from "../../features/settings/settings-presenter";
+import type {
+  SettingsLinklyTerminalSelectionSnapshot,
+  SettingsPaymentSettingsInput,
+} from "../../features/settings/settings-presenter";
 import {
   mergeSettingsSquareDevices,
   normalizeSettingsSquareDeviceId,
@@ -27,12 +30,13 @@ export class HbposSettingsPaymentTestApi {
     provider: "square" | "linkly",
     input: SettingsPaymentSettingsInput,
     signal: AbortSignal,
+    terminals?: SettingsLinklyTerminalSelectionSnapshot | null,
   ): Promise<void> {
     if (provider === "square") {
       await this.testSquare(input, signal);
       return;
     }
-    await this.testLinkly(input, signal);
+    await this.testLinkly(input, signal, terminals);
   }
 
   private async testSquare(
@@ -109,6 +113,7 @@ export class HbposSettingsPaymentTestApi {
   private async testLinkly(
     input: SettingsPaymentSettingsInput,
     signal: AbortSignal,
+    terminals?: SettingsLinklyTerminalSelectionSnapshot | null,
   ): Promise<void> {
     const configuration = input.linkly;
     if (!configuration) {
@@ -119,9 +124,7 @@ export class HbposSettingsPaymentTestApi {
     >({
       method: "POST",
       url: "/api/v1/linkly/cloud-backend/logon-test",
-      params: {
-        environment: configuration.environment,
-      },
+      params: linklyLogonTestParams(configuration.environment, terminals),
       signal,
     });
     const result = unwrapHbposEnvelope(response.data);
@@ -129,6 +132,27 @@ export class HbposSettingsPaymentTestApi {
       throw new Error("Linkly Cloud logon test was declined.");
     }
   }
+}
+
+function linklyLogonTestParams(
+  environment: "Sandbox" | "Production",
+  terminals?: SettingsLinklyTerminalSelectionSnapshot | null,
+): Readonly<Record<string, string | number>> {
+  if (terminals?.mode !== "Active") return { environment };
+  const terminalId = terminals.selectedTerminalId?.trim() ?? "";
+  if (
+    terminals.environment !== environment ||
+    !terminalId ||
+    !Number.isSafeInteger(terminals.selectionRevision) ||
+    terminals.selectionRevision <= 0
+  ) {
+    throw new Error("Linkly terminal selection is invalid for payment test.");
+  }
+  return {
+    environment,
+    terminalId,
+    selectionRevision: terminals.selectionRevision,
+  };
 }
 
 function normalizedText(value: unknown): string {

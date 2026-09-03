@@ -92,6 +92,7 @@ export const P = {
     View: 'DeviceRegistration.View',
     Manage: 'DeviceRegistration.Manage',
     ActivationCodesManage: 'DeviceRegistration.ActivationCodes.Manage',
+    MobileActivationCodesManage: 'DeviceRegistration.MobileActivationCodes.Manage',
   },
   EmployeeProfiles: {
     View: 'EmployeeProfiles.View',

@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import * as reportRefresh from "./report-refresh";
+import {
+  ReportLoadPerformanceTimer,
+  discardReportNavigationStart,
+  hasPendingReportNavigationStart,
+  markReportHubNavigationStart,
+} from "./report-load-performance";
 
 const { createReportRefreshController, getReportRefreshQueryOptions } = reportRefresh;
 const reportRefetchOptions = (
@@ -57,6 +63,74 @@ async function run() {
   await Promise.all([activeRefresh, overlappingRefresh]);
   unsubscribe();
   queryClient.clear();
+
+  discardReportNavigationStart("revenue");
+  discardReportNavigationStart("product");
+  let focusNow = 100;
+  const focusTimer = new ReportLoadPerformanceTimer(() => focusNow);
+  const focusQueryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const focusQueryKey = ["reports", "revenue-summary", "focus-race"] as const;
+  let focusRequestCount = 0;
+  let releaseFocusRequest: (() => void) | undefined;
+  const focusRequestPending = new Promise<void>((resolve) => {
+    releaseFocusRequest = resolve;
+  });
+  const focusQueryFn = async () => {
+    focusRequestCount += 1;
+    focusTimer.start("cold", "revenue");
+    await focusRequestPending;
+    focusNow = 300;
+    focusTimer.markDataNormalized();
+    return { rows: [{ id: "S01" }] };
+  };
+  const focusObserver = new QueryObserver(focusQueryClient, {
+    queryKey: focusQueryKey,
+    queryFn: focusQueryFn,
+    staleTime: Infinity,
+  });
+  const unsubscribeFocus = focusObserver.subscribe(() => undefined);
+  await Promise.resolve();
+  assert.equal(focusRequestCount, 1, "进入 Reports 前必须已有一个真实在途请求");
+
+  focusNow = 200;
+  markReportHubNavigationStart(focusNow);
+  const focusRefresh = focusQueryClient.refetchQueries(
+    getReportRefreshQueryOptions("revenue"),
+    reportRefetchOptions,
+  );
+  await Promise.resolve();
+  assert.equal(
+    focusRequestCount,
+    1,
+    "cancelRefetch=false 必须复用旧请求；该场景不能假设会启动新 queryFn",
+  );
+  releaseFocusRequest?.();
+  await focusRefresh;
+  focusNow = 350;
+
+  assert.deepEqual(focusTimer.markFirstRowVisible(), {
+    cacheState: "cold",
+    navigationMs: 0,
+    requestMs: 100,
+    normalizeRenderMs: 50,
+    totalMs: 150,
+    budgetMs: 2_000,
+    meetsFirstDataBudget: true,
+  }, "本次焦点会话必须从 grouped marker 起点计时，不能沿用旧请求起点");
+  assert.equal(
+    hasPendingReportNavigationStart("revenue", focusNow),
+    false,
+    "在途请求完成时必须认领本次 grouped marker",
+  );
+  assert.equal(
+    hasPendingReportNavigationStart("product", focusNow),
+    false,
+    "活动页签认领后必须整组清除未激活候选 marker",
+  );
+  unsubscribeFocus();
+  focusQueryClient.clear();
 
   const calls: string[] = [];
   let release: (() => void) | undefined;

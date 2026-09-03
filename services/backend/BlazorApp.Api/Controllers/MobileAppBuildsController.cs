@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using BlazorApp.Api.Authentication;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Services;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using Microsoft.AspNetCore.Authorization;
@@ -19,16 +20,19 @@ namespace BlazorApp.Api.Controllers
         private const int MaxEasWebhookBodyBytes = 256 * 1024;
         private readonly IMobileAppBuildService _service;
         private readonly EasWebhookOptions _options;
+        private readonly MobileAppBuildOptions _mobileAppBuildOptions;
         private readonly ILogger<MobileAppBuildsController> _logger;
 
         public MobileAppBuildsController(
             IMobileAppBuildService service,
             IOptions<EasWebhookOptions> options,
-            ILogger<MobileAppBuildsController> logger
+            ILogger<MobileAppBuildsController> logger,
+            IOptions<MobileAppBuildOptions>? mobileAppBuildOptions = null
         )
         {
             _service = service;
             _options = options.Value;
+            _mobileAppBuildOptions = mobileAppBuildOptions?.Value ?? new MobileAppBuildOptions();
             _logger = logger;
         }
 
@@ -97,17 +101,23 @@ namespace BlazorApp.Api.Controllers
 
         [HttpGet("android-latest")]
         [AllowAnonymous]
-        public async Task<IActionResult> AndroidLatest([FromQuery] string profile = "production")
+        public async Task<IActionResult> AndroidLatest(
+            [FromQuery] string profile = "production",
+            [FromQuery] string? integrity = null
+        )
         {
             var normalizedProfile = NormalizePublicProfile(profile);
-            if (normalizedProfile == null)
+            if (
+                normalizedProfile == null
+                || !_mobileAppBuildOptions.PublicAndroidUpdatesEnabled
+                || !string.Equals(integrity, "sha256-v1", StringComparison.Ordinal)
+            )
             {
-                // 匿名自更新只开放精确白名单轨道，避免任意 development/internal APK 被公网枚举。
+                // 旧端没有协商完整性能力时主动不投放，避免残缺 APK 继续触发系统安装循环。
                 return Ok(ApiResponse<MobileAppBuildPublicDto?>.OK(null));
             }
 
-            // 移动端未登录时也要能检查是否存在新安装包，但这里只返回当前轨道最新 APK 元数据，不开放历史列表。
-            var result = await _service.GetLatestAsync(normalizedProfile);
+            var result = await _service.GetLatestPublicMobileAndroidAsync(normalizedProfile);
             if (!result.Success)
             {
                 return Ok(ApiResponse<MobileAppBuildPublicDto?>.Error(result.Message, result.ErrorCode, result.Details));
@@ -123,6 +133,8 @@ namespace BlazorApp.Api.Controllers
                     AppBuildVersion = result.Data.AppBuildVersion,
                     ArtifactUrl = result.Data.ArtifactUrl,
                     CosArtifactUrl = result.Data.CosArtifactUrl,
+                    ArtifactSha256 = result.Data.ArtifactSha256,
+                    ArtifactSize = result.Data.ArtifactSize,
                 };
 
             return Ok(ApiResponse<MobileAppBuildPublicDto?>.OK(latest));
@@ -162,24 +174,31 @@ namespace BlazorApp.Api.Controllers
         )
         {
             var normalizedProfile = NormalizePublicProfile(profile);
-            if (normalizedProfile == null || string.IsNullOrWhiteSpace(easBuildId))
+            if (
+                normalizedProfile == null
+                || !_mobileAppBuildOptions.PublicAndroidUpdatesEnabled
+                || string.IsNullOrWhiteSpace(easBuildId)
+            )
             {
                 return NotFound(ApiResponse<object>.Error("未找到可下载的安装包", "APK_NOT_FOUND"));
             }
 
-            var result = await _service.GetByBuildIdAsync(easBuildId, normalizedProfile);
+            var result = await _service.GetPublicMobileAndroidByBuildIdAsync(
+                easBuildId,
+                normalizedProfile
+            );
             if (!result.Success)
             {
                 return BadRequest(ApiResponse<object>.Error(result.Message, result.ErrorCode, result.Details));
             }
 
-            if (string.IsNullOrWhiteSpace(result.Data?.ArtifactUrl))
+            if (string.IsNullOrWhiteSpace(result.Data?.CosArtifactUrl))
             {
                 return NotFound(ApiResponse<object>.Error("未找到可下载的安装包", "APK_NOT_FOUND"));
             }
 
-            // 新安装器绑定到检查时拿到的 buildId，避免最新 APK 后续变化时下载到另一个构建。
-            return Redirect(result.Data.ArtifactUrl);
+            // 绑定到已完成镜像的同一 build，拒绝 EAS 回退，避免元数据和下载字节不一致。
+            return Redirect(result.Data.CosArtifactUrl);
         }
 
         [HttpGet("pos-handheld/android-latest")]

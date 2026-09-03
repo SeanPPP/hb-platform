@@ -1312,6 +1312,16 @@ const activationCodeOnlyAccess = buildAccess(
 )
 const activationCodeOnlyPreview = buildWebRoleMenuPreview(activationCodeOnlyAccess, translate)
 
+const mobileActivationCodeOnlyAccess = buildAccess(
+  createCurrentUser({
+    permissions: [P.DeviceRegistration.MobileActivationCodesManage],
+  }),
+)
+const mobileActivationCodeOnlyPreview = buildWebRoleMenuPreview(
+  mobileActivationCodeOnlyAccess,
+  translate,
+)
+
 assertEqual(
   activationCodeOnlyAccess.canViewDeviceRegistration,
   true,
@@ -1332,6 +1342,31 @@ assertEqual(
   true,
   'Activation-code managers should see the protected device registration menu',
 )
+assertEqual(
+  mobileActivationCodeOnlyAccess.canManageMobileDeviceActivationCodes,
+  true,
+  'Mobile activation permission should unlock only the Mobile activation actions',
+)
+assertEqual(
+  mobileActivationCodeOnlyAccess.canManageDeviceRegistration,
+  false,
+  'Mobile activation permission must not grant legacy device management',
+)
+assertEqual(
+  mobileActivationCodeOnlyAccess.canViewDeviceRegistration,
+  true,
+  'Mobile activation managers should be able to enter the device registration page',
+)
+assertEqual(
+  mobileActivationCodeOnlyAccess.canAccessAdminShell,
+  true,
+  'Mobile activation managers should be allowed into the backend shell',
+)
+assertEqual(
+  Boolean(findWebMenuNode(mobileActivationCodeOnlyPreview, '/system/device-registration')),
+  true,
+  'Mobile activation managers should see the protected device registration menu',
+)
 
 const superAdminWebPreview = buildWebRoleMenuPreview(superAdminPreviewAccess, translate)
 const superAdminDeviceMenu = superAdminWebPreview
@@ -1340,7 +1375,7 @@ const superAdminDeviceMenu = superAdminWebPreview
 
 assertEqual(
   superAdminDeviceMenu?.permissionCodes.join(','),
-  `${P.DeviceRegistration.View},${P.DeviceRegistration.Manage},${P.DeviceRegistration.ActivationCodesManage}`,
+  `${P.DeviceRegistration.View},${P.DeviceRegistration.Manage},${P.DeviceRegistration.ActivationCodesManage},${P.DeviceRegistration.MobileActivationCodesManage}`,
   'Super admin Web preview should show protected menus with their normal permission codes',
 )
 

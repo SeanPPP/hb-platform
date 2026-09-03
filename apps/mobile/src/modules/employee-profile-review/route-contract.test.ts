@@ -8,19 +8,21 @@ const mobileRoot = resolve(moduleDir, "../../..");
 const read = (path: string) => readFile(resolve(mobileRoot, path), "utf8");
 
 async function main() {
-const [tabsLayout, tabRoute, detailRoute, rootLayout, iosReviewMenu, detailScreen] = await Promise.all([
-  read("app/(tabs)/_layout.tsx"),
-  read("app/(tabs)/employee-profile-review.tsx"),
-  read("app/employee-profile-review/[requestId].tsx"),
+const [shellLayout, listRoute, detailRoute, reviewLayout, rootLayout, iosReviewMenu, detailScreen] = await Promise.all([
+  read("app/(shell)/_layout.tsx"),
+  read("app/(shell)/employee-profile-review/index.tsx"),
+  read("app/(shell)/employee-profile-review/[requestId].tsx"),
+  read("app/(shell)/employee-profile-review/_layout.tsx"),
   read("app/_layout.tsx"),
   read("src/modules/ios-review/menu.ts"),
   read("src/modules/employee-profile-review/employee-profile-review-detail-screen.tsx"),
 ]);
 
-assert.match(tabsLayout, /name="employee-profile-review"/);
-assert.match(tabsLayout, /tabs\.employeeProfileReview/);
-assert.match(tabsLayout, /filterEmployeeProfileReviewRouteNames/);
-assert.match(tabRoute, /EmployeeProfileReviewListScreen/);
+assert.match(shellLayout, /initialRouteName: "workbench"/);
+assert.match(shellLayout, /filterEmployeeProfileReviewRouteNames/);
+assert.match(reviewLayout, /initialRouteName: "index"/);
+assert.match(reviewLayout, /name="index" options=\{\{ headerShown: false \}\}/);
+assert.match(listRoute, /EmployeeProfileReviewListScreen/);
 assert.match(detailRoute, /EmployeeProfileReviewDetailScreen/);
 assert.match(detailScreen, /maskSensitiveValue/);
 assert.match(detailScreen, /toggleReveal/);
@@ -48,6 +50,13 @@ assert.match(detailScreen, /sensitiveDetailActivityGuard\.fetch/);
 assert.match(detailScreen, /clearEmployeeProfileReviewDetailCache/);
 assert.match(detailScreen, /employeeProfileReviewDetailQueryKey/);
 assert.match(detailScreen, /gcTime:\s*0/);
+assert.match(
+  detailScreen,
+  /target === "\/\(shell\)\/employee-profile-review" && router\.canGoBack\(\)/,
+  "审核详情返回列表时应优先复用既有 Stack 历史"
+);
+assert.match(detailScreen, /router\.back\(\)/);
+assert.match(detailScreen, /router\.replace\(target\)/);
 const reviewMutationSource = detailScreen.slice(
   detailScreen.indexOf("const reviewMutation = useMutation"),
   detailScreen.indexOf("const toggleReveal")
@@ -60,7 +69,7 @@ assert.doesNotMatch(
 );
 assert.match(detailScreen, /getReviewFailureKind\(detailQuery\.error\)/);
 assert.match(detailScreen, /setRevealedFields\(new Set\(\)\)/);
-assert.match(detailScreen, /leaveDetail\("\/\(tabs\)\/settings"\)/);
+assert.match(detailScreen, /leaveDetail\("\/\(shell\)\/settings"\)/);
 const headerBackSource = detailScreen.slice(
   detailScreen.indexOf("useLayoutEffect(() =>"),
   detailScreen.indexOf("const resumeDetailAfterForeground")
@@ -84,7 +93,7 @@ assert.match(headerBackSource, /disabled=\{isLeavingSensitiveDetail\}/);
 assert.match(headerBackSource, /hitSlop=\{4\}/);
 assert.match(
   headerBackSource,
-  /onPress=\{\(\) => void leaveDetail\("\/\(tabs\)\/employee-profile-review"\)\}/,
+  /onPress=\{\(\) => void leaveDetail\("\/\(shell\)\/employee-profile-review"\)\}/,
   "导航栏返回按钮必须复用清理敏感缓存的安全退出流程"
 );
 assert.match(
@@ -106,7 +115,12 @@ assert.doesNotMatch(
   /queryClient\.setQueryData\(/,
   "审核成功后不得把含完整敏感值的详情重新写入缓存"
 );
-assert.match(rootLayout, /name="employee-profile-review"/);
+assert.match(rootLayout, /name="\(shell\)"/);
+assert.doesNotMatch(
+  rootLayout,
+  /name="employee-profile-review"/,
+  "敏感资料审核页面应由 Shell 内部栈管理，避免绕过统一底部导航与返回层级"
+);
 assert.doesNotMatch(
   iosReviewMenu,
   /routeName:\s*"employee-profile-review"/,

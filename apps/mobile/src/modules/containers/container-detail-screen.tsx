@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Alert, Image, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Alert, AppState, Image, RefreshControl, ScrollView, StyleSheet, View, type AppStateStatus } from "react-native";
 import { useRouter } from "expo-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -34,6 +34,10 @@ import {
   createSubmitJob,
   exportContainerDetails,
   getContainerDetail,
+  getContainerDetailPresence,
+  heartbeatContainerDetailPresence,
+  leaveContainerDetailPresence,
+  previewContainerDetailBatchAction,
   queryContainerProducts,
   recalculate,
   wait,
@@ -67,17 +71,30 @@ import {
   hasDetailProductCodeConflict,
   toggleCurrentPageSelection,
   toggleSelectedTag,
-  trimToUndefined,
 } from "./query";
+import {
+  applyContainerDetailServerConflicts,
+  buildContainerDetailEditForm,
+  buildContainerDetailEditPayload,
+  getContainerDetailEditableFieldValue,
+  getContainerDetailServerFieldTokens,
+  isCurrentContainerDetailEditSession,
+  reconcileContainerDetailPartialSave,
+  type ContainerDetailEditForm,
+} from "./container-detail-edit-state";
 import type {
   ContainerDetail,
+  ContainerDetailBatchPreview,
+  ContainerDetailConcurrentConflict,
+  ContainerDetailPresence,
   ContainerDetailQuery,
   ContainerDetailQueryTag,
+  ContainerDetailSaveValidationError,
   ContainerExportFormat,
   UpdateContainerDetailRequest,
 } from "./types";
 
-const TAGS: Array<{ value: ContainerDetailQueryTag; label: string }> = [
+const TAGS: { value: ContainerDetailQueryTag; label: string }[] = [
   { value: "all", label: "全部" },
   { value: "new", label: "新商品" },
   { value: "existing", label: "已有" },
@@ -89,17 +106,7 @@ const TAGS: Array<{ value: ContainerDetailQueryTag; label: string }> = [
 
 type BulkModalType = "float" | "prices" | null;
 
-interface EditForm {
-  productName: string;
-  englishName: string;
-  domesticPrice: string;
-  importPrice: string;
-  oemPrice: string;
-  floatRate: string;
-  containerQuantity: string;
-  middlePackQuantity: string;
-  isActive: boolean;
-}
+type EditForm = ContainerDetailEditForm;
 
 interface DetailRangeFilterForm {
   containerQuantityMin: string;
@@ -123,18 +130,21 @@ const EMPTY_DETAIL_RANGE_FILTERS: DetailRangeFilterForm = {
   oemPriceMax: "",
 };
 
-const DETAIL_RANGE_FILTER_KEYS = Object.keys(EMPTY_DETAIL_RANGE_FILTERS) as Array<keyof DetailRangeFilterForm>;
+const DETAIL_RANGE_FILTER_KEYS = Object.keys(EMPTY_DETAIL_RANGE_FILTERS) as (keyof DetailRangeFilterForm)[];
 
 function formatDate(value?: string) {
   return value ? value.slice(0, 10) : "--";
 }
 
-function formatNumber(value?: number | null, digits = 2) {
-  return value == null || !Number.isFinite(value) ? "--" : value.toFixed(digits);
+function formatRecentActivity(value?: string) {
+  if (!value) return "刚刚";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "刚刚";
+  return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
-function numberInput(value?: number | null) {
-  return value == null || !Number.isFinite(value) ? "" : String(value);
+function formatNumber(value?: number | null, digits = 2) {
+  return value == null || !Number.isFinite(value) ? "--" : value.toFixed(digits);
 }
 
 function parseOptionalNumber(value: string) {
@@ -171,39 +181,54 @@ function buildRangeQuery(filters: DetailRangeFilterForm): Partial<ContainerDetai
   };
 }
 
-function buildEditForm(detail: ContainerDetail): EditForm {
-  return {
-    productName: getDetailProductName(detail),
-    englishName: getDetailEnglishName(detail),
-    domesticPrice: numberInput(detail.国内价格),
-    importPrice: numberInput(detail.进口价格),
-    oemPrice: numberInput(getDetailVisibleOemPrice(detail)),
-    floatRate: numberInput(detail.调整浮率),
-    containerQuantity: numberInput(detail.装柜数量),
-    middlePackQuantity: numberInput(detail.中包数),
-    isActive: detail.IsActive ?? detail.warehouseIsActive ?? true,
-  };
+function createClientSessionId() {
+  return globalThis.crypto?.randomUUID?.() ?? `mobile-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function buildEditPayload(detail: ContainerDetail, form: EditForm): UpdateContainerDetailRequest {
-  const hguid = getDetailGuid(detail);
-  const payload = {
-    hguid,
-    商品名称: trimToUndefined(form.productName),
-    英文名称: trimToUndefined(form.englishName),
-    国内价格: parseOptionalNumber(form.domesticPrice),
-    进口价格: parseOptionalNumber(form.importPrice),
-    贴牌价格: parseOptionalNumber(form.oemPrice),
-    调整浮率: parseOptionalNumber(form.floatRate),
-    装柜数量: parseOptionalNumber(form.containerQuantity),
-    中包数: parseOptionalNumber(form.middlePackQuantity),
-    IsActive: form.isActive,
-  };
-  const invalid = Object.values(payload).some((value) => Number.isNaN(value));
-  if (invalid) {
-    throw new Error("编辑字段存在无效数字");
+function displayConflictValue(value: unknown) {
+  if (value == null || value === "") return "--";
+  if (typeof value === "boolean") return value ? "启用" : "停用";
+  return String(value);
+}
+
+function isExpiredBatchPreviewError(error: unknown) {
+  const response = (error as { response?: { status?: number; data?: unknown } })?.response;
+  const data = response?.data && typeof response.data === "object" ? response.data as Record<string, unknown> : {};
+  const code = data.code ?? data.Code;
+  return response?.status === 409
+    || code === "BATCH_PREVIEW_STALE"
+    || code === "BATCH_PREVIEW_TOKEN_INVALID"
+    || code === "PREVIEW_TOKEN_EXPIRED";
+}
+
+function buildForegroundTokenConflicts(
+  baseline: ContainerDetail,
+  latest: ContainerDetail,
+  form: EditForm,
+): ContainerDetailConcurrentConflict[] {
+  let payload: UpdateContainerDetailRequest;
+  try {
+    payload = buildContainerDetailEditPayload(baseline, form);
+  } catch {
+    // 输入尚未有效或没有本地修改时，不制造并发冲突。
+    return [];
   }
-  return payload;
+  const baselineTokens = getContainerDetailServerFieldTokens(baseline);
+  const latestTokens = getContainerDetailServerFieldTokens(latest);
+  const submitted = payload as unknown as Record<string, unknown>;
+  return Object.keys(payload.expectedServerFieldTokens ?? {}).flatMap((field) => {
+    const latestToken = latestTokens[field];
+    if (!latestToken || latestToken === baselineTokens[field]) return [];
+    return [{
+      hguid: getDetailGuid(baseline).trim(),
+      field,
+      code: "CONCURRENT_FIELD_UPDATE" as const,
+      message: "服务器已更新",
+      serverValue: getContainerDetailEditableFieldValue(latest, field),
+      submittedValue: field === "英文名称" && payload.ClearEnglishName ? "" : submitted[field],
+      currentServerFieldToken: latestToken,
+    }];
+  });
 }
 
 function DetailMetric({ label, value }: { label: string; value: string }) {
@@ -320,6 +345,7 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
   const router = useRouter();
   const queryClient = useQueryClient();
   const access = useAuthStore((state) => state.access);
+  const userGuid = useAuthStore((state) => state.user?.userGUID ?? "");
   const [keyword, setKeyword] = useState("");
   const [appliedKeyword, setAppliedKeyword] = useState("");
   const [selectedTags, setSelectedTags] = useState<ContainerDetailQueryTag[]>([]);
@@ -333,12 +359,21 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
   const [editingDetail, setEditingDetail] = useState<ContainerDetail | null>(null);
   const [editForm, setEditForm] = useState<EditForm | null>(null);
   const [editEnglishNameError, setEditEnglishNameError] = useState("");
+  const [editValidationErrors, setEditValidationErrors] = useState<ContainerDetailSaveValidationError[]>([]);
+  const [editConflicts, setEditConflicts] = useState<ContainerDetailConcurrentConflict[]>([]);
+  const [presence, setPresence] = useState<ContainerDetailPresence>({ viewers: [], editors: [] });
+  const [batchPreview, setBatchPreview] = useState<(ContainerDetailBatchPreview & {
+    action: "delete" | "float" | "prices" | "recalculate" | "backfill";
+  }) | null>(null);
   const [showReadonlyOemPrice, setShowReadonlyOemPrice] = useState(false);
   const [showRangeFilters, setShowRangeFilters] = useState(false);
   const [rangeFilters, setRangeFilters] = useState<DetailRangeFilterForm>(EMPTY_DETAIL_RANGE_FILTERS);
   const [appliedRangeFilters, setAppliedRangeFilters] = useState<DetailRangeFilterForm>(EMPTY_DETAIL_RANGE_FILTERS);
   const [aligningDetailHguid, setAligningDetailHguid] = useState("");
   const [snackbar, setSnackbar] = useState("");
+  const clientSessionIdRef = useRef(createClientSessionId());
+  const editSessionIdRef = useRef("");
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
   const headerQuery = useQuery({
     queryKey: ["containers", "detail", containerGuid],
@@ -362,7 +397,7 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
     enabled: Boolean(containerGuid) && access.canViewContainers,
   });
 
-  const details = productsQuery.data?.items ?? [];
+  const details = useMemo(() => productsQuery.data?.items ?? [], [productsQuery.data?.items]);
   const currentPageDetailGuids = useMemo(() => getCurrentPageDetailGuids(details), [details]);
   const selectedSet = useMemo(
     () => new Set(selectedHguids.map((item) => item.trim()).filter(Boolean)),
@@ -372,13 +407,24 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
   const isCurrentPageFullySelected = currentPageDetailGuids.length > 0
     && currentPageSelectedCount === currentPageDetailGuids.length;
   const selectedDetails = details.filter((detail) => selectedSet.has(getDetailGuid(detail).trim()));
-  const filteredItemCount = productsQuery.data?.itemsTotal ?? details.length;
   const totalPages = Math.max(1, Math.ceil((productsQuery.data?.itemsTotal ?? 0) / detailQueryPayload.pageSize));
   const canEditContainer = access.canEditContainer;
   const canDeleteContainer = access.canDeleteContainer;
   const canRunProductJobs = access.canEditContainer && access.hasPermission("PosProducts.Manage");
   const canAlignDomesticProductCode = canEditContainer && (access.isAdmin || access.hasPermission("Products.Edit"));
   const rangeFilterActive = hasRangeFilters(appliedRangeFilters);
+  const presenceState = editingDetail || editForm ? "editing" : "viewing";
+  const otherViewers = presence.viewers.filter((item) => item.userGuid !== userGuid);
+  const otherEditors = presence.editors.filter((item) => item.userGuid !== userGuid);
+  const editingDetailRef = useRef(editingDetail);
+  const editFormRef = useRef(editForm);
+  const presenceStateRef = useRef<"viewing" | "editing">(presenceState);
+  const detailRefetchRef = useRef(productsQuery.refetch);
+  const refreshPresenceRef = useRef<(state?: "viewing" | "editing") => Promise<void>>(async () => undefined);
+  editingDetailRef.current = editingDetail;
+  editFormRef.current = editForm;
+  presenceStateRef.current = presenceState;
+  detailRefetchRef.current = productsQuery.refetch;
 
   const invalidateDetail = () => {
     void queryClient.invalidateQueries({ queryKey: ["containers", "detail"] });
@@ -386,65 +432,214 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
     void queryClient.invalidateQueries({ queryKey: ["containers", "list"] });
   };
 
+  useEffect(() => {
+    if (!containerGuid || !access.canViewContainers) return;
+    let disposed = false;
+    const sessionId = clientSessionIdRef.current;
+    const refreshPresence = async (state: "viewing" | "editing" = presenceStateRef.current) => {
+      try {
+        const next = await heartbeatContainerDetailPresence(containerGuid, {
+          clientSessionId: sessionId,
+          state,
+        });
+        if (!disposed) setPresence(next);
+      } catch {
+        // 在线状态只作协作提醒，任何失败都不能阻止编辑或保存。
+        if (!disposed) setPresence({ viewers: [], editors: [] });
+      }
+    };
+    refreshPresenceRef.current = refreshPresence;
+    void refreshPresence();
+    const interval = setInterval(() => {
+      if (AppState.currentState === "active") void refreshPresence();
+    }, 30_000);
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      const previousState = appStateRef.current;
+      appStateRef.current = nextState;
+      if (nextState === "active" && previousState !== "active") {
+        // 回到前台先取得新令牌；已打开弹窗的本地输入不能被服务器数据覆盖。
+        void detailRefetchRef.current().then((result) => {
+          const baseline = editingDetailRef.current;
+          const form = editFormRef.current;
+          const latest = baseline
+            ? result.data?.items.find((item) => getDetailGuid(item).trim() === getDetailGuid(baseline).trim())
+            : undefined;
+          if (!baseline || !form || !latest || disposed) return;
+          const conflicts = buildForegroundTokenConflicts(baseline, latest, form);
+          if (!conflicts.length) return;
+          setEditConflicts((current) => {
+            const byField = new Map(current.map((item) => [item.field, item]));
+            conflicts.forEach((item) => byField.set(item.field, item));
+            return [...byField.values()];
+          });
+          setSnackbar(`服务器已更新 ${conflicts.length} 个正在编辑的字段`);
+        }).catch(() => undefined);
+        void getContainerDetailPresence(containerGuid).then((next) => {
+          if (!disposed) setPresence(next);
+        }).catch(() => {
+          if (!disposed) setPresence({ viewers: [], editors: [] });
+        });
+        void refreshPresence();
+      }
+    });
+    return () => {
+      disposed = true;
+      refreshPresenceRef.current = async () => undefined;
+      clearInterval(interval);
+      subscription.remove();
+      void leaveContainerDetailPresence(containerGuid, sessionId).catch(() => undefined);
+    };
+  }, [access.canViewContainers, containerGuid]);
+
+  useEffect(() => {
+    if (AppState.currentState === "active") void refreshPresenceRef.current(presenceState);
+  }, [presenceState]);
+
   function closeEditModal() {
+    editSessionIdRef.current = "";
     setEditEnglishNameError("");
+    setEditValidationErrors([]);
+    setEditConflicts([]);
     setEditingDetail(null);
     setEditForm(null);
   }
 
   function openEditModal(detail: ContainerDetail) {
+    editSessionIdRef.current = createClientSessionId();
     setEditEnglishNameError("");
+    setEditValidationErrors([]);
+    setEditConflicts([]);
     setEditingDetail(detail);
-    setEditForm(buildEditForm(detail));
+    setEditForm(buildContainerDetailEditForm(detail));
   }
 
   function handleEditEnglishNameChange(value: string) {
     setEditEnglishNameError("");
+    setEditValidationErrors((current) => current.filter((item) => item.field !== "英文名称"));
     setEditForm((current) => current && { ...current, englishName: value });
   }
 
   const updateMutation = useMutation({
-    mutationFn: () => {
+    mutationFn: async (overrideAcknowledgements?: Record<string, string>) => {
       if (!editingDetail || !editForm) throw new Error("没有可保存的明细");
-      return batchUpdateDetails([buildEditPayload(editingDetail, editForm)]);
+      const editSessionId = editSessionIdRef.current;
+      const editingHguid = getDetailGuid(editingDetail).trim();
+      const submittedPayload = buildContainerDetailEditPayload(editingDetail, editForm, overrideAcknowledgements);
+      const result = await batchUpdateDetails(containerGuid, [submittedPayload]);
+      return {
+        baseline: editingDetail,
+        form: editForm,
+        submittedPayload,
+        result,
+        editSessionId,
+        editingHguid,
+      };
     },
-    onSuccess: (result) => {
+    onSuccess: async ({ baseline, form, submittedPayload, result, editSessionId, editingHguid }) => {
       invalidateDetail();
-      const editingHguid = editingDetail ? getDetailGuid(editingDetail).trim() : "";
-      const rowError = result.validationErrors.find(
-        (error) => error.hguid === editingHguid && error.field === "*",
-      );
-      if (rowError) {
-        // 明细已失效时继续编辑无法恢复，关闭弹窗并用表单级提示说明原因。
-        closeEditModal();
-        setSnackbar(rowError.message);
+      const validationErrors = result.validationErrors.filter((error) => error.hguid === editingHguid);
+      const conflicts = result.conflicts.filter((conflict) => conflict.hguid === editingHguid);
+      let latest: ContainerDetail | null = null;
+      try {
+        const refreshed = await detailRefetchRef.current();
+        latest = refreshed.data?.items.find((item) => getDetailGuid(item).trim() === editingHguid) ?? null;
+      } catch {
+        // 保存结果已经成功返回；刷新失败不能丢弃仍打开的用户输入。
+      }
+      if (!isCurrentContainerDetailEditSession({
+        expectedSessionId: editSessionId,
+        expectedHguid: editingHguid,
+        currentSessionId: editSessionIdRef.current,
+        currentHguid: getDetailGuid(editingDetailRef.current).trim(),
+      })) {
+        // 迟到响应只刷新列表，绝不能覆盖已取消或后来打开的编辑会话。
         return;
       }
-      const englishNameError = result.validationErrors.find(
-        (error) => error.hguid === editingHguid && error.field === "英文名称",
-      );
-      if (englishNameError) {
-        // 同一请求的其它字段已成功保存；保留草稿，只让用户修正被拒绝的英文名称。
-        setEditEnglishNameError(englishNameError.message);
+      const reconciled = reconcileContainerDetailPartialSave({
+        baseline,
+        form,
+        submittedPayload,
+        latest,
+        validationErrors,
+        conflicts,
+      });
+      if (reconciled.savedFields.size) {
+        setEditingDetail(reconciled.detail);
+        setEditForm(reconciled.form);
+      }
+      setEditConflicts(conflicts);
+      setEditValidationErrors(validationErrors);
+      const englishNameError = validationErrors.find((error) => error.field === "英文名称");
+      setEditEnglishNameError(englishNameError?.message ?? "");
+      if (validationErrors.length || conflicts.length) {
+        setSnackbar(`有 ${validationErrors.length + conflicts.length} 个字段未保存，请处理后重试`);
         return;
       }
       closeEditModal();
       setSnackbar("明细已保存");
     },
-    onError: (error) => setSnackbar(error instanceof Error ? error.message : "保存明细失败"),
+    onError: (error) => {
+      const code = error instanceof Error ? (error as Error & { code?: string }).code : undefined;
+      setSnackbar(code === "CONCURRENCY_TOKEN_REQUIRED" ? "当前应用版本仅可查看，请升级后再编辑货柜明细" : error instanceof Error ? error.message : "保存明细失败");
+    },
   });
 
+  function applyServerValues(conflicts: ContainerDetailConcurrentConflict[]) {
+    const resolvedFields = new Set(conflicts.map((item) => item.field));
+    const currentDetail = editingDetailRef.current;
+    const currentForm = editFormRef.current;
+    if (currentDetail && currentForm) {
+      const resolved = applyContainerDetailServerConflicts(currentDetail, currentForm, conflicts);
+      setEditingDetail(resolved.detail);
+      setEditForm(resolved.form);
+    }
+    setEditConflicts((current) => current.filter((item) => !resolvedFields.has(item.field)));
+  }
+
+  function applyServerValue(conflict: ContainerDetailConcurrentConflict) {
+    applyServerValues([conflict]);
+  }
+
+  function keepMyValue(conflict: ContainerDetailConcurrentConflict) {
+    // 覆盖确认只承认用户刚刚看到的版本；中间若再变更，服务器会再次返回冲突。
+    updateMutation.mutate({ [conflict.field]: conflict.currentServerFieldToken });
+  }
+
+  function keepAllMyValues() {
+    const acknowledgements = Object.fromEntries(
+      editConflicts.map((item) => [item.field, item.currentServerFieldToken]),
+    );
+    Alert.alert(
+      "确认覆盖服务器值",
+      `将覆盖 ${editConflicts.length} 个服务器已更新字段。若服务器再次变化，仍会要求重新确认。`,
+      [
+        { text: "取消", style: "cancel" },
+        {
+          text: "确认保留我的值",
+          style: "destructive",
+          onPress: () => updateMutation.mutate(acknowledgements),
+        },
+      ],
+    );
+  }
+
   const bulkMutation = useMutation({
-    mutationFn: async (action: "delete" | "float" | "prices" | "recalculate" | "backfill") => {
+    mutationFn: async ({
+      action,
+      previewToken,
+    }: {
+      action: "delete" | "float" | "prices" | "recalculate" | "backfill";
+      previewToken: string;
+    }) => {
       const scope = buildBatchScope(detailQueryPayload, selectedHguids);
       if (action === "delete") {
         if (!selectedHguids.length) throw new Error("请先选择要删除的明细");
-        return batchDeleteDetails(selectedHguids);
+        return batchDeleteDetails(containerGuid, scope, previewToken);
       }
       if (action === "float") {
         const rate = parseOptionalNumber(bulkFloatRate);
         if (rate === undefined || Number.isNaN(rate)) throw new Error("请输入有效浮率");
-        return applyFloatRate(containerGuid, scope, rate);
+        return applyFloatRate(containerGuid, scope, rate, previewToken);
       }
       if (action === "prices") {
         const importPrice = parseOptionalNumber(bulkImportPrice);
@@ -456,21 +651,63 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
         ) {
           throw new Error("请输入有效进口价或零售价");
         }
-        return applyPrices(containerGuid, scope, { importPrice, oemPrice });
+        return applyPrices(containerGuid, scope, { importPrice, oemPrice }, previewToken);
       }
-      if (action === "recalculate") return recalculate(containerGuid, scope);
-      return backfill(containerGuid, scope);
+      if (action === "recalculate") return recalculate(containerGuid, scope, previewToken);
+      return backfill(containerGuid, scope, previewToken);
     },
     onSuccess: () => {
       setBulkModalType(null);
       setBulkFloatRate("");
       setBulkImportPrice("");
       setBulkOemPrice("");
+      setBatchPreview(null);
       setSelectedHguids([]);
       invalidateDetail();
       setSnackbar("批量操作已完成");
     },
-    onError: (error) => setSnackbar(error instanceof Error ? error.message : "批量操作失败"),
+    onError: (error, variables) => {
+      if (isExpiredBatchPreviewError(error)) {
+        // 预览令牌一旦失效不能重放：清除旧令牌，只重新获取预览，绝不自动执行。
+        setBatchPreview(null);
+        previewBulkMutation.mutate(variables.action, {
+          onSuccess: (preview) => setSnackbar(`批量数据已变化，已刷新预览（影响 ${preview.affectedCount} 条），请重新确认执行`),
+        });
+        return;
+      }
+      setSnackbar(error instanceof Error ? error.message : "批量操作失败");
+    },
+  });
+
+  const previewBulkMutation = useMutation({
+    mutationFn: async (action: "delete" | "float" | "prices" | "recalculate" | "backfill") => {
+      const scope = buildBatchScope(detailQueryPayload, selectedHguids);
+      let operation: string;
+      let parameters: Record<string, unknown> | undefined;
+      if (action === "delete") {
+        if (!selectedHguids.length) throw new Error("请先选择要删除的明细");
+        operation = "delete-details";
+      } else if (action === "float") {
+        const floatRate = parseOptionalNumber(bulkFloatRate);
+        if (floatRate === undefined || Number.isNaN(floatRate)) throw new Error("请输入有效浮率");
+        operation = "apply-float-rate";
+        parameters = { floatRate };
+      } else if (action === "prices") {
+        const importPrice = parseOptionalNumber(bulkImportPrice);
+        const oemPrice = parseOptionalNumber(bulkOemPrice);
+        if ((importPrice === undefined && oemPrice === undefined) || Number.isNaN(importPrice) || Number.isNaN(oemPrice)) {
+          throw new Error("请输入有效进口价或零售价");
+        }
+        operation = "apply-prices";
+        parameters = { importPrice, oemPrice };
+      } else {
+        operation = action === "recalculate" ? "recalculate-costs" : "backfill-last-prices";
+      }
+      const preview = await previewContainerDetailBatchAction(containerGuid, { operation, scope, parameters });
+      return { ...preview, action };
+    },
+    onSuccess: (preview) => setBatchPreview(preview),
+    onError: (error) => setSnackbar(error instanceof Error ? error.message : "批量预览失败"),
   });
 
   const createProductsMutation = useMutation({
@@ -594,27 +831,24 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
     );
   };
 
-  const confirmWholeFilterMutation = (
-    action: "float" | "prices" | "recalculate" | "backfill",
-    title: string,
-  ) => {
-    if (selectedHguids.length) {
-      bulkMutation.mutate(action);
-      return;
-    }
-
-    Alert.alert(
-      title,
-      `未选择明细，将作用于当前筛选结果 ${filteredItemCount} 条。`,
-      [
-        { text: "取消", style: "cancel" },
-        {
-          text: "确认执行",
-          style: "destructive",
-          onPress: () => bulkMutation.mutate(action),
-        },
-      ],
-    );
+  const requestBatchPreview = (action: "delete" | "float" | "prices" | "recalculate" | "backfill", title: string) => {
+    previewBulkMutation.mutate(action, {
+      onSuccess: (preview) => {
+        if (action === "float" || action === "prices") return;
+        Alert.alert(
+          title,
+          `服务器预览：影响 ${preview.affectedCount} 条。${preview.fieldSummary.join("、")}`,
+          [
+            { text: "取消", style: "cancel" },
+            {
+              text: "确认执行",
+              style: action === "delete" ? "destructive" : "default",
+              onPress: () => bulkMutation.mutate({ action, previewToken: preview.previewToken }),
+            },
+          ],
+        );
+      },
+    });
   };
 
   const toggleSelection = (hguid: string) => {
@@ -693,6 +927,12 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
                 <DetailMetric label="件数" value={formatNumber(headerQuery.data?.合计件数, 0)} />
                 <DetailMetric label="金额" value={formatNumber(headerQuery.data?.合计金额)} />
               </View>
+              {otherEditors.length || otherViewers.length ? (
+                <View style={styles.presenceRow}>
+                  {otherEditors.length ? <Text style={styles.presenceEditing}>正在编辑：{otherEditors.map((item) => `${item.userName} ${formatRecentActivity(item.lastActiveAt)}`).join("、")}</Text> : null}
+                  {otherViewers.length ? <Text style={styles.muted}>正在查看：{otherViewers.map((item) => `${item.userName} ${formatRecentActivity(item.lastActiveAt)}`).join("、")}</Text> : null}
+                </View>
+              ) : null}
             </>
           )}
         </Surface>
@@ -832,14 +1072,14 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
                     <>
                       <Menu.Item title="批量调浮率" onPress={() => { setBulkMenuVisible(false); setBulkModalType("float"); }} />
                       <Menu.Item title="批量改价" onPress={() => { setBulkMenuVisible(false); setBulkModalType("prices"); }} />
-                      <Menu.Item title="重算成本" onPress={() => { setBulkMenuVisible(false); confirmWholeFilterMutation("recalculate", "重算成本"); }} />
-                      <Menu.Item title="回填上次价格" onPress={() => { setBulkMenuVisible(false); confirmWholeFilterMutation("backfill", "回填上次价格"); }} />
+                      <Menu.Item title="重算成本" onPress={() => { setBulkMenuVisible(false); requestBatchPreview("recalculate", "重算成本"); }} />
+                      <Menu.Item title="回填上次价格" onPress={() => { setBulkMenuVisible(false); requestBatchPreview("backfill", "回填上次价格"); }} />
                     </>
                   ) : null}
                   {canDeleteContainer ? (
                     <>
                       <Divider />
-                      <Menu.Item title="删除所选" onPress={() => { setBulkMenuVisible(false); bulkMutation.mutate("delete"); }} />
+                      <Menu.Item title="删除所选" onPress={() => { setBulkMenuVisible(false); requestBatchPreview("delete", "删除所选明细"); }} />
                     </>
                   ) : null}
                   <Divider />
@@ -936,70 +1176,111 @@ export function ContainerDetailScreen({ containerGuid }: { containerGuid: string
       </ScrollView>
 
       <Portal>
-        <Modal visible={Boolean(editingDetail && editForm)} onDismiss={closeEditModal} contentContainerStyle={styles.modal}>
+        <Modal visible={Boolean(editingDetail && editForm)} onDismiss={updateMutation.isPending ? () => undefined : closeEditModal} contentContainerStyle={styles.modal}>
           <Text variant="titleMedium">编辑明细</Text>
           {editForm ? (
             <>
-              <TextInput mode="outlined" label="中文名称" value={editForm.productName} onChangeText={(value) => setEditForm((current) => current && { ...current, productName: value })} />
+              <TextInput mode="outlined" label="中文名称" disabled={updateMutation.isPending} value={editForm.productName} onChangeText={(value) => setEditForm((current) => current && { ...current, productName: value })} />
               <TextInput
                 mode="outlined"
                 label="英文名称"
                 value={editForm.englishName}
                 error={Boolean(editEnglishNameError)}
+                disabled={updateMutation.isPending}
                 onChangeText={handleEditEnglishNameChange}
               />
               <HelperText type="error" visible={Boolean(editEnglishNameError)}>
                 {editEnglishNameError}
               </HelperText>
+              {editValidationErrors.length ? (
+                <Surface style={styles.validationPanel} mode="flat">
+                  <Text variant="titleSmall" style={styles.validationTitle}>以下字段未保存</Text>
+                  {editValidationErrors.map((error) => (
+                    <Text key={`${error.field}-${error.code}`} style={styles.muted}>
+                      {error.field === "*" ? "本行" : error.field}：{error.message}
+                    </Text>
+                  ))}
+                </Surface>
+              ) : null}
+              {editConflicts.length ? (
+                <Surface style={styles.conflictPanel} mode="flat">
+                  <Text variant="titleSmall" style={styles.conflictTitle}>服务器已更新（{editConflicts.length}）</Text>
+                  {editConflicts.length > 1 ? (
+                    <View style={styles.actionRow}>
+                      <Button compact disabled={updateMutation.isPending} onPress={() => applyServerValues(editConflicts)}>全部采用服务器值</Button>
+                      <Button compact mode="contained-tonal" disabled={updateMutation.isPending} onPress={keepAllMyValues}>全部保留我的值</Button>
+                    </View>
+                  ) : null}
+                  {editConflicts.map((conflict) => (
+                    <View key={conflict.field} style={styles.conflictItem}>
+                      <Text variant="labelLarge">{conflict.field}</Text>
+                      <Text style={styles.muted}>服务器：{displayConflictValue(conflict.serverValue)}</Text>
+                      <Text style={styles.muted}>我的值：{displayConflictValue(conflict.submittedValue)}</Text>
+                      <View style={styles.actionRow}>
+                        <Button compact disabled={updateMutation.isPending} onPress={() => applyServerValue(conflict)}>采用服务器值</Button>
+                        <Button compact mode="contained-tonal" disabled={updateMutation.isPending} onPress={() => keepMyValue(conflict)}>保留我的值</Button>
+                      </View>
+                    </View>
+                  ))}
+                </Surface>
+              ) : null}
               <View style={styles.inputRow}>
-                <TextInput mode="outlined" label="国内价" keyboardType="decimal-pad" value={editForm.domesticPrice} onChangeText={(value) => setEditForm((current) => current && { ...current, domesticPrice: value })} style={styles.inputHalf} />
-                <TextInput mode="outlined" label="进口价" keyboardType="decimal-pad" value={editForm.importPrice} onChangeText={(value) => setEditForm((current) => current && { ...current, importPrice: value })} style={styles.inputHalf} />
+                <TextInput mode="outlined" label="国内价" disabled={updateMutation.isPending} keyboardType="decimal-pad" value={editForm.domesticPrice} onChangeText={(value) => setEditForm((current) => current && { ...current, domesticPrice: value })} style={styles.inputHalf} />
+                <TextInput mode="outlined" label="进口价" disabled={updateMutation.isPending} keyboardType="decimal-pad" value={editForm.importPrice} onChangeText={(value) => setEditForm((current) => current && { ...current, importPrice: value })} style={styles.inputHalf} />
               </View>
               <View style={styles.inputRow}>
-                <TextInput mode="outlined" label="零售价" keyboardType="decimal-pad" value={editForm.oemPrice} onChangeText={(value) => setEditForm((current) => current && { ...current, oemPrice: value })} style={styles.inputHalf} />
-                <TextInput mode="outlined" label="浮率" keyboardType="decimal-pad" value={editForm.floatRate} onChangeText={(value) => setEditForm((current) => current && { ...current, floatRate: value })} style={styles.inputHalf} />
+                <TextInput mode="outlined" label="零售价" disabled={updateMutation.isPending} keyboardType="decimal-pad" value={editForm.oemPrice} onChangeText={(value) => setEditForm((current) => current && { ...current, oemPrice: value })} style={styles.inputHalf} />
+                <TextInput mode="outlined" label="浮率" disabled={updateMutation.isPending} keyboardType="decimal-pad" value={editForm.floatRate} onChangeText={(value) => setEditForm((current) => current && { ...current, floatRate: value })} style={styles.inputHalf} />
               </View>
               <View style={styles.inputRow}>
-                <TextInput mode="outlined" label="装柜数量" keyboardType="decimal-pad" value={editForm.containerQuantity} onChangeText={(value) => setEditForm((current) => current && { ...current, containerQuantity: value })} style={styles.inputHalf} />
-                <TextInput mode="outlined" label="中包数" keyboardType="decimal-pad" value={editForm.middlePackQuantity} onChangeText={(value) => setEditForm((current) => current && { ...current, middlePackQuantity: value })} style={styles.inputHalf} />
+                <TextInput mode="outlined" label="装柜数量" disabled={updateMutation.isPending} keyboardType="decimal-pad" value={editForm.containerQuantity} onChangeText={(value) => setEditForm((current) => current && { ...current, containerQuantity: value })} style={styles.inputHalf} />
+                <TextInput mode="outlined" label="中包数" disabled={updateMutation.isPending} keyboardType="decimal-pad" value={editForm.middlePackQuantity} onChangeText={(value) => setEditForm((current) => current && { ...current, middlePackQuantity: value })} style={styles.inputHalf} />
               </View>
               <View style={styles.switchRow}>
                 <Text>启用</Text>
-                <Switch value={editForm.isActive} onValueChange={(value) => setEditForm((current) => current && { ...current, isActive: value })} />
+                <Switch value={editForm.isActive} disabled={updateMutation.isPending} onValueChange={(value) => setEditForm((current) => current && { ...current, isActive: value })} />
               </View>
             </>
           ) : null}
           <View style={styles.actionRow}>
-            <Button onPress={closeEditModal}>取消</Button>
-            <Button mode="contained" loading={updateMutation.isPending} onPress={() => updateMutation.mutate()}>保存</Button>
+            <Button disabled={updateMutation.isPending} onPress={closeEditModal}>取消</Button>
+            <Button mode="contained" disabled={updateMutation.isPending} loading={updateMutation.isPending} onPress={() => updateMutation.mutate(undefined)}>保存</Button>
           </View>
         </Modal>
 
         <Modal visible={Boolean(bulkModalType)} onDismiss={() => setBulkModalType(null)} contentContainerStyle={styles.modal}>
           <Text variant="titleMedium">{bulkModalType === "float" ? "批量调浮率" : "批量改价"}</Text>
           {bulkModalType === "float" ? (
-            <TextInput mode="outlined" label="浮率" keyboardType="decimal-pad" value={bulkFloatRate} onChangeText={setBulkFloatRate} />
+            <TextInput mode="outlined" label="浮率" keyboardType="decimal-pad" value={bulkFloatRate} onChangeText={(value) => { setBatchPreview(null); setBulkFloatRate(value); }} />
           ) : (
             <>
-              <TextInput mode="outlined" label="进口价" keyboardType="decimal-pad" value={bulkImportPrice} onChangeText={setBulkImportPrice} />
-              <TextInput mode="outlined" label="零售价" keyboardType="decimal-pad" value={bulkOemPrice} onChangeText={setBulkOemPrice} />
+              <TextInput mode="outlined" label="进口价" keyboardType="decimal-pad" value={bulkImportPrice} onChangeText={(value) => { setBatchPreview(null); setBulkImportPrice(value); }} />
+              <TextInput mode="outlined" label="零售价" keyboardType="decimal-pad" value={bulkOemPrice} onChangeText={(value) => { setBatchPreview(null); setBulkOemPrice(value); }} />
             </>
           )}
           <Text style={styles.muted}>{selectedHguids.length ? `作用于已选 ${selectedHguids.length} 条` : "未选择时作用于当前筛选结果"}</Text>
+          {batchPreview && batchPreview.action === bulkModalType ? (
+            <Surface style={styles.previewPanel} mode="flat">
+              <Text>服务器预览：影响 {batchPreview.affectedCount} 条</Text>
+              {batchPreview.fieldSummary.length ? <Text style={styles.muted}>{batchPreview.fieldSummary.join("、")}</Text> : null}
+            </Surface>
+          ) : null}
           <View style={styles.actionRow}>
             <Button onPress={() => setBulkModalType(null)}>取消</Button>
             <Button
               mode="contained"
-              loading={bulkMutation.isPending}
+              loading={bulkMutation.isPending || previewBulkMutation.isPending}
               onPress={() => {
                 if (!bulkModalType) return;
-                confirmWholeFilterMutation(
-                  bulkModalType === "float" ? "float" : "prices",
-                  bulkModalType === "float" ? "批量调浮率" : "批量改价",
-                );
+                const action = bulkModalType === "float" ? "float" : "prices";
+                if (batchPreview?.action === action) {
+                  bulkMutation.mutate({ action, previewToken: batchPreview.previewToken });
+                  return;
+                }
+                requestBatchPreview(action, action === "float" ? "批量调浮率" : "批量改价");
               }}
             >
-              执行
+              {batchPreview?.action === bulkModalType ? "确认执行" : "预览"}
             </Button>
           </View>
         </Modal>
@@ -1082,6 +1363,13 @@ const styles = StyleSheet.create({
     marginTop: 10,
     color: "#B45309",
   },
+  presenceRow: {
+    gap: 4,
+    paddingTop: 2,
+  },
+  presenceEditing: {
+    color: "#B45309",
+  },
   detailImageFrame: {
     width: 72,
     height: 72,
@@ -1122,6 +1410,40 @@ const styles = StyleSheet.create({
     padding: 16,
     borderRadius: 8,
     backgroundColor: "#FFFFFF",
+  },
+  conflictPanel: {
+    gap: 8,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: "#FEF2F2",
+    borderWidth: 1,
+    borderColor: "#FCA5A5",
+  },
+  validationPanel: {
+    gap: 4,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: "#FFF7ED",
+    borderWidth: 1,
+    borderColor: "#FDBA74",
+  },
+  validationTitle: {
+    color: "#9A3412",
+  },
+  conflictTitle: {
+    color: "#B91C1C",
+  },
+  conflictItem: {
+    gap: 4,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: "#FECACA",
+  },
+  previewPanel: {
+    gap: 4,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: "#EFF6FF",
   },
   inputRow: {
     flexDirection: "row",

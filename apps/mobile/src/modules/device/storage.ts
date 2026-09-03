@@ -1,8 +1,9 @@
+import * as SecureStore from "expo-secure-store";
 import { AppAsyncStorage } from "@/shared/storage/async-storage";
-import type { PersistedDeviceSession } from "@/modules/device/types";
-
-const DEVICE_INSTALLATION_ID_KEY = "hbweb_device_installation_id";
-const DEVICE_SESSION_KEY = "hbweb_device_session";
+import {
+  createDeviceStorage,
+  type DeviceStorageKeyValuePort,
+} from "@/modules/device/device-storage-core";
 
 function generateInstallationId() {
   return `hbmobile-${Date.now().toString(36)}-${Math.random()
@@ -10,27 +11,26 @@ function generateInstallationId() {
     .slice(2, 10)}`;
 }
 
-export const DeviceStorage = {
-  async getInstallationId() {
-    const existingValue = await AppAsyncStorage.getString(DEVICE_INSTALLATION_ID_KEY);
-    if (existingValue) {
-      return existingValue;
-    }
+const presentationStorage: DeviceStorageKeyValuePort = {
+  getItem: (key) => AppAsyncStorage.getString(key),
+  setItem: (key, value) => AppAsyncStorage.setString(key, value),
+  removeItem: (key) => AppAsyncStorage.removeItem(key),
+};
 
-    const nextValue = generateInstallationId();
-    await AppAsyncStorage.setString(DEVICE_INSTALLATION_ID_KEY, nextValue);
-    return nextValue;
+const sensitiveStorage: DeviceStorageKeyValuePort = {
+  getItem: (key) => SecureStore.getItemAsync(key),
+  setItem: async (key, value) => {
+    await SecureStore.setItemAsync(key, value, {
+      keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
+    });
   },
-
-  async getSession() {
-    return AppAsyncStorage.getObject<PersistedDeviceSession>(DEVICE_SESSION_KEY);
-  },
-
-  async setSession(session: PersistedDeviceSession) {
-    await AppAsyncStorage.setObject(DEVICE_SESSION_KEY, session);
-  },
-
-  async clearSession() {
-    await AppAsyncStorage.removeItem(DEVICE_SESSION_KEY);
+  removeItem: async (key) => {
+    await SecureStore.deleteItemAsync(key);
   },
 };
+
+export const DeviceStorage = createDeviceStorage({
+  presentation: presentationStorage,
+  sensitive: sensitiveStorage,
+  generateInstallationId,
+});

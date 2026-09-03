@@ -170,7 +170,7 @@ async function run() {
     "已取消的旧响应不能覆盖提交后的清零缓存"
   );
 
-  const cartSource = readFileSync(resolve(process.cwd(), "app/(tabs)/cart.tsx"), "utf8");
+  const cartSource = readFileSync(resolve(process.cwd(), "app/(shell)/cart.tsx"), "utf8");
   if (!cartSource.includes("reconcileSubmittedCartCache(queryClient, selectedStoreCode)")) {
     throw new Error("订单提交成功处理必须调用统一缓存协调 helper");
   }

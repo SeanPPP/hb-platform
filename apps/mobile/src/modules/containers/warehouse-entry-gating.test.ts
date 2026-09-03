@@ -4,7 +4,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const currentDir = dirname(fileURLToPath(import.meta.url));
-const warehouseSource = readFileSync(resolve(currentDir, "../../../app/(tabs)/warehouse.tsx"), "utf8");
+const warehouseSource = readFileSync(resolve(currentDir, "../../../app/(shell)/warehouse.tsx"), "utf8");
 
 const gateIndex = warehouseSource.indexOf("if (!canUseWarehouseTools)");
 const entryIndex = warehouseSource.indexOf("{renderContainerEntry()}", gateIndex);

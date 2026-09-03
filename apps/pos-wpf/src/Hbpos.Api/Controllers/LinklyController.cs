@@ -41,6 +41,248 @@ public sealed class LinklyController(
     private const string CloudBackendPairTimeoutCode = "LINKLY_CLOUD_BACKEND_PAIR_TIMEOUT";
     private const string CloudBackendPairPersistenceFailedCode = "LINKLY_CLOUD_BACKEND_PAIR_PERSISTENCE_FAILED";
     private const string CloudBackendPairPreparationFailedCode = "LINKLY_CLOUD_BACKEND_PAIR_PREPARATION_FAILED";
+    private const string CloudBackendTerminalNotFoundCode = "LINKLY_CLOUD_TERMINAL_NOT_FOUND";
+    private const string CloudBackendTerminalNotReadyCode = "LINKLY_CLOUD_TERMINAL_NOT_READY";
+    private const string CloudBackendTerminalAssignedCode = "LINKLY_CLOUD_TERMINAL_ASSIGNED";
+    private const string CloudBackendTerminalSelectionConflictCode = "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT";
+    private const string CloudBackendTerminalSessionActiveCode = "LINKLY_CLOUD_TERMINAL_SESSION_ACTIVE";
+    private const string CloudBackendTerminalPairingConflictCode = "LINKLY_CLOUD_TERMINAL_PAIRING_CONFLICT";
+    private const string CloudTerminalCredentialReentryRequiredCode =
+        "LINKLY_CLOUD_TERMINAL_CREDENTIAL_REENTRY_REQUIRED";
+    private const string CloudTerminalCredentialReentryRequiredMessage =
+        "Linkly Cloud terminal credentials must be re-entered in the management portal.";
+    private const string CloudTerminalCredentialUnavailableCode =
+        "LINKLY_CLOUD_TERMINAL_CREDENTIAL_UNAVAILABLE";
+    private const string CloudTerminalCredentialUnavailableMessage =
+        "Linkly Cloud terminal credentials are unavailable. Re-enter them in the management portal.";
+    private const string CloudLegacyModeDisabledCode = "LINKLY_CLOUD_LEGACY_MODE_DISABLED";
+    private const string CloudLegacyModeDisabledMessage =
+        "Legacy Linkly Cloud credential endpoints are disabled while multi-terminal mode is Active.";
+
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentTerminalSelection)]
+    [HttpGet("cloud-backend/terminals")]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalListResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalListResponse>), StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ApiResult<LinklyCloudTerminalListResponse>>> GetCloudBackendTerminals(
+        [FromQuery] string? environment,
+        CancellationToken cancellationToken)
+    {
+        var scope = GetAuthenticatedDeviceScope<LinklyCloudTerminalListResponse>();
+        if (scope.Result is not null)
+        {
+            return scope.Result;
+        }
+
+        try
+        {
+            var response = await GetTerminalService().GetTerminalsAsync(
+                scope.StoreCode!,
+                scope.DeviceCode!,
+                environment ?? string.Empty,
+                cancellationToken);
+            return Ok(ApiResult<LinklyCloudTerminalListResponse>.Ok(response));
+        }
+        catch (LinklyCloudBackendValidationException ex)
+        {
+            return BadRequest(ApiResult<LinklyCloudTerminalListResponse>.Fail(
+                CloudBackendInvalidCode,
+                ex.Message));
+        }
+    }
+
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentTerminalSelection)]
+    [HttpPut("cloud-backend/terminal-selection")]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalSelectionResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalSelectionResponse>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalSelectionResponse>), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalSelectionResponse>), StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<ApiResult<LinklyCloudTerminalSelectionResponse>>> SelectCloudBackendTerminal(
+        [FromBody] LinklyCloudTerminalSelectionRequest request,
+        CancellationToken cancellationToken)
+    {
+        var scope = GetAuthenticatedDeviceScope<LinklyCloudTerminalSelectionResponse>();
+        if (scope.Result is not null)
+        {
+            return scope.Result;
+        }
+
+        if (request is null)
+        {
+            return BadRequest(ApiResult<LinklyCloudTerminalSelectionResponse>.Fail(
+                CloudBackendInvalidCode,
+                "request body is required."));
+        }
+
+        try
+        {
+            var response = await GetTerminalService().SelectTerminalAsync(
+                scope.StoreCode!,
+                scope.DeviceCode!,
+                request,
+                GetUpdatedByClaim(),
+                cancellationToken);
+            return Ok(ApiResult<LinklyCloudTerminalSelectionResponse>.Ok(response));
+        }
+        catch (LinklyCloudTerminalCredentialReentryRequiredException)
+        {
+            return Conflict(CredentialReentryRequired<LinklyCloudTerminalSelectionResponse>());
+        }
+        catch (LinklyCloudTerminalCredentialUnavailableException)
+        {
+            return Conflict(CredentialUnavailable<LinklyCloudTerminalSelectionResponse>());
+        }
+        catch (LinklyCloudTerminalNotFoundException ex)
+        {
+            return NotFound(ApiResult<LinklyCloudTerminalSelectionResponse>.Fail(
+                CloudBackendTerminalNotFoundCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalNotReadyException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudTerminalSelectionResponse>.Fail(
+                CloudBackendTerminalNotReadyCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalAssignedException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudTerminalSelectionResponse>.Fail(
+                CloudBackendTerminalAssignedCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalSelectionConflictException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudTerminalSelectionResponse>.Fail(
+                CloudBackendTerminalSelectionConflictCode,
+                ex.Message));
+        }
+        catch (LinklyCloudBackendValidationException ex)
+        {
+            return BadRequest(ApiResult<LinklyCloudTerminalSelectionResponse>.Fail(
+                CloudBackendInvalidCode,
+                ex.Message));
+        }
+    }
+
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
+    [HttpPost("cloud-backend/terminals/{terminalId:guid}/pair")]
+    [LinklyCloudPairRequestModelState]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalPairResponse>), StatusCodes.Status200OK)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalPairResponse>), StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalPairResponse>), StatusCodes.Status404NotFound)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalPairResponse>), StatusCodes.Status409Conflict)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalPairResponse>), StatusCodes.Status422UnprocessableEntity)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalPairResponse>), StatusCodes.Status500InternalServerError)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalPairResponse>), StatusCodes.Status502BadGateway)]
+    [ProducesResponseType(typeof(ApiResult<LinklyCloudTerminalPairResponse>), StatusCodes.Status504GatewayTimeout)]
+    public async Task<ActionResult<ApiResult<LinklyCloudTerminalPairResponse>>> PairCloudBackendTerminal(
+        Guid terminalId,
+        [FromBody] LinklyCloudBackendPairRequest request,
+        CancellationToken cancellationToken)
+    {
+        var scope = GetAuthenticatedDeviceScope<LinklyCloudTerminalPairResponse>();
+        if (scope.Result is not null)
+        {
+            return scope.Result;
+        }
+
+        if (request is null)
+        {
+            return BadRequest(ApiResult<LinklyCloudTerminalPairResponse>.Fail(
+                CloudBackendPairInvalidCode,
+                "request body is required."));
+        }
+
+        try
+        {
+            var response = await GetTerminalService().PairTerminalAsync(
+                scope.StoreCode!,
+                scope.DeviceCode!,
+                terminalId,
+                request,
+                GetUpdatedByClaim(),
+                cancellationToken);
+            return Ok(ApiResult<LinklyCloudTerminalPairResponse>.Ok(response));
+        }
+        catch (LinklyCloudTerminalCredentialReentryRequiredException)
+        {
+            return Conflict(CredentialReentryRequired<LinklyCloudTerminalPairResponse>());
+        }
+        catch (LinklyCloudTerminalCredentialUnavailableException)
+        {
+            return Conflict(CredentialUnavailable<LinklyCloudTerminalPairResponse>());
+        }
+        catch (LinklyCloudTerminalNotFoundException ex)
+        {
+            return NotFound(ApiResult<LinklyCloudTerminalPairResponse>.Fail(
+                CloudBackendTerminalNotFoundCode,
+                ex.Message));
+        }
+        catch (LinklyCloudPairingValidationException ex)
+        {
+            return BadRequest(ApiResult<LinklyCloudTerminalPairResponse>.Fail(
+                CloudBackendPairInvalidCode,
+                ex.Message));
+        }
+        catch (LinklyCloudPairingCredentialMissingException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudTerminalPairResponse>.Fail(
+                CloudBackendPairCredentialMissingCode,
+                ex.Message));
+        }
+        catch (LinklyCloudPairingInProgressException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudTerminalPairResponse>.Fail(
+                CloudBackendPairInProgressCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalSessionActiveException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudTerminalPairResponse>.Fail(
+                CloudBackendTerminalSessionActiveCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalPairingConflictException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudTerminalPairResponse>.Fail(
+                CloudBackendTerminalPairingConflictCode,
+                ex.Message));
+        }
+        catch (LinklyCloudPairingRejectedException ex)
+        {
+            return UnprocessableEntity(ApiResult<LinklyCloudTerminalPairResponse>.Fail(
+                CloudBackendPairRejectedCode,
+                ex.Message));
+        }
+        catch (LinklyCloudPairingUpstreamException ex)
+        {
+            return StatusCode(
+                StatusCodes.Status502BadGateway,
+                ApiResult<LinklyCloudTerminalPairResponse>.Fail(CloudBackendPairUpstreamFailedCode, ex.Message));
+        }
+        catch (LinklyCloudPairingTimeoutException ex)
+        {
+            return StatusCode(
+                StatusCodes.Status504GatewayTimeout,
+                ApiResult<LinklyCloudTerminalPairResponse>.Fail(CloudBackendPairTimeoutCode, ex.Message));
+        }
+        catch (LinklyCloudPairingPersistenceException)
+        {
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                ApiResult<LinklyCloudTerminalPairResponse>.Fail(
+                    CloudBackendPairPersistenceFailedCode,
+                    "Linkly Cloud pairing succeeded but the terminal credential could not be saved."));
+        }
+        catch (Exception ex)
+        {
+            Log($"cloud backend terminal pair failed terminalId={terminalId:D} error={ex.GetType().Name}");
+            return StatusCode(
+                StatusCodes.Status500InternalServerError,
+                ApiResult<LinklyCloudTerminalPairResponse>.Fail(
+                    CloudBackendFailedCode,
+                    "Failed to pair Linkly Cloud backend terminal."));
+        }
+    }
 
     [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
     [HttpPost("cloud-backend/pair")]
@@ -71,6 +313,24 @@ public sealed class LinklyController(
 
         try
         {
+            var normalizedEnvironment = LinklyCloudCredentialService.NormalizeEnvironment(request.Environment);
+            if (normalizedEnvironment is null)
+            {
+                return BadRequest(ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                    CloudBackendPairInvalidCode,
+                    "environment must be Production or Sandbox"));
+            }
+
+            if (await IsLegacyModeDisabledAsync(
+                    normalizedEnvironment,
+                    scope.StoreCode!,
+                    cancellationToken))
+            {
+                return Conflict(ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                    CloudLegacyModeDisabledCode,
+                    CloudLegacyModeDisabledMessage));
+            }
+
             var response = await linklyCloudPairingService.PairAsync(
                 scope.StoreCode!,
                 scope.DeviceCode!,
@@ -78,6 +338,12 @@ public sealed class LinklyController(
                 GetUpdatedByClaim(),
                 cancellationToken);
             return Ok(ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Ok(response));
+        }
+        catch (LinklyCloudLegacyModeDisabledException)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                CloudLegacyModeDisabledCode,
+                CloudLegacyModeDisabledMessage));
         }
         catch (LinklyCloudPairingValidationException ex)
         {
@@ -172,6 +438,17 @@ public sealed class LinklyController(
         Log($"cloud credential request store={LogValue(storeCode)} environment={normalizedEnvironment}");
         try
         {
+            if (await IsLegacyModeDisabledAsync(
+                    normalizedEnvironment,
+                    storeCode,
+                    cancellationToken))
+            {
+                stopwatch.Stop();
+                return Conflict(ApiResult<LinklyCloudCredentialResponse>.Fail(
+                    CloudLegacyModeDisabledCode,
+                    CloudLegacyModeDisabledMessage));
+            }
+
             var credential = await linklyCloudCredentialService.GetByStoreCodeAsync(
                 storeCode,
                 normalizedEnvironment,
@@ -231,6 +508,16 @@ public sealed class LinklyController(
                     "environment must be Production or Sandbox"));
             }
 
+            if (await IsLegacyModeDisabledAsync(
+                    normalizedEnvironment,
+                    storeCode,
+                    cancellationToken))
+            {
+                return Conflict(ApiResult<LinklyCloudCredentialUpsertResponse>.Fail(
+                    CloudLegacyModeDisabledCode,
+                    CloudLegacyModeDisabledMessage));
+            }
+
             Log($"cloud credential upsert request store={LogValue(storeCode)} environment={normalizedEnvironment}");
             var response = await linklyCloudCredentialService.UpsertAsync(
                 storeCode,
@@ -239,6 +526,12 @@ public sealed class LinklyController(
                 cancellationToken);
             Log($"cloud credential upsert response store={LogValue(storeCode)} environment={response.Environment} status=200 updatedAt={response.UpdatedAt:O}");
             return Ok(ApiResult<LinklyCloudCredentialUpsertResponse>.Ok(response));
+        }
+        catch (LinklyCloudLegacyModeDisabledException)
+        {
+            return Conflict(ApiResult<LinklyCloudCredentialUpsertResponse>.Fail(
+                CloudLegacyModeDisabledCode,
+                CloudLegacyModeDisabledMessage));
         }
         catch (LinklyCloudCredentialValidationException ex)
         {
@@ -287,6 +580,32 @@ public sealed class LinklyController(
                     ? "An active Linkly Cloud transaction already exists for this terminal."
                     : $"An active Linkly Cloud transaction already exists for this terminal: {ex.ActiveSessionId}."));
         }
+        catch (LinklyCloudTerminalCredentialReentryRequiredException)
+        {
+            return Conflict(CredentialReentryRequired<LinklyCloudBackendSessionResponse>());
+        }
+        catch (LinklyCloudTerminalCredentialUnavailableException)
+        {
+            return Conflict(CredentialUnavailable<LinklyCloudBackendSessionResponse>());
+        }
+        catch (LinklyCloudTerminalSelectionConflictException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                CloudBackendTerminalSelectionConflictCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalNotReadyException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                CloudBackendTerminalNotReadyCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalNotFoundException ex)
+        {
+            return NotFound(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                CloudBackendTerminalNotFoundCode,
+                ex.Message));
+        }
         catch (LinklyCloudBackendValidationException ex)
         {
             return BadRequest(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
@@ -333,6 +652,32 @@ public sealed class LinklyController(
                     ? "An active Linkly Cloud operation already exists for this terminal."
                     : $"An active Linkly Cloud operation already exists for this terminal: {ex.ActiveSessionId}."));
         }
+        catch (LinklyCloudTerminalCredentialReentryRequiredException)
+        {
+            return Conflict(CredentialReentryRequired<LinklyCloudBackendSessionResponse>());
+        }
+        catch (LinklyCloudTerminalCredentialUnavailableException)
+        {
+            return Conflict(CredentialUnavailable<LinklyCloudBackendSessionResponse>());
+        }
+        catch (LinklyCloudTerminalSelectionConflictException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                CloudBackendTerminalSelectionConflictCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalNotReadyException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                CloudBackendTerminalNotReadyCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalNotFoundException ex)
+        {
+            return NotFound(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
+                CloudBackendTerminalNotFoundCode,
+                ex.Message));
+        }
         catch (LinklyCloudBackendValidationException ex)
         {
             return BadRequest(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
@@ -371,6 +716,24 @@ public sealed class LinklyController(
 
         try
         {
+            var normalizedEnvironment = LinklyCloudCredentialService.NormalizeEnvironment(request.Environment);
+            if (normalizedEnvironment is null)
+            {
+                return BadRequest(ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                    CloudBackendInvalidCode,
+                    "environment must be Production or Sandbox"));
+            }
+
+            if (await IsLegacyModeDisabledAsync(
+                    normalizedEnvironment,
+                    scope.StoreCode!,
+                    cancellationToken))
+            {
+                return Conflict(ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                    CloudLegacyModeDisabledCode,
+                    CloudLegacyModeDisabledMessage));
+            }
+
             var response = await linklyCloudBackendAsyncService.UpsertTerminalCredentialAsync(
                 scope.StoreCode!,
                 scope.DeviceCode!,
@@ -378,6 +741,12 @@ public sealed class LinklyController(
                 GetUpdatedByClaim(),
                 cancellationToken);
             return Ok(ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Ok(response));
+        }
+        catch (LinklyCloudLegacyModeDisabledException)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendTerminalCredentialResponse>.Fail(
+                CloudLegacyModeDisabledCode,
+                CloudLegacyModeDisabledMessage));
         }
         catch (LinklyCloudBackendValidationException ex)
         {
@@ -493,11 +862,13 @@ public sealed class LinklyController(
         }
     }
 
-    [Authorize(Policy = CashierAuthorizationPolicies.PaymentSettings)]
+    [Authorize(Policy = CashierAuthorizationPolicies.PaymentTerminalSelection)]
     [HttpGet("cloud-backend/health")]
     public async Task<ActionResult<ApiResult<LinklyCloudBackendHealthResponse>>> GetCloudBackendHealth(
         [FromQuery] string? environment,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        [FromQuery] Guid? terminalId = null,
+        [FromQuery] long? selectionRevision = null)
     {
         var scope = GetAuthenticatedDeviceScope<LinklyCloudBackendHealthResponse>();
         if (scope.Result is not null)
@@ -511,13 +882,41 @@ public sealed class LinklyController(
                 scope.StoreCode!,
                 scope.DeviceCode!,
                 environment ?? string.Empty,
+                terminalId,
+                selectionRevision,
                 cancellationToken);
             return Ok(ApiResult<LinklyCloudBackendHealthResponse>.Ok(response));
+        }
+        catch (LinklyCloudTerminalCredentialReentryRequiredException)
+        {
+            return Conflict(CredentialReentryRequired<LinklyCloudBackendHealthResponse>());
+        }
+        catch (LinklyCloudTerminalCredentialUnavailableException)
+        {
+            return Conflict(CredentialUnavailable<LinklyCloudBackendHealthResponse>());
         }
         catch (LinklyCloudBackendValidationException ex)
         {
             return BadRequest(ApiResult<LinklyCloudBackendHealthResponse>.Fail(
                 CloudBackendInvalidCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalSelectionConflictException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendHealthResponse>.Fail(
+                CloudBackendTerminalSelectionConflictCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalNotReadyException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendHealthResponse>.Fail(
+                CloudBackendTerminalNotReadyCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalNotFoundException ex)
+        {
+            return NotFound(ApiResult<LinklyCloudBackendHealthResponse>.Fail(
+                CloudBackendTerminalNotFoundCode,
                 ex.Message));
         }
     }
@@ -526,7 +925,9 @@ public sealed class LinklyController(
     [HttpPost("cloud-backend/status-test")]
     public async Task<ActionResult<ApiResult<LinklyCloudBackendStatusTestResponse>>> RunCloudBackendStatusTest(
         [FromQuery] string? environment,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        [FromQuery] Guid? terminalId = null,
+        [FromQuery] long? selectionRevision = null)
     {
         var scope = GetAuthenticatedDeviceScope<LinklyCloudBackendStatusTestResponse>();
         if (scope.Result is not null)
@@ -540,8 +941,18 @@ public sealed class LinklyController(
                 scope.StoreCode!,
                 scope.DeviceCode!,
                 environment ?? string.Empty,
+                terminalId,
+                selectionRevision,
                 cancellationToken);
             return Ok(ApiResult<LinklyCloudBackendStatusTestResponse>.Ok(response));
+        }
+        catch (LinklyCloudTerminalCredentialReentryRequiredException)
+        {
+            return Conflict(CredentialReentryRequired<LinklyCloudBackendStatusTestResponse>());
+        }
+        catch (LinklyCloudTerminalCredentialUnavailableException)
+        {
+            return Conflict(CredentialUnavailable<LinklyCloudBackendStatusTestResponse>());
         }
         catch (LinklyCloudBackendValidationException ex)
         {
@@ -549,9 +960,33 @@ public sealed class LinklyController(
                 CloudBackendInvalidCode,
                 ex.Message));
         }
+        catch (LinklyCloudBackendActiveTransactionException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendStatusTestResponse>.Fail(
+                CloudBackendActiveCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalSelectionConflictException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendStatusTestResponse>.Fail(
+                CloudBackendTerminalSelectionConflictCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalNotReadyException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendStatusTestResponse>.Fail(
+                CloudBackendTerminalNotReadyCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalNotFoundException ex)
+        {
+            return NotFound(ApiResult<LinklyCloudBackendStatusTestResponse>.Fail(
+                CloudBackendTerminalNotFoundCode,
+                ex.Message));
+        }
         catch (Exception ex)
         {
-            Log($"cloud-backend status-test error={ex.GetType().Name} message={ex.Message}");
+            Log($"cloud-backend status-test error={ex.GetType().Name}");
             return StatusCode(
                 StatusCodes.Status500InternalServerError,
                 ApiResult<LinklyCloudBackendStatusTestResponse>.Fail(
@@ -564,7 +999,9 @@ public sealed class LinklyController(
     [HttpPost("cloud-backend/logon-test")]
     public async Task<ActionResult<ApiResult<LinklyCloudBackendLogonTestResponse>>> RunCloudBackendLogonTest(
         [FromQuery] string? environment,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        [FromQuery] Guid? terminalId = null,
+        [FromQuery] long? selectionRevision = null)
     {
         var scope = GetAuthenticatedDeviceScope<LinklyCloudBackendLogonTestResponse>();
         if (scope.Result is not null)
@@ -578,8 +1015,18 @@ public sealed class LinklyController(
                 scope.StoreCode!,
                 scope.DeviceCode!,
                 environment ?? string.Empty,
+                terminalId,
+                selectionRevision,
                 cancellationToken);
             return Ok(ApiResult<LinklyCloudBackendLogonTestResponse>.Ok(response));
+        }
+        catch (LinklyCloudTerminalCredentialReentryRequiredException)
+        {
+            return Conflict(CredentialReentryRequired<LinklyCloudBackendLogonTestResponse>());
+        }
+        catch (LinklyCloudTerminalCredentialUnavailableException)
+        {
+            return Conflict(CredentialUnavailable<LinklyCloudBackendLogonTestResponse>());
         }
         catch (LinklyCloudBackendValidationException ex)
         {
@@ -587,9 +1034,33 @@ public sealed class LinklyController(
                 CloudBackendInvalidCode,
                 ex.Message));
         }
+        catch (LinklyCloudBackendActiveTransactionException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendLogonTestResponse>.Fail(
+                CloudBackendActiveCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalSelectionConflictException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendLogonTestResponse>.Fail(
+                CloudBackendTerminalSelectionConflictCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalNotReadyException ex)
+        {
+            return Conflict(ApiResult<LinklyCloudBackendLogonTestResponse>.Fail(
+                CloudBackendTerminalNotReadyCode,
+                ex.Message));
+        }
+        catch (LinklyCloudTerminalNotFoundException ex)
+        {
+            return NotFound(ApiResult<LinklyCloudBackendLogonTestResponse>.Fail(
+                CloudBackendTerminalNotFoundCode,
+                ex.Message));
+        }
         catch (Exception ex)
         {
-            Log($"cloud-backend logon-test error={ex.GetType().Name} message={ex.Message}");
+            Log($"cloud-backend logon-test error={ex.GetType().Name}");
             return StatusCode(
                 StatusCodes.Status500InternalServerError,
                 ApiResult<LinklyCloudBackendLogonTestResponse>.Fail(
@@ -625,6 +1096,14 @@ public sealed class LinklyController(
                 : Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(
                     LinklyCardTransactionSanitizer.Attach(response)));
         }
+        catch (LinklyCloudTerminalCredentialReentryRequiredException)
+        {
+            return Conflict(CredentialReentryRequired<LinklyCloudBackendSessionResponse>());
+        }
+        catch (LinklyCloudTerminalCredentialUnavailableException)
+        {
+            return Conflict(CredentialUnavailable<LinklyCloudBackendSessionResponse>());
+        }
         catch (LinklyCloudBackendValidationException ex)
         {
             return BadRequest(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
@@ -659,6 +1138,14 @@ public sealed class LinklyController(
                     CloudBackendNotFoundCode,
                     "Linkly Cloud backend settlement was not found."))
                 : Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(response));
+        }
+        catch (LinklyCloudTerminalCredentialReentryRequiredException)
+        {
+            return Conflict(CredentialReentryRequired<LinklyCloudBackendSessionResponse>());
+        }
+        catch (LinklyCloudTerminalCredentialUnavailableException)
+        {
+            return Conflict(CredentialUnavailable<LinklyCloudBackendSessionResponse>());
         }
         catch (LinklyCloudBackendValidationException ex)
         {
@@ -765,6 +1252,14 @@ public sealed class LinklyController(
             return Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(
                 LinklyCardTransactionSanitizer.Attach(response)));
         }
+        catch (LinklyCloudTerminalCredentialReentryRequiredException)
+        {
+            return Conflict(CredentialReentryRequired<LinklyCloudBackendSessionResponse>());
+        }
+        catch (LinklyCloudTerminalCredentialUnavailableException)
+        {
+            return Conflict(CredentialUnavailable<LinklyCloudBackendSessionResponse>());
+        }
         catch (LinklyCloudBackendSessionNotFoundException)
         {
             return NotFound(ApiResult<LinklyCloudBackendSessionResponse>.Fail(
@@ -807,6 +1302,14 @@ public sealed class LinklyController(
             }
 
             return Ok(ApiResult<LinklyCloudBackendSessionResponse>.Ok(response));
+        }
+        catch (LinklyCloudTerminalCredentialReentryRequiredException)
+        {
+            return Conflict(CredentialReentryRequired<LinklyCloudBackendSessionResponse>());
+        }
+        catch (LinklyCloudTerminalCredentialUnavailableException)
+        {
+            return Conflict(CredentialUnavailable<LinklyCloudBackendSessionResponse>());
         }
         catch (LinklyCloudBackendSessionNotFoundException)
         {
@@ -983,6 +1486,33 @@ public sealed class LinklyController(
 
         // CloudBackendAsync 所有设备 scope 只信任认证 claim，忽略 query/body 中任何门店或设备字段。
         return (storeCode.Trim(), deviceCode.Trim(), null);
+    }
+
+    private ILinklyCloudTerminalService GetTerminalService()
+    {
+        // 通过统一终端服务读取模式和终端状态，控制器不直接接触 repository。
+        return HttpContext.RequestServices.GetService<ILinklyCloudTerminalService>()
+            ?? throw new InvalidOperationException("Linkly Cloud terminal service is not registered.");
+    }
+
+    private static ApiResult<T> CredentialReentryRequired<T>() => ApiResult<T>.Fail(
+        CloudTerminalCredentialReentryRequiredCode,
+        CloudTerminalCredentialReentryRequiredMessage);
+
+    private static ApiResult<T> CredentialUnavailable<T>() => ApiResult<T>.Fail(
+        CloudTerminalCredentialUnavailableCode,
+        CloudTerminalCredentialUnavailableMessage);
+
+    private async Task<bool> IsLegacyModeDisabledAsync(
+        string environment,
+        string storeCode,
+        CancellationToken cancellationToken)
+    {
+        var mode = await GetTerminalService().GetConfigurationModeAsync(
+            environment,
+            storeCode,
+            cancellationToken);
+        return string.Equals(mode, "Active", StringComparison.OrdinalIgnoreCase);
     }
 
     private string? GetUpdatedByClaim()

@@ -105,6 +105,7 @@ export interface AccessControl {
   canManageAppDownloads: boolean
   canViewDeviceRegistration: boolean
   canManageDeviceRegistration: boolean
+  canManageMobileDeviceActivationCodes: boolean
   canViewPosProducts: boolean
   canManagePosProducts: boolean
   canAccessAdminShell: boolean

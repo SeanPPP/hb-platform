@@ -1,6 +1,5 @@
 import { DownloadOutlined, FileExcelOutlined, PrinterOutlined, RollbackOutlined } from '@ant-design/icons'
 import { Button, Empty, Space, Spin, message } from 'antd'
-import ExcelJS from 'exceljs'
 import { useKeepAliveContext } from 'keepalive-for-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -285,6 +284,7 @@ export default function PickingListPage() {
 
     setExportingExcel(true)
     try {
+      const { default: ExcelJS } = await import('exceljs')
       const workbook = new ExcelJS.Workbook()
       const excelData = buildPickingListExcelData(
         order,

@@ -80,7 +80,7 @@ export function EmployeeProfileReviewListScreen() {
     }
     await clearEmployeeProfileReviewListCache(queryClient);
     if (mountedRef.current) {
-      router.replace("/(tabs)/settings");
+      router.replace("/(shell)/settings");
     }
   }, [queryClient, router]);
 

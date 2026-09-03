@@ -145,7 +145,7 @@ async function run() {
       "src/modules/advertisements/advertisements-screen.tsx",
       "src/shared/logging/log-center-runtime.ts",
       "src/components/attendance/LeaveManagementCard.tsx",
-      "app/(tabs)/warehouse.tsx",
+      "app/(shell)/warehouse.tsx",
     ];
     runtimeFiles.forEach((file) => {
       const source = readMobileSource(file);
@@ -171,7 +171,7 @@ async function run() {
       "审核会话恢复时必须允许强制停止遗留后台定位任务",
     );
 
-    const productQuerySource = readMobileSource("app/(tabs)/product-query.tsx");
+    const productQuerySource = readMobileSource("app/(shell)/product-query.tsx");
     assert.match(productQuerySource, /9330000000017/,
       "商品查询页必须提供固定示例条码");
 
@@ -208,7 +208,7 @@ async function run() {
     );
     assert.match(hydrateSavedPrinterSource, /PrinterStorage\.getPrinter\(\)/);
 
-    const settingsSource = readMobileSource("app/(tabs)/settings.tsx");
+    const settingsSource = readMobileSource("app/(shell)/settings.tsx");
     assertGuardBefore(settingsSource, "const handleCheckUpdates", "checkAndDownloadAppUpdate()", "手动 OTA");
     assert.match(
       settingsSource,

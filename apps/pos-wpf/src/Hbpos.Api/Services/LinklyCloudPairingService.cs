@@ -65,6 +65,8 @@ public sealed class LinklyCloudPairingService(
 {
     private static readonly ConcurrentDictionary<PairingScope, byte> InProgress = new();
     private static readonly TimeSpan PersistenceTimeout = TimeSpan.FromSeconds(15);
+    // 上游 HTTP 超时、持久化窗口与一分钟收尾余量合计后取安全上界，避免 Pair Code 被并发重放。
+    private static readonly TimeSpan LegacyPairingLeaseDuration = TimeSpan.FromSeconds(315);
 
     public async Task<LinklyCloudBackendTerminalCredentialResponse> PairAsync(
         string storeCode,
@@ -92,13 +94,51 @@ public sealed class LinklyCloudPairingService(
 
         try
         {
-            return await PairCoreAsync(
-                environment,
-                normalizedStoreCode,
-                normalizedDeviceCode,
-                pairCode,
-                updatedBy,
-                cancellationToken);
+            var attemptId = Guid.NewGuid();
+            var now = DateTime.UtcNow;
+            try
+            {
+                await terminalCredentialRepository.AcquireLegacyPairingLeaseAsync(
+                    environment,
+                    normalizedStoreCode,
+                    attemptId,
+                    now.Add(LegacyPairingLeaseDuration),
+                    now,
+                    cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                // 取消时无法证明数据库是否已落租约，按未知结果处理且绝不触发上游重放。
+                throw new LinklyCloudPairingTimeoutException();
+            }
+
+            try
+            {
+                return await PairCoreAsync(
+                    environment,
+                    normalizedStoreCode,
+                    normalizedDeviceCode,
+                    pairCode,
+                    attemptId,
+                    updatedBy,
+                    cancellationToken);
+            }
+            catch (LinklyCloudPairingCredentialMissingException)
+            {
+                await ReleaseExplicitFailureLeaseAsync(environment, normalizedStoreCode, attemptId);
+                throw;
+            }
+            catch (LinklyCloudPairingPreparationException)
+            {
+                // 配置读取失败发生在上游调用之前，Pair Code 尚未消费，可按 attemptId 安全释放。
+                await ReleaseExplicitFailureLeaseAsync(environment, normalizedStoreCode, attemptId);
+                throw;
+            }
+            catch (LinklyCloudPairingRejectedException)
+            {
+                await ReleaseExplicitFailureLeaseAsync(environment, normalizedStoreCode, attemptId);
+                throw;
+            }
         }
         finally
         {
@@ -111,6 +151,7 @@ public sealed class LinklyCloudPairingService(
         string storeCode,
         string deviceCode,
         string pairCode,
+        Guid attemptId,
         string? updatedBy,
         CancellationToken cancellationToken)
     {
@@ -191,6 +232,7 @@ public sealed class LinklyCloudPairingService(
             environment,
             storeCode,
             deviceCode,
+            attemptId,
             posId,
             upstreamResponse.Secret.Trim(),
             updatedBy);
@@ -200,6 +242,7 @@ public sealed class LinklyCloudPairingService(
         string environment,
         string storeCode,
         string deviceCode,
+        Guid attemptId,
         string posId,
         string secret,
         string? updatedBy)
@@ -209,22 +252,15 @@ public sealed class LinklyCloudPairingService(
         try
         {
             // 上游已经成功后，不能再使用请求 token；客户端断开也必须给持久化一个有界机会。
-            await terminalCredentialRepository.UpsertAsync(
+            var saved = await terminalCredentialRepository.CompleteLegacyPairingAsync(
                 environment,
                 storeCode,
                 deviceCode,
+                attemptId,
+                now,
                 secret,
                 posId,
-                now,
                 NormalizeOptional(updatedBy),
-                persistenceTimeout.Token).WaitAsync(persistenceTimeout.Token);
-
-            // 共享仓库为旧调用方保留了内存回退记录；配对必须额外按 claims scope
-            // 真正读回相同 secret/posId，才能向 iPad 宣告完成。
-            var saved = await terminalCredentialRepository.GetByDeviceAsync(
-                environment,
-                storeCode,
-                deviceCode,
                 persistenceTimeout.Token).WaitAsync(persistenceTimeout.Token);
 
             if (saved is null ||
@@ -246,10 +282,35 @@ public sealed class LinklyCloudPairingService(
                 saved.PosId!.Trim(),
                 new DateTimeOffset(DateTime.SpecifyKind(saved.UpdatedAt ?? now, DateTimeKind.Utc)));
         }
+        catch (LinklyCloudLegacyModeDisabledException)
+        {
+            // 完成 CAS 期间模式可能被切至 Active；必须保留专用 409，而非误报持久化失败。
+            throw;
+        }
         catch (Exception ex)
         {
             LogFailure("persistence", environment, storeCode, deviceCode, ex);
             throw new LinklyCloudPairingPersistenceException();
+        }
+    }
+
+    private async Task ReleaseExplicitFailureLeaseAsync(
+        string environment,
+        string storeCode,
+        Guid attemptId)
+    {
+        try
+        {
+            await terminalCredentialRepository.ReleaseLegacyPairingLeaseAsync(
+                environment,
+                storeCode,
+                attemptId,
+                CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            // 显式失败优先释放；若释放本身失败不能误报为可重试，记录后保留原始结果。
+            LogFailure("lease-release", environment, storeCode, "legacy", ex);
         }
     }
 

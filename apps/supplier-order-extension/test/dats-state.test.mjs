@@ -6,6 +6,7 @@ import {
   needsProcessing,
   shouldInjectList,
   computeButtonState,
+  buildSummaryCacheKey,
   normalizeSummaryItem,
   normalizeSummaryMap,
 } from '../src/lib/dats-state.js';
@@ -54,8 +55,13 @@ test('computeButtonState 明确短状态', () => {
   assert.deepEqual(computeButtonState({ error: 'x' }), { kind: 'error', reason: 'error' });
   assert.deepEqual(computeButtonState({ hasMatch: false }), { kind: 'none', reason: 'noMatch' });
   assert.deepEqual(
-    computeButtonState({ hasMatch: true, hasPurchase: false }),
-    { kind: 'none', reason: 'noPurchase' },
+    computeButtonState({
+      hasMatch: true,
+      hasPurchase: false,
+      salesRankBand: 'top-20',
+      salesRankingDays: 90,
+    }),
+    { kind: 'none', reason: 'noPurchase', salesRankBand: 'top-20', salesRankingDays: 90 },
   );
   assert.deepEqual(
     computeButtonState({
@@ -64,13 +70,21 @@ test('computeButtonState 明确短状态', () => {
       lastOrderDate: '2026-08-01',
       lastOrderQuantity: 10,
       salesToDate: 42,
+      salesRankBand: 'top-10',
+      salesRankingDays: 60,
     }),
     {
       kind: 'ok',
       lastOrderDate: '2026-08-01',
       lastOrderQuantity: 10,
       salesToDate: 42,
+      salesRankBand: 'top-10',
+      salesRankingDays: 60,
     },
+  );
+  assert.deepEqual(
+    computeButtonState({ hasMatch: false, hasPurchase: false, salesRankBand: 'top-10' }),
+    { kind: 'none', reason: 'noMatch' },
   );
 });
 
@@ -80,22 +94,36 @@ test('normalizeSummaryItem 归一化摘要项', () => {
   assert.deepEqual(normalizeSummaryItem({ hasMatch: false }), { hasMatch: false, hasPurchase: false, lastOrderDate: null, lastOrderQuantity: null, salesToDate: null });
   assert.equal(normalizeSummaryItem({ lastOrderDate: '2026-08-01' }).hasPurchase, true);
   assert.deepEqual(
-    normalizeSummaryItem({
-      matchStatus: 'matched',
-      latestPurchaseDate: '2026-08-01',
-      latestPurchaseQuantity: 12,
-      salesSinceLatestPurchase: 7,
-    }),
+    normalizeSummaryItem(
+      {
+        matchStatus: 'matched',
+        latestPurchaseDate: '2026-08-01',
+        latestPurchaseQuantity: 12,
+        salesSinceLatestPurchase: 7,
+        salesRankBand: 'top-30',
+      },
+      { salesRankingAvailable: true },
+    ),
     {
       hasMatch: true,
       hasPurchase: true,
       lastOrderDate: '2026-08-01',
       lastOrderQuantity: 12,
       salesToDate: 7,
+      salesRankBand: 'top-30',
     },
   );
   assert.equal(normalizeSummaryItem({ matchStatus: 'no-purchase' }).hasPurchase, false);
   assert.equal(normalizeSummaryItem({ matchStatus: 'unmatched' }).hasMatch, false);
+});
+
+test('摘要缓存键包含门店、周期和商品，避免 60/90 天结果串用', () => {
+  assert.equal(buildSummaryCacheKey('1014', 'ABC', 60), '1014:60:ABC');
+  assert.equal(buildSummaryCacheKey('1014', 'ABC', 90), '1014:90:ABC');
+  assert.notEqual(
+    buildSummaryCacheKey('1014', 'ABC', 60),
+    buildSummaryCacheKey('1014', 'ABC', 90),
+  );
 });
 
 test('normalizeSummaryMap 支持对象/数组/items 形态', () => {
@@ -103,4 +131,23 @@ test('normalizeSummaryMap 支持对象/数组/items 形态', () => {
   assert.equal(normalizeSummaryMap({ A: { hasPurchase: true }, B: { hasMatch: false } }).A.hasPurchase, true);
   assert.equal(normalizeSummaryMap([{ itemNumber: 'A', hasPurchase: true }]).A.hasPurchase, true);
   assert.equal(normalizeSummaryMap({ items: [{ itemNumber: 'A', hasPurchase: true }] }).A.hasPurchase, true);
+});
+
+test('批量摘要仅在顶层明确声明排名可用时接受销量档位', () => {
+  const item = {
+    itemNumber: 'A',
+    matchStatus: 'no-purchase',
+    salesRankBand: 'top-20',
+  };
+
+  assert.equal(
+    normalizeSummaryMap({ salesRankingAvailable: true, items: [item] }).A.salesRankBand,
+    'top-20',
+  );
+  assert.equal(
+    normalizeSummaryMap({ salesRankingAvailable: false, items: [item] }).A.salesRankBand,
+    undefined,
+  );
+  assert.equal(normalizeSummaryMap({ items: [item] }).A.salesRankBand, undefined);
+  assert.equal(normalizeSummaryMap([item]).A.salesRankBand, undefined);
 });

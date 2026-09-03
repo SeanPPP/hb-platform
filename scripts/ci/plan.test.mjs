@@ -75,6 +75,20 @@ test('组件路径只选择自身及固定跨目录依赖', () => {
   assert.deepEqual(selectedFor(['apps/antpos-web/index.html']), ['antpos-web'])
 })
 
+test('Mobile 原生模块与 Android 配置变化进入 mobile-android 矩阵', () => {
+  for (const path of [
+    'apps/mobile/modules/hb-app-installer/android/src/main/Installer.kt',
+    'apps/mobile/app.config.ts',
+    'apps/mobile/app.json',
+  ]) {
+    const selected = selectComponents([path])
+    assert.deepEqual([...selected].sort(), ['mobile'], path)
+    assert.deepEqual(buildMatrices(selected, { timeout: 12 }).android, {
+      include: [{ component: 'mobile-android', runner: 'ubuntu-24.04', timeout: 12 }],
+    }, path)
+  }
+})
+
 test('POS 共享包、脚本与根 workspace 文件精确触发双端和契约检查', () => {
   for (const path of [
     'packages/pos-domain/src/core/contracts/cart.ts',
@@ -194,6 +208,11 @@ test('各 runner 矩阵始终非空，未选择时使用 noop sentinel', () => {
   const weekly = buildMatrices(new Set(['web']), { timeout: 45 })
   assert.deepEqual(weekly.linuxNode, {
     include: [{ component: 'web', runner: 'ubuntu-24.04', timeout: 45 }],
+  })
+
+  const mobile = buildMatrices(new Set(['mobile']), { timeout: 12 })
+  assert.deepEqual(mobile.android, {
+    include: [{ component: 'mobile-android', runner: 'ubuntu-24.04', timeout: 12 }],
   })
 
   const handheld = buildMatrices(new Set(['pos-handheld']), { timeout: 12 })

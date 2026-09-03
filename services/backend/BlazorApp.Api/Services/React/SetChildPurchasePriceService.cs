@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using BlazorApp.Shared.DTOs;
+using BlazorApp.Shared.Helper;
 using BlazorApp.Shared.Models;
 using SqlSugar;
 
@@ -12,6 +13,7 @@ namespace BlazorApp.Api.Services.React
     {
         private const int MaxDetailCount = 100;
         private const int MaxCodesPerDifference = 20;
+        private const int MaxStoreMultiCodeProductCodeLength = 50;
         private const string KeySeparator = "\u0001";
         private readonly ISqlSugarClient _db;
 
@@ -61,6 +63,26 @@ namespace BlazorApp.Api.Services.React
             IEnumerable<string?>? storeCodes,
             string updatedBy
         ) => ExecuteLockedAsync(lockScope, productCodes, storeCodes, updatedBy, includeGlobal: true);
+
+        /// <summary>
+        /// 复用正式重算的同一算法在既有 app lock/事务内做无写入核验。
+        /// 用于货柜保存的丢响应重试：只有所有套装/多码成本均已是提交后应有值时才允许幂等成功。
+        /// </summary>
+        internal async Task<SetChildPurchasePriceWritebackResultDto> PreviewLockedAsync(
+            SetChildPurchasePriceLockScope lockScope,
+            IEnumerable<string?> productCodes
+        )
+        {
+            var normalizedProducts = NormalizeCodes(productCodes);
+            lockScope.EnsureCovers(_db, normalizedProducts);
+            return await ExecuteCoreAsync(
+                new SetChildPurchasePriceWritebackRequestDto { ProductCodes = normalizedProducts },
+                dryRun: true,
+                updatedBy: null,
+                includeGlobal: true,
+                includeStores: true
+            );
+        }
 
         internal Task<SetChildPurchasePriceWritebackResultDto> RecalculateGlobalLockedAsync(
             SetChildPurchasePriceLockScope lockScope,
@@ -162,6 +184,472 @@ namespace BlazorApp.Api.Services.React
             );
             EnsureBusinessRecalculationComplete(result, normalizedProducts, includeGlobal: false);
             return result;
+        }
+
+        /// <summary>
+        /// 在调用方事务和商品锁内补齐明确缺失的门店套装/多码投影。
+        /// 只新增有效总部关系对应的缺失行；额外行、重复键、停用/软删除墓碑都作为商品级失败返回。
+        /// </summary>
+        internal async Task<SetChildStoreRelationRepairResult> RepairMissingStoreRelationsLockedAsync(
+            SetChildPurchasePriceLockScope lockScope,
+            IReadOnlyDictionary<string, decimal> requestedParentPurchasePrices,
+            string updatedBy
+        )
+        {
+            var normalizedPurchasePrices = requestedParentPurchasePrices
+                .Where(pair => !string.IsNullOrWhiteSpace(pair.Key))
+                .GroupBy(pair => pair.Key.Trim(), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.Last().Value,
+                    StringComparer.OrdinalIgnoreCase
+                );
+            var normalizedProducts = normalizedPurchasePrices.Keys.ToList();
+            var repairResult = new SetChildStoreRelationRepairResult();
+            if (normalizedProducts.Count == 0)
+            {
+                return repairResult;
+            }
+
+            lockScope.EnsureCovers(_db, normalizedProducts);
+            var allManagedSetRows = await _db.Queryable<ProductSetCode>()
+                .Where(row =>
+                    normalizedProducts.Contains(row.ProductCode)
+                    && (row.SetType == 1 || row.SetType == 2)
+                )
+                .ToListAsync();
+            var setRows = allManagedSetRows
+                .Where(row => row.IsActive && !row.IsDeleted)
+                .ToList();
+            var historicalType1ParentCodes = allManagedSetRows
+                .Where(row => row.SetType == 1)
+                .Select(row => row.ProductCode.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var allStoreRows = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(row =>
+                    row.ProductCode != null && normalizedProducts.Contains(row.ProductCode)
+                )
+                .ToListAsync();
+            var storePriceRows = await _db.Queryable<StoreRetailPrice>()
+                .Where(row =>
+                    row.ProductCode != null
+                    && normalizedProducts.Contains(row.ProductCode)
+                    && row.StoreCode != null
+                    && row.IsActive
+                    && !row.IsDeleted
+                )
+                .ToListAsync();
+            var products = await _db.Queryable<Product>()
+                .Where(row =>
+                    row.ProductCode != null
+                    && normalizedProducts.Contains(row.ProductCode)
+                    && !row.IsDeleted
+                )
+                .ToListAsync();
+
+            var setGroups = setRows
+                .GroupBy(row => row.ProductCode.Trim(), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+            var activeStoreRows = allStoreRows
+                .Where(row => row.IsActive && !row.IsDeleted)
+                .ToList();
+            var activeStoreGroups = activeStoreRows
+                .Where(row =>
+                    !string.IsNullOrWhiteSpace(row.StoreCode)
+                    && !string.IsNullOrWhiteSpace(row.ProductCode)
+                )
+                .GroupBy(
+                    row => BuildKey(row.StoreCode!, row.ProductCode!),
+                    StringComparer.OrdinalIgnoreCase
+                )
+                .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+            var allStoreGroups = allStoreRows
+                .Where(row =>
+                    !string.IsNullOrWhiteSpace(row.StoreCode)
+                    && !string.IsNullOrWhiteSpace(row.ProductCode)
+                )
+                .GroupBy(
+                    row => BuildKey(row.StoreCode!, row.ProductCode!),
+                    StringComparer.OrdinalIgnoreCase
+                )
+                .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+            var productMap = products
+                .GroupBy(row => row.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+            var storePriceGroups = storePriceRows
+                .Where(row =>
+                    !string.IsNullOrWhiteSpace(row.StoreCode)
+                    && !string.IsNullOrWhiteSpace(row.ProductCode)
+                )
+                .GroupBy(
+                    row => BuildKey(row.StoreCode!, row.ProductCode!),
+                    StringComparer.OrdinalIgnoreCase
+                )
+                .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+            var candidateKeys = activeStoreGroups.Keys
+                .Concat(storePriceGroups.Keys)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var now = DateTime.UtcNow;
+            var actor = string.IsNullOrWhiteSpace(updatedBy) ? "System" : updatedBy;
+
+            var plannedRowsByProduct = new Dictionary<
+                string,
+                (List<StoreMultiCodeProduct> Rows, int GroupCount)
+            >(StringComparer.OrdinalIgnoreCase);
+            foreach (var productCode in normalizedProducts.OrderBy(code => code, StringComparer.OrdinalIgnoreCase))
+            {
+                var activeRowsForProduct = activeStoreRows
+                    .Where(row =>
+                        string.Equals(
+                            row.ProductCode?.Trim(),
+                            productCode,
+                            StringComparison.OrdinalIgnoreCase
+                        )
+                    )
+                    .ToList();
+                if (activeRowsForProduct.Any(row => string.IsNullOrWhiteSpace(row.StoreCode)))
+                {
+                    repairResult.AddFailure(
+                        productCode,
+                        "SET_CHILD_STORE_RELATION_INVALID",
+                        "门店子项的分店编码为空"
+                    );
+                    continue;
+                }
+                if (!setGroups.TryGetValue(productCode, out var productSetRows))
+                {
+                    if (
+                        historicalType1ParentCodes.Contains(productCode)
+                        && activeRowsForProduct.Count > 0
+                    )
+                    {
+                        repairResult.AddFailure(
+                            productCode,
+                            "SET_CHILD_STORE_RELATION_INVALID",
+                            "总部无有效 Type1 关系但门店仍有活跃子项"
+                        );
+                    }
+                    continue;
+                }
+
+                var structuralError = ValidateSetGroupStructure(productCode, productSetRows);
+                if (structuralError != null)
+                {
+                    repairResult.AddFailure(
+                        productCode,
+                        "SET_CHILD_STORE_RELATION_INVALID",
+                        structuralError
+                    );
+                    continue;
+                }
+                if (!productMap.TryGetValue(productCode, out var product))
+                {
+                    repairResult.AddFailure(
+                        productCode,
+                        "SET_CHILD_STORE_RELATION_INVALID",
+                        "本地主商品不存在"
+                    );
+                    continue;
+                }
+                if (normalizedPurchasePrices[productCode] <= 0m)
+                {
+                    repairResult.AddFailure(
+                        productCode,
+                        "SET_CHILD_COST_RECALCULATION_INCOMPLETE",
+                        "套装或多码商品的进口价格必须大于0"
+                    );
+                    continue;
+                }
+                if (
+                    productSetRows.Any(row =>
+                        row.SetType == 1 && row.SetRetailPrice.GetValueOrDefault() <= 0m
+                    )
+                )
+                {
+                    repairResult.AddFailure(
+                        productCode,
+                        "SET_CHILD_COST_RECALCULATION_INCOMPLETE",
+                        "Type1 套装子项零售价为空或0"
+                    );
+                    continue;
+                }
+
+                var requiredRows = productSetRows.ToDictionary(
+                    row => row.SetProductCode.Trim(),
+                    row => row,
+                    StringComparer.OrdinalIgnoreCase
+                );
+                var plannedRows = new List<StoreMultiCodeProduct>();
+                var plannedGroupCount = 0;
+                var productFailed = false;
+                foreach (var groupKey in candidateKeys
+                    .Where(key =>
+                    {
+                        var parts = key.Split(KeySeparator, 2, StringSplitOptions.None);
+                        return parts.Length == 2
+                            && string.Equals(
+                                parts[1],
+                                productCode,
+                                StringComparison.OrdinalIgnoreCase
+                            );
+                    })
+                    .OrderBy(key => key, StringComparer.OrdinalIgnoreCase))
+                {
+                    var keyParts = groupKey.Split(KeySeparator, 2, StringSplitOptions.None);
+                    var storeCode = keyParts[0];
+                    if (
+                        storePriceGroups.TryGetValue(groupKey, out var matchingStorePrices)
+                        && matchingStorePrices.Count > 1
+                    )
+                    {
+                        repairResult.AddFailure(
+                            productCode,
+                            "SET_CHILD_COST_RECALCULATION_INCOMPLETE",
+                            $"分店 {storeCode} 存在重复主商品价格记录"
+                        );
+                        productFailed = true;
+                        break;
+                    }
+                    activeStoreGroups.TryGetValue(groupKey, out var activeRows);
+                    allStoreGroups.TryGetValue(groupKey, out var everyRow);
+                    activeRows ??= new List<StoreMultiCodeProduct>();
+                    everyRow ??= new List<StoreMultiCodeProduct>();
+
+                    if (activeRows.Any(row => string.IsNullOrWhiteSpace(row.MultiCodeProductCode)))
+                    {
+                        repairResult.AddFailure(
+                            productCode,
+                            "SET_CHILD_STORE_RELATION_INVALID",
+                            $"分店 {storeCode} 子项业务键为空"
+                        );
+                        productFailed = true;
+                        break;
+                    }
+
+                    var duplicateChild = activeRows
+                        .GroupBy(
+                            row => row.MultiCodeProductCode!.Trim(),
+                            StringComparer.OrdinalIgnoreCase
+                        )
+                        .FirstOrDefault(group => group.Count() > 1);
+                    if (duplicateChild != null)
+                    {
+                        repairResult.AddFailure(
+                            productCode,
+                            "SET_CHILD_STORE_RELATION_INVALID",
+                            $"分店 {storeCode} 子项业务键重复: {duplicateChild.Key}"
+                        );
+                        productFailed = true;
+                        break;
+                    }
+
+                    var activeCodes = activeRows
+                        .Select(row => row.MultiCodeProductCode!.Trim())
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var extraCodes = activeCodes
+                        .Except(requiredRows.Keys, StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    if (extraCodes.Count > 0)
+                    {
+                        repairResult.AddFailure(
+                            productCode,
+                            "SET_CHILD_STORE_RELATION_INVALID",
+                            $"分店 {storeCode} 存在额外子项: {FormatCodeList(extraCodes)}"
+                        );
+                        productFailed = true;
+                        break;
+                    }
+
+                    var missingCodes = requiredRows.Keys
+                        .Except(activeCodes, StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    if (missingCodes.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    // 两个来源字段各自允许 50 字符，但目标组合业务键只有 50；先拒绝，避免 SQL Server 截断异常回滚整批保存。
+                    var oversizedChildCode = missingCodes.FirstOrDefault(childCode =>
+                        storeCode.Length + childCode.Length > MaxStoreMultiCodeProductCodeLength
+                    );
+                    if (oversizedChildCode != null)
+                    {
+                        repairResult.AddFailure(
+                            productCode,
+                            "SET_CHILD_STORE_RELATION_INVALID",
+                            $"分店 {storeCode} 子项 {oversizedChildCode} 的组合业务键超过 {MaxStoreMultiCodeProductCodeLength} 字符"
+                        );
+                        productFailed = true;
+                        break;
+                    }
+
+                    foreach (var childCode in missingCodes)
+                    {
+                        var historicalRow = everyRow.FirstOrDefault(row =>
+                            !string.IsNullOrWhiteSpace(row.MultiCodeProductCode)
+                            && string.Equals(
+                                row.MultiCodeProductCode.Trim(),
+                                childCode,
+                                StringComparison.OrdinalIgnoreCase
+                            )
+                        );
+                        if (historicalRow != null)
+                        {
+                            repairResult.AddFailure(
+                                productCode,
+                                "SET_CHILD_STORE_RELATION_TOMBSTONED",
+                                $"分店 {storeCode} 子项 {childCode} 已停用或软删除，未自动复活"
+                            );
+                            productFailed = true;
+                            break;
+                        }
+
+                        var setRow = requiredRows[childCode];
+                        plannedRows.Add(
+                            new StoreMultiCodeProduct
+                            {
+                                UUID = UuidHelper.GenerateUuid7(),
+                                StoreCode = storeCode,
+                                ProductCode = productCode,
+                                MultiCodeProductCode = childCode,
+                                StoreMultiCodeProductCode = storeCode + childCode,
+                                MultiBarcode = setRow.SetBarcode,
+                                PurchasePrice = null,
+                                MultiCodeRetailPrice = setRow.SetRetailPrice,
+                                DiscountRate = 0m,
+                                IsAutoPricing = false,
+                                IsSpecialProduct = product.IsSpecialProduct,
+                                IsActive = true,
+                                IsDeleted = false,
+                                CreatedAt = now,
+                                UpdatedAt = now,
+                                CreatedBy = actor,
+                                UpdatedBy = actor,
+                            }
+                        );
+                    }
+                    if (productFailed)
+                    {
+                        break;
+                    }
+                    plannedGroupCount++;
+                }
+
+                if (productFailed || plannedRows.Count == 0)
+                {
+                    continue;
+                }
+
+                plannedRowsByProduct[productCode] = (plannedRows, plannedGroupCount);
+            }
+
+            // 全部通过预检查的关系一次插入、一次结构校验，避免事务和商品锁内按商品
+            // 重复 Inspect 查询；若某商品校验失败，仅删除本次为该商品新增的投影。
+            var allPlannedRows = plannedRowsByProduct.Values
+                .SelectMany(plan => plan.Rows)
+                .ToList();
+            if (allPlannedRows.Count == 0)
+            {
+                return repairResult;
+            }
+
+            var inserted = 0;
+            // StoreMultiCodeProduct 单行字段较多；80 行足以避开 SQL Server 参数上限，
+            // 同时仍为固定分块批处理，不会按关系行退化成 N+1。
+            foreach (var insertBatch in allPlannedRows.Chunk(80))
+            {
+                inserted += await _db.Insertable(insertBatch.ToList()).ExecuteCommandAsync();
+            }
+            if (inserted != allPlannedRows.Count)
+            {
+                throw new InvalidOperationException(
+                    $"批量补齐门店套装关系数量不一致，期望 {allPlannedRows.Count}，实际 {inserted}"
+                );
+            }
+
+            var validation = await InspectStoreStructuresLockedAsync(
+                lockScope,
+                plannedRowsByProduct.Keys
+            );
+            var validationErrorsByProduct = validation.Errors
+                .Where(error => !string.IsNullOrWhiteSpace(error.ProductCode))
+                .GroupBy(error => error.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
+            var failedProductCodes = validationErrorsByProduct.Keys
+                .Intersect(plannedRowsByProduct.Keys, StringComparer.OrdinalIgnoreCase)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (
+                validation.StoreMultiCodeProduct.SkippedGroupCount > 0
+                && failedProductCodes.Count == 0
+            )
+            {
+                // 结构检查无法归属到具体商品时宁可撤销本批新增关系，避免带着未知坏数据继续重算。
+                failedProductCodes.UnionWith(plannedRowsByProduct.Keys);
+            }
+
+            var failedInsertedIds = failedProductCodes
+                .SelectMany(productCode => plannedRowsByProduct[productCode].Rows)
+                .Select(row => row.UUID)
+                .ToList();
+            if (failedInsertedIds.Count > 0)
+            {
+                // UUID 条件同样受 SQL Server 参数上限约束；按固定批次删除本次插入的失败投影。
+                foreach (var deleteBatch in failedInsertedIds.Chunk(500))
+                {
+                    await _db.Deleteable<StoreMultiCodeProduct>()
+                        .Where(row => deleteBatch.Contains(row.UUID))
+                        .ExecuteCommandAsync();
+                }
+            }
+
+            foreach (var (productCode, plan) in plannedRowsByProduct)
+            {
+                if (failedProductCodes.Contains(productCode))
+                {
+                    var reason = validationErrorsByProduct.TryGetValue(
+                        productCode,
+                        out var errors
+                    )
+                        ? errors.First().Reason
+                        : "补齐后门店子项结构仍不完整";
+                    repairResult.AddFailure(
+                        productCode,
+                        "SET_CHILD_COST_RECALCULATION_INCOMPLETE",
+                        reason
+                    );
+                    continue;
+                }
+
+                repairResult.AutoRepairedStoreGroupCount += plan.GroupCount;
+                repairResult.AutoRepairedRelationCount += plan.Rows.Count;
+            }
+
+            return repairResult;
+        }
+
+        /// <summary>
+        /// 返回锁内结构检查结果而不抛业务完整性异常，供字段级部分成功入口使用。
+        /// </summary>
+        private async Task<SetChildPurchasePriceWritebackResultDto> InspectStoreStructuresLockedAsync(
+            SetChildPurchasePriceLockScope lockScope,
+            IEnumerable<string?> productCodes
+        )
+        {
+            var normalizedProducts = NormalizeCodes(productCodes);
+            lockScope.EnsureCovers(_db, normalizedProducts);
+            return await ExecuteCoreAsync(
+                new SetChildPurchasePriceWritebackRequestDto
+                {
+                    ProductCodes = normalizedProducts,
+                },
+                dryRun: true,
+                updatedBy: null,
+                includeGlobal: false,
+                includeStores: true,
+                validateStoreStructuresOnly: true
+            );
         }
 
         private async Task<SetChildPurchasePriceWritebackResultDto> ExecuteWithOwnedLockAsync(
@@ -1088,5 +1576,33 @@ namespace BlazorApp.Api.Services.React
             public string ChildCode { get; init; } = string.Empty;
             public decimal RetailPrice { get; init; }
         }
+    }
+
+    internal sealed class SetChildStoreRelationRepairResult
+    {
+        public int AutoRepairedStoreGroupCount { get; set; }
+        public int AutoRepairedRelationCount { get; set; }
+        public Dictionary<string, SetChildStoreRelationRepairFailure> Failures { get; } =
+            new(StringComparer.OrdinalIgnoreCase);
+
+        public void AddFailure(string productCode, string code, string message)
+        {
+            Failures.TryAdd(
+                productCode,
+                new SetChildStoreRelationRepairFailure
+                {
+                    ProductCode = productCode,
+                    Code = code,
+                    Message = message,
+                }
+            );
+        }
+    }
+
+    internal sealed class SetChildStoreRelationRepairFailure
+    {
+        public string ProductCode { get; init; } = string.Empty;
+        public string Code { get; init; } = string.Empty;
+        public string Message { get; init; } = string.Empty;
     }
 }

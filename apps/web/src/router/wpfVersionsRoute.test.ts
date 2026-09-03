@@ -59,9 +59,9 @@ const noWpfAccess = buildRolePreviewAccess({
 const routeSource = readFileSync(join(process.cwd(), 'src/router/routes.tsx'), 'utf8')
 
 assertEqual(
-  routeSource.includes("import SystemWpfVersionsPage from '../pages/System/WpfVersions'"),
+  routeSource.includes("const SystemWpfVersionsPage = lazy(() => import('../pages/System/WpfVersions'))"),
   true,
-  'Routes should import the WPF versions page',
+  'Routes should lazy import the WPF versions page',
 )
 
 assertEqual(

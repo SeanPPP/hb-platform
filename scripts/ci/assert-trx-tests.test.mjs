@@ -75,3 +75,13 @@ test('POS API 常规组件排除由 weekly lane 执行的 SQL 集成测试', () 
     /pos-api\)[\s\S]*--filter 'Category!=SQL&Category!=Performance&Category!=LiveE2e'/,
   )
 })
+
+test('Backend Mobile 合同测试排除由独立 Schema lane 强制执行的 SQL 测试', () => {
+  const source = readFileSync(new URL('./run-dotnet-component.sh', import.meta.url), 'utf8')
+  const backend = source.slice(source.indexOf('  backend)'), source.indexOf('  pos-api)'))
+
+  assert.match(
+    backend,
+    /dotnet test "\$mobile_activation_project"[\s\S]*?--filter 'Category!=SQL'/,
+  )
+})

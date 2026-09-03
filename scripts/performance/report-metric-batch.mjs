@@ -4,10 +4,25 @@ import { pathToFileURL } from "node:url";
 
 import { postServiceJson, redactSensitive } from "./lib/http-reporter.mjs";
 import { validateMetricBatchV1 } from "./lib/metric-batch.mjs";
-import { ValidationError } from "./lib/validation.mjs";
+import {
+  ValidationError,
+  assertEnum,
+  assertExactKeys,
+  assertFiniteNumber,
+  assertSafeString,
+} from "./lib/validation.mjs";
 
 const ENDPOINT_PATH = "/api/system/performance/automation-batches";
 const MAX_INPUT_BYTES = 256 * 1024;
+const MAX_SAMPLING_POLICIES = 200;
+const INGEST_COUNT_KEYS = ["acceptedCount", "duplicateCount", "rejectedCount"];
+const SAMPLING_KEYS = ["baselineState", "defaultSampleRate", "policies"];
+const BASELINE_STATES = ["not_started", "observing", "frozen"];
+const AUTOMATION_METRIC_NAMES = [
+  "ci.run.duration",
+  "web.first_screen.bytes",
+  "web.largest_initial_chunk.bytes",
+];
 
 function parseTimeout(value, name) {
   if (value === undefined || value === "") return undefined;
@@ -15,6 +30,52 @@ function parseTimeout(value, name) {
     throw new ValidationError(`${name} 必须是整数毫秒`);
   }
   return Number(value);
+}
+
+function validateSamplingPolicyResponse(data) {
+  const presentSamplingKeys = SAMPLING_KEYS.filter((key) => Object.hasOwn(data, key));
+  if (presentSamplingKeys.length === 0) return;
+  if (presentSamplingKeys.length !== SAMPLING_KEYS.length) {
+    throw new ValidationError("automation batch 响应采样策略字段必须同时返回");
+  }
+
+  assertEnum(data.baselineState, BASELINE_STATES, "automation batch 响应 baselineState");
+  assertFiniteNumber(
+    data.defaultSampleRate,
+    "automation batch 响应 defaultSampleRate",
+    { min: 0, max: 1 },
+  );
+  if (!Array.isArray(data.policies) || data.policies.length > MAX_SAMPLING_POLICIES) {
+    throw new ValidationError(
+      `automation batch 响应 policies 最多允许 ${MAX_SAMPLING_POLICIES} 项`,
+    );
+  }
+
+  const policyKeys = new Set();
+  data.policies.forEach((policy, index) => {
+    const path = `automation batch 响应 policies[${index}]`;
+    assertExactKeys(
+      policy,
+      {
+        required: ["metric", "selector", "sampleRate"],
+        optional: ["slowThreshold"],
+      },
+      path,
+    );
+    assertEnum(policy.metric, AUTOMATION_METRIC_NAMES, `${path}.metric`);
+    assertSafeString(policy.selector, `${path}.selector`, { maxLength: 120 });
+    assertFiniteNumber(policy.sampleRate, `${path}.sampleRate`, { min: 0, max: 1 });
+    if (Object.hasOwn(policy, "slowThreshold") && policy.slowThreshold !== null) {
+      // 后端阈值会在合法 P95 上继续放大；这里只约束 DTO 的实际协议：非负有限数。
+      assertFiniteNumber(policy.slowThreshold, `${path}.slowThreshold`, { min: 0 });
+    }
+
+    const policyKey = `${policy.metric}\u0000${policy.selector}`;
+    if (policyKeys.has(policyKey)) {
+      throw new ValidationError(`${path} 与已有 metric/selector 重复`);
+    }
+    policyKeys.add(policyKey);
+  });
 }
 
 export async function reportMetricBatch({
@@ -37,15 +98,17 @@ export async function reportMetricBatch({
   if (data === null || typeof data !== "object" || Array.isArray(data)) {
     throw new Error("automation batch 响应缺少 ingest 计数");
   }
-  const allowedKeys = new Set(["acceptedCount", "duplicateCount", "rejectedCount"]);
-  for (const key of Object.keys(data)) {
-    if (!allowedKeys.has(key)) throw new Error(`automation batch 响应包含未知计数字段 ${key}`);
-  }
-  for (const key of allowedKeys) {
+  assertExactKeys(
+    data,
+    { required: INGEST_COUNT_KEYS, optional: SAMPLING_KEYS },
+    "automation batch 响应 data",
+  );
+  for (const key of INGEST_COUNT_KEYS) {
     if (!Number.isInteger(data[key]) || data[key] < 0) {
       throw new Error(`automation batch 响应计数 ${key} 无效`);
     }
   }
+  validateSamplingPolicyResponse(data);
   if (data.rejectedCount !== 0 || data.acceptedCount + data.duplicateCount !== payload.events.length) {
     throw new Error("automation batch ingest 计数与发送事件数不一致或包含 rejected 事件");
   }

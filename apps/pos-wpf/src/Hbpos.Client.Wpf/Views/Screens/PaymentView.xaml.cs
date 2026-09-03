@@ -3,7 +3,9 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
+using Hbpos.Contracts.Linkly;
 
 namespace Hbpos.Client.Wpf.Views.Screens;
 
@@ -20,7 +22,7 @@ public partial class PaymentView : UserControl
         DataContextChanged += PaymentViewDataContextChanged;
     }
 
-    private void PaymentViewLoaded(object sender, RoutedEventArgs e)
+    private async void PaymentViewLoaded(object sender, RoutedEventArgs e)
     {
         if (_isViewLoaded)
         {
@@ -29,6 +31,40 @@ public partial class PaymentView : UserControl
 
         _isViewLoaded = true;
         AttachViewModel(DataContext as INotifyPropertyChanged);
+        if (DataContext is PaymentViewModel viewModel)
+        {
+            try
+            {
+                await viewModel.RefreshLinklyCloudTerminalsAsync();
+            }
+            catch (Exception ex)
+            {
+                // 目录加载失败由 VM 展示；Loaded 事件不得让付款页崩溃。
+                ConsoleLog.WriteError(
+                    "Payment",
+                    $"refresh linkly terminal directory on load failed error={ex.GetType().Name} message={ex.Message}",
+                    exception: ex);
+            }
+        }
+    }
+
+    private async void LinklyCloudTerminal_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (DataContext is not PaymentViewModel viewModel ||
+            e.AddedItems.OfType<LinklyCloudTerminalSummary>().FirstOrDefault() is not { } terminal)
+        {
+            return;
+        }
+
+        await viewModel.SelectLinklyCloudTerminalAsync(terminal);
+    }
+
+    private async void RefreshLinklyCloudTerminals_Click(object sender, RoutedEventArgs e)
+    {
+        if (DataContext is PaymentViewModel viewModel)
+        {
+            await viewModel.RefreshLinklyCloudTerminalsAsync();
+        }
     }
 
     private void PaymentViewUnloaded(object sender, RoutedEventArgs e)

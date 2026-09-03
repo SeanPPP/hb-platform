@@ -389,6 +389,26 @@ namespace BlazorApp.Shared.DTOs
         /// 销售额增长率
         /// </summary>
         public decimal? TotalAmountGrowth { get; set; }
+
+        /// <summary>
+        /// 当前期毛利额；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? GrossProfit { get; set; }
+
+        /// <summary>
+        /// 当前期毛利率；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? GrossMarginRate { get; set; }
+
+        /// <summary>
+        /// 同期毛利额；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? CompareGrossProfit { get; set; }
+
+        /// <summary>
+        /// 同期毛利率；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? CompareGrossMarginRate { get; set; }
     }
 
     /// <summary>
@@ -461,6 +481,26 @@ namespace BlazorApp.Shared.DTOs
         /// 销售额增长率
         /// </summary>
         public decimal? TotalAmountGrowth { get; set; }
+
+        /// <summary>
+        /// 当前期毛利额；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? GrossProfit { get; set; }
+
+        /// <summary>
+        /// 当前期毛利率；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? GrossMarginRate { get; set; }
+
+        /// <summary>
+        /// 同期毛利额；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? CompareGrossProfit { get; set; }
+
+        /// <summary>
+        /// 同期毛利率；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? CompareGrossMarginRate { get; set; }
     }
 
     /// <summary>
@@ -538,6 +578,26 @@ namespace BlazorApp.Shared.DTOs
         /// 销售额增长率
         /// </summary>
         public decimal? TotalAmountGrowth { get; set; }
+
+        /// <summary>
+        /// 当前期毛利额；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? GrossProfit { get; set; }
+
+        /// <summary>
+        /// 当前期毛利率；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? GrossMarginRate { get; set; }
+
+        /// <summary>
+        /// 同期毛利额；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? CompareGrossProfit { get; set; }
+
+        /// <summary>
+        /// 同期毛利率；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? CompareGrossMarginRate { get; set; }
     }
 
     /// <summary>
@@ -748,6 +808,26 @@ namespace BlazorApp.Shared.DTOs
         /// 对比期订单数量
         /// </summary>
         public int OrderCountLY { get; set; }
+
+        /// <summary>
+        /// 当前期毛利额；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? GrossProfit { get; set; }
+
+        /// <summary>
+        /// 当前期毛利率；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? GrossMarginRate { get; set; }
+
+        /// <summary>
+        /// 同期毛利额；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? GrossProfitLY { get; set; }
+
+        /// <summary>
+        /// 同期毛利率；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? GrossMarginRateLY { get; set; }
     }
 
     /// <summary>
@@ -799,6 +879,26 @@ namespace BlazorApp.Shared.DTOs
         /// 对比期平均单价
         /// </summary>
         public decimal CompareAverageUnitPrice { get; set; }
+
+        /// <summary>
+        /// 当前期毛利额；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? GrossProfit { get; set; }
+
+        /// <summary>
+        /// 当前期毛利率；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? GrossMarginRate { get; set; }
+
+        /// <summary>
+        /// 对比期毛利额；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? CompareGrossProfit { get; set; }
+
+        /// <summary>
+        /// 对比期毛利率；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? CompareGrossMarginRate { get; set; }
     }
 
     /// <summary>
@@ -875,6 +975,26 @@ namespace BlazorApp.Shared.DTOs
         /// 销售额增长率
         /// </summary>
         public decimal? TotalAmountGrowth { get; set; }
+
+        /// <summary>
+        /// 当前期毛利额；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? GrossProfit { get; set; }
+
+        /// <summary>
+        /// 当前期毛利率；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? GrossMarginRate { get; set; }
+
+        /// <summary>
+        /// 同期毛利额；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? CompareGrossProfit { get; set; }
+
+        /// <summary>
+        /// 同期毛利率；任一参与统计行缺少成本时为 null
+        /// </summary>
+        public decimal? CompareGrossMarginRate { get; set; }
     }
 
     /// <summary>
@@ -1045,6 +1165,61 @@ namespace BlazorApp.Shared.DTOs
         /// 去年同期平均订单价值
         /// </summary>
         public decimal AovLY { get; set; }
+    }
+
+    /// <summary>
+    /// Executive Dashboard 分店业绩响应。
+    /// 统计补算超过接口短等待预算时，仍会返回当前快照，并显式标记完整性状态。
+    /// </summary>
+    public class ExecutiveBranchPerformanceResultDto
+    {
+        /// <summary>
+        /// 当前可用的分店业绩快照
+        /// </summary>
+        public List<ExecutiveBranchPerformanceDto> Items { get; set; } = new();
+
+        /// <summary>
+        /// 统计缺口是否仍在后台补算
+        /// </summary>
+        public bool StatisticsPending { get; set; }
+
+        /// <summary>
+        /// 当前查询范围预期返回的分店数量
+        /// </summary>
+        public int StatisticsExpectedBranchCount { get; set; }
+
+        /// <summary>
+        /// 当前响应快照已包含的分店数量
+        /// </summary>
+        public int StatisticsSnapshotBranchCount { get; set; }
+    }
+
+    /// <summary>
+    /// 营业额明细统一响应。明细统计不可将“有数组”误判为完整：
+    /// 客户端只有在待完成为 false 且预期/快照数量相等时才可展示为完整结果。
+    /// </summary>
+    public class ExecutiveReportResultDto<T> : IReadOnlyList<T>
+    {
+        /// <summary>当前可用明细快照</summary>
+        public List<T> Items { get; set; } = new();
+
+        /// <summary>统计是否仍在补算或快照不完整</summary>
+        public bool StatisticsPending { get; set; }
+
+        /// <summary>当前查询范围预期明细项数量</summary>
+        public int StatisticsExpectedItemCount { get; set; }
+
+        /// <summary>当前响应实际包含的明细项数量</summary>
+        public int StatisticsSnapshotItemCount { get; set; }
+
+        // 保留只读枚举能力，减少既有服务端调用方的迁移摩擦；HTTP 契约仍明确使用 Items。
+        public int Count => Items.Count;
+
+        public T this[int index] => Items[index];
+
+        public IEnumerator<T> GetEnumerator() => Items.GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     /// <summary>

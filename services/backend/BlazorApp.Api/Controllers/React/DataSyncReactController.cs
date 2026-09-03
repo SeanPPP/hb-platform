@@ -702,9 +702,14 @@ namespace BlazorApp.Api.Controllers.React
                 result.ErrorCount = 1;
             }
 
+            var isContainerMutationBusy =
+                result.ErrorCode == ContainerMutationLock.BusyErrorCode;
+            var isSetChildPurchasePriceBusy =
+                result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode;
+
             // 兼容尚未填充 BusyErrorCount 的旧服务结果，同时把计数约束在 ErrorCount 内。
             if (
-                result.ErrorCode == SetChildPurchasePriceMutationLock.BusyErrorCode
+                (isSetChildPurchasePriceBusy || isContainerMutationBusy)
                 && result.BusyErrorCount == 0
             )
             {
@@ -718,7 +723,9 @@ namespace BlazorApp.Api.Controllers.React
                 && result.BusyErrorCount > 0
                 && result.BusyErrorCount == result.ErrorCount;
             var responseErrorCode = allBusyWithoutCommit
-                ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                ? isContainerMutationBusy
+                    ? ContainerMutationLock.BusyErrorCode
+                    : SetChildPurchasePriceMutationLock.BusyErrorCode
                 : committedCount > 0
                     ? "PARTIAL_FAILURE"
                     : result.BusyErrorCount > 0 && result.BusyErrorCount < result.ErrorCount
@@ -732,6 +739,10 @@ namespace BlazorApp.Api.Controllers.React
             );
 
             // 只有全部错误均为锁竞争且没有任何已提交写入时返回 409。
+            if (allBusyWithoutCommit && HttpContext != null)
+            {
+                Response.Headers.RetryAfter = "1";
+            }
             return allBusyWithoutCommit ? Conflict(response) : Ok(response);
         }
 

@@ -9,7 +9,7 @@ const routeSource = readFileSync(join(process.cwd(), 'src/router/routes.tsx'), '
 const listSource = readFileSync(join(process.cwd(), 'src/pages/Warehouse/Containers/index.tsx'), 'utf8')
 const reportSource = readFileSync(join(process.cwd(), 'src/pages/Warehouse/ContainerAllocationSales/index.tsx'), 'utf8')
 
-assert(routeSource.includes("import ContainerAllocationSalesPage from '../pages/Warehouse/ContainerAllocationSales'"), '应导入货柜配销数据页')
+assert(routeSource.includes("const ContainerAllocationSalesPage = lazy(() => import('../pages/Warehouse/ContainerAllocationSales'))"), '应独立懒加载货柜配销数据页')
 assert(routeSource.includes("path: '/warehouse/container/allocation-sales/:containerGuid'"), '应注册带货柜 GUID 的隐藏路由')
 assert(routeSource.includes("activeMenu: '/warehouse/containers'"), '配销数据页应保持货柜菜单激活')
 assert(routeSource.includes("accessKey: 'canViewContainers'"), '配销数据页应沿用货柜查看权限')

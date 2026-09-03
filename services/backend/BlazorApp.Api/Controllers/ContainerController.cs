@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
 using BlazorApp.Api.Interfaces;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 
 namespace BlazorApp.Api.Controllers
@@ -22,6 +23,30 @@ namespace BlazorApp.Api.Controllers
         {
             _containerService = containerService;
             _logger = logger;
+        }
+
+        private IActionResult CreateContainerMutationConflictResponse(
+            Exception exception,
+            string operation
+        )
+        {
+            ContainerMutationLock.TryResolveConflict(exception, out var conflict);
+            Response.Headers.RetryAfter = "1";
+            _logger.LogWarning(
+                exception,
+                "{Operation}遇到货柜并发冲突, ResultCode: {ResultCode}",
+                operation,
+                conflict?.ResultCode
+            );
+            return StatusCode(
+                StatusCodes.Status409Conflict,
+                new
+                {
+                    success = false,
+                    code = ContainerMutationLock.BusyErrorCode,
+                    message = "同一货柜正在保存，请稍后重试",
+                }
+            );
         }
 
         /// <summary>
@@ -77,6 +102,10 @@ namespace BlazorApp.Api.Controllers
                 {
                     return NotFound(new { success = false, message = "货柜不存在或更新失败" });
                 }
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "更新货柜信息");
             }
             catch (Exception ex)
             {
@@ -213,6 +242,10 @@ namespace BlazorApp.Api.Controllers
                     data = new { totalUpdated, totalRequested = updates.Count }
                 });
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "批量更新货柜明细");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量更新货柜明细失败");
@@ -249,6 +282,10 @@ namespace BlazorApp.Api.Controllers
                     message = "创建成功",
                     data = new { containerGuid }
                 });
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "创建货柜");
             }
             catch (InvalidOperationException ex)
             {

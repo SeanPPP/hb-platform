@@ -78,22 +78,31 @@ namespace BlazorApp.Api.Services.React
             }
 
             var containerGuid = request.ContainerGuid.Trim();
-            var rows = await LoadRowsAsync(containerGuid, normalizedDetailHguids, isSubmitContainer);
-            if (isSubmitContainer && rows.Count == 0)
-            {
-                AddError(result, null, null, null, "EMPTY_CONTAINER_DETAILS", "当前货柜没有可提交的明细");
-                return FinalizeResult(result);
-            }
-
             var submitTransactionStarted = false;
             try
             {
                 if (isSubmitContainer)
                 {
                     // 整柜提交是一个业务原子动作：创建、更新门店价、完成货柜必须一起提交或一起回滚。
-                    _context.Db.Ado.BeginTran();
+                    await _context.Db.Ado.BeginTranAsync();
                     submitTransactionStarted = true;
+                    // 统一锁序为货柜锁 → 商品锁，且整柜来源行必须在持锁事务内重读。
+                    await ContainerMutationLock.AcquireContainersAsync(
+                        _context.Db,
+                        new[] { containerGuid }
+                    );
                 }
+
+            // 非提交入口只用单条查询取得一致快照，且本执行器从不写 ContainerDetail。
+            var rows = await LoadRowsAsync(containerGuid, normalizedDetailHguids, isSubmitContainer);
+            if (isSubmitContainer && rows.Count == 0)
+            {
+                AddError(result, null, null, null, "EMPTY_CONTAINER_DETAILS", "当前货柜没有可提交的明细");
+                return CompleteSubmitTransaction(
+                    await FinalizeSubmitResultAsync(containerGuid, isSubmitContainer, result),
+                    submitTransactionStarted
+                );
+            }
 
             var rowsByDetail = rows
                 .Where(row => !string.IsNullOrWhiteSpace(row.DetailHguid))
@@ -117,7 +126,7 @@ namespace BlazorApp.Api.Services.React
             SetChildPurchasePriceLockScope? submitSetChildPurchasePriceLock = null;
             if (isSubmitContainer)
             {
-                // 整柜事务先锁本柜涉及商品，再读取并写入主成本、关系和门店投影。
+                // 已持有货柜锁，再按稳定商品编码取锁并读取、写入主成本、关系和门店投影。
                 submitSetChildPurchasePriceLock = productCodes.Count == 0
                     ? await SetChildPurchasePriceMutationLock.AcquireAllAsync(_context.Db)
                     : await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
@@ -344,12 +353,13 @@ namespace BlazorApp.Api.Services.React
                     }
                 }
                 catch (Exception ex)
+                    when (
+                        !ContainerMutationLock.TryResolveConflict(ex, out _)
+                        && !SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                    )
                 {
                     _logger.LogError(ex, "货柜创建新商品批量写入失败: {OperationId}", request.OperationId);
-                    var reasonCode = SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
-                        ? SetChildPurchasePriceMutationLock.BusyErrorCode
-                        : "WAREHOUSE_BATCH_EXCEPTION";
-                    AddError(result, null, null, null, reasonCode, ex.Message);
+                    AddError(result, null, null, null, "WAREHOUSE_BATCH_EXCEPTION", ex.Message);
                 }
             }
 
@@ -405,9 +415,11 @@ namespace BlazorApp.Api.Services.React
             {
                 RollbackSubmitTransaction(submitTransactionStarted);
                 _logger.LogError(ex, "整柜提交事务失败: {OperationId}", request.OperationId);
-                var reasonCode = SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
-                    ? SetChildPurchasePriceMutationLock.BusyErrorCode
-                    : "SUBMIT_CONTAINER_EXCEPTION";
+                var reasonCode = ContainerMutationLock.TryResolveConflict(ex, out _)
+                    ? ContainerMutationLock.BusyErrorCode
+                    : SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                        ? SetChildPurchasePriceMutationLock.BusyErrorCode
+                        : "SUBMIT_CONTAINER_EXCEPTION";
                 AddError(result, null, null, null, reasonCode, ex.Message);
                 return FinalizeResult(result);
             }
@@ -1671,12 +1683,13 @@ namespace BlazorApp.Api.Services.React
                 }
             }
             catch (Exception ex)
+                when (
+                    !ContainerMutationLock.TryResolveConflict(ex, out _)
+                    && !SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                )
             {
                 _logger.LogError(ex, "整柜提交更新已有商品价格失败");
-                var reasonCode = SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
-                    ? SetChildPurchasePriceMutationLock.BusyErrorCode
-                    : "UPDATE_EXISTING_PRODUCTS_FAILED";
-                AddError(result, null, null, null, reasonCode, ex.Message);
+                AddError(result, null, null, null, "UPDATE_EXISTING_PRODUCTS_FAILED", ex.Message);
             }
         }
 
@@ -1930,6 +1943,10 @@ namespace BlazorApp.Api.Services.React
                 result.ContainerCompleted = true;
             }
             catch (Exception ex)
+                when (
+                    !ContainerMutationLock.TryResolveConflict(ex, out _)
+                    && !SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _)
+                )
             {
                 _logger.LogError(ex, "整柜提交完成货柜状态失败: {ContainerGuid}", containerGuid);
                 AddError(result, null, null, null, "COMPLETE_CONTAINER_FAILED", ex.Message);

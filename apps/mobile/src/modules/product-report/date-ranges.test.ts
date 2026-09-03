@@ -26,7 +26,7 @@ assert.deepEqual(getProductReportQuickRange("thisWeek", anchor), {
   key: "thisWeek",
   mode: "week",
   startDate: "2026-06-29",
-  endDate: "2026-07-05",
+  endDate: "2026-07-04",
 });
 
 assert.deepEqual(getProductReportQuickRange("lastWeek", anchor), {
@@ -40,7 +40,7 @@ assert.deepEqual(getProductReportQuickRange("thisMonth", anchor), {
   key: "thisMonth",
   mode: "month",
   startDate: "2026-07-01",
-  endDate: "2026-07-31",
+  endDate: "2026-07-04",
 });
 
 assert.deepEqual(getProductReportQuickRange("lastMonth", anchor), {
@@ -59,7 +59,32 @@ assert.deepEqual(getProductReportCompareRange(getProductReportQuickRange("today"
 assert.deepEqual(getProductReportCompareRange(getProductReportQuickRange("thisMonth", anchor)), {
   mode: "month",
   startDate: "2025-07-01",
-  endDate: "2025-07-31",
+  endDate: "2025-07-04",
+});
+
+assert.deepEqual(getProductReportCompareRange(getProductReportQuickRange("thisWeek", anchor)), {
+  mode: "week",
+  startDate: "2025-06-30",
+  endDate: "2025-07-05",
+});
+
+assert.deepEqual(getProductReportCompareRange(getProductReportQuickRange("lastMonth", anchor)), {
+  mode: "month",
+  startDate: "2025-06-01",
+  endDate: "2025-06-30",
+});
+
+const midMonthAnchor = new Date(2026, 6, 17);
+assert.deepEqual(getProductReportQuickRange("thisMonth", midMonthAnchor), {
+  key: "thisMonth",
+  mode: "month",
+  startDate: "2026-07-01",
+  endDate: "2026-07-17",
+});
+assert.deepEqual(getProductReportCompareRange(getProductReportQuickRange("thisMonth", midMonthAnchor)), {
+  mode: "month",
+  startDate: "2025-07-01",
+  endDate: "2025-07-17",
 });
 
 assert.equal(isValidProductReportDateRange("2026-07-01", "2026-07-04"), true);

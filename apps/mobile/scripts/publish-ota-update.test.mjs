@@ -1404,6 +1404,8 @@ test("preflight/register 只向后台发送 Bearer 与 JSON，严格读取业务
     { gitCommitHash: "different-commit" },
     { dashboardUrl: "https://expo.dev/projects/other/update" },
     { publishedAtUtc: "2026-08-27T10:17:00.000Z" },
+    // Date.parse 只保留毫秒；这里覆盖 SQL Server datetime 舍入曾漏过的亚毫秒漂移。
+    { publishedAtUtc: "2026-08-27T10:16:00.0000001Z" },
     { isRollback: true, rollbackOfReleaseId: null },
     { registrationSource: "legacy-backfill" },
   ]) {

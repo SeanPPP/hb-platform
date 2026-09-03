@@ -10,10 +10,17 @@ namespace BlazorApp.Api.Interfaces
 
         Task<ApiResponse<MobileAppBuildDto?>> GetLatestAsync(string appKey, string profile);
 
+        Task<ApiResponse<MobileAppBuildDto?>> GetLatestPublicMobileAndroidAsync(string profile);
+
         Task<ApiResponse<MobileAppBuildDto?>> GetByBuildIdAsync(string easBuildId, string profile);
 
         Task<ApiResponse<MobileAppBuildDto?>> GetByBuildIdAsync(
             string appKey,
+            string easBuildId,
+            string profile
+        );
+
+        Task<ApiResponse<MobileAppBuildDto?>> GetPublicMobileAndroidByBuildIdAsync(
             string easBuildId,
             string profile
         );

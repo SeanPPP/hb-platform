@@ -17,7 +17,8 @@ case "$component" in
       VITE_CENTER_LOG_PROJECT=hbweb_rv \
       VITE_CENTER_LOG_ENVIRONMENT=Production \
       VITE_CENTER_LOG_SERVICE_NAME=hbweb_rv-web \
-      npm --prefix apps/web run build:ci
+      npm --prefix apps/web run build:ci -- --manifest
+    npm --prefix apps/web run verify:bundle
     ;;
   mobile)
     npm --prefix apps/mobile ci --no-audit --no-fund

@@ -251,4 +251,15 @@
   <data name="settings.serverAddress.blocked.deviceActivation" xml:space="preserve"><value>Finish recovering the pending device activation before switching servers.</value></data>
   <data name="settings.serverAddress.blocked.sync" xml:space="preserve"><value>Resolve all pending, failed, or syncing orders before switching servers.</value></data>
   <data name="settings.serverAddress.blocked.audit" xml:space="preserve"><value>Wait for pending operation audit events to upload before switching servers.</value></data>
+  <data name="settings.linkly.cloudBackend.credentialsManagedByWeb" xml:space="preserve"><value>Cloud usernames and passwords are managed centrally in Web Admin. This POS only receives a safe terminal list.</value></data>
+  <data name="settings.linkly.cloudBackend.terminal" xml:space="preserve"><value>Card terminal</value></data>
+  <data name="settings.linkly.cloudBackend.refresh" xml:space="preserve"><value>Refresh</value></data>
+  <data name="settings.linkly.cloudBackend.noTerminal" xml:space="preserve"><value>No Linkly Cloud terminal is available for this store and environment.</value></data>
+  <data name="settings.linkly.cloudBackend.terminalDisplay" xml:space="preserve"><value>Lane {0} · {1}</value></data>
+  <data name="settings.linkly.cloudBackend.terminalRequired" xml:space="preserve"><value>Select a Linkly Cloud terminal first.</value></data>
+  <data name="settings.linkly.cloudBackend.pairCodeSixDigits" xml:space="preserve"><value>Enter the 6-digit pair code shown on the selected terminal.</value></data>
+  <data name="settings.linkly.cloudBackend.terminalBusy" xml:space="preserve"><value>This terminal is busy and cannot be selected now.</value></data>
+  <data name="settings.linkly.cloudBackend.pairBeforeSelect" xml:space="preserve"><value>Pair this terminal before selecting it for payments.</value></data>
+  <data name="settings.linkly.cloudBackend.selected" xml:space="preserve"><value>{0} is selected for this POS.</value></data>
+  <data name="settings.linkly.cloudBackend.pairedButNotSelected" xml:space="preserve"><value>Terminal paired but not selected. Select it again before taking payments.</value></data>
 </root>

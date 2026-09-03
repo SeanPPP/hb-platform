@@ -14,10 +14,10 @@ function assertNotIncludes(source: string, expected: string, message: string) {
 }
 
 const root = process.cwd();
-const rootLayout = readFileSync(resolve(root, "app/_layout.tsx"), "utf8");
-const preorderLayout = readFileSync(resolve(root, "app/preorders/_layout.tsx"), "utf8");
-const home = readFileSync(resolve(root, "app/(tabs)/home.tsx"), "utf8");
-const cart = readFileSync(resolve(root, "app/(tabs)/cart.tsx"), "utf8");
+const shellLayout = readFileSync(resolve(root, "app/(shell)/_layout.tsx"), "utf8");
+const preorderLayout = readFileSync(resolve(root, "app/(shell)/preorders/_layout.tsx"), "utf8");
+const home = readFileSync(resolve(root, "app/(shell)/home.tsx"), "utf8");
+const cart = readFileSync(resolve(root, "app/(shell)/cart.tsx"), "utf8");
 const preorderDetail = readFileSync(
   resolve(root, "src/modules/preorder/preorder-detail-screen.tsx"),
   "utf8"
@@ -32,8 +32,9 @@ const performSubmitSource = preorderDetail.slice(
   preorderDetail.indexOf("const confirmSubmit")
 );
 
-assertIncludes(rootLayout, '<Stack.Screen name="preorders" />', "root stack registers preorder");
+assertIncludes(shellLayout, 'initialRouteName: "workbench"', "Shell stack anchors preorder navigation at workbench");
 assertIncludes(preorderLayout, "headerShown: false", "preorder is a standalone full-screen stack");
+assertIncludes(preorderLayout, 'initialRouteName: "index"', "preorder detail deep links retain the list parent");
 assertIncludes(home, "PreorderGateBanner", "home exposes the preorder gate");
 assertIncludes(home, "canBypassPreorderGate(access)", "warehouse users bypass the home preorder prompt");
 assertIncludes(cart, "PreorderGateBanner", "cart exposes the preorder gate");

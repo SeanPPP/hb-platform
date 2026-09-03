@@ -25,6 +25,7 @@ test("路径选择只启用受影响 lane，共享基线文件启用全部 lane"
     "backend",
   ]);
   assert.deepEqual(selectLanesForPaths(["apps/web/src/main.tsx"]), ["web"]);
+  assert.deepEqual(selectLanesForPaths(["web-bundle-budget.json"]), ["web"]);
   assert.deepEqual(selectLanesForPaths(["apps/pos-ipad/src/app.ts"]), ["pos-ipad"]);
   assert.deepEqual(selectLanesForPaths(["apps/pos-handheld/src/app.ts"]), [
     "pos-handheld",

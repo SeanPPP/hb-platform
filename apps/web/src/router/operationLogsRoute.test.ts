@@ -48,7 +48,7 @@ const access = buildRolePreviewAccess({
 const routeSource = readFileSync(join(process.cwd(), 'src/router/routes.tsx'), 'utf8')
 
 assertEqual(
-  routeSource.includes("import PosAdminOperationLogsPage from '../pages/PosAdmin/OperationLogs'") &&
+  routeSource.includes("const PosAdminOperationLogsPage = lazy(() => import('../pages/PosAdmin/OperationLogs'))") &&
     routeSource.includes("path: '/pos-admin/operation-logs'") &&
     routeSource.includes("title: 'menu.operationLogs'") &&
     routeSource.includes("accessKey: 'canViewOperationAudits'") &&

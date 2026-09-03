@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services.React;
@@ -20,6 +21,101 @@ internal static class SetChildPurchasePriceMutationLock
         ISqlSugarClient db,
         IEnumerable<string?> productCodes
     ) => AcquireAsync(db, productCodes, lockAll: false);
+
+    /// <summary>
+    /// 为允许字段级部分成功的入口一次获取共享总闸，再按稳定顺序尝试商品锁。
+    /// 所有商品共用等待预算；旧的全有或全无入口保持不变。
+    /// </summary>
+    internal static async Task<SetChildPurchasePricePartialLockResult> AcquireProductsPartiallyAsync(
+        ISqlSugarClient db,
+        IEnumerable<string?> productCodes,
+        int totalWaitMilliseconds = LockTimeoutMilliseconds
+    )
+    {
+        if (db.Ado.Transaction == null)
+        {
+            throw new InvalidOperationException("套装子项成本业务锁必须在数据库事务内获取");
+        }
+        if (totalWaitMilliseconds < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(totalWaitMilliseconds),
+                "共享锁等待预算不能小于0"
+            );
+        }
+
+        var normalizedCodes = NormalizeProductCodes(productCodes);
+        if (normalizedCodes.Count == 0)
+        {
+            throw new ArgumentException("按商品获取套装子项成本锁时，商品编码不能为空", nameof(productCodes));
+        }
+
+        var acquiredCodes = new List<string>();
+        var busyCodes = new List<string>();
+        if (db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+        {
+            var waitStopwatch = Stopwatch.StartNew();
+            try
+            {
+                await AcquireDatabaseResourceWithTimeoutAsync(
+                    db,
+                    GateResource,
+                    "Shared",
+                    totalWaitMilliseconds
+                );
+            }
+            catch (SetChildPurchasePriceLockException exception)
+                when (CanContinuePartialLockFailure(exception))
+            {
+                busyCodes.AddRange(normalizedCodes);
+                return new SetChildPurchasePricePartialLockResult(
+                    new SetChildPurchasePriceLockScope(db, false, acquiredCodes),
+                    busyCodes
+                );
+            }
+
+            foreach (var productCode in normalizedCodes)
+            {
+                var elapsedMilliseconds = (long)waitStopwatch.Elapsed.TotalMilliseconds;
+                var remainingMilliseconds = (int)
+                    Math.Max(0L, (long)totalWaitMilliseconds - elapsedMilliseconds);
+                try
+                {
+                    await AcquireDatabaseResourceWithTimeoutAsync(
+                        db,
+                        ProductResourcePrefix + productCode,
+                        "Exclusive",
+                        remainingMilliseconds
+                    );
+                    acquiredCodes.Add(productCode);
+                }
+                catch (SetChildPurchasePriceLockException exception)
+                    when (CanContinuePartialLockFailure(exception))
+                {
+                    busyCodes.Add(productCode);
+                }
+            }
+        }
+        else
+        {
+            acquiredCodes.AddRange(normalizedCodes);
+        }
+
+        return new SetChildPurchasePricePartialLockResult(
+            new SetChildPurchasePriceLockScope(db, false, acquiredCodes),
+            busyCodes
+        );
+    }
+
+    /// <summary>
+    /// sp_getapplock 直接返回 -3 不会自动回滚事务，可把该请求视为 busy；
+    /// SQL 1205 包装出的 -3 带 inner 且事务可能已回滚，必须向外传播并回滚整批。
+    /// </summary>
+    internal static bool CanContinuePartialLockFailure(
+        SetChildPurchasePriceLockException exception
+    ) =>
+        exception.ResultCode is -1 or -2
+        || (exception.ResultCode == -3 && exception.InnerException == null);
 
     private static async Task<SetChildPurchasePriceLockScope> AcquireAsync(
         ISqlSugarClient db,
@@ -79,6 +175,45 @@ internal static class SetChildPurchasePriceMutationLock
                 new SugarParameter("@Resource", resource),
                 new SugarParameter("@LockMode", lockMode),
                 new SugarParameter("@LockTimeout", LockTimeoutMilliseconds)
+            );
+        }
+        catch (Exception ex) when (TryResolveAcquireConflictResultCode(ex, out _))
+        {
+            TryResolveAcquireConflictResultCode(ex, out var resultCode);
+            throw new SetChildPurchasePriceLockException(resource, resultCode, ex);
+        }
+        if (result < 0)
+        {
+            throw new SetChildPurchasePriceLockException(resource, result);
+        }
+    }
+
+    /// <summary>
+    /// 仅供部分成功入口传入剩余共享预算；旧锁入口继续使用固定 10 秒实现。
+    /// </summary>
+    private static async Task AcquireDatabaseResourceWithTimeoutAsync(
+        ISqlSugarClient db,
+        string resource,
+        string lockMode,
+        int lockTimeoutMilliseconds
+    )
+    {
+        int result;
+        try
+        {
+            result = await db.Ado.SqlQuerySingleAsync<int>(
+                """
+                DECLARE @Result int;
+                EXEC @Result = sys.sp_getapplock
+                    @Resource = @Resource,
+                    @LockMode = @LockMode,
+                    @LockOwner = N'Transaction',
+                    @LockTimeout = @LockTimeout;
+                SELECT @Result;
+                """,
+                new SugarParameter("@Resource", resource),
+                new SugarParameter("@LockMode", lockMode),
+                new SugarParameter("@LockTimeout", lockTimeoutMilliseconds)
             );
         }
         catch (Exception ex) when (TryResolveAcquireConflictResultCode(ex, out _))
@@ -217,6 +352,21 @@ internal static class SetChildPurchasePriceMutationLock
             .Distinct(StringComparer.Ordinal)
             .OrderBy(code => code, StringComparer.Ordinal)
             .ToList();
+}
+
+internal sealed class SetChildPurchasePricePartialLockResult
+{
+    internal SetChildPurchasePricePartialLockResult(
+        SetChildPurchasePriceLockScope lockScope,
+        IReadOnlyList<string> busyProductCodes
+    )
+    {
+        LockScope = lockScope;
+        BusyProductCodes = busyProductCodes;
+    }
+
+    internal SetChildPurchasePriceLockScope LockScope { get; }
+    internal IReadOnlyList<string> BusyProductCodes { get; }
 }
 
 internal sealed class SetChildPurchasePriceLockScope

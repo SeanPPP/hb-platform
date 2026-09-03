@@ -56,6 +56,13 @@ const normalized = normalizeAppNavigationMenu([
     permission: "SeasonalCards.Remaining.ViewManagedStore",
     order: 23,
   },
+  {
+    routeName: "workbench",
+    titleKey: "tabs.workbench",
+    icon: "view-dashboard-outline",
+    permission: null,
+    order: 0,
+  },
 ]);
 
 assertEqual(normalized.length, 7, "normalizer keeps legacy attendance routes, advertisements, promotions, reports, and seasonal cards");
@@ -89,4 +96,9 @@ assertEqual(
   normalized[6]?.routeName,
   "seasonal-cards",
   "seasonal cards route remains available"
+);
+assertEqual(
+  normalized.some((item) => item.routeName === "workbench"),
+  false,
+  "workbench is a local shell and must not be accepted as a backend business menu item"
 );

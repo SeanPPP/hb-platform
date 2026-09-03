@@ -7,10 +7,15 @@ import type { CurrentUser } from '../../../types/auth'
 import { P } from '../../../types/permissions'
 import {
   buildLinklyCredentialPayload,
+  buildCreateLinklyTerminalPayload,
+  buildUpdateLinklyTerminalPayload,
   buildSquareTokenPayload,
+  canActivateLinklyConfiguration,
   createLinklyCredentialFormValues,
+  createLinklyTerminalFormValues,
   createSquareTokenFormValues,
   getEnvironmentStatus,
+  getLinklyTerminalAssignmentOwner,
   resolvePaymentTerminalSettingsErrorMessage,
 } from './pageLogic'
 
@@ -92,6 +97,120 @@ const clearLinkly = buildLinklyCredentialPayload('001', 'Sandbox', {
 })
 assertEqual(clearLinkly.clearCredential, true, 'clear Linkly payload should set clearCredential=true')
 assert('password' in clearLinkly === false, 'clear Linkly payload should not send password')
+
+const terminalForm = createLinklyTerminalFormValues({
+  terminalId: 'terminal-1',
+  storeCode: '001',
+  environment: 'Production',
+  laneNo: 2,
+  displayName: 'Back Counter',
+  usernameMasked: '7457•••••002',
+  hasPassword: true,
+  pairingState: 'Ready',
+  selectedDeviceCount: 1,
+  updatedAtUtc: '2026-09-02T00:00:00Z',
+})
+assertEqual(terminalForm.laneNo, 2, 'terminal edit form should hydrate lane')
+assertEqual(terminalForm.displayName, 'Back Counter', 'terminal edit form should hydrate display name')
+assertEqual(terminalForm.username, '', 'terminal edit form must not hydrate masked username')
+assertEqual(terminalForm.password, '', 'terminal edit form must not hydrate password')
+
+const createTerminal = buildCreateLinklyTerminalPayload('001', 'Production', {
+  laneNo: 3,
+  displayName: ' Side Counter ',
+  username: ' test-user-003 ',
+  password: ' terminal-secret ',
+})
+assertEqual(createTerminal.displayName, 'Side Counter', 'terminal display name should be trimmed')
+assertEqual(createTerminal.username, 'test-user-003', 'terminal username should be trimmed')
+assertEqual(createTerminal.password, 'terminal-secret', 'terminal password should be trimmed')
+
+const updateTerminal = buildUpdateLinklyTerminalPayload('001', 'Sandbox', {
+  laneNo: 3,
+  displayName: 'Side Counter',
+  username: ' ',
+  password: ' ',
+})
+assert('username' in updateTerminal === false, 'blank edit username should preserve server credential')
+assert('password' in updateTerminal === false, 'blank edit password should preserve server credential')
+
+const activationBase = {
+  storeCode: '001',
+  environment: 'Production' as const,
+  mode: 'Draft' as const,
+  terminals: [{
+    terminalId: 'terminal-1',
+    storeCode: '001',
+    environment: 'Production' as const,
+    laneNo: 1,
+    displayName: 'Front Counter',
+    usernameMasked: '7457•••••001',
+    hasPassword: true,
+    pairingState: 'Ready' as const,
+    selectedDeviceCount: 1,
+    updatedAtUtc: '2026-09-02T00:00:00Z',
+  }],
+  devices: [{
+    deviceCode: 'POS-01',
+    deviceSystem: 'Windows',
+    enabled: true,
+    deviceMissing: false,
+    terminalId: 'terminal-1',
+    revision: 1,
+  }],
+}
+assertEqual(canActivateLinklyConfiguration(activationBase), true, 'ready terminal and complete selections can activate')
+assertEqual(
+  canActivateLinklyConfiguration({ ...activationBase, devices: [{ ...activationBase.devices[0], terminalId: null }] }),
+  false,
+  'enabled device without selection blocks activation',
+)
+assertEqual(
+  canActivateLinklyConfiguration({
+    ...activationBase,
+    devices: [
+      activationBase.devices[0],
+      {
+        ...activationBase.devices[0],
+        deviceCode: 'POS-DISABLED',
+        enabled: false,
+        deviceMissing: false,
+        terminalId: null,
+      },
+    ],
+  }),
+  true,
+  'disabled device without selection should not block activation',
+)
+assertEqual(
+  canActivateLinklyConfiguration({
+    ...activationBase,
+    devices: [
+      activationBase.devices[0],
+      {
+        ...activationBase.devices[0],
+        deviceCode: 'POS-02',
+      },
+    ],
+  }),
+  false,
+  'two enabled POS devices cannot activate with the same terminal',
+)
+assertEqual(
+  getLinklyTerminalAssignmentOwner(activationBase, 'terminal-1', 'POS-01'),
+  null,
+  'the current POS keeps its own terminal option',
+)
+assertEqual(
+  getLinklyTerminalAssignmentOwner(activationBase, 'terminal-1', 'POS-02'),
+  'POS-01',
+  'another POS sees the terminal owner',
+)
+assertEqual(
+  getLinklyTerminalAssignmentOwner(activationBase, 'terminal-unassigned', 'POS-02'),
+  null,
+  'an unassigned terminal stays available',
+)
 
 const sandboxStatus = getEnvironmentStatus(
   [

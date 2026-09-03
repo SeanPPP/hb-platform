@@ -305,10 +305,18 @@ public sealed class MobileAppBuildAppKeyIsolationTests : IDisposable
         await service.HandleEasWebhookAsync(
             CreateBuildPayload("handheld-build", "hb-pos-handheld", "2026-08-10T02:00:00Z")
         );
+        var mobileBuild = await db
+            .Queryable<MobileAppBuild>()
+            .SingleAsync(build => build.AppKey == MobileAppKeys.Mobile);
+        mobileBuild.CosArtifactUrl = "https://downloads.example/mobile-build.apk";
+        mobileBuild.CosMirrorStatus = MobileAppBuildService.CosMirrorStatusSucceeded;
+        mobileBuild.ArtifactSha256 = new string('e', 64);
+        mobileBuild.ArtifactSize = 4096;
+        await db.Updateable(mobileBuild).ExecuteCommandAsync();
         var controller = CreateController(service);
 
         var mobileLatest = Assert.IsType<OkObjectResult>(
-            await controller.AndroidLatest("production")
+            await controller.AndroidLatest("production", "sha256-v1")
         );
         var handheldLatest = Assert.IsType<OkObjectResult>(
             await controller.PosHandheldAndroidLatest("production")

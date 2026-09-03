@@ -32,75 +32,77 @@ import {
   WalletOutlined,
 } from '@ant-design/icons'
 import type { MenuProps } from 'antd'
+import { lazy } from 'react'
 import { matchPath, Navigate } from 'react-router-dom'
 import i18n from '../i18n'
 import ForbiddenPage from '../pages/Forbidden'
-import DashboardPage from '../pages/Dashboard'
-import DomesticChinaSuppliersPage from '../pages/DomesticPurchase/ChinaSuppliers'
-import DomesticProductsPage from '../pages/DomesticPurchase/DomesticProducts'
-import ProductPrefixCodeManagementPage from '../pages/DomesticPurchase/ProductPrefixCodeManagement'
-import ProductCreationPage from '../pages/DomesticPurchase/ProductCreation'
-import ProductImportPage from '../pages/DomesticPurchase/ProductImport'
-import ProductGradeManagementPage from '../pages/Warehouse/ProductGradeManagement'
 import NotFoundPage from '../pages/NotFound'
-import ExecutiveSalesIntelligencePage from '../pages/ExecutiveSalesIntelligence'
-import CompactSalesBoardPage from '../pages/ExecutiveSalesIntelligence/CompactSalesBoard'
-import SalesDetailAnalysisPage from '../pages/ExecutiveSalesIntelligence/SalesDetailAnalysisV2'
-import ProductMovementReportPage from '../pages/ExecutiveSalesIntelligence/ProductMovementReport'
-import WarehouseProductFlowAnalysisPage from '../pages/ExecutiveSalesIntelligence/WarehouseProductFlowAnalysis'
-import LocalProductSalesAnalysisPage from '../pages/ExecutiveSalesIntelligence/LocalProductSalesAnalysis'
-import PurchaseAmountDashboardPage from '../pages/ExecutiveSalesIntelligence/PurchaseAmountDashboard'
-import PosmSalesOrdersPage from '../pages/PosmSalesOrders'
-import PosAdminCashRegisterUsersPage from '../pages/PosAdmin/CashRegisterUsers'
-import PosAdminPricingStrategiesPage from '../pages/PosAdmin/PricingStrategies'
-import PosAdminPromotionsPage from '../pages/PosAdmin/Promotions'
-import PosAdminScheduleAttendancePage from '../pages/PosAdmin/ScheduleAttendance'
-import PosAdminDeviceRegistrationPage from '../pages/PosAdmin/DeviceRegistration'
-import PosAdminSupplierManagementPage from '../pages/PosAdmin/SupplierManagement'
-import PosAdminProductManagementPage from '../pages/PosAdmin/ProductManagement'
-import PosAdminStoreProductPricePage from '../pages/PosAdmin/StoreProductPrice'
-import PosAdminAdvertisementsPage from '../pages/PosAdmin/Advertisements'
-import PosAdminOperationLogsPage from '../pages/PosAdmin/OperationLogs'
-import LinklySettlementsPage from '../pages/PosAdmin/LinklySettlements'
-import LinklySettlementDetailPage from '../pages/PosAdmin/LinklySettlementDetail'
-import LocalSupplierInvoicesPage from '../pages/PosAdmin/LocalSupplierInvoices'
-import LocalSupplierInvoiceDetailPage from '../pages/PosAdmin/LocalSupplierInvoiceDetailPage'
-import LocalSupplierInvoiceSalesAnalysisPage from '../pages/PosAdmin/LocalSupplierInvoiceSalesAnalysis'
-import LocalSupplierPurchaseSalesAnalysisPage from '../pages/PosAdmin/LocalSupplierPurchaseSalesAnalysis'
-import InvoiceEditPage from '../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'
-import SystemAppDownloadsPage from '../pages/System/AppDownloads'
-import SystemCenterLogsPage from '../pages/System/CenterLogs'
-import SystemPerformanceBaselinePage from '../pages/System/PerformanceBaseline'
-import EmergencyLoginKeysPage from '../pages/System/EmergencyLoginKeys'
-import InvoiceEmailSettingsPage from '../pages/System/InvoiceEmailSettings'
-import PaymentTerminalSettingsPage from '../pages/System/PaymentTerminalSettings'
-import SystemScheduledStatisticsPage from '../pages/System/ScheduledStatistics'
-import SystemWpfVersionsPage from '../pages/System/WpfVersions'
-import SystemRolesPage from '../pages/System/Roles'
-import SystemStoresPage from '../pages/System/Stores'
-import SystemEmployeeProfilesPage from '../pages/System/EmployeeProfiles'
-import SystemUsersPage from '../pages/System/Users'
-import SystemPermissionsPage from '../pages/System/Permissions'
-import WarehouseCategoriesPage from '../pages/Warehouse/Categories'
-import ContainerDetailPage from '../pages/Warehouse/ContainerDetail'
-import ContainerAllocationSalesPage from '../pages/Warehouse/ContainerAllocationSales'
-import ContainersPage from '../pages/Warehouse/Containers'
-import WarehouseLocationsPage from '../pages/Warehouse/Locations'
-import WarehouseProductsPage from '../pages/Warehouse/Products'
-import RetailPriceChangesPage from '../pages/Warehouse/RetailPriceChanges'
-import WarehouseProductRecordsPage from '../pages/Warehouse/ProductRecords'
-import StoreOrderDetailPage from '../pages/Warehouse/StoreOrders/Detail'
-import StoreOrderInvoicePage from '../pages/Warehouse/StoreOrders/Invoice'
-import StoreOrderPickingListPage from '../pages/Warehouse/StoreOrders/PickingList'
-import StoreOrdersPage from '../pages/Warehouse/StoreOrders'
-import StoreOrderImportPriceVariancePage from '../pages/Warehouse/StoreOrderImportPriceVariance'
-import PreordersPage from '../pages/Warehouse/Preorders'
-import PreorderActivationDetailPage from '../pages/Warehouse/Preorders/ActivationDetail'
 import type { AccessControl } from '../types/auth'
 import type { NavigationMenuDto } from '../types/auth'
 import type { AppRouteItem, AppRouteMeta, TabItem } from '../types/router'
 import { chooseNavigationMenus } from './menuFallback'
 import { shouldIncludeLocalMenuRoute } from './menuVisibility'
+
+const DashboardPage = lazy(() => import('../pages/Dashboard'))
+const DomesticChinaSuppliersPage = lazy(() => import('../pages/DomesticPurchase/ChinaSuppliers'))
+const DomesticProductsPage = lazy(() => import('../pages/DomesticPurchase/DomesticProducts'))
+const ProductPrefixCodeManagementPage = lazy(() => import('../pages/DomesticPurchase/ProductPrefixCodeManagement'))
+const ProductCreationPage = lazy(() => import('../pages/DomesticPurchase/ProductCreation'))
+const ProductImportPage = lazy(() => import('../pages/DomesticPurchase/ProductImport'))
+const ProductGradeManagementPage = lazy(() => import('../pages/Warehouse/ProductGradeManagement'))
+const ExecutiveSalesIntelligencePage = lazy(() => import('../pages/ExecutiveSalesIntelligence'))
+const CompactSalesBoardPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/CompactSalesBoard'))
+const SalesDetailAnalysisPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/SalesDetailAnalysisV2'))
+const ProductMovementReportPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/ProductMovementReport'))
+const WarehouseProductFlowAnalysisPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/WarehouseProductFlowAnalysis'))
+const LocalProductSalesAnalysisPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/LocalProductSalesAnalysis'))
+const PurchaseAmountDashboardPage = lazy(() => import('../pages/ExecutiveSalesIntelligence/PurchaseAmountDashboard'))
+const PosmSalesOrdersPage = lazy(() => import('../pages/PosmSalesOrders'))
+const PosAdminCashRegisterUsersPage = lazy(() => import('../pages/PosAdmin/CashRegisterUsers'))
+const PosAdminPricingStrategiesPage = lazy(() => import('../pages/PosAdmin/PricingStrategies'))
+const PosAdminPromotionsPage = lazy(() => import('../pages/PosAdmin/Promotions'))
+const PosAdminScheduleAttendancePage = lazy(() => import('../pages/PosAdmin/ScheduleAttendance'))
+const PosAdminDeviceRegistrationPage = lazy(() => import('../pages/PosAdmin/DeviceRegistration'))
+const PosAdminSupplierManagementPage = lazy(() => import('../pages/PosAdmin/SupplierManagement'))
+const PosAdminProductManagementPage = lazy(() => import('../pages/PosAdmin/ProductManagement'))
+const PosAdminStoreProductPricePage = lazy(() => import('../pages/PosAdmin/StoreProductPrice'))
+const PosAdminAdvertisementsPage = lazy(() => import('../pages/PosAdmin/Advertisements'))
+const PosAdminOperationLogsPage = lazy(() => import('../pages/PosAdmin/OperationLogs'))
+const LinklySettlementsPage = lazy(() => import('../pages/PosAdmin/LinklySettlements'))
+const LinklySettlementDetailPage = lazy(() => import('../pages/PosAdmin/LinklySettlementDetail'))
+const LocalSupplierInvoicesPage = lazy(() => import('../pages/PosAdmin/LocalSupplierInvoices'))
+const LocalSupplierInvoiceDetailPage = lazy(() => import('../pages/PosAdmin/LocalSupplierInvoiceDetailPage'))
+const LocalSupplierInvoiceSalesAnalysisPage = lazy(() => import('../pages/PosAdmin/LocalSupplierInvoiceSalesAnalysis'))
+const LocalSupplierPurchaseSalesAnalysisPage = lazy(() => import('../pages/PosAdmin/LocalSupplierPurchaseSalesAnalysis'))
+const InvoiceEditPage = lazy(() => import('../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'))
+const SystemAppDownloadsPage = lazy(() => import('../pages/System/AppDownloads'))
+const SystemCenterLogsPage = lazy(() => import('../pages/System/CenterLogs'))
+const SystemPerformanceBaselinePage = lazy(() => import('../pages/System/PerformanceBaseline'))
+const EmergencyLoginKeysPage = lazy(() => import('../pages/System/EmergencyLoginKeys'))
+const InvoiceEmailSettingsPage = lazy(() => import('../pages/System/InvoiceEmailSettings'))
+const PaymentTerminalSettingsPage = lazy(() => import('../pages/System/PaymentTerminalSettings'))
+const SystemScheduledStatisticsPage = lazy(() => import('../pages/System/ScheduledStatistics'))
+const SystemWpfVersionsPage = lazy(() => import('../pages/System/WpfVersions'))
+const SystemRolesPage = lazy(() => import('../pages/System/Roles'))
+const SystemStoresPage = lazy(() => import('../pages/System/Stores'))
+const SystemEmployeeProfilesPage = lazy(() => import('../pages/System/EmployeeProfiles'))
+const SystemUsersPage = lazy(() => import('../pages/System/Users'))
+const SystemPermissionsPage = lazy(() => import('../pages/System/Permissions'))
+const WarehouseCategoriesPage = lazy(() => import('../pages/Warehouse/Categories'))
+const ContainerDetailPage = lazy(() => import('../pages/Warehouse/ContainerDetail'))
+const ContainerAllocationSalesPage = lazy(() => import('../pages/Warehouse/ContainerAllocationSales'))
+const ContainersPage = lazy(() => import('../pages/Warehouse/Containers'))
+const WarehouseLocationsPage = lazy(() => import('../pages/Warehouse/Locations'))
+const WarehouseProductsPage = lazy(() => import('../pages/Warehouse/Products'))
+const RetailPriceChangesPage = lazy(() => import('../pages/Warehouse/RetailPriceChanges'))
+const WarehouseProductRecordsPage = lazy(() => import('../pages/Warehouse/ProductRecords'))
+const StoreOrderDetailPage = lazy(() => import('../pages/Warehouse/StoreOrders/Detail'))
+const StoreOrderInvoicePage = lazy(() => import('../pages/Warehouse/StoreOrders/Invoice'))
+const StoreOrderPickingListPage = lazy(() => import('../pages/Warehouse/StoreOrders/PickingList'))
+const StoreOrdersPage = lazy(() => import('../pages/Warehouse/StoreOrders'))
+const StoreOrderImportPriceVariancePage = lazy(() => import('../pages/Warehouse/StoreOrderImportPriceVariance'))
+const PreordersPage = lazy(() => import('../pages/Warehouse/Preorders'))
+const PreorderActivationDetailPage = lazy(() => import('../pages/Warehouse/Preorders/ActivationDetail'))
 
 export interface ResolvedRoute extends AppRouteItem {
   parentPaths: string[]

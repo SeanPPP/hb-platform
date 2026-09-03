@@ -145,7 +145,9 @@ namespace BlazorApp.Api.Services.React
                 result.Message = $"货柜 HQ 增量同步失败: {ex.Message}";
                 result.ErrorCode = ex is ContainerSyncInvalidSourceDataException
                     ? ContainerHqSyncErrorCodes.InvalidSourceData
-                    : ContainerHqSyncErrorCodes.InternalError;
+                    : ContainerMutationLock.TryResolveConflict(ex, out _)
+                        ? ContainerMutationLock.BusyErrorCode
+                        : ContainerHqSyncErrorCodes.InternalError;
                 result.Details ??= ex.ToString();
                 await FinishTaskAsync(taskLog.Id, result);
                 return result;
@@ -354,16 +356,38 @@ namespace BlazorApp.Api.Services.React
         )
         {
             var now = DateTime.UtcNow;
-            var containerCodes = hqContainers
-                .Select(x => x.HGUID!.Trim())
-                .Distinct(StringComparer.OrdinalIgnoreCase)
+            var snapshotContainerCodes = hqContainers
+                .Select(x => x.HGUID)
+                .Concat(hqDetails.Select(x => x.主表GUID))
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var hqDetailCodes = hqDetails
+                .Select(detail => detail.HGUID)
+                .Where(detailCode => !string.IsNullOrWhiteSpace(detailCode))
+                .Select(detailCode => detailCode!.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var existingContainerCodes = hqDetailCodes.Count == 0
+                ? new List<string>()
+                : await db.Queryable<ContainerDetail>()
+                    .Where(detail => hqDetailCodes.Contains(detail.DetailCode))
+                    .Where(detail => detail.ContainerCode != null)
+                    .Select(detail => detail.ContainerCode!)
+                    .ToListAsync();
+            var containerCodes = snapshotContainerCodes
+                .Concat(existingContainerCodes)
                 .ToList();
 
             await db.Ado.BeginTranAsync();
             try
             {
+                // HQ 快照在事务外完成；进入本地事务后先按稳定货柜键取锁，再重读并写入。
+                var mutationLock = await ContainerMutationLock.AcquireContainersAsync(
+                    db,
+                    containerCodes
+                );
                 var existingContainers = await db.Queryable<Container>()
-                    .Where(x => containerCodes.Contains(x.ContainerCode))
+                    .Where(x => snapshotContainerCodes.Contains(x.ContainerCode))
                     .ToListAsync();
                 var existingContainerMap = existingContainers.ToDictionary(
                     x => x.ContainerCode,
@@ -371,8 +395,14 @@ namespace BlazorApp.Api.Services.React
                 );
 
                 var existingDetails = await db.Queryable<ContainerDetail>()
-                    .Where(x => containerCodes.Contains(x.ContainerCode))
+                    .Where(x =>
+                        snapshotContainerCodes.Contains(x.ContainerCode)
+                        || hqDetailCodes.Contains(x.DetailCode)
+                    )
                     .ToListAsync();
+                mutationLock.EnsureCovers(
+                    existingDetails.Select(detail => detail.ContainerCode)
+                );
                 var existingDetailMap = existingDetails.ToDictionary(
                     x => x.DetailCode,
                     StringComparer.OrdinalIgnoreCase
@@ -413,6 +443,12 @@ namespace BlazorApp.Api.Services.React
                         detailsToInsert.Add(localEntity);
                     }
                 }
+                mutationLock.EnsureCovers(
+                    existingDetails
+                        .Concat(detailsToInsert)
+                        .Concat(detailsToUpdate)
+                        .Select(detail => detail.ContainerCode)
+                );
 
                 if (containersToInsert.Count > 0)
                 {
@@ -446,11 +482,12 @@ namespace BlazorApp.Api.Services.React
                         .BulkUpdateAsync(detailsToUpdate);
                 }
 
-                var hqDetailCodes = hqDetails
-                    .Select(x => x.HGUID!.Trim())
-                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
                 var detailCodesToSoftDelete = existingDetails
-                    .Where(x => !x.IsDeleted && !hqDetailCodes.Contains(x.DetailCode))
+                    .Where(x =>
+                        snapshotContainerCodes.Contains(x.ContainerCode)
+                        && !x.IsDeleted
+                        && !hqDetailCodes.Contains(x.DetailCode)
+                    )
                     .Select(x => x.DetailCode)
                     .ToList();
 
@@ -470,10 +507,36 @@ namespace BlazorApp.Api.Services.React
                 stats.UpdatedCount += containersToUpdate.Count + detailsToUpdate.Count;
                 stats.SoftDeletedDetailCount += detailCodesToSoftDelete.Count;
             }
-            catch
+            catch (Exception ex)
+            {
+                await RollbackContainerMutationTransactionSafelyAsync(db, ex);
+                throw;
+            }
+        }
+
+        private async Task RollbackContainerMutationTransactionSafelyAsync(
+            ISqlSugarClient db,
+            Exception originalException
+        )
+        {
+            if (db.Ado.Transaction == null)
+            {
+                return;
+            }
+
+            try
             {
                 await db.Ado.RollbackTranAsync();
-                throw;
+            }
+            catch (Exception rollbackException)
+            {
+                // 保留应用锁或死锁原异常，回滚失败只记录为附加诊断。
+                ContainerMutationLock.ResetFailedTransaction(db);
+                _logger.LogWarning(
+                    rollbackException,
+                    "货柜 HQ 同步事务回滚失败，保留原始异常 {OriginalExceptionType}",
+                    originalException.GetType().Name
+                );
             }
         }
 

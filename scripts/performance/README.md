@@ -33,11 +33,19 @@ stylesheet。它使用 Node zlib 的真实 gzip 算法生成 `WebBundleReportV1`
 上报时 `web.first_screen.bytes` 取首屏 gzip 总量，
 `web.largest_initial_chunk.bytes` 取最大初始 JS chunk gzip；两者单位均为 `bytes`，
 并与 Web lane timing 合并到同一个 MetricBatchV1。raw 总量和动态路由 chunk 不作为
-独立硬门禁指标，保留在 report artifact。manifest、preload、入口或资源缺失会明确
-失败，不会产生 0 bytes。若 `npm ci`、build 或测试先失败，仍会记录该 Web lane 的
-真实 `ci.run.duration`（结论为 failed），但不会采集、上传或用 `0 bytes` 伪造
-bundle 指标。所有资源必须位于 dist 内，路径穿越、外部 URL 和任何
+独立硬门禁指标，保留在 report artifact。manifest、入口或引用资源缺失会明确失败，
+不会产生 0 bytes。若 `npm ci`、build 或测试先失败，仍会记录该 Web lane 的真实
+`ci.run.duration`（结论为 failed），但不会采集、上传或用 `0 bytes` 伪造 bundle 指标。
+所有资源必须位于 dist 内，路径穿越、外部 URL 和任何
 symlink 都会被拒绝。
+
+独立的 `web-bundle-budget.json` 是确定性构建门禁，不与仍处于 `observing` 的
+Production P95 预算混用。`npm --prefix apps/web run verify:bundle` 会复用上述 collector
+校验 dist/manifest，再验证主入口、首屏、最大初始 JS、任一 JS、Excel/PDF 异步资源、
+禁入首屏的重型依赖，以及代表性页面动态入口。阈值按 KiB 固化在版本化预算中；等于
+上限通过，超出任意 1 byte 即失败。Vite 可以把所有同步依赖合并进单一入口，因此
+`modulepreload`/`preload` 可以为空，但 module script、manifest 入口与完整静态闭包仍为
+必填且会递归复核。
 
 两个 POS lane 会在 typecheck 后运行 `verify:metro-bundle`：iPad 导出 iOS、手持
 POS 导出 Android。它调用本地 Expo CLI 的 `expo export --platform … --output-dir …`，

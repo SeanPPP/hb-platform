@@ -1431,9 +1431,10 @@ test("Linkly 配对复用 payment configuration transition、pending-data gate�
       linklySetup: {
         pair: async (
           environment: "Sandbox" | "Production",
+          terminalId: string,
           pairCode: string,
         ) => {
-          events.push(`pair:${environment}:${pairCode}`);
+          events.push(`pair:${environment}:${terminalId}:${pairCode}`);
           return { status: pairResult };
         },
       },
@@ -1456,6 +1457,7 @@ test("Linkly 配对复用 payment configuration transition、pending-data gate�
   const action = {
     kind: "pair-linkly" as const,
     environment: "Sandbox" as const,
+    terminalId: "terminal-1",
     pairCode: "123456",
   };
 
@@ -1466,7 +1468,7 @@ test("Linkly 配对复用 payment configuration transition、pending-data gate�
   assert.deepEqual(events, [
     "transition:start",
     "pending",
-    "pair:Sandbox:123456",
+    "pair:Sandbox:terminal-1:123456",
     "transition:end",
   ]);
 
@@ -1482,7 +1484,7 @@ test("Linkly 配对复用 payment configuration transition、pending-data gate�
   assert.deepEqual(events, [
     "transition:start",
     "pending",
-    "pair:Sandbox:654321",
+    "pair:Sandbox:terminal-1:654321",
     "transition:end",
   ]);
 
@@ -1548,6 +1550,7 @@ test("Linkly 配对和支付切换允许普通耐久队列但阻断敏感订单"
       {
         kind: "pair-linkly",
         environment: "Production",
+        terminalId: "terminal-1",
         pairCode: "123456",
       },
       signal,
@@ -1567,6 +1570,7 @@ test("Linkly 配对和支付切换允许普通耐久队列但阻断敏感订单"
       {
         kind: "pair-linkly",
         environment: "Production",
+        terminalId: "terminal-1",
         pairCode: "654321",
       },
       signal,
@@ -1637,6 +1641,7 @@ test("Linkly 配对 POST 返回后 signal 取消仍保留不可逆 completed 终
     {
       kind: "pair-linkly",
       environment: "Production",
+      terminalId: "terminal-1",
       pairCode: "123456",
     },
     controller.signal,

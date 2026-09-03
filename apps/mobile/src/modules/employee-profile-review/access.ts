@@ -22,7 +22,7 @@ export interface EmployeeProfileReviewAccessInput {
   roleNames?: Iterable<string>;
   permissions?: Iterable<string>;
   menuRouteNames?: Iterable<string>;
-  sessionKind?: "account" | "device" | "iosReview";
+  sessionKind?: "account" | "device" | "deviceAccount" | "iosReview";
 }
 
 export interface EmployeeProfileReviewAccessResult {

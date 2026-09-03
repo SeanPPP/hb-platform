@@ -36,9 +36,23 @@ internal interface ISchemaMigrationRuntime
 
     Task ApplyMainBaselineAsync(CancellationToken cancellationToken);
 
+    Task ApplyBrowserExtensionSessionGrantAsync(CancellationToken cancellationToken);
+
+    Task ApplyContainerDetailQueryIndexesAsync(CancellationToken cancellationToken);
+
+    Task ApplyContainerDetailCollaborationAsync(CancellationToken cancellationToken);
+
+    Task VerifyContainerDetailCollaborationAsync(CancellationToken cancellationToken);
+
+    Task VerifyContainerDetailQueryIndexesAsync(CancellationToken cancellationToken);
+
     Task ApplyPosmBaselineAsync(CancellationToken cancellationToken);
 
+    Task ApplyMobileDeviceActivationAsync(CancellationToken cancellationToken);
+
     Task VerifyDeviceActivationSchemaAsync(CancellationToken cancellationToken);
+
+    Task VerifyMobileDeviceActivationSchemaAsync(CancellationToken cancellationToken);
 }
 
 internal interface ISchemaMigrationSession : IAsyncDisposable
@@ -53,6 +67,10 @@ internal interface ISchemaMigrationSession : IAsyncDisposable
 internal sealed class SchemaProviderNotSupportedException : Exception;
 
 internal sealed class DeviceActivationSchemaMismatchException : Exception;
+
+internal sealed class ContainerDetailQueryIndexSchemaMismatchException : Exception;
+
+internal sealed class ContainerDetailCollaborationSchemaMismatchException : Exception;
 
 internal sealed class SchemaBaselineSqlFailureException(string stepId) : Exception
 {
@@ -166,12 +184,98 @@ internal sealed class SqlServerSchemaMigrationRuntime : ISchemaMigrationRuntime
     public Task ApplyMainBaselineAsync(CancellationToken cancellationToken) =>
         ApplyBaselineAsync(SchemaDatabase.Main, cancellationToken);
 
+    public Task ApplyBrowserExtensionSessionGrantAsync(
+        CancellationToken cancellationToken
+    ) => RunStrictBaselineAsync(
+        _mainDbContext.Db,
+        () => BrowserExtensionSessionGrantSchemaMigrator.EnsureAsync(
+            _mainDbContext.Db,
+            NullLogger.Instance
+        ),
+        cancellationToken,
+        "main-browser-extension-session-grant"
+    );
+
+    public async Task ApplyContainerDetailQueryIndexesAsync(
+        CancellationToken cancellationToken
+    )
+    {
+        await SqlServerSchemaMigrationStore.ExecuteBatchAsync(
+            _mainDatabase.ConnectionString,
+            ContainerDetailQueryIndexSchema.ApplySql,
+            _commandTimeoutSeconds,
+            cancellationToken
+        );
+        // 精确签名在记录 migration ledger 前通过，同名错误索引不能被误标为已完成。
+        await VerifyContainerDetailQueryIndexesAsync(cancellationToken);
+    }
+
+    public async Task ApplyContainerDetailCollaborationAsync(CancellationToken cancellationToken)
+    {
+        await RunStrictBaselineAsync(
+            _mainDbContext.Db,
+            () => ContainerDetailCollaborationSchemaMigrator.EnsureAsync(
+                _mainDbContext.Db,
+                NullLogger.Instance
+            ),
+            cancellationToken,
+            "main-container-detail-collaboration"
+        );
+        // 成功建表后必须先验证精确签名，协调器才可写入 migration ledger。
+        await VerifyContainerDetailCollaborationAsync(cancellationToken);
+    }
+
+    public async Task VerifyContainerDetailCollaborationAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SqlServerSchemaMigrationStore.ExecuteReadOnlyBatchAsync(
+                _mainDatabase.ConnectionString,
+                ContainerDetailCollaborationSchemaMigrator.VerifySql,
+                _commandTimeoutSeconds,
+                cancellationToken
+            );
+        }
+        catch (SqlException exception) when (exception.Number is >= 51540 and <= 51553)
+        {
+            throw new ContainerDetailCollaborationSchemaMismatchException();
+        }
+    }
+
+    public async Task VerifyContainerDetailQueryIndexesAsync(
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            await SqlServerSchemaMigrationStore.ExecuteReadOnlyBatchAsync(
+                _mainDatabase.ConnectionString,
+                ContainerDetailQueryIndexSchema.VerifySql,
+                _commandTimeoutSeconds,
+                cancellationToken
+            );
+        }
+        catch (SqlException exception) when (exception.Number is >= 51530 and <= 51539)
+        {
+            throw new ContainerDetailQueryIndexSchemaMismatchException();
+        }
+    }
+
     public async Task ApplyPosmBaselineAsync(CancellationToken cancellationToken)
     {
         await ApplyBaselineAsync(SchemaDatabase.Posm, cancellationToken);
         // 严格签名必须在 coordinator 写入 POSM 账本前通过，不能留到最终 check 才失败。
         await VerifyDeviceActivationSchemaAsync(cancellationToken);
     }
+
+    public Task ApplyMobileDeviceActivationAsync(CancellationToken cancellationToken) =>
+        RunStrictBaselineAsync(
+            _posmDbContext.Db,
+            () => new MobileDeviceActivationSchemaMigrator(_posmDbContext)
+                .MigrateAsync(cancellationToken),
+            cancellationToken,
+            "posm-mobile-device-activation"
+        );
 
     internal async Task ApplyBaselineAsync(
         SchemaDatabase database,
@@ -290,6 +394,24 @@ internal sealed class SqlServerSchemaMigrationRuntime : ISchemaMigrationRuntime
             );
         }
         catch (SqlException exception) when (exception.Number is >= 51100 and <= 51199)
+        {
+            throw new DeviceActivationSchemaMismatchException();
+        }
+    }
+
+    public async Task VerifyMobileDeviceActivationSchemaAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SqlServerSchemaMigrationStore.ExecuteReadOnlyBatchAsync(
+                _posmDatabase.ConnectionString,
+                MobileDeviceActivationSchema.VerifySql,
+                _commandTimeoutSeconds,
+                cancellationToken
+            );
+        }
+        catch (SqlException exception) when (exception.Number is >= 51400 and <= 51499)
         {
             throw new DeviceActivationSchemaMismatchException();
         }

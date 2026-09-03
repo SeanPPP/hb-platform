@@ -38,12 +38,85 @@ public sealed class LinklyCloudPairingServiceTests
     {
         var credentials = new FakeCredentialRepository { Record = null };
         var transport = new FakePairingTransport();
-        var service = CreateService(credentials, new FakeTerminalCredentialRepository(), transport);
+        var terminal = new FakeTerminalCredentialRepository();
+        var service = CreateService(credentials, terminal, transport);
 
         await Assert.ThrowsAsync<LinklyCloudPairingCredentialMissingException>(() =>
             service.PairAsync("S01", "POS-01", CreateRequest(), "device:POS-01", CancellationToken.None));
 
         Assert.Equal(1, credentials.GetCalls);
+        Assert.Equal(0, transport.Calls);
+        Assert.Equal(1, terminal.LegacyLeaseReleaseCalls);
+    }
+
+    [Fact]
+    public async Task PairAsync_does_not_call_transport_when_multi_terminal_mode_is_active()
+    {
+        var terminal = new FakeTerminalCredentialRepository
+        {
+            LegacyLeaseAcquireException = new LinklyCloudLegacyModeDisabledException()
+        };
+        var transport = new FakePairingTransport();
+        var service = CreateService(new FakeCredentialRepository(), terminal, transport);
+
+        await Assert.ThrowsAsync<LinklyCloudLegacyModeDisabledException>(() =>
+            service.PairAsync("S01", "POS-01", CreateRequest(), "device:POS-01", CancellationToken.None));
+
+        Assert.Equal(1, terminal.LegacyLeaseAcquireCalls);
+        Assert.Equal(0, transport.Calls);
+    }
+
+    [Fact]
+    public async Task PairAsync_does_not_call_transport_when_database_lease_is_busy()
+    {
+        var terminal = new FakeTerminalCredentialRepository
+        {
+            LegacyLeaseAcquireException = new LinklyCloudPairingInProgressException()
+        };
+        var transport = new FakePairingTransport();
+        var service = CreateService(new FakeCredentialRepository(), terminal, transport);
+
+        await Assert.ThrowsAsync<LinklyCloudPairingInProgressException>(() =>
+            service.PairAsync("S01", "POS-01", CreateRequest(), "device:POS-01", CancellationToken.None));
+
+        Assert.Equal(1, terminal.LegacyLeaseAcquireCalls);
+        Assert.Equal(0, transport.Calls);
+    }
+
+    [Fact]
+    public async Task PairAsync_treats_lease_acquisition_cancellation_as_unknown_without_transport_replay()
+    {
+        var terminal = new FakeTerminalCredentialRepository
+        {
+            LegacyLeaseAcquireException = new OperationCanceledException("database operation cancelled")
+        };
+        var transport = new FakePairingTransport();
+        var service = CreateService(new FakeCredentialRepository(), terminal, transport);
+
+        await Assert.ThrowsAsync<LinklyCloudPairingTimeoutException>(() =>
+            service.PairAsync("S01", "POS-01", CreateRequest(), "device:POS-01", CancellationToken.None));
+
+        Assert.Equal(1, terminal.LegacyLeaseAcquireCalls);
+        Assert.Equal(0, terminal.LegacyLeaseReleaseCalls);
+        Assert.Equal(0, transport.Calls);
+    }
+
+    [Fact]
+    public async Task PairAsync_releases_legacy_lease_when_configuration_read_fails_before_transport()
+    {
+        var credentials = new FakeCredentialRepository
+        {
+            GetException = new InvalidOperationException("configuration unavailable")
+        };
+        var terminal = new FakeTerminalCredentialRepository();
+        var transport = new FakePairingTransport();
+        var service = CreateService(credentials, terminal, transport);
+
+        await Assert.ThrowsAsync<LinklyCloudPairingPreparationException>(() =>
+            service.PairAsync("S01", "POS-01", CreateRequest(), "device:POS-01", CancellationToken.None));
+
+        Assert.Equal(1, terminal.LegacyLeaseAcquireCalls);
+        Assert.Equal(1, terminal.LegacyLeaseReleaseCalls);
         Assert.Equal(0, transport.Calls);
     }
 
@@ -150,6 +223,7 @@ public sealed class LinklyCloudPairingServiceTests
             service.PairAsync("S01", "POS-01", CreateRequest(), "device:POS-01", CancellationToken.None));
 
         Assert.Equal(0, terminal.UpsertCalls);
+        Assert.Equal(1, terminal.LegacyLeaseReleaseCalls);
     }
 
     [Fact]
@@ -165,6 +239,8 @@ public sealed class LinklyCloudPairingServiceTests
             service.PairAsync("S01", "POS-01", CreateRequest(), "device:POS-01", CancellationToken.None));
 
         Assert.Equal(0, terminal.UpsertCalls);
+        Assert.Equal(1, terminal.LegacyLeaseAcquireCalls);
+        Assert.Equal(0, terminal.LegacyLeaseReleaseCalls);
     }
 
     [Theory]
@@ -218,21 +294,76 @@ public sealed class LinklyCloudPairingServiceTests
         await Assert.ThrowsAsync<LinklyCloudPairingPersistenceException>(() =>
             service.PairAsync("S01", "POS-01", CreateRequest(), "device:POS-01", CancellationToken.None));
 
-        Assert.Equal(1, terminal.UpsertCalls);
+        Assert.Equal(1, terminal.LegacyCompleteCalls);
     }
 
     [Fact]
-    public async Task PairAsync_requires_persisted_terminal_credential_read_back_after_upstream_success()
+    public async Task PairAsync_completes_legacy_pairing_with_lease_compare_and_swap()
+    {
+        var terminal = new FakeTerminalCredentialRepository();
+        var service = CreateService(
+            new FakeCredentialRepository(),
+            terminal,
+            new FakePairingTransport(new LinklyCloudPairingTransportResponse(HttpStatusCode.OK, "upstream-secret")));
+
+        await service.PairAsync("S01", "POS-01", CreateRequest(), "device:POS-01", CancellationToken.None);
+
+        Assert.Equal(1, terminal.LegacyLeaseAcquireCalls);
+        Assert.Equal(1, terminal.LegacyCompleteCalls);
+        Assert.Equal(0, terminal.UpsertCalls);
+        Assert.NotEqual(Guid.Empty, terminal.CompletedAttemptId);
+    }
+
+    [Fact]
+    public async Task PairAsync_treats_late_lease_completion_as_uncertain_persistence_failure()
     {
         var terminal = new FakeTerminalCredentialRepository
         {
-            // 模拟仓库写方法返回内存记录，但后续按设备读取仍为空。
+            LegacyCompleteException = new LinklyCloudLegacyPairingLeaseConflictException()
+        };
+        var service = CreateService(
+            new FakeCredentialRepository(),
+            terminal,
+            new FakePairingTransport(new LinklyCloudPairingTransportResponse(HttpStatusCode.OK, "upstream-secret")));
+
+        await Assert.ThrowsAsync<LinklyCloudPairingPersistenceException>(() =>
+            service.PairAsync("S01", "POS-01", CreateRequest(), "device:POS-01", CancellationToken.None));
+
+        Assert.Equal(1, terminal.LegacyCompleteCalls);
+        Assert.Equal(0, terminal.LegacyLeaseReleaseCalls);
+    }
+
+    [Fact]
+    public async Task PairAsync_preserves_active_mode_exception_from_atomic_completion()
+    {
+        var terminal = new FakeTerminalCredentialRepository
+        {
+            LegacyCompleteException = new LinklyCloudLegacyModeDisabledException()
+        };
+        var service = CreateService(
+            new FakeCredentialRepository(),
+            terminal,
+            new FakePairingTransport(new LinklyCloudPairingTransportResponse(HttpStatusCode.OK, "upstream-secret")));
+
+        await Assert.ThrowsAsync<LinklyCloudLegacyModeDisabledException>(() =>
+            service.PairAsync("S01", "POS-01", CreateRequest(), "device:POS-01", CancellationToken.None));
+
+        Assert.Equal(1, terminal.LegacyCompleteCalls);
+        Assert.Equal(0, terminal.LegacyLeaseReleaseCalls);
+    }
+
+    [Fact]
+    public async Task PairAsync_requires_the_atomic_completion_result_to_match_upstream_success()
+    {
+        var terminal = new FakeTerminalCredentialRepository
+        {
+            // 原子完成 SQL 必须读回完整记录；返回缺少 secret 的结果不能向终端宣告成功。
             SaveHandler = _ => Task.FromResult(new LinklyCloudBackendTerminalCredentialRecord
             {
                 Environment = "Sandbox",
                 StoreCode = "S01",
                 DeviceCode = "POS-01",
-                Secret = "upstream-secret",
+                Secret = null,
                 PosId = "550e8400-e29b-41d4-a716-446655440000",
                 UpdatedAt = DateTime.UtcNow
             })
@@ -245,7 +376,7 @@ public sealed class LinklyCloudPairingServiceTests
         await Assert.ThrowsAsync<LinklyCloudPairingPersistenceException>(() =>
             service.PairAsync("S01", "POS-01", CreateRequest(), "device:POS-01", CancellationToken.None));
 
-        Assert.Equal(1, terminal.UpsertCalls);
+        Assert.Equal(1, terminal.LegacyCompleteCalls);
     }
 
     [Fact]
@@ -435,12 +566,19 @@ public sealed class LinklyCloudPairingServiceTests
 
         public int GetCalls { get; private set; }
 
+        public Exception? GetException { get; set; }
+
         public Task<LinklyCloudCredentialRecord?> GetByStoreCodeAsync(
             string storeCode,
             string environment,
             CancellationToken cancellationToken)
         {
             GetCalls++;
+            if (GetException is not null)
+            {
+                throw GetException;
+            }
+
             return Task.FromResult(Record);
         }
 
@@ -464,6 +602,18 @@ public sealed class LinklyCloudPairingServiceTests
         public Func<CancellationToken, Task<LinklyCloudBackendTerminalCredentialRecord>>? SaveHandler { get; set; }
 
         public int UpsertCalls { get; private set; }
+
+        public int LegacyLeaseAcquireCalls { get; private set; }
+
+        public int LegacyLeaseReleaseCalls { get; private set; }
+
+        public int LegacyCompleteCalls { get; private set; }
+
+        public Guid CompletedAttemptId { get; private set; }
+
+        public Exception? LegacyLeaseAcquireException { get; set; }
+
+        public Exception? LegacyCompleteException { get; set; }
 
         public string? SavedPosId { get; private set; }
 
@@ -510,6 +660,78 @@ public sealed class LinklyCloudPairingServiceTests
                 Secret = secret,
                 PosId = posId,
                 UpdatedAt = updatedAt,
+                UpdatedBy = updatedBy
+            };
+            return Record;
+        }
+
+        public Task AcquireLegacyPairingLeaseAsync(
+            string environment,
+            string storeCode,
+            Guid attemptId,
+            DateTime leaseExpiresAt,
+            DateTime now,
+            CancellationToken cancellationToken)
+        {
+            LegacyLeaseAcquireCalls++;
+            if (LegacyLeaseAcquireException is not null)
+            {
+                throw LegacyLeaseAcquireException;
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public Task ReleaseLegacyPairingLeaseAsync(
+            string environment,
+            string storeCode,
+            Guid attemptId,
+            CancellationToken cancellationToken)
+        {
+            LegacyLeaseReleaseCalls++;
+            return Task.CompletedTask;
+        }
+
+        public async Task<LinklyCloudBackendTerminalCredentialRecord> CompleteLegacyPairingAsync(
+            string environment,
+            string storeCode,
+            string deviceCode,
+            Guid attemptId,
+            DateTime now,
+            string secret,
+            string posId,
+            string? updatedBy,
+            CancellationToken cancellationToken)
+        {
+            LegacyCompleteCalls++;
+            CompletedAttemptId = attemptId;
+            if (LegacyCompleteException is not null)
+            {
+                throw LegacyCompleteException;
+            }
+
+            SavedPosId = posId;
+            SavedBy = updatedBy;
+            SavedToken = cancellationToken;
+
+            if (SaveException is not null)
+            {
+                throw SaveException;
+            }
+
+            if (SaveHandler is not null)
+            {
+                return await SaveHandler(cancellationToken);
+            }
+
+            Record = new LinklyCloudBackendTerminalCredentialRecord
+            {
+                Environment = environment,
+                StoreCode = storeCode,
+                DeviceCode = deviceCode,
+                Secret = secret,
+                PosId = posId,
+                UpdatedAt = now,
                 UpdatedBy = updatedBy
             };
             return Record;

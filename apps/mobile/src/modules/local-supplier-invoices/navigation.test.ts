@@ -125,7 +125,7 @@ const restoreHref = buildLocalSupplierInvoicesRestoreHref({
 
 assertEqual(
   restoreHref.pathname,
-  "/(tabs)/local-supplier-invoices",
+  "/(shell)/local-supplier-invoices",
   "restore href targets the invoice screen"
 );
 assertEqual(

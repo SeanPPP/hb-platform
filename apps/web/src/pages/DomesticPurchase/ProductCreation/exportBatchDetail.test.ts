@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { ProductCreationType } from '../../../types/domesticProductCreation'
 import type { BatchProductItem } from '../../../types/domesticProductCreation'
 import { getExportableBatchItems } from './exportBatchDetail'
@@ -60,5 +62,22 @@ assert.deepEqual(
 assert.equal(exportableItems[1].parentItemNumber, 'HB001-8001')
 assert.equal(exportableItems[2].productType, ProductCreationType.SET_SUB_ITEM)
 assert.equal(exportableItems[3].parentItemNumber, 'HB001-MISSING')
+
+const productionExcelSources = new Map([
+  ['src/services/exportService.ts', 3],
+  ['src/pages/DomesticPurchase/ProductCreation/exportBatchDetail.ts', 1],
+  ['src/pages/Warehouse/StoreOrders/Invoice.tsx', 1],
+  ['src/pages/Warehouse/StoreOrders/PickingList.tsx', 1],
+])
+
+for (const [sourcePath, expectedDynamicImports] of productionExcelSources) {
+  const source = readFileSync(resolve(process.cwd(), sourcePath), 'utf8')
+  assert.doesNotMatch(source, /^\s*import\b[^\n]*['"]exceljs['"]/m, `${sourcePath} 不得静态加载 ExcelJS`)
+  assert.equal(
+    source.match(/await\s+import\(['"]exceljs['"]\)/g)?.length,
+    expectedDynamicImports,
+    `${sourcePath} 每个 Excel 导出入口必须在操作内加载 ExcelJS`,
+  )
+}
 
 console.log('exportBatchDetail.test: ok')

@@ -369,6 +369,7 @@ export default function ShopHomePage() {
           pageSize,
           categoryGUID: categoryId || undefined,
           itemNumber: keyword || undefined,
+          productName: keyword || undefined,
           sortBy: 'Default',
           grade: gradeFilter.length ? [...gradeFilter].sort().join(',') : undefined,
         })

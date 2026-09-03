@@ -308,6 +308,8 @@ namespace BlazorApp.Shared.Constants
                 new(Permissions.DeviceRegistration.Manage, "管理设备注册", "系统管理", "页面 /system/device-registration - 审核、维护或管理设备注册"),
                 // 仅注册权限，不写入 StoreManager/WarehouseManager 角色模板；手工委派仍受可管理分店范围约束。
                 new(Permissions.DeviceRegistration.ActivationCodes.Manage, "管理设备开通码", "系统管理", "页面 /system/device-registration - 为可管理分店创建和撤销一次性 POS 设备开通码"),
+                // Mobile 设备绑定可直接继承目标账号权限，必须与 POS 开通码使用独立的高敏权限。
+                new(Permissions.DeviceRegistration.MobileActivationCodes.Manage, "管理移动端设备开通码", "系统管理", "页面 /system/device-registration - 为指定账号创建和撤销一次性 Mobile 设备开通码"),
                 new(Permissions.LocalPurchase.View, "查看本地进货", "本地进货管理", "页面 /pos-admin/local-supplier-invoices - 查看分店进货单列表与详情"),
                 new(Permissions.LocalPurchase.MobileView, "移动端查看澳洲进货", "本地进货管理", "移动端 - 查看已授权分店的澳洲进货单列表与详情"),
                 new(Permissions.LocalPurchase.Edit, "编辑本地进货", "本地进货管理", "页面 /pos-admin/local-supplier-invoices - 新增、编辑、提交和维护分店进货单"),

@@ -133,6 +133,8 @@ test("生产组合把可选 Square setup 能力转给 Presenter 且不暴露 tok
 test("生产组合隔离 Linkly health 读取与配对写入，并只经危险动作提交一次", async () => {
   const events: string[] = [];
   let paired = false;
+  let selectedTerminalId = "terminal-1";
+  let selectionRevision = 1;
   const base = dependencies();
   const runtime = createProductionSettingsComposition({
     ...base,
@@ -146,10 +148,17 @@ test("生产组合隔离 Linkly health 读取与配对写入，并只经危险�
           blockerCode: "LINKLY_CONFIGURATION_MISSING",
         },
       },
+      test: async (_provider, _configuration, _signal, terminals) => {
+        assert.equal(terminals?.selectedTerminalId, "terminal-2");
+        assert.equal(terminals?.selectionRevision, 2);
+        events.push("logon:Production:terminal-2:2");
+      },
     },
     linklySetup: {
-      readState: async (environment, signal) => {
+      readState: async (environment, signal, terminals) => {
         assert.equal(signal.aborted, false);
+        assert.equal(terminals?.selectedTerminalId, selectedTerminalId);
+        assert.equal(terminals?.selectionRevision, selectionRevision);
         events.push(`health:${environment}:${paired ? "paired" : "unpaired"}`);
         return {
           environment,
@@ -163,9 +172,82 @@ test("生产组合隔离 Linkly health 读取与配对写入，并只经危险�
           ],
         };
       },
-      pair: async (environment, pairCode, signal) => {
+      readTerminals: async (environment, signal) => {
         assert.equal(signal.aborted, false);
-        events.push(`pair:${environment}:${pairCode}`);
+        events.push(`terminals:${environment}:${selectedTerminalId}`);
+        return {
+          environment,
+          mode: "Active",
+          selectedTerminalId,
+          selectionRevision,
+          terminals: [
+            {
+              terminalId: "terminal-1",
+              laneNo: 1,
+              displayName: "Front",
+              pairingState: "Ready",
+              isBusy: false,
+              isReady: true,
+              lastHealthStatus: "Ready",
+              lastHealthAt: null,
+            },
+            {
+              terminalId: "terminal-2",
+              laneNo: 2,
+              displayName: "Returns",
+              pairingState: "Ready",
+              isBusy: false,
+              isReady: true,
+              lastHealthStatus: "Ready",
+              lastHealthAt: null,
+            },
+          ],
+        };
+      },
+      selectTerminal: async (
+        environment,
+        terminalId,
+        expectedRevision,
+        signal,
+      ) => {
+        assert.equal(signal.aborted, false);
+        events.push(
+          `select:${environment}:${terminalId}:${expectedRevision}`,
+        );
+        selectedTerminalId = terminalId;
+        selectionRevision = expectedRevision + 1;
+        return {
+          environment,
+          mode: "Active",
+          selectedTerminalId,
+          selectionRevision,
+          terminals: [
+            {
+              terminalId: "terminal-1",
+              laneNo: 1,
+              displayName: "Front",
+              pairingState: "Ready",
+              isBusy: false,
+              isReady: true,
+              lastHealthStatus: "Ready",
+              lastHealthAt: null,
+            },
+            {
+              terminalId: "terminal-2",
+              laneNo: 2,
+              displayName: "Returns",
+              pairingState: "Ready",
+              isBusy: false,
+              isReady: true,
+              lastHealthStatus: "Ready",
+              lastHealthAt: null,
+            },
+          ],
+        };
+      },
+      pair: async (environment, terminalId, pairCode, signal) => {
+        assert.equal(signal.aborted, false);
+        events.push(`pair:${environment}:${terminalId}:${pairCode}`);
         paired = true;
         return { status: "completed" };
       },
@@ -175,16 +257,104 @@ test("生产组合隔离 Linkly health 读取与配对写入，并只经危险�
 
   await presenter.load();
   assert.equal(presenter.getState().linklySetup?.health.value?.isReady, false);
+  assert.equal(
+    presenter.getState().linklySetup?.terminals.value?.terminals.length,
+    2,
+  );
+  await presenter.selectLinklyTerminal("terminal-2");
   assert.equal(presenter.requestLinklyPair("123456"), true);
   await presenter.confirmDangerousAction();
+  await presenter.testPaymentProvider("linkly");
 
   assert.deepEqual(events, [
+    "terminals:Production:terminal-1",
     "health:Production:unpaired",
-    "pair:Production:123456",
+    "select:Production:terminal-2:1",
+    "pair:Production:terminal-2:123456",
+    "terminals:Production:terminal-2",
     "health:Production:paired",
+    "logon:Production:terminal-2:2",
   ]);
-  assert.equal(presenter.getState().statusCode, "linkly-paired");
+  assert.equal(presenter.getState().statusCode, "payment-test-passed");
   assert.equal(presenter.getState().linklySetup?.health.value?.isReady, true);
+});
+
+test("生产 Linkly 终端切换遇到未决支付时保持零 PUT", async () => {
+  let selectCalls = 0;
+  const base = dependencies();
+  const runtime = createProductionSettingsComposition({
+    ...base,
+    pendingData: {
+      read: async () => ({
+        hasFulfilmentInFlight: false,
+        hasSyncOrAuditInFlight: false,
+        paymentConfigurationSensitiveOrderCount: 0,
+        pendingDurableWriteCount: 0,
+        pendingReturnCount: 0,
+        pendingSaleCount: 0,
+        unresolvedPaymentCount: 1,
+      }),
+    },
+    linklySetup: {
+      readState: async (environment) => ({
+        environment,
+        storeCode: "S1",
+        deviceCode: "IPAD-1",
+        isReady: true,
+        checks: [],
+      }),
+      readTerminals: async (environment) => ({
+        environment,
+        mode: "Active",
+        selectedTerminalId: "terminal-1",
+        selectionRevision: 1,
+        terminals: [
+          {
+            terminalId: "terminal-1",
+            laneNo: 1,
+            displayName: "Front",
+            pairingState: "Ready",
+            isBusy: false,
+            isReady: true,
+            lastHealthStatus: "Ready",
+            lastHealthAt: null,
+          },
+          {
+            terminalId: "terminal-2",
+            laneNo: 2,
+            displayName: "Returns",
+            pairingState: "Ready",
+            isBusy: false,
+            isReady: true,
+            lastHealthStatus: "Ready",
+            lastHealthAt: null,
+          },
+        ],
+      }),
+      selectTerminal: async (environment) => {
+        selectCalls += 1;
+        return {
+          environment,
+          mode: "Active",
+          selectedTerminalId: "terminal-2",
+          selectionRevision: 2,
+          terminals: [],
+        };
+      },
+      pair: async () => ({ status: "completed" }),
+    },
+  });
+  const presenter = runtime.createPresenter();
+
+  await presenter.load();
+  assert.equal(
+    presenter.getState().linklySetup?.terminals.value?.terminals.length,
+    2,
+  );
+  await presenter.selectLinklyTerminal("terminal-2");
+
+  assert.equal(selectCalls, 0);
+  assert.equal(presenter.getState().statusCode, "linkly-terminal-switch-failed");
 });
 
 test("生产组合每次创建 Square 配对码只生成一个幂等键并调用底层 API 一次", async () => {

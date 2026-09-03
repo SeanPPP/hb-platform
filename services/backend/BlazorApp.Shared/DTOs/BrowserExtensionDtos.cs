@@ -9,6 +9,13 @@ public static class BrowserExtensionMatchStatuses
     public const string Unmatched = "unmatched";
 }
 
+public static class BrowserExtensionSalesRankBands
+{
+    public const string Top10 = "top-10";
+    public const string Top20 = "top-20";
+    public const string Top30 = "top-30";
+}
+
 public sealed class BrowserExtensionReleaseNotesDto
 {
     public string Zh { get; set; } = string.Empty;
@@ -66,6 +73,8 @@ public sealed class BrowserExtensionProductSummaryBatchRequestDto
     [MinLength(1)]
     [MaxLength(100)]
     public List<string> ItemNumbers { get; set; } = new();
+
+    public int SalesRankingDays { get; set; } = 60;
 }
 
 public sealed class BrowserExtensionProductSummaryDto
@@ -78,6 +87,7 @@ public sealed class BrowserExtensionProductSummaryDto
     public decimal? LatestPurchaseQuantity { get; set; }
     public decimal SalesSinceLatestPurchase { get; set; }
     public DateTime? SalesStatisticLastUpdate { get; set; }
+    public string? SalesRankBand { get; set; }
 }
 
 public sealed class BrowserExtensionProductSummaryBatchDto
@@ -85,6 +95,13 @@ public sealed class BrowserExtensionProductSummaryBatchDto
     public string StoreCode { get; set; } = string.Empty;
     public string SupplierCode { get; set; } = string.Empty;
     public DateOnly EndDate { get; set; }
+    public bool SalesRankingAvailable { get; set; }
+    public int SalesRankingDays { get; set; } = 60;
+    public DateOnly SalesRankingStartDate { get; set; }
+    public DateOnly SalesRankingEndDate { get; set; }
+    public int SalesRankingEnabledStoreCount { get; set; }
+    public int SalesRankingTotalProductCount { get; set; }
+    public DateTime? SalesRankingStatisticLastUpdate { get; set; }
     public List<BrowserExtensionProductSummaryDto> Items { get; set; } = new();
 }
 
@@ -150,6 +167,12 @@ public sealed class BrowserExtensionSupplierTopSalesRequestDto
 
     [Range(1, 90)]
     public int Days { get; set; } = 60;
+
+    public int? TopPercent { get; set; }
+
+    public int? Page { get; set; }
+
+    public int? PageSize { get; set; }
 }
 
 public sealed class BrowserExtensionSupplierTopSalesItemDto
@@ -161,6 +184,7 @@ public sealed class BrowserExtensionSupplierTopSalesItemDto
     public string? ImageUrl { get; set; }
     public decimal SalesQuantity { get; set; }
     public decimal? AverageSellingPrice { get; set; }
+    public string? SalesRankBand { get; set; }
 }
 
 public sealed class BrowserExtensionSupplierTopSalesDto
@@ -171,6 +195,11 @@ public sealed class BrowserExtensionSupplierTopSalesDto
     public DateOnly EndDate { get; set; }
     public int EnabledStoreCount { get; set; }
     public int TotalProductCount { get; set; }
+    public int TopPercent { get; set; } = 10;
+    public int TotalRankedCount { get; set; }
+    public int? Page { get; set; }
+    public int? PageSize { get; set; }
+    public int? TotalPages { get; set; }
     public DateTime? SalesStatisticLastUpdate { get; set; }
     public List<BrowserExtensionSupplierTopSalesItemDto> Items { get; set; } = new();
 }

@@ -127,6 +127,10 @@
   align-items: center;
 }
 
+.container-detail-table .ant-table-pagination {
+  margin: 8px 0 0;
+}
+
 /* 商品图保持缩略图比例，点击后由 AntD Image 打开放大预览。 */
 .container-detail-product-image {
   border-radius: 4px;
@@ -175,6 +179,11 @@
 
 .container-detail-product-name-editable:hover {
   color: #1677ff;
+}
+
+.container-detail-auto-save-failed {
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px #ff4d4f;
 }
 
 .container-detail-product-name-input,
@@ -320,8 +329,73 @@
   width: 100%;
 }
 
+/* 在线状态仅作协作提醒，保持一行紧凑，不挤占大表格的主要编辑空间。 */
+.container-detail-editing-presence {
+  min-width: 0;
+  padding: 2px 6px;
+  border-left: 2px solid #faad14;
+  background: #fffbe6;
+  white-space: nowrap;
+}
+
+/* 冲突仅标记对应字段，避免在高密度表格中把整行染红而掩盖其他可安全合并的编辑。 */
+.container-detail-concurrent-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  padding: 1px;
+  border: 1px solid #ff4d4f;
+  border-radius: 3px;
+  background: #fff2f0;
+}
+
+.container-detail-concurrent-field .ant-input,
+.container-detail-concurrent-field .ant-input-number {
+  min-width: 0;
+}
+
+.container-detail-concurrent-field-badge {
+  flex: 0 0 auto;
+  color: #cf1322;
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.container-detail-concurrent-field-input {
+  outline: 1px solid #ff4d4f;
+}
+
+.container-detail-export-progress {
+  display: grid;
+  gap: 2px;
+  width: min(100%, 420px);
+}
+
+.container-detail-export-progress .ant-typography {
+  font-size: 12px;
+  line-height: 1.2;
+}
+
 .container-detail-bulk-input {
   width: 118px;
+}
+
+.container-detail-draft-meta {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.container-detail-auto-save-meta {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.container-detail-draft-meta .ant-btn-link,
+.container-detail-auto-save-meta .ant-btn-link {
+  height: 22px;
+  padding: 0 4px;
 }
 
 .container-detail-table-region {
@@ -428,6 +502,39 @@
   color: #1677ff;
 }
 
+.container-detail-freight-calculator {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(100%, 280px);
+  min-width: 210px;
+}
+
+.container-detail-freight-mode {
+  display: flex;
+  max-width: 100%;
+}
+
+.container-detail-freight-mode .ant-radio-button-wrapper {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-inline: 8px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.container-detail-freight-input {
+  width: 100%;
+}
+
+.container-detail-freight-feedback {
+  display: block;
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .container-detail-page-small .ant-card-body {
   padding: 12px;
 }
@@ -442,6 +549,16 @@
 
 .container-detail-page-small .ant-descriptions table {
   min-width: 720px;
+}
+
+.container-detail-page-small .container-detail-freight-calculator {
+  width: 220px;
+  min-width: 0;
+}
+
+.container-detail-page-small .container-detail-freight-mode .ant-radio-button-wrapper {
+  padding-inline: 6px;
+  font-size: 12px;
 }
 
 .container-detail-page-small .container-detail-stats {

@@ -149,6 +149,10 @@
       "name": "Device Registration Manage",
       "description": "Allows access to Device Registration Manage."
     },
+    "DeviceRegistration.MobileActivationCodes.Manage": {
+      "name": "Manage mobile device activation codes",
+      "description": "Create and revoke one-time Mobile device activation codes for selected accounts."
+    },
     "DeviceRegistration.View": {
       "name": "Device Registration View",
       "description": "Allows access to Device Registration View."

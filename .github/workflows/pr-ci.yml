@@ -230,7 +230,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: package-lock.json
+          cache-dependency-path: |
+            package-lock.json
+            apps/mobile/package-lock.json
       - if: matrix.component != 'noop'
         uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
         with:
@@ -241,7 +243,8 @@ jobs:
         shell: bash
         run: |
           bash() {
-            if [[ "${1:-}" == 'apps/pos-handheld/android/gradlew' ]]; then
+            if [[ "${1:-}" == 'apps/pos-handheld/android/gradlew' ||
+                  "${1:-}" == 'apps/mobile/android/gradlew' ]]; then
               # 仅为 CI 的 Gradle 调用分配更高 JVM 上限，并开启可并行的缓存构建。
               command bash "$@" --parallel --build-cache '-Dorg.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=1g'
               return

@@ -42,6 +42,9 @@ export function selectLanesForPaths(paths) {
     if (SHARED_PATHS.has(filePath) || filePath.startsWith("scripts/performance/")) {
       return [...QUALITY_LANES];
     }
+    if (filePath === "web-bundle-budget.json") {
+      selected.add("web");
+    }
     if (
       POS_SHARED_ROOT_PATHS.has(filePath) ||
       filePath.startsWith("packages/pos-") ||

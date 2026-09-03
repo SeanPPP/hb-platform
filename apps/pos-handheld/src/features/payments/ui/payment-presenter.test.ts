@@ -19,6 +19,10 @@ import type {
   LinklySafeOperatorKey,
 } from "@/features/payments/runtime/linkly-operator-runtime";
 import type {
+  LinklyTerminalSelectionPort,
+  LinklyTerminalSelectionSnapshot,
+} from "@/features/payments/linkly";
+import type {
   PaymentCheckoutPublicSnapshot,
   PaymentCheckoutRuntimePort,
 } from "@/features/payments/runtime/payment-checkout-runtime";
@@ -103,6 +107,197 @@ test("后台恢复保持 Pending 页面稳定并公开独立恢复状态", async
   pending.resolve(runtime.recovery);
   assert.equal(await recovery, false);
   assert.equal(presenter.getState().recoveryInFlight, false);
+});
+
+test("Linkly Cloud 单终端在无选择时自动持久选择，多终端快速切换只发布最后目标", async () => {
+  const runtime = new FakePaymentRuntime();
+  const singlePort = new FakeLinklyTerminalSelectionPort(
+    terminalSelection({ selectedTerminalId: null, selectionRevision: 0 }),
+  );
+  const single = createPresenter(runtime, undefined, aud(1_000), {
+    environment: "Sandbox",
+    port: singlePort,
+  });
+
+  await single.initialize();
+
+  assert.deepEqual(singlePort.selectCalls, [
+    { environment: "Sandbox", terminalId: "terminal-1", expectedRevision: 0 },
+  ]);
+  assert.equal(
+    single.getState().linklyTerminals?.snapshot?.selectedTerminalId,
+    "terminal-1",
+  );
+  assert.equal(canSelectPaymentMethod(single.getState(), "linkly-cloud"), true);
+
+  const firstSwitch = deferred<LinklyTerminalSelectionSnapshot>();
+  const multiPort = new FakeLinklyTerminalSelectionPort(
+    terminalSelection({
+      selectedTerminalId: "terminal-current",
+      terminals: [
+        terminal("terminal-current", "Current"),
+        terminal("terminal-a", "A"),
+        terminal("terminal-b", "B"),
+      ],
+    }),
+  );
+  multiPort.selectImpl = async (environment, terminalId, expectedRevision) => {
+    if (terminalId === "terminal-a") return firstSwitch.promise;
+    return terminalSelection({
+      environment,
+      selectedTerminalId: terminalId,
+      selectionRevision: expectedRevision + 1,
+      terminals: multiPort.snapshot.terminals,
+    });
+  };
+  const multi = createPresenter(
+    new FakePaymentRuntime(),
+    undefined,
+    aud(1_000),
+    { environment: "Sandbox", port: multiPort },
+  );
+  await multi.initialize();
+  const published: Array<string | null> = [];
+  multi.subscribe(() => {
+    published.push(
+      multi.getState().linklyTerminals?.snapshot?.selectedTerminalId ?? null,
+    );
+  });
+
+  const selectA = multi.selectLinklyTerminal("terminal-a");
+  await tick();
+  const selectB = multi.selectLinklyTerminal("terminal-b");
+  firstSwitch.resolve(terminalSelection({
+    selectedTerminalId: "terminal-a",
+    selectionRevision: 2,
+    terminals: multiPort.snapshot.terminals,
+  }));
+
+  assert.equal(await selectA, true);
+  assert.equal(await selectB, true);
+  assert.deepEqual(multiPort.selectCalls, [
+    { environment: "Sandbox", terminalId: "terminal-a", expectedRevision: 1 },
+    { environment: "Sandbox", terminalId: "terminal-b", expectedRevision: 2 },
+  ]);
+  assert.equal(
+    multi.getState().linklyTerminals?.snapshot?.selectedTerminalId,
+    "terminal-b",
+  );
+  assert.equal(published.includes("terminal-a"), false);
+});
+
+test("Linkly 未知结果恢复期间禁止切换终端", async () => {
+  const runtime = new FakePaymentRuntime();
+  runtime.recovery = snapshot({
+    status: "unknown",
+    provider: "linkly-cloud",
+    attemptId: "attempt-linkly-unknown",
+    allowedActions: actions({ recover: true }),
+  });
+  const terminals = new FakeLinklyTerminalSelectionPort(
+    terminalSelection({
+      terminals: [terminal("terminal-1", "Front"), terminal("terminal-2", "Back")],
+    }),
+  );
+  const presenter = createPresenter(runtime, undefined, aud(1_000), {
+    environment: "Sandbox",
+    port: terminals,
+  });
+
+  await presenter.initialize();
+
+  assert.equal(await presenter.selectLinklyTerminal("terminal-2"), false);
+  assert.equal(terminals.selectCalls.length, 0);
+});
+
+test("Linkly 忙碌终端可预选，但支付仍保持关闭", async () => {
+  const terminals = new FakeLinklyTerminalSelectionPort(
+    terminalSelection({
+      terminals: [
+        terminal("terminal-1", "Front"),
+        { ...terminal("terminal-2", "Back"), isBusy: true },
+      ],
+    }),
+  );
+  const presenter = createPresenter(
+    new FakePaymentRuntime(),
+    undefined,
+    aud(1_000),
+    { environment: "Sandbox", port: terminals },
+  );
+  await presenter.initialize();
+
+  assert.equal(await presenter.selectLinklyTerminal("terminal-2"), true);
+  assert.deepEqual(terminals.selectCalls, [
+    { environment: "Sandbox", terminalId: "terminal-2", expectedRevision: 1 },
+  ]);
+  assert.equal(
+    presenter.getState().linklyTerminals?.snapshot?.selectedTerminalId,
+    "terminal-2",
+  );
+  assert.equal(canSelectPaymentMethod(presenter.getState(), "linkly-cloud"), false);
+});
+
+test("Linkly selection conflict 只刷新权威目录并要求确认，不自动重发付款", async () => {
+  const runtime = new FakePaymentRuntime();
+  const terminals = new FakeLinklyTerminalSelectionPort(
+    terminalSelection({
+      selectedTerminalId: "terminal-a",
+      selectionRevision: 3,
+      terminals: [terminal("terminal-a", "A"), terminal("terminal-b", "B")],
+    }),
+  );
+  runtime.startImpl = async () => {
+    terminals.snapshot = terminalSelection({
+      selectedTerminalId: "terminal-b",
+      selectionRevision: 4,
+      terminals: [terminal("terminal-a", "A"), terminal("terminal-b", "B")],
+    });
+    return snapshot({
+      status: "declined",
+      provider: "linkly-cloud",
+      attemptId: "attempt-selection-conflict",
+      errorCode: "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+      allowedActions: actions({ start: true, changeProvider: true, addCash: true }),
+    });
+  };
+  const presenter = createPresenter(runtime, undefined, aud(1_000), {
+    environment: "Sandbox",
+    port: terminals,
+  });
+  await presenter.initialize();
+  assert.equal(presenter.selectMethod("linkly-cloud"), true);
+
+  const submitted = await presenter.submitSelected();
+
+  assert.equal(submitted, false);
+  assert.equal(runtime.startCalls.length, 1);
+  assert.deepEqual(runtime.startCalls[0], {
+    checkoutIntentId: "checkout-local-1",
+    expectedCartRevision: 7,
+    actionId: "action-1",
+    provider: "linkly-cloud",
+    amount: aud(1_000),
+    linklyTerminalSelection: {
+      environment: "Sandbox",
+      mode: "Active",
+      terminalId: "terminal-a",
+      selectionRevision: 3,
+    },
+  });
+  assert.equal(terminals.readCalls, 2);
+  assert.equal(
+    presenter.getState().linklyTerminals?.snapshot?.selectedTerminalId,
+    "terminal-b",
+  );
+  assert.equal(
+    presenter.getState().runtimeErrorCode,
+    "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+  );
+  assert.equal(
+    paymentText("zh", "error.LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT"),
+    "刷卡机选择已变更。请确认当前刷卡机后再重新发起付款。",
+  );
 });
 
 test("后台恢复在途时手动恢复立即失败，不加入后台 signal 的 promise", async () => {
@@ -1005,11 +1200,16 @@ function createPresenter(
   runtime: FakePaymentRuntime,
   linklyOperator?: LinklyOperatorRuntimePort,
   entryTotal: Money = aud(1_000),
+  linklyTerminals?: Readonly<{
+    environment: string;
+    port: LinklyTerminalSelectionPort;
+  }>,
 ): PaymentPresenter {
   let action = 0;
   return new PaymentPresenter({
     runtime,
     ...(linklyOperator ? { linklyOperator } : {}),
+    ...(linklyTerminals ? { linklyTerminals } : {}),
     entry: {
       checkoutIntentId: "checkout-local-1",
       expectedCartRevision: 7,
@@ -1017,6 +1217,76 @@ function createPresenter(
     },
     createActionId: () => `action-${++action}`,
   });
+}
+
+function terminal(terminalId: string, displayName: string) {
+  return {
+    terminalId,
+    laneNo: 1,
+    displayName,
+    pairingState: "Ready" as const,
+    isBusy: false,
+    isReady: true,
+    lastHealthStatus: "Ready",
+    lastHealthAt: null,
+  };
+}
+
+function terminalSelection(
+  override: Partial<LinklyTerminalSelectionSnapshot> = {},
+): LinklyTerminalSelectionSnapshot {
+  return {
+    environment: "Sandbox",
+    mode: "Active",
+    selectedTerminalId: "terminal-1",
+    selectionRevision: 1,
+    terminals: [terminal("terminal-1", "Front")],
+    ...override,
+  };
+}
+
+class FakeLinklyTerminalSelectionPort implements LinklyTerminalSelectionPort {
+  public readCalls = 0;
+  public readonly selectCalls: Array<{
+    environment: string;
+    terminalId: string;
+    expectedRevision: number;
+  }> = [];
+  public selectImpl: (
+    environment: string,
+    terminalId: string,
+    expectedRevision: number,
+  ) => Promise<LinklyTerminalSelectionSnapshot> = async (
+    environment,
+    terminalId,
+    expectedRevision,
+  ) => terminalSelection({
+    environment,
+    selectedTerminalId: terminalId,
+    selectionRevision: expectedRevision + 1,
+    terminals: this.snapshot.terminals,
+  });
+
+  public constructor(public snapshot: LinklyTerminalSelectionSnapshot) {}
+
+  public readTerminals(): Promise<LinklyTerminalSelectionSnapshot> {
+    this.readCalls += 1;
+    return Promise.resolve(this.snapshot);
+  }
+
+  public async selectTerminal(
+    environment: string,
+    terminalId: string,
+    expectedRevision: number,
+  ): Promise<LinklyTerminalSelectionSnapshot> {
+    this.selectCalls.push({ environment, terminalId, expectedRevision });
+    this.snapshot = await this.selectImpl(
+      environment,
+      terminalId,
+      expectedRevision,
+    );
+    return this.snapshot;
+  }
 }
 
 function snapshot(

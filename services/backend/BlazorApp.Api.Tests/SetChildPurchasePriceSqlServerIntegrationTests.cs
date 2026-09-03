@@ -98,6 +98,86 @@ public sealed class SetChildPurchasePriceSqlServerIntegrationTests
 
     [SetChildPurchasePriceSqlServerFact]
     [Trait("Category", "SQL")]
+    public async Task AcquireProductsPartiallyAsync_SqlServer共享总预算且保留已成功商品锁()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+
+        var suffix = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var availableCode = $"LOCK-A-{suffix}";
+        var busyCode = $"LOCK-B-{suffix}";
+        using var firstDb = CreateClient(connectionString);
+        using var secondDb = CreateClient(connectionString);
+        await firstDb.Ado.BeginTranAsync();
+        await secondDb.Ado.BeginTranAsync();
+        try
+        {
+            await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                firstDb,
+                new[] { busyCode }
+            );
+            var startedAt = DateTime.UtcNow;
+
+            var result = await SetChildPurchasePriceMutationLock.AcquireProductsPartiallyAsync(
+                secondDb,
+                new[] { busyCode, availableCode },
+                totalWaitMilliseconds: 250
+            );
+
+            Assert.True(DateTime.UtcNow - startedAt < TimeSpan.FromSeconds(3));
+            Assert.Equal(new[] { busyCode }, result.BusyProductCodes);
+            result.LockScope.EnsureCovers(secondDb, new[] { availableCode });
+            Assert.Throws<InvalidOperationException>(() =>
+            {
+                result.LockScope.EnsureCovers(secondDb, new[] { busyCode });
+            });
+        }
+        finally
+        {
+            await secondDb.Ado.RollbackTranAsync();
+            await firstDb.Ado.RollbackTranAsync();
+        }
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task AcquireProductsPartiallyAsync_SqlServer总闸等待也计入共享预算()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+
+        var productCode = $"LOCK-GATE-{Guid.NewGuid():N}".ToUpperInvariant();
+        using var firstDb = CreateClient(connectionString);
+        using var secondDb = CreateClient(connectionString);
+        await firstDb.Ado.BeginTranAsync();
+        await secondDb.Ado.BeginTranAsync();
+        try
+        {
+            await SetChildPurchasePriceMutationLock.AcquireAllAsync(firstDb);
+            var startedAt = DateTime.UtcNow;
+
+            var result = await SetChildPurchasePriceMutationLock.AcquireProductsPartiallyAsync(
+                secondDb,
+                new[] { productCode },
+                totalWaitMilliseconds: 250
+            );
+
+            Assert.True(DateTime.UtcNow - startedAt < TimeSpan.FromSeconds(3));
+            Assert.Equal(new[] { productCode }, result.BusyProductCodes);
+            Assert.Throws<InvalidOperationException>(() =>
+            {
+                result.LockScope.EnsureCovers(secondDb, new[] { productCode });
+            });
+        }
+        finally
+        {
+            await secondDb.Ado.RollbackTranAsync();
+            await firstDb.Ado.RollbackTranAsync();
+        }
+    }
+
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
     public async Task AcquireAllAsync_SqlServer全量锁阻止普通共享总闸()
     {
         var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
@@ -264,10 +344,91 @@ public sealed class SetChildPurchasePriceSqlServerIntegrationTests
         }
     }
 
+    [SetChildPurchasePriceSqlServerFact]
+    [Trait("Category", "SQL")]
+    public async Task ContainerDetailCaseUpdate_SqlServer同一明细不同字段并发保存互不覆盖()
+    {
+        var connectionString = Environment.GetEnvironmentVariable(ConnectionEnvironmentVariable);
+        Assert.False(string.IsNullOrWhiteSpace(connectionString));
+
+        var suffix = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var tableName = $"ContainerDetailCaseRace_{suffix}";
+        const string detailCode = "D-CONCURRENT";
+        using var setupDb = CreateClient(connectionString);
+        using var firstDb = CreateClient(connectionString);
+        using var secondDb = CreateClient(connectionString);
+        await setupDb.Ado.ExecuteCommandAsync(
+            $"CREATE TABLE [{tableName}] (DetailCode nvarchar(100) NOT NULL PRIMARY KEY, DomesticPrice decimal(18,2) NULL, OEMPrice decimal(18,2) NULL);"
+        );
+        try
+        {
+            await setupDb.Ado.ExecuteCommandAsync(
+                $"INSERT INTO [{tableName}] (DetailCode, DomesticPrice, OEMPrice) VALUES (@DetailCode, 1, 2);",
+                new SugarParameter("@DetailCode", detailCode)
+            );
+
+            await firstDb.Ado.BeginTranAsync();
+            try
+            {
+                // 与货柜保存一致：每次请求只为被接受字段生成 CASE，绝不能带回另一字段的旧值。
+                await firstDb.Ado.ExecuteCommandAsync(
+                    $"UPDATE [{tableName}] SET DomesticPrice = CASE WHEN DetailCode = @DetailCode THEN @DomesticPrice ELSE DomesticPrice END WHERE DetailCode IN (@DetailCode);",
+                    new SugarParameter("@DetailCode", detailCode),
+                    new SugarParameter("@DomesticPrice", 10m)
+                );
+
+                var secondTask = Task.Run(async () =>
+                {
+                    await secondDb.Ado.BeginTranAsync();
+                    try
+                    {
+                        await secondDb.Ado.ExecuteCommandAsync(
+                            $"UPDATE [{tableName}] SET OEMPrice = CASE WHEN DetailCode = @DetailCode THEN @OEMPrice ELSE OEMPrice END WHERE DetailCode IN (@DetailCode);",
+                            new SugarParameter("@DetailCode", detailCode),
+                            new SugarParameter("@OEMPrice", 20m)
+                        );
+                        await secondDb.Ado.CommitTranAsync();
+                    }
+                    catch
+                    {
+                        await secondDb.Ado.RollbackTranAsync();
+                        throw;
+                    }
+                });
+
+                await Task.Delay(200);
+                await firstDb.Ado.CommitTranAsync();
+                await secondTask.WaitAsync(TimeSpan.FromSeconds(15));
+            }
+            catch
+            {
+                await firstDb.Ado.RollbackTranAsync();
+                throw;
+            }
+
+            var finalValues = await setupDb.Ado.SqlQuerySingleAsync<ContainerDetailCaseRaceResult>(
+                $"SELECT DomesticPrice, OEMPrice FROM [{tableName}] WHERE DetailCode = @DetailCode;",
+                new SugarParameter("@DetailCode", detailCode)
+            );
+            Assert.Equal(10m, finalValues.DomesticPrice);
+            Assert.Equal(20m, finalValues.OEMPrice);
+        }
+        finally
+        {
+            await setupDb.Ado.ExecuteCommandAsync($"DROP TABLE IF EXISTS [{tableName}];");
+        }
+    }
+
     private sealed class RaceResult
     {
         public decimal SourcePrice { get; set; }
         public decimal DerivedCost { get; set; }
+    }
+
+    private sealed class ContainerDetailCaseRaceResult
+    {
+        public decimal DomesticPrice { get; set; }
+        public decimal OEMPrice { get; set; }
     }
 
     private static SqlSugarClient CreateClient(string connectionString) => new(new ConnectionConfig

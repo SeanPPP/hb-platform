@@ -112,6 +112,7 @@ function createEmptyAccess(): AccessControl {
     canManageAppDownloads: false,
     canViewDeviceRegistration: false,
     canManageDeviceRegistration: false,
+    canManageMobileDeviceActivationCodes: false,
     canViewPosProducts: false,
     canManagePosProducts: false,
     canAccessAdminShell: false,
@@ -335,8 +336,11 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
   const canViewAppDownloads =
     isAdmin || canManageAppDownloads || hasPermission(P.System.ViewAppDownloads)
   const canManageDeviceRegistration = isAdmin || hasPermission(P.DeviceRegistration.Manage)
+  const canManageMobileDeviceActivationCodes =
+    isAdmin || hasPermission(P.DeviceRegistration.MobileActivationCodesManage)
   const canViewDeviceRegistration =
     canManageDeviceRegistration ||
+    canManageMobileDeviceActivationCodes ||
     isAdmin ||
     hasPermission(P.DeviceRegistration.View) ||
     hasPermission(P.DeviceRegistration.ActivationCodesManage)
@@ -449,6 +453,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     canManageAppDownloads,
     canViewDeviceRegistration,
     canManageDeviceRegistration,
+    canManageMobileDeviceActivationCodes,
     canViewPosProducts,
     canManagePosProducts,
     canAccessAdminShell,

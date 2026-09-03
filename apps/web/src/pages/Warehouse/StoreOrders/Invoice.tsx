@@ -1,6 +1,5 @@
 import { DownloadOutlined, FileExcelOutlined, MailOutlined, PrinterOutlined, RollbackOutlined } from '@ant-design/icons'
 import { Button, Empty, Image, Input, Modal, Segmented, Space, Spin, Switch, message } from 'antd'
-import ExcelJS from 'exceljs'
 import type { TFunction } from 'i18next'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -88,6 +87,7 @@ async function downloadInvoiceExcel(
   headerInfo: InvoiceExcelHeaderInfo,
   t: TFunction,
 ) {
+  const { default: ExcelJS } = await import('exceljs')
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet(t('warehouse.invoice.excel.sheetName'))
 

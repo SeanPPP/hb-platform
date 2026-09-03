@@ -770,9 +770,12 @@ function blockingResult(
       return result("declined", snapshot, {
         attemptId: attempt.attemptId,
         errorCode:
-          attempt.provider === "square" &&
-          attempt.lastErrorCode === "SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED"
-            ? "SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED"
+          (attempt.provider === "square" &&
+            attempt.lastErrorCode === "SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED") ||
+          (attempt.provider === "linkly-cloud" &&
+            attempt.lastErrorCode ===
+              "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT")
+            ? attempt.lastErrorCode
             : null,
       });
     case "Cancelled":

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using AutoMapper;
@@ -9,6 +10,7 @@ using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HBSalesRecord;
 using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.POSM;
 using Microsoft.Extensions.Caching.Memory;
@@ -160,9 +162,38 @@ namespace BlazorApp.Api.Services.React
     {
         public string ProductCode { get; set; } = string.Empty;
         public string? ProductName { get; set; }
+        public int Period { get; set; }
         public int Quantity { get; set; }
         public decimal SalesAmount { get; set; }
         public int OrderCount { get; set; }
+        public decimal? GrossProfit { get; set; }
+        public int StatisticRowCount { get; set; }
+        public int CostedRowCount { get; set; }
+        public int GrossProfitRowCount { get; set; }
+    }
+
+    /// <summary>
+    /// 当前期、同期商品聚合后在数据库中合并的分页行。
+    /// </summary>
+    internal class ProductReportProductCombinedAggregateRow
+    {
+        public string ProductCode { get; set; } = string.Empty;
+        public string? CurrentProductName { get; set; }
+        public string? CompareProductName { get; set; }
+        public int CurrentQuantity { get; set; }
+        public decimal CurrentSalesAmount { get; set; }
+        public int CurrentOrderCount { get; set; }
+        public decimal? CurrentGrossProfit { get; set; }
+        public int CurrentStatisticRowCount { get; set; }
+        public int CurrentCostedRowCount { get; set; }
+        public int CurrentGrossProfitRowCount { get; set; }
+        public int CompareQuantity { get; set; }
+        public decimal CompareSalesAmount { get; set; }
+        public int CompareOrderCount { get; set; }
+        public decimal? CompareGrossProfit { get; set; }
+        public int CompareStatisticRowCount { get; set; }
+        public int CompareCostedRowCount { get; set; }
+        public int CompareGrossProfitRowCount { get; set; }
     }
 
     internal sealed class CompactSalesBoardAggregateRow
@@ -176,6 +207,11 @@ namespace BlazorApp.Api.Services.React
     {
         public DateTime Date { get; set; }
         public string? BranchCode { get; set; }
+    }
+
+    internal class StatisticDateBranchDeviceRow : StatisticDateBranchRow
+    {
+        public string? DeviceCode { get; set; }
     }
 
     internal class StatisticDateBranchHourRow
@@ -192,6 +228,10 @@ namespace BlazorApp.Api.Services.React
         public string BranchCode { get; set; } = string.Empty;
         public int Quantity { get; set; }
         public decimal SalesAmount { get; set; }
+        public decimal? GrossProfit { get; set; }
+        public int StatisticRowCount { get; set; }
+        public int CostedRowCount { get; set; }
+        public int GrossProfitRowCount { get; set; }
     }
 
     internal class SupplierBranchAggregateRow
@@ -202,6 +242,10 @@ namespace BlazorApp.Api.Services.React
         public decimal TotalAmount { get; set; }
         public int TotalQuantity { get; set; }
         public int? OrderCount { get; set; }
+        public decimal? GrossProfit { get; set; }
+        public int StatisticRowCount { get; set; }
+        public int CostedRowCount { get; set; }
+        public int GrossProfitRowCount { get; set; }
     }
 
     internal class ProductSupplierBranchAggregateRow : SupplierBranchAggregateRow
@@ -216,7 +260,20 @@ namespace BlazorApp.Api.Services.React
         public int TotalQuantity { get; set; }
         public int OrderCount { get; set; }
         public int StoreCount { get; set; }
+        public decimal? GrossProfit { get; set; }
+        public int StatisticRowCount { get; set; }
+        public int CostedRowCount { get; set; }
+        public int GrossProfitRowCount { get; set; }
     }
+
+    internal readonly record struct SupplierCompareMetrics(
+        decimal TotalAmount,
+        int OrderCount,
+        decimal? GrossProfit,
+        int StatisticRowCount,
+        int CostedRowCount,
+        int GrossProfitRowCount
+    );
 
     /// <summary>
     /// 销售仪表板 React 服务
@@ -234,25 +291,58 @@ namespace BlazorApp.Api.Services.React
         // 测试专用：在 cache miss 捕获代际后、写入缓存前触发，用于交错测试模拟 ClearActiveKeys 切代。
         internal Action? ProductSalesAnalysisCacheWriteInterceptor { get; set; }
 
+        // 测试专用：可控地挂起分店统计补算，验证超时响应不会把部分快照误报为完整。
+        internal Func<DateTime, Task>? StoreStatisticsRefreshTestInterceptor { get; set; }
+
+        // 测试专用：模拟分时统计快速任务完成但意外漏写统计行。
+        internal Func<DateTime, Task>? HourlyStatisticsRefreshTestInterceptor { get; set; }
+
+        // 测试专用：记录 POSM 销售覆盖查询次数，避免稳定快照路径重复扫描来源明细。
+        internal Action? PosmStoreSalesCoverageReadTestInterceptor { get; set; }
+
+        // 测试专用：模拟快速补算后营业额排行来源身份暂不可核验。
+        internal Action? ExpectedExecutiveBranchCodesTestInterceptor { get; set; }
+
+        // 测试专用：在分店统计补算键清理完成后触发，避免测试依赖不确定的轮询延迟。
+        internal Action? StoreStatisticsRefreshCompletedTestInterceptor { get; set; }
+
         private static readonly TimeSpan SUMMARY_CACHE_DURATION = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan RANKING_CACHE_DURATION = TimeSpan.FromMinutes(10);
         private static readonly TimeSpan BEST_SELLERS_CACHE_DURATION = TimeSpan.FromMinutes(30);
         private static readonly TimeSpan DETAIL_CACHE_DURATION = TimeSpan.FromMinutes(3);
         private static readonly TimeSpan PRODUCT_SALES_ANALYSIS_CACHE_DURATION = TimeSpan.FromMinutes(5);
-        private static readonly TimeSpan REPORT_STATISTICS_REFRESH_WAIT = TimeSpan.FromMilliseconds(2200);
+        private static readonly TimeSpan SALES_SOURCE_COVERAGE_CACHE_DURATION = TimeSpan.FromSeconds(20);
+        // 缺口统计只短等 250ms；快速补算可随本次返回，慢任务转后台，给查询和渲染保留 2 秒预算。
+        private static readonly TimeSpan REPORT_STATISTICS_REFRESH_WAIT = TimeSpan.FromMilliseconds(250);
         private static readonly TimeSpan STATISTICS_RUNNING_STALE_AFTER = TimeSpan.FromMinutes(90);
         private const int REPORT_STATISTICS_REFRESH_MAX_DAYS = 35;
         private const int LEGACY_CHINA_SUPPLIER_PRODUCT_FILTER_LIMIT = 2000;
         private const int PRODUCT_SALES_ANALYSIS_CODE_BATCH_SIZE = 500;
         private const string CHINA_LOCAL_SUPPLIER_CODE = "200";
         private const string CHINA_LOCAL_SUPPLIER_FALLBACK_NAME = "hotbargain";
+        private const string REPORT_STATISTICS_CACHE_GENERATION_KEY =
+            "SalesDashboard:ReportStatisticsCacheGeneration";
         private static readonly ConcurrentDictionary<string, byte> REPORT_STATISTICS_REFRESHING_KEYS = new();
+        private static readonly ConditionalWeakTable<IMemoryCache, object>
+            REPORT_STATISTICS_CACHE_GENERATION_LOCKS = new();
+        private static readonly ConditionalWeakTable<
+            IMemoryCache,
+            ConcurrentDictionary<
+                string,
+                Lazy<Task<Dictionary<DateTime, HashSet<string>>?>>
+            >
+        > SALES_SOURCE_COVERAGE_READS = new();
 
         private enum StatisticsRefreshState
         {
             NotNeeded,
             Completed,
             Pending,
+        }
+
+        private sealed class ReportStatisticsCacheGenerationState
+        {
+            public long Value;
         }
 
         public SalesDashboardReactService(
@@ -806,15 +896,36 @@ namespace BlazorApp.Api.Services.React
             string? supplierCode = null
         )
         {
+            var statisticStatus = await GetProductReportStatisticStatusAsync(dateRange);
+            return await GetSupplierSalesRankAsync(
+                dateRange,
+                branchCodes,
+                topN,
+                supplierCode,
+                statisticStatus
+            );
+        }
+
+        public async Task<List<SupplierSalesRankDto>> GetSupplierSalesRankAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes,
+            int topN,
+            string? supplierCode,
+            ProductReportStatisticStatusDto statisticStatus
+        )
+        {
             try
             {
                 ValidateDateRange(dateRange);
+                if (!IsProductStatisticFresh(statisticStatus))
+                    return new List<SupplierSalesRankDto>();
 
                 var cacheKey = SalesDashboardCacheKeys.SupplierRank(
                     dateRange,
                     branchCodes,
                     topN,
-                    supplierCode
+                    supplierCode,
+                    statisticStatus.CacheVersion
                 );
 
                 if (
@@ -852,6 +963,10 @@ namespace BlazorApp.Api.Services.React
                         TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
                         TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
                         OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                        GrossProfit = SqlFunc.AggregateSum(s.GrossProfit),
+                        StatisticRowCount = SqlFunc.AggregateCount(s.ProductCode),
+                        CostedRowCount = SqlFunc.AggregateCount(s.TotalCost),
+                        GrossProfitRowCount = SqlFunc.AggregateCount(s.GrossProfit),
                     })
                     .ToListAsync();
                 currentRows = ResolveAustralianSupplierBranchRows(
@@ -885,7 +1000,7 @@ namespace BlazorApp.Api.Services.React
 
                 var currentSupplierCodes = currentData.Select(s => s.SupplierCode).ToList();
                 var supplierNameMap = await GetAustralianSupplierNameMapAsync(currentSupplierCodes);
-                var compareDict = new Dictionary<string, (decimal TotalAmount, int OrderCount)>(
+                var compareDict = new Dictionary<string, SupplierCompareMetrics>(
                     StringComparer.OrdinalIgnoreCase
                 );
 
@@ -914,6 +1029,10 @@ namespace BlazorApp.Api.Services.React
                                 BranchCode = s.BranchCode,
                                 TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
                                 OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                                GrossProfit = SqlFunc.AggregateSum(s.GrossProfit),
+                                StatisticRowCount = SqlFunc.AggregateCount(s.ProductCode),
+                                CostedRowCount = SqlFunc.AggregateCount(s.TotalCost),
+                                GrossProfitRowCount = SqlFunc.AggregateCount(s.GrossProfit),
                             })
                             .ToListAsync();
                     var compareRows = ResolveAustralianSupplierBranchRows(
@@ -961,7 +1080,14 @@ namespace BlazorApp.Api.Services.React
                         AverageTransaction = item.OrderCount > 0 ? item.TotalAmount / item.OrderCount : 0,
                         StoreCount = item.StoreCount,
                         CompareTotalAmount = hasCompare ? compare.TotalAmount : null,
+                        GrossProfit = GetCompleteGrossProfit(
+                            item.GrossProfit,
+                            item.StatisticRowCount,
+                            item.CostedRowCount,
+                            item.GrossProfitRowCount
+                        ),
                     };
+                    dto.GrossMarginRate = CalculateGrossMarginRate(dto.TotalAmount, dto.GrossProfit);
 
                     if (hasCompare)
                     {
@@ -969,6 +1095,16 @@ namespace BlazorApp.Api.Services.React
                         dto.CompareAverageTransaction =
                             compare.OrderCount > 0 ? compare.TotalAmount / compare.OrderCount : 0;
                         dto.TotalAmountGrowth = CalculateGrowth(item.TotalAmount, compare.TotalAmount);
+                        dto.CompareGrossProfit = GetCompleteGrossProfit(
+                            compare.GrossProfit,
+                            compare.StatisticRowCount,
+                            compare.CostedRowCount,
+                            compare.GrossProfitRowCount
+                        );
+                        dto.CompareGrossMarginRate = CalculateGrossMarginRate(
+                            compare.TotalAmount,
+                            dto.CompareGrossProfit
+                        );
                     }
 
                     return dto;
@@ -990,7 +1126,7 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetSupplierSalesRankAsync failed");
-                return new List<SupplierSalesRankDto>();
+                throw;
             }
         }
 
@@ -1010,15 +1146,36 @@ namespace BlazorApp.Api.Services.React
             string? supplierCode = null
         )
         {
+            var statisticStatus = await GetProductReportStatisticStatusAsync(dateRange);
+            return await GetChinaSupplierSalesRankAsync(
+                dateRange,
+                branchCodes,
+                topN,
+                supplierCode,
+                statisticStatus
+            );
+        }
+
+        public async Task<List<ChinaSupplierSalesRankDto>> GetChinaSupplierSalesRankAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes,
+            int topN,
+            string? supplierCode,
+            ProductReportStatisticStatusDto statisticStatus
+        )
+        {
             try
             {
                 ValidateDateRange(dateRange);
+                if (!IsProductStatisticFresh(statisticStatus))
+                    return new List<ChinaSupplierSalesRankDto>();
 
                 var cacheKey = SalesDashboardCacheKeys.ChinaSupplierRank(
                     dateRange,
                     branchCodes,
                     topN,
-                    supplierCode
+                    supplierCode,
+                    statisticStatus.CacheVersion
                 );
 
                 if (
@@ -1069,6 +1226,10 @@ namespace BlazorApp.Api.Services.React
                         TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
                         TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
                         OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                        GrossProfit = SqlFunc.AggregateSum(s.GrossProfit),
+                        StatisticRowCount = SqlFunc.AggregateCount(s.ProductCode),
+                        CostedRowCount = SqlFunc.AggregateCount(s.TotalCost),
+                        GrossProfitRowCount = SqlFunc.AggregateCount(s.GrossProfit),
                     })
                     .ToListAsync();
 
@@ -1106,7 +1267,7 @@ namespace BlazorApp.Api.Services.React
 
                 var currentSupplierCodes = currentData.Select(s => s.SupplierCode).ToList();
                 var supplierNameMap = await GetChinaSupplierNameMapAsync(currentSupplierCodes);
-                var compareDict = new Dictionary<string, (decimal TotalAmount, int OrderCount)>(
+                var compareDict = new Dictionary<string, SupplierCompareMetrics>(
                     StringComparer.OrdinalIgnoreCase
                 );
 
@@ -1136,6 +1297,10 @@ namespace BlazorApp.Api.Services.React
                             SupplierCode = s.SupplierCode,
                             TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
                             OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                            GrossProfit = SqlFunc.AggregateSum(s.GrossProfit),
+                            StatisticRowCount = SqlFunc.AggregateCount(s.ProductCode),
+                            CostedRowCount = SqlFunc.AggregateCount(s.TotalCost),
+                            GrossProfitRowCount = SqlFunc.AggregateCount(s.GrossProfit),
                         })
                         .ToListAsync();
 
@@ -1186,7 +1351,14 @@ namespace BlazorApp.Api.Services.React
                         AverageTransaction = item.OrderCount > 0 ? item.TotalAmount / item.OrderCount : 0,
                         StoreCount = item.StoreCount,
                         CompareTotalAmount = hasCompare ? compare.TotalAmount : null,
+                        GrossProfit = GetCompleteGrossProfit(
+                            item.GrossProfit,
+                            item.StatisticRowCount,
+                            item.CostedRowCount,
+                            item.GrossProfitRowCount
+                        ),
                     };
+                    dto.GrossMarginRate = CalculateGrossMarginRate(dto.TotalAmount, dto.GrossProfit);
 
                     if (hasCompare)
                     {
@@ -1194,6 +1366,16 @@ namespace BlazorApp.Api.Services.React
                         dto.CompareAverageTransaction =
                             compare.OrderCount > 0 ? compare.TotalAmount / compare.OrderCount : 0;
                         dto.TotalAmountGrowth = CalculateGrowth(item.TotalAmount, compare.TotalAmount);
+                        dto.CompareGrossProfit = GetCompleteGrossProfit(
+                            compare.GrossProfit,
+                            compare.StatisticRowCount,
+                            compare.CostedRowCount,
+                            compare.GrossProfitRowCount
+                        );
+                        dto.CompareGrossMarginRate = CalculateGrossMarginRate(
+                            compare.TotalAmount,
+                            dto.CompareGrossProfit
+                        );
                     }
 
                     return dto;
@@ -1215,7 +1397,7 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetChinaSupplierSalesRankAsync failed");
-                return new List<ChinaSupplierSalesRankDto>();
+                throw;
             }
         }
 
@@ -1232,6 +1414,22 @@ namespace BlazorApp.Api.Services.React
             List<string>? branchCodes = null
         )
         {
+            var statisticStatus = await GetProductReportStatisticStatusAsync(dateRange);
+            return await GetSupplierStoreSalesAsync(
+                dateRange,
+                supplierCodes,
+                branchCodes,
+                statisticStatus
+            );
+        }
+
+        public async Task<List<SupplierStoreSalesDto>> GetSupplierStoreSalesAsync(
+            DateRangeDto dateRange,
+            List<string> supplierCodes,
+            List<string>? branchCodes,
+            ProductReportStatisticStatusDto statisticStatus
+        )
+        {
             try
             {
                 var targetSupplierCodes = NormalizeCodes(supplierCodes);
@@ -1239,11 +1437,14 @@ namespace BlazorApp.Api.Services.React
                     throw new ArgumentException("供应商代码不能为空", nameof(supplierCodes));
 
                 ValidateDateRange(dateRange);
+                if (!IsProductStatisticFresh(statisticStatus))
+                    return new List<SupplierStoreSalesDto>();
 
                 var cacheKey = SalesDashboardCacheKeys.SupplierStore(
                     dateRange,
                     targetSupplierCodes,
-                    branchCodes
+                    branchCodes,
+                    statisticStatus.CacheVersion
                 );
 
                 if (
@@ -1283,6 +1484,10 @@ namespace BlazorApp.Api.Services.React
                         TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
                         TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
                         OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                        GrossProfit = SqlFunc.AggregateSum(s.GrossProfit),
+                        StatisticRowCount = SqlFunc.AggregateCount(s.ProductCode),
+                        CostedRowCount = SqlFunc.AggregateCount(s.TotalCost),
+                        GrossProfitRowCount = SqlFunc.AggregateCount(s.GrossProfit),
                     })
                     .ToListAsync();
                 var currentData = ResolveAustralianSupplierBranchRows(
@@ -1321,8 +1526,8 @@ namespace BlazorApp.Api.Services.React
                 );
 
                 // 批量获取对比数据
-                Dictionary<string, (decimal TotalAmount, int OrderCount)> compareDict =
-                    new Dictionary<string, (decimal TotalAmount, int OrderCount)>(
+                Dictionary<string, SupplierCompareMetrics> compareDict =
+                    new Dictionary<string, SupplierCompareMetrics>(
                         StringComparer.OrdinalIgnoreCase
                     );
 
@@ -1351,6 +1556,10 @@ namespace BlazorApp.Api.Services.React
                             SupplierCode = s.SupplierCode,
                             TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
                             OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                            GrossProfit = SqlFunc.AggregateSum(s.GrossProfit),
+                            StatisticRowCount = SqlFunc.AggregateCount(s.ProductCode),
+                            CostedRowCount = SqlFunc.AggregateCount(s.TotalCost),
+                            GrossProfitRowCount = SqlFunc.AggregateCount(s.GrossProfit),
                         })
                         .ToListAsync();
                     var compareDataList = ResolveAustralianSupplierBranchRows(
@@ -1408,7 +1617,14 @@ namespace BlazorApp.Api.Services.React
                             OrderCount = orderCount,
                             AverageTransaction =
                                 orderCount > 0 ? item.TotalAmount / orderCount : 0,
+                            GrossProfit = GetCompleteGrossProfit(
+                                item.GrossProfit,
+                                item.StatisticRowCount,
+                                item.CostedRowCount,
+                                item.GrossProfitRowCount
+                            ),
                         };
+                        dto.GrossMarginRate = CalculateGrossMarginRate(dto.TotalAmount, dto.GrossProfit);
 
                         if (hasCompare)
                         {
@@ -1419,6 +1635,16 @@ namespace BlazorApp.Api.Services.React
                             dto.TotalAmountGrowth = CalculateGrowth(
                                 item.TotalAmount,
                                 compare.TotalAmount
+                            );
+                            dto.CompareGrossProfit = GetCompleteGrossProfit(
+                                compare.GrossProfit,
+                                compare.StatisticRowCount,
+                                compare.CostedRowCount,
+                                compare.GrossProfitRowCount
+                            );
+                            dto.CompareGrossMarginRate = CalculateGrossMarginRate(
+                                compare.TotalAmount,
+                                dto.CompareGrossProfit
                             );
                         }
 
@@ -2002,6 +2228,7 @@ namespace BlazorApp.Api.Services.React
         /// <param name="pageIndex">页码，从 1 开始</param>
         /// <param name="pageSize">每页大小，默认 100</param>
         /// <param name="productSearch">商品货号/条码搜索词（可选）</param>
+        /// <param name="chinaSupplierScope">是否限制为全部中国供应商商品</param>
         /// <returns>分页的含折扣信息的产品销售明细</returns>
         public async Task<PagedSalesProductDetailWithDiscountDto> GetEnhancedSalesProductDetailsAsync(
             DateRangeDto dateRange,
@@ -2010,7 +2237,34 @@ namespace BlazorApp.Api.Services.React
             List<string>? chinaSupplierCodes = null,
             int pageIndex = 1,
             int pageSize = 100,
-            string? productSearch = null
+            string? productSearch = null,
+            bool chinaSupplierScope = false
+        )
+        {
+            var statisticStatus = await GetProductReportStatisticStatusAsync(dateRange);
+            return await GetEnhancedSalesProductDetailsAsync(
+                dateRange,
+                branchCodes,
+                localSupplierCodes,
+                chinaSupplierCodes,
+                pageIndex,
+                pageSize,
+                productSearch,
+                statisticStatus,
+                chinaSupplierScope
+            );
+        }
+
+        public async Task<PagedSalesProductDetailWithDiscountDto> GetEnhancedSalesProductDetailsAsync(
+            DateRangeDto dateRange,
+            List<string>? branchCodes,
+            List<string>? localSupplierCodes,
+            List<string>? chinaSupplierCodes,
+            int pageIndex,
+            int pageSize,
+            string? productSearch,
+            ProductReportStatisticStatusDto statisticStatus,
+            bool chinaSupplierScope = false
         )
         {
             try
@@ -2018,6 +2272,16 @@ namespace BlazorApp.Api.Services.React
                 ValidateDateRange(dateRange);
                 pageIndex = Math.Max(1, pageIndex);
                 pageSize = Math.Clamp(pageSize, 1, 100);
+                if (!IsProductStatisticFresh(statisticStatus))
+                {
+                    return new PagedSalesProductDetailWithDiscountDto
+                    {
+                        Data = new List<SalesProductDetailWithDiscountDto>(),
+                        Total = 0,
+                        PageIndex = pageIndex,
+                        PageSize = pageSize,
+                    };
+                }
                 var normalizedProductSearch = productSearch?.Trim();
                 if (string.IsNullOrWhiteSpace(normalizedProductSearch))
                 {
@@ -2025,14 +2289,16 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 _logger.LogInformation(
-                    "[GetEnhancedSalesProductDetailsAsync] Processing request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, HasSupplierFilter={HasSupplierFilter}, HasProductSearch={HasProductSearch}",
+                    "[GetEnhancedSalesProductDetailsAsync] Processing request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, HasSupplierFilter={HasSupplierFilter}, HasProductSearch={HasProductSearch}, ChinaSupplierScope={ChinaSupplierScope}",
                     dateRange.StartDate,
                     dateRange.EndDate,
                     dateRange.CompareStartDate,
                     dateRange.CompareEndDate,
-                    (localSupplierCodes != null && localSupplierCodes.Any())
+                    chinaSupplierScope
+                        || (localSupplierCodes != null && localSupplierCodes.Any())
                         || (chinaSupplierCodes != null && chinaSupplierCodes.Any()),
-                    normalizedProductSearch != null
+                    normalizedProductSearch != null,
+                    chinaSupplierScope
                 );
 
                 var cacheKey = SalesDashboardCacheKeys.EnhancedProductDetail(
@@ -2042,7 +2308,9 @@ namespace BlazorApp.Api.Services.React
                     chinaSupplierCodes,
                     pageIndex,
                     pageSize,
-                    normalizedProductSearch
+                    normalizedProductSearch,
+                    statisticStatus.CacheVersion,
+                    chinaSupplierScope
                 );
 
                 if (
@@ -2063,14 +2331,66 @@ namespace BlazorApp.Api.Services.React
                 var compareStartDate = dateRange.CompareStartDate?.Date;
                 var compareEndDate = dateRange.CompareEndDate?.Date;
                 var normalizedChinaSupplierCodes = NormalizeCodes(chinaSupplierCodes);
-                var chinaProductMap = normalizedChinaSupplierCodes.Any()
-                    ? await GetChinaSupplierProductMapAsync(normalizedChinaSupplierCodes)
-                    : new Dictionary<string, string>();
+                // 显式中国范围优先于遗留本地供应商参数，避免客户端切换时残留参数形成交集。
+                var effectiveLocalSupplierCodes = chinaSupplierScope ? null : localSupplierCodes;
+                var normalizedLocalSupplierCodes = NormalizeCodes(effectiveLocalSupplierCodes);
+                // 默认商品主表不涉及中国供应商映射时，直接在数据库完成当前/同期并集与分页。
+                // 200 或中国供应商仍保留旧路径，避免新旧中国货映射口径被改变。
+                if (
+                    !chinaSupplierScope
+                    && !normalizedChinaSupplierCodes.Any()
+                    && !normalizedLocalSupplierCodes.Any(IsChinaLocalSupplierCode)
+                )
+                {
+                    var fastPathResult = await GetEnhancedSalesProductDetailsFastPathAsync(
+                        startDate,
+                        endDate,
+                        compareStartDate,
+                        compareEndDate,
+                        branchCodes,
+                        effectiveLocalSupplierCodes,
+                        pageIndex,
+                        pageSize,
+                        normalizedProductSearch
+                    );
+                    var fastPathCacheOptions = new MemoryCacheEntryOptions()
+                        .SetAbsoluteExpiration(DETAIL_CACHE_DURATION)
+                        .SetSlidingExpiration(TimeSpan.FromMinutes(1));
+                    _cache.Set(cacheKey, fastPathResult, fastPathCacheOptions);
+                    return fastPathResult;
+                }
+                Dictionary<string, string> chinaProductMap;
+                if (chinaSupplierScope && !normalizedChinaSupplierCodes.Any())
+                {
+                    // 中国供应商页未点选具体供应商时，范围应是全部中国供应商，而不是未筛选商品。
+                    // 同时收集旧 200 商品映射和直接写入统计表的中国供应商代码。
+                    chinaProductMap = await GetChinaSupplierProductMapAsync();
+                    normalizedChinaSupplierCodes = (
+                        await GetChinaSupplierCodeSetAsync(chinaProductMap.Values)
+                    ).ToList();
+                }
+                else
+                {
+                    chinaProductMap = normalizedChinaSupplierCodes.Any()
+                        ? await GetChinaSupplierProductMapAsync(normalizedChinaSupplierCodes)
+                        : new Dictionary<string, string>();
+                }
+                if (chinaSupplierScope && !normalizedChinaSupplierCodes.Any())
+                {
+                    // 显式中国范围无法解析到任何供应商时必须返回空，不能退化为未筛选全商品。
+                    return new PagedSalesProductDetailWithDiscountDto
+                    {
+                        Data = new List<SalesProductDetailWithDiscountDto>(),
+                        Total = 0,
+                        PageIndex = pageIndex,
+                        PageSize = pageSize,
+                    };
+                }
                 var currentData = await QueryProductReportProductAggregatesAsync(
                     startDate,
                     endDate,
                     branchCodes,
-                    localSupplierCodes,
+                    effectiveLocalSupplierCodes,
                     normalizedChinaSupplierCodes,
                     chinaProductMap,
                     normalizedProductSearch
@@ -2083,7 +2403,7 @@ namespace BlazorApp.Api.Services.React
                         compareStartDate.Value,
                         compareEndDate.Value,
                         branchCodes,
-                        localSupplierCodes,
+                        effectiveLocalSupplierCodes,
                         normalizedChinaSupplierCodes,
                         chinaProductMap,
                         normalizedProductSearch
@@ -2151,7 +2471,19 @@ namespace BlazorApp.Api.Services.React
                             AverageUnitPrice = x is { Quantity: > 0 } ? x.SalesAmount / x.Quantity : 0,
                             AverageOriginalPrice = null,
                             OrderCount = x?.OrderCount ?? 0,
+                            GrossProfit = x == null
+                                ? null
+                                : GetCompleteGrossProfit(
+                                    x.GrossProfit,
+                                    x.StatisticRowCount,
+                                    x.CostedRowCount,
+                                    x.GrossProfitRowCount
+                                ),
                         };
+                        result.GrossMarginRate = CalculateGrossMarginRate(
+                            result.SalesAmount,
+                            result.GrossProfit
+                        );
 
                         if (compareData != null)
                         {
@@ -2162,6 +2494,16 @@ namespace BlazorApp.Api.Services.React
                                 compareData.Quantity > 0 ? compareData.SalesAmount / compareData.Quantity : 0;
                             result.AverageOriginalPriceLY = null;
                             result.OrderCountLY = compareData.OrderCount;
+                            result.GrossProfitLY = GetCompleteGrossProfit(
+                                compareData.GrossProfit,
+                                compareData.StatisticRowCount,
+                                compareData.CostedRowCount,
+                                compareData.GrossProfitRowCount
+                            );
+                            result.GrossMarginRateLY = CalculateGrossMarginRate(
+                                result.SalesAmountLY,
+                                result.GrossProfitLY
+                            );
                         }
 
                         return result;
@@ -2192,13 +2534,7 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetEnhancedSalesProductDetailsAsync failed");
-                return new PagedSalesProductDetailWithDiscountDto
-                {
-                    Data = new List<SalesProductDetailWithDiscountDto>(),
-                    Total = 0,
-                    PageIndex = pageIndex,
-                    PageSize = pageSize,
-                };
+                throw;
             }
         }
 
@@ -2215,14 +2551,33 @@ namespace BlazorApp.Api.Services.React
             List<string>? branchCodes = null
         )
         {
+            var statisticStatus = await GetProductReportStatisticStatusAsync(dateRange);
+            return await GetProductSalesByAllBranchesAsync(
+                dateRange,
+                productCode,
+                branchCodes,
+                statisticStatus
+            );
+        }
+
+        public async Task<List<ProductBranchSalesDto>> GetProductSalesByAllBranchesAsync(
+            DateRangeDto dateRange,
+            string productCode,
+            List<string>? branchCodes,
+            ProductReportStatisticStatusDto statisticStatus
+        )
+        {
             try
             {
                 ValidateDateRange(dateRange);
+                if (!IsProductStatisticFresh(statisticStatus))
+                    return new List<ProductBranchSalesDto>();
 
                 var cacheKey = SalesDashboardCacheKeys.ProductBranch(
                     dateRange,
                     productCode,
-                    branchCodes
+                    branchCodes,
+                    statisticStatus.CacheVersion
                 );
 
                 if (
@@ -2249,11 +2604,15 @@ namespace BlazorApp.Api.Services.React
 
                 var salesData = await salesQuery
                     .GroupBy(s => s.BranchCode)
-                    .Select(s => new
+                    .Select(s => new ProductBranchAggregateRow
                     {
-                        BranchCode = s.BranchCode,
+                        BranchCode = s.BranchCode ?? string.Empty,
                         Quantity = SqlFunc.AggregateSum(s.TotalQuantity),
                         SalesAmount = SqlFunc.AggregateSum(s.TotalAmount),
+                        GrossProfit = SqlFunc.AggregateSum(s.GrossProfit),
+                        StatisticRowCount = SqlFunc.AggregateCount(s.ProductCode),
+                        CostedRowCount = SqlFunc.AggregateCount(s.TotalCost),
+                        GrossProfitRowCount = SqlFunc.AggregateCount(s.GrossProfit),
                     })
                     .ToListAsync();
 
@@ -2268,21 +2627,18 @@ namespace BlazorApp.Api.Services.React
                     var compareRows = await compareQuery
                         .Where(s => s.ProductCode == productCode)
                         .GroupBy(s => s.BranchCode)
-                        .Select(s => new
+                        .Select(s => new ProductBranchAggregateRow
                         {
-                            BranchCode = s.BranchCode,
+                            BranchCode = s.BranchCode ?? string.Empty,
                             Quantity = SqlFunc.AggregateSum(s.TotalQuantity),
                             SalesAmount = SqlFunc.AggregateSum(s.TotalAmount),
+                            GrossProfit = SqlFunc.AggregateSum(s.GrossProfit),
+                            StatisticRowCount = SqlFunc.AggregateCount(s.ProductCode),
+                            CostedRowCount = SqlFunc.AggregateCount(s.TotalCost),
+                            GrossProfitRowCount = SqlFunc.AggregateCount(s.GrossProfit),
                         })
                         .ToListAsync();
-                    compareSalesData = compareRows
-                        .Select(x => new ProductBranchAggregateRow
-                        {
-                            BranchCode = x.BranchCode ?? string.Empty,
-                            Quantity = x.Quantity,
-                            SalesAmount = x.SalesAmount,
-                        })
-                        .ToList();
+                    compareSalesData = compareRows;
                 }
 
                 var currentSalesByBranch = salesData
@@ -2291,9 +2647,13 @@ namespace BlazorApp.Api.Services.React
                         x => x.BranchCode ?? string.Empty,
                         x => new ProductBranchAggregateRow
                         {
-                            BranchCode = x.BranchCode ?? string.Empty,
+                            BranchCode = x.BranchCode,
                             Quantity = x.Quantity,
                             SalesAmount = x.SalesAmount,
+                            GrossProfit = x.GrossProfit,
+                            StatisticRowCount = x.StatisticRowCount,
+                            CostedRowCount = x.CostedRowCount,
+                            GrossProfitRowCount = x.GrossProfitRowCount,
                         },
                         StringComparer.OrdinalIgnoreCase
                     );
@@ -2328,7 +2688,32 @@ namespace BlazorApp.Api.Services.React
                                 current is { Quantity: > 0 } ? current.SalesAmount / current.Quantity : 0,
                             CompareAverageUnitPrice =
                                 compare is { Quantity: > 0 } ? compare.SalesAmount / compare.Quantity : 0,
+                            GrossProfit = current == null
+                                ? null
+                                : GetCompleteGrossProfit(
+                                    current.GrossProfit,
+                                    current.StatisticRowCount,
+                                    current.CostedRowCount,
+                                    current.GrossProfitRowCount
+                                ),
+                            CompareGrossProfit = compare == null
+                                ? null
+                                : GetCompleteGrossProfit(
+                                    compare.GrossProfit,
+                                    compare.StatisticRowCount,
+                                    compare.CostedRowCount,
+                                    compare.GrossProfitRowCount
+                                ),
                         };
+                    })
+                    .Select(row =>
+                    {
+                        row.GrossMarginRate = CalculateGrossMarginRate(row.SalesAmount, row.GrossProfit);
+                        row.CompareGrossMarginRate = CalculateGrossMarginRate(
+                            row.CompareSalesAmount,
+                            row.CompareGrossProfit
+                        );
+                        return row;
                     })
                     .OrderByDescending(x => x.SalesAmount)
                     .ThenByDescending(x => x.CompareSalesAmount)
@@ -2350,7 +2735,7 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetProductSalesByAllBranchesAsync failed");
-                return new List<ProductBranchSalesDto>();
+                throw;
             }
         }
 
@@ -2367,6 +2752,22 @@ namespace BlazorApp.Api.Services.React
             List<string>? branchCodes = null
         )
         {
+            var statisticStatus = await GetProductReportStatisticStatusAsync(dateRange);
+            return await GetChinaSupplierStoreSalesAsync(
+                dateRange,
+                supplierCodes,
+                branchCodes,
+                statisticStatus
+            );
+        }
+
+        public async Task<List<ChinaSupplierStoreSalesDto>> GetChinaSupplierStoreSalesAsync(
+            DateRangeDto dateRange,
+            List<string> supplierCodes,
+            List<string>? branchCodes,
+            ProductReportStatisticStatusDto statisticStatus
+        )
+        {
             try
             {
                 var targetSupplierCodes = NormalizeCodes(supplierCodes);
@@ -2374,11 +2775,14 @@ namespace BlazorApp.Api.Services.React
                     throw new ArgumentException("供应商代码不能为空", nameof(supplierCodes));
 
                 ValidateDateRange(dateRange);
+                if (!IsProductStatisticFresh(statisticStatus))
+                    return new List<ChinaSupplierStoreSalesDto>();
 
                 var cacheKey = SalesDashboardCacheKeys.ChinaSupplierStore(
                     dateRange,
                     targetSupplierCodes,
-                    branchCodes
+                    branchCodes,
+                    statisticStatus.CacheVersion
                 );
 
                 if (
@@ -2427,6 +2831,10 @@ namespace BlazorApp.Api.Services.React
                         TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
                         TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
                         OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                        GrossProfit = SqlFunc.AggregateSum(s.GrossProfit),
+                        StatisticRowCount = SqlFunc.AggregateCount(s.ProductCode),
+                        CostedRowCount = SqlFunc.AggregateCount(s.TotalCost),
+                        GrossProfitRowCount = SqlFunc.AggregateCount(s.GrossProfit),
                     })
                     .ToListAsync();
                 var currentRows = currentAggregateRows
@@ -2438,6 +2846,10 @@ namespace BlazorApp.Api.Services.React
                         TotalAmount = row.TotalAmount,
                         TotalQuantity = row.TotalQuantity,
                         OrderCount = row.OrderCount,
+                        GrossProfit = row.GrossProfit,
+                        StatisticRowCount = row.StatisticRowCount,
+                        CostedRowCount = row.CostedRowCount,
+                        GrossProfitRowCount = row.GrossProfitRowCount,
                     })
                     .ToList();
 
@@ -2476,8 +2888,8 @@ namespace BlazorApp.Api.Services.React
                 );
 
                 // 中国供应商分店下钻需要同期金额、客单数和客单价，供移动端第二行显示。
-                Dictionary<string, (decimal TotalAmount, int OrderCount)> compareDict =
-                    new Dictionary<string, (decimal TotalAmount, int OrderCount)>(
+                Dictionary<string, SupplierCompareMetrics> compareDict =
+                    new Dictionary<string, SupplierCompareMetrics>(
                         StringComparer.OrdinalIgnoreCase
                     );
 
@@ -2507,6 +2919,10 @@ namespace BlazorApp.Api.Services.React
                             SupplierCode = s.SupplierCode,
                             TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
                             OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                            GrossProfit = SqlFunc.AggregateSum(s.GrossProfit),
+                            StatisticRowCount = SqlFunc.AggregateCount(s.ProductCode),
+                            CostedRowCount = SqlFunc.AggregateCount(s.TotalCost),
+                            GrossProfitRowCount = SqlFunc.AggregateCount(s.GrossProfit),
                         })
                         .ToListAsync();
                     var compareRows = compareAggregateRows
@@ -2517,6 +2933,10 @@ namespace BlazorApp.Api.Services.React
                             SupplierCode = row.SupplierCode,
                             TotalAmount = row.TotalAmount,
                             OrderCount = row.OrderCount,
+                            GrossProfit = row.GrossProfit,
+                            StatisticRowCount = row.StatisticRowCount,
+                            CostedRowCount = row.CostedRowCount,
+                            GrossProfitRowCount = row.GrossProfitRowCount,
                         })
                         .ToList();
 
@@ -2573,7 +2993,14 @@ namespace BlazorApp.Api.Services.React
                             OrderCount = orderCount,
                             AverageTransaction =
                                 orderCount > 0 ? item.TotalAmount / orderCount : 0,
+                            GrossProfit = GetCompleteGrossProfit(
+                                item.GrossProfit,
+                                item.StatisticRowCount,
+                                item.CostedRowCount,
+                                item.GrossProfitRowCount
+                            ),
                         };
+                        dto.GrossMarginRate = CalculateGrossMarginRate(dto.TotalAmount, dto.GrossProfit);
 
                         if (hasCompare)
                         {
@@ -2584,6 +3011,16 @@ namespace BlazorApp.Api.Services.React
                             dto.TotalAmountGrowth = CalculateGrowth(
                                 item.TotalAmount,
                                 compare.TotalAmount
+                            );
+                            dto.CompareGrossProfit = GetCompleteGrossProfit(
+                                compare.GrossProfit,
+                                compare.StatisticRowCount,
+                                compare.CostedRowCount,
+                                compare.GrossProfitRowCount
+                            );
+                            dto.CompareGrossMarginRate = CalculateGrossMarginRate(
+                                compare.TotalAmount,
+                                dto.CompareGrossProfit
                             );
                         }
 
@@ -2636,7 +3073,7 @@ namespace BlazorApp.Api.Services.React
 
                 if (!ValidateDatabaseConnection<AustralianSupplierStoreSalesDetail>())
                 {
-                    return new List<AustralianSupplierStoreSalesDetailDto>();
+                    throw new InvalidOperationException("澳洲供应商分店销售明细表不可用");
                 }
 
                 var startDate = dateRange.StartDate.Date;
@@ -2676,7 +3113,7 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetAustralianSupplierStoreSalesDetailsAsync failed");
-                return new List<AustralianSupplierStoreSalesDetailDto>();
+                throw;
             }
         }
 
@@ -2701,7 +3138,7 @@ namespace BlazorApp.Api.Services.React
 
                 if (!ValidateDatabaseConnection<ChinaSupplierStoreSalesDetail>())
                 {
-                    return new List<ChinaSupplierStoreSalesDetailDto>();
+                    throw new InvalidOperationException("中国供应商分店销售明细表不可用");
                 }
 
                 var startDate = dateRange.StartDate.Date;
@@ -2741,7 +3178,7 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetChinaSupplierStoreSalesDetailsAsync failed");
-                return new List<ChinaSupplierStoreSalesDetailDto>();
+                throw;
             }
         }
 
@@ -2948,8 +3385,8 @@ namespace BlazorApp.Api.Services.React
         /// <param name="dateRange">日期范围</param>
         /// <param name="topN">返回前N条记录</param>
         /// <param name="branchCodes">分店代码列表（可选）</param>
-        /// <returns>分店业绩排名列表</returns>
-        public async Task<List<ExecutiveBranchPerformanceDto>> GetExecutiveBranchPerformanceAsync(
+        /// <returns>分店业绩排名及统计完整性状态</returns>
+        public async Task<ExecutiveBranchPerformanceResultDto> GetExecutiveBranchPerformanceAsync(
             DateRangeDto dateRange,
             int? topN = null,
             List<string>? branchCodes = null
@@ -2960,7 +3397,15 @@ namespace BlazorApp.Api.Services.React
                 ValidateDateRange(dateRange);
                 var normalizedBranchCodes = NormalizeBranchCodes(branchCodes);
                 if (branchCodes != null && normalizedBranchCodes.Count == 0)
-                    return new List<ExecutiveBranchPerformanceDto>();
+                    return new ExecutiveBranchPerformanceResultDto();
+
+                // 管理员的“全部分店”以启用门店目录为展示权威集合；统计表只负责提供有销售的数值。
+                var activeStoreNameMap = normalizedBranchCodes.Count == 0
+                    ? await GetActiveStoreNameMapAsync()
+                    : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var displayBranchCodes = normalizedBranchCodes.Count > 0
+                    ? normalizedBranchCodes.ToHashSet(StringComparer.OrdinalIgnoreCase)
+                    : activeStoreNameMap.Keys.ToHashSet(StringComparer.OrdinalIgnoreCase);
 
                 var statisticsRefreshState = await EnsureStoreSalesStatisticsAsync(
                     dateRange,
@@ -2971,17 +3416,16 @@ namespace BlazorApp.Api.Services.React
                 var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
                 var statisticsVersion = await GetStatisticsCacheVersionAsync();
                 var cacheKey =
-                    $"ExecutiveBranchPerformance_{statisticsVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{topN?.ToString() ?? "all"}_{string.Join(",", normalizedBranchCodes)}";
+                    $"ExecutiveBranchPerformance_{statisticsVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{topN?.ToString() ?? "all"}_{string.Join(",", displayBranchCodes.OrderBy(code => code, StringComparer.OrdinalIgnoreCase))}";
 
                 if (
                     statisticsRefreshState == StatisticsRefreshState.NotNeeded
                     &&
-                    _cache.TryGetValue<List<ExecutiveBranchPerformanceDto>>(
+                    _cache.TryGetValue<ExecutiveBranchPerformanceResultDto>(
                         cacheKey,
                         out var cachedResult
                     )
                     && cachedResult != null
-                    && cachedResult.Count != 0
                 )
                 {
                     _logger.LogInformation("从缓存获取 Executive 分店业绩: {CacheKey}", cacheKey);
@@ -2996,11 +3440,15 @@ namespace BlazorApp.Api.Services.React
                     .Db.Queryable<StoreSalesStatistic>()
                     .Where(s => s.Date >= startDate && s.Date <= endDate);
 
-                if (normalizedBranchCodes.Count > 0)
+                if (displayBranchCodes.Count > 0)
                 {
                     branchCurrentQuery = branchCurrentQuery.Where(s =>
-                        normalizedBranchCodes.Contains(s.BranchCode)
+                        displayBranchCodes.Contains(s.BranchCode)
                     );
+                }
+                else
+                {
+                    branchCurrentQuery = branchCurrentQuery.Where(s => false);
                 }
 
                 var currentData = await branchCurrentQuery
@@ -3026,9 +3474,13 @@ namespace BlazorApp.Api.Services.React
                         .Db.Queryable<StoreSalesStatistic>()
                         .Where(s => s.Date >= lyStartDate && s.Date <= lyEndDate);
 
-                    if (normalizedBranchCodes.Count > 0)
+                    if (displayBranchCodes.Count > 0)
                     {
-                        lyQuery = lyQuery.Where(s => normalizedBranchCodes.Contains(s.BranchCode));
+                        lyQuery = lyQuery.Where(s => displayBranchCodes.Contains(s.BranchCode));
+                    }
+                    else
+                    {
+                        lyQuery = lyQuery.Where(s => false);
                     }
 
                     var lyData = await lyQuery
@@ -3074,8 +3526,53 @@ namespace BlazorApp.Api.Services.React
                                         ? lyItem3.RevenueLY / lyItem3.OrderCountLY
                                         : 0,
                             }
-                    )
-                    .OrderByDescending(x => x.Revenue);
+                    );
+
+                if (displayBranchCodes.Count > 0)
+                {
+                    var snapshotBranchCodes = currentData
+                        .Where(item => !string.IsNullOrWhiteSpace(item.BranchCode))
+                        .Select(item => item.BranchCode)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var zeroSalesBranchCodes = displayBranchCodes
+                        .Where(code => !snapshotBranchCodes.Contains(code))
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                    if (zeroSalesBranchCodes.Count > 0)
+                    {
+                        // 授权范围是普通用户可见分店的权威集合；统计表不会为零销售分店逐日落行时，仍须保留零值排行行。
+                        var branchNameMap = normalizedBranchCodes.Count == 0
+                            ? activeStoreNameMap
+                            : await GetStoreNameMapAsync(zeroSalesBranchCodes);
+                        result = result.Concat(zeroSalesBranchCodes.Select(code =>
+                            new ExecutiveBranchPerformanceDto
+                            {
+                                BranchCode = code,
+                                BranchName = branchNameMap.TryGetValue(code, out var branchName)
+                                    && !string.IsNullOrWhiteSpace(branchName)
+                                        ? branchName
+                                        : code,
+                                Revenue = 0,
+                                RevenueLY = lyDict.TryGetValue(code, out var lyItem)
+                                    ? lyItem.RevenueLY
+                                    : 0,
+                                OrderCount = 0,
+                                OrderCountLY = lyDict.TryGetValue(code, out var lyItem2)
+                                    ? lyItem2.OrderCountLY
+                                    : 0,
+                                Aov = 0,
+                                AovLY = lyDict.TryGetValue(code, out var lyItem3)
+                                    && lyItem3.OrderCountLY > 0
+                                        ? lyItem3.RevenueLY / lyItem3.OrderCountLY
+                                        : 0,
+                            }
+                        ));
+                    }
+                }
+
+                result = result
+                    .OrderByDescending(x => x.Revenue)
+                    .ThenBy(x => x.BranchCode, StringComparer.OrdinalIgnoreCase);
 
                 if (topN.HasValue && topN.Value > 0)
                 {
@@ -3100,17 +3597,64 @@ namespace BlazorApp.Api.Services.React
                     )
                     .ToList();
 
+                var expectedBranchCount = displayBranchCodes.Count;
+                if (topN.HasValue && topN.Value > 0)
+                {
+                    expectedBranchCount = Math.Min(expectedBranchCount, topN.Value);
+                }
+                var hasSourceBranchIdentityGap = false;
+                var sourceBranchIdentityUnverified = false;
+                if (statisticsRefreshState != StatisticsRefreshState.NotNeeded)
+                {
+                    var sourceBranchCodes = await GetExpectedExecutiveBranchCodesAsync(
+                        startDate,
+                        endDate,
+                        normalizedBranchCodes
+                    );
+                    if (sourceBranchCodes != null)
+                    {
+                        // 不能只比较行数：授权分店的零值补行会让“少写真实销售分店”伪装成完整。
+                        // 必须按实际聚合来源的分店身份核验统计快照，并同时识别缺失和陈旧分店行。
+                        var statisticSnapshotBranchCodes = currentData
+                            .Where(item => !string.IsNullOrWhiteSpace(item.BranchCode))
+                            .Select(item => item.BranchCode)
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        var displayedSourceBranchCodes = sourceBranchCodes
+                            .Where(displayBranchCodes.Contains)
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        hasSourceBranchIdentityGap = !displayedSourceBranchCodes.SetEquals(
+                            statisticSnapshotBranchCodes
+                        );
+                    }
+                    else
+                    {
+                        // 快速补算后的 POSM 来源身份无法核验时，不能证明统计快照完整；必须 fail closed 且禁止缓存。
+                        sourceBranchIdentityUnverified = true;
+                    }
+                }
+
+                var response = new ExecutiveBranchPerformanceResultDto
+                {
+                    Items = rankedResult,
+                    StatisticsPending = statisticsRefreshState == StatisticsRefreshState.Pending
+                        || rankedResult.Count < expectedBranchCount
+                        || hasSourceBranchIdentityGap
+                        || sourceBranchIdentityUnverified,
+                    StatisticsExpectedBranchCount = expectedBranchCount,
+                    StatisticsSnapshotBranchCount = rankedResult.Count,
+                };
+
                 // 缓存结果
                 var cacheOptions = new MemoryCacheEntryOptions()
                     .SetAbsoluteExpiration(RANKING_CACHE_DURATION)
                     .SetSlidingExpiration(TimeSpan.FromMinutes(5));
 
-                if (statisticsRefreshState != StatisticsRefreshState.Pending)
+                if (!response.StatisticsPending)
                 {
-                    _cache.Set(cacheKey, rankedResult, cacheOptions);
+                    _cache.Set(cacheKey, response, cacheOptions);
                 }
 
-                return rankedResult;
+                return response;
             }
             catch (Exception ex)
             {
@@ -3125,8 +3669,8 @@ namespace BlazorApp.Api.Services.React
         /// </summary>
         /// <param name="dateRange">日期范围</param>
         /// <param name="branchCodes">分店代码列表（可选）</param>
-        /// <returns>每小时流量密度列表</returns>
-        public async Task<List<ExecutiveHourlyTrafficDto>> GetExecutiveHourlyTrafficAsync(
+        /// <returns>每小时流量密度及统计完整性状态</returns>
+        public async Task<ExecutiveReportResultDto<ExecutiveHourlyTrafficDto>> GetExecutiveHourlyTrafficAsync(
             DateRangeDto dateRange,
             List<string>? branchCodes = null
         )
@@ -3136,12 +3680,33 @@ namespace BlazorApp.Api.Services.React
                 ValidateDateRange(dateRange);
                 var normalizedBranchCodes = NormalizeBranchCodes(branchCodes);
                 if (branchCodes != null && normalizedBranchCodes.Count == 0)
-                    return new List<ExecutiveHourlyTrafficDto>();
+                    return new ExecutiveReportResultDto<ExecutiveHourlyTrafficDto>();
 
                 var statisticsRefreshState = await EnsureHourlySalesStatisticsAsync(
                     dateRange,
                     normalizedBranchCodes
                 );
+                // 快速补算任务即使已结束，也必须重查来源/统计覆盖；不能把“完成”当作“完整”。
+                // 稳定统计已在 Ensure 中完成一次覆盖核验，此处不重复扫描 POSM，允许尽早命中缓存。
+                var hourlyStatisticsStillMissing = new List<DateTime>();
+                if (statisticsRefreshState == StatisticsRefreshState.Completed)
+                {
+                    hourlyStatisticsStillMissing = await GetMissingHourlyStatisticDatesAsync(
+                        dateRange.StartDate.Date,
+                        dateRange.EndDate.Date,
+                        normalizedBranchCodes
+                    );
+                    if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+                    {
+                        hourlyStatisticsStillMissing.AddRange(await GetMissingHourlyStatisticDatesAsync(
+                            dateRange.CompareStartDate.Value.Date,
+                            dateRange.CompareEndDate.Value.Date,
+                            normalizedBranchCodes
+                        ));
+                    }
+                }
+                var statisticsPending = statisticsRefreshState == StatisticsRefreshState.Pending
+                    || hourlyStatisticsStillMissing.Count > 0;
 
                 var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
                 var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
@@ -3152,12 +3717,12 @@ namespace BlazorApp.Api.Services.React
                 if (
                     statisticsRefreshState == StatisticsRefreshState.NotNeeded
                     &&
-                    _cache.TryGetValue<List<ExecutiveHourlyTrafficDto>>(
+                    _cache.TryGetValue<ExecutiveReportResultDto<ExecutiveHourlyTrafficDto>>(
                         cacheKey,
                         out var cachedResult
                     )
                     && cachedResult != null
-                    && cachedResult.Count != 0
+                    && !cachedResult.StatisticsPending
                 )
                 {
                     _logger.LogInformation("从缓存获取 Executive 每小时流量: {CacheKey}", cacheKey);
@@ -3199,7 +3764,10 @@ namespace BlazorApp.Api.Services.React
                     .ThenBy(x => x.Hour)
                     .ToList();
 
-                var lyDict = new Dictionary<(string? BranchCode, int Hour), (decimal RevenueLY, int OrderCountLY)>();
+                var lyDict = new Dictionary<
+                    (string BranchCode, int Hour),
+                    (string BranchCode, string BranchName, decimal Revenue, int OrderCount)
+                >();
                 if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
                 {
                     var lyStartDate = dateRange.CompareStartDate.Value.Date;
@@ -3226,48 +3794,114 @@ namespace BlazorApp.Api.Services.React
                         .Select(s => new
                         {
                             BranchCode = s.BranchCode,
+                            BranchName = SqlFunc.AggregateMax(s.BranchName),
                             Hour = s.Hour,
                             RevenueLY = SqlFunc.AggregateSum(s.TotalAmount),
                             OrderCountLY = SqlFunc.AggregateSum(s.OrderCount ?? 0),
                         })
                         .ToListAsync();
 
-                    lyDict = lyHourlyData.ToDictionary(
-                        s => (s.BranchCode, s.Hour),
-                        s => (s.RevenueLY, s.OrderCountLY)
-                    );
+                    lyDict = lyHourlyData
+                        .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
+                        .GroupBy(row => (
+                            BranchCode: row.BranchCode!.Trim().ToUpperInvariant(),
+                            Hour: row.Hour
+                        ))
+                        .ToDictionary(
+                            group => group.Key,
+                            group =>
+                            {
+                                var branchCode = group.First().BranchCode!.Trim();
+                                var branchName = group
+                                    .Select(row => row.BranchName)
+                                    .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
+                                    ?? branchCode;
+                                return (
+                                    BranchCode: branchCode,
+                                    BranchName: branchName,
+                                    Revenue: group.Sum(row => row.RevenueLY),
+                                    OrderCount: group.Sum(row => row.OrderCountLY)
+                                );
+                            }
+                        );
                 }
 
-                var result = hourlyData
-                    .GroupBy(h => h.BranchCode)
+                var currentDict = hourlyData
+                    .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
+                    .GroupBy(row => (
+                        BranchCode: row.BranchCode!.Trim().ToUpperInvariant(),
+                        Hour: row.Hour
+                    ))
+                    .ToDictionary(
+                        group => group.Key,
+                        group =>
+                        {
+                            var branchCode = group.First().BranchCode!.Trim();
+                            var branchName = group
+                                .Select(row => row.BranchName)
+                                .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
+                                ?? branchCode;
+                            return (
+                                BranchCode: branchCode,
+                                BranchName: branchName,
+                                Revenue: group.Sum(row => row.Revenue),
+                                OrderCount: group.Sum(row => row.OrderCount)
+                            );
+                        }
+                    );
+                var unionKeys = currentDict.Keys
+                    .Union(lyDict.Keys)
+                    .OrderBy(key => key.BranchCode, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(key => key.Hour)
+                    .ToList();
+                var items = unionKeys
+                    .GroupBy(key => key.BranchCode, StringComparer.OrdinalIgnoreCase)
                     .Select(branchGroup =>
                     {
-                        var branchCode = branchGroup.Key ?? string.Empty;
-                        var branchName = branchGroup
-                            .Select(item => item.BranchName)
-                            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
-                            ?? branchCode;
-                        var branchMaxRevenue = branchGroup.Max(x => x.Revenue);
+                        var currentRepresentative = branchGroup
+                            .Where(currentDict.ContainsKey)
+                            .Select(key => currentDict[key])
+                            .FirstOrDefault();
+                        var compareRepresentative = branchGroup
+                            .Where(lyDict.ContainsKey)
+                            .Select(key => lyDict[key])
+                            .FirstOrDefault();
+                        var branchCode = !string.IsNullOrWhiteSpace(currentRepresentative.BranchCode)
+                            ? currentRepresentative.BranchCode
+                            : compareRepresentative.BranchCode;
+                        var branchName = !string.IsNullOrWhiteSpace(currentRepresentative.BranchName)
+                            ? currentRepresentative.BranchName
+                            : !string.IsNullOrWhiteSpace(compareRepresentative.BranchName)
+                                ? compareRepresentative.BranchName
+                                : branchCode;
+                        var branchMaxRevenue = branchGroup.Max(key =>
+                            currentDict.TryGetValue(key, out var current) ? current.Revenue : 0m
+                        );
                         var peakThreshold = branchMaxRevenue * 0.8m;
 
-                        return branchGroup.Select(item => new ExecutiveHourlyTrafficDto
+                        return branchGroup.Select(key =>
                         {
-                            Hour = $"{item.Hour:D2}:00",
-                            BranchCode = branchCode,
-                            BranchName = branchName,
-                            Revenue = item.Revenue,
-                            RevenueLY = lyDict.TryGetValue((branchCode, item.Hour), out var ly)
-                                ? ly.RevenueLY
-                                : 0,
-                            OrderCount = item.OrderCount,
-                            OrderCountLY = lyDict.TryGetValue((branchCode, item.Hour), out var lyOrder)
-                                ? lyOrder.OrderCountLY
-                                : 0,
-                            Percentage =
-                                branchMaxRevenue > 0
-                                    ? (int)(item.Revenue * 100 / branchMaxRevenue)
+                            var current = currentDict.TryGetValue(key, out var currentValue)
+                                ? currentValue
+                                : (BranchCode: branchCode, BranchName: branchName, Revenue: 0m, OrderCount: 0);
+                            var compare = lyDict.TryGetValue(key, out var compareValue)
+                                ? compareValue
+                                : (BranchCode: branchCode, BranchName: branchName, Revenue: 0m, OrderCount: 0);
+                            return new ExecutiveHourlyTrafficDto
+                            {
+                                Hour = $"{key.Hour:D2}:00",
+                                BranchCode = branchCode,
+                                BranchName = branchName,
+                                Revenue = current.Revenue,
+                                RevenueLY = compare.Revenue,
+                                OrderCount = current.OrderCount,
+                                OrderCountLY = compare.OrderCount,
+                                Percentage = branchMaxRevenue > 0
+                                    ? (int)(current.Revenue * 100 / branchMaxRevenue)
                                     : 0,
-                            IsPeak = item.Revenue >= peakThreshold,
+                                IsPeak = branchMaxRevenue > 0
+                                    && current.Revenue >= peakThreshold,
+                            };
                         });
                     })
                     .SelectMany(x => x)
@@ -3278,12 +3912,17 @@ namespace BlazorApp.Api.Services.React
                     .SetAbsoluteExpiration(RANKING_CACHE_DURATION)
                     .SetSlidingExpiration(TimeSpan.FromMinutes(5));
 
-                if (statisticsRefreshState != StatisticsRefreshState.Pending)
+                var response = CreateExecutiveReportResult(
+                    items,
+                    statisticsPending
+                );
+
+                if (!response.StatisticsPending)
                 {
-                    _cache.Set(cacheKey, result, cacheOptions);
+                    _cache.Set(cacheKey, response, cacheOptions);
                 }
 
-                return result;
+                return response;
             }
             catch (Exception ex)
             {
@@ -3297,8 +3936,8 @@ namespace BlazorApp.Api.Services.React
         /// </summary>
         /// <param name="dateRange">日期范围</param>
         /// <param name="branchCodes">分店代码列表（可选）</param>
-        /// <returns>分店每日营业额列表</returns>
-        public async Task<List<BranchDailyPerformanceDto>> GetBranchDailyPerformanceAsync(
+        /// <returns>分店每日营业额及统计完整性状态</returns>
+        public async Task<ExecutiveReportResultDto<BranchDailyPerformanceDto>> GetBranchDailyPerformanceAsync(
             DateRangeDto dateRange,
             List<string>? branchCodes = null
         )
@@ -3308,12 +3947,33 @@ namespace BlazorApp.Api.Services.React
                 ValidateDateRange(dateRange);
                 var normalizedBranchCodes = NormalizeBranchCodes(branchCodes);
                 if (branchCodes != null && normalizedBranchCodes.Count == 0)
-                    return new List<BranchDailyPerformanceDto>();
+                    return new ExecutiveReportResultDto<BranchDailyPerformanceDto>();
 
                 var statisticsRefreshState = await EnsureStoreSalesStatisticsAsync(
                     dateRange,
                     normalizedBranchCodes
                 );
+                // 与排行相同，分店日表须按 POSM 销售分店身份复核，避免补零行掩盖漏写统计。
+                // 稳定统计已在 Ensure 中完成一次覆盖核验，此处不重复扫描 POSM，允许尽早命中缓存。
+                var storeStatisticsStillMissing = new List<DateTime>();
+                if (statisticsRefreshState == StatisticsRefreshState.Completed)
+                {
+                    storeStatisticsStillMissing = await GetMissingStoreStatisticDatesAsync(
+                        dateRange.StartDate.Date,
+                        dateRange.EndDate.Date,
+                        normalizedBranchCodes
+                    );
+                    if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+                    {
+                        storeStatisticsStillMissing.AddRange(await GetMissingStoreStatisticDatesAsync(
+                            dateRange.CompareStartDate.Value.Date,
+                            dateRange.CompareEndDate.Value.Date,
+                            normalizedBranchCodes
+                        ));
+                    }
+                }
+                var statisticsPending = statisticsRefreshState == StatisticsRefreshState.Pending
+                    || storeStatisticsStillMissing.Count > 0;
 
                 var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
                 var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
@@ -3324,12 +3984,12 @@ namespace BlazorApp.Api.Services.React
                 if (
                     statisticsRefreshState == StatisticsRefreshState.NotNeeded
                     &&
-                    _cache.TryGetValue<List<BranchDailyPerformanceDto>>(
+                    _cache.TryGetValue<ExecutiveReportResultDto<BranchDailyPerformanceDto>>(
                         cacheKey,
                         out var cachedResult
                     )
                     && cachedResult != null
-                    && cachedResult.Count != 0
+                    && !cachedResult.StatisticsPending
                 )
                 {
                     _logger.LogInformation("从缓存获取分店每日营业额: {CacheKey}", cacheKey);
@@ -3362,7 +4022,10 @@ namespace BlazorApp.Api.Services.React
                     })
                     .ToListAsync();
 
-                var lyDict = new Dictionary<(string BranchCode, DateTime Date), (decimal Revenue, int OrderCount)>();
+                var lyDict = new Dictionary<
+                    (string BranchCode, DateTime Date),
+                    (string BranchCode, string BranchName, decimal Revenue, int OrderCount)
+                >();
                 if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
                 {
                     var lyStartDate = dateRange.CompareStartDate.Value.Date;
@@ -3383,59 +4046,139 @@ namespace BlazorApp.Api.Services.React
                         {
                             Date = s.Date,
                             BranchCode = s.BranchCode,
+                            BranchName = SqlFunc.AggregateMax(s.BranchName),
                             Revenue = SqlFunc.AggregateSum(s.TotalAmount),
                             OrderCount = SqlFunc.AggregateSum(s.OrderCount),
                         })
                         .ToListAsync();
 
-                    lyDict = lyData.ToDictionary(
-                        row => (row.BranchCode, row.Date.Date),
-                        row => (row.Revenue, row.OrderCount)
-                    );
+                    lyDict = lyData
+                        .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
+                        .Select(row => new
+                        {
+                            Row = row,
+                            CurrentDate = startDate.AddDays((row.Date.Date - lyStartDate).Days),
+                        })
+                        .Where(item => item.CurrentDate >= startDate && item.CurrentDate <= endDate)
+                        .GroupBy(item => (
+                            BranchCode: item.Row.BranchCode.Trim().ToUpperInvariant(),
+                            Date: item.CurrentDate
+                        ))
+                        .ToDictionary(
+                            group => group.Key,
+                            group =>
+                            {
+                                var branchCode = group.First().Row.BranchCode.Trim();
+                                var branchName = group
+                                    .Select(item => item.Row.BranchName)
+                                    .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
+                                    ?? branchCode;
+                                return (
+                                    BranchCode: branchCode,
+                                    BranchName: branchName,
+                                    Revenue: group.Sum(item => item.Row.Revenue),
+                                    OrderCount: group.Sum(item => item.Row.OrderCount)
+                                );
+                            }
+                        );
                 }
 
                 // 按当前区间和对比区间的相同偏移天数配对，兼容同周和同月份规则。
-                var compareStartDate = dateRange.CompareStartDate?.Date;
-                var result = currentData
-                    .Select(row =>
+                var currentDict = currentData
+                    .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
+                    .GroupBy(row => (
+                        BranchCode: row.BranchCode.Trim().ToUpperInvariant(),
+                        Date: row.Date.Date
+                    ))
+                    .ToDictionary(
+                        group => group.Key,
+                        group =>
+                        {
+                            var branchCode = group.First().BranchCode.Trim();
+                            var branchName = group
+                                .Select(row => row.BranchName)
+                                .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
+                                ?? branchCode;
+                            return (
+                                BranchCode: branchCode,
+                                BranchName: branchName,
+                                Revenue: group.Sum(row => row.Revenue),
+                                OrderCount: group.Sum(row => row.OrderCount)
+                            );
+                        }
+                    );
+                var items = currentDict.Keys
+                    .Union(lyDict.Keys)
+                    .Select(key =>
                     {
-                        var compareDate = compareStartDate?.AddDays((row.Date.Date - startDate).Days);
-                        var ly = compareDate.HasValue
-                            && lyDict.TryGetValue((row.BranchCode, compareDate.Value), out var matched)
-                                ? matched
-                                : (Revenue: 0m, OrderCount: 0);
+                        var current = currentDict.TryGetValue(key, out var currentValue)
+                            ? currentValue
+                            : default;
+                        var compare = lyDict.TryGetValue(key, out var compareValue)
+                            ? compareValue
+                            : default;
+                        var branchCode = !string.IsNullOrWhiteSpace(current.BranchCode)
+                            ? current.BranchCode
+                            : compare.BranchCode;
+                        var branchName = !string.IsNullOrWhiteSpace(current.BranchName)
+                            ? current.BranchName
+                            : !string.IsNullOrWhiteSpace(compare.BranchName)
+                                ? compare.BranchName
+                                : branchCode;
 
                         return new BranchDailyPerformanceDto
                         {
-                            Date = row.Date.Date,
-                            BranchCode = row.BranchCode,
-                            BranchName = row.BranchName,
-                            Revenue = row.Revenue,
-                            RevenueLY = ly.Revenue,
-                            OrderCount = row.OrderCount,
-                            OrderCountLY = ly.OrderCount,
+                            Date = key.Date,
+                            BranchCode = branchCode,
+                            BranchName = branchName,
+                            Revenue = current.Revenue,
+                            RevenueLY = compare.Revenue,
+                            OrderCount = current.OrderCount,
+                            OrderCountLY = compare.OrderCount,
                         };
                     })
                     .OrderBy(row => row.Date)
                     .ThenByDescending(row => row.Revenue)
+                    .ThenBy(row => row.BranchCode, StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
                 var cacheOptions = new MemoryCacheEntryOptions()
                     .SetAbsoluteExpiration(RANKING_CACHE_DURATION)
                     .SetSlidingExpiration(TimeSpan.FromMinutes(5));
 
-                if (statisticsRefreshState != StatisticsRefreshState.Pending)
+                var response = CreateExecutiveReportResult(
+                    items,
+                    statisticsPending
+                );
+
+                if (!response.StatisticsPending)
                 {
-                    _cache.Set(cacheKey, result, cacheOptions);
+                    _cache.Set(cacheKey, response, cacheOptions);
                 }
 
-                return result;
+                return response;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetBranchDailyPerformanceAsync failed");
                 throw;
             }
+        }
+
+        private static ExecutiveReportResultDto<T> CreateExecutiveReportResult<T>(
+            List<T> items,
+            bool statisticsPending
+        )
+        {
+            // Pending 快照没有可证明的最终条目数，故故意令 expected 大于 snapshot，
+            // 防止客户端仅凭数组非空将局部结果展示为完整明细。
+            return new ExecutiveReportResultDto<T>
+            {
+                Items = items,
+                StatisticsPending = statisticsPending,
+                StatisticsSnapshotItemCount = items.Count,
+                StatisticsExpectedItemCount = statisticsPending ? items.Count + 1 : items.Count,
+            };
         }
 
         public async Task<StatisticsFreshnessDto> GetStatisticsFreshnessAsync()
@@ -3480,7 +4223,52 @@ namespace BlazorApp.Api.Services.React
         private async Task<string> GetStatisticsCacheVersionAsync()
         {
             var freshness = await GetStatisticsFreshnessAsync();
-            return freshness.LastSuccessfulAtUtc?.Ticks.ToString() ?? "none";
+            var scheduledVersion = freshness.LastSuccessfulAtUtc?.Ticks.ToString() ?? "none";
+            var generation = Volatile.Read(ref GetReportStatisticsCacheGenerationState().Value);
+            return $"{scheduledVersion}:g{generation}";
+        }
+
+        private ReportStatisticsCacheGenerationState GetReportStatisticsCacheGenerationState()
+        {
+            if (
+                _cache.TryGetValue<ReportStatisticsCacheGenerationState>(
+                    REPORT_STATISTICS_CACHE_GENERATION_KEY,
+                    out var state
+                )
+                && state != null
+            )
+            {
+                return state;
+            }
+
+            // 同一个 IMemoryCache 代表同一个应用实例；加锁只覆盖首次建代际对象，后续递增无锁。
+            var gate = REPORT_STATISTICS_CACHE_GENERATION_LOCKS.GetValue(_cache, _ => new object());
+            lock (gate)
+            {
+                if (
+                    _cache.TryGetValue<ReportStatisticsCacheGenerationState>(
+                        REPORT_STATISTICS_CACHE_GENERATION_KEY,
+                        out state
+                    )
+                    && state != null
+                )
+                {
+                    return state;
+                }
+
+                state = new ReportStatisticsCacheGenerationState();
+                _cache.Set(
+                    REPORT_STATISTICS_CACHE_GENERATION_KEY,
+                    state,
+                    new MemoryCacheEntryOptions().SetPriority(CacheItemPriority.NeverRemove)
+                );
+                return state;
+            }
+        }
+
+        private long AdvanceReportStatisticsCacheGeneration()
+        {
+            return Interlocked.Increment(ref GetReportStatisticsCacheGenerationState().Value);
         }
 
         /// <summary>
@@ -3858,14 +4646,23 @@ namespace BlazorApp.Api.Services.React
                 "分店营业额",
                 missingDates,
                 branchCodes,
-                (service, date) => service.UpdateStoreStatistics(
-                    date,
-                    RequiresAllBranchRefresh(date)
-                        ? null
-                        : branchCodes.Count > 0
-                            ? branchCodes
-                            : null
-                ),
+                async (service, date) =>
+                {
+                    if (StoreStatisticsRefreshTestInterceptor != null)
+                    {
+                        await StoreStatisticsRefreshTestInterceptor(date);
+                        return;
+                    }
+
+                    await service.UpdateStoreStatistics(
+                        date,
+                        RequiresAllBranchRefresh(date)
+                            ? null
+                            : branchCodes.Count > 0
+                                ? branchCodes
+                                : null
+                    );
+                },
                 RequiresAllBranchRefresh
             );
         }
@@ -3895,7 +4692,16 @@ namespace BlazorApp.Api.Services.React
                 "分时营业额",
                 missingDates,
                 new List<string>(),
-                (service, date) => service.UpdateHourlyStatistics(date)
+                async (service, date) =>
+                {
+                    if (HourlyStatisticsRefreshTestInterceptor != null)
+                    {
+                        await HourlyStatisticsRefreshTestInterceptor(date);
+                        return;
+                    }
+
+                    await service.UpdateHourlyStatistics(date);
+                }
             );
         }
 
@@ -3919,18 +4725,23 @@ namespace BlazorApp.Api.Services.React
             var rows = await query
                 .Select(s => new StatisticDateBranchRow { Date = s.Date, BranchCode = s.BranchCode })
                 .ToListAsync();
-            Dictionary<DateTime, int>? expectedBranchCounts = null;
-            if (branchCodes.Count == 0)
+
+            var expectedSalesBranchesByDate = await GetStoreSalesSourceBranchCodesByDateAsync(
+                startDate,
+                endDate,
+                branchCodes
+            );
+            if (expectedSalesBranchesByDate == null)
             {
-                expectedBranchCounts = await GetPosmSalesBranchCountsAsync(startDate, endDate);
-                if (expectedBranchCounts == null)
-                {
-                    // 全分店覆盖无法确认时，保守触发营业额统计重算，避免把部分分店统计误判为完整并写入缓存。
-                    return expectedDates;
-                }
+                // 来源覆盖无法确认时，保守触发营业额统计重算，避免真实销售缺口被隐藏。
+                return expectedDates;
             }
 
-            return GetMissingDatesFromRows(expectedDates, branchCodes, rows, expectedBranchCounts);
+            return GetMissingStoreStatisticDatesFromRows(
+                expectedDates,
+                rows,
+                expectedSalesBranchesByDate
+            );
         }
 
         private async Task<List<DateTime>> GetMissingHourlyStatisticDatesAsync(
@@ -3960,56 +4771,361 @@ namespace BlazorApp.Api.Services.React
                     TotalAmount = s.TotalAmount,
                 })
                 .ToListAsync();
+
+            var expectedSalesBranchesByDate = await GetPosmStoreSalesBranchCodesByDateAsync(
+                startDate,
+                endDate,
+                branchCodes
+            );
+            if (expectedSalesBranchesByDate == null)
+            {
+                // POSM 来源覆盖无法确认时，保守触发重算；不能把局部小时统计误认为完整。
+                return expectedDates;
+            }
+
             return GetMissingHourlyDatesFromRows(
                 expectedDates,
-                branchCodes,
-                rows
+                rows,
+                expectedSalesBranchesByDate
             );
         }
 
-        private async Task<Dictionary<DateTime, int>?> GetPosmSalesBranchCountsAsync(
+        private async Task<Dictionary<DateTime, HashSet<string>>?> GetStoreSalesSourceBranchCodesByDateAsync(
             DateTime startDate,
-            DateTime endDate
+            DateTime endDate,
+            List<string> branchCodes
+        )
+        {
+            startDate = startDate.Date;
+            endDate = endDate.Date;
+            var result = new Dictionary<DateTime, HashSet<string>>();
+
+            // 门店日统计始终聚合 POSM；2025 年还会叠加 HBSales，完整性身份必须取两者并集。
+            var posmCoverage = await GetPosmStoreSalesBranchCodesByDateAsync(
+                startDate,
+                endDate,
+                branchCodes
+            );
+            if (posmCoverage == null)
+                return null;
+            MergeSalesSourceCoverage(result, posmCoverage);
+
+            var hbSalesStart = startDate > new DateTime(2025, 1, 1)
+                ? startDate
+                : new DateTime(2025, 1, 1);
+            var hbSalesEnd = endDate < new DateTime(2025, 12, 31)
+                ? endDate
+                : new DateTime(2025, 12, 31);
+            if (hbSalesStart <= hbSalesEnd)
+            {
+                var hbSalesCoverage = await GetHbSalesStoreSalesBranchCodesByDateAsync(
+                    hbSalesStart,
+                    hbSalesEnd,
+                    branchCodes
+                );
+                if (hbSalesCoverage == null)
+                    return null;
+                MergeSalesSourceCoverage(result, hbSalesCoverage);
+            }
+
+            return result;
+        }
+
+        private Task<Dictionary<DateTime, HashSet<string>>?> GetPosmStoreSalesBranchCodesByDateAsync(
+            DateTime startDate,
+            DateTime endDate,
+            List<string> branchCodes
+        )
+        {
+            return GetCachedSalesSourceCoverageAsync(
+                "POSM",
+                startDate,
+                endDate,
+                branchCodes,
+                async () =>
+                {
+                    PosmStoreSalesCoverageReadTestInterceptor?.Invoke();
+                    var nextDate = endDate.Date.AddDays(1);
+                    var sourceRows = await _posmContext.Db.Queryable<SalesOrder>()
+                        .Where(so =>
+                            so.Status != null
+                            && (so.Status == 1 || so.Status == 4)
+                            && so.OrderTime != null
+                            && so.OrderTime >= startDate.Date
+                            && so.OrderTime < nextDate
+                        )
+                        // 最长 35 天的覆盖检查只需要唯一身份组合，避免把每笔订单拉入应用内存。
+                        .GroupBy(so => new
+                        {
+                            Date = so.OrderTime!.Value.Date,
+                            so.BranchCode,
+                            so.DeviceCode,
+                        })
+                        .Select(so => new StatisticDateBranchDeviceRow
+                        {
+                            Date = so.OrderTime!.Value.Date,
+                            BranchCode = so.BranchCode,
+                            DeviceCode = so.DeviceCode,
+                        })
+                        .ToListAsync();
+                    var deviceBranchMap = await SalesStatisticsProductStoreDailySourceQueries
+                        .LoadDeviceBranchMapAsync(
+                            _posmContext,
+                            sourceRows
+                                .Where(row => string.IsNullOrWhiteSpace(row.BranchCode))
+                                .Select(row => row.DeviceCode)
+                        );
+                    var branchSet = branchCodes
+                        .Where(code => !string.IsNullOrWhiteSpace(code))
+                        .Select(code => code.Trim())
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                    // 与日表及分时统计一致：先用设备映射补齐分店，再应用请求的分店范围。
+                    return sourceRows
+                        .Select(row => new StatisticDateBranchRow
+                        {
+                            Date = row.Date,
+                            BranchCode = SalesStatisticsCodeRules.ResolveBranchCode(
+                                row.BranchCode,
+                                row.DeviceCode,
+                                deviceBranchMap
+                            ),
+                        })
+                        .Where(row =>
+                            !string.IsNullOrWhiteSpace(row.BranchCode)
+                            && (branchSet.Count == 0 || branchSet.Contains(row.BranchCode))
+                        )
+                        .ToList();
+                }
+            );
+        }
+
+        private Task<Dictionary<DateTime, HashSet<string>>?> GetHbSalesStoreSalesBranchCodesByDateAsync(
+            DateTime startDate,
+            DateTime endDate,
+            List<string> branchCodes
+        )
+        {
+            return GetCachedSalesSourceCoverageAsync(
+                "HBSales",
+                startDate,
+                endDate,
+                branchCodes,
+                async () =>
+                {
+                    if (_serviceScopeFactory == null)
+                        throw new InvalidOperationException("HBSales 来源覆盖查询缺少服务作用域");
+
+                    using var scope = _serviceScopeFactory.CreateScope();
+                    var hbSalesContext = scope.ServiceProvider.GetService<HBSalesRecordSqlSugarContext>()
+                        ?? throw new InvalidOperationException("HBSales 来源覆盖查询缺少数据库上下文");
+                    var nextDate = endDate.Date.AddDays(1);
+                    var mainWindowStart = startDate.Date.AddDays(-7);
+                    var mainWindowEnd = nextDate.AddDays(7);
+                    var query = hbSalesContext.Db.Queryable<SalesOrderMain>()
+                        .LeftJoin<SalesOrderDetailRecord>((main, detail) =>
+                            main.B销售单号 == detail.B销售单号
+                        )
+                        .Where((main, detail) =>
+                            detail.B结账日期.HasValue
+                            && detail.B结账日期.Value >= startDate.Date
+                            && detail.B结账日期.Value < nextDate
+                            && main.B结账日期.HasValue
+                            && main.B结账日期.Value >= mainWindowStart
+                            && main.B结账日期.Value < mainWindowEnd
+                            && (main.B单据类型 == null || main.B单据类型.Trim() != "2")
+                            && detail.B分店代码 != null
+                            && detail.B分店代码.Trim() != ""
+                        );
+
+                    if (branchCodes.Count > 0)
+                    {
+                        query = query.Where((main, detail) =>
+                            branchCodes.Contains(detail.B分店代码!.Trim())
+                        );
+                    }
+
+                    return await query
+                        .GroupBy((main, detail) => new
+                        {
+                            Date = detail.B结账日期!.Value.Date,
+                            BranchCode = detail.B分店代码!.Trim(),
+                        })
+                        .Select((main, detail) => new StatisticDateBranchRow
+                        {
+                            Date = detail.B结账日期!.Value.Date,
+                            BranchCode = detail.B分店代码!.Trim(),
+                        })
+                        .ToListAsync();
+                }
+            );
+        }
+
+        private async Task<Dictionary<DateTime, HashSet<string>>?> GetCachedSalesSourceCoverageAsync(
+            string source,
+            DateTime startDate,
+            DateTime endDate,
+            List<string> branchCodes,
+            Func<Task<List<StatisticDateBranchRow>>> readRowsAsync
+        )
+        {
+            var branchKey = branchCodes.Count > 0
+                ? string.Join(",", branchCodes.OrderBy(code => code, StringComparer.OrdinalIgnoreCase))
+                : "ALL";
+            var cacheKey =
+                $"SalesSourceCoverage_{source}_{startDate:yyyyMMdd}_{endDate:yyyyMMdd}_{branchKey}";
+            if (
+                _cache.TryGetValue<Dictionary<DateTime, string[]>>(cacheKey, out var cachedSnapshot)
+                && cachedSnapshot != null
+            )
+            {
+                return CloneSalesSourceCoverage(cachedSnapshot);
+            }
+
+            // 同一 IMemoryCache 代表同一应用实例；跨请求共享 single-flight，避免首屏三个组件同时扫来源明细。
+            var cacheReads = SALES_SOURCE_COVERAGE_READS.GetValue(
+                _cache,
+                _ => new ConcurrentDictionary<
+                    string,
+                    Lazy<Task<Dictionary<DateTime, HashSet<string>>?>>
+                >()
+            );
+            var lazyRead = cacheReads.GetOrAdd(
+                cacheKey,
+                _ => new Lazy<Task<Dictionary<DateTime, HashSet<string>>?>>(
+                    async () =>
+                    {
+                        if (
+                            _cache.TryGetValue<Dictionary<DateTime, string[]>>(
+                                cacheKey,
+                                out var concurrentSnapshot
+                            )
+                            && concurrentSnapshot != null
+                        )
+                        {
+                            return CloneSalesSourceCoverage(concurrentSnapshot);
+                        }
+
+                        try
+                        {
+                            var rows = await readRowsAsync();
+                            var coverage = rows
+                                .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
+                                .GroupBy(row => row.Date.Date)
+                                .ToDictionary(
+                                    group => group.Key,
+                                    group => group
+                                        .Select(row => row.BranchCode!.Trim())
+                                        .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                                );
+                            var snapshot = coverage.ToDictionary(
+                                pair => pair.Key,
+                                pair => pair.Value
+                                    .OrderBy(code => code, StringComparer.OrdinalIgnoreCase)
+                                    .ToArray()
+                            );
+                            _cache.Set(
+                                cacheKey,
+                                snapshot,
+                                new MemoryCacheEntryOptions().SetAbsoluteExpiration(
+                                    SALES_SOURCE_COVERAGE_CACHE_DURATION
+                                )
+                            );
+                            return coverage;
+                        }
+                        catch (Exception ex)
+                        {
+                            // 失败结果绝不进入缓存；下一个请求必须重新尝试并继续 fail closed。
+                            _logger.LogWarning(
+                                ex,
+                                "读取 {Source} 分店销售覆盖范围失败，保守触发营业额统计重算",
+                                source
+                            );
+                            return null;
+                        }
+                    },
+                    LazyThreadSafetyMode.ExecutionAndPublication
+                )
+            );
+
+            try
+            {
+                var coverage = await lazyRead.Value;
+                return coverage == null ? null : CloneSalesSourceCoverage(coverage);
+            }
+            finally
+            {
+                ((ICollection<
+                    KeyValuePair<
+                        string,
+                        Lazy<Task<Dictionary<DateTime, HashSet<string>>?>>
+                    >
+                >)cacheReads).Remove(new KeyValuePair<
+                    string,
+                    Lazy<Task<Dictionary<DateTime, HashSet<string>>?>>
+                >(cacheKey, lazyRead));
+            }
+        }
+
+        private static Dictionary<DateTime, HashSet<string>> CloneSalesSourceCoverage(
+            Dictionary<DateTime, string[]> snapshot
+        )
+        {
+            return snapshot.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value.ToHashSet(StringComparer.OrdinalIgnoreCase)
+            );
+        }
+
+        private static Dictionary<DateTime, HashSet<string>> CloneSalesSourceCoverage(
+            Dictionary<DateTime, HashSet<string>> coverage
+        )
+        {
+            return coverage.ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value.ToHashSet(StringComparer.OrdinalIgnoreCase)
+            );
+        }
+
+        private static void MergeSalesSourceCoverage(
+            Dictionary<DateTime, HashSet<string>> target,
+            Dictionary<DateTime, HashSet<string>> source
+        )
+        {
+            foreach (var (date, branchCodes) in source)
+            {
+                if (!target.TryGetValue(date, out var existing))
+                {
+                    target[date] = branchCodes.ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    continue;
+                }
+
+                existing.UnionWith(branchCodes);
+            }
+        }
+
+        private async Task<HashSet<string>?> GetExpectedExecutiveBranchCodesAsync(
+            DateTime startDate,
+            DateTime endDate,
+            List<string> branchCodes
         )
         {
             try
             {
-                var nextDate = endDate.Date.AddDays(1);
-                var rows = await _posmContext.Db.Queryable<SalesOrder>()
-                    .Where(so =>
-                        so.Status != null
-                        && (so.Status == 1 || so.Status == 4)
-                        && so.OrderTime != null
-                        && so.OrderTime >= startDate
-                        && so.OrderTime < nextDate
-                        && so.BranchCode != null
-                        && so.BranchCode != ""
-                    )
-                    .GroupBy(so => new
-                    {
-                        Date = so.OrderTime!.Value.Date,
-                        so.BranchCode,
-                    })
-                    .Select(so => new StatisticDateBranchRow
-                    {
-                        Date = so.OrderTime!.Value.Date,
-                        BranchCode = so.BranchCode,
-                    })
-                    .ToListAsync();
-
-                return rows
-                    .GroupBy(row => row.Date.Date)
-                    .ToDictionary(
-                        group => group.Key,
-                        group => group
-                            .Select(row => row.BranchCode!)
-                            .Distinct(StringComparer.OrdinalIgnoreCase)
-                            .Count()
-                    );
+                ExpectedExecutiveBranchCodesTestInterceptor?.Invoke();
+                var coverage = await GetStoreSalesSourceBranchCodesByDateAsync(
+                    startDate,
+                    endDate,
+                    branchCodes
+                );
+                return coverage?
+                    .Values.SelectMany(codes => codes)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "读取 POSM 分店销售覆盖范围失败，保守触发全分店营业额统计重算");
+                // Pending 本身仍是权威状态；来源身份读取失败时退回当前快照，避免接口再次失败。
+                _logger.LogWarning(ex, "读取营业额排行预期分店身份失败");
                 return null;
             }
         }
@@ -4085,9 +5201,24 @@ namespace BlazorApp.Api.Services.React
                 }
                 finally
                 {
+                    if (allSucceeded)
+                    {
+                        var generation = AdvanceReportStatisticsCacheGeneration();
+                        _logger.LogInformation(
+                            "{Label}统计自动重算完成，营业额报表缓存切换至代际 {Generation}",
+                            label,
+                            generation
+                        );
+                    }
+
                     foreach (var item in pendingItems)
                     {
                         REPORT_STATISTICS_REFRESHING_KEYS.TryRemove(item.Key, out _);
+                    }
+
+                    if (string.Equals(kind, "store", StringComparison.Ordinal))
+                    {
+                        StoreStatisticsRefreshCompletedTestInterceptor?.Invoke();
                     }
                 }
 
@@ -4105,7 +5236,7 @@ namespace BlazorApp.Api.Services.React
                     : StatisticsRefreshState.Pending;
             }
 
-            // 查询接口最多短等一小段时间；慢重算留给后台继续，避免移动端卡超过 3 秒。
+            // 超过 250ms 后先读取已有快照，刷新状态继续标记为 Pending。
             _logger.LogInformation(
                 "{Label}统计缺失，已触发后台重算: {Dates}",
                 label,
@@ -4187,42 +5318,59 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
         }
 
+        private static List<DateTime> GetMissingStoreStatisticDatesFromRows(
+            List<DateTime> expectedDates,
+            IEnumerable<StatisticDateBranchRow> rows,
+            Dictionary<DateTime, HashSet<string>> expectedSalesBranchesByDate
+        )
+        {
+            var foundBranchesByDate = rows
+                .Where(row =>
+                    !string.IsNullOrWhiteSpace(row.BranchCode)
+                    && !string.Equals(row.BranchCode, "ALL", StringComparison.OrdinalIgnoreCase)
+                )
+                .GroupBy(row => row.Date.Date)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group
+                        .Select(row => row.BranchCode!)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                );
+
+            // 零销售分店不会产生统计行；来源与统计身份必须逐日完全一致。
+            // 即使来源当天为空，也必须识别残留统计行，避免陈旧快照进入长缓存。
+            return expectedDates
+                .Where(date => !expectedSalesBranchesByDate
+                    .GetValueOrDefault(
+                        date,
+                        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                    )
+                    .SetEquals(
+                        foundBranchesByDate.GetValueOrDefault(
+                            date,
+                            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                        )
+                    ))
+                .ToList();
+        }
+
         private static List<DateTime> GetMissingHourlyDatesFromRows(
             List<DateTime> expectedDates,
-            List<string> branchCodes,
             IEnumerable<StatisticDateBranchHourRow> rows,
-            Dictionary<DateTime, int>? expectedBranchCounts = null
+            Dictionary<DateTime, HashSet<string>> expectedSalesBranchesByDate
         )
         {
             var rowList = rows.ToList();
-            var missingDates = GetMissingDatesFromRows(
+            var missingDates = GetMissingStoreStatisticDatesFromRows(
                     expectedDates,
-                    branchCodes,
                     rowList.Select(row => new StatisticDateBranchRow
                     {
                         Date = row.Date,
                         BranchCode = row.BranchCode,
                     }),
-                    expectedBranchCounts
+                    expectedSalesBranchesByDate
                 )
                 .ToHashSet();
-
-            if (branchCodes.Count == 0)
-            {
-                var datesWithStoreRows = rowList
-                    .Where(row =>
-                        !string.IsNullOrWhiteSpace(row.BranchCode)
-                        && !string.Equals(row.BranchCode, "ALL", StringComparison.OrdinalIgnoreCase)
-                    )
-                    .Select(row => row.Date.Date)
-                    .ToHashSet();
-
-                foreach (var date in expectedDates.Where(date => !datesWithStoreRows.Contains(date)))
-                {
-                    // 分时营业额不能把 ALL 汇总行当成真实分店数据。
-                    missingDates.Add(date);
-                }
-            }
 
             foreach (var date in rowList
                          .Where(row =>
@@ -4443,6 +5591,41 @@ namespace BlazorApp.Api.Services.React
             );
         }
 
+        private static bool HasCompleteGrossProfit(
+            int statisticRowCount,
+            int costedRowCount,
+            int grossProfitRowCount
+        )
+        {
+            // SQL SUM 会忽略 NULL；只有所有参与行均具备成本和毛利时，才能对外返回汇总毛利。
+            return statisticRowCount > 0
+                && statisticRowCount == costedRowCount
+                && statisticRowCount == grossProfitRowCount;
+        }
+
+        private static decimal? GetCompleteGrossProfit(
+            decimal? grossProfit,
+            int statisticRowCount,
+            int costedRowCount,
+            int grossProfitRowCount
+        )
+        {
+            return HasCompleteGrossProfit(
+                statisticRowCount,
+                costedRowCount,
+                grossProfitRowCount
+            )
+                ? grossProfit
+                : null;
+        }
+
+        private static decimal? CalculateGrossMarginRate(decimal salesAmount, decimal? grossProfit)
+        {
+            return salesAmount > 0m && grossProfit.HasValue
+                ? grossProfit.Value / salesAmount
+                : null;
+        }
+
         private static string ResolveAustralianSupplierCode(
             string? statisticSupplierCode,
             HashSet<string> chinaSupplierCodes
@@ -4474,6 +5657,10 @@ namespace BlazorApp.Api.Services.React
                 TotalAmount = row.TotalAmount,
                 TotalQuantity = row.TotalQuantity,
                 OrderCount = row.OrderCount,
+                GrossProfit = row.GrossProfit,
+                StatisticRowCount = row.StatisticRowCount,
+                CostedRowCount = row.CostedRowCount,
+                GrossProfitRowCount = row.GrossProfitRowCount,
             });
 
             return preserveDate
@@ -4520,6 +5707,10 @@ namespace BlazorApp.Api.Services.React
                 TotalAmount = row.TotalAmount,
                 TotalQuantity = row.TotalQuantity,
                 OrderCount = row.OrderCount,
+                GrossProfit = row.GrossProfit,
+                StatisticRowCount = row.StatisticRowCount,
+                CostedRowCount = row.CostedRowCount,
+                GrossProfitRowCount = row.GrossProfitRowCount,
             });
         }
 
@@ -4645,6 +5836,230 @@ namespace BlazorApp.Api.Services.React
 
             // 只在快路径查不到商品统计时执行，用于区分“统计未生成”和“POSM 映射缺失”。
             return await query.AnyAsync();
+        }
+
+        private async Task<PagedSalesProductDetailWithDiscountDto> GetEnhancedSalesProductDetailsFastPathAsync(
+            DateTime startDate,
+            DateTime endDate,
+            DateTime? compareStartDate,
+            DateTime? compareEndDate,
+            List<string>? branchCodes,
+            List<string>? localSupplierCodes,
+            int pageIndex,
+            int pageSize,
+            string? productSearch
+        )
+        {
+            var currentStatisticQuery = await BuildProductReportStatisticQueryAsync(
+                startDate,
+                endDate,
+                branchCodes,
+                localSupplierCodes,
+                chinaProductCodes: null,
+                productSearch,
+                chinaSupplierCodes: null
+            );
+            var periodQueries = new List<ISugarQueryable<ProductReportProductAggregateRow>>
+            {
+                BuildProductReportProductAggregateQuery(currentStatisticQuery, period: 0),
+            };
+
+            if (compareStartDate.HasValue && compareEndDate.HasValue)
+            {
+                var compareStatisticQuery = await BuildProductReportStatisticQueryAsync(
+                    compareStartDate.Value,
+                    compareEndDate.Value,
+                    branchCodes,
+                    localSupplierCodes,
+                    chinaProductCodes: null,
+                    productSearch,
+                    chinaSupplierCodes: null
+                );
+                periodQueries.Add(BuildProductReportProductAggregateQuery(compareStatisticQuery, period: 1));
+            }
+
+            // UnionAll 后再按商品码聚合，确保同期独有商品与当前期商品都留在同一个 SQL 分页集合内。
+            var periodAggregateQuery = periodQueries.Count == 1
+                ? periodQueries[0]
+                : _context.Db.UnionAll(periodQueries.ToArray()).MergeTable();
+            var combinedQuery = periodAggregateQuery
+                .GroupBy(row => row.ProductCode)
+                .Select(row => new ProductReportProductCombinedAggregateRow
+                {
+                    ProductCode = row.ProductCode,
+                    CurrentProductName = SqlFunc.AggregateMax(
+                        SqlFunc.IIF(row.Period == 0, row.ProductName, null)
+                    ),
+                    CompareProductName = SqlFunc.AggregateMax(
+                        SqlFunc.IIF(row.Period == 1, row.ProductName, null)
+                    ),
+                    CurrentQuantity = SqlFunc.AggregateSum(
+                        SqlFunc.IIF(row.Period == 0, row.Quantity, 0)
+                    ),
+                    CurrentSalesAmount = SqlFunc.AggregateSum(
+                        SqlFunc.IIF(row.Period == 0, row.SalesAmount, 0m)
+                    ),
+                    CurrentOrderCount = SqlFunc.AggregateSum(
+                        SqlFunc.IIF(row.Period == 0, row.OrderCount, 0)
+                    ),
+                    CurrentGrossProfit = SqlFunc.AggregateSum(
+                        SqlFunc.IIF(row.Period == 0, row.GrossProfit, null)
+                    ),
+                    CurrentStatisticRowCount = SqlFunc.AggregateSum(
+                        SqlFunc.IIF(row.Period == 0, row.StatisticRowCount, 0)
+                    ),
+                    CurrentCostedRowCount = SqlFunc.AggregateSum(
+                        SqlFunc.IIF(row.Period == 0, row.CostedRowCount, 0)
+                    ),
+                    CurrentGrossProfitRowCount = SqlFunc.AggregateSum(
+                        SqlFunc.IIF(row.Period == 0, row.GrossProfitRowCount, 0)
+                    ),
+                    CompareQuantity = SqlFunc.AggregateSum(
+                        SqlFunc.IIF(row.Period == 1, row.Quantity, 0)
+                    ),
+                    CompareSalesAmount = SqlFunc.AggregateSum(
+                        SqlFunc.IIF(row.Period == 1, row.SalesAmount, 0m)
+                    ),
+                    CompareOrderCount = SqlFunc.AggregateSum(
+                        SqlFunc.IIF(row.Period == 1, row.OrderCount, 0)
+                    ),
+                    CompareGrossProfit = SqlFunc.AggregateSum(
+                        SqlFunc.IIF(row.Period == 1, row.GrossProfit, null)
+                    ),
+                    CompareStatisticRowCount = SqlFunc.AggregateSum(
+                        SqlFunc.IIF(row.Period == 1, row.StatisticRowCount, 0)
+                    ),
+                    CompareCostedRowCount = SqlFunc.AggregateSum(
+                        SqlFunc.IIF(row.Period == 1, row.CostedRowCount, 0)
+                    ),
+                    CompareGrossProfitRowCount = SqlFunc.AggregateSum(
+                        SqlFunc.IIF(row.Period == 1, row.GrossProfitRowCount, 0)
+                    ),
+                })
+                .MergeTable();
+            var total = await combinedQuery.CountAsync();
+            var skip = (long)(pageIndex - 1) * pageSize;
+            if (skip >= total || skip >= int.MaxValue)
+            {
+                return new PagedSalesProductDetailWithDiscountDto
+                {
+                    Data = new List<SalesProductDetailWithDiscountDto>(),
+                    Total = total,
+                    PageIndex = pageIndex,
+                    PageSize = pageSize,
+                };
+            }
+
+            var pageRows = await combinedQuery
+                .OrderBy(row => row.CurrentSalesAmount, OrderByType.Desc)
+                .OrderBy(row => row.CompareSalesAmount, OrderByType.Desc)
+                .OrderBy(row => row.ProductCode, OrderByType.Asc)
+                .Skip((int)skip)
+                .Take(pageSize)
+                .ToListAsync();
+            var pageProductCodes = pageRows.Select(row => row.ProductCode).ToList();
+            var products = pageProductCodes.Any()
+                ? await _context
+                    .Db.Queryable<Product>()
+                    .Where(product =>
+                        product.ProductCode != null && pageProductCodes.Contains(product.ProductCode)
+                    )
+                    .Select(product => new ProductInfo
+                    {
+                        ProductCode = product.ProductCode ?? string.Empty,
+                        ItemNumber = product.ItemNumber,
+                        ProductImage = product.ProductImage,
+                    })
+                    .ToListAsync()
+                : new List<ProductInfo>();
+            var productDict = products.ToDictionary(product => product.ProductCode, StringComparer.OrdinalIgnoreCase);
+            var data = pageRows
+                .Select(row =>
+                {
+                    var hasCurrentData = row.CurrentStatisticRowCount > 0;
+                    var hasCompareData = row.CompareStatisticRowCount > 0;
+                    var result = new SalesProductDetailWithDiscountDto
+                    {
+                        ProductCode = row.ProductCode,
+                        ItemNumber = productDict.TryGetValue(row.ProductCode, out var product)
+                            ? product.ItemNumber
+                            : null,
+                        ProductImage = productDict.TryGetValue(row.ProductCode, out var productImage)
+                            ? productImage.ProductImage
+                            : null,
+                        ProductName = row.CurrentProductName ?? row.CompareProductName,
+                        Quantity = row.CurrentQuantity,
+                        DiscountedQuantity = 0,
+                        SalesAmount = row.CurrentSalesAmount,
+                        AverageUnitPrice = row.CurrentQuantity > 0
+                            ? row.CurrentSalesAmount / row.CurrentQuantity
+                            : 0,
+                        AverageOriginalPrice = null,
+                        OrderCount = row.CurrentOrderCount,
+                        GrossProfit = hasCurrentData
+                            ? GetCompleteGrossProfit(
+                                row.CurrentGrossProfit,
+                                row.CurrentStatisticRowCount,
+                                row.CurrentCostedRowCount,
+                                row.CurrentGrossProfitRowCount
+                            )
+                            : null,
+                        QuantityLY = row.CompareQuantity,
+                        DiscountedQuantityLY = 0,
+                        SalesAmountLY = row.CompareSalesAmount,
+                        AverageUnitPriceLY = row.CompareQuantity > 0
+                            ? row.CompareSalesAmount / row.CompareQuantity
+                            : 0,
+                        AverageOriginalPriceLY = null,
+                        OrderCountLY = row.CompareOrderCount,
+                        GrossProfitLY = hasCompareData
+                            ? GetCompleteGrossProfit(
+                                row.CompareGrossProfit,
+                                row.CompareStatisticRowCount,
+                                row.CompareCostedRowCount,
+                                row.CompareGrossProfitRowCount
+                            )
+                            : null,
+                    };
+                    result.GrossMarginRate = CalculateGrossMarginRate(result.SalesAmount, result.GrossProfit);
+                    result.GrossMarginRateLY = CalculateGrossMarginRate(
+                        result.SalesAmountLY,
+                        result.GrossProfitLY
+                    );
+                    return result;
+                })
+                .ToList();
+
+            return new PagedSalesProductDetailWithDiscountDto
+            {
+                Data = data,
+                Total = total,
+                PageIndex = pageIndex,
+                PageSize = pageSize,
+            };
+        }
+
+        private static ISugarQueryable<ProductReportProductAggregateRow> BuildProductReportProductAggregateQuery(
+            ISugarQueryable<ProductStoreDailySalesStatistic> query,
+            int period
+        )
+        {
+            return query
+                .GroupBy(statistic => statistic.ProductCode)
+                .Select(statistic => new ProductReportProductAggregateRow
+                {
+                    ProductCode = statistic.ProductCode,
+                    ProductName = SqlFunc.AggregateMax(statistic.ProductName),
+                    Period = period,
+                    Quantity = SqlFunc.AggregateSum(statistic.TotalQuantity),
+                    SalesAmount = SqlFunc.AggregateSum(statistic.TotalAmount),
+                    OrderCount = SqlFunc.AggregateSum(statistic.OrderCount),
+                    GrossProfit = SqlFunc.AggregateSum(statistic.GrossProfit),
+                    StatisticRowCount = SqlFunc.AggregateCount(statistic.ProductCode),
+                    CostedRowCount = SqlFunc.AggregateCount(statistic.TotalCost),
+                    GrossProfitRowCount = SqlFunc.AggregateCount(statistic.GrossProfit),
+                })
+                .MergeTable();
         }
 
         private async Task<List<ProductReportProductAggregateRow>> QueryProductReportProductAggregatesAsync(
@@ -4906,6 +6321,10 @@ namespace BlazorApp.Api.Services.React
                     Quantity = SqlFunc.AggregateSum(s.TotalQuantity),
                     SalesAmount = SqlFunc.AggregateSum(s.TotalAmount),
                     OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                    GrossProfit = SqlFunc.AggregateSum(s.GrossProfit),
+                    StatisticRowCount = SqlFunc.AggregateCount(s.ProductCode),
+                    CostedRowCount = SqlFunc.AggregateCount(s.TotalCost),
+                    GrossProfitRowCount = SqlFunc.AggregateCount(s.GrossProfit),
                 })
                 .MergeTable()
                 .ToListAsync();
@@ -4927,6 +6346,10 @@ namespace BlazorApp.Api.Services.React
                     Quantity = group.Sum(row => row.Quantity),
                     SalesAmount = group.Sum(row => row.SalesAmount),
                     OrderCount = group.Sum(row => row.OrderCount),
+                    GrossProfit = group.Sum(row => row.GrossProfit ?? 0m),
+                    StatisticRowCount = group.Sum(row => row.StatisticRowCount),
+                    CostedRowCount = group.Sum(row => row.CostedRowCount),
+                    GrossProfitRowCount = group.Sum(row => row.GrossProfitRowCount),
                 })
                 .ToList();
         }
@@ -4963,6 +6386,8 @@ namespace BlazorApp.Api.Services.React
                     TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
                     TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
                     OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                    // 旧供应商统计没有成本快照；计入缺失行，禁止与新日统计混合后伪造完整毛利。
+                    StatisticRowCount = SqlFunc.AggregateCount(s.SupplierCode),
                 })
                 .ToListAsync();
         }
@@ -4999,6 +6424,8 @@ namespace BlazorApp.Api.Services.React
                     TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
                     TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
                     OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                    // 旧供应商统计没有成本快照；计入缺失行，禁止与新日统计混合后伪造完整毛利。
+                    StatisticRowCount = SqlFunc.AggregateCount(s.SupplierCode),
                 })
                 .ToListAsync();
         }
@@ -5036,6 +6463,8 @@ namespace BlazorApp.Api.Services.React
                     TotalAmount = SqlFunc.AggregateSum(s.TotalAmount),
                     TotalQuantity = SqlFunc.AggregateSum(s.TotalQuantity),
                     OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                    // 旧供应商统计没有成本快照；计入缺失行，禁止与新日统计混合后伪造完整毛利。
+                    StatisticRowCount = SqlFunc.AggregateCount(s.SupplierCode),
                 })
                 .ToListAsync();
         }
@@ -5058,6 +6487,10 @@ namespace BlazorApp.Api.Services.React
                     TotalAmount = group.Sum(row => row.TotalAmount),
                     TotalQuantity = group.Sum(row => row.TotalQuantity),
                     OrderCount = group.Sum(row => row.OrderCount ?? 0),
+                    GrossProfit = group.Sum(row => row.GrossProfit ?? 0m),
+                    StatisticRowCount = group.Sum(row => row.StatisticRowCount),
+                    CostedRowCount = group.Sum(row => row.CostedRowCount),
+                    GrossProfitRowCount = group.Sum(row => row.GrossProfitRowCount),
                 })
                 .ToList();
         }
@@ -5082,6 +6515,10 @@ namespace BlazorApp.Api.Services.React
                     TotalAmount = group.Sum(row => row.TotalAmount),
                     TotalQuantity = group.Sum(row => row.TotalQuantity),
                     OrderCount = group.Sum(row => row.OrderCount ?? 0),
+                    GrossProfit = group.Sum(row => row.GrossProfit ?? 0m),
+                    StatisticRowCount = group.Sum(row => row.StatisticRowCount),
+                    CostedRowCount = group.Sum(row => row.CostedRowCount),
+                    GrossProfitRowCount = group.Sum(row => row.GrossProfitRowCount),
                 })
                 .ToList();
         }
@@ -5106,6 +6543,10 @@ namespace BlazorApp.Api.Services.React
                     TotalAmount = row.TotalAmount,
                     TotalQuantity = row.TotalQuantity,
                     OrderCount = row.OrderCount,
+                    GrossProfit = row.GrossProfit,
+                    StatisticRowCount = row.StatisticRowCount,
+                    CostedRowCount = row.CostedRowCount,
+                    GrossProfitRowCount = row.GrossProfitRowCount,
                 })
                 .Where(row => !string.IsNullOrWhiteSpace(row.SupplierCode));
 
@@ -5125,6 +6566,10 @@ namespace BlazorApp.Api.Services.React
                     TotalAmount = group.Sum(row => row.TotalAmount),
                     TotalQuantity = group.Sum(row => row.TotalQuantity),
                     OrderCount = group.Sum(row => row.OrderCount ?? 0),
+                    GrossProfit = group.Sum(row => row.GrossProfit ?? 0m),
+                    StatisticRowCount = group.Sum(row => row.StatisticRowCount),
+                    CostedRowCount = group.Sum(row => row.CostedRowCount),
+                    GrossProfitRowCount = group.Sum(row => row.GrossProfitRowCount),
                     StoreCount = group
                         .Select(row => row.BranchCode)
                         .Where(code => !string.IsNullOrWhiteSpace(code))
@@ -5135,7 +6580,7 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
         }
 
-        private static Dictionary<string, (decimal TotalAmount, int OrderCount)> BuildSupplierCompareDict(
+        private static Dictionary<string, SupplierCompareMetrics> BuildSupplierCompareDict(
             IEnumerable<SupplierBranchAggregateRow> rows,
             IEnumerable<string>? allowedSupplierCodes = null
         )
@@ -5152,22 +6597,33 @@ namespace BlazorApp.Api.Services.React
                 .GroupBy(row => row.SupplierCode.Trim(), StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(
                     group => group.Key,
-                    group => (
+                    group => new SupplierCompareMetrics(
                         group.Sum(row => row.TotalAmount),
-                        group.Sum(row => row.OrderCount ?? 0)
+                        group.Sum(row => row.OrderCount ?? 0),
+                        group.Sum(row => row.GrossProfit ?? 0m),
+                        group.Sum(row => row.StatisticRowCount),
+                        group.Sum(row => row.CostedRowCount),
+                        group.Sum(row => row.GrossProfitRowCount)
                     ),
                     StringComparer.OrdinalIgnoreCase
                 );
         }
 
-        private static Dictionary<string, (decimal TotalAmount, int OrderCount)> BuildSupplierBranchCompareDict(
+        private static Dictionary<string, SupplierCompareMetrics> BuildSupplierBranchCompareDict(
             IEnumerable<SupplierBranchAggregateRow> rows
         )
         {
             return AggregateSupplierBranchRows(rows)
                 .ToDictionary(
                     row => $"{row.BranchCode}|{row.SupplierCode}",
-                    row => (row.TotalAmount, row.OrderCount ?? 0),
+                    row => new SupplierCompareMetrics(
+                        row.TotalAmount,
+                        row.OrderCount ?? 0,
+                        row.GrossProfit,
+                        row.StatisticRowCount,
+                        row.CostedRowCount,
+                        row.GrossProfitRowCount
+                    ),
                     StringComparer.OrdinalIgnoreCase
                 );
         }
@@ -5323,6 +6779,32 @@ namespace BlazorApp.Api.Services.React
                 s => s.StoreCode ?? string.Empty,
                 s => s.StoreName ?? string.Empty
             );
+        }
+
+        private async Task<Dictionary<string, string>> GetActiveStoreNameMapAsync()
+        {
+            var stores = await _context
+                .Db.Queryable<Store>()
+                .Where(store =>
+                    store.IsActive == true
+                    && store.IsDeleted == false
+                    && store.StoreCode != null
+                    && store.StoreCode != ""
+                )
+                .Select(store => new { store.StoreCode, store.StoreName })
+                .ToListAsync();
+
+            return stores
+                .Where(store => !string.IsNullOrWhiteSpace(store.StoreCode))
+                .GroupBy(store => store.StoreCode!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group
+                        .Select(store => store.StoreName)
+                        .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
+                        ?? group.Key,
+                    StringComparer.OrdinalIgnoreCase
+                );
         }
 
         /// <summary>
@@ -5849,11 +7331,11 @@ namespace BlazorApp.Api.Services.React
                             SalesAmount = x.SalesAmount,
                             TotalCost = x.TotalCost,
                             GrossProfit = x.GrossProfit,
-                    GrossMarginRate = x.SalesAmount > 0m && x.GrossProfit.HasValue
+                            GrossMarginRate = x.SalesAmount > 0m && x.GrossProfit.HasValue
                         ? x.GrossProfit.Value / x.SalesAmount
                         : null,
-                    CostSource = x.CostSource,
-                })
+                            CostSource = x.CostSource,
+                        })
                         .ToList()
                 );
 
@@ -6019,6 +7501,123 @@ namespace BlazorApp.Api.Services.React
                         x.Select(row => row.ProductName).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))
                     )
                 );
+        }
+
+        /// <summary>
+        /// 只读获取商品日分店统计完整性。调用此方法不会触发统计聚合。
+        /// </summary>
+        public async Task<ProductReportStatisticStatusDto> GetProductReportStatisticStatusAsync(
+            DateRangeDto dateRange
+        )
+        {
+            ValidateDateRange(dateRange);
+            var currentStatus = await GetProductStatisticStatusAsync(
+                dateRange.StartDate.Date,
+                dateRange.EndDate.Date
+            );
+            var status = currentStatus;
+            if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+            {
+                var compareStatus = await GetProductStatisticStatusAsync(
+                    dateRange.CompareStartDate.Value.Date,
+                    dateRange.CompareEndDate.Value.Date
+                );
+                status = MergeProductStatisticStatus(currentStatus, compareStatus);
+            }
+            return new ProductReportStatisticStatusDto
+            {
+                StatisticStatus = status.Status,
+                StatisticMessage = GetPublicProductStatisticMessage(status.Status),
+                StatisticUpdatedAt = status.UpdatedAt,
+                CacheVersion = status.CacheVersion,
+            };
+        }
+
+        private static string? GetPublicProductStatisticMessage(string status)
+        {
+            if (string.Equals(status, SalesStatisticRefreshStatus.Fresh, StringComparison.OrdinalIgnoreCase))
+                return null;
+            if (string.Equals(status, SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase))
+                return "商品统计处理失败，请稍后重试。";
+            if (string.Equals(status, SalesStatisticRefreshStatus.Stale, StringComparison.OrdinalIgnoreCase))
+                return "商品统计等待更新。";
+            return "商品统计尚未准备完成。";
+        }
+
+        private static ProductStatisticStatusSnapshot MergeProductStatisticStatus(
+            ProductStatisticStatusSnapshot currentStatus,
+            ProductStatisticStatusSnapshot compareStatus
+        )
+        {
+            var cacheVersionSource = $"current:{currentStatus.CacheVersion}|compare:{compareStatus.CacheVersion}";
+            var cacheVersion = Convert.ToHexString(
+                SHA256.HashData(Encoding.UTF8.GetBytes(cacheVersionSource))
+            );
+            // 同期水位只要有一段不可解释，就不能声称整体水位可解释；两段都有时取最旧值。
+            DateTime? updatedAt = currentStatus.UpdatedAt.HasValue && compareStatus.UpdatedAt.HasValue
+                ? new[] { currentStatus.UpdatedAt.Value, compareStatus.UpdatedAt.Value }.Min()
+                : null;
+
+            if (
+                string.Equals(currentStatus.Status, SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(compareStatus.Status, SalesStatisticRefreshStatus.Failed, StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                return new ProductStatisticStatusSnapshot(
+                    SalesStatisticRefreshStatus.Failed,
+                    "商品统计处理失败，请稍后重试。",
+                    cacheVersion,
+                    updatedAt
+                );
+            }
+
+            if (
+                string.Equals(currentStatus.Status, SalesStatisticRefreshStatus.Stale, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(compareStatus.Status, SalesStatisticRefreshStatus.Stale, StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                return new ProductStatisticStatusSnapshot(
+                    SalesStatisticRefreshStatus.Stale,
+                    "商品统计等待更新。",
+                    cacheVersion,
+                    updatedAt
+                );
+            }
+
+            if (!IsProductStatisticSnapshotFresh(currentStatus) || !IsProductStatisticSnapshotFresh(compareStatus))
+            {
+                return new ProductStatisticStatusSnapshot(
+                    SalesStatisticRefreshStatus.Pending,
+                    "商品统计尚未准备完成。",
+                    cacheVersion,
+                    updatedAt
+                );
+            }
+
+            return new ProductStatisticStatusSnapshot(
+                SalesStatisticRefreshStatus.Fresh,
+                null,
+                cacheVersion,
+                updatedAt
+            );
+        }
+
+        private static bool IsProductStatisticSnapshotFresh(ProductStatisticStatusSnapshot status)
+        {
+            return string.Equals(
+                status.Status,
+                SalesStatisticRefreshStatus.Fresh,
+                StringComparison.OrdinalIgnoreCase
+            );
+        }
+
+        private static bool IsProductStatisticFresh(ProductReportStatisticStatusDto status)
+        {
+            return string.Equals(
+                status.StatisticStatus,
+                SalesStatisticRefreshStatus.Fresh,
+                StringComparison.OrdinalIgnoreCase
+            );
         }
 
         private async Task<ProductStatisticStatusSnapshot> GetProductStatisticStatusAsync(

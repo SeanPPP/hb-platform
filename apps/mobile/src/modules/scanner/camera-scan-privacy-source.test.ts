@@ -10,7 +10,7 @@ const productMaintenanceApiSource = readFileSync(
   "utf8"
 );
 const productQuerySource = readFileSync(
-  join(__dirname, "../../../app/(tabs)/product-query.tsx"),
+  join(__dirname, "../../../app/(shell)/product-query.tsx"),
   "utf8"
 );
 

@@ -1,17 +1,25 @@
-// 侧栏：登录/退出、门店选择、供应商授权、采购周期混排/筛选/分页、zh/en 切换
+// 侧栏：网站会话连接、门店选择、供应商授权、采购周期混排/筛选/分页、zh/en 切换
 import { resolveInitialLocale, t } from '../lib/i18n.js';
 import { normalizeApiOrigin, toApiHostPattern } from '../lib/api-origin.js';
 import { createGenerationGuard } from '../lib/dats-state.js';
 import { selectVisibleSupplierEntries } from '../lib/supplier-list.js';
-import { getPendingLocateChange } from '../lib/storage-compat.js';
+import { getPendingLocateChange, matchesStorageArea } from '../lib/storage-compat.js';
+import { createSingleFlight } from '../lib/session-handoff.js';
 import {
+  beginRankingLoad,
   buildProductImageCandidates,
   formatAverageSellingPrice,
+  formatSalesRankBand,
   normalizeRankingDays,
+  normalizeRankingPageSize,
   normalizeSupplierOptions,
   normalizeStoreOptions,
-  paginateRanking,
+  normalizeTopSalesPage,
+  resolveRankingRetryTarget,
+  resolveRankingViewState,
+  restoreRankingLoad,
   shouldPreserveManualSupplier,
+  transitionRankingPagination,
 } from '../lib/ranking.js';
 import {
   normalizeCycles,
@@ -34,6 +42,8 @@ function getPreferredLanguages() {
 
 let locale = resolveInitialLocale(null, getPreferredLanguages());
 let user = null;
+let authState = 'checking';
+let authReason = null;
 let profiles = [];
 let storeOptions = [];
 let selectedStoreCode = null;
@@ -45,9 +55,13 @@ let currentSupplier = null;
 let activeView = 'ranking';
 let rankingDays = 60;
 let rankingPage = 1;
+let rankingPageSize = 50;
 let rankingData = null;
+let rankingLegacyItems = null;
 let rankingApiOrigin = null;
 let rankingLoading = false;
+let rankingError = null;
+let rankingRetryTarget = null;
 let apiOrigin = null;
 let defaultApiOrigin = null;
 let localApiOrigin = null;
@@ -73,15 +87,37 @@ function formatMessage(key, values = {}) {
   );
 }
 
+function renderRankingPercentLabels() {
+  const percent = rankingData?.topPercent === 10 ? 10 : 30;
+  el('rankingTab').textContent = formatMessage('rankingTab', { percent });
+  el('rankingTitle').textContent = formatMessage('rankingTitle', { percent });
+  el('rankingBadge').textContent = `TOP ${percent}%`;
+}
+
+function scrollRankingToTop() {
+  const prefersReducedMotion = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  el('rankingTitle').scrollIntoView({
+    block: 'start',
+    behavior: prefersReducedMotion ? 'auto' : 'smooth',
+  });
+}
+
+function announceRankingPage() {
+  el('rankingAnnouncement').textContent = formatMessage('rankingPageChanged', {
+    page: rankingData?.page ?? rankingPage,
+    totalPages: rankingData?.totalPages ?? 0,
+  });
+}
+
 function applyI18n() {
   document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en';
   document.title = t(locale, 'title');
   el('pageTitle').textContent = t(locale, 'title');
-  el('loginBtn').textContent = t(locale, 'login');
-  el('logoutBtn').textContent = t(locale, 'logout');
+  el('openShopBtn').textContent = t(locale, 'openShop');
+  el('recheckBtn').textContent = t(locale, 'recheckSession');
+  el('connectedTitle').textContent = t(locale, 'sessionConnectedTitle');
+  el('disconnectBtn').textContent = t(locale, 'disconnectExtension');
   el('storeSaveBtn').textContent = t(locale, 'save');
-  el('username').placeholder = t(locale, 'username');
-  el('password').placeholder = t(locale, 'password');
   el('apiTitle').textContent = t(locale, 'apiTitle');
   el('apiRemoteBtn').textContent = t(locale, 'apiRemote');
   el('apiLocalBtn').textContent = t(locale, 'apiLocal');
@@ -89,16 +125,16 @@ function applyI18n() {
   el('apiOriginInput').placeholder = t(locale, 'apiPlaceholder');
   el('apiOriginInput').setAttribute('aria-label', t(locale, 'apiTitle'));
   el('apiOriginHint').textContent = t(locale, 'apiHint');
-  el('username').setAttribute('aria-label', t(locale, 'username'));
-  el('password').setAttribute('aria-label', t(locale, 'password'));
   el('storeLabel').textContent = t(locale, 'store');
   el('storeEmpty').textContent = t(locale, 'noPosStore');
   el('supplierTitle').textContent = t(locale, 'supplier');
   el('historyTab').textContent = t(locale, 'historyTab');
-  el('rankingTab').textContent = t(locale, 'rankingTab');
-  el('rankingTitle').textContent = t(locale, 'rankingTitle');
+  renderRankingPercentLabels();
   el('rankingSupplierLabel').textContent = t(locale, 'rankingSupplier');
   el('rankingPeriodLabel').textContent = t(locale, 'rankingPeriod');
+  el('rankingPageSizeLabel').textContent = t(locale, 'rankingPageSize');
+  el('rankingRetryBtn').textContent = t(locale, 'rankingRetry');
+  el('rankingLegacyHint').textContent = t(locale, 'rankingLegacyHint');
   document.querySelectorAll('[data-ranking-days]').forEach((button) => {
     button.textContent = `${button.dataset.rankingDays} ${t(locale, 'days')}`;
   });
@@ -124,13 +160,34 @@ function renderApiSettings() {
 }
 
 function renderAuth() {
-  const loggedIn = !!user;
-  el('authSection').hidden = loggedIn;
-  el('userSection').hidden = !loggedIn;
-  el('storeSection').hidden = !loggedIn;
-  el('supplierSection').hidden = !loggedIn;
-  if (loggedIn) {
-    el('userInfo').textContent = (user.username || user.name || user.displayName) || t(locale, 'title');
+  const connected = authState === 'connected' && !!user;
+  const authSection = el('authSection');
+  authSection.hidden = connected;
+  authSection.classList.toggle('checking', authState === 'checking');
+  authSection.classList.toggle('needs-website', authState === 'needsWebsite');
+  el('userSection').hidden = !connected;
+  el('storeSection').hidden = !connected;
+  el('supplierSection').hidden = !connected;
+  el('openShopBtn').disabled = authState === 'checking';
+  el('recheckBtn').disabled = authState === 'checking';
+
+  if (authState === 'checking') {
+    el('authStatusTitle').textContent = t(locale, 'sessionCheckingTitle');
+    el('authStatusDescription').textContent = t(locale, 'sessionCheckingDescription');
+  } else {
+    el('authStatusTitle').textContent = t(locale, 'sessionNeedsWebsiteTitle');
+    el('authStatusDescription').textContent = authReason === 'API_ORIGIN_MISMATCH'
+      ? t(locale, 'apiOriginMismatch')
+      : t(locale, 'sessionNeedsWebsiteDescription');
+  }
+
+  if (connected) {
+    el('userInfo').textContent = (
+      user.fullName
+      || user.username
+      || user.name
+      || user.displayName
+    ) || t(locale, 'title');
   }
 }
 
@@ -277,8 +334,11 @@ function attachImageCandidates(image, placeholder, item) {
 
 function renderRanking() {
   const visible = !!user && activeView === 'ranking';
-  el('rankingSection').hidden = !visible;
+  const section = el('rankingSection');
+  section.hidden = !visible;
   if (!visible) return;
+  section.setAttribute('aria-busy', String(rankingLoading));
+  renderRankingPercentLabels();
 
   el('rankingSupplier').textContent = currentSupplier
     ? `${currentSupplier.displayName || currentSupplier.supplierCode} (${currentSupplier.supplierCode})`
@@ -303,20 +363,38 @@ function renderRanking() {
   supplierSelect.disabled = supplierOptions.length === 0;
   if (currentSupplier) supplierSelect.value = currentSupplier.supplierCode;
   document.querySelectorAll('[data-ranking-days]').forEach((button) => {
-    button.classList.toggle('active', Number(button.dataset.rankingDays) === rankingDays);
+    const active = Number(button.dataset.rankingDays) === rankingDays;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
   });
+  const pageSizeSelect = el('rankingPageSizeSelect');
+  pageSizeSelect.value = String(rankingPageSize);
+  pageSizeSelect.disabled = rankingLoading;
 
   const list = el('rankingList');
   list.replaceChildren();
   const items = rankingData && Array.isArray(rankingData.items) ? rankingData.items : [];
-  const pagedItems = paginateRanking(items, rankingPage);
-  rankingPage = pagedItems.page;
   const hasSupplier = !!currentSupplier;
-  const empty = !rankingLoading && items.length === 0;
-  el('rankingEmpty').hidden = !empty;
-  el('rankingEmpty').textContent = hasSupplier
-    ? t(locale, 'rankingNoData')
-    : t(locale, 'rankingNoSupplier');
+  const state = el('rankingState');
+  const stateText = el('rankingStateText');
+  const retry = el('rankingRetryBtn');
+  let message = '';
+  const viewState = resolveRankingViewState({
+    hasSupplier,
+    loading: rankingLoading,
+    error: rankingError,
+    totalRankedCount: rankingData?.totalRankedCount,
+  });
+  if (viewState === 'no-supplier') message = t(locale, 'rankingNoSupplier');
+  else if (viewState === 'loading') message = t(locale, 'rankingLoading');
+  else if (viewState === 'error') message = t(locale, 'rankingLoadFailed');
+  else if (viewState === 'empty') message = t(locale, 'rankingNoData');
+  state.hidden = !message;
+  stateText.textContent = message;
+  state.setAttribute('aria-live', rankingError ? 'assertive' : 'polite');
+  state.title = rankingError || '';
+  retry.hidden = !rankingError;
+  el('rankingLegacyHint').hidden = rankingData?.mode !== 'legacy';
 
   if (rankingData) {
     const scope = formatMessage('rankingScope', {
@@ -331,7 +409,7 @@ function renderRanking() {
     el('rankingScope').textContent = '';
   }
 
-  for (const item of pagedItems.items) {
+  for (const item of items) {
     const li = document.createElement('li');
     li.className = 'ranking-item';
 
@@ -354,8 +432,20 @@ function renderRanking() {
 
     const product = document.createElement('div');
     product.className = 'ranking-product';
+    const nameRow = document.createElement('div');
+    nameRow.className = 'ranking-name-row';
     const name = document.createElement('strong');
     name.textContent = item.productName || item.itemNumber || item.productCode || '—';
+    nameRow.appendChild(name);
+    const rankBand = item.salesRankBand || (rankingData?.mode === 'legacy' ? 'top-10' : null);
+    const rankBandLabel = formatSalesRankBand(rankBand);
+    if (rankBandLabel) {
+      const band = document.createElement('span');
+      band.className = 'ranking-band';
+      band.classList.add(`ranking-band-${rankBand}`);
+      band.textContent = rankBandLabel;
+      nameRow.appendChild(band);
+    }
     const codeRow = document.createElement('div');
     codeRow.className = 'ranking-code-row';
     const code = document.createElement('span');
@@ -369,7 +459,7 @@ function renderRanking() {
     copy.setAttribute('aria-label', `${t(locale, 'copy')} ${code.textContent}`);
     copy.addEventListener('click', () => copyText(code.textContent, copy));
     codeRow.append(code, copy);
-    product.append(name, codeRow);
+    product.append(nameRow, codeRow);
 
     const metrics = document.createElement('div');
     metrics.className = 'ranking-metrics';
@@ -397,13 +487,18 @@ function renderRanking() {
     list.appendChild(li);
   }
 
-  const showPager = !rankingLoading && items.length > 0;
+  // 翻页失败时继续展示旧商品，但隐藏与新 pageSize 偏好不一致的旧分页元数据；只保留“重试”入口。
+  const showPager = !rankingError && (rankingData?.totalRankedCount ?? 0) > 0;
   el('rankingPager').hidden = !showPager;
   el('rankingPageInfo').textContent = showPager
-    ? `${t(locale, 'page')} ${pagedItems.page} / ${pagedItems.totalPages} · ${pagedItems.pageSize}`
+    ? formatMessage('rankingPageSummary', {
+      page: rankingData.page,
+      totalPages: rankingData.totalPages,
+      total: rankingData.totalRankedCount,
+    })
     : '';
-  el('rankingPrevBtn').disabled = pagedItems.page <= 1;
-  el('rankingNextBtn').disabled = pagedItems.page >= pagedItems.totalPages;
+  el('rankingPrevBtn').disabled = rankingLoading || !showPager || rankingData.page <= 1;
+  el('rankingNextBtn').disabled = rankingLoading || !showPager || rankingData.page >= rankingData.totalPages;
 }
 
 function renderItem() {
@@ -526,7 +621,10 @@ async function loadActiveSupplier() {
   rankingRequestGeneration.advance();
   currentSupplier = detectedSupplier;
   rankingData = null;
+  rankingLegacyItems = null;
   rankingLoading = false;
+  rankingError = null;
+  rankingRetryTarget = null;
   rankingPage = 1;
   return true;
 }
@@ -543,7 +641,10 @@ function selectSupplier(supplierCode, { manual = false } = {}) {
   if (changed) {
     rankingRequestGeneration.advance();
     rankingData = null;
+    rankingLegacyItems = null;
     rankingLoading = false;
+    rankingError = null;
+    rankingRetryTarget = null;
     rankingPage = 1;
   }
   return changed;
@@ -567,39 +668,153 @@ function scheduleActiveSupplierRefresh() {
   }, 120);
 }
 
-async function loadRanking() {
+function renderLegacyRankingPage({ scrollOnSuccess = false } = {}) {
+  if (!rankingLegacyItems) return false;
+  const normalized = normalizeTopSalesPage(
+    {
+      topPercent: 10,
+      supplierCode: rankingData?.supplierCode,
+      days: rankingData?.days,
+      totalProductCount: rankingData?.totalProductCount,
+      totalRankedCount: rankingLegacyItems.length,
+      items: rankingLegacyItems,
+    },
+    {
+      requestedPage: rankingPage,
+      requestedPageSize: rankingPageSize,
+      requestedSupplierCode: currentSupplier?.supplierCode,
+      requestedDays: rankingDays,
+    },
+  );
+  rankingData = { ...rankingData, ...normalized };
+  rankingPage = normalized.page;
+  rankingPageSize = normalized.pageSize;
+  rankingError = null;
+  rankingRetryTarget = null;
+  renderRanking();
+  if (scrollOnSuccess) {
+    scrollRankingToTop();
+    announceRankingPage();
+  }
+  return true;
+}
+
+async function loadRanking({ clear = rankingData == null, scrollOnSuccess = false } = {}) {
   if (!currentSupplier) await loadActiveSupplier();
   if (!currentSupplier) {
     rankingData = null;
+    rankingLegacyItems = null;
     rankingLoading = false;
+    rankingError = null;
+    rankingRetryTarget = null;
     setStatus('');
     render();
-    return;
+    return false;
   }
 
   const requestGeneration = rankingRequestGeneration.advance();
   const requestedSupplierCode = currentSupplier.supplierCode;
-  rankingLoading = true;
-  rankingData = null;
-  rankingPage = 1;
-  setStatus(t(locale, 'loading'));
-  renderRanking();
-  const response = await send({
-    type: 'SUPPLIER_TOP_SALES',
+  const requestedPage = rankingPage;
+  const requestedPageSize = rankingPageSize;
+  const requestedRankingDays = rankingDays;
+  const requestTarget = {
     supplierCode: requestedSupplierCode,
-    days: rankingDays,
-  });
-  if (!rankingRequestGeneration.isCurrent(requestGeneration)) return;
-  rankingLoading = false;
-  if (!response || !response.ok) {
-    setStatus((response && response.error) || t(locale, 'error'));
-    renderRanking();
-    return;
-  }
-  rankingData = response.data || null;
-  rankingApiOrigin = response.apiOrigin || apiOrigin;
+    days: requestedRankingDays,
+    page: requestedPage,
+    pageSize: requestedPageSize,
+  };
+  rankingRetryTarget = null;
+  const rankingLoad = beginRankingLoad({
+    page: requestedPage,
+    pageSize: requestedPageSize,
+    data: rankingData,
+    legacyItems: rankingLegacyItems,
+  }, { clear });
+  const previousRankingState = rankingLoad.checkpoint;
+  rankingPage = rankingLoad.state.page;
+  rankingPageSize = rankingLoad.state.pageSize;
+  rankingData = rankingLoad.state.data;
+  rankingLegacyItems = rankingLoad.state.legacyItems;
+  rankingLoading = rankingLoad.state.loading;
+  rankingError = rankingLoad.state.error;
+  if (clear) el('rankingAnnouncement').textContent = '';
   setStatus('');
   renderRanking();
+  let response;
+  try {
+    response = await send({
+      type: 'SUPPLIER_TOP_SALES',
+      supplierCode: requestedSupplierCode,
+      days: requestedRankingDays,
+      topPercent: 30,
+      page: requestedPage,
+      pageSize: requestedPageSize,
+    });
+  } catch (error) {
+    response = { ok: false, error: String((error && error.message) || error) };
+  }
+  if (!rankingRequestGeneration.isCurrent(requestGeneration)) return false;
+  rankingLoading = false;
+  if (!response || !response.ok) {
+    const error = (response && response.error) || t(locale, 'rankingLoadFailed');
+    if (clear) {
+      rankingData = null;
+      rankingLegacyItems = null;
+      rankingError = error;
+    } else {
+      const restored = restoreRankingLoad(previousRankingState, error);
+      rankingPage = restored.page;
+      rankingPageSize = restored.pageSize;
+      rankingData = restored.data;
+      rankingLegacyItems = restored.legacyItems;
+      rankingLoading = restored.loading;
+      rankingError = restored.error;
+    }
+    rankingRetryTarget = requestTarget;
+    renderRanking();
+    return false;
+  }
+  try {
+    const rawData = response.data || {};
+    const normalized = normalizeTopSalesPage(rawData, {
+      requestedPage,
+      requestedPageSize,
+      requestedSupplierCode,
+      requestedDays: requestedRankingDays,
+    });
+    rankingData = { ...rawData, ...normalized };
+    rankingLegacyItems = normalized.mode === 'legacy' && Array.isArray(rawData.items)
+      ? rawData.items
+      : null;
+    rankingPage = normalized.page;
+    rankingPageSize = normalized.pageSize;
+  } catch (error) {
+    if (clear) {
+      rankingData = null;
+      rankingLegacyItems = null;
+      rankingError = String((error && error.message) || error);
+    } else {
+      const restored = restoreRankingLoad(previousRankingState, error);
+      rankingPage = restored.page;
+      rankingPageSize = restored.pageSize;
+      rankingData = restored.data;
+      rankingLegacyItems = restored.legacyItems;
+      rankingLoading = restored.loading;
+      rankingError = restored.error;
+    }
+    rankingRetryTarget = requestTarget;
+    renderRanking();
+    return false;
+  }
+  rankingApiOrigin = response.apiOrigin || apiOrigin;
+  rankingRetryTarget = null;
+  setStatus('');
+  renderRanking();
+  if (scrollOnSuccess) {
+    scrollRankingToTop();
+    announceRankingPage();
+  }
+  return true;
 }
 
 async function loadItem(item) {
@@ -636,11 +851,82 @@ async function loadItem(item) {
   renderItem();
 }
 
+function resetAuthenticatedData() {
+  itemRequestGeneration.advance();
+  rankingRequestGeneration.advance();
+  activeSupplierRequestGeneration.advance();
+  user = null;
+  profiles = [];
+  storeOptions = [];
+  timeline = [];
+  rankingData = null;
+  rankingLegacyItems = null;
+  currentSupplier = null;
+  manuallySelectedSupplierCode = null;
+  lastDetectedSupplierCode = null;
+  rankingPage = 1;
+  rankingLoading = false;
+  rankingError = null;
+  rankingRetryTarget = null;
+  if (activeSupplierRefreshTimer != null) {
+    clearTimeout(activeSupplierRefreshTimer);
+    activeSupplierRefreshTimer = null;
+  }
+}
+
+const connectFromWebsiteSession = createSingleFlight(async ({ loadView = false } = {}) => {
+  authState = 'checking';
+  authReason = null;
+  setStatus('');
+  render();
+
+  const response = await send({ type: 'CURRENT' });
+  if (!response?.ok || !response.user) {
+    resetAuthenticatedData();
+    authState = 'needsWebsite';
+    authReason = response?.reason || 'WEBSITE_SESSION_REQUIRED';
+    setStatus(authReason === 'API_ORIGIN_MISMATCH'
+      ? t(locale, 'apiOriginMismatch')
+      : response?.error || '');
+    render();
+    return false;
+  }
+
+  user = response.user;
+  authState = 'connected';
+  await loadProfiles();
+  await loadStores();
+  await loadActiveSupplier();
+  setStatus('');
+  render();
+
+  if (loadView) {
+    if (currentItem) await loadItem(currentItem);
+    else if (activeView === 'ranking') await loadRanking();
+  }
+  return true;
+});
+
 async function init() {
-  const stored = await chrome.storage.local.get(['locale', 'selectedStoreCode']);
+  const stored = await chrome.storage.local.get([
+    'locale',
+    'selectedStoreCode',
+    'salesRankingDays',
+    'salesRankingPageSize',
+  ]);
   locale = resolveInitialLocale(stored.locale, getPreferredLanguages());
-  if (stored.locale !== locale) {
-    await chrome.storage.local.set({ locale });
+  rankingDays = normalizeRankingDays(stored.salesRankingDays);
+  rankingPageSize = normalizeRankingPageSize(stored.salesRankingPageSize);
+  const normalizedPreferences = {};
+  if (stored.locale !== locale) normalizedPreferences.locale = locale;
+  if (stored.salesRankingDays !== rankingDays) {
+    normalizedPreferences.salesRankingDays = rankingDays;
+  }
+  if (stored.salesRankingPageSize !== rankingPageSize) {
+    normalizedPreferences.salesRankingPageSize = rankingPageSize;
+  }
+  if (Object.keys(normalizedPreferences).length > 0) {
+    await chrome.storage.local.set(normalizedPreferences);
   }
   applyI18n();
   selectedStoreCode = stored.selectedStoreCode || null;
@@ -652,22 +938,13 @@ async function init() {
     localApiOrigin = apiConfig.localApiOrigin;
   }
 
-  const cur = await send({ type: 'CURRENT' });
-  if (cur && cur.ok && cur.user) {
-    user = cur.user;
-  }
-
-  await loadProfiles();
-  if (user) {
-    await loadStores();
-    await loadActiveSupplier();
-  }
+  const connected = await connectFromWebsiteSession();
 
   const { pendingLocate } = await chrome.storage.session.get('pendingLocate');
-  if (pendingLocate) {
+  if (connected && pendingLocate) {
     await chrome.storage.session.remove('pendingLocate');
     await loadItem(pendingLocate);
-  } else if (user && activeView === 'ranking') {
+  } else if (connected && activeView === 'ranking') {
     await loadRanking();
   }
 
@@ -705,24 +982,16 @@ async function applyApiOrigin(value) {
 
   apiOrigin = response.apiOrigin;
   if (response.changed) {
-    itemRequestGeneration.advance();
-    rankingRequestGeneration.advance();
-    activeSupplierRequestGeneration.advance();
-    user = null;
-    profiles = [];
-    storeOptions = [];
-    timeline = [];
-    rankingData = null;
-    currentSupplier = null;
-    manuallySelectedSupplierCode = null;
-    lastDetectedSupplierCode = null;
-    rankingPage = 1;
-    el('password').value = '';
+    resetAuthenticatedData();
+    authState = 'checking';
+    authReason = null;
     setStatus(t(locale, 'apiSwitched'));
+    render();
+    await connectFromWebsiteSession({ loadView: true });
   } else {
     setStatus(t(locale, 'apiSaved'));
+    render();
   }
-  render();
 }
 
 el('localeBtn').addEventListener('click', async () => {
@@ -749,52 +1018,31 @@ el('apiOriginInput').addEventListener('keydown', (event) => {
   void applyApiOrigin(el('apiOriginInput').value);
 });
 
-el('loginBtn').addEventListener('click', async () => {
-  const username = el('username').value.trim();
-  const password = el('password').value;
-  if (!username || !password) {
-    setStatus(t(locale, 'emptyCredentials'));
+el('openShopBtn').addEventListener('click', async () => {
+  authState = 'checking';
+  authReason = null;
+  setStatus('');
+  render();
+  const response = await send({ type: 'OPEN_HB_SHOP' });
+  if (response?.connected) {
+    await connectFromWebsiteSession({ loadView: true });
     return;
   }
-  setStatus(t(locale, 'loading'));
-  const res = await send({ type: 'LOGIN', username, password });
-  if (res && res.ok) {
-    user = res.user || null;
-    el('password').value = '';
-    const cur = await send({ type: 'CURRENT' });
-    if (cur && cur.ok && cur.user) {
-      user = cur.user;
-    }
-    await loadProfiles();
-    await loadStores();
-    await loadActiveSupplier();
-    setStatus('');
-    if (currentItem) await loadItem(currentItem);
-    else if (activeView === 'ranking') await loadRanking();
-  } else {
-    setStatus((res && res.error) || t(locale, 'error'));
-  }
+  authState = 'needsWebsite';
+  authReason = response?.reason || 'WEBSITE_TAB_REQUIRED';
+  setStatus(response?.ok ? '' : response?.error || t(locale, 'error'));
   render();
 });
 
-el('logoutBtn').addEventListener('click', async () => {
-  itemRequestGeneration.advance();
-  rankingRequestGeneration.advance();
-  activeSupplierRequestGeneration.advance();
-  user = null;
-  if (activeSupplierRefreshTimer != null) {
-    clearTimeout(activeSupplierRefreshTimer);
-    activeSupplierRefreshTimer = null;
-  }
-  await send({ type: 'LOGOUT' });
-  activeSupplierRequestGeneration.advance();
-  storeOptions = [];
-  timeline = [];
-  rankingData = null;
-  currentSupplier = null;
-  manuallySelectedSupplierCode = null;
-  lastDetectedSupplierCode = null;
-  rankingPage = 1;
+el('recheckBtn').addEventListener('click', () => {
+  void connectFromWebsiteSession({ loadView: true });
+});
+
+el('disconnectBtn').addEventListener('click', async () => {
+  await send({ type: 'DISCONNECT' });
+  resetAuthenticatedData();
+  authState = 'needsWebsite';
+  authReason = 'WEBSITE_SESSION_REQUIRED';
   setStatus('');
   render();
 });
@@ -844,25 +1092,72 @@ document.querySelectorAll('[data-ranking-days]').forEach((button) => {
   button.addEventListener('click', async () => {
     const nextDays = normalizeRankingDays(button.dataset.rankingDays);
     if (nextDays === rankingDays && rankingData) return;
+    rankingRequestGeneration.advance();
     rankingDays = nextDays;
-    rankingPage = 1;
-    await loadRanking();
+    rankingRetryTarget = null;
+    ({ page: rankingPage, pageSize: rankingPageSize } = transitionRankingPagination(
+      { page: rankingPage, pageSize: rankingPageSize },
+      { type: 'context' },
+    ));
+    await chrome.storage.local.set({ salesRankingDays: rankingDays });
+    await loadRanking({ clear: true });
   });
 });
 
-el('rankingPrevBtn').addEventListener('click', () => {
-  if (rankingPage > 1) {
-    rankingPage--;
-    renderRanking();
+el('rankingPageSizeSelect').addEventListener('change', async () => {
+  const nextPageSize = normalizeRankingPageSize(el('rankingPageSizeSelect').value);
+  if (nextPageSize === rankingPageSize) return;
+  ({ page: rankingPage, pageSize: rankingPageSize } = transitionRankingPagination(
+    { page: rankingPage, pageSize: rankingPageSize },
+    { type: 'page-size', pageSize: nextPageSize },
+  ));
+  // 页大小是用户偏好，不应因为本次网络请求失败而在侧栏重开后丢失。
+  await chrome.storage.local.set({ salesRankingPageSize: rankingPageSize });
+  if (!renderLegacyRankingPage({ scrollOnSuccess: true })) {
+    // pageSize 改变会重定义页码边界，按上下文切换处理，避免复用旧分页元数据。
+    await loadRanking({ clear: true, scrollOnSuccess: true });
   }
 });
 
-el('rankingNextBtn').addEventListener('click', () => {
-  const items = rankingData && Array.isArray(rankingData.items) ? rankingData.items : [];
-  const current = paginateRanking(items, rankingPage);
-  if (rankingPage < current.totalPages) {
-    rankingPage++;
-    renderRanking();
+el('rankingRetryBtn').addEventListener('click', async () => {
+  const retryTarget = resolveRankingRetryTarget(rankingRetryTarget, {
+    supplierCode: currentSupplier?.supplierCode,
+    days: rankingDays,
+  });
+  if (retryTarget) {
+    rankingPage = retryTarget.page;
+    rankingPageSize = retryTarget.pageSize;
+  }
+  const loaded = await loadRanking({
+    clear: rankingData == null,
+    scrollOnSuccess: rankingData != null,
+  });
+  if (loaded && retryTarget) {
+    await chrome.storage.local.set({ salesRankingPageSize: rankingPageSize });
+  }
+});
+
+el('rankingPrevBtn').addEventListener('click', async () => {
+  if (rankingPage > 1) {
+    ({ page: rankingPage, pageSize: rankingPageSize } = transitionRankingPagination(
+      { page: rankingPage, pageSize: rankingPageSize },
+      { type: 'page', page: rankingPage - 1 },
+    ));
+    if (!renderLegacyRankingPage({ scrollOnSuccess: true })) {
+      await loadRanking({ clear: false, scrollOnSuccess: true });
+    }
+  }
+});
+
+el('rankingNextBtn').addEventListener('click', async () => {
+  if (rankingData && rankingPage < rankingData.totalPages) {
+    ({ page: rankingPage, pageSize: rankingPageSize } = transitionRankingPagination(
+      { page: rankingPage, pageSize: rankingPageSize },
+      { type: 'page', page: rankingPage + 1 },
+    ));
+    if (!renderLegacyRankingPage({ scrollOnSuccess: true })) {
+      await loadRanking({ clear: false, scrollOnSuccess: true });
+    }
   }
 });
 
@@ -888,6 +1183,55 @@ el('nextBtn').addEventListener('click', () => {
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (matchesStorageArea(areaName, 'local')) {
+    let rankingContextChanged = false;
+    let rankingPageSizeChanged = false;
+    if (changes.salesRankingDays) {
+      const nextDays = normalizeRankingDays(changes.salesRankingDays.newValue);
+      if (nextDays !== rankingDays) {
+        rankingDays = nextDays;
+        rankingContextChanged = true;
+      }
+    }
+    if (changes.salesRankingPageSize) {
+      const nextPageSize = normalizeRankingPageSize(changes.salesRankingPageSize.newValue);
+      if (nextPageSize !== rankingPageSize) {
+        rankingPageSize = nextPageSize;
+        rankingPageSizeChanged = true;
+      }
+    }
+    if (rankingContextChanged || rankingPageSizeChanged) {
+      rankingRequestGeneration.advance();
+      rankingPage = 1;
+      rankingError = null;
+      if (rankingContextChanged) {
+        rankingData = null;
+        rankingLegacyItems = null;
+        rankingRetryTarget = null;
+      }
+      if (user && activeView === 'ranking' && currentSupplier) {
+        const renderedLegacyPage = !rankingContextChanged && renderLegacyRankingPage();
+        if (!renderedLegacyPage) {
+          void loadRanking({
+            clear: rankingContextChanged || rankingPageSizeChanged || rankingData == null,
+          });
+        }
+      }
+      else render();
+    }
+  }
+
+  const tokenChange = areaName === 'session' ? changes.websiteAccessToken : null;
+  if (tokenChange?.newValue && authState !== 'connected') {
+    void connectFromWebsiteSession({ loadView: true });
+  } else if (tokenChange?.oldValue && !tokenChange.newValue) {
+    resetAuthenticatedData();
+    authState = 'needsWebsite';
+    authReason = 'WEBSITE_SESSION_REQUIRED';
+    setStatus('');
+    render();
+  }
+
   const item = getPendingLocateChange(changes, areaName);
   if (!item) return;
   void chrome.storage.session

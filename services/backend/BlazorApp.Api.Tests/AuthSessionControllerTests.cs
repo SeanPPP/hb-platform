@@ -313,6 +313,31 @@ public sealed class AuthSessionControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task SessionRefresh_WhenConcurrentRotationLoses_DoesNotClearWinnerCookies()
+    {
+        var authService = new Mock<IAuthService>();
+        authService
+            .Setup(service =>
+                service.RefreshTokensAsync(
+                    It.IsAny<HttpContext>(),
+                    It.IsAny<string>(),
+                    It.IsAny<string>()
+                )
+            )
+            .ReturnsAsync((TokenResponse?)null);
+
+        var controller = CreateController(authService.Object);
+        controller.ControllerContext.HttpContext.Request.Headers.Cookie =
+            "access_token=expired-access; refresh_token=already-consumed";
+
+        var result = await InvokeAsync(controller, "SessionRefresh");
+
+        Assert.NotNull(result);
+        Assert.False(GetBoolean(result!, "Success"));
+        Assert.False(controller.Response.Headers.ContainsKey("Set-Cookie"));
+    }
+
+    [Fact]
     public async Task SessionLogout_RevokesRefreshTokenFromCookie()
     {
         var authService = new Mock<IAuthService>();

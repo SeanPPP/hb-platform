@@ -467,7 +467,6 @@ namespace BlazorApp.Api.Services.React
                 var added = 0;
                 var updated = 0;
                 var errors = 0;
-
                 var existingInvoices = await _localContext
                     .Db.Queryable<StoreLocalSupplierInvoice>()
                     .Select(x => x.InvoiceGUID)
@@ -664,12 +663,7 @@ namespace BlazorApp.Api.Services.React
                 var added = 0;
                 var updated = 0;
                 var errors = 0;
-
-                var existingContainers = await _localContext
-                    .Db.Queryable<Container>()
-                    .Select(x => x.ContainerCode)
-                    .ToListAsync();
-                var existingCodes = new HashSet<string>(existingContainers);
+                var busyErrors = 0;
 
                 for (var page = 1; page <= pages; page++)
                 {
@@ -691,16 +685,41 @@ namespace BlazorApp.Api.Services.React
                         .Map<List<Container>>(batch)
                         .Where(x => !string.IsNullOrWhiteSpace(x.ContainerCode))
                         .ToList();
-
-                    var toInsert = localBatch
-                        .Where(x => !existingCodes.Contains(x.ContainerCode!))
+                    var affectedContainerCodes = localBatch
+                        .Select(container => container.ContainerCode)
+                        .Where(containerCode => !string.IsNullOrWhiteSpace(containerCode))
+                        .Select(containerCode => containerCode!)
                         .ToList();
-                    var toUpdate = localBatch
-                        .Where(x => existingCodes.Contains(x.ContainerCode!))
-                        .ToList();
+                    if (affectedContainerCodes.Count == 0)
+                    {
+                        continue;
+                    }
 
                     try
                     {
+                        await _localContext.Db.Ado.BeginTranAsync();
+                        var mutationLock = await ContainerMutationLock.AcquireContainersAsync(
+                            _localContext.Db,
+                            affectedContainerCodes
+                        );
+                        mutationLock.EnsureCovers(
+                            localBatch.Select(container => container.ContainerCode)
+                        );
+                        var existingCodes = (
+                            await _localContext.Db.Queryable<Container>()
+                                .Where(container =>
+                                    affectedContainerCodes.Contains(container.ContainerCode)
+                                )
+                                .Select(container => container.ContainerCode)
+                                .ToListAsync()
+                        ).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        var toInsert = localBatch
+                            .Where(x => !existingCodes.Contains(x.ContainerCode!))
+                            .ToList();
+                        var toUpdate = localBatch
+                            .Where(x => existingCodes.Contains(x.ContainerCode!))
+                            .ToList();
+
                         if (toUpdate.Any())
                         {
                             await _localContext
@@ -708,7 +727,6 @@ namespace BlazorApp.Api.Services.React
                                 .AS("Container")
                                 .PageSize(writePageSize)
                                 .BulkUpdateAsync(toUpdate);
-                            updated += toUpdate.Count;
                         }
 
                         if (toInsert.Any())
@@ -718,8 +736,11 @@ namespace BlazorApp.Api.Services.React
                                 .AS("Container")
                                 .PageSize(writePageSize)
                                 .BulkCopyAsync(toInsert);
-                            added += toInsert.Count;
                         }
+
+                        await _localContext.Db.Ado.CommitTranAsync();
+                        updated += toUpdate.Count;
+                        added += toInsert.Count;
 
                         _logger.LogInformation(
                             "[ReactSync] 货柜增量页{Page}: 插入{Inserted}, 更新{Updated}",
@@ -728,16 +749,18 @@ namespace BlazorApp.Api.Services.React
                             toUpdate.Count
                         );
 
-                        foreach (
-                            var c in localBatch.Where(x =>
-                                !string.IsNullOrWhiteSpace(x.ContainerCode)
-                            )
-                        )
-                            existingCodes.Add(c.ContainerCode!);
                     }
                     catch (Exception ex)
                     {
+                        await RollbackContainerMutationTransactionSafelyAsync(
+                            _localContext.Db,
+                            ex
+                        );
                         errors++;
+                        if (ContainerMutationLock.TryResolveConflict(ex, out _))
+                        {
+                            busyErrors++;
+                        }
                         _logger.LogError(
                             ex,
                             "[ReactSync] 货柜增量页{Page}出错: {Error}",
@@ -755,6 +778,11 @@ namespace BlazorApp.Api.Services.React
                 result.AddedCount = added;
                 result.UpdatedCount = updated;
                 result.ErrorCount = errors;
+                result.BusyErrorCount = busyErrors;
+                result.ErrorCode =
+                    busyErrors > 0 && busyErrors == errors
+                        ? ContainerMutationLock.BusyErrorCode
+                        : null;
 
                 if (result.IsSuccess)
                 {
@@ -773,6 +801,12 @@ namespace BlazorApp.Api.Services.React
                 await _taskLogService.LogTaskFailureAsync(taskLog.Id, ex.Message);
                 result.IsSuccess = false;
                 result.Message = $"同步失败: {ex.Message}";
+                if (ContainerMutationLock.TryResolveConflict(ex, out _))
+                {
+                    result.ErrorCount = Math.Max(result.ErrorCount, 1);
+                    result.BusyErrorCount = result.ErrorCount;
+                    result.ErrorCode = ContainerMutationLock.BusyErrorCode;
+                }
                 return result;
             }
         }
@@ -863,12 +897,7 @@ namespace BlazorApp.Api.Services.React
                 var added = 0;
                 var updated = 0;
                 var errors = 0;
-
-                var existingDetails = await _localContext
-                    .Db.Queryable<ContainerDetail>()
-                    .Select(x => x.DetailCode)
-                    .ToListAsync();
-                var existingGuids = new HashSet<string>(existingDetails);
+                var busyErrors = 0;
 
                 for (var page = 1; page <= pages; page++)
                 {
@@ -890,16 +919,56 @@ namespace BlazorApp.Api.Services.React
                         .Map<List<ContainerDetail>>(batch)
                         .Where(x => !string.IsNullOrWhiteSpace(x.ContainerCode))
                         .ToList();
-
-                    var toInsert = localBatch
-                        .Where(x => !existingGuids.Contains(x.DetailCode!))
+                    var detailCodes = localBatch
+                        .Select(detail => detail.DetailCode)
+                        .Where(detailCode => !string.IsNullOrWhiteSpace(detailCode))
+                        .Select(detailCode => detailCode!)
                         .ToList();
-                    var toUpdate = localBatch
-                        .Where(x => existingGuids.Contains(x.DetailCode!))
+                    var existingContainerCodes = detailCodes.Count == 0
+                        ? new List<string>()
+                        : await _localContext.Db.Queryable<ContainerDetail>()
+                            .Where(detail => detailCodes.Contains(detail.DetailCode))
+                            .Where(detail => detail.ContainerCode != null)
+                            .Select(detail => detail.ContainerCode!)
+                            .ToListAsync();
+                    var affectedContainerCodes = localBatch
+                        .Select(detail => detail.ContainerCode)
+                        .Where(containerCode => !string.IsNullOrWhiteSpace(containerCode))
+                        .Select(containerCode => containerCode!)
+                        .Concat(existingContainerCodes)
                         .ToList();
+                    if (affectedContainerCodes.Count == 0)
+                    {
+                        continue;
+                    }
 
                     try
                     {
+                        await _localContext.Db.Ado.BeginTranAsync();
+                        var mutationLock = await ContainerMutationLock.AcquireContainersAsync(
+                            _localContext.Db,
+                            affectedContainerCodes
+                        );
+                        mutationLock.EnsureCovers(
+                            localBatch.Select(detail => detail.ContainerCode)
+                        );
+                        var lockedExistingDetails = await _localContext.Db
+                            .Queryable<ContainerDetail>()
+                                .Where(detail => detailCodes.Contains(detail.DetailCode))
+                                .ToListAsync();
+                        mutationLock.EnsureCovers(
+                            lockedExistingDetails.Select(detail => detail.ContainerCode)
+                        );
+                        var existingGuids = lockedExistingDetails
+                            .Select(detail => detail.DetailCode)
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        var toInsert = localBatch
+                            .Where(x => !existingGuids.Contains(x.DetailCode!))
+                            .ToList();
+                        var toUpdate = localBatch
+                            .Where(x => existingGuids.Contains(x.DetailCode!))
+                            .ToList();
+
                         if (toUpdate.Any())
                         {
                             await _localContext
@@ -907,7 +976,6 @@ namespace BlazorApp.Api.Services.React
                                 .AS("ContainerDetail")
                                 .PageSize(writePageSize)
                                 .BulkUpdateAsync(toUpdate);
-                            updated += toUpdate.Count;
                         }
 
                         if (toInsert.Any())
@@ -917,8 +985,11 @@ namespace BlazorApp.Api.Services.React
                                 .AS("ContainerDetail")
                                 .PageSize(writePageSize)
                                 .BulkCopyAsync(toInsert);
-                            added += toInsert.Count;
                         }
+
+                        await _localContext.Db.Ado.CommitTranAsync();
+                        updated += toUpdate.Count;
+                        added += toInsert.Count;
 
                         _logger.LogInformation(
                             "[ReactSync] 货柜详情增量页{Page}: 插入{Inserted}, 更新{Updated}",
@@ -927,14 +998,18 @@ namespace BlazorApp.Api.Services.React
                             toUpdate.Count
                         );
 
-                        foreach (
-                            var d in localBatch.Where(x => !string.IsNullOrWhiteSpace(x.DetailCode))
-                        )
-                            existingGuids.Add(d.DetailCode!);
                     }
                     catch (Exception ex)
                     {
+                        await RollbackContainerMutationTransactionSafelyAsync(
+                            _localContext.Db,
+                            ex
+                        );
                         errors++;
+                        if (ContainerMutationLock.TryResolveConflict(ex, out _))
+                        {
+                            busyErrors++;
+                        }
                         _logger.LogError(
                             ex,
                             "[ReactSync] 货柜详情增量页{Page}出错: {Error}",
@@ -952,6 +1027,11 @@ namespace BlazorApp.Api.Services.React
                 result.AddedCount = added;
                 result.UpdatedCount = updated;
                 result.ErrorCount = errors;
+                result.BusyErrorCount = busyErrors;
+                result.ErrorCode =
+                    busyErrors > 0 && busyErrors == errors
+                        ? ContainerMutationLock.BusyErrorCode
+                        : null;
 
                 if (result.IsSuccess)
                 {
@@ -970,7 +1050,39 @@ namespace BlazorApp.Api.Services.React
                 await _taskLogService.LogTaskFailureAsync(taskLog.Id, ex.Message);
                 result.IsSuccess = false;
                 result.Message = $"同步失败: {ex.Message}";
+                if (ContainerMutationLock.TryResolveConflict(ex, out _))
+                {
+                    result.ErrorCount = Math.Max(result.ErrorCount, 1);
+                    result.BusyErrorCount = result.ErrorCount;
+                    result.ErrorCode = ContainerMutationLock.BusyErrorCode;
+                }
                 return result;
+            }
+        }
+
+        private async Task RollbackContainerMutationTransactionSafelyAsync(
+            ISqlSugarClient db,
+            Exception originalException
+        )
+        {
+            if (db.Ado.Transaction == null)
+            {
+                return;
+            }
+
+            try
+            {
+                await db.Ado.RollbackTranAsync();
+            }
+            catch (Exception rollbackException)
+            {
+                // 页级回滚失败不能覆盖原始锁冲突，否则汇总结果会丢失正确错误码。
+                ContainerMutationLock.ResetFailedTransaction(db);
+                _logger.LogWarning(
+                    rollbackException,
+                    "货柜增量同步事务回滚失败，保留原始异常 {OriginalExceptionType}",
+                    originalException.GetType().Name
+                );
             }
         }
 

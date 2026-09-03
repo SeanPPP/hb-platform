@@ -1,0 +1,200 @@
+using BlazorApp.Api.Controllers.React;
+using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.Constants;
+using BlazorApp.Shared.DTOs;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
+using Xunit;
+
+namespace BlazorApp.Api.Tests;
+
+public sealed class ReactContainerControllerConcurrencyContractTests
+{
+    [Fact]
+    public void 批量分类必须同时要求货柜编辑和POS商品管理权限()
+    {
+        var method = typeof(ReactContainerController).GetMethod(
+            nameof(ReactContainerController.AssignCategoryByScope)
+        );
+
+        Assert.NotNull(method);
+        var policies = method!.GetCustomAttributes(typeof(AuthorizeAttribute), inherit: true)
+            .Cast<AuthorizeAttribute>()
+            .Select(attribute => attribute.Policy)
+            .ToList();
+
+        Assert.Contains(Permissions.Container.Edit, policies);
+        Assert.Contains(Permissions.PosProducts.Manage, policies);
+    }
+
+    [Fact]
+    public async Task 批量预览权限必须按操作匹配_删除用户无需货柜编辑权限()
+    {
+        var service = new Mock<IContainerReactService>();
+        service
+            .Setup(item => item.PreviewBatchActionAsync("C-1", It.IsAny<ContainerDetailBatchPreviewRequestDto>()))
+            .ReturnsAsync(new ContainerDetailBatchPreviewResultDto());
+        var authorization = CreateAuthorizationService(Permissions.Container.Delete);
+        var controller = CreateController(service.Object, authorization.Object);
+
+        var result = await controller.PreviewContainerDetailBatchAction(
+            "C-1",
+            new ContainerDetailBatchPreviewRequestDto { Operation = "delete-details" }
+        );
+
+        Assert.IsType<OkObjectResult>(result);
+        authorization.Verify(item => item.AuthorizeAsync(
+            It.IsAny<System.Security.Claims.ClaimsPrincipal>(),
+            null,
+            Permissions.Container.Delete
+        ), Times.Once);
+        authorization.Verify(item => item.AuthorizeAsync(
+            It.IsAny<System.Security.Claims.ClaimsPrincipal>(),
+            null,
+            Permissions.Container.Edit
+        ), Times.Never);
+    }
+
+    [Fact]
+    public async Task 批量分类预览必须同时通过货柜编辑和POS商品管理权限()
+    {
+        var service = new Mock<IContainerReactService>(MockBehavior.Strict);
+        var authorization = CreateAuthorizationService(Permissions.Container.Edit);
+        var controller = CreateController(service.Object, authorization.Object);
+
+        var result = await controller.PreviewContainerDetailBatchAction(
+            "C-1",
+            new ContainerDetailBatchPreviewRequestDto { Operation = "assign-category" }
+        );
+
+        Assert.IsType<ForbidResult>(result);
+        authorization.Verify(item => item.AuthorizeAsync(
+            It.IsAny<System.Security.Claims.ClaimsPrincipal>(),
+            null,
+            Permissions.PosProducts.Manage
+        ), Times.Once);
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task 批量预览过期_所有新版执行入口均返回稳定409错误码()
+    {
+        var service = new Mock<IContainerReactService>();
+        service
+            .Setup(item => item.ApplyFloatRateByScopeAsync("C-1", It.IsAny<ContainerDetailApplyFloatRateRequestDto>()))
+            .ThrowsAsync(new ContainerDetailBatchPreviewConflictException("预览已过期"));
+        service
+            .Setup(item => item.ApplyPricesByScopeAsync("C-1", It.IsAny<ContainerDetailApplyPricesRequestDto>()))
+            .ThrowsAsync(new ContainerDetailBatchPreviewConflictException("预览已过期"));
+        service
+            .Setup(item => item.RecalculateCostsByScopeAsync("C-1", It.IsAny<ContainerDetailBatchScopeDto>()))
+            .ThrowsAsync(new ContainerDetailBatchPreviewConflictException("预览已过期"));
+        service
+            .Setup(item => item.BackfillLastPricesByScopeAsync("C-1", It.IsAny<ContainerDetailBatchScopeDto>()))
+            .ThrowsAsync(new ContainerDetailBatchPreviewConflictException("预览已过期"));
+        service
+            .Setup(item => item.BatchDeleteDetailsScopedAsync("C-1", It.IsAny<ContainerDetailBatchScopeDto>()))
+            .ThrowsAsync(new ContainerDetailBatchPreviewConflictException("预览已过期"));
+        service
+            .Setup(item => item.SetStatusByScopeAsync("C-1", It.IsAny<ContainerDetailSetStatusRequestDto>()))
+            .ThrowsAsync(new ContainerDetailBatchPreviewConflictException("预览已过期"));
+        service
+            .Setup(item => item.AssignCategoryByScopeAsync("C-1", It.IsAny<ContainerDetailAssignCategoryRequestDto>()))
+            .ThrowsAsync(new ContainerDetailBatchPreviewConflictException("预览已过期"));
+        var controller = CreateController(service.Object);
+
+        var responses = new IActionResult[]
+        {
+            await controller.ApplyFloatRateByScope("C-1", new ContainerDetailApplyFloatRateRequestDto { FloatRate = 1.3m }),
+            await controller.ApplyPricesByScope("C-1", new ContainerDetailApplyPricesRequestDto { ImportPrice = 1m }),
+            await controller.RecalculateCostsByScope("C-1", new ContainerDetailBatchScopeDto()),
+            await controller.BackfillLastPricesByScope("C-1", new ContainerDetailBatchScopeDto()),
+            await controller.BatchDeleteDetailsScoped("C-1", new ContainerDetailBatchScopeDto()),
+            await controller.SetStatusByScope("C-1", new ContainerDetailSetStatusRequestDto { IsActive = true }),
+            await controller.AssignCategoryByScope("C-1", new ContainerDetailAssignCategoryRequestDto()),
+        };
+
+        foreach (var response in responses)
+        {
+            var conflict = Assert.IsType<ConflictObjectResult>(response);
+            Assert.Equal(
+                ContainerDetailBatchPreviewConflictException.ErrorCode,
+                ReadProperty<string>(conflict.Value!, "code")
+            );
+        }
+    }
+
+    [Fact]
+    public async Task 旧版明细写入缺少字段令牌_返回稳定428错误码()
+    {
+        var service = new Mock<IContainerReactService>();
+        service
+            .Setup(item => item.BatchUpdateDetailsDetailedAsync(It.IsAny<List<UpdateContainerDetailDto>>()))
+            .ThrowsAsync(new ContainerDetailConcurrencyTokenRequiredException());
+        var controller = CreateController(service.Object);
+
+        var response = await controller.BatchUpdateDetails(
+            new List<UpdateContainerDetailDto> { new() { HGUID = "D-1", 进口价格 = 1m } }
+        );
+
+        var required = Assert.IsType<ObjectResult>(response);
+        Assert.Equal(StatusCodes.Status428PreconditionRequired, required.StatusCode);
+        Assert.Equal(
+            ContainerDetailConcurrencyTokenRequiredException.ErrorCode,
+            ReadProperty<string>(required.Value!, "code")
+        );
+    }
+
+    private static ReactContainerController CreateController(
+        IContainerReactService service,
+        IAuthorizationService? authorizationService = null
+    )
+    {
+        var controller = new ReactContainerController(
+            service,
+            Mock.Of<IContainerAllocationSalesReportService>(),
+            Mock.Of<IContainerHqSyncService>(),
+            new ContainerExportService(NullLogger<ContainerExportService>.Instance, new HttpClient()),
+            authorizationService ?? Mock.Of<IAuthorizationService>(),
+            new MemoryCache(new MemoryCacheOptions()),
+            NullLogger<ReactContainerController>.Instance
+        );
+        controller.ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() };
+        return controller;
+    }
+
+    private static Mock<IAuthorizationService> CreateAuthorizationService(
+        params string[] allowedPermissions
+    )
+    {
+        var allowed = allowedPermissions.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorization
+            .Setup(item => item.AuthorizeAsync(
+                It.IsAny<System.Security.Claims.ClaimsPrincipal>(),
+                It.IsAny<object?>(),
+                It.IsAny<string>()
+            ))
+            .ReturnsAsync((
+                System.Security.Claims.ClaimsPrincipal _,
+                object? _,
+                string policy
+            ) => allowed.Contains(policy)
+                ? AuthorizationResult.Success()
+                : AuthorizationResult.Failed());
+        return authorization;
+    }
+
+    private static T ReadProperty<T>(object value, string propertyName)
+    {
+        var property = value.GetType().GetProperty(propertyName);
+        Assert.NotNull(property);
+        return Assert.IsType<T>(property!.GetValue(value));
+    }
+}

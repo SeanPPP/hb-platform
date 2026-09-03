@@ -7,10 +7,13 @@ import type {
   DeviceActivationManageableStore,
   DeviceActivationStatus,
   DeviceActivationSystem,
+  MobileDeviceActivationCodeCreatePayload,
+  MobileDeviceActivationManageableAccount,
 } from '../types/deviceActivationCode'
 import request, { unwrapApiData } from '../utils/request'
 
 const API_BASE = '/api/react/v1/device-activation-codes'
+const MOBILE_API_BASE = '/api/react/v1/mobile-device-activation-codes'
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -90,6 +93,9 @@ export function normalizeDeviceActivationCodeSummary(
     consumptionKind,
     previousStoreCode: asNullableString(pick(raw, 'previousStoreCode', 'PreviousStoreCode')),
     previousDeviceCode: asNullableString(pick(raw, 'previousDeviceCode', 'PreviousDeviceCode')),
+    targetUserGuid: asNullableString(pick(raw, 'targetUserGuid', 'TargetUserGuid')),
+    targetUsername: asNullableString(pick(raw, 'targetUsername', 'TargetUsername')),
+    targetFullName: asNullableString(pick(raw, 'targetFullName', 'TargetFullName')),
   }
 }
 
@@ -130,6 +136,17 @@ export async function getDeviceActivationCodes(params: {
   return normalizeDeviceActivationCodeListResponse(unwrapApiData(response))
 }
 
+export async function getMobileDeviceActivationCodes(params: {
+  page: number
+  pageSize: number
+  storeCode?: string
+  deviceSystem?: DeviceActivationSystem
+  status?: DeviceActivationStatus
+}): Promise<DeviceActivationCodePagedResult> {
+  const response = await request.get<ApiResponse<unknown>>(MOBILE_API_BASE, { params })
+  return normalizeDeviceActivationCodeListResponse(unwrapApiData(response))
+}
+
 export async function getDeviceActivationManageableStores(): Promise<DeviceActivationManageableStore[]> {
   const response = await request.get<ApiResponse<unknown>>(`${API_BASE}/manageable-stores`)
   const data = unwrapApiData(response)
@@ -140,6 +157,42 @@ export async function getDeviceActivationManageableStores(): Promise<DeviceActiv
     const storeCode = raw ? asString(pick(raw, 'storeCode', 'StoreCode')) : undefined
     const storeName = raw ? asString(pick(raw, 'storeName', 'StoreName')) : undefined
     return storeCode && storeName ? [{ storeCode, storeName }] : []
+  })
+}
+
+export async function getMobileDeviceActivationManageableStores(): Promise<DeviceActivationManageableStore[]> {
+  const response = await request.get<ApiResponse<unknown>>(`${MOBILE_API_BASE}/manageable-stores`)
+  const data = unwrapApiData(response)
+  if (!Array.isArray(data)) return []
+
+  return data.flatMap((value) => {
+    const raw = asRecord(value)
+    const storeCode = raw ? asString(pick(raw, 'storeCode', 'StoreCode')) : undefined
+    const storeName = raw ? asString(pick(raw, 'storeName', 'StoreName')) : undefined
+    return storeCode && storeName ? [{ storeCode, storeName }] : []
+  })
+}
+
+export async function getMobileDeviceActivationManageableAccounts(
+  storeCode: string,
+): Promise<MobileDeviceActivationManageableAccount[]> {
+  const response = await request.get<ApiResponse<unknown>>(`${MOBILE_API_BASE}/manageable-accounts`, {
+    params: { storeCode },
+  })
+  const data = unwrapApiData(response)
+  if (!Array.isArray(data)) return []
+
+  return data.flatMap((value) => {
+    const raw = asRecord(value)
+    if (!raw) return []
+    const userGuid = asString(pick(raw, 'userGuid', 'UserGuid'))
+    const username = asString(pick(raw, 'username', 'Username'))
+    if (!userGuid || !username) return []
+    return [{
+      userGuid,
+      username,
+      fullName: asNullableString(pick(raw, 'fullName', 'FullName')),
+    }]
   })
 }
 
@@ -163,6 +216,26 @@ export async function createDeviceActivationCode(
   return { grant, activationCode }
 }
 
+export async function createMobileDeviceActivationCode(
+  payload: MobileDeviceActivationCodeCreatePayload,
+): Promise<DeviceActivationCodeCreateResponse> {
+  const response = await request.post<ApiResponse<unknown>>(MOBILE_API_BASE, {
+    ...payload,
+    reason: payload.reason.trim(),
+  })
+  const data = asRecord(unwrapApiData(response))
+  const grant = normalizeDeviceActivationCodeSummary(
+    data ? pick(data, 'grant', 'Grant') ?? data : null,
+  )
+  const activationCode = data
+    ? asString(pick(data, 'activationCode', 'ActivationCode'))
+    : undefined
+  if (!grant || !activationCode || !grant.targetUserGuid || !grant.targetUsername) {
+    throw new Error('移动端设备开通码创建响应无效')
+  }
+  return { grant, activationCode }
+}
+
 export async function revokeDeviceActivationCode(
   grantId: string,
   reason: string,
@@ -174,6 +247,20 @@ export async function revokeDeviceActivationCode(
   const grant = normalizeDeviceActivationCodeSummary(unwrapApiData(response))
   if (!grant) {
     throw new Error('设备开通码撤销响应无效')
+  }
+  return grant
+}
+export async function revokeMobileDeviceActivationCode(
+  grantId: string,
+  reason: string,
+): Promise<DeviceActivationCodeSummary> {
+  const response = await request.post<ApiResponse<unknown>>(
+    `${MOBILE_API_BASE}/${encodeURIComponent(grantId)}/revoke`,
+    { reason: reason.trim() },
+  )
+  const grant = normalizeDeviceActivationCodeSummary(unwrapApiData(response))
+  if (!grant || !grant.targetUserGuid || !grant.targetUsername) {
+    throw new Error('移动端设备开通码撤销响应无效')
   }
   return grant
 }

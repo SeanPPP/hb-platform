@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="../../services/backend/BlazorApp.Shared/BlazorApp.Shared.csproj" />
     <Project Path="src/Hbpos.Api/Hbpos.Api.csproj" />
     <Project Path="src/Hbpos.Client.Wpf/Hbpos.Client.Wpf.csproj" />
     <Project Path="src/Hbpos.Contracts/Hbpos.Contracts.csproj" />

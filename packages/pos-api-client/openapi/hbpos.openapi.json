@@ -2994,6 +2994,371 @@
         }
       }
     },
+    "/api/v1/linkly/cloud-backend/terminals": {
+      "get": {
+        "tags": [
+          "Linkly"
+        ],
+        "parameters": [
+          {
+            "name": "environment",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalListResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalListResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalListResponseApiResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalListResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalListResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalListResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/linkly/cloud-backend/terminal-selection": {
+      "put": {
+        "tags": [
+          "Linkly"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudTerminalSelectionRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudTerminalSelectionRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudTerminalSelectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalSelectionResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalSelectionResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalSelectionResponseApiResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalSelectionResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalSelectionResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalSelectionResponseApiResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalSelectionResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalSelectionResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalSelectionResponseApiResult"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalSelectionResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalSelectionResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalSelectionResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/linkly/cloud-backend/terminals/{terminalId}/pair": {
+      "post": {
+        "tags": [
+          "Linkly"
+        ],
+        "parameters": [
+          {
+            "name": "terminalId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudBackendPairRequest"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudBackendPairRequest"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinklyCloudBackendPairRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Content",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal Server Error",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Bad Gateway",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Gateway Timeout",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinklyCloudTerminalPairResponseApiResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/linkly/cloud-backend/pair": {
       "post": {
         "tags": [
@@ -3516,6 +3881,22 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "terminalId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "selectionRevision",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
           }
         ],
         "responses": {
@@ -3554,6 +3935,22 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "terminalId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "selectionRevision",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
           }
         ],
         "responses": {
@@ -3591,6 +3988,22 @@
             "in": "query",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "terminalId",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "selectionRevision",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
             }
           }
         ],
@@ -9211,6 +9624,15 @@
             },
             "nullable": true
           },
+          "terminalId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "terminalDisplayName": {
+            "type": "string",
+            "nullable": true
+          },
           "cardTransaction": {
             "$ref": "#/components/schemas/LinklyCloudBackendCardTransactionDto"
           }
@@ -9242,6 +9664,16 @@
         "properties": {
           "environment": {
             "type": "string",
+            "nullable": true
+          },
+          "terminalId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "selectionRevision": {
+            "type": "integer",
+            "format": "int64",
             "nullable": true
           }
         },
@@ -9417,6 +9849,16 @@
               "type": "string"
             },
             "nullable": true
+          },
+          "terminalId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "selectionRevision": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
           }
         },
         "additionalProperties": false
@@ -9525,6 +9967,200 @@
           },
           "message": {
             "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinklyCloudTerminalListResponse": {
+        "type": "object",
+        "properties": {
+          "environment": {
+            "type": "string",
+            "nullable": true
+          },
+          "selectedTerminalId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "selectionRevision": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          },
+          "terminals": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinklyCloudTerminalSummary"
+            },
+            "nullable": true
+          },
+          "mode": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinklyCloudTerminalListResponseApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/LinklyCloudTerminalListResponse"
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinklyCloudTerminalPairResponse": {
+        "type": "object",
+        "properties": {
+          "terminalId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "environment": {
+            "type": "string",
+            "nullable": true
+          },
+          "displayName": {
+            "type": "string",
+            "nullable": true
+          },
+          "pairingState": {
+            "type": "string",
+            "nullable": true
+          },
+          "isReady": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinklyCloudTerminalPairResponseApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/LinklyCloudTerminalPairResponse"
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinklyCloudTerminalSelectionRequest": {
+        "type": "object",
+        "properties": {
+          "environment": {
+            "type": "string",
+            "nullable": true
+          },
+          "terminalId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinklyCloudTerminalSelectionResponse": {
+        "type": "object",
+        "properties": {
+          "environment": {
+            "type": "string",
+            "nullable": true
+          },
+          "terminalId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "revision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinklyCloudTerminalSelectionResponseApiResult": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "$ref": "#/components/schemas/LinklyCloudTerminalSelectionResponse"
+          },
+          "errorCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinklyCloudTerminalSummary": {
+        "type": "object",
+        "properties": {
+          "terminalId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "laneNo": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "displayName": {
+            "type": "string",
+            "nullable": true
+          },
+          "pairingState": {
+            "type": "string",
+            "nullable": true
+          },
+          "isBusy": {
+            "type": "boolean"
+          },
+          "isReady": {
+            "type": "boolean"
+          },
+          "lastHealthStatus": {
+            "type": "string",
+            "nullable": true
+          },
+          "lastHealthAt": {
+            "type": "string",
+            "format": "date-time",
             "nullable": true
           }
         },

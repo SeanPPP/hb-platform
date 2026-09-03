@@ -198,6 +198,7 @@
       "exportFormat": "导出格式",
       "exportExcel": "导出 Excel",
       "exportPdf": "导出 PDF",
+      "exportAllExcelWithImages": "全部导出（含图片）",
       "resetColumns": "重置列",
       "selectExportColumns": "选择导出列",
       "exportSelectedColumns": "按所选列导出",
@@ -207,6 +208,7 @@
       "showReadonlyOemPrice": "只读零售价",
       "pushToHq": "发送到 HQ",
       "saveDetails": "保存明细",
+      "retryAutoSave": "重试",
       "recalculateCosts": "重算成本",
       "matchDomesticData": "匹配国内数据",
       "alignDomesticProductCode": "对齐编码",
@@ -282,6 +284,20 @@
       "importPrice": "进口价格",
       "oemPrice": "零售价",
       "warehouseStatus": "仓库状态"
+    },
+    "freightCalculator": {
+      "modes": {
+        "standard68": "68 m³ 标准运费",
+        "perCbm": "每 m³ 单价"
+      },
+      "placeholders": {
+        "standard68": "输入 68 m³ 报价",
+        "perCbm": "输入每 m³ 单价"
+      },
+      "preview": "当前 {{volume}} m³ → 运费 {{freight}}",
+      "invalidVolume": "总体积无效，无法换算运费",
+      "invalidInput": "请输入大于或等于 0 的有效报价",
+      "refreshFailed": "无法读取最新总体积，运费未保存"
     },
     "matchTypes": {
       "productCode": "商品编码匹配",
@@ -368,6 +384,8 @@
       "hqTranslationResultTitle": "HQ 数据翻译结果",
       "exportAllDetailsTitle": "导出全部匹配商品",
       "exportAllDetailsContent": "未选择商品，将按当前筛选和排序导出全部匹配商品，共 {{count}} 条。是否继续？",
+      "exportWholeContainerTitle": "全部导出（含图片）",
+      "exportWholeContainerContent": "将忽略当前勾选和筛选，导出本货柜全部明细及商品图片，并保留当前排序。数据较多时需要一些时间，是否继续？",
       "exportColumnsTitle": "选择导出列"
     },
     "messages": {
@@ -385,6 +403,7 @@
       "loadDetailFailed": "加载货柜明细失败",
       "headerSaveSuccess": "货柜信息已保存",
       "headerSaveAndCostsRecalculated": "货柜信息已保存，已重算 {{count}} 条明细成本",
+      "headerSavedCostsRecalculateCancelled": "货柜信息已保存，成本重算已取消",
       "headerSavedCostsRecalculateFailed": "货柜信息已保存，但成本重算失败：{{message}}",
       "headerSaveFailed": "保存货柜信息失败",
       "columnOrderReset": "列设置已恢复默认",
@@ -428,6 +447,9 @@
       "savePendingPriceDetailsFirst": "请先点击“保存明细”保存进口价格/零售价",
       "savePendingDetailsFirst": "请先点击“保存明细”保存待提交的明细修改",
       "detailSaveFailed": "货柜明细保存失败，请稍后重试",
+      "detailNotFound": "货柜明细不存在或已被删除",
+      "detailSaveContextMissing": "货柜明细保存上下文已失效",
+      "productNameRequired": "商品名称不能为空",
       "noPendingPriceDetails": "没有待保存的明细价格",
       "detailPricesSaved": "已保存 {{count}} 条明细价格",
       "noPendingDetails": "没有待保存的明细修改",
@@ -474,8 +496,15 @@
       "detailsDeleted": "已删除 {{count}} 条明细",
       "noDataToExport": "没有可导出的数据",
       "detailsExported": "已导出 {{count}} 条明细",
+      "detailsExportedWithImageFailures": "已导出 {{count}} 条明细，其中 {{failed}} 张商品图片下载失败",
       "detailsPdfExported": "已导出 {{count}} 条明细 PDF",
-      "detailsExportFailed": "导出失败，请稍后重试"
+      "detailsExportFailed": "导出失败，请稍后重试",
+      "exportLoadingAllDetails": "正在加载整柜明细",
+      "exportPreparingImages": "正在准备商品图片",
+      "exportWritingWorkbook": "正在写入 Excel 表格",
+      "exportGeneratingFile": "正在生成 Excel 文件",
+      "exportGeneratingPdf": "正在生成 PDF 文件",
+      "exportComplete": "导出完成"
     },
     "productTypes": {
       "normal": "普通商品",
@@ -499,6 +528,11 @@
     "text": {
       "showingRows": "显示 {{filtered}} / {{total}} 条",
       "loadedRows": "已加载 {{loaded}} / 共 {{total}} 条",
+      "autoSavingFields": "正在保存 {{count}} 项",
+      "autoSaveFailedFields": "{{count}} 项未保存",
+      "fullRows": "已完整加载 {{count}} 条",
+      "pageRows": "当前页 {{loaded}} / 共 {{total}} 条",
+      "paginationTotal": "共 {{total}} 条",
       "visibleRows": "当前可见 {{count}} 条",
       "selectedFilters": "已选过滤",
       "selectedFirst": "选中优先",
@@ -532,6 +566,8 @@
       "unitVolumeColumn": "单件体积",
       "totalVolumeColumn": "总体积",
       "retailPriceColumn": "零售价",
+      "productImageDownloadFailed": "图片下载失败",
+      "productImageMissing": "无图片",
       "summaryTitle": "货柜主表信息"
     },
     "setCode": {
@@ -697,9 +733,10 @@
   },
   "paymentTerminalSettings": {
     "title": "支付终端配置",
-    "subtitle": "管理 Square 和 Linkly Cloud 的生产/沙盒凭据。",
+    "subtitle": "管理 Square Token，以及生产/沙盒环境下一机一凭据的 Linkly Cloud 终端。",
     "squareTitle": "Square Token",
     "linklyTitle": "Linkly Cloud Credential",
+    "linklyTerminalsTitle": "Linkly Cloud 终端",
     "store": "门店",
     "username": "用户名",
     "password": "密码",
@@ -714,12 +751,68 @@
     "loadFailed": "加载支付终端配置失败",
     "noPermission": "当前账号没有系统设置管理权限。",
     "selectStoreRequired": "请先选择门店",
+    "laneNo": "Lane 编号",
+    "terminalName": "终端名称",
+    "credential": "凭据",
+    "passwordSaved": "已保存密码",
+    "pairingState": "配对状态",
+    "health": "健康状态",
+    "selectedDevices": "已选择 POS",
+    "addTerminal": "新增终端",
+    "addTerminalTitle": "新增 Linkly 终端",
+    "editTerminalTitle": "编辑终端 - {{name}}",
+    "activate": "启用多终端",
+    "activateConfirmTitle": "确认启用当前门店与环境？",
+    "activateConfirmDescription": "启用后将停止接受旧共享凭据的更新。",
+    "activationSuccess": "Linkly 多终端配置已启用",
+    "activationFailed": "启用 Linkly 多终端配置失败",
+    "selectionSaved": "POS 初始终端已保存",
+    "selectionReleased": "POS 初始终端分配已解除",
+    "oneCredentialPerTerminal": "每组 Linkly Lane 用户名和密码只能对应一台实体刷卡机。",
+    "noTerminals": "尚未配置 Linkly 终端",
+    "deviceSelectionsTitle": "POS 初始终端选择",
+    "deviceSelectionsDescription": "为每台已启用 POS 指定默认刷卡机；收银员仍可在 POS 端切换可用终端。",
+    "deviceCode": "POS 设备",
+    "deviceSystem": "系统",
+    "deviceStatus": "状态",
+    "deviceEnabled": "已启用",
+    "deviceDisabled": "已禁用",
+    "deviceMissing": "设备记录缺失",
+    "initialTerminal": "初始终端",
+    "selectTerminal": "选择终端",
+    "releaseSelection": "解除分配",
+    "releaseSelectionConfirmTitle": "确认解除终端分配？",
+    "releaseSelectionConfirmDescription": "{{deviceCode}} 已禁用或记录缺失。解除后将释放其占用的实体 Linkly 刷卡机；如需恢复，必须重新分配。",
+    "assignedToDevice": "已由 {{deviceCode}} 占用",
+    "duplicateAssignmentWarning": "同一台 Linkly 刷卡机被分配给了多台 POS，请先解除重复分配再启用。",
+    "noDevices": "当前门店没有已注册 POS 设备",
+    "blankKeepsCredential": "留空将保留服务器上现有凭据。",
+    "editCredentialHint": "当前用户名：{{username}}。修改用户名或密码会清除配对，必须重新输入 Pair Code。",
+    "configurationModes": {
+      "Legacy": "旧配置",
+      "Draft": "草稿",
+      "Active": "已启用"
+    },
+    "modeDescriptions": {
+      "Legacy": "当前门店仍使用旧共享凭据；新增第一台终端会进入草稿，但不会复制旧密钥。",
+      "Draft": "请先完成终端配对及每台 POS 的初始选择，再启用多终端。",
+      "Active": "当前门店与环境已启用一机一凭据的 Linkly 终端配置。"
+    },
+    "pairingStates": {
+      "Unpaired": "未配对",
+      "Ready": "可用",
+      "Unknown": "状态未知",
+      "NeedsRepair": "需要重配"
+    },
     "environments": {
       "Production": "生产",
       "Sandbox": "沙盒"
     },
     "validation": {
-      "username": "请输入 Linkly 用户名"
+      "username": "请输入 Linkly 用户名",
+      "password": "请输入 Linkly 密码",
+      "laneNo": "请输入 1 到 9999 的 Lane 编号",
+      "terminalName": "请输入终端名称"
     }
   },
   "emergencyLoginKeys": {
@@ -3192,7 +3285,16 @@
         "title": "设备开通码",
         "view": "设备开通码",
         "noteTitle": "一次性设备开通",
-        "noteDescription": "开通码只绑定一个分店和一个平台，扫码确认后立即消费。二维码原文只在创建结果中显示一次。",
+        "noteDescription": "开通码只绑定一个设备类型、分店和平台；移动端开通码还会绑定指定账号。扫码确认后立即消费，二维码原文只在创建结果中显示一次。",
+        "deviceType": "设备类型",
+        "deviceTypes": {
+          "POS": "POS",
+          "Mobile": "移动端"
+        },
+        "targetAccount": "绑定账号",
+        "targetAccountRequired": "请选择要绑定的账号",
+        "loadAccountsFailed": "加载可绑定账号失败",
+        "mobileAccountScopeHint": "移动端设备绑定后将以该账号身份登录，并实时继承该账号的权限和可访问分店。",
         "filterByStatus": "按状态筛选",
         "create": "创建开通码",
         "createTitle": "创建一次性设备开通码",
@@ -5091,6 +5193,17 @@
     "shoppingCart": "购物车",
     "cart": "购物车",
     "checkout": "结算",
+    "reviewOrder": "查看订单",
+    "storeOrdering": "分店订货",
+    "primaryNavigation": "商城导航",
+    "mobileNavigation": "商城移动导航",
+    "mobileShop": "商城",
+    "allCategories": "全部分类",
+    "more": "更多",
+    "language": "语言",
+    "orderingFor": "当前分店：",
+    "searchOrScan": "搜索商品或扫描条码",
+    "orderPrice": "订货价",
     "selectStore": "选择分店",
     "productSearch": "搜索商品",
     "loadingCategories": "分类加载中...",
@@ -5250,6 +5363,7 @@
       "hideScanner": "隐藏扫码器",
       "scanner": "扫码器",
       "barcodeScan": "条码扫描",
+      "shortAction": "扫码",
       "pause": "暂停",
       "resume": "继续",
       "soundReady": "声音已就绪",

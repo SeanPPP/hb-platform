@@ -198,6 +198,7 @@
       "exportFormat": "Export Format",
       "exportExcel": "Export Excel",
       "exportPdf": "Export PDF",
+      "exportAllExcelWithImages": "Export All (with Images)",
       "resetColumns": "Reset Columns",
       "selectExportColumns": "Select Export Columns",
       "exportSelectedColumns": "Export Selected Columns",
@@ -207,6 +208,7 @@
       "showReadonlyOemPrice": "Read-only RRP",
       "pushToHq": "Send to HQ",
       "saveDetails": "Save Details",
+      "retryAutoSave": "Retry",
       "recalculateCosts": "Recalculate Costs",
       "matchDomesticData": "Match Domestic Data",
       "alignDomesticProductCode": "Align Code",
@@ -282,6 +284,20 @@
       "importPrice": "Import Price",
       "oemPrice": "RRP",
       "warehouseStatus": "Warehouse Status"
+    },
+    "freightCalculator": {
+      "modes": {
+        "standard68": "68 m³ quote",
+        "perCbm": "Per m³"
+      },
+      "placeholders": {
+        "standard68": "Enter 68 m³ quote",
+        "perCbm": "Enter price per m³"
+      },
+      "preview": "Current {{volume}} m³ → Freight {{freight}}",
+      "invalidVolume": "Total volume is invalid; freight cannot be calculated",
+      "invalidInput": "Enter a valid quote greater than or equal to 0",
+      "refreshFailed": "Could not load the latest total volume; freight was not saved"
     },
     "matchTypes": {
       "productCode": "Product Code",
@@ -368,6 +384,8 @@
       "hqTranslationResultTitle": "HQ Translation Result",
       "exportAllDetailsTitle": "Export All Matching Products",
       "exportAllDetailsContent": "No products are selected. Export all matching products using the current filters and sorting, {{count}} rows total. Continue?",
+      "exportWholeContainerTitle": "Export All (with Images)",
+      "exportWholeContainerContent": "Ignore the current selection and filters, then export every detail in this container with product images while preserving the current sort. This may take some time for large containers. Continue?",
       "exportColumnsTitle": "Select Export Columns"
     },
     "messages": {
@@ -385,6 +403,7 @@
       "loadDetailFailed": "Failed to load container details",
       "headerSaveSuccess": "Container information saved",
       "headerSaveAndCostsRecalculated": "Container information saved. Recalculated costs for {{count}} details.",
+      "headerSavedCostsRecalculateCancelled": "Container information saved. Cost recalculation was cancelled.",
       "headerSavedCostsRecalculateFailed": "Container information saved, but cost recalculation failed: {{message}}",
       "headerSaveFailed": "Failed to save container information",
       "columnOrderReset": "Column settings reset to default",
@@ -428,6 +447,9 @@
       "savePendingPriceDetailsFirst": "Save pending import/RRP changes first.",
       "savePendingDetailsFirst": "Click Save Details to save pending detail changes first.",
       "detailSaveFailed": "Failed to save container details. Please try again later.",
+      "detailNotFound": "The container detail no longer exists.",
+      "detailSaveContextMissing": "The container detail save context is no longer available.",
+      "productNameRequired": "Product name cannot be empty.",
       "noPendingPriceDetails": "No pending detail prices to save",
       "detailPricesSaved": "Saved prices for {{count}} details",
       "noPendingDetails": "No pending detail changes to save",
@@ -474,8 +496,15 @@
       "detailsDeleted": "Deleted {{count}} details",
       "noDataToExport": "No data to export",
       "detailsExported": "Exported {{count}} details",
+      "detailsExportedWithImageFailures": "Exported {{count}} details; {{failed}} product images could not be downloaded",
       "detailsPdfExported": "Exported {{count}} details to PDF",
-      "detailsExportFailed": "Export failed. Please try again later."
+      "detailsExportFailed": "Export failed. Please try again later.",
+      "exportLoadingAllDetails": "Loading all container details",
+      "exportPreparingImages": "Preparing product images",
+      "exportWritingWorkbook": "Writing the Excel workbook",
+      "exportGeneratingFile": "Generating the Excel file",
+      "exportGeneratingPdf": "Generating the PDF file",
+      "exportComplete": "Export complete"
     },
     "productTypes": {
       "normal": "Normal Product",
@@ -499,6 +528,11 @@
     "text": {
       "showingRows": "Showing {{filtered}} / {{total}} rows",
       "loadedRows": "Loaded {{loaded}} / {{total}} rows",
+      "autoSavingFields": "Saving {{count}} fields",
+      "autoSaveFailedFields": "{{count}} fields not saved",
+      "fullRows": "Loaded all {{count}} rows",
+      "pageRows": "Page {{loaded}} / {{total}} rows",
+      "paginationTotal": "{{total}} rows",
       "visibleRows": "{{count}} visible",
       "selectedFilters": "Selected Filters",
       "selectedFirst": "Selected First",
@@ -532,6 +566,8 @@
       "unitVolumeColumn": "Unit Volume",
       "totalVolumeColumn": "Total Volume",
       "retailPriceColumn": "Retail Price",
+      "productImageDownloadFailed": "Image download failed",
+      "productImageMissing": "No image",
       "summaryTitle": "Container Header"
     },
     "setCode": {
@@ -697,9 +733,10 @@
   },
   "paymentTerminalSettings": {
     "title": "Payment Terminal Settings",
-    "subtitle": "Manage Square and Linkly Cloud credentials for production and sandbox.",
+    "subtitle": "Manage Square tokens and one-to-one Linkly Cloud terminal credentials for production and sandbox.",
     "squareTitle": "Square Token",
     "linklyTitle": "Linkly Cloud Credential",
+    "linklyTerminalsTitle": "Linkly Cloud Terminals",
     "store": "Store",
     "username": "Username",
     "password": "Password",
@@ -714,12 +751,68 @@
     "loadFailed": "Failed to load payment terminal settings",
     "noPermission": "The current account does not have permission to manage system settings.",
     "selectStoreRequired": "Please select a store first",
+    "laneNo": "Lane",
+    "terminalName": "Terminal name",
+    "credential": "Credential",
+    "passwordSaved": "Password saved",
+    "pairingState": "Pairing",
+    "health": "Health",
+    "selectedDevices": "Selected POS",
+    "addTerminal": "Add terminal",
+    "addTerminalTitle": "Add Linkly terminal",
+    "editTerminalTitle": "Edit terminal - {{name}}",
+    "activate": "Activate multi-terminal",
+    "activateConfirmTitle": "Activate this store and environment?",
+    "activateConfirmDescription": "The legacy shared credential will stop accepting updates after activation.",
+    "activationSuccess": "Linkly multi-terminal configuration activated",
+    "activationFailed": "Failed to activate Linkly multi-terminal configuration",
+    "selectionSaved": "Initial terminal selection saved",
+    "selectionReleased": "POS initial terminal selection released",
+    "oneCredentialPerTerminal": "Each Linkly Lane username and password must belong to exactly one physical payment terminal.",
+    "noTerminals": "No Linkly terminals configured",
+    "deviceSelectionsTitle": "POS initial terminal selection",
+    "deviceSelectionsDescription": "Choose the terminal each enabled POS uses by default. Cashiers can switch between available terminals in the POS app.",
+    "deviceCode": "POS device",
+    "deviceSystem": "System",
+    "deviceStatus": "Status",
+    "deviceEnabled": "Enabled",
+    "deviceDisabled": "Disabled",
+    "deviceMissing": "Device record missing",
+    "initialTerminal": "Initial terminal",
+    "selectTerminal": "Select a terminal",
+    "releaseSelection": "Release assignment",
+    "releaseSelectionConfirmTitle": "Release this terminal assignment?",
+    "releaseSelectionConfirmDescription": "{{deviceCode}} is disabled or missing. This releases its reserved physical Linkly terminal and cannot be undone without a new assignment.",
+    "assignedToDevice": "Assigned to {{deviceCode}}",
+    "duplicateAssignmentWarning": "A Linkly terminal is assigned to more than one POS. Resolve the duplicate assignment before activation.",
+    "noDevices": "No POS devices registered for this store",
+    "blankKeepsCredential": "Leave blank to keep the current server credential.",
+    "editCredentialHint": "Current username: {{username}}. Changing a username or password clears the pairing and requires a new Pair Code.",
+    "configurationModes": {
+      "Legacy": "Legacy",
+      "Draft": "Draft",
+      "Active": "Active"
+    },
+    "modeDescriptions": {
+      "Legacy": "This store still uses the legacy shared credential. Adding the first terminal starts a draft without copying legacy secrets.",
+      "Draft": "Complete terminal pairing and initial POS selections before activation.",
+      "Active": "One-to-one terminal credentials are active for this store and environment."
+    },
+    "pairingStates": {
+      "Unpaired": "Unpaired",
+      "Ready": "Ready",
+      "Unknown": "Unknown",
+      "NeedsRepair": "Needs repair"
+    },
     "environments": {
       "Production": "Production",
       "Sandbox": "Sandbox"
     },
     "validation": {
-      "username": "Please enter the Linkly username"
+      "username": "Please enter the Linkly username",
+      "password": "Please enter the Linkly password",
+      "laneNo": "Please enter a Lane number from 1 to 9999",
+      "terminalName": "Please enter a terminal name"
     }
   },
   "emergencyLoginKeys": {
@@ -3192,7 +3285,16 @@
         "title": "Device Activation Codes",
         "view": "Activation Codes",
         "noteTitle": "One-time device activation",
-        "noteDescription": "Each code is bound to one store and platform and is consumed after confirmation. The QR payload is shown only once after creation.",
+        "noteDescription": "Each code is bound to one device type, store, and platform. Mobile codes also bind a selected account. Codes are consumed after confirmation, and the QR payload is shown only once after creation.",
+        "deviceType": "Device Type",
+        "deviceTypes": {
+          "POS": "POS",
+          "Mobile": "Mobile"
+        },
+        "targetAccount": "Bound Account",
+        "targetAccountRequired": "Select an account to bind",
+        "loadAccountsFailed": "Failed to load bindable accounts",
+        "mobileAccountScopeHint": "After binding, the Mobile device signs in as this account and inherits its current permissions and accessible stores.",
         "filterByStatus": "Filter by Status",
         "create": "Create Code",
         "createTitle": "Create One-time Device Activation Code",
@@ -5091,6 +5193,17 @@
     "shoppingCart": "Shopping Cart",
     "cart": "Cart",
     "checkout": "Checkout",
+    "reviewOrder": "Review Order",
+    "storeOrdering": "Store Ordering",
+    "primaryNavigation": "Shop navigation",
+    "mobileNavigation": "Shop mobile navigation",
+    "mobileShop": "Shop",
+    "allCategories": "All Categories",
+    "more": "More",
+    "language": "Language",
+    "orderingFor": "Ordering for:",
+    "searchOrScan": "Search products or scan barcode",
+    "orderPrice": "Order price",
     "selectStore": "Select Store",
     "productSearch": "Product Search",
     "loadingCategories": "Loading categories...",
@@ -5250,6 +5363,7 @@
       "hideScanner": "Hide Scanner",
       "scanner": "Scanner",
       "barcodeScan": "Barcode Scan",
+      "shortAction": "Scan",
       "pause": "Pause",
       "resume": "Resume",
       "soundReady": "Sound Ready",

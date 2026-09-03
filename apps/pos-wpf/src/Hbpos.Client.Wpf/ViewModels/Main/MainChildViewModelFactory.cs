@@ -378,7 +378,8 @@ internal sealed class MainChildViewModelFactory
             onInstallmentOrderCreatedAsync,
             confirmInstallmentFullFirstPaymentAsync,
             _operationAuditLogger,
-            _operationAuthorizationService);
+            _operationAuthorizationService,
+            cardTerminalSetupService: _cardTerminalSetupService);
     }
 
     public DailyCloseViewModel CreateDailyCloseViewModel(

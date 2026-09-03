@@ -17,12 +17,89 @@ import type { components } from "@hb/pos-api-client/openapi";
 
 type LinklySessionDto = components["schemas"]["LinklyCloudBackendSessionResponse"];
 type LinklyCardTransactionDto = components["schemas"]["LinklyCloudBackendCardTransactionDto"];
+type LinklyTransactionRequest =
+  components["schemas"]["LinklyCloudBackendTransactionRequest"] &
+  Readonly<{
+    terminalId?: string;
+    selectionRevision?: number;
+  }>;
+
+export type LinklyTerminalMode = "Active" | "Legacy" | "Draft";
+
+export type LinklyTerminalPairingState =
+  | "Unpaired"
+  | "Ready"
+  | "Unknown"
+  | "NeedsRepair";
+
+export type LinklyTerminalSummary = Readonly<{
+  terminalId: string;
+  laneNo: number;
+  displayName: string;
+  pairingState: LinklyTerminalPairingState;
+  isBusy: boolean;
+  isReady: boolean;
+  lastHealthStatus: string | null;
+  lastHealthAt: string | null;
+}>;
+
+export type LinklyTerminalSelectionSnapshot = Readonly<{
+  environment: string;
+  mode: LinklyTerminalMode;
+  selectedTerminalId: string | null;
+  selectionRevision: number;
+  terminals: readonly LinklyTerminalSummary[];
+}>;
+
+export interface LinklyTerminalSelectionPort {
+  readTerminals(
+    environment: string,
+    signal?: AbortSignal,
+  ): Promise<LinklyTerminalSelectionSnapshot>;
+  selectTerminal(
+    environment: string,
+    terminalId: string,
+    expectedRevision: number,
+    signal?: AbortSignal,
+  ): Promise<LinklyTerminalSelectionSnapshot>;
+}
+
+export type LinklyPaymentTerminalSelectionExpectation =
+  | Readonly<{
+      environment: string;
+      mode: "Active";
+      terminalId: string;
+      selectionRevision: number;
+    }>
+  | Readonly<{
+      environment: string;
+      mode: "Legacy" | "Draft";
+    }>;
+
+export interface LinklyPaymentTerminalSelectionBindingPort {
+  runWithSelection<T>(
+    orderGuid: string,
+    selection: LinklyPaymentTerminalSelectionExpectation,
+    operation: () => Promise<T>,
+  ): Promise<T>;
+}
+
+interface LinklyPaymentAwareTerminalSelectionPort
+  extends LinklyTerminalSelectionPort {
+  readTerminalsForPayment(
+    environment: string,
+    orderGuid: string,
+    requireBinding: boolean,
+  ): Promise<LinklyTerminalSelectionSnapshot>;
+}
 
 export type LinklyCloudBackendSession = Readonly<{
   environment: string;
   storeCode: string;
   deviceCode: string;
   sessionId: string;
+  terminalId?: string | null;
+  terminalDisplayName?: string | null;
   status: string;
   txnRef: string | null;
   responseCode: string | null;
@@ -47,14 +124,46 @@ export type LinklyCloudBackendSession = Readonly<{
   cardTransaction?: LinklyCardTransactionDto | null;
 }>;
 
-export type LinklyCloudBackendProviderOptions = Readonly<{ environment: string }>;
+export type LinklyCloudBackendProviderOptions = Readonly<{
+  environment: string;
+  terminalSelection: LinklyTerminalSelectionPort;
+}>;
 
 /** iPad 仅调用 Hbpos.Api；Linkly terminal secret 和 POS ID 永不下发到客户端。 */
-export class LinklyCloudBackendApi {
+export class LinklyCloudBackendApi implements LinklyTerminalSelectionPort {
   public constructor(private readonly transport: HbposTransport) {}
 
-  public create(input: components["schemas"]["LinklyCloudBackendTransactionRequest"]): Promise<LinklyCloudBackendSession> {
+  public create(input: LinklyTransactionRequest): Promise<LinklyCloudBackendSession> {
     return this.requestSession({ method: "POST", url: "/api/v1/linkly/cloud-backend/transactions", data: input });
+  }
+
+  public async readTerminals(
+    environment: string,
+    signal?: AbortSignal,
+  ): Promise<LinklyTerminalSelectionSnapshot> {
+    const response = await this.transport.request<HbposEnvelope<unknown>>({
+      method: "GET",
+      url: "/api/v1/linkly/cloud-backend/terminals",
+      params: { environment },
+      ...(signal ? { signal } : {}),
+    });
+    return normalizeTerminalSelection(unwrapHbposEnvelope(response.data));
+  }
+
+  public async selectTerminal(
+    environment: string,
+    terminalId: string,
+    expectedRevision: number,
+    signal?: AbortSignal,
+  ): Promise<LinklyTerminalSelectionSnapshot> {
+    await this.transport.request<HbposEnvelope<unknown>>({
+      method: "PUT",
+      url: "/api/v1/linkly/cloud-backend/terminal-selection",
+      data: { environment, terminalId, expectedRevision },
+      ...(signal ? { signal } : {}),
+    });
+    // PUT 响应可能只带选择头字段；始终重读安全列表作为唯一权威状态。
+    return this.readTerminals(environment, signal);
   }
 
   public active(environment: string): Promise<LinklyCloudBackendSession | null> {
@@ -104,6 +213,83 @@ export class LinklyCloudBackendApi {
 }
 
 /**
+ * 把支付页已展示的终端选择按 OrderGuid 临时绑定到 provider 调用。提交前仍重读
+ * 权威目录；任何 mode、terminalId 或 revision 漂移都在交易 POST 前失败关闭。
+ */
+export class LinklyPaymentTerminalSelectionCoordinator
+  implements
+    LinklyPaymentAwareTerminalSelectionPort,
+    LinklyPaymentTerminalSelectionBindingPort
+{
+  private readonly bindings = new Map<
+    string,
+    Readonly<{
+      selection: LinklyPaymentTerminalSelectionExpectation;
+      token: symbol;
+    }>
+  >();
+
+  public constructor(private readonly api: LinklyCloudBackendApi) {}
+
+  public readTerminals(
+    environment: string,
+    signal?: AbortSignal,
+  ): Promise<LinklyTerminalSelectionSnapshot> {
+    return this.api.readTerminals(environment, signal);
+  }
+
+  public selectTerminal(
+    environment: string,
+    terminalId: string,
+    expectedRevision: number,
+    signal?: AbortSignal,
+  ): Promise<LinklyTerminalSelectionSnapshot> {
+    return this.api.selectTerminal(
+      environment,
+      terminalId,
+      expectedRevision,
+      signal,
+    );
+  }
+
+  public async runWithSelection<T>(
+    orderGuid: string,
+    selection: LinklyPaymentTerminalSelectionExpectation,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const token = Symbol("linkly-payment-terminal-selection");
+    if (!orderGuid.trim() || this.bindings.has(orderGuid)) {
+      throw new LinklyTerminalSelectionConflictError();
+    }
+    this.bindings.set(orderGuid, Object.freeze({ selection, token }));
+    try {
+      return await operation();
+    } finally {
+      if (this.bindings.get(orderGuid)?.token === token) {
+        this.bindings.delete(orderGuid);
+      }
+    }
+  }
+
+  public async readTerminalsForPayment(
+    environment: string,
+    orderGuid: string,
+    requireBinding: boolean,
+  ): Promise<LinklyTerminalSelectionSnapshot> {
+    const binding = this.bindings.get(orderGuid);
+    if (!binding) {
+      if (requireBinding) throw new LinklyTerminalSelectionConflictError();
+      return this.api.readTerminals(environment);
+    }
+    const snapshot = await this.api.readTerminals(environment);
+    if (!matchesPaymentSelection(snapshot, binding.selection)) {
+      throw new LinklyTerminalSelectionConflictError();
+    }
+    return snapshot;
+  }
+}
+
+/**
  * Linkly Backend Async 的支付 Provider。create 一旦进入传输歧义，绝不重发 POST；
  * 没有已持久 SessionId 时只允许通过已持久 UID 强匹配 active/resumable，绝不凭同额认领。
  */
@@ -120,14 +306,32 @@ export class LinklyCloudBackendProvider implements OnlinePaymentPort {
     if (attempt.operation === "refund") return this.refund(attempt);
     if (attempt.state === "Unknown" || attempt.references.sessionId) return this.recover(attempt);
 
+    const selection = await transactionTerminalSelection(
+      this.options.terminalSelection,
+      this.options.environment,
+      attempt,
+    );
+    if (!selection.ok) return terminalSelectionDeclined(attempt, selection.code);
+
     const active = await this.api.active(this.options.environment);
     // 这是另一笔未完成交易，不能把它的 SessionId/TxnRef 绑定到当前新订单。
     if (active) return activeSessionConflict(attempt);
     try {
-      const created = await this.api.create(transactionRequest(attempt, this.options.environment));
+      const created = await this.api.create(
+        transactionRequest(attempt, this.options.environment, selection),
+      );
       return toPaymentResult(created, attempt);
     } catch (error) {
       if (isActiveSessionConflict(error)) return activeSessionConflict(attempt);
+      if (isTerminalSelectionConflict(error)) {
+        return terminalSelectionDeclined(
+          attempt,
+          "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+        );
+      }
+      if (isTerminalNotReadyConflict(error)) {
+        return terminalSelectionDeclined(attempt, "LINKLY_TERMINAL_NOT_READY");
+      }
       if (!isCreateAmbiguous(error)) throw error;
       return this.recoverAmbiguousCreate(attempt);
     }
@@ -155,12 +359,33 @@ export class LinklyCloudBackendProvider implements OnlinePaymentPort {
     if (attempt.references.rfn === null) return { state: "Declined", references: attempt.references, receiptText: null, responseCode: "LINKLY_RFN_REQUIRED" };
     if (attempt.state === "Unknown" || attempt.references.sessionId) return this.recover(attempt);
 
+    const selection = await transactionTerminalSelection(
+      this.options.terminalSelection,
+      this.options.environment,
+      attempt,
+    );
+    if (!selection.ok) return terminalSelectionDeclined(attempt, selection.code);
+
     const active = await this.api.active(this.options.environment);
     if (active) return activeSessionConflict(attempt);
     try {
-      return toPaymentResult(await this.api.create(transactionRequest(attempt, this.options.environment)), attempt);
+      return toPaymentResult(
+        await this.api.create(
+          transactionRequest(attempt, this.options.environment, selection),
+        ),
+        attempt,
+      );
     } catch (error) {
       if (isActiveSessionConflict(error)) return activeSessionConflict(attempt);
+      if (isTerminalSelectionConflict(error)) {
+        return terminalSelectionDeclined(
+          attempt,
+          "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+        );
+      }
+      if (isTerminalNotReadyConflict(error)) {
+        return terminalSelectionDeclined(attempt, "LINKLY_TERMINAL_NOT_READY");
+      }
       if (!isCreateAmbiguous(error)) throw error;
       return this.recoverAmbiguousCreate(attempt);
     }
@@ -364,9 +589,19 @@ function isFinalPaymentState(
   return state === "Approved" || state === "Declined" || state === "Cancelled";
 }
 
-function transactionRequest(attempt: PaymentAttempt, environment: string): components["schemas"]["LinklyCloudBackendTransactionRequest"] {
-  const request: components["schemas"]["LinklyCloudBackendTransactionRequest"] = {
+function transactionRequest(
+  attempt: PaymentAttempt,
+  environment: string,
+  selection: Extract<TransactionTerminalSelection, { ok: true }>,
+): LinklyTransactionRequest {
+  const request: LinklyTransactionRequest = {
     environment,
+    ...(selection.mode === "Active"
+      ? {
+          terminalId: selection.terminalId,
+          selectionRevision: selection.selectionRevision,
+        }
+      : {}),
     txnType: attempt.operation === "refund" ? "R" : "P",
     amtPurchase: linklyProviderAmountCents(attempt),
   };
@@ -448,6 +683,83 @@ function activeSessionConflict(attempt: PaymentAttempt): PaymentProviderResult {
   };
 }
 
+type TransactionTerminalSelection =
+  | Readonly<{
+      ok: true;
+      mode: "Active";
+      terminalId: string;
+      selectionRevision: number;
+    }>
+  | Readonly<{
+      ok: true;
+      mode: "Legacy" | "Draft";
+    }>
+  | Readonly<{
+      ok: false;
+      code:
+        | "LINKLY_TERMINAL_SELECTION_REQUIRED"
+        | "LINKLY_TERMINAL_BUSY"
+        | "LINKLY_TERMINAL_NOT_READY"
+        | "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT";
+    }>;
+
+async function transactionTerminalSelection(
+  port: LinklyTerminalSelectionPort,
+  environment: string,
+  attempt: PaymentAttempt,
+): Promise<TransactionTerminalSelection> {
+  let snapshot: LinklyTerminalSelectionSnapshot;
+  try {
+    snapshot = isPaymentAwareSelectionPort(port)
+      ? await port.readTerminalsForPayment(
+          environment,
+          attempt.orderGuid,
+          // 新支付必须带 UI 确认绑定；退款兼容旧入口，但一旦绑定也必须校验漂移。
+          attempt.operation === "purchase",
+        )
+      : await port.readTerminals(environment);
+  } catch (error) {
+    if (isTerminalSelectionConflict(error)) {
+      return {
+        ok: false,
+        code: "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+      };
+    }
+    throw error;
+  }
+  if (snapshot.mode !== "Active") {
+    return { ok: true, mode: snapshot.mode };
+  }
+  const selected = snapshot.terminals.find(
+    (terminal) => terminal.terminalId === snapshot.selectedTerminalId,
+  );
+  if (!selected || snapshot.environment !== environment) {
+    return { ok: false, code: "LINKLY_TERMINAL_SELECTION_REQUIRED" };
+  }
+  if (selected.isBusy) return { ok: false, code: "LINKLY_TERMINAL_BUSY" };
+  if (!selected.isReady || selected.pairingState !== "Ready") {
+    return { ok: false, code: "LINKLY_TERMINAL_NOT_READY" };
+  }
+  return {
+    ok: true,
+    mode: "Active",
+    terminalId: selected.terminalId,
+    selectionRevision: snapshot.selectionRevision,
+  };
+}
+
+function terminalSelectionDeclined(
+  attempt: PaymentAttempt,
+  responseCode: Extract<TransactionTerminalSelection, { ok: false }>["code"],
+): PaymentProviderResult {
+  return {
+    state: "Declined",
+    references: attempt.references,
+    receiptText: null,
+    responseCode,
+  };
+}
+
 const LINKLY_PENDING_STATUSES = new Set([
   "pending",
   "tokenrefreshrequired",
@@ -485,9 +797,14 @@ function sessionState(session: LinklyCloudBackendSession): PaymentProviderResult
 }
 
 function normalizeSession(value: LinklySessionDto): LinklyCloudBackendSession {
+  const safeValue = value as LinklySessionDto &
+    Readonly<{
+      terminalId?: unknown;
+      terminalDisplayName?: unknown;
+    }>;
   return {
     environment: requiredText(value.environment, "environment"), storeCode: requiredText(value.storeCode, "storeCode"), deviceCode: requiredText(value.deviceCode, "deviceCode"),
-    sessionId: requiredText(value.sessionId, "sessionId"), status: typeof value.status === "string" ? value.status : "", txnRef: optionalText(value.txnRef), responseCode: optionalText(value.responseCode),
+    sessionId: requiredText(value.sessionId, "sessionId"), terminalId: optionalText(safeValue.terminalId), terminalDisplayName: optionalText(safeValue.terminalDisplayName), status: typeof value.status === "string" ? value.status : "", txnRef: optionalText(value.txnRef), responseCode: optionalText(value.responseCode),
     responseText: optionalText(value.responseText), recoveryAction: optionalText(value.recoveryAction), displayText: optionalText(value.displayText), cancelKeyFlag: Boolean(value.cancelKeyFlag),
     okKeyFlag: Boolean(value.okKeyFlag), acceptYesKeyFlag: Boolean(value.acceptYesKeyFlag), declineNoKeyFlag: Boolean(value.declineNoKeyFlag), authoriseKeyFlag: Boolean(value.authoriseKeyFlag),
     inputType: optionalText(value.inputType), graphicCode: optionalText(value.graphicCode), displayLines: (value.displayLines ?? []).map((line) => requiredText(line, "displayLines")), receiptText: optionalText(value.receiptText),
@@ -497,6 +814,88 @@ function normalizeSession(value: LinklySessionDto): LinklyCloudBackendSession {
     transactionSuccess: value.transactionSuccess ?? null,
     cardTransaction: value.cardTransaction ?? null,
   };
+}
+
+function normalizeTerminalSelection(value: unknown): LinklyTerminalSelectionSnapshot {
+  if (!isRecord(value) || !Array.isArray(value.terminals)) {
+    throw new Error("Invalid Linkly terminal selection response.");
+  }
+  const environment = requiredText(value.environment, "terminal.environment");
+  const mode = normalizeTerminalMode(value.mode);
+  const selectedTerminalId = optionalText(value.selectedTerminalId);
+  const selectionRevision =
+    value.selectionRevision === null || value.selectionRevision === undefined
+      ? 0
+      : integer(value.selectionRevision, "terminal.selectionRevision");
+  if (
+    selectionRevision < 0 ||
+    (selectedTerminalId !== null && selectionRevision === 0)
+  ) {
+    throw new Error("Invalid Linkly terminal selectionRevision.");
+  }
+  const terminals = Object.freeze(
+    value.terminals.map((candidate, index) => {
+      if (!isRecord(candidate)) {
+        throw new Error(`Invalid Linkly terminals[${index}].`);
+      }
+      const pairingState = requiredText(
+        candidate.pairingState,
+        `terminals[${index}].pairingState`,
+      );
+      if (!isLinklyPairingState(pairingState)) {
+        throw new Error(`Invalid Linkly terminals[${index}].pairingState.`);
+      }
+      return Object.freeze({
+        terminalId: requiredText(
+          candidate.terminalId,
+          `terminals[${index}].terminalId`,
+        ),
+        laneNo: integer(candidate.laneNo, `terminals[${index}].laneNo`),
+        displayName: requiredText(
+          candidate.displayName,
+          `terminals[${index}].displayName`,
+        ),
+        pairingState,
+        isBusy: candidate.isBusy === true,
+        isReady: candidate.isReady === true,
+        lastHealthStatus: optionalText(candidate.lastHealthStatus),
+        lastHealthAt: optionalText(candidate.lastHealthAt),
+      });
+    }),
+  );
+  if (
+    selectedTerminalId !== null &&
+    !terminals.some((terminal) => terminal.terminalId === selectedTerminalId)
+  ) {
+    throw new Error("Invalid Linkly selectedTerminalId.");
+  }
+  return Object.freeze({
+    environment,
+    mode,
+    selectedTerminalId,
+    selectionRevision,
+    terminals,
+  });
+}
+
+function normalizeTerminalMode(value: unknown): LinklyTerminalMode {
+  // 兼容尚未返回 mode 的旧服务；未知非空枚举保持失败关闭。
+  if (value === undefined || value === null || value === "") return "Legacy";
+  if (value === "Active" || value === "Legacy" || value === "Draft") {
+    return value;
+  }
+  throw new Error("Invalid Linkly terminal mode.");
+}
+
+function isLinklyPairingState(
+  value: string,
+): value is LinklyTerminalPairingState {
+  return (
+    value === "Unpaired" ||
+    value === "Ready" ||
+    value === "Unknown" ||
+    value === "NeedsRepair"
+  );
 }
 
 const LINKLY_CARD_TRANSACTION_KEYS = new Set([
@@ -608,7 +1007,12 @@ function integer(value: unknown, field: string): number { if (typeof value !== "
 function isNotFound(error: unknown): boolean { return error instanceof HbposApiError && (error.status === 404 || error.code === "LINKLY_CLOUD_BACKEND_SESSION_NOT_FOUND"); }
 function sessionNotFound(): HbposApiError { return new HbposApiError("Linkly session was not found.", { kind: "http", status: 404, code: "LINKLY_CLOUD_BACKEND_SESSION_NOT_FOUND" }); }
 function isCreateAmbiguous(error: unknown): boolean { return error instanceof HbposApiError && (error.kind === "transport" || error.status === 408 || (error.status !== undefined && error.status >= 500)); }
-function isActiveSessionConflict(error: unknown): boolean { return error instanceof HbposApiError && error.status === 409; }
+function isActiveSessionConflict(error: unknown): boolean { return error instanceof HbposApiError && error.status === 409 && error.code === "LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION"; }
+function isTerminalSelectionConflict(error: unknown): boolean { return error instanceof LinklyTerminalSelectionConflictError || (error instanceof HbposApiError && error.status === 409 && error.code === "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT"); }
+function isTerminalNotReadyConflict(error: unknown): boolean { return error instanceof HbposApiError && error.status === 409 && error.code === "LINKLY_CLOUD_TERMINAL_NOT_READY"; }
+function isPaymentAwareSelectionPort(port: LinklyTerminalSelectionPort): port is LinklyPaymentAwareTerminalSelectionPort { return "readTerminalsForPayment" in port && typeof port.readTerminalsForPayment === "function"; }
+function matchesPaymentSelection(snapshot: LinklyTerminalSelectionSnapshot, expected: LinklyPaymentTerminalSelectionExpectation): boolean { return snapshot.environment === expected.environment && snapshot.mode === expected.mode && (expected.mode !== "Active" || (snapshot.selectedTerminalId === expected.terminalId && snapshot.selectionRevision === expected.selectionRevision)); }
+class LinklyTerminalSelectionConflictError extends Error { public readonly code = "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT"; }
 function linklyProviderAmountCents(attempt: PaymentAttempt): number {
   const amount = paymentProviderAmountCents(attempt.operation, attempt.amount);
   if (amount === null) throw new Error("LINKLY_AMOUNT_INVALID");

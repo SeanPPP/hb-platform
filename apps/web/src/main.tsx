@@ -3,6 +3,7 @@ import 'antd/dist/reset.css'
 import './i18n'
 import './styles/global.css'
 import App from './App'
+import { registerChunkPreloadRecovery } from './router/chunkRecovery'
 import { reportRuntimeError } from './utils/centerLogClient'
 
 function registerGlobalErrorHandlers() {
@@ -22,6 +23,8 @@ function registerGlobalErrorHandlers() {
   })
 }
 
+// 必须在应用启动前注册，才能接住首个懒加载 chunk 的旧 hash 失败。
+registerChunkPreloadRecovery()
 registerGlobalErrorHandlers()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<App />)

@@ -13,12 +13,18 @@ import {
   getReportRefreshQueryOptions,
   type ReportTab,
 } from "@/modules/reports/report-refresh";
+import {
+  discardReportNavigationStart,
+  getPendingReportNavigationToken,
+  markReportNavigationStart,
+} from "@/modules/reports/report-load-performance";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 export function ReportsHubScreen() {
   const { t } = useAppTranslation("common");
   const [tab, setTab] = useState<ReportTab>("revenue");
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [focusNavigationActionId, setFocusNavigationActionId] = useState<number | null>(null);
   const queryClient = useQueryClient();
   const freshnessQuery = useStatisticsFreshnessQuery();
   const refetchFreshness = freshnessQuery.refetch;
@@ -56,7 +62,22 @@ export function ReportsHubScreen() {
     useCallback(() => {
       // Tab 路由会常驻，重新进入报告页时主动获取最新统计状态。
       void refetchFreshness();
-    }, [refetchFreshness]),
+      const navigationActionId = getPendingReportNavigationToken(tab);
+      setFocusNavigationActionId(navigationActionId);
+      if (navigationActionId === null) return;
+
+      // 常驻且已有缓存的报表不一定自动重新 query；显式刷新活动页签。
+      // 若 React Query 复用在途请求，计时器会在完整数据返回时延迟认领本次点击；
+      // 因此这里只在焦点会话结束时清理仍未认领的标记。
+      void queryClient
+        .refetchQueries(getReportRefreshQueryOptions(tab), REPORT_REFETCH_OPTIONS)
+        .catch(() => undefined);
+
+      return () => {
+        discardReportNavigationStart(tab, navigationActionId);
+        setFocusNavigationActionId((current) => current === navigationActionId ? null : current);
+      };
+    }, [queryClient, refetchFreshness, tab]),
   );
   const freshnessTime = formatStatisticsFreshnessTime(freshnessQuery.data?.lastSuccessfulAtUtc ?? null);
   const freshnessLabel = freshnessQuery.isError
@@ -69,6 +90,13 @@ export function ReportsHubScreen() {
     : freshnessQuery.data?.latestRunStatus === "Failed"
       ? t("reports.freshness.failed")
       : null;
+  const handleTabChange = useCallback((value: string) => {
+    if (value !== "revenue" && value !== "product") return;
+    if (value === tab) return;
+    // 先记录用户点击，再提交页签状态；新屏幕的首个 query 会一次性消费对应标记。
+    markReportNavigationStart(value);
+    setTab(value);
+  }, [tab]);
   return (
     <SafeAreaView style={styles.container} edges={["top", "left", "right"]}>
       <View style={styles.header}>
@@ -92,7 +120,7 @@ export function ReportsHubScreen() {
         </Text>
         <SegmentedButtons
           value={tab}
-          onValueChange={(value) => setTab(value as ReportTab)}
+          onValueChange={handleTabChange}
           buttons={[
             { value: "revenue", label: t("reports.sections.revenue") },
             { value: "product", label: t("reports.sections.product") },
@@ -101,8 +129,17 @@ export function ReportsHubScreen() {
       </View>
 
       {tab === "revenue"
-        ? <RevenueReportScreen embedded onRefreshReport={() => refreshController.refresh("revenue")} />
-        : <ProductReportScreen embedded onRefreshReport={() => refreshController.refresh("product")} />}
+        ? <RevenueReportScreen
+            embedded
+            freshnessLabel={freshnessLabel}
+            reportNavigationActionId={focusNavigationActionId}
+            onRefreshReport={() => refreshController.refresh("revenue")}
+          />
+        : <ProductReportScreen
+            embedded
+            reportNavigationActionId={focusNavigationActionId}
+            onRefreshReport={() => refreshController.refresh("product")}
+          />}
     </SafeAreaView>
   );
 }
@@ -113,9 +150,10 @@ const styles = StyleSheet.create({
     backgroundColor: "#F7F8FA",
   },
   header: {
-    gap: 12,
-    padding: 16,
-    paddingBottom: 8,
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 6,
   },
   title: {
     color: "#111827",

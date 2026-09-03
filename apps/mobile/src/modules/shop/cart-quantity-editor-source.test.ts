@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-const cartSource = readFileSync(resolve(process.cwd(), "app/(tabs)/cart.tsx"), "utf8");
+const cartSource = readFileSync(resolve(process.cwd(), "app/(shell)/cart.tsx"), "utf8");
 
 function assertIncludes(source: string, expected: string, message: string) {
   if (!source.includes(expected)) {

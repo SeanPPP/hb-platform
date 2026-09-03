@@ -12,6 +12,51 @@ public sealed class CardTerminalSetupServiceTests
     private const string LocalToken = "opaque-local-setup-token";
 
     [Fact]
+    public async Task Linkly_backend_terminal_directory_selection_and_pairing_delegate_without_credentials()
+    {
+        var terminalId = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        var backend = new FakeLinklyBackendTerminalClient
+        {
+            TerminalDirectory = new LinklyCloudTerminalListResponse(
+                "Sandbox",
+                terminalId,
+                3,
+                [new LinklyCloudTerminalSummary(terminalId, 1, "Front", "Unpaired", false, false, null, null)]),
+            TerminalSelection = new LinklyCloudTerminalSelectionResponse("Sandbox", terminalId, 4),
+            TerminalPairResult = new LinklyCloudTerminalPairResponse(
+                terminalId,
+                "Sandbox",
+                "Front",
+                "Ready",
+                true,
+                "Paired")
+        };
+        var service = new CardTerminalSetupService(
+            new FakeCardTerminalSettingsStore(),
+            new FakeSquareTerminalSetupClient(),
+            new FakeLinklyTerminalClient(),
+            linklyBackendTerminalClient: backend);
+
+        var directory = await service.ListLinklyCloudBackendTerminalsAsync(CardTerminalEnvironment.Sandbox);
+        var selection = await service.SelectLinklyCloudBackendTerminalAsync(
+            CardTerminalEnvironment.Sandbox,
+            terminalId,
+            expectedRevision: 3);
+        var pairing = await service.PairLinklyCloudBackendTerminalAsync(
+            CardTerminalEnvironment.Sandbox,
+            terminalId,
+            "123456");
+
+        Assert.Same(backend.TerminalDirectory, directory);
+        Assert.Same(backend.TerminalSelection, selection);
+        Assert.Same(backend.TerminalPairResult, pairing);
+        Assert.Equal(CardTerminalEnvironment.Sandbox, backend.LastTerminalEnvironment);
+        Assert.Equal(terminalId, backend.LastTerminalId);
+        Assert.Equal(3, backend.LastExpectedRevision);
+        Assert.Equal("123456", backend.LastPairCode);
+    }
+
+    [Fact]
     public async Task LogonLinklyAsync_delegates_to_local_terminal_client()
     {
         var expected = new LinklyLogonResult(true, "logged on", "00", "APPROVED");
@@ -715,11 +760,60 @@ public sealed class CardTerminalSetupServiceTests
 
     private sealed class FakeLinklyBackendTerminalClient : ILinklyBackendTerminalClient
     {
+        public LinklyCloudTerminalListResponse TerminalDirectory { get; init; } =
+            new("Sandbox", null, null, []);
+
+        public LinklyCloudTerminalSelectionResponse TerminalSelection { get; init; } =
+            new("Sandbox", Guid.Empty, 1);
+
+        public LinklyCloudTerminalPairResponse TerminalPairResult { get; init; } =
+            new(Guid.Empty, "Sandbox", string.Empty, "Unpaired", false, string.Empty);
+
+        public CardTerminalEnvironment? LastTerminalEnvironment { get; private set; }
+
+        public Guid? LastTerminalId { get; private set; }
+
+        public long? LastExpectedRevision { get; private set; }
+
+        public string? LastPairCode { get; private set; }
+
         public LinklyConnectionTestResult StatusTestResult { get; init; } = new(false, "status failed");
 
         public CardTerminalEnvironment? LastStatusTestEnvironment { get; private set; }
 
         public int StatusTestCallCount { get; private set; }
+
+        public Task<LinklyCloudTerminalListResponse> GetTerminalsAsync(
+            CardTerminalEnvironment environment,
+            CancellationToken cancellationToken = default)
+        {
+            LastTerminalEnvironment = environment;
+            return Task.FromResult(TerminalDirectory);
+        }
+
+        public Task<LinklyCloudTerminalSelectionResponse> SelectTerminalAsync(
+            CardTerminalEnvironment environment,
+            Guid terminalId,
+            long? expectedRevision,
+            CancellationToken cancellationToken = default)
+        {
+            LastTerminalEnvironment = environment;
+            LastTerminalId = terminalId;
+            LastExpectedRevision = expectedRevision;
+            return Task.FromResult(TerminalSelection);
+        }
+
+        public Task<LinklyCloudTerminalPairResponse> PairTerminalAsync(
+            CardTerminalEnvironment environment,
+            Guid terminalId,
+            string pairCode,
+            CancellationToken cancellationToken = default)
+        {
+            LastTerminalEnvironment = environment;
+            LastTerminalId = terminalId;
+            LastPairCode = pairCode;
+            return Task.FromResult(TerminalPairResult);
+        }
 
         public Task<LinklyConnectionTestResult> TestConnectionAsync(
             CardTerminalEnvironment environment,

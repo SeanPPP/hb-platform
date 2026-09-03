@@ -110,6 +110,7 @@ export type ProductionSettingsCompositionInput = Readonly<{
       provider: "square" | "linkly",
       input: SettingsPaymentSettingsInput,
       signal: AbortSignal,
+      terminals?: import("../../features/settings/settings-presenter").SettingsLinklyTerminalSelectionSnapshot | null,
     ): Promise<void>;
     save(input: SettingsPaymentSettingsInput): Promise<void>;
   }>;
@@ -250,11 +251,12 @@ export function createProductionSettingsComposition(
       },
     },
     payments: {
-      test: (provider, configuration, signal) =>
+      test: (provider, configuration, signal, terminals) =>
         input.paymentConfiguration.test(
           provider,
           configuration,
           signal,
+          terminals,
         ),
     },
     paymentConfiguration: {
@@ -266,6 +268,12 @@ export function createProductionSettingsComposition(
       ? {
           linklySetup: {
             pair: input.linklySetup.pair.bind(input.linklySetup),
+            ...(input.linklySetup.selectTerminal
+              ? {
+                  selectTerminal:
+                    input.linklySetup.selectTerminal.bind(input.linklySetup),
+                }
+              : {}),
           },
         }
       : {}),
@@ -390,6 +398,20 @@ export function createProductionSettingsComposition(
       ? {
           linklySetup: Object.freeze({
             readState: input.linklySetup.readState.bind(input.linklySetup),
+            ...(input.linklySetup.readTerminals
+              ? {
+                  readTerminals:
+                    input.linklySetup.readTerminals.bind(input.linklySetup),
+                }
+              : {}),
+            ...(input.linklySetup.selectTerminal
+              ? {
+                  selectTerminal:
+                    productionControl.selectLinklyTerminalGuarded.bind(
+                      productionControl,
+                    ),
+                }
+              : {}),
           }),
         }
       : {}),

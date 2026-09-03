@@ -12,6 +12,425 @@ namespace Hbpos.Client.Tests;
 public sealed class LinklyBackendTerminalClientTests
 {
     [Fact]
+    public async Task GetTerminalsAsync_returns_safe_terminal_directory_and_caches_selection()
+    {
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            Assert.Equal(HttpMethod.Get, request.Method);
+            Assert.Equal(
+                "/api/v1/linkly/cloud-backend/terminals?environment=Sandbox",
+                request.RequestUri!.PathAndQuery);
+            return JsonResponse(
+                """
+                {
+                  "success": true,
+                  "data": {
+                    "environment": "Sandbox",
+                    "mode": "Active",
+                    "selectedTerminalId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                    "selectionRevision": 7,
+                    "terminals": [
+                      {
+                        "terminalId": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                        "laneNo": 1,
+                        "displayName": "Front Counter",
+                        "pairingState": "Ready",
+                        "isBusy": false,
+                        "isReady": true,
+                        "lastHealthStatus": "Healthy",
+                        "lastHealthAt": "2026-09-02T00:00:00Z"
+                      }
+                    ]
+                  }
+                }
+                """);
+        }, passHealthRequestsToHandler: true);
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.GetTerminalsAsync(CardTerminalEnvironment.Sandbox);
+
+        Assert.Equal(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), result.SelectedTerminalId);
+        Assert.Equal("Active", result.Mode);
+        Assert.Equal(7, result.SelectionRevision);
+        var terminal = Assert.Single(result.Terminals);
+        Assert.Equal(1, terminal.LaneNo);
+        Assert.Equal("Front Counter", terminal.DisplayName);
+        Assert.True(terminal.IsReady);
+    }
+
+    [Fact]
+    public async Task SelectTerminalAsync_puts_expected_revision_and_updates_cached_selection()
+    {
+        HttpRequestMessage? captured = null;
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            captured = CloneRequestWithBody(request);
+            return JsonResponse(
+                """
+                {
+                  "success": true,
+                  "data": {
+                    "environment": "Sandbox",
+                    "terminalId": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+                    "revision": 8
+                  }
+                }
+                """);
+        }, passHealthRequestsToHandler: true);
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.SelectTerminalAsync(
+            CardTerminalEnvironment.Sandbox,
+            Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            expectedRevision: 7);
+
+        Assert.NotNull(captured);
+        Assert.Equal(HttpMethod.Put, captured.Method);
+        Assert.Equal("/api/v1/linkly/cloud-backend/terminal-selection", captured.RequestUri!.AbsolutePath);
+        var body = await captured.Content!.ReadAsStringAsync();
+        Assert.Equal("Sandbox", ReadJsonString(body, "environment"));
+        Assert.Equal("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", ReadJsonString(body, "terminalId"));
+        Assert.Equal("7", ReadJsonString(body, "expectedRevision"));
+        Assert.Equal(8, result.Revision);
+    }
+
+    [Fact]
+    public async Task PairTerminalAsync_posts_only_environment_and_pair_code()
+    {
+        HttpRequestMessage? captured = null;
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            captured = CloneRequestWithBody(request);
+            return JsonResponse(
+                """
+                {
+                  "success": true,
+                  "data": {
+                    "terminalId": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+                    "environment": "Sandbox",
+                    "displayName": "Lane 3",
+                    "pairingState": "Ready",
+                    "isReady": true,
+                    "message": "Paired"
+                  }
+                }
+                """);
+        }, passHealthRequestsToHandler: true);
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.PairTerminalAsync(
+            CardTerminalEnvironment.Sandbox,
+            Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            "123456");
+
+        Assert.NotNull(captured);
+        Assert.Equal(HttpMethod.Post, captured.Method);
+        Assert.Equal(
+            "/api/v1/linkly/cloud-backend/terminals/cccccccc-cccc-cccc-cccc-cccccccccccc/pair",
+            captured.RequestUri!.AbsolutePath);
+        var body = await captured.Content!.ReadAsStringAsync();
+        using var json = JsonDocument.Parse(body);
+        Assert.Equal(["environment", "pairCode"], json.RootElement.EnumerateObject().Select(item => item.Name).Order().ToArray());
+        Assert.Equal("Sandbox", json.RootElement.GetProperty("environment").GetString());
+        Assert.Equal("123456", json.RootElement.GetProperty("pairCode").GetString());
+        Assert.True(result.IsReady);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_includes_cached_terminal_id_and_selection_revision()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/terminals" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "mode": "Active",
+                        "selectedTerminalId": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+                        "selectionRevision": 11,
+                        "terminals": [{
+                          "terminalId": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+                          "laneNo": 2,
+                          "displayName": "Side Counter",
+                          "pairingState": "Ready",
+                          "isBusy": false,
+                          "isReady": true,
+                          "lastHealthStatus": "Healthy",
+                          "lastHealthAt": null
+                        }]
+                      }
+                    }
+                    """),
+                "/api/v1/linkly/cloud-backend/health" => ReadyHealthResponse(),
+                "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(PendingSessionJson("terminal-session", "TXN-TERMINAL")),
+                "/api/v1/linkly/cloud-backend/transactions/terminal-session/status" => JsonResponse(ApprovedSessionJson("terminal-session", "TXN-TERMINAL")),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        }, passHealthRequestsToHandler: true);
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        await client.GetTerminalsAsync(CardTerminalEnvironment.Sandbox);
+        await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        var start = Assert.Single(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/transactions", StringComparison.Ordinal));
+        var body = await start.Content!.ReadAsStringAsync();
+        Assert.Equal("dddddddd-dddd-dddd-dddd-dddddddddddd", ReadJsonString(body, "terminalId"));
+        Assert.Equal("11", ReadJsonString(body, "selectionRevision"));
+        var health = Assert.Single(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/health", StringComparison.Ordinal));
+        Assert.Contains("terminalId=dddddddd-dddd-dddd-dddd-dddddddddddd", health.RequestUri!.Query, StringComparison.Ordinal);
+        Assert.Contains("selectionRevision=11", health.RequestUri.Query, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_keeps_payment_bound_to_terminal_confirmed_before_background_refresh()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var directoryCalls = 0;
+        var healthCalls = 0;
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/terminals", StringComparison.Ordinal))
+            {
+                directoryCalls++;
+                var terminalId = directoryCalls == 1
+                    ? "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+                    : "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+                var revision = directoryCalls == 1 ? 7 : 8;
+                return JsonResponse($$"""
+                {
+                  "success": true,
+                  "data": {
+                    "environment": "Sandbox",
+                    "mode": "Active",
+                    "selectedTerminalId": "{{terminalId}}",
+                    "selectionRevision": {{revision}},
+                    "terminals": []
+                  }
+                }
+                """);
+            }
+
+            if (path.EndsWith("/health", StringComparison.Ordinal))
+            {
+                healthCalls++;
+                return healthCalls == 1
+                    ? JsonResponse(
+                        """
+                        { "success": false, "errorCode": "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT", "message": "Selection changed." }
+                        """,
+                        HttpStatusCode.Conflict)
+                    : ReadyHealthResponse();
+            }
+
+            return path switch
+            {
+                "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(PendingSessionJson("snapshot-session", "TXN-SNAPSHOT")),
+                "/api/v1/linkly/cloud-backend/transactions/snapshot-session/status" => JsonResponse(ApprovedSessionJson("snapshot-session", "TXN-SNAPSHOT")),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        }, passHealthRequestsToHandler: true);
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        await client.GetTerminalsAsync(CardTerminalEnvironment.Sandbox);
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.True(result.Approved);
+        Assert.Equal(2, directoryCalls);
+        var start = Assert.Single(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/transactions", StringComparison.Ordinal));
+        var body = await start.Content!.ReadAsStringAsync();
+        Assert.Equal("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", ReadJsonString(body, "terminalId"));
+        Assert.Equal("7", ReadJsonString(body, "selectionRevision"));
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_does_not_adopt_terminal_loaded_after_payment_started()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/health", StringComparison.Ordinal) &&
+                !request.RequestUri.Query.Contains("terminalId=", StringComparison.Ordinal))
+            {
+                return JsonResponse(
+                    """
+                    {
+                      "success": false,
+                      "errorCode": "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+                      "message": "Terminal selection is required."
+                    }
+                    """,
+                    HttpStatusCode.Conflict);
+            }
+
+            return path switch
+            {
+                "/api/v1/linkly/cloud-backend/terminals" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "mode": "Active",
+                        "selectedTerminalId": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+                        "selectionRevision": 21,
+                        "terminals": [{
+                          "terminalId": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+                          "laneNo": 4,
+                          "displayName": "Cold Start Counter",
+                          "pairingState": "Ready",
+                          "isBusy": false,
+                          "isReady": true,
+                          "lastHealthStatus": "Healthy",
+                          "lastHealthAt": null
+                        }]
+                      }
+                    }
+                    """),
+                "/api/v1/linkly/cloud-backend/health" => ReadyHealthResponse(),
+                "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(PendingSessionJson("cold-session", "TXN-COLD")),
+                "/api/v1/linkly/cloud-backend/transactions/cold-session/status" => JsonResponse(ApprovedSessionJson("cold-session", "TXN-COLD")),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        }, passHealthRequestsToHandler: true);
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.True(result.Approved);
+        var healthRequests = requests
+            .Where(request => request.RequestUri!.AbsolutePath.EndsWith("/health", StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(2, healthRequests.Length);
+        Assert.DoesNotContain("terminalId=", healthRequests[0].RequestUri!.Query, StringComparison.Ordinal);
+        Assert.Contains("terminalId=ffffffff-ffff-ffff-ffff-ffffffffffff", healthRequests[1].RequestUri!.Query, StringComparison.Ordinal);
+        Assert.Contains("selectionRevision=21", healthRequests[1].RequestUri!.Query, StringComparison.Ordinal);
+        var start = Assert.Single(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/transactions", StringComparison.Ordinal));
+        var body = await start.Content!.ReadAsStringAsync();
+        using var transactionJson = JsonDocument.Parse(body);
+        Assert.False(transactionJson.RootElement.TryGetProperty("terminalId", out _));
+        Assert.False(transactionJson.RootElement.TryGetProperty("selectionRevision", out _));
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_keeps_legacy_payload_until_multi_terminal_mode_is_active()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/terminals" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "mode": "Draft",
+                        "selectedTerminalId": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+                        "selectionRevision": 4,
+                        "terminals": [{
+                          "terminalId": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+                          "laneNo": 3,
+                          "displayName": "Draft Counter",
+                          "pairingState": "Ready",
+                          "isBusy": false,
+                          "isReady": true,
+                          "lastHealthStatus": "Healthy",
+                          "lastHealthAt": null
+                        }]
+                      }
+                    }
+                    """),
+                "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(PendingSessionJson("draft-session", "TXN-DRAFT")),
+                "/api/v1/linkly/cloud-backend/transactions/draft-session/status" => JsonResponse(ApprovedSessionJson("draft-session", "TXN-DRAFT")),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        await client.GetTerminalsAsync(CardTerminalEnvironment.Sandbox);
+        await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        var start = Assert.Single(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/transactions", StringComparison.Ordinal));
+        var body = await start.Content!.ReadAsStringAsync();
+        using var json = JsonDocument.Parse(body);
+        Assert.False(json.RootElement.TryGetProperty("terminalId", out _));
+        Assert.False(json.RootElement.TryGetProperty("selectionRevision", out _));
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_selection_conflict_refreshes_directory_without_replaying_payment()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/transactions/active" =>
+                    new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(
+                    """
+                    {
+                      "success": false,
+                      "errorCode": "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+                      "message": "Terminal selection changed."
+                    }
+                    """,
+                    HttpStatusCode.Conflict),
+                "/api/v1/linkly/cloud-backend/terminals" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "mode": "Active",
+                        "selectedTerminalId": "12121212-1212-4212-8212-121212121212",
+                        "selectionRevision": 44,
+                        "terminals": [{
+                          "terminalId": "12121212-1212-4212-8212-121212121212",
+                          "laneNo": 1,
+                          "displayName": "Updated Counter",
+                          "pairingState": "Ready",
+                          "isBusy": false,
+                          "isReady": true,
+                          "lastHealthStatus": "Healthy",
+                          "lastHealthAt": null
+                        }]
+                      }
+                    }
+                    """),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("linkly.backend.terminalSelectionChanged", result.StatusKey);
+        Assert.Single(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/transactions", StringComparison.Ordinal));
+        Assert.Single(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/transactions/active", StringComparison.Ordinal));
+        Assert.Single(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/terminals", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task SettlementAsync_returns_not_submitted_when_cancelled_before_any_backend_request()
     {
         var client = CreateClient(
@@ -91,6 +510,90 @@ public sealed class LinklyBackendTerminalClientTests
             start => Assert.Equal("https://api.example/api/v1/linkly/cloud-backend/settlements", start.RequestUri!.AbsoluteUri));
         var startBody = await requests[1].Content!.ReadAsStringAsync();
         Assert.Equal("Sandbox", ReadJsonString(startBody, "environment"));
+    }
+
+    [Fact]
+    public async Task SettlementAsync_refreshes_active_terminal_scope_when_client_cache_is_cold()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var settlementStarts = 0;
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/settlements/resumable" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/terminals" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "mode": "Active",
+                        "selectedTerminalId": "abababab-abab-abab-abab-abababababab",
+                        "selectionRevision": 31,
+                        "terminals": [{
+                          "terminalId": "abababab-abab-abab-abab-abababababab",
+                          "laneNo": 5,
+                          "displayName": "Daily Close Counter",
+                          "pairingState": "Ready",
+                          "isBusy": false,
+                          "isReady": true,
+                          "lastHealthStatus": "Healthy",
+                          "lastHealthAt": null
+                        }]
+                      }
+                    }
+                    """),
+                "/api/v1/linkly/cloud-backend/settlements" when ++settlementStarts == 1 => JsonResponse(
+                    """
+                    {
+                      "success": false,
+                      "errorCode": "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+                      "message": "Terminal selection is required."
+                    }
+                    """,
+                    HttpStatusCode.Conflict),
+                "/api/v1/linkly/cloud-backend/settlements" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "terminalId": "abababab-abab-abab-abab-abababababab",
+                        "terminalDisplayName": "Daily Close Counter",
+                        "sessionId": "settlement-cold",
+                        "status": "Completed",
+                        "responseCode": "00",
+                        "responseText": "SETTLED",
+                        "operationType": "Settlement",
+                        "operationSuccess": true,
+                        "settlementData": "TOTAL=20.00",
+                        "settlementReceiptTexts": ["SETTLEMENT", "TOTAL $20.00"],
+                        "notifications": []
+                      }
+                    }
+                    """),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.SettlementAsync(CreateSession(), CreateSettings());
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(2, settlementStarts);
+        var starts = requests
+            .Where(request => request.RequestUri!.AbsolutePath.EndsWith("/settlements", StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(2, starts.Length);
+        var firstBody = await starts[0].Content!.ReadAsStringAsync();
+        Assert.Null(TryReadJsonString(firstBody, "terminalId"));
+        var retryBody = await starts[1].Content!.ReadAsStringAsync();
+        Assert.Equal("abababab-abab-abab-abab-abababababab", ReadJsonString(retryBody, "terminalId"));
+        Assert.Equal("31", ReadJsonString(retryBody, "selectionRevision"));
     }
 
     [Theory]
@@ -426,6 +929,88 @@ public sealed class LinklyBackendTerminalClientTests
         Assert.Equal("POST", requestLog.RootElement.GetProperty("request").GetProperty("method").GetString());
         using var responseLog = FindLinklyLog(logs.Lines, "logon-test", "response");
         Assert.Equal("00", responseLog.RootElement.GetProperty("response").GetProperty("body").GetProperty("data").GetProperty("responseCode").GetString());
+    }
+
+    [Fact]
+    public async Task TestConnectionAsync_refreshes_and_retries_safe_logon_with_active_terminal_scope()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            var path = request.RequestUri!.AbsolutePath;
+            if (path.EndsWith("/logon-test", StringComparison.Ordinal)
+                && !request.RequestUri.Query.Contains("terminalId=", StringComparison.Ordinal))
+            {
+                return JsonResponse(
+                    """
+                    {
+                      "success": false,
+                      "errorCode": "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+                      "message": "Terminal selection is required."
+                    }
+                    """,
+                    HttpStatusCode.Conflict);
+            }
+
+            return path switch
+            {
+                "/api/v1/linkly/cloud-backend/terminals" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "mode": "Active",
+                        "selectedTerminalId": "34343434-3434-4434-8434-343434343434",
+                        "selectionRevision": 52,
+                        "terminals": [{
+                          "terminalId": "34343434-3434-4434-8434-343434343434",
+                          "laneNo": 2,
+                          "displayName": "Logon Counter",
+                          "pairingState": "Ready",
+                          "isBusy": false,
+                          "isReady": true,
+                          "lastHealthStatus": "Healthy",
+                          "lastHealthAt": null
+                        }]
+                      }
+                    }
+                    """),
+                "/api/v1/linkly/cloud-backend/logon-test" => JsonResponse(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "environment": "Sandbox",
+                        "storeCode": "S01",
+                        "deviceCode": "TERM-1",
+                        "transactionReference": "logon-terminal-session",
+                        "requestedAt": "2026-09-02T00:00:00Z",
+                        "httpStatus": 200,
+                        "succeeded": true,
+                        "responseCode": "00",
+                        "responseText": "APPROVED",
+                        "transactionSuccess": true,
+                        "message": "Logon succeeded."
+                      }
+                    }
+                    """),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.TestConnectionAsync(CardTerminalEnvironment.Sandbox);
+
+        Assert.True(result.Succeeded);
+        var logonRequests = requests
+            .Where(request => request.RequestUri!.AbsolutePath.EndsWith("/logon-test", StringComparison.Ordinal))
+            .ToArray();
+        Assert.Equal(2, logonRequests.Length);
+        Assert.DoesNotContain("terminalId=", logonRequests[0].RequestUri!.Query, StringComparison.Ordinal);
+        Assert.Contains("terminalId=34343434-3434-4434-8434-343434343434", logonRequests[1].RequestUri!.Query, StringComparison.Ordinal);
+        Assert.Contains("selectionRevision=52", logonRequests[1].RequestUri!.Query, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -2640,6 +3225,38 @@ public sealed class LinklyBackendTerminalClientTests
     }
 
     [Fact]
+    public async Task PurchaseAsync_does_not_start_new_transaction_after_preflight_takeover_succeeds()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var takeoverCount = 0;
+        var accessor = new LinklyPaymentAttemptContextAccessor();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return JsonResponse(PendingSessionJson("preflight-active-1", "TXN-PREVIOUS"));
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService(), TimeSpan.Zero, null, null, accessor);
+        using var scope = accessor.Begin(new LinklyPaymentAttemptContext(
+            Guid.Parse("bbbbbbbb-cccc-dddd-eeee-ffffffffffff"),
+            (_, _, _, _) => Task.CompletedTask,
+            TakeOverActiveSessionAsync: (_, _, _) =>
+            {
+                takeoverCount++;
+                return Task.FromResult(LinklyActiveSessionTakeoverResult.Success);
+            }));
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("linkly.backend.activeSessionRequiresRecovery", result.StatusKey);
+        Assert.Equal(1, takeoverCount);
+        Assert.DoesNotContain(requests, request =>
+            request.Method == HttpMethod.Post &&
+            request.RequestUri!.AbsolutePath.EndsWith("/transactions", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task PurchaseAsync_rejects_active_session_after_conflict_without_generic_backend_failure()
     {
         var requests = new List<HttpRequestMessage>();
@@ -2653,6 +3270,7 @@ public sealed class LinklyBackendTerminalClientTests
                     """
                     {
                       "success": false,
+                      "errorCode": "LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION",
                       "message": "Active session exists."
                     }
                     """,
@@ -2698,6 +3316,35 @@ public sealed class LinklyBackendTerminalClientTests
         Assert.True(finalState.IsFinal);
         Assert.Contains("unfinished card transaction", finalState.DisplayText, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(1, dialog.CloseCallCount);
+    }
+
+    [Fact]
+    public async Task PurchaseAsync_unknown_conflict_does_not_take_over_or_replay_transaction()
+    {
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHttpMessageHandler(request =>
+        {
+            requests.Add(CloneRequestWithBody(request));
+            return request.RequestUri!.AbsolutePath switch
+            {
+                "/api/v1/linkly/cloud-backend/transactions/active" => new HttpResponseMessage(HttpStatusCode.NotFound),
+                "/api/v1/linkly/cloud-backend/transactions" => JsonResponse(
+                    """
+                    { "success": false, "message": "Conflict without an error code." }
+                    """,
+                    HttpStatusCode.Conflict),
+                _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
+            };
+        });
+        var client = CreateClient(handler, new FakeLinklyTerminalDialogService());
+
+        var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
+
+        Assert.False(result.Approved);
+        Assert.False(result.ResultUnknown);
+        Assert.Equal("linkly.backend.terminalSelectionChanged", result.StatusKey);
+        Assert.Single(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/transactions", StringComparison.Ordinal));
+        Assert.Single(requests, request => request.RequestUri!.AbsolutePath.EndsWith("/transactions/active", StringComparison.Ordinal));
     }
 
     [Fact]

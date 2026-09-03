@@ -43,11 +43,12 @@ function runtime(trace: string[]): MobileOtaUpdatesRuntimePort {
   };
 }
 
-test("只在命中策略后临时 override，check/fetch 双验证后才标记已下载", async () => {
+test("下载后恢复当前 channel，用户确认 reload 时才切换并保留目标 channel", async () => {
   const trace: string[] = [];
   const port = new MobileOtaUpdatePort({
     enabled: true,
     runtimeVersion: "1.0.2",
+    currentChannel: "production",
     updates: runtime(trace),
   });
 
@@ -56,14 +57,20 @@ test("只在命中策略后临时 override，check/fetch 双验证后才标记�
     reason: null,
   });
   assert.deepEqual(trace, [
-    "clear",
     `set:${decision.releaseChannel}`,
     "check",
     "fetch",
-    "clear",
+    "set:production",
   ]);
   await port.reload();
-  assert.equal(trace.at(-1), "reload");
+  assert.deepEqual(trace, [
+    `set:${decision.releaseChannel}`,
+    "check",
+    "fetch",
+    "set:production",
+    `set:${decision.releaseChannel}`,
+    "reload",
+  ]);
 });
 
 test("check 或 fetch 任一 manifest 的 runtime/updateId 不匹配均拒绝", async () => {
@@ -72,6 +79,7 @@ test("check 或 fetch 任一 manifest 的 runtime/updateId 不匹配均拒绝", 
     const port = new MobileOtaUpdatePort({
       enabled: true,
       runtimeVersion: decision.runtimeVersion,
+      currentChannel: "production",
       updates: {
         setUpdateRequestHeadersOverride() {},
         async checkForUpdateAsync() {
@@ -107,18 +115,16 @@ test("check 或 fetch 任一 manifest 的 runtime/updateId 不匹配均拒绝", 
   }
 });
 
-test("override 清理失败优先 fail-closed，绝不允许 reload", async () => {
-  let overrideSet = false;
+test("下载成功后旧 channel 恢复失败也 fail-closed", async () => {
   let reloads = 0;
   const port = new MobileOtaUpdatePort({
     enabled: true,
     runtimeVersion: decision.runtimeVersion,
+    currentChannel: "production",
     updates: {
       setUpdateRequestHeadersOverride(headers) {
-        if (headers) {
-          overrideSet = true;
-        } else if (overrideSet) {
-          throw new Error("clear failed");
+        if (headers?.["expo-channel-name"] === "production") {
+          throw new Error("restore failed");
         }
       },
       async checkForUpdateAsync() {
@@ -141,62 +147,48 @@ test("override 清理失败优先 fail-closed，绝不允许 reload", async () =
 
   assert.deepEqual(await port.download(decision), {
     state: "rejected",
-    reason: "channel-clear-failed",
+    reason: "channel-restore-failed",
   });
   await assert.rejects(() => port.reload(), /not ready/i);
   assert.equal(reloads, 0);
 });
 
-test("冷启动清理首次失败后，用户下载重试会先重新清理并在成功后继续", async () => {
+test("下载不可用时恢复当前正在运行的唯一 channel", async () => {
   const trace: string[] = [];
-  let clearAttempts = 0;
-  const updates = runtime(trace);
-  const originalSetOverride = updates.setUpdateRequestHeadersOverride;
-  updates.setUpdateRequestHeadersOverride = (headers) => {
-    if (!headers) {
-      clearAttempts += 1;
-      trace.push(`clear-attempt:${clearAttempts}`);
-      if (clearAttempts === 1) throw new Error("startup clear failed once");
-      return;
-    }
-    originalSetOverride(headers);
-  };
+  const currentChannel = "mobile-production-android-release-previous";
   const port = new MobileOtaUpdatePort({
     enabled: true,
     runtimeVersion: decision.runtimeVersion,
-    updates,
+    currentChannel,
+    updates: {
+      ...runtime(trace),
+      async checkForUpdateAsync() {
+        trace.push("check");
+        return { isAvailable: false };
+      },
+    },
   });
 
   assert.deepEqual(await port.download(decision), {
-    state: "downloaded",
-    reason: null,
+    state: "unavailable",
+    reason: "not-available",
   });
   assert.deepEqual(trace, [
-    "clear-attempt:1",
-    "clear-attempt:2",
     `set:${decision.releaseChannel}`,
     "check",
-    "fetch",
-    "clear-attempt:3",
+    `set:${currentChannel}`,
   ]);
 });
 
-test("冷启动清理重试仍失败时不 check/reload，下一次下载仍可再次清理恢复", async () => {
+test("reload 失败时恢复原 channel，并要求重新下载后才能再次 reload", async () => {
   const trace: string[] = [];
-  let clearAttempts = 0;
-  let reloads = 0;
   const port = new MobileOtaUpdatePort({
     enabled: true,
     runtimeVersion: decision.runtimeVersion,
+    currentChannel: "production",
     updates: {
       setUpdateRequestHeadersOverride(headers) {
-        if (headers) {
-          trace.push(`set:${headers["expo-channel-name"]}`);
-          return;
-        }
-        clearAttempts += 1;
-        trace.push(`clear-attempt:${clearAttempts}`);
-        if (clearAttempts <= 2) throw new Error("clear still failed");
+        trace.push(headers ? `set:${headers["expo-channel-name"]}` : "clear");
       },
       async checkForUpdateAsync() {
         trace.push("check");
@@ -213,30 +205,26 @@ test("冷启动清理重试仍失败时不 check/reload，下一次下载仍可�
         };
       },
       async reloadAsync() {
-        reloads += 1;
+        trace.push("reload");
+        throw new Error("reload failed");
       },
     },
   });
 
   assert.deepEqual(await port.download(decision), {
-    state: "rejected",
-    reason: "channel-clear-failed",
-  });
-  assert.deepEqual(trace, ["clear-attempt:1", "clear-attempt:2"]);
-  assert.equal(reloads, 0);
-
-  assert.deepEqual(await port.download(decision), {
     state: "downloaded",
     reason: null,
   });
+  assert.equal(port.isReady(decision), true);
+  await assert.rejects(() => port.reload(), /reload failed/);
+  assert.equal(port.isReady(decision), false);
   assert.deepEqual(trace, [
-    "clear-attempt:1",
-    "clear-attempt:2",
-    "clear-attempt:3",
     `set:${decision.releaseChannel}`,
     "check",
     "fetch",
-    "clear-attempt:4",
+    "set:production",
+    `set:${decision.releaseChannel}`,
+    "reload",
+    "set:production",
   ]);
-  assert.equal(reloads, 0);
 });

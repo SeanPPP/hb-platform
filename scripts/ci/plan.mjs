@@ -187,6 +187,9 @@ export function buildMatrices(selected, { timeout = 15 } = {}) {
     if (component === 'pos-ipad') {
       macos.push({ component: 'pos-ipad-native' })
     }
+    if (component === 'mobile') {
+      android.push({ component: 'mobile-android' })
+    }
     if (component === 'pos-handheld') {
       macos.push({
         component: 'pos-handheld-native',

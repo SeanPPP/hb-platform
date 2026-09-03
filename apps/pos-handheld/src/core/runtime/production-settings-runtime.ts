@@ -1,10 +1,12 @@
 import {
   SettingsPresenter,
+  type PaymentEnvironment,
   type SettingsClearSavedPrinterResult,
   type SettingsControlPort,
   type SettingsDangerousActionResult,
   type SettingsDangerousConfirmation,
   type SettingsLinklySetupReadPort,
+  type SettingsLinklyTerminalSelectionSnapshot,
   type SettingsSquareSetupControlPort,
 } from "../../features/settings/settings-presenter";
 import type { SettingsRuntimeFactory } from "../../features/settings/settings-runtime";
@@ -49,6 +51,15 @@ type LeaseAwareSettingsControlPort = SettingsControlPort &
           signal: AbortSignal,
           assertActive?: () => void,
         ) => Promise<SettingsClearSavedPrinterResult>)
+      | undefined;
+    selectLinklyTerminalGuarded?:
+      | ((
+          environment: PaymentEnvironment,
+          terminalId: string,
+          expectedRevision: number,
+          signal: AbortSignal,
+          assertActive?: () => void,
+        ) => Promise<SettingsLinklyTerminalSelectionSnapshot>)
       | undefined;
   }>;
 
@@ -203,12 +214,47 @@ function securedSettingsPort(
       : {}),
     ...(linklySetup
       ? {
-          // 配对没有直接 mutation 端口；危险 pair 只通过 executeDangerousAction。
+          // Pair 只走危险动作；终端选择必须走 production control 的共享门禁。
           linklySetup: Object.freeze({
             readState: (
               environment: Parameters<SettingsLinklySetupReadPort["readState"]>[0],
               signal: Parameters<SettingsLinklySetupReadPort["readState"]>[1],
-            ) => run(() => linklySetup.readState(environment, signal)),
+              terminals?: Parameters<SettingsLinklySetupReadPort["readState"]>[2],
+            ) =>
+              run(() =>
+                linklySetup.readState(environment, signal, terminals),
+              ),
+            ...(linklySetup.readTerminals
+              ? {
+                  readTerminals: (
+                    environment: PaymentEnvironment,
+                    signal: AbortSignal,
+                  ) =>
+                    run(() =>
+                      linklySetup.readTerminals!(environment, signal),
+                    ),
+                }
+              : {}),
+            ...(linklySetup.selectTerminal &&
+            leaseAwareControl.selectLinklyTerminalGuarded
+              ? {
+                  selectTerminal: (
+                    environment: PaymentEnvironment,
+                    terminalId: string,
+                    expectedRevision: number,
+                    signal: AbortSignal,
+                  ) => {
+                    assertSameSession(lease.get(), identity);
+                    return leaseAwareControl.selectLinklyTerminalGuarded!(
+                      environment,
+                      terminalId,
+                      expectedRevision,
+                      signal,
+                      () => assertSameSession(lease.get(), identity),
+                    );
+                  },
+                }
+              : {}),
           }),
         }
       : {}),
@@ -252,12 +298,13 @@ function securedSettingsPort(
       : {}),
     preflightDeviceReregistration: (signal) =>
       run(() => input.control.preflightDeviceReregistration(signal)),
-    testPaymentProvider: (provider, settings, signal) =>
+    testPaymentProvider: (provider, settings, signal, terminals) =>
       run(() =>
         input.control.testPaymentProvider(
           provider,
           settings,
           signal,
+          terminals,
         ),
       ),
     savePrinterSettings: (settings, signal) =>

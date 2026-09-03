@@ -226,7 +226,7 @@ export function ContainerListScreen() {
       return;
     }
 
-    router.navigate("/(tabs)/warehouse");
+    router.navigate("/(shell)/warehouse");
   }, [router]);
 
   const invalidateList = () => queryClient.invalidateQueries({ queryKey: ["containers"] });

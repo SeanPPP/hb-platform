@@ -222,7 +222,7 @@ export default function PosTerminalPermissionsScreen() {
       router.back();
       return;
     }
-    router.replace("/(tabs)/users");
+    router.replace("/(shell)/users");
   }, [router]);
 
   const groupedPermissions = useMemo(

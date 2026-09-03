@@ -665,7 +665,10 @@ test("Linkly 配对走 transition bypass，health 读取走 lease，POST 后不�
   await presenter.load();
   events.length = 0;
 
-  assert.equal(presenter.requestLinklyPair("123456"), true);
+  assert.equal(
+    presenter.requestLinklyPair("terminal-1", "123456"),
+    true,
+  );
   await presenter.confirmDangerousAction();
 
   assert.equal(presenter.getState().statusCode, "linkly-paired");

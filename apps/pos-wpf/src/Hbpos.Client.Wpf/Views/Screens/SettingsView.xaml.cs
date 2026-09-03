@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Windows.Controls;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
+using Hbpos.Contracts.Linkly;
 
 namespace Hbpos.Client.Wpf.Views.Screens;
 
@@ -115,6 +116,46 @@ public partial class SettingsView : UserControl
         _viewModel?.RaiseLinklyCloudPasswordInputChanged(hasPassword: false);
     }
 
+    private async void LinklyCloudTerminal_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_viewModel is null || e.AddedItems.OfType<LinklyCloudTerminalSummary>().FirstOrDefault() is not { } terminal)
+        {
+            return;
+        }
+
+        try
+        {
+            await _viewModel.SelectLinklyCloudBackendTerminalAsync(terminal);
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.WriteError(
+                "Settings",
+                $"select linkly cloud terminal failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
+    }
+
+    private async void RefreshLinklyCloudTerminals_Click(object sender, System.Windows.RoutedEventArgs e)
+    {
+        if (_viewModel is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _viewModel.RefreshLinklyCloudBackendTerminalsAsync();
+        }
+        catch (Exception ex)
+        {
+            ConsoleLog.WriteError(
+                "Settings",
+                $"refresh linkly cloud terminals failed error={ex.GetType().Name} message={ex.Message}",
+                exception: ex);
+        }
+    }
+
     private void AttachViewModel(SettingsViewModel? viewModel)
     {
         if (ReferenceEquals(_viewModel, viewModel))
@@ -148,18 +189,12 @@ public partial class SettingsView : UserControl
 
     private string GetCurrentLinklyCloudPassword()
     {
-        if (_viewModel?.IsLinklyCloudBackendAsyncMode == true)
-        {
-            return LinklyCloudBackendPasswordBox.Password;
-        }
-
         return LinklyCloudPasswordBox.Password;
     }
 
     private void ClearLinklyCloudPasswordBoxes()
     {
         ClearPasswordBox(LinklyCloudPasswordBox);
-        ClearPasswordBox(LinklyCloudBackendPasswordBox);
     }
 
     private static void ClearPasswordBox(PasswordBox passwordBox)
