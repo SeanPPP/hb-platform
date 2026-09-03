@@ -69,11 +69,11 @@
       </section>
 
       <div id="dataTabs" class="data-tabs" role="tablist" hidden>
-        <button id="historyTab" type="button" role="tab" aria-selected="true">商品记录</button>
-        <button id="rankingTab" type="button" role="tab" aria-selected="false">热销 TOP 10%</button>
+        <button id="historyTab" type="button" role="tab" aria-selected="true" aria-controls="itemSection">商品记录</button>
+        <button id="rankingTab" type="button" role="tab" aria-selected="false" aria-controls="rankingSection">热销 TOP 30%</button>
       </div>
 
-      <section id="itemSection" role="tabpanel" hidden>
+      <section id="itemSection" role="tabpanel" aria-labelledby="historyTab" hidden>
         <h2 id="itemTitle"></h2>
         <div class="filters">
           <button type="button" data-filter="all" class="active">全部</button>
@@ -101,13 +101,13 @@
         </div>
       </section>
 
-      <section id="rankingSection" role="tabpanel" hidden>
+      <section id="rankingSection" role="tabpanel" aria-labelledby="rankingTab" aria-busy="false" hidden>
         <div class="ranking-heading">
           <div>
-            <h2 id="rankingTitle">供应商热销 TOP 10%</h2>
+            <h2 id="rankingTitle">供应商热销 TOP 30%</h2>
             <small id="rankingSupplier"></small>
           </div>
-          <span class="ranking-badge">TOP 10%</span>
+          <span id="rankingBadge" class="ranking-badge">TOP 30%</span>
         </div>
         <div class="ranking-supplier-control">
           <label id="rankingSupplierLabel" for="rankingSupplierSelect">供应商</label>
@@ -121,13 +121,28 @@
           </div>
         </div>
         <p id="rankingScope" class="ranking-scope"></p>
+        <p id="rankingLegacyHint" class="ranking-legacy-hint" hidden></p>
         <ol id="rankingList" class="ranking-list"></ol>
-        <p id="rankingEmpty" class="muted" hidden>暂无销售数据</p>
-        <div id="rankingPager" class="pager ranking-pager" hidden>
-          <button id="rankingPrevBtn" type="button">上一页</button>
-          <span id="rankingPageInfo"></span>
-          <button id="rankingNextBtn" type="button">下一页</button>
+        <div id="rankingState" class="ranking-state muted" role="status" aria-live="polite" hidden>
+          <span id="rankingStateText"></span>
+          <button id="rankingRetryBtn" type="button" hidden>重试</button>
         </div>
+        <div id="rankingPager" class="ranking-pager" hidden>
+          <div class="ranking-pagination-summary">
+            <label id="rankingPageSizeLabel" for="rankingPageSizeSelect">每页</label>
+            <select id="rankingPageSizeSelect" aria-controls="rankingList">
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="200">200</option>
+            </select>
+            <span id="rankingPageInfo" aria-live="polite"></span>
+          </div>
+          <div class="pager ranking-page-actions">
+            <button id="rankingPrevBtn" type="button" aria-controls="rankingList">上一页</button>
+            <button id="rankingNextBtn" type="button" aria-controls="rankingList">下一页</button>
+          </div>
+        </div>
+        <span id="rankingAnnouncement" class="visually-hidden" role="status" aria-live="polite" aria-atomic="true"></span>
       </section>
 
       <div id="status" class="status" role="status" aria-live="polite"></div>

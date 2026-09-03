@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
@@ -6,6 +8,7 @@ using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.POSM;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 using SqlSugar;
 
@@ -18,12 +21,14 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
     private readonly IOptionsSnapshot<BrowserExtensionOptions> _options;
     private readonly ILogger<BrowserExtensionService> _logger;
     private readonly TimeProvider _timeProvider;
+    private readonly BrowserExtensionRankingSnapshotCache _rankingCache;
 
     public BrowserExtensionService(
         SqlSugarContext context,
         POSMSqlSugarContext posmContext,
         IOptionsSnapshot<BrowserExtensionOptions> options,
         ILogger<BrowserExtensionService> logger,
+        IMemoryCache memoryCache,
         TimeProvider? timeProvider = null
     )
     {
@@ -32,6 +37,7 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
         _options = options;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _rankingCache = new BrowserExtensionRankingSnapshotCache(memoryCache);
     }
 
     public BrowserExtensionReleaseDto GetRelease() =>
@@ -47,20 +53,60 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
         ArgumentNullException.ThrowIfNull(request);
         var storeCode = NormalizeCode(request.StoreCode, "分店代码");
         var supplierCode = NormalizeCode(request.SupplierCode, "供应商代码");
+        var salesRankingDays = BrowserExtensionRankingLogic.NormalizeSummaryDays(
+            request.SalesRankingDays
+        );
         EnsureSupplierEnabled(supplierCode);
         var itemNumbers = BrowserExtensionPurchaseCycleSqlBuilder.NormalizeItemNumbers(
             request.ItemNumbers
         );
         var today = await ResolveStoreTodayAsync(storeCode);
         var items = await QuerySummariesAsync(storeCode, supplierCode, itemNumbers, today);
-
-        return new BrowserExtensionProductSummaryBatchDto
+        var rankingToday = ResolveRankingToday();
+        var response = new BrowserExtensionProductSummaryBatchDto
         {
             StoreCode = storeCode,
             SupplierCode = supplierCode,
             EndDate = today,
+            SalesRankingDays = salesRankingDays,
+            SalesRankingStartDate = BrowserExtensionRankingLogic.ResolveStartDate(
+                rankingToday,
+                salesRankingDays
+            ),
+            SalesRankingEndDate = rankingToday,
             Items = items,
         };
+
+        try
+        {
+            var ranking = await GetSupplierSalesRankingSnapshotAsync(
+                supplierCode,
+                salesRankingDays,
+                rankingToday
+            );
+            response.SalesRankingAvailable = true;
+            response.SalesRankingStartDate = ranking.StartDate;
+            response.SalesRankingEndDate = ranking.EndDate;
+            response.SalesRankingEnabledStoreCount = ranking.EnabledStoreCount;
+            response.SalesRankingTotalProductCount = ranking.TotalProductCount;
+            response.SalesRankingStatisticLastUpdate = ranking.SalesStatisticLastUpdate;
+            BrowserExtensionRankingLogic.ApplySalesRankBands(
+                response.Items,
+                ranking.RankedTopThirty
+            );
+        }
+        catch (Exception ex)
+        {
+            // 排名是摘要上的增强信息；失败时保留原有采购记录，避免整页按钮不可用。
+            _logger.LogWarning(
+                ex,
+                "浏览器订货助手批量摘要销量排名降级 SupplierCode={SupplierCode} Days={Days}",
+                supplierCode,
+                salesRankingDays
+            );
+        }
+
+        return response;
     }
 
     public async Task<BrowserExtensionPurchaseCyclesDto> GetPurchaseCyclesAsync(
@@ -235,53 +281,45 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
         ArgumentNullException.ThrowIfNull(request);
         var supplierCode = NormalizeCode(request.SupplierCode, "供应商代码");
         var days = BrowserExtensionRankingLogic.NormalizeDays(request.Days);
+        var paging = BrowserExtensionRankingLogic.ResolveTopSalesPaging(
+            request.TopPercent,
+            request.Page,
+            request.PageSize
+        );
         EnsureSupplierEnabled(supplierCode);
 
         var today = ResolveRankingToday();
-        var startDate = BrowserExtensionRankingLogic.ResolveStartDate(today, days);
-        var enabledStoreCodes = await QueryEnabledPosStoreCodesAsync();
+        var ranking = await GetSupplierSalesRankingSnapshotAsync(supplierCode, days, today);
         var response = new BrowserExtensionSupplierTopSalesDto
         {
             SupplierCode = supplierCode,
             Days = days,
-            StartDate = startDate,
-            EndDate = today,
-            EnabledStoreCount = enabledStoreCodes.Count,
+            StartDate = ranking.StartDate,
+            EndDate = ranking.EndDate,
+            EnabledStoreCount = ranking.EnabledStoreCount,
+            TotalProductCount = ranking.TotalProductCount,
+            SalesStatisticLastUpdate = ranking.SalesStatisticLastUpdate,
+            TopPercent = paging.TopPercent,
         };
-        if (enabledStoreCodes.Count == 0)
+        var topCount = BrowserExtensionRankingLogic.CalculateTopItemCount(
+            ranking.TotalProductCount,
+            paging.TopPercent
+        );
+        var ranked = ranking.RankedTopThirty.Take(topCount).ToList();
+        response.TotalRankedCount = ranked.Count;
+        if (!paging.IsLegacy)
         {
-            return response;
+            var pageWindow = BrowserExtensionRankingLogic.ResolvePageWindow(
+                paging.Page!.Value,
+                paging.PageSize!.Value,
+                response.TotalRankedCount
+            );
+            response.Page = pageWindow.Page;
+            response.PageSize = pageWindow.PageSize;
+            response.TotalPages = pageWindow.TotalPages;
+            ranked = ranked.Skip(pageWindow.Skip).Take(pageWindow.PageSize).ToList();
         }
 
-        var startDateTime = startDate.ToDateTime(TimeOnly.MinValue);
-        var endDateExclusive = today.AddDays(1).ToDateTime(TimeOnly.MinValue);
-        var salesRows = await _db.Queryable<ProductStoreDailySalesStatistic>()
-            .Where(row =>
-                enabledStoreCodes.Contains(row.BranchCode)
-                && row.SupplierCode == supplierCode
-                && row.Date >= startDateTime
-                && row.Date < endDateExclusive
-            )
-            .GroupBy(row => row.ProductCode)
-            .Select(row => new BrowserExtensionSupplierSalesAggregate
-            {
-                ProductCode = row.ProductCode,
-                ProductName = SqlFunc.AggregateMax(row.ProductName),
-                SalesQuantity = SqlFunc.AggregateSum(row.TotalQuantity),
-                SalesAmount = SqlFunc.AggregateSum(row.TotalAmount),
-                SalesStatisticLastUpdate = SqlFunc.AggregateMax(row.UpdateTime),
-            })
-            .ToListAsync();
-        response.TotalProductCount = salesRows.Count(row =>
-            !string.IsNullOrWhiteSpace(row.ProductCode) && row.SalesQuantity > 0m
-        );
-        response.SalesStatisticLastUpdate = salesRows
-            .Select(row => row.SalesStatisticLastUpdate)
-            .Where(value => value.HasValue)
-            .DefaultIfEmpty()
-            .Max();
-
-        var ranked = BrowserExtensionRankingLogic.RankTopDecile(salesRows);
         if (ranked.Count == 0)
         {
             return response;
@@ -325,19 +363,179 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
                     ImageUrl = product?.ProductImage?.Trim(),
                     SalesQuantity = row.SalesQuantity,
                     AverageSellingPrice = row.AverageSellingPrice,
+                    SalesRankBand = row.SalesRankBand,
                 };
             })
             .ToList();
 
         _logger.LogInformation(
-            "浏览器订货助手供应商热销排行查询完成 SupplierCode={SupplierCode} Days={Days} StoreCount={StoreCount} ProductCount={ProductCount} TopCount={TopCount}",
+            "浏览器订货助手供应商热销排行查询完成 SupplierCode={SupplierCode} Days={Days} StoreCount={StoreCount} ProductCount={ProductCount} TopPercent={TopPercent} TotalRankedCount={TotalRankedCount} Page={Page} PageSize={PageSize} TotalPages={TotalPages} ItemCount={ItemCount}",
             supplierCode,
             days,
-            enabledStoreCodes.Count,
+            ranking.EnabledStoreCount,
             response.TotalProductCount,
+            response.TopPercent,
+            response.TotalRankedCount,
+            response.Page,
+            response.PageSize,
+            response.TotalPages,
             response.Items.Count
         );
         return response;
+    }
+
+    private async Task<BrowserExtensionSupplierSalesRankingSnapshot>
+        GetSupplierSalesRankingSnapshotAsync(string supplierCode, int days, DateOnly today)
+    {
+        var startDate = BrowserExtensionRankingLogic.ResolveStartDate(today, days);
+        var enabledStoreCodes = await QueryEnabledPosStoreCodesAsync();
+        if (enabledStoreCodes.Count == 0)
+        {
+            return new BrowserExtensionSupplierSalesRankingSnapshot
+            {
+                SupplierCode = supplierCode,
+                Days = days,
+                StartDate = startDate,
+                EndDate = today,
+            };
+        }
+
+        var refreshStates = await QueryProductStoreDailyRefreshStatesAsync(startDate, today);
+        var cacheKey = BuildSupplierSalesRankingCacheKey(
+            supplierCode,
+            days,
+            startDate,
+            today,
+            enabledStoreCodes,
+            refreshStates
+        );
+        return await _rankingCache.GetOrCreateAsync(
+            cacheKey,
+            () =>
+                QuerySupplierSalesRankingSnapshotAsync(
+                    supplierCode,
+                    days,
+                    startDate,
+                    today,
+                    enabledStoreCodes
+                )
+        );
+    }
+
+    private async Task<BrowserExtensionSupplierSalesRankingSnapshot>
+        QuerySupplierSalesRankingSnapshotAsync(
+            string supplierCode,
+            int days,
+            DateOnly startDate,
+            DateOnly endDate,
+            IReadOnlyList<string> enabledStoreCodes
+        )
+    {
+        var startDateTime = startDate.ToDateTime(TimeOnly.MinValue);
+        var endDateExclusive = endDate.AddDays(1).ToDateTime(TimeOnly.MinValue);
+        var salesRows = await _db.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row =>
+                enabledStoreCodes.Contains(row.BranchCode)
+                && row.SupplierCode == supplierCode
+                && row.Date >= startDateTime
+                && row.Date < endDateExclusive
+            )
+            .GroupBy(row => row.ProductCode)
+            .Select(row => new BrowserExtensionSupplierSalesAggregate
+            {
+                ProductCode = row.ProductCode,
+                ProductName = SqlFunc.AggregateMax(row.ProductName),
+                SalesQuantity = SqlFunc.AggregateSum(row.TotalQuantity),
+                SalesAmount = SqlFunc.AggregateSum(row.TotalAmount),
+                SalesStatisticLastUpdate = SqlFunc.AggregateMax(row.UpdateTime),
+            })
+            .ToListAsync();
+        var totalProductCount = salesRows.Count(row =>
+            !string.IsNullOrWhiteSpace(row.ProductCode) && row.SalesQuantity > 0m
+        );
+        var salesStatisticLastUpdate = salesRows
+            .Select(row => row.SalesStatisticLastUpdate)
+            .Where(value => value.HasValue)
+            .DefaultIfEmpty()
+            .Max();
+
+        return new BrowserExtensionSupplierSalesRankingSnapshot
+        {
+            SupplierCode = supplierCode,
+            Days = days,
+            StartDate = startDate,
+            EndDate = endDate,
+            EnabledStoreCount = enabledStoreCodes.Count,
+            TotalProductCount = totalProductCount,
+            SalesStatisticLastUpdate = salesStatisticLastUpdate,
+            RankedTopThirty = BrowserExtensionRankingLogic.RankTopPercent(
+                salesRows,
+                BrowserExtensionRankingLogic.MaximumTopPercent
+            ),
+        };
+    }
+
+    private async Task<List<BrowserExtensionRankingRefreshStateRow>>
+        QueryProductStoreDailyRefreshStatesAsync(DateOnly startDate, DateOnly endDate)
+    {
+        var startDateTime = startDate.ToDateTime(TimeOnly.MinValue);
+        var endDateExclusive = endDate.AddDays(1).ToDateTime(TimeOnly.MinValue);
+        return await _db.Queryable<SalesStatisticRefreshState>()
+            .Where(state =>
+                state.StatisticType == SalesStatisticType.ProductStoreDaily
+                && state.Date >= startDateTime
+                && state.Date < endDateExclusive
+            )
+            .OrderBy(state => state.Date)
+            .Select(state => new BrowserExtensionRankingRefreshStateRow
+            {
+                Date = state.Date,
+                Status = state.Status,
+                LastSourceUploadTime = state.LastSourceUploadTime,
+                LastAggregatedAtUtc = state.LastAggregatedAtUtc,
+                CompletedAtUtc = state.CompletedAtUtc,
+            })
+            .ToListAsync();
+    }
+
+    private static string BuildSupplierSalesRankingCacheKey(
+        string supplierCode,
+        int days,
+        DateOnly startDate,
+        DateOnly endDate,
+        IReadOnlyList<string> enabledStoreCodes,
+        IReadOnlyList<BrowserExtensionRankingRefreshStateRow> refreshStates
+    )
+    {
+        var source = new StringBuilder();
+        AppendCacheKeyPart(source, supplierCode);
+        AppendCacheKeyPart(source, days.ToString());
+        AppendCacheKeyPart(source, startDate.DayNumber.ToString());
+        AppendCacheKeyPart(source, endDate.DayNumber.ToString());
+        AppendCacheKeyPart(source, enabledStoreCodes.Count.ToString());
+        foreach (var storeCode in enabledStoreCodes)
+        {
+            AppendCacheKeyPart(source, storeCode);
+        }
+
+        AppendCacheKeyPart(source, refreshStates.Count.ToString());
+        foreach (var state in refreshStates)
+        {
+            AppendCacheKeyPart(source, state.Date.Ticks.ToString());
+            AppendCacheKeyPart(source, state.Status);
+            AppendCacheKeyPart(source, state.LastSourceUploadTime?.Ticks.ToString());
+            AppendCacheKeyPart(source, state.LastAggregatedAtUtc?.Ticks.ToString());
+            AppendCacheKeyPart(source, state.CompletedAtUtc?.Ticks.ToString());
+        }
+
+        var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source.ToString())));
+        return $"browser-extension:supplier-sales-ranking:v1:{digest}";
+    }
+
+    private static void AppendCacheKeyPart(StringBuilder destination, string? value)
+    {
+        var normalized = value ?? string.Empty;
+        destination.Append(normalized.Length).Append(':').Append(normalized).Append('|');
     }
 
     private async Task<List<BrowserExtensionProductSummaryDto>> QuerySummariesAsync(
@@ -512,6 +710,15 @@ public sealed class BrowserExtensionService : IBrowserExtensionService
         public decimal? LatestPurchaseQuantity { get; set; }
         public decimal SalesSinceLatestPurchase { get; set; }
         public DateTime? SalesStatisticLastUpdate { get; set; }
+    }
+
+    private sealed class BrowserExtensionRankingRefreshStateRow
+    {
+        public DateTime Date { get; set; }
+        public string Status { get; set; } = string.Empty;
+        public DateTime? LastSourceUploadTime { get; set; }
+        public DateTime? LastAggregatedAtUtc { get; set; }
+        public DateTime? CompletedAtUtc { get; set; }
     }
 
     private sealed class PurchaseSqlRow
