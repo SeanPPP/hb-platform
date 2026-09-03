@@ -10,6 +10,8 @@ import {
 import {
   checkMobileOtaUpdate,
   readCachedMobileOtaRequiredDecision,
+  tryClaimMobileOtaOptionalPrompt,
+  type MobileOtaManualCheckResult,
   type MobileOtaUpdateContext,
   type MobileOtaUpdateDecision,
 } from "./mobile-ota-update";
@@ -151,13 +153,13 @@ export function useMobileOtaUpdate(options: UseMobileOtaUpdateOptions) {
 
   function promptOptionalRestart(decision: MobileOtaUpdateDecision) {
     const identity = decisionTargetIdentity(decision);
-    if (
-      optionalPromptTargetRef.current === identity
-      || !appUpdateMutualExclusion.tryOwnPrompt("ota")
-    ) {
+    if (!tryClaimMobileOtaOptionalPrompt(
+      optionalPromptTargetRef,
+      identity,
+      () => appUpdateMutualExclusion.tryOwnPrompt("ota"),
+    )) {
       return;
     }
-    optionalPromptTargetRef.current = identity;
     Alert.alert(
       i18n.t("settings:dialogs.mobileOtaAvailableTitle"),
       decision.releaseMessage
@@ -402,11 +404,42 @@ export function useMobileOtaUpdate(options: UseMobileOtaUpdateOptions) {
     };
   }, []);
 
+  async function checkManually(): Promise<MobileOtaManualCheckResult> {
+    if (!enabledRef.current) {
+      return Object.freeze({ status: "disabled" });
+    }
+
+    // 用户主动检查时允许再次展示先前选择“稍后”的可选更新提示。
+    optionalPromptTargetRef.current = null;
+    await runCheckRef.current();
+
+    const current = snapshotRef.current;
+    if (!enabledRef.current) {
+      return Object.freeze({ status: "disabled" });
+    }
+    if (current.lastError) {
+      return Object.freeze({ status: "failed" });
+    }
+    if (!current.decision || current.decision.state === "none") {
+      return Object.freeze({ status: "not-available" });
+    }
+    if (current.decision.state === "required") {
+      return Object.freeze({ status: "required" });
+    }
+    if (!current.downloaded) {
+      return Object.freeze({ status: "failed" });
+    }
+
+    promptOptionalRestart(current.decision);
+    return Object.freeze({ status: "update-ready" });
+  }
+
   return {
     ...snapshot,
     // 首次 effect 前也必须保持 checking 门禁，不能让业务页面短暂可交互。
     enabled: effectiveEnabled,
     recheck: () => runCheckRef.current(),
+    checkManually,
     downloadRequired: () => downloadRequiredRef.current(),
     restartRequired: () => restartRequiredRef.current(),
   };

@@ -1,14 +1,85 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { createAppUpdateMutualExclusion } from "./app-update-mutual-exclusion";
 import {
   MOBILE_OTA_REQUIRED_CACHE_KEY,
   checkMobileOtaUpdate,
   getMobileOtaBoundaryMode,
   readCachedMobileOtaRequiredDecision,
+  tryClaimMobileOtaOptionalPrompt,
   type MobileOtaUpdateContext,
   type MobileOtaUpdateStorage,
 } from "./mobile-ota-update";
+
+test("可选 OTA 提示在互斥通知同步重入时只认领一次", () => {
+  const coordinator = createAppUpdateMutualExclusion({
+    otaInitializationPending: false,
+  });
+  const targetRef: { current: string | null } = { current: null };
+  let attempts = 0;
+  let prompts = 0;
+
+  const prompt = () => {
+    attempts += 1;
+    if (attempts > 10) {
+      throw new Error("检测到可选 OTA 提示同步递归重入");
+    }
+    if (tryClaimMobileOtaOptionalPrompt(
+      targetRef,
+      "optional-target",
+      () => coordinator.tryOwnPrompt("ota"),
+    )) {
+      prompts += 1;
+    }
+  };
+  const unsubscribe = coordinator.subscribe(prompt);
+
+  try {
+    assert.doesNotThrow(prompt);
+    assert.equal(prompts, 1);
+    assert.equal(targetRef.current, "optional-target");
+  } finally {
+    unsubscribe();
+  }
+});
+
+test("可选 OTA 提示锁竞争失败会回滚目标并允许稍后重试", () => {
+  const coordinator = createAppUpdateMutualExclusion({
+    otaInitializationPending: false,
+  });
+  const targetRef: { current: string | null } = { current: "previous-target" };
+
+  assert.equal(coordinator.tryOwnPrompt("native"), true);
+  assert.equal(
+    tryClaimMobileOtaOptionalPrompt(
+      targetRef,
+      "next-target",
+      () => coordinator.tryOwnPrompt("ota"),
+    ),
+    false,
+  );
+  assert.equal(targetRef.current, "previous-target");
+
+  coordinator.releasePrompt("native");
+  assert.equal(
+    tryClaimMobileOtaOptionalPrompt(
+      targetRef,
+      "next-target",
+      () => coordinator.tryOwnPrompt("ota"),
+    ),
+    true,
+  );
+  assert.equal(targetRef.current, "next-target");
+  assert.equal(
+    tryClaimMobileOtaOptionalPrompt(
+      targetRef,
+      "next-target",
+      () => coordinator.tryOwnPrompt("ota"),
+    ),
+    false,
+  );
+});
 
 test("启用后的首次 render 在策略初始化前保持 checking，required 后不渲染业务内容", () => {
   assert.equal(
