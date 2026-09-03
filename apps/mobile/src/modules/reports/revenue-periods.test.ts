@@ -37,7 +37,7 @@ assert.deepEqual(getLastWeekRevenuePeriod(anchor), {
 assert.deepEqual(getDefaultRevenuePeriod("week", anchor), {
   mode: "week",
   startDate: "2026-06-29",
-  endDate: "2026-07-05",
+  endDate: "2026-07-04",
 });
 
 assert.deepEqual(getLastMonthRevenuePeriod(anchor), {
@@ -48,8 +48,100 @@ assert.deepEqual(getLastMonthRevenuePeriod(anchor), {
 assert.deepEqual(getDefaultRevenuePeriod("month", anchor), {
   mode: "month",
   startDate: "2026-07-01",
-  endDate: "2026-07-31",
+  endDate: "2026-07-04",
 });
+
+const midWeekAnchor = new Date(2026, 6, 8);
+assert.deepEqual(getDefaultRevenuePeriod("week", midWeekAnchor), {
+  mode: "week",
+  startDate: "2026-07-06",
+  endDate: "2026-07-08",
+});
+assert.deepEqual(getDefaultRevenuePeriod("month", midWeekAnchor), {
+  mode: "month",
+  startDate: "2026-07-01",
+  endDate: "2026-07-08",
+});
+assert.deepEqual(getRevenuePeriodForDate("week", "2026-07-06", midWeekAnchor), {
+  mode: "week",
+  startDate: "2026-07-06",
+  endDate: "2026-07-08",
+});
+assert.deepEqual(getRevenuePeriodForDate("month", "2026-07-01", midWeekAnchor), {
+  mode: "month",
+  startDate: "2026-07-01",
+  endDate: "2026-07-08",
+});
+
+// 历史周/月保持完整自然周期，不能因为所选日期位于周期中间而被截短。
+assert.deepEqual(getRevenuePeriodForDate("week", "2026-06-17", midWeekAnchor), {
+  mode: "week",
+  startDate: "2026-06-15",
+  endDate: "2026-06-21",
+});
+assert.deepEqual(getRevenuePeriodForDate("month", "2026-06-17", midWeekAnchor), {
+  mode: "month",
+  startDate: "2026-06-01",
+  endDate: "2026-06-30",
+});
+assert.deepEqual(getPreviousRevenuePeriod(getDefaultRevenuePeriod("week", midWeekAnchor)), {
+  mode: "week",
+  startDate: "2026-06-29",
+  endDate: "2026-07-05",
+});
+assert.deepEqual(
+  getNextRevenuePeriod(
+    { mode: "week", startDate: "2026-06-29", endDate: "2026-07-05" },
+    midWeekAnchor,
+  ),
+  {
+    mode: "week",
+    startDate: "2026-07-06",
+    endDate: "2026-07-08",
+  },
+);
+assert.deepEqual(
+  getNextRevenuePeriod(
+    { mode: "month", startDate: "2026-06-01", endDate: "2026-06-30" },
+    midWeekAnchor,
+  ),
+  {
+    mode: "month",
+    startDate: "2026-07-01",
+    endDate: "2026-07-08",
+  },
+);
+assert.deepEqual(
+  getCompareRevenuePeriod(getDefaultRevenuePeriod("week", midWeekAnchor), "lastYearIsoWeek"),
+  {
+    mode: "week",
+    startDate: "2025-07-07",
+    endDate: "2025-07-09",
+  },
+);
+assert.deepEqual(
+  getCompareRevenuePeriod(getDefaultRevenuePeriod("month", midWeekAnchor), "lastYearSameMonth"),
+  {
+    mode: "month",
+    startDate: "2025-07-01",
+    endDate: "2025-07-08",
+  },
+);
+
+const midMonthAnchor = new Date(2026, 6, 17);
+assert.deepEqual(getDefaultRevenuePeriod("month", midMonthAnchor), {
+  mode: "month",
+  startDate: "2026-07-01",
+  endDate: "2026-07-17",
+});
+assert.deepEqual(
+  getCompareRevenuePeriod(getDefaultRevenuePeriod("month", midMonthAnchor), "lastYearSameMonth"),
+  {
+    mode: "month",
+    startDate: "2025-07-01",
+    endDate: "2025-07-17",
+  },
+);
 
 assert.deepEqual(getLastYearSameWeekdayPeriod(getDefaultRevenuePeriod("day", anchor)), {
   mode: "day",
@@ -102,6 +194,22 @@ assert.deepEqual(getLastYearSameMonthPeriod(month), {
   endDate: "2025-03-31",
 });
 assert.deepEqual(getCompareRevenuePeriod(month, "lastYearSameMonth"), getLastYearSameMonthPeriod(month));
+assert.deepEqual(
+  getLastYearSameMonthPeriod({ mode: "month", startDate: "2025-02-01", endDate: "2025-02-28" }),
+  {
+    mode: "month",
+    startDate: "2024-02-01",
+    endDate: "2024-02-29",
+  },
+);
+assert.deepEqual(
+  getLastYearSameMonthPeriod({ mode: "month", startDate: "2025-02-01", endDate: "2025-02-15" }),
+  {
+    mode: "month",
+    startDate: "2024-02-01",
+    endDate: "2024-02-15",
+  },
+);
 
 assert.deepEqual(getRevenueDateBounds(new Date(2026, 6, 11)), {
   minDate: "2025-07-11",
