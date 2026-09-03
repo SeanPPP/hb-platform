@@ -86,9 +86,25 @@ public sealed class SchemaMigrationCoordinatorTests
         Assert.Contains("VerifyProductHqSyncOutboxAsync", runtimeMethods);
         Assert.Contains("ApplyPosmBaselineAsync", runtimeMethods);
         Assert.Contains("ApplyMobileDeviceActivationAsync", runtimeMethods);
+        Assert.Contains("ApplyLinklyMultiTerminalAsync", runtimeMethods);
         Assert.Contains("VerifyMobileDeviceActivationSchemaAsync", runtimeMethods);
+        Assert.Contains("VerifyLinklyMultiTerminalSchemaAsync", runtimeMethods);
         Assert.Contains("ValidatePrerequisitesAsync", runtimeMethods);
         Assert.DoesNotContain("ApplyMigrationAsync", runtimeMethods);
+    }
+
+    [Fact]
+    public void PosmMigrationSteps_必须包含独立Linkly多终端迁移()
+    {
+        Assert.Contains(
+            SchemaMigrationCoordinator.PosmMigrationSteps,
+            step =>
+                step.MigrationId.Contains(
+                    "linkly-multi-terminal",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                && step.MigrationId != SchemaMigrationCoordinator.PosmMigrationId
+        );
     }
 
     [Fact]
@@ -109,6 +125,7 @@ public sealed class SchemaMigrationCoordinatorTests
         var coordinatorSource = await ReadCoordinatorSourceAsync();
         var runtimeSource = await ReadRuntimeSourceAsync();
         var storeSource = await ReadStoreSourceAsync();
+        var linklyApply = ExtractMethod(runtimeSource, "ApplyLinklyMultiTerminalAsync");
 
         Assert.Contains("HBWebSchemaMigrationHistory", runtimeSource, StringComparison.Ordinal);
         Assert.Contains("HBWebPosmSchemaMigrationHistory", runtimeSource, StringComparison.Ordinal);
@@ -122,6 +139,13 @@ public sealed class SchemaMigrationCoordinatorTests
         Assert.Contains("@LockTimeout = 0", storeSource, StringComparison.Ordinal);
         Assert.Contains("SqlConnection", storeSource, StringComparison.Ordinal);
         Assert.Contains("SchemaExitCodes.MigrationLockUnavailable", coordinatorSource, StringComparison.Ordinal);
+        Assert.True(
+            IndexOfRequired(
+                linklyApply,
+                "PaymentTerminalSettingsSchemaMigrator.EnsureLinklyMultiTerminalAsync"
+            ) < IndexOfRequired(linklyApply, "VerifyLinklyMultiTerminalSchemaAsync"),
+            "Linkly v2 只能在专用 DDL 与精确签名都通过后由协调器登记。"
+        );
     }
 
     [Fact]
@@ -301,6 +325,7 @@ public sealed class SchemaMigrationCoordinatorTests
         Assert.Contains("VerifyProductHqSyncOutboxAsync", checkMethod, StringComparison.Ordinal);
         Assert.Contains("VerifyDeviceActivationSchemaAsync", checkMethod, StringComparison.Ordinal);
         Assert.Contains("VerifyMobileDeviceActivationSchemaAsync", checkMethod, StringComparison.Ordinal);
+        Assert.Contains("VerifyLinklyMultiTerminalSchemaAsync", checkMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("CreateTable", checkMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("StartupSchemaMigrator", checkMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("PaymentTerminalSettingsSchemaMigrator", checkMethod, StringComparison.Ordinal);
@@ -314,6 +339,7 @@ public sealed class SchemaMigrationCoordinatorTests
         Assert.Equal(1, CountOccurrences(checkMethod, "VerifyProductHqSyncOutboxAsync"));
         Assert.Equal(1, CountOccurrences(checkMethod, "VerifyDeviceActivationSchemaAsync"));
         Assert.Equal(1, CountOccurrences(checkMethod, "VerifyMobileDeviceActivationSchemaAsync"));
+        Assert.Equal(1, CountOccurrences(checkMethod, "VerifyLinklyMultiTerminalSchemaAsync"));
         Assert.Contains("DeviceActivationCodeSchema.VerifySql", runtimeSource, StringComparison.Ordinal);
         Assert.Contains("MobileDeviceActivationSchema.VerifySql", runtimeSource, StringComparison.Ordinal);
         Assert.Contains(
@@ -322,7 +348,17 @@ public sealed class SchemaMigrationCoordinatorTests
             StringComparison.Ordinal
         );
         Assert.Contains(
+            "PaymentTerminalSettingsSchemaMigrator.LinklyMultiTerminalVerifySql",
+            runtimeSource,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
             "exception.Number is >= 51071 and <= 51081",
+            runtimeSource,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "exception.Number is >= 51600 and <= 51616",
             runtimeSource,
             StringComparison.Ordinal
         );
@@ -353,6 +389,10 @@ public sealed class SchemaMigrationCoordinatorTests
         runtime.MarkApplied(
             SchemaDatabase.Posm,
             SchemaMigrationCoordinator.MobileDeviceActivationMigrationId
+        );
+        runtime.MarkApplied(
+            SchemaDatabase.Posm,
+            SchemaMigrationCoordinator.LinklyMultiTerminalMigrationId
         );
         var coordinator = CreateCoordinator(runtime);
 
@@ -496,6 +536,123 @@ public sealed class SchemaMigrationCoordinatorTests
     }
 
     [Fact]
+    public async Task MigrateAsync_既有Posm步骤已记账_仍执行并记账Linkly多终端迁移()
+    {
+        var runtime = new FakeSchemaMigrationRuntime();
+        foreach (var step in SchemaMigrationCoordinator.MainMigrationSteps)
+        {
+            runtime.MarkApplied(SchemaDatabase.Main, step.MigrationId);
+        }
+        runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
+        runtime.MarkApplied(
+            SchemaDatabase.Posm,
+            SchemaMigrationCoordinator.MobileDeviceActivationMigrationId
+        );
+
+        var result = await CreateCoordinator(runtime).MigrateAsync(CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.DoesNotContain(
+            $"Apply:Posm:{SchemaMigrationCoordinator.PosmMigrationId}",
+            runtime.Events
+        );
+        Assert.DoesNotContain(
+            $"Apply:Posm:{SchemaMigrationCoordinator.MobileDeviceActivationMigrationId}",
+            runtime.Events
+        );
+        Assert.Contains(
+            $"Apply:Posm:{SchemaMigrationCoordinator.LinklyMultiTerminalMigrationId}",
+            runtime.Events
+        );
+        Assert.Contains(
+            $"Record:Posm:{SchemaMigrationCoordinator.LinklyMultiTerminalMigrationId}",
+            runtime.Events
+        );
+    }
+
+    [Fact]
+    public async Task MigrateAsync_Linkly签名失败不得登记新版本()
+    {
+        var runtime = new FakeSchemaMigrationRuntime
+        {
+            LinklyVerifyException = new LinklyMultiTerminalSchemaMismatchException(),
+        };
+        foreach (var step in SchemaMigrationCoordinator.MainMigrationSteps)
+        {
+            runtime.MarkApplied(SchemaDatabase.Main, step.MigrationId);
+        }
+        runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
+        runtime.MarkApplied(
+            SchemaDatabase.Posm,
+            SchemaMigrationCoordinator.MobileDeviceActivationMigrationId
+        );
+
+        var result = await CreateCoordinator(runtime).MigrateAsync(CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(SchemaExitCodes.SchemaNotReady, result.ExitCode);
+        Assert.Equal(SchemaDiagnosticCodes.LinklyMultiTerminalIncompatible, result.DiagnosticCode);
+        Assert.Contains(
+            $"Apply:Posm:{SchemaMigrationCoordinator.LinklyMultiTerminalMigrationId}",
+            runtime.Events
+        );
+        Assert.Contains("VerifyLinkly", runtime.Events);
+        Assert.DoesNotContain(
+            $"Record:Posm:{SchemaMigrationCoordinator.LinklyMultiTerminalMigrationId}",
+            runtime.Events
+        );
+    }
+
+    [Fact]
+    public async Task CheckAsync_Linkly账本缺失_保留PosmMissing且跳过签名门禁()
+    {
+        var runtime = new FakeSchemaMigrationRuntime
+        {
+            LinklyVerifyException = new LinklyMultiTerminalSchemaMismatchException(),
+        };
+        foreach (var step in SchemaMigrationCoordinator.MainMigrationSteps)
+        {
+            runtime.MarkApplied(SchemaDatabase.Main, step.MigrationId);
+        }
+        runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
+        runtime.MarkApplied(
+            SchemaDatabase.Posm,
+            SchemaMigrationCoordinator.MobileDeviceActivationMigrationId
+        );
+
+        var result = await CreateCoordinator(runtime).CheckAsync(CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(SchemaExitCodes.SchemaNotReady, result.ExitCode);
+        Assert.Equal(SchemaDiagnosticCodes.PosmMigrationMissing, result.DiagnosticCode);
+        Assert.DoesNotContain("VerifyLinkly", runtime.Events);
+    }
+
+    [Fact]
+    public async Task CheckAsync_Linkly账本已登记但签名缺失_返回稳定不兼容诊断()
+    {
+        var runtime = new FakeSchemaMigrationRuntime
+        {
+            LinklyVerifyException = new LinklyMultiTerminalSchemaMismatchException(),
+        };
+        foreach (var step in SchemaMigrationCoordinator.MainMigrationSteps)
+        {
+            runtime.MarkApplied(SchemaDatabase.Main, step.MigrationId);
+        }
+        foreach (var step in SchemaMigrationCoordinator.PosmMigrationSteps)
+        {
+            runtime.MarkApplied(SchemaDatabase.Posm, step.MigrationId);
+        }
+
+        var result = await CreateCoordinator(runtime).CheckAsync(CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(SchemaExitCodes.SchemaNotReady, result.ExitCode);
+        Assert.Equal(SchemaDiagnosticCodes.LinklyMultiTerminalIncompatible, result.DiagnosticCode);
+        Assert.Contains("VerifyLinkly", runtime.Events);
+    }
+
+    [Fact]
     public async Task MigrateAsync_baseline失败不得写入该数据库账本()
     {
         var runtime = new FakeSchemaMigrationRuntime();
@@ -605,6 +762,10 @@ public sealed class SchemaMigrationCoordinatorTests
             SchemaDatabase.Posm,
             SchemaMigrationCoordinator.MobileDeviceActivationMigrationId
         );
+        runtime.MarkApplied(
+            SchemaDatabase.Posm,
+            SchemaMigrationCoordinator.LinklyMultiTerminalMigrationId
+        );
 
         var result = await CreateCoordinator(runtime).CheckAsync(CancellationToken.None);
 
@@ -622,6 +783,8 @@ public sealed class SchemaMigrationCoordinatorTests
                 "Check:Main:20260903.001-product-hq-sync-outbox",
                 "Check:Posm:20260827.001-hbweb-posm-baseline",
                 "Check:Posm:20260831.001-mobile-device-activation",
+                "Check:Posm:20260903.001-linkly-multi-terminal",
+                "VerifyLinkly",
                 "Verify",
                 "VerifyMobile",
             ],
@@ -653,6 +816,10 @@ public sealed class SchemaMigrationCoordinatorTests
         runtime.MarkApplied(
             SchemaDatabase.Posm,
             SchemaMigrationCoordinator.MobileDeviceActivationMigrationId
+        );
+        runtime.MarkApplied(
+            SchemaDatabase.Posm,
+            SchemaMigrationCoordinator.LinklyMultiTerminalMigrationId
         );
 
         var result = await CreateCoordinator(runtime).CheckAsync(CancellationToken.None);
@@ -775,6 +942,7 @@ public sealed class SchemaMigrationCoordinatorTests
         public Exception? ContainerDetailIndexesVerifyException { get; init; }
         public Exception? ContainerDetailCollaborationVerifyException { get; init; }
         public Exception? ProductHqOutboxVerifyException { get; init; }
+        public Exception? LinklyVerifyException { get; init; }
 
         public void MarkApplied(SchemaDatabase database, string migrationId) =>
             _applied.Add((database, migrationId));
@@ -884,6 +1052,16 @@ public sealed class SchemaMigrationCoordinatorTests
                 cancellationToken
             );
 
+        public async Task ApplyLinklyMultiTerminalAsync(CancellationToken cancellationToken)
+        {
+            await ApplyAsync(
+                SchemaDatabase.Posm,
+                SchemaMigrationCoordinator.LinklyMultiTerminalMigrationId,
+                cancellationToken
+            );
+            await VerifyLinklyMultiTerminalSchemaAsync(cancellationToken);
+        }
+
         public Task ApplyMainAppendAsync(
             string migrationId,
             CancellationToken cancellationToken
@@ -951,6 +1129,20 @@ public sealed class SchemaMigrationCoordinatorTests
             if (MobileVerifyException is not null)
             {
                 throw MobileVerifyException;
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public Task VerifyLinklyMultiTerminalSchemaAsync(
+            CancellationToken cancellationToken
+        )
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Events.Add("VerifyLinkly");
+            if (LinklyVerifyException is not null)
+            {
+                throw LinklyVerifyException;
             }
 
             return Task.CompletedTask;

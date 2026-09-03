@@ -21,6 +21,8 @@ internal sealed class SchemaMigrationCoordinator
     internal const string PosmMigrationId = "20260827.001-hbweb-posm-baseline";
     internal const string MobileDeviceActivationMigrationId =
         "20260831.001-mobile-device-activation";
+    internal const string LinklyMultiTerminalMigrationId =
+        "20260903.001-linkly-multi-terminal";
 
     internal static readonly IReadOnlyList<SchemaMigrationStep> MainMigrationSteps =
     [
@@ -63,6 +65,11 @@ internal sealed class SchemaMigrationCoordinator
             static (runtime, cancellationToken) =>
                 runtime.ApplyMobileDeviceActivationAsync(cancellationToken)
         ),
+        new(
+            LinklyMultiTerminalMigrationId,
+            static (runtime, cancellationToken) =>
+                runtime.ApplyLinklyMultiTerminalAsync(cancellationToken)
+        ),
     ];
 
     private const string MainScope = "Main";
@@ -76,6 +83,8 @@ internal sealed class SchemaMigrationCoordinator
         "container-detail-collaboration-schema-signature";
     private const string ProductHqSyncOutboxSignatureId =
         "product-hq-sync-outbox-schema-signature";
+    private const string LinklyMultiTerminalSignatureId =
+        "linkly-multi-terminal-schema-signature";
 
     private readonly ISchemaMigrationRuntime _runtime;
     private readonly ILogger<SchemaMigrationCoordinator> _logger;
@@ -175,6 +184,13 @@ internal sealed class SchemaMigrationCoordinator
                 SchemaDiagnosticCodes.MainMigrationMissing
             );
         }
+        catch (LinklyMultiTerminalSchemaMismatchException)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.SchemaNotReady,
+                SchemaDiagnosticCodes.LinklyMultiTerminalIncompatible
+            );
+        }
         catch (SchemaProviderNotSupportedException)
         {
             LogResult(
@@ -239,6 +255,13 @@ internal sealed class SchemaMigrationCoordinator
             return SchemaOperationResult.Failure(
                 SchemaExitCodes.SchemaNotReady,
                 SchemaDiagnosticCodes.MainMigrationMissing
+            );
+        }
+        catch (LinklyMultiTerminalSchemaMismatchException)
+        {
+            return SchemaOperationResult.Failure(
+                SchemaExitCodes.SchemaNotReady,
+                SchemaDiagnosticCodes.LinklyMultiTerminalIncompatible
             );
         }
         catch (SchemaProviderNotSupportedException)
@@ -387,6 +410,11 @@ internal sealed class SchemaMigrationCoordinator
             await VerifyContainerDetailQueryIndexesAsync(cancellationToken);
             await VerifyContainerDetailCollaborationAsync(cancellationToken);
             await VerifyProductHqSyncOutboxAsync(cancellationToken);
+        }
+        if (posmApplied)
+        {
+            // 新 migration ID 尚未登记时优先返回 POSM Missing；仅在账本齐全后判断结构漂移。
+            await VerifyLinklyMultiTerminalSchemaAsync(cancellationToken);
         }
         await VerifyDeviceActivationSchemaAsync(cancellationToken);
         await VerifyMobileDeviceActivationSchemaAsync(cancellationToken);
@@ -619,6 +647,41 @@ internal sealed class SchemaMigrationCoordinator
                     OperationCanceledException => SchemaDiagnosticCodes.Cancelled,
                     DeviceActivationSchemaMismatchException =>
                         SchemaDiagnosticCodes.DeviceActivationIncompatible,
+                    _ => SchemaDiagnosticCodes.DatabaseFailure,
+                }
+            );
+            throw;
+        }
+    }
+
+    private async Task VerifyLinklyMultiTerminalSchemaAsync(
+        CancellationToken cancellationToken
+    )
+    {
+        var stopwatch = Stopwatch.StartNew();
+        try
+        {
+            await _runtime.VerifyLinklyMultiTerminalSchemaAsync(cancellationToken);
+            LogResult(
+                PosmScope,
+                LinklyMultiTerminalSignatureId,
+                stopwatch.ElapsedMilliseconds,
+                "Ready",
+                SchemaDiagnosticCodes.Ready
+            );
+        }
+        catch (Exception exception)
+        {
+            LogResult(
+                PosmScope,
+                LinklyMultiTerminalSignatureId,
+                stopwatch.ElapsedMilliseconds,
+                "Failed",
+                exception switch
+                {
+                    OperationCanceledException => SchemaDiagnosticCodes.Cancelled,
+                    LinklyMultiTerminalSchemaMismatchException =>
+                        SchemaDiagnosticCodes.LinklyMultiTerminalIncompatible,
                     _ => SchemaDiagnosticCodes.DatabaseFailure,
                 }
             );

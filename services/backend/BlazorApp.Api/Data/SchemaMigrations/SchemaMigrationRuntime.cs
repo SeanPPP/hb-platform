@@ -54,9 +54,13 @@ internal interface ISchemaMigrationRuntime
 
     Task ApplyMobileDeviceActivationAsync(CancellationToken cancellationToken);
 
+    Task ApplyLinklyMultiTerminalAsync(CancellationToken cancellationToken);
+
     Task VerifyDeviceActivationSchemaAsync(CancellationToken cancellationToken);
 
     Task VerifyMobileDeviceActivationSchemaAsync(CancellationToken cancellationToken);
+
+    Task VerifyLinklyMultiTerminalSchemaAsync(CancellationToken cancellationToken);
 }
 
 internal interface ISchemaMigrationSession : IAsyncDisposable
@@ -77,6 +81,8 @@ internal sealed class ContainerDetailQueryIndexSchemaMismatchException : Excepti
 internal sealed class ContainerDetailCollaborationSchemaMismatchException : Exception;
 
 internal sealed class ProductHqSyncOutboxSchemaMismatchException : Exception;
+
+internal sealed class LinklyMultiTerminalSchemaMismatchException : Exception;
 
 internal sealed class SchemaBaselineSqlFailureException(string stepId) : Exception
 {
@@ -312,6 +318,21 @@ internal sealed class SqlServerSchemaMigrationRuntime : ISchemaMigrationRuntime
             "posm-mobile-device-activation"
         );
 
+    public async Task ApplyLinklyMultiTerminalAsync(CancellationToken cancellationToken)
+    {
+        await RunStrictBaselineAsync(
+            _posmDbContext.Db,
+            () => PaymentTerminalSettingsSchemaMigrator.EnsureLinklyMultiTerminalAsync(
+                _posmDbContext.Db,
+                NullLogger.Instance
+            ),
+            cancellationToken,
+            "posm-linkly-multi-terminal"
+        );
+        // 只有精确签名通过后，协调器才允许登记这个追加迁移版本。
+        await VerifyLinklyMultiTerminalSchemaAsync(cancellationToken);
+    }
+
     internal async Task ApplyBaselineAsync(
         SchemaDatabase database,
         CancellationToken cancellationToken
@@ -449,6 +470,25 @@ internal sealed class SqlServerSchemaMigrationRuntime : ISchemaMigrationRuntime
         catch (SqlException exception) when (exception.Number is >= 51400 and <= 51499)
         {
             throw new DeviceActivationSchemaMismatchException();
+        }
+    }
+
+    public async Task VerifyLinklyMultiTerminalSchemaAsync(
+        CancellationToken cancellationToken
+    )
+    {
+        try
+        {
+            await SqlServerSchemaMigrationStore.ExecuteReadOnlyBatchAsync(
+                _posmDatabase.ConnectionString,
+                PaymentTerminalSettingsSchemaMigrator.LinklyMultiTerminalVerifySql,
+                _commandTimeoutSeconds,
+                cancellationToken
+            );
+        }
+        catch (SqlException exception) when (exception.Number is >= 51600 and <= 51616)
+        {
+            throw new LinklyMultiTerminalSchemaMismatchException();
         }
     }
 

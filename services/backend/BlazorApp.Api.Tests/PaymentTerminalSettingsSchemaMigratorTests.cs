@@ -63,6 +63,7 @@ public sealed class PaymentTerminalSettingsSchemaMigratorTests
         Assert.Contains("[TerminalId] UNIQUEIDENTIFIER NULL", sql);
         Assert.Contains("[ClientAcknowledgedAt] DATETIME2(7) NULL", sql);
         Assert.Contains("IX_POSM_LinklyCloudBackendSession_TerminalRecovery", sql);
+        Assert.Contains("UX_POSM_LinklyCloudBackendSession_ActiveCloudTerminal", sql);
         Assert.Contains("IX_POSM_LinklyCloudBackendSession_DeviceRecovery", sql);
         Assert.Contains("[PairingAttemptId] UNIQUEIDENTIFIER NULL", sql);
         Assert.Contains("[PairingLeaseExpiresAt] DATETIME2(7) NULL", sql);
@@ -113,5 +114,96 @@ public sealed class PaymentTerminalSettingsSchemaMigratorTests
         Assert.Contains("CK_POSM_LinklyCloudTerminal_CredentialProtectionVersion", sql);
         Assert.DoesNotContain("UPDATE [dbo].[POSM_LinklyCloudTerminal] SET [Password]", sql);
         Assert.DoesNotContain("UPDATE [dbo].[POSM_LinklyCloudTerminal] SET [Secret]", sql);
+    }
+
+    [Fact]
+    public void LinklyMultiTerminalMigration_only_contains_v2_objects()
+    {
+        var scripts = PaymentTerminalSettingsSchemaMigrator.LinklyMultiTerminalSqlScriptsForTests;
+        var sql = string.Join("\n", scripts);
+        var backendColumns = scripts
+            .Select((script, index) => (script, index))
+            .Single(item => item.script.Contains(
+                "COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'TerminalId')",
+                StringComparison.Ordinal
+            ));
+        var backendIndexes = scripts
+            .Select((script, index) => (script, index))
+            .Single(item => item.script.Contains(
+                "CREATE UNIQUE INDEX [UX_POSM_LinklyCloudBackendSession_ActiveCloudTerminal]",
+                StringComparison.Ordinal
+            ));
+        var credentialProtectionColumn = scripts
+            .Select((script, index) => (script, index))
+            .Single(item => item.script.Contains(
+                "ADD [CredentialProtectionVersion] TINYINT NOT NULL",
+                StringComparison.Ordinal
+            ));
+        var credentialProtectionConstraint = scripts
+            .Select((script, index) => (script, index))
+            .Single(item => item.script.Contains(
+                "ADD CONSTRAINT [CK_POSM_LinklyCloudTerminal_CredentialProtectionVersion]",
+                StringComparison.Ordinal
+            ));
+
+        Assert.Contains("POSM_LinklyCloudBackendSession", sql);
+        Assert.Contains("POSM_LinklyCloudTerminal", sql);
+        Assert.Contains("POSM_LinklyCloudDeviceSelection", sql);
+        Assert.Contains("POSM_LinklyCloudConfigurationMode", sql);
+        Assert.DoesNotContain("POSM_SquareToken", sql);
+        Assert.DoesNotContain("POSM_LinklyCloudCredential", sql);
+        Assert.True(
+            backendColumns.index < backendIndexes.index,
+            "补列和引用新列的索引必须分成前后两个 SQL batch。"
+        );
+        Assert.DoesNotContain(
+            "CREATE INDEX [IX_POSM_LinklyCloudBackendSession_TerminalRecovery]",
+            backendColumns.script,
+            StringComparison.Ordinal
+        );
+        Assert.True(
+            credentialProtectionColumn.index < credentialProtectionConstraint.index,
+            "凭据保护版本列和引用它的约束必须分成前后两个 SQL batch。"
+        );
+        Assert.DoesNotContain(
+            "ADD CONSTRAINT [CK_POSM_LinklyCloudTerminal_CredentialProtectionVersion]",
+            credentialProtectionColumn.script,
+            StringComparison.Ordinal
+        );
+    }
+
+    [Fact]
+    public void LinklyMultiTerminalVerifySql_is_read_only_and_covers_required_signatures()
+    {
+        var sql = PaymentTerminalSettingsSchemaMigrator.LinklyMultiTerminalVerifySql;
+
+        Assert.Contains("POSM_LinklyCloudBackendSession", sql);
+        Assert.Contains("POSM_LinklyCloudTerminal", sql);
+        Assert.Contains("POSM_LinklyCloudDeviceSelection", sql);
+        Assert.Contains("POSM_LinklyCloudConfigurationMode", sql);
+        Assert.Contains("TerminalId", sql);
+        Assert.Contains("ClientAcknowledgedAt", sql);
+        Assert.Contains("CredentialProtectionVersion", sql);
+        Assert.Contains("PairingAttemptId", sql);
+        Assert.Contains("LegacyPairingAttemptId", sql);
+        Assert.Contains("UX_POSM_LinklyCloudTerminal_Scope_LaneNo", sql);
+        Assert.Contains("UX_POSM_LinklyCloudDeviceSelection_Scope_Terminal", sql);
+        Assert.Contains("IX_POSM_LinklyCloudBackendSession_TerminalRecovery", sql);
+        Assert.Contains("UX_POSM_LinklyCloudBackendSession_ActiveCloudTerminal", sql);
+        Assert.Contains("sys.check_constraints", sql);
+        Assert.Contains("ck.definition", sql);
+        Assert.Contains("in_form.remainder = REPLICATE(N',', required.value_count - 1)", sql);
+        Assert.Contains("or_form.remainder = REPLICATE(N'or', required.value_count - 1)", sql);
+        Assert.DoesNotContain("cleaned.definition", sql);
+        Assert.Contains("fk.delete_referential_action = 0", sql);
+        Assert.Contains("fk.update_referential_action = 0", sql);
+        Assert.Contains("THROW 51600", sql);
+        Assert.Contains("THROW 51616", sql);
+        Assert.DoesNotContain("CREATE TABLE", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ALTER TABLE", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("DROP TABLE", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("INSERT INTO", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("UPDATE [", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("DELETE FROM", sql, StringComparison.OrdinalIgnoreCase);
     }
 }
