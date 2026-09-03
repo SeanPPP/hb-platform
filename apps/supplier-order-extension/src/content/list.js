@@ -86,6 +86,7 @@
   let visibilityObserver = null;
   let scanTimer = null;
   let scanInterval = null;
+  let gfaLayoutStyle = null;
 
   // 读取卡片商品号：attribute/text + 声明式 transforms
   function readItemNumber(card) {
@@ -97,6 +98,38 @@
     }
     const raw = itemCfg.source === 'attribute' ? el.getAttribute(itemCfg.attribute) : el.textContent;
     return applyTransforms(raw, itemCfg.transforms);
+  }
+
+  function ensureGfaLayoutStyle() {
+    if (gfaLayoutStyle?.isConnected) return;
+    const existing = document.querySelector('style[data-hb-sro-gfa-layout]');
+    if (existing) {
+      gfaLayoutStyle = existing;
+      return;
+    }
+    gfaLayoutStyle = document.createElement('style');
+    gfaLayoutStyle.setAttribute('data-hb-sro-gfa-layout', '');
+    // GFA 的 100px 小列表行容不下商品明细和两行摘要；让内容按摘要高度自然扩展。
+    gfaLayoutStyle.textContent = `
+.list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content {
+  height: auto !important;
+  min-height: 100px;
+}
+.list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content > a.list-content[href*="/product/view?id="] {
+  height: auto !important;
+}
+.list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content > a.list-content[href*="/product/view?id="] .list-detail {
+  height: auto !important;
+}
+@media (max-width: 500px) {
+  .list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content {
+    padding-bottom: 46px !important;
+  }
+  .list-row[data-product] > .content > [data-hb-sro-host] {
+    margin-right: 0 !important;
+  }
+}`;
+    (document.head || document.documentElement).appendChild(gfaLayoutStyle);
   }
 
   function mountHost(card) {
@@ -113,9 +146,9 @@
     host.setAttribute('data-hb-sro-host', '');
     const isGfaFixedHeightRow =
       profile.supplierCode === '236' && card.matches('.list-row[data-product]');
-    // GFA 的商品主链接占满固定高度内容区；宿主留在链接之后时会被父级 overflow 裁掉。
+    if (isGfaFixedHeightRow) ensureGfaLayoutStyle();
     host.style.cssText = isGfaFixedHeightRow
-      ? 'display:block;margin:0 235px 0 0;position:relative;z-index:2;transform:translateY(-100%);pointer-events:none;'
+      ? 'display:block;margin:4px 235px 0 0;position:relative;z-index:2;pointer-events:none;'
       : 'display:block;margin:4px 0;';
     mountEl.insertAdjacentElement(pos, host);
     return host;

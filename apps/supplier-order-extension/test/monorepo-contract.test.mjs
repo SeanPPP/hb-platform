@@ -120,15 +120,21 @@ test('供应商页摘要按钮完整显示并自动换行', () => {
   assert.ok(!buttonStyle.includes('overflow:hidden'));
 });
 
-test('GFA 固定高度商品行会把摘要宿主上移到可见区域', () => {
+test('GFA 商品行会为摘要扩展高度并保持商品明细与操作区互不遮挡', () => {
   const list = read('src/content/list.js');
   const mountHost = list.match(/function mountHost\(card\) \{[\s\S]*?\n  \}/)?.[0] ?? '';
   const buttonStyle = list.match(/'\.hb-btn\{([^']+)\}'/)?.[1] ?? '';
 
   assert.ok(mountHost.includes("profile.supplierCode === '236'"));
   assert.ok(mountHost.includes("card.matches('.list-row[data-product]')"));
-  assert.ok(mountHost.includes('margin:0 235px 0 0'));
-  assert.ok(mountHost.includes('transform:translateY(-100%)'));
+  assert.ok(mountHost.includes('ensureGfaLayoutStyle()'));
+  assert.ok(list.includes('height: auto !important'));
+  assert.ok(list.includes('a.list-content[href*="/product/view?id="]'));
+  assert.ok(list.includes('.list-detail'));
+  assert.ok(list.includes('@media (max-width: 500px)'));
+  assert.ok(list.includes('padding-bottom: 46px !important'));
+  assert.ok(mountHost.includes('margin:4px 235px 0 0'));
+  assert.ok(!mountHost.includes('transform:translateY(-100%)'));
   assert.ok(mountHost.includes('z-index:2'));
   assert.ok(mountHost.includes('pointer-events:none'));
   assert.ok(buttonStyle.includes('pointer-events:auto'));
