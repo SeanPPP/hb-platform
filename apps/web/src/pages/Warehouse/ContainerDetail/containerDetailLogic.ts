@@ -1975,6 +1975,79 @@ function roundToDigits(value: number, digits: number) {
   return Math.round((value + Number.EPSILON) * base) / base
 }
 
+export type ContainerFreightInputMode = 'perCbm' | 'standard68'
+
+export const STANDARD_CONTAINER_VOLUME_CBM = 68
+
+function isValidContainerFreightAmount(value: number | null | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+export function normalizeContainerFreightInput(
+  value: number | null | undefined,
+  mode: ContainerFreightInputMode,
+): number | undefined {
+  if (!isValidContainerFreightAmount(value)) {
+    return undefined
+  }
+
+  const normalizedValue = roundToDigits(value, mode === 'perCbm' ? 4 : 2)
+  return Number.isFinite(normalizedValue) ? normalizedValue : undefined
+}
+
+export function isValidContainerFreightVolume(value: number | null | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
+export function calculateContainerFreight(
+  inputValue: number | null | undefined,
+  totalVolume: number | null | undefined,
+  mode: ContainerFreightInputMode,
+): number | undefined {
+  if (!isValidContainerFreightAmount(inputValue) || !isValidContainerFreightVolume(totalVolume)) {
+    return undefined
+  }
+
+  const freight = mode === 'perCbm'
+    ? inputValue * totalVolume
+    : (inputValue * totalVolume) / STANDARD_CONTAINER_VOLUME_CBM
+  if (!Number.isFinite(freight)) {
+    return undefined
+  }
+
+  const roundedFreight = roundToDigits(freight, 2)
+  return Number.isFinite(roundedFreight) ? roundedFreight : undefined
+}
+
+export function resolveContainerFreightPreview(
+  savedFreight: number | null | undefined,
+  inputValue: number | null | undefined,
+  totalVolume: number | null | undefined,
+  mode: ContainerFreightInputMode,
+  inputDirty: boolean,
+): number | undefined {
+  if (!inputDirty) {
+    return isValidContainerFreightAmount(savedFreight) ? savedFreight : undefined
+  }
+
+  return calculateContainerFreight(inputValue, totalVolume, mode)
+}
+
+export function deriveContainerFreightInput(
+  freight: number | null | undefined,
+  totalVolume: number | null | undefined,
+  mode: ContainerFreightInputMode,
+): number | undefined {
+  if (!isValidContainerFreightAmount(freight) || !isValidContainerFreightVolume(totalVolume)) {
+    return undefined
+  }
+
+  const inputValue = mode === 'perCbm'
+    ? freight / totalVolume
+    : (freight * STANDARD_CONTAINER_VOLUME_CBM) / totalVolume
+  return Number.isFinite(inputValue) ? inputValue : undefined
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }

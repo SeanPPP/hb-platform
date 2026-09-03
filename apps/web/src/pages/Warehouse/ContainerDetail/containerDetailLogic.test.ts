@@ -56,6 +56,7 @@ import {
   buildContainerDetailHqPushSelection,
   buildContainerDetailTranslationUpdates,
   calculateContainerDetailImportPrice,
+  calculateContainerFreight,
   calculateContainerSetCodePurchasePrice,
   calculateContainerDetailTransportCost,
   calculateContainerDetailUnitTransportCost,
@@ -103,7 +104,11 @@ import {
   DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS,
+  deriveContainerFreightInput,
   getContainerDetailCostMissingFields,
+  isValidContainerFreightVolume,
+  normalizeContainerFreightInput,
+  resolveContainerFreightPreview,
   getUpdateFieldSelectionState,
   type ContainerDetailTableColumnKey,
   type ContainerDetailColumnFilters,
@@ -2393,6 +2398,14 @@ function getLocaleValue(source: Record<string, unknown>, key: string) {
 const containerDetailExportLabelKeys = CONTAINER_DETAIL_EXPORT_COLUMNS.map((column) => column.labelKey)
 
 const requiredContainerI18nKeys = [
+  'containers.freightCalculator.modes.standard68',
+  'containers.freightCalculator.modes.perCbm',
+  'containers.freightCalculator.placeholders.standard68',
+  'containers.freightCalculator.placeholders.perCbm',
+  'containers.freightCalculator.preview',
+  'containers.freightCalculator.invalidVolume',
+  'containers.freightCalculator.invalidInput',
+  'containers.freightCalculator.refreshFailed',
   'containers.actions.batchUpdateFloatRate',
   'containers.actions.batchUpdatePrices',
   'containers.actions.showReadonlyOemPrice',
@@ -3703,6 +3716,136 @@ const priceContainer = {
   运费: 12000,
   总体积: 67.44,
 }
+
+assertEqual(
+  calculateContainerFreight(13000, 68.628, 'standard68'),
+  13120.06,
+  '68 m³ 标准运费应按当前总体积折算并保留 2 位小数',
+)
+assertEqual(
+  calculateContainerFreight(190, 68.628, 'perCbm'),
+  13039.32,
+  '每 m³ 单价应乘当前总体积并保留 2 位小数',
+)
+assertEqual(
+  calculateContainerFreight(13000, 68, 'standard68'),
+  13000,
+  '总体积正好为 68 m³ 时标准运费应保持不变',
+)
+assertEqual(
+  calculateContainerFreight(190, 63.125, 'perCbm'),
+  calculateContainerFreight(190 * 68, 63.125, 'standard68'),
+  '两种报价模式的等价值应生成相同最终运费',
+)
+assertEqual(calculateContainerFreight(0, 68.628, 'perCbm'), 0, '每 m³ 单价 0 应是合法输入')
+assertEqual(calculateContainerFreight(0, 68.628, 'standard68'), 0, '68 m³ 标准运费 0 应是合法输入')
+for (const invalidInput of [undefined, null, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+  assertEqual(
+    calculateContainerFreight(invalidInput, 68.628, 'standard68'),
+    undefined,
+    `无效报价 ${String(invalidInput)} 不应生成最终运费`,
+  )
+}
+assertEqual(
+  calculateContainerFreight(Number.MAX_VALUE, 68.628, 'perCbm'),
+  undefined,
+  '报价换算溢出时不应生成最终运费',
+)
+for (const invalidVolume of [undefined, null, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+  assertEqual(
+    isValidContainerFreightVolume(invalidVolume),
+    false,
+    `无效总体积 ${String(invalidVolume)} 应被拒绝`,
+  )
+  assertEqual(
+    calculateContainerFreight(13000, invalidVolume, 'standard68'),
+    undefined,
+    `无效总体积 ${String(invalidVolume)} 不应生成最终运费`,
+  )
+}
+const savedFreight = 13120.06
+const savedVolume = 68.628
+const standard68Input = deriveContainerFreightInput(savedFreight, savedVolume, 'standard68')
+const perCbmInput = deriveContainerFreightInput(savedFreight, savedVolume, 'perCbm')
+assertEqual(
+  calculateContainerFreight(standard68Input, savedVolume, 'standard68'),
+  savedFreight,
+  '已保存运费反算为 68 m³ 报价后应能无损换回最终运费',
+)
+assertEqual(
+  calculateContainerFreight(perCbmInput, savedVolume, 'perCbm'),
+  savedFreight,
+  '已保存运费反算为每 m³ 单价后应能无损换回最终运费',
+)
+assertEqual(
+  calculateContainerFreight(
+    deriveContainerFreightInput(
+      calculateContainerFreight(standard68Input, savedVolume, 'standard68'),
+      savedVolume,
+      'perCbm',
+    ),
+    savedVolume,
+    'perCbm',
+  ),
+  savedFreight,
+  '反复切换报价模式不应改变最终运费',
+)
+const precisionBoundaryFreight = 1000.46
+const precisionBoundaryVolume = 68.628
+const normalizedStandard68Input = normalizeContainerFreightInput(
+  deriveContainerFreightInput(precisionBoundaryFreight, precisionBoundaryVolume, 'standard68'),
+  'standard68',
+)
+assertEqual(normalizedStandard68Input, 991.31, '68 m³ 反算报价应先归一化为输入框实际显示的 2 位小数')
+assertEqual(
+  calculateContainerFreight(normalizedStandard68Input, precisionBoundaryVolume, 'standard68'),
+  1000.47,
+  '跨分边界样例应证明仅使用归一化报价回算会错误改变已保存运费',
+)
+assertEqual(
+  resolveContainerFreightPreview(
+    precisionBoundaryFreight,
+    normalizedStandard68Input,
+    precisionBoundaryVolume,
+    'standard68',
+    false,
+  ),
+  precisionBoundaryFreight,
+  '未修改报价时预览必须使用已保存最终运费，不能使用显示精度回算值',
+)
+assertEqual(
+  resolveContainerFreightPreview(
+    precisionBoundaryFreight,
+    normalizedStandard68Input,
+    precisionBoundaryVolume,
+    'standard68',
+    true,
+  ),
+  1000.47,
+  '用户实际修改报价后，预览才应使用当前报价重新换算',
+)
+for (const mode of ['standard68', 'perCbm'] as const) {
+  const normalizedInput = normalizeContainerFreightInput(
+    deriveContainerFreightInput(precisionBoundaryFreight, precisionBoundaryVolume, mode),
+    mode,
+  )
+  assertEqual(
+    normalizeContainerFreightInput(normalizedInput, mode),
+    normalizedInput,
+    `${mode} 程序化输入应与失焦后的精度归一化值一致`,
+  )
+  assertEqual(
+    resolveContainerFreightPreview(
+      precisionBoundaryFreight,
+      normalizedInput,
+      precisionBoundaryVolume,
+      mode,
+      false,
+    ),
+    precisionBoundaryFreight,
+    `${mode} 仅聚焦失焦不得改变最终运费`,
+  )
+}
 const priceRows: ContainerDetail[] = [
   {
     id: 101,
@@ -3902,7 +4045,7 @@ assertDeepEqual(
     'value={batchImportPrice}\n            placeholder={t(\'containers.fields.importPrice\')}\n            min={0}\n            prefix="$"\n            precision={2}\n            controls={false}',
     'value={batchOemPrice}\n            placeholder={t(\'containers.fields.oemPrice\')}\n            min={0}\n            prefix="$"\n            precision={2}\n            controls={false}',
     '<InputNumber value={headerForm.汇率} precision={4} controls={false}',
-    '<InputNumber value={headerForm.运费} precision={2} controls={false}',
+    "step={freightInputMode === 'perCbm' ? 0.0001 : 0.01}\n                      controls={false}",
   ].filter((snippet) => !pageSource.includes(snippet)),
   [],
   '货柜明细页所有可编辑数字输入都应关闭加减按钮',
@@ -3911,6 +4054,90 @@ assertEqual(pageSource.includes('value={row.进口价格}'), true, '进口价格
 assertEqual(pageSource.includes('defaultValue={row.进口价格}'), false, '进口价格输入框不能使用 defaultValue')
 assertEqual(pageSource.includes('const updatePayload: UpdateContainerRequest'), true, '保存货柜头部应使用窄更新 payload')
 assertEqual(pageSource.includes('await updateContainer(containerGuid, nextContainer)'), false, '保存货柜头部不能把完整货柜对象发送到后端')
+assertEqual(
+  pageSource.includes("useState<ContainerFreightInputMode>('standard68')") &&
+    pageSource.includes("setFreightInputMode('standard68')") &&
+    pageSource.includes("deriveContainerFreightInput(info.运费, info.总体积, 'standard68')"),
+  true,
+  '货柜加载或刷新后应以已保存最终运费反算默认的 68 m³ 标准报价',
+)
+assertEqual(
+  pageSource.includes('value={freightInputMode}') &&
+    pageSource.includes("aria-label={t('containers.fields.freight')}") &&
+    pageSource.includes('value={freightInputValue}') &&
+    pageSource.includes('setFreightInputDirty(true)') &&
+    pageSource.includes("t('containers.freightCalculator.preview'") &&
+    pageSource.includes('role="status" aria-live="polite"') &&
+    pageSource.includes('role="alert"'),
+  true,
+  '运费换算应使用独立受控草稿，并展示当前总体积对应的最终运费预览',
+)
+assertEqual(
+  pageSource.includes('disabled={!freightVolumeValid}') &&
+    pageSource.includes("t('containers.freightCalculator.invalidVolume')") &&
+    pageStyleSource.includes('.container-detail-freight-calculator') &&
+    pageStyleSource.includes('.container-detail-page-small .container-detail-freight-calculator'),
+  true,
+  '总体积无效时应禁用报价输入、显示行内原因，并提供窄屏样式',
+)
+assertEqual(
+  pageSource.includes('const handleFreightInputModeChange') &&
+    pageSource.includes('setFreightInputValue(normalizeContainerFreightInput(') &&
+    pageSource.includes('deriveContainerFreightInput(freightPreviewValue, container?.总体积, nextMode)') &&
+    pageSource.includes('resolveContainerFreightPreview('),
+  true,
+  '切换报价模式应从稳定最终运费反算并按目标模式精度归一化输入显示',
+)
+{
+  const modeChangeStart = pageSource.indexOf('const handleFreightInputModeChange')
+  const inputChangeStart = pageSource.indexOf('const handleFreightInputChange', modeChangeStart)
+  const inputChangeEnd = pageSource.indexOf('const columnDragSensors', inputChangeStart)
+  const modeChangeSource = pageSource.slice(modeChangeStart, inputChangeStart)
+  const inputChangeSource = pageSource.slice(inputChangeStart, inputChangeEnd)
+  assertEqual(
+    modeChangeStart >= 0 && inputChangeStart > modeChangeStart && !modeChangeSource.includes('setFreightInputDirty(true)'),
+    true,
+    '只切换报价模式不能把运费草稿标记为已修改',
+  )
+  assertEqual(
+    inputChangeEnd > inputChangeStart &&
+      inputChangeSource.indexOf('if (Object.is(nextValue, freightInputValue)) return') <
+        inputChangeSource.indexOf('setFreightInputDirty(true)'),
+    true,
+    '输入框失焦返回相同归一化值时不能把运费草稿标记为已修改',
+  )
+}
+assertEqual(
+  pageSource.includes('if (freightInputDirty) {') &&
+    pageSource.includes('const latestContainer = await getContainerDetail(containerGuid)') &&
+    pageSource.includes('运费: nextFreight') &&
+    pageSource.indexOf('const latestContainer = await getContainerDetail(containerGuid)') <
+      pageSource.indexOf('await updateContainer(containerGuid, updatePayload)'),
+  true,
+  '已修改报价保存前应读取服务端最新总体积，并且 payload 只携带换算后的最终运费',
+)
+{
+  const saveHeaderStart = pageSource.indexOf('const saveHeader = async () => {')
+  const saveHeaderEnd = pageSource.indexOf('const saveFloatRatePatch', saveHeaderStart)
+  const saveHeaderSource = pageSource.slice(saveHeaderStart, saveHeaderEnd)
+  assertEqual(
+    saveHeaderStart >= 0 &&
+      saveHeaderEnd > saveHeaderStart &&
+      saveHeaderSource.indexOf('savingHeaderRef.current = true') <
+        saveHeaderSource.indexOf('await drainAutoSavesBeforeAction()') &&
+      saveHeaderSource.includes('savingHeaderRef.current = false'),
+    true,
+    '保存货柜应在第一个 await 前取得同步互斥锁，并在 finally 中释放',
+  )
+  assertEqual(
+    saveHeaderSource.indexOf('await updateContainer(containerGuid, updatePayload)') <
+      saveHeaderSource.indexOf("setFreightInputMode('standard68')") &&
+      saveHeaderSource.includes('setFreightInputDirty(false)') &&
+      saveHeaderSource.includes('运费: nextFreight'),
+    true,
+    'PUT 成功后应立即更新本地最终运费基准并清除草稿，避免 reload 失败后重复提交旧报价',
+  )
+}
 assertEqual(
   pageSource.includes("t('containers.fields.domesticPriceTotal')") &&
     pageSource.includes("formatCurrency(container?.合计金额, '¥')"),
@@ -3921,7 +4148,7 @@ assertEqual(
   const headerFormInitStart = pageSource.indexOf('setHeaderForm({')
   const headerFormInitEnd = pageSource.indexOf('    } catch (error) {', headerFormInitStart)
   const headerUpdatePayloadStart = pageSource.indexOf('const updatePayload: UpdateContainerRequest = {')
-  const headerUpdatePayloadEnd = pageSource.indexOf('    setSavingHeader(true)', headerUpdatePayloadStart)
+  const headerUpdatePayloadEnd = pageSource.indexOf('await updateContainer(containerGuid, updatePayload)', headerUpdatePayloadStart)
   assertEqual(
     headerFormInitStart >= 0 &&
       headerFormInitEnd > headerFormInitStart &&
@@ -3940,7 +4167,11 @@ assertEqual(
   )
   assertEqual(
     !headerFormInitSource.includes('合计金额') &&
+      !headerFormInitSource.includes('运费: info.运费') &&
       !headerUpdatePayloadSource.includes('合计金额') &&
+      !headerUpdatePayloadSource.includes('freightInputMode') &&
+      !headerUpdatePayloadSource.includes('freightInputValue') &&
+      !headerUpdatePayloadSource.includes('freightInputDirty') &&
       !headerUpdatePayloadSource.includes('...headerForm'),
     true,
     '国内价格合计来自主表汇总，只读字段不能进入 headerForm 初始化、保存 payload 或被整包展开',
