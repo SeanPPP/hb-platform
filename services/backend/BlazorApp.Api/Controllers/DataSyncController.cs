@@ -30,6 +30,32 @@ namespace BlazorApp.Api.Controllers
             _logger = logger;
         }
 
+        private IActionResult CreateContainerSyncFailureResponse(SyncResult result)
+        {
+            var committedCount = result.AddedCount + result.UpdatedCount + result.DeletedCount;
+            var normalizedErrorCount = Math.Max(result.ErrorCount, 1);
+            var normalizedBusyErrorCount =
+                result.ErrorCode == ContainerMutationLock.BusyErrorCode
+                    ? result.BusyErrorCount == 0
+                        ? normalizedErrorCount
+                        : Math.Clamp(result.BusyErrorCount, 0, normalizedErrorCount)
+                    : 0;
+            var allBusyWithoutCommit =
+                committedCount == 0
+                && normalizedBusyErrorCount == normalizedErrorCount;
+            if (allBusyWithoutCommit)
+            {
+                Response.Headers.RetryAfter = "1";
+                return Conflict(
+                    ApiResponse<SyncResult>.Error(result.Message, result.ErrorCode, result)
+                );
+            }
+
+            return BadRequest(
+                ApiResponse<SyncResult>.Error(result.Message, "SYNC_FAILED", result)
+            );
+        }
+
         /// <summary>
         /// 从HQ总部同步供应商数据
         /// 🔄 从总部数据库获取最新供应商信息并更新本地数据库
@@ -693,9 +719,7 @@ namespace BlazorApp.Api.Controllers
                 else
                 {
                     _logger.LogWarning("货柜数据同步失败: {Message}", result.Message);
-                    return BadRequest(
-                        ApiResponse<SyncResult>.Error(result.Message, "SYNC_FAILED", result)
-                    );
+                    return CreateContainerSyncFailureResponse(result);
                 }
             }
             catch (Exception ex)
@@ -752,9 +776,7 @@ namespace BlazorApp.Api.Controllers
                 else
                 {
                     _logger.LogWarning("货柜数据增量同步失败: {Message}", result.Message);
-                    return BadRequest(
-                        ApiResponse<SyncResult>.Error(result.Message, "SYNC_FAILED", result)
-                    );
+                    return CreateContainerSyncFailureResponse(result);
                 }
             }
             catch (Exception ex)

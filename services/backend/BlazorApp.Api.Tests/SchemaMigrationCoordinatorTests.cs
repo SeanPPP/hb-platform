@@ -79,6 +79,9 @@ public sealed class SchemaMigrationCoordinatorTests
 
         Assert.NotNull(stepExecutor);
         Assert.Contains("ApplyMainBaselineAsync", runtimeMethods);
+        Assert.Contains("ApplyBrowserExtensionSessionGrantAsync", runtimeMethods);
+        Assert.Contains("ApplyContainerDetailQueryIndexesAsync", runtimeMethods);
+        Assert.Contains("VerifyContainerDetailQueryIndexesAsync", runtimeMethods);
         Assert.Contains("ApplyPosmBaselineAsync", runtimeMethods);
         Assert.Contains("ApplyMobileDeviceActivationAsync", runtimeMethods);
         Assert.Contains("VerifyMobileDeviceActivationSchemaAsync", runtimeMethods);
@@ -285,13 +288,14 @@ public sealed class SchemaMigrationCoordinatorTests
     }
 
     [Fact]
-    public async Task Coordinator_Check仅做四批只读门禁且不执行迁移器()
+    public async Task Coordinator_Check只做账本与精确签名门禁且不执行迁移器()
     {
         var source = await ReadCoordinatorSourceAsync();
         var checkMethod = ExtractMethod(source, "CheckCoreAsync");
         var runtimeSource = await ReadRuntimeSourceAsync();
 
         Assert.Contains("CheckLedgerAsync", checkMethod, StringComparison.Ordinal);
+        Assert.Contains("VerifyContainerDetailQueryIndexesAsync", checkMethod, StringComparison.Ordinal);
         Assert.Contains("VerifyDeviceActivationSchemaAsync", checkMethod, StringComparison.Ordinal);
         Assert.Contains("VerifyMobileDeviceActivationSchemaAsync", checkMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("CreateTable", checkMethod, StringComparison.Ordinal);
@@ -301,8 +305,9 @@ public sealed class SchemaMigrationCoordinatorTests
         Assert.DoesNotContain("EmergencyLogin", checkMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("sp_getapplock", checkMethod, StringComparison.Ordinal);
 
-        // 两个账本查询 + 两条设备激活 VerifySql，启动门禁不能重新扫描/写入 schema。
+        // 两个账本查询 + 已登记迁移的精确签名 VerifySql，启动门禁不能重新扫描/写入 schema。
         Assert.Equal(2, CountOccurrences(checkMethod, "CheckLedgerAsync"));
+        Assert.Equal(1, CountOccurrences(checkMethod, "VerifyContainerDetailQueryIndexesAsync"));
         Assert.Equal(1, CountOccurrences(checkMethod, "VerifyDeviceActivationSchemaAsync"));
         Assert.Equal(1, CountOccurrences(checkMethod, "VerifyMobileDeviceActivationSchemaAsync"));
         Assert.Contains("DeviceActivationCodeSchema.VerifySql", runtimeSource, StringComparison.Ordinal);
@@ -314,6 +319,18 @@ public sealed class SchemaMigrationCoordinatorTests
     {
         var runtime = new FakeSchemaMigrationRuntime();
         runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.MainMigrationId);
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId
+        );
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.ContainerDetailQueryIndexesMigrationId
+        );
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.ContainerDetailCollaborationMigrationId
+        );
         runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
         runtime.MarkApplied(
             SchemaDatabase.Posm,
@@ -331,10 +348,80 @@ public sealed class SchemaMigrationCoordinatorTests
     }
 
     [Fact]
+    public async Task MigrateAsync_旧主库Baseline已应用_仍执行并记账浏览器扩展Grant迁移()
+    {
+        var runtime = new FakeSchemaMigrationRuntime();
+        runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.MainMigrationId);
+        runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
+        runtime.MarkApplied(
+            SchemaDatabase.Posm,
+            SchemaMigrationCoordinator.MobileDeviceActivationMigrationId
+        );
+
+        var result = await CreateCoordinator(runtime).MigrateAsync(CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.DoesNotContain(
+            $"Apply:Main:{SchemaMigrationCoordinator.MainMigrationId}",
+            runtime.Events
+        );
+        Assert.Contains(
+            $"Apply:Main:{SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId}",
+            runtime.Events
+        );
+        Assert.Contains(
+            $"Record:Main:{SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId}",
+            runtime.Events
+        );
+    }
+
+    [Fact]
+    public async Task MigrateAsync_所有既有主库步骤已记账_仍执行并记账货柜协作迁移()
+    {
+        var runtime = new FakeSchemaMigrationRuntime();
+        runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.MainMigrationId);
+        runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId);
+        runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.ContainerDetailQueryIndexesMigrationId);
+        runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
+        runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.MobileDeviceActivationMigrationId);
+
+        var result = await CreateCoordinator(runtime).MigrateAsync(CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Contains($"Apply:Main:{SchemaMigrationCoordinator.ContainerDetailCollaborationMigrationId}", runtime.Events);
+        Assert.Contains($"Record:Main:{SchemaMigrationCoordinator.ContainerDetailCollaborationMigrationId}", runtime.Events);
+    }
+
+    [Fact]
+    public async Task CheckAsync_协作账本已登记但签名缺失_返回稳定不兼容诊断()
+    {
+        var runtime = new FakeSchemaMigrationRuntime
+        {
+            ContainerDetailCollaborationVerifyException =
+                new ContainerDetailCollaborationSchemaMismatchException(),
+        };
+        foreach (var step in SchemaMigrationCoordinator.MainMigrationSteps)
+            runtime.MarkApplied(SchemaDatabase.Main, step.MigrationId);
+        foreach (var step in SchemaMigrationCoordinator.PosmMigrationSteps)
+            runtime.MarkApplied(SchemaDatabase.Posm, step.MigrationId);
+
+        var result = await CreateCoordinator(runtime).CheckAsync(CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal(SchemaExitCodes.SchemaNotReady, result.ExitCode);
+        Assert.Equal(SchemaDiagnosticCodes.ContainerDetailCollaborationIncompatible, result.DiagnosticCode);
+        Assert.Contains("VerifyContainerDetailCollaboration", runtime.Events);
+    }
+
+    [Fact]
     public async Task MigrateAsync_旧PosmBaseline已应用_仍执行并记账Mobile设备绑定迁移()
     {
         var runtime = new FakeSchemaMigrationRuntime();
         runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.MainMigrationId);
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId
+        );
         runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
 
         var result = await CreateCoordinator(runtime).MigrateAsync(CancellationToken.None);
@@ -447,10 +534,23 @@ public sealed class SchemaMigrationCoordinatorTests
     }
 
     [Fact]
-    public async Task CheckAsync_缺少账本返回20且固定执行四批只读门禁()
+    public async Task CheckAsync_缺少查询索引账本时保留主库Missing且跳过该签名门禁()
     {
-        var runtime = new FakeSchemaMigrationRuntime();
+        var runtime = new FakeSchemaMigrationRuntime
+        {
+            ContainerDetailIndexesVerifyException =
+                new ContainerDetailQueryIndexSchemaMismatchException(),
+        };
+        runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.MainMigrationId);
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId
+        );
         runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
+        runtime.MarkApplied(
+            SchemaDatabase.Posm,
+            SchemaMigrationCoordinator.MobileDeviceActivationMigrationId
+        );
 
         var result = await CreateCoordinator(runtime).CheckAsync(CancellationToken.None);
 
@@ -462,6 +562,9 @@ public sealed class SchemaMigrationCoordinatorTests
                 "EnsureProviders",
                 "Preflight",
                 "Check:Main:20260827.001-hbweb-baseline",
+                "Check:Main:20260830.001-browser-extension-session-grant",
+                "Check:Main:20260902.001-container-detail-query-indexes",
+                "Check:Main:20260903.001-container-detail-collaboration",
                 "Check:Posm:20260827.001-hbweb-posm-baseline",
                 "Check:Posm:20260831.001-mobile-device-activation",
                 "Verify",
@@ -469,6 +572,7 @@ public sealed class SchemaMigrationCoordinatorTests
             ],
             runtime.Events
         );
+        Assert.DoesNotContain("VerifyContainerDetailIndexes", runtime.Events);
         Assert.DoesNotContain(runtime.Events, entry => entry.StartsWith("Acquire:", StringComparison.Ordinal));
         Assert.DoesNotContain(runtime.Events, entry => entry.StartsWith("Apply:", StringComparison.Ordinal));
         Assert.DoesNotContain(runtime.Events, entry => entry.StartsWith("Record:", StringComparison.Ordinal));
@@ -482,6 +586,14 @@ public sealed class SchemaMigrationCoordinatorTests
             MobileVerifyException = new DeviceActivationSchemaMismatchException(),
         };
         runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.MainMigrationId);
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId
+        );
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.ContainerDetailQueryIndexesMigrationId
+        );
         runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
         runtime.MarkApplied(
             SchemaDatabase.Posm,
@@ -605,6 +717,8 @@ public sealed class SchemaMigrationCoordinatorTests
         public Exception? AcquireException { get; init; }
         public Exception? VerifyException { get; init; }
         public Exception? MobileVerifyException { get; init; }
+        public Exception? ContainerDetailIndexesVerifyException { get; init; }
+        public Exception? ContainerDetailCollaborationVerifyException { get; init; }
 
         public void MarkApplied(SchemaDatabase database, string migrationId) =>
             _applied.Add((database, migrationId));
@@ -658,6 +772,41 @@ public sealed class SchemaMigrationCoordinatorTests
                 cancellationToken
             );
 
+        public Task ApplyBrowserExtensionSessionGrantAsync(
+            CancellationToken cancellationToken
+        ) => ApplyAsync(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId,
+            cancellationToken
+        );
+
+        public Task ApplyContainerDetailQueryIndexesAsync(
+            CancellationToken cancellationToken
+        ) => ApplyAsync(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.ContainerDetailQueryIndexesMigrationId,
+            cancellationToken
+        );
+
+        public Task ApplyContainerDetailCollaborationAsync(
+            CancellationToken cancellationToken
+        ) => ApplyAsync(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.ContainerDetailCollaborationMigrationId,
+            cancellationToken
+        );
+
+        public Task VerifyContainerDetailCollaborationAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Events.Add("VerifyContainerDetailCollaboration");
+            if (ContainerDetailCollaborationVerifyException is not null)
+            {
+                throw ContainerDetailCollaborationVerifyException;
+            }
+            return Task.CompletedTask;
+        }
+
         public Task ApplyPosmBaselineAsync(CancellationToken cancellationToken) =>
             ApplyAsync(
                 SchemaDatabase.Posm,
@@ -700,6 +849,20 @@ public sealed class SchemaMigrationCoordinatorTests
             if (VerifyException is not null)
             {
                 throw VerifyException;
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public Task VerifyContainerDetailQueryIndexesAsync(
+            CancellationToken cancellationToken
+        )
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Events.Add("VerifyContainerDetailIndexes");
+            if (ContainerDetailIndexesVerifyException is not null)
+            {
+                throw ContainerDetailIndexesVerifyException;
             }
 
             return Task.CompletedTask;

@@ -54,6 +54,11 @@ async function run() {
   assert.match(primaryTabBar, /router\.navigate/);
   assert.match(
     primaryTabBar,
+    /const action = resolvePrimaryNavigationAction[\s\S]*?if \(action === "none"\)[\s\S]*?item\.targetRouteName === "reports"[\s\S]*?markReportHubNavigationStart\(\)[\s\S]*?router\.(?:dismissTo|navigate)/,
+    "底栏确实进入报告路由时必须记录一次由活动页签认领的点击起点"
+  );
+  assert.match(
+    primaryTabBar,
     /numberOfLines=\{2\}/,
     "动态底栏在窄屏上必须允许放大后的一级导航标签换行"
   );

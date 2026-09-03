@@ -99,6 +99,19 @@ export const IOS_REVIEW_STORES: ReadonlyArray<UserStoreDto> = [
     stateCode: "QLD",
     assignedAt: "2026-01-01T00:00:00.000Z",
   },
+  // 审核账号保持 28 店规模，确保报表、筛选和长列表按真实门店数量验收。
+  ...Array.from({ length: 25 }, (_, index): UserStoreDto => {
+    const branchNumber = index + 3;
+    const guidNumber = index + 4;
+    return {
+      storeGUID: `8f42dc5b-77ce-46ea-94a4-6f73ddcce${String(guidNumber).padStart(3, "0")}`,
+      storeCode: `REV${String(branchNumber).padStart(3, "0")}`,
+      storeName: `Demo Branch ${String(branchNumber).padStart(2, "0")}`,
+      postcode: String(4000 + branchNumber),
+      stateCode: "QLD",
+      assignedAt: "2026-01-01T00:00:00.000Z",
+    };
+  }),
 ];
 
 export function createIosReviewUser(): CurrentUser {

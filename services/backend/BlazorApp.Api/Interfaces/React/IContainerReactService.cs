@@ -32,7 +32,10 @@ namespace BlazorApp.Api.Interfaces.React
         /// <summary>
         /// 按服务端筛选、排序和内部分页查询货柜商品明细（React）
         /// </summary>
-        Task<ContainerDetailQueryResultDto> QueryContainerDetailsAsync(ContainerDetailQueryDto request);
+        Task<ContainerDetailQueryResultDto> QueryContainerDetailsAsync(
+            ContainerDetailQueryDto request,
+            CancellationToken cancellationToken = default
+        );
 
         /// <summary>
         /// 获取国内套装多码价格明细（货柜明细弹窗专用）。
@@ -66,9 +69,17 @@ namespace BlazorApp.Api.Interfaces.React
         Task<int> BatchUpdateDetailsAsync(List<UpdateContainerDetailDto> updates);
 
         /// <summary>
-        /// 批量更新货柜明细并返回 React 页面所需的部分成功和字段级错误。
+        /// 兼容旧客户端的无货柜范围部分成功入口。
         /// </summary>
         Task<ContainerDetailBatchUpdateResultDto> BatchUpdateDetailsDetailedAsync(
+            List<UpdateContainerDetailDto> updates
+        );
+
+        /// <summary>
+        /// 在指定货柜范围内批量更新明细，并返回 React 页面所需的部分成功和字段级错误。
+        /// </summary>
+        Task<ContainerDetailBatchUpdateResultDto> BatchUpdateDetailsDetailedAsync(
+            string containerGuid,
             List<UpdateContainerDetailDto> updates
         );
 
@@ -90,6 +101,19 @@ namespace BlazorApp.Api.Interfaces.React
         Task<int> ApplyPricesByScopeAsync(string containerGuid, ContainerDetailApplyPricesRequestDto request);
 
         /// <summary>
+        /// 按当前筛选范围批量上下架，并通过预览令牌防止覆盖其他用户更新。
+        /// </summary>
+        Task<int> SetStatusByScopeAsync(string containerGuid, ContainerDetailSetStatusRequestDto request);
+
+        /// <summary>
+        /// 按当前筛选范围批量分配或清空分类，并通过预览令牌防止覆盖其他用户更新。
+        /// </summary>
+        Task<int> AssignCategoryByScopeAsync(
+            string containerGuid,
+            ContainerDetailAssignCategoryRequestDto request
+        );
+
+        /// <summary>
         /// 按当前筛选范围重算运输成本和进口价。
         /// </summary>
         Task<int> RecalculateCostsByScopeAsync(string containerGuid, ContainerDetailBatchScopeDto request);
@@ -98,6 +122,13 @@ namespace BlazorApp.Api.Interfaces.React
         /// 按当前筛选范围回填货柜明细上次价格快照。
         /// </summary>
         Task<int> BackfillLastPricesByScopeAsync(string containerGuid, ContainerDetailBatchScopeDto request);
+
+        Task<ContainerDetailBatchPreviewResultDto> PreviewBatchActionAsync(
+            string containerGuid,
+            ContainerDetailBatchPreviewRequestDto request
+        );
+
+        Task<int> BatchDeleteDetailsScopedAsync(string containerGuid, ContainerDetailBatchScopeDto request);
 
         /// <summary>
         /// 创建新货柜（React）

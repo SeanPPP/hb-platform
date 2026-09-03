@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
@@ -10,6 +11,7 @@ using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using SqlSugar;
@@ -49,7 +51,8 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
             typeof(StoreRetailPrice),
             typeof(ProductSetCode),
             typeof(StoreMultiCodeProduct),
-            typeof(WarehouseCategory)
+            typeof(WarehouseCategory),
+            typeof(ContainerDetailFieldOverrideAudit)
         );
     }
 
@@ -122,7 +125,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
                 },
             }
         ).ExecuteCommandAsync();
-        var service = CreateService();
+        var service = CreateService(concurrencyEnabled: true);
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.UpdateContainerAsync(
@@ -808,6 +811,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         var service = CreateService();
 
         var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
             new List<UpdateContainerDetailDto>
             {
                 new()
@@ -850,6 +854,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         var service = CreateService();
 
         var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
             new List<UpdateContainerDetailDto>
             {
                 new()
@@ -916,6 +921,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         var service = CreateService();
 
         var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
             new List<UpdateContainerDetailDto>
             {
                 new()
@@ -969,6 +975,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         var service = CreateService();
 
         var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
             new List<UpdateContainerDetailDto>
             {
                 new() { HGUID = "D-NOOP-NAME-1", 英文名称 = "Same English" },
@@ -999,6 +1006,7 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         var service = CreateService();
 
         var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
             new List<UpdateContainerDetailDto>
             {
                 new()
@@ -1021,6 +1029,1228 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         Assert.Equal("CONTAINS_CHINESE", error.Code);
         Assert.Equal(6.78m, detail.ImportPrice);
         Assert.Equal("Existing English", domesticProduct.EnglishProductName);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_货柜范围外明细返回错误且绝不写入()
+    {
+        await SeedDetailAsync("D-IN-SCOPE", productCode: null);
+        await _localDb.Insertable(
+            new ContainerDetail
+            {
+                DetailCode = "D-OUT-OF-SCOPE",
+                ContainerCode = "C-OTHER",
+                DomesticPrice = 1m,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-IN-SCOPE", 国内价格 = 2m },
+                new() { HGUID = "D-OUT-OF-SCOPE", 国内价格 = 9m },
+            }
+        );
+
+        var inScope = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(row => row.DetailCode == "D-IN-SCOPE");
+        var outOfScope = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(row => row.DetailCode == "D-OUT-OF-SCOPE");
+        Assert.Equal(2m, inScope.DomesticPrice);
+        Assert.Equal(1m, outOfScope.DomesticPrice);
+        var error = Assert.Single(result.ValidationErrors);
+        Assert.Equal("D-OUT-OF-SCOPE", error.HGUID);
+        Assert.Equal("*", error.Field);
+        Assert.Equal("DETAIL_OUTSIDE_CONTAINER", error.Code);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_并发改动其它明细字段_窄更新不得用旧实体覆盖()
+    {
+        await SeedDetailAsync("D-NARROW-WRITE", productCode: null);
+        var captureCount = 0;
+        var history = new Mock<IWarehouseProductChangeHistoryService>();
+        history
+            .Setup(service => service.CaptureSnapshotsAsync(
+                It.IsAny<IEnumerable<string>>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Returns(async () =>
+            {
+                if (captureCount++ == 0)
+                {
+                    await _localDb.Updateable<ContainerDetail>()
+                        .SetColumns(row => row.OEMPrice == 99m)
+                        .Where(row => row.DetailCode == "D-NARROW-WRITE")
+                        .ExecuteCommandAsync();
+                }
+                return new Dictionary<string, WarehouseProductChangeSnapshotDto>();
+            });
+        history
+            .Setup(service => service.RecordChangesAsync(
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<IReadOnlyDictionary<string, WarehouseProductChangeSnapshotDto>>(),
+                It.IsAny<WarehouseProductChangeHistoryContextDto>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(0);
+        var service = CreateService(history.Object);
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-NARROW-WRITE", 国内价格 = 8m },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(row => row.DetailCode == "D-NARROW-WRITE");
+        Assert.Equal(1, result.TotalUpdated);
+        Assert.Equal(8m, detail.DomesticPrice);
+        Assert.Equal(99m, detail.OEMPrice);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_同字段令牌过期应保留草稿所需冲突信息_其它字段仍可保存()
+    {
+        await SeedDetailAsync("D-FIELD-CONCURRENCY", productCode: null);
+        await _localDb.Updateable<ContainerDetail>()
+            .SetColumns(detail => detail.DomesticPrice == 2m)
+            .SetColumns(detail => detail.TransportCost == 1m)
+            .Where(detail => detail.DetailCode == "D-FIELD-CONCURRENCY")
+            .ExecuteCommandAsync();
+        var baselineDomestic = ContainerDetailFieldConcurrencyGuard.CreateToken(
+            "D-FIELD-CONCURRENCY", "国内价格", 1m, null
+        );
+        var baselineTransport = ContainerDetailFieldConcurrencyGuard.CreateToken(
+            "D-FIELD-CONCURRENCY", "运输成本", 1m, null
+        );
+        var service = CreateService(concurrencyEnabled: true);
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-FIELD-CONCURRENCY",
+                    国内价格 = 3m,
+                    运输成本 = 4m,
+                    ExpectedServerFieldTokens = new Dictionary<string, string>
+                    {
+                        ["国内价格"] = baselineDomestic,
+                        ["运输成本"] = baselineTransport,
+                    },
+                    SkipRelatedProductSync = true,
+                },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(row => row.DetailCode == "D-FIELD-CONCURRENCY");
+        var conflict = Assert.Single(result.Conflicts);
+        Assert.Equal("国内价格", conflict.Field);
+        Assert.Equal("CONCURRENT_FIELD_UPDATE", conflict.Code);
+        Assert.Equal(2m, conflict.ServerValue);
+        Assert.Equal(3m, conflict.SubmittedValue);
+        Assert.Equal(2m, detail.DomesticPrice);
+        Assert.Equal(4m, detail.TransportCost);
+        Assert.Equal(1, result.TotalUpdated);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_确认覆盖应在同一事务追加审计()
+    {
+        await SeedDetailAsync("D-OVERRIDE-AUDIT", productCode: null);
+        await _localDb.Updateable<ContainerDetail>()
+            .SetColumns(detail => detail.DomesticPrice == 2m)
+            .Where(detail => detail.DetailCode == "D-OVERRIDE-AUDIT")
+            .ExecuteCommandAsync();
+        var service = CreateService(
+            currentUserService: CreateCurrentUser("USER-OVERRIDE", "确认覆盖用户"),
+            concurrencyEnabled: true
+        );
+        var currentToken = ContainerDetailFieldConcurrencyGuard.CreateToken(
+            "D-OVERRIDE-AUDIT", "国内价格", 2m, null
+        );
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-OVERRIDE-AUDIT",
+                    国内价格 = 3m,
+                    ExpectedServerFieldTokens = new Dictionary<string, string>
+                    {
+                        ["国内价格"] = ContainerDetailFieldConcurrencyGuard.CreateToken(
+                            "D-OVERRIDE-AUDIT", "国内价格", 1m, null
+                        ),
+                    },
+                    OverrideAcknowledgements = new Dictionary<string, string>
+                    {
+                        ["国内价格"] = currentToken,
+                    },
+                    SkipRelatedProductSync = true,
+                },
+            }
+        );
+
+        var audit = await _localDb.Queryable<ContainerDetailFieldOverrideAudit>().SingleAsync();
+        Assert.Empty(result.Conflicts);
+        Assert.Equal(1, result.TotalUpdated);
+        Assert.Equal("D-OVERRIDE-AUDIT", audit.DetailHguid);
+        Assert.Equal("国内价格", audit.Field);
+        Assert.Equal(currentToken, audit.ConfirmationToken);
+        Assert.Equal("USER-OVERRIDE", audit.ActorUserGuid);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_确认覆盖后字段校验失败_不应写入假审计()
+    {
+        await SeedDetailAndProductAsync("D-OVERRIDE-REJECTED", "P-OVERRIDE-REJECTED", "Old English");
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(item => item.DetailCode == "D-OVERRIDE-REJECTED");
+        var domestic = await _localDb.Queryable<DomesticProduct>()
+            .SingleAsync(item => item.ProductCode == "P-OVERRIDE-REJECTED");
+        var snapshot = ContainerDetailFieldConcurrencyGuard.CreateSnapshots(
+            detail,
+            warehouseProduct: null,
+            domesticProduct: domestic,
+            localProduct: null
+        )["英文名称"];
+        var currentToken = ContainerDetailFieldConcurrencyGuard.CreateToken(
+            detail.DetailCode,
+            "英文名称",
+            snapshot.Value,
+            snapshot.RelatedValue
+        );
+        var service = CreateService(
+            currentUserService: CreateCurrentUser("USER-OVERRIDE-REJECTED", "确认覆盖用户"),
+            concurrencyEnabled: true
+        );
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = detail.DetailCode,
+                    // 备注保证事务会继续执行至审计阶段；英文名随后因中文校验失败而不应留下覆盖记录。
+                    备注 = "仍应保存",
+                    英文名称 = "中文名称",
+                    ExpectedServerFieldTokens = new Dictionary<string, string>
+                    {
+                        ["英文名称"] = ContainerDetailFieldConcurrencyGuard.CreateToken(
+                            detail.DetailCode,
+                            "英文名称",
+                            "Older English",
+                            null
+                        ),
+                    },
+                    OverrideAcknowledgements = new Dictionary<string, string>
+                    {
+                        ["英文名称"] = currentToken,
+                    },
+                },
+            }
+        );
+
+        Assert.Contains(result.ValidationErrors, error => error.Field == "英文名称" && error.Code == "CONTAINS_CHINESE");
+        Assert.Empty(await _localDb.Queryable<ContainerDetailFieldOverrideAudit>().ToListAsync());
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_多明细字段更新使用单条参数化CaseSql()
+    {
+        await SeedDetailAsync("D-CASE-1", productCode: null);
+        await SeedDetailAsync("D-CASE-2", productCode: null);
+        await SeedDetailAsync("D-CASE-3", productCode: null);
+        var detailUpdateCount = 0;
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (
+                sql.TrimStart().StartsWith("UPDATE ContainerDetail", StringComparison.OrdinalIgnoreCase)
+                && sql.Contains("DomesticPrice = CASE", StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                Interlocked.Increment(ref detailUpdateCount);
+            }
+        };
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-CASE-1", 国内价格 = 3m },
+                new() { HGUID = "D-CASE-2", 国内价格 = 4m },
+                new() { HGUID = "D-CASE-3", 国内价格 = 5m },
+            }
+        );
+
+        Assert.Equal(3, result.TotalUpdated);
+        Assert.Equal(1, detailUpdateCount);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_最大参数预算时按固定分块写入明细()
+    {
+        const int rowCount = 81;
+        for (var index = 0; index < rowCount; index++)
+        {
+            await SeedDetailAsync($"D-PARAMETER-BUDGET-{index:D3}", productCode: null);
+        }
+        var detailUpdateCount = 0;
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (
+                sql.TrimStart().StartsWith("UPDATE ContainerDetail", StringComparison.OrdinalIgnoreCase)
+                && sql.Contains("DomesticPrice = CASE", StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                Interlocked.Increment(ref detailUpdateCount);
+            }
+        };
+        var service = CreateService();
+
+        var updated = await service.BatchUpdateDetailsAsync(
+            Enumerable
+                .Range(0, rowCount)
+                .Select(index => new UpdateContainerDetailDto
+                {
+                    HGUID = $"D-PARAMETER-BUDGET-{index:D3}",
+                    调整浮率 = 1.1m,
+                    国内价格 = 2m,
+                    进口价格 = 3m,
+                    运输成本 = 4m,
+                    贴牌价格 = 5m,
+                    单件装箱数 = 6m,
+                    单件体积 = 7m,
+                    装柜数量 = 8m,
+                    合计装柜体积 = 9m,
+                    合计装柜金额 = 10m,
+                    IsActive = true,
+                })
+                .ToList()
+        );
+
+        Assert.Equal(rowCount, updated);
+        Assert.Equal(2, detailUpdateCount);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_重复明细整行拒绝且不受请求顺序影响()
+    {
+        await SeedDetailAsync("D-DUPLICATE-REQUEST", productCode: null);
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-DUPLICATE-REQUEST", 国内价格 = 2m },
+                new() { HGUID = "D-DUPLICATE-REQUEST", 国内价格 = 3m },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(row => row.DetailCode == "D-DUPLICATE-REQUEST");
+        var error = Assert.Single(result.ValidationErrors);
+        Assert.Equal(2, result.TotalRequested);
+        Assert.Equal(0, result.TotalUpdated);
+        Assert.Equal("D-DUPLICATE-REQUEST", error.HGUID);
+        Assert.Equal("*", error.Field);
+        Assert.Equal("DUPLICATE_DETAIL_UPDATE", error.Code);
+        Assert.Null(detail.DomesticPrice);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_重复明细严格入口整体拒绝()
+    {
+        await SeedDetailAsync("D-DUPLICATE-STRICT", productCode: null);
+        var service = CreateService();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.BatchUpdateDetailsAsync(
+                new List<UpdateContainerDetailDto>
+                {
+                    new() { HGUID = "D-DUPLICATE-STRICT", 国内价格 = 2m },
+                    new() { HGUID = "D-DUPLICATE-STRICT", 国内价格 = 3m },
+                }
+            )
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(row => row.DetailCode == "D-DUPLICATE-STRICT");
+        Assert.Null(detail.DomesticPrice);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_关联价格同步按商品聚合并按参数预算分块()
+    {
+        const int productCount = 401;
+        var details = new List<ContainerDetail>();
+        var warehouses = new List<WarehouseProduct>();
+        var products = new List<Product>();
+        var storePrices = new List<StoreRetailPrice>();
+        var updates = new List<UpdateContainerDetailDto>();
+        for (var index = 0; index < productCount; index++)
+        {
+            var productCode = $"P-SYNC-BUDGET-{index:D3}";
+            details.Add(new ContainerDetail
+            {
+                DetailCode = $"D-SYNC-BUDGET-{index:D3}",
+                ContainerCode = "C-TEST",
+                ProductCode = productCode,
+                ImportPrice = 1m,
+                IsDeleted = false,
+            });
+            warehouses.Add(new WarehouseProduct
+            {
+                ProductCode = productCode,
+                ImportPrice = 1m,
+                OEMPrice = 2m,
+                IsActive = true,
+                IsDeleted = false,
+            });
+            products.Add(new Product
+            {
+                ProductCode = productCode,
+                ProductName = productCode,
+                PurchasePrice = 1m,
+                RetailPrice = 2m,
+                IsActive = true,
+                IsDeleted = false,
+            });
+            storePrices.Add(new StoreRetailPrice
+            {
+                StoreCode = "001",
+                ProductCode = productCode,
+                PurchasePrice = 1m,
+                StoreRetailPriceValue = 2m,
+                IsActive = true,
+                IsDeleted = false,
+            });
+            updates.Add(
+                new UpdateContainerDetailDto
+                {
+                    HGUID = $"D-SYNC-BUDGET-{index:D3}",
+                    进口价格 = 3m,
+                    贴牌价格 = 4m,
+                    IsActive = false,
+                }
+            );
+        }
+        await _localDb.Insertable(details).ExecuteCommandAsync();
+        await _localDb.Insertable(warehouses).ExecuteCommandAsync();
+        await _localDb.Insertable(products).ExecuteCommandAsync();
+        await _localDb.Insertable(storePrices).ExecuteCommandAsync();
+        var warehouseUpdateCount = 0;
+        var productUpdateCount = 0;
+        var storePriceUpdateCount = 0;
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sql.TrimStart().StartsWith("UPDATE WarehouseProduct SET", StringComparison.OrdinalIgnoreCase))
+                Interlocked.Increment(ref warehouseUpdateCount);
+            if (sql.TrimStart().StartsWith("UPDATE Product SET", StringComparison.OrdinalIgnoreCase))
+                Interlocked.Increment(ref productUpdateCount);
+            if (sql.TrimStart().StartsWith("UPDATE StoreRetailPrice SET", StringComparison.OrdinalIgnoreCase))
+                Interlocked.Increment(ref storePriceUpdateCount);
+        };
+        var service = CreateService();
+
+        var updated = await service.BatchUpdateDetailsAsync(updates);
+
+        Assert.Equal(productCount, updated);
+        Assert.Equal(2, warehouseUpdateCount);
+        Assert.Equal(2, productUpdateCount);
+        Assert.Equal(2, storePriceUpdateCount);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_门店关系大量补齐按固定分块插入()
+    {
+        const string productCode = "P-STORE-RELATION-BUDGET";
+        await SeedDetailAndProductAsync("D-STORE-RELATION-BUDGET", productCode, "Old English");
+        await SeedRelatedPriceRowsAsync(productCode);
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = "SET-STORE-RELATION-BUDGET",
+                ProductCode = productCode,
+                SetProductCode = "CHILD-STORE-RELATION-BUDGET",
+                SetItemNumber = "CHILD-STORE-RELATION-BUDGET",
+                SetBarcode = "9300000000776",
+                SetRetailPrice = 5m,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            Enumerable
+                .Range(0, 81)
+                .Select(index => new StoreRetailPrice
+                {
+                    StoreCode = $"B{index:D3}",
+                    ProductCode = productCode,
+                    PurchasePrice = 1m,
+                    StoreRetailPriceValue = 2m,
+                    IsActive = true,
+                    IsDeleted = false,
+                })
+                .ToList()
+        ).ExecuteCommandAsync();
+        var insertCount = 0;
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (
+                sql.TrimStart().StartsWith("INSERT", StringComparison.OrdinalIgnoreCase)
+                && sql.Contains("StoreMultiCodeProduct", StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                Interlocked.Increment(ref insertCount);
+            }
+        };
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-STORE-RELATION-BUDGET", 进口价格 = 10m },
+            }
+        );
+
+        Assert.Empty(result.ValidationErrors);
+        Assert.Equal(83, result.AutoRepairedRelationCount);
+        Assert.Equal(2, insertCount);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_补关系校验失败时按固定分块删除本次插入行()
+    {
+        const string productCode = "P-STORE-RELATION-DELETE-BUDGET";
+        await SeedDetailAndProductAsync("D-STORE-RELATION-DELETE-BUDGET", productCode, "Old English");
+        await SeedRelatedPriceRowsAsync(productCode);
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = "SET-STORE-RELATION-DELETE-BUDGET",
+                ProductCode = productCode,
+                SetProductCode = "CHILD-STORE-RELATION-DELETE-BUDGET",
+                SetItemNumber = "CHILD-STORE-RELATION-DELETE-BUDGET",
+                SetBarcode = "9300000000783",
+                SetRetailPrice = 5m,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            Enumerable
+                .Range(0, 1_001)
+                .Select(index => new StoreRetailPrice
+                {
+                    StoreCode = $"C{index:D4}",
+                    ProductCode = productCode,
+                    PurchasePrice = 1m,
+                    StoreRetailPriceValue = 2m,
+                    IsActive = true,
+                    IsDeleted = false,
+                })
+                .ToList()
+        ).ExecuteCommandAsync();
+        // 模拟插入后才暴露的结构异常，验证只回收本次新增 UUID，且删除不会超出参数预算。
+        await _localDb.Ado.ExecuteCommandAsync(
+            """
+            CREATE TRIGGER store_multi_code_product_force_invalid
+            AFTER INSERT ON StoreMultiCodeProduct
+            BEGIN
+                UPDATE StoreMultiCodeProduct
+                SET MultiCodeProductCode = 'BROKEN'
+                WHERE UUID = NEW.UUID;
+            END;
+            """
+        );
+        var deleteCount = 0;
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (
+                sql.TrimStart().StartsWith("DELETE", StringComparison.OrdinalIgnoreCase)
+                && sql.Contains("StoreMultiCodeProduct", StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                Interlocked.Increment(ref deleteCount);
+            }
+        };
+        var service = CreateService();
+
+        try
+        {
+            var result = await service.BatchUpdateDetailsDetailedAsync(
+                "C-TEST",
+                new List<UpdateContainerDetailDto>
+                {
+                    new() { HGUID = "D-STORE-RELATION-DELETE-BUDGET", 进口价格 = 10m },
+                }
+            );
+
+            Assert.Contains(
+                result.ValidationErrors,
+                error => error.Code == "SET_CHILD_COST_RECALCULATION_INCOMPLETE"
+            );
+            Assert.Equal(0, result.AutoRepairedRelationCount);
+            Assert.Equal(3, deleteCount);
+            Assert.Empty(
+                await _localDb.Queryable<StoreMultiCodeProduct>()
+                    .Where(row => row.ProductCode == productCode)
+                    .ToListAsync()
+            );
+        }
+        finally
+        {
+            await _localDb.Ado.ExecuteCommandAsync(
+                "DROP TRIGGER IF EXISTS store_multi_code_product_force_invalid;"
+            );
+        }
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_同商品贴牌价与上下架冲突_逐字段拒绝且保存无冲突字段()
+    {
+        const string productCode = "P-CONFLICT-PRICE-ACTIVE";
+        await SeedDetailAndProductAsync("D-CONFLICT-A", productCode, "Old English");
+        await SeedDetailAsync("D-CONFLICT-B", productCode);
+        await SeedRelatedPriceRowsAsync(productCode);
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-CONFLICT-A",
+                    国内价格 = 11m,
+                    贴牌价格 = 8m,
+                    IsActive = true,
+                },
+                new()
+                {
+                    HGUID = "D-CONFLICT-B",
+                    国内价格 = 12m,
+                    贴牌价格 = 9m,
+                    IsActive = false,
+                },
+            }
+        );
+
+        var details = await _localDb.Queryable<ContainerDetail>()
+            .Where(row => row.ProductCode == productCode)
+            .OrderBy(row => row.DetailCode)
+            .ToListAsync();
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == productCode);
+        var warehouse = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(row => row.ProductCode == productCode);
+        Assert.Equal(new decimal?[] { 11m, 12m }, details.Select(row => row.DomesticPrice));
+        Assert.All(details, row => Assert.Null(row.OEMPrice));
+        // 上下架字段意图冲突时必须保持每行原值；此测试种子没有设置该字段，原值为 null。
+        Assert.All(details, row => Assert.Null(row.IsActive));
+        Assert.Equal(2.22m, product.RetailPrice);
+        Assert.Equal(2.22m, warehouse.OEMPrice);
+        Assert.True(warehouse.IsActive);
+        Assert.Equal(4, result.ValidationErrors.Count);
+        Assert.Equal(
+            new[] { "D-CONFLICT-A", "D-CONFLICT-B" },
+            result.ValidationErrors
+                .Where(error => error.Code == "CONFLICTING_PRODUCT_OEM_PRICE")
+                .Select(error => error.HGUID)
+                .OrderBy(value => value)
+        );
+        Assert.Equal(
+            new[] { "D-CONFLICT-A", "D-CONFLICT-B" },
+            result.ValidationErrors
+                .Where(error => error.Code == "CONFLICTING_PRODUCT_ACTIVE_STATE")
+                .Select(error => error.HGUID)
+                .OrderBy(value => value)
+        );
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_同商品相同贴牌价与上下架意图_合并并全部保存()
+    {
+        const string productCode = "P-MERGED-PRICE-ACTIVE";
+        await SeedDetailAndProductAsync("D-MERGED-A", productCode, "Old English");
+        await SeedDetailAsync("D-MERGED-B", productCode);
+        await SeedRelatedPriceRowsAsync(productCode);
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-MERGED-A", 贴牌价格 = 8m, IsActive = false },
+                new() { HGUID = "D-MERGED-B", 贴牌价格 = 8m, IsActive = false },
+            }
+        );
+
+        var details = await _localDb.Queryable<ContainerDetail>()
+            .Where(row => row.ProductCode == productCode)
+            .ToListAsync();
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == productCode);
+        var warehouse = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(row => row.ProductCode == productCode);
+        Assert.Equal(2, result.TotalUpdated);
+        Assert.Empty(result.ValidationErrors);
+        Assert.All(details, row => Assert.Equal(8m, row.OEMPrice));
+        Assert.All(details, row => Assert.False(row.IsActive));
+        Assert.Equal(8m, product.RetailPrice);
+        Assert.Equal(8m, warehouse.OEMPrice);
+        Assert.False(warehouse.IsActive);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_缺失Type1和Type2门店关系_自动补齐并重算成本()
+    {
+        const string productCode = "P-SET-AUTO-REPAIR";
+        await SeedDetailAndProductAsync("D-SET-AUTO-REPAIR", productCode, "Old English");
+        await SeedRelatedPriceRowsAsync(productCode);
+        await _localDb.Updateable<Product>()
+            .SetColumns(product => product.IsSpecialProduct == true)
+            .Where(product => product.ProductCode == productCode)
+            .ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new List<ProductSetCode>
+            {
+                new()
+                {
+                    SetCodeId = "SET-AUTO-TYPE1",
+                    ProductCode = productCode,
+                    SetProductCode = "CHILD-TYPE1",
+                    SetItemNumber = "CHILD-TYPE1",
+                    SetBarcode = "9300000000011",
+                    SetRetailPrice = 4m,
+                    SetType = 1,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new()
+                {
+                    SetCodeId = "SET-AUTO-TYPE2",
+                    ProductCode = productCode,
+                    SetProductCode = " CHILD-TYPE2 ",
+                    SetItemNumber = "CHILD-TYPE2",
+                    SetBarcode = "9300000000028",
+                    SetRetailPrice = 5m,
+                    SetType = 2,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateService(
+            currentUserService: CreateCurrentUser("user-charles", "charles")
+        );
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-SET-AUTO-REPAIR", 进口价格 = 10m },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(row => row.DetailCode == "D-SET-AUTO-REPAIR");
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == productCode);
+        var setRows = await _localDb.Queryable<ProductSetCode>()
+            .Where(row => row.ProductCode == productCode)
+            .OrderBy(row => row.SetProductCode)
+            .ToListAsync();
+        var storeRows = await _localDb.Queryable<StoreMultiCodeProduct>()
+            .Where(row => row.ProductCode == productCode && row.IsActive && !row.IsDeleted)
+            .OrderBy(row => row.StoreCode)
+            .OrderBy(row => row.MultiCodeProductCode)
+            .ToListAsync();
+
+        Assert.Equal(1, result.TotalUpdated);
+        Assert.Empty(result.ValidationErrors);
+        Assert.Equal(2, result.AutoRepairedStoreGroupCount);
+        Assert.Equal(4, result.AutoRepairedRelationCount);
+        Assert.Equal(10m, detail.ImportPrice);
+        Assert.Equal(10m, product.PurchasePrice);
+        Assert.All(setRows, row => Assert.Equal(10m, row.SetPurchasePrice));
+        Assert.Equal(4, storeRows.Count);
+        Assert.Equal(
+            new[] { "CHILD-TYPE1", "CHILD-TYPE2" },
+            storeRows
+                .Select(row => row.MultiCodeProductCode!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(code => code)
+        );
+        Assert.All(storeRows, row =>
+        {
+            Assert.Equal(10m, row.PurchasePrice);
+            Assert.Equal(row.StoreCode + row.MultiCodeProductCode, row.StoreMultiCodeProductCode);
+            Assert.True(row.IsSpecialProduct);
+            Assert.Equal("charles", row.CreatedBy);
+            Assert.Equal("charles", row.UpdatedBy);
+        });
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_多个缺失关系商品_同批补齐并统一重算()
+    {
+        var productPrices = new Dictionary<string, decimal>
+        {
+            ["P-BATCH-REPAIR-A"] = 8m,
+            ["P-BATCH-REPAIR-B"] = 12m,
+        };
+        foreach (var pair in productPrices)
+        {
+            var detailCode = $"D-{pair.Key}";
+            await SeedDetailAndProductAsync(detailCode, pair.Key, "Old English");
+            await SeedRelatedPriceRowsAsync(pair.Key);
+            await _localDb.Insertable(
+                new ProductSetCode
+                {
+                    SetCodeId = $"SET-{pair.Key}",
+                    ProductCode = pair.Key,
+                    SetProductCode = $"CHILD-{pair.Key}",
+                    SetItemNumber = $"CHILD-{pair.Key}",
+                    SetBarcode = pair.Key == "P-BATCH-REPAIR-A"
+                        ? "9300000000080"
+                        : "9300000000097",
+                    SetRetailPrice = 5m,
+                    SetType = 2,
+                    IsActive = true,
+                    IsDeleted = false,
+                }
+            ).ExecuteCommandAsync();
+        }
+        var productSetSelectCount = 0;
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (
+                sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase)
+                && sql.Contains("ProductSetCode", StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                Interlocked.Increment(ref productSetSelectCount);
+            }
+        };
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            productPrices
+                .Select(pair => new UpdateContainerDetailDto
+                {
+                    HGUID = $"D-{pair.Key}",
+                    进口价格 = pair.Value,
+                })
+                .ToList()
+        );
+
+        Assert.Equal(2, result.TotalUpdated);
+        Assert.Empty(result.ValidationErrors);
+        Assert.Equal(4, result.AutoRepairedStoreGroupCount);
+        Assert.Equal(4, result.AutoRepairedRelationCount);
+        Assert.True(
+            // 预加载、批量结构校验和后续成本重算各有固定查询；无论商品数多少均不得随商品数增长。
+            productSetSelectCount <= 7,
+            $"批量补关系后 ProductSetCode 查询应保持常数级，实际 {productSetSelectCount} 次"
+        );
+        foreach (var pair in productPrices)
+        {
+            Assert.Equal(
+                pair.Value,
+                (
+                    await _localDb.Queryable<ProductSetCode>()
+                        .SingleAsync(row => row.ProductCode == pair.Key)
+                ).SetPurchasePrice
+            );
+            var storeRows = await _localDb.Queryable<StoreMultiCodeProduct>()
+                .Where(row => row.ProductCode == pair.Key && row.IsActive && !row.IsDeleted)
+                .ToListAsync();
+            Assert.Equal(2, storeRows.Count);
+            Assert.All(storeRows, row => Assert.Equal(pair.Value, row.PurchasePrice));
+        }
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_缺失关系命中软删除墓碑_仅拒绝进口价并保存其它字段和正常行()
+    {
+        const string unsafeProductCode = "P-SET-TOMBSTONE";
+        const string normalProductCode = "P-NORMAL-SAVE";
+        await SeedDetailAndProductAsync("D-SET-TOMBSTONE", unsafeProductCode, "Old English");
+        await SeedRelatedPriceRowsAsync(unsafeProductCode);
+        await SeedDetailAndProductAsync("D-NORMAL-SAVE", normalProductCode, "Old English");
+        await SeedRelatedPriceRowsAsync(normalProductCode);
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = "SET-TOMBSTONE-TYPE2",
+                ProductCode = unsafeProductCode,
+                SetProductCode = "CHILD-TOMBSTONE",
+                SetItemNumber = "CHILD-TOMBSTONE",
+                SetBarcode = "9300000000035",
+                SetRetailPrice = 6m,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new StoreMultiCodeProduct
+            {
+                UUID = "STORE-TOMBSTONE",
+                StoreCode = "001",
+                ProductCode = unsafeProductCode,
+                MultiCodeProductCode = "CHILD-TOMBSTONE",
+                StoreMultiCodeProductCode = "001CHILD-TOMBSTONE",
+                MultiBarcode = "9300000000035",
+                PurchasePrice = 1.11m,
+                MultiCodeRetailPrice = 6m,
+                IsActive = false,
+                IsDeleted = true,
+                CreatedBy = "历史操作人",
+                UpdatedBy = "历史操作人",
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateService(
+            currentUserService: CreateCurrentUser("user-charles", "charles")
+        );
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-SET-TOMBSTONE",
+                    进口价格 = 8.88m,
+                    贴牌价格 = 9.99m,
+                },
+                new() { HGUID = "D-NORMAL-SAVE", 进口价格 = 7.77m },
+            }
+        );
+
+        var unsafeDetail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(row => row.DetailCode == "D-SET-TOMBSTONE");
+        var unsafeProduct = await _localDb.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == unsafeProductCode);
+        var unsafeWarehouse = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(row => row.ProductCode == unsafeProductCode);
+        var unsafeStorePrices = await _localDb.Queryable<StoreRetailPrice>()
+            .Where(row => row.ProductCode == unsafeProductCode)
+            .ToListAsync();
+        var tombstone = await _localDb.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(row => row.UUID == "STORE-TOMBSTONE");
+        var unsafeActiveProjectionCount = await _localDb.Queryable<StoreMultiCodeProduct>()
+            .CountAsync(row =>
+                row.ProductCode == unsafeProductCode && row.IsActive && !row.IsDeleted
+            );
+        var normalDetail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(row => row.DetailCode == "D-NORMAL-SAVE");
+        var normalProduct = await _localDb.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == normalProductCode);
+
+        Assert.Equal(2, result.TotalUpdated);
+        var error = Assert.Single(result.ValidationErrors);
+        Assert.Equal("D-SET-TOMBSTONE", error.HGUID);
+        Assert.Equal("进口价格", error.Field);
+        Assert.Equal("SET_CHILD_STORE_RELATION_TOMBSTONED", error.Code);
+        Assert.Equal(0, result.AutoRepairedStoreGroupCount);
+        Assert.Equal(0, result.AutoRepairedRelationCount);
+        Assert.Equal(1.23m, unsafeDetail.ImportPrice);
+        Assert.Equal(9.99m, unsafeDetail.OEMPrice);
+        Assert.Equal(1.11m, unsafeProduct.PurchasePrice);
+        Assert.Equal(9.99m, unsafeProduct.RetailPrice);
+        Assert.Equal(1.11m, unsafeWarehouse.ImportPrice);
+        Assert.Equal(9.99m, unsafeWarehouse.OEMPrice);
+        Assert.All(unsafeStorePrices, row => Assert.Equal(1.11m, row.PurchasePrice));
+        Assert.True(tombstone.IsDeleted);
+        Assert.False(tombstone.IsActive);
+        Assert.Equal("历史操作人", tombstone.UpdatedBy);
+        Assert.Equal(0, unsafeActiveProjectionCount);
+        Assert.Equal(7.77m, normalDetail.ImportPrice);
+        Assert.Equal(7.77m, normalProduct.PurchasePrice);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_Type1关系完整但子项零售价为零_仅拒绝进口价并保存其它字段和正常行()
+    {
+        const string unsafeProductCode = "P-SET-ZERO-RETAIL";
+        const string normalProductCode = "P-ZERO-RETAIL-NORMAL";
+        await SeedDetailAndProductAsync("D-SET-ZERO-RETAIL", unsafeProductCode, "Old English");
+        await SeedRelatedPriceRowsAsync(unsafeProductCode);
+        await SeedDetailAndProductAsync("D-ZERO-RETAIL-NORMAL", normalProductCode, "Old English");
+        await SeedRelatedPriceRowsAsync(normalProductCode);
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = "SET-ZERO-RETAIL-TYPE1",
+                ProductCode = unsafeProductCode,
+                SetProductCode = "CHILD-ZERO-RETAIL",
+                SetItemNumber = "CHILD-ZERO-RETAIL",
+                SetBarcode = "9300000000059",
+                SetRetailPrice = 0m,
+                SetType = 1,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new[] { "001", "002" }.Select(storeCode => new StoreMultiCodeProduct
+            {
+                UUID = $"STORE-ZERO-RETAIL-{storeCode}",
+                StoreCode = storeCode,
+                ProductCode = unsafeProductCode,
+                MultiCodeProductCode = "CHILD-ZERO-RETAIL",
+                StoreMultiCodeProductCode = storeCode + "CHILD-ZERO-RETAIL",
+                MultiBarcode = "9300000000059",
+                PurchasePrice = 1.11m,
+                MultiCodeRetailPrice = 0m,
+                IsActive = true,
+                IsDeleted = false,
+            }).ToList()
+        ).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-SET-ZERO-RETAIL",
+                    进口价格 = 8.88m,
+                    贴牌价格 = 9.99m,
+                },
+                new() { HGUID = "D-ZERO-RETAIL-NORMAL", 进口价格 = 7.77m },
+            }
+        );
+
+        var unsafeDetail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(row => row.DetailCode == "D-SET-ZERO-RETAIL");
+        var unsafeProduct = await _localDb.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == unsafeProductCode);
+        var normalDetail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(row => row.DetailCode == "D-ZERO-RETAIL-NORMAL");
+        var normalProduct = await _localDb.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == normalProductCode);
+
+        Assert.Equal(2, result.TotalUpdated);
+        var error = Assert.Single(result.ValidationErrors);
+        Assert.Equal("D-SET-ZERO-RETAIL", error.HGUID);
+        Assert.Equal("进口价格", error.Field);
+        Assert.Equal("SET_CHILD_COST_RECALCULATION_INCOMPLETE", error.Code);
+        Assert.Equal(1.23m, unsafeDetail.ImportPrice);
+        Assert.Equal(9.99m, unsafeDetail.OEMPrice);
+        Assert.Equal(1.11m, unsafeProduct.PurchasePrice);
+        Assert.Equal(9.99m, unsafeProduct.RetailPrice);
+        Assert.Equal(7.77m, normalDetail.ImportPrice);
+        Assert.Equal(7.77m, normalProduct.PurchasePrice);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_门店子项组合业务键超过列长度_仅拒绝进口价并保存其它字段()
+    {
+        const string productCode = "P-SET-LONG-STORE-KEY";
+        var childCode = new string('C', 49);
+        await SeedDetailAndProductAsync("D-SET-LONG-STORE-KEY", productCode, "Old English");
+        await SeedRelatedPriceRowsAsync(productCode);
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = "SET-LONG-STORE-KEY-TYPE2",
+                ProductCode = productCode,
+                SetProductCode = childCode,
+                SetItemNumber = childCode,
+                SetBarcode = "9300000000073",
+                SetRetailPrice = 6m,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-SET-LONG-STORE-KEY",
+                    进口价格 = 8.88m,
+                    贴牌价格 = 9.99m,
+                },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(row => row.DetailCode == "D-SET-LONG-STORE-KEY");
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == productCode);
+
+        Assert.Equal(1, result.TotalUpdated);
+        var error = Assert.Single(result.ValidationErrors);
+        Assert.Equal("D-SET-LONG-STORE-KEY", error.HGUID);
+        Assert.Equal("进口价格", error.Field);
+        Assert.Equal("SET_CHILD_STORE_RELATION_INVALID", error.Code);
+        Assert.Equal(1.23m, detail.ImportPrice);
+        Assert.Equal(9.99m, detail.OEMPrice);
+        Assert.Equal(1.11m, product.PurchasePrice);
+        Assert.Equal(9.99m, product.RetailPrice);
+        Assert.Equal(
+            0,
+            await _localDb.Queryable<StoreMultiCodeProduct>()
+                .CountAsync(row => row.ProductCode == productCode)
+        );
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_总部Type1仅剩历史关系但门店仍有活跃子项_仅拒绝进口价()
+    {
+        const string productCode = "P-HISTORICAL-TYPE1-ORPHAN";
+        await SeedDetailAndProductAsync("D-HISTORICAL-TYPE1-ORPHAN", productCode, "Old English");
+        await SeedRelatedPriceRowsAsync(productCode);
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = "SET-HISTORICAL-TYPE1",
+                ProductCode = productCode,
+                SetProductCode = "CHILD-HISTORICAL-TYPE1",
+                SetItemNumber = "CHILD-HISTORICAL-TYPE1",
+                SetBarcode = "9300000000066",
+                SetRetailPrice = 6m,
+                SetType = 1,
+                IsActive = false,
+                IsDeleted = true,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new StoreMultiCodeProduct
+            {
+                UUID = "STORE-HISTORICAL-TYPE1-ORPHAN",
+                StoreCode = "001",
+                ProductCode = productCode,
+                MultiCodeProductCode = "CHILD-HISTORICAL-TYPE1",
+                StoreMultiCodeProductCode = "001CHILD-HISTORICAL-TYPE1",
+                MultiBarcode = "9300000000066",
+                PurchasePrice = 1.11m,
+                MultiCodeRetailPrice = 6m,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-HISTORICAL-TYPE1-ORPHAN",
+                    进口价格 = 8.88m,
+                    贴牌价格 = 9.99m,
+                },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(row => row.DetailCode == "D-HISTORICAL-TYPE1-ORPHAN");
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == productCode);
+        var storeProjection = await _localDb.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(row => row.UUID == "STORE-HISTORICAL-TYPE1-ORPHAN");
+
+        Assert.Equal(1, result.TotalUpdated);
+        var error = Assert.Single(result.ValidationErrors);
+        Assert.Equal("D-HISTORICAL-TYPE1-ORPHAN", error.HGUID);
+        Assert.Equal("进口价格", error.Field);
+        Assert.Equal("SET_CHILD_STORE_RELATION_INVALID", error.Code);
+        Assert.Equal(1.23m, detail.ImportPrice);
+        Assert.Equal(9.99m, detail.OEMPrice);
+        Assert.Equal(1.11m, product.PurchasePrice);
+        Assert.Equal(9.99m, product.RetailPrice);
+        Assert.True(storeProjection.IsActive);
+        Assert.False(storeProjection.IsDeleted);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_缺失多码门店关系_旧入口保持严格回滚语义()
+    {
+        const string productCode = "P-STRICT-MULTI-CODE";
+        await SeedDetailAndProductAsync("D-STRICT-MULTI-CODE", productCode, "Old English");
+        await SeedRelatedPriceRowsAsync(productCode);
+        await _localDb.Insertable(
+            new ProductSetCode
+            {
+                SetCodeId = "SET-STRICT-TYPE2",
+                ProductCode = productCode,
+                SetProductCode = "CHILD-STRICT-TYPE2",
+                SetItemNumber = "CHILD-STRICT-TYPE2",
+                SetBarcode = "9300000000042",
+                SetRetailPrice = 6m,
+                SetType = 2,
+                IsActive = true,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateService();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.BatchUpdateDetailsAsync(
+                new List<UpdateContainerDetailDto>
+                {
+                    new()
+                    {
+                        HGUID = "D-STRICT-MULTI-CODE",
+                        进口价格 = 8.88m,
+                        贴牌价格 = 9.99m,
+                    },
+                }
+            )
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(row => row.DetailCode == "D-STRICT-MULTI-CODE");
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(row => row.ProductCode == productCode);
+        var warehouse = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(row => row.ProductCode == productCode);
+        var storePrices = await _localDb.Queryable<StoreRetailPrice>()
+            .Where(row => row.ProductCode == productCode)
+            .ToListAsync();
+
+        Assert.Contains("套装子项成本无法完整重算", exception.Message);
+        Assert.Equal(1.23m, detail.ImportPrice);
+        Assert.Null(detail.OEMPrice);
+        Assert.Equal(1.11m, product.PurchasePrice);
+        Assert.Equal(2.22m, product.RetailPrice);
+        Assert.Equal(1.11m, warehouse.ImportPrice);
+        Assert.Equal(2.22m, warehouse.OEMPrice);
+        Assert.All(storePrices, row => Assert.Equal(1.11m, row.PurchasePrice));
+        Assert.Equal(
+            0,
+            await _localDb.Queryable<StoreMultiCodeProduct>()
+                .CountAsync(row => row.ProductCode == productCode && !row.IsDeleted)
+        );
     }
 
     [Fact]
@@ -1602,6 +2832,546 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
+    public async Task ApplyPricesByScopeAsync_预览后本地主档价格变化_应拒绝且零写入()
+    {
+        await SeedDetailAndProductAsync(
+            "D-PREVIEW-PRODUCT-STALE",
+            "P-PREVIEW-PRODUCT-STALE",
+            englishName: "Old English"
+        );
+        await SeedRelatedPriceRowsAsync("P-PREVIEW-PRODUCT-STALE");
+        var service = CreateService();
+        var preview = await service.PreviewBatchActionAsync(
+            "C-TEST",
+            new ContainerDetailBatchPreviewRequestDto
+            {
+                Operation = "apply-prices",
+                Scope = new ContainerDetailBatchScopeDto
+                {
+                    SelectedHguids = new List<string> { "D-PREVIEW-PRODUCT-STALE" },
+                },
+                // 前端 JSON number 必须能够确定性绑定到执行参数。
+                Parameters = new Dictionary<string, JsonElement>
+                {
+                    ["importPrice"] = JsonDocument.Parse("8.88").RootElement.Clone(),
+                },
+            }
+        );
+        var previewJson = JsonSerializer.Serialize(
+            preview,
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }
+        );
+        Assert.Equal(new[] { "进口价格" }, preview.FieldSummary);
+        Assert.Contains("\"fieldSummary\"", previewJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"fields\"", previewJson, StringComparison.Ordinal);
+
+        await _localDb.Updateable<Product>()
+            .SetColumns(product => product.PurchasePrice == 6.66m)
+            .Where(product => product.ProductCode == "P-PREVIEW-PRODUCT-STALE")
+            .ExecuteCommandAsync();
+
+        await Assert.ThrowsAsync<ContainerDetailBatchPreviewConflictException>(() =>
+            service.ApplyPricesByScopeAsync(
+                "C-TEST",
+                new ContainerDetailApplyPricesRequestDto
+                {
+                    ImportPrice = 8.88m,
+                    SelectedHguids = new List<string> { "D-PREVIEW-PRODUCT-STALE" },
+                    PreviewToken = preview.PreviewToken,
+                }
+            )
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(item => item.DetailCode == "D-PREVIEW-PRODUCT-STALE");
+        var warehouse = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(item => item.ProductCode == "P-PREVIEW-PRODUCT-STALE");
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(item => item.ProductCode == "P-PREVIEW-PRODUCT-STALE");
+        var storePrices = await _localDb.Queryable<StoreRetailPrice>()
+            .Where(item => item.ProductCode == "P-PREVIEW-PRODUCT-STALE")
+            .ToListAsync();
+
+        Assert.Equal(1.23m, detail.ImportPrice);
+        Assert.Equal(1.11m, warehouse.ImportPrice);
+        Assert.Equal(6.66m, product.PurchasePrice);
+        Assert.All(storePrices, item => Assert.Equal(1.11m, item.PurchasePrice));
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_进口价丢响应重试_套装多码全部已同步时幂等_子项变化则冲突()
+    {
+        const string productCode = "P-IMPORT-REPLAY-SET-MULTI";
+        const string detailCode = "D-IMPORT-REPLAY-SET-MULTI";
+        await SeedDetailAndProductAsync(detailCode, productCode, "Old English");
+        await SeedRelatedPriceRowsAsync(productCode);
+        var setRows = new[]
+        {
+            new ProductSetCode { SetCodeId = "SET-REPLAY-1", ProductCode = productCode, SetProductCode = "CHILD-1", SetItemNumber = "CHILD-1", SetType = 1, SetRetailPrice = 6m, SetPurchasePrice = 1m, IsActive = true },
+            new ProductSetCode { SetCodeId = "SET-REPLAY-2", ProductCode = productCode, SetProductCode = "CHILD-2", SetItemNumber = "CHILD-2", SetType = 2, SetRetailPrice = 4m, SetPurchasePrice = 1m, IsActive = true },
+        };
+        await _localDb.Insertable(setRows).ExecuteCommandAsync();
+        await _localDb.Insertable(new[]
+        {
+            new StoreMultiCodeProduct { UUID = "MULTI-REPLAY-1", StoreCode = "001", ProductCode = productCode, MultiCodeProductCode = "CHILD-1", MultiCodeRetailPrice = 6m, PurchasePrice = 1m, IsActive = true },
+            new StoreMultiCodeProduct { UUID = "MULTI-REPLAY-2", StoreCode = "001", ProductCode = productCode, MultiCodeProductCode = "CHILD-2", MultiCodeRetailPrice = 4m, PurchasePrice = 1m, IsActive = true },
+            new StoreMultiCodeProduct { UUID = "MULTI-REPLAY-3", StoreCode = "002", ProductCode = productCode, MultiCodeProductCode = "CHILD-1", MultiCodeRetailPrice = 6m, PurchasePrice = 1m, IsActive = true },
+            new StoreMultiCodeProduct { UUID = "MULTI-REPLAY-4", StoreCode = "002", ProductCode = productCode, MultiCodeProductCode = "CHILD-2", MultiCodeRetailPrice = 4m, PurchasePrice = 1m, IsActive = true },
+        }).ExecuteCommandAsync();
+        var detail = await _localDb.Queryable<ContainerDetail>().SingleAsync(x => x.DetailCode == detailCode);
+        var warehouse = await _localDb.Queryable<WarehouseProduct>().SingleAsync(x => x.ProductCode == productCode);
+        var domestic = await _localDb.Queryable<DomesticProduct>().SingleAsync(x => x.ProductCode == productCode);
+        var local = await _localDb.Queryable<Product>().SingleAsync(x => x.ProductCode == productCode);
+        var stores = await _localDb.Queryable<StoreRetailPrice>().Where(x => x.ProductCode == productCode).ToListAsync();
+        var baseline = ContainerDetailFieldConcurrencyGuard.CreateToken(
+            detailCode, "进口价格",
+            ContainerDetailFieldConcurrencyGuard.CreateSnapshots(detail, warehouse, domestic, local, stores, setRows, await _localDb.Queryable<StoreMultiCodeProduct>().Where(x => x.ProductCode == productCode).ToListAsync())["进口价格"].Value,
+            ContainerDetailFieldConcurrencyGuard.CreateSnapshots(detail, warehouse, domestic, local, stores, setRows, await _localDb.Queryable<StoreMultiCodeProduct>().Where(x => x.ProductCode == productCode).ToListAsync())["进口价格"].RelatedValue
+        );
+        var service = CreateService(concurrencyEnabled: true);
+        UpdateContainerDetailDto Request() => new()
+        {
+            HGUID = detailCode,
+            进口价格 = 5m,
+            ExpectedServerFieldTokens = new Dictionary<string, string> { ["进口价格"] = baseline },
+        };
+
+        Assert.Empty((await service.BatchUpdateDetailsDetailedAsync("C-TEST", new List<UpdateContainerDetailDto> { Request() })).Conflicts);
+        var replay = await service.BatchUpdateDetailsDetailedAsync("C-TEST", new List<UpdateContainerDetailDto> { Request() });
+        Assert.Empty(replay.Conflicts);
+        Assert.Equal(1, replay.TotalUpdated);
+
+        await _localDb.Updateable<ProductSetCode>().SetColumns(x => x.SetPurchasePrice == 4m).Where(x => x.SetCodeId == "SET-REPLAY-1").ExecuteCommandAsync();
+        var staleReplay = await service.BatchUpdateDetailsDetailedAsync("C-TEST", new List<UpdateContainerDetailDto> { Request() });
+        Assert.Contains(staleReplay.Conflicts, conflict => conflict.Field == "进口价格");
+        Assert.Equal(4m, (await _localDb.Queryable<ProductSetCode>().SingleAsync(x => x.SetCodeId == "SET-REPLAY-1")).SetPurchasePrice);
+    }
+
+    [Fact]
+    public async Task ApplyPricesByScopeAsync_预览scope意图变化即使目标相同也应拒绝()
+    {
+        await SeedDetailAndProductAsync("D-PREVIEW-SCOPE", "P-PREVIEW-SCOPE", englishName: "Old English");
+        var service = CreateService();
+        var preview = await service.PreviewBatchActionAsync(
+            "C-TEST",
+            new ContainerDetailBatchPreviewRequestDto
+            {
+                Operation = "apply-prices",
+                Scope = new ContainerDetailBatchScopeDto
+                {
+                    SelectedHguids = new List<string> { "D-PREVIEW-SCOPE" },
+                    Query = new ContainerDetailQueryDto { ProductName = "画布" },
+                },
+                Parameters = new Dictionary<string, JsonElement>
+                {
+                    ["importPrice"] = JsonDocument.Parse("8.88").RootElement.Clone(),
+                },
+            }
+        );
+
+        await Assert.ThrowsAsync<ContainerDetailBatchPreviewConflictException>(() =>
+            service.ApplyPricesByScopeAsync(
+                "C-TEST",
+                new ContainerDetailApplyPricesRequestDto
+                {
+                    ImportPrice = 8.88m,
+                    SelectedHguids = new List<string> { "D-PREVIEW-SCOPE" },
+                    Query = new ContainerDetailQueryDto { ProductName = "相框" },
+                    PreviewToken = preview.PreviewToken,
+                }
+            )
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(item => item.DetailCode == "D-PREVIEW-SCOPE");
+        Assert.Equal(1.23m, detail.ImportPrice);
+    }
+
+    [Fact]
+    public async Task ApplyPricesByScopeAsync_有效预览令牌_应完整提交明细与关联价格()
+    {
+        await SeedDetailAndProductAsync("D-PREVIEW-COMMIT", "P-PREVIEW-COMMIT", englishName: "Old English");
+        await SeedRelatedPriceRowsAsync("P-PREVIEW-COMMIT");
+        var service = CreateService();
+        var preview = await service.PreviewBatchActionAsync(
+            "C-TEST",
+            new ContainerDetailBatchPreviewRequestDto
+            {
+                Operation = "apply-prices",
+                Scope = new ContainerDetailBatchScopeDto
+                {
+                    SelectedHguids = new List<string> { "D-PREVIEW-COMMIT" },
+                },
+                Parameters = new Dictionary<string, JsonElement>
+                {
+                    ["importPrice"] = JsonDocument.Parse("8.88").RootElement.Clone(),
+                },
+            }
+        );
+
+        var totalUpdated = await service.ApplyPricesByScopeAsync(
+            "C-TEST",
+            new ContainerDetailApplyPricesRequestDto
+            {
+                ImportPrice = 8.88m,
+                SelectedHguids = new List<string> { "D-PREVIEW-COMMIT" },
+                PreviewToken = preview.PreviewToken,
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(item => item.DetailCode == "D-PREVIEW-COMMIT");
+        var warehouse = await _localDb.Queryable<WarehouseProduct>()
+            .SingleAsync(item => item.ProductCode == "P-PREVIEW-COMMIT");
+        var product = await _localDb.Queryable<Product>()
+            .SingleAsync(item => item.ProductCode == "P-PREVIEW-COMMIT");
+        var storePrices = await _localDb.Queryable<StoreRetailPrice>()
+            .Where(item => item.ProductCode == "P-PREVIEW-COMMIT")
+            .ToListAsync();
+
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal(8.88m, detail.ImportPrice);
+        Assert.Equal(8.88m, warehouse.ImportPrice);
+        Assert.Equal(8.88m, product.PurchasePrice);
+        Assert.All(storePrices, item => Assert.Equal(8.88m, item.PurchasePrice));
+    }
+
+    [Fact]
+    public async Task RecalculateCostsByScopeAsync_预览后货柜成本输入变化_应拒绝且零写入()
+    {
+        await _localDb.Insertable(
+            new Container
+            {
+                ContainerCode = "C-PREVIEW-HEADER",
+                ContainerNumber = "C-PREVIEW-HEADER",
+                ExchangeRate = 5m,
+                ShippingFee = 100m,
+                TotalVolume = 10m,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        await _localDb.Insertable(
+            new ContainerDetail
+            {
+                DetailCode = "D-PREVIEW-HEADER",
+                ContainerCode = "C-PREVIEW-HEADER",
+                ProductCode = "P-PREVIEW-HEADER",
+                DomesticPrice = 10m,
+                TotalVolume = 2m,
+                LoadingQuantity = 5m,
+                AdjustmentRate = 1.3m,
+                TransportCost = 0m,
+                ImportPrice = 0m,
+                IsDeleted = false,
+            }
+        ).ExecuteCommandAsync();
+        var service = CreateService();
+        var preview = await service.PreviewBatchActionAsync(
+            "C-PREVIEW-HEADER",
+            new ContainerDetailBatchPreviewRequestDto
+            {
+                Operation = "recalculate-costs",
+                Scope = new ContainerDetailBatchScopeDto
+                {
+                    SelectedHguids = new List<string> { "D-PREVIEW-HEADER" },
+                },
+            }
+        );
+
+        await _localDb.Updateable<Container>()
+            .SetColumns(container => container.ShippingFee == 200m)
+            .Where(container => container.ContainerCode == "C-PREVIEW-HEADER")
+            .ExecuteCommandAsync();
+
+        await Assert.ThrowsAsync<ContainerDetailBatchPreviewConflictException>(() =>
+            service.RecalculateCostsByScopeAsync(
+                "C-PREVIEW-HEADER",
+                new ContainerDetailBatchScopeDto
+                {
+                    SelectedHguids = new List<string> { "D-PREVIEW-HEADER" },
+                    PreviewToken = preview.PreviewToken,
+                }
+            )
+        );
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(item => item.DetailCode == "D-PREVIEW-HEADER");
+        Assert.Equal(0m, detail.ImportPrice);
+        Assert.Equal(0m, detail.TransportCost);
+    }
+
+    [Fact]
+    public async Task BackfillLastPricesByScopeAsync_预览后仓库来源变化_应拒绝且零写入()
+    {
+        await SeedDetailAndProductAsync("D-PREVIEW-BACKFILL", "P-PREVIEW-BACKFILL", englishName: "Old English");
+        await SeedRelatedPriceRowsAsync("P-PREVIEW-BACKFILL");
+        var service = CreateService();
+        var preview = await service.PreviewBatchActionAsync(
+            "C-TEST",
+            new ContainerDetailBatchPreviewRequestDto
+            {
+                Operation = "backfill-last-prices",
+                Scope = new ContainerDetailBatchScopeDto
+                {
+                    SelectedHguids = new List<string> { "D-PREVIEW-BACKFILL" },
+                },
+            }
+        );
+
+        await _localDb.Updateable<WarehouseProduct>()
+            .SetColumns(product => product.ImportPrice == 9.99m)
+            .Where(product => product.ProductCode == "P-PREVIEW-BACKFILL")
+            .ExecuteCommandAsync();
+
+        await Assert.ThrowsAsync<ContainerDetailBatchPreviewConflictException>(() =>
+            service.BackfillLastPricesByScopeAsync(
+                "C-TEST",
+                new ContainerDetailBatchScopeDto
+                {
+                    SelectedHguids = new List<string> { "D-PREVIEW-BACKFILL" },
+                    PreviewToken = preview.PreviewToken,
+                }
+            )
+        );
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(item => item.DetailCode == "D-PREVIEW-BACKFILL");
+        Assert.Null(detail.LastImportPrice);
+        Assert.Null(detail.LastOEMPrice);
+    }
+
+    [Fact]
+    public async Task BatchDeleteDetailsScopedAsync_预览后关联分店进货价变化_应拒绝且零写入()
+    {
+        await SeedDetailAndProductAsync(
+            "D-PREVIEW-DELETE-RELATED",
+            "P-PREVIEW-DELETE-RELATED",
+            englishName: "Old English"
+        );
+        await SeedRelatedPriceRowsAsync("P-PREVIEW-DELETE-RELATED");
+        var service = CreateService();
+        var preview = await service.PreviewBatchActionAsync(
+            "C-TEST",
+            new ContainerDetailBatchPreviewRequestDto
+            {
+                Operation = "delete-details",
+                Scope = new ContainerDetailBatchScopeDto
+                {
+                    SelectedHguids = new List<string> { "D-PREVIEW-DELETE-RELATED" },
+                },
+            }
+        );
+
+        await _localDb.Updateable<StoreRetailPrice>()
+            .SetColumns(price => price.PurchasePrice == 9.99m)
+            .Where(price => price.ProductCode == "P-PREVIEW-DELETE-RELATED")
+            .ExecuteCommandAsync();
+
+        await Assert.ThrowsAsync<ContainerDetailBatchPreviewConflictException>(() =>
+            service.BatchDeleteDetailsScopedAsync(
+                "C-TEST",
+                new ContainerDetailBatchScopeDto
+                {
+                    SelectedHguids = new List<string> { "D-PREVIEW-DELETE-RELATED" },
+                    PreviewToken = preview.PreviewToken,
+                }
+            )
+        );
+
+        Assert.Equal(
+            1,
+            await _localDb.Queryable<ContainerDetail>()
+                .CountAsync(detail => detail.DetailCode == "D-PREVIEW-DELETE-RELATED")
+        );
+    }
+
+    [Fact]
+    public async Task BatchDeleteDetailsScopedAsync_预览后套装多码关系变化_应拒绝且零写入()
+    {
+        const string productCode = "P-PREVIEW-DELETE-SET-MULTI";
+        await SeedDetailAndProductAsync("D-PREVIEW-DELETE-SET-MULTI", productCode, "Old English");
+        await SeedRelatedPriceRowsAsync(productCode);
+        await _localDb.Insertable(new ProductSetCode
+        {
+            SetCodeId = "SET-PREVIEW-DELETE-SET-MULTI",
+            ProductCode = productCode,
+            SetProductCode = "CHILD-PREVIEW-DELETE-SET-MULTI",
+            SetItemNumber = "CHILD-PREVIEW-DELETE-SET-MULTI",
+            SetRetailPrice = 10m,
+            SetPurchasePrice = 1m,
+            SetType = 1,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new StoreMultiCodeProduct
+        {
+            UUID = "MULTI-PREVIEW-DELETE-SET-MULTI",
+            ProductCode = productCode,
+            StoreCode = "001",
+            MultiCodeProductCode = "CHILD-PREVIEW-DELETE-SET-MULTI",
+            MultiCodeRetailPrice = 10m,
+            PurchasePrice = 1m,
+            IsActive = true,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        var service = CreateService();
+        var preview = await service.PreviewBatchActionAsync(
+            "C-TEST",
+            new ContainerDetailBatchPreviewRequestDto
+            {
+                Operation = "delete-details",
+                Scope = new ContainerDetailBatchScopeDto
+                {
+                    SelectedHguids = new List<string> { "D-PREVIEW-DELETE-SET-MULTI" },
+                },
+            }
+        );
+
+        await _localDb.Updateable<StoreMultiCodeProduct>()
+            .SetColumns(row => row.MultiCodeRetailPrice == 11m)
+            .Where(row => row.UUID == "MULTI-PREVIEW-DELETE-SET-MULTI")
+            .ExecuteCommandAsync();
+
+        await Assert.ThrowsAsync<ContainerDetailBatchPreviewConflictException>(() =>
+            service.BatchDeleteDetailsScopedAsync(
+                "C-TEST",
+                new ContainerDetailBatchScopeDto
+                {
+                    SelectedHguids = new List<string> { "D-PREVIEW-DELETE-SET-MULTI" },
+                    PreviewToken = preview.PreviewToken,
+                }
+            )
+        );
+
+        Assert.Equal(1, await _localDb.Queryable<ContainerDetail>()
+            .CountAsync(detail => detail.DetailCode == "D-PREVIEW-DELETE-SET-MULTI"));
+    }
+
+    [Fact]
+    public async Task SetStatusByScopeAsync_有效预览令牌_应同步明细和仓库状态()
+    {
+        await SeedDetailAndProductAsync("D-SET-STATUS", "P-SET-STATUS", "Old English");
+        await SeedRelatedPriceRowsAsync("P-SET-STATUS");
+        var service = CreateService();
+        var preview = await service.PreviewBatchActionAsync(
+            "C-TEST",
+            new ContainerDetailBatchPreviewRequestDto
+            {
+                Operation = "set-status",
+                Scope = new ContainerDetailBatchScopeDto
+                {
+                    SelectedHguids = new List<string> { "D-SET-STATUS" },
+                },
+                Parameters = new Dictionary<string, JsonElement>
+                {
+                    ["isActive"] = JsonDocument.Parse("false").RootElement.Clone(),
+                },
+            }
+        );
+
+        var totalUpdated = await service.SetStatusByScopeAsync(
+            "C-TEST",
+            new ContainerDetailSetStatusRequestDto
+            {
+                IsActive = false,
+                SelectedHguids = new List<string> { "D-SET-STATUS" },
+                PreviewToken = preview.PreviewToken,
+            }
+        );
+
+        Assert.Equal(1, totalUpdated);
+        Assert.False((await _localDb.Queryable<ContainerDetail>().SingleAsync(item => item.DetailCode == "D-SET-STATUS")).IsActive);
+        Assert.False((await _localDb.Queryable<WarehouseProduct>().SingleAsync(item => item.ProductCode == "P-SET-STATUS")).IsActive);
+    }
+
+    [Fact]
+    public async Task AssignCategoryByScopeAsync_预览后本地主档分类变化_应拒绝且零写入()
+    {
+        await SeedDetailAndProductAsync("D-ASSIGN-CATEGORY", "P-ASSIGN-CATEGORY", "Old English");
+        await SeedRelatedPriceRowsAsync("P-ASSIGN-CATEGORY");
+        await SeedWarehouseCategoryAsync("CAT-ASSIGN");
+        var service = CreateService();
+        var preview = await service.PreviewBatchActionAsync(
+            "C-TEST",
+            new ContainerDetailBatchPreviewRequestDto
+            {
+                Operation = "assign-category",
+                Scope = new ContainerDetailBatchScopeDto
+                {
+                    SelectedHguids = new List<string> { "D-ASSIGN-CATEGORY" },
+                },
+                Parameters = new Dictionary<string, JsonElement>
+                {
+                    ["categoryGuid"] = JsonDocument.Parse("\"CAT-ASSIGN\"").RootElement.Clone(),
+                },
+            }
+        );
+
+        await _localDb.Updateable<Product>()
+            .SetColumns(product => product.WarehouseCategoryGUID == "CAT-CHANGED")
+            .Where(product => product.ProductCode == "P-ASSIGN-CATEGORY")
+            .ExecuteCommandAsync();
+
+        await Assert.ThrowsAsync<ContainerDetailBatchPreviewConflictException>(() =>
+            service.AssignCategoryByScopeAsync(
+                "C-TEST",
+                new ContainerDetailAssignCategoryRequestDto
+                {
+                    CategoryGuid = "CAT-ASSIGN",
+                    SelectedHguids = new List<string> { "D-ASSIGN-CATEGORY" },
+                    PreviewToken = preview.PreviewToken,
+                }
+            )
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(item => item.DetailCode == "D-ASSIGN-CATEGORY");
+        Assert.Null(detail.TargetWarehouseCategoryGUID);
+    }
+
+    [Fact]
+    public async Task AssignCategoryByScopeAsync_有效预览令牌_应同步明细与本地主档分类()
+    {
+        await SeedDetailAndProductAsync("D-ASSIGN-CATEGORY-COMMIT", "P-ASSIGN-CATEGORY-COMMIT", "Old English");
+        await SeedRelatedPriceRowsAsync("P-ASSIGN-CATEGORY-COMMIT");
+        await SeedWarehouseCategoryAsync("CAT-ASSIGN-COMMIT");
+        var service = CreateService();
+        var preview = await service.PreviewBatchActionAsync(
+            "C-TEST",
+            new ContainerDetailBatchPreviewRequestDto
+            {
+                Operation = "assign-category",
+                Scope = new ContainerDetailBatchScopeDto
+                {
+                    SelectedHguids = new List<string> { "D-ASSIGN-CATEGORY-COMMIT" },
+                },
+                Parameters = new Dictionary<string, JsonElement>
+                {
+                    ["categoryGuid"] = JsonDocument.Parse("\"CAT-ASSIGN-COMMIT\"").RootElement.Clone(),
+                },
+            }
+        );
+
+        var totalUpdated = await service.AssignCategoryByScopeAsync(
+            "C-TEST",
+            new ContainerDetailAssignCategoryRequestDto
+            {
+                CategoryGuid = "CAT-ASSIGN-COMMIT",
+                SelectedHguids = new List<string> { "D-ASSIGN-CATEGORY-COMMIT" },
+                PreviewToken = preview.PreviewToken,
+            }
+        );
+
+        Assert.Equal(1, totalUpdated);
+        Assert.Equal(
+            "CAT-ASSIGN-COMMIT",
+            (await _localDb.Queryable<ContainerDetail>().SingleAsync(item => item.DetailCode == "D-ASSIGN-CATEGORY-COMMIT")).TargetWarehouseCategoryGUID
+        );
+        Assert.Equal(
+            "CAT-ASSIGN-COMMIT",
+            (await _localDb.Queryable<Product>().SingleAsync(item => item.ProductCode == "P-ASSIGN-CATEGORY-COMMIT")).WarehouseCategoryGUID
+        );
+    }
+
+    [Fact]
     public async Task ApplyFloatRateByScopeAsync_系统重算进货价_应只更新货柜明细()
     {
         await _localDb.Insertable(
@@ -1820,6 +3590,72 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
         Assert.Equal(0, totalUpdated);
     }
 
+    [Fact]
+    public async Task BatchUpdateDetailsAsync_全部明细不存在_应返回字段级错误且不抛异常()
+    {
+        var service = CreateService();
+        var updates = new List<UpdateContainerDetailDto>
+        {
+            new() { HGUID = "D-MISSING-ONLY", 英文名称 = "Missing Detail" },
+        };
+
+        var detailedResult = await service.BatchUpdateDetailsDetailedAsync(updates);
+        var totalUpdated = await service.BatchUpdateDetailsAsync(updates);
+
+        Assert.Equal(1, detailedResult.TotalRequested);
+        Assert.Equal(0, detailedResult.TotalUpdated);
+        var error = Assert.Single(detailedResult.ValidationErrors);
+        Assert.Equal("D-MISSING-ONLY", error.HGUID);
+        Assert.Equal("*", error.Field);
+        Assert.Equal("DETAIL_NOT_FOUND", error.Code);
+        Assert.Equal(0, totalUpdated);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_仅修改备注_应持久化且支持清空()
+    {
+        await SeedDetailAsync("D-REMARK-ONLY", productCode: null);
+        var service = CreateService();
+
+        var updateResult = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-REMARK-ONLY",
+                    备注 = "连续编辑备注",
+                    SkipRelatedProductSync = true,
+                },
+            }
+        );
+        var updatedDetail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(detail => detail.DetailCode == "D-REMARK-ONLY");
+
+        Assert.Equal(1, updateResult.TotalUpdated);
+        Assert.Empty(updateResult.ValidationErrors);
+        Assert.Equal("连续编辑备注", updatedDetail.Remarks);
+
+        var clearResult = await service.BatchUpdateDetailsDetailedAsync(
+            "C-TEST",
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-REMARK-ONLY",
+                    备注 = string.Empty,
+                    SkipRelatedProductSync = true,
+                },
+            }
+        );
+        var clearedDetail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(detail => detail.DetailCode == "D-REMARK-ONLY");
+
+        Assert.Equal(1, clearResult.TotalUpdated);
+        Assert.Empty(clearResult.ValidationErrors);
+        Assert.Equal(string.Empty, clearedDetail.Remarks);
+    }
+
     public void Dispose()
     {
         _localDb.Dispose();
@@ -1832,20 +3668,27 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
 
     private ContainerReactService CreateService(
         IWarehouseProductChangeHistoryService? historyService = null,
-        ICurrentUserService? currentUserService = null
+        ICurrentUserService? currentUserService = null,
+        bool concurrencyEnabled = false
     )
     {
         return new ContainerReactService(
             CreateSqlSugarContext(_localDb),
             CreateHqSqlSugarContext(),
             CreateHBSalesSqlSugarContext(_hbSalesDb),
-            new ConfigurationBuilder().Build(),
+            new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ContainerDetailConcurrency:Enabled"] = concurrencyEnabled.ToString(),
+                })
+                .Build(),
             Mock.Of<IMapper>(),
             NullLogger<ContainerReactService>.Instance,
             Mock.Of<IContainerHqSyncService>(),
             CreateTranslationServiceMock(),
             historyService ?? Mock.Of<IWarehouseProductChangeHistoryService>(),
-            currentUserService ?? Mock.Of<ICurrentUserService>()
+            currentUserService ?? Mock.Of<ICurrentUserService>(),
+            new EphemeralDataProtectionProvider()
         );
     }
 

@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Services;
@@ -6,6 +7,7 @@ using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Mvc;
 
 namespace BlazorApp.Api.Controllers
@@ -179,13 +181,66 @@ namespace BlazorApp.Api.Controllers
 
             if (tokenResponse == null)
             {
-                CookieHelper.ClearAuthCookies(Response);
+                // 并发刷新输家不能写过期 Set-Cookie，否则可能覆盖赢家刚旋转的新会话。
+                // 失效 Cookie 本身无法通过认证，登录或显式登出时会再覆盖/清理。
                 return ApiResponse<SessionResponse>.Error("刷新令牌无效或已过期");
             }
 
             CookieHelper.SetTokens(Response, tokenResponse.AccessToken, tokenResponse.RefreshToken);
             return ApiResponse<SessionResponse>.OK(CreateSessionResponse(tokenResponse), "令牌刷新成功");
         }
+
+        /// <summary>
+        /// 已登录网站用 Cookie 会话申请浏览器扩展一次性 PKCE 授权码。
+        /// </summary>
+        [HttpPost("extension/authorize")]
+        [Authorize]
+        [EnableRateLimiting(BrowserExtensionSessionGrantRateLimits.AuthorizePolicyName)]
+        public async Task<ApiResponse<BrowserExtensionAuthorizeResponse>> ExtensionAuthorize(
+            [FromBody] BrowserExtensionAuthorizeRequest request,
+            [FromServices] BrowserExtensionSessionGrantService grantService
+        )
+        {
+            // 必须明确拒绝 Authorization header，避免扩展 bearer 自己续签新的扩展 bearer。
+            if (
+                !string.IsNullOrWhiteSpace(Request.Headers.Authorization.FirstOrDefault())
+                || string.IsNullOrWhiteSpace(CookieHelper.GetAccessToken(Request.HttpContext))
+                || User.Identity?.IsAuthenticated != true
+                || User.HasClaim("token_use", "browser_extension")
+            )
+            {
+                return ApiResponse<BrowserExtensionAuthorizeResponse>.Error(
+                    "请先在 HB SHOP 网站登录",
+                    BrowserExtensionSessionGrantService.CookieSessionRequiredErrorCode
+                );
+            }
+
+            var userGuid =
+                User.FindFirst("userId")?.Value
+                ?? User.FindFirst("sub")?.Value
+                ?? User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            var sessionId = User.FindFirst("sessionId")?.Value;
+            if (string.IsNullOrWhiteSpace(userGuid) || string.IsNullOrWhiteSpace(sessionId))
+            {
+                return ApiResponse<BrowserExtensionAuthorizeResponse>.Error(
+                    "网站登录会话无效或已过期",
+                    BrowserExtensionSessionGrantService.InvalidGrantErrorCode
+                );
+            }
+
+            return await grantService.AuthorizeAsync(userGuid, sessionId, request);
+        }
+
+        /// <summary>
+        /// 浏览器扩展用一次性授权码和 PKCE verifier 兑换短期访问令牌。
+        /// </summary>
+        [HttpPost("extension/token")]
+        [AllowAnonymous]
+        [EnableRateLimiting(BrowserExtensionSessionGrantRateLimits.ExchangePolicyName)]
+        public Task<ApiResponse<BrowserExtensionTokenResponse>> ExtensionToken(
+            [FromBody] BrowserExtensionTokenRequest request,
+            [FromServices] BrowserExtensionSessionGrantService grantService
+        ) => grantService.ExchangeAsync(request);
 
         /// <summary>
         /// 获取当前用户信息接口

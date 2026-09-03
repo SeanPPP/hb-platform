@@ -44,35 +44,6 @@
     return parsed ? `${parsed}/*` : null;
   }
 
-  // src/lib/refresh-flow.js
-  function createAuthExecutor({ isAuthFailure: isAuthFailure2, refresh }) {
-    let refreshPromise = null;
-    async function withRefresh(request) {
-      const first = await request();
-      if (!isAuthFailure2(first)) return first;
-      if (!refreshPromise) {
-        refreshPromise = Promise.resolve().then(refresh).then(
-          () => {
-            refreshPromise = null;
-          },
-          (err) => {
-            refreshPromise = null;
-            throw err;
-          }
-        );
-      }
-      await refreshPromise;
-      return request();
-    }
-    return {
-      withRefresh,
-      _isRefreshing: () => !!refreshPromise,
-      _reset: () => {
-        refreshPromise = null;
-      }
-    };
-  }
-
   // src/lib/origin-registration.js
   async function resolveGrantedProfileOrigins(profiles, hasPermission) {
     const allowedOrigins = [
@@ -329,15 +300,107 @@
     };
   }
 
+  // src/lib/session-handoff.js
+  var WEBSITE_SESSION_CLIENT_ID = "hb-supplier-order";
+  function parseOrigin(value) {
+    try {
+      const url = new URL(value);
+      if (url.username || url.password) return null;
+      return url.origin;
+    } catch {
+      return null;
+    }
+  }
+  function validateWebsiteSessionContext({
+    pageUrl,
+    webOrigin,
+    apiOrigin,
+    isTopLevel
+  }) {
+    if (!isTopLevel) return { ok: false, reason: "NOT_TOP_LEVEL" };
+    let page;
+    try {
+      page = new URL(pageUrl);
+    } catch {
+      return { ok: false, reason: "INVALID_PAGE_URL" };
+    }
+    const trustedWebOrigin = parseOrigin(webOrigin);
+    const trustedApiOrigin = parseOrigin(apiOrigin);
+    if (!trustedWebOrigin || page.origin !== trustedWebOrigin) {
+      return { ok: false, reason: "UNTRUSTED_PAGE" };
+    }
+    if (page.pathname !== "/shop") return { ok: false, reason: "NOT_SHOP_PAGE" };
+    if (!trustedApiOrigin || trustedApiOrigin !== page.origin) {
+      return { ok: false, reason: "API_ORIGIN_MISMATCH" };
+    }
+    return { ok: true, origin: page.origin };
+  }
+  function failure(body, fallbackReason) {
+    return {
+      ok: false,
+      reason: body?.errorCode || fallbackReason,
+      error: body?.message || fallbackReason
+    };
+  }
+  function parseTokenResponse({ httpOk, body, nowMs = Date.now() }) {
+    if (!httpOk || body?.success !== true) return failure(body, "TOKEN_EXCHANGE_FAILED");
+    const data = body.data;
+    const expiryMs = Date.parse(data?.accessTokenExpiry || "");
+    if (!data || typeof data.accessToken !== "string" || !data.accessToken || typeof data.accessTokenExpiry !== "string" || !Number.isFinite(expiryMs) || expiryMs <= nowMs + 5e3 || data.refreshToken != null || typeof data.userGuid !== "string" || !data.userGuid.trim() || !(typeof data.username === "string" && data.username.trim() || typeof data.fullName === "string" && data.fullName.trim())) {
+      return failure(body, "INVALID_TOKEN_RESPONSE");
+    }
+    const user = {
+      userGuid: data.userGuid.trim(),
+      ...typeof data.username === "string" && data.username.trim() ? { username: data.username.trim() } : {},
+      ...typeof data.fullName === "string" && data.fullName.trim() ? { fullName: data.fullName.trim() } : {}
+    };
+    return {
+      ok: true,
+      accessToken: data.accessToken,
+      accessTokenExpiry: data.accessTokenExpiry,
+      user
+    };
+  }
+  function createSingleFlight(task) {
+    let pending = null;
+    return (...args) => {
+      if (pending) return pending;
+      let result;
+      try {
+        result = task(...args);
+      } catch (error) {
+        result = Promise.reject(error);
+      }
+      const current = Promise.resolve(result);
+      const wrapped = current.finally(() => {
+        if (pending === wrapped) pending = null;
+      });
+      pending = wrapped;
+      return wrapped;
+    };
+  }
+  function createAccessRequestExecutor({ isAuthFailure: isAuthFailure2, clearAccessSession: clearAccessSession2 }) {
+    return async (request) => {
+      const response = await request();
+      if (isAuthFailure2(response)) await clearAccessSession2();
+      return response;
+    };
+  }
+
   // hb-safari-config:config.js
-  var EXTENSION_VERSION = "1.2.0";
+  var EXTENSION_VERSION = "1.3.0";
   var HB_API_ORIGIN = "https://hotbargain.vip";
+  var HB_WEB_ORIGIN = "https://hotbargain.vip";
   var BUILD_TARGET = "safari";
   var API_BASE = HB_API_ORIGIN;
 
   // src/background/service-worker.js
-  var ACCESS_KEY = "accessToken";
-  var REFRESH_KEY = "refreshToken";
+  var ACCESS_KEY = "websiteAccessToken";
+  var ACCESS_EXPIRY_KEY = "websiteAccessTokenExpiry";
+  var USER_KEY = "websiteSessionUser";
+  var PENDING_HANDOFF_KEY = "pendingWebsiteSessionHandoff";
+  var LEGACY_ACCESS_KEY = "accessToken";
+  var LEGACY_REFRESH_KEY = "refreshToken";
   var PROFILES_KEY = "supplierProfiles";
   var GRANTED_KEY = "grantedOrigins";
   var API_ORIGIN_KEY = "apiOrigin";
@@ -350,26 +413,56 @@
   var setLocal = (obj) => chrome.storage.local.set(obj);
   var removeLocal = (keys) => chrome.storage.local.remove(keys);
   async function getAccessToken() {
-    const r = await getSession(ACCESS_KEY);
-    return r[ACCESS_KEY];
+    const stored = await getSession([ACCESS_KEY, ACCESS_EXPIRY_KEY]);
+    const token = stored[ACCESS_KEY];
+    const expiry = Date.parse(stored[ACCESS_EXPIRY_KEY] || "");
+    if (!token || !Number.isFinite(expiry) || expiry <= Date.now() + 5e3) {
+      if (token || stored[ACCESS_EXPIRY_KEY]) await clearAccessSession();
+      return null;
+    }
+    return token;
   }
-  async function getRefreshToken() {
-    const r = await getLocal(REFRESH_KEY);
-    return r[REFRESH_KEY];
+  async function clearAccessSession() {
+    await removeSession([ACCESS_KEY, ACCESS_EXPIRY_KEY, USER_KEY]);
+  }
+  async function getStoredSessionUser() {
+    const stored = await getSession(USER_KEY);
+    const value = stored[USER_KEY];
+    if (!value || typeof value !== "object" || typeof value.userGuid !== "string" || !value.userGuid.trim() || !(typeof value.username === "string" && value.username.trim() || typeof value.fullName === "string" && value.fullName.trim())) {
+      return null;
+    }
+    return {
+      userGuid: value.userGuid.trim(),
+      ...typeof value.username === "string" && value.username.trim() ? { username: value.username.trim() } : {},
+      ...typeof value.fullName === "string" && value.fullName.trim() ? { fullName: value.fullName.trim() } : {}
+    };
+  }
+  async function clearLegacyCredentials() {
+    await Promise.all([
+      removeSession([LEGACY_ACCESS_KEY]),
+      removeLocal([LEGACY_REFRESH_KEY])
+    ]);
   }
   async function getApiOrigin() {
     const stored = await getLocal(API_ORIGIN_KEY);
     return resolveApiOrigin(stored[API_ORIGIN_KEY], API_BASE);
   }
-  async function rawFetch(path, options = {}) {
-    const [accessToken, apiOrigin] = await Promise.all([getAccessToken(), getApiOrigin()]);
+  async function rawFetch(path, options = {}, { anonymous = false } = {}) {
+    const [accessToken, apiOrigin] = await Promise.all([
+      anonymous ? null : getAccessToken(),
+      getApiOrigin()
+    ]);
     const headers = {
       "X-HB-Extension-Version": EXTENSION_VERSION,
       ...options.body ? { "Content-Type": "application/json" } : {},
       ...options.headers || {}
     };
     if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
-    const res = await fetch(`${apiOrigin}${path}`, { ...options, headers });
+    const res = await fetch(`${apiOrigin}${path}`, {
+      ...options,
+      credentials: "omit",
+      headers
+    });
     let body = null;
     try {
       body = await res.json();
@@ -401,74 +494,159 @@
     }
     const current = await getApiOrigin();
     if (normalized === current) {
-      return { ok: true, apiOrigin: normalized, changed: false, requiresLogin: false };
+      return { ok: true, apiOrigin: normalized, changed: false, requiresWebsiteSession: false };
     }
     await setLocal({ [API_ORIGIN_KEY]: normalized, [PROFILES_KEY]: DEFAULT_PROFILES });
-    await Promise.all([removeSession([ACCESS_KEY]), removeLocal([REFRESH_KEY])]);
+    await Promise.all([clearAccessSession(), removeSession(PENDING_HANDOFF_KEY)]);
     await syncContentScripts();
-    return { ok: true, apiOrigin: normalized, changed: true, requiresLogin: true };
+    return { ok: true, apiOrigin: normalized, changed: true, requiresWebsiteSession: true };
   }
-  async function doRefresh() {
-    try {
-      const [accessToken, refreshToken] = await Promise.all([getAccessToken(), getRefreshToken()]);
-      if (!refreshToken) throw new Error("no refresh token");
-      const res = await rawFetch("/api/Auth/refresh", {
-        method: "POST",
-        body: JSON.stringify({ accessToken, refreshToken })
-      });
-      if (!res.success || !res.data || !res.data.accessToken || !res.data.refreshToken) {
-        throw new Error(res.message || res.errorCode || "refresh failed");
-      }
-      await Promise.all([
-        setSession({ [ACCESS_KEY]: res.data.accessToken }),
-        setLocal({ [REFRESH_KEY]: res.data.refreshToken })
-      ]);
-    } catch (error) {
-      await Promise.all([removeSession([ACCESS_KEY]), removeLocal([REFRESH_KEY])]);
-      throw error;
-    }
-  }
-  var authExecutor = createAuthExecutor({
+  var accessRequestExecutor = createAccessRequestExecutor({
     isAuthFailure: (r) => isAuthFailure(r, r.httpStatus),
-    refresh: doRefresh
+    clearAccessSession
   });
-  function apiRequest(path, options = {}) {
-    return authExecutor.withRefresh(() => rawFetch(path, options));
-  }
-  async function handleLogin({ username, password }) {
-    if (typeof username !== "string" || typeof password !== "string" || !username || !password) {
-      return { ok: false, error: "\u7528\u6237\u540D\u6216\u5BC6\u7801\u4E3A\u7A7A" };
+  async function apiRequest(path, options = {}) {
+    if (!await getAccessToken()) {
+      const handoff = await ensureWebsiteSession();
+      if (!handoff.ok) {
+        return {
+          httpStatus: 401,
+          ok: false,
+          success: false,
+          message: handoff.error,
+          errorCode: handoff.reason || "WEBSITE_SESSION_REQUIRED"
+        };
+      }
     }
-    const res = await rawFetch("/api/Auth/login", {
-      method: "POST",
-      body: JSON.stringify({ username, password, passwordFormat: "raw" })
+    return accessRequestExecutor(() => rawFetch(path, options));
+  }
+  function validateGrantMessage(message) {
+    return message?.clientId === WEBSITE_SESSION_CLIENT_ID && typeof message.code === "string" && message.code.length >= 16 && message.code.length <= 512 && typeof message.codeVerifier === "string" && /^[A-Za-z0-9_-]{43,128}$/u.test(message.codeVerifier) && typeof message.state === "string" && /^[A-Za-z0-9_-]{32,128}$/u.test(message.state);
+  }
+  async function exchangeWebsiteSessionGrant(message, sender) {
+    const apiOrigin = await getApiOrigin();
+    const senderUrl = sender?.tab?.url || sender?.url;
+    const context = validateWebsiteSessionContext({
+      pageUrl: senderUrl,
+      webOrigin: HB_WEB_ORIGIN,
+      apiOrigin,
+      isTopLevel: sender?.frameId == null || sender.frameId === 0
     });
-    if (!res.success || !res.data || !res.data.accessToken) {
-      return { ok: false, error: res.message || res.errorCode || "\u767B\u5F55\u5931\u8D25" };
+    if (!context.ok || !validateGrantMessage(message)) {
+      return {
+        ok: false,
+        reason: context.reason || "INVALID_WEBSITE_SESSION_GRANT",
+        error: "\u7F51\u7AD9\u4F1A\u8BDD\u6388\u6743\u6765\u6E90\u65E0\u6548"
+      };
     }
-    await setSession({ [ACCESS_KEY]: res.data.accessToken });
-    if (res.data.refreshToken) await setLocal({ [REFRESH_KEY]: res.data.refreshToken });
-    return { ok: true, user: res.data.user || res.data };
+    const res = await rawFetch("/api/Auth/extension/token", {
+      method: "POST",
+      body: JSON.stringify({
+        code: message.code,
+        codeVerifier: message.codeVerifier,
+        state: message.state,
+        clientId: WEBSITE_SESSION_CLIENT_ID
+      })
+    }, { anonymous: true });
+    const parsed = parseTokenResponse({
+      httpOk: res.ok,
+      body: {
+        success: res.success,
+        data: res.data,
+        message: res.message,
+        errorCode: res.errorCode
+      }
+    });
+    if (!parsed.ok) {
+      await clearAccessSession();
+      return { ok: false, reason: parsed.reason, error: parsed.error };
+    }
+    await setSession({
+      [ACCESS_KEY]: parsed.accessToken,
+      [ACCESS_EXPIRY_KEY]: parsed.accessTokenExpiry,
+      [USER_KEY]: parsed.user
+    });
+    await removeSession(PENDING_HANDOFF_KEY);
+    return { ok: true, user: parsed.user, accessTokenExpiry: parsed.accessTokenExpiry };
   }
-  async function handleCurrent() {
-    const res = await apiRequest("/api/Auth/current", { method: "GET" });
-    if (!res.success) return { ok: false, error: res.message || res.errorCode || "\u83B7\u53D6\u7528\u6237\u5931\u8D25" };
-    return { ok: true, user: res.data };
-  }
-  async function handleLogout() {
-    try {
-      await authExecutor.withRefresh(async () => {
-        const refreshToken = await getRefreshToken();
-        if (!refreshToken) return { httpStatus: 200, success: true };
-        return rawFetch("/api/Auth/logout", {
-          method: "POST",
-          body: JSON.stringify({ refreshToken })
-        });
+  var acceptWebsiteSessionGrant = createSingleFlight(exchangeWebsiteSessionGrant);
+  async function findTrustedShopTabs() {
+    const tabs = await chrome.tabs.query({ url: `${HB_WEB_ORIGIN}/shop*` });
+    return tabs.filter((tab) => {
+      const context = validateWebsiteSessionContext({
+        pageUrl: tab.url,
+        webOrigin: HB_WEB_ORIGIN,
+        apiOrigin: HB_WEB_ORIGIN,
+        isTopLevel: true
       });
-    } catch {
+      return tab.id != null && context.ok;
+    });
+  }
+  async function requestWebsiteSessionFromTab() {
+    const apiOrigin = await getApiOrigin();
+    if (apiOrigin !== HB_WEB_ORIGIN) {
+      return {
+        ok: false,
+        reason: "API_ORIGIN_MISMATCH",
+        error: "\u5F53\u524D\u63A5\u53E3\u4E0E HB SHOP \u7F51\u9875\u4E0D\u540C\u6E90",
+        loginUrl: `${HB_WEB_ORIGIN}/shop`
+      };
     }
-    await removeSession([ACCESS_KEY]);
-    await removeLocal([REFRESH_KEY]);
+    const tabs = await findTrustedShopTabs();
+    if (!tabs.length) {
+      return {
+        ok: false,
+        reason: "WEBSITE_TAB_REQUIRED",
+        error: "\u8BF7\u6253\u5F00\u6216\u767B\u5F55 HB SHOP",
+        loginUrl: `${HB_WEB_ORIGIN}/shop`
+      };
+    }
+    let lastFailure = null;
+    for (const tab of tabs) {
+      try {
+        const result = await chrome.tabs.sendMessage(tab.id, {
+          type: "REQUEST_WEBSITE_SESSION",
+          apiOrigin
+        });
+        if (result?.ok) return result;
+        lastFailure = result;
+      } catch (error) {
+        lastFailure = { error: String(error?.message || error) };
+      }
+    }
+    return {
+      ok: false,
+      reason: lastFailure?.reason || "WEBSITE_BRIDGE_UNAVAILABLE",
+      error: lastFailure?.error || "HB SHOP \u6388\u6743\u6865\u5C1A\u672A\u5C31\u7EEA",
+      loginUrl: `${HB_WEB_ORIGIN}/shop`
+    };
+  }
+  var ensureWebsiteSession = createSingleFlight(async () => {
+    if (await getAccessToken()) return { ok: true };
+    return requestWebsiteSessionFromTab();
+  });
+  async function handleCurrent() {
+    if (await getAccessToken()) {
+      const existingUser = await getStoredSessionUser();
+      if (existingUser) return { ok: true, user: existingUser };
+      await clearAccessSession();
+    }
+    const handoff = await ensureWebsiteSession();
+    if (!handoff.ok) return handoff;
+    const currentUser = handoff.user || await getStoredSessionUser();
+    if (!currentUser) {
+      await clearAccessSession();
+      return {
+        ok: false,
+        reason: "INVALID_TOKEN_RESPONSE",
+        error: "\u7F51\u7AD9\u4F1A\u8BDD\u8FD4\u56DE\u7684\u8D26\u53F7\u4FE1\u606F\u65E0\u6548",
+        loginUrl: `${HB_WEB_ORIGIN}/shop`
+      };
+    }
+    return { ok: true, user: currentUser };
+  }
+  async function handleDisconnect() {
+    await Promise.all([clearAccessSession(), removeSession(PENDING_HANDOFF_KEY)]);
     return { ok: true };
   }
   async function handleGetProfiles() {
@@ -627,6 +805,58 @@
     if (/tab/i.test(msg)) return "\u672A\u627E\u5230\u6807\u7B7E\u9875";
     return msg || "\u6253\u5F00\u4FA7\u680F\u5931\u8D25";
   }
+  async function focusTab(tab) {
+    if (tab.windowId != null && chrome.windows?.update) {
+      try {
+        await chrome.windows.update(tab.windowId, { focused: true });
+      } catch {
+      }
+    }
+    return chrome.tabs.update(tab.id, { active: true });
+  }
+  async function handleOpenHbShop() {
+    await setSession({ [PENDING_HANDOFF_KEY]: true });
+    const shopTabs = await findTrustedShopTabs();
+    if (shopTabs.length) {
+      await focusTab(shopTabs[0]);
+      const handoff = await ensureWebsiteSession();
+      return { ok: true, connected: !!handoff.ok, reason: handoff.reason };
+    }
+    const webTabs = await chrome.tabs.query({ url: `${HB_WEB_ORIGIN}/*` });
+    const existing = webTabs.find((tab) => tab.id != null);
+    if (existing) {
+      await chrome.tabs.update(existing.id, { url: `${HB_WEB_ORIGIN}/shop`, active: true });
+      if (existing.windowId != null && chrome.windows?.update) {
+        try {
+          await chrome.windows.update(existing.windowId, { focused: true });
+        } catch {
+        }
+      }
+      return { ok: true, connected: false, pending: true };
+    }
+    await chrome.tabs.create({ url: `${HB_WEB_ORIGIN}/shop`, active: true });
+    return { ok: true, connected: false, pending: true };
+  }
+  var openHbShop = createSingleFlight(handleOpenHbShop);
+  async function handleShopBridgeReady(sender) {
+    const senderUrl = sender?.tab?.url || sender?.url;
+    const source = validateWebsiteSessionContext({
+      pageUrl: senderUrl,
+      webOrigin: HB_WEB_ORIGIN,
+      apiOrigin: HB_WEB_ORIGIN,
+      isTopLevel: sender?.frameId == null || sender.frameId === 0
+    });
+    if (!source.ok) return { ok: false, reason: source.reason };
+    const [{ [PENDING_HANDOFF_KEY]: pending }, apiOrigin] = await Promise.all([
+      getSession(PENDING_HANDOFF_KEY),
+      getApiOrigin()
+    ]);
+    return {
+      ok: true,
+      shouldAuthorize: pending === true,
+      apiOrigin
+    };
+  }
   function openSidePanel(sender, pendingLocate) {
     const tabId = sender && sender.tab && sender.tab.id;
     if (tabId == null) return Promise.resolve({ ok: false, error: "\u7F3A\u5C11\u6807\u7B7E\u9875" });
@@ -635,6 +865,7 @@
     return Promise.all([openPromise, locatePromise]).then(() => ({ ok: true })).catch((e) => ({ ok: false, error: friendlySidePanelError(e) }));
   }
   chrome.runtime.onInstalled.addListener(async () => {
+    await clearLegacyCredentials();
     try {
       await assistantPanel.configureAction();
     } catch {
@@ -644,23 +875,30 @@
     await syncContentScripts();
   });
   chrome.runtime.onStartup.addListener(async () => {
+    await clearLegacyCredentials();
     await migrateStoredProfiles();
     await syncContentScripts();
+  });
+  void clearLegacyCredentials().catch(() => {
   });
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const type = message && message.type;
     const run = async () => {
       switch (type) {
-        case "LOGIN":
-          return handleLogin(message);
         case "GET_API_ORIGIN":
           return handleGetApiOrigin();
         case "SET_API_ORIGIN":
           return handleSetApiOrigin(message);
         case "CURRENT":
           return handleCurrent();
-        case "LOGOUT":
-          return handleLogout();
+        case "WEBSITE_SESSION_GRANT":
+          return acceptWebsiteSessionGrant(message, sender);
+        case "SHOP_BRIDGE_READY":
+          return handleShopBridgeReady(sender);
+        case "DISCONNECT":
+          return handleDisconnect();
+        case "OPEN_HB_SHOP":
+          return openHbShop();
         case "RELEASE":
           return handleRelease();
         case "GET_PROFILES":

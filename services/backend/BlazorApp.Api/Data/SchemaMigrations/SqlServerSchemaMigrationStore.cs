@@ -282,4 +282,19 @@ internal static class SqlServerSchemaMigrationStore
         command.CommandTimeout = commandTimeoutSeconds;
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
+
+    public static async Task ExecuteBatchAsync(
+        string connectionString,
+        string sql,
+        int commandTimeoutSeconds,
+        CancellationToken cancellationToken
+    )
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.CommandTimeout = commandTimeoutSeconds;
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
 }

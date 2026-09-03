@@ -1,12 +1,14 @@
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace BlazorApp.Api.Controllers.React
 {
@@ -203,6 +205,54 @@ namespace BlazorApp.Api.Controllers.React
             return false;
         }
 
+        private IActionResult CreateContainerMutationConflictResponse(
+            Exception exception,
+            string operation
+        )
+        {
+            ContainerMutationLock.TryResolveConflict(exception, out var conflict);
+            Response.Headers.RetryAfter = "1";
+            _logger.LogWarning(
+                exception,
+                "{Operation}遇到货柜并发冲突, ResultCode: {ResultCode}",
+                operation,
+                conflict?.ResultCode
+            );
+            return StatusCode(
+                StatusCodes.Status409Conflict,
+                new
+                {
+                    success = false,
+                    code = ContainerMutationLock.BusyErrorCode,
+                    message = "同一货柜正在保存，请稍后重试",
+                }
+            );
+        }
+
+        private bool IsContainerDetailTokenRequired() =>
+            HttpContext.RequestServices.GetRequiredService<IConfiguration>()
+                .GetValue<bool>("ContainerDetailConcurrency:RequireTokens");
+
+        private IActionResult CreateContainerDetailTokenRequiredResponse() =>
+            StatusCode(
+                StatusCodes.Status428PreconditionRequired,
+                new
+                {
+                    success = false,
+                    code = ContainerDetailConcurrencyTokenRequiredException.ErrorCode,
+                    message = "当前客户端版本不支持并发保存，请升级后再编辑",
+                }
+            );
+
+        private IActionResult CreateBatchPreviewConflictResponse(
+            ContainerDetailBatchPreviewConflictException exception
+        ) => Conflict(new
+        {
+            success = false,
+            code = ContainerDetailBatchPreviewConflictException.ErrorCode,
+            message = exception.Message,
+        });
+
         /// <summary>
         /// 获取货柜列表（React专用）
         /// </summary>
@@ -353,6 +403,10 @@ namespace BlazorApp.Api.Controllers.React
                     return NotFound(new { success = false, message = "货柜不存在或更新失败" });
                 }
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "更新货柜信息");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(
@@ -414,7 +468,8 @@ namespace BlazorApp.Api.Controllers.React
         [Authorize(Policy = Permissions.Container.View)]
         public async Task<IActionResult> QueryContainerProducts(
             string containerGuid,
-            [FromBody] ContainerDetailQueryDto? request
+            [FromBody] ContainerDetailQueryDto? request,
+            CancellationToken cancellationToken = default
         )
         {
             try
@@ -427,7 +482,10 @@ namespace BlazorApp.Api.Controllers.React
                 request ??= new ContainerDetailQueryDto();
                 request.ContainerGuid = containerGuid;
 
-                var result = await _containerReactService.QueryContainerDetailsAsync(request);
+                var result = await _containerReactService.QueryContainerDetailsAsync(
+                    request,
+                    cancellationToken
+                );
 
                 return Ok(
                     new
@@ -437,6 +495,10 @@ namespace BlazorApp.Api.Controllers.React
                         message = "获取货柜商品明细成功",
                     }
                 );
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -456,7 +518,8 @@ namespace BlazorApp.Api.Controllers.React
         [Authorize(Policy = Permissions.Container.View)]
         public async Task<IActionResult> ExportContainerProducts(
             string containerGuid,
-            [FromBody] ReactContainerDetailsExportRequest? request
+            [FromBody] ReactContainerDetailsExportRequest? request,
+            CancellationToken cancellationToken = default
         )
         {
             try
@@ -478,7 +541,11 @@ namespace BlazorApp.Api.Controllers.React
                     return NotFound(new { success = false, message = "货柜不存在" });
                 }
 
-                var details = await LoadReactContainerExportDetailsAsync(containerGuid, request);
+                var details = await LoadReactContainerExportDetailsAsync(
+                    containerGuid,
+                    request,
+                    cancellationToken
+                );
                 if (details.Count == 0)
                 {
                     return BadRequest(new { success = false, message = "没有找到要导出的明细数据" });
@@ -511,6 +578,10 @@ namespace BlazorApp.Api.Controllers.React
 
                 return File(fileBytes, contentType, fileName);
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(
@@ -524,7 +595,8 @@ namespace BlazorApp.Api.Controllers.React
 
         private async Task<List<ContainerDetailDto>> LoadReactContainerExportDetailsAsync(
             string containerGuid,
-            ReactContainerDetailsExportRequest request
+            ReactContainerDetailsExportRequest request,
+            CancellationToken cancellationToken
         )
         {
             var query = request.Query ?? new ContainerDetailQueryDto();
@@ -543,7 +615,10 @@ namespace BlazorApp.Api.Controllers.React
 
             while (true)
             {
-                var result = await _containerReactService.QueryContainerDetailsAsync(query);
+                var result = await _containerReactService.QueryContainerDetailsAsync(
+                    query,
+                    cancellationToken
+                );
                 var items = selectedHguids.Count == 0
                     ? result.Items
                     : result.Items
@@ -857,8 +932,71 @@ namespace BlazorApp.Api.Controllers.React
         }
 
         /// <summary>
-        /// 批量更新货柜明细（React专用）
+        /// 货柜明细协作状态心跳（仅作界面提醒，不参与保存锁定）
         /// </summary>
+        [HttpPost("{containerGuid:guid}/editing-presence/heartbeat")]
+        [Authorize(Policy = Permissions.Container.View)]
+        public async Task<IActionResult> HeartbeatContainerDetailPresence(
+            string containerGuid,
+            [FromBody] ContainerDetailPresenceHeartbeatDto request
+        )
+        {
+            try
+            {
+                var collaboration = HttpContext.RequestServices
+                    .GetRequiredService<IContainerDetailCollaborationService>();
+                return Ok(new { success = true, data = await collaboration.HeartbeatAsync(containerGuid, request) });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                // 在线状态仅作提醒，客户端失败后应隐藏状态条且绝不能阻断编辑保存。
+                _logger.LogWarning(ex, "货柜协作心跳失败, ContainerGuid: {ContainerGuid}", containerGuid);
+                return StatusCode(503, new { success = false, message = "协作状态暂不可用" });
+            }
+        }
+
+        [HttpGet("{containerGuid:guid}/editing-presence")]
+        [Authorize(Policy = Permissions.Container.View)]
+        public async Task<IActionResult> GetContainerDetailPresence(string containerGuid)
+        {
+            try
+            {
+                var collaboration = HttpContext.RequestServices
+                    .GetRequiredService<IContainerDetailCollaborationService>();
+                return Ok(new { success = true, data = await collaboration.GetActiveUsersAsync(containerGuid) });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "获取货柜协作状态失败, ContainerGuid: {ContainerGuid}", containerGuid);
+                return StatusCode(503, new { success = false, message = "协作状态暂不可用" });
+            }
+        }
+
+        [HttpPost("{containerGuid:guid}/editing-presence/leave")]
+        [Authorize(Policy = Permissions.Container.View)]
+        public async Task<IActionResult> LeaveContainerDetailPresence(
+            string containerGuid,
+            [FromBody] ContainerDetailPresenceHeartbeatDto request
+        )
+        {
+            try
+            {
+                var collaboration = HttpContext.RequestServices
+                    .GetRequiredService<IContainerDetailCollaborationService>();
+                await collaboration.LeaveAsync(containerGuid, request.ClientSessionId);
+                return Ok(new { success = true });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "离开货柜协作状态失败, ContainerGuid: {ContainerGuid}", containerGuid);
+                return StatusCode(503, new { success = false, message = "协作状态暂不可用" });
+            }
+        }
+
         /// <param name="updates">明细更新列表</param>
         /// <returns>更新结果</returns>
         [HttpPost("batch-update-details")]
@@ -885,9 +1023,82 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             }
+            catch (ContainerDetailConcurrencyTokenRequiredException ex)
+            {
+                return StatusCode(
+                    StatusCodes.Status428PreconditionRequired,
+                    new
+                    {
+                        success = false,
+                        code = ContainerDetailConcurrencyTokenRequiredException.ErrorCode,
+                        message = ex.Message,
+                    }
+                );
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "批量更新货柜明细");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量更新货柜明细失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        /// <summary>
+        /// 在路由指定货柜范围内批量更新明细（Web 专用部分成功入口）。
+        /// </summary>
+        [HttpPost("{containerGuid:guid}/batch-update-details")]
+        [Authorize(Policy = Permissions.Container.Edit)]
+        public async Task<IActionResult> BatchUpdateDetailsScoped(
+            string containerGuid,
+            [FromBody] List<UpdateContainerDetailDto> updates
+        )
+        {
+            try
+            {
+                if (updates == null || !updates.Any())
+                {
+                    return BadRequest(new { success = false, message = "更新列表不能为空" });
+                }
+
+                var result = await _containerReactService.BatchUpdateDetailsDetailedAsync(
+                    containerGuid,
+                    updates
+                );
+                return Ok(
+                    new
+                    {
+                        success = true,
+                        message = $"成功更新 {result.TotalUpdated} 条明细",
+                        data = result,
+                    }
+                );
+            }
+            catch (ContainerDetailConcurrencyTokenRequiredException ex)
+            {
+                return StatusCode(
+                    StatusCodes.Status428PreconditionRequired,
+                    new
+                    {
+                        success = false,
+                        code = ContainerDetailConcurrencyTokenRequiredException.ErrorCode,
+                        message = ex.Message,
+                    }
+                );
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "批量更新货柜明细");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "批量更新货柜明细失败, ContainerGuid: {ContainerGuid}",
+                    containerGuid
+                );
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
@@ -914,6 +1125,10 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "对齐国内商品编码");
+            }
             catch (InvalidOperationException ex)
             {
                 return BadRequest(new { success = false, message = ex.Message });
@@ -928,6 +1143,54 @@ namespace BlazorApp.Api.Controllers.React
         /// <summary>
         /// 按当前筛选范围批量调浮率（React专用）
         /// </summary>
+        [HttpPost("{containerGuid:guid}/actions/preview")]
+        public async Task<IActionResult> PreviewContainerDetailBatchAction(
+            string containerGuid,
+            [FromBody] ContainerDetailBatchPreviewRequestDto request
+        )
+        {
+            try
+            {
+                if (request == null)
+                {
+                    return BadRequest(new { success = false, message = "批量操作预览请求不能为空" });
+                }
+                // 预览令牌是执行的必要前置步骤，权限必须与对应执行入口一致；
+                // 否则只有删除权限的用户会因拿不到令牌而无法执行原本获准的删除。
+                var normalizedOperation = request.Operation?.Trim().ToLowerInvariant();
+                var requiredContainerPolicy = normalizedOperation == "delete-details"
+                    ? Permissions.Container.Delete
+                    : Permissions.Container.Edit;
+                if (!(await _authorizationService.AuthorizeAsync(User, null, requiredContainerPolicy)).Succeeded)
+                {
+                    return Forbid();
+                }
+                if (
+                    normalizedOperation == "assign-category"
+                    && !(await _authorizationService.AuthorizeAsync(
+                        User,
+                        null,
+                        Permissions.PosProducts.Manage
+                    )).Succeeded
+                )
+                {
+                    return Forbid();
+                }
+
+                var preview = await _containerReactService.PreviewBatchActionAsync(containerGuid, request);
+                return Ok(new { success = true, data = preview });
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "货柜批量操作预览失败, ContainerGuid: {ContainerGuid}", containerGuid);
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
         [HttpPost("{containerGuid}/actions/apply-float-rate")]
         [Authorize(Policy = Permissions.Container.Edit)]
         public async Task<IActionResult> ApplyFloatRateByScope(
@@ -954,6 +1217,18 @@ namespace BlazorApp.Api.Controllers.React
                         data = new { totalUpdated },
                     }
                 );
+            }
+            catch (ContainerDetailConcurrencyTokenRequiredException)
+            {
+                return CreateContainerDetailTokenRequiredResponse();
+            }
+            catch (ContainerDetailBatchPreviewConflictException ex)
+            {
+                return CreateBatchPreviewConflictResponse(ex);
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "按筛选范围批量调浮率");
             }
             catch (InvalidOperationException ex)
             {
@@ -996,9 +1271,93 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             }
+            catch (ContainerDetailConcurrencyTokenRequiredException)
+            {
+                return CreateContainerDetailTokenRequiredResponse();
+            }
+            catch (ContainerDetailBatchPreviewConflictException ex)
+            {
+                return CreateBatchPreviewConflictResponse(ex);
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "按筛选范围批量改价");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "按筛选范围批量改价失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpPost("{containerGuid}/actions/set-status")]
+        [Authorize(Policy = Permissions.Container.Edit)]
+        public async Task<IActionResult> SetStatusByScope(
+            string containerGuid,
+            [FromBody] ContainerDetailSetStatusRequestDto request
+        )
+        {
+            try
+            {
+                if (request == null || !request.IsActive.HasValue)
+                    return BadRequest(new { success = false, message = "上下架状态不能为空" });
+                var totalUpdated = await _containerReactService.SetStatusByScopeAsync(containerGuid, request);
+                return Ok(new { success = true, data = new { totalUpdated } });
+            }
+            catch (ContainerDetailConcurrencyTokenRequiredException)
+            {
+                return CreateContainerDetailTokenRequiredResponse();
+            }
+            catch (ContainerDetailBatchPreviewConflictException ex)
+            {
+                return CreateBatchPreviewConflictResponse(ex);
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "按筛选范围批量上下架");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "按筛选范围批量上下架失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpPost("{containerGuid}/actions/assign-category")]
+        [Authorize(Policy = Permissions.Container.Edit)]
+        // 批量分类同时写 Product.WarehouseCategoryGUID，不能仅凭货柜编辑权限越权修改 POS 商品主档。
+        [Authorize(Policy = Permissions.PosProducts.Manage)]
+        public async Task<IActionResult> AssignCategoryByScope(
+            string containerGuid,
+            [FromBody] ContainerDetailAssignCategoryRequestDto request
+        )
+        {
+            try
+            {
+                if (request == null)
+                    return BadRequest(new { success = false, message = "批量分类请求不能为空" });
+                var totalUpdated = await _containerReactService.AssignCategoryByScopeAsync(containerGuid, request);
+                return Ok(new { success = true, data = new { totalUpdated } });
+            }
+            catch (ContainerDetailConcurrencyTokenRequiredException)
+            {
+                return CreateContainerDetailTokenRequiredResponse();
+            }
+            catch (ContainerDetailBatchPreviewConflictException ex)
+            {
+                return CreateBatchPreviewConflictResponse(ex);
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "按筛选范围批量分类");
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "按筛选范围批量分类失败");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
@@ -1028,6 +1387,18 @@ namespace BlazorApp.Api.Controllers.React
                         data = new { totalUpdated },
                     }
                 );
+            }
+            catch (ContainerDetailConcurrencyTokenRequiredException)
+            {
+                return CreateContainerDetailTokenRequiredResponse();
+            }
+            catch (ContainerDetailBatchPreviewConflictException ex)
+            {
+                return CreateBatchPreviewConflictResponse(ex);
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "按筛选范围重算成本");
             }
             catch (InvalidOperationException ex)
             {
@@ -1066,6 +1437,18 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             }
+            catch (ContainerDetailConcurrencyTokenRequiredException)
+            {
+                return CreateContainerDetailTokenRequiredResponse();
+            }
+            catch (ContainerDetailBatchPreviewConflictException ex)
+            {
+                return CreateBatchPreviewConflictResponse(ex);
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "按筛选范围回填上次价格");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "按筛选范围回填上次价格失败");
@@ -1090,6 +1473,11 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     return BadRequest(new { success = false, message = "删除列表不能为空" });
                 }
+                if (IsContainerDetailTokenRequired())
+                {
+                    // 旧删除入口没有货柜范围与预览令牌，强制阶段必须只读，不能成为并发保护旁路。
+                    return CreateContainerDetailTokenRequiredResponse();
+                }
 
                 var totalDeleted = await _containerReactService.BatchDeleteDetailsAsync(
                     request.Hguids
@@ -1104,9 +1492,44 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "批量删除货柜明细");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量删除货柜明细失败");
+                return StatusCode(500, new { success = false, message = "服务器内部错误" });
+            }
+        }
+
+        [HttpPost("{containerGuid:guid}/actions/delete-details")]
+        [Authorize(Policy = Permissions.Container.Delete)]
+        public async Task<IActionResult> BatchDeleteDetailsScoped(
+            string containerGuid,
+            [FromBody] ContainerDetailBatchScopeDto request
+        )
+        {
+            try
+            {
+                var totalDeleted = await _containerReactService.BatchDeleteDetailsScopedAsync(containerGuid, request ?? new());
+                return Ok(new { success = true, data = new { totalDeleted } });
+            }
+            catch (ContainerDetailConcurrencyTokenRequiredException)
+            {
+                return CreateContainerDetailTokenRequiredResponse();
+            }
+            catch (ContainerDetailBatchPreviewConflictException ex)
+            {
+                return Conflict(new { success = false, code = ContainerDetailBatchPreviewConflictException.ErrorCode, message = ex.Message });
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "批量删除货柜明细");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "批量删除货柜明细失败, ContainerGuid: {ContainerGuid}", containerGuid);
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
         }
@@ -1172,6 +1595,10 @@ namespace BlazorApp.Api.Controllers.React
                         data = new { containerGuid },
                     }
                 );
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "创建货柜");
             }
             catch (InvalidOperationException ex)
             {
@@ -1275,6 +1702,10 @@ namespace BlazorApp.Api.Controllers.React
                     }
                 );
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                return CreateContainerMutationConflictResponse(ex, "批量分配商品到货柜");
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "批量分配商品到货柜失败");
@@ -1358,8 +1789,14 @@ namespace BlazorApp.Api.Controllers.React
         /// <summary>
         /// 将核心同步结果映射为 HTTP 语义，保证 data 始终是 SyncResult。
         /// </summary>
-        private static IActionResult CreateSyncFailureResponse(SyncResult result)
+        private IActionResult CreateSyncFailureResponse(SyncResult result)
         {
+            if (result.ErrorCode == ContainerMutationLock.BusyErrorCode)
+            {
+                Response.Headers.RetryAfter = "1";
+                return Conflict(CreateSyncResponse(false, result.Message, result));
+            }
+
             return result.ErrorCode switch
             {
                 ContainerHqSyncErrorCodes.Conflict => new ConflictObjectResult(

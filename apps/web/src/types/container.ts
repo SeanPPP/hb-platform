@@ -107,10 +107,12 @@ export interface ContainerDetail {
   HasProductCodeConflict?: boolean
   conflictReason?: string
   ConflictReason?: string
+  /** 服务端字段指纹；仅用于检测其他用户的同字段修改，不能从本地生成。 */
+  serverFieldTokens?: Record<string, string>
 }
 
-export type ContainerDetailQueryTag = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport' | 'active' | 'inactive'
 export type ContainerDetailQueryProductType = 'normal' | 'set' | 'multi' | 'setChild'
+export type ContainerDetailQueryTag = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport' | 'active' | 'inactive' | ContainerDetailQueryProductType
 export type ContainerDetailQueryNewProductState = 'new' | 'existing'
 export type ContainerDetailQueryMatchType = 'productCode' | 'supplierItem' | 'unmatched'
 export type ContainerDetailQueryWarehouseStatus = 'active' | 'inactive'
@@ -158,6 +160,7 @@ export interface ContainerDetailQuery {
   selectedTags?: ContainerDetailQueryTag[]
   sortBy?: string
   sortOrder?: ContainerDetailQuerySortOrder
+  includeItems?: boolean
   includeTotal?: boolean
   includeStats?: boolean
 }
@@ -170,6 +173,13 @@ export interface ContainerDetailTagStats {
   abnormalImport: number
   active: number
   inactive: number
+  normal: number
+  set: number
+  multi: number
+  setChild: number
+  productCodeMatched: number
+  supplierItemMatched: number
+  unmatched: number
 }
 
 export interface ContainerDetailQueryResult {
@@ -216,6 +226,52 @@ export interface ContainerDetailBatchScope {
 export interface ContainerDetailBatchActionResult {
   totalUpdated: number
   totalRequested?: number
+}
+
+export interface ContainerDetailActionPreviewRequest {
+  operation: string
+  scope: ContainerDetailBatchScope
+  parameters?: Record<string, unknown>
+}
+
+export interface ContainerDetailActionPreview {
+  previewToken: string
+  affectedCount: number
+  fieldSummary: string[]
+  expiresAt: string
+}
+
+export interface ContainerDetailEditingUser {
+  userGuid: string
+  userName: string
+  lastActiveAt: string
+}
+
+export interface ContainerDetailEditingPresence {
+  viewers: ContainerDetailEditingUser[]
+  editors: ContainerDetailEditingUser[]
+}
+
+export interface ContainerDetailBatchUpdateResult {
+  totalUpdated: number
+  totalRequested: number
+  validationErrors: Array<{
+    hguid: string
+    field: string
+    code: string
+    message: string
+  }>
+  autoRepairedStoreGroupCount?: number
+  autoRepairedRelationCount?: number
+  conflicts: Array<{
+    hguid: string
+    field: string
+    serverValue: unknown
+    submittedValue: unknown
+    currentServerFieldToken: string
+    code: 'CONCURRENT_FIELD_UPDATE'
+    message?: string
+  }>
 }
 
 export interface ContainerQueryRequest {
@@ -274,6 +330,7 @@ export interface UpdateContainerDetailRequest {
   进口价格?: number
   运输成本?: number
   商品名称?: string
+  备注?: string
   英文名称?: string
   ClearEnglishName?: boolean
   ProductCategoryGUID?: string
@@ -296,6 +353,10 @@ export interface UpdateContainerDetailRequest {
   HasProductCodeConflict?: boolean
   conflictReason?: string
   ConflictReason?: string
+  /** 用户开始编辑时服务器返回的字段基线令牌。 */
+  expectedServerFieldTokens?: Record<string, string>
+  /** 用户明确选择保留我的值时，确认覆盖的服务器当前令牌。 */
+  overrideAcknowledgements?: Record<string, string>
 }
 
 export interface AlignDomesticProductCodeRequest {

@@ -48,6 +48,7 @@ internal sealed class DataSyncContainersStore : DataSyncSliceBase
                 await LocalContext.Db.Ado.BeginTranAsync();
                 try
                 {
+                    await ContainerMutationLock.AcquireAllAsync(LocalContext.Db);
                     Logger.LogInformation("清空本地货柜数据...");
                     await LocalContext.Db.Deleteable<ContainerDetail>().ExecuteCommandAsync();
                     await LocalContext.Db.Deleteable<Container>().ExecuteCommandAsync();
@@ -104,9 +105,12 @@ internal sealed class DataSyncContainersStore : DataSyncSliceBase
                     result.Message = $"货柜数据全量同步成功，主表: {totalContainers} 条，明细: {totalDetails} 条";
                     Logger.LogInformation(result.Message);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    await LocalContext.Db.Ado.RollbackTranAsync();
+                    await RollbackContainerMutationTransactionSafelyAsync(
+                        LocalContext.Db,
+                        ex
+                    );
                     throw;
                 }
             }
@@ -116,6 +120,10 @@ internal sealed class DataSyncContainersStore : DataSyncSliceBase
                 result.Message = $"同步失败: {ex.Message}";
                 result.ErrorCount = Math.Max(result.ErrorCount, 1);
                 result.IsSuccess = false;
+                if (ContainerMutationLock.TryResolveConflict(ex, out _))
+                {
+                    result.ErrorCode = ContainerMutationLock.BusyErrorCode;
+                }
             }
             finally
             {
@@ -177,66 +185,88 @@ internal sealed class DataSyncContainersStore : DataSyncSliceBase
                         $"从HQ数据库获取到第 {pageNumber} 批增量货柜主表数据，共 {hqContainersBatch.Count} 条"
                     );
 
-                    // 获取现有的本地货柜数据
                     var hqGuids = hqContainersBatch
                         .Select(c => c.HGUID)
                         .Where(g => !string.IsNullOrEmpty(g))
+                        .Select(g => g!)
                         .ToList();
-                    var existingContainers = await LocalContext
-                        .Db.Queryable<Container>()
-                        .Where(c => hqGuids.Contains(c.ContainerCode))
-                        .ToListAsync();
-
-                    var containersToUpdate = new List<Container>();
-                    var containersToAdd = new List<Container>();
-
-                    foreach (var hqContainer in hqContainersBatch)
+                    await LocalContext.Db.Ado.BeginTranAsync();
+                    try
                     {
-                        try
+                        var mutationLock = await ContainerMutationLock.AcquireContainersAsync(
+                            LocalContext.Db,
+                            hqGuids
+                        );
+                        // 等待锁后重新读取，禁止把锁前旧快照覆盖到本地。
+                        var existingContainers = await LocalContext
+                            .Db.Queryable<Container>()
+                            .Where(c => hqGuids.Contains(c.ContainerCode))
+                            .ToListAsync();
+                        var containersToUpdate = new List<Container>();
+                        var containersToAdd = new List<Container>();
+
+                        foreach (var hqContainer in hqContainersBatch)
                         {
-                            var containerCode = hqContainer.HGUID ?? UuidHelper.GenerateUuid7();
-                            var existingContainer = existingContainers.FirstOrDefault(c =>
-                                c.ContainerCode == containerCode
-                            );
-
-                            // 使用AutoMapper转换HQ数据到本地实体
-                            var localContainer = Mapper.Map<Container>(hqContainer);
-
-                            if (existingContainer != null)
+                            try
                             {
-                                // 更新现有记录，保留原创建信息
-                                localContainer.CreatedAt = existingContainer.CreatedAt;
-                                localContainer.CreatedBy = existingContainer.CreatedBy;
-                                containersToUpdate.Add(localContainer);
+                                var containerCode =
+                                    hqContainer.HGUID ?? UuidHelper.GenerateUuid7();
+                                var existingContainer = existingContainers.FirstOrDefault(c =>
+                                    c.ContainerCode == containerCode
+                                );
+
+                                // 使用AutoMapper转换HQ数据到本地实体
+                                var localContainer = Mapper.Map<Container>(hqContainer);
+
+                                if (existingContainer != null)
+                                {
+                                    // 更新现有记录，保留原创建信息
+                                    localContainer.CreatedAt = existingContainer.CreatedAt;
+                                    localContainer.CreatedBy = existingContainer.CreatedBy;
+                                    containersToUpdate.Add(localContainer);
+                                }
+                                else
+                                {
+                                    // 新增记录，AutoMapper已经处理了创建信息
+                                    containersToAdd.Add(localContainer);
+                                }
                             }
-                            else
+                            catch (Exception ex)
                             {
-                                // 新增记录，AutoMapper已经处理了创建信息
-                                containersToAdd.Add(localContainer);
+                                Logger.LogWarning(
+                                    $"处理增量货柜主表数据失败，跳过记录 {hqContainer.HGUID}: {ex.Message}"
+                                );
+                                result.ErrorCount++;
                             }
                         }
-                        catch (Exception ex)
-                        {
-                            Logger.LogWarning(
-                                $"处理增量货柜主表数据失败，跳过记录 {hqContainer.HGUID}: {ex.Message}"
-                            );
-                            result.ErrorCount++;
-                        }
-                    }
 
-                    // 批量更新和新增
-                    if (containersToUpdate.Any())
-                    {
-                        await LocalContext.Db.Updateable(containersToUpdate).ExecuteCommandAsync();
+                        mutationLock.EnsureCovers(
+                            containersToUpdate
+                                .Concat(containersToAdd)
+                                .Select(container => container.ContainerCode)
+                        );
+
+                        if (containersToUpdate.Any())
+                        {
+                            await LocalContext.Db.Updateable(containersToUpdate).ExecuteCommandAsync();
+                        }
+                        if (containersToAdd.Any())
+                        {
+                            await LocalContext.Db.Insertable(containersToAdd).ExecuteCommandAsync();
+                        }
+
+                        await LocalContext.Db.Ado.CommitTranAsync();
                         result.UpdatedCount += containersToUpdate.Count;
-                        totalContainers += containersToUpdate.Count;
-                    }
-
-                    if (containersToAdd.Any())
-                    {
-                        await LocalContext.Db.Insertable(containersToAdd).ExecuteCommandAsync();
                         result.AddedCount += containersToAdd.Count;
-                        totalContainers += containersToAdd.Count;
+                        totalContainers += containersToUpdate.Count + containersToAdd.Count;
+                    }
+                    catch (Exception ex)
+                    {
+                        await RollbackContainerMutationTransactionSafelyAsync(
+                            LocalContext.Db,
+                            ex
+                        );
+                        throw;
                     }
 
                     pageNumber++;
@@ -267,43 +297,17 @@ internal sealed class DataSyncContainersStore : DataSyncSliceBase
                         $"从HQ数据库获取到第 {pageNumber} 批增量货柜明细数据，共 {hqDetailsBatch.Count} 条"
                     );
 
-                    // 获取现有的本地货柜明细数据
                     var hqDetailGuids = hqDetailsBatch
                         .Select(d => d.HGUID)
                         .Where(g => !string.IsNullOrEmpty(g))
+                        .Select(g => g!)
                         .ToList();
-                    var existingDetails = await LocalContext
-                        .Db.Queryable<ContainerDetail>()
-                        .Where(d => hqDetailGuids.Contains(d.DetailCode))
-                        .ToListAsync();
-
-                    var detailsToUpdate = new List<ContainerDetail>();
-                    var detailsToAdd = new List<ContainerDetail>();
-
+                    var mappedDetails = new List<ContainerDetail>();
                     foreach (var hqDetail in hqDetailsBatch)
                     {
                         try
                         {
-                            var detailCode = hqDetail.HGUID ?? UuidHelper.GenerateUuid7();
-                            var existingDetail = existingDetails.FirstOrDefault(d =>
-                                d.DetailCode == detailCode
-                            );
-
-                            // 使用AutoMapper转换HQ数据到本地实体
-                            var localDetail = Mapper.Map<ContainerDetail>(hqDetail);
-
-                            if (existingDetail != null)
-                            {
-                                // 更新现有记录，保留原创建信息
-                                localDetail.CreatedAt = existingDetail.CreatedAt;
-                                localDetail.CreatedBy = existingDetail.CreatedBy;
-                                detailsToUpdate.Add(localDetail);
-                            }
-                            else
-                            {
-                                // 新增记录，AutoMapper已经处理了创建信息
-                                detailsToAdd.Add(localDetail);
-                            }
+                            mappedDetails.Add(Mapper.Map<ContainerDetail>(hqDetail));
                         }
                         catch (Exception ex)
                         {
@@ -313,18 +317,83 @@ internal sealed class DataSyncContainersStore : DataSyncSliceBase
                             result.ErrorCount++;
                         }
                     }
-
-                    // 批量更新和新增明细数据
-                    if (detailsToUpdate.Any())
+                    var affectedContainerCodes = mappedDetails
+                        .Select(detail => detail.ContainerCode)
+                        .Where(containerCode => !string.IsNullOrWhiteSpace(containerCode))
+                        .Select(containerCode => containerCode!)
+                        .ToList();
+                    var existingContainerCodes = hqDetailGuids.Count == 0
+                        ? new List<string>()
+                        : await LocalContext.Db.Queryable<ContainerDetail>()
+                            .Where(detail => hqDetailGuids.Contains(detail.DetailCode))
+                            .Where(detail => detail.ContainerCode != null)
+                            .Select(detail => detail.ContainerCode!)
+                            .ToListAsync();
+                    affectedContainerCodes.AddRange(existingContainerCodes);
+                    if (affectedContainerCodes.Count == 0)
                     {
-                        await LocalContext.Db.Updateable(detailsToUpdate).ExecuteCommandAsync();
-                        totalDetails += detailsToUpdate.Count;
+                        pageNumber++;
+                        continue;
                     }
 
-                    if (detailsToAdd.Any())
+                    await LocalContext.Db.Ado.BeginTranAsync();
+                    try
                     {
-                        await LocalContext.Db.Insertable(detailsToAdd).ExecuteCommandAsync();
-                        totalDetails += detailsToAdd.Count;
+                        var mutationLock = await ContainerMutationLock.AcquireContainersAsync(
+                            LocalContext.Db,
+                            affectedContainerCodes
+                        );
+                        var existingDetails = await LocalContext
+                            .Db.Queryable<ContainerDetail>()
+                            .Where(d => hqDetailGuids.Contains(d.DetailCode))
+                            .ToListAsync();
+                        mutationLock.EnsureCovers(
+                            mappedDetails
+                                .Concat(existingDetails)
+                                .Select(detail => detail.ContainerCode)
+                        );
+                        var existingByCode = existingDetails.ToDictionary(
+                            detail => detail.DetailCode,
+                            StringComparer.OrdinalIgnoreCase
+                        );
+                        var detailsToUpdate = new List<ContainerDetail>();
+                        var detailsToAdd = new List<ContainerDetail>();
+                        foreach (var localDetail in mappedDetails)
+                        {
+                            if (existingByCode.TryGetValue(localDetail.DetailCode, out var existing))
+                            {
+                                // 更新现有记录，保留原创建信息
+                                localDetail.CreatedAt = existing.CreatedAt;
+                                localDetail.CreatedBy = existing.CreatedBy;
+                                detailsToUpdate.Add(localDetail);
+                            }
+                            else
+                            {
+                                detailsToAdd.Add(localDetail);
+                            }
+                        }
+
+                        if (detailsToUpdate.Any())
+                        {
+                            await LocalContext.Db.Updateable(detailsToUpdate).ExecuteCommandAsync();
+                        }
+                        if (detailsToAdd.Any())
+                        {
+                            await LocalContext.Db.Insertable(detailsToAdd).ExecuteCommandAsync();
+                        }
+
+                        await LocalContext.Db.Ado.CommitTranAsync();
+                        totalDetails += detailsToUpdate.Count + detailsToAdd.Count;
+                        result.UpdatedCount += detailsToUpdate.Count;
+                        result.AddedCount += detailsToAdd.Count;
+                    }
+                    catch (Exception ex)
+                    {
+                        await RollbackContainerMutationTransactionSafelyAsync(
+                            LocalContext.Db,
+                            ex
+                        );
+                        throw;
                     }
 
                     pageNumber++;
@@ -343,6 +412,12 @@ internal sealed class DataSyncContainersStore : DataSyncSliceBase
                 Logger.LogError(ex, "增量同步货柜数据时发生错误");
                 result.Message = $"增量同步失败: {ex.Message}";
                 result.IsSuccess = false;
+                if (ContainerMutationLock.TryResolveConflict(ex, out _))
+                {
+                    result.ErrorCount++;
+                    result.BusyErrorCount++;
+                    result.ErrorCode = ContainerMutationLock.BusyErrorCode;
+                }
             }
             finally
             {
@@ -351,5 +426,31 @@ internal sealed class DataSyncContainersStore : DataSyncSliceBase
             }
 
             return result;
+        }
+
+        private async Task RollbackContainerMutationTransactionSafelyAsync(
+            ISqlSugarClient db,
+            Exception originalException
+        )
+        {
+            if (db.Ado.Transaction == null)
+            {
+                return;
+            }
+
+            try
+            {
+                await db.Ado.RollbackTranAsync();
+            }
+            catch (Exception rollbackException)
+            {
+                // 回滚失败仅记录，保留原始货柜应用锁或死锁异常供上层映射。
+                ContainerMutationLock.ResetFailedTransaction(db);
+                Logger.LogWarning(
+                    rollbackException,
+                    "旧版货柜同步事务回滚失败，保留原始异常 {OriginalExceptionType}",
+                    originalException.GetType().Name
+                );
+            }
         }
 }

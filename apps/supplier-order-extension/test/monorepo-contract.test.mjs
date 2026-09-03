@@ -65,10 +65,11 @@ test('扩展源码无远程代码执行入口且 manifest 不申请 tabs 权限'
   assert.ok(!transforms.includes('new Function'));
 });
 
-test('构建分别配置 HB Web 与 API 源，/shop 桥接不依赖 API 同源', () => {
+test('构建分别记录 HB Web 与 API 源，网站会话交接显式执行同源校验', () => {
   const build = read('build.mjs');
   const config = read('src/config.template.js');
   const manifest = read('src/manifest.template.json');
+  const sessionHandoff = read('src/lib/session-handoff.js');
 
   assert.ok(build.includes('HB_WEB_ORIGIN'));
   assert.ok(build.includes('HB_API_ORIGIN'));
@@ -76,6 +77,7 @@ test('构建分别配置 HB Web 与 API 源，/shop 桥接不依赖 API 同源',
   assert.ok(config.includes('__HB_API_ORIGIN__'));
   assert.ok(manifest.includes('__WEB_ORIGIN__/*'));
   assert.ok(manifest.includes('__API_ORIGIN__/*'));
+  assert.ok(sessionHandoff.includes("reason: 'API_ORIGIN_MISMATCH'"));
 });
 
 test('Safari 构建使用 16.4+ 兼容 manifest 且不声明 Chrome Side Panel', () => {
@@ -124,17 +126,17 @@ test('侧栏商品请求使用 generation guard，旧响应不能覆盖新商品
   assert.ok(sidepanel.includes('itemRequestGeneration.isCurrent'));
 });
 
-test('退出重试在请求闭包内重新读取旋转后的 refresh token', () => {
+test('升级会清理旧版长期凭据，后续网站会话不再读取或写入 refresh token', () => {
   const worker = read('src/background/service-worker.js');
-  const start = worker.indexOf('async function handleLogout()');
-  const end = worker.indexOf('async function handleGetProfiles()');
-  const logout = worker.slice(start, end);
-  assert.ok(start >= 0 && end > start);
-  assert.ok(logout.includes('authExecutor.withRefresh(async () =>'));
-  assert.ok(logout.indexOf('authExecutor.withRefresh') < logout.indexOf('getRefreshToken()'));
+  assert.ok(worker.includes("const LEGACY_ACCESS_KEY = 'accessToken'"));
+  assert.ok(worker.includes("const LEGACY_REFRESH_KEY = 'refreshToken'"));
+  assert.ok(worker.includes('removeSession([LEGACY_ACCESS_KEY])'));
+  assert.ok(worker.includes('removeLocal([LEGACY_REFRESH_KEY])'));
+  assert.ok(!worker.includes('getRefreshToken'));
+  assert.ok(!worker.includes('setLocal({ [LEGACY_REFRESH_KEY]'));
 });
 
-test('侧栏提供远端和本地 5002 后端地址快捷设置', () => {
+test('正式侧栏隐藏环境切换入口，同时保留构建与开发调试契约', () => {
   const html = read('src/sidepanel/sidepanel.html');
   const sidepanel = read('src/sidepanel/sidepanel.js');
   const worker = read('src/background/service-worker.js');
@@ -143,12 +145,13 @@ test('侧栏提供远端和本地 5002 后端地址快捷设置', () => {
   for (const id of ['apiOriginInput', 'apiRemoteBtn', 'apiLocalBtn', 'apiSaveBtn']) {
     assert.ok(html.includes(`id="${id}"`), `侧栏缺少 ${id}`);
   }
+  assert.match(html, /<section id="apiSection"[^>]* hidden>/u);
   assert.ok(sidepanel.includes("type: 'GET_API_ORIGIN'"));
   assert.ok(sidepanel.includes("type: 'SET_API_ORIGIN'"));
   assert.ok(worker.includes("case 'GET_API_ORIGIN':"));
   assert.ok(worker.includes("case 'SET_API_ORIGIN':"));
-  assert.ok(worker.includes('removeSession([ACCESS_KEY])'));
-  assert.ok(worker.includes('removeLocal([REFRESH_KEY])'));
+  assert.ok(worker.includes('await clearAccessSession()'));
+  assert.ok(worker.includes("reason: 'API_ORIGIN_MISMATCH'"));
   assert.ok(manifest.includes('http://localhost/*'));
   assert.ok(manifest.includes('http://127.0.0.1/*'));
 });

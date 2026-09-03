@@ -29,40 +29,39 @@ assert.match(source, /function openEditModal\(detail: ContainerDetail\)/);
 assert.match(source, /function handleEditEnglishNameChange\(value: string\)/);
 
 assert.ok(
-  updateMutation.includes("onSuccess: (result) =>"),
+  /onSuccess: async \(\{[\s\S]*result[\s\S]*\}\) =>/.test(updateMutation),
   "保存成功回调必须读取 batch-update-details 结构化结果",
 );
 assert.ok(
-  updateMutation.includes('error.field === "英文名称"'),
-  "必须仅把英文名称字段校验错误映射到英文名称输入框",
+  updateMutation.includes("reconcileContainerDetailPartialSave"),
+  "部分成功必须按服务器最新行回写成功字段基线",
 );
 assert.ok(
-  updateMutation.includes('error.field === "*"') &&
-    updateMutation.includes("setSnackbar(rowError.message);"),
-  "整行失效必须显示表单级提示，不能伪装成英文名称输入错误",
+  updateMutation.includes("setEditValidationErrors(validationErrors);"),
+  "任意字段校验错误必须保留给编辑弹窗展示",
 );
 assert.match(
   updateMutation,
-  /if \(rowError\) \{[\s\S]*closeEditModal\(\);[\s\S]*setSnackbar\(rowError\.message\);[\s\S]*return;[\s\S]*\}/,
-  "整行失效后必须关闭不可恢复的编辑弹窗并阻止成功提示",
+  /if \(validationErrors\.length \|\| conflicts\.length\) \{[\s\S]*setSnackbar\([\s\S]*return;[\s\S]*\}/,
+  "任何字段或整行校验失败都必须保留编辑弹窗并阻止成功提示",
 );
 assert.ok(
   updateMutation.includes("invalidateDetail();"),
   "同一请求中其它字段可能已保存，收到字段错误时也必须刷新详情",
 );
 assert.ok(
-  updateMutation.includes("setEditEnglishNameError(englishNameError.message);"),
+  updateMutation.includes("setEditEnglishNameError(englishNameError?.message ?? \"\");"),
   "后端英文名称错误必须写入字段错误状态",
 );
 assert.match(
   updateMutation,
-  /if \(englishNameError\) \{[\s\S]*setEditEnglishNameError\(englishNameError\.message\);[\s\S]*return;[\s\S]*\}[\s\S]*closeEditModal\(\);[\s\S]*setSnackbar\("明细已保存"\);/,
-  "字段错误必须保留弹窗和草稿；无字段错误时才关闭并显示全成功",
+  /if \(validationErrors\.length \|\| conflicts\.length\) \{[\s\S]*return;[\s\S]*\}[\s\S]*closeEditModal\(\);[\s\S]*setSnackbar\("明细已保存"\);/,
+  "任意字段错误必须保留弹窗和草稿；无错误时才关闭并显示全成功",
 );
 
 assert.ok(
-  editModal.includes("onDismiss={closeEditModal}"),
-  "关闭编辑弹窗必须统一清理旧字段错误",
+  editModal.includes("onDismiss={updateMutation.isPending ? () => undefined : closeEditModal}"),
+  "保存期间禁止关闭编辑弹窗，空闲时才统一清理旧字段错误",
 );
 assert.ok(
   editModal.includes('label="英文名称"'),
@@ -81,12 +80,16 @@ assert.ok(
   "HelperText 必须展示后端原始错误信息",
 );
 assert.ok(
+  editModal.includes("editValidationErrors.map"),
+  "套装、多码等其它字段校验错误必须在弹窗中逐项展示",
+);
+assert.ok(
   editModal.includes("onChangeText={handleEditEnglishNameChange}"),
   "修改英文名称时必须经过清错处理",
 );
 assert.ok(
-  editModal.includes("<Button onPress={closeEditModal}>取消</Button>"),
-  "取消编辑必须统一清理旧字段错误",
+  editModal.includes("<Button disabled={updateMutation.isPending} onPress={closeEditModal}>取消</Button>"),
+  "取消编辑必须统一清理旧字段错误，保存期间必须禁用",
 );
 assert.match(
   source,
@@ -95,7 +98,7 @@ assert.match(
 );
 assert.match(
   source,
-  /function openEditModal\(detail: ContainerDetail\) \{[\s\S]*setEditEnglishNameError\(""\);[\s\S]*setEditingDetail\(detail\);[\s\S]*setEditForm\(buildEditForm\(detail\)\);[\s\S]*\}/,
+  /function openEditModal\(detail: ContainerDetail\) \{[\s\S]*setEditEnglishNameError\(""\);[\s\S]*setEditingDetail\(detail\);[\s\S]*setEditForm\(buildContainerDetailEditForm\(detail\)\);[\s\S]*\}/,
   "重新打开编辑必须从干净错误状态开始",
 );
 assert.match(

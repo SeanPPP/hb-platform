@@ -1,10 +1,14 @@
-import type { ContainerDetail, ContainerDetailQuery, ContainerMain, UpdateContainerDetailRequest } from '../../../types/container'
+import type { ContainerDetail, ContainerDetailQuery, ContainerDetailQueryResult, ContainerMain, UpdateContainerDetailRequest } from '../../../types/container'
 import type { PushProductsToHqItem, PushProductsToHqResult } from '../../../types/posProduct'
 
 export type ContainerDetailProductTypeFilter = 'normal' | 'set' | 'multi' | 'setChild'
 export type ContainerDetailTagFilter = 'all' | 'new' | 'existing' | 'noOemPrice' | 'abnormalImport' | 'active' | 'inactive' | ContainerDetailProductTypeFilter
 
-export type ContainerDetailTagStats = Record<ContainerDetailTagFilter, number>
+export type ContainerDetailTagStats = Record<ContainerDetailTagFilter, number> & {
+  productCodeMatched: number
+  supplierItemMatched: number
+  unmatched: number
+}
 type ContainerDetailSelectableTagFilter = Exclude<ContainerDetailTagFilter, 'all'>
 export type ContainerDetailNewProductFilter = 'new' | 'existing'
 export type ContainerDetailMatchTypeFilter = 'productCode' | 'supplierItem' | 'unmatched'
@@ -14,10 +18,125 @@ export const CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY = '__ALL_CONTAINER_DETAIL_
 export const CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY = '__UNCATEGORIZED_CONTAINER_DETAIL_CATEGORIES__'
 export const DEFAULT_CONTAINER_DETAIL_FLOAT_RATE = 1.3
 export const CONTAINER_DETAIL_ENGLISH_NAME_FIELD = '英文名称'
+export const CONTAINER_DETAIL_INITIAL_PAGE_SIZE = 100
+export const CONTAINER_DETAIL_FULL_LOAD_LIMIT = 200
+export const CONTAINER_DETAIL_DEFAULT_PAGE_SIZE = 100
+export const CONTAINER_DETAIL_PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1000] as const
+export type ContainerDetailLoadMode = 'probe' | 'full' | 'paged'
 
+export function resolveContainerDetailInitialPage(
+  result: Pick<ContainerDetailQueryResult, 'items' | 'itemsTotal'>,
+) {
+  if (result.itemsTotal <= CONTAINER_DETAIL_FULL_LOAD_LIMIT) {
+    return {
+      mode: 'full' as const,
+      items: result.items,
+      itemsTotal: result.itemsTotal,
+      requiresFullLoad: result.items.length < result.itemsTotal,
+    }
+  }
+
+  return {
+    mode: 'paged' as const,
+    // 大货柜直接复用首屏 100 行，避免再请求同一个第 1 页。
+    items: result.items,
+    itemsTotal: result.itemsTotal,
+    requiresFullLoad: false,
+  }
+}
+
+export function resolveContainerDetailFullPage(
+  result: Pick<ContainerDetailQueryResult, 'items' | 'itemsTotal' | 'hasMore'>,
+  fullLoadLimit = CONTAINER_DETAIL_FULL_LOAD_LIMIT,
+) {
+  if (result.hasMore) {
+    return {
+      mode: 'paged' as const,
+      items: result.items.slice(0, CONTAINER_DETAIL_DEFAULT_PAGE_SIZE),
+      // 关闭 total 的二次请求只会返回 hasMore；至少保留一个可翻页的可信下界。
+      itemsTotal: Math.max(result.itemsTotal, fullLoadLimit + 1),
+    }
+  }
+
+  return {
+    mode: 'full' as const,
+    items: result.items,
+    itemsTotal: Math.max(result.itemsTotal, result.items.length),
+  }
+}
+
+export function canReuseContainerDetailInitialPage({
+  filters,
+  selectedTags,
+  sortState,
+  pageSize,
+}: {
+  filters: ContainerDetailColumnFilters
+  selectedTags: ContainerDetailTagFilter[]
+  sortState: ContainerDetailSortState
+  pageSize: number
+}) {
+  if (
+    pageSize !== CONTAINER_DETAIL_DEFAULT_PAGE_SIZE
+    || sortState.field !== 'itemNumber'
+    || sortState.order !== 'ascend'
+  ) return false
+
+  const query = buildContainerDetailQuery({
+    containerGuid: '__probe__',
+    filters,
+    selectedTags,
+    sortState,
+    pageNumber: 1,
+    pageSize,
+  })
+  const scopeKeys = Object.keys(query).filter((key) => ![
+    'containerGuid',
+    'pageNumber',
+    'pageSize',
+    'sortBy',
+    'sortOrder',
+  ].includes(key))
+  return scopeKeys.length === 0
+}
+
+/**
+ * 所有明细可编辑字段共用一套草稿元数据。这样普通、套装和多码行的保存都走相同字段级并发契约，
+ * 不会因页面入口不同而漏掉本地恢复或服务器基线令牌。
+ */
+export const CONTAINER_DETAIL_DRAFT_FIELDS = [
+  '调整浮率', '国内价格', '进口价格', '运输成本', '商品名称', '英文名称',
+  'ProductCategoryGUID', '贴牌价格', '单件装箱数', '中包数', '单件体积',
+  '装柜数量', '合计装柜体积', '合计装柜金额', '备注', 'IsActive',
+] as const
+export type ContainerDetailDraftField = typeof CONTAINER_DETAIL_DRAFT_FIELDS[number]
 export type PendingContainerDetailPatch = Pick<UpdateContainerDetailRequest, 'hguid'> &
-  Partial<Pick<UpdateContainerDetailRequest, '进口价格' | '贴牌价格' | '英文名称' | 'ClearEnglishName'>>
+  Partial<Pick<UpdateContainerDetailRequest, ContainerDetailDraftField | 'ClearEnglishName'>>
 export type PendingContainerDetailPatchMap = Record<string, PendingContainerDetailPatch>
+
+/**
+ * 接口中少数可编辑字段使用了历史别名或嵌套商品对象。冲突抽屉与单元格提示必须读取
+ * 同一个规范值，避免服务器已有值被错误展示为 "--"。
+ */
+export function getContainerDetailConflictServerValue(row: ContainerDetail, field: string): unknown {
+  if (field === '商品名称') return getContainerDetailProductName(row)
+  if (field === '英文名称') return getContainerDetailEnglishName(row)
+  if (field === 'IsActive') return row.IsActive ?? row.warehouseIsActive
+  if (field === 'ProductCategoryGUID') return getContainerDetailCategoryGuid(row)
+  return row[field as keyof ContainerDetail]
+}
+
+/** 批量预览令牌过期只能重新预览，调用方不得据此自动重放原写请求。 */
+export function isContainerDetailActionPreviewExpired(error: unknown) {
+  const candidate = error as {
+    status?: number
+    response?: { status?: number; data?: { code?: string } }
+    code?: string
+  } | null
+  const status = candidate?.status ?? candidate?.response?.status
+  const code = candidate?.code ?? candidate?.response?.data?.code
+  return status === 409 || code === 'BATCH_PREVIEW_EXPIRED' || code === 'BATCH_PREVIEW_CHANGED'
+}
 
 export interface ContainerDetailSaveValidationError {
   hguid: string
@@ -43,11 +162,31 @@ export function normalizeContainerDetailEnglishNameForSave(englishName: string) 
   ))
 }
 
+export function getSubmittedContainerDetailFields(update: UpdateContainerDetailRequest) {
+  const fields = CONTAINER_DETAIL_DRAFT_FIELDS.filter((field) => field in update)
+  if (update.ClearEnglishName === true && !fields.includes(CONTAINER_DETAIL_ENGLISH_NAME_FIELD)) {
+    fields.push(CONTAINER_DETAIL_ENGLISH_NAME_FIELD)
+  }
+  return fields
+}
+
+/**
+ * 直接操作可能与已存在草稿合并为同一次部分成功保存。只有该更新涉及的每个字段都已落库，
+ * 才允许调用方关闭弹窗或把匹配结果回显到行；否则不能用客户端值伪造成功。
+ */
+export function filterSuccessfullySavedContainerDetailUpdates<T extends UpdateContainerDetailRequest>(
+  updates: T[],
+  successfulFieldKeys: readonly string[],
+) {
+  const successfulKeys = new Set(successfulFieldKeys)
+  return updates.filter((update) => {
+    const fields = getSubmittedContainerDetailFields(update)
+    return fields.length > 0 && fields.every((field) => successfulKeys.has(`${update.hguid}:${field}`))
+  })
+}
+
 function hasPendingContainerDetailFields(patch: PendingContainerDetailPatch) {
-  return patch.进口价格 != null
-    || patch.贴牌价格 != null
-    || patch.英文名称 !== undefined
-    || patch.ClearEnglishName === true
+  return getSubmittedContainerDetailFields(patch).length > 0
 }
 
 export function mergePendingContainerDetailPatch(
@@ -59,14 +198,12 @@ export function mergePendingContainerDetailPatch(
     ...(current[key] ?? { hguid: patch.hguid }),
   }
 
-  if ('进口价格' in patch) {
-    if (patch.进口价格 == null) delete nextPatch.进口价格
-    else nextPatch.进口价格 = patch.进口价格
-  }
-  if ('贴牌价格' in patch) {
-    if (patch.贴牌价格 == null) delete nextPatch.贴牌价格
-    else nextPatch.贴牌价格 = patch.贴牌价格
-  }
+  CONTAINER_DETAIL_DRAFT_FIELDS.forEach((field) => {
+    if (field === CONTAINER_DETAIL_ENGLISH_NAME_FIELD || !(field in patch)) return
+    const value = patch[field]
+    if (value == null) delete nextPatch[field]
+    else nextPatch[field] = value as never
+  })
   if ('英文名称' in patch) {
     nextPatch.英文名称 = patch.英文名称
     delete nextPatch.ClearEnglishName
@@ -91,7 +228,10 @@ export function applyPendingContainerDetailPatches(
     if (!pendingPatch) return row
 
     const visiblePatch: Partial<ContainerDetail> = {}
-    if ('进口价格' in pendingPatch) visiblePatch.进口价格 = pendingPatch.进口价格
+    CONTAINER_DETAIL_DRAFT_FIELDS.forEach((field) => {
+      if (field === CONTAINER_DETAIL_ENGLISH_NAME_FIELD || !(field in pendingPatch)) return
+      ;(visiblePatch as Record<string, unknown>)[field] = pendingPatch[field]
+    })
     if ('贴牌价格' in pendingPatch) {
       visiblePatch.贴牌价格 = pendingPatch.贴牌价格
       if (!row.是否新商品) {
@@ -117,8 +257,10 @@ export function buildPendingContainerDetailSavePlan(
   const detailUpdates = pendingPatches
     .map((patch) => {
       const update: UpdateContainerDetailRequest = { hguid: patch.hguid }
-      if (patch.进口价格 != null) update.进口价格 = patch.进口价格
-      if (patch.贴牌价格 != null) update.贴牌价格 = patch.贴牌价格
+      CONTAINER_DETAIL_DRAFT_FIELDS.forEach((field) => {
+        if (field === CONTAINER_DETAIL_ENGLISH_NAME_FIELD || !(field in patch)) return
+        update[field] = patch[field] as never
+      })
       if (patch.ClearEnglishName === true) {
         update.ClearEnglishName = true
       } else if (patch.英文名称 !== undefined) {
@@ -136,12 +278,7 @@ export function buildPendingContainerDetailSavePlan(
       }
       return update
     })
-    .filter((update) => (
-      update.进口价格 != null
-      || update.贴牌价格 != null
-      || update.英文名称 !== undefined
-      || update.ClearEnglishName === true
-    ))
+    .filter((update) => getSubmittedContainerDetailFields(update).length > 0)
 
   return {
     pendingPatches,
@@ -165,7 +302,7 @@ function hasValidationError(
   ))
 }
 
-function removeSavedPendingField<K extends keyof PendingContainerDetailPatch>(
+function removeSavedPendingField<K extends ContainerDetailDraftField | 'ClearEnglishName'>(
   currentPatch: PendingContainerDetailPatch,
   submittedPatch: UpdateContainerDetailRequest,
   field: K,
@@ -224,30 +361,19 @@ export function clearSavedPendingContainerDetailFields(
     const currentPatch = next[submittedPatch.hguid]
     if (!currentPatch) return
     const remainingPatch = { ...currentPatch }
-    if (!hasValidationError(validationErrors, submittedPatch.hguid, '进口价格')) {
-      removeSavedPendingField(remainingPatch, submittedPatch, '进口价格')
-    }
-    if (!hasValidationError(validationErrors, submittedPatch.hguid, '贴牌价格')) {
-      removeSavedPendingField(remainingPatch, submittedPatch, '贴牌价格')
-    }
-    if (!hasValidationError(validationErrors, submittedPatch.hguid, CONTAINER_DETAIL_ENGLISH_NAME_FIELD)) {
-      removeSavedPendingField(remainingPatch, submittedPatch, '英文名称')
-      removeSavedPendingField(remainingPatch, submittedPatch, 'ClearEnglishName')
-    }
+    getSubmittedContainerDetailFields(submittedPatch).forEach((field) => {
+      if (hasValidationError(validationErrors, submittedPatch.hguid, field)) return
+      if (field === CONTAINER_DETAIL_ENGLISH_NAME_FIELD) {
+        removeSavedPendingField(remainingPatch, submittedPatch, '英文名称')
+        removeSavedPendingField(remainingPatch, submittedPatch, 'ClearEnglishName')
+        return
+      }
+      removeSavedPendingField(remainingPatch, submittedPatch, field)
+    })
     if (hasPendingContainerDetailFields(remainingPatch)) next[submittedPatch.hguid] = remainingPatch
     else delete next[submittedPatch.hguid]
   })
   return next
-}
-
-function getSubmittedContainerDetailFields(update: UpdateContainerDetailRequest) {
-  const fields: string[] = []
-  if ('进口价格' in update) fields.push('进口价格')
-  if ('贴牌价格' in update) fields.push('贴牌价格')
-  if ('英文名称' in update || update.ClearEnglishName === true) {
-    fields.push(CONTAINER_DETAIL_ENGLISH_NAME_FIELD)
-  }
-  return fields
 }
 
 export function countSuccessfullySavedContainerDetailRows(
@@ -507,17 +633,28 @@ export type ContainerDetailExportColumnKey =
   | 'productImage'
   | 'productName'
   | 'englishName'
+  | 'categoryName'
   | 'containerPieces'
+  | 'packingQuantity'
   | 'containerQuantity'
   | 'unitVolume'
   | 'totalVolume'
   | 'middlePackQuantity'
   | 'domesticPrice'
+  | 'transportCost'
+  | 'unitTransportCost'
+  | 'floatRate'
+  | 'importPrice'
   | 'lastImportPrice'
   | 'lastOEMPrice'
   | 'oemPrice'
+  | 'productType'
+  | 'newProduct'
+  | 'matchType'
+  | 'warehouseStatus'
+  | 'remark'
 
-export type ContainerDetailExportValueType = 'text' | 'integer' | 'money' | 'volume'
+export type ContainerDetailExportValueType = 'text' | 'number' | 'integer' | 'money' | 'volume'
 
 export interface ContainerDetailExportColumnDefinition {
   key: ContainerDetailExportColumnKey
@@ -528,6 +665,16 @@ export interface ContainerDetailExportColumnDefinition {
 }
 
 export type ContainerDetailExportRow = Record<ContainerDetailExportColumnKey, string | number>
+
+export interface ContainerDetailExportRowOptions {
+  getProductTypeLabel?: (value: string) => string
+  getMatchTypeLabel?: (value: ContainerDetailMatchTypeFilter) => string
+  newProductLabel?: string
+  existingProductLabel?: string
+  activeLabel?: string
+  inactiveLabel?: string
+  missingNumericValue?: '' | 0
+}
 
 export interface UpdateFieldSelectionState {
   isAllSelected: boolean
@@ -578,6 +725,35 @@ export const DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS: ContainerDetailExp
   'oemPrice',
 ]
 
+// “全部导出”对应当前明细表的业务列顺序；条码保留文本，商品图片单独嵌入工作簿。
+export const ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS: ContainerDetailExportColumnKey[] = [
+  'index',
+  'productImage',
+  'itemNumber',
+  'barcode',
+  'englishName',
+  'oemPrice',
+  'productName',
+  'categoryName',
+  'containerPieces',
+  'packingQuantity',
+  'containerQuantity',
+  'unitVolume',
+  'domesticPrice',
+  'transportCost',
+  'unitTransportCost',
+  'floatRate',
+  'middlePackQuantity',
+  'importPrice',
+  'lastImportPrice',
+  'lastOEMPrice',
+  'productType',
+  'newProduct',
+  'matchType',
+  'warehouseStatus',
+  'remark',
+]
+
 export const CONTAINER_DETAIL_EXPORT_COLUMNS: ContainerDetailExportColumnDefinition[] = [
   { key: 'index', labelKey: 'containers.export.indexColumn', fallbackLabel: '序号', width: 8, valueType: 'integer' },
   { key: 'itemNumber', labelKey: 'containers.fields.itemNumber', fallbackLabel: '货号', width: 18, valueType: 'text' },
@@ -595,6 +771,17 @@ export const CONTAINER_DETAIL_EXPORT_COLUMNS: ContainerDetailExportColumnDefinit
   { key: 'lastImportPrice', labelKey: 'containers.fields.warehouseImportPrice', fallbackLabel: '实时进货价', width: 14, valueType: 'money' },
   { key: 'lastOEMPrice', labelKey: 'containers.fields.lastOEMPrice', fallbackLabel: '实时零售价', width: 14, valueType: 'money' },
   { key: 'oemPrice', labelKey: 'containers.fields.oemPrice', fallbackLabel: '零售价', width: 12, valueType: 'money' },
+  { key: 'categoryName', labelKey: 'containers.fields.category', fallbackLabel: '分类', width: 24, valueType: 'text' },
+  { key: 'packingQuantity', labelKey: 'containers.fields.packingQuantity', fallbackLabel: '单件装箱数', width: 14, valueType: 'integer' },
+  { key: 'transportCost', labelKey: 'containers.fields.transportCost', fallbackLabel: '运输成本', width: 14, valueType: 'money' },
+  { key: 'unitTransportCost', labelKey: 'containers.fields.unitTransportCost', fallbackLabel: '单件运输成本', width: 16, valueType: 'money' },
+  { key: 'floatRate', labelKey: 'containers.fields.floatRate', fallbackLabel: '调整浮率', width: 12, valueType: 'number' },
+  { key: 'importPrice', labelKey: 'containers.fields.importPrice', fallbackLabel: '进口价格', width: 12, valueType: 'money' },
+  { key: 'productType', labelKey: 'containers.fields.productType', fallbackLabel: '类型', width: 14, valueType: 'text' },
+  { key: 'newProduct', labelKey: 'containers.fields.newProduct', fallbackLabel: '新商品', width: 12, valueType: 'text' },
+  { key: 'matchType', labelKey: 'containers.fields.matchType', fallbackLabel: '匹配方式', width: 16, valueType: 'text' },
+  { key: 'warehouseStatus', labelKey: 'containers.fields.warehouseStatus', fallbackLabel: '仓库状态', width: 12, valueType: 'text' },
+  { key: 'remark', labelKey: 'containers.fields.remark', fallbackLabel: '备注', width: 24, valueType: 'text' },
 ]
 
 const containerDetailSortFields = new Set<string>([
@@ -993,10 +1180,6 @@ export function getContainerDetailBatchCategoryProductCodes(rows: ContainerDetai
 }
 
 export function getContainerDetailMatchType(row: ContainerDetail): ContainerDetailMatchTypeFilter {
-  if (hasContainerDetailProductCodeConflict(row)) {
-    return 'supplierItem'
-  }
-
   const raw = row.matchType ?? row.MatchType
   const normalized = raw?.trim().toLowerCase()
   if (normalized === 'productcode' || normalized === 'product_code' || normalized === '商品编码') {
@@ -1015,7 +1198,8 @@ export function getContainerDetailMatchType(row: ContainerDetail): ContainerDeta
 }
 
 export function getContainerDetailProductType(row: ContainerDetail) {
-  // 商品类型以国内商品表关联信息为准，货柜明细快照字段仅作为历史数据兜底。
+  // 套装子商品只记录在货柜明细快照中，必须优先识别；其他类型仍以国内商品表为准。
+  if (row.商品类型 === '套装子商品') return '套装子商品'
   return row.商品信息?.商品类型 || row.商品类型 || '普通商品'
 }
 
@@ -1108,17 +1292,28 @@ export function getContainerDetailExportColumns(
   return columns
 }
 
-function getContainerDetailUnitVolume(row: ContainerDetail) {
-  return row.单件体积 ?? row.商品信息?.单件体积 ?? 0
+function getContainerDetailUnitVolume(row: ContainerDetail, missingNumericValue: '' | 0 = 0) {
+  return row.单件体积 ?? row.商品信息?.单件体积 ?? missingNumericValue
 }
 
-function getContainerDetailTotalVolume(row: ContainerDetail) {
-  const unitVolume = getContainerDetailUnitVolume(row)
+function getContainerDetailTotalVolume(row: ContainerDetail, missingNumericValue: '' | 0 = 0) {
+  const unitVolume = row.单件体积 ?? row.商品信息?.单件体积
   // 优先使用后端已落库的合计体积；缺失时按件数和单件体积生成导出兜底值。
-  return row.合计装柜体积 ?? ((row.装柜件数 ?? 0) * unitVolume)
+  return row.合计装柜体积 ?? (
+    row.装柜件数 != null && unitVolume != null
+      ? row.装柜件数 * unitVolume
+      : missingNumericValue
+  )
 }
 
-export function buildContainerDetailExportRow(row: ContainerDetail, index = 0): ContainerDetailExportRow {
+export function buildContainerDetailExportRow(
+  row: ContainerDetail,
+  index = 0,
+  options: ContainerDetailExportRowOptions = {},
+): ContainerDetailExportRow {
+  const missingNumericValue = options.missingNumericValue ?? 0
+  const matchType = getContainerDetailMatchType(row)
+  const productType = getContainerDetailProductType(row)
   return {
     index: index + 1,
     itemNumber: getContainerDetailItemNumber(row) ?? '',
@@ -1127,20 +1322,38 @@ export function buildContainerDetailExportRow(row: ContainerDetail, index = 0): 
     productImage: getContainerDetailImageUrl(row) ?? '',
     productName: getContainerDetailProductName(row) ?? '',
     englishName: getContainerDetailEnglishName(row) ?? '',
-    containerPieces: row.装柜件数 ?? 0,
-    containerQuantity: row.装柜数量 ?? 0,
-    unitVolume: getContainerDetailUnitVolume(row),
-    totalVolume: getContainerDetailTotalVolume(row),
-    middlePackQuantity: row.中包数 ?? 0,
-    domesticPrice: row.国内价格 ?? 0,
-    lastImportPrice: getContainerDetailRealtimeImportPrice(row) ?? 0,
-    lastOEMPrice: getContainerDetailRealtimeRetailPrice(row) ?? 0,
-    oemPrice: getContainerDetailVisibleOemPrice(row) ?? 0,
+    categoryName: getContainerDetailCategoryPath(row) ?? getContainerDetailCategoryName(row) ?? '',
+    containerPieces: row.装柜件数 ?? missingNumericValue,
+    packingQuantity: row.单件装箱数 ?? missingNumericValue,
+    containerQuantity: row.装柜数量 ?? missingNumericValue,
+    unitVolume: getContainerDetailUnitVolume(row, missingNumericValue),
+    totalVolume: getContainerDetailTotalVolume(row, missingNumericValue),
+    middlePackQuantity: row.中包数 ?? missingNumericValue,
+    domesticPrice: row.国内价格 ?? missingNumericValue,
+    transportCost: row.运输成本 ?? missingNumericValue,
+    unitTransportCost: calculateContainerDetailUnitTransportCost(row) ?? missingNumericValue,
+    floatRate: row.调整浮率 ?? missingNumericValue,
+    importPrice: row.进口价格 ?? missingNumericValue,
+    lastImportPrice: getContainerDetailRealtimeImportPrice(row) ?? missingNumericValue,
+    lastOEMPrice: getContainerDetailRealtimeRetailPrice(row) ?? missingNumericValue,
+    oemPrice: getContainerDetailVisibleOemPrice(row) ?? missingNumericValue,
+    productType: options.getProductTypeLabel?.(productType) ?? productType,
+    newProduct: row.是否新商品
+      ? (options.newProductLabel ?? '新商品')
+      : (options.existingProductLabel ?? '已有商品'),
+    matchType: options.getMatchTypeLabel?.(matchType) ?? matchType,
+    warehouseStatus: row.warehouseIsActive === true
+      ? (options.activeLabel ?? '上架')
+      : (options.inactiveLabel ?? '下架'),
+    remark: row.备注 ?? '',
   }
 }
 
-export function buildContainerDetailExportRows(rows: ContainerDetail[]): ContainerDetailExportRow[] {
-  return rows.map(buildContainerDetailExportRow)
+export function buildContainerDetailExportRows(
+  rows: ContainerDetail[],
+  options: ContainerDetailExportRowOptions = {},
+): ContainerDetailExportRow[] {
+  return rows.map((row, index) => buildContainerDetailExportRow(row, index, options))
 }
 
 export function withContainerDetailEnglishName(row: ContainerDetail, englishName?: string): ContainerDetail {
@@ -1281,6 +1494,9 @@ export function buildContainerDetailTagStats(rows: ContainerDetail[]): Container
     set: 0,
     multi: 0,
     setChild: 0,
+    productCodeMatched: 0,
+    supplierItemMatched: 0,
+    unmatched: 0,
   }
 
   rows.forEach((row) => {
@@ -1293,6 +1509,10 @@ export function buildContainerDetailTagStats(rows: ContainerDetail[]): Container
     if (matchesContainerDetailTagFilter(row, 'inactive')) stats.inactive += 1
     const productType = getContainerDetailProductTypeFilterKey(row)
     stats[productType] += 1
+    const matchType = getContainerDetailMatchType(row)
+    if (matchType === 'productCode') stats.productCodeMatched += 1
+    else if (matchType === 'supplierItem') stats.supplierItemMatched += 1
+    else stats.unmatched += 1
   })
 
   return stats
@@ -1363,8 +1583,13 @@ function getColumnSortValue(row: ContainerDetail, field: ContainerDetailSortFiel
       return getContainerDetailProductName(row)
     case 'englishName':
       return getContainerDetailEnglishName(row)
-    case 'productType':
-      return getContainerDetailProductTypeFilterKey(row)
+    case 'productType': {
+      const productType = getContainerDetailProductTypeFilterKey(row)
+      if (productType === 'set') return 1
+      if (productType === 'multi') return 2
+      if (productType === 'setChild') return 3
+      return 0
+    }
     case 'newProduct':
       return row.是否新商品 ? 1 : 0
     case 'matchType':
@@ -1459,12 +1684,58 @@ export function applyContainerDetailColumnState(
     .map((item) => item.row)
 }
 
+export function prepareContainerDetailWholeExportRows(
+  rows: ContainerDetail[],
+  pendingPatches: PendingContainerDetailPatchMap,
+  sortState?: ContainerDetailSortState,
+) {
+  // 整柜导出只继承当前排序；页面筛选和勾选均不应缩小导出范围。
+  return applyContainerDetailColumnState(
+    applyPendingContainerDetailPatches(rows, pendingPatches),
+    {},
+    sortState,
+  )
+}
+
+export function applyContainerDetailLocalExportValues(
+  rows: ContainerDetail[],
+  localRows: ContainerDetail[],
+) {
+  const localRowsByGuid = new Map(
+    localRows
+      .filter((row) => Boolean(row.hguid))
+      .map((row) => [row.hguid, row] as const),
+  )
+
+  return rows.map((row) => {
+    const localRow = row.hguid ? localRowsByGuid.get(row.hguid) : undefined
+    if (!localRow) return row
+
+    // 仅覆盖页面可编辑值及其本地联动结果，其他字段继续使用刚分页拉取的服务端快照。
+    return mergeContainerDetailPatch(row, {
+      商品名称: localRow.商品名称,
+      单件装箱数: localRow.单件装箱数,
+      单件体积: localRow.单件体积,
+      中包数: localRow.中包数,
+      调整浮率: localRow.调整浮率,
+      装柜数量: localRow.装柜数量,
+      合计装柜体积: localRow.合计装柜体积,
+      合计装柜金额: localRow.合计装柜金额,
+      运输成本: localRow.运输成本,
+      进口价格: localRow.进口价格,
+      备注: localRow.备注,
+    })
+  })
+}
+
 export interface BuildContainerDetailQueryOptions {
   containerGuid: string
   filters: ContainerDetailColumnFilters
+  selectedTags?: ContainerDetailTagFilter[]
   sortState?: ContainerDetailSortState
   pageNumber: number
   pageSize: number
+  includeItems?: boolean
   includeTotal?: boolean
   includeStats?: boolean
 }
@@ -1516,9 +1787,11 @@ function assignNumberRange(
 export function buildContainerDetailQuery({
   containerGuid,
   filters,
+  selectedTags,
   sortState,
   pageNumber,
   pageSize,
+  includeItems,
   includeTotal,
   includeStats,
 }: BuildContainerDetailQueryOptions): ContainerDetailQuery {
@@ -1528,7 +1801,10 @@ export function buildContainerDetailQuery({
     pageSize,
   }
 
-  // total/tagStats 是货柜明细追加页的主要固定开销；只有调用方明确指定时才传给后端。
+  // items/total/tagStats 可独立关闭；分页首屏先返回行，统计再由轻量请求补齐。
+  if (includeItems != null) {
+    query.includeItems = includeItems
+  }
   if (includeTotal != null) {
     query.includeTotal = includeTotal
   }
@@ -1545,6 +1821,11 @@ export function buildContainerDetailQuery({
   assignNonEmptyArray(query, 'newProductStates', filters.newProductStates)
   assignNonEmptyArray(query, 'matchTypes', filters.matchTypes)
   assignNonEmptyArray(query, 'warehouseStatus', filters.warehouseStatus)
+  assignNonEmptyArray(
+    query,
+    'selectedTags',
+    selectedTags?.filter((tag) => tag !== 'all'),
+  )
 
   assignNumberRange(query, 'containerPiecesMin', 'containerPiecesMax', filters.containerPieces)
   assignNumberRange(query, 'middlePackQuantityMin', 'middlePackQuantityMax', filters.middlePackQuantity)
@@ -1733,6 +2014,79 @@ export function applyContainerDetailEnglishNameUpdates(
 function roundToDigits(value: number, digits: number) {
   const base = 10 ** digits
   return Math.round((value + Number.EPSILON) * base) / base
+}
+
+export type ContainerFreightInputMode = 'perCbm' | 'standard68'
+
+export const STANDARD_CONTAINER_VOLUME_CBM = 68
+
+function isValidContainerFreightAmount(value: number | null | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
+export function normalizeContainerFreightInput(
+  value: number | null | undefined,
+  mode: ContainerFreightInputMode,
+): number | undefined {
+  if (!isValidContainerFreightAmount(value)) {
+    return undefined
+  }
+
+  const normalizedValue = roundToDigits(value, mode === 'perCbm' ? 4 : 2)
+  return Number.isFinite(normalizedValue) ? normalizedValue : undefined
+}
+
+export function isValidContainerFreightVolume(value: number | null | undefined): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
+export function calculateContainerFreight(
+  inputValue: number | null | undefined,
+  totalVolume: number | null | undefined,
+  mode: ContainerFreightInputMode,
+): number | undefined {
+  if (!isValidContainerFreightAmount(inputValue) || !isValidContainerFreightVolume(totalVolume)) {
+    return undefined
+  }
+
+  const freight = mode === 'perCbm'
+    ? inputValue * totalVolume
+    : (inputValue * totalVolume) / STANDARD_CONTAINER_VOLUME_CBM
+  if (!Number.isFinite(freight)) {
+    return undefined
+  }
+
+  const roundedFreight = roundToDigits(freight, 2)
+  return Number.isFinite(roundedFreight) ? roundedFreight : undefined
+}
+
+export function resolveContainerFreightPreview(
+  savedFreight: number | null | undefined,
+  inputValue: number | null | undefined,
+  totalVolume: number | null | undefined,
+  mode: ContainerFreightInputMode,
+  inputDirty: boolean,
+): number | undefined {
+  if (!inputDirty) {
+    return isValidContainerFreightAmount(savedFreight) ? savedFreight : undefined
+  }
+
+  return calculateContainerFreight(inputValue, totalVolume, mode)
+}
+
+export function deriveContainerFreightInput(
+  freight: number | null | undefined,
+  totalVolume: number | null | undefined,
+  mode: ContainerFreightInputMode,
+): number | undefined {
+  if (!isValidContainerFreightAmount(freight) || !isValidContainerFreightVolume(totalVolume)) {
+    return undefined
+  }
+
+  const inputValue = mode === 'perCbm'
+    ? freight / totalVolume
+    : (freight * STANDARD_CONTAINER_VOLUME_CBM) / totalVolume
+  return Number.isFinite(inputValue) ? inputValue : undefined
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

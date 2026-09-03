@@ -1,5 +1,20 @@
 import { extractApiErrorMessage } from "./error-message";
 
+const REPORT_STATISTIC_METADATA_KEYS = new Set([
+  "statisticStatus",
+  "StatisticStatus",
+  "statisticMessage",
+  "StatisticMessage",
+  "cacheVersion",
+  "CacheVersion",
+  "statisticsPending",
+  "StatisticsPending",
+  "statisticsExpectedBranchCount",
+  "StatisticsExpectedBranchCount",
+  "statisticsSnapshotBranchCount",
+  "StatisticsSnapshotBranchCount",
+]);
+
 export function unwrapApiEnvelope<T>(payload: unknown): T {
   let current = payload;
   for (let depth = 0; depth < 3; depth++) {
@@ -19,6 +34,8 @@ export function unwrapApiEnvelope<T>(payload: unknown): T {
     // 显式失败可能没有 data，必须先抛错；其余对象继续保持原有解包判定。
     if (!("data" in envelope)) break;
     const keys = Object.keys(current);
+    // 报表完整性状态与 data 同属一个不可拆分的读取快照；解包会把 Pending 空数组误判成业务空数据。
+    if (keys.some((key) => REPORT_STATISTIC_METADATA_KEYS.has(key))) break;
     const isEnvelope =
       keys.includes("data") &&
       (keys.includes("success") || keys.includes("isSuccess") || keys.includes("message"));

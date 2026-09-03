@@ -198,6 +198,7 @@
       "exportFormat": "Export Format",
       "exportExcel": "Export Excel",
       "exportPdf": "Export PDF",
+      "exportAllExcelWithImages": "Export All (with Images)",
       "resetColumns": "Reset Columns",
       "selectExportColumns": "Select Export Columns",
       "exportSelectedColumns": "Export Selected Columns",
@@ -207,6 +208,7 @@
       "showReadonlyOemPrice": "Read-only RRP",
       "pushToHq": "Send to HQ",
       "saveDetails": "Save Details",
+      "retryAutoSave": "Retry",
       "recalculateCosts": "Recalculate Costs",
       "matchDomesticData": "Match Domestic Data",
       "alignDomesticProductCode": "Align Code",
@@ -282,6 +284,20 @@
       "importPrice": "Import Price",
       "oemPrice": "RRP",
       "warehouseStatus": "Warehouse Status"
+    },
+    "freightCalculator": {
+      "modes": {
+        "standard68": "68 m³ quote",
+        "perCbm": "Per m³"
+      },
+      "placeholders": {
+        "standard68": "Enter 68 m³ quote",
+        "perCbm": "Enter price per m³"
+      },
+      "preview": "Current {{volume}} m³ → Freight {{freight}}",
+      "invalidVolume": "Total volume is invalid; freight cannot be calculated",
+      "invalidInput": "Enter a valid quote greater than or equal to 0",
+      "refreshFailed": "Could not load the latest total volume; freight was not saved"
     },
     "matchTypes": {
       "productCode": "Product Code",
@@ -368,6 +384,8 @@
       "hqTranslationResultTitle": "HQ Translation Result",
       "exportAllDetailsTitle": "Export All Matching Products",
       "exportAllDetailsContent": "No products are selected. Export all matching products using the current filters and sorting, {{count}} rows total. Continue?",
+      "exportWholeContainerTitle": "Export All (with Images)",
+      "exportWholeContainerContent": "Ignore the current selection and filters, then export every detail in this container with product images while preserving the current sort. This may take some time for large containers. Continue?",
       "exportColumnsTitle": "Select Export Columns"
     },
     "messages": {
@@ -385,6 +403,7 @@
       "loadDetailFailed": "Failed to load container details",
       "headerSaveSuccess": "Container information saved",
       "headerSaveAndCostsRecalculated": "Container information saved. Recalculated costs for {{count}} details.",
+      "headerSavedCostsRecalculateCancelled": "Container information saved. Cost recalculation was cancelled.",
       "headerSavedCostsRecalculateFailed": "Container information saved, but cost recalculation failed: {{message}}",
       "headerSaveFailed": "Failed to save container information",
       "columnOrderReset": "Column settings reset to default",
@@ -428,6 +447,9 @@
       "savePendingPriceDetailsFirst": "Save pending import/RRP changes first.",
       "savePendingDetailsFirst": "Click Save Details to save pending detail changes first.",
       "detailSaveFailed": "Failed to save container details. Please try again later.",
+      "detailNotFound": "The container detail no longer exists.",
+      "detailSaveContextMissing": "The container detail save context is no longer available.",
+      "productNameRequired": "Product name cannot be empty.",
       "noPendingPriceDetails": "No pending detail prices to save",
       "detailPricesSaved": "Saved prices for {{count}} details",
       "noPendingDetails": "No pending detail changes to save",
@@ -474,8 +496,15 @@
       "detailsDeleted": "Deleted {{count}} details",
       "noDataToExport": "No data to export",
       "detailsExported": "Exported {{count}} details",
+      "detailsExportedWithImageFailures": "Exported {{count}} details; {{failed}} product images could not be downloaded",
       "detailsPdfExported": "Exported {{count}} details to PDF",
-      "detailsExportFailed": "Export failed. Please try again later."
+      "detailsExportFailed": "Export failed. Please try again later.",
+      "exportLoadingAllDetails": "Loading all container details",
+      "exportPreparingImages": "Preparing product images",
+      "exportWritingWorkbook": "Writing the Excel workbook",
+      "exportGeneratingFile": "Generating the Excel file",
+      "exportGeneratingPdf": "Generating the PDF file",
+      "exportComplete": "Export complete"
     },
     "productTypes": {
       "normal": "Normal Product",
@@ -499,6 +528,11 @@
     "text": {
       "showingRows": "Showing {{filtered}} / {{total}} rows",
       "loadedRows": "Loaded {{loaded}} / {{total}} rows",
+      "autoSavingFields": "Saving {{count}} fields",
+      "autoSaveFailedFields": "{{count}} fields not saved",
+      "fullRows": "Loaded all {{count}} rows",
+      "pageRows": "Page {{loaded}} / {{total}} rows",
+      "paginationTotal": "{{total}} rows",
       "visibleRows": "{{count}} visible",
       "selectedFilters": "Selected Filters",
       "selectedFirst": "Selected First",
@@ -532,6 +566,8 @@
       "unitVolumeColumn": "Unit Volume",
       "totalVolumeColumn": "Total Volume",
       "retailPriceColumn": "Retail Price",
+      "productImageDownloadFailed": "Image download failed",
+      "productImageMissing": "No image",
       "summaryTitle": "Container Header"
     },
     "setCode": {

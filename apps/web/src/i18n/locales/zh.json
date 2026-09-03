@@ -198,6 +198,7 @@
       "exportFormat": "导出格式",
       "exportExcel": "导出 Excel",
       "exportPdf": "导出 PDF",
+      "exportAllExcelWithImages": "全部导出（含图片）",
       "resetColumns": "重置列",
       "selectExportColumns": "选择导出列",
       "exportSelectedColumns": "按所选列导出",
@@ -207,6 +208,7 @@
       "showReadonlyOemPrice": "只读零售价",
       "pushToHq": "发送到 HQ",
       "saveDetails": "保存明细",
+      "retryAutoSave": "重试",
       "recalculateCosts": "重算成本",
       "matchDomesticData": "匹配国内数据",
       "alignDomesticProductCode": "对齐编码",
@@ -282,6 +284,20 @@
       "importPrice": "进口价格",
       "oemPrice": "零售价",
       "warehouseStatus": "仓库状态"
+    },
+    "freightCalculator": {
+      "modes": {
+        "standard68": "68 m³ 标准运费",
+        "perCbm": "每 m³ 单价"
+      },
+      "placeholders": {
+        "standard68": "输入 68 m³ 报价",
+        "perCbm": "输入每 m³ 单价"
+      },
+      "preview": "当前 {{volume}} m³ → 运费 {{freight}}",
+      "invalidVolume": "总体积无效，无法换算运费",
+      "invalidInput": "请输入大于或等于 0 的有效报价",
+      "refreshFailed": "无法读取最新总体积，运费未保存"
     },
     "matchTypes": {
       "productCode": "商品编码匹配",
@@ -368,6 +384,8 @@
       "hqTranslationResultTitle": "HQ 数据翻译结果",
       "exportAllDetailsTitle": "导出全部匹配商品",
       "exportAllDetailsContent": "未选择商品，将按当前筛选和排序导出全部匹配商品，共 {{count}} 条。是否继续？",
+      "exportWholeContainerTitle": "全部导出（含图片）",
+      "exportWholeContainerContent": "将忽略当前勾选和筛选，导出本货柜全部明细及商品图片，并保留当前排序。数据较多时需要一些时间，是否继续？",
       "exportColumnsTitle": "选择导出列"
     },
     "messages": {
@@ -385,6 +403,7 @@
       "loadDetailFailed": "加载货柜明细失败",
       "headerSaveSuccess": "货柜信息已保存",
       "headerSaveAndCostsRecalculated": "货柜信息已保存，已重算 {{count}} 条明细成本",
+      "headerSavedCostsRecalculateCancelled": "货柜信息已保存，成本重算已取消",
       "headerSavedCostsRecalculateFailed": "货柜信息已保存，但成本重算失败：{{message}}",
       "headerSaveFailed": "保存货柜信息失败",
       "columnOrderReset": "列设置已恢复默认",
@@ -428,6 +447,9 @@
       "savePendingPriceDetailsFirst": "请先点击“保存明细”保存进口价格/零售价",
       "savePendingDetailsFirst": "请先点击“保存明细”保存待提交的明细修改",
       "detailSaveFailed": "货柜明细保存失败，请稍后重试",
+      "detailNotFound": "货柜明细不存在或已被删除",
+      "detailSaveContextMissing": "货柜明细保存上下文已失效",
+      "productNameRequired": "商品名称不能为空",
       "noPendingPriceDetails": "没有待保存的明细价格",
       "detailPricesSaved": "已保存 {{count}} 条明细价格",
       "noPendingDetails": "没有待保存的明细修改",
@@ -474,8 +496,15 @@
       "detailsDeleted": "已删除 {{count}} 条明细",
       "noDataToExport": "没有可导出的数据",
       "detailsExported": "已导出 {{count}} 条明细",
+      "detailsExportedWithImageFailures": "已导出 {{count}} 条明细，其中 {{failed}} 张商品图片下载失败",
       "detailsPdfExported": "已导出 {{count}} 条明细 PDF",
-      "detailsExportFailed": "导出失败，请稍后重试"
+      "detailsExportFailed": "导出失败，请稍后重试",
+      "exportLoadingAllDetails": "正在加载整柜明细",
+      "exportPreparingImages": "正在准备商品图片",
+      "exportWritingWorkbook": "正在写入 Excel 表格",
+      "exportGeneratingFile": "正在生成 Excel 文件",
+      "exportGeneratingPdf": "正在生成 PDF 文件",
+      "exportComplete": "导出完成"
     },
     "productTypes": {
       "normal": "普通商品",
@@ -499,6 +528,11 @@
     "text": {
       "showingRows": "显示 {{filtered}} / {{total}} 条",
       "loadedRows": "已加载 {{loaded}} / 共 {{total}} 条",
+      "autoSavingFields": "正在保存 {{count}} 项",
+      "autoSaveFailedFields": "{{count}} 项未保存",
+      "fullRows": "已完整加载 {{count}} 条",
+      "pageRows": "当前页 {{loaded}} / 共 {{total}} 条",
+      "paginationTotal": "共 {{total}} 条",
       "visibleRows": "当前可见 {{count}} 条",
       "selectedFilters": "已选过滤",
       "selectedFirst": "选中优先",
@@ -532,6 +566,8 @@
       "unitVolumeColumn": "单件体积",
       "totalVolumeColumn": "总体积",
       "retailPriceColumn": "零售价",
+      "productImageDownloadFailed": "图片下载失败",
+      "productImageMissing": "无图片",
       "summaryTitle": "货柜主表信息"
     },
     "setCode": {

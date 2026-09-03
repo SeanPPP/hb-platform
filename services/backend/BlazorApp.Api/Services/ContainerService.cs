@@ -3,6 +3,7 @@ using AutoMapper;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 
@@ -301,12 +302,17 @@ namespace BlazorApp.Api.Services
         {
             try
             {
+                await _localContext.Db.Ado.BeginTranAsync();
+                // 编号 + 装柜日期是跨柜唯一组合，必须在独占总闸内重读、复查并更新。
+                await ContainerMutationLock.AcquireAllAsync(_localContext.Db);
+
                 var container = await _localContext.Db.Queryable<Container>()
                     .Where(x => x.ContainerCode == containerGuid)
                     .FirstAsync();
 
                 if (container == null)
                 {
+                    await _localContext.Db.Ado.CommitTranAsync();
                     _logger.LogWarning("货柜不存在: {ContainerGuid}", containerGuid);
                     return false;
                 }
@@ -401,10 +407,17 @@ namespace BlazorApp.Api.Services
 
                 _logger.LogInformation("更新货柜信息成功: {ContainerGuid}, 影响行数: {RowsAffected}", containerGuid, rowsAffected);
 
+                await _localContext.Db.Ado.CommitTranAsync();
                 return rowsAffected > 0;
+            }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                await RollbackContainerMutationTransactionSafelyAsync(ex);
+                throw;
             }
             catch (Exception ex)
             {
+                await RollbackContainerMutationTransactionSafelyAsync(ex);
                 _logger.LogError(ex, "更新货柜信息失败, ContainerGuid: {ContainerGuid}", containerGuid);
                 throw;
             }
@@ -430,37 +443,67 @@ namespace BlazorApp.Api.Services
                     .Where(detailCode => !string.IsNullOrWhiteSpace(detailCode))
                     .Distinct(StringComparer.Ordinal)
                     .ToList();
-                var details = await _localContext.Db.Queryable<ContainerDetail>()
+                var candidateContainerCodes = await _localContext.Db.Queryable<ContainerDetail>()
                     .Where(detail => detailCodes.Contains(detail.DetailCode))
+                    .Where(detail => detail.ContainerCode != null)
+                    .Select(detail => detail.ContainerCode!)
                     .ToListAsync();
-                var detailMap = details.ToDictionary(detail => detail.DetailCode, StringComparer.Ordinal);
-                var productCodes = updates
-                    .Where(update => !string.IsNullOrEmpty(update.商品名称) || !string.IsNullOrEmpty(update.英文名称))
-                    .Select(update => detailMap.TryGetValue(update.HGUID, out var detail) ? detail.ProductCode : null)
-                    .Where(productCode => !string.IsNullOrWhiteSpace(productCode))
-                    .Select(productCode => productCode!)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-                var products = productCodes.Count == 0
-                    ? new List<DomesticProduct>()
-                    : await _localContext.Db.Queryable<DomesticProduct>()
-                        .Where(product => productCodes.Contains(product.ProductCode))
-                        .ToListAsync();
-                var productMap = products
-                    .GroupBy(product => product.ProductCode, StringComparer.OrdinalIgnoreCase)
-                    .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+                if (candidateContainerCodes.Count == 0)
+                {
+                    return 0;
+                }
                 var auditBatchGuid = Guid.NewGuid();
                 var auditActorGuid = _currentUserService.GetCurrentUserGuid();
                 var auditActorName = _currentUserService.GetCurrentUsername();
-                var sourceReference = string.Join(",", details
-                    .Select(detail => detail.ContainerCode)
-                    .Where(containerCode => !string.IsNullOrWhiteSpace(containerCode))
-                    .Distinct(StringComparer.OrdinalIgnoreCase));
                 var totalUpdated = 0;
 
                 await _localContext.Db.Ado.BeginTranAsync();
                 try
                 {
+                    // 锁前只解析业务键；锁后重读全部本地实体，避免把等待期间的旧快照写回。
+                    var mutationLock = await ContainerMutationLock.AcquireContainersAsync(
+                        _localContext.Db,
+                        candidateContainerCodes
+                    );
+                    var details = await _localContext.Db.Queryable<ContainerDetail>()
+                        .Where(detail => detailCodes.Contains(detail.DetailCode))
+                        .ToListAsync();
+                    mutationLock.EnsureCovers(details.Select(detail => detail.ContainerCode));
+                    var detailMap = details.ToDictionary(
+                        detail => detail.DetailCode,
+                        StringComparer.Ordinal
+                    );
+                    var productCodes = updates
+                        .Where(update =>
+                            !string.IsNullOrEmpty(update.商品名称)
+                            || !string.IsNullOrEmpty(update.英文名称)
+                        )
+                        .Select(update =>
+                            detailMap.TryGetValue(update.HGUID, out var detail)
+                                ? detail.ProductCode
+                                : null
+                        )
+                        .Where(productCode => !string.IsNullOrWhiteSpace(productCode))
+                        .Select(productCode => productCode!)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+                    var products = productCodes.Count == 0
+                        ? new List<DomesticProduct>()
+                        : await _localContext.Db.Queryable<DomesticProduct>()
+                            .Where(product => productCodes.Contains(product.ProductCode))
+                            .ToListAsync();
+                    var productMap = products
+                        .GroupBy(product => product.ProductCode, StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(
+                            group => group.Key,
+                            group => group.First(),
+                            StringComparer.OrdinalIgnoreCase
+                        );
+                    var sourceReference = string.Join(",", details
+                        .Select(detail => detail.ContainerCode)
+                        .Where(containerCode => !string.IsNullOrWhiteSpace(containerCode))
+                        .Distinct(StringComparer.OrdinalIgnoreCase));
+
                     // 前快照和业务写入处于同一事务，避免审计记录跨越并发修改。
                     var beforeSnapshots = productCodes.Count == 0
                         ? null
@@ -495,8 +538,20 @@ namespace BlazorApp.Api.Services
                             detail.OEMPrice = update.贴牌价格.Value;
                         }
 
+                        if (update.备注 != null)
+                        {
+                            detail.Remarks = update.备注;
+                        }
+
                         var rowsAffected = await _localContext.Db.Updateable(detail)
-                            .UpdateColumns(item => new { item.AdjustmentRate, item.ImportPrice, item.TransportCost, item.OEMPrice })
+                            .UpdateColumns(item => new
+                            {
+                                item.AdjustmentRate,
+                                item.ImportPrice,
+                                item.TransportCost,
+                                item.OEMPrice,
+                                item.Remarks,
+                            })
                             .Where(item => item.DetailCode == update.HGUID)
                             .ExecuteCommandAsync();
                         if (rowsAffected > 0)
@@ -546,9 +601,9 @@ namespace BlazorApp.Api.Services
 
                     await _localContext.Db.Ado.CommitTranAsync();
                 }
-                catch
+                catch (Exception ex)
                 {
-                    await _localContext.Db.Ado.RollbackTranAsync();
+                    await RollbackContainerMutationTransactionSafelyAsync(ex);
                     throw;
                 }
 
@@ -573,6 +628,10 @@ namespace BlazorApp.Api.Services
                 var containerNumber = dto.货柜编号.Trim();
                 var loadingDate = dto.装柜日期?.Date;
                 _logger.LogInformation("开始创建货柜: {ContainerNumber}", containerNumber);
+
+                await _localContext.Db.Ado.BeginTranAsync();
+                // 去重检查和插入处于同一独占总闸事务，关闭并发 check-then-insert 窗口。
+                await ContainerMutationLock.AcquireAllAsync(_localContext.Db);
 
                 // 货柜编号允许重复，只限制同一编号在同一装柜日期重复创建。
                 var existsQuery = _localContext.Db.Queryable<Container>()
@@ -617,15 +676,47 @@ namespace BlazorApp.Api.Services
                 var result = await _localContext.Db.Insertable(container)
                     .ExecuteReturnEntityAsync();
 
+                await _localContext.Db.Ado.CommitTranAsync();
+
                 _logger.LogInformation("创建货柜成功: {ContainerCode}, 货柜编号: {ContainerNumber}",
                     result.ContainerCode, result.ContainerNumber);
 
                 return result.ContainerCode;
             }
+            catch (Exception ex) when (ContainerMutationLock.TryResolveConflict(ex, out _))
+            {
+                await RollbackContainerMutationTransactionSafelyAsync(ex);
+                throw;
+            }
             catch (Exception ex)
             {
+                await RollbackContainerMutationTransactionSafelyAsync(ex);
                 _logger.LogError(ex, "创建货柜失败, 货柜编号: {ContainerNumber}", dto.货柜编号);
                 throw;
+            }
+        }
+
+        private async Task RollbackContainerMutationTransactionSafelyAsync(
+            Exception originalException
+        )
+        {
+            if (_localContext.Db.Ado.Transaction == null)
+            {
+                return;
+            }
+
+            try
+            {
+                await _localContext.Db.Ado.RollbackTranAsync();
+            }
+            catch (Exception rollbackException)
+            {
+                ContainerMutationLock.ResetFailedTransaction(_localContext.Db);
+                _logger.LogWarning(
+                    rollbackException,
+                    "回滚货柜变更事务失败，保留原始异常: {OriginalMessage}",
+                    originalException.Message
+                );
             }
         }
     }

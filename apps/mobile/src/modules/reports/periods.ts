@@ -76,19 +76,7 @@ function endOfMonth(date: Date) {
   return new Date(date.getFullYear(), date.getMonth() + 1, 0);
 }
 
-function daysBetween(startDate: string, endDate: string) {
-  return Math.round((parseDateKey(endDate).getTime() - parseDateKey(startDate).getTime()) / DAY_MS) + 1;
-}
-
-function shiftPeriod(period: RevenuePeriod, days: number): RevenuePeriod {
-  return {
-    mode: period.mode,
-    startDate: formatDateKey(addDays(parseDateKey(period.startDate), days)),
-    endDate: formatDateKey(addDays(parseDateKey(period.endDate), days)),
-  };
-}
-
-export function getDefaultRevenuePeriod(mode: RevenuePeriodMode, anchor = new Date()): RevenuePeriod {
+function getNaturalRevenuePeriod(mode: RevenuePeriodMode, anchor: Date): RevenuePeriod {
   if (mode === "day") {
     return { mode, startDate: formatDateKey(anchor), endDate: formatDateKey(anchor) };
   }
@@ -102,8 +90,36 @@ export function getDefaultRevenuePeriod(mode: RevenuePeriodMode, anchor = new Da
   return { mode, startDate: formatDateKey(start), endDate: formatDateKey(endOfMonth(start)) };
 }
 
-export function getRevenuePeriodForDate(mode: RevenuePeriodMode, date: string) {
-  return getDefaultRevenuePeriod(mode, parseDateKey(date));
+function clipCurrentRevenuePeriod(period: RevenuePeriod, anchor: Date): RevenuePeriod {
+  const anchorDate = formatDateKey(anchor);
+  if (anchorDate < period.startDate || anchorDate > period.endDate) {
+    return period;
+  }
+
+  return { ...period, endDate: anchorDate };
+}
+
+function daysBetween(startDate: string, endDate: string) {
+  return Math.round((parseDateKey(endDate).getTime() - parseDateKey(startDate).getTime()) / DAY_MS) + 1;
+}
+
+function shiftPeriod(period: RevenuePeriod, days: number): RevenuePeriod {
+  return {
+    mode: period.mode,
+    startDate: formatDateKey(addDays(parseDateKey(period.startDate), days)),
+    endDate: formatDateKey(addDays(parseDateKey(period.endDate), days)),
+  };
+}
+
+export function getDefaultRevenuePeriod(mode: RevenuePeriodMode, anchor = new Date()): RevenuePeriod {
+  // 当前周/月只查询已经发生的日期，避免把未来零值混入累计指标。
+  return clipCurrentRevenuePeriod(getNaturalRevenuePeriod(mode, anchor), anchor);
+}
+
+export function getRevenuePeriodForDate(mode: RevenuePeriodMode, date: string, anchor = new Date()) {
+  const period = getNaturalRevenuePeriod(mode, parseDateKey(date));
+  // 只有所选日期落在当前自然周期时才截到今天；历史周/月始终保持完整。
+  return clipCurrentRevenuePeriod(period, anchor);
 }
 
 export function getRevenueDateBounds(anchor = new Date()): RevenueDateBounds {
@@ -142,16 +158,35 @@ export function getPreviousRevenuePeriod(period: RevenuePeriod): RevenuePeriod {
     return { mode: period.mode, startDate: formatDateKey(start), endDate: formatDateKey(endOfMonth(start)) };
   }
 
+  if (period.mode === "week") {
+    const start = addDays(parseDateKey(period.startDate), -7);
+    return { mode: period.mode, startDate: formatDateKey(start), endDate: formatDateKey(addDays(start, 6)) };
+  }
+
   return shiftPeriod(period, -daysBetween(period.startDate, period.endDate));
 }
 
-export function getNextRevenuePeriod(period: RevenuePeriod): RevenuePeriod {
+export function getNextRevenuePeriod(period: RevenuePeriod, anchor = new Date()): RevenuePeriod {
   if (period.mode === "month") {
     const start = addMonths(parseDateKey(period.startDate), 1);
-    return { mode: period.mode, startDate: formatDateKey(start), endDate: formatDateKey(endOfMonth(start)) };
+    return clipCurrentRevenuePeriod(
+      { mode: period.mode, startDate: formatDateKey(start), endDate: formatDateKey(endOfMonth(start)) },
+      anchor,
+    );
   }
 
-  return shiftPeriod(period, daysBetween(period.startDate, period.endDate));
+  if (period.mode === "week") {
+    const start = addDays(parseDateKey(period.startDate), 7);
+    return clipCurrentRevenuePeriod(
+      { mode: period.mode, startDate: formatDateKey(start), endDate: formatDateKey(addDays(start, 6)) },
+      anchor,
+    );
+  }
+
+  return clipCurrentRevenuePeriod(
+    shiftPeriod(period, daysBetween(period.startDate, period.endDate)),
+    anchor,
+  );
 }
 
 export function getYesterdayRevenuePeriod(anchor = new Date()): RevenuePeriod {
@@ -188,11 +223,24 @@ export function getLastYearIsoWeekPeriod(period: RevenuePeriod): RevenuePeriod {
 
 export function getLastYearSameMonthPeriod(period: RevenuePeriod): RevenuePeriod {
   const start = parseDateKey(period.startDate);
+  const currentMonthStart = new Date(start.getFullYear(), start.getMonth(), 1);
+  const isCompleteNaturalMonth =
+    period.startDate === formatDateKey(currentMonthStart) &&
+    period.endDate === formatDateKey(endOfMonth(currentMonthStart));
   const compareStart = new Date(start.getFullYear() - 1, start.getMonth(), 1);
+  const durationEnd = addDays(compareStart, daysBetween(period.startDate, period.endDate) - 1);
+  const compareMonthEnd = endOfMonth(compareStart);
   return {
     mode: period.mode,
     startDate: formatDateKey(compareStart),
-    endDate: formatDateKey(endOfMonth(compareStart)),
+    // 完整历史月使用比较年份的自然月末；只有 MTD/部分月才按已发生天数对齐。
+    endDate: formatDateKey(
+      isCompleteNaturalMonth
+        ? compareMonthEnd
+        : durationEnd <= compareMonthEnd
+          ? durationEnd
+          : compareMonthEnd,
+    ),
   };
 }
 

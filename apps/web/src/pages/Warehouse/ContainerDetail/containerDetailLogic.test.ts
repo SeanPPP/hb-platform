@@ -8,7 +8,12 @@ import {
 } from '../Products/categoryPath'
 import {
   CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY,
+  ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   CONTAINER_DETAIL_EXPORT_COLUMNS,
+  CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+  CONTAINER_DETAIL_FULL_LOAD_LIMIT,
+  CONTAINER_DETAIL_INITIAL_PAGE_SIZE,
+  CONTAINER_DETAIL_PAGE_SIZE_OPTIONS,
   CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY,
   applyPendingContainerDetailPatches,
   applyContainerDetailEnglishNameUpdates,
@@ -24,8 +29,10 @@ import {
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailMatchStatusUpdates,
   buildPendingContainerDetailSavePlan,
+  filterSuccessfullySavedContainerDetailUpdates,
   countSuccessfullySavedContainerDetailRows,
   canUseContainerDetailLocalTagFilters,
+  canReuseContainerDetailInitialPage,
   clearSavedPendingContainerDetailFields,
   mergeContainerDetailColumnOrder,
   isContainerDetailColumnOrderCustomized,
@@ -50,6 +57,7 @@ import {
   buildContainerDetailHqPushSelection,
   buildContainerDetailTranslationUpdates,
   calculateContainerDetailImportPrice,
+  calculateContainerFreight,
   calculateContainerSetCodePurchasePrice,
   calculateContainerDetailTransportCost,
   calculateContainerDetailUnitTransportCost,
@@ -61,6 +69,8 @@ import {
   mergePendingContainerDetailPatch,
   getContainerDetailBatchCategoryProductCodes,
   getContainerDetailCategoryGuid,
+  getContainerDetailConflictServerValue,
+  isContainerDetailActionPreviewExpired,
   getContainerDetailCategoryName,
   getContainerDetailCategoryPath,
   getContainerDetailCategoryTooltipRecord,
@@ -82,6 +92,10 @@ import {
   getContainerDetailWarehouseActionFailureMessage,
   getContainerDetailEditableColumnKeysInOrder,
   getContainerDetailExportColumns,
+  applyContainerDetailLocalExportValues,
+  prepareContainerDetailWholeExportRows,
+  resolveContainerDetailFullPage,
+  resolveContainerDetailInitialPage,
   getNextContainerDetailEditableCell,
   getNextUpdateFieldSelection,
   isContainerDetailSortField,
@@ -93,7 +107,11 @@ import {
   DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS,
+  deriveContainerFreightInput,
   getContainerDetailCostMissingFields,
+  isValidContainerFreightVolume,
+  normalizeContainerFreightInput,
+  resolveContainerFreightPreview,
   getUpdateFieldSelectionState,
   type ContainerDetailTableColumnKey,
   type ContainerDetailColumnFilters,
@@ -139,6 +157,39 @@ const rows: ContainerDetail[] = [
   },
 ]
 
+const conflictValueRow = {
+  id: 9,
+  hguid: 'conflict-row',
+  调整浮率: 1.3,
+  国内价格: 18,
+  进口价格: 4.2,
+  运输成本: 0.8,
+  商品信息: { 商品名称: '服务器商品名', 英文名称: 'Server product name', productCategoryGUID: 'category-from-product' },
+  贴牌价格: 8.9,
+  单件装箱数: 12,
+  中包数: 3,
+  单件体积: 0.15,
+  装柜数量: 20,
+  合计装柜体积: 3,
+  合计装柜金额: 240,
+  备注: '服务器备注',
+  warehouseIsActive: false,
+} as ContainerDetail
+
+assertDeepEqual(
+  [
+    '调整浮率', '国内价格', '进口价格', '运输成本', '商品名称', '英文名称',
+    'ProductCategoryGUID', '贴牌价格', '单件装箱数', '中包数', '单件体积',
+    '装柜数量', '合计装柜体积', '合计装柜金额', '备注', 'IsActive',
+  ].map((field) => getContainerDetailConflictServerValue(conflictValueRow, field)),
+  [1.3, 18, 4.2, 0.8, '服务器商品名', 'Server product name', 'category-from-product', 8.9, 12, 3, 0.15, 20, 3, 240, '服务器备注', false],
+  '冲突抽屉必须为全部可编辑字段解析真实服务器值，并兼容商品信息、仓库状态和分类别名',
+)
+assertEqual(isContainerDetailActionPreviewExpired({ status: 409 }), true, 'HTTP 409 应要求批量操作重新预览')
+assertEqual(isContainerDetailActionPreviewExpired({ response: { data: { code: 'BATCH_PREVIEW_EXPIRED' } } }), true, '稳定预览过期码应要求重新预览')
+assertEqual(isContainerDetailActionPreviewExpired({ code: 'BATCH_PREVIEW_CHANGED' }), true, '稳定预览变化码应要求重新预览')
+assertEqual(isContainerDetailActionPreviewExpired({ status: 500 }), false, '非预览冲突错误不得误导为可重新确认的批量预览')
+
 assertDeepEqual(
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   [
@@ -160,6 +211,42 @@ assertEqual(
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS.some((key) => key === 'barcodeImage' || key === 'productImage'),
   false,
   '货柜明细默认导出列不应包含图片列，避免默认导出变慢',
+)
+assertDeepEqual(
+  ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
+  [
+    'index',
+    'productImage',
+    'itemNumber',
+    'barcode',
+    'englishName',
+    'oemPrice',
+    'productName',
+    'categoryName',
+    'containerPieces',
+    'packingQuantity',
+    'containerQuantity',
+    'unitVolume',
+    'domesticPrice',
+    'transportCost',
+    'unitTransportCost',
+    'floatRate',
+    'middlePackQuantity',
+    'importPrice',
+    'lastImportPrice',
+    'lastOEMPrice',
+    'productType',
+    'newProduct',
+    'matchType',
+    'warehouseStatus',
+    'remark',
+  ],
+  '全部导出应固定包含当前明细表全部业务列，并只嵌入商品图片',
+)
+assertEqual(
+  ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS.includes('barcodeImage'),
+  false,
+  '全部导出应保留条码文本，不额外生成条码图片',
 )
 
 const updateFieldOptions = ['importPrice', 'oemPrice', 'storeRetailPrice'] as const
@@ -520,7 +607,9 @@ const exportRow = buildContainerDetailExportRow({
   是否新商品: true,
   matchType: 'productCode',
   装柜件数: 3,
+  单件装箱数: 240,
   装柜数量: 720,
+  中包数: 12,
   国内价格: 2.3,
   调整浮率: 1.2,
   运输成本: 0.08,
@@ -533,6 +622,8 @@ const exportRow = buildContainerDetailExportRow({
   单件体积: 0.1188,
   合计装柜体积: 0.3564,
   warehouseIsActive: true,
+  categoryName: '收纳',
+  categoryPath: '家居 > 收纳',
   备注: '优先上架',
   商品信息: {
     货号: 'HB291-005',
@@ -543,6 +634,13 @@ const exportRow = buildContainerDetailExportRow({
     商品类型: '套装商品',
     零售价格: 9.99,
   },
+}, 0, {
+  getProductTypeLabel: (value) => `类型:${value}`,
+  getMatchTypeLabel: (value) => `匹配:${value}`,
+  newProductLabel: '新商品',
+  existingProductLabel: '已有商品',
+  activeLabel: '上架',
+  inactiveLabel: '下架',
 })
 assertDeepEqual(
   {
@@ -552,13 +650,25 @@ assertDeepEqual(
     productImage: exportRow.productImage,
     productName: exportRow.productName,
     englishName: exportRow.englishName,
+    categoryName: exportRow.categoryName,
     containerPieces: exportRow.containerPieces,
+    packingQuantity: exportRow.packingQuantity,
     containerQuantity: exportRow.containerQuantity,
     unitVolume: exportRow.unitVolume,
     totalVolume: exportRow.totalVolume,
+    transportCost: exportRow.transportCost,
+    unitTransportCost: exportRow.unitTransportCost,
+    floatRate: exportRow.floatRate,
+    middlePackQuantity: exportRow.middlePackQuantity,
+    importPrice: exportRow.importPrice,
     lastImportPrice: exportRow.lastImportPrice,
     lastOEMPrice: exportRow.lastOEMPrice,
     oemPrice: exportRow.oemPrice,
+    productType: exportRow.productType,
+    newProduct: exportRow.newProduct,
+    matchType: exportRow.matchType,
+    warehouseStatus: exportRow.warehouseStatus,
+    remark: exportRow.remark,
   },
   {
     itemNumber: 'HB291-005',
@@ -567,15 +677,119 @@ assertDeepEqual(
     productImage: 'https://cdn.example.com/info-image.jpg',
     productName: '明细名称',
     englishName: 'Detail Name',
+    categoryName: '家居 > 收纳',
     containerPieces: 3,
+    packingQuantity: 240,
     containerQuantity: 720,
     unitVolume: 0.1188,
     totalVolume: 0.3564,
+    transportCost: 0.08,
+    unitTransportCost: 19.2,
+    floatRate: 1.2,
+    middlePackQuantity: 12,
+    importPrice: 0.67,
     lastImportPrice: 0.52,
     lastOEMPrice: 4.8,
     oemPrice: 3.5,
+    productType: '类型:套装商品',
+    newProduct: '新商品',
+    matchType: '匹配:productCode',
+    warehouseStatus: '上架',
+    remark: '优先上架',
   },
-  '货柜明细导出行应按 Excel 模板读取页面展示字段、体积字段和实时仓库价，且新商品零售价应使用明细业务价',
+  '货柜明细导出行应完整读取页面业务字段、分类路径和本地化枚举值，且新商品零售价应使用明细业务价',
+)
+
+const wholeExportRows = prepareContainerDetailWholeExportRows(
+  [
+    { id: 201, hguid: 'whole-export-b', 英文名称: 'Bravo', 进口价格: 2 },
+    { id: 202, hguid: 'whole-export-a', 英文名称: 'Zulu', 进口价格: 3 },
+  ],
+  {
+    'whole-export-a': { hguid: 'whole-export-a', 英文名称: 'Alpha', 进口价格: 0 },
+  },
+  { field: 'englishName', order: 'ascend' },
+)
+assertDeepEqual(
+  wholeExportRows.map((row) => ({ hguid: row.hguid, englishName: row.英文名称, importPrice: row.进口价格 })),
+  [
+    { hguid: 'whole-export-a', englishName: 'Alpha', importPrice: 0 },
+    { hguid: 'whole-export-b', englishName: 'Bravo', importPrice: 2 },
+  ],
+  '全部导出应忽略页面筛选，合并未保存草稿后按当前排序输出，并保留有效的 0 值',
+)
+const wholeExportLocalRows = applyContainerDetailLocalExportValues(
+  [{
+    id: 204,
+    hguid: 'whole-export-local',
+    商品名称: '服务端新名称',
+    商品图片: 'https://cdn.example.com/fresh.jpg',
+    国内价格: 99,
+    单件装箱数: 10,
+    单件体积: 0.1,
+    装柜数量: 20,
+    运输成本: 1,
+    进口价格: 2,
+    备注: '服务端备注',
+  }],
+  [{
+    id: 204,
+    hguid: 'whole-export-local',
+    商品名称: '页面编辑名称',
+    商品图片: 'https://cdn.example.com/stale.jpg',
+    国内价格: 1,
+    单件装箱数: 24,
+    单件体积: 0.2,
+    调整浮率: 1.3,
+    中包数: 6,
+    装柜数量: 48,
+    合计装柜体积: 0.4,
+    合计装柜金额: 9.6,
+    运输成本: 0.5,
+    进口价格: 0.9,
+    备注: '页面未保存备注',
+  }],
+)
+assertDeepEqual(
+  {
+    productName: wholeExportLocalRows[0].商品名称,
+    packingQuantity: wholeExportLocalRows[0].单件装箱数,
+    unitVolume: wholeExportLocalRows[0].单件体积,
+    floatRate: wholeExportLocalRows[0].调整浮率,
+    middlePackQuantity: wholeExportLocalRows[0].中包数,
+    containerQuantity: wholeExportLocalRows[0].装柜数量,
+    totalVolume: wholeExportLocalRows[0].合计装柜体积,
+    totalAmount: wholeExportLocalRows[0].合计装柜金额,
+    transportCost: wholeExportLocalRows[0].运输成本,
+    importPrice: wholeExportLocalRows[0].进口价格,
+    remark: wholeExportLocalRows[0].备注,
+    productImage: wholeExportLocalRows[0].商品图片,
+    domesticPrice: wholeExportLocalRows[0].国内价格,
+  },
+  {
+    productName: '页面编辑名称',
+    packingQuantity: 24,
+    unitVolume: 0.2,
+    floatRate: 1.3,
+    middlePackQuantity: 6,
+    containerQuantity: 48,
+    totalVolume: 0.4,
+    totalAmount: 9.6,
+    transportCost: 0.5,
+    importPrice: 0.9,
+    remark: '页面未保存备注',
+    productImage: 'https://cdn.example.com/fresh.jpg',
+    domesticPrice: 99,
+  },
+  '全部导出只应覆盖页面可编辑及联动字段，图片和国内价等非编辑字段必须保留新服务端快照',
+)
+assertEqual(
+  buildContainerDetailExportRows(
+    [{ id: 203, hguid: 'whole-export-missing' }],
+    { missingNumericValue: '' },
+  )[0].domesticPrice,
+  '',
+  '全部导出应将缺失数值保留为空白，而不是伪造为 0',
 )
 
 assertEqual(
@@ -676,15 +890,26 @@ assertDeepEqual(
       productImage: '',
       productName: '',
       englishName: '',
+      categoryName: '',
       containerPieces: 0,
+      packingQuantity: 0,
       containerQuantity: 0,
       unitVolume: 0,
       totalVolume: 0,
       middlePackQuantity: 0,
       domesticPrice: 0,
+      transportCost: 0,
+      unitTransportCost: 0,
+      floatRate: 0,
+      importPrice: 0,
       lastImportPrice: 0,
       lastOEMPrice: 0,
       oemPrice: 0,
+      productType: '普通商品',
+      newProduct: '已有商品',
+      matchType: 'unmatched',
+      warehouseStatus: '下架',
+      remark: '',
     },
   ],
   '货柜明细导出行缺失字段时应使用稳定空值或 0，避免 Excel 导出报错',
@@ -737,9 +962,10 @@ assertEqual(
     id: 104,
     hguid: 'type-detail-fallback',
     商品类型: '套装子商品',
+    商品信息: { 商品类型: '普通商品' },
   }),
   '套装子商品',
-  '国内商品表类型缺失时应回退货柜明细商品类型',
+  '套装子商品应优先读取明细快照，避免全量与分页模式分类不一致',
 )
 
 const categoryRows: ContainerDetail[] = [
@@ -1138,6 +1364,18 @@ assertDeepEqual(
   ],
   '保存计划应提交有效价格、非空英文名称和明确清空，同时保留含中文名称供后端逐字段拒绝',
 )
+
+assertDeepEqual(
+  filterSuccessfullySavedContainerDetailUpdates(
+    [
+      { hguid: 'save-one', 国内价格: 9.8 },
+      { hguid: 'save-two', ProductCategoryGUID: 'category-guid', 调整浮率: 1.3 },
+    ],
+    ['save-one:国内价格', 'save-two:ProductCategoryGUID'],
+  ),
+  [{ hguid: 'save-one', 国内价格: 9.8 }],
+  '直接保存回显只能包含全部目标字段均已成功的更新，部分冲突不得伪造成功',
+)
 assertDeepEqual(
   {
     rows: pendingDetailSavePlan.pendingPatches.length,
@@ -1494,10 +1732,10 @@ assertEqual(
 )
 
 const tagRows: ContainerDetail[] = [
-  { id: 31, hguid: 'tag-31', 是否新商品: true, 贴牌价格: 0, 进口价格: 1, warehouseIsActive: true },
-  { id: 32, hguid: 'tag-32', 是否新商品: true, 贴牌价格: 0, warehouseOEMPrice: 2, 进口价格: 0, warehouseIsActive: false, 商品信息: { 商品类型: '套装商品' } },
-  { id: 33, hguid: 'tag-33', 是否新商品: false, 贴牌价格: 3, 进口价格: 4, warehouseIsActive: true, 商品信息: { 商品类型: '多码商品' } },
-  { id: 34, hguid: 'tag-34', 是否新商品: false, 贴牌价格: 0, 进口价格: undefined, warehouseIsActive: undefined, 商品类型: '套装子商品' },
+  { id: 31, hguid: 'tag-31', 是否新商品: true, 贴牌价格: 0, 进口价格: 1, warehouseIsActive: true, matchType: 'productCode' },
+  { id: 32, hguid: 'tag-32', 是否新商品: true, 贴牌价格: 0, warehouseOEMPrice: 2, 进口价格: 0, warehouseIsActive: false, matchType: 'supplierItem', 商品信息: { 商品类型: '套装商品' } },
+  { id: 33, hguid: 'tag-33', 是否新商品: false, 贴牌价格: 3, 进口价格: 4, warehouseIsActive: true, matchType: 'unmatched', 商品信息: { 商品类型: '多码商品' } },
+  { id: 34, hguid: 'tag-34', 是否新商品: false, 贴牌价格: 0, 进口价格: undefined, warehouseIsActive: undefined, matchType: 'productCode', 商品类型: '套装子商品', 商品信息: { 商品类型: '普通商品' } },
 ]
 
 assertDeepEqual(
@@ -1514,6 +1752,9 @@ assertDeepEqual(
     set: 1,
     multi: 1,
     setChild: 1,
+    productCodeMatched: 2,
+    supplierItemMatched: 1,
+    unmatched: 1,
   },
   '统计栏应按当前基础结果统计全部、新商品、已有商品、缺零售价、进口价异常、上下架和商品类型数量',
 )
@@ -1596,7 +1837,7 @@ const columnStateRows: ContainerDetail[] = [
     贴牌价格: 2.01,
     warehouseOEMPrice: 2.01,
     warehouseIsActive: undefined,
-    商品信息: { 货号: '8104032', 条形码: '8052533140328', 商品名称: '三角支架', 英文名称: 'Triangle Bracket' },
+    商品信息: { 货号: '8104032', 条形码: '8052533140328', 商品名称: '三角支架', 英文名称: 'Triangle Bracket', 商品类型: '普通商品' },
   },
 ]
 
@@ -1635,6 +1876,120 @@ assertDeepEqual(
 assertDeepEqual(columnState({}, { field: 'transportCost', order: 'ascend' }), ['column-203', 'column-201', 'column-202'], '数字排序应把空值排在最后')
 assertDeepEqual(columnState({}, { field: 'warehouseStatus', order: 'descend' }), ['column-201', 'column-202', 'column-203'], '仓库状态排序应支持上架优先且同值保持原始顺序')
 assertDeepEqual(columnState({}, { field: 'matchType', order: 'ascend' }), ['column-201', 'column-203', 'column-202'], '匹配方式排序应按商品编码、供应商货号、未匹配稳定排序')
+assertDeepEqual(
+  applyContainerDetailColumnState([
+    { id: 221, hguid: 'type-sort-child', 商品类型: '套装子商品', 商品信息: { 商品类型: '普通商品' } },
+    { id: 222, hguid: 'type-sort-multi', 商品信息: { 商品类型: '多码商品' } },
+    { id: 223, hguid: 'type-sort-normal', 商品信息: { 商品类型: '普通商品' } },
+    { id: 224, hguid: 'type-sort-set', 商品信息: { 商品类型: '套装商品' } },
+  ], {}, { field: 'productType', order: 'ascend' }).map((row) => row.hguid),
+  ['type-sort-normal', 'type-sort-set', 'type-sort-multi', 'type-sort-child'],
+  '商品类型排序应与服务端使用相同的普通、套装、多码、套装子商品顺序',
+)
+
+assertDeepEqual(
+  {
+    initialPageSize: CONTAINER_DETAIL_INITIAL_PAGE_SIZE,
+    fullLoadLimit: CONTAINER_DETAIL_FULL_LOAD_LIMIT,
+    defaultPageSize: CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+    options: CONTAINER_DETAIL_PAGE_SIZE_OPTIONS,
+  },
+  {
+    initialPageSize: 100,
+    fullLoadLimit: 200,
+    defaultPageSize: 100,
+    options: [50, 100, 200, 500, 1000],
+  },
+  '首屏、全量阈值与分页档位应保持产品契约',
+)
+
+const initialPageRows = Array.from({ length: 100 }, (_, index): ContainerDetail => ({
+  id: index + 1,
+  hguid: `initial-${index + 1}`,
+}))
+assertDeepEqual(
+  resolveContainerDetailInitialPage({ items: initialPageRows, itemsTotal: 100 }),
+  {
+    mode: 'full',
+    items: initialPageRows,
+    itemsTotal: 100,
+    requiresFullLoad: false,
+  },
+  '100 条应直接使用首屏完整结果，不发起第二次明细请求',
+)
+assertDeepEqual(
+  resolveContainerDetailInitialPage({ items: initialPageRows, itemsTotal: 101 }),
+  {
+    mode: 'full',
+    items: initialPageRows,
+    itemsTotal: 101,
+    requiresFullLoad: true,
+  },
+  '101 条应继续读取完整集，且仍不显示分页',
+)
+assertDeepEqual(
+  resolveContainerDetailInitialPage({ items: initialPageRows, itemsTotal: 200 }),
+  {
+    mode: 'full',
+    items: initialPageRows,
+    itemsTotal: 200,
+    requiresFullLoad: true,
+  },
+  '200 条应继续拉取完整集',
+)
+assertDeepEqual(
+  resolveContainerDetailInitialPage({ items: initialPageRows, itemsTotal: 201 }),
+  {
+    mode: 'paged',
+    items: initialPageRows,
+    itemsTotal: 201,
+    requiresFullLoad: false,
+  },
+  '201 条应直接复用首屏进入服务端分页',
+)
+
+const concurrentFullRows = Array.from({ length: 200 }, (_, index): ContainerDetail => ({
+  id: index + 1,
+  hguid: `concurrent-${index + 1}`,
+}))
+assertDeepEqual(
+  resolveContainerDetailFullPage({ items: concurrentFullRows, itemsTotal: 0, hasMore: true }, 200),
+  {
+    mode: 'paged',
+    items: concurrentFullRows.slice(0, 100),
+    itemsTotal: 201,
+  },
+  '首屏探测 200 后并发增长到 201 条时，二次请求必须回退分页且只显示正确首页 100 条',
+)
+assertDeepEqual(
+  resolveContainerDetailFullPage({ items: concurrentFullRows, itemsTotal: 0, hasMore: false }, 200),
+  {
+    mode: 'full',
+    items: concurrentFullRows,
+    itemsTotal: 200,
+  },
+  '二次请求确认无更多数据时应保持全量模式',
+)
+assertEqual(
+  canReuseContainerDetailInitialPage({
+    filters: {},
+    selectedTags: [],
+    sortState: { field: 'itemNumber', order: 'ascend' },
+    pageSize: 100,
+  }),
+  true,
+  '无筛选的默认首页可直接复用',
+)
+assertEqual(
+  canReuseContainerDetailInitialPage({
+    filters: {},
+    selectedTags: ['active'],
+    sortState: { field: 'itemNumber', order: 'ascend' },
+    pageSize: 100,
+  }),
+  false,
+  '存在标签筛选时不得复用无筛选首页',
+)
 
 assertDeepEqual(
   buildContainerDetailQuery({
@@ -2091,6 +2446,14 @@ function getLocaleValue(source: Record<string, unknown>, key: string) {
 const containerDetailExportLabelKeys = CONTAINER_DETAIL_EXPORT_COLUMNS.map((column) => column.labelKey)
 
 const requiredContainerI18nKeys = [
+  'containers.freightCalculator.modes.standard68',
+  'containers.freightCalculator.modes.perCbm',
+  'containers.freightCalculator.placeholders.standard68',
+  'containers.freightCalculator.placeholders.perCbm',
+  'containers.freightCalculator.preview',
+  'containers.freightCalculator.invalidVolume',
+  'containers.freightCalculator.invalidInput',
+  'containers.freightCalculator.refreshFailed',
   'containers.actions.batchUpdateFloatRate',
   'containers.actions.batchUpdatePrices',
   'containers.actions.showReadonlyOemPrice',
@@ -2099,7 +2462,14 @@ const requiredContainerI18nKeys = [
   'containers.actions.matchDomesticData',
   'containers.actions.alignDomesticProductCode',
   'containers.actions.previewImage',
+  'containers.actions.exportAllExcelWithImages',
+  'containers.actions.retryAutoSave',
   'containers.text.loadedRows',
+  'containers.text.autoSavingFields',
+  'containers.text.autoSaveFailedFields',
+  'containers.text.fullRows',
+  'containers.text.pageRows',
+  'containers.text.paginationTotal',
   'containers.text.warehouseInventoriesCreated',
   'containers.text.warehouseInventoriesUpdated',
   'containers.text.skippedNewProducts',
@@ -2116,9 +2486,14 @@ const requiredContainerI18nKeys = [
   'containers.modals.savePendingDetailsNewRetailHint',
   'containers.modals.savePendingDetailsInvalidEnglishHint',
   'containers.modals.savePendingDetailsRetryHint',
+  'containers.modals.exportWholeContainerTitle',
+  'containers.modals.exportWholeContainerContent',
   'containers.messages.selectedRowsHidden',
   'containers.messages.savePendingDetailsFirst',
   'containers.messages.detailSaveFailed',
+  'containers.messages.detailNotFound',
+  'containers.messages.detailSaveContextMissing',
+  'containers.messages.productNameRequired',
   'containers.messages.noPendingDetails',
   'containers.messages.detailsSaved',
   'containers.messages.detailFieldsNotSaved',
@@ -2147,6 +2522,13 @@ const requiredContainerI18nKeys = [
   'containers.messages.createProductFailed',
   'containers.messages.purchasePricesUpdateFailed',
   'containers.messages.newProductCannotToggleWarehouseStatus',
+  'containers.messages.detailsExportedWithImageFailures',
+  'containers.messages.exportLoadingAllDetails',
+  'containers.messages.exportPreparingImages',
+  'containers.messages.exportWritingWorkbook',
+  'containers.messages.exportGeneratingFile',
+  'containers.messages.exportGeneratingPdf',
+  'containers.messages.exportComplete',
   'containers.messages.newProductsSkippedForWarehouseStatus',
   'containers.modals.batchUpdateFloatRateTitle',
   'containers.modals.batchUpdatePricesTitle',
@@ -2157,6 +2539,8 @@ const requiredContainerI18nKeys = [
   'containers.modals.alignDomesticProductCodeConflictHint',
   'containers.modals.rowCategoryTitle',
   'containers.export.summaryTitle',
+  'containers.export.productImageDownloadFailed',
+  'containers.export.productImageMissing',
   ...containerDetailExportLabelKeys,
   'containers.setCode.pricesTitle',
   'containers.setCode.missingProductCode',
@@ -2234,6 +2618,17 @@ assertDeepEqual(
     'Current Purchase Price',
     'Current Retail Price',
     'RRP',
+    'Category',
+    'QTY/CTN',
+    'TP-cost/ unit',
+    'TP-cost/ CTN',
+    'Float Rate',
+    'Import Price',
+    'Type',
+    'New Product',
+    'Match Type',
+    'Warehouse Status',
+    'Remark',
   ],
   '英文模式导出列选择弹窗和 Excel 表头应全部使用英文 locale，不能回退到中文 fallback',
 )
@@ -2730,20 +3125,20 @@ assertEqual(
   '匹配国内数据检测请求应使用行供应商编码且不再提交条码兜底',
 )
 assertEqual(
-  pageSource.includes('void reconcileLoadedMatchStatus(result.items, currentReconcileGeneration)') &&
-    pageSource.includes('products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))') &&
-    pageSource.includes('buildContainerDetailMatchStatusUpdates(rowsNeedingMatchStatus, detected)') &&
-    pageSource.includes('加载态只校正表格展示状态，不写库'),
+  !pageSource.includes('reconcileLoadedMatchStatus') &&
+    !pageSource.includes('buildContainerDetailMatchStatusUpdates(rowsNeedingMatchStatus, detected)') &&
+    (pageSource.match(/await detectProducts\(/g) ?? []).length === 1,
   true,
-  '页面加载后应对当前懒加载块只读校正匹配状态，避免旧错误 MatchType 留在表格中且避免写库',
+  '普通页面加载应直接使用后端权威 MatchType，只有显式匹配国内数据操作可以调用 detectProducts',
 )
 assertEqual(
-  pageSource.includes('const containerDetailReconcileGenerationRef = useRef(0)') &&
-    pageSource.includes('const currentReconcileGeneration = containerDetailReconcileGenerationRef.current') &&
-    pageSource.includes('if (containerDetailReconcileGenerationRef.current !== reconcileGeneration)') &&
-    !pageSource.includes('containerDetailLoadRequestIdRef.current !== requestId)'),
+  pageSource.includes('const currentRequestId = containerDetailLoadRequestIdRef.current + 1') &&
+    pageSource.includes('const isCurrentRequest = () => (') &&
+    pageSource.includes('!controller.signal.aborted') &&
+    pageSource.includes('containerDetailLoadRequestIdRef.current === currentRequestId') &&
+    pageSource.includes('currentContainerGuidRef.current === containerGuid'),
   true,
-  '追加页之间应共享匹配校正 generation；只有重置、切换或离开页面才能使旧校正结果失效',
+  '翻页、筛选和排序请求应以 AbortSignal、requestId 和货柜 GUID 共同阻止旧响应覆盖',
 )
 assertEqual(
   pageSource.includes('SkipRelatedProductSync: true'),
@@ -2773,7 +3168,7 @@ assertEqual(
 assertEqual(
   pageSource.includes("onChange={(event) => markPendingDetailPatch(row, { 英文名称: event.target.value })}") &&
     !pageSource.includes("onBlur={(event) => void saveRowPatch(row, { 英文名称: event.target.value })") &&
-    pageSource.includes("status={validationError ? 'error' : undefined}"),
+    pageSource.includes("status={validationError || saveFailure || concurrencyConflict ? 'error' : undefined}"),
   true,
   '单行英文名称应进入保存明细队列，不再失焦自动保存，并为中文或空白草稿显示错误状态',
 )
@@ -2783,10 +3178,12 @@ assertEqual(
   '筛选条件变化时应清空已选明细，避免隐藏选中行后批量操作退回作用于当前全部可见行',
 )
 assertEqual(
-  pageSource.includes('[active, activeLoadQueryKey]') &&
-    pageSource.includes('标签不进入 detailQueryKey；只有非标签远程筛选变化才重置懒加载结果。'),
+  pageSource.includes('[active, activeLoadQueryKey, currentUserGuid]') &&
+    pageSource.includes('selectedTags: selectedTagFilters') &&
+    pageSource.includes("detailLoadMode === 'full'") &&
+    pageSource.includes("detailLoadMode === 'paged'"),
   true,
-  '远程重载 effect 应监听 active 和 base 查询 key，标签切换不应触发 reset reload',
+  '全量模式标签应在本地处理；分页模式标签必须进入远程 scope 并触发受控重载',
 )
 assertEqual(
   pageSource.includes("{ value: 'all', label: t('containers.filters.allTags'), color: 'blue' }"),
@@ -3315,7 +3712,8 @@ assertEqual(
 assertEqual(
   pageSource.includes('pendingDetailSavePromisesRef') &&
     pageSource.includes('failedDetailSaveKeysRef') &&
-    pageSource.includes('buildContainerDetailSaveFailureKeys(saveKey, patch)') &&
+    pageSource.includes('autoSaveQueueRef') &&
+    pageSource.includes('await flushContainerDetailAutoSaves()') &&
     pageSource.includes('blurActiveContainerDetailEditableCell()') &&
     pageSource.includes('flushPendingDetailSaves') &&
     pageSource.includes('failedDetailSaveKeysRef.current.size > 0') &&
@@ -3365,6 +3763,136 @@ const priceContainer = {
   汇率: 4.5,
   运费: 12000,
   总体积: 67.44,
+}
+
+assertEqual(
+  calculateContainerFreight(13000, 68.628, 'standard68'),
+  13120.06,
+  '68 m³ 标准运费应按当前总体积折算并保留 2 位小数',
+)
+assertEqual(
+  calculateContainerFreight(190, 68.628, 'perCbm'),
+  13039.32,
+  '每 m³ 单价应乘当前总体积并保留 2 位小数',
+)
+assertEqual(
+  calculateContainerFreight(13000, 68, 'standard68'),
+  13000,
+  '总体积正好为 68 m³ 时标准运费应保持不变',
+)
+assertEqual(
+  calculateContainerFreight(190, 63.125, 'perCbm'),
+  calculateContainerFreight(190 * 68, 63.125, 'standard68'),
+  '两种报价模式的等价值应生成相同最终运费',
+)
+assertEqual(calculateContainerFreight(0, 68.628, 'perCbm'), 0, '每 m³ 单价 0 应是合法输入')
+assertEqual(calculateContainerFreight(0, 68.628, 'standard68'), 0, '68 m³ 标准运费 0 应是合法输入')
+for (const invalidInput of [undefined, null, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+  assertEqual(
+    calculateContainerFreight(invalidInput, 68.628, 'standard68'),
+    undefined,
+    `无效报价 ${String(invalidInput)} 不应生成最终运费`,
+  )
+}
+assertEqual(
+  calculateContainerFreight(Number.MAX_VALUE, 68.628, 'perCbm'),
+  undefined,
+  '报价换算溢出时不应生成最终运费',
+)
+for (const invalidVolume of [undefined, null, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+  assertEqual(
+    isValidContainerFreightVolume(invalidVolume),
+    false,
+    `无效总体积 ${String(invalidVolume)} 应被拒绝`,
+  )
+  assertEqual(
+    calculateContainerFreight(13000, invalidVolume, 'standard68'),
+    undefined,
+    `无效总体积 ${String(invalidVolume)} 不应生成最终运费`,
+  )
+}
+const savedFreight = 13120.06
+const savedVolume = 68.628
+const standard68Input = deriveContainerFreightInput(savedFreight, savedVolume, 'standard68')
+const perCbmInput = deriveContainerFreightInput(savedFreight, savedVolume, 'perCbm')
+assertEqual(
+  calculateContainerFreight(standard68Input, savedVolume, 'standard68'),
+  savedFreight,
+  '已保存运费反算为 68 m³ 报价后应能无损换回最终运费',
+)
+assertEqual(
+  calculateContainerFreight(perCbmInput, savedVolume, 'perCbm'),
+  savedFreight,
+  '已保存运费反算为每 m³ 单价后应能无损换回最终运费',
+)
+assertEqual(
+  calculateContainerFreight(
+    deriveContainerFreightInput(
+      calculateContainerFreight(standard68Input, savedVolume, 'standard68'),
+      savedVolume,
+      'perCbm',
+    ),
+    savedVolume,
+    'perCbm',
+  ),
+  savedFreight,
+  '反复切换报价模式不应改变最终运费',
+)
+const precisionBoundaryFreight = 1000.46
+const precisionBoundaryVolume = 68.628
+const normalizedStandard68Input = normalizeContainerFreightInput(
+  deriveContainerFreightInput(precisionBoundaryFreight, precisionBoundaryVolume, 'standard68'),
+  'standard68',
+)
+assertEqual(normalizedStandard68Input, 991.31, '68 m³ 反算报价应先归一化为输入框实际显示的 2 位小数')
+assertEqual(
+  calculateContainerFreight(normalizedStandard68Input, precisionBoundaryVolume, 'standard68'),
+  1000.47,
+  '跨分边界样例应证明仅使用归一化报价回算会错误改变已保存运费',
+)
+assertEqual(
+  resolveContainerFreightPreview(
+    precisionBoundaryFreight,
+    normalizedStandard68Input,
+    precisionBoundaryVolume,
+    'standard68',
+    false,
+  ),
+  precisionBoundaryFreight,
+  '未修改报价时预览必须使用已保存最终运费，不能使用显示精度回算值',
+)
+assertEqual(
+  resolveContainerFreightPreview(
+    precisionBoundaryFreight,
+    normalizedStandard68Input,
+    precisionBoundaryVolume,
+    'standard68',
+    true,
+  ),
+  1000.47,
+  '用户实际修改报价后，预览才应使用当前报价重新换算',
+)
+for (const mode of ['standard68', 'perCbm'] as const) {
+  const normalizedInput = normalizeContainerFreightInput(
+    deriveContainerFreightInput(precisionBoundaryFreight, precisionBoundaryVolume, mode),
+    mode,
+  )
+  assertEqual(
+    normalizeContainerFreightInput(normalizedInput, mode),
+    normalizedInput,
+    `${mode} 程序化输入应与失焦后的精度归一化值一致`,
+  )
+  assertEqual(
+    resolveContainerFreightPreview(
+      precisionBoundaryFreight,
+      normalizedInput,
+      precisionBoundaryVolume,
+      mode,
+      false,
+    ),
+    precisionBoundaryFreight,
+    `${mode} 仅聚焦失焦不得改变最终运费`,
+  )
 }
 const priceRows: ContainerDetail[] = [
   {
@@ -3565,7 +4093,7 @@ assertDeepEqual(
     'value={batchImportPrice}\n            placeholder={t(\'containers.fields.importPrice\')}\n            min={0}\n            prefix="$"\n            precision={2}\n            controls={false}',
     'value={batchOemPrice}\n            placeholder={t(\'containers.fields.oemPrice\')}\n            min={0}\n            prefix="$"\n            precision={2}\n            controls={false}',
     '<InputNumber value={headerForm.汇率} precision={4} controls={false}',
-    '<InputNumber value={headerForm.运费} precision={2} controls={false}',
+    "step={freightInputMode === 'perCbm' ? 0.0001 : 0.01}\n                      controls={false}",
   ].filter((snippet) => !pageSource.includes(snippet)),
   [],
   '货柜明细页所有可编辑数字输入都应关闭加减按钮',
@@ -3574,6 +4102,90 @@ assertEqual(pageSource.includes('value={row.进口价格}'), true, '进口价格
 assertEqual(pageSource.includes('defaultValue={row.进口价格}'), false, '进口价格输入框不能使用 defaultValue')
 assertEqual(pageSource.includes('const updatePayload: UpdateContainerRequest'), true, '保存货柜头部应使用窄更新 payload')
 assertEqual(pageSource.includes('await updateContainer(containerGuid, nextContainer)'), false, '保存货柜头部不能把完整货柜对象发送到后端')
+assertEqual(
+  pageSource.includes("useState<ContainerFreightInputMode>('standard68')") &&
+    pageSource.includes("setFreightInputMode('standard68')") &&
+    pageSource.includes("deriveContainerFreightInput(info.运费, info.总体积, 'standard68')"),
+  true,
+  '货柜加载或刷新后应以已保存最终运费反算默认的 68 m³ 标准报价',
+)
+assertEqual(
+  pageSource.includes('value={freightInputMode}') &&
+    pageSource.includes("aria-label={t('containers.fields.freight')}") &&
+    pageSource.includes('value={freightInputValue}') &&
+    pageSource.includes('setFreightInputDirty(true)') &&
+    pageSource.includes("t('containers.freightCalculator.preview'") &&
+    pageSource.includes('role="status" aria-live="polite"') &&
+    pageSource.includes('role="alert"'),
+  true,
+  '运费换算应使用独立受控草稿，并展示当前总体积对应的最终运费预览',
+)
+assertEqual(
+  pageSource.includes('disabled={!freightVolumeValid}') &&
+    pageSource.includes("t('containers.freightCalculator.invalidVolume')") &&
+    pageStyleSource.includes('.container-detail-freight-calculator') &&
+    pageStyleSource.includes('.container-detail-page-small .container-detail-freight-calculator'),
+  true,
+  '总体积无效时应禁用报价输入、显示行内原因，并提供窄屏样式',
+)
+assertEqual(
+  pageSource.includes('const handleFreightInputModeChange') &&
+    pageSource.includes('setFreightInputValue(normalizeContainerFreightInput(') &&
+    pageSource.includes('deriveContainerFreightInput(freightPreviewValue, container?.总体积, nextMode)') &&
+    pageSource.includes('resolveContainerFreightPreview('),
+  true,
+  '切换报价模式应从稳定最终运费反算并按目标模式精度归一化输入显示',
+)
+{
+  const modeChangeStart = pageSource.indexOf('const handleFreightInputModeChange')
+  const inputChangeStart = pageSource.indexOf('const handleFreightInputChange', modeChangeStart)
+  const inputChangeEnd = pageSource.indexOf('const columnDragSensors', inputChangeStart)
+  const modeChangeSource = pageSource.slice(modeChangeStart, inputChangeStart)
+  const inputChangeSource = pageSource.slice(inputChangeStart, inputChangeEnd)
+  assertEqual(
+    modeChangeStart >= 0 && inputChangeStart > modeChangeStart && !modeChangeSource.includes('setFreightInputDirty(true)'),
+    true,
+    '只切换报价模式不能把运费草稿标记为已修改',
+  )
+  assertEqual(
+    inputChangeEnd > inputChangeStart &&
+      inputChangeSource.indexOf('if (Object.is(nextValue, freightInputValue)) return') <
+        inputChangeSource.indexOf('setFreightInputDirty(true)'),
+    true,
+    '输入框失焦返回相同归一化值时不能把运费草稿标记为已修改',
+  )
+}
+assertEqual(
+  pageSource.includes('if (freightInputDirty) {') &&
+    pageSource.includes('const latestContainer = await getContainerDetail(containerGuid)') &&
+    pageSource.includes('运费: nextFreight') &&
+    pageSource.indexOf('const latestContainer = await getContainerDetail(containerGuid)') <
+      pageSource.indexOf('await updateContainer(containerGuid, updatePayload)'),
+  true,
+  '已修改报价保存前应读取服务端最新总体积，并且 payload 只携带换算后的最终运费',
+)
+{
+  const saveHeaderStart = pageSource.indexOf('const saveHeader = async () => {')
+  const saveHeaderEnd = pageSource.indexOf('const saveFloatRatePatch', saveHeaderStart)
+  const saveHeaderSource = pageSource.slice(saveHeaderStart, saveHeaderEnd)
+  assertEqual(
+    saveHeaderStart >= 0 &&
+      saveHeaderEnd > saveHeaderStart &&
+      saveHeaderSource.indexOf('savingHeaderRef.current = true') <
+        saveHeaderSource.indexOf('await drainAutoSavesBeforeAction()') &&
+      saveHeaderSource.includes('savingHeaderRef.current = false'),
+    true,
+    '保存货柜应在第一个 await 前取得同步互斥锁，并在 finally 中释放',
+  )
+  assertEqual(
+    saveHeaderSource.indexOf('await updateContainer(containerGuid, updatePayload)') <
+      saveHeaderSource.indexOf("setFreightInputMode('standard68')") &&
+      saveHeaderSource.includes('setFreightInputDirty(false)') &&
+      saveHeaderSource.includes('运费: nextFreight'),
+    true,
+    'PUT 成功后应立即更新本地最终运费基准并清除草稿，避免 reload 失败后重复提交旧报价',
+  )
+}
 assertEqual(
   pageSource.includes("t('containers.fields.domesticPriceTotal')") &&
     pageSource.includes("formatCurrency(container?.合计金额, '¥')"),
@@ -3584,7 +4196,7 @@ assertEqual(
   const headerFormInitStart = pageSource.indexOf('setHeaderForm({')
   const headerFormInitEnd = pageSource.indexOf('    } catch (error) {', headerFormInitStart)
   const headerUpdatePayloadStart = pageSource.indexOf('const updatePayload: UpdateContainerRequest = {')
-  const headerUpdatePayloadEnd = pageSource.indexOf('    setSavingHeader(true)', headerUpdatePayloadStart)
+  const headerUpdatePayloadEnd = pageSource.indexOf('await updateContainer(containerGuid, updatePayload)', headerUpdatePayloadStart)
   assertEqual(
     headerFormInitStart >= 0 &&
       headerFormInitEnd > headerFormInitStart &&
@@ -3603,7 +4215,11 @@ assertEqual(
   )
   assertEqual(
     !headerFormInitSource.includes('合计金额') &&
+      !headerFormInitSource.includes('运费: info.运费') &&
       !headerUpdatePayloadSource.includes('合计金额') &&
+      !headerUpdatePayloadSource.includes('freightInputMode') &&
+      !headerUpdatePayloadSource.includes('freightInputValue') &&
+      !headerUpdatePayloadSource.includes('freightInputDirty') &&
       !headerUpdatePayloadSource.includes('...headerForm'),
     true,
     '国内价格合计来自主表汇总，只读字段不能进入 headerForm 初始化、保存 payload 或被整包展开',
@@ -3633,7 +4249,8 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('const shouldRecalculateCosts =') &&
-    pageSource.includes('recalculateContainerCostsByScope(containerGuid, buildWholeContainerDetailBatchScope())'),
+    pageSource.includes("'recalculate-costs', scope, {}, t('containers.actions.recalculateCosts', '重算成本')") &&
+    pageSource.includes('recalculateContainerCostsByScope(containerGuid, scope, previewToken)'),
   true,
   '保存货柜头部汇率或运费变化后应自动按整柜范围重算成本',
 )
@@ -3660,10 +4277,36 @@ assertEqual(
   true,
   '保存货柜头部成功但成本重算失败时应独立提示，不能伪装成保存失败',
 )
+{
+  const saveHeaderStart = pageSource.indexOf('const saveHeader = async () => {')
+  const saveHeaderEnd = pageSource.indexOf('const saveFloatRatePatch', saveHeaderStart)
+  const saveHeaderSource = pageSource.slice(saveHeaderStart, saveHeaderEnd)
+  assertEqual(
+    !saveHeaderSource.includes('if (!previewToken) return') &&
+      saveHeaderSource.includes('headerSavedCostsRecalculateCancelled') &&
+      saveHeaderSource.indexOf('headerSavedCostsRecalculateCancelled') <
+        saveHeaderSource.indexOf('setHeaderEditing(false)'),
+    true,
+    '头部 PUT 成功后取消成本重算预览时应明确提示并继续退出编辑、刷新服务器结果',
+  )
+  const firstPreviewConfirm = saveHeaderSource.indexOf('let previewToken = await confirmPreviewedContainerDetailAction(')
+  const staleCheck = saveHeaderSource.indexOf('isContainerDetailActionPreviewExpired(error)', firstPreviewConfirm)
+  const refreshedPreviewConfirm = saveHeaderSource.indexOf('previewToken = await confirmPreviewedContainerDetailAction(', staleCheck)
+  assertEqual(
+    firstPreviewConfirm >= 0 &&
+      saveHeaderSource.includes('while (previewToken) {') &&
+      staleCheck > firstPreviewConfirm &&
+      refreshedPreviewConfirm > staleCheck,
+    true,
+    '头部已保存但重算执行遇到 409 时，应重新预览并要求用户再次确认后才重试',
+  )
+}
 assertEqual(
   pageSource.includes('setBatchFloatRate(DEFAULT_CONTAINER_DETAIL_FLOAT_RATE)') &&
     pageSource.includes('setBatchModalScopeRows(scopedRows)') &&
-    pageSource.includes('applyContainerFloatRateByScope(containerGuid, buildDetailBatchScope(batchModalScopeRows), batchFloatRate)'),
+    pageSource.includes('const parameters = { floatRate: batchFloatRate }') &&
+    pageSource.includes("'apply-float-rate', scope, parameters") &&
+    pageSource.includes('applyContainerFloatRateByScope(containerGuid, scope, batchFloatRate, previewToken)'),
   true,
   '批量修改浮率弹窗打开时应默认填入 1.30，确认后按弹窗解析出的批量 scope 重算成本',
 )
@@ -3692,28 +4335,32 @@ assertEqual(
   '货柜明细表格应使用列头过滤和排序后的 displayRows',
 )
 assertEqual(
-  pageSource.includes('applyContainerDetailColumnState(filteredRows, {}, sortState)'),
+  pageSource.includes("detailLoadMode === 'full'") &&
+    pageSource.includes('applyCurrentClientFilters(baseFilteredRows)') &&
+    pageSource.includes('sortState,') &&
+    pageSource.includes('const pagedDetailQuery = useMemo(() => buildContainerDetailQuery({'),
   true,
-  '货柜明细列头排序应在前端对当前已加载可见行排序',
+  '货柜明细列头排序应在全量模式本地执行，在分页模式进入后端查询',
 )
 assertEqual(
   pageSource.includes('getCategoryTree') &&
-    pageSource.includes('batchAssignProducts') &&
+    pageSource.includes('assignContainerDetailCategoryByScope') &&
+    pageSource.includes("'assign-category', scope, parameters") &&
     pageSource.includes('buildWarehouseCategoryLookup') &&
     pageSource.includes('getWarehouseProductCategoryTooltip') &&
     pageSource.includes('formatWarehouseCategoryNodeName'),
   true,
-  '货柜明细应加载分类树、复用分类路径 Tooltip helper 和国际化名称 helper，并调用批量分类服务',
+  '货柜明细应加载分类树、复用分类路径 Tooltip helper 和国际化名称 helper，并调用受预览令牌保护的批量分类服务',
 )
 assertEqual(
   !pageSource.includes('const [itemNumberFilter, setItemNumberFilter]') &&
     !pageSource.includes('const [categoryFilterValue, setCategoryFilterValue]') &&
-    pageSource.includes('baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))') &&
-    pageSource.includes("applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)") &&
+    pageSource.includes('sourceRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))') &&
+    pageSource.includes('applyContainerDetailColumnState(nextTagFilteredRows, columnFilters, sortState)') &&
     !pageSource.includes('applyContainerDetailCategoryFilter(textFilteredRows, categoryFilterValue, categoryLookup)') &&
-    !pageSource.includes('categoryFilterValue, sortState'),
+    pageSource.includes('selectedTags: selectedTagFilters'),
   true,
-  '顶部过滤条移除后，标签快览和列头文字过滤仍应在前端过滤已加载行，分类和排序不应进入远程加载查询依赖',
+  '顶部过滤条移除后，全量模式应本地过滤，分页模式应把完整列筛选和标签交给后端',
 )
 assertEqual(
   !pageSource.includes("placeholder={t('containers.filters.allCategories'") &&
@@ -3732,30 +4379,31 @@ assertEqual(
 )
 assertEqual(
   (() => {
-    const baseQueryStart = pageSource.indexOf('const baseDetailQuery = useMemo(() => buildContainerDetailQuery({')
-    const queryEnd = pageSource.indexOf('const baseDetailQueryKey', baseQueryStart)
-    const baseQuerySource = pageSource.slice(baseQueryStart, queryEnd)
-    return baseQueryStart >= 0 &&
-      queryEnd > baseQueryStart &&
-      !pageSource.includes('const scopedDetailQuery = useMemo(() => buildContainerDetailQuery({') &&
-      !pageSource.includes('const scopedFullDetailQuery = useMemo(() => buildContainerDetailQuery({') &&
-      !baseQuerySource.includes('selectedTags') &&
-      baseQuerySource.includes('filters: remoteColumnFilters') &&
-      pageSource.includes('const detailQuery = baseDetailQuery') &&
-      pageSource.includes('const detailQueryKey = baseDetailQueryKey') &&
-      pageSource.includes('const activeLoadQueryKey = detailQueryKey')
+    const initialStart = pageSource.indexOf('const initialDetailQuery = useMemo(() => buildContainerDetailQuery({')
+    const fullStart = pageSource.indexOf('const fullDetailQuery = useMemo(() => buildContainerDetailQuery({')
+    const pagedStart = pageSource.indexOf('const pagedDetailQuery = useMemo(() => buildContainerDetailQuery({')
+    const statsStart = pageSource.indexOf('const pagedDetailStatsQuery = useMemo(() => buildContainerDetailQuery({')
+    return initialStart >= 0 &&
+      fullStart > initialStart &&
+      pagedStart > fullStart &&
+      statsStart > pagedStart &&
+      pageSource.includes('pageSize: CONTAINER_DETAIL_INITIAL_PAGE_SIZE') &&
+      pageSource.includes('pageSize: CONTAINER_DETAIL_FULL_LOAD_LIMIT') &&
+      pageSource.includes('pageSize: detailPageSize') &&
+      pageSource.includes('selectedTags: selectedTagFilters')
   })(),
   true,
-  '明细加载查询应只保留无标签 base 查询，标签切换不应进入远程查询 key',
+  '明细加载应区分首屏 100、完整 200、服务端分页和延迟统计四类查询',
 )
 assertEqual(
-  pageSource.includes("const shouldComputeDetailMeta = mode === 'reset'") &&
-    pageSource.includes('includeTotal: shouldComputeDetailMeta') &&
-    pageSource.includes('includeStats: shouldComputeDetailMeta') &&
+  pageSource.includes('includeItems: false') &&
+    pageSource.includes('schedulePagedDetailStats') &&
+    pageSource.includes('includeTotal: true') &&
+    pageSource.includes('includeStats: true') &&
     pageSource.includes('if (result.totalComputed !== false) {') &&
     pageSource.includes('if (result.statsComputed !== false) {'),
   true,
-  '货柜明细首屏才应请求 total/tagStats，追加页不应覆盖首屏统计',
+  '分页行请求完成后应以 includeItems=false 的独立请求补 total 和 TagStats',
 )
 assertEqual(
   (() => {
@@ -3773,22 +4421,56 @@ assertEqual(
   '后台批量拉全量明细时应跳过 total/tagStats 并依赖 hasMore',
 )
 assertEqual(
-  !pageSource.includes('itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber') &&
-    pageSource.includes('const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => omitContainerDetailTextFilters(columnFilters), [columnFilters])'),
+  pageSource.includes("key: 'allExcelWithImages'") &&
+    pageSource.includes("t('containers.actions.exportAllExcelWithImages'") &&
+    pageSource.includes("void exportDetails(ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS, 'excel', 'wholeContainer')"),
   true,
-  '顶部货号和列头文字筛选不应合并进远程查询条件',
+  '导出菜单应提供独立的全部导出入口，并固定使用全业务列及商品图片',
 )
 assertEqual(
-  pageSource.includes('baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))') &&
-    pageSource.includes("applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)") &&
-    pageSource.includes('hasLoadedFullBaseDetailQuery ? localBaseTagStats : remoteTagStats') &&
+  pageSource.includes("index: 'containers.columns.index'") &&
+    pageSource.includes("productName: 'containers.fields.productName'") &&
+    pageSource.includes("containerPieces: 'containers.fields.containerPieces'") &&
+    pageSource.includes("containerQuantity: 'containers.fields.containerQuantity'"),
+  true,
+  '全部导出的历史模板列应改用当前明细表头文案，避免显示序号、中文名称等旧名称',
+)
+assertEqual(
+  (() => {
+    const exportStart = pageSource.indexOf('const exportDetails = async (')
+    const exportEnd = pageSource.indexOf('const clearColumnFilter', exportStart)
+    const exportSource = pageSource.slice(exportStart, exportEnd)
+    return exportStart >= 0 &&
+      exportEnd > exportStart &&
+      exportSource.includes("exportScope === 'wholeContainer'") &&
+      exportSource.indexOf('await waitForPendingDetailSavesForExport()') >= 0 &&
+      exportSource.indexOf('await waitForPendingDetailSavesForExport()') < exportSource.indexOf('fetchAllRowsForWholeContainerExport()') &&
+      !exportSource.includes('await flushPendingDetailSaves()') &&
+      !pageSource.includes('mergeContainerDetailLoadedItems(allRows, baseFilteredRows)') &&
+      pageSource.includes('applyContainerDetailLocalExportValues(allRows, baseFilteredRows)') &&
+      pageSource.includes('pendingDetailPatchesRef.current') &&
+      pageSource.includes('prepareContainerDetailWholeExportRows')
+  })(),
+  true,
+  '全部导出应等待页面自动保存结束但不被保存失败阻断，再分页读取整柜、选择性叠加本地值和草稿并保留当前排序',
+)
+assertEqual(
+  !pageSource.includes('itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber') &&
+    !pageSource.includes('omitContainerDetailTextFilters(columnFilters)') &&
+    pageSource.includes('filters: columnFilters'),
+  true,
+  '分页模式应把列头文字筛选纳入远程查询，保证全局结果而不是只过滤当前页',
+)
+assertEqual(
+  pageSource.includes("const tagStats = detailLoadMode === 'full' ? localBaseTagStats : remoteTagStats") &&
+    pageSource.includes('selectedTags: selectedTagFilters') &&
     pageSource.includes('return await fetchAllRowsForCurrentQuery()') &&
     pageSource.includes('setBatchModalScopeRows(scopedRows)') &&
     pageSource.includes('buildDetailBatchScope(batchModalScopeRows)') &&
     pageSource.includes('selectedHguids: getRowsHguids(scopeRows)') &&
-    pageSource.includes('...baseDetailQuery,'),
+    pageSource.includes('return overlayPendingDetailChanges(allRows)'),
   true,
-  '标签应始终进入前端过滤链路，批量作用域和全量拉取应使用 base 查询后在前端收敛 HGUID',
+  '分页标签和批量全量作用域应由后端全局筛选，随后叠加当前草稿并收敛 HGUID',
 )
 assertEqual(
   pageSource.includes('columnFilters') && pageSource.includes('sortState'),
@@ -3813,8 +4495,8 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes("const CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS = ['englishName', 'packingQuantity', 'unitVolume', 'middlePackQuantity', 'floatRate', 'importPrice', 'oemPrice', 'remark'] as const") &&
-    pageSource.includes("patchRow(rowKey(row), { 中包数: value == null ? undefined : Number(value) })") &&
-    pageSource.includes("saveRowPatch(row, { 中包数: event.target.value ? Number(event.target.value) : undefined })"),
+    pageSource.includes("patchAutoSaveRow(row, { 中包数: value == null ? undefined : Number(value) })") &&
+    pageSource.includes("saveRowPatch(row, { 中包数: Number(event.target.value) })"),
   true,
   '中包数列应作为可编辑数字列保存到货柜明细更新接口',
 )
@@ -3839,8 +4521,8 @@ assertEqual(
   '单件体积行内输入和只读显示应保留 3 位小数',
 )
 assertEqual(
-  pageSource.includes("patchRow(rowKey(row), { 单件装箱数: row.单件装箱数 })") &&
-    pageSource.includes("patchRow(rowKey(row), { 单件体积: row.单件体积 })") &&
+  pageSource.includes("restoreAutoSaveEditBaseline(row, '单件装箱数')") &&
+    pageSource.includes("restoreAutoSaveEditBaseline(row, '单件体积')") &&
     pageSource.includes('const savePackageMetricPatch = async (row: ContainerDetail, patch: Partial<ContainerDetail>) => {') &&
     pageSource.includes('showCostRecalculateWarning(getContainerDetailCostMissingFields(container))') &&
     pageSource.includes('update.SkipRelatedProductSync = true') &&
@@ -3850,29 +4532,121 @@ assertEqual(
   '单件装箱数和单件体积清空时应回滚当前值，系统重算进货价不能同步仓库表',
 )
 assertEqual(
+  pageSource.includes('const autoSaveEditBaselineRef = useRef<Map<string, unknown>>(new Map())') &&
+    pageSource.includes("onFocus={() => captureAutoSaveEditBaseline(row, '中包数', row.中包数)}") &&
+    pageSource.includes("if (!event.target.value.trim()) {\n                restoreAutoSaveEditBaseline(row, '中包数')") &&
+    !pageSource.includes("saveRowPatch(row, { 中包数: event.target.value ? Number(event.target.value) : undefined })"),
+  true,
+  '中包数清空时必须恢复聚焦前值且不入队，避免 undefined 被 JSON 省略后误判保存成功',
+)
+assertEqual(
+  pageSource.includes('createContainerDetailAutoSaveQueue({') &&
+    pageSource.includes('buildContainerDetailAutoSaveContextKey(containerGuid, draftIdentity)') &&
+    pageSource.includes('buildContainerDetailAutoSaveUpdate(latestRow, intent.patch, contextSnapshot.container)') &&
+    pageSource.includes('autoSaveContextSnapshotsRef.current.get(contextKey)') &&
+    pageSource.includes('contextSnapshot.containerGuid,') &&
+    pageSource.includes('await flushContainerDetailAutoSaves()') &&
+    pageSource.includes('autoSaveSnapshot.failureCount > 0') &&
+    pageSource.includes('aria-invalid={Boolean(saveFailure || concurrencyConflict)}') &&
+    pageSource.includes("t('containers.actions.retryAutoSave', '重试')"),
+  true,
+  '行内即时保存应按货柜上下文串行合并，并通过 PR #49 的 scoped 路由发送最新快照及展示失败重试状态',
+)
+assertEqual(
+  pageSource.includes('isContainerDetailAutoSaveContextCurrent(') &&
+    pageSource.includes('lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
+    pageSource.includes('visibleContainerGuidRef.current === containerGuid') &&
+    pageSource.includes('if (!autoSaveContextSnapshotsRef.current.has(nextAutoSaveContextKey))') &&
+    pageSource.includes('autoSaveQueueRef.current?.discardContext(previousAutoSaveContextKey)') &&
+    pageSource.includes('const lifecycleAction = resolveContainerDetailAutoSaveLifecycleAction(active, contextKey)') &&
+    pageSource.includes("if (lifecycleAction === 'discard') {") &&
+    pageSource.includes("if (lifecycleAction !== 'attach') return") &&
+    pageSource.includes('autoSaveQueueRef.current?.attachContext(contextKey)') &&
+    pageSource.includes("resolveContainerDetailAutoSaveLifecycleAction(containerDetailTabActiveRef.current, contextKey) !== 'attach'"),
+  true,
+  'A→B→A 切页只可由 active KeepAlive 实例 attach；inactive 应 detach 且迟到 blur 不得抢占队列',
+)
+assertEqual(
+  pageSource.includes('const loadedItemsWithDraft = applyPendingContainerDetailPatches(') &&
+    pageSource.includes('const shouldOverlayCurrentAutoSaves = isContainerDetailAutoSaveContextCurrent(') &&
+    pageSource.includes('autoSaveQueueRef.current?.getUnsettledPatches(currentAutoSaveContextKey)') &&
+    pageSource.includes('return applyContainerDetailAutoSavePatches(') &&
+    pageSource.indexOf('const loadedItemsWithDraft = applyPendingContainerDetailPatches(')
+      < pageSource.indexOf('return applyContainerDetailAutoSavePatches('),
+  true,
+  '查询响应应先叠加手动草稿，再只用当前上下文的 pending/running/failure 最新值覆盖服务器响应',
+)
+assertEqual(
+  pageSource.includes('onBatchSuccess: (contextKey) => {') &&
+    pageSource.includes('const activeItemLoad = detailAbortControllerRef.current') &&
+    pageSource.includes('if (!activeItemLoad || activeItemLoad.signal.aborted) return') &&
+    pageSource.includes('activeItemLoad.abort()') &&
+    pageSource.includes('containerDetailLoadRequestIdRef.current += 1'),
+  true,
+  '自动保存成功应在清除 running overlay 前废弃当前货柜的旧查询，防止迟到回包覆盖新值',
+)
+assertEqual(
+  pageSource.includes('const canApplyAutoSaveResultToCurrentContext = () => (') &&
+    pageSource.includes('contextKey === autoSaveContextKeyRef.current') &&
+    pageSource.includes('if (result.conflicts.length > 0 && canApplyAutoSaveResultToCurrentContext())') &&
+    pageSource.includes('if (canApplyAutoSaveResultToCurrentContext()) {\n      pendingDetailOverrideAcknowledgementsRef.current') &&
+    pageSource.includes('if (clearResult.persisted && canApplyAutoSaveResultToCurrentContext())'),
+  true,
+  'A 货柜自动保存迟到回包只能清理 A 的持久化草稿，不得污染当前 B 货柜的冲突和内存草稿',
+)
+const autoSaveTransportSource = pageSource.slice(
+  pageSource.indexOf('autoSaveSendBatchRef.current = async (contextKey, intents) => {'),
+  pageSource.indexOf('const enqueueAutoSavePatch =', pageSource.indexOf('autoSaveSendBatchRef.current = async (contextKey, intents) => {')),
+)
+assertEqual(
+  pageSource.includes('type ContainerDetailAutoSaveContextSnapshot = ContainerDetailDraftContext & {') &&
+    pageSource.includes('fieldVersions: Record<string, string>') &&
+    pageSource.includes('fieldBaselineTokens: Record<string, string>') &&
+    autoSaveTransportSource.includes('contextSnapshot.fieldBaselineTokens') &&
+    autoSaveTransportSource.includes('contextSnapshot.fieldVersions') &&
+    autoSaveTransportSource.includes('contextSnapshot.userGuid, contextSnapshot.containerGuid') &&
+    !autoSaveTransportSource.includes('pendingDetailFieldBaselineTokensRef.current') &&
+    !autoSaveTransportSource.includes('pendingDetailFieldVersionsRef.current'),
+  true,
+  'discard 后继续发送的 A pending 批次必须全程使用 A context 固定的用户、字段版本和服务器基线',
+)
+assertEqual(
+  !pageSource.includes('autoSaveQueueRef.current?.clearFailures('),
+  true,
+  '自动保存失败必须保留到新 revision 入队或显式重试，输入中途不得提前解除依赖阻塞',
+)
+assertEqual(
+  pageSource.includes("if (!productName) {") &&
+    pageSource.includes("t('containers.messages.productNameRequired', '商品名称不能为空')") &&
+    pageSource.includes('onChange={(event) => setEditingProductNameValue(event.target.value)}'),
+  true,
+  '商品名称空白提交不得入队，编辑缓冲或 Escape 不得提前清除原保存失败状态',
+)
+assertEqual(
   containerDetailLogicSource.includes('export type PendingContainerDetailPatch =') &&
     pageSource.includes('const [pendingDetailPatches, setPendingDetailPatches] = useState<PendingContainerDetailPatchMap>({})') &&
     pageSource.includes('const [detailSaveSubmitting, setDetailSaveSubmitting] = useState(false)') &&
     pageSource.includes('const markPendingDetailPatch = (') &&
     pageSource.includes('const buildPendingDetailSavePlan = (): PendingContainerDetailPageSavePlan | null => {') &&
     pageSource.includes('const confirmSavePendingDetails = (plan: PendingContainerDetailPageSavePlan) => new Promise<boolean>') &&
-    pageSource.includes('const executePendingDetailSavePlan = async (plan: PendingContainerDetailPageSavePlan) => {') &&
+    pageSource.includes('const executePendingDetailSavePlan = async (\n    plan: PendingContainerDetailPageSavePlan,\n  ): Promise<PendingContainerDetailSaveExecutionResult> => {') &&
     pageSource.includes('const savePendingDetails = async () => {'),
   true,
   '货柜明细页应统一维护价格和英文名称的手动待保存状态',
 )
 assertEqual(
-  containerDetailLogicSource.includes('if (patch.进口价格 != null) update.进口价格 = patch.进口价格') &&
-    containerDetailLogicSource.includes('if (patch.贴牌价格 != null) update.贴牌价格 = patch.贴牌价格') &&
+  containerDetailLogicSource.includes('export const CONTAINER_DETAIL_DRAFT_FIELDS = [') &&
+    containerDetailLogicSource.includes('CONTAINER_DETAIL_DRAFT_FIELDS.forEach((field) => {') &&
     containerDetailLogicSource.includes('update.英文名称 = englishName') &&
     containerDetailLogicSource.includes('update.ClearEnglishName = true') &&
-    pageSource.includes('batchUpdateDetails(plan.detailUpdates),') &&
+    pageSource.includes('batchUpdateDetails(saveContainerGuid, plan.detailUpdates),') &&
     pageSource.includes('failedPendingDetailSaveKeysRef.current,') &&
     !pageSource.includes('await batchUpdateWarehouseProducts(plan.warehouseUpdates)') &&
     !pageSource.includes("t('containers.messages.missingWarehouseProductCodeForRetailPrice'") &&
     pageSource.includes('const confirmed = await confirmSavePendingDetails(savePlan)') &&
     pageSource.includes('await executePendingDetailSavePlan(savePlan)') &&
-    pageSource.includes('clearSavedPendingContainerDetailFields(current, plan.detailUpdates, result.validationErrors)') &&
+    pageSource.includes('settleContainerDetailDraftSaveSuccess(') &&
+    pageSource.includes('clearContainerDetailDraftFieldsIfVersionMatches(') &&
     pageSource.includes("t('containers.messages.detailsSaved'"),
   true,
   '保存明细应统一提交价格和英文名称，并按后端字段校验结果仅清除已保存内容',
@@ -3921,8 +4695,8 @@ assertEqual(
   columnsSource.includes('function renderOemPriceCell(row: ContainerDetail)') &&
     columnsSource.includes("formatCurrency(getContainerDetailVisibleOemPrice(row), '$')") &&
     columnsSource.includes('function renderImportPriceCell(row: ContainerDetail, input?: ReactNode)') &&
-    pageSource.includes('renderImportPriceCell(row, (') &&
-    pageSource.includes(': renderImportPriceCell(row)') &&
+    pageSource.includes("renderConcurrentEditableField(row, '进口价格', renderImportPriceCell(row, (") &&
+    pageSource.includes("renderConcurrentEditableField(row, '进口价格', renderImportPriceCell(row))") &&
     pageSource.includes("formatCurrency(v, '¥')") &&
     pageSource.includes("prefix=\"$\""),
   true,
@@ -3984,9 +4758,10 @@ assertEqual(
   '页面应通过统一 helper 解析商品编码，避免空白编码绕过兜底',
 )
 assertEqual(
-  pageSource.includes('getContainerDetailWarehouseActionFailureMessage(result'),
+  pageSource.includes('setContainerDetailStatusByScope(containerGuid, scope, isActive, previewToken)') &&
+    pageSource.includes("'set-status', scope, parameters"),
   true,
-  '仓库状态更新应统一检查根失败和部分失败结果',
+  '仓库状态更新应走预览令牌保护的货柜范围动作，不能绕过并发守卫',
 )
 assertEqual(
   pageSource.includes('pendingWarehouseStatusCodes') &&
@@ -3996,7 +4771,7 @@ assertEqual(
   '行内仓库状态更新应显示提交中状态，并阻止新商品或重复点击',
 )
 assertEqual(
-  pageSource.includes('const previousStatuses = rows') &&
+  pageSource.includes('const statusRows = rows') &&
     pageSource.includes('setRows((items) => applyContainerDetailWarehouseStatusByProductCodes(items, [productCode], isActive))') &&
     pageSource.includes('rollbackContainerDetailWarehouseStatuses'),
   true,
@@ -4015,7 +4790,7 @@ assertEqual(
   '批量和行内仓库状态更新都应复用同商品编码本地更新 helper',
 )
 assertEqual(
-  pageSource.includes('applyContainerPricesByScope(containerGuid, buildDetailBatchScope(batchModalScopeRows)') &&
+  pageSource.includes('applyContainerPricesByScope(containerGuid, scope, prices, previewToken)') &&
     pageSource.includes("const scopedRows = await confirmBatchRows(t(isActive ? 'containers.actions.batchActivate' : 'containers.actions.batchDeactivate'))") &&
     pageSource.includes('return await fetchAllRowsForCurrentQuery()') &&
     pageSource.includes('const productCodes = eligibleRows'),
@@ -4078,9 +4853,17 @@ assertEqual(
   '本页批量翻译、批量修改和批量清除英文名称都应进入保存明细队列，不能立即落库',
 )
 assertEqual(
-  pageSource.includes('applyPendingContainerDetailPatches(result.items, pendingDetailPatchesRef.current)') &&
-    pageSource.includes('pendingDetailContainerGuidRef.current !== containerGuid') &&
-    !pageSource.includes('setPendingDetailPatches({})'),
+  pageSource.includes('const overlayPendingDetailChanges = (items: ContainerDetail[]) => {') &&
+    pageSource.includes('items,\n      pendingDetailPatchesRef.current,') &&
+    pageSource.includes('applyContainerDetailAutoSavePatches(') &&
+    pageSource.includes('const publishLoadedDetailRows = (items: ContainerDetail[]) => {') &&
+    pageSource.includes('rowsRef.current = loadedItems') &&
+    pageSource.includes('updateAutoSaveContextRows(currentAutoSaveContextKey, loadedItems, containerRef.current)') &&
+    pageSource.includes('publishLoadedDetailRows(result.items)') &&
+    pageSource.includes('pendingDetailDraftIdentityRef.current === draftIdentity') &&
+    pageSource.includes('pendingDetailDraftIdentityRef.current = draftIdentity') &&
+    pageSource.includes('applyPendingDetailDraftState(restoredDraft, false)') &&
+    pageSource.includes('}, [active, currentUserGuid, containerGuid])'),
   true,
   '同一货柜刷新或筛选重载应重新覆盖未保存草稿，仅切换货柜时清空旧草稿',
 )
@@ -4098,10 +4881,11 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('failedPendingDetailSaveKeysRef') &&
-    pageSource.includes('reconcilePendingContainerDetailSaveFailureKeys(') &&
+    pageSource.includes('failedPendingDetailSaveKeysRef.current = new Set(Object.keys(failures))') &&
     pageSource.includes('failedPendingDetailSaveKeysRef.current.size > 0') &&
     pageSource.includes('pendingDetailSavePromisesRef.current.clear()') &&
-    pageSource.includes('currentContainerGuidRef.current === saveContainerGuid'),
+    pageSource.includes('currentContainerGuidRef.current === saveContainerGuid') &&
+    pageSource.includes('pendingDetailDraftIdentityRef.current === saveDraftIdentity'),
   true,
   '统一保存失败状态应按当前草稿字段及货柜作用域清理，不能污染后续意图或新货柜',
 )
@@ -4124,9 +4908,10 @@ assertEqual(
   '图片和编号列不应添加无意义列头过滤配置',
 )
 assertEqual(
-  pageSource.includes('buildContainerDetailFloatRateUpdates([row], container, value)'),
+  pageSource.includes('const latestRow = rowsRef.current.find((item) => item.hguid === row.hguid) ?? row') &&
+    pageSource.includes('调整浮率: value ?? latestRow.调整浮率 ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE'),
   true,
-  '单行保存浮率应使用原始行计算变化，不能提前覆盖浮率导致不写库',
+  '单行保存浮率应从最新行快照构造队列意图，不能被连续输入的旧闭包覆盖',
 )
 assertEqual(
   pageSource.includes('recalculateContainerCostsByScope(containerGuid, buildDetailBatchScope())'),
@@ -4134,9 +4919,9 @@ assertEqual(
   '货柜明细页不应再暴露独立重算成本 scope 写回入口',
 )
 assertEqual(
-  pageSource.includes("await loadDetailChunk(1, 'reset')"),
+  pageSource.includes('await reloadCurrentDetailRef.current()'),
   true,
-  '重算成本写回成功后应重载当前查询首块',
+  '重算成本写回成功后应重载当前查询范围',
 )
 assertEqual(pageSource.includes("t('containers.messages.missingFreightForCost'"), true, '缺少运费时应通过 i18n 提示且不写库')
 assertEqual(pageSource.includes("t('containers.messages.missingTotalVolumeForCost'"), true, '缺少总体积时应通过 i18n 提示且不写库')
@@ -4318,9 +5103,9 @@ assertEqual(
     pageSource.includes('void openBatchCategory()') &&
     pageSource.includes('handleBatchCategorySave') &&
     pageSource.includes('getContainerDetailBatchCategoryProductCodes(batchCategoryTargetRows)') &&
-    pageSource.includes('batchAssignProducts(targetCategoryGuid, productCodes)'),
+    pageSource.includes('assignContainerDetailCategoryByScope(containerGuid, scope, targetCategoryGuid, previewToken)'),
   true,
-  '批量操作菜单应包含批量分类，并提交当前目标行的去重商品编码',
+  '批量操作菜单应包含批量分类，并以当前目标行 scope 走预览令牌保护动作',
 )
 assertEqual(
   pageSource.includes('const canBackfillLastPrices = access.isAdmin || access.isWarehouseManager') ||
@@ -4335,7 +5120,7 @@ const batchCategorySaveSource = pageSource.slice(
   pageSource.indexOf('const submitBatchEditEnglishName = async () => {'),
 )
 assertEqual(
-  batchCategorySaveSource.includes('await batchAssignProducts(targetCategoryGuid, productCodes)') &&
+  batchCategorySaveSource.includes('await assignContainerDetailCategoryByScope(containerGuid, scope, targetCategoryGuid, previewToken)') &&
     !batchCategorySaveSource.includes("await loadDetailChunk(1, 'reset')") &&
     batchCategorySaveSource.includes('setRows((items) =>') &&
     batchCategorySaveSource.includes('const productCode = getContainerDetailProductCode(item)') &&
@@ -4367,7 +5152,8 @@ assertEqual(
     rowCategoryModalSource.includes('open={rowCategoryOpen}') &&
     rowCategoryModalSource.includes('selectedKey={rowTargetCategoryGuid}') &&
     rowCategoryModalSource.includes('onOk={() => void handleRowCategorySave()}') &&
-    pageSource.includes('await batchUpdateDetails([{ hguid: rowCategoryEditingRow.hguid, ProductCategoryGUID: rowTargetCategoryGuid }])') &&
+    pageSource.includes('queuePendingDetailUpdates([{ hguid: rowCategoryEditingRow.hguid, ProductCategoryGUID: rowTargetCategoryGuid }])') &&
+    pageSource.includes('const savePlan = buildPendingDetailSavePlan()') &&
     pageSource.includes('rowKey(item) !== rowKey(rowCategoryEditingRow)') &&
     pageSource.includes('setRowCategoryOpen(false)'),
   true,
@@ -4447,12 +5233,20 @@ assertEqual(
   '货柜明细表格应按当前显示顺序给偶数视觉行添加隔行色 class',
 )
 assertEqual(
-  pageSource.includes('const CONTAINER_DETAIL_PAGE_SIZE = 50') &&
-    pageSource.includes('pagination={false}') &&
+  containerDetailLogicSource.includes('export const CONTAINER_DETAIL_INITIAL_PAGE_SIZE = 100') &&
+    containerDetailLogicSource.includes('export const CONTAINER_DETAIL_FULL_LOAD_LIMIT = 200') &&
+    containerDetailLogicSource.includes('export const CONTAINER_DETAIL_DEFAULT_PAGE_SIZE = 100') &&
+    containerDetailLogicSource.includes('export const CONTAINER_DETAIL_PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1000]') &&
+    pageSource.includes("pagination={detailLoadMode === 'paged' ? {") &&
+    pageSource.includes('current: detailPageNumber') &&
+    pageSource.includes('pageSize: detailPageSize') &&
+    pageSource.includes('total: detailItemsTotal') &&
+    pageSource.includes('showSizeChanger: true') &&
+    pageSource.includes('pageSizeOptions: [...CONTAINER_DETAIL_PAGE_SIZE_OPTIONS]') &&
     pageSource.includes('virtual') &&
     pageSource.includes('onScroll={handleDetailTableScroll}'),
   true,
-  '货柜明细应关闭可见分页器，使用 50 条内部懒加载块和虚拟滚动',
+  '货柜明细 200 条以内应保留完整虚拟列表，超过 200 条才显示默认 100 条及 50/100/200/500/1000 分页档位',
 )
 const stickyControlsStart = pageSource.indexOf('className="container-detail-sticky-controls"')
 const detailTableStart = pageSource.indexOf('className="container-detail-table"', stickyControlsStart)
@@ -4468,7 +5262,8 @@ assertEqual(
     stickyControlsSource.includes('className="container-detail-action-meta"') &&
     stickyControlsSource.includes('className="container-detail-bulk-row"') &&
     stickyControlsSource.includes('<ContainerTagFilters') &&
-    stickyControlsSource.includes('{exporting ? <Progress percent={exportProgress} size="small" /> : null}'),
+    stickyControlsSource.includes('className="container-detail-export-progress"') &&
+    stickyControlsSource.includes('<Progress percent={exportProgress} size="small" />'),
   true,
   '货柜明细操作按钮、状态信息、批量操作、统计标签和导出进度应在表格前的紧凑 sticky 控制区内',
 )
@@ -4504,90 +5299,99 @@ assertEqual(
   '货柜明细 Tab 切回时应重挂载 AntD 虚拟表格并恢复滚动位置，避免 KeepAlive 隐藏后 body 空白',
 )
 assertEqual(
-  pageSource.includes('lastDetailTableScrollTopRef.current = target.scrollTop') &&
-    pageSource.includes('shouldLoadNextContainerDetailChunk({') &&
-    pageSource.includes('void loadNextDetailChunk()'),
+  (() => {
+    const scrollStart = pageSource.indexOf('const handleDetailTableScroll = (event: UIEvent<HTMLDivElement>) => {')
+    const scrollEnd = pageSource.indexOf('const handleWarehouseStatusChange', scrollStart)
+    const scrollSource = pageSource.slice(scrollStart, scrollEnd)
+    return scrollStart >= 0 &&
+      scrollEnd > scrollStart &&
+      scrollSource.includes('lastDetailTableScrollTopRef.current = target.scrollTop') &&
+      !scrollSource.includes('shouldLoadNextContainerDetailChunk') &&
+      !scrollSource.includes('loadNextDetailChunk')
+  })(),
   true,
-  '货柜明细表格滚动处理应保存滚动位置，并在进入预加载区时加载下一块',
+  '货柜明细表格滚动只应保存位置，不应再自动追加下一块',
 )
 assertEqual(
-  pageSource.includes('const detailAppendRequestRef = useRef<') &&
-    pageSource.includes('const detailResetRequestRef = useRef<') &&
-    pageSource.includes('startContainerDetailAppendRequest(') &&
-    pageSource.includes('cancelContainerDetailAppendRequest(detailAppendRequestRef.current)') &&
-    pageSource.includes('finishContainerDetailAppendRequest(') &&
-    pageSource.includes('detailAppendRequestRef.current = appendStart.request') &&
-    pageSource.includes('|| detailResetRequestRef.current'),
+  pageSource.includes('const detailAbortControllerRef = useRef<AbortController | null>(null)') &&
+    pageSource.includes('const detailResetRequestRef = useRef<AbortController | null>(null)') &&
+    pageSource.includes('const containerDetailLoadRequestIdRef = useRef(0)') &&
+    pageSource.includes('detailAbortControllerRef.current?.abort()') &&
+    !pageSource.includes('const detailAppendRequestRef = useRef<') &&
+    !pageSource.includes('startContainerDetailAppendRequest(') &&
+    !pageSource.includes('finishContainerDetailAppendRequest('),
   true,
-  '货柜明细追加加载应同步防重入、避让重置请求，并只允许请求所有者释放 token',
+  '货柜明细分页请求应使用单一 AbortController 和 request id 防止旧请求覆盖当前页',
 )
 assertEqual(
-  pageSource.includes('const detailReadAheadRequestRef = useRef<') &&
-    pageSource.includes('const startDetailReadAhead = (pageNumber: number) =>') &&
-    pageSource.includes('startContainerDetailReadAheadRequest(') &&
-    pageSource.includes('resetReadAheadRequest = startDetailReadAhead(pageNumber + 1)') &&
-    pageSource.includes('detailReadAheadRequestRef.current?.key === requestKey') &&
-    pageSource.includes('await readAheadRequest.promise') &&
-    pageSource.includes('startDetailReadAhead(result.pageNumber + 1)') &&
-    pageSource.includes('startDetailReadAhead(detailPageNumber + 1)') &&
-    pageSource.includes('cancelContainerDetailReadAheadRequest(detailReadAheadRequestRef.current)'),
+  !pageSource.includes('const detailReadAheadRequestRef = useRef<') &&
+    !pageSource.includes('const startDetailReadAhead = (pageNumber: number) =>') &&
+    !pageSource.includes('startContainerDetailReadAheadRequest(') &&
+    !pageSource.includes('cancelContainerDetailReadAheadRequest('),
   true,
-  '货柜明细应只保留下一页前读缓存，滚动消费后接续预取并在失效时取消',
+  '显式分页不应保留旧的前读缓存和滚动追加请求',
 )
 assertEqual(
   (() => {
-    const readAheadStart = pageSource.indexOf('const startDetailReadAhead = (pageNumber: number) =>')
-    const readAheadEnd = pageSource.indexOf('const loadDetailChunk = async', readAheadStart)
-    const readAheadSource = pageSource.slice(readAheadStart, readAheadEnd)
-    return readAheadStart >= 0 &&
-      readAheadEnd > readAheadStart &&
-      readAheadSource.includes('pageSize: CONTAINER_DETAIL_PAGE_SIZE') &&
-      readAheadSource.includes('includeTotal: false') &&
-      readAheadSource.includes('includeStats: false')
+    const initialQueryStart = pageSource.indexOf('const initialDetailQuery = useMemo(() => buildContainerDetailQuery({')
+    const pagedQueryStart = pageSource.indexOf('const pagedDetailQuery = useMemo(() => buildContainerDetailQuery({')
+    const querySource = pageSource.slice(initialQueryStart, pagedQueryStart)
+    return initialQueryStart >= 0 &&
+      pagedQueryStart > initialQueryStart &&
+      querySource.includes('pageSize: CONTAINER_DETAIL_INITIAL_PAGE_SIZE') &&
+      querySource.includes('includeTotal: true') &&
+      querySource.includes('includeStats: false') &&
+      querySource.includes('pageSize: CONTAINER_DETAIL_FULL_LOAD_LIMIT') &&
+      querySource.includes('includeTotal: false')
   })(),
   true,
-  '前读页必须保持 50 条，并跳过 total 与标签统计',
+  '首屏探测应读取 100 条和总数，只有 101 至 200 条时再读取最多 200 条完整集',
 )
 assertEqual(
   (() => {
-    const firstPageStart = pageSource.indexOf('const resultPromise = queryContainerProducts(')
-    const secondPageStart = pageSource.indexOf(
-      'resetReadAheadRequest = startDetailReadAhead(pageNumber + 1)',
-      firstPageStart,
-    )
-    const firstPageAwait = pageSource.indexOf('result = await resultPromise', secondPageStart)
-    return firstPageStart >= 0 &&
-      secondPageStart > firstPageStart &&
-      firstPageAwait > secondPageStart
+    const loadStart = pageSource.indexOf("if (requestedMode === 'probe') {")
+    const pagedLoadStart = pageSource.indexOf('const result = await queryContainerProducts(', loadStart)
+    const loadSource = pageSource.slice(loadStart, pagedLoadStart)
+    return loadStart >= 0 &&
+      pagedLoadStart > loadStart &&
+      loadSource.includes('initialDetailQuery') &&
+      loadSource.includes('resolveContainerDetailInitialPage(initialResult)') &&
+      loadSource.includes('fullDetailQuery') &&
+      loadSource.includes('resolveContainerDetailFullPage(') &&
+      loadSource.includes("if (fullResolution.mode === 'paged')")
   })(),
   true,
-  '重置查询应先启动首屏请求，再并发第 2 页并等待首屏结果',
+  '探测流程应先判定总量，再处理并发增长到 201 条以上时切换分页的边界',
 )
 assertEqual(
-  pageSource.includes("void loadNextDetailChunk('auto')") &&
-    pageSource.includes("source === 'auto' && failedDetailAppendRequestKeyRef.current === requestKey") &&
-    pageSource.includes('detailResetRequestRef.current = null') &&
-    pageSource.includes('setDetailLoadingMore(false)'),
+  pageSource.includes('const schedulePagedDetailStats = (') &&
+    pageSource.includes('window.setTimeout(() => {') &&
+    pageSource.includes('detailStatsAbortControllerRef.current?.abort()') &&
+    pageSource.includes('includeItems: false') &&
+    pageSource.includes('schedulePagedDetailStats(pagedDetailStatsQuery, pagedDetailStatsKey)') &&
+    !pageSource.includes('setDetailLoadingMore('),
   true,
-  '标签自动补齐失败后应停止自动重试，清理时应同步释放加载状态',
+  '分页行请求应独立延迟加载 total 和标签统计，并可取消过期统计请求',
 )
-const detailQueryAutoReloadIndex = pageSource.indexOf('requestedDetailQueryKey: activeLoadQueryKey')
-const detailLoadEffectIndex = pageSource.lastIndexOf('useEffect(() => {', detailQueryAutoReloadIndex)
+const detailLoadEffectIndex = pageSource.indexOf('useEffect(() => {', pageSource.indexOf('void loadHeader(shouldShowInitialLoading)'))
 const detailLoadCancellationIndex = pageSource.indexOf(
   'const cancelDetailLoads = () =>',
   detailLoadEffectIndex,
 )
-const skipDetailAutoReloadIndex = pageSource.lastIndexOf(
-  'if (shouldSkipDetailAutoReload({',
-  detailQueryAutoReloadIndex,
+const fullModeCacheIndex = pageSource.indexOf("if (detailLoadMode === 'full')", detailLoadEffectIndex)
+const detailLoadCacheIndex = pageSource.indexOf(
+  'lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid',
+  fullModeCacheIndex,
 )
 assertEqual(
   detailLoadEffectIndex >= 0 &&
     detailLoadCancellationIndex >= detailLoadEffectIndex &&
-    detailLoadCancellationIndex < skipDetailAutoReloadIndex &&
-    pageSource.indexOf('return cancelDetailLoads', skipDetailAutoReloadIndex) >= 0,
+    detailLoadCancellationIndex < fullModeCacheIndex &&
+    detailLoadCacheIndex > fullModeCacheIndex &&
+    pageSource.indexOf('return cancelDetailLoads', fullModeCacheIndex) >= 0 &&
+    pageSource.indexOf('return cancelDetailLoads', detailLoadCacheIndex) >= 0,
   true,
-  'KeepAlive 命中缓存跳过重载时也必须注册追加请求取消函数',
+  '完整模式或 KeepAlive 命中成功查询缓存时也必须注册当前明细请求取消函数',
 )
 assertEqual(
   pageStyleSource.includes('.container-detail-table .ant-table-thead > tr > th'),
@@ -4743,8 +5547,11 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('if (headerLoadRequestIdRef.current !== currentRequestId)') &&
-    pageSource.includes('if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId)') &&
-    pageSource.includes('return'),
+    pageSource.includes('const isCurrentRequest = () => (') &&
+    pageSource.includes('!controller.signal.aborted') &&
+    pageSource.includes('containerDetailLoadRequestIdRef.current === currentRequestId') &&
+    pageSource.includes('currentContainerGuidRef.current === containerGuid') &&
+    pageSource.includes('if (!isCurrentRequest()) return'),
   true,
   '货柜详情过期请求完成或失败后应直接忽略，不能写入 state 或弹失败提示',
 )
@@ -4768,11 +5575,14 @@ assertEqual(
   '货柜详情应有中文注释说明移动端 route element 复用时 GUID 必须跟随当前 URL',
 )
 assertEqual(
-  pageSource.includes('const lastLoadedContainerDetailSuccessRef = useRef<{ containerGuid: string; queryKey: string } | null>(null)') &&
-    pageSource.includes('lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }') &&
-    pageSource.includes('const loadedDetailQueryKey = lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
-    pageSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
-    !pageSource.includes('loadedDetailQueryKey: lastLoadedContainerDetailQueryKeyRef.current'),
+  pageSource.includes('const lastLoadedContainerDetailSuccessRef = useRef<{') &&
+    pageSource.includes('containerGuid: string\n    queryKey: string\n    generation: number') &&
+    pageSource.includes('lastLoadedContainerDetailSuccessRef.current = {') &&
+    pageSource.includes('queryKey: pagedDetailQueryKey,') &&
+    pageSource.includes('generation: currentRequestId,') &&
+    pageSource.includes('lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid') &&
+    pageSource.includes('lastLoadedContainerDetailSuccessRef.current.queryKey === activeLoadQueryKey') &&
+    !pageSource.includes('lastLoadedContainerDetailQueryKeyRef'),
   true,
   '明细自动跳过判断只能使用明细成功加载记录，不能沿用头部加载状态或旧查询 key',
 )

@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Xml.Linq;
 
 namespace Hbpos.Client.Tests;
@@ -252,7 +251,7 @@ public sealed class MainWindowXamlTests
     }
 
     [Fact]
-    public void Header_brand_uses_crisp_vector_mark_and_hb_pos_name()
+    public void Header_brand_uses_shared_app_icon_and_hb_pos_name()
     {
         var repoRoot = FindRepoRoot();
         var document = XDocument.Load(Path.Combine(
@@ -264,18 +263,12 @@ public sealed class MainWindowXamlTests
             "MainWindow.xaml"));
         XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
 
-        var brandMark = Assert.Single(document.Descendants().Where(element =>
-            element.Attributes().Any(attribute =>
-                string.Equals(attribute.Name.LocalName, "AutomationProperties.AutomationId", StringComparison.Ordinal) &&
-                string.Equals(attribute.Value, "HeaderBrandMark", StringComparison.Ordinal))));
+        var brandMark = FindElementByAutomationId(document, "HeaderBrandMark");
 
-        Assert.Equal(presentation + "Border", brandMark.Name);
-        Assert.Equal("32", (string?)brandMark.Attribute("Width"));
-        Assert.Equal("32", (string?)brandMark.Attribute("Height"));
-        Assert.Equal(
-            "HB",
-            (string?)Assert.Single(brandMark.Descendants(presentation + "TextBlock")).Attribute("Text"));
-        Assert.Empty(brandMark.Descendants(presentation + "Image"));
+        AssertSharedBrandImage(brandMark, "32", "32");
+        Assert.Equal("0,0,10,0", (string?)brandMark.Attribute("Margin"));
+        Assert.DoesNotContain(document.Descendants(presentation + "TextBlock"), element =>
+            string.Equals((string?)element.Attribute("Text"), "HB", StringComparison.Ordinal));
 
         foreach (var resourceName in new[] { "Strings.resx", "Strings.zh-CN.resx" })
         {
@@ -295,7 +288,7 @@ public sealed class MainWindowXamlTests
     }
 
     [Fact]
-    public void Startup_brand_uses_crisp_vector_mark_instead_of_scaling_window_icon()
+    public void Startup_brand_uses_shared_app_icon_without_legacy_frame_or_initials()
     {
         var document = XDocument.Load(Path.Combine(
             FindRepoRoot(),
@@ -307,24 +300,15 @@ public sealed class MainWindowXamlTests
         XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
         var window = Assert.IsType<XElement>(document.Root);
 
-        var brandMark = Assert.Single(document.Descendants().Where(element =>
-            element.Attributes().Any(attribute =>
-                string.Equals(attribute.Name.LocalName, "AutomationProperties.AutomationId", StringComparison.Ordinal) &&
-                string.Equals(attribute.Value, "StartupBrandMark", StringComparison.Ordinal))));
+        var brandMark = FindElementByAutomationId(document, "StartupBrandMark");
 
-        Assert.Equal(presentation + "Border", brandMark.Name);
-        Assert.Equal("56", (string?)brandMark.Attribute("Width"));
-        Assert.Equal("56", (string?)brandMark.Attribute("Height"));
-        Assert.Empty(brandMark.Descendants(presentation + "Image"));
-
-        var initials = Assert.Single(brandMark.Descendants(presentation + "TextBlock"));
-        Assert.Equal("HB", (string?)initials.Attribute("Text"));
-        Assert.Contains(initials.Attributes(), attribute =>
-            string.Equals(attribute.Name.LocalName, "TextOptions.TextFormattingMode", StringComparison.Ordinal) &&
-            string.Equals(attribute.Value, "Display", StringComparison.Ordinal));
-        Assert.Contains(initials.Attributes(), attribute =>
-            string.Equals(attribute.Name.LocalName, "TextOptions.TextRenderingMode", StringComparison.Ordinal) &&
-            string.Equals(attribute.Value, "ClearType", StringComparison.Ordinal));
+        AssertSharedBrandImage(brandMark, "82", "82");
+        Assert.Equal(presentation + "StackPanel", brandMark.Parent?.Name);
+        Assert.Equal("Center", (string?)brandMark.Attribute("HorizontalAlignment"));
+        Assert.DoesNotContain(document.Descendants(presentation + "TextBlock"), element =>
+            string.Equals((string?)element.Attribute("Text"), "HB", StringComparison.Ordinal));
+        Assert.DoesNotContain(document.Descendants().Attributes(), attribute =>
+            attribute.Value is "#FFE8F0FE" or "#FFD3E2FF" or "#FFEE5835" or "#FFD94827");
 
         Assert.Equal(
             "pack://application:,,,/Resources/AppIcon.ico",
@@ -332,88 +316,89 @@ public sealed class MainWindowXamlTests
     }
 
     [Fact]
-    public void Startup_brand_frame_keeps_rounding_clearance_around_vector_mark()
+    public void Device_registration_and_all_windows_use_shared_app_icon()
     {
-        const double minimumClearancePerEdge = 2;
-        var document = XDocument.Load(Path.Combine(
-            FindRepoRoot(),
-            "apps",
-            "pos-wpf",
-            "src",
-            "Hbpos.Client.Wpf",
-            "StartupSplashWindow.xaml"));
-        var brandMark = Assert.Single(document.Descendants().Where(element =>
-            element.Attributes().Any(attribute =>
-                string.Equals(attribute.Name.LocalName, "AutomationProperties.AutomationId", StringComparison.Ordinal) &&
-                string.Equals(attribute.Value, "StartupBrandMark", StringComparison.Ordinal))));
-        var frame = Assert.IsType<XElement>(brandMark.Parent);
+        var repoRoot = FindRepoRoot();
+        var wpfRoot = Path.Combine(repoRoot, "apps", "pos-wpf", "src", "Hbpos.Client.Wpf");
+        const string sharedImageSource = "pack://application:,,,/Resources/AppBrandIcon.png";
+        const string windowIcon = "pack://application:,,,/Resources/AppIcon.ico";
 
-        var frameWidth = ReadUniformLength(frame, "Width");
-        var frameHeight = ReadUniformLength(frame, "Height");
-        var padding = ReadUniformLength(frame, "Padding");
-        var borderThickness = ReadUniformLength(frame, "BorderThickness");
-        var markWidth = ReadUniformLength(brandMark, "Width");
-        var markHeight = ReadUniformLength(brandMark, "Height");
-        var frameContentWidth = frameWidth - ((padding + borderThickness) * 2);
-        var frameContentHeight = frameHeight - ((padding + borderThickness) * 2);
+        var registration = XDocument.Load(Path.Combine(
+            wpfRoot,
+            "Views",
+            "Screens",
+            "DeviceRegistrationView.xaml"));
+        var registrationIcon = Assert.Single(registration.Descendants().Where(element =>
+            string.Equals(element.Name.LocalName, "Image", StringComparison.Ordinal) &&
+            string.Equals((string?)element.Attribute("Source"), sharedImageSource, StringComparison.Ordinal)));
+        AssertSharedBrandImage(registrationIcon, "42", "42");
 
-        Assert.True(
-            frameContentWidth - markWidth >= minimumClearancePerEdge * 2,
-            "Startup brand frame must leave at least 2 DIP clearance on each horizontal edge.");
-        Assert.True(
-            frameContentHeight - markHeight >= minimumClearancePerEdge * 2,
-            "Startup brand frame must leave at least 2 DIP clearance on each vertical edge.");
-        Assert.Equal("Center", (string?)brandMark.Attribute("HorizontalAlignment"));
-        Assert.Equal("Center", (string?)brandMark.Attribute("VerticalAlignment"));
+        foreach (var relativeWindowPath in new[]
+                 {
+                     "MainWindow.xaml",
+                     "StartupSplashWindow.xaml",
+                     Path.Combine("Views", "Windows", "CustomerDisplayWindow.xaml"),
+                     Path.Combine("Views", "Windows", "AppUpdatePromptWindow.xaml")
+                 })
+        {
+            var window = XDocument.Load(Path.Combine(wpfRoot, relativeWindowPath));
+            Assert.Equal(windowIcon, (string?)window.Root?.Attribute("Icon"));
+        }
     }
 
     [Fact]
-    public void Startup_brand_text_keeps_glyphs_away_from_layout_edges()
+    public void Brand_images_use_consistent_scaling_pixel_alignment_and_accessible_name()
     {
-        var document = XDocument.Load(Path.Combine(
-            FindRepoRoot(),
-            "apps",
-            "pos-wpf",
-            "src",
-            "Hbpos.Client.Wpf",
-            "StartupSplashWindow.xaml"));
-        var brandMark = Assert.Single(document.Descendants().Where(element =>
+        var wpfRoot = Path.Combine(FindRepoRoot(), "apps", "pos-wpf", "src", "Hbpos.Client.Wpf");
+        var mainWindow = XDocument.Load(Path.Combine(wpfRoot, "MainWindow.xaml"));
+        var startup = XDocument.Load(Path.Combine(wpfRoot, "StartupSplashWindow.xaml"));
+        var registration = XDocument.Load(Path.Combine(
+            wpfRoot,
+            "Views",
+            "Screens",
+            "DeviceRegistrationView.xaml"));
+        var registrationIcon = Assert.Single(registration.Descendants().Where(element =>
+            string.Equals(element.Name.LocalName, "Image", StringComparison.Ordinal) &&
+            string.Equals(
+                (string?)element.Attribute("Source"),
+                "pack://application:,,,/Resources/AppBrandIcon.png",
+                StringComparison.Ordinal)));
+
+        AssertSharedBrandImage(FindElementByAutomationId(mainWindow, "HeaderBrandMark"), "32", "32");
+        AssertSharedBrandImage(FindElementByAutomationId(startup, "StartupBrandMark"), "82", "82");
+        AssertSharedBrandImage(registrationIcon, "42", "42");
+    }
+
+    private static XElement FindElementByAutomationId(XDocument document, string automationId)
+    {
+        return Assert.Single(document.Descendants().Where(element =>
             element.Attributes().Any(attribute =>
-                string.Equals(attribute.Name.LocalName, "AutomationProperties.AutomationId", StringComparison.Ordinal) &&
-                string.Equals(attribute.Value, "StartupBrandMark", StringComparison.Ordinal))));
-        var initials = Assert.Single(brandMark.Descendants().Where(element =>
-            string.Equals(element.Name.LocalName, "TextBlock", StringComparison.Ordinal)));
-
-        var padding = ReadThickness(initials, "Padding");
-
-        Assert.True(
-            padding.Left >= 1 && padding.Right >= 1,
-            "Startup brand text must reserve horizontal space so glyph pixels do not touch its layout edges.");
+                string.Equals(
+                    attribute.Name.LocalName,
+                    "AutomationProperties.AutomationId",
+                    StringComparison.Ordinal) &&
+                string.Equals(attribute.Value, automationId, StringComparison.Ordinal))));
     }
 
-    private static double ReadUniformLength(XElement element, string attributeName)
+    private static void AssertSharedBrandImage(XElement image, string width, string height)
     {
-        var attribute = Assert.IsType<XAttribute>(element.Attribute(attributeName));
-        return double.Parse(attribute.Value, CultureInfo.InvariantCulture);
+        Assert.Equal("Image", image.Name.LocalName);
+        Assert.Equal(width, (string?)image.Attribute("Width"));
+        Assert.Equal(height, (string?)image.Attribute("Height"));
+        Assert.Equal("pack://application:,,,/Resources/AppBrandIcon.png", (string?)image.Attribute("Source"));
+        Assert.Equal("Uniform", (string?)image.Attribute("Stretch"));
+        Assert.Equal("HighQuality", GetAttributeValue(image, "RenderOptions.BitmapScalingMode"));
+        Assert.Equal("True", (string?)image.Attribute("SnapsToDevicePixels"));
+        Assert.Equal("True", (string?)image.Attribute("UseLayoutRounding"));
+        Assert.Equal("{loc:Loc AppName}", GetAttributeValue(image, "AutomationProperties.Name"));
     }
 
-    private static (double Left, double Top, double Right, double Bottom) ReadThickness(
-        XElement element,
-        string attributeName)
+    private static string? GetAttributeValue(XElement element, string localName)
     {
-        var attribute = Assert.IsType<XAttribute>(element.Attribute(attributeName));
-        var values = attribute.Value
-            .Split(',', StringSplitOptions.TrimEntries)
-            .Select(value => double.Parse(value, CultureInfo.InvariantCulture))
-            .ToArray();
-
-        return values.Length switch
-        {
-            1 => (values[0], values[0], values[0], values[0]),
-            2 => (values[0], values[1], values[0], values[1]),
-            4 => (values[0], values[1], values[2], values[3]),
-            _ => throw new FormatException($"Unsupported thickness value '{attribute.Value}'.")
-        };
+        return element.Attributes()
+            .SingleOrDefault(attribute =>
+                string.Equals(attribute.Name.LocalName, localName, StringComparison.Ordinal))
+            ?.Value;
     }
 
     private static string FindRepoRoot()

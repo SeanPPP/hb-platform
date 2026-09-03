@@ -118,6 +118,7 @@
     <Compile Include="AuthServiceTests.cs" />
     <Compile Include="AuthSessionValidatorMobileDeviceTests.cs" />
     <Compile Include="AuthSessionControllerTests.cs" />
+    <Compile Include="BrowserExtensionSessionHandoffTests.cs" />
     <Compile Include="StoreVoucherReactRouteTests.cs" />
     <Compile Include="ReactStoreOrderAuthorizationTests.cs" />
     <Compile Include="StoreOrderRouteContractTests.cs" />
@@ -218,9 +219,18 @@
     <Compile Include="ContainerHqSyncServiceTests.cs" />
     <Compile Include="HqProductTranslationReactServiceTests.cs" />
     <Compile Include="ContainerReactServiceBatchUpdateDetailsTests.cs" />
+    <Compile Include="ContainerMutationLockTests.cs" />
+    <Compile Include="ContainerMutationLockSqlServerIntegrationTests.cs" />
+    <Compile Include="ContainerMutationWriterContractTests.cs" />
+    <Compile Include="ContainerDetailFieldConcurrencyGuardTests.cs" />
+    <Compile Include="ContainerDetailCollaborationContractTests.cs" />
+    <Compile Include="ContainerDetailCollaborationSchemaMigratorTests.cs" />
+    <Compile Include="ContainerDetailBatchPreviewLockContractTests.cs" />
+    <Compile Include="ReactContainerControllerConcurrencyContractTests.cs" />
     <Compile Include="ContainerCreateDuplicateTests.cs" />
     <Compile Include="LegacyContainerProductChangeHistoryTests.cs" />
     <Compile Include="ContainerReactServiceDetailQueryTests.cs" />
+    <Compile Include="ContainerDetailQueryIndexMigrationTests.cs" />
     <Compile Include="ContainerReactServiceLocalSupplierCodeTests.cs" />
     <Compile Include="ContainerProductCreationServiceTests.cs" />
     <Compile Include="ReactContainerControllerSyncContractTests.cs" />

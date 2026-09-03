@@ -50,7 +50,7 @@ public sealed class SchemaMigrationSqlServerIntegrationTests
         Assert.Equal(SchemaExitCodes.SchemaNotReady, emptyDatabaseCheck.ExitCode);
 
         var migrated = await coordinator.MigrateAsync(CancellationToken.None);
-        Assert.True(migrated.Success);
+        Assert.True(migrated.Success, migrated.DiagnosticCode);
         Assert.Equal(SchemaExitCodes.Success, migrated.ExitCode);
 
         var checkedResult = await coordinator.CheckAsync(CancellationToken.None);
@@ -65,6 +65,11 @@ public sealed class SchemaMigrationSqlServerIntegrationTests
             databases.MainConnectionString,
             SqlServerSchemaMigrationRuntime.MainHistoryTable,
             SchemaMigrationCoordinator.MainMigrationId
+        );
+        await AssertHistoryTableAsync(
+            databases.MainConnectionString,
+            SqlServerSchemaMigrationRuntime.MainHistoryTable,
+            SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId
         );
         await AssertHistoryTableAsync(
             databases.PosmConnectionString,

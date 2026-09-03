@@ -1,6 +1,8 @@
 import ExcelJS from 'exceljs'
 import { readFileSync } from 'node:fs'
 import {
+  addContainerDetailWorksheetImages,
+  calculateContainerExportImageSize,
   mapContainerExportProgress,
   populateContainerDetailsWorksheet,
   resolveContainerDetailPdfLayout,
@@ -88,6 +90,96 @@ const imageResult = populateContainerDetailsWorksheet(
 assertEqual(imageResult.barcodeImageColIndex, 1, '条码图片列应返回零基列号')
 assertEqual(imageResult.productImageColIndex, 2, '商品图片列应返回零基列号')
 assertEqual(imageWorksheet.getRow(imageResult.dataStartRowNumber).height, 58, '选择图片列时应增加 Excel 行高')
+
+const embeddedImageWorkbook = new ExcelJS.Workbook()
+const embeddedImageWorksheet = embeddedImageWorkbook.addWorksheet('去重商品图片')
+const embeddedImageItems = [
+  { index: 1, productImage: 'https://cdn.example.com/shared.png' },
+  { index: 2, productImage: 'https://cdn.example.com/shared.png' },
+  { index: 3, productImage: 'https://cdn.example.com/failed.png' },
+  { index: 4, productImage: '' },
+]
+const embeddedImageWorksheetInfo = populateContainerDetailsWorksheet(
+  embeddedImageWorksheet,
+  embeddedImageItems,
+  {
+    columns: [
+      { header: '序号', key: 'index', width: 8, valueType: 'integer' },
+      { header: '商品图片', key: 'productImage', width: 18, valueType: 'text' },
+    ],
+  },
+)
+const onePixelPng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+const embeddedImageResult = addContainerDetailWorksheetImages(
+  embeddedImageWorkbook,
+  embeddedImageWorksheet,
+  embeddedImageItems,
+  embeddedImageWorksheetInfo,
+  {
+    barcodeImageMap: new Map(),
+    productImageMap: new Map([['https://cdn.example.com/shared.png', onePixelPng]]),
+    productImageSizeMap: new Map([[
+      'https://cdn.example.com/shared.png',
+      { width: 160, height: 80 },
+    ]]),
+    productImageKeyByRow: new Map([
+      [0, 'https://cdn.example.com/shared.png'],
+      [1, 'https://cdn.example.com/shared.png'],
+    ]),
+    failedProductImageRows: new Set([2]),
+    missingProductImageRows: new Set([3]),
+  },
+  {
+    productImageDownloadFailedText: 'Image download failed',
+    productImageMissingText: 'No image',
+  },
+)
+assertEqual(embeddedImageWorksheet.getImages().length, 2, '同一商品图片应嵌入到每一条明细行')
+const firstEmbeddedImageRange = embeddedImageWorksheet.getImages()[0]?.range as unknown as {
+  ext?: { width?: number; height?: number }
+}
+assertEqual(
+  JSON.stringify(firstEmbeddedImageRange.ext),
+  JSON.stringify({ width: 72, height: 36 }),
+  'Excel 商品图片应在单元格显示范围内保持原始宽高比，不得拉伸铺满单元格',
+)
+assertEqual(
+  embeddedImageWorksheet.getRow(embeddedImageWorksheetInfo.dataStartRowNumber).getCell(2).value,
+  null,
+  '已嵌入图片的单元格不应泄露原始或签名 URL',
+)
+assertEqual(
+  ((embeddedImageWorkbook as unknown as { model: { media?: unknown[] } }).model.media?.length ?? 0),
+  1,
+  '相同图片 URL 应只创建一个工作簿媒体资源，避免重复放大文件',
+)
+assertEqual(embeddedImageResult.embeddedProductImageCount, 2, '图片嵌入结果应统计成功行数')
+assertEqual(embeddedImageResult.failedProductImageCount, 1, '图片嵌入结果应统计下载失败行数')
+assertEqual(embeddedImageResult.missingProductImageCount, 1, '图片嵌入结果应统计无图行数')
+assertEqual(
+  embeddedImageWorksheet.getRow(embeddedImageWorksheetInfo.dataStartRowNumber + 2).getCell(2).value,
+  'Image download failed',
+  '下载失败的商品图片单元格应使用调用方提供的本地化提示',
+)
+assertEqual(
+  embeddedImageWorksheet.getRow(embeddedImageWorksheetInfo.dataStartRowNumber + 3).getCell(2).value,
+  'No image',
+  '没有图片地址的商品图片单元格应使用调用方提供的本地化提示',
+)
+assertEqual(
+  JSON.stringify(calculateContainerExportImageSize(320, 160)),
+  JSON.stringify({ width: 160, height: 80 }),
+  '商品图片缩略图应按比例限制在 160×160 内',
+)
+const embeddedImageWorkbookBuffer = await embeddedImageWorkbook.xlsx.writeBuffer()
+assertEqual(embeddedImageWorkbookBuffer.byteLength > 0, true, '复用同一图片资源后工作簿仍应能成功序列化')
+const reloadedImageWorkbook = new ExcelJS.Workbook()
+await reloadedImageWorkbook.xlsx.load(embeddedImageWorkbookBuffer)
+assertEqual(
+  reloadedImageWorkbook.getWorksheet('去重商品图片')?.getImages().length,
+  2,
+  '工作簿重新读取后应保留相同媒体资源在两行中的图片定位',
+)
 
 const plainWorkbook = new ExcelJS.Workbook()
 const plainWorksheet = plainWorkbook.addWorksheet('货柜明细普通列')

@@ -8,4 +8,4 @@
 | Identifiers → User ID | App Functionality | 是 | 否 |
 | Other Data → 内部采购、销售与供应商商品业务数据 | App Functionality | 是 | 否 |
 
-账号密码只用于向 Hot Bargain 系统发起认证，扩展不保存密码。访问令牌、门店选择与扩展设置的处理方式以公开隐私政策为准。
+账号密码只在 Hot Bargain 网站完成认证；扩展不收集、读取或保存账号密码与网站 Cookie。网站通过一次性授权码向扩展签发短期访问令牌，该令牌仅保存在浏览器会话存储中。门店选择与扩展设置的处理方式以公开隐私政策为准。
