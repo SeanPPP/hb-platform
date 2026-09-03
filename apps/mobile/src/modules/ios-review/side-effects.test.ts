@@ -209,7 +209,7 @@ async function run() {
     assert.match(hydrateSavedPrinterSource, /PrinterStorage\.getPrinter\(\)/);
 
     const settingsSource = readMobileSource("app/(shell)/settings.tsx");
-    assertGuardBefore(settingsSource, "const handleCheckUpdates", "checkAndDownloadAppUpdate()", "手动 OTA");
+    assertGuardBefore(settingsSource, "const handleCheckUpdates", "await checkMobileOtaUpdate()", "手动 OTA");
     assert.match(
       settingsSource,
       /Updates are disabled in offline demo mode/,

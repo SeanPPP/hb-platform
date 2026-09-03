@@ -3,6 +3,9 @@ export const MOBILE_OTA_REQUIRED_CACHE_KEY = "mobile-ota-update:required:v1";
 export type MobileOtaPlatform = "Android" | "iOS";
 export type MobileOtaClientChannel = "production" | "preview";
 export type MobileOtaUpdateState = "none" | "optional" | "required";
+export type MobileOtaManualCheckResult = Readonly<{
+  status: "update-ready" | "required" | "not-available" | "disabled" | "failed";
+}>;
 
 export type MobileOtaUpdateDecision = Readonly<{
   state: MobileOtaUpdateState;
