@@ -10,9 +10,12 @@
   "summary": {
     "currentStore": "当前门店",
     "noStore": "未选择门店",
+    "switchStore": "切换",
+    "storePickerTitle": "切换分店",
     "authorizedFunctions": "获权功能",
     "functionCount": "{{count}} 项",
     "cartSku": "购物车 SKU",
+    "cartLoading": "正在加载当前门店购物车",
     "skuCount": "{{count}} 项"
   },
   "quickActions": {
@@ -64,6 +67,10 @@
   },
   "accessibility": {
     "openFunction": "打开{{title}}",
-    "functionCount": "{{title}}，{{count}}项可用功能"
+    "functionCount": "{{title}}，{{count}}项可用功能",
+    "currentStore": "当前门店，{{store}}",
+    "changeStore": "当前门店，{{store}}，切换分店",
+    "changeStoreHint": "打开当前账号获权的分店列表",
+    "storesLoading": "正在加载可用分店"
   }
 }

@@ -39,19 +39,11 @@ export function PrimaryTabBar({ activeRouteName }: PrimaryTabBarProps) {
       {items.map((item) => {
         const targetPath = TAB_PATHS[item.targetRouteName];
         const label = t(item.labelKey);
-        const iconColor = item.locked
-          ? HB_COLORS.outline
-          : item.active
-            ? HB_COLORS.brand
-            : HB_COLORS.textSecondary;
-        const labelColor = item.locked
-          ? HB_COLORS.outline
-          : item.active
-            ? HB_COLORS.action
-            : HB_COLORS.textSecondary;
+        const iconColor = item.active ? HB_COLORS.brand : HB_COLORS.textSecondary;
+        const labelColor = item.active ? HB_COLORS.action : HB_COLORS.textSecondary;
 
         const onPress = () => {
-          if (item.locked || !targetPath) {
+          if (!targetPath) {
             return;
           }
 
@@ -75,32 +67,17 @@ export function PrimaryTabBar({ activeRouteName }: PrimaryTabBarProps) {
           <Pressable
             key={item.key}
             accessibilityRole="button"
-            accessibilityLabel={
-              item.locked ? t("tabs.lockedLabel", { label }) : label
-            }
-            accessibilityState={{
-              selected: item.active,
-              disabled: item.locked,
-            }}
-            disabled={item.locked}
+            accessibilityLabel={label}
+            accessibilityState={{ selected: item.active }}
             onPress={onPress}
             style={({ pressed }) => [
               styles.item,
-              pressed && !item.locked ? styles.itemPressed : null,
+              pressed ? styles.itemPressed : null,
             ]}
           >
             <View style={styles.iconArea}>
               {item.active ? <View style={styles.activeIndicator} /> : null}
               <MaterialCommunityIcons name={item.icon} color={iconColor} size={23} />
-              {item.locked ? (
-                <View style={styles.lockBadge}>
-                  <MaterialCommunityIcons
-                    name="lock-outline"
-                    color={HB_COLORS.textSecondary}
-                    size={10}
-                  />
-                </View>
-              ) : null}
             </View>
             <Text
               allowFontScaling
@@ -152,19 +129,6 @@ const styles = StyleSheet.create({
     height: 3,
     borderRadius: 2,
     backgroundColor: HB_COLORS.brand,
-  },
-  lockBadge: {
-    position: "absolute",
-    right: 0,
-    bottom: 0,
-    width: 15,
-    height: 15,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: HB_COLORS.surfaceMuted,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: HB_COLORS.outline,
   },
   label: {
     marginTop: 1,
