@@ -300,6 +300,32 @@
     };
   }
 
+  // src/lib/ranking.js
+  var DEFAULT_RANKING_PAGE_SIZE = 50;
+  var RANKING_PAGE_SIZES = /* @__PURE__ */ new Set([50, 100, 200]);
+  function normalizeRankingDays(value) {
+    return Number(value) === 90 ? 90 : 60;
+  }
+  function normalizeRankingPageSize(value) {
+    const numericValue = Number(value);
+    return RANKING_PAGE_SIZES.has(numericValue) ? numericValue : DEFAULT_RANKING_PAGE_SIZE;
+  }
+  function normalizeTopSalesRequest({ topPercent, page, pageSize } = {}) {
+    const providedCount = [topPercent, page, pageSize].filter((value) => value != null).length;
+    if (providedCount === 0) return null;
+    const numericTopPercent = Number(topPercent);
+    const numericPage = Number(page);
+    const numericPageSize = Number(pageSize);
+    if (providedCount !== 3 || numericTopPercent !== 30 || !Number.isInteger(numericPage) || numericPage < 1 || normalizeRankingPageSize(numericPageSize) !== numericPageSize) {
+      throw new Error("\u65E0\u6548\u7684\u70ED\u9500\u699C\u5206\u9875\u53C2\u6570");
+    }
+    return {
+      topPercent: numericTopPercent,
+      page: numericPage,
+      pageSize: numericPageSize
+    };
+  }
+
   // src/lib/session-handoff.js
   var WEBSITE_SESSION_CLIENT_ID = "hb-supplier-order";
   function parseOrigin(value) {
@@ -388,7 +414,7 @@
   }
 
   // hb-safari-config:config.js
-  var EXTENSION_VERSION = "1.3.0";
+  var EXTENSION_VERSION = "1.4.0";
   var HB_API_ORIGIN = "https://hotbargain.vip";
   var HB_WEB_ORIGIN = "https://hotbargain.vip";
   var BUILD_TARGET = "safari";
@@ -689,13 +715,18 @@
     if (!res.success) return { ok: false, error: res.message || res.errorCode || "\u83B7\u53D6\u7248\u672C\u5931\u8D25" };
     return { ok: true, release: res.data };
   }
-  async function handleSummaryBatch({ storeCode, supplierCode, itemNumbers }) {
+  async function handleSummaryBatch({ storeCode, supplierCode, itemNumbers, salesRankingDays }) {
     if (!storeCode || !supplierCode || !Array.isArray(itemNumbers)) {
       return { ok: false, error: "\u53C2\u6570\u7F3A\u5931" };
     }
     const res = await apiRequest("/api/react/v1/browser-extension/product-purchase-cycle-summary/batch", {
       method: "POST",
-      body: JSON.stringify({ storeCode, supplierCode, itemNumbers })
+      body: JSON.stringify({
+        storeCode,
+        supplierCode,
+        itemNumbers,
+        salesRankingDays: normalizeRankingDays(salesRankingDays)
+      })
     });
     if (!res.success) return { ok: false, error: res.message || res.errorCode || "\u6458\u8981\u83B7\u53D6\u5931\u8D25" };
     return { ok: true, data: res.data };
@@ -716,12 +747,21 @@
     if (!res.success) return { ok: false, error: res.message || res.errorCode || "\u95E8\u5E97\u83B7\u53D6\u5931\u8D25" };
     return { ok: true, data: res.data };
   }
-  async function handleSupplierTopSales({ supplierCode, days }) {
+  async function handleSupplierTopSales({ supplierCode, days, topPercent, page, pageSize }) {
     if (!supplierCode) return { ok: false, error: "\u4F9B\u5E94\u5546\u4EE3\u7801\u7F3A\u5931" };
-    const normalizedDays = Number(days) === 90 ? 90 : 60;
+    let pagination;
+    try {
+      pagination = normalizeTopSalesRequest({ topPercent, page, pageSize });
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
     const res = await apiRequest("/api/react/v1/browser-extension/supplier-top-sales", {
       method: "POST",
-      body: JSON.stringify({ supplierCode, days: normalizedDays })
+      body: JSON.stringify({
+        supplierCode,
+        days: normalizeRankingDays(days),
+        ...pagination || {}
+      })
     });
     if (!res.success) return { ok: false, error: res.message || res.errorCode || "\u70ED\u9500\u6392\u884C\u83B7\u53D6\u5931\u8D25" };
     return { ok: true, data: res.data, apiOrigin: await getApiOrigin() };

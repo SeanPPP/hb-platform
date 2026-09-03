@@ -9,6 +9,7 @@
     i18nMod,
     recoveryMod,
     storageCompatMod,
+    rankingMod,
   ] = await Promise.all([
     import(chrome.runtime.getURL('lib/profiles.js')),
     import(chrome.runtime.getURL('lib/batch.js')),
@@ -17,6 +18,7 @@
     import(chrome.runtime.getURL('lib/i18n.js')),
     import(chrome.runtime.getURL('lib/list-recovery.js')),
     import(chrome.runtime.getURL('lib/storage-compat.js')),
+    import(chrome.runtime.getURL('lib/ranking.js')),
   ]);
   const { matchProfile } = profilesMod;
   const { createBatchQueue } = batchMod;
@@ -26,6 +28,7 @@
     createNodeStateRegistry,
     shouldInjectList,
     computeButtonState,
+    buildSummaryCacheKey,
     normalizeSummaryMap,
   } = stateMod;
   const { normalizeLocale, t } = i18nMod;
@@ -36,16 +39,30 @@
     shouldRequestVisibleSummary,
   } = recoveryMod;
   const { matchesStorageArea } = storageCompatMod;
+  const { formatSalesRankBand, normalizeRankingDays } = rankingMod;
 
   const origin = location.origin;
 
-  const stored = await chrome.storage.local.get(['supplierProfiles', 'selectedStoreCode', 'locale']);
+  const stored = await chrome.storage.local.get([
+    'supplierProfiles',
+    'selectedStoreCode',
+    'locale',
+    'salesRankingDays',
+  ]);
   const { supplierProfiles } = stored;
   let selectedStoreCode = stored.selectedStoreCode || null;
   let locale = normalizeLocale(stored.locale);
+  let salesRankingDays = normalizeRankingDays(stored.salesRankingDays);
   const profiles = (supplierProfiles && supplierProfiles.profiles) || [];
   const profile = matchProfile(profiles, { origin, pathname: location.pathname });
   if (!profile) return;
+
+  function formatMessage(key, values = {}) {
+    return Object.entries(values).reduce(
+      (message, [name, value]) => message.replaceAll(`{${name}}`, String(value)),
+      t(locale, key),
+    );
+  }
 
   const cardSelector = profile.cardSelector;
   const itemCfg = profile.itemNumber;
@@ -109,6 +126,9 @@
       '.hb-order{color:#c62828;font-weight:600;}',
       '.hb-sales{color:#1565c0;font-weight:600;}',
       '.hb-muted{color:#757575;}',
+      '.hb-rank-line{display:block;width:max-content;max-width:100%;box-sizing:border-box;margin-top:2px;padding:1px 6px;border:1px solid #b8d8ff;border-radius:999px;background:#eaf3ff;color:#1565c0;font-size:10px;font-weight:700;line-height:1.5;overflow-wrap:anywhere;white-space:normal;}',
+      '.hb-rank-line-top-20{border-color:#c7e3ca;background:#eef7ef;color:#2e7d32;}',
+      '.hb-rank-line-top-30{border-color:#ddd0ef;background:#f5f1fb;color:#6f3cc3;}',
     ].join('');
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -144,6 +164,17 @@
       btn.appendChild(document.createTextNode(' · '));
       btn.appendChild(sales);
     }
+    const rankLabel = formatSalesRankBand(state.salesRankBand);
+    if ((state.kind === 'ok' || state.reason === 'noPurchase') && rankLabel) {
+      const rankLine = document.createElement('span');
+      rankLine.className = 'hb-rank-line';
+      rankLine.classList.add(`hb-rank-line-${state.salesRankBand}`);
+      rankLine.textContent = formatMessage('salesRankBand', {
+        days: state.salesRankingDays,
+        band: rankLabel,
+      });
+      btn.appendChild(rankLine);
+    }
   }
 
   function shortStatus(state) {
@@ -159,8 +190,12 @@
     const requestedGeneration = entry.generation;
     const requestedItemNumber = entry.itemNumber;
     const requestedCard = entry.card;
+    const requestedRankingDays = salesRankingDays;
     batch
-      .enqueue(`${selectedStoreCode || 'none'}:${requestedItemNumber}`, requestedItemNumber)
+      .enqueue(
+        buildSummaryCacheKey(selectedStoreCode, requestedItemNumber, salesRankingDays),
+        requestedItemNumber,
+      )
       .then((summary) => {
         if (
           !active
@@ -173,7 +208,7 @@
         }
         const state = summary && summary.storeMissing
           ? { kind: 'noStore' }
-          : computeButtonState(summary);
+          : computeButtonState({ ...summary, salesRankingDays: requestedRankingDays });
         resetSummaryRetry(entry);
         entry.state = state;
         renderButton(entry, state);
@@ -192,33 +227,38 @@
       });
   }
 
-  // 微批队列：150ms、每批最多100、去重与缓存
-  const batch = createBatchQueue({
-    maxSize: 100,
-    delayMs: 150,
-    cacheTtlMs: 60000,
-    flush: async (entries) => {
-      if (!selectedStoreCode) {
+  // 每个队列固定绑定门店与排名周期；上下文变化时换代，旧请求即使晚返回也会被 generation 丢弃。
+  function createSummaryBatch(storeCode, rankingDays) {
+    return createBatchQueue({
+      maxSize: 100,
+      delayMs: 150,
+      cacheTtlMs: 60000,
+      flush: async (entries) => {
+        if (!storeCode) {
+          const out = {};
+          for (const e of entries) out[e.key] = { storeMissing: true };
+          return out;
+        }
+        const itemNumbers = entries.map((e) => e.item);
+        const resp = await chrome.runtime.sendMessage({
+          type: 'SUMMARY_BATCH',
+          storeCode,
+          supplierCode: profile.supplierCode,
+          itemNumbers,
+          salesRankingDays: rankingDays,
+        });
+        if (!resp || !resp.ok) {
+          throw new Error((resp && resp.error) || 'summary request failed');
+        }
+        const map = normalizeSummaryMap(resp && resp.data);
         const out = {};
-        for (const e of entries) out[e.key] = { storeMissing: true };
+        for (const e of entries) out[e.key] = map[e.item] || { hasMatch: false };
         return out;
-      }
-      const itemNumbers = entries.map((e) => e.item);
-      const resp = await chrome.runtime.sendMessage({
-        type: 'SUMMARY_BATCH',
-        storeCode: selectedStoreCode,
-        supplierCode: profile.supplierCode,
-        itemNumbers,
-      });
-      if (!resp || !resp.ok) {
-        throw new Error((resp && resp.error) || 'summary request failed');
-      }
-      const map = normalizeSummaryMap(resp && resp.data);
-      const out = {};
-      for (const e of entries) out[e.key] = map[e.item] || { hasMatch: false };
-      return out;
-    },
-  });
+      },
+    });
+  }
+
+  let batch = createSummaryBatch(selectedStoreCode, salesRankingDays);
 
   function attachEntryButton(entry) {
     entry.host?.remove();
@@ -393,9 +433,18 @@
   window.addEventListener('hashchange', handleNavigation);
 
   function refreshForStore(storeCode) {
+    refreshSummaryContext({ storeCode });
+  }
+
+  function refreshSummaryContext({
+    storeCode = selectedStoreCode,
+    rankingDays = salesRankingDays,
+  } = {}) {
     selectedStoreCode = storeCode || null;
+    salesRankingDays = normalizeRankingDays(rankingDays);
     generation.advance();
     batch.clearCache();
+    batch = createSummaryBatch(selectedStoreCode, salesRankingDays);
     for (const card of trackedCards) {
       const entry = registry.get(card);
       if (!entry || !card.isConnected) continue;
@@ -424,8 +473,17 @@
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (!matchesStorageArea(areaName, 'local') || !active) return;
-    if (changes.selectedStoreCode) {
+    if (changes.selectedStoreCode && !changes.salesRankingDays) {
       refreshForStore(changes.selectedStoreCode.newValue);
+    } else if (changes.selectedStoreCode || changes.salesRankingDays) {
+      refreshSummaryContext({
+        storeCode: changes.selectedStoreCode
+          ? changes.selectedStoreCode.newValue
+          : selectedStoreCode,
+        rankingDays: changes.salesRankingDays
+          ? changes.salesRankingDays.newValue
+          : salesRankingDays,
+      });
     }
     if (changes.locale) {
       locale = normalizeLocale(changes.locale.newValue);

@@ -71,6 +71,29 @@ test('网站会话状态与操作提供完整中英文文案', () => {
   }
 });
 
+test('TOP 30 分页、旧服务提示与重试提供完整中英文文案', () => {
+  for (const key of [
+    'rankingTab',
+    'rankingTitle',
+    'rankingPageSize',
+    'rankingPageSummary',
+    'rankingLoading',
+    'rankingLoadFailed',
+    'rankingRetry',
+    'rankingLegacyHint',
+    'salesRankBand',
+  ]) {
+    assert.equal(typeof t('zh', key), 'string', `zh.${key}`);
+    assert.equal(typeof t('en', key), 'string', `en.${key}`);
+    assert.notEqual(t('zh', key), key, `zh.${key}`);
+    assert.notEqual(t('en', key), key, `en.${key}`);
+  }
+  assert.match(t('zh', 'rankingTab'), /\{percent\}/);
+  assert.match(t('en', 'rankingPageSummary'), /\{total\}/);
+  assert.match(t('zh', 'salesRankBand'), /\{days\}.*\{band\}/);
+  assert.match(t('en', 'salesRankBand'), /\{days\}.*\{band\}/);
+});
+
 test('供应商折叠控件提供完整中英文文案', () => {
   for (const key of ['supplierExpand', 'supplierCollapse', 'supplierCollapsedHint']) {
     assert.equal(typeof t('zh', key), 'string', `zh.${key}`);

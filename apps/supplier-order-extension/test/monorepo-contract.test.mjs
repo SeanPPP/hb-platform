@@ -163,7 +163,7 @@ test('TXK 明文 HTTP 权限仅开放给已核验的精确域名', () => {
   assert.ok(!manifest.includes('"http://*/*"'));
 });
 
-test('Top 10% 商品图片、名称和货号完整显示并允许窄屏换行', () => {
+test('Top 30% 商品图片、名称、货号和销量档位完整显示并允许窄屏换行', () => {
   const css = read('src/sidepanel/sidepanel.css');
   const sidepanel = read('src/sidepanel/sidepanel.js');
   const nameRule = css.match(/\.ranking-product strong\s*\{([^}]+)\}/)?.[1] ?? '';
@@ -180,17 +180,24 @@ test('Top 10% 商品图片、名称和货号完整显示并允许窄屏换行', 
   assert.ok(imageRule.includes('height: 72px'));
   assert.ok(sidepanel.includes("placeholder.className = 'ranking-image-placeholder'"));
   assert.ok(sidepanel.includes('placeholder.hidden = false'));
+  assert.ok(sidepanel.includes("band.className = 'ranking-band'"));
 });
 
-test('Top 10% 支持供应商自动与手动切换、均价和每页 50 条分页', () => {
+test('Top 30% 支持供应商切换、服务端分页、每页条数和旧 TOP 10 提示', () => {
   const html = read('src/sidepanel/sidepanel.html');
   const sidepanel = read('src/sidepanel/sidepanel.js');
+  const worker = read('src/background/service-worker.js');
 
   for (const id of [
     'rankingSupplierSelect',
+    'rankingPageSizeSelect',
     'rankingPrevBtn',
     'rankingPageInfo',
     'rankingNextBtn',
+    'rankingLegacyHint',
+    'rankingState',
+    'rankingRetryBtn',
+    'rankingAnnouncement',
   ]) {
     assert.ok(html.includes(`id="${id}"`), `排名区缺少 ${id}`);
   }
@@ -199,10 +206,49 @@ test('Top 10% 支持供应商自动与手动切换、均价和每页 50 条分�
   assert.ok(sidepanel.includes('chrome.tabs.onUpdated.addListener'));
   assert.ok(sidepanel.includes("el('rankingSupplierSelect').addEventListener('change'"));
   assert.ok(sidepanel.includes('formatAverageSellingPrice(item.averageSellingPrice'));
-  assert.ok(sidepanel.includes('paginateRanking(items, rankingPage)'));
+  assert.ok(sidepanel.includes('normalizeTopSalesPage'));
+  assert.ok(sidepanel.includes('topPercent: 30'));
+  assert.ok(sidepanel.includes('pageSize: rankingPageSize'));
+  assert.ok(sidepanel.includes('totalRankedCount'));
+  assert.ok(sidepanel.includes('totalPages'));
+  assert.ok(sidepanel.includes("chrome.storage.local.set({ salesRankingPageSize"));
+  const pageSizeHandler = sidepanel.slice(
+    sidepanel.indexOf("el('rankingPageSizeSelect').addEventListener('change'"),
+    sidepanel.indexOf("el('rankingRetryBtn').addEventListener('click'"),
+  );
+  assert.ok(
+    pageSizeHandler.indexOf('chrome.storage.local.set({ salesRankingPageSize')
+      < pageSizeHandler.indexOf('renderLegacyRankingPage'),
+    '每页条数必须先持久化，再发起可能失败的榜单请求',
+  );
+  assert.ok(!sidepanel.includes('stored.rankingPageSize'));
+  assert.ok(!sidepanel.includes('changes.rankingPageSize'));
+  assert.ok(sidepanel.includes("chrome.storage.local.set({ salesRankingDays"));
+  assert.ok(sidepanel.includes('scrollRankingToTop'));
+  assert.ok(sidepanel.includes("formatMessage('rankingPageChanged'"));
+  assert.ok(sidepanel.includes('restoreRankingLoad'));
+  assert.ok(sidepanel.includes('const showPager = !rankingError'));
+  assert.ok(sidepanel.includes('rankingRetryTarget'));
+  assert.ok(sidepanel.includes('resolveRankingRetryTarget'));
+  assert.ok(worker.includes('topPercent'));
+  assert.ok(worker.includes('pageSize'));
   assert.ok(sidepanel.includes('const activeSupplierRequestGeneration = createGenerationGuard(0)'));
   assert.ok(sidepanel.includes('activeSupplierRequestGeneration.isCurrent(requestGeneration)'));
   assert.ok(sidepanel.includes("placeholder.value = ''"));
+});
+
+test('供应商商品摘要携带并隔离 60/90 天销量排名周期', () => {
+  const list = read('src/content/list.js');
+  const worker = read('src/background/service-worker.js');
+
+  assert.ok(list.includes("'salesRankingDays'"));
+  assert.ok(list.includes('buildSummaryCacheKey'));
+  assert.ok(list.includes('salesRankingDays,'));
+  assert.ok(list.includes('changes.salesRankingDays'));
+  assert.ok(worker.includes('salesRankingDays'));
+  assert.ok(list.includes("rankLine.className = 'hb-rank-line'"));
+  assert.ok(list.includes("formatMessage('salesRankBand'"));
+  assert.ok(!list.includes("btn.appendChild(document.createTextNode(' · '));\n      btn.appendChild(band)"));
 });
 
 test('没有当前商品时仍可切换到商品记录空状态', () => {
