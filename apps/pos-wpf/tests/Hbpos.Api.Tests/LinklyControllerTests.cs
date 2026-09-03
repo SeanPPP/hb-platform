@@ -327,6 +327,41 @@ public sealed class LinklyControllerTests
             apiResult.Message);
     }
 
+    [Theory]
+    [InlineData(true, "LINKLY_CLOUD_TERMINAL_CREDENTIAL_REENTRY_REQUIRED", "Linkly Cloud terminal credentials must be re-entered in the management portal.")]
+    [InlineData(false, "LINKLY_CLOUD_TERMINAL_CREDENTIAL_UNAVAILABLE", "Linkly Cloud terminal credentials are unavailable. Re-enter them in the management portal.")]
+    public async Task StartCloudBackendTransaction_returns_fixed_safe_credential_failure(
+        bool reentryRequired,
+        string expectedCode,
+        string expectedMessage)
+    {
+        await using var factory = new LinklyApiFactory(
+            linklyCloudBackendAsyncService: new CapturingLinklyCloudBackendAsyncService(
+                reentryRequired
+                    ? new LinklyCloudTerminalCredentialReentryRequiredException()
+                    : new LinklyCloudTerminalCredentialUnavailableException()));
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        using var response = await client.PostAsJsonAsync(
+            "/api/v1/linkly/cloud-backend/transactions",
+            new
+            {
+                Environment = "Sandbox",
+                TxnType = "P",
+                AmtPurchase = 1000,
+                TerminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+                SelectionRevision = 1
+            });
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var envelope = await response.Content
+            .ReadFromJsonAsync<ApiResult<LinklyCloudBackendSessionResponse>>();
+        Assert.NotNull(envelope);
+        Assert.Equal(expectedCode, envelope!.ErrorCode);
+        Assert.Equal(expectedMessage, envelope.Message);
+    }
+
     [Fact]
     public async Task GetCloudCredential_ReturnsBadRequestForInvalidEnvironment()
     {
@@ -507,6 +542,28 @@ public sealed class LinklyControllerTests
         Assert.Equal("logon-session-1", apiResult.Data?.TransactionReference);
     }
 
+    [Theory]
+    [InlineData("status-test")]
+    [InlineData("logon-test")]
+    public async Task CloudBackendTerminalTest_MapsPhysicalTerminalFenceToStableConflict(string route)
+    {
+        var backendService = new CapturingLinklyCloudBackendAsyncService(
+            terminalTestException: new LinklyCloudBackendActiveTransactionException("active-session"));
+        await using var factory = new LinklyApiFactory(linklyCloudBackendAsyncService: backendService);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        using var response = await client.PostAsync(
+            $"/api/v1/linkly/cloud-backend/{route}?environment=sandbox",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var apiResult = await response.Content.ReadFromJsonAsync<ApiResult<object>>();
+        Assert.NotNull(apiResult);
+        Assert.False(apiResult!.Success);
+        Assert.Equal("LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION", apiResult.ErrorCode);
+    }
+
     [Fact]
     public async Task UpsertCloudBackendTerminalCredential_UsesAuthenticatedDeviceClaimsOnlyAndDoesNotExposeSecret()
     {
@@ -542,6 +599,81 @@ public sealed class LinklyControllerTests
         Assert.True(apiResult.Data?.HasSecret);
         Assert.DoesNotContain("secret-pos-01", body, StringComparison.Ordinal);
         Assert.DoesNotContain("\"secret\"", body, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Active_mode_disables_legacy_credential_endpoints_without_calling_legacy_services()
+    {
+        var credentialService = new StubLinklyCloudCredentialService();
+        var backendService = new CapturingLinklyCloudBackendAsyncService();
+        var modeService = new FixedLinklyCloudTerminalModeService("Active");
+        await using var factory = new LinklyApiFactory(
+            linklyCloudCredentialService: credentialService,
+            linklyCloudBackendAsyncService: backendService,
+            linklyCloudTerminalService: modeService);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        using var getCredential = await client.GetAsync(
+            "/api/v1/linkly/cloud-credential?environment=Sandbox");
+        using var upsertCredential = await client.PutAsJsonAsync(
+            "/api/v1/linkly/cloud-credential",
+            new LinklyCloudCredentialUpsertRequest("Sandbox", "legacy-user", "legacy-password"));
+        using var upsertTerminal = await client.PutAsJsonAsync(
+            "/api/v1/linkly/cloud-backend/terminal",
+            new LinklyCloudBackendTerminalCredentialUpsertRequest(
+                "Sandbox",
+                "legacy-secret",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"));
+
+        await AssertLegacyModeDisabledAsync(getCredential);
+        await AssertLegacyModeDisabledAsync(upsertCredential);
+        await AssertLegacyModeDisabledAsync(upsertTerminal);
+        Assert.Equal(0, credentialService.GetCalls);
+        Assert.Equal(0, credentialService.UpsertCalls);
+        Assert.Null(backendService.LastTerminalUpsertRequest);
+        Assert.Equal(3, modeService.ModeCalls);
+    }
+
+    [Fact]
+    public async Task Draft_mode_keeps_legacy_credential_endpoints_compatible()
+    {
+        var credentialService = new StubLinklyCloudCredentialService(
+            responseFactory: (storeCode, environment) => Task.FromResult<LinklyCloudCredentialResponse?>(
+                new LinklyCloudCredentialResponse(
+                    storeCode,
+                    environment,
+                    "legacy-user",
+                    "legacy-password",
+                    DateTimeOffset.UtcNow)));
+        var backendService = new CapturingLinklyCloudBackendAsyncService();
+        var modeService = new FixedLinklyCloudTerminalModeService("Draft");
+        await using var factory = new LinklyApiFactory(
+            linklyCloudCredentialService: credentialService,
+            linklyCloudBackendAsyncService: backendService,
+            linklyCloudTerminalService: modeService);
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Test");
+
+        using var getCredential = await client.GetAsync(
+            "/api/v1/linkly/cloud-credential?environment=Sandbox");
+        using var upsertCredential = await client.PutAsJsonAsync(
+            "/api/v1/linkly/cloud-credential",
+            new LinklyCloudCredentialUpsertRequest("Sandbox", "legacy-user", "legacy-password"));
+        using var upsertTerminal = await client.PutAsJsonAsync(
+            "/api/v1/linkly/cloud-backend/terminal",
+            new LinklyCloudBackendTerminalCredentialUpsertRequest(
+                "Sandbox",
+                "legacy-secret",
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"));
+
+        Assert.Equal(HttpStatusCode.OK, getCredential.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, upsertCredential.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, upsertTerminal.StatusCode);
+        Assert.Equal(1, credentialService.GetCalls);
+        Assert.Equal(1, credentialService.UpsertCalls);
+        Assert.NotNull(backendService.LastTerminalUpsertRequest);
+        Assert.Equal(3, modeService.ModeCalls);
     }
 
     [Fact]
@@ -808,6 +940,15 @@ public sealed class LinklyControllerTests
         throw new Xunit.Sdk.XunitException($"Expected Linkly JSON log operation={operation} phase={phase}.");
     }
 
+    private static async Task AssertLegacyModeDisabledAsync(HttpResponseMessage response)
+    {
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        var envelope = await response.Content.ReadFromJsonAsync<ApiResult<JsonElement>>();
+        Assert.NotNull(envelope);
+        Assert.False(envelope!.Success);
+        Assert.Equal("LINKLY_CLOUD_LEGACY_MODE_DISABLED", envelope.ErrorCode);
+    }
+
     private sealed class RecordingLogger<T> : ILogger<T>
     {
         public List<string> Lines { get; } = [];
@@ -838,7 +979,8 @@ public sealed class LinklyControllerTests
         ILinklyCloudCredentialService? linklyCloudCredentialService = null,
         ILinklyCloudCredentialSchemaInitializer? schemaInitializer = null,
         ILinklyCloudBackendAsyncService? linklyCloudBackendAsyncService = null,
-        ILinklyCloudBackendAsyncSchemaInitializer? backendAsyncSchemaInitializer = null)
+        ILinklyCloudBackendAsyncSchemaInitializer? backendAsyncSchemaInitializer = null,
+        ILinklyCloudTerminalService? linklyCloudTerminalService = null)
         : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(Microsoft.AspNetCore.Hosting.IWebHostBuilder builder)
@@ -867,6 +1009,9 @@ public sealed class LinklyControllerTests
 
                 services.RemoveAll<ILinklyCloudBackendAsyncService>();
                 services.AddSingleton(linklyCloudBackendAsyncService ?? new CapturingLinklyCloudBackendAsyncService());
+
+                services.RemoveAll<ILinklyCloudTerminalService>();
+                services.AddSingleton(linklyCloudTerminalService ?? new FixedLinklyCloudTerminalModeService("Legacy"));
 
                 services.RemoveAll<ILinklyCloudPairingService>();
                 services.AddSingleton<ILinklyCloudPairingService>(new NoOpLinklyCloudPairingService());
@@ -1029,7 +1174,8 @@ public sealed class LinklyControllerTests
         LinklyCloudBackendHealthResponse? healthResponse = null,
         LinklyCloudBackendSessionResponse? sendKeyResponse = null,
         LinklyCloudBackendSessionResponse? acknowledgeResponse = null,
-        Exception? acknowledgeException = null) : ILinklyCloudBackendAsyncService
+        Exception? acknowledgeException = null,
+        Exception? terminalTestException = null) : ILinklyCloudBackendAsyncService
     {
         public string? LastStoreCode { get; private set; }
 
@@ -1182,6 +1328,11 @@ public sealed class LinklyControllerTests
             string environment,
             CancellationToken cancellationToken)
         {
+            if (terminalTestException is not null)
+            {
+                throw terminalTestException;
+            }
+
             LastStatusTestStoreCode = storeCode;
             LastStatusTestDeviceCode = deviceCode;
             LastStatusTestEnvironment = environment;
@@ -1207,6 +1358,11 @@ public sealed class LinklyControllerTests
             string environment,
             CancellationToken cancellationToken)
         {
+            if (terminalTestException is not null)
+            {
+                throw terminalTestException;
+            }
+
             LastLogonTestStoreCode = storeCode;
             LastLogonTestDeviceCode = deviceCode;
             LastLogonTestEnvironment = environment;
@@ -1324,11 +1480,16 @@ public sealed class LinklyControllerTests
         Func<string, string, Exception>? exceptionFactory = null,
         Func<string, LinklyCloudCredentialUpsertRequest, string?, Task<LinklyCloudCredentialUpsertResponse>>? upsertFactory = null) : ILinklyCloudCredentialService
     {
+        public int GetCalls { get; private set; }
+
+        public int UpsertCalls { get; private set; }
+
         public Task<LinklyCloudCredentialResponse?> GetByStoreCodeAsync(
             string storeCode,
             string environment,
             CancellationToken cancellationToken)
         {
+            GetCalls++;
             if (exceptionFactory is not null)
             {
                 throw exceptionFactory(storeCode, environment);
@@ -1348,6 +1509,7 @@ public sealed class LinklyControllerTests
             string? updatedBy,
             CancellationToken cancellationToken)
         {
+            UpsertCalls++;
             if (upsertFactory is not null)
             {
                 return upsertFactory(storeCode, request, updatedBy);

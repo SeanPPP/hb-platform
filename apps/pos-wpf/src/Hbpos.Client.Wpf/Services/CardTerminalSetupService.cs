@@ -1,4 +1,5 @@
 using Hbpos.Client.Wpf.Localization;
+using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Square;
 
 namespace Hbpos.Client.Wpf.Services;
@@ -89,6 +90,31 @@ public interface ICardTerminalSetupService
     Task<LinklyConnectionTestResult> TestLinklyCloudBackendConnectionAsync(
         CardTerminalEnvironment environment,
         CancellationToken cancellationToken = default);
+
+    Task<LinklyCloudTerminalListResponse> ListLinklyCloudBackendTerminalsAsync(
+        CardTerminalEnvironment environment,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult(new LinklyCloudTerminalListResponse(
+            environment.ToString(),
+            SelectedTerminalId: null,
+            SelectionRevision: null,
+            Terminals: []));
+
+    Task<LinklyCloudTerminalSelectionResponse> SelectLinklyCloudBackendTerminalAsync(
+        CardTerminalEnvironment environment,
+        Guid terminalId,
+        long? expectedRevision,
+        CancellationToken cancellationToken = default) =>
+        Task.FromException<LinklyCloudTerminalSelectionResponse>(
+            new NotSupportedException("Linkly Cloud terminal selection is unavailable."));
+
+    Task<LinklyCloudTerminalPairResponse> PairLinklyCloudBackendTerminalAsync(
+        CardTerminalEnvironment environment,
+        Guid terminalId,
+        string pairCode,
+        CancellationToken cancellationToken = default) =>
+        Task.FromException<LinklyCloudTerminalPairResponse>(
+            new NotSupportedException("Linkly Cloud terminal pairing is unavailable."));
 
     Task<LinklyConnectionTestResult> TestLinklyCloudBackendTransactionStatusAsync(
         CardTerminalEnvironment environment,
@@ -405,6 +431,57 @@ public sealed class CardTerminalSetupService(
         var result = await linklyBackendTerminalClient.TestConnectionAsync(environment, cancellationToken);
         LogLinklyCloudSetup($"backend test completed environment={environment} success={result.Succeeded}");
         return result;
+    }
+
+    public Task<LinklyCloudTerminalListResponse> ListLinklyCloudBackendTerminalsAsync(
+        CardTerminalEnvironment environment,
+        CancellationToken cancellationToken = default)
+    {
+        if (linklyBackendTerminalClient is null)
+        {
+            return Task.FromException<LinklyCloudTerminalListResponse>(
+                new InvalidOperationException(T("settings.linklyCloud.unavailable", "Linkly Cloud setup is unavailable.")));
+        }
+
+        return linklyBackendTerminalClient.GetTerminalsAsync(environment, cancellationToken);
+    }
+
+    public Task<LinklyCloudTerminalSelectionResponse> SelectLinklyCloudBackendTerminalAsync(
+        CardTerminalEnvironment environment,
+        Guid terminalId,
+        long? expectedRevision,
+        CancellationToken cancellationToken = default)
+    {
+        if (linklyBackendTerminalClient is null)
+        {
+            return Task.FromException<LinklyCloudTerminalSelectionResponse>(
+                new InvalidOperationException(T("settings.linklyCloud.unavailable", "Linkly Cloud setup is unavailable.")));
+        }
+
+        return linklyBackendTerminalClient.SelectTerminalAsync(
+            environment,
+            terminalId,
+            expectedRevision,
+            cancellationToken);
+    }
+
+    public Task<LinklyCloudTerminalPairResponse> PairLinklyCloudBackendTerminalAsync(
+        CardTerminalEnvironment environment,
+        Guid terminalId,
+        string pairCode,
+        CancellationToken cancellationToken = default)
+    {
+        if (linklyBackendTerminalClient is null)
+        {
+            return Task.FromException<LinklyCloudTerminalPairResponse>(
+                new InvalidOperationException(T("settings.linklyCloud.unavailable", "Linkly Cloud setup is unavailable.")));
+        }
+
+        return linklyBackendTerminalClient.PairTerminalAsync(
+            environment,
+            terminalId,
+            pairCode,
+            cancellationToken);
     }
 
     public async Task<LinklyConnectionTestResult> TestLinklyCloudBackendTransactionStatusAsync(

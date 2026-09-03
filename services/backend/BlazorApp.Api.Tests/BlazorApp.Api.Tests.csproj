@@ -138,6 +138,7 @@
     <Compile Include="InvoiceEmailSettingsServiceTests.cs" />
     <Compile Include="PaymentTerminalSettingsServiceTests.cs" />
     <Compile Include="PaymentTerminalSettingsSchemaMigratorTests.cs" />
+    <Compile Include="LinklyCloudTerminalCredentialDataProtectionTests.cs" />
     <Compile Include="EmergencyLoginGrantTests.cs" />
     <Compile Include="EmergencyLoginKeyManagementTests.cs" />
     <Compile Include="StoreOrderHqSyncTests.cs" />

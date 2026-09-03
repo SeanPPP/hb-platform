@@ -20,6 +20,11 @@ import {
   type PaymentCheckoutTender,
 } from "@/features/payments/runtime/payment-checkout-runtime";
 import type { PaymentProviderAvailability } from "@/features/payments/runtime/payment-provider-registry";
+import type {
+  LinklyPaymentTerminalSelectionExpectation,
+  LinklyTerminalSelectionPort,
+  LinklyTerminalSelectionSnapshot,
+} from "@/features/payments/linkly";
 import { calculateCashSettlement } from "@/features/sales/domain";
 
 export type PaymentUiMethod = "cash" | PaymentProvider;
@@ -140,6 +145,12 @@ export type PaymentPresenterState = Readonly<{
     errorCode: LinklyOperatorErrorCode | null;
     allowedKeys: readonly LinklySafeOperatorKey[];
   }>;
+  linklyTerminals?: Readonly<{
+    kind: "unavailable" | "loading" | "ready" | "switching" | "failed";
+    environment: string | null;
+    snapshot: LinklyTerminalSelectionSnapshot | null;
+    errorCode: "LINKLY_TERMINAL_SELECTION_FAILED" | null;
+  }>;
 }>;
 
 /**
@@ -152,6 +163,7 @@ export interface PaymentScreenPresenter {
   initialize(): Promise<boolean>;
   destroy(): void;
   selectMethod(method: PaymentUiMethod): boolean;
+  selectLinklyTerminal?(terminalId: string): Promise<boolean>;
   setAmountText(value: string): void;
   setVoucherCode(value: string): void;
   dismissError(): void;
@@ -192,6 +204,10 @@ export type PaymentCheckoutEntryContext = Readonly<{
 export type PaymentPresenterDependencies = Readonly<{
   runtime: PaymentCheckoutRuntimePort;
   linklyOperator?: LinklyOperatorRuntimePort;
+  linklyTerminals?: Readonly<{
+    environment: string;
+    port: LinklyTerminalSelectionPort;
+  }>;
   entry: PaymentCheckoutEntryContext | null;
   createActionId(): string;
 }>;
@@ -265,6 +281,9 @@ export class PaymentPresenter {
   private voucherCode = "";
   private destroyed = false;
   private lifecycleRevision = 0;
+  private readonly linklyTerminalAbort = new AbortController();
+  private linklySelectionDesiredId: string | null = null;
+  private linklySelectionInFlight: Promise<boolean> | null = null;
 
   public constructor(private readonly dependencies: PaymentPresenterDependencies) {
     const providers = safeProviderAvailability(dependencies.runtime);
@@ -303,6 +322,19 @@ export class PaymentPresenter {
       tenderReversalRecovery: null,
       checkout: emptyRegularCheckout(dependencies.entry?.lines),
       linkly: emptyLinklyState(),
+      linklyTerminals: dependencies.linklyTerminals
+        ? Object.freeze({
+            kind: "loading" as const,
+            environment: dependencies.linklyTerminals.environment,
+            snapshot: null,
+            errorCode: null,
+          })
+        : Object.freeze({
+            kind: "unavailable" as const,
+            environment: null,
+            snapshot: null,
+            errorCode: null,
+          }),
     };
   }
 
@@ -326,10 +358,15 @@ export class PaymentPresenter {
       if (!this.isCurrent(revision)) return false;
       if (recovery) {
         this.applySnapshot(recovery);
+        const linklyTerminals = await this.loadLinklyTerminals(false);
+        this.patchIfCurrent(revision, { linklyTerminals });
       } else {
+        const linklyTerminals = await this.loadLinklyTerminals(true);
+        if (!this.isCurrent(revision)) return false;
         this.patch({
           phase: "ready",
           initialized: true,
+          linklyTerminals,
           allowedActions: Object.freeze({
             ...EMPTY_ALLOWED_ACTIONS,
             start: this.dependencies.entry !== null,
@@ -359,6 +396,8 @@ export class PaymentPresenter {
     if (this.destroyed) return;
     this.destroyed = true;
     this.lifecycleRevision += 1;
+    this.linklyTerminalAbort.abort();
+    this.linklySelectionDesiredId = null;
     this.voucherCode = "";
     this.listeners.clear();
   }
@@ -384,6 +423,176 @@ export class PaymentPresenter {
           : resetCashPresentation(this.state.checkout),
     });
     return true;
+  }
+
+  public selectLinklyTerminal(terminalId: string): Promise<boolean> {
+    const normalizedTerminalId = terminalId.trim();
+    const resource = this.state.linklyTerminals;
+    const terminal = resource?.snapshot?.terminals.find(
+      (candidate) => candidate.terminalId === normalizedTerminalId,
+    );
+    if (
+      !this.dependencies.linklyTerminals ||
+      !resource?.snapshot ||
+      resource.snapshot.mode !== "Active" ||
+      !canSwitchLinklyTerminal(this.state) ||
+      !terminal ||
+      !terminal.isReady ||
+      terminal.pairingState !== "Ready"
+    ) {
+      return Promise.resolve(false);
+    }
+    if (
+      resource.snapshot.selectedTerminalId === normalizedTerminalId &&
+      !this.linklySelectionInFlight
+    ) {
+      return Promise.resolve(true);
+    }
+
+    this.linklySelectionDesiredId = normalizedTerminalId;
+    if (this.linklySelectionInFlight) return this.linklySelectionInFlight;
+    const pending = this.drainLinklyTerminalSelection().finally(() => {
+      if (this.linklySelectionInFlight === pending) {
+        this.linklySelectionInFlight = null;
+      }
+    });
+    this.linklySelectionInFlight = pending;
+    return pending;
+  }
+
+  private async loadLinklyTerminals(
+    autoSelectSingle: boolean,
+  ): Promise<NonNullable<PaymentPresenterState["linklyTerminals"]>> {
+    const configuration = this.dependencies.linklyTerminals;
+    if (!configuration) {
+      return Object.freeze({
+        kind: "unavailable",
+        environment: null,
+        snapshot: null,
+        errorCode: null,
+      });
+    }
+    try {
+      let snapshot = await configuration.port.readTerminals(
+        configuration.environment,
+        this.linklyTerminalAbort.signal,
+      );
+      if (snapshot.environment !== configuration.environment) {
+        throw new Error("LINKLY_TERMINAL_ENVIRONMENT_MISMATCH");
+      }
+      const onlyTerminal = snapshot.terminals[0];
+      if (
+        autoSelectSingle &&
+        snapshot.mode === "Active" &&
+        snapshot.selectedTerminalId === null &&
+        snapshot.terminals.length === 1 &&
+        onlyTerminal?.isReady &&
+        onlyTerminal.pairingState === "Ready"
+      ) {
+        snapshot = await configuration.port.selectTerminal(
+          configuration.environment,
+          onlyTerminal.terminalId,
+          snapshot.selectionRevision,
+          this.linklyTerminalAbort.signal,
+        );
+      }
+      return Object.freeze({
+        kind: "ready",
+        environment: configuration.environment,
+        snapshot,
+        errorCode: null,
+      });
+    } catch {
+      return Object.freeze({
+        kind: "failed",
+        environment: configuration.environment,
+        snapshot: null,
+        errorCode: "LINKLY_TERMINAL_SELECTION_FAILED",
+      });
+    }
+  }
+
+  private async drainLinklyTerminalSelection(): Promise<boolean> {
+    const configuration = this.dependencies.linklyTerminals;
+    let latest = this.state.linklyTerminals?.snapshot ?? null;
+    if (!configuration || !latest || latest.mode !== "Active") return false;
+
+    while (this.linklySelectionDesiredId && !this.destroyed) {
+      const targetId = this.linklySelectionDesiredId;
+      this.linklySelectionDesiredId = null;
+      const target = latest.terminals.find(
+        (terminal) => terminal.terminalId === targetId,
+      );
+      if (
+        !target ||
+        !target.isReady ||
+        target.pairingState !== "Ready" ||
+        !canSwitchLinklyTerminal(this.state)
+      ) {
+        return false;
+      }
+      this.patch({
+        linklyTerminals: Object.freeze({
+          kind: "switching",
+          environment: configuration.environment,
+          snapshot: this.state.linklyTerminals?.snapshot ?? latest,
+          errorCode: null,
+        }),
+      });
+      try {
+        latest = await configuration.port.selectTerminal(
+          configuration.environment,
+          targetId,
+          latest.selectionRevision,
+          this.linklyTerminalAbort.signal,
+        );
+      } catch {
+        try {
+          latest = await configuration.port.readTerminals(
+            configuration.environment,
+            this.linklyTerminalAbort.signal,
+          );
+        } catch {
+          if (!this.destroyed) {
+            this.patch({
+              linklyTerminals: Object.freeze({
+                kind: "failed",
+                environment: configuration.environment,
+                snapshot: null,
+                errorCode: "LINKLY_TERMINAL_SELECTION_FAILED",
+              }),
+            });
+          }
+          return false;
+        }
+        // PUT 结果不明确时只重读，不自动重发同一次选择。
+        if (!this.linklySelectionDesiredId) {
+          this.patch({
+            linklyTerminals: Object.freeze({
+              kind: "ready",
+              environment: configuration.environment,
+              snapshot: latest,
+              errorCode: null,
+            }),
+          });
+          return latest.selectedTerminalId === targetId;
+        }
+      }
+
+      // 新目标已排队时不发布旧目标，使用刚取得的 revision 继续持久切换。
+      if (this.linklySelectionDesiredId) continue;
+      if (!this.destroyed) {
+        this.patch({
+          linklyTerminals: Object.freeze({
+            kind: "ready",
+            environment: configuration.environment,
+            snapshot: latest,
+            errorCode: null,
+          }),
+        });
+      }
+    }
+    return !this.destroyed;
   }
 
   public setAmountText(value: string): void {
@@ -447,6 +656,14 @@ export class PaymentPresenter {
       this.patch({ fieldIssue: "voucher-required" });
       return Promise.resolve(false);
     }
+    const linklyTerminalSelection =
+      method === "linkly-cloud"
+        ? linklyPaymentSelectionForState(this.state)
+        : null;
+    if (method === "linkly-cloud" && !linklyTerminalSelection) {
+      this.patch({ fieldIssue: "method-unavailable" });
+      return Promise.resolve(false);
+    }
 
     return this.runExclusive(async (revision) => {
       this.patchIfCurrent(revision, {
@@ -488,6 +705,9 @@ export class PaymentPresenter {
             actionId,
             provider: method,
             amount,
+            ...(linklyTerminalSelection
+              ? { linklyTerminalSelection }
+              : {}),
             ...(method === "voucher"
               ? { voucherCode: this.voucherCode }
               : {}),
@@ -506,6 +726,9 @@ export class PaymentPresenter {
             actionId,
             provider: method,
             amount,
+            ...(linklyTerminalSelection
+              ? { linklyTerminalSelection }
+              : {}),
             ...(method === "voucher"
               ? { voucherCode: this.voucherCode }
               : {}),
@@ -516,6 +739,14 @@ export class PaymentPresenter {
       }
       if (!snapshot || !this.isCurrent(revision)) return false;
       this.applySnapshot(snapshot);
+      if (
+        snapshot.errorCode ===
+        "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT"
+      ) {
+        const linklyTerminals = await this.loadLinklyTerminals(false);
+        if (!this.isCurrent(revision)) return false;
+        this.patch({ linklyTerminals });
+      }
       if (method === "cash") {
         const settlement = snapshot.cashSettlement;
         this.patchIfCurrent(revision, {
@@ -871,6 +1102,7 @@ export function canSelectPaymentMethod(
   method: PaymentUiMethod,
 ): boolean {
   if (state.busy) return false;
+  if (method === "linkly-cloud" && !linklyTerminalReady(state)) return false;
   const activeMethods = state.tenders.map((tender) => tender.method);
   if (state.checkout.flow !== "regular") {
     if (!state.allowedActions.start || activeMethods.length > 0) return false;
@@ -893,6 +1125,57 @@ export function canSelectPaymentMethod(
     return false;
   }
   return state.allowedActions.start;
+}
+
+function linklyTerminalReady(state: PaymentPresenterState): boolean {
+  const resource = state.linklyTerminals;
+  // 非 Linkly 组合（例如分期 presenter）保留既有 provider 可用性判断。
+  if (!resource) return true;
+  if (resource.kind !== "ready" || !resource.snapshot) return false;
+  if (resource.snapshot.mode !== "Active") return true;
+  const selected = resource.snapshot.terminals.find(
+    (terminal) => terminal.terminalId === resource.snapshot?.selectedTerminalId,
+  );
+  return Boolean(
+    selected &&
+      selected.isReady &&
+      !selected.isBusy &&
+      selected.pairingState === "Ready",
+  );
+}
+
+function linklyPaymentSelectionForState(
+  state: PaymentPresenterState,
+): LinklyPaymentTerminalSelectionExpectation | null {
+  const resource = state.linklyTerminals;
+  const snapshot = resource?.kind === "ready" ? resource.snapshot : null;
+  if (!snapshot) return null;
+  if (snapshot.mode !== "Active") {
+    return Object.freeze({
+      environment: snapshot.environment,
+      mode: snapshot.mode,
+    });
+  }
+  const selected = snapshot.terminals.find(
+    (terminal) => terminal.terminalId === snapshot.selectedTerminalId,
+  );
+  if (!selected) return null;
+  return Object.freeze({
+    environment: snapshot.environment,
+    mode: "Active",
+    terminalId: selected.terminalId,
+    selectionRevision: snapshot.selectionRevision,
+  });
+}
+
+export function canSwitchLinklyTerminal(state: PaymentPresenterState): boolean {
+  if (state.busy || state.recoveryInFlight) return false;
+  return (
+    state.phase === "ready" ||
+    state.phase === "partial" ||
+    state.phase === "declined" ||
+    state.phase === "cancelled"
+  );
 }
 
 export function canSubmitPaymentMethod(

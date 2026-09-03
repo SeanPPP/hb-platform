@@ -135,6 +135,18 @@ public sealed class SqlSugarLinklyCloudCredentialRepository(
     HbposSqlSugarContext dbContext) : ILinklyCloudCredentialRepository
 {
     internal const string UpsertSql = """
+        SET XACT_ABORT ON;
+        SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+        BEGIN TRANSACTION;
+
+        DECLARE @Mode NVARCHAR(16);
+        SELECT @Mode = [Mode]
+        FROM [dbo].[POSM_LinklyCloudConfigurationMode] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode;
+
+        IF @Mode = N'Active'
+            THROW 51005, 'Legacy Linkly Cloud endpoints are disabled while multi-terminal mode is Active.', 1;
+
         MERGE [dbo].[POSM_LinklyCloudCredential] WITH (HOLDLOCK) AS target
         USING (SELECT @StoreCode AS [StoreCode], @Environment AS [Environment]) AS source
         ON target.[StoreCode] = source.[StoreCode]
@@ -148,6 +160,8 @@ public sealed class SqlSugarLinklyCloudCredentialRepository(
         WHEN NOT MATCHED THEN
             INSERT ([StoreCode], [Environment], [Username], [Password], [UpdatedAt], [UpdatedBy])
             VALUES (@StoreCode, @Environment, @Username, @Password, @UpdatedAt, @UpdatedBy);
+
+        COMMIT TRANSACTION;
         """;
 
     public async Task<LinklyCloudCredentialRecord?> GetByStoreCodeAsync(
@@ -187,15 +201,22 @@ public sealed class SqlSugarLinklyCloudCredentialRepository(
         string? updatedBy,
         CancellationToken cancellationToken)
     {
-        // 密码只写入数据库参数，响应映射只暴露 HasPassword，不回传明文。
-        await dbContext.PosmDb.Ado.ExecuteCommandAsync(
-            UpsertSql,
-            new SugarParameter("@StoreCode", storeCode),
-            new SugarParameter("@Environment", environment),
-            new SugarParameter("@Username", username),
-            new SugarParameter("@Password", password),
-            new SugarParameter("@UpdatedAt", updatedAt),
-            new SugarParameter("@UpdatedBy", updatedBy));
+        try
+        {
+            // 密码只写入数据库参数；与模式行在同一事务中加锁，避免旧配置绕过 Active 切换。
+            await dbContext.PosmDb.Ado.ExecuteCommandAsync(
+                UpsertSql,
+                new SugarParameter("@StoreCode", storeCode),
+                new SugarParameter("@Environment", environment),
+                new SugarParameter("@Username", username),
+                new SugarParameter("@Password", password),
+                new SugarParameter("@UpdatedAt", updatedAt),
+                new SugarParameter("@UpdatedBy", updatedBy));
+        }
+        catch (Exception ex) when (ex.ToString().Contains("51005", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new LinklyCloudLegacyModeDisabledException();
+        }
 
         return await GetByStoreCodeAsync(storeCode, environment, cancellationToken)
             ?? new LinklyCloudCredentialRecord

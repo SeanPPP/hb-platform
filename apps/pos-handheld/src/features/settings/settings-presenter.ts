@@ -68,20 +68,57 @@ export type SettingsLinklyPairResult = Readonly<{
   status: "completed" | "unknown";
 }>;
 
+export type SettingsLinklyPairingState =
+  | "Unpaired"
+  | "Ready"
+  | "Unknown"
+  | "NeedsRepair";
+
+export type SettingsLinklyTerminal = Readonly<{
+  terminalId: string;
+  laneNo: number;
+  displayName: string;
+  pairingState: SettingsLinklyPairingState;
+  isBusy: boolean;
+  isReady: boolean;
+  lastHealthStatus: string | null;
+  lastHealthAt: string | null;
+}>;
+
+export type SettingsLinklyTerminalSelectionSnapshot = Readonly<{
+  environment: PaymentEnvironment;
+  mode: "Active" | "Legacy" | "Draft";
+  selectedTerminalId: string | null;
+  selectionRevision: number;
+  terminals: readonly SettingsLinklyTerminal[];
+}>;
+
 export interface SettingsLinklySetupReadPort {
   readState(
     environment: PaymentEnvironment,
     signal: AbortSignal,
+    terminals?: SettingsLinklyTerminalSelectionSnapshot | null,
   ): Promise<SettingsLinklyHealthSnapshot>;
+  readTerminals?(
+    environment: PaymentEnvironment,
+    signal: AbortSignal,
+  ): Promise<SettingsLinklyTerminalSelectionSnapshot>;
+  selectTerminal?(
+    environment: PaymentEnvironment,
+    terminalId: string,
+    expectedRevision: number,
+    signal: AbortSignal,
+  ): Promise<SettingsLinklyTerminalSelectionSnapshot>;
 }
 
-/** Settings 页面只可读取公开 health；不可把配对写能力暴露给 Presenter。 */
+/** Settings 页面只接触公开 health/终端摘要与选择；配对写能力不暴露给 Presenter。 */
 export type SettingsLinklySetupControlPort = SettingsLinklySetupReadPort;
 
 /** 配对写端口只由危险动作路径持有。 */
 export interface SettingsLinklyPairingPort {
   pair(
     environment: PaymentEnvironment,
+    terminalId: string,
     pairCode: string,
     signal: AbortSignal,
   ): Promise<SettingsLinklyPairResult>;
@@ -99,6 +136,10 @@ export type SettingsLinklyLogonTestState = Readonly<{
 
 export type SettingsLinklySetupState = Readonly<{
   health: SettingsLinklyHealthResource;
+  terminals: Readonly<{
+    kind: "idle" | "loading" | "ready" | "failed" | "switching";
+    value: SettingsLinklyTerminalSelectionSnapshot | null;
+  }>;
   logonTest: SettingsLinklyLogonTestState;
   /** 仅用于清空 UI 瞬态 PairCode，不保存 PairCode 本身。 */
   pairCodeResetToken: number;
@@ -291,6 +332,7 @@ export type SettingsDangerousConfirmation =
   | Readonly<{
       kind: "pair-linkly";
       environment: PaymentEnvironment;
+      terminalId: string;
       pairCode: string;
     }>
   | Readonly<{ kind: "reset-catalog" }>
@@ -373,6 +415,7 @@ export interface SettingsControlPort {
     provider: "square" | "linkly",
     input: SettingsPaymentSettingsInput,
     signal: AbortSignal,
+    terminals?: SettingsLinklyTerminalSelectionSnapshot | null,
   ): Promise<void>;
   savePrinterSettings(
     settings: ReceiptPrinterSettings,
@@ -438,6 +481,8 @@ export type SettingsStatusCode =
   | "linkly-pair-unknown"
   | "linkly-paired"
   | "linkly-setup-required"
+  | "linkly-terminal-selected"
+  | "linkly-terminal-switch-failed"
   | "payment-settings-invalid"
   | "payment-settings-save-failed"
   | "payment-settings-saved"
@@ -1501,7 +1546,12 @@ export class SettingsPresenter {
     return Promise.resolve();
   }
 
-  public requestLinklyPair(pairCode: string): boolean {
+  public requestLinklyPair(pairCode: string): boolean;
+  public requestLinklyPair(terminalId: string, pairCode: string): boolean;
+  public requestLinklyPair(
+    terminalIdOrPairCode: string,
+    explicitPairCode?: string,
+  ): boolean {
     if (this.catalogRefreshRunning()) {
       this.patch({ confirmation: null, statusCode: "safety-check-failed" });
       return false;
@@ -1509,13 +1559,23 @@ export class SettingsPresenter {
     if (!this.requirePermission(this.state.access.canConfigurePayments)) {
       return false;
     }
-    const normalizedPairCode = pairCode.trim();
+    const selectedTerminalId =
+      this.state.linklySetup?.terminals.value?.selectedTerminalId ?? "";
+    const terminalId = (
+      explicitPairCode === undefined
+        ? selectedTerminalId
+        : terminalIdOrPairCode
+    ).trim();
+    const normalizedPairCode = (
+      explicitPairCode ?? terminalIdOrPairCode
+    ).trim();
     if (!/^\d{6}$/u.test(normalizedPairCode)) {
       this.patch({ statusCode: "linkly-pair-code-invalid" });
       return false;
     }
     if (
       !this.options.port.linklySetup ||
+      !terminalId ||
       !hasLinklyCloudCredentials(
         this.state,
         this.state.linklyDraft.environment,
@@ -1527,7 +1587,106 @@ export class SettingsPresenter {
     return this.requestConfirmation({
       kind: "pair-linkly",
       environment: this.state.linklyDraft.environment,
+      terminalId,
       pairCode: normalizedPairCode,
+    });
+  }
+
+  public selectLinklyTerminal(terminalId: string): Promise<void> {
+    const setup = this.options.port.linklySetup;
+    const snapshot = this.state.linklySetup?.terminals.value;
+    const normalizedTerminalId = terminalId.trim();
+    const terminal = snapshot?.terminals.find(
+      (candidate) => candidate.terminalId === normalizedTerminalId,
+    );
+    if (
+      !this.requirePermission(this.state.access.canConfigurePayments) ||
+      !setup?.selectTerminal ||
+      !snapshot ||
+      snapshot.environment !== this.state.linklyDraft.environment ||
+      !terminal ||
+      !terminal.isReady
+    ) {
+      this.patch({ statusCode: "linkly-terminal-switch-failed" });
+      return Promise.resolve();
+    }
+    if (snapshot.selectedTerminalId === normalizedTerminalId) {
+      this.patch({ statusCode: "linkly-terminal-selected" });
+      return Promise.resolve();
+    }
+    const environment = snapshot.environment;
+    const generation = ++this.linklySetupGeneration;
+    this.patch({
+      linklySetup: this.state.linklySetup
+        ? Object.freeze({
+            ...this.state.linklySetup,
+            terminals: Object.freeze({
+              kind: "switching" as const,
+              value: snapshot,
+            }),
+            pairCodeResetToken:
+              this.state.linklySetup.pairCodeResetToken + 1,
+          })
+        : null,
+      statusCode: null,
+    });
+    return setup.selectTerminal(
+      environment,
+      normalizedTerminalId,
+      snapshot.selectionRevision,
+      this.lifetime.signal,
+    ).then((next) => {
+      if (!this.isCurrentLinklySetupRequest(
+        environment,
+        this.loadGeneration,
+        generation,
+      )) return;
+      this.patch({
+        linklySetup: this.state.linklySetup
+          ? Object.freeze({
+              ...this.state.linklySetup,
+              terminals: Object.freeze({ kind: "ready" as const, value: next }),
+            })
+          : null,
+        statusCode: "linkly-terminal-selected",
+      });
+    }).catch(async (error) => {
+      if (isAbortError(error) || !this.isCurrentLinklySetupRequest(
+        environment,
+        this.loadGeneration,
+        generation,
+      )) return;
+      let authoritative: SettingsLinklyTerminalSelectionSnapshot | null = null;
+      if (setup.readTerminals) {
+        try {
+          const refreshed = await setup.readTerminals(
+            environment,
+            this.lifetime.signal,
+          );
+          if (refreshed.environment === environment) authoritative = refreshed;
+        } catch {
+          // PUT 可能已提交；第二次 GET 仍失败时不能把旧选择继续标记为已确认。
+        }
+      }
+      if (!this.isCurrentLinklySetupRequest(
+        environment,
+        this.loadGeneration,
+        generation,
+      )) return;
+      this.patch({
+        linklySetup: this.state.linklySetup
+          ? Object.freeze({
+              ...this.state.linklySetup,
+              terminals: authoritative
+                ? Object.freeze({ kind: "ready" as const, value: authoritative })
+                : Object.freeze({ kind: "failed" as const, value: null }),
+            })
+          : null,
+        statusCode:
+          authoritative?.selectedTerminalId === normalizedTerminalId
+            ? "linkly-terminal-selected"
+            : "linkly-terminal-switch-failed",
+      });
     });
   }
 
@@ -1583,6 +1742,9 @@ export class SettingsPresenter {
           provider,
           input,
           this.lifetime.signal,
+          provider === "linkly"
+            ? this.state.linklySetup?.terminals.value ?? null
+            : undefined,
         );
         if (linklyTestEnvironment && this.state.linklySetup) {
           this.patch({
@@ -2483,8 +2645,26 @@ export class SettingsPresenter {
         false,
       ),
     });
+    let terminals: SettingsLinklyTerminalSelectionSnapshot | null = null;
     try {
-      const health = await setup.readState(environment, this.lifetime.signal);
+      // Active health 必须绑定同一次权威选择；先读目录可避免把旧终端状态带入检查。
+      terminals = setup.readTerminals
+        ? await setup.readTerminals(environment, this.lifetime.signal)
+        : null;
+      if (
+        !this.isCurrentLinklySetupRequest(
+          environment,
+          loadGeneration,
+          generation,
+        )
+      ) {
+        return;
+      }
+      const health = await setup.readState(
+        environment,
+        this.lifetime.signal,
+        terminals,
+      );
       if (
         !this.isCurrentLinklySetupRequest(
           environment,
@@ -2499,6 +2679,9 @@ export class SettingsPresenter {
         linklySetup: Object.freeze({
           ...this.state.linklySetup!,
           health: Object.freeze({ kind: "ready", value: health }),
+          terminals: terminals
+            ? Object.freeze({ kind: "ready" as const, value: terminals })
+            : this.state.linklySetup!.terminals,
         }),
       });
     } catch (error) {
@@ -2516,6 +2699,11 @@ export class SettingsPresenter {
         linklySetup: Object.freeze({
           ...this.state.linklySetup!,
           health: Object.freeze({ kind: "failed", value: null }),
+          // health 失败不抹掉已经读到的权威目录，确保仍可选择/修复终端。
+          terminals:
+            terminals?.environment === environment
+              ? Object.freeze({ kind: "ready" as const, value: terminals })
+              : Object.freeze({ kind: "failed" as const, value: null }),
         }),
         statusCode: "linkly-health-load-failed",
       });
@@ -2748,6 +2936,7 @@ function initialLinklySetupState(
 ): SettingsLinklySetupState {
   return Object.freeze({
     health: Object.freeze({ kind: "idle", value: null }),
+    terminals: Object.freeze({ kind: "idle", value: null }),
     logonTest: Object.freeze({ environment, status: "idle" }),
     pairCodeResetToken: 0,
   });
@@ -2761,6 +2950,7 @@ function resetLinklySetupState(
 ): SettingsLinklySetupState {
   return Object.freeze({
     health: Object.freeze({ kind: "loading", value: null }),
+    terminals: Object.freeze({ kind: "loading", value: null }),
     logonTest: resetLogonTest
       ? Object.freeze({ environment, status: "idle" })
       : state.logonTest,
@@ -2783,6 +2973,14 @@ function hasLinklyCloudCredentials(
   state: Pick<SettingsState, "linklySetup">,
   environment: PaymentEnvironment,
 ): boolean {
+  const terminals = state.linklySetup?.terminals;
+  if (
+    terminals?.kind === "ready" &&
+    terminals.value?.environment === environment &&
+    terminals.value.mode === "Active"
+  ) {
+    return terminals.value.terminals.length > 0;
+  }
   const health = state.linklySetup?.health;
   const value = health?.value;
   return (
@@ -2800,9 +2998,27 @@ function isLinklySetupReady(
   state: Pick<SettingsState, "linklySetup">,
   environment: PaymentEnvironment,
 ): boolean {
+  const terminals = state.linklySetup?.terminals;
+  const selection = terminals?.value;
+  const selected = selection?.terminals.find(
+    (terminal) => terminal.terminalId === selection.selectedTerminalId,
+  );
+  const logonTest = state.linklySetup?.logonTest;
+  if (
+    terminals?.kind === "ready" &&
+    selection?.environment === environment &&
+    selection.mode === "Active"
+  ) {
+    return Boolean(
+      selected?.isReady &&
+      !selected.isBusy &&
+      selected.pairingState === "Ready" &&
+      logonTest?.environment === environment &&
+      logonTest.status === "passed",
+    );
+  }
   const health = state.linklySetup?.health;
   const value = health?.value;
-  const logonTest = state.linklySetup?.logonTest;
   return (
     health?.kind === "ready" &&
     value?.environment === environment &&
@@ -2816,6 +3032,22 @@ function isLinklyHealthReady(
   state: Pick<SettingsState, "linklySetup">,
   environment: PaymentEnvironment,
 ): boolean {
+  const terminals = state.linklySetup?.terminals;
+  const selection = terminals?.value;
+  const selected = selection?.terminals.find(
+    (terminal) => terminal.terminalId === selection.selectedTerminalId,
+  );
+  if (
+    terminals?.kind === "ready" &&
+    selection?.environment === environment &&
+    selection.mode === "Active"
+  ) {
+    return Boolean(
+      selected?.isReady &&
+      !selected.isBusy &&
+      selected.pairingState === "Ready",
+    );
+  }
   const health = state.linklySetup?.health;
   const value = health?.value;
   return (

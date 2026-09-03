@@ -69,7 +69,31 @@ public interface ILinklyCloudBackendAsyncService
         string environment,
         CancellationToken cancellationToken);
 
+    Task<LinklyCloudBackendHealthResponse> GetHealthAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        Guid? terminalId,
+        long? selectionRevision,
+        CancellationToken cancellationToken) =>
+        GetHealthAsync(storeCode, deviceCode, environment, cancellationToken);
+
     Task<LinklyCloudBackendLogonTestResponse> RunLogonTestAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        CancellationToken cancellationToken);
+
+    Task<LinklyCloudBackendLogonTestResponse> RunLogonTestAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        Guid? terminalId,
+        long? selectionRevision,
+        CancellationToken cancellationToken) =>
+        RunLogonTestAsync(storeCode, deviceCode, environment, cancellationToken);
+
+    Task<LinklyCloudBackendStatusTestResponse> RunStatusTestAsync(
         string storeCode,
         string deviceCode,
         string environment,
@@ -79,7 +103,10 @@ public interface ILinklyCloudBackendAsyncService
         string storeCode,
         string deviceCode,
         string environment,
-        CancellationToken cancellationToken);
+        Guid? terminalId,
+        long? selectionRevision,
+        CancellationToken cancellationToken) =>
+        RunStatusTestAsync(storeCode, deviceCode, environment, cancellationToken);
 
     Task<LinklyCloudBackendTerminalCredentialResponse> UpsertTerminalCredentialAsync(
         string storeCode,
@@ -169,7 +196,8 @@ public class LinklyCloudBackendAsyncService(
     ILinklyCloudCredentialRepository credentialRepository,
     ILinklyCloudBackendTerminalCredentialRepository terminalCredentialRepository,
     IOptions<LinklyCloudBackendAsyncOptions> options,
-    ILogger<LinklyCloudBackendAsyncService>? logger = null) : ILinklyCloudBackendAsyncService
+    ILogger<LinklyCloudBackendAsyncService>? logger = null,
+    ILinklyCloudTerminalService? terminalService = null) : ILinklyCloudBackendAsyncService
 {
     private static readonly JsonSerializerOptions ServiceJsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -180,6 +208,8 @@ public class LinklyCloudBackendAsyncService(
     private const int MaxTxnRefCreateAttempts = 5;
     private const string OperationTypeTransaction = "Transaction";
     private const string OperationTypeSettlement = "Settlement";
+    private const string TerminalHealthHealthy = "Healthy";
+    private const string TerminalHealthUnhealthy = "Unhealthy";
 
     public async Task<LinklyCloudBackendSessionResponse> StartTransactionAsync(
         string storeCode,
@@ -197,6 +227,15 @@ public class LinklyCloudBackendAsyncService(
         var notificationBaseUri = GetPublicNotificationBaseUri();
         // 配置缺失必须在创建本地 Pending 前失败，避免产生未提交但占用终端的假 active session。
         _ = GetRequiredNotificationBearer(environment);
+        var terminalContext = terminalService is null
+            ? null
+            : await terminalService.ResolvePaymentTerminalAsync(
+                environment,
+                normalizedStoreCode,
+                normalizedDeviceCode,
+                request.TerminalId,
+                request.SelectionRevision,
+                cancellationToken);
         var activeSession = await repository.GetActiveSessionAsync(
             environment,
             normalizedStoreCode,
@@ -207,16 +246,31 @@ public class LinklyCloudBackendAsyncService(
             throw new LinklyCloudBackendActiveTransactionException(activeSession.SessionId);
         }
 
+        if (terminalContext is not null)
+        {
+            var activeTerminalSession = await repository.GetActiveSessionByTerminalAsync(
+                environment,
+                normalizedStoreCode,
+                terminalContext.Terminal.TerminalId,
+                cancellationToken);
+            if (activeTerminalSession is not null)
+            {
+                throw new LinklyCloudBackendActiveTransactionException(activeTerminalSession.SessionId);
+            }
+        }
+
         var token = await tokenProvider.GetTokenAsync(
             environment,
             normalizedStoreCode,
             normalizedDeviceCode,
+            terminalContext?.Terminal.TerminalId,
             cancellationToken);
 
         var session = await CreatePendingSessionWithUniqueTxnRefAsync(
             environment,
             normalizedStoreCode,
             normalizedDeviceCode,
+            terminalContext,
             cancellationToken);
 
         var notification = BuildNotificationRequest(environment, session.SessionId, notificationBaseUri);
@@ -262,6 +316,15 @@ public class LinklyCloudBackendAsyncService(
         var normalizedDeviceCode = NormalizeRequired(deviceCode, "deviceCode");
         var notificationBaseUri = GetPublicNotificationBaseUri();
         _ = GetRequiredNotificationBearer(environment);
+        var terminalContext = terminalService is null
+            ? null
+            : await terminalService.ResolvePaymentTerminalAsync(
+                environment,
+                normalizedStoreCode,
+                normalizedDeviceCode,
+                request.TerminalId,
+                request.SelectionRevision,
+                cancellationToken);
         var activeSession = await repository.GetActiveSessionAsync(
             environment,
             normalizedStoreCode,
@@ -272,15 +335,30 @@ public class LinklyCloudBackendAsyncService(
             throw new LinklyCloudBackendActiveTransactionException(activeSession.SessionId);
         }
 
+        if (terminalContext is not null)
+        {
+            var activeTerminalSession = await repository.GetActiveSessionByTerminalAsync(
+                environment,
+                normalizedStoreCode,
+                terminalContext.Terminal.TerminalId,
+                cancellationToken);
+            if (activeTerminalSession is not null)
+            {
+                throw new LinklyCloudBackendActiveTransactionException(activeTerminalSession.SessionId);
+            }
+        }
+
         var token = await tokenProvider.GetTokenAsync(
             environment,
             normalizedStoreCode,
             normalizedDeviceCode,
+            terminalContext?.Terminal.TerminalId,
             cancellationToken);
         var session = await CreatePendingSessionWithUniqueTxnRefAsync(
             environment,
             normalizedStoreCode,
             normalizedDeviceCode,
+            terminalContext,
             cancellationToken,
             OperationTypeSettlement);
         var transportRequest = new LinklyCloudBackendTransportSettlementRequest(
@@ -348,6 +426,7 @@ public class LinklyCloudBackendAsyncService(
                 normalizedEnvironment,
                 normalizedStoreCode,
                 normalizedDeviceCode,
+                session!.TerminalId,
                 cancellationToken);
             var transportRequest = new LinklyCloudBackendTransportSessionRequest(
                 normalizedEnvironment,
@@ -528,6 +607,7 @@ public class LinklyCloudBackendAsyncService(
             session.Environment,
             session.StoreCode,
             session.DeviceCode,
+            session.TerminalId,
             cancellationToken);
         var transportRequest = new LinklyCloudBackendTransportSessionRequest(
             session.Environment,
@@ -581,6 +661,7 @@ public class LinklyCloudBackendAsyncService(
             session.Environment,
             session.StoreCode,
             session.DeviceCode,
+            session.TerminalId,
             cancellationToken);
         var transportRequest = new LinklyCloudBackendTransportSendKeyRequest(
             session.Environment,
@@ -890,15 +971,35 @@ public class LinklyCloudBackendAsyncService(
         await repository.UpsertSessionAsync(session, cancellationToken);
     }
 
-    public async Task<LinklyCloudBackendHealthResponse> GetHealthAsync(
+    public Task<LinklyCloudBackendHealthResponse> GetHealthAsync(
         string storeCode,
         string deviceCode,
         string environment,
         CancellationToken cancellationToken)
     {
+        return GetHealthAsync(storeCode, deviceCode, environment, null, null, cancellationToken);
+    }
+
+    public async Task<LinklyCloudBackendHealthResponse> GetHealthAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        Guid? terminalId,
+        long? selectionRevision,
+        CancellationToken cancellationToken)
+    {
         var normalizedEnvironment = NormalizeEnvironment(environment);
         var normalizedStoreCode = NormalizeRequired(storeCode, "storeCode");
         var normalizedDeviceCode = NormalizeRequired(deviceCode, "deviceCode");
+        var terminalContext = terminalService is null
+            ? null
+            : await terminalService.ResolvePaymentTerminalAsync(
+                normalizedEnvironment,
+                normalizedStoreCode,
+                normalizedDeviceCode,
+                terminalId,
+                selectionRevision,
+                cancellationToken);
         var checks = new List<LinklyCloudBackendHealthCheckDto>();
         LogServiceJson(
             operation: "backend-health",
@@ -918,34 +1019,43 @@ public class LinklyCloudBackendAsyncService(
             response: null,
             details: null);
 
-        var credential = await credentialRepository.GetByStoreCodeAsync(
-            normalizedStoreCode,
-            normalizedEnvironment,
-            cancellationToken);
-        var storeCredentialReady = credential is not null &&
-            !string.IsNullOrWhiteSpace(credential.Username) &&
-            !string.IsNullOrWhiteSpace(credential.Password);
+        var credential = terminalContext is null
+            ? await credentialRepository.GetByStoreCodeAsync(
+                normalizedStoreCode,
+                normalizedEnvironment,
+                cancellationToken)
+            : null;
+        var storeCredentialReady = terminalContext is not null
+            ? !string.IsNullOrWhiteSpace(terminalContext.Terminal.Username) &&
+                !string.IsNullOrWhiteSpace(terminalContext.Terminal.Password)
+            : credential is not null &&
+                !string.IsNullOrWhiteSpace(credential.Username) &&
+                !string.IsNullOrWhiteSpace(credential.Password);
         checks.Add(CreateHealthCheck(
             "STORE_CREDENTIAL",
             storeCredentialReady,
             "Linkly Cloud store credential is configured.",
             "Linkly Cloud store credential is missing for this store and environment."));
 
-        var terminalCredential = await terminalCredentialRepository.GetByDeviceAsync(
-            normalizedEnvironment,
-            normalizedStoreCode,
-            normalizedDeviceCode,
-            cancellationToken);
-        var terminalSecretReady = terminalCredential is not null &&
-            !string.IsNullOrWhiteSpace(terminalCredential.Secret);
+        var terminalCredential = terminalContext is null
+            ? await terminalCredentialRepository.GetByDeviceAsync(
+                normalizedEnvironment,
+                normalizedStoreCode,
+                normalizedDeviceCode,
+                cancellationToken)
+            : null;
+        var terminalSecretReady = terminalContext is not null
+            ? !string.IsNullOrWhiteSpace(terminalContext.Terminal.Secret)
+            : terminalCredential is not null && !string.IsNullOrWhiteSpace(terminalCredential.Secret);
         checks.Add(CreateHealthCheck(
             "TERMINAL_SECRET",
             terminalSecretReady,
             "Linkly Cloud terminal secret is configured.",
             "Linkly Cloud terminal secret is missing for this terminal."));
 
-        var terminalPosIdReady = terminalCredential is not null &&
-            !string.IsNullOrWhiteSpace(terminalCredential.PosId);
+        var terminalPosIdReady = terminalContext is not null
+            ? !string.IsNullOrWhiteSpace(terminalContext.Terminal.PosId)
+            : terminalCredential is not null && !string.IsNullOrWhiteSpace(terminalCredential.PosId);
         checks.Add(CreateHealthCheck(
             "TERMINAL_POS_ID",
             terminalPosIdReady,
@@ -1004,32 +1114,53 @@ public class LinklyCloudBackendAsyncService(
         return response;
     }
 
-    public async Task<LinklyCloudBackendStatusTestResponse> RunStatusTestAsync(
+    public Task<LinklyCloudBackendStatusTestResponse> RunStatusTestAsync(
         string storeCode,
         string deviceCode,
         string environment,
         CancellationToken cancellationToken)
     {
+        return RunStatusTestAsync(storeCode, deviceCode, environment, null, null, cancellationToken);
+    }
+
+    public async Task<LinklyCloudBackendStatusTestResponse> RunStatusTestAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        Guid? terminalId,
+        long? selectionRevision,
+        CancellationToken cancellationToken)
+    {
         var normalizedEnvironment = NormalizeEnvironment(environment);
         var normalizedStoreCode = NormalizeRequired(storeCode, "storeCode");
         var normalizedDeviceCode = NormalizeRequired(deviceCode, "deviceCode");
-        var token = await tokenProvider.GetTokenAsync(
+        var terminalContext = terminalService is null
+            ? null
+            : await terminalService.ResolvePaymentTerminalAsync(
+                normalizedEnvironment,
+                normalizedStoreCode,
+                normalizedDeviceCode,
+                terminalId,
+                selectionRevision,
+                cancellationToken);
+        var requestedAt = DateTimeOffset.UtcNow;
+        var sessionId = Guid.NewGuid().ToString("D");
+        var transportResponse = await ExecuteTerminalTestRequestAsync(
             normalizedEnvironment,
             normalizedStoreCode,
             normalizedDeviceCode,
+            terminalContext,
+            (token, physicalTerminalId) => transport.SendStatusAsync(
+                new LinklyCloudBackendTransportStatusRequest(
+                    normalizedEnvironment,
+                    token.RestBaseUrl,
+                    token.AccessToken,
+                    sessionId,
+                    normalizedStoreCode,
+                    normalizedDeviceCode,
+                    physicalTerminalId),
+                cancellationToken),
             cancellationToken);
-        var requestedAt = DateTimeOffset.UtcNow;
-        var sessionId = Guid.NewGuid().ToString("D");
-        var transportRequest = new LinklyCloudBackendTransportStatusRequest(
-            normalizedEnvironment,
-            token.RestBaseUrl,
-            token.AccessToken,
-            sessionId,
-            normalizedStoreCode,
-            normalizedDeviceCode);
-
-        var transportResponse = await SendWithRecoverableFailureAsync(
-            () => transport.SendStatusAsync(transportRequest, cancellationToken));
         var status = ParseStatusTestResponse(
             transportResponse.Body,
             out var responseCode,
@@ -1061,6 +1192,12 @@ public class LinklyCloudBackendAsyncService(
             responseDate,
             responseTime,
             message);
+
+        await TryRecordDefinitiveTerminalHealthAsync(
+            terminalContext,
+            transportResponse.StatusCode,
+            succeeded,
+            CancellationToken.None);
 
         LogServiceJson(
             operation: "transaction-status-test",
@@ -1112,32 +1249,53 @@ public class LinklyCloudBackendAsyncService(
         return NormalizeOptional(latestSession?.TxnRef);
     }
 
-    public async Task<LinklyCloudBackendLogonTestResponse> RunLogonTestAsync(
+    public Task<LinklyCloudBackendLogonTestResponse> RunLogonTestAsync(
         string storeCode,
         string deviceCode,
         string environment,
         CancellationToken cancellationToken)
     {
+        return RunLogonTestAsync(storeCode, deviceCode, environment, null, null, cancellationToken);
+    }
+
+    public async Task<LinklyCloudBackendLogonTestResponse> RunLogonTestAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        Guid? terminalId,
+        long? selectionRevision,
+        CancellationToken cancellationToken)
+    {
         var normalizedEnvironment = NormalizeEnvironment(environment);
         var normalizedStoreCode = NormalizeRequired(storeCode, "storeCode");
         var normalizedDeviceCode = NormalizeRequired(deviceCode, "deviceCode");
-        var token = await tokenProvider.GetTokenAsync(
+        var terminalContext = terminalService is null
+            ? null
+            : await terminalService.ResolvePaymentTerminalAsync(
+                normalizedEnvironment,
+                normalizedStoreCode,
+                normalizedDeviceCode,
+                terminalId,
+                selectionRevision,
+                cancellationToken);
+        var requestedAt = DateTimeOffset.UtcNow;
+        var sessionId = Guid.NewGuid().ToString("D");
+        var transportResponse = await ExecuteTerminalTestRequestAsync(
             normalizedEnvironment,
             normalizedStoreCode,
             normalizedDeviceCode,
+            terminalContext,
+            (token, physicalTerminalId) => transport.SendLogonAsync(
+                new LinklyCloudBackendTransportSessionRequest(
+                    normalizedEnvironment,
+                    token.RestBaseUrl,
+                    token.AccessToken,
+                    sessionId,
+                    normalizedStoreCode,
+                    normalizedDeviceCode,
+                    physicalTerminalId),
+                cancellationToken),
             cancellationToken);
-        var requestedAt = DateTimeOffset.UtcNow;
-        var sessionId = Guid.NewGuid().ToString("D");
-        var transportRequest = new LinklyCloudBackendTransportSessionRequest(
-            normalizedEnvironment,
-            token.RestBaseUrl,
-            token.AccessToken,
-            sessionId,
-            normalizedStoreCode,
-            normalizedDeviceCode);
-
-        var transportResponse = await SendWithRecoverableFailureAsync(
-            () => transport.SendLogonAsync(transportRequest, cancellationToken));
         var logon = ParseLogonTestResponse(
             transportResponse.Body,
             out var responseCode,
@@ -1163,6 +1321,12 @@ public class LinklyCloudBackendAsyncService(
             caid,
             pinPadVersion,
             message);
+
+        await TryRecordDefinitiveTerminalHealthAsync(
+            terminalContext,
+            transportResponse.StatusCode,
+            succeeded,
+            CancellationToken.None);
 
         LogServiceJson(
             operation: "logon-test",
@@ -1293,9 +1457,15 @@ public class LinklyCloudBackendAsyncService(
         string environment,
         string storeCode,
         string deviceCode,
+        LinklyCloudTerminalPaymentContext? terminalContext,
         CancellationToken cancellationToken,
         string operationType = OperationTypeTransaction)
     {
+        if (terminalContext is not null && terminalContext.Terminal.UpdatedAt is null)
+        {
+            throw new LinklyCloudTerminalSelectionConflictException();
+        }
+
         for (var attempt = 0; attempt < MaxTxnRefCreateAttempts; attempt++)
         {
             var now = DateTimeOffset.UtcNow;
@@ -1304,6 +1474,9 @@ public class LinklyCloudBackendAsyncService(
                 Environment = environment,
                 StoreCode = storeCode,
                 DeviceCode = deviceCode,
+                TerminalId = terminalContext?.Terminal.TerminalId,
+                SelectionRevision = terminalContext?.Selection.Revision,
+                TerminalUpdatedAt = terminalContext?.Terminal.UpdatedAt,
                 SessionId = Guid.NewGuid().ToString("D"),
                 Status = StatusPending,
                 OperationType = operationType,
@@ -1314,20 +1487,111 @@ public class LinklyCloudBackendAsyncService(
                 UpdatedAt = now
             };
 
-            // 闂傚倷鑳堕…鍫㈡崲閹扮増鍋嬮柟鐗堟緲缁犳岸鏌曢崼婵囧仾闁惧繗顫夌€氭岸鏌熺紒妯洪唶婵°倐鍋撻棁澶愭煕韫囨稒锛熷ù婧垮灲閺岋綁鏁傜捄銊х厯闂佸搫琚崝宥囩箔閻斿摜绡€闁告洦鍙庡Σ鐑芥⒒娴ｅ憡鍟為柛鏃€娲滅划鏃堟倻閼恒儱鍓梺缁樻煥閸氬宕?Linkly闂傚倷鐒︾€笛呯矙閹烘梻鐭欓柡宥庡亐閸嬫挸顫濋妷銉т紙閻庤娲╃紞渚€銆侀弮鍫濆窛�?TxnRef 闂傚倷绀侀幗婊堝磿閹版澘鍨傛い鏍ㄧ矌閸楁岸鏌熺紒銏犳灍闁绘挶鍎查妵鍕籍閸屾艾浠橀梺鍝勬娴滎剛妲愰幒妤€绠涙い蹇撴閻℃绱撴担浠嬪摵缂佽鐗嗛悾宄邦潩椤戣姤鐎婚梺褰掑亰閸撴瑧鑺遍妷鈺傗拺闁告稑锕﹂幊鍛存煕韫囨棑鑰跨€规洘濞婂畷顐﹀Ψ閿曗偓閻濅即姊洪崫鍕閼裤倝鏌?
+            // 数据库原子闸门拒绝时，先区分在途会话和配置漂移；仅 TxnRef 碰撞允许生成新引用重试。
             if (await repository.TryCreateSessionAsync(session, cancellationToken))
             {
                 return session;
             }
 
-            var active = await repository.GetActiveSessionAsync(environment, storeCode, deviceCode, cancellationToken);
-            if (active is not null)
+            var resumable = await repository.GetResumableSessionAsync(
+                environment,
+                storeCode,
+                deviceCode,
+                cancellationToken);
+            if (resumable is not null)
             {
-                throw new LinklyCloudBackendActiveTransactionException(active.SessionId);
+                throw new LinklyCloudBackendActiveTransactionException(resumable.SessionId);
+            }
+
+            if (terminalContext is not null)
+            {
+                var blockingTerminal = await repository.GetBlockingSessionByTerminalAsync(
+                    environment,
+                    storeCode,
+                    terminalContext.Terminal.TerminalId,
+                    cancellationToken);
+                if (blockingTerminal is not null)
+                {
+                    throw new LinklyCloudBackendActiveTransactionException(blockingTerminal.SessionId);
+                }
+            }
+
+            await EnsurePaymentConfigurationSnapshotStillCurrentAsync(
+                environment,
+                storeCode,
+                deviceCode,
+                terminalContext,
+                cancellationToken);
+            if (terminalContext is not null && terminalService is not null)
+            {
+                var currentTerminal = await terminalService.GetTerminalAsync(
+                    environment,
+                    storeCode,
+                    terminalContext.Terminal.TerminalId,
+                    cancellationToken);
+                if (currentTerminal?.PairingAttemptId is not null &&
+                    currentTerminal.PairingLeaseExpiresAt is not null &&
+                    currentTerminal.PairingLeaseExpiresAt > DateTime.UtcNow)
+                {
+                    throw new LinklyCloudBackendActiveTransactionException(null);
+                }
             }
         }
 
         throw new LinklyCloudBackendValidationException("Failed to allocate a unique Linkly Cloud transaction reference.");
+    }
+
+    private async Task EnsurePaymentConfigurationSnapshotStillCurrentAsync(
+        string environment,
+        string storeCode,
+        string deviceCode,
+        LinklyCloudTerminalPaymentContext? expected,
+        CancellationToken cancellationToken)
+    {
+        if (terminalService is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var current = await terminalService.ResolvePaymentTerminalAsync(
+                environment,
+                storeCode,
+                deviceCode,
+                expected?.Terminal.TerminalId,
+                expected?.Selection.Revision,
+                cancellationToken);
+            if (expected is null)
+            {
+                if (current is not null)
+                {
+                    throw new LinklyCloudTerminalSelectionConflictException();
+                }
+
+                return;
+            }
+
+            if (current is null ||
+                current.Terminal.TerminalId != expected.Terminal.TerminalId ||
+                current.Selection.Revision != expected.Selection.Revision ||
+                current.Terminal.UpdatedAt != expected.Terminal.UpdatedAt)
+            {
+                throw new LinklyCloudTerminalSelectionConflictException();
+            }
+        }
+        catch (LinklyCloudTerminalSelectionConflictException)
+        {
+            throw;
+        }
+        catch (LinklyCloudTerminalNotFoundException)
+        {
+            throw new LinklyCloudTerminalSelectionConflictException();
+        }
+        catch (LinklyCloudTerminalNotReadyException)
+        {
+            throw new LinklyCloudTerminalSelectionConflictException();
+        }
     }
 
     private LinklyCloudBackendNotificationRequest BuildNotificationRequest(
@@ -1561,6 +1825,13 @@ public class LinklyCloudBackendAsyncService(
             ? BuildSettlementReceiptTexts(session.SettlementReceiptTexts, notifications)
             : LinklyReceiptTextSanitizer.SanitizeReceipts(
                 ReadSettlementReceiptTexts(session.SettlementReceiptTexts));
+        var terminalDisplayName = session.TerminalId.HasValue && terminalService is not null
+            ? await terminalService.GetTerminalDisplayNameAsync(
+                session.Environment,
+                session.StoreCode,
+                session.TerminalId.Value,
+                cancellationToken)
+            : null;
         return new LinklyCloudBackendSessionResponse(
             session.Environment,
             session.StoreCode,
@@ -1595,7 +1866,9 @@ public class LinklyCloudBackendAsyncService(
             NormalizeOperationType(session.OperationType),
             session.OperationSuccess,
             LinklyReceiptTextSanitizer.SanitizeSettlementData(session.SettlementData),
-            settlementReceiptTexts);
+            settlementReceiptTexts,
+            session.TerminalId,
+            terminalDisplayName);
     }
 
     private static async Task<LinklyCloudBackendTransportResponse> SendWithRecoverableFailureAsync(
@@ -1613,6 +1886,137 @@ public class LinklyCloudBackendAsyncService(
         {
             return new LinklyCloudBackendTransportResponse(HttpStatusCode.RequestTimeout, null);
         }
+    }
+
+    private async Task<LinklyCloudBackendTransportResponse> ExecuteTerminalTestRequestAsync(
+        string environment,
+        string storeCode,
+        string deviceCode,
+        LinklyCloudTerminalPaymentContext? terminalContext,
+        Func<LinklyCloudBackendToken, Guid?, Task<LinklyCloudBackendTransportResponse>> sendAsync,
+        CancellationToken cancellationToken)
+    {
+        var operationLease = terminalContext is null
+            ? null
+            : await terminalService!.AcquireOperationLeaseAsync(
+                environment,
+                storeCode,
+                deviceCode,
+                terminalContext,
+                cancellationToken);
+        var preserveLeaseUntilExpiry = false;
+        try
+        {
+            // Token 获取失败发生在终端请求之前，可以安全释放；只有终端请求结果歧义才保留租约。
+            var token = await tokenProvider.GetTokenAsync(
+                environment,
+                storeCode,
+                deviceCode,
+                terminalContext?.Terminal.TerminalId,
+                cancellationToken);
+            LinklyCloudBackendTransportResponse response;
+            try
+            {
+                response = await sendAsync(token, terminalContext?.Terminal.TerminalId);
+            }
+            catch (HttpRequestException)
+            {
+                preserveLeaseUntilExpiry = operationLease is not null;
+                return new LinklyCloudBackendTransportResponse(HttpStatusCode.RequestTimeout, null);
+            }
+            catch (OperationCanceledException)
+            {
+                preserveLeaseUntilExpiry = operationLease is not null;
+                return new LinklyCloudBackendTransportResponse(HttpStatusCode.RequestTimeout, null);
+            }
+            catch
+            {
+                preserveLeaseUntilExpiry = operationLease is not null;
+                throw;
+            }
+
+            preserveLeaseUntilExpiry = operationLease is not null &&
+                IsAmbiguousTerminalTestResponse(response.StatusCode);
+            return response;
+        }
+        finally
+        {
+            // 2xx/明确 4xx 可释放；网络、取消、408 或 5xx 可能已被终端接收，保留到自然过期。
+            if (!preserveLeaseUntilExpiry && operationLease is not null && terminalService is not null)
+            {
+                try
+                {
+                    await terminalService.ReleaseOperationLeaseAsync(
+                        environment,
+                        storeCode,
+                        operationLease.TerminalId,
+                        operationLease.LeaseId,
+                        CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    logger?.LogWarning(
+                        "Linkly Cloud terminal operation lease release failed environment={Environment} store={StoreCode} terminalId={TerminalId} error={ErrorType}",
+                        environment,
+                        storeCode,
+                        operationLease.TerminalId,
+                        ex.GetType().Name);
+                }
+            }
+        }
+    }
+
+    private static bool IsAmbiguousTerminalTestResponse(HttpStatusCode statusCode)
+    {
+        var code = (int)statusCode;
+        return statusCode == HttpStatusCode.RequestTimeout || code is >= 500 and <= 599;
+    }
+
+    private async Task TryRecordDefinitiveTerminalHealthAsync(
+        LinklyCloudTerminalPaymentContext? terminalContext,
+        HttpStatusCode statusCode,
+        bool succeeded,
+        CancellationToken cancellationToken)
+    {
+        // 超时、取消与 5xx 都可能已到达实体终端，沿用租约的未知结果语义，绝不伪造健康状态。
+        if (terminalContext is null || !IsDefinitiveTerminalTestResponse(statusCode) || terminalService is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var recorded = await terminalService.RecordHealthAsync(
+                terminalContext,
+                succeeded ? TerminalHealthHealthy : TerminalHealthUnhealthy,
+                DateTime.UtcNow,
+                cancellationToken);
+            if (!recorded)
+            {
+                logger?.LogWarning(
+                    "Linkly Cloud terminal health was not recorded because terminal configuration changed environment={Environment} store={StoreCode} terminalId={TerminalId}",
+                    terminalContext.Terminal.Environment,
+                    terminalContext.Terminal.StoreCode,
+                    terminalContext.Terminal.TerminalId);
+            }
+        }
+        catch (Exception ex)
+        {
+            // 健康快照是诊断信息；实体终端已确认的测试结果不能因快照写入失败变成 500。
+            logger?.LogWarning(
+                ex,
+                "Linkly Cloud terminal health persistence failed environment={Environment} store={StoreCode} terminalId={TerminalId}",
+                terminalContext.Terminal.Environment,
+                terminalContext.Terminal.StoreCode,
+                terminalContext.Terminal.TerminalId);
+        }
+    }
+
+    private static bool IsDefinitiveTerminalTestResponse(HttpStatusCode statusCode)
+    {
+        var code = (int)statusCode;
+        return statusCode == HttpStatusCode.OK ||
+            code is >= 400 and < 500 && statusCode != HttpStatusCode.RequestTimeout;
     }
 
     private static void ApplyTransportResponse(
@@ -2850,8 +3254,7 @@ public class LinklyCloudBackendAsyncService(
         return new
         {
             hasSecret = trimmed.Length > 0,
-            secretLength = trimmed.Length,
-            secretPreview = trimmed.Length <= 8 ? "***" : $"{trimmed[..4]}...{trimmed[^4..]}"
+            secretLength = trimmed.Length
         };
     }
 
@@ -2928,6 +3331,14 @@ public interface ILinklyCloudBackendTokenProvider
         string storeCode,
         string deviceCode,
         CancellationToken cancellationToken);
+
+    Task<LinklyCloudBackendToken> GetTokenAsync(
+        string environment,
+        string storeCode,
+        string deviceCode,
+        Guid? terminalId,
+        CancellationToken cancellationToken) =>
+        GetTokenAsync(environment, storeCode, deviceCode, cancellationToken);
 }
 
 public sealed record LinklyCloudBackendToken(
@@ -2974,7 +3385,8 @@ public sealed class HttpLinklyCloudBackendTokenProvider(
     ILinklyCloudBackendTerminalCredentialRepository terminalCredentialRepository,
     HttpClient httpClient,
     IOptions<LinklyCloudBackendAsyncOptions> options,
-    ILogger<HttpLinklyCloudBackendTokenProvider>? logger = null) : ILinklyCloudBackendTokenProvider
+    ILogger<HttpLinklyCloudBackendTokenProvider>? logger = null,
+    ILinklyCloudTerminalRepository? cloudTerminalRepository = null) : ILinklyCloudBackendTokenProvider
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
@@ -2987,34 +3399,78 @@ public sealed class HttpLinklyCloudBackendTokenProvider(
         string deviceCode,
         CancellationToken cancellationToken)
     {
+        return await GetTokenAsync(environment, storeCode, deviceCode, terminalId: null, cancellationToken);
+    }
+
+    public async Task<LinklyCloudBackendToken> GetTokenAsync(
+        string environment,
+        string storeCode,
+        string deviceCode,
+        Guid? terminalId,
+        CancellationToken cancellationToken)
+    {
         var normalizedEnvironment = NormalizeEnvironment(environment);
         var normalizedStoreCode = NormalizeRequired(storeCode, "storeCode");
         var normalizedDeviceCode = NormalizeRequired(deviceCode, "deviceCode");
+        var hasPhysicalTerminal = terminalId is { } value && value != Guid.Empty;
 
-        var credential = await credentialRepository.GetByStoreCodeAsync(
-            normalizedStoreCode,
-            normalizedEnvironment,
-            cancellationToken);
-        if (credential is null ||
-            string.IsNullOrWhiteSpace(credential.Username) ||
-            string.IsNullOrWhiteSpace(credential.Password))
+        if (!hasPhysicalTerminal && cloudTerminalRepository is not null)
         {
-            throw new LinklyCloudBackendValidationException(
-                "Linkly Cloud credential is not configured for this store and environment.");
+            var mode = await cloudTerminalRepository.GetConfigurationModeAsync(
+                normalizedEnvironment,
+                normalizedStoreCode,
+                cancellationToken);
+            if (string.Equals(mode?.Trim(), "Active", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new LinklyCloudTerminalSelectionConflictException(
+                    "Active Linkly Cloud multi-terminal mode requires terminalId.");
+            }
         }
 
-        var terminalCredential = await terminalCredentialRepository.GetByDeviceAsync(
-            normalizedEnvironment,
-            normalizedStoreCode,
-            normalizedDeviceCode,
-            cancellationToken);
-        if (terminalCredential is null || string.IsNullOrWhiteSpace(terminalCredential.Secret))
+        string? terminalSecret;
+        string? terminalPosId;
+        if (hasPhysicalTerminal)
+        {
+            var terminal = cloudTerminalRepository is null
+                ? null
+                : await cloudTerminalRepository.GetAsync(
+                    normalizedEnvironment,
+                    normalizedStoreCode,
+                    terminalId!.Value,
+                    cancellationToken);
+            terminalSecret = terminal?.Secret;
+            terminalPosId = terminal?.PosId;
+        }
+        else
+        {
+            var credential = await credentialRepository.GetByStoreCodeAsync(
+                normalizedStoreCode,
+                normalizedEnvironment,
+                cancellationToken);
+            if (credential is null ||
+                string.IsNullOrWhiteSpace(credential.Username) ||
+                string.IsNullOrWhiteSpace(credential.Password))
+            {
+                throw new LinklyCloudBackendValidationException(
+                    "Linkly Cloud credential is not configured for this store and environment.");
+            }
+
+            var terminalCredential = await terminalCredentialRepository.GetByDeviceAsync(
+                normalizedEnvironment,
+                normalizedStoreCode,
+                normalizedDeviceCode,
+                cancellationToken);
+            terminalSecret = terminalCredential?.Secret;
+            terminalPosId = terminalCredential?.PosId;
+        }
+
+        if (string.IsNullOrWhiteSpace(terminalSecret))
         {
             throw new LinklyCloudBackendValidationException(
                 "Linkly Cloud terminal secret is not configured for this terminal.");
         }
 
-        if (string.IsNullOrWhiteSpace(terminalCredential.PosId))
+        if (string.IsNullOrWhiteSpace(terminalPosId))
         {
             throw new LinklyCloudBackendValidationException(
                 "Linkly Cloud POS ID is not configured for this terminal.");
@@ -3026,10 +3482,10 @@ public sealed class HttpLinklyCloudBackendTokenProvider(
         // 闂備礁鎲￠懝鎯归悜绛嬫�?token 闂佽崵濮村ú顓㈠绩闁秵鍎戦柣妤€鐗婃刊鎾偣閹帒濡介柡鍡楃箳缁辨挻鎷呴崫銉モ叡�?secret闂備線娼уΛ鏃傛導婵犵爤 identity 闂備礁鎲＄划宀勬儔婵傚摜宓侀柛鈩兩戝▍鐘绘煕閹扮數鍘涢柛銈囧█楠?endpoint�?
         var requestUri = new Uri(GetBaseUri(authBaseUrl), "tokens/cloudpos");
         var tokenRequest = new LinklyCloudBackendTokenRequest(
-            terminalCredential.Secret.Trim(),
+            terminalSecret.Trim(),
             NormalizeRequired(options.Value.PosName, "posName"),
             NormalizeRequired(options.Value.PosVersion, "posVersion"),
-            terminalCredential.PosId.Trim(),
+            terminalPosId.Trim(),
             posVendorId);
         LogTokenHttpRequest(
             normalizedEnvironment,
@@ -3045,7 +3501,7 @@ public sealed class HttpLinklyCloudBackendTokenProvider(
         return await LinklyCloudTerminalConcurrencyGate.RunAsync(
             normalizedEnvironment,
             normalizedStoreCode,
-            normalizedDeviceCode,
+            terminalId?.ToString("D") ?? normalizedDeviceCode,
             async gateCancellationToken =>
             {
                 var stopwatch = Stopwatch.StartNew();
@@ -3315,12 +3771,56 @@ public interface ILinklyCloudBackendTerminalCredentialRepository
         DateTime updatedAt,
         string? updatedBy,
         CancellationToken cancellationToken);
+
+    // 旧版配对需要数据库级租约；所有实现都必须明确处理，不能回退到无保护写入。
+    Task AcquireLegacyPairingLeaseAsync(
+        string environment,
+        string storeCode,
+        Guid attemptId,
+        DateTime leaseExpiresAt,
+        DateTime now,
+        CancellationToken cancellationToken);
+
+    Task ReleaseLegacyPairingLeaseAsync(
+        string environment,
+        string storeCode,
+        Guid attemptId,
+        CancellationToken cancellationToken);
+
+    Task<LinklyCloudBackendTerminalCredentialRecord> CompleteLegacyPairingAsync(
+        string environment,
+        string storeCode,
+        string deviceCode,
+        Guid attemptId,
+        DateTime now,
+        string secret,
+        string posId,
+        string? updatedBy,
+        CancellationToken cancellationToken);
 }
+
+public sealed class LinklyCloudLegacyModeDisabledException()
+    : Exception("Legacy Linkly Cloud credential endpoints are disabled while multi-terminal mode is Active.");
+
+public sealed class LinklyCloudLegacyPairingLeaseConflictException()
+    : Exception("Linkly Cloud pairing lease is no longer owned by this request.");
 
 public sealed class SqlSugarLinklyCloudBackendTerminalCredentialRepository(
     HbposSqlSugarContext dbContext) : ILinklyCloudBackendTerminalCredentialRepository
 {
     internal const string UpsertSql = """
+        SET XACT_ABORT ON;
+        SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+        BEGIN TRANSACTION;
+
+        DECLARE @Mode NVARCHAR(16);
+        SELECT @Mode = [Mode]
+        FROM [dbo].[POSM_LinklyCloudConfigurationMode] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode;
+
+        IF @Mode = N'Active'
+            THROW 51005, 'Legacy Linkly Cloud endpoints are disabled while multi-terminal mode is Active.', 1;
+
         MERGE [dbo].[POSM_LinklyCloudBackendTerminal] WITH (HOLDLOCK) AS target
         USING (
             SELECT @Environment AS [Environment],
@@ -3338,6 +3838,123 @@ public sealed class SqlSugarLinklyCloudBackendTerminalCredentialRepository(
         WHEN NOT MATCHED THEN
             INSERT ([Environment], [StoreCode], [DeviceCode], [Secret], [PosId], [UpdatedAt], [UpdatedBy])
             VALUES (@Environment, @StoreCode, @DeviceCode, @Secret, @PosId, @UpdatedAt, @UpdatedBy);
+
+        COMMIT TRANSACTION;
+        """;
+
+    internal const string AcquireLegacyPairingLeaseSql = """
+        SET XACT_ABORT ON;
+        SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+        BEGIN TRANSACTION;
+
+        DECLARE @Mode NVARCHAR(16);
+        DECLARE @ExistingAttemptId UNIQUEIDENTIFIER;
+        DECLARE @ExistingLeaseExpiresAt DATETIME2(7);
+        SELECT @Mode = [Mode],
+               @ExistingAttemptId = [LegacyPairingAttemptId],
+               @ExistingLeaseExpiresAt = [LegacyPairingLeaseExpiresAt]
+        FROM [dbo].[POSM_LinklyCloudConfigurationMode] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode;
+
+        IF @Mode = N'Active'
+            THROW 51005, 'Legacy Linkly Cloud endpoints are disabled while multi-terminal mode is Active.', 1;
+
+        IF @Mode IS NULL
+        BEGIN
+            INSERT INTO [dbo].[POSM_LinklyCloudConfigurationMode] (
+                [Environment], [StoreCode], [Mode], [LegacyPairingAttemptId], [LegacyPairingLeaseExpiresAt], [UpdatedAt], [UpdatedBy])
+            VALUES (
+                @Environment, @StoreCode, N'Legacy', @AttemptId, @LeaseExpiresAt, @Now, NULL);
+        END
+        ELSE
+        BEGIN
+            IF @ExistingAttemptId IS NOT NULL
+               AND @ExistingLeaseExpiresAt IS NOT NULL
+               AND @ExistingLeaseExpiresAt > @Now
+                THROW 51007, 'Linkly Cloud legacy pairing is already in progress.', 1;
+
+            UPDATE [dbo].[POSM_LinklyCloudConfigurationMode]
+            SET [LegacyPairingAttemptId] = @AttemptId,
+                [LegacyPairingLeaseExpiresAt] = @LeaseExpiresAt,
+                [UpdatedAt] = @Now
+            WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode;
+        END;
+
+        COMMIT TRANSACTION;
+        """;
+
+    internal const string ReleaseLegacyPairingLeaseSql = """
+        UPDATE [dbo].[POSM_LinklyCloudConfigurationMode]
+        SET [LegacyPairingAttemptId] = NULL,
+            [LegacyPairingLeaseExpiresAt] = NULL
+        WHERE [Environment] = @Environment
+          AND [StoreCode] = @StoreCode
+          AND [LegacyPairingAttemptId] = @AttemptId;
+        """;
+
+    internal const string CompleteLegacyPairingSql = """
+        SET XACT_ABORT ON;
+        SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+        BEGIN TRANSACTION;
+
+        DECLARE @Mode NVARCHAR(16);
+        DECLARE @ExistingAttemptId UNIQUEIDENTIFIER;
+        DECLARE @ExistingLeaseExpiresAt DATETIME2(7);
+        SELECT @Mode = [Mode],
+               @ExistingAttemptId = [LegacyPairingAttemptId],
+               @ExistingLeaseExpiresAt = [LegacyPairingLeaseExpiresAt]
+        FROM [dbo].[POSM_LinklyCloudConfigurationMode] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode;
+
+        IF @Mode = N'Active'
+            THROW 51005, 'Legacy Linkly Cloud endpoints are disabled while multi-terminal mode is Active.', 1;
+
+        IF @ExistingAttemptId IS NULL
+           OR @ExistingAttemptId <> @AttemptId
+           OR @ExistingLeaseExpiresAt IS NULL
+           OR @ExistingLeaseExpiresAt <= @Now
+            THROW 51006, 'Linkly Cloud pairing lease is no longer owned by this request.', 1;
+
+        MERGE [dbo].[POSM_LinklyCloudBackendTerminal] WITH (HOLDLOCK) AS target
+        USING (
+            SELECT @Environment AS [Environment],
+                   @StoreCode AS [StoreCode],
+                   @DeviceCode AS [DeviceCode]) AS source
+        ON target.[Environment] = source.[Environment]
+           AND target.[StoreCode] = source.[StoreCode]
+           AND target.[DeviceCode] = source.[DeviceCode]
+        WHEN MATCHED THEN
+            UPDATE SET
+                [Secret] = @Secret,
+                [PosId] = @PosId,
+                [UpdatedAt] = @Now,
+                [UpdatedBy] = @UpdatedBy
+        WHEN NOT MATCHED THEN
+            INSERT ([Environment], [StoreCode], [DeviceCode], [Secret], [PosId], [UpdatedAt], [UpdatedBy])
+            VALUES (@Environment, @StoreCode, @DeviceCode, @Secret, @PosId, @Now, @UpdatedBy);
+
+        UPDATE [dbo].[POSM_LinklyCloudConfigurationMode]
+        SET [LegacyPairingAttemptId] = NULL,
+            [LegacyPairingLeaseExpiresAt] = NULL,
+            [UpdatedAt] = @Now
+        WHERE [Environment] = @Environment
+          AND [StoreCode] = @StoreCode
+          AND [LegacyPairingAttemptId] = @AttemptId;
+
+        IF @@ROWCOUNT <> 1
+            THROW 51006, 'Linkly Cloud pairing lease is no longer owned by this request.', 1;
+
+        SELECT TOP 1
+            [Id], [Environment], [StoreCode], [DeviceCode], [Secret], [PosId], [UpdatedAt], [UpdatedBy]
+        FROM [dbo].[POSM_LinklyCloudBackendTerminal] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Environment] = @Environment
+          AND [StoreCode] = @StoreCode
+          AND [DeviceCode] = @DeviceCode
+          AND NULLIF(LTRIM(RTRIM([Secret])), '') IS NOT NULL
+          AND NULLIF(LTRIM(RTRIM([PosId])), '') IS NOT NULL
+        ORDER BY [UpdatedAt] DESC, [Id] DESC;
+
+        COMMIT TRANSACTION;
         """;
 
     public async Task<LinklyCloudBackendTerminalCredentialRecord?> GetByDeviceAsync(
@@ -3398,20 +4015,27 @@ public sealed class SqlSugarLinklyCloudBackendTerminalCredentialRepository(
         string? updatedBy,
         CancellationToken cancellationToken)
     {
-        // secret 闂傚倸鍊风粈渚€骞夐敓鐘冲仭妞ゆ牗绋撻々鍙夌節婵犲倻澧曢柣銈庡櫍閺岀喖骞戦幇闈涙缂備讲鍋撻柛宀€鍋為悡蹇擃熆閼哥數娲存俊缁㈠枟缁绘盯宕煎┑鍫濈厽闂佸搫鐬奸崰鎾诲箯閻樿鐏抽柧蹇ｅ亞娴滎亞绱撻崒娆撴闁告梹鍨剁粋宥囨崉閾忚娈鹃梺鎸庣箓椤︻垳澹曢崗鑲╃闁瑰鍋熼幊鍕亜閺傝法效婵﹥妞介獮鎰償閿濆倹顫嶉梻浣稿悑濡炲潡宕归崼鏇犲祦闁哄稁鍘介悡銉╂倵閿濆骸浜滈柛鏂挎嚇濮婃椽宕崟顐熷亾閹间焦鍊舵繝闈涙濡插牏鎲搁弮鍫濊摕闁跨喓濮撮獮銏′繆椤栨繍鍤欓柛鐐差槸閳规垿鎮╅顫?HasSecret闂傚倸鍊烽悞锔锯偓绗涘懐鐭欓柟瀵稿仧闂勫嫰鏌￠崘銊モ偓鑽ょ不閺傛鐔嗛柤鎼佹涧婵洭鏌ｉ幇顒婅含闁哄矉缍侀獮鍥敇閻戝棙顥嬮梻浣虹帛閸旀洟鏁冮鍫濊摕闁跨喓濮寸粈瀣亜閹扳晛鐒洪柛鏂款樀濮婃椽宕崟闈涘壈闂佸摜鍠庨悺銊︾┍?
-        await dbContext.PosmDb.Ado.ExecuteCommandAsync(
-            UpsertSql,
-            new
-            {
-                Environment = environment,
-                StoreCode = storeCode,
-                DeviceCode = deviceCode,
-                Secret = secret,
-                PosId = posId,
-                UpdatedAt = updatedAt,
-                UpdatedBy = updatedBy
-            },
-            cancellationToken);
+        try
+        {
+            // 旧端点写入前必须锁定配置模式，避免 controller 预检查与实际写入之间切换到 Active。
+            await dbContext.PosmDb.Ado.ExecuteCommandAsync(
+                UpsertSql,
+                new
+                {
+                    Environment = environment,
+                    StoreCode = storeCode,
+                    DeviceCode = deviceCode,
+                    Secret = secret,
+                    PosId = posId,
+                    UpdatedAt = updatedAt,
+                    UpdatedBy = updatedBy
+                },
+                cancellationToken);
+        }
+        catch (Exception ex) when (IsSqlError(ex, "51005"))
+        {
+            throw new LinklyCloudLegacyModeDisabledException();
+        }
 
         return await GetByDeviceAsync(environment, storeCode, deviceCode, cancellationToken)
             ?? new LinklyCloudBackendTerminalCredentialRecord
@@ -3425,6 +4049,91 @@ public sealed class SqlSugarLinklyCloudBackendTerminalCredentialRepository(
                 UpdatedBy = updatedBy
             };
     }
+
+    public async Task AcquireLegacyPairingLeaseAsync(
+        string environment,
+        string storeCode,
+        Guid attemptId,
+        DateTime leaseExpiresAt,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await dbContext.PosmDb.Ado.ExecuteCommandAsync(
+                AcquireLegacyPairingLeaseSql,
+                new
+                {
+                    Environment = environment,
+                    StoreCode = storeCode,
+                    AttemptId = attemptId,
+                    LeaseExpiresAt = leaseExpiresAt,
+                    Now = now
+                },
+                cancellationToken);
+        }
+        catch (Exception ex) when (IsSqlError(ex, "51005"))
+        {
+            throw new LinklyCloudLegacyModeDisabledException();
+        }
+        catch (Exception ex) when (IsSqlError(ex, "51007"))
+        {
+            throw new LinklyCloudPairingInProgressException();
+        }
+    }
+
+    public Task ReleaseLegacyPairingLeaseAsync(
+        string environment,
+        string storeCode,
+        Guid attemptId,
+        CancellationToken cancellationToken) =>
+        dbContext.PosmDb.Ado.ExecuteCommandAsync(
+            ReleaseLegacyPairingLeaseSql,
+            new
+            {
+                Environment = environment,
+                StoreCode = storeCode,
+                AttemptId = attemptId
+            },
+            cancellationToken);
+
+    public async Task<LinklyCloudBackendTerminalCredentialRecord> CompleteLegacyPairingAsync(
+        string environment,
+        string storeCode,
+        string deviceCode,
+        Guid attemptId,
+        DateTime now,
+        string secret,
+        string posId,
+        string? updatedBy,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var completed = await dbContext.PosmDb.Ado.SqlQuerySingleAsync<LinklyCloudBackendTerminalCredentialRecord>(
+                CompleteLegacyPairingSql,
+                new SugarParameter("@Environment", environment),
+                new SugarParameter("@StoreCode", storeCode),
+                new SugarParameter("@DeviceCode", deviceCode),
+                new SugarParameter("@AttemptId", attemptId),
+                new SugarParameter("@Now", now),
+                new SugarParameter("@Secret", secret),
+                new SugarParameter("@PosId", posId),
+                new SugarParameter("@UpdatedBy", updatedBy));
+            return completed ?? throw new LinklyCloudLegacyPairingLeaseConflictException();
+        }
+        catch (Exception ex) when (IsSqlError(ex, "51005"))
+        {
+            throw new LinklyCloudLegacyModeDisabledException();
+        }
+        catch (Exception ex) when (IsSqlError(ex, "51006"))
+        {
+            throw new LinklyCloudLegacyPairingLeaseConflictException();
+        }
+    }
+
+    private static bool IsSqlError(Exception exception, string code) =>
+        exception.ToString().Contains(code, StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class LinklyCloudBackendTerminalCredentialRecord
@@ -3513,7 +4222,8 @@ public sealed record LinklyCloudBackendTransportSessionRequest(
     string AccessToken,
     string SessionId,
     string StoreCode,
-    string DeviceCode);
+    string DeviceCode,
+    Guid? TerminalId = null);
 
 public sealed record LinklyCloudBackendTransportStatusRequest(
     string Environment,
@@ -3521,7 +4231,8 @@ public sealed record LinklyCloudBackendTransportStatusRequest(
     string AccessToken,
     string SessionId,
     string StoreCode,
-    string DeviceCode);
+    string DeviceCode,
+    Guid? TerminalId = null);
 
 public sealed record LinklyCloudBackendTransportSendKeyRequest(
     string Environment,
@@ -3627,7 +4338,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         return SendAsync(
             request.Environment,
             request.StoreCode,
-            request.DeviceCode,
+            request.TerminalId?.ToString("D") ?? request.DeviceCode,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -3648,7 +4359,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         return SendAsync(
             request.Environment,
             request.StoreCode,
-            request.DeviceCode,
+            request.TerminalId?.ToString("D") ?? request.DeviceCode,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -3679,7 +4390,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         return SendAsync(
             request.Environment,
             request.StoreCode,
-            request.DeviceCode,
+            request.TerminalId?.ToString("D") ?? request.DeviceCode,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -3707,7 +4418,7 @@ public sealed class HttpLinklyCloudBackendAsyncTransport(
         return SendAsync(
             request.Environment,
             request.StoreCode,
-            request.DeviceCode,
+            request.TerminalId?.ToString("D") ?? request.DeviceCode,
             request.RestBaseUrl,
             request.AccessToken,
             request.SessionId,
@@ -4171,6 +4882,19 @@ public interface ILinklyCloudBackendAsyncRepository
         string deviceCode,
         CancellationToken cancellationToken);
 
+    Task<LinklyCloudBackendSessionRecord?> GetActiveSessionByTerminalAsync(
+        string environment,
+        string storeCode,
+        Guid terminalId,
+        CancellationToken cancellationToken) => Task.FromResult<LinklyCloudBackendSessionRecord?>(null);
+
+    Task<LinklyCloudBackendSessionRecord?> GetBlockingSessionByTerminalAsync(
+        string environment,
+        string storeCode,
+        Guid terminalId,
+        CancellationToken cancellationToken) =>
+        GetActiveSessionByTerminalAsync(environment, storeCode, terminalId, cancellationToken);
+
     Task<LinklyCloudBackendSessionRecord?> GetResumableSessionAsync(
         string environment,
         string storeCode,
@@ -4218,6 +4942,15 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
             if (_sessions.Values.Any(existing =>
                 existing.IsActive &&
                 SameTerminal(existing, session.Environment, session.StoreCode, session.DeviceCode)))
+            {
+                return Task.FromResult(false);
+            }
+
+            if (session.TerminalId.HasValue && _sessions.Values.Any(existing =>
+                existing.IsActive &&
+                existing.TerminalId == session.TerminalId &&
+                string.Equals(existing.Environment, session.Environment, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(existing.StoreCode, session.StoreCode, StringComparison.OrdinalIgnoreCase)))
             {
                 return Task.FromResult(false);
             }
@@ -4313,6 +5046,50 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
                     existing.IsActive)
                 // 中文注释：active 只用于新付款前的即时阻塞；历史终态恢复继续走 resumable，避免清完一条又弹下一条旧记录。
                 .OrderByDescending(existing => existing.UpdatedAt)
+                .ThenByDescending(existing => existing.Id)
+                .FirstOrDefault();
+            return Task.FromResult(session is null ? null : Clone(session));
+        }
+    }
+
+    public Task<LinklyCloudBackendSessionRecord?> GetActiveSessionByTerminalAsync(
+        string environment,
+        string storeCode,
+        Guid terminalId,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var session = _sessions.Values
+                .Where(existing =>
+                    existing.IsActive &&
+                    existing.TerminalId == terminalId &&
+                    string.Equals(existing.Environment, environment, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(existing.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(existing => existing.UpdatedAt)
+                .ThenByDescending(existing => existing.Id)
+                .FirstOrDefault();
+            return Task.FromResult(session is null ? null : Clone(session));
+        }
+    }
+
+    public Task<LinklyCloudBackendSessionRecord?> GetBlockingSessionByTerminalAsync(
+        string environment,
+        string storeCode,
+        Guid terminalId,
+        CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            var session = _sessions.Values
+                .Where(existing =>
+                    existing.TerminalId == terminalId &&
+                    string.Equals(existing.Environment, environment, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(existing.StoreCode, storeCode, StringComparison.OrdinalIgnoreCase) &&
+                    (existing.IsActive ||
+                        IsFinalForClientRecovery(existing) && existing.ClientAcknowledgedAt is null))
+                .OrderBy(existing => existing.IsActive ? 0 : 1)
+                .ThenByDescending(existing => existing.UpdatedAt)
                 .ThenByDescending(existing => existing.Id)
                 .FirstOrDefault();
             return Task.FromResult(session is null ? null : Clone(session));
@@ -4477,6 +5254,7 @@ public sealed class InMemoryLinklyCloudBackendAsyncRepository : ILinklyCloudBack
             Environment = session.Environment,
             StoreCode = session.StoreCode,
             DeviceCode = session.DeviceCode,
+            TerminalId = session.TerminalId,
             SessionId = session.SessionId,
             Status = session.Status,
             TxnRef = session.TxnRef,
@@ -4530,29 +5308,105 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         SET XACT_ABORT ON;
         SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
         BEGIN TRANSACTION;
+        DECLARE @CanCreate BIT = 1;
+        DECLARE @Mode NVARCHAR(16) = N'Legacy';
+        DECLARE @StoredTerminalId UNIQUEIDENTIFIER = NULL;
+        DECLARE @StoredSelectionRevision BIGINT = NULL;
 
-        IF NOT EXISTS (
-            SELECT 1
+        -- 固定锁序：会话（设备、实体终端、TxnRef）-> 终端 -> 选择 -> 模式。
+        IF EXISTS (
+            SELECT TOP (1) 1
             FROM [dbo].[POSM_LinklyCloudBackendSession] WITH (UPDLOCK, HOLDLOCK)
             WHERE [Environment] = @Environment
               AND [StoreCode] = @StoreCode
               AND [DeviceCode] = @DeviceCode
-              AND [IsActive] = 1)
-        AND NOT EXISTS (
-            SELECT 1
+              AND (
+                  [IsActive] = 1
+                  OR (
+                      [Status] IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted')
+                      AND [ClientAcknowledgedAt] IS NULL
+                  )
+              ))
+            SET @CanCreate = 0;
+
+        IF @CanCreate = 1 AND @TerminalId IS NOT NULL AND EXISTS (
+            SELECT TOP (1) 1
+            FROM [dbo].[POSM_LinklyCloudBackendSession] WITH (UPDLOCK, HOLDLOCK)
+            WHERE [Environment] = @Environment
+              AND [StoreCode] = @StoreCode
+              AND [TerminalId] = @TerminalId
+              AND (
+                  [IsActive] = 1
+                  OR (
+                      [Status] IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted')
+                      AND [ClientAcknowledgedAt] IS NULL
+                  )
+              ))
+            SET @CanCreate = 0;
+
+        IF @CanCreate = 1 AND @TxnRef IS NOT NULL AND EXISTS (
+            SELECT TOP (1) 1
             FROM [dbo].[POSM_LinklyCloudBackendSession] WITH (UPDLOCK, HOLDLOCK)
             WHERE [Environment] = @Environment
               AND [StoreCode] = @StoreCode
               AND [TxnRef] = @TxnRef)
+            SET @CanCreate = 0;
+
+        IF @CanCreate = 1 AND @TerminalId IS NOT NULL
+        BEGIN
+            SELECT @StoredTerminalId = [TerminalId]
+            FROM [dbo].[POSM_LinklyCloudTerminal] WITH (UPDLOCK, HOLDLOCK)
+            WHERE [Environment] = @Environment
+              AND [StoreCode] = @StoreCode
+              AND [TerminalId] = @TerminalId
+              AND [CredentialProtectionVersion] = 1
+              AND [UpdatedAt] = @TerminalUpdatedAt
+              AND [PairingState] = N'Ready'
+              AND NULLIF(LTRIM(RTRIM([Secret])), N'') IS NOT NULL
+              AND NULLIF(LTRIM(RTRIM([PosId])), N'') IS NOT NULL
+              AND (
+                  [PairingAttemptId] IS NULL
+                  OR [PairingLeaseExpiresAt] IS NULL
+                  OR [PairingLeaseExpiresAt] <= @UpdatedAt
+              );
+
+            IF @StoredTerminalId IS NULL
+                SET @CanCreate = 0;
+        END;
+
+        IF @CanCreate = 1 AND @TerminalId IS NOT NULL
+        BEGIN
+            SELECT @StoredSelectionRevision = [Revision]
+            FROM [dbo].[POSM_LinklyCloudDeviceSelection] WITH (UPDLOCK, HOLDLOCK)
+            WHERE [Environment] = @Environment
+              AND [StoreCode] = @StoreCode
+              AND [DeviceCode] = @DeviceCode
+              AND [TerminalId] = @TerminalId
+              AND [Revision] = @SelectionRevision;
+
+            IF @StoredSelectionRevision IS NULL
+                SET @CanCreate = 0;
+        END;
+
+        SELECT @Mode = [Mode]
+        FROM [dbo].[POSM_LinklyCloudConfigurationMode] WITH (UPDLOCK, HOLDLOCK)
+        WHERE [Environment] = @Environment AND [StoreCode] = @StoreCode;
+
+        IF @CanCreate = 1 AND (
+            (@TerminalId IS NULL AND ISNULL(@Mode, N'Legacy') = N'Active')
+            OR (@TerminalId IS NOT NULL AND ISNULL(@Mode, N'Legacy') <> N'Active'))
+            SET @CanCreate = 0;
+
+        IF @CanCreate = 1
         BEGIN
             INSERT INTO [dbo].[POSM_LinklyCloudBackendSession] (
-                [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef], [OperationType],
+                [Environment], [StoreCode], [DeviceCode], [TerminalId], [SessionId], [Status], [TxnRef], [OperationType],
                 [TransactionSuccess], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
                 [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt])
             VALUES (
-                @Environment, @StoreCode, @DeviceCode, @SessionId, @Status, @TxnRef, @OperationType,
+                @Environment, @StoreCode, @DeviceCode, @TerminalId, @SessionId, @Status, @TxnRef, @OperationType,
                 @TransactionSuccess, @OperationSuccess, @SettlementData, @SettlementReceiptTexts, @ResponseCode, @ResponseText, @RecoveryAction, @DisplayText, @DisplayLines,
                 @CancelKeyFlag, @OKKeyFlag, @AcceptYesKeyFlag, @DeclineNoKeyFlag, @AuthoriseKeyFlag,
                 @InputType, @GraphicCode, @ReceiptText,
@@ -4592,6 +5446,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
                     OR ISNULL(target.[ResponseText], N'') <> ISNULL(@ResponseText, N'')
                 )) THEN
             UPDATE SET
+                [TerminalId] = COALESCE(target.[TerminalId], @TerminalId),
                 [Status] = @Status,
                 [TxnRef] = @TxnRef,
                 [OperationType] = @OperationType,
@@ -4620,13 +5475,13 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
                 [UpdatedAt] = @UpdatedAt
         WHEN NOT MATCHED THEN
             INSERT (
-                [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef], [OperationType],
+                [Environment], [StoreCode], [DeviceCode], [TerminalId], [SessionId], [Status], [TxnRef], [OperationType],
                 [TransactionSuccess], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
                 [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt])
             VALUES (
-                @Environment, @StoreCode, @DeviceCode, @SessionId, @Status, @TxnRef, @OperationType,
+                @Environment, @StoreCode, @DeviceCode, @TerminalId, @SessionId, @Status, @TxnRef, @OperationType,
                 @TransactionSuccess, @OperationSuccess, @SettlementData, @SettlementReceiptTexts, @ResponseCode, @ResponseText, @RecoveryAction, @DisplayText, @DisplayLines,
                 @CancelKeyFlag, @OKKeyFlag, @AcceptYesKeyFlag, @DeclineNoKeyFlag, @AuthoriseKeyFlag,
                 @InputType, @GraphicCode, @ReceiptText,
@@ -4637,39 +5492,18 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
         LinklyCloudBackendSessionRecord session,
         CancellationToken cancellationToken)
     {
-        for (var attempt = 0; attempt < 5; attempt++)
+        try
         {
-            try
-            {
-                var affected = await dbContext.PosmDb.Ado.ExecuteCommandAsync(TryCreateSessionSql, ToSessionParameters(session));
-                if (affected > 0)
-                {
-                    return true;
-                }
-            }
-            catch (Exception ex) when (IsUniqueConstraintViolation(ex))
-            {
-                var activeAfterConflict = await GetActiveSessionAsync(session.Environment, session.StoreCode, session.DeviceCode, cancellationToken);
-                if (activeAfterConflict is not null ||
-                    ex.ToString().Contains("UX_POSM_LinklyCloudBackendSession_ActiveTerminal", StringComparison.OrdinalIgnoreCase))
-                {
-                    return false;
-                }
-
-                session.TxnRef = CreateTxnRef();
-                continue;
-            }
-
-            var active = await GetActiveSessionAsync(session.Environment, session.StoreCode, session.DeviceCode, cancellationToken);
-            if (active is not null)
-            {
-                return false;
-            }
-
-            session.TxnRef = CreateTxnRef();
+            var affected = await dbContext.PosmDb.Ado.ExecuteCommandAsync(
+                TryCreateSessionSql,
+                ToSessionParameters(session));
+            return affected > 0;
         }
-
-        return false;
+        catch (Exception ex) when (IsUniqueConstraintViolation(ex))
+        {
+            // 唯一键冲突可能来自 TxnRef 或在途会话；由服务层重读权威状态后决定是否重试。
+            return false;
+        }
     }
 
     private static bool IsUniqueConstraintViolation(Exception ex)
@@ -4697,7 +5531,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
     {
         const string sql = """
             SELECT TOP 1
-                [Id], [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
+                [Id], [Environment], [StoreCode], [DeviceCode], [TerminalId], [SessionId], [Status], [TxnRef],
                 [TransactionSuccess], [OperationType], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
@@ -4724,7 +5558,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
     {
         const string sql = """
             SELECT TOP 1
-                [Id], [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
+                [Id], [Environment], [StoreCode], [DeviceCode], [TerminalId], [SessionId], [Status], [TxnRef],
                 [TransactionSuccess], [OperationType], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
@@ -4749,7 +5583,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
     {
         const string sql = """
             SELECT TOP 1
-                [Id], [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
+                [Id], [Environment], [StoreCode], [DeviceCode], [TerminalId], [SessionId], [Status], [TxnRef],
                 [TransactionSuccess], [OperationType], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
@@ -4771,6 +5605,68 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
             new SugarParameter("@DeviceCode", deviceCode));
     }
 
+    public async Task<LinklyCloudBackendSessionRecord?> GetActiveSessionByTerminalAsync(
+        string environment,
+        string storeCode,
+        Guid terminalId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP 1
+                [Id], [Environment], [StoreCode], [DeviceCode], [TerminalId], [SessionId], [Status], [TxnRef],
+                [TransactionSuccess], [OperationType], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
+                [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
+                [InputType], [GraphicCode], [ReceiptText],
+                [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt]
+            FROM [dbo].[POSM_LinklyCloudBackendSession]
+            WHERE [Environment] = @Environment
+              AND [StoreCode] = @StoreCode
+              AND [TerminalId] = @TerminalId
+              AND [IsActive] = 1
+            ORDER BY [UpdatedAt] DESC, [Id] DESC;
+            """;
+
+        return await dbContext.PosmDb.Ado.SqlQuerySingleAsync<LinklyCloudBackendSessionRecord>(
+            sql,
+            new SugarParameter("@Environment", environment),
+            new SugarParameter("@StoreCode", storeCode),
+            new SugarParameter("@TerminalId", terminalId));
+    }
+
+    public async Task<LinklyCloudBackendSessionRecord?> GetBlockingSessionByTerminalAsync(
+        string environment,
+        string storeCode,
+        Guid terminalId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP 1
+                [Id], [Environment], [StoreCode], [DeviceCode], [TerminalId], [SessionId], [Status], [TxnRef],
+                [TransactionSuccess], [OperationType], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
+                [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
+                [InputType], [GraphicCode], [ReceiptText],
+                [RecoveryCount], [ReceiptPrintedAt], [ClientAcknowledgedAt], [LastHttpStatus], [IsActive], [UpdatedAt]
+            FROM [dbo].[POSM_LinklyCloudBackendSession]
+            WHERE [Environment] = @Environment
+              AND [StoreCode] = @StoreCode
+              AND [TerminalId] = @TerminalId
+              AND (
+                    [IsActive] = 1
+                    OR ([Status] IN (N'Completed', N'Cancelled', N'Failed', N'NotSubmitted') AND [ClientAcknowledgedAt] IS NULL)
+                  )
+            ORDER BY
+                CASE WHEN [IsActive] = 1 THEN 0 ELSE 1 END,
+                [UpdatedAt] DESC,
+                [Id] DESC;
+            """;
+
+        return await dbContext.PosmDb.Ado.SqlQuerySingleAsync<LinklyCloudBackendSessionRecord>(
+            sql,
+            new SugarParameter("@Environment", environment),
+            new SugarParameter("@StoreCode", storeCode),
+            new SugarParameter("@TerminalId", terminalId));
+    }
+
     public async Task<LinklyCloudBackendSessionRecord?> GetResumableSessionAsync(
         string environment,
         string storeCode,
@@ -4779,7 +5675,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
     {
         const string sql = """
             SELECT TOP 1
-                [Id], [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
+                [Id], [Environment], [StoreCode], [DeviceCode], [TerminalId], [SessionId], [Status], [TxnRef],
                 [TransactionSuccess], [OperationType], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
@@ -4814,7 +5710,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
     {
         const string sql = """
             SELECT TOP 1
-                [Id], [Environment], [StoreCode], [DeviceCode], [SessionId], [Status], [TxnRef],
+                [Id], [Environment], [StoreCode], [DeviceCode], [TerminalId], [SessionId], [Status], [TxnRef],
                 [TransactionSuccess], [OperationType], [OperationSuccess], [SettlementData], [SettlementReceiptTexts], [ResponseCode], [ResponseText], [RecoveryAction], [DisplayText], [DisplayLines],
                 [CancelKeyFlag], [OKKeyFlag], [AcceptYesKeyFlag], [DeclineNoKeyFlag], [AuthoriseKeyFlag],
                 [InputType], [GraphicCode], [ReceiptText],
@@ -4939,6 +5835,9 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
             new SugarParameter("@Environment", session.Environment),
             new SugarParameter("@StoreCode", session.StoreCode),
             new SugarParameter("@DeviceCode", session.DeviceCode),
+            new SugarParameter("@TerminalId", session.TerminalId),
+            new SugarParameter("@SelectionRevision", session.SelectionRevision),
+            new SugarParameter("@TerminalUpdatedAt", session.TerminalUpdatedAt),
             new SugarParameter("@SessionId", session.SessionId),
             new SugarParameter("@Status", session.Status),
             new SugarParameter("@TxnRef", session.TxnRef),
@@ -4986,6 +5885,14 @@ public sealed class LinklyCloudBackendSessionRecord
     public string StoreCode { get; set; } = string.Empty;
 
     public string DeviceCode { get; set; } = string.Empty;
+
+    public Guid? TerminalId { get; set; }
+
+    [SugarColumn(IsIgnore = true)]
+    public long? SelectionRevision { get; set; }
+
+    [SugarColumn(IsIgnore = true)]
+    public DateTime? TerminalUpdatedAt { get; set; }
 
     public string SessionId { get; set; } = string.Empty;
 

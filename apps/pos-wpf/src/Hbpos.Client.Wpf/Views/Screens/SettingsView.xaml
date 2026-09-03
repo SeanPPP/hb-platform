@@ -1551,57 +1551,85 @@
                                                 <TextBlock Text="{loc:Loc settings.payment.sandbox.toggle}" FontWeight="Bold" />
                                             </CheckBox>
 
-                                            <TextBlock Text="{loc:Loc settings.linkly.cloud.secret}" Style="{StaticResource SettingsLabelStyle}" />
-                                            <Border MinHeight="42"
-                                                    Background="#FFF6F8FB"
-                                                    BorderBrush="{StaticResource PosBorderBrush}"
+                                            <Border Background="#FFF3F7FF"
+                                                    BorderBrush="#FFBED0EE"
                                                     BorderThickness="1"
                                                     CornerRadius="6"
-                                                    Padding="12,8"
-                                                    Margin="0,0,0,14">
-                                                <TextBlock Text="{Binding LinklyCloudSecretStatusText}"
-                                                           FontSize="12"
-                                                           Foreground="{StaticResource PosMutedForegroundBrush}"
-                                                           TextWrapping="Wrap" />
-                                            </Border>
-
-                                            <TextBlock Text="{loc:Loc settings.linkly.cloud.credential}" Style="{StaticResource SettingsLabelStyle}" />
-                                            <Border MinHeight="42"
-                                                    Background="#FFF6F8FB"
-                                                    BorderBrush="{StaticResource PosBorderBrush}"
-                                                    BorderThickness="1"
-                                                    CornerRadius="6"
-                                                    Padding="12,8"
-                                                    Margin="0,0,0,14">
-                                                <TextBlock Text="{Binding LinklyCloudCredentialStatusText}"
-                                                           FontSize="12"
-                                                           Foreground="{StaticResource PosMutedForegroundBrush}"
-                                                           TextWrapping="Wrap" />
-                                            </Border>
-
-                                            <TextBlock Text="{loc:Loc settings.linkly.cloud.username}" Style="{StaticResource SettingsLabelStyle}" />
-                                            <TextBox Text="{Binding LinklyCloudUsernameText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                     Style="{StaticResource SettingsFieldTextBoxStyle}"
-                                                     Margin="0,0,0,14" />
-
-                                            <TextBlock Text="{loc:Loc settings.linkly.cloud.password}" Style="{StaticResource SettingsLabelStyle}" />
-                                            <PasswordBox x:Name="LinklyCloudBackendPasswordBox"
-                                                         PasswordChanged="LinklyCloudPasswordBox_PasswordChanged"
-                                                         Style="{StaticResource SettingsFieldPasswordBoxStyle}"
-                                                         Margin="0,0,0,12" />
-
-                                            <Button Click="SaveLinklyCloudCredential_Click"
-                                                    IsEnabled="{Binding CanSaveLinklyCloudCredentialFromView}"
-                                                    Style="{StaticResource PosSecondaryButtonStyle}"
-                                                    Height="42"
-                                                    MinWidth="168"
-                                                    HorizontalAlignment="Left"
+                                                    Padding="12,10"
                                                     Margin="0,0,0,16">
-                                                <StackPanel Orientation="Horizontal">
-                                                    <materialDesign:PackIcon Kind="ShieldKeyOutline" Width="18" Height="18" Margin="0,0,8,0" />
-                                                    <TextBlock Text="{loc:Loc settings.linkly.cloud.saveCredential}" />
-                                                </StackPanel>
-                                            </Button>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <materialDesign:PackIcon Kind="ShieldLockOutline"
+                                                                             Width="20"
+                                                                             Height="20"
+                                                                             Foreground="{StaticResource PosPrimaryBrush}"
+                                                                             Margin="0,1,10,0" />
+                                                    <TextBlock Grid.Column="1"
+                                                               Text="{loc:Loc settings.linkly.cloudBackend.credentialsManagedByWeb}"
+                                                               FontSize="12"
+                                                               Foreground="{StaticResource PosTextBrush}"
+                                                               TextWrapping="Wrap" />
+                                                </Grid>
+                                            </Border>
+
+                                            <TextBlock Text="{loc:Loc settings.linkly.cloudBackend.terminal}" Style="{StaticResource SettingsLabelStyle}" />
+                                            <Grid Margin="0,0,0,14">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="10" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <ComboBox Grid.Column="0"
+                                                          ItemsSource="{Binding LinklyCloudTerminals}"
+                                                          SelectedItem="{Binding SelectedLinklyCloudTerminal, Mode=TwoWay}"
+                                                          SelectionChanged="LinklyCloudTerminal_SelectionChanged"
+                                                          MinHeight="42"
+                                                          Padding="10,6"
+                                                          AutomationProperties.AutomationId="LinklyCloudTerminalSelector">
+                                                    <ComboBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Grid MinWidth="260">
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <Border Background="#FFE9EFF9" CornerRadius="4" Padding="7,3" Margin="0,0,9,0">
+                                                                    <TextBlock Text="{Binding LaneNo, StringFormat=Lane {0}}" FontSize="11" FontWeight="Bold" />
+                                                                </Border>
+                                                                <TextBlock Grid.Column="1" Text="{Binding DisplayName}" VerticalAlignment="Center" FontWeight="SemiBold" />
+                                                                <TextBlock Grid.Column="2" Text="{Binding PairingState}" VerticalAlignment="Center" FontSize="11" Foreground="{StaticResource PosMutedForegroundBrush}" Margin="10,0,0,0" />
+                                                            </Grid>
+                                                        </DataTemplate>
+                                                    </ComboBox.ItemTemplate>
+                                                </ComboBox>
+                                                <Button Grid.Column="2"
+                                                        Click="RefreshLinklyCloudTerminals_Click"
+                                                        Style="{StaticResource PosSecondaryButtonStyle}"
+                                                        Height="42"
+                                                        MinWidth="108">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <materialDesign:PackIcon Kind="Refresh" Width="18" Height="18" Margin="0,0,7,0" />
+                                                        <TextBlock Text="{loc:Loc settings.linkly.cloudBackend.refresh}" />
+                                                    </StackPanel>
+                                                </Button>
+                                            </Grid>
+
+                                            <Border Background="#FFF8F9FB"
+                                                    BorderBrush="{StaticResource PosBorderBrush}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="6"
+                                                    Padding="10,8"
+                                                    Margin="0,0,0,14">
+                                                <TextBlock Text="{Binding SelectedLinklyCloudTerminalText}"
+                                                           FontSize="12"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{StaticResource PosTextBrush}"
+                                                           TextWrapping="Wrap" />
+                                            </Border>
 
                                             <TextBlock Text="{loc:Loc settings.linkly.cloud.pairCode}" Style="{StaticResource SettingsLabelStyle}" />
                                             <Grid Margin="0,0,0,12">

@@ -9,12 +9,14 @@ import {
   type SettingsDangerousActionResult,
   type SettingsDangerousConfirmation,
   type SettingsDeviceActivationPreviewResponse,
+  type PaymentEnvironment,
   type SettingsPaymentSettingsInput,
   type SettingsPendingDataSnapshot,
   type SettingsPrinterDevice,
   type SettingsReceiptProfileDraft,
   type SettingsScannerTestResult,
   type SettingsLinklyPairingPort,
+  type SettingsLinklyTerminalSelectionSnapshot,
   type SettingsSnapshot,
 } from "../../features/settings/settings-presenter";
 import type { ReceiptPrinterSettings } from "../db/pos-settings-repository";
@@ -37,6 +39,7 @@ export type ProductionSettingsControlDependencies = Readonly<{
       provider: "square" | "linkly",
       input: SettingsPaymentSettingsInput,
       signal: AbortSignal,
+      terminals?: SettingsLinklyTerminalSelectionSnapshot | null,
     ): Promise<void>;
   }>;
   paymentConfiguration: Readonly<{
@@ -45,7 +48,19 @@ export type ProductionSettingsControlDependencies = Readonly<{
   paymentConfigurationTransition: Readonly<{
     run<T>(operation: () => Promise<T>): Promise<T>;
   }>;
-  linklySetup?: SettingsLinklyPairingPort | undefined;
+  linklySetup?:
+    | (SettingsLinklyPairingPort &
+        Readonly<{
+          selectTerminal?:
+            | ((
+                environment: PaymentEnvironment,
+                terminalId: string,
+                expectedRevision: number,
+                signal: AbortSignal,
+              ) => Promise<SettingsLinklyTerminalSelectionSnapshot>)
+            | undefined;
+        }>)
+    | undefined;
   runtimeReload: Readonly<{
     reload(signal: AbortSignal): Promise<void>;
   }>;
@@ -202,10 +217,61 @@ export class ProductionSettingsControl implements SettingsControlPort {
     provider: "square" | "linkly",
     input: SettingsPaymentSettingsInput,
     signal: AbortSignal,
+    terminals?: SettingsLinklyTerminalSelectionSnapshot | null,
   ): Promise<void> {
     return abortChecked(signal, () =>
-      this.input.payments.test(provider, input, signal),
+      this.input.payments.test(provider, input, signal, terminals),
     );
+  }
+
+  public async selectLinklyTerminalGuarded(
+    environment: PaymentEnvironment,
+    terminalId: string,
+    expectedRevision: number,
+    signal: AbortSignal,
+    assertActive: () => void = () => undefined,
+  ): Promise<SettingsLinklyTerminalSelectionSnapshot> {
+    const selectTerminal = this.input.linklySetup?.selectTerminal;
+    if (!selectTerminal) {
+      throw linklyTerminalSelectionBlocked();
+    }
+    throwIfAborted(signal);
+    return this.input.paymentConfigurationTransition.run(async () => {
+      throwIfAborted(signal);
+      assertActive();
+      if (this.catalogRefreshBlocks()) {
+        throw linklyTerminalSelectionBlocked();
+      }
+      let pending: SettingsPendingDataSnapshot;
+      try {
+        pending = await abortChecked(signal, () =>
+          this.input.pendingData.read(signal),
+        );
+      } catch (error) {
+        if (signal.aborted) throw error;
+        throw linklyTerminalSelectionBlocked();
+      }
+      const blockers = derivePendingWorkBlockers(pending).filter(
+        ({ code }) =>
+          code === "active-cart" ||
+          code === "fulfilment-in-flight" ||
+          code === "sync-or-audit-in-flight" ||
+          code === "payment-configuration-sensitive-orders" ||
+          code === "unresolved-payments",
+      );
+      if (blockers.length > 0 || this.catalogRefreshBlocks()) {
+        throw linklyTerminalSelectionBlocked();
+      }
+      // PUT 是持久切换；只在提交前复核 lease，提交后不因换班诱导重放。
+      assertActive();
+      throwIfAborted(signal);
+      return selectTerminal(
+        environment,
+        terminalId,
+        expectedRevision,
+        signal,
+      );
+    });
   }
 
   public savePrinterSettings(
@@ -455,6 +521,7 @@ export class ProductionSettingsControl implements SettingsControlPort {
         assertActive();
         const result = await this.input.linklySetup.pair(
           action.environment,
+          action.terminalId,
           action.pairCode,
           signal,
         );
@@ -608,6 +675,13 @@ function completed(
   >,
 ): SettingsDangerousActionResult {
   return Object.freeze({ status: "completed", kind });
+}
+
+function linklyTerminalSelectionBlocked(): Error {
+  return Object.assign(
+    new Error("Linkly terminal selection is blocked by pending work."),
+    { code: "LINKLY_TERMINAL_SELECTION_BLOCKED" },
+  );
 }
 
 function deviceReregistrationCommitted(): SettingsDangerousActionResult {

@@ -579,6 +579,85 @@ public sealed class CashierPermissionAuthorizationTests
         Assert.Contains(Permissions.PosTerminal.Payment.Confirm, cashierService.CheckedPermissions);
     }
 
+    public static IEnumerable<object[]> PaymentTerminalSelectionPermissionCases()
+    {
+        yield return
+        [
+            new[] { Permissions.PosTerminal.Settings.PaymentTerminal },
+            true
+        ];
+        yield return
+        [
+            new[]
+            {
+                Permissions.PosTerminal.Payment.TakeCard,
+                Permissions.PosTerminal.Payment.Confirm
+            },
+            true
+        ];
+        yield return
+        [
+            new[] { Permissions.PosTerminal.Payment.TakeCard },
+            false
+        ];
+        yield return
+        [
+            new[] { Permissions.PosTerminal.Payment.Confirm },
+            false
+        ];
+        yield return [Array.Empty<string>(), false];
+    }
+
+    [Theory]
+    [MemberData(nameof(PaymentTerminalSelectionPermissionCases))]
+    public async Task Payment_terminal_selection_policy_allows_settings_or_complete_card_permissions(
+        string[] grantedPermissions,
+        bool expectedSuccess)
+    {
+        var options = new AuthorizationOptions();
+        CashierAuthorizationPolicies.AddPolicies(options);
+        var policy = options.GetPolicy(CashierAuthorizationPolicies.PaymentTerminalSelection);
+        Assert.NotNull(policy);
+        var cashierService = new SelectiveCashierService(grantedPermissions);
+        var httpContext = CreateHttpContext("ticket", cashierService, new FakeEmergencyGrantService(null));
+        var permissionRequirements = policy.Requirements
+            .OfType<CashierPermissionRequirement>()
+            .ToArray();
+        var context = new AuthorizationHandlerContext(permissionRequirements, httpContext.User, null);
+        var handler = new CashierPermissionAuthorizationHandler(
+            new HttpContextAccessor { HttpContext = httpContext },
+            new FakeTicketService(new CashierAuthorizationTicket(
+                "C001", "U001", "S001", "POS-01", DateTimeOffset.UtcNow.AddHours(1))));
+
+        await handler.HandleAsync(context);
+
+        Assert.Equal(expectedSuccess, context.HasSucceeded);
+    }
+
+    [Fact]
+    public void Payment_terminal_selection_policy_encodes_settings_or_take_card_and_confirm()
+    {
+        var options = new AuthorizationOptions();
+        CashierAuthorizationPolicies.AddPolicies(options);
+        var policy = options.GetPolicy(CashierAuthorizationPolicies.PaymentTerminalSelection);
+        Assert.NotNull(policy);
+        var requirements = policy.Requirements
+            .OfType<CashierPermissionRequirement>()
+            .ToArray();
+
+        Assert.Equal(2, requirements.Length);
+        Assert.Contains(requirements, requirement => requirement.PermissionCodes.SequenceEqual(
+        [
+            Permissions.PosTerminal.Settings.PaymentTerminal,
+            Permissions.PosTerminal.Payment.TakeCard
+        ]));
+        Assert.Contains(requirements, requirement => requirement.PermissionCodes.SequenceEqual(
+        [
+            Permissions.PosTerminal.Settings.PaymentTerminal,
+            Permissions.PosTerminal.Payment.Confirm
+        ]));
+    }
+
     [Fact]
     public void Sensitive_policies_map_to_their_specific_pos_permissions()
     {

@@ -16,6 +16,10 @@ import {
 
 import type { PaymentAttempt, PaymentProvider } from "@/core/contracts";
 import type {
+  LinklyPaymentTerminalSelectionBindingPort,
+  LinklyPaymentTerminalSelectionExpectation,
+} from "@/features/payments/linkly";
+import type {
   PaymentProviderAvailability,
   PaymentProviderAvailabilityPort,
 } from "@/features/payments/runtime/payment-provider-registry";
@@ -73,6 +77,45 @@ test("重复点击共享同一 action，provider/completion/clear 各执行一�
       reversible: true,
     },
   ]);
+});
+
+test("Linkly 启动在 provider 调用期间按 OrderGuid 绑定 UI 已确认终端快照", async () => {
+  const harness = createHarness();
+  const binding = new RecordingLinklyPaymentSelection();
+  harness.linklyPaymentSelection = binding;
+  harness.attempts.put(attempt({
+    attemptId: "attempt-selection-conflict",
+    provider: "linkly-cloud",
+    state: "Declined",
+    lastErrorCode: "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+  }));
+  harness.mixed.addOnlineTender = async () => {
+    assert.equal(binding.activeOrderGuid, "order-1");
+    return mixed("declined", {
+      attemptId: "attempt-selection-conflict",
+      errorCode: "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+    });
+  };
+  const selection: LinklyPaymentTerminalSelectionExpectation = {
+    environment: "Sandbox",
+    mode: "Active",
+    terminalId: "terminal-1",
+    selectionRevision: 3,
+  };
+
+  const result = await harness.runtime().start({
+    ...startInput(),
+    provider: "linkly-cloud",
+    linklyTerminalSelection: selection,
+  });
+
+  assert.deepEqual(binding.calls, [{ orderGuid: "order-1", selection }]);
+  assert.equal(binding.activeOrderGuid, null);
+  assert.equal(result.status, "declined");
+  assert.equal(
+    result.errorCode,
+    "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
+  );
 });
 
 test("首次现金支付先耐久同一 draft，再原子写入现金 tender 并完成清车", async () => {
@@ -1738,6 +1781,9 @@ function createHarness(
         }): Promise<{ prepared: true }>;
       }
     | undefined;
+  let linklyPaymentSelection:
+    | LinklyPaymentTerminalSelectionBindingPort
+    | undefined;
   return {
     events,
     session,
@@ -1753,6 +1799,12 @@ function createHarness(
     set voucherPreparation(value) {
       voucherPreparation = value;
     },
+    get linklyPaymentSelection() {
+      return linklyPaymentSelection;
+    },
+    set linklyPaymentSelection(value) {
+      linklyPaymentSelection = value;
+    },
     runtime() {
       const options = {
         mixed,
@@ -1764,12 +1816,38 @@ function createHarness(
         permissions,
       };
       return new PaymentCheckoutRuntime(
-        voucherPreparation
-          ? { ...options, voucherPreparation }
-          : options,
+        {
+          ...options,
+          ...(voucherPreparation ? { voucherPreparation } : {}),
+          ...(linklyPaymentSelection ? { linklyPaymentSelection } : {}),
+        },
       );
     },
   };
+}
+
+class RecordingLinklyPaymentSelection
+  implements LinklyPaymentTerminalSelectionBindingPort
+{
+  public activeOrderGuid: string | null = null;
+  public readonly calls: Array<Readonly<{
+    orderGuid: string;
+    selection: LinklyPaymentTerminalSelectionExpectation;
+  }>> = [];
+
+  public async runWithSelection<T>(
+    orderGuid: string,
+    selection: LinklyPaymentTerminalSelectionExpectation,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    this.calls.push({ orderGuid, selection });
+    this.activeOrderGuid = orderGuid;
+    try {
+      return await operation();
+    } finally {
+      this.activeOrderGuid = null;
+    }
+  }
 }
 
 class SessionGuard {

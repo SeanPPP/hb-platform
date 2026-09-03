@@ -24,6 +24,7 @@ public static class CashierAuthorizationPolicies
     public const string DailyCloseSave = "Cashier.DailyCloseSave";
     public const string DailyClosePrint = "Cashier.DailyClosePrint";
     public const string PaymentSettings = "Cashier.PaymentSettings";
+    public const string PaymentTerminalSelection = "Cashier.PaymentTerminalSelection";
     public const string SpecialProductsView = "Cashier.SpecialProductsView";
     public const string SpecialProductsManage = "Cashier.SpecialProductsManage";
     public const string DeviceRegistration = "Cashier.DeviceRegistration";
@@ -57,6 +58,7 @@ public static class CashierAuthorizationPolicies
             Permissions.PosTerminal.DailyClose.Save,
             Permissions.PosTerminal.DailyClose.Reprint);
         Add(options, PaymentSettings, Permissions.PosTerminal.Settings.PaymentTerminal);
+        AddPaymentTerminalSelection(options);
         Add(options, SpecialProductsView, Permissions.PosTerminal.SpecialProducts.View);
         Add(options, SpecialProductsManage, Permissions.PosTerminal.SpecialProducts.Manage);
         Add(options, DeviceRegistration, Permissions.PosTerminal.Settings.DeviceRegistration);
@@ -91,6 +93,26 @@ public static class CashierAuthorizationPolicies
             {
                 policy.AddRequirements(new CashierPermissionRequirement([permission]));
             }
+        });
+    }
+
+    private static void AddPaymentTerminalSelection(AuthorizationOptions options)
+    {
+        options.AddPolicy(PaymentTerminalSelection, policy =>
+        {
+            policy.RequireAuthenticatedUser();
+            // 两个 requirement 共同表达：设置权限，或同时具备收卡与确认权限。
+            policy.AddRequirements(
+                new CashierPermissionRequirement(
+                [
+                    Permissions.PosTerminal.Settings.PaymentTerminal,
+                    Permissions.PosTerminal.Payment.TakeCard
+                ]),
+                new CashierPermissionRequirement(
+                [
+                    Permissions.PosTerminal.Settings.PaymentTerminal,
+                    Permissions.PosTerminal.Payment.Confirm
+                ]));
         });
     }
 

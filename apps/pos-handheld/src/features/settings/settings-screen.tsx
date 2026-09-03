@@ -85,6 +85,7 @@ export type SettingsScreenPresenter = Pick<
   | "savePaymentSettings"
   | "savePrinterSettings"
   | "scanPrinters"
+  | "selectLinklyTerminal"
   | "selectPane"
   | "setApiAddressDraft"
   | "setDrawerEnabled"
@@ -1237,6 +1238,7 @@ function LinklySetupCard({
   state: SettingsState;
 }>) {
   const [pairCode, setPairCode] = useState("");
+  const [pairTerminalId, setPairTerminalId] = useState("");
   const setup = state.linklySetup;
   const t = (
     key: SettingsCopyKey,
@@ -1244,9 +1246,23 @@ function LinklySetupCard({
   ) => settingsText(locale, key, values);
   useEffect(() => {
     setPairCode("");
-  }, [state.linklyDraft.environment, setup?.pairCodeResetToken]);
+    setPairTerminalId(
+      setup?.terminals.value?.selectedTerminalId ??
+        setup?.terminals.value?.terminals[0]?.terminalId ??
+        "",
+    );
+  }, [
+    state.linklyDraft.environment,
+    setup?.pairCodeResetToken,
+    setup?.terminals.value?.selectedTerminalId,
+    setup?.terminals.value?.terminals[0]?.terminalId,
+  ]);
   if (!setup) return null;
   const health = setup.health.value;
+  const terminalSnapshot = setup.terminals.value;
+  const pairTerminal = terminalSnapshot?.terminals.find(
+    (terminal) => terminal.terminalId === pairTerminalId,
+  );
   const healthReady = linklyHealthReady(state);
   const storeCredentialsReady = linklyStoreCredentialsReady(state);
   const terminalPaired = linklyTerminalPaired(state);
@@ -1305,6 +1321,56 @@ function LinklySetupCard({
           tone="secondary"
         />
       </View>
+      <FieldLabel label={t("linkly.terminals")} />
+      {terminalSnapshot?.terminals.length ? (
+        <View style={styles.linklyTerminalList} testID="settings-linkly-terminals">
+          {terminalSnapshot.terminals.map((terminal) => {
+            const selected = terminal.terminalId === pairTerminalId;
+            const terminalDisabled =
+              disabled || setup.terminals.kind === "switching";
+            const status = terminal.isBusy
+              ? t("linkly.statusBusy")
+              : terminal.pairingState === "NeedsRepair"
+                ? t("linkly.statusNeedsRepair")
+                : terminal.isReady && terminal.pairingState === "Ready"
+                  ? t("linkly.statusReady")
+                  : terminal.pairingState === "Unpaired"
+                    ? t("linkly.statusUnpaired")
+                    : t("linkly.statusUnknown");
+            return (
+              <PosPressable
+                accessibilityLabel={`${terminal.displayName}. Lane ${terminal.laneNo}. ${status}`}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: terminalDisabled, selected }}
+                disabled={terminalDisabled}
+                key={terminal.terminalId}
+                onPress={() => {
+                  setPairCode("");
+                  setPairTerminalId(terminal.terminalId);
+                  if (terminal.isReady && terminal.pairingState === "Ready") {
+                    void presenter.selectLinklyTerminal(terminal.terminalId);
+                  }
+                }}
+                sound="tap"
+                style={({ pressed }) => [
+                  styles.linklyTerminalOption,
+                  selected && styles.linklyTerminalOptionSelected,
+                  terminalDisabled && styles.squareSelectionDisabled,
+                  pressed && !terminalDisabled && styles.pressedButton,
+                ]}
+                testID={`settings-linkly-terminal-${terminal.terminalId}`}
+              >
+                <Text style={styles.linklyTerminalName}>
+                  {`${terminal.displayName} · Lane ${terminal.laneNo}`}
+                </Text>
+                <Text style={styles.linklyTerminalStatus}>{status}</Text>
+              </PosPressable>
+            );
+          })}
+        </View>
+      ) : (
+        <Text style={styles.squareFieldHint}>{t("linkly.noTerminals")}</Text>
+      )}
       <FieldLabel label={t("linkly.pairCode")} />
       <PosKeyboardAwareTextInput
         accessibilityLabel={t("linkly.pairCode")}
@@ -1326,10 +1392,12 @@ function LinklySetupCard({
         disabled={
           disabled ||
           !storeCredentialsReady ||
+          !pairTerminal ||
+          pairTerminal.isBusy ||
           pairCode.length !== 6
         }
         label={t("linkly.pair")}
-        onPress={() => presenter.requestLinklyPair(pairCode)}
+        onPress={() => presenter.requestLinklyPair(pairTerminalId, pairCode)}
         testID="settings-linkly-pair"
       />
       <Text style={styles.linklySetupStatus} testID="settings-linkly-logon-status">
@@ -3329,6 +3397,37 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     marginTop: 12,
     padding: 12,
+  },
+  linklyTerminalList: {
+    gap: 8,
+    marginBottom: 4,
+  },
+  linklyTerminalOption: {
+    backgroundColor: posColors.surface,
+    borderColor: posColors.border,
+    borderRadius: 8,
+    borderWidth: 1,
+    justifyContent: "center",
+    minHeight: SETTINGS_MIN_TOUCH_TARGET,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  linklyTerminalOptionSelected: {
+    backgroundColor: posColors.blueSoft,
+    borderColor: posColors.blue,
+  },
+  linklyTerminalName: {
+    color: posColors.ink,
+    fontSize: 14,
+    fontWeight: "800",
+    lineHeight: 19,
+  },
+  linklyTerminalStatus: {
+    color: posColors.mutedInk,
+    fontSize: 12,
+    fontWeight: "600",
+    lineHeight: 17,
+    marginTop: 2,
   },
   linklySetupStatus: {
     color: posColors.mutedInk,
