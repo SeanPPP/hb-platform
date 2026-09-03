@@ -29,6 +29,7 @@ import {
   buildContainerDetailMatchedDomesticDataUpdates,
   buildContainerDetailMatchStatusUpdates,
   buildPendingContainerDetailSavePlan,
+  filterSuccessfullySavedContainerDetailUpdates,
   countSuccessfullySavedContainerDetailRows,
   canUseContainerDetailLocalTagFilters,
   canReuseContainerDetailInitialPage,
@@ -68,6 +69,8 @@ import {
   mergePendingContainerDetailPatch,
   getContainerDetailBatchCategoryProductCodes,
   getContainerDetailCategoryGuid,
+  getContainerDetailConflictServerValue,
+  isContainerDetailActionPreviewExpired,
   getContainerDetailCategoryName,
   getContainerDetailCategoryPath,
   getContainerDetailCategoryTooltipRecord,
@@ -153,6 +156,39 @@ const rows: ContainerDetail[] = [
     },
   },
 ]
+
+const conflictValueRow = {
+  id: 9,
+  hguid: 'conflict-row',
+  调整浮率: 1.3,
+  国内价格: 18,
+  进口价格: 4.2,
+  运输成本: 0.8,
+  商品信息: { 商品名称: '服务器商品名', 英文名称: 'Server product name', productCategoryGUID: 'category-from-product' },
+  贴牌价格: 8.9,
+  单件装箱数: 12,
+  中包数: 3,
+  单件体积: 0.15,
+  装柜数量: 20,
+  合计装柜体积: 3,
+  合计装柜金额: 240,
+  备注: '服务器备注',
+  warehouseIsActive: false,
+} as ContainerDetail
+
+assertDeepEqual(
+  [
+    '调整浮率', '国内价格', '进口价格', '运输成本', '商品名称', '英文名称',
+    'ProductCategoryGUID', '贴牌价格', '单件装箱数', '中包数', '单件体积',
+    '装柜数量', '合计装柜体积', '合计装柜金额', '备注', 'IsActive',
+  ].map((field) => getContainerDetailConflictServerValue(conflictValueRow, field)),
+  [1.3, 18, 4.2, 0.8, '服务器商品名', 'Server product name', 'category-from-product', 8.9, 12, 3, 0.15, 20, 3, 240, '服务器备注', false],
+  '冲突抽屉必须为全部可编辑字段解析真实服务器值，并兼容商品信息、仓库状态和分类别名',
+)
+assertEqual(isContainerDetailActionPreviewExpired({ status: 409 }), true, 'HTTP 409 应要求批量操作重新预览')
+assertEqual(isContainerDetailActionPreviewExpired({ response: { data: { code: 'BATCH_PREVIEW_EXPIRED' } } }), true, '稳定预览过期码应要求重新预览')
+assertEqual(isContainerDetailActionPreviewExpired({ code: 'BATCH_PREVIEW_CHANGED' }), true, '稳定预览变化码应要求重新预览')
+assertEqual(isContainerDetailActionPreviewExpired({ status: 500 }), false, '非预览冲突错误不得误导为可重新确认的批量预览')
 
 assertDeepEqual(
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
@@ -1327,6 +1363,18 @@ assertDeepEqual(
     { hguid: 'detail-4', ClearEnglishName: true },
   ],
   '保存计划应提交有效价格、非空英文名称和明确清空，同时保留含中文名称供后端逐字段拒绝',
+)
+
+assertDeepEqual(
+  filterSuccessfullySavedContainerDetailUpdates(
+    [
+      { hguid: 'save-one', 国内价格: 9.8 },
+      { hguid: 'save-two', ProductCategoryGUID: 'category-guid', 调整浮率: 1.3 },
+    ],
+    ['save-one:国内价格', 'save-two:ProductCategoryGUID'],
+  ),
+  [{ hguid: 'save-one', 国内价格: 9.8 }],
+  '直接保存回显只能包含全部目标字段均已成功的更新，部分冲突不得伪造成功',
 )
 assertDeepEqual(
   {
@@ -3120,7 +3168,7 @@ assertEqual(
 assertEqual(
   pageSource.includes("onChange={(event) => markPendingDetailPatch(row, { 英文名称: event.target.value })}") &&
     !pageSource.includes("onBlur={(event) => void saveRowPatch(row, { 英文名称: event.target.value })") &&
-    pageSource.includes("status={validationError || saveFailure ? 'error' : undefined}"),
+    pageSource.includes("status={validationError || saveFailure || concurrencyConflict ? 'error' : undefined}"),
   true,
   '单行英文名称应进入保存明细队列，不再失焦自动保存，并为中文或空白草稿显示错误状态',
 )
@@ -4201,7 +4249,8 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('const shouldRecalculateCosts =') &&
-    pageSource.includes('recalculateContainerCostsByScope(containerGuid, buildWholeContainerDetailBatchScope())'),
+    pageSource.includes("'recalculate-costs', scope, {}, t('containers.actions.recalculateCosts', '重算成本')") &&
+    pageSource.includes('recalculateContainerCostsByScope(containerGuid, scope, previewToken)'),
   true,
   '保存货柜头部汇率或运费变化后应自动按整柜范围重算成本',
 )
@@ -4228,10 +4277,36 @@ assertEqual(
   true,
   '保存货柜头部成功但成本重算失败时应独立提示，不能伪装成保存失败',
 )
+{
+  const saveHeaderStart = pageSource.indexOf('const saveHeader = async () => {')
+  const saveHeaderEnd = pageSource.indexOf('const saveFloatRatePatch', saveHeaderStart)
+  const saveHeaderSource = pageSource.slice(saveHeaderStart, saveHeaderEnd)
+  assertEqual(
+    !saveHeaderSource.includes('if (!previewToken) return') &&
+      saveHeaderSource.includes('headerSavedCostsRecalculateCancelled') &&
+      saveHeaderSource.indexOf('headerSavedCostsRecalculateCancelled') <
+        saveHeaderSource.indexOf('setHeaderEditing(false)'),
+    true,
+    '头部 PUT 成功后取消成本重算预览时应明确提示并继续退出编辑、刷新服务器结果',
+  )
+  const firstPreviewConfirm = saveHeaderSource.indexOf('let previewToken = await confirmPreviewedContainerDetailAction(')
+  const staleCheck = saveHeaderSource.indexOf('isContainerDetailActionPreviewExpired(error)', firstPreviewConfirm)
+  const refreshedPreviewConfirm = saveHeaderSource.indexOf('previewToken = await confirmPreviewedContainerDetailAction(', staleCheck)
+  assertEqual(
+    firstPreviewConfirm >= 0 &&
+      saveHeaderSource.includes('while (previewToken) {') &&
+      staleCheck > firstPreviewConfirm &&
+      refreshedPreviewConfirm > staleCheck,
+    true,
+    '头部已保存但重算执行遇到 409 时，应重新预览并要求用户再次确认后才重试',
+  )
+}
 assertEqual(
   pageSource.includes('setBatchFloatRate(DEFAULT_CONTAINER_DETAIL_FLOAT_RATE)') &&
     pageSource.includes('setBatchModalScopeRows(scopedRows)') &&
-    pageSource.includes('applyContainerFloatRateByScope(containerGuid, buildDetailBatchScope(batchModalScopeRows), batchFloatRate)'),
+    pageSource.includes('const parameters = { floatRate: batchFloatRate }') &&
+    pageSource.includes("'apply-float-rate', scope, parameters") &&
+    pageSource.includes('applyContainerFloatRateByScope(containerGuid, scope, batchFloatRate, previewToken)'),
   true,
   '批量修改浮率弹窗打开时应默认填入 1.30，确认后按弹窗解析出的批量 scope 重算成本',
 )
@@ -4269,12 +4344,13 @@ assertEqual(
 )
 assertEqual(
   pageSource.includes('getCategoryTree') &&
-    pageSource.includes('batchAssignProducts') &&
+    pageSource.includes('assignContainerDetailCategoryByScope') &&
+    pageSource.includes("'assign-category', scope, parameters") &&
     pageSource.includes('buildWarehouseCategoryLookup') &&
     pageSource.includes('getWarehouseProductCategoryTooltip') &&
     pageSource.includes('formatWarehouseCategoryNodeName'),
   true,
-  '货柜明细应加载分类树、复用分类路径 Tooltip helper 和国际化名称 helper，并调用批量分类服务',
+  '货柜明细应加载分类树、复用分类路径 Tooltip helper 和国际化名称 helper，并调用受预览令牌保护的批量分类服务',
 )
 assertEqual(
   !pageSource.includes('const [itemNumberFilter, setItemNumberFilter]') &&
@@ -4471,7 +4547,7 @@ assertEqual(
     pageSource.includes('contextSnapshot.containerGuid,') &&
     pageSource.includes('await flushContainerDetailAutoSaves()') &&
     pageSource.includes('autoSaveSnapshot.failureCount > 0') &&
-    pageSource.includes('aria-invalid={Boolean(saveFailure)}') &&
+    pageSource.includes('aria-invalid={Boolean(saveFailure || concurrencyConflict)}') &&
     pageSource.includes("t('containers.actions.retryAutoSave', '重试')"),
   true,
   '行内即时保存应按货柜上下文串行合并，并通过 PR #49 的 scoped 路由发送最新快照及展示失败重试状态',
@@ -4510,6 +4586,31 @@ assertEqual(
   '自动保存成功应在清除 running overlay 前废弃当前货柜的旧查询，防止迟到回包覆盖新值',
 )
 assertEqual(
+  pageSource.includes('const canApplyAutoSaveResultToCurrentContext = () => (') &&
+    pageSource.includes('contextKey === autoSaveContextKeyRef.current') &&
+    pageSource.includes('if (result.conflicts.length > 0 && canApplyAutoSaveResultToCurrentContext())') &&
+    pageSource.includes('if (canApplyAutoSaveResultToCurrentContext()) {\n      pendingDetailOverrideAcknowledgementsRef.current') &&
+    pageSource.includes('if (clearResult.persisted && canApplyAutoSaveResultToCurrentContext())'),
+  true,
+  'A 货柜自动保存迟到回包只能清理 A 的持久化草稿，不得污染当前 B 货柜的冲突和内存草稿',
+)
+const autoSaveTransportSource = pageSource.slice(
+  pageSource.indexOf('autoSaveSendBatchRef.current = async (contextKey, intents) => {'),
+  pageSource.indexOf('const enqueueAutoSavePatch =', pageSource.indexOf('autoSaveSendBatchRef.current = async (contextKey, intents) => {')),
+)
+assertEqual(
+  pageSource.includes('type ContainerDetailAutoSaveContextSnapshot = ContainerDetailDraftContext & {') &&
+    pageSource.includes('fieldVersions: Record<string, string>') &&
+    pageSource.includes('fieldBaselineTokens: Record<string, string>') &&
+    autoSaveTransportSource.includes('contextSnapshot.fieldBaselineTokens') &&
+    autoSaveTransportSource.includes('contextSnapshot.fieldVersions') &&
+    autoSaveTransportSource.includes('contextSnapshot.userGuid, contextSnapshot.containerGuid') &&
+    !autoSaveTransportSource.includes('pendingDetailFieldBaselineTokensRef.current') &&
+    !autoSaveTransportSource.includes('pendingDetailFieldVersionsRef.current'),
+  true,
+  'discard 后继续发送的 A pending 批次必须全程使用 A context 固定的用户、字段版本和服务器基线',
+)
+assertEqual(
   !pageSource.includes('autoSaveQueueRef.current?.clearFailures('),
   true,
   '自动保存失败必须保留到新 revision 入队或显式重试，输入中途不得提前解除依赖阻塞',
@@ -4528,14 +4629,14 @@ assertEqual(
     pageSource.includes('const markPendingDetailPatch = (') &&
     pageSource.includes('const buildPendingDetailSavePlan = (): PendingContainerDetailPageSavePlan | null => {') &&
     pageSource.includes('const confirmSavePendingDetails = (plan: PendingContainerDetailPageSavePlan) => new Promise<boolean>') &&
-    pageSource.includes('const executePendingDetailSavePlan = async (plan: PendingContainerDetailPageSavePlan) => {') &&
+    pageSource.includes('const executePendingDetailSavePlan = async (\n    plan: PendingContainerDetailPageSavePlan,\n  ): Promise<PendingContainerDetailSaveExecutionResult> => {') &&
     pageSource.includes('const savePendingDetails = async () => {'),
   true,
   '货柜明细页应统一维护价格和英文名称的手动待保存状态',
 )
 assertEqual(
-  containerDetailLogicSource.includes('if (patch.进口价格 != null) update.进口价格 = patch.进口价格') &&
-    containerDetailLogicSource.includes('if (patch.贴牌价格 != null) update.贴牌价格 = patch.贴牌价格') &&
+  containerDetailLogicSource.includes('export const CONTAINER_DETAIL_DRAFT_FIELDS = [') &&
+    containerDetailLogicSource.includes('CONTAINER_DETAIL_DRAFT_FIELDS.forEach((field) => {') &&
     containerDetailLogicSource.includes('update.英文名称 = englishName') &&
     containerDetailLogicSource.includes('update.ClearEnglishName = true') &&
     pageSource.includes('batchUpdateDetails(saveContainerGuid, plan.detailUpdates),') &&
@@ -4594,8 +4695,8 @@ assertEqual(
   columnsSource.includes('function renderOemPriceCell(row: ContainerDetail)') &&
     columnsSource.includes("formatCurrency(getContainerDetailVisibleOemPrice(row), '$')") &&
     columnsSource.includes('function renderImportPriceCell(row: ContainerDetail, input?: ReactNode)') &&
-    pageSource.includes('renderImportPriceCell(row, (') &&
-    pageSource.includes(': renderImportPriceCell(row)') &&
+    pageSource.includes("renderConcurrentEditableField(row, '进口价格', renderImportPriceCell(row, (") &&
+    pageSource.includes("renderConcurrentEditableField(row, '进口价格', renderImportPriceCell(row))") &&
     pageSource.includes("formatCurrency(v, '¥')") &&
     pageSource.includes("prefix=\"$\""),
   true,
@@ -4657,9 +4758,10 @@ assertEqual(
   '页面应通过统一 helper 解析商品编码，避免空白编码绕过兜底',
 )
 assertEqual(
-  pageSource.includes('getContainerDetailWarehouseActionFailureMessage(result'),
+  pageSource.includes('setContainerDetailStatusByScope(containerGuid, scope, isActive, previewToken)') &&
+    pageSource.includes("'set-status', scope, parameters"),
   true,
-  '仓库状态更新应统一检查根失败和部分失败结果',
+  '仓库状态更新应走预览令牌保护的货柜范围动作，不能绕过并发守卫',
 )
 assertEqual(
   pageSource.includes('pendingWarehouseStatusCodes') &&
@@ -4669,7 +4771,7 @@ assertEqual(
   '行内仓库状态更新应显示提交中状态，并阻止新商品或重复点击',
 )
 assertEqual(
-  pageSource.includes('const previousStatuses = rows') &&
+  pageSource.includes('const statusRows = rows') &&
     pageSource.includes('setRows((items) => applyContainerDetailWarehouseStatusByProductCodes(items, [productCode], isActive))') &&
     pageSource.includes('rollbackContainerDetailWarehouseStatuses'),
   true,
@@ -4688,7 +4790,7 @@ assertEqual(
   '批量和行内仓库状态更新都应复用同商品编码本地更新 helper',
 )
 assertEqual(
-  pageSource.includes('applyContainerPricesByScope(containerGuid, buildDetailBatchScope(batchModalScopeRows)') &&
+  pageSource.includes('applyContainerPricesByScope(containerGuid, scope, prices, previewToken)') &&
     pageSource.includes("const scopedRows = await confirmBatchRows(t(isActive ? 'containers.actions.batchActivate' : 'containers.actions.batchDeactivate'))") &&
     pageSource.includes('return await fetchAllRowsForCurrentQuery()') &&
     pageSource.includes('const productCodes = eligibleRows'),
@@ -4756,7 +4858,7 @@ assertEqual(
     pageSource.includes('applyContainerDetailAutoSavePatches(') &&
     pageSource.includes('const publishLoadedDetailRows = (items: ContainerDetail[]) => {') &&
     pageSource.includes('rowsRef.current = loadedItems') &&
-    pageSource.includes('rows: loadedItems,') &&
+    pageSource.includes('updateAutoSaveContextRows(currentAutoSaveContextKey, loadedItems, containerRef.current)') &&
     pageSource.includes('publishLoadedDetailRows(result.items)') &&
     pageSource.includes('pendingDetailDraftIdentityRef.current === draftIdentity') &&
     pageSource.includes('pendingDetailDraftIdentityRef.current = draftIdentity') &&
@@ -5001,9 +5103,9 @@ assertEqual(
     pageSource.includes('void openBatchCategory()') &&
     pageSource.includes('handleBatchCategorySave') &&
     pageSource.includes('getContainerDetailBatchCategoryProductCodes(batchCategoryTargetRows)') &&
-    pageSource.includes('batchAssignProducts(targetCategoryGuid, productCodes)'),
+    pageSource.includes('assignContainerDetailCategoryByScope(containerGuid, scope, targetCategoryGuid, previewToken)'),
   true,
-  '批量操作菜单应包含批量分类，并提交当前目标行的去重商品编码',
+  '批量操作菜单应包含批量分类，并以当前目标行 scope 走预览令牌保护动作',
 )
 assertEqual(
   pageSource.includes('const canBackfillLastPrices = access.isAdmin || access.isWarehouseManager') ||
@@ -5018,7 +5120,7 @@ const batchCategorySaveSource = pageSource.slice(
   pageSource.indexOf('const submitBatchEditEnglishName = async () => {'),
 )
 assertEqual(
-  batchCategorySaveSource.includes('await batchAssignProducts(targetCategoryGuid, productCodes)') &&
+  batchCategorySaveSource.includes('await assignContainerDetailCategoryByScope(containerGuid, scope, targetCategoryGuid, previewToken)') &&
     !batchCategorySaveSource.includes("await loadDetailChunk(1, 'reset')") &&
     batchCategorySaveSource.includes('setRows((items) =>') &&
     batchCategorySaveSource.includes('const productCode = getContainerDetailProductCode(item)') &&
@@ -5050,7 +5152,8 @@ assertEqual(
     rowCategoryModalSource.includes('open={rowCategoryOpen}') &&
     rowCategoryModalSource.includes('selectedKey={rowTargetCategoryGuid}') &&
     rowCategoryModalSource.includes('onOk={() => void handleRowCategorySave()}') &&
-    pageSource.includes('await batchUpdateDetails(containerGuid, [{ hguid: rowCategoryEditingRow.hguid, ProductCategoryGUID: rowTargetCategoryGuid }])') &&
+    pageSource.includes('queuePendingDetailUpdates([{ hguid: rowCategoryEditingRow.hguid, ProductCategoryGUID: rowTargetCategoryGuid }])') &&
+    pageSource.includes('const savePlan = buildPendingDetailSavePlan()') &&
     pageSource.includes('rowKey(item) !== rowKey(rowCategoryEditingRow)') &&
     pageSource.includes('setRowCategoryOpen(false)'),
   true,

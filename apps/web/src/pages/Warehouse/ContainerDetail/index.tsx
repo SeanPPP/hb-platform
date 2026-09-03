@@ -35,6 +35,7 @@ import {
   DatePicker,
   Descriptions,
   Dropdown,
+  Drawer,
   Image,
   Input,
   InputNumber,
@@ -67,11 +68,17 @@ import {
   alignDomesticProductCode,
   applyContainerFloatRateByScope,
   applyContainerPricesByScope,
-  batchDeleteDetails,
+  assignContainerDetailCategoryByScope,
   batchUpdateDetails,
+  deleteContainerDetailsByScope,
+  getContainerDetailEditingPresence,
+  heartbeatContainerDetailEditingPresence,
+  leaveContainerDetailEditingPresence,
+  previewContainerDetailAction,
   getContainerDetail,
   queryContainerProducts,
   recalculateContainerCostsByScope,
+  setContainerDetailStatusByScope,
   translateHqProductNamesByContainerNumber,
   updateContainer,
 } from '../../../services/containerService'
@@ -97,20 +104,18 @@ import { upsertForActiveStores as upsertMultiCodeForActiveStores, type StoreMult
 import { upsertForActiveStores as upsertRetailForActiveStores, type StoreRetailPriceUpsertActiveItem } from '../../../services/storeRetailPriceService'
 import { batchTranslate } from '../../../services/translationService'
 import {
-  batchAssignProducts,
   getCategoryTree,
   type WarehouseCategoryNode,
 } from '../../../services/warehouseCategoryService'
 import {
   batchUpdateWarehouseProducts,
-  bulkSetStatus,
   detectProducts,
   type WarehouseProductBatchUpdateItem,
 } from '../../../services/warehouseProductService'
 import { useAuthStore } from '../../../store/auth'
 import { useTabsStore } from '../../../store/tabs'
 import { P } from '../../../types/permissions'
-import type { ContainerDetail, ContainerDetailBatchScope, ContainerDomesticSetCodeItem, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest, UpdateContainerRequest } from '../../../types/container'
+import type { ContainerDetail, ContainerDetailBatchScope, ContainerDetailEditingPresence, ContainerDomesticSetCodeItem, ContainerMain, HqTranslationResult, UpdateContainerDetailRequest, UpdateContainerRequest } from '../../../types/container'
 import { copyTextToClipboard } from '../../../utils/clipboard'
 import { shouldShowDetailInitialLoading, shouldSkipDetailAutoReload } from '../../../utils/detailLoadState'
 import {
@@ -156,6 +161,10 @@ import {
   applyContainerDetailLocalExportValues,
   getContainerDetailBarcode,
   getContainerDetailCategoryGuid,
+  getContainerDetailConflictServerValue,
+  filterSuccessfullySavedContainerDetailUpdates,
+  isContainerDetailActionPreviewExpired,
+  getSubmittedContainerDetailFields,
   getContainerDetailEnglishName,
   getContainerDetailImageUrl,
   getContainerDetailItemNumber,
@@ -170,7 +179,6 @@ import {
   getContainerDetailProductName,
   getContainerDetailProductType,
   getContainerDetailTranslationSource,
-  getContainerDetailWarehouseActionFailureMessage,
   getContainerDetailWarehouseStatusFilterKey,
   getNextUpdateFieldSelection,
   getNextContainerDetailEditableCell,
@@ -234,8 +242,11 @@ import {
 import ContainerTagFilters from './ContainerTagFilters'
 import {
   buildContainerDetailDraftStorageKey,
+  captureContainerDetailDraftFieldBaselineTokens,
   captureContainerDetailDraftFieldVersions,
   captureSuccessfullySavedContainerDetailDraftFieldVersions,
+  buildContainerDetailOverrideAcknowledgements,
+  clearContainerDetailOverrideAcknowledgements,
   clearContainerDetailDraftFieldsIfVersionMatches,
   createContainerDetailDraftLocateResetPlan,
   clearContainerDetailDraftFailuresForPatches,
@@ -255,6 +266,7 @@ import {
   type ContainerDetailDraftFailureMap,
   type ContainerDetailDraftState,
   type ContainerDetailDraftStorage,
+  type ContainerDetailVersionedOverrideAcknowledgement,
 } from './containerDetailDraft'
 import {
   applyContainerDetailAutoSavePatches,
@@ -291,11 +303,32 @@ type PendingContainerDetailPageSavePlan = PendingContainerDetailSavePlan & {
   saveKeys: string[]
   draftContext: ContainerDetailDraftContext
   draftFieldVersionSnapshot: Record<string, string>
+  expectedServerFieldTokens: Record<string, Record<string, string>>
+  overrideAcknowledgements: Record<string, Record<string, string>>
+}
+type PendingContainerDetailSaveExecutionResult = {
+  isCurrent: boolean
+  successfulFieldKeys: string[]
+}
+type ContainerDetailFieldConflict = {
+  hguid: string
+  field: string
+  serverValue: unknown
+  submittedValue: unknown
+  currentServerFieldToken: string
+  code?: string
+  message?: string
 }
 type ContainerDetailDraftContext = {
   userGuid: string
   containerGuid: string
   draftIdentity: string
+}
+type ContainerDetailAutoSaveContextSnapshot = ContainerDetailDraftContext & {
+  rows: ContainerDetail[]
+  container: Pick<ContainerMain, '汇率' | '运费' | '总体积'> | null
+  fieldVersions: Record<string, string>
+  fieldBaselineTokens: Record<string, string>
 }
 type ContainerDetailExportFormat = 'excel' | 'pdf'
 type ContainerDetailExportScope = 'selectionOrFiltered' | 'wholeContainer'
@@ -340,6 +373,18 @@ function formatNumber(value?: number, digits = 2) {
 function formatCurrency(value?: number, symbol = '$', digits = 2) {
   const formatted = formatNumber(value, digits)
   return formatted === '--' ? formatted : `${symbol}${formatted}`
+}
+
+function formatContainerDetailPresenceUser(user: ContainerDetailEditingPresence['viewers'][number], now = Date.now()) {
+  const activeAt = Date.parse(user.lastActiveAt)
+  if (Number.isNaN(activeAt)) return `${user.userName}（刚刚）`
+  const minutes = Math.max(0, Math.floor((now - activeAt) / 60_000))
+  const recent = minutes < 1 ? '刚刚' : minutes < 60 ? `${minutes} 分钟前` : dayjs(activeAt).format('HH:mm')
+  return `${user.userName}（${recent}）`
+}
+
+function getContainerDetailPresenceTitle(users: ContainerDetailEditingPresence['viewers']) {
+  return users.map((user) => `${user.userName}：${dayjs(user.lastActiveAt).format('YYYY-MM-DD HH:mm:ss')}`).join('；')
 }
 
 function rowKey(row: ContainerDetail) {
@@ -780,6 +825,13 @@ export default function ContainerDetailPage() {
   } | null>(null)
   const [pendingDetailPatches, setPendingDetailPatches] = useState<PendingContainerDetailPatchMap>({})
   const [pendingDetailFailures, setPendingDetailFailures] = useState<ContainerDetailDraftFailureMap>({})
+  const [pendingDetailConflicts, setPendingDetailConflicts] = useState<ContainerDetailFieldConflict[]>([])
+  const [conflictDrawerOpen, setConflictDrawerOpen] = useState(false)
+  const [editingPresence, setEditingPresence] = useState<ContainerDetailEditingPresence>({ viewers: [], editors: [] })
+  const [editingPresenceAvailable, setEditingPresenceAvailable] = useState(false)
+  const [isContainerDetailFieldFocused, setIsContainerDetailFieldFocused] = useState(false)
+  const hasPendingConcurrencyConflicts = pendingDetailConflicts.length > 0
+  const pendingDetailFieldCount = countPendingContainerDetailFields(pendingDetailPatches)
   const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([])
   const [selectedTagFilters, setSelectedTagFilters] = useState<ContainerDetailTagFilter[]>([])
   const [categories, setCategories] = useState<WarehouseCategoryNode[]>([])
@@ -875,6 +927,9 @@ export default function ContainerDetailPage() {
   const pendingDetailPatchesRef = useRef<PendingContainerDetailPatchMap>({})
   const pendingDetailFailuresRef = useRef<ContainerDetailDraftFailureMap>({})
   const pendingDetailFieldVersionsRef = useRef<Record<string, string>>({})
+  const pendingDetailFieldBaselineTokensRef = useRef<Record<string, string>>({})
+  const pendingDetailOverrideAcknowledgementsRef = useRef<Record<string, ContainerDetailVersionedOverrideAcknowledgement>>({})
+  const clientEditingSessionIdRef = useRef(`container-detail-${crypto.randomUUID?.() ?? Math.random().toString(36).slice(2)}`)
   const [isDetailDraftMemoryOnly, setIsDetailDraftMemoryOnly] = useState(false)
   const isDetailDraftMemoryOnlyRef = useRef(false)
   const detailRowsContainerGuidRef = useRef(containerGuid)
@@ -909,11 +964,39 @@ export default function ContainerDetailPage() {
     contextKey: string,
     snapshot: ContainerDetailAutoSaveSnapshot,
   ) => void>(() => undefined)
-  const autoSaveContextSnapshotsRef = useRef<Map<string, {
-    containerGuid: string
-    rows: ContainerDetail[]
-    container: Pick<ContainerMain, '汇率' | '运费' | '总体积'> | null
-  }>>(new Map())
+  const autoSaveContextSnapshotsRef = useRef<Map<string, ContainerDetailAutoSaveContextSnapshot>>(new Map())
+  const updateAutoSaveContextRows = (
+    contextKey: string,
+    nextRows: ContainerDetail[],
+    nextContainer: Pick<ContainerMain, '汇率' | '运费' | '总体积'> | null,
+  ) => {
+    const contextSnapshot = autoSaveContextSnapshotsRef.current.get(contextKey)
+    if (!contextSnapshot) return
+    autoSaveContextSnapshotsRef.current.set(contextKey, {
+      ...contextSnapshot,
+      rows: nextRows,
+      container: nextContainer,
+    })
+  }
+  const updateCurrentAutoSaveContextDraftMetadata = (
+    fieldVersions: Record<string, string>,
+    fieldBaselineTokens: Record<string, string>,
+  ) => {
+    const contextKey = autoSaveContextKeyRef.current
+    const contextSnapshot = autoSaveContextSnapshotsRef.current.get(contextKey)
+    if (!contextSnapshot || !isContainerDetailAutoSaveContextCurrent(
+      contextKey,
+      containerGuid,
+      pendingDetailDraftIdentityRef.current,
+    )) return
+    autoSaveContextSnapshotsRef.current.set(contextKey, {
+      ...contextSnapshot,
+      userGuid: currentUserGuid,
+      draftIdentity: pendingDetailDraftIdentityRef.current,
+      fieldVersions: { ...fieldVersions },
+      fieldBaselineTokens: { ...fieldBaselineTokens },
+    })
+  }
   const autoSaveQueueRef = useRef<ContainerDetailAutoSaveQueue | null>(null)
   if (!autoSaveQueueRef.current) {
     autoSaveQueueRef.current = createContainerDetailAutoSaveQueue({
@@ -955,11 +1038,7 @@ export default function ContainerDetailPage() {
     && lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid
     && visibleContainerGuidRef.current === containerGuid
   ) {
-    autoSaveContextSnapshotsRef.current.set(autoSaveContextKeyRef.current, {
-      containerGuid,
-      rows,
-      container,
-    })
+    updateAutoSaveContextRows(autoSaveContextKeyRef.current, rows, container)
   }
   const [headerEditing, setHeaderEditing] = useState(false)
   const [headerForm, setHeaderForm] = useState<{
@@ -1019,6 +1098,7 @@ export default function ContainerDetailPage() {
     const previousPendingPatches = pendingDetailPatchesRef.current
     const previousFailures = pendingDetailFailuresRef.current
     const previousFieldVersions = pendingDetailFieldVersionsRef.current
+    const previousBaselineTokens = pendingDetailFieldBaselineTokensRef.current
     const failures = reconcileContainerDetailDraftFailures(
       nextState.failures,
       nextState.pendingPatches,
@@ -1028,31 +1108,38 @@ export default function ContainerDetailPage() {
       nextState.fieldVersions ?? pendingDetailFieldVersionsRef.current,
       changedPatches,
     )
+    const fieldBaselineTokens = nextState.fieldBaselineTokens ?? previousBaselineTokens
     pendingDetailPatchesRef.current = nextState.pendingPatches
     pendingDetailFailuresRef.current = failures
     pendingDetailFieldVersionsRef.current = fieldVersions
+    pendingDetailFieldBaselineTokensRef.current = fieldBaselineTokens
+    updateCurrentAutoSaveContextDraftMetadata(fieldVersions, fieldBaselineTokens)
+    // 草稿版本变化（跨标签同步、重新编辑、字段被删除）后，旧覆盖确认不得继续复用。
+    pendingDetailOverrideAcknowledgementsRef.current = Object.fromEntries(
+      Object.entries(pendingDetailOverrideAcknowledgementsRef.current).filter(([key, acknowledgement]) => (
+        acknowledgement.fieldVersion === fieldVersions[key]
+      )),
+    )
     failedPendingDetailSaveKeysRef.current = new Set(Object.keys(failures))
     setPendingDetailPatches(nextState.pendingPatches)
     setPendingDetailFailures(failures)
     if (persist) {
       const removedFieldVersions = changedPatches.reduce<Record<string, string>>((next, patch) => {
         const currentPatch = nextState.pendingPatches[patch.hguid]
-        const addIfRemoved = (field: string, removed: boolean) => {
+        getSubmittedContainerDetailFields(patch).forEach((field) => {
           const key = `${patch.hguid}:${field}`
-          if (removed && previousFieldVersions[key]) next[key] = previousFieldVersions[key]
-        }
-        if ('进口价格' in patch) addIfRemoved('进口价格', currentPatch?.进口价格 == null)
-        if ('贴牌价格' in patch) addIfRemoved('贴牌价格', currentPatch?.贴牌价格 == null)
-        if ('英文名称' in patch || patch.ClearEnglishName === true) {
-          addIfRemoved('英文名称', currentPatch?.英文名称 === undefined && currentPatch?.ClearEnglishName !== true)
-        }
+          const currentValue = field === '英文名称'
+            ? (currentPatch?.ClearEnglishName === true ? null : currentPatch?.英文名称)
+            : currentPatch?.[field as keyof PendingContainerDetailPatch]
+          if (currentValue === undefined && previousFieldVersions[key]) next[key] = previousFieldVersions[key]
+        })
         return next
       }, {})
       const persisted = writeContainerDetailDraft(
         getContainerDetailDraftStorage(),
         currentUserGuid,
         containerGuid,
-        { pendingPatches: nextState.pendingPatches, failures, fieldVersions },
+        { pendingPatches: nextState.pendingPatches, failures, fieldVersions, fieldBaselineTokens },
         undefined,
         false,
         changedPatches,
@@ -1067,6 +1154,7 @@ export default function ContainerDetailPage() {
           const recoveredPatches = { ...nextState.pendingPatches }
           const recoveredFailures = { ...failures }
           const recoveredVersions = { ...fieldVersions }
+          const recoveredBaselineTokens = { ...fieldBaselineTokens }
           Object.keys(removedFieldVersions).forEach((fieldKey) => {
             const separatorIndex = fieldKey.lastIndexOf(':')
             const hguid = fieldKey.slice(0, separatorIndex)
@@ -1074,14 +1162,15 @@ export default function ContainerDetailPage() {
             const previousPatch = previousPendingPatches[hguid]
             if (!previousPatch) return
             const patch = { ...(recoveredPatches[hguid] ?? { hguid }) }
-            if (field === '进口价格') patch.进口价格 = previousPatch.进口价格
-            if (field === '贴牌价格') patch.贴牌价格 = previousPatch.贴牌价格
             if (field === '英文名称') {
               patch.英文名称 = previousPatch.英文名称
               patch.ClearEnglishName = previousPatch.ClearEnglishName
+            } else if (field in previousPatch) {
+              ;(patch as Record<string, unknown>)[field] = previousPatch[field as keyof PendingContainerDetailPatch]
             }
             recoveredPatches[hguid] = patch
             if (previousFieldVersions[fieldKey]) recoveredVersions[fieldKey] = previousFieldVersions[fieldKey]
+            if (previousBaselineTokens[fieldKey]) recoveredBaselineTokens[fieldKey] = previousBaselineTokens[fieldKey]
             const previousFailure = previousFailures[fieldKey]
             if (previousFailure) recoveredFailures[fieldKey] = previousFailure
             const previousRowFailureKey = `${hguid}:*`
@@ -1092,6 +1181,8 @@ export default function ContainerDetailPage() {
           pendingDetailPatchesRef.current = recoveredPatches
           pendingDetailFailuresRef.current = reconciledRecoveredFailures
           pendingDetailFieldVersionsRef.current = recoveredVersions
+          pendingDetailFieldBaselineTokensRef.current = recoveredBaselineTokens
+          updateCurrentAutoSaveContextDraftMetadata(recoveredVersions, recoveredBaselineTokens)
           failedPendingDetailSaveKeysRef.current = new Set(Object.keys(reconciledRecoveredFailures))
           setPendingDetailPatches(recoveredPatches)
           setPendingDetailFailures(reconciledRecoveredFailures)
@@ -1120,6 +1211,9 @@ export default function ContainerDetailPage() {
     lastLoadedContainerDetailSuccessRef.current = null
     rowsRef.current = []
     autoSaveEditBaselineRef.current.clear()
+    // 用户或货柜命名空间切换时，确认覆盖必须重新由当前用户作出。
+    pendingDetailOverrideAcknowledgementsRef.current = {}
+    setPendingDetailConflicts([])
     setRows([])
     setSelectedRowKeys([])
     const restoredDraft = readContainerDetailDraft(
@@ -1136,9 +1230,13 @@ export default function ContainerDetailPage() {
     autoSaveContextKeyRef.current = nextAutoSaveContextKey
     if (!autoSaveContextSnapshotsRef.current.has(nextAutoSaveContextKey)) {
       autoSaveContextSnapshotsRef.current.set(nextAutoSaveContextKey, {
+        userGuid: currentUserGuid,
         containerGuid,
+        draftIdentity,
         rows: [],
         container: null,
+        fieldVersions: { ...(restoredDraft.fieldVersions ?? {}) },
+        fieldBaselineTokens: { ...(restoredDraft.fieldBaselineTokens ?? {}) },
       })
     }
     const resetAutoSaveSnapshot: ContainerDetailAutoSaveSnapshot = {
@@ -1200,11 +1298,58 @@ export default function ContainerDetailPage() {
     if (contextKey) autoSaveQueueRef.current?.discardContext(contextKey)
   }, [])
 
+  const editingPresenceState: 'viewing' | 'editing' = hasPendingConcurrencyConflicts || pendingDetailFieldCount > 0 || autoSaveSnapshot.unsavedFieldCount > 0 || isContainerDetailFieldFocused ? 'editing' : 'viewing'
+
+  useEffect(() => {
+    if (!active || !containerGuid || !currentUserGuid) {
+      setEditingPresenceAvailable(false)
+      return
+    }
+    let cancelled = false
+    // 清理回调固定本次 effect 的会话 ID，避免 eslint 与运行时都误读为会话已切换。
+    const clientSessionId = clientEditingSessionIdRef.current
+    const refreshPresence = async () => {
+      try {
+        await heartbeatContainerDetailEditingPresence(containerGuid, {
+          clientSessionId,
+          state: editingPresenceState,
+        })
+        const next = await getContainerDetailEditingPresence(containerGuid)
+        if (cancelled) return
+        // 后端按用户聚合同一浏览器多标签；前端仅排除自己，在线状态只作提示。
+        setEditingPresence({
+          viewers: next.viewers.filter((user) => user.userGuid !== currentUserGuid),
+          editors: next.editors.filter((user) => user.userGuid !== currentUserGuid),
+        })
+        setEditingPresenceAvailable(true)
+      } catch {
+        // 状态租约不可用不影响草稿、保存或服务器并发校验，只隐藏提示避免制造假阻断。
+        if (!cancelled) setEditingPresenceAvailable(false)
+      }
+    }
+    void refreshPresence()
+    const timer = window.setInterval(() => void refreshPresence(), 30_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [active, containerGuid, currentUserGuid, editingPresenceState])
+
+  useEffect(() => {
+    if (!active || !containerGuid || !currentUserGuid) return
+    const clientSessionId = clientEditingSessionIdRef.current
+    // editing/viewing 切换只续租；离开仅发生在卸载、货柜/用户切换或 Tab 停用，避免旧 cleanup 删除新心跳。
+    return () => {
+      void leaveContainerDetailEditingPresence(containerGuid, { clientSessionId }).catch(() => undefined)
+    }
+  }, [active, containerGuid, currentUserGuid])
+
   const applyExternalPendingDetailDraftState = (nextDraft: ContainerDetailDraftState) => {
     const currentDraft: ContainerDetailDraftState = {
       pendingPatches: pendingDetailPatchesRef.current,
       failures: pendingDetailFailuresRef.current,
       fieldVersions: pendingDetailFieldVersionsRef.current,
+      fieldBaselineTokens: pendingDetailFieldBaselineTokensRef.current,
     }
     const applyMode = getContainerDetailDraftExternalApplyMode(currentDraft, nextDraft)
     applyPendingDetailDraftState(nextDraft, false)
@@ -1530,6 +1675,40 @@ export default function ContainerDetailPage() {
   }
 
   const publishLoadedDetailRows = (items: ContainerDetail[]) => {
+    const serverRowsByHguid = new Map(items.map((item) => [item.hguid, item]))
+    const restoredConflicts: ContainerDetailFieldConflict[] = Object.values(pendingDetailPatchesRef.current).flatMap((patch) => getSubmittedContainerDetailFields(patch).flatMap((field) => {
+      const hguid = patch.hguid
+      const key = `${hguid}:${field}`
+      const baselineToken = pendingDetailFieldBaselineTokensRef.current[key]
+      const serverRow = serverRowsByHguid.get(hguid)
+      const currentServerFieldToken = serverRow?.serverFieldTokens?.[field]
+      const submittedValue = field === '英文名称'
+        ? (patch?.ClearEnglishName === true ? null : patch?.英文名称)
+        : patch?.[field as keyof PendingContainerDetailPatch]
+      if (!serverRow || !currentServerFieldToken || currentServerFieldToken === baselineToken || submittedValue === undefined) return []
+      return [{
+        hguid,
+        field,
+        serverValue: getContainerDetailConflictServerValue(serverRow, field),
+        submittedValue,
+        currentServerFieldToken,
+        code: 'CONCURRENT_FIELD_UPDATE',
+        message: baselineToken
+          ? undefined
+          : t('containers.messages.legacyDraftRequiresReview', '旧草稿缺少服务器基线，请选择采用服务器值或保留我的值'),
+      }]
+    }))
+    setPendingDetailConflicts((current) => {
+      const incomingKeys = new Set(restoredConflicts.map((item) => `${item.hguid}:${item.field}`))
+      const currentTokens = new Map<string, string>(items.flatMap((row) => Object.entries(row.serverFieldTokens ?? {}).map(([field, token]) => [`${row.hguid}:${field}`, token] as const)))
+      const retained = current.filter((conflict) => {
+        const key = `${conflict.hguid}:${conflict.field}`
+        // 服务端已回到该草稿首次看到的版本，旧冲突提示已失效，必须自动撤销。
+        if (currentTokens.get(key) === pendingDetailFieldBaselineTokensRef.current[key]) return false
+        return !incomingKeys.has(key)
+      })
+      return restoredConflicts.length > 0 ? [...retained, ...restoredConflicts] : retained
+    })
     const loadedItems = overlayPendingDetailChanges(items)
     rowsRef.current = loadedItems
     const currentAutoSaveContextKey = autoSaveContextKeyRef.current
@@ -1538,11 +1717,7 @@ export default function ContainerDetailPage() {
       containerGuid,
       pendingDetailDraftIdentityRef.current,
     )) {
-      autoSaveContextSnapshotsRef.current.set(currentAutoSaveContextKey, {
-        containerGuid,
-        rows: loadedItems,
-        container: containerRef.current,
-      })
+      updateAutoSaveContextRows(currentAutoSaveContextKey, loadedItems, containerRef.current)
     }
     setRows(loadedItems)
   }
@@ -2007,7 +2182,7 @@ export default function ContainerDetailPage() {
 
   const tagStats = detailLoadMode === 'full' ? localBaseTagStats : remoteTagStats
 
-  const tagStatOptions = useMemo<Array<{ value: ContainerDetailTagFilter; label: string; color?: string }>>(() => [
+  const tagStatOptions = useMemo<{ value: ContainerDetailTagFilter; label: string; color?: string }[]>(() => [
     { value: 'all', label: t('containers.filters.allTags'), color: 'blue' },
     { value: 'new', label: t('containers.tags.newProduct'), color: 'cyan' },
     { value: 'existing', label: t('containers.tags.existingProduct'), color: 'purple' },
@@ -2365,16 +2540,71 @@ export default function ContainerDetailPage() {
     return confirmed ? selectedFields : null
   }
 
+  const confirmPreviewedContainerDetailAction = async (
+    operation: string,
+    scope: ContainerDetailBatchScope,
+    parameters: Record<string, unknown>,
+    actionName: string,
+    danger = false,
+  ) => {
+    const preview = await previewContainerDetailAction(containerGuid, { operation, scope, parameters })
+    return new Promise<string | null>((resolve) => {
+      Modal.confirm({
+        title: t('containers.modals.confirmBatchPreviewTitle', '确认批量操作'),
+        content: t(
+          'containers.modals.confirmBatchPreviewContent',
+          '{{action}}将影响 {{count}} 条明细（字段：{{fields}}）。数据变化或预览过期后需要重新确认。',
+          { action: actionName, count: preview.affectedCount, fields: preview.fieldSummary.join('、') || '--' },
+        ),
+        okText: t('common.confirm', '确认'),
+        cancelText: t('common.cancel'),
+        okButtonProps: danger ? { danger: true } : undefined,
+        onOk: () => resolve(preview.previewToken),
+        onCancel: () => resolve(null),
+      })
+    })
+  }
+
+  const refreshExpiredContainerDetailActionPreview = async (
+    operation: string,
+    scope: ContainerDetailBatchScope,
+    parameters: Record<string, unknown>,
+  ) => {
+    const preview = await previewContainerDetailAction(containerGuid, { operation, scope, parameters })
+    Modal.info({
+      title: t('containers.modals.batchPreviewChangedTitle', '批量操作数据已变化'),
+      content: t('containers.modals.batchPreviewChangedContent', '最新预览影响 {{count}} 条明细（字段：{{fields}}），请再次确认后执行。', {
+        count: preview.affectedCount,
+        fields: preview.fieldSummary.join('、') || '--',
+      }),
+    })
+  }
+
+  const handleExpiredContainerDetailActionPreview = async (
+    error: unknown,
+    operation: string,
+    scope: ContainerDetailBatchScope,
+    parameters: Record<string, unknown>,
+  ) => {
+    if (!isContainerDetailActionPreviewExpired(error)) return false
+    try {
+      // 409 只刷新预览并展示新摘要，绝不在用户未再次确认时重放写请求。
+      await refreshExpiredContainerDetailActionPreview(operation, scope, parameters)
+    } catch (refreshError) {
+      message.error(refreshError instanceof Error ? refreshError.message : t('containers.messages.batchPreviewRefreshFailed', '刷新批量预览失败'))
+    }
+    return true
+  }
+
   const canCreateContainerProducts = access.canEditContainer && access.canManagePosProducts
   const canSubmitContainer = access.canEditContainer && access.canManagePosProducts
   const canBatchSetCategory = access.canEditContainer && access.canManagePosProducts
   const canAlignDomesticProductCode = access.canEditContainer && (access.isAdmin || access.hasPermission(P.Products.Edit))
   const pendingDetailPatchList = useMemo(() => Object.values(pendingDetailPatches), [pendingDetailPatches])
   const pendingDetailPatchCount = pendingDetailPatchList.length
-  const pendingDetailFieldCount = useMemo(
-    () => countPendingContainerDetailFields(pendingDetailPatches),
-    [pendingDetailPatches],
-  )
+  const conflictByFieldKey = useMemo(() => new Map(
+    pendingDetailConflicts.map((conflict) => [`${conflict.hguid}:${conflict.field}`, conflict] as const),
+  ), [pendingDetailConflicts])
   const autoSaveFailureMap = useMemo(() => new Map(
     autoSaveSnapshot.failures.map((failure) => [`${failure.hguid}:${failure.field}`, failure] as const),
   ), [autoSaveSnapshot.failures])
@@ -2391,6 +2621,128 @@ export default function ContainerDetailPage() {
     if (contextKey) autoSaveQueueRef.current?.retryFailed(contextKey)
   }
 
+  const resolveConcurrencyConflict = (row: ContainerDetail, field: string) => (
+    row.hguid ? conflictByFieldKey.get(`${row.hguid}:${field}`) : undefined
+  )
+
+  const renderConcurrentEditableField = (row: ContainerDetail, field: string, child: ReactNode) => {
+    const conflict = resolveConcurrencyConflict(row, field)
+    if (!conflict) return child
+    return (
+      <span className="container-detail-concurrent-field" title={conflict.message ?? t('containers.messages.concurrentFieldUpdate', '服务器已更新该字段')}>
+        {child}
+        <span className="container-detail-concurrent-field-badge">{t('containers.text.serverUpdated', '服务器已更新')}</span>
+      </span>
+    )
+  }
+
+  const acceptServerConflict = async (conflict: ContainerDetailFieldConflict) => {
+    const fieldVersion = pendingDetailFieldVersionsRef.current[`${conflict.hguid}:${conflict.field}`]
+    if (!fieldVersion) return
+    const cleared = clearContainerDetailDraftFieldsIfVersionMatches(
+      getContainerDetailDraftStorage(),
+      currentUserGuid,
+      containerGuid,
+      { [`${conflict.hguid}:${conflict.field}`]: fieldVersion },
+    )
+    if (!cleared.persisted) {
+      message.error(t('containers.messages.localDraftClearFailed', '本地草稿清空失败，已保留当前修改'))
+      return
+    }
+    pendingDetailOverrideAcknowledgementsRef.current = clearContainerDetailOverrideAcknowledgements(
+      pendingDetailOverrideAcknowledgementsRef.current,
+      { [`${conflict.hguid}:${conflict.field}`]: fieldVersion },
+    )
+    const nextDraft = readContainerDetailDraft(getContainerDetailDraftStorage(), currentUserGuid, containerGuid)
+    applyPendingDetailDraftState(nextDraft, false)
+    setPendingDetailConflicts((current) => current.filter((item) => (
+      item.hguid !== conflict.hguid || item.field !== conflict.field
+    )))
+    await reloadCurrentDetailRef.current()
+  }
+
+  const acceptAllServerConflicts = async () => {
+    const fieldVersions = pendingDetailConflicts.reduce<Record<string, string>>((next, conflict) => {
+      const key = `${conflict.hguid}:${conflict.field}`
+      const version = pendingDetailFieldVersionsRef.current[key]
+      if (version) next[key] = version
+      return next
+    }, {})
+    if (!Object.keys(fieldVersions).length) return
+    // 每个字段各自按版本清除；同用户其他标签刚写入的新草稿绝不能被整批操作误删。
+    const cleared = clearContainerDetailDraftFieldsIfVersionMatches(
+      getContainerDetailDraftStorage(), currentUserGuid, containerGuid, fieldVersions,
+    )
+    if (!cleared.persisted) {
+      message.error(t('containers.messages.localDraftClearFailed', '本地草稿清空失败，已保留当前修改'))
+      return
+    }
+    const retainedKeys = new Set(cleared.newerFieldVersionKeys)
+    pendingDetailOverrideAcknowledgementsRef.current = clearContainerDetailOverrideAcknowledgements(
+      pendingDetailOverrideAcknowledgementsRef.current,
+      Object.fromEntries(Object.entries(fieldVersions).filter(([key]) => !retainedKeys.has(key))),
+    )
+    applyPendingDetailDraftState(readContainerDetailDraft(getContainerDetailDraftStorage(), currentUserGuid, containerGuid), false)
+    setPendingDetailConflicts((current) => current.filter((conflict) => retainedKeys.has(`${conflict.hguid}:${conflict.field}`)))
+    await reloadCurrentDetailRef.current()
+  }
+
+  const keepMineConflict = (conflict: ContainerDetailFieldConflict) => {
+    Modal.confirm({
+      title: t('containers.modals.confirmOverrideConcurrentField', '确认覆盖服务器更新'),
+      content: t('containers.messages.confirmOverrideConcurrentField', '将以你的值覆盖刚刚看到的服务器值；若其间再次修改，系统会再次提示冲突。'),
+      okText: t('containers.actions.keepMyValue', '保留我的值'),
+      okButtonProps: { danger: true },
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        const key = `${conflict.hguid}:${conflict.field}`
+        const patch = pendingDetailPatchesRef.current[conflict.hguid]
+        const fieldVersion = pendingDetailFieldVersionsRef.current[key]
+        if (!patch || !fieldVersion) return
+        // 只记录确认令牌，首次编辑的 expected token 绝不能前移，确保后端走覆盖审计路径。
+        pendingDetailOverrideAcknowledgementsRef.current[key] = {
+          token: conflict.currentServerFieldToken,
+          fieldVersion,
+        }
+        setPendingDetailConflicts((current) => current.filter((item) => (
+          item.hguid !== conflict.hguid || item.field !== conflict.field
+        )))
+        // 下一次保存携带新的 expected token，后端将其作为 override acknowledgement 校验。
+        await savePendingDetails()
+      },
+    })
+  }
+
+  const keepAllMineConflicts = () => {
+    Modal.confirm({
+      title: t('containers.modals.confirmOverrideConcurrentFields', '确认批量覆盖服务器更新'),
+      content: t('containers.messages.confirmOverrideConcurrentFields', '将以你的值覆盖刚刚看到的服务器值。任何再次变化的字段仍会单独提示冲突。'),
+      okText: t('containers.actions.keepMyValue', '批量保留我的值'),
+      okButtonProps: { danger: true },
+      cancelText: t('common.cancel'),
+      onOk: async () => {
+        const eligible = pendingDetailConflicts.filter((conflict) => (
+          Boolean(pendingDetailPatchesRef.current[conflict.hguid])
+          && Boolean(pendingDetailFieldVersionsRef.current[`${conflict.hguid}:${conflict.field}`])
+        ))
+        if (!eligible.length) return
+        eligible.forEach((conflict) => {
+          const key = `${conflict.hguid}:${conflict.field}`
+          const fieldVersion = pendingDetailFieldVersionsRef.current[key]
+          if (!fieldVersion) return
+          // 每个 ack 只确认当前看见的令牌；服务端会拒绝确认之后的再次修改。
+          pendingDetailOverrideAcknowledgementsRef.current[key] = {
+            token: conflict.currentServerFieldToken,
+            fieldVersion,
+          }
+        })
+        const eligibleKeys = new Set(eligible.map((conflict) => `${conflict.hguid}:${conflict.field}`))
+        setPendingDetailConflicts((current) => current.filter((conflict) => !eligibleKeys.has(`${conflict.hguid}:${conflict.field}`)))
+        await savePendingDetails()
+      },
+    })
+  }
+
   const ensureNoPendingDetails = () => {
     if (!pendingDetailPatchCount) return true
     // 跨库和后台动作必须等待价格、英文名称等本地草稿统一落库。
@@ -2404,11 +2756,7 @@ export default function ContainerDetailPage() {
     ))
     rowsRef.current = nextRows
     if (autoSaveContextKeyRef.current) {
-      autoSaveContextSnapshotsRef.current.set(autoSaveContextKeyRef.current, {
-        containerGuid,
-        rows: nextRows,
-        container: containerRef.current,
-      })
+      updateAutoSaveContextRows(autoSaveContextKeyRef.current, nextRows, containerRef.current)
     }
     setRows(nextRows)
   }
@@ -2447,6 +2795,30 @@ export default function ContainerDetailPage() {
   }
 
   const queuePendingDetailUpdates = (updates: PendingContainerDetailPatch[]) => {
+    const baselineTokens = { ...pendingDetailFieldBaselineTokensRef.current }
+    updates.forEach((update) => {
+      getSubmittedContainerDetailFields(update).forEach((field) => {
+        // 新一轮编辑必须显式重新确认，不能复用上一次冲突的覆盖授权。
+        delete pendingDetailOverrideAcknowledgementsRef.current[`${update.hguid}:${field}`]
+      })
+    })
+    updates.forEach((update) => {
+      const row = rowsRef.current.find((item) => item.hguid === update.hguid)
+      if (!row?.serverFieldTokens) return
+      Object.keys(update).forEach((field) => {
+        if (field === 'hguid' || field === 'ClearEnglishName') return
+        const normalizedField = field === 'ClearEnglishName' ? '英文名称' : field
+        const key = `${update.hguid}:${normalizedField}`
+        // 同一草稿字段的基线只能取首次编辑时的服务端令牌，不能被后续刷新静默前移。
+        if (!baselineTokens[key] && row.serverFieldTokens?.[normalizedField]) {
+          baselineTokens[key] = row.serverFieldTokens[normalizedField]
+        }
+      })
+      if (update.ClearEnglishName === true) {
+        const key = `${update.hguid}:英文名称`
+        if (!baselineTokens[key] && row.serverFieldTokens?.英文名称) baselineTokens[key] = row.serverFieldTokens.英文名称
+      }
+    })
     applyPendingDetailDraftState({
       pendingPatches: updates.reduce(
         (next, update) => mergePendingContainerDetailPatch(next, update),
@@ -2457,6 +2829,7 @@ export default function ContainerDetailPage() {
         pendingDetailFailuresRef.current,
         updates,
       ),
+      fieldBaselineTokens: baselineTokens,
     }, true, updates, true)
   }
 
@@ -2518,7 +2891,7 @@ export default function ContainerDetailPage() {
       setColumnFilters({})
       return
     }
-    const fields: Array<{ field: string; columnKey: ContainerDetailEditableColumnKey }> = [
+    const fields: { field: string; columnKey: ContainerDetailEditableColumnKey }[] = [
       { field: '进口价格', columnKey: 'importPrice' },
       { field: '贴牌价格', columnKey: 'oemPrice' },
       { field: '英文名称', columnKey: 'englishName' },
@@ -2665,6 +3038,10 @@ export default function ContainerDetailPage() {
           setIsDetailDraftMemoryOnly(true)
           throw new Error(t('containers.messages.localDraftClearFailed', '本地草稿清空失败，已保留当前修改'))
         }
+        pendingDetailOverrideAcknowledgementsRef.current = clearContainerDetailOverrideAcknowledgements(
+          pendingDetailOverrideAcknowledgementsRef.current,
+          Object.fromEntries(Object.entries(draftFieldVersionSnapshot).filter(([key]) => !cleared.newerFieldVersionKeys.includes(key))),
+        )
         const remainingDraft = readContainerDetailDraft(
           getContainerDetailDraftStorage(),
           draftContext.userGuid,
@@ -2814,10 +3191,69 @@ export default function ContainerDetailPage() {
       throw new Error(t('containers.messages.detailSaveContextMissing', '货柜明细保存上下文已失效'))
     }
     // 只在该批真正出队时读取对应上下文快照，避免连续编辑或切页后发送旧派生值。
-    return batchUpdateDetails(
-      contextSnapshot.containerGuid,
-      buildAutoSaveUpdatesFromLatestRows(intents, contextSnapshot),
+    const rawUpdates = buildAutoSaveUpdatesFromLatestRows(intents, contextSnapshot)
+    const persistedBaselineTokens = captureContainerDetailDraftFieldBaselineTokens(
+      contextSnapshot.fieldBaselineTokens,
+      rawUpdates,
     )
+    const updates = rawUpdates.map((update) => ({
+      ...update,
+      expectedServerFieldTokens: {
+        ...Object.fromEntries(Object.keys(update).flatMap((field) => {
+        if (field === 'hguid' || field === 'ClearEnglishName') return []
+        const token = contextSnapshot.rows.find((row) => row.hguid === update.hguid)?.serverFieldTokens?.[field]
+        return token ? [[field, token]] : []
+        })),
+        // 用户直接编辑字段优先使用持久化的首次基线；派生成本字段仍使用同一快照中的服务器令牌。
+        ...(persistedBaselineTokens[update.hguid] ?? {}),
+      },
+    }))
+    const fieldVersions = captureContainerDetailDraftFieldVersions(
+      contextSnapshot.fieldVersions,
+      updates,
+    )
+    const result = await batchUpdateDetails(
+      contextSnapshot.containerGuid,
+      updates,
+    )
+    // A 货柜请求返回时页面可能已切到 B。持久化清理仍按 A 的 namespace/version 安全执行，
+    // 但所有当前页面状态与 ref 只能由仍然活跃的同一自动保存上下文更新。
+    const canApplyAutoSaveResultToCurrentContext = () => (
+      contextKey === autoSaveContextKeyRef.current
+      && contextSnapshot.userGuid === currentUserGuid
+      && contextSnapshot.draftIdentity === pendingDetailDraftIdentityRef.current
+    )
+    const failures = [...result.validationErrors, ...result.conflicts.map((conflict) => ({
+      hguid: conflict.hguid,
+      field: conflict.field,
+      code: conflict.code,
+      message: conflict.message ?? '服务器已更新该字段',
+    }))]
+    if (result.conflicts.length > 0 && canApplyAutoSaveResultToCurrentContext()) {
+      setPendingDetailConflicts((current) => [...current, ...result.conflicts.filter((next) => !current.some((item) => item.hguid === next.hguid && item.field === next.field))])
+      setConflictDrawerOpen(true)
+    }
+    const successfullySavedFieldVersions = captureSuccessfullySavedContainerDetailDraftFieldVersions(
+      fieldVersions, updates, failures,
+    )
+    if (canApplyAutoSaveResultToCurrentContext()) {
+      pendingDetailOverrideAcknowledgementsRef.current = clearContainerDetailOverrideAcknowledgements(
+        pendingDetailOverrideAcknowledgementsRef.current,
+        successfullySavedFieldVersions,
+      )
+    }
+    const clearResult = clearContainerDetailDraftFieldsIfVersionMatches(
+      getContainerDetailDraftStorage(), contextSnapshot.userGuid, contextSnapshot.containerGuid,
+      successfullySavedFieldVersions,
+    )
+    if (clearResult.persisted && canApplyAutoSaveResultToCurrentContext()) {
+      applyPendingDetailDraftState(readContainerDetailDraft(
+        getContainerDetailDraftStorage(),
+        contextSnapshot.userGuid,
+        contextSnapshot.containerGuid,
+      ), false)
+    }
+    return { ...result, validationErrors: failures }
   }
 
   const enqueueAutoSavePatch = (row: ContainerDetail, patch: ContainerDetailAutoSavePatch) => {
@@ -2828,6 +3264,8 @@ export default function ContainerDetailPage() {
       || resolveContainerDetailAutoSaveLifecycleAction(containerDetailTabActiveRef.current, contextKey) !== 'attach'
     ) return
     const latestRow = rowsRef.current.find((item) => item.hguid === row.hguid) ?? row
+    // 自动保存也先进入同一份 localStorage 草稿；刷新、关闭或网络失败都不会丢字段。
+    queuePendingDetailUpdates([{ hguid: row.hguid, ...patch }])
     const optimisticUpdate = buildContainerDetailAutoSaveUpdate(latestRow, patch, containerRef.current)
     const nextRows = rowsRef.current.map((item) => (
       item.hguid === optimisticUpdate.hguid
@@ -2835,11 +3273,7 @@ export default function ContainerDetailPage() {
         : item
     ))
     rowsRef.current = nextRows
-    autoSaveContextSnapshotsRef.current.set(contextKey, {
-      containerGuid,
-      rows: nextRows,
-      container: containerRef.current,
-    })
+    updateAutoSaveContextRows(contextKey, nextRows, containerRef.current)
     setRows(nextRows)
     autoSaveQueueRef.current?.enqueue(contextKey, row.hguid, patch)
   }
@@ -2851,21 +3285,41 @@ export default function ContainerDetailPage() {
   }
 
   const buildPendingDetailSavePlan = (): PendingContainerDetailPageSavePlan | null => {
-    if (!pendingDetailPatchList.length) {
+    // 直接操作刚入队时 React 尚未提交渲染；必须从同步 ref 取草稿，避免漏掉本次字段。
+    const currentPendingDetailPatchList = Object.values(pendingDetailPatchesRef.current)
+    if (!currentPendingDetailPatchList.length) {
       message.warning(t('containers.messages.noPendingDetails', '没有待保存的明细修改'))
       return null
     }
-    const plan = buildPendingContainerDetailSavePlan(pendingDetailPatchList)
-    const saveKeys = plan.detailUpdates.flatMap((update) => (
+    const plan = buildPendingContainerDetailSavePlan(currentPendingDetailPatchList)
+    const expectedServerFieldTokens = captureContainerDetailDraftFieldBaselineTokens(
+      pendingDetailFieldBaselineTokensRef.current,
+      plan.detailUpdates,
+    )
+    const overrideAcknowledgements = buildContainerDetailOverrideAcknowledgements(
+      plan.detailUpdates,
+      expectedServerFieldTokens,
+      pendingDetailFieldVersionsRef.current,
+      pendingDetailOverrideAcknowledgementsRef.current,
+    )
+    const detailUpdates = plan.detailUpdates.map((update) => ({
+      ...update,
+      expectedServerFieldTokens: expectedServerFieldTokens[update.hguid],
+      overrideAcknowledgements: overrideAcknowledgements[update.hguid],
+    }))
+    const saveKeys = detailUpdates.flatMap((update) => (
       buildContainerDetailSaveFailureKeys(update.hguid, update)
     ))
     return {
       ...plan,
+      detailUpdates,
       saveKeys,
+      expectedServerFieldTokens,
+      overrideAcknowledgements,
       draftContext: getCurrentDetailDraftContext(),
       draftFieldVersionSnapshot: captureContainerDetailDraftFieldVersions(
         pendingDetailFieldVersionsRef.current,
-        plan.detailUpdates,
+        detailUpdates,
       ),
     }
   }
@@ -2930,10 +3384,16 @@ export default function ContainerDetailPage() {
     })
   })
 
-  const executePendingDetailSavePlan = async (plan: PendingContainerDetailPageSavePlan) => {
+  const executePendingDetailSavePlan = async (
+    plan: PendingContainerDetailPageSavePlan,
+  ): Promise<PendingContainerDetailSaveExecutionResult> => {
+    const ignoredSaveResult: PendingContainerDetailSaveExecutionResult = {
+      isCurrent: false,
+      successfulFieldKeys: [],
+    }
     if (!isCurrentDetailDraftContext(plan.draftContext)) {
       message.warning(t('containers.messages.draftContextChanged', '用户或货柜已切换，已取消本次保存'))
-      return
+      return ignoredSaveResult
     }
     const saveContainerGuid = plan.draftContext.containerGuid
     const saveDraftIdentity = plan.draftContext.draftIdentity
@@ -2954,6 +3414,7 @@ export default function ContainerDetailPage() {
             totalUpdated: 0,
             totalRequested: 0,
             validationErrors: [],
+            conflicts: [],
             autoRepairedStoreGroupCount: undefined,
             autoRepairedRelationCount: undefined,
           })
@@ -2975,12 +3436,30 @@ export default function ContainerDetailPage() {
         !scopedSave.isCurrentContainer
         || pendingDetailDraftIdentityRef.current !== saveDraftIdentity
       ) {
-        return
+        return ignoredSaveResult
       }
+      const concurrentFieldErrors: ContainerDetailSaveValidationError[] = result.conflicts.map((conflict) => ({
+        hguid: conflict.hguid,
+        field: conflict.field,
+        code: conflict.code,
+        message: conflict.message ?? t('containers.messages.concurrentFieldUpdate', '服务器已更新该字段，请选择采用服务器值或保留我的值'),
+      }))
       const validationErrors: ContainerDetailSaveValidationError[] = [
         ...plan.localValidationErrors,
         ...result.validationErrors,
+        ...concurrentFieldErrors,
       ]
+      if (result.conflicts.length > 0) {
+        // 冲突是业务结果而非网络失败；保留草稿、在单元格标红，并让用户显式决定是否覆盖。
+        setPendingDetailConflicts((current) => {
+          const incomingKeys = new Set(result.conflicts.map((item) => `${item.hguid}:${item.field}`))
+          return [
+            ...current.filter((item) => !incomingKeys.has(`${item.hguid}:${item.field}`)),
+            ...result.conflicts,
+          ]
+        })
+        setConflictDrawerOpen(true)
+      }
       if (plan.detailUpdates.length > 0 && scopedSave.shouldInvalidateDetailLoad) {
         // 保存结果优先于更早发出的查询，避免旧响应在队列清理后覆盖刚保存的本地值。
         detailControllerAtSaveStart?.abort()
@@ -3002,26 +3481,36 @@ export default function ContainerDetailPage() {
           pendingPatches: pendingDetailPatchesRef.current,
           failures: pendingDetailFailuresRef.current,
           fieldVersions: pendingDetailFieldVersionsRef.current,
+          fieldBaselineTokens: pendingDetailFieldBaselineTokensRef.current,
         },
         plan.detailUpdates,
         validationErrors,
+      )
+      const successfullySavedFieldVersions = captureSuccessfullySavedContainerDetailDraftFieldVersions(
+        plan.draftFieldVersionSnapshot,
+        plan.detailUpdates,
+        validationErrors,
+      )
+      const executionResult: PendingContainerDetailSaveExecutionResult = {
+        isCurrent: true,
+        successfulFieldKeys: Object.keys(successfullySavedFieldVersions),
+      }
+      pendingDetailOverrideAcknowledgementsRef.current = clearContainerDetailOverrideAcknowledgements(
+        pendingDetailOverrideAcknowledgementsRef.current,
+        successfullySavedFieldVersions,
       )
       const removedSavedDrafts = clearContainerDetailDraftFieldsIfVersionMatches(
         getContainerDetailDraftStorage(),
         plan.draftContext.userGuid,
         saveContainerGuid,
-        captureSuccessfullySavedContainerDetailDraftFieldVersions(
-          plan.draftFieldVersionSnapshot,
-          plan.detailUpdates,
-          validationErrors,
-        ),
+        successfullySavedFieldVersions,
       )
       if (!removedSavedDrafts.persisted) {
         isDetailDraftMemoryOnlyRef.current = true
         setIsDetailDraftMemoryOnly(true)
         // 删除失败时保留内存补丁；不能让已保存响应清空不可恢复的本地编辑。
         saveResponseApplied = true
-        return
+        return executionResult
       }
       if (removedSavedDrafts.hasNewerFieldVersion) {
         // 另一标签页在本次保存后已写入新版本，重新读取并优先恢复它，不能复活旧值。
@@ -3036,7 +3525,7 @@ export default function ContainerDetailPage() {
           removedSavedDrafts.newerFieldVersionKeys,
         ))
         saveResponseApplied = true
-        return
+        return executionResult
       }
       // 条件删除失败时保留内存状态，不能用一次普通写入伪装成“草稿已清除”。
       applyPendingDetailDraftState(settledDraftState, removedSavedDrafts.persisted, plan.pendingPatches)
@@ -3071,6 +3560,7 @@ export default function ContainerDetailPage() {
           { count: failedRowCount, reasons },
         ))
       }
+      return executionResult
     } catch (error) {
       if (
         currentContainerGuidRef.current === saveContainerGuid
@@ -3097,6 +3587,7 @@ export default function ContainerDetailPage() {
         }
         handleDetailSaveError(error)
       }
+      return ignoredSaveResult
     } finally {
       if (
         currentContainerGuidRef.current === saveContainerGuid
@@ -3157,11 +3648,7 @@ export default function ContainerDetailPage() {
     })
     rowsRef.current = nextRows
     if (autoSaveContextKeyRef.current) {
-      autoSaveContextSnapshotsRef.current.set(autoSaveContextKeyRef.current, {
-        containerGuid,
-        rows: nextRows,
-        container: containerRef.current,
-      })
+      updateAutoSaveContextRows(autoSaveContextKeyRef.current, nextRows, containerRef.current)
     }
     setRows(nextRows)
   }
@@ -3249,9 +3736,28 @@ export default function ContainerDetailPage() {
       setFreightInputDirty(false)
 
       if (shouldRecalculateCosts) {
+        const scope = buildWholeContainerDetailBatchScope()
         try {
-          const result = await recalculateContainerCostsByScope(containerGuid, buildWholeContainerDetailBatchScope())
-          message.success(t('containers.messages.headerSaveAndCostsRecalculated', '货柜信息已保存，已重算 {{count}} 条明细成本', { count: result.totalUpdated }))
+          let previewToken = await confirmPreviewedContainerDetailAction(
+            'recalculate-costs', scope, {}, t('containers.actions.recalculateCosts', '重算成本'),
+          )
+          while (previewToken) {
+            try {
+              const result = await recalculateContainerCostsByScope(containerGuid, scope, previewToken)
+              message.success(t('containers.messages.headerSaveAndCostsRecalculated', '货柜信息已保存，已重算 {{count}} 条明细成本', { count: result.totalUpdated }))
+              break
+            } catch (error) {
+              if (!isContainerDetailActionPreviewExpired(error)) throw error
+              // 409 后重新读取预览；只有用户再次确认新令牌才会重试写入。
+              previewToken = await confirmPreviewedContainerDetailAction(
+                'recalculate-costs', scope, {}, t('containers.actions.recalculateCosts', '重算成本'),
+              )
+            }
+          }
+          if (!previewToken) {
+            // 头部 PUT 已完成；取消重算只跳过成本写入，仍需退出编辑并刷新真实服务器状态。
+            message.info(t('containers.messages.headerSavedCostsRecalculateCancelled', '货柜信息已保存，成本重算已取消'))
+          }
         } catch (error) {
           console.error(error)
           const errorMessage = error instanceof Error ? error.message : t('containers.messages.costRecalculateFailed', '成本重算失败')
@@ -3317,8 +3823,14 @@ export default function ContainerDetailPage() {
     }
     if (!await drainAutoSavesBeforeAction()) return
     setBatchFloatRateSaving(true)
+    const scope = buildDetailBatchScope(batchModalScopeRows)
+    const parameters = { floatRate: batchFloatRate }
     try {
-      const result = await applyContainerFloatRateByScope(containerGuid, buildDetailBatchScope(batchModalScopeRows), batchFloatRate)
+      const previewToken = await confirmPreviewedContainerDetailAction(
+        'apply-float-rate', scope, parameters, t('containers.actions.batchUpdateFloatRate', '批量修改浮率'),
+      )
+      if (!previewToken) return
+      const result = await applyContainerFloatRateByScope(containerGuid, scope, batchFloatRate, previewToken)
       await reloadCurrentDetailRef.current()
       setBatchFloatRateModalOpen(false)
       setBatchModalTargetCount(0)
@@ -3326,6 +3838,12 @@ export default function ContainerDetailPage() {
       setBatchFloatRate(null)
       setSelectedRowKeys([])
       message.success(t('containers.messages.detailsUpdated', { count: result.totalUpdated }))
+    } catch (error) {
+      if (await handleExpiredContainerDetailActionPreview(error, 'apply-float-rate', scope, parameters)) {
+        message.info(t('containers.messages.batchPreviewReconfirmRequired', '批量预览已更新，请再次确认后执行'))
+      } else {
+        message.error(error instanceof Error ? error.message : t('containers.messages.detailsUpdateFailed', '批量修改浮率失败'))
+      }
     } finally {
       setBatchFloatRateSaving(false)
     }
@@ -3372,8 +3890,21 @@ export default function ContainerDetailPage() {
         update.进口价格 != null
       ))
       if (writableUpdates.length) {
-        // 匹配方式只用于当前表格展示，批量保存接口只提交它支持的业务字段。
-        await batchUpdateDetails(containerGuid, writableUpdates)
+        // 匹配结果先进入同一份字段草稿：实际字段的首次 server token 会随请求提交，
+        // 冲突、校验失败或网络失败均保留意图而非被本地展示覆盖。
+        queuePendingDetailUpdates(writableUpdates)
+        const savePlan = buildPendingDetailSavePlan()
+        const saveResult = savePlan
+          ? await executePendingDetailSavePlan(savePlan)
+          : { isCurrent: false, successfulFieldKeys: [] }
+        const fullySavedUpdates = filterSuccessfullySavedContainerDetailUpdates(
+          writableUpdates,
+          saveResult.successfulFieldKeys,
+        )
+        if (fullySavedUpdates.length !== writableUpdates.length) {
+          // 任意目标字段冲突或校验失败时保留草稿和当前交互；不能把检测结果伪装成已保存。
+          return
+        }
       }
       applyDetailUpdatesToRows(updates)
       if (!selectedRowKeys.length) {
@@ -3482,11 +4013,17 @@ export default function ContainerDetailPage() {
     }
     if (!await drainAutoSavesBeforeAction()) return
     setBatchPricesSaving(true)
+    const scope = buildDetailBatchScope(batchModalScopeRows)
+    const prices = {
+      importPrice: batchImportPrice,
+      oemPrice: batchOemPrice,
+    }
     try {
-      const result = await applyContainerPricesByScope(containerGuid, buildDetailBatchScope(batchModalScopeRows), {
-        importPrice: batchImportPrice,
-        oemPrice: batchOemPrice,
-      })
+      const previewToken = await confirmPreviewedContainerDetailAction(
+        'apply-prices', scope, prices, t('containers.actions.batchUpdatePrices', '批量修改价格'),
+      )
+      if (!previewToken) return
+      const result = await applyContainerPricesByScope(containerGuid, scope, prices, previewToken)
       await reloadCurrentDetailRef.current()
       setBatchPricesModalOpen(false)
       setBatchModalTargetCount(0)
@@ -3495,6 +4032,12 @@ export default function ContainerDetailPage() {
       setBatchOemPrice(null)
       setSelectedRowKeys([])
       message.success(t('containers.messages.detailPricesUpdated', { count: result.totalUpdated }))
+    } catch (error) {
+      if (await handleExpiredContainerDetailActionPreview(error, 'apply-prices', scope, prices)) {
+        message.info(t('containers.messages.batchPreviewReconfirmRequired', '批量预览已更新，请再次确认后执行'))
+      } else {
+        message.error(error instanceof Error ? error.message : t('containers.messages.detailPricesUpdateFailed', '批量改价失败'))
+      }
     } finally {
       setBatchPricesSaving(false)
     }
@@ -3534,15 +4077,25 @@ export default function ContainerDetailPage() {
       return
     }
     if (!await drainAutoSavesBeforeAction()) return
-    const result = await bulkSetStatus(productCodes, isActive)
-    const failureMessage = getContainerDetailWarehouseActionFailureMessage(result, t('containers.messages.batchActiveFailed'))
-    if (failureMessage) {
-      message.error(failureMessage)
-      return
+    const statusRows = eligibleRows.filter((row) => productCodes.includes(getContainerDetailProductCode(row) ?? ''))
+    const scope = buildDetailBatchScope(statusRows)
+    const parameters = { isActive }
+    try {
+      const previewToken = await confirmPreviewedContainerDetailAction(
+        'set-status', scope, parameters, t(isActive ? 'containers.actions.batchActivate' : 'containers.actions.batchDeactivate'),
+      )
+      if (!previewToken) return
+      await setContainerDetailStatusByScope(containerGuid, scope, isActive, previewToken)
+      setRows((items) => applyContainerDetailWarehouseStatusByProductCodes(items, productCodes, isActive))
+      setSelectedRowKeys([])
+      message.success(t(isActive ? 'containers.messages.productsActivated' : 'containers.messages.productsDeactivated', { count: productCodes.length }))
+    } catch (error) {
+      if (await handleExpiredContainerDetailActionPreview(error, 'set-status', scope, parameters)) {
+        message.info(t('containers.messages.batchPreviewReconfirmRequired', '批量预览已更新，请再次确认后执行'))
+      } else {
+        message.error(error instanceof Error ? error.message : t('containers.messages.batchActiveFailed'))
+      }
     }
-    setRows((items) => applyContainerDetailWarehouseStatusByProductCodes(items, productCodes, isActive))
-    setSelectedRowKeys([])
-    message.success(t(isActive ? 'containers.messages.productsActivated' : 'containers.messages.productsDeactivated', { count: productCodes.length }))
   }
 
   const translateNames = async () => {
@@ -3683,8 +4236,16 @@ export default function ContainerDetailPage() {
 
     setRowCategorySaving(true)
     try {
-      // 单行目标分类只提交当前明细 GUID，不影响批量分类入口和其他已加载行。
-      await batchUpdateDetails(containerGuid, [{ hguid: rowCategoryEditingRow.hguid, ProductCategoryGUID: rowTargetCategoryGuid }])
+      // 单行分类也走字段草稿保存，确保 RequireTokens 开启后不会 428，冲突时保留用户选择。
+      queuePendingDetailUpdates([{ hguid: rowCategoryEditingRow.hguid, ProductCategoryGUID: rowTargetCategoryGuid }])
+      const savePlan = buildPendingDetailSavePlan()
+      const saveResult = savePlan
+        ? await executePendingDetailSavePlan(savePlan)
+        : { isCurrent: false, successfulFieldKeys: [] }
+      if (!saveResult.successfulFieldKeys.includes(`${rowCategoryEditingRow.hguid}:ProductCategoryGUID`)) {
+        // 冲突、校验或网络失败时保持分类弹窗和草稿，用户可在冲突抽屉中处理后重试。
+        return
+      }
       const categoryPatch = buildContainerDetailCategoryPatch(
         rowCategoryEditingRow,
         rowTargetCategoryGuid,
@@ -3729,9 +4290,15 @@ export default function ContainerDetailPage() {
     if (!await drainAutoSavesBeforeAction()) return
 
     setBatchCategorySaving(true)
+    const scope = buildDetailBatchScope(batchCategoryTargetRows.filter((row) => productCodes.includes(getContainerDetailProductCode(row) ?? '')))
+    const parameters = { categoryGuid: targetCategoryGuid }
     try {
-      // 批量分类只写仓库商品分类，不修改货柜明细价格、数量等业务字段。
-      await batchAssignProducts(targetCategoryGuid, productCodes)
+      const previewToken = await confirmPreviewedContainerDetailAction(
+        'assign-category', scope, parameters, t('containers.actions.batchSetCategory', '批量分类'),
+      )
+      if (!previewToken) return
+      // 分类也必须走货柜范围保护动作，避免绕过预览令牌与并发锁。
+      await assignContainerDetailCategoryByScope(containerGuid, scope, targetCategoryGuid, previewToken)
       const productCodeSet = new Set(productCodes)
       // 保存成功后只更新当前已加载行，避免重新查询整张明细表造成等待和 loading。
       setRows((items) =>
@@ -3751,7 +4318,11 @@ export default function ContainerDetailPage() {
         message.warning(t('containers.messages.batchCategorySkippedMissingCode', '已跳过 {{count}} 条缺少商品编码的明细', { count: skippedMissingCodeCount }))
       }
     } catch (error) {
-      message.error(error instanceof Error ? error.message : t('warehouse.categories.batchAssignFailed', '批量分类失败'))
+      if (await handleExpiredContainerDetailActionPreview(error, 'assign-category', scope, parameters)) {
+        message.info(t('containers.messages.batchPreviewReconfirmRequired', '批量预览已更新，请再次确认后执行'))
+      } else {
+        message.error(error instanceof Error ? error.message : t('warehouse.categories.batchAssignFailed', '批量分类失败'))
+      }
     } finally {
       setBatchCategorySaving(false)
     }
@@ -4420,10 +4991,23 @@ export default function ContainerDetailPage() {
       onOk: async () => {
         if (!await drainAutoSavesBeforeAction()) return
         const hguids = selectedRows.map((row) => row.hguid).filter((value): value is string => Boolean(value))
-        await batchDeleteDetails(hguids)
-        setRows((items) => items.filter((item) => !hguids.includes(item.hguid)))
-        setSelectedRowKeys([])
-        message.success(t('containers.messages.detailsDeleted', { count: hguids.length }))
+        const scope = { selectedHguids: hguids }
+        const previewToken = await confirmPreviewedContainerDetailAction(
+          'delete-details', scope, {}, t('containers.actions.deleteDetails', '删除明细'), true,
+        )
+        if (!previewToken) return
+        try {
+          await deleteContainerDetailsByScope(containerGuid, scope, previewToken)
+          setRows((items) => items.filter((item) => !hguids.includes(item.hguid)))
+          setSelectedRowKeys([])
+          message.success(t('containers.messages.detailsDeleted', { count: hguids.length }))
+        } catch (error) {
+          if (await handleExpiredContainerDetailActionPreview(error, 'delete-details', scope, {})) {
+            message.info(t('containers.messages.batchPreviewReconfirmRequired', '批量预览已更新，请再次确认后执行'))
+            return
+          }
+          throw error
+        }
       },
     })
   }
@@ -4620,26 +5204,28 @@ export default function ContainerDetailPage() {
 
   const filterIcon = (active?: boolean) => <SearchOutlined style={{ color: active ? '#1677ff' : undefined }} />
 
-  const makeTextFilterDropdown = (key: TextColumnFilterKey, placeholder: string) => ({ confirm }: FilterDropdownProps) => (
-    <div className="container-detail-column-filter" onKeyDown={(event) => event.stopPropagation()}>
-      <Input
-        value={(columnFilters[key] as string | undefined) ?? ''}
-        allowClear
-        placeholder={placeholder}
-        onChange={(event) => setColumnFilters((current) => ({ ...current, [key]: event.target.value }))}
-        onPressEnter={() => confirm()}
-      />
-      <Space>
-        <Button size="small" type="primary" onClick={() => confirm()}>{t('containers.actions.applyColumnFilter', '应用')}</Button>
-        <Button size="small" onClick={() => {
-          clearColumnFilter(key)
-          confirm()
-        }}>{t('containers.actions.resetColumnFilter', '重置')}</Button>
-      </Space>
-    </div>
-  )
+  const makeTextFilterDropdown = (key: TextColumnFilterKey, placeholder: string) => function ContainerDetailTextFilterDropdown({ confirm }: FilterDropdownProps) {
+    return (
+      <div className="container-detail-column-filter" onKeyDown={(event) => event.stopPropagation()}>
+        <Input
+          value={(columnFilters[key] as string | undefined) ?? ''}
+          allowClear
+          placeholder={placeholder}
+          onChange={(event) => setColumnFilters((current) => ({ ...current, [key]: event.target.value }))}
+          onPressEnter={() => confirm()}
+        />
+        <Space>
+          <Button size="small" type="primary" onClick={() => confirm()}>{t('containers.actions.applyColumnFilter', '应用')}</Button>
+          <Button size="small" onClick={() => {
+            clearColumnFilter(key)
+            confirm()
+          }}>{t('containers.actions.resetColumnFilter', '重置')}</Button>
+        </Space>
+      </div>
+    )
+  }
 
-  const makeNumberRangeFilterDropdown = (key: NumberColumnFilterKey) => ({ confirm }: FilterDropdownProps) => {
+  const makeNumberRangeFilterDropdown = (key: NumberColumnFilterKey) => function ContainerDetailNumberRangeFilterDropdown({ confirm }: FilterDropdownProps) {
     const value = (columnFilters[key] as ContainerDetailNumberRangeFilter | undefined) ?? {}
     const updateRange = (patch: ContainerDetailNumberRangeFilter) => {
       const next = { ...value, ...patch }
@@ -4673,25 +5259,27 @@ export default function ContainerDetailPage() {
     )
   }
 
-  const makeEnumFilterDropdown = (key: EnumColumnFilterKey, options: { value: string; label: string }[]) => ({ confirm }: FilterDropdownProps) => (
-    <div className="container-detail-column-filter" onKeyDown={(event) => event.stopPropagation()}>
-      <Select
-        mode="multiple"
-        value={(columnFilters[key] as string[] | undefined) ?? []}
-        allowClear
-        style={{ minWidth: 180 }}
-        options={options}
-        onChange={(values) => setColumnFilters((current) => ({ ...current, [key]: values } as ContainerDetailColumnFilters))}
-      />
-      <Space>
-        <Button size="small" type="primary" onClick={() => confirm()}>{t('containers.actions.applyColumnFilter', '应用')}</Button>
-        <Button size="small" onClick={() => {
-          clearColumnFilter(key)
-          confirm()
-        }}>{t('containers.actions.resetColumnFilter', '重置')}</Button>
-      </Space>
-    </div>
-  )
+  const makeEnumFilterDropdown = (key: EnumColumnFilterKey, options: { value: string; label: string }[]) => function ContainerDetailEnumFilterDropdown({ confirm }: FilterDropdownProps) {
+    return (
+      <div className="container-detail-column-filter" onKeyDown={(event) => event.stopPropagation()}>
+        <Select
+          mode="multiple"
+          value={(columnFilters[key] as string[] | undefined) ?? []}
+          allowClear
+          style={{ minWidth: 180 }}
+          options={options}
+          onChange={(values) => setColumnFilters((current) => ({ ...current, [key]: values } as ContainerDetailColumnFilters))}
+        />
+        <Space>
+          <Button size="small" type="primary" onClick={() => confirm()}>{t('containers.actions.applyColumnFilter', '应用')}</Button>
+          <Button size="small" onClick={() => {
+            clearColumnFilter(key)
+            confirm()
+          }}>{t('containers.actions.resetColumnFilter', '重置')}</Button>
+        </Space>
+      </div>
+    )
+  }
 
   const makeSortProps = (field: ContainerDetailSortField) => ({
     key: field,
@@ -4764,25 +5352,29 @@ export default function ContainerDetailPage() {
     }
     if (!await drainAutoSavesBeforeAction()) return
 
-    const previousStatuses = rows
+    const statusRows = rows
       .filter((item) => getContainerDetailProductCode(item) === productCode)
+    const previousStatuses = statusRows
       .map((item) => ({ key: rowKey(item), warehouseIsActive: item.warehouseIsActive }))
-
-    setPendingWarehouseStatusCodes((codes) => new Set(codes).add(productCode))
-    setRows((items) => applyContainerDetailWarehouseStatusByProductCodes(items, [productCode], isActive))
+    const scope = buildDetailBatchScope(statusRows)
+    const parameters = { isActive }
 
     try {
-      const result = await bulkSetStatus([productCode], isActive)
-      const failureMessage = getContainerDetailWarehouseActionFailureMessage(result, t('containers.messages.batchActiveFailed'))
-      if (failureMessage) {
-        setRows((items) => rollbackContainerDetailWarehouseStatuses(items, previousStatuses, rowKey))
-        message.error(failureMessage)
-        return
-      }
+      const previewToken = await confirmPreviewedContainerDetailAction(
+        'set-status', scope, parameters, t(isActive ? 'containers.actions.batchActivate' : 'containers.actions.batchDeactivate'),
+      )
+      if (!previewToken) return
+      setPendingWarehouseStatusCodes((codes) => new Set(codes).add(productCode))
+      setRows((items) => applyContainerDetailWarehouseStatusByProductCodes(items, [productCode], isActive))
+      await setContainerDetailStatusByScope(containerGuid, scope, isActive, previewToken)
       message.success(t(isActive ? 'containers.messages.productsActivated' : 'containers.messages.productsDeactivated', { count: 1 }))
     } catch (error) {
       setRows((items) => rollbackContainerDetailWarehouseStatuses(items, previousStatuses, rowKey))
-      message.error(error instanceof Error ? error.message : t('containers.messages.batchActiveFailed'))
+      if (await handleExpiredContainerDetailActionPreview(error, 'set-status', scope, parameters)) {
+        message.info(t('containers.messages.batchPreviewReconfirmRequired', '批量预览已更新，请再次确认后执行'))
+      } else {
+        message.error(error instanceof Error ? error.message : t('containers.messages.batchActiveFailed'))
+      }
     } finally {
       setPendingWarehouseStatusCodes((codes) => {
         const next = new Set(codes)
@@ -4898,20 +5490,21 @@ export default function ContainerDetailPage() {
           row.hguid,
           '英文名称',
         )
-        const validationMessage = saveFailure?.message ?? (validationError === 'CONTAINS_CHINESE'
+        const concurrencyConflict = resolveConcurrencyConflict(row, '英文名称')
+        const validationMessage = concurrencyConflict?.message ?? saveFailure?.message ?? (validationError === 'CONTAINS_CHINESE'
           ? t('containers.messages.englishNameContainsChinese', '英文名称不能包含中文')
           : validationError === 'EMPTY_ENGLISH_NAME'
             ? t('containers.messages.emptyEnglishNameNotSaved', '空白英文名称不会保存，如需清空请使用“清除英文名称”')
             : undefined)
-        return (
+        return renderConcurrentEditableField(row, '英文名称', (
           <Input.TextArea
             ref={(cell) => setEditableCellRef(rowKey(row), 'englishName', cell)}
             className="container-detail-english-name-input"
             value={getContainerDetailEnglishName(row) ?? ''}
             autoSize={{ minRows: 1, maxRows: 2 }}
             style={{ resize: 'none' }}
-            status={validationError || saveFailure ? 'error' : undefined}
-            aria-invalid={Boolean(validationError || saveFailure)}
+            status={validationError || saveFailure || concurrencyConflict ? 'error' : undefined}
+            aria-invalid={Boolean(validationError || saveFailure || concurrencyConflict)}
             aria-label={validationMessage
               ? `${t('containers.fields.englishName')}：${validationMessage}`
               : t('containers.fields.englishName')}
@@ -4919,7 +5512,7 @@ export default function ContainerDetailPage() {
             onChange={(event) => markPendingDetailPatch(row, { 英文名称: event.target.value })}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'englishName', event)}
           />
-        )
+        ))
       },
     },
     {
@@ -4928,9 +5521,9 @@ export default function ContainerDetailPage() {
       width: 120,
       render: (_, row) => {
         const categoryCell = renderContainerDetailCategoryCell(row, categoryLookup, i18n.language)
-        if (!canBatchSetCategory) return categoryCell
+        if (!canBatchSetCategory) return renderConcurrentEditableField(row, 'ProductCategoryGUID', categoryCell)
 
-        return (
+        return renderConcurrentEditableField(row, 'ProductCategoryGUID', (
           <button
             type="button"
             className="container-detail-category-button"
@@ -4941,7 +5534,7 @@ export default function ContainerDetailPage() {
           >
             {categoryCell}
           </button>
-        )
+        ))
       },
     },
     {
@@ -4962,7 +5555,8 @@ export default function ContainerDetailPage() {
       ...numberFilterProps('packingQuantity'),
       render: (_value, row) => {
         const saveFailure = getAutoSaveFailure(row, '单件装箱数')
-        return access.canEditContainer ? (
+        const concurrencyConflict = resolveConcurrencyConflict(row, '单件装箱数')
+        return access.canEditContainer ? renderConcurrentEditableField(row, '单件装箱数', (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'packingQuantity', cell)}
             value={row.单件装箱数}
@@ -4972,9 +5566,9 @@ export default function ContainerDetailPage() {
             step={1}
             controls={false}
             style={{ width: 72 }}
-            status={saveFailure ? 'error' : undefined}
-            aria-invalid={Boolean(saveFailure)}
-            title={saveFailure?.message}
+            status={saveFailure || concurrencyConflict ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure || concurrencyConflict)}
+            title={concurrencyConflict?.message ?? saveFailure?.message}
             onFocus={() => captureAutoSaveEditBaseline(row, '单件装箱数', row.单件装箱数)}
             onChange={(value) => patchAutoSaveRow(row, { 单件装箱数: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
@@ -4987,7 +5581,7 @@ export default function ContainerDetailPage() {
             }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'packingQuantity', event)}
           />
-        ) : renderNumericCell(formatNumber(row.单件装箱数, 0))
+        )) : renderConcurrentEditableField(row, '单件装箱数', renderNumericCell(formatNumber(row.单件装箱数, 0)))
       },
     },
     {
@@ -5008,7 +5602,8 @@ export default function ContainerDetailPage() {
       ...numberFilterProps('unitVolume'),
       render: (_value, row) => {
         const saveFailure = getAutoSaveFailure(row, '单件体积')
-        return access.canEditContainer ? (
+        const concurrencyConflict = resolveConcurrencyConflict(row, '单件体积')
+        return access.canEditContainer ? renderConcurrentEditableField(row, '单件体积', (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'unitVolume', cell)}
             value={row.单件体积}
@@ -5017,9 +5612,9 @@ export default function ContainerDetailPage() {
             precision={3}
             controls={false}
             style={{ width: 72 }}
-            status={saveFailure ? 'error' : undefined}
-            aria-invalid={Boolean(saveFailure)}
-            title={saveFailure?.message}
+            status={saveFailure || concurrencyConflict ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure || concurrencyConflict)}
+            title={concurrencyConflict?.message ?? saveFailure?.message}
             onFocus={() => captureAutoSaveEditBaseline(row, '单件体积', row.单件体积)}
             onChange={(value) => patchAutoSaveRow(row, { 单件体积: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
@@ -5032,7 +5627,7 @@ export default function ContainerDetailPage() {
             }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'unitVolume', event)}
           />
-        ) : renderNumericCell(formatNumber(row.单件体积, 3))
+        )) : renderConcurrentEditableField(row, '单件体积', renderNumericCell(formatNumber(row.单件体积, 3)))
       },
     },
     {
@@ -5042,7 +5637,7 @@ export default function ContainerDetailPage() {
       align: 'right',
       ...makeSortProps('domesticPrice'),
       ...numberFilterProps('domesticPrice'),
-      render: (v) => renderNumericCell(formatCurrency(v, '¥')),
+      render: (v, row) => renderConcurrentEditableField(row, '国内价格', renderNumericCell(formatCurrency(v, '¥'))),
     },
     {
       title: renderColumnTitle('transportCost', t('containers.fields.transportCost')),
@@ -5051,7 +5646,7 @@ export default function ContainerDetailPage() {
       align: 'right',
       ...makeSortProps('transportCost'),
       ...numberFilterProps('transportCost'),
-      render: (v) => renderNumericCell(formatCurrency(v, '$')),
+      render: (v, row) => renderConcurrentEditableField(row, '运输成本', renderNumericCell(formatCurrency(v, '$'))),
     },
     {
       title: renderColumnTitle('unitTransportCost', t('containers.fields.unitTransportCost', '单件运输成本')),
@@ -5070,7 +5665,8 @@ export default function ContainerDetailPage() {
       ...numberFilterProps('floatRate'),
       render: (_value, row) => {
         const saveFailure = getAutoSaveFailure(row, '调整浮率')
-        return access.canEditContainer ? (
+        const concurrencyConflict = resolveConcurrencyConflict(row, '调整浮率')
+        return access.canEditContainer ? renderConcurrentEditableField(row, '调整浮率', (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'floatRate', cell)}
             value={row.调整浮率}
@@ -5078,9 +5674,9 @@ export default function ContainerDetailPage() {
             precision={2}
             controls={false}
             style={{ width: 78 }}
-            status={saveFailure ? 'error' : undefined}
-            aria-invalid={Boolean(saveFailure)}
-            title={saveFailure?.message}
+            status={saveFailure || concurrencyConflict ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure || concurrencyConflict)}
+            title={concurrencyConflict?.message ?? saveFailure?.message}
             onFocus={() => captureAutoSaveEditBaseline(row, '调整浮率', row.调整浮率)}
             onChange={(value) => patchAutoSaveRow(row, { 调整浮率: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
@@ -5094,7 +5690,7 @@ export default function ContainerDetailPage() {
             }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'floatRate', event)}
           />
-        ) : renderNumericCell(formatNumber(row.调整浮率, 2))
+        )) : renderConcurrentEditableField(row, '调整浮率', renderNumericCell(formatNumber(row.调整浮率, 2)))
       },
     },
     {
@@ -5106,7 +5702,8 @@ export default function ContainerDetailPage() {
       ...numberFilterProps('middlePackQuantity'),
       render: (_value, row) => {
         const saveFailure = getAutoSaveFailure(row, '中包数')
-        return access.canEditContainer ? (
+        const concurrencyConflict = resolveConcurrencyConflict(row, '中包数')
+        return access.canEditContainer ? renderConcurrentEditableField(row, '中包数', (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'middlePackQuantity', cell)}
             value={row.中包数}
@@ -5115,9 +5712,9 @@ export default function ContainerDetailPage() {
             precision={0}
             controls={false}
             style={{ width: 68 }}
-            status={saveFailure ? 'error' : undefined}
-            aria-invalid={Boolean(saveFailure)}
-            title={saveFailure?.message}
+            status={saveFailure || concurrencyConflict ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure || concurrencyConflict)}
+            title={concurrencyConflict?.message ?? saveFailure?.message}
             onFocus={() => captureAutoSaveEditBaseline(row, '中包数', row.中包数)}
             onChange={(value) => patchAutoSaveRow(row, { 中包数: value == null ? undefined : Number(value) })}
             onBlur={(event) => {
@@ -5130,7 +5727,7 @@ export default function ContainerDetailPage() {
             }}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'middlePackQuantity', event)}
           />
-        ) : renderNumericCell(row.中包数 ?? '--')
+        )) : renderConcurrentEditableField(row, '中包数', renderNumericCell(row.中包数 ?? '--'))
       },
     },
     {
@@ -5155,8 +5752,9 @@ export default function ContainerDetailPage() {
           row.hguid,
           '进口价格',
         )
+        const concurrencyConflict = resolveConcurrencyConflict(row, '进口价格')
         return access.canEditContainer
-          ? renderImportPriceCell(row, (
+          ? renderConcurrentEditableField(row, '进口价格', renderImportPriceCell(row, (
             <InputNumber
               ref={(cell) => setEditableCellRef(rowKey(row), 'importPrice', cell)}
               value={row.进口价格}
@@ -5166,17 +5764,17 @@ export default function ContainerDetailPage() {
               precision={2}
               controls={false}
               style={{ width: 78 }}
-              status={saveFailure ? 'error' : undefined}
-              aria-invalid={Boolean(saveFailure)}
-              aria-label={saveFailure
-                ? `${t('containers.fields.importPrice')}：${saveFailure.message}`
+              status={saveFailure || concurrencyConflict ? 'error' : undefined}
+              aria-invalid={Boolean(saveFailure || concurrencyConflict)}
+              aria-label={saveFailure || concurrencyConflict
+                ? `${t('containers.fields.importPrice')}：${concurrencyConflict?.message ?? saveFailure?.message}`
                 : t('containers.fields.importPrice')}
-              title={saveFailure?.message}
+              title={concurrencyConflict?.message ?? saveFailure?.message}
               onChange={(value) => markPendingDetailPatch(row, { 进口价格: value == null ? undefined : Number(value) })}
               onKeyDown={(event) => handleEditableCellKeyDown(row, 'importPrice', event)}
             />
-          ))
-          : renderImportPriceCell(row)
+          )))
+          : renderConcurrentEditableField(row, '进口价格', renderImportPriceCell(row))
       },
     },
     {
@@ -5192,7 +5790,8 @@ export default function ContainerDetailPage() {
           row.hguid,
           '贴牌价格',
         )
-        return access.canEditContainer ? (
+        const concurrencyConflict = resolveConcurrencyConflict(row, '贴牌价格')
+        return access.canEditContainer ? renderConcurrentEditableField(row, '贴牌价格', (
           <InputNumber
             ref={(cell) => setEditableCellRef(rowKey(row), 'oemPrice', cell)}
             value={getContainerDetailVisibleOemPrice(row)}
@@ -5202,16 +5801,16 @@ export default function ContainerDetailPage() {
             precision={2}
             controls={false}
             style={{ width: 78 }}
-            status={saveFailure ? 'error' : undefined}
-            aria-invalid={Boolean(saveFailure)}
-            aria-label={saveFailure
-              ? `${t('containers.fields.oemPrice')}：${saveFailure.message}`
+            status={saveFailure || concurrencyConflict ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure || concurrencyConflict)}
+            aria-label={saveFailure || concurrencyConflict
+              ? `${t('containers.fields.oemPrice')}：${concurrencyConflict?.message ?? saveFailure?.message}`
               : t('containers.fields.oemPrice')}
-            title={saveFailure?.message}
+            title={concurrencyConflict?.message ?? saveFailure?.message}
             onChange={(value) => markPendingDetailPatch(row, { 贴牌价格: value == null ? undefined : Number(value) })}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'oemPrice', event)}
           />
-        ) : renderOemPriceCell(row)
+        )) : renderConcurrentEditableField(row, '贴牌价格', renderOemPriceCell(row))
       },
     },
     {
@@ -5310,17 +5909,18 @@ export default function ContainerDetailPage() {
       render: (_, row) => {
         const key = rowKey(row)
         const saveFailure = getAutoSaveFailure(row, '商品名称')
+        const concurrencyConflict = resolveConcurrencyConflict(row, '商品名称')
         if (access.canEditContainer && editingProductNameRowKey === key) {
-          return (
+          return renderConcurrentEditableField(row, '商品名称', (
             <Input.TextArea
               autoFocus
               className="container-detail-product-name-input"
               value={editingProductNameValue}
               autoSize={{ minRows: 1, maxRows: 2 }}
               style={{ resize: 'none' }}
-              status={saveFailure ? 'error' : undefined}
-              aria-invalid={Boolean(saveFailure)}
-              title={saveFailure?.message}
+              status={saveFailure || concurrencyConflict ? 'error' : undefined}
+              aria-invalid={Boolean(saveFailure || concurrencyConflict)}
+              title={concurrencyConflict?.message ?? saveFailure?.message}
               onChange={(event) => setEditingProductNameValue(event.target.value)}
               onBlur={() => handleProductNameEditBlur(row)}
               onKeyDown={(event) => {
@@ -5335,22 +5935,23 @@ export default function ContainerDetailPage() {
                 }
               }}
             />
-          )
+          ))
         }
 
-        return (
+        return renderConcurrentEditableField(row, '商品名称', (
           <div
             className={[
               access.canEditContainer ? 'container-detail-product-name-editable' : '',
               saveFailure ? 'container-detail-auto-save-failed' : '',
+              concurrencyConflict ? 'container-detail-concurrent-field-input' : '',
             ].filter(Boolean).join(' ') || undefined}
-            aria-invalid={Boolean(saveFailure)}
-            title={saveFailure?.message}
+            aria-invalid={Boolean(saveFailure || concurrencyConflict)}
+            title={concurrencyConflict?.message ?? saveFailure?.message}
             onDoubleClick={() => startEditingProductName(row)}
           >
             <TwoLineText value={getContainerDetailProductName(row)} />
           </div>
-        )
+        ))
       },
     },
     {
@@ -5373,7 +5974,7 @@ export default function ContainerDetailPage() {
               ? t('containers.messages.selectedProductsMissingCode')
               : ''
 
-        return access.canEditContainer ? (
+        return access.canEditContainer ? renderConcurrentEditableField(row, 'IsActive', (
           <Tooltip title={warehouseStatusDisabledMessage}>
             <Switch
               size="small"
@@ -5385,9 +5986,9 @@ export default function ContainerDetailPage() {
               onChange={(checked) => void handleWarehouseStatusChange(row, checked)}
             />
           </Tooltip>
-        ) : (
+        )) : renderConcurrentEditableField(row, 'IsActive', (
           <Tag color={isActive ? 'success' : 'default'}>{isActive ? t('common.activeUpper') : t('common.inactiveUpper')}</Tag>
-        )
+        ))
       },
     },
     {
@@ -5397,18 +5998,19 @@ export default function ContainerDetailPage() {
       ...textFilterProps('remark', t('containers.placeholders.filterRemark', '备注过滤')),
       render: (_, row) => {
         const saveFailure = getAutoSaveFailure(row, '备注')
-        return access.canEditContainer ? (
+        const concurrencyConflict = resolveConcurrencyConflict(row, '备注')
+        return access.canEditContainer ? renderConcurrentEditableField(row, '备注', (
           <Input
             ref={(cell) => setEditableCellRef(rowKey(row), 'remark', cell)}
             value={row.备注 ?? ''}
-            status={saveFailure ? 'error' : undefined}
-            aria-invalid={Boolean(saveFailure)}
-            title={saveFailure?.message}
+            status={saveFailure || concurrencyConflict ? 'error' : undefined}
+            aria-invalid={Boolean(saveFailure || concurrencyConflict)}
+            title={concurrencyConflict?.message ?? saveFailure?.message}
             onChange={(event) => patchAutoSaveRow(row, { 备注: event.target.value })}
             onBlur={(event) => void saveRowPatch(row, { 备注: event.target.value }).catch(handleDetailSaveError)}
             onKeyDown={(event) => handleEditableCellKeyDown(row, 'remark', event)}
           />
-        ) : row.备注 || '--'
+        )) : renderConcurrentEditableField(row, '备注', row.备注 || '--')
       },
     },
   ]
@@ -6041,6 +6643,21 @@ export default function ContainerDetailPage() {
                     </Space>
                   </div>
 
+                  {editingPresenceAvailable && (editingPresence.viewers.length > 0 || editingPresence.editors.length > 0) ? (
+                    <Space size={6} wrap className="container-detail-editing-presence" aria-live="polite">
+                      {editingPresence.viewers.length > 0 ? (
+                        <Typography.Text type="secondary" title={getContainerDetailPresenceTitle(editingPresence.viewers)}>
+                          {t('containers.text.otherViewers', '正在查看：{{names}}', { names: editingPresence.viewers.map((user) => formatContainerDetailPresenceUser(user)).join('、') })}
+                        </Typography.Text>
+                      ) : null}
+                      {editingPresence.editors.length > 0 ? (
+                        <Typography.Text type="warning" title={getContainerDetailPresenceTitle(editingPresence.editors)}>
+                          {t('containers.text.otherEditors', '正在编辑：{{names}}', { names: editingPresence.editors.map((user) => formatContainerDetailPresenceUser(user)).join('、') })}
+                        </Typography.Text>
+                      ) : null}
+                    </Space>
+                  ) : null}
+
                   {access.canEditContainer ? (
                     <Space wrap size={[6, 6]} className="container-detail-bulk-row">
                       <Button
@@ -6106,6 +6723,11 @@ export default function ContainerDetailPage() {
                           </Button>
                         </Space>
                       ) : null}
+                      {hasPendingConcurrencyConflicts ? (
+                        <Button size="small" danger onClick={() => setConflictDrawerOpen(true)}>
+                          {t('containers.actions.reviewConcurrencyConflicts', '并发冲突 {{count}} 项', { count: pendingDetailConflicts.length })}
+                        </Button>
+                      ) : null}
                     </Space>
                   ) : null}
 
@@ -6127,7 +6749,16 @@ export default function ContainerDetailPage() {
                 </div>
               </div>
 
-              <div ref={setTableRegionElement} className="container-detail-table-region">
+              <div
+                ref={setTableRegionElement}
+                className="container-detail-table-region"
+                onFocusCapture={() => setIsContainerDetailFieldFocused(true)}
+                onBlurCapture={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                    setIsContainerDetailFieldFocused(false)
+                  }
+                }}
+              >
                 <DndContext sensors={columnDragSensors} collisionDetection={closestCenter} onDragEnd={handleColumnDragEnd}>
                   <SortableContext items={columnOrder} strategy={horizontalListSortingStrategy}>
                     <MeasuredTable metricId="warehouse.container-detail.table-1"
@@ -6209,6 +6840,38 @@ export default function ContainerDetailPage() {
           />
         </Space>
       </Modal>
+      <Drawer
+        title={t('containers.modals.concurrencyConflictsTitle', '货柜明细并发冲突')}
+        open={conflictDrawerOpen}
+        onClose={() => setConflictDrawerOpen(false)}
+        width={480}
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          {pendingDetailConflicts.length > 1 ? (
+            <Space wrap>
+              <Button size="small" onClick={() => void acceptAllServerConflicts()}>
+                {t('containers.actions.useAllServerValues', '批量采用服务器值')}
+              </Button>
+              <Button size="small" danger onClick={keepAllMineConflicts}>
+                {t('containers.actions.keepAllMyValues', '批量保留我的值')}
+              </Button>
+            </Space>
+          ) : null}
+          {pendingDetailConflicts.map((conflict) => (
+            <Card size="small" key={`${conflict.hguid}:${conflict.field}`}>
+              <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                <Typography.Text strong>{conflict.field}</Typography.Text>
+                <Typography.Text type="secondary">{t('containers.text.serverValue', '服务器值')}：{String(conflict.serverValue ?? '--')}</Typography.Text>
+                <Typography.Text>{t('containers.text.myValue', '我的值')}：{String(conflict.submittedValue ?? '--')}</Typography.Text>
+                <Space>
+                  <Button size="small" onClick={() => void acceptServerConflict(conflict)}>{t('containers.actions.useServerValue', '采用服务器值')}</Button>
+                  <Button size="small" danger onClick={() => keepMineConflict(conflict)}>{t('containers.actions.keepMyValue', '保留我的值')}</Button>
+                </Space>
+              </Space>
+            </Card>
+          ))}
+        </Space>
+      </Drawer>
       <WarehouseProductChangeHistoryDrawer
         open={Boolean(changeHistoryProduct)}
         productCode={changeHistoryProduct?.productCode}

@@ -329,6 +329,44 @@
   width: 100%;
 }
 
+/* 在线状态仅作协作提醒，保持一行紧凑，不挤占大表格的主要编辑空间。 */
+.container-detail-editing-presence {
+  min-width: 0;
+  padding: 2px 6px;
+  border-left: 2px solid #faad14;
+  background: #fffbe6;
+  white-space: nowrap;
+}
+
+/* 冲突仅标记对应字段，避免在高密度表格中把整行染红而掩盖其他可安全合并的编辑。 */
+.container-detail-concurrent-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  max-width: 100%;
+  padding: 1px;
+  border: 1px solid #ff4d4f;
+  border-radius: 3px;
+  background: #fff2f0;
+}
+
+.container-detail-concurrent-field .ant-input,
+.container-detail-concurrent-field .ant-input-number {
+  min-width: 0;
+}
+
+.container-detail-concurrent-field-badge {
+  flex: 0 0 auto;
+  color: #cf1322;
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.container-detail-concurrent-field-input {
+  outline: 1px solid #ff4d4f;
+}
+
 .container-detail-export-progress {
   display: grid;
   gap: 2px;

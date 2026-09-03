@@ -64,6 +64,26 @@ namespace BlazorApp.Api.Services.React
             string updatedBy
         ) => ExecuteLockedAsync(lockScope, productCodes, storeCodes, updatedBy, includeGlobal: true);
 
+        /// <summary>
+        /// 复用正式重算的同一算法在既有 app lock/事务内做无写入核验。
+        /// 用于货柜保存的丢响应重试：只有所有套装/多码成本均已是提交后应有值时才允许幂等成功。
+        /// </summary>
+        internal async Task<SetChildPurchasePriceWritebackResultDto> PreviewLockedAsync(
+            SetChildPurchasePriceLockScope lockScope,
+            IEnumerable<string?> productCodes
+        )
+        {
+            var normalizedProducts = NormalizeCodes(productCodes);
+            lockScope.EnsureCovers(_db, normalizedProducts);
+            return await ExecuteCoreAsync(
+                new SetChildPurchasePriceWritebackRequestDto { ProductCodes = normalizedProducts },
+                dryRun: true,
+                updatedBy: null,
+                includeGlobal: true,
+                includeStores: true
+            );
+        }
+
         internal Task<SetChildPurchasePriceWritebackResultDto> RecalculateGlobalLockedAsync(
             SetChildPurchasePriceLockScope lockScope,
             IEnumerable<string?> productCodes,

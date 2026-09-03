@@ -1,12 +1,19 @@
 import {
   alignDomesticProductCode,
+  assignContainerDetailCategoryByScope,
   batchUpdateDetails,
+  deleteContainerDetailsByScope,
+  getContainerDetailEditingPresence,
+  heartbeatContainerDetailEditingPresence,
+  leaveContainerDetailEditingPresence,
+  previewContainerDetailAction,
   createContainer,
   getComingSoonContainerProducts,
   getComingSoonContainerSummaries,
   getContainerDomesticSetCodes,
   queryContainerProducts,
   recalculateContainerCostsByScope,
+  setContainerDetailStatusByScope,
   syncContainersFromHq,
   translateHqProductNamesByContainerNumber,
   updateContainerDomesticSetCodePrices,
@@ -155,6 +162,14 @@ try {
       备注: '连续编辑后的备注',
       ProductCategoryGUID: 'CAT-TARGET',
       SkipRelatedProductSync: true,
+      expectedServerFieldTokens: {
+        '英文名称': 'baseline-english',
+        '中包数': 'baseline-middle-pack',
+        '备注': 'baseline-remark',
+      },
+      overrideAcknowledgements: {
+        '备注': 'current-remark',
+      },
     },
   ]
   const detailUpdateResult = await batchUpdateDetails('container-123', detailUpdates)
@@ -167,8 +182,8 @@ try {
   assertEqual(capturedInit?.method, 'POST', 'batchUpdateDetails should use POST')
   assertDeepEqual(
     JSON.parse(String(capturedInit?.body)),
-    [{ HGUID: 'D-CLEAR-EN', ClearEnglishName: true, ProductCategoryGUID: 'CAT-TARGET', 中包数: 12, 备注: '连续编辑后的备注', SkipRelatedProductSync: true }],
-    'batchUpdateDetails 应发送备注等显式字段，货柜范围由路径约束',
+    [{ HGUID: 'D-CLEAR-EN', ClearEnglishName: true, ProductCategoryGUID: 'CAT-TARGET', 中包数: 12, 备注: '连续编辑后的备注', SkipRelatedProductSync: true, ExpectedServerFieldTokens: { '英文名称': 'baseline-english', '中包数': 'baseline-middle-pack', '备注': 'baseline-remark' }, OverrideAcknowledgements: { '备注': 'current-remark' } }],
+    'batchUpdateDetails 应发送字段令牌和备注等显式字段，货柜范围由路径约束',
   )
   assertDeepEqual(
     detailUpdateResult.validationErrors,
@@ -188,6 +203,109 @@ try {
     { autoRepairedStoreGroupCount: 2, autoRepairedRelationCount: 3 },
     'batchUpdateDetails should preserve optional set and multi-code auto-repair statistics',
   )
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        totalUpdated: 0,
+        totalRequested: 1,
+        validationErrors: [],
+        conflicts: [{
+          hguid: 'D-CONFLICT',
+          field: '进口价格',
+          serverValue: 4.8,
+          submittedValue: 4.2,
+          currentServerFieldToken: 'current-import',
+          code: 'CONCURRENT_FIELD_UPDATE',
+        }],
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  const conflictResult = await batchUpdateDetails('container-123', [{
+    hguid: 'D-CONFLICT',
+    进口价格: 4.2,
+    expectedServerFieldTokens: { '进口价格': 'baseline-import' },
+  }])
+  assertDeepEqual(
+    conflictResult.conflicts,
+    [{
+      hguid: 'D-CONFLICT',
+      field: '进口价格',
+      serverValue: 4.8,
+      submittedValue: 4.2,
+      currentServerFieldToken: 'current-import',
+      code: 'CONCURRENT_FIELD_UPDATE',
+    }],
+    'batchUpdateDetails 应保留字段级并发冲突，不得当作网络失败或清除草稿',
+  )
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+    return new Response(JSON.stringify({
+      success: true,
+      data: {
+        previewToken: 'preview-token',
+        affectedCount: 2,
+        fieldSummary: ['进口价格', '调整浮率'],
+        expiresAt: '2026-09-03T00:05:00Z',
+      },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  const preview = await previewContainerDetailAction('container-123', {
+    operation: 'apply-prices',
+    scope: { selectedHguids: ['D-1', 'D-2'] },
+    parameters: { importPrice: 4.2 },
+  })
+  assertEqual(capturedUrl, '/api/react/v1/containers/container-123/actions/preview', '批量预览应使用货柜范围路由')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    { operation: 'apply-prices', scope: { selectedHguids: ['D-1', 'D-2'] }, parameters: { importPrice: 4.2 } },
+    '批量预览必须发送操作、范围与参数，供服务端签名',
+  )
+  assertDeepEqual(preview, {
+    previewToken: 'preview-token',
+    affectedCount: 2,
+    fieldSummary: ['进口价格', '调整浮率'],
+    expiresAt: '2026-09-03T00:05:00Z',
+  }, '批量预览应保留服务端范围摘要和短期令牌')
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+    return new Response(JSON.stringify({ success: true, data: { totalDeleted: 2, totalRequested: 2 } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+  const deleteResult = await deleteContainerDetailsByScope('container-123', { selectedHguids: ['D-1', 'D-2'] }, 'preview-delete')
+  assertEqual(capturedUrl, '/api/react/v1/containers/container-123/actions/delete-details', '批量删除应使用货柜范围动作路由')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    { selectedHguids: ['D-1', 'D-2'], previewToken: 'preview-delete' },
+    '批量删除必须携带必填 previewToken，并保留既有根级 scope 形状',
+  )
+  assertDeepEqual(deleteResult, { totalDeleted: 2, totalRequested: 2 }, '批量删除应只返回经过整数验证的统计结果')
+
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    capturedUrl = String(input)
+    capturedInit = init
+    return new Response(JSON.stringify({ success: true, data: { viewers: [{ userGuid: 'U-2', userName: 'Alice', lastActiveAt: '2026-09-03T00:00:00Z' }], editors: [] } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as typeof fetch
+  const presence = await getContainerDetailEditingPresence('container-123')
+  assertEqual(capturedUrl, '/api/react/v1/containers/container-123/editing-presence', '活动用户查询应绑定货柜范围')
+  assertEqual(presence.viewers[0]?.userName, 'Alice', '活动用户查询应规范化查看者')
+  await heartbeatContainerDetailEditingPresence('container-123', { clientSessionId: 'session-1', state: 'editing' })
+  assertEqual(capturedUrl, '/api/react/v1/containers/container-123/editing-presence/heartbeat', '心跳应使用货柜范围路由')
+  assertDeepEqual(JSON.parse(String(capturedInit?.body)), { clientSessionId: 'session-1', state: 'editing' }, '心跳应上报客户端会话和编辑状态')
+  await leaveContainerDetailEditingPresence('container-123', { clientSessionId: 'session-1' })
+  assertEqual(capturedUrl, '/api/react/v1/containers/container-123/editing-presence/leave', '离开应使用最佳努力货柜范围路由')
 
   globalThis.fetch = (async () => new Response(JSON.stringify({
     data: {
@@ -440,7 +558,7 @@ try {
       pageSize: 50,
       selectedTags: [],
     },
-  })
+  }, 'preview-recalculate')
 
   assertEqual(
     capturedUrl,
@@ -457,6 +575,7 @@ try {
         pageSize: 50,
         selectedTags: [],
       },
+      previewToken: 'preview-recalculate',
     },
     'recalculateContainerCostsByScope 应原样发送整柜 query scope',
   )
@@ -464,6 +583,21 @@ try {
     recalculateResult,
     { totalUpdated: 87, totalRequested: 87 },
     'recalculateContainerCostsByScope 应返回后端更新统计',
+  )
+
+  await setContainerDetailStatusByScope('WHOLE-CONTAINER-GUID', { selectedHguids: ['D-1'] }, false, 'preview-status')
+  assertEqual(capturedUrl, '/api/react/v1/containers/WHOLE-CONTAINER-GUID/actions/set-status', '上下架必须使用货柜范围并发保护动作')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    { selectedHguids: ['D-1'], isActive: false, previewToken: 'preview-status' },
+    '上下架执行必须保留 root-level scope 并携带必填 previewToken',
+  )
+  await assignContainerDetailCategoryByScope('WHOLE-CONTAINER-GUID', { selectedHguids: ['D-1'] }, 'CATEGORY-1', 'preview-category')
+  assertEqual(capturedUrl, '/api/react/v1/containers/WHOLE-CONTAINER-GUID/actions/assign-category', '分类必须使用货柜范围并发保护动作')
+  assertDeepEqual(
+    JSON.parse(String(capturedInit?.body)),
+    { selectedHguids: ['D-1'], categoryGuid: 'CATEGORY-1', previewToken: 'preview-category' },
+    '分类执行必须保留 root-level scope 并携带必填 previewToken',
   )
 
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {

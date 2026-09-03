@@ -1,9 +1,11 @@
 import type { UpdateContainerDetailRequest } from '../../../types/container'
 import {
+  CONTAINER_DETAIL_DRAFT_FIELDS,
   CONTAINER_DETAIL_ENGLISH_NAME_FIELD,
   clearSavedPendingContainerDetailFields,
   mergePendingContainerDetailPatch,
   normalizeContainerDetailEnglishNameForSave,
+  getSubmittedContainerDetailFields,
   type ContainerDetailSaveValidationError,
   type PendingContainerDetailPatch,
   type PendingContainerDetailPatchMap,
@@ -11,8 +13,21 @@ import {
 
 export const CONTAINER_DETAIL_DRAFT_TTL_MS = 7 * 24 * 60 * 60 * 1000
 export const CONTAINER_DETAIL_DRAFT_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000
-const CONTAINER_DETAIL_DRAFT_SCHEMA_VERSION = 2
+/** v2 整体草稿没有字段基线；该值永不可能等于服务器指纹，只允许显式覆盖后写入。 */
+export const CONTAINER_DETAIL_LEGACY_BASELINE_TOKEN = '__HB_CONTAINER_DETAIL_LEGACY_BASELINE__'
+const CONTAINER_DETAIL_DRAFT_SCHEMA_VERSION = 3
 const CONTAINER_DETAIL_DRAFT_STORAGE_PREFIX = 'hb.containerDetailDraft.v2'
+const numericDraftFields = new Set<string>([
+  '调整浮率', '国内价格', '进口价格', '运输成本', '贴牌价格', '单件装箱数',
+  '中包数', '单件体积', '装柜数量', '合计装柜体积', '合计装柜金额',
+])
+const booleanDraftFields = new Set<string>(['IsActive'])
+
+function isValidStoredDraftFieldValue(field: string, value: unknown) {
+  if (numericDraftFields.has(field)) return typeof value === 'number' && Number.isFinite(value)
+  if (booleanDraftFields.has(field)) return typeof value === 'boolean'
+  return typeof value === 'string'
+}
 
 export interface ContainerDetailDraftStorage {
   getItem: (key: string) => string | null
@@ -29,6 +44,8 @@ export interface ContainerDetailDraftState {
   failures: ContainerDetailDraftFailureMap
   /** 每个待保存字段的写入版本，用于避免旧保存响应删掉新编辑。 */
   fieldVersions?: Record<string, string>
+  /** 每个字段开始编辑时观察到的服务端令牌；刷新后仍能拒绝静默覆盖。 */
+  fieldBaselineTokens?: Record<string, string>
 }
 
 export interface RestoredContainerDetailDraft extends ContainerDetailDraftState {
@@ -42,6 +59,7 @@ interface StoredContainerDetailDraftField {
   hguid: string
   field: string
   value: string | number | boolean
+  baselineToken?: string
   failure?: ContainerDetailSaveValidationError
 }
 
@@ -69,12 +87,13 @@ function enumerateContainerDetailDraftStorageKeys(
 }
 
 function getPatchFieldValue(patch: PendingContainerDetailPatch, field: string): string | number | boolean | undefined {
-  if (field === '进口价格') return patch.进口价格
-  if (field === '贴牌价格') return patch.贴牌价格
   if (field === CONTAINER_DETAIL_ENGLISH_NAME_FIELD) {
     return patch.ClearEnglishName === true ? true : patch.英文名称
   }
-  return undefined
+  const value = patch[field as keyof PendingContainerDetailPatch]
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+    ? value
+    : undefined
 }
 
 function makeDraftFieldVersion(updatedAt: number) {
@@ -125,6 +144,65 @@ export function captureContainerDetailDraftFieldVersions(
     })
     return snapshot
   }, {})
+}
+
+/** 按本次提交的字段从本地草稿快照提取服务端基线令牌。 */
+export function captureContainerDetailDraftFieldBaselineTokens(
+  fieldBaselineTokens: Record<string, string> | undefined,
+  updates: UpdateContainerDetailRequest[],
+) {
+  return updates.reduce<Record<string, Record<string, string>>>((result, update) => {
+    const tokens = getSubmittedFields(update).reduce<Record<string, string>>((next, field) => {
+      const token = fieldBaselineTokens?.[getFieldVersionKey(update.hguid, field)]
+      // 旧 v2 草稿没有基线，必须强制走冲突/明确覆盖，绝不能把当前服务器令牌伪装为首次编辑基线。
+      next[field] = token || CONTAINER_DETAIL_LEGACY_BASELINE_TOKEN
+      return next
+    }, {})
+    if (Object.keys(tokens).length) result[update.hguid] = tokens
+    return result
+  }, {})
+}
+
+/**
+ * 强制覆盖确认只对用户当时看到的草稿版本有效。首次编辑基线不能前移，
+ * 否则服务端会把覆盖误判成普通更新，无法记录强制覆盖审计。
+ */
+export type ContainerDetailVersionedOverrideAcknowledgement = {
+  token: string
+  fieldVersion: string
+}
+
+export function buildContainerDetailOverrideAcknowledgements(
+  updates: UpdateContainerDetailRequest[],
+  expectedServerFieldTokens: Record<string, Record<string, string>>,
+  fieldVersions: Record<string, string>,
+  acknowledgements: Record<string, ContainerDetailVersionedOverrideAcknowledgement>,
+) {
+  return updates.reduce<Record<string, Record<string, string>>>((result, update) => {
+    const rowAcknowledgements = getSubmittedFields(update).reduce<Record<string, string>>((next, field) => {
+      const key = getFieldVersionKey(update.hguid, field)
+      const acknowledgement = acknowledgements[key]
+      // 草稿被再次编辑、没有编辑基线时，旧确认绝不能进入新的请求。
+      if (expectedServerFieldTokens[update.hguid]?.[field]
+        && acknowledgement?.fieldVersion === fieldVersions[key]) {
+        next[field] = acknowledgement.token
+      }
+      return next
+    }, {})
+    if (Object.keys(rowAcknowledgements).length) result[update.hguid] = rowAcknowledgements
+    return result
+  }, {})
+}
+
+export function clearContainerDetailOverrideAcknowledgements(
+  acknowledgements: Record<string, ContainerDetailVersionedOverrideAcknowledgement>,
+  fieldVersions: Record<string, string>,
+) {
+  const next = { ...acknowledgements }
+  Object.entries(fieldVersions).forEach(([key, fieldVersion]) => {
+    if (next[key]?.fieldVersion === fieldVersion) delete next[key]
+  })
+  return next
 }
 
 export function captureSuccessfullySavedContainerDetailDraftFieldVersions(
@@ -270,6 +348,7 @@ export function mergeContainerDetailDraftNewerFields(
   const pendingPatches = { ...current.pendingPatches }
   const failures = { ...current.failures }
   const fieldVersions = { ...(current.fieldVersions ?? {}) }
+  const fieldBaselineTokens = { ...(current.fieldBaselineTokens ?? {}) }
   newerFieldVersionKeys.forEach((fieldVersionKey) => {
     const separatorIndex = fieldVersionKey.lastIndexOf(':')
     if (separatorIndex <= 0) return
@@ -279,8 +358,9 @@ export function mergeContainerDetailDraftNewerFields(
     const value = restoredPatch ? getPatchFieldValue(restoredPatch, field) : undefined
     if (value === undefined || !restored.fieldVersions?.[fieldVersionKey]) return
     const nextPatch = { ...(pendingPatches[hguid] ?? { hguid }) }
-    if (field === '进口价格') nextPatch.进口价格 = value as number
-    if (field === '贴牌价格') nextPatch.贴牌价格 = value as number
+    if (CONTAINER_DETAIL_DRAFT_FIELDS.includes(field as typeof CONTAINER_DETAIL_DRAFT_FIELDS[number])) {
+      nextPatch[field as typeof CONTAINER_DETAIL_DRAFT_FIELDS[number]] = value as never
+    }
     if (field === CONTAINER_DETAIL_ENGLISH_NAME_FIELD) {
       delete nextPatch.英文名称
       delete nextPatch.ClearEnglishName
@@ -289,6 +369,8 @@ export function mergeContainerDetailDraftNewerFields(
     }
     pendingPatches[hguid] = nextPatch
     fieldVersions[fieldVersionKey] = restored.fieldVersions[fieldVersionKey]
+    const restoredToken = restored.fieldBaselineTokens?.[fieldVersionKey]
+    if (restoredToken) fieldBaselineTokens[fieldVersionKey] = restoredToken
     delete failures[getFailureKey(hguid, field)]
     delete failures[getFailureKey(hguid, '*')]
     const restoredFailure = restored.failures[getFailureKey(hguid, field)]
@@ -298,6 +380,7 @@ export function mergeContainerDetailDraftNewerFields(
     pendingPatches,
     failures: reconcileContainerDetailDraftFailures(failures, pendingPatches),
     fieldVersions,
+    fieldBaselineTokens,
   }
 }
 
@@ -305,15 +388,7 @@ function emptyContainerDetailDraft(): RestoredContainerDetailDraft {
   return { pendingPatches: {}, failures: {}, restored: false }
 }
 
-function getSubmittedFields(update: UpdateContainerDetailRequest) {
-  const fields: string[] = []
-  if ('进口价格' in update) fields.push('进口价格')
-  if ('贴牌价格' in update) fields.push('贴牌价格')
-  if ('英文名称' in update || update.ClearEnglishName === true) {
-    fields.push(CONTAINER_DETAIL_ENGLISH_NAME_FIELD)
-  }
-  return fields
-}
+const getSubmittedFields = getSubmittedContainerDetailFields
 
 function getFailureKey(hguid: string, field: string) {
   return `${hguid}:${field}`
@@ -321,12 +396,7 @@ function getFailureKey(hguid: string, field: string) {
 
 function hasPendingField(patch: PendingContainerDetailPatch | undefined, field: string) {
   if (!patch) return false
-  if (field === '进口价格') return patch.进口价格 != null
-  if (field === '贴牌价格') return patch.贴牌价格 != null
-  if (field === CONTAINER_DETAIL_ENGLISH_NAME_FIELD) {
-    return patch.英文名称 !== undefined || patch.ClearEnglishName === true
-  }
-  return false
+  return getPatchFieldValue(patch, field) !== undefined
 }
 
 function isCurrentPendingValue(
@@ -335,14 +405,12 @@ function isCurrentPendingValue(
   field: string,
 ) {
   if (!patch || !hasPendingField(patch, field)) return false
-  if (field === '进口价格') return patch.进口价格 === update.进口价格
-  if (field === '贴牌价格') return patch.贴牌价格 === update.贴牌价格
   if (field === CONTAINER_DETAIL_ENGLISH_NAME_FIELD) {
     if (update.ClearEnglishName === true) return patch.ClearEnglishName === true
     return patch.英文名称 !== undefined
       && normalizeContainerDetailEnglishNameForSave(patch.英文名称) === update.英文名称
   }
-  return false
+  return getPatchFieldValue(patch, field) === update[field as keyof UpdateContainerDetailRequest]
 }
 
 function normalizeStoredFailure(value: unknown): ContainerDetailSaveValidationError | null {
@@ -402,6 +470,7 @@ export function readContainerDetailDraft(
     const pendingPatches: PendingContainerDetailPatchMap = {}
     const failures: ContainerDetailDraftFailureMap = {}
     const fieldVersions: Record<string, string> = {}
+    const fieldBaselineTokens: Record<string, string> = {}
     enumerateContainerDetailDraftStorageKeys(storage, userGuid, containerGuid).forEach((key) => {
       const raw = storage.getItem(key)
       if (!raw) return
@@ -412,7 +481,7 @@ export function readContainerDetailDraft(
           || now - stored.updatedAt > CONTAINER_DETAIL_DRAFT_TTL_MS
           || stored.updatedAt > now + CONTAINER_DETAIL_DRAFT_MAX_FUTURE_SKEW_MS
         if (
-          stored.schemaVersion !== CONTAINER_DETAIL_DRAFT_SCHEMA_VERSION
+          (stored.schemaVersion !== 2 && stored.schemaVersion !== CONTAINER_DETAIL_DRAFT_SCHEMA_VERSION)
           || expired
           || typeof stored.version !== 'string'
           || !stored.version
@@ -425,13 +494,14 @@ export function readContainerDetailDraft(
           return
         }
         const patch: PendingContainerDetailPatch = { hguid: stored.hguid }
-        if (stored.field === '进口价格' && typeof stored.value === 'number' && Number.isFinite(stored.value)) {
-          patch.进口价格 = stored.value
-        } else if (stored.field === '贴牌价格' && typeof stored.value === 'number' && Number.isFinite(stored.value)) {
-          patch.贴牌价格 = stored.value
-        } else if (stored.field === CONTAINER_DETAIL_ENGLISH_NAME_FIELD) {
+        if (stored.field === CONTAINER_DETAIL_ENGLISH_NAME_FIELD) {
           if (stored.value === true) patch.ClearEnglishName = true
           else if (typeof stored.value === 'string') patch.英文名称 = stored.value
+        } else if (
+          CONTAINER_DETAIL_DRAFT_FIELDS.includes(stored.field as typeof CONTAINER_DETAIL_DRAFT_FIELDS[number])
+          && isValidStoredDraftFieldValue(stored.field, stored.value)
+        ) {
+          patch[stored.field as typeof CONTAINER_DETAIL_DRAFT_FIELDS[number]] = stored.value as never
         }
         if (!hasPendingField(patch, stored.field)) {
           storage.removeItem(key)
@@ -439,6 +509,9 @@ export function readContainerDetailDraft(
         }
         pendingPatches[stored.hguid] = mergePendingContainerDetailPatch(pendingPatches, patch)[stored.hguid]
         fieldVersions[getFieldVersionKey(stored.hguid, stored.field)] = stored.version
+        if (typeof stored.baselineToken === 'string' && stored.baselineToken) {
+          fieldBaselineTokens[getFieldVersionKey(stored.hguid, stored.field)] = stored.baselineToken
+        }
         const failure = normalizeStoredFailure(stored.failure)
         if (failure && failure.hguid === stored.hguid && failure.field === stored.field) {
           failures[getFailureKey(failure.hguid, failure.field)] = failure
@@ -449,7 +522,7 @@ export function readContainerDetailDraft(
     })
     const reconciledFailures = reconcileContainerDetailDraftFailures(failures, pendingPatches)
     return countPendingContainerDetailFields(pendingPatches) > 0
-      ? { pendingPatches, failures: reconciledFailures, fieldVersions, restored: true }
+      ? { pendingPatches, failures: reconciledFailures, fieldVersions, fieldBaselineTokens, restored: true }
       : emptyContainerDetailDraft()
   } catch {
     // localStorage 被浏览器策略禁用时仅降级为内存草稿。
@@ -494,6 +567,7 @@ export function writeContainerDetailDraft(
           hguid: patch.hguid,
           field,
           value,
+          baselineToken: state.fieldBaselineTokens?.[fieldKey],
           failure: failures[getFailureKey(patch.hguid, field)],
         }
         storage.setItem(
@@ -539,12 +613,10 @@ export function clearContainerDetailDraft(
 }
 
 export function countPendingContainerDetailFields(pendingPatches: PendingContainerDetailPatchMap) {
-  return Object.values(pendingPatches).reduce((count, patch) => (
-    count
-    + (patch.进口价格 != null ? 1 : 0)
-    + (patch.贴牌价格 != null ? 1 : 0)
-    + (patch.英文名称 !== undefined || patch.ClearEnglishName === true ? 1 : 0)
-  ), 0)
+  return Object.values(pendingPatches).reduce(
+    (count, patch) => count + getSubmittedFields(patch).length,
+    0,
+  )
 }
 
 export function scopeContainerDetailRowsToContainer<TRow>(
@@ -605,7 +677,12 @@ export function settleContainerDetailDraftSaveSuccess(
   })
 
   failures = reconcileContainerDetailDraftFailures(failures, pendingPatches)
-  return { pendingPatches, failures }
+  return {
+    pendingPatches,
+    failures,
+    fieldVersions: current.fieldVersions,
+    fieldBaselineTokens: current.fieldBaselineTokens,
+  }
 }
 
 export function markContainerDetailDraftSaveFailure(
@@ -626,5 +703,10 @@ export function markContainerDetailDraftSaveFailure(
       }
     })
   })
-  return { pendingPatches, failures: reconcileContainerDetailDraftFailures(failures, pendingPatches) }
+  return {
+    pendingPatches,
+    failures: reconcileContainerDetailDraftFailures(failures, pendingPatches),
+    fieldVersions: current.fieldVersions,
+    fieldBaselineTokens: current.fieldBaselineTokens,
+  }
 }

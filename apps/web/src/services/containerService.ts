@@ -6,8 +6,11 @@ import type {
   ComingSoonHomeContainerSummary,
   ComingSoonHomeProduct,
   ContainerDetailBatchActionResult,
+  ContainerDetailActionPreview,
+  ContainerDetailActionPreviewRequest,
   ContainerDetailBatchUpdateResult,
   ContainerDetailBatchScope,
+  ContainerDetailEditingPresence,
   ContainerDomesticSetCodeItem,
   ContainerDetail,
   ContainerDetailQuery,
@@ -254,15 +257,100 @@ async function postContainerDetailAction<TBody extends object>(
   return response.data ?? { totalUpdated: 0 }
 }
 
+/**
+ * 所有批量写入先使用同一服务端预览，执行令牌把用户、筛选范围、参数和目标字段基线绑定在一起。
+ */
+export async function previewContainerDetailAction(
+  containerGuid: string,
+  requestBody: ContainerDetailActionPreviewRequest,
+): Promise<ContainerDetailActionPreview> {
+  const response = await request<ApiResponse<ContainerDetailActionPreview> | {
+    success?: boolean
+    isSuccess?: boolean
+    message?: string
+    data?: ContainerDetailActionPreview
+  }>(`${API_BASE}/${encodeURIComponent(containerGuid)}/actions/preview`, {
+    method: 'POST',
+    data: requestBody,
+  })
+  ensureSuccess(response.success ?? response.isSuccess, response.message, '批量操作预览失败')
+  const data = response.data
+  if (
+    !data
+    || typeof data.previewToken !== 'string'
+    || !data.previewToken
+    || !Number.isInteger(data.affectedCount)
+    || data.affectedCount < 0
+    || !Array.isArray(data.fieldSummary)
+    || data.fieldSummary.some((field) => typeof field !== 'string')
+    || typeof data.expiresAt !== 'string'
+    || Number.isNaN(Date.parse(data.expiresAt))
+  ) {
+    throw new Error('批量操作预览返回数据不完整')
+  }
+  return data
+}
+
+export async function getContainerDetailEditingPresence(
+  containerGuid: string,
+): Promise<ContainerDetailEditingPresence> {
+  const response = await request<ApiResponse<ContainerDetailEditingPresence> | {
+    success?: boolean
+    isSuccess?: boolean
+    message?: string
+    data?: ContainerDetailEditingPresence
+  }>(`${API_BASE}/${encodeURIComponent(containerGuid)}/editing-presence`, { method: 'GET' })
+  ensureSuccess(response.success ?? response.isSuccess, response.message, '获取货柜编辑状态失败')
+  const data = response.data
+  if (!data || !Array.isArray(data.viewers) || !Array.isArray(data.editors)) {
+    throw new Error('获取货柜编辑状态返回数据不完整')
+  }
+  const normalize = (users: Array<ContainerDetailEditingPresence['viewers'][number] & { displayName?: unknown }>) => users.flatMap((user) => (
+    user
+    && typeof user.userGuid === 'string'
+    && (typeof user.userName === 'string' || typeof user.displayName === 'string')
+    && typeof user.lastActiveAt === 'string'
+    && !Number.isNaN(Date.parse(user.lastActiveAt))
+      ? [{ userGuid: user.userGuid, userName: user.userName ?? user.displayName as string, lastActiveAt: user.lastActiveAt }]
+      : []
+  ))
+  return { viewers: normalize(data.viewers), editors: normalize(data.editors) }
+}
+
+export async function heartbeatContainerDetailEditingPresence(
+  containerGuid: string,
+  payload: { clientSessionId: string; state: 'viewing' | 'editing' },
+) {
+  const response = await request<{ success?: boolean; isSuccess?: boolean; message?: string }>(
+    `${API_BASE}/${encodeURIComponent(containerGuid)}/editing-presence/heartbeat`,
+    { method: 'POST', data: payload },
+  )
+  ensureSuccess(response.success ?? response.isSuccess, response.message, '更新货柜编辑状态失败')
+}
+
+/** 离开只做尽力而为的租约释放；网络失败绝不能阻断页面关闭或编辑。 */
+export async function leaveContainerDetailEditingPresence(
+  containerGuid: string,
+  payload: { clientSessionId: string },
+) {
+  const response = await request<{ success?: boolean; isSuccess?: boolean; message?: string }>(
+    `${API_BASE}/${encodeURIComponent(containerGuid)}/editing-presence/leave`,
+    { method: 'POST', data: payload },
+  )
+  ensureSuccess(response.success ?? response.isSuccess, response.message, '离开货柜编辑状态失败')
+}
+
 export async function applyContainerFloatRateByScope(
   containerGuid: string,
   scope: ContainerDetailBatchScope,
   floatRate: number,
+  previewToken: string,
 ): Promise<ContainerDetailBatchActionResult> {
   return postContainerDetailAction(containerGuid, 'apply-float-rate', {
     ...scope,
     // 批量写接口使用统一 scope；未勾选时 scope.query 代表当前筛选结果全量。
     floatRate,
+    previewToken,
   }, '批量调浮率失败')
 }
 
@@ -270,26 +358,49 @@ export async function applyContainerPricesByScope(
   containerGuid: string,
   scope: ContainerDetailBatchScope,
   prices: { importPrice?: number | null; oemPrice?: number | null },
+  previewToken: string,
 ): Promise<ContainerDetailBatchActionResult> {
   return postContainerDetailAction(containerGuid, 'apply-prices', {
     ...scope,
     importPrice: prices.importPrice,
     oemPrice: prices.oemPrice,
+    previewToken,
   }, '批量改价失败')
 }
 
 export async function recalculateContainerCostsByScope(
   containerGuid: string,
   scope: ContainerDetailBatchScope,
+  previewToken: string,
 ): Promise<ContainerDetailBatchActionResult> {
-  return postContainerDetailAction(containerGuid, 'recalculate-costs', scope, '重算成本失败')
+  return postContainerDetailAction(containerGuid, 'recalculate-costs', { ...scope, previewToken }, '重算成本失败')
 }
 
 export async function backfillContainerLastPricesByScope(
   containerGuid: string,
   scope: ContainerDetailBatchScope,
+  previewToken: string,
 ): Promise<ContainerDetailBatchActionResult> {
-  return postContainerDetailAction(containerGuid, 'backfill-last-prices', scope, '回填上次价格失败')
+  return postContainerDetailAction(containerGuid, 'backfill-last-prices', { ...scope, previewToken }, '回填上次价格失败')
+}
+
+/** 货柜范围上下架与明细并发/批量预览使用同一条受保护动作链。 */
+export async function setContainerDetailStatusByScope(
+  containerGuid: string,
+  scope: ContainerDetailBatchScope,
+  isActive: boolean,
+  previewToken: string,
+): Promise<ContainerDetailBatchActionResult> {
+  return postContainerDetailAction(containerGuid, 'set-status', { ...scope, isActive, previewToken }, '批量上下架失败')
+}
+
+export async function assignContainerDetailCategoryByScope(
+  containerGuid: string,
+  scope: ContainerDetailBatchScope,
+  categoryGuid: string,
+  previewToken: string,
+): Promise<ContainerDetailBatchActionResult> {
+  return postContainerDetailAction(containerGuid, 'assign-category', { ...scope, categoryGuid, previewToken }, '批量分类失败')
 }
 
 export async function getContainerDetail(containerGuid: string): Promise<ContainerMain> {
@@ -371,6 +482,8 @@ export async function batchUpdateDetails(
     备注: item.备注,
     IsActive: item.IsActive,
     SkipRelatedProductSync: item.SkipRelatedProductSync,
+    ExpectedServerFieldTokens: item.expectedServerFieldTokens,
+    OverrideAcknowledgements: item.overrideAcknowledgements,
   }))
   const submittedFieldsByHguid = new Map<string, Set<string>>()
   serializedUpdates.forEach((update) => {
@@ -378,7 +491,13 @@ export async function batchUpdateDetails(
       throw new Error('批量更新货柜明细包含重复 HGUID，未保存草稿已保留')
     }
     const fields = new Set(Object.entries(update).flatMap(([field, value]) => {
-      if (field === 'HGUID' || field === 'SkipRelatedProductSync' || value === undefined) return []
+      if (
+        field === 'HGUID'
+        || field === 'SkipRelatedProductSync'
+        || field === 'ExpectedServerFieldTokens'
+        || field === 'OverrideAcknowledgements'
+        || value === undefined
+      ) return []
       if (field === 'ClearEnglishName') return value === true ? ['英文名称'] : []
       return [field]
     }))
@@ -400,6 +519,15 @@ export async function batchUpdateDetails(
         field?: string
         code?: string
         message?: string
+      }>
+      conflicts?: Array<{
+        hguid?: string
+        field?: string
+        serverValue?: unknown
+        submittedValue?: unknown
+      currentServerFieldToken?: string
+      code?: string
+      message?: string
       }>
     }
   }>(`${API_BASE}/${encodeURIComponent(normalizedContainerGuid)}/batch-update-details`, {
@@ -456,6 +584,37 @@ export async function batchUpdateDetails(
       message: error.message,
     }
   })
+  const conflictKeys = new Set<string>()
+  // 灰度期间允许尚未升级的后端省略 conflicts；省略只能表示“没有可报告冲突”，不能把未知失败清成成功。
+  const conflicts = (data.conflicts ?? []).map((conflict) => {
+    if (
+      !conflict
+      || typeof conflict.hguid !== 'string'
+      || !updateHguids.has(conflict.hguid)
+      || typeof conflict.field !== 'string'
+      || !conflict.field.trim()
+      || !submittedFieldsByHguid.get(conflict.hguid)?.has(conflict.field)
+      || typeof conflict.currentServerFieldToken !== 'string'
+      || !conflict.currentServerFieldToken.trim()
+      || conflict.code !== 'CONCURRENT_FIELD_UPDATE'
+    ) {
+      throw new Error('批量更新货柜明细返回并发冲突不完整，未保存草稿已保留')
+    }
+    const conflictKey = `${conflict.hguid}:${conflict.field}`
+    if (conflictKeys.has(conflictKey) || validationErrorKeys.has(conflictKey)) {
+      throw new Error('批量更新货柜明细返回字段结果冲突，未保存草稿已保留')
+    }
+    conflictKeys.add(conflictKey)
+    return {
+      hguid: conflict.hguid,
+      field: conflict.field,
+      serverValue: conflict.serverValue,
+      submittedValue: conflict.submittedValue,
+      currentServerFieldToken: conflict.currentServerFieldToken,
+      code: 'CONCURRENT_FIELD_UPDATE' as const,
+      message: typeof conflict.message === 'string' ? conflict.message : undefined,
+    }
+  })
   const assertOptionalCount = (value: unknown) => (
     value === undefined || (Number.isInteger(value) && (value as number) >= 0)
   )
@@ -474,6 +633,11 @@ export async function batchUpdateDetails(
     fields.add(error.field)
     failedFieldsByHguid.set(error.hguid, fields)
   })
+  conflicts.forEach((conflict) => {
+    const fields = failedFieldsByHguid.get(conflict.hguid) ?? new Set<string>()
+    fields.add(conflict.field)
+    failedFieldsByHguid.set(conflict.hguid, fields)
+  })
   const successfulHguidCount = Array.from(submittedFieldsByHguid.entries()).filter(([hguid, fields]) => (
     !fullFailureHguids.has(hguid)
     && Array.from(fields).some((field) => !failedFieldsByHguid.get(hguid)?.has(field))
@@ -488,6 +652,7 @@ export async function batchUpdateDetails(
     autoRepairedStoreGroupCount: data.autoRepairedStoreGroupCount,
     autoRepairedRelationCount: data.autoRepairedRelationCount,
     validationErrors,
+    conflicts,
   }
 }
 
@@ -547,6 +712,31 @@ export async function batchDeleteDetails(hguids: string[]): Promise<{ totalDelet
     totalDeleted: response.data?.totalDeleted ?? hguids.length,
     totalRequested: response.data?.totalRequested ?? hguids.length,
   }
+}
+
+export async function deleteContainerDetailsByScope(
+  containerGuid: string,
+  scope: ContainerDetailBatchScope,
+  previewToken: string,
+): Promise<{ totalDeleted: number; totalRequested: number }> {
+  const response = await request<ApiResponse<{ totalDeleted: number; totalRequested: number }> | {
+    success?: boolean
+    isSuccess?: boolean
+    message?: string
+    data?: { totalDeleted?: number; totalRequested?: number }
+  }>(`${API_BASE}/${encodeURIComponent(containerGuid)}/actions/delete-details`, {
+    method: 'POST',
+    data: { ...scope, previewToken },
+  })
+  ensureSuccess(response.success ?? response.isSuccess, response.message, '删除货柜明细失败')
+  const data = response.data
+  const totalDeleted = data?.totalDeleted
+  const totalRequested = data?.totalRequested
+  if (typeof totalDeleted !== 'number' || !Number.isInteger(totalDeleted)
+    || typeof totalRequested !== 'number' || !Number.isInteger(totalRequested)) {
+    throw new Error('删除货柜明细返回数据不完整')
+  }
+  return { totalDeleted, totalRequested }
 }
 
 export async function syncContainersFromHq(startDate?: string): Promise<SyncResult> {

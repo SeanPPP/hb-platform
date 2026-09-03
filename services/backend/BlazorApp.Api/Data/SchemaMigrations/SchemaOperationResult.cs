@@ -19,6 +19,8 @@ internal static class SchemaDiagnosticCodes
     public const string DeviceActivationIncompatible = "SCHEMA_DEVICE_ACTIVATION_INCOMPATIBLE";
     public const string ContainerDetailQueryIndexesIncompatible =
         "SCHEMA_CONTAINER_DETAIL_QUERY_INDEXES_INCOMPATIBLE";
+    public const string ContainerDetailCollaborationIncompatible =
+        "SCHEMA_CONTAINER_DETAIL_COLLABORATION_INCOMPATIBLE";
     public const string ProviderUnsupported = "SCHEMA_PROVIDER_UNSUPPORTED";
     public const string DatabaseFailure = "SCHEMA_DATABASE_FAILURE";
     public const string MigrationFailure = "SCHEMA_MIGRATION_FAILURE";

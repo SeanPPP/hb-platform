@@ -2,10 +2,14 @@ import type { UpdateContainerDetailRequest } from '../../../types/container'
 import {
   CONTAINER_DETAIL_DRAFT_TTL_MS,
   CONTAINER_DETAIL_DRAFT_MAX_FUTURE_SKEW_MS,
+  CONTAINER_DETAIL_LEGACY_BASELINE_TOKEN,
   buildContainerDetailDraftStorageKey,
+  buildContainerDetailOverrideAcknowledgements,
   captureContainerDetailDraftFieldVersions,
+  captureContainerDetailDraftFieldBaselineTokens,
   captureSuccessfullySavedContainerDetailDraftFieldVersions,
   clearContainerDetailDraftFieldsIfVersionMatches,
+  clearContainerDetailOverrideAcknowledgements,
   clearContainerDetailDraft,
   createContainerDetailDraftLocateResetPlan,
   clearContainerDetailDraftFailuresForPatches,
@@ -86,6 +90,32 @@ assertEqual(
   'hb.containerDetailDraft.v2:user%2Fa:container%3Ab',
   '草稿 key 应按用户和货柜隔离并编码特殊字符',
 )
+
+const overrideUpdate: UpdateContainerDetailRequest = { hguid: 'detail-override', 进口价格: 4.2 }
+const overrideBaselineTokens = { 'detail-override': { 进口价格: 'first-edit-baseline' } }
+const overrideVersions = { 'detail-override:进口价格': '100-override' }
+const versionedAcknowledgements = {
+  'detail-override:进口价格': { token: 'server-version-confirmed', fieldVersion: '100-override' },
+}
+assertDeepEqual(
+  buildContainerDetailOverrideAcknowledgements(
+    [overrideUpdate], overrideBaselineTokens, overrideVersions, versionedAcknowledgements,
+  ),
+  { 'detail-override': { 进口价格: 'server-version-confirmed' } },
+  '强制覆盖应保留首次编辑 expected token，并只附带用户刚确认的服务器令牌以触发审计路径',
+)
+assertDeepEqual(
+  buildContainerDetailOverrideAcknowledgements(
+    [overrideUpdate], overrideBaselineTokens, { 'detail-override:进口价格': '101-reedited' }, versionedAcknowledgements,
+  ),
+  {},
+  '字段再次编辑换版本后不得复用旧 override acknowledgement',
+)
+assertDeepEqual(
+  clearContainerDetailOverrideAcknowledgements(versionedAcknowledgements, overrideVersions),
+  {},
+  '保存成功或采用服务器值后应按字段版本清除 override acknowledgement',
+)
 assertEqual(
   buildContainerDetailDraftStorageKey('user/a', 'container:b') === buildContainerDetailDraftStorageKey('user/b', 'container:b'),
   false,
@@ -104,6 +134,69 @@ assertDeepEqual(restoredDraft.failures, draftState.failures, '刷新或重新登
 assertEqual(Object.keys(restoredDraft.fieldVersions ?? {}).length, 3, '每个待保存字段应有独立版本')
 
 const originalVersions = restoredDraft.fieldVersions ?? {}
+const persistedBaselineTokens = {
+  'detail-1:进口价格': 'server-import-token',
+  'detail-1:英文名称': 'server-english-token',
+}
+const allFieldsStorage = new MemoryStorage()
+assertEqual(
+  writeContainerDetailDraft(allFieldsStorage, 'user/a', 'container:b', {
+    ...draftState,
+    fieldBaselineTokens: persistedBaselineTokens,
+  }, now + 2),
+  true,
+  '字段草稿应持久化开始编辑时看到的服务器令牌',
+)
+const restoredWithTokens = readContainerDetailDraft(allFieldsStorage, 'user/a', 'container:b', now + 3)
+assertDeepEqual(
+  restoredWithTokens.fieldBaselineTokens,
+  persistedBaselineTokens,
+  '刷新、关闭重开和重新登录后应恢复字段服务器令牌，不能用当前服务器值替换旧基线',
+)
+assertDeepEqual(
+  captureContainerDetailDraftFieldBaselineTokens(restoredWithTokens.fieldBaselineTokens, [
+    { hguid: 'detail-1', 进口价格: 3.2 },
+    { hguid: 'detail-2', 贴牌价格: 8.99 },
+  ]),
+  {
+    'detail-1': { '进口价格': 'server-import-token' },
+    'detail-2': { '贴牌价格': CONTAINER_DETAIL_LEGACY_BASELINE_TOKEN },
+  },
+  '提交时缺基线的旧草稿必须携带不可匹配 sentinel，由服务端要求显式覆盖并保留审计路径',
+)
+assertEqual(
+  writeContainerDetailDraft(allFieldsStorage, 'user/a', 'container:b', {
+    pendingPatches: {
+      'detail-all-fields': {
+        hguid: 'detail-all-fields',
+        商品名称: '多码套装画框',
+        调整浮率: 1.3,
+        单件装箱数: 12,
+        单件体积: 0.08,
+        中包数: 6,
+        备注: '跨用户编辑草稿',
+        IsActive: true,
+      },
+    },
+    failures: {},
+    fieldBaselineTokens: {
+      'detail-all-fields:商品名称': 'name-token',
+      'detail-all-fields:调整浮率': 'rate-token',
+      'detail-all-fields:备注': 'remark-token',
+    },
+  }, now + 4),
+  true,
+  '普通、套装和多码共用的可编辑字段应全部写入字段草稿',
+)
+const allFieldsRestored = readContainerDetailDraft(allFieldsStorage, 'user/a', 'container:b', now + 5)
+assertDeepEqual(
+  allFieldsRestored.pendingPatches['detail-all-fields'],
+  {
+    hguid: 'detail-all-fields', 调整浮率: 1.3, 商品名称: '多码套装画框',
+    单件装箱数: 12, 中包数: 6, 单件体积: 0.08, 备注: '跨用户编辑草稿', IsActive: true,
+  },
+  '刷新后应恢复自动保存字段，不能只恢复价格与英文名称',
+)
 const submittedVersionSnapshot = captureContainerDetailDraftFieldVersions(originalVersions, [{ hguid: 'detail-1', 进口价格: 3.2 }])
 const newerVersions = refreshContainerDetailDraftFieldVersions(
   draftState.pendingPatches,
@@ -235,6 +328,14 @@ assertDeepEqual(
   readContainerDetailDraft(storage, 'user/a', 'container:b', now).pendingPatches,
   { 'valid-detail': { hguid: 'valid-detail', 进口价格: 4.2 } },
   '混合存储数据中只有 hguid 的幽灵补丁应静默丢弃，不得让保存按钮虚假启用',
+)
+assertDeepEqual(
+  captureContainerDetailDraftFieldBaselineTokens(
+    readContainerDetailDraft(storage, 'user/a', 'container:b', now).fieldBaselineTokens,
+    [{ hguid: 'valid-detail', 进口价格: 4.2 }],
+  ),
+  { 'valid-detail': { 进口价格: CONTAINER_DETAIL_LEGACY_BASELINE_TOKEN } },
+  'v2 草稿缺少字段基线时必须提交不可匹配 legacy sentinel，随后只能显式确认覆盖，不能静默使用当前服务器令牌',
 )
 
 const submittedUpdates: UpdateContainerDetailRequest[] = [

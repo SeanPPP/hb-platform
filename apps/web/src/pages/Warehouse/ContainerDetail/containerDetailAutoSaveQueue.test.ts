@@ -719,6 +719,73 @@ async function testSuccessfulSaveInvalidatesStaleItemQueryBeforeClearingRunningO
   assertEqual(contextBController.signal.aborted, false, 'A 保存成功不得失效 B 的 item query')
 }
 
+async function testDiscardedContextDrainsPendingBatchWithOriginalPersistenceMetadata() {
+  const firstRequest = deferred<void>()
+  const contexts = new Map([
+    ['context-A', {
+      userGuid: 'user-A',
+      draftIdentity: 'draft-A',
+      fieldVersions: { 'row-a:备注': 'version-A' },
+      fieldBaselineTokens: { 'row-a:备注': 'token-A' },
+    }],
+    ['context-B', {
+      userGuid: 'user-B',
+      draftIdentity: 'draft-B',
+      fieldVersions: { 'row-b:备注': 'version-B' },
+      fieldBaselineTokens: { 'row-b:备注': 'token-B' },
+    }],
+  ])
+  let activeUserGuid = 'user-A'
+  const batches: {
+    contextKey: string
+    userGuid: string
+    fieldVersion?: string
+    baselineToken?: string
+    activeUserGuid: string
+  }[] = []
+  const queue = createContainerDetailAutoSaveQueue({
+    sendBatch: async (contextKey) => {
+      const context = contexts.get(contextKey)
+      assert(context, `缺少 ${contextKey} 的持久化上下文`)
+      batches.push({
+        contextKey,
+        userGuid: context.userGuid,
+        fieldVersion: context.fieldVersions['row-a:备注'],
+        baselineToken: context.fieldBaselineTokens['row-a:备注'],
+        activeUserGuid,
+      })
+      if (batches.length === 1) await firstRequest.promise
+      return { validationErrors: [] }
+    },
+  })
+
+  queue.enqueue('context-A', 'row-a', { 备注: 'A 请求 1' })
+  await flushMicrotasks()
+  queue.enqueue('context-A', 'row-a', { 备注: 'A 请求 2' })
+  queue.discardContext('context-A')
+  activeUserGuid = 'user-B'
+  firstRequest.resolve()
+  for (let index = 0; index < 10 && batches.length < 2; index += 1) {
+    await flushMicrotasks()
+  }
+
+  assertEqual(batches.length, 2, 'discard 只断开 UI，A 的 pending 批次仍应完成')
+  assertDeepEqual(
+    batches.map(({ contextKey, userGuid, fieldVersion, baselineToken }) => ({
+      contextKey,
+      userGuid,
+      fieldVersion,
+      baselineToken,
+    })),
+    [
+      { contextKey: 'context-A', userGuid: 'user-A', fieldVersion: 'version-A', baselineToken: 'token-A' },
+      { contextKey: 'context-A', userGuid: 'user-A', fieldVersion: 'version-A', baselineToken: 'token-A' },
+    ],
+    'A 的后续批次必须继续使用 A 固定的用户、版本和服务器基线',
+  )
+  assertEqual(batches[1].activeUserGuid, 'user-B', '回归场景必须确实已切换到 B 用户上下文')
+}
+
 function testContextSnapshotOwnership() {
   const contextA = buildContainerDetailAutoSaveContextKey('container-a', 'draft-a')
   assertEqual(
@@ -753,6 +820,7 @@ async function run() {
   await testOnlyActiveKeepAliveInstanceOwnsAndEnqueuesAutoSaveContext()
   await testDiscardedOwnerCannotRebindThroughLateEnqueue()
   await testSuccessfulSaveInvalidatesStaleItemQueryBeforeClearingRunningOverlay()
+  await testDiscardedContextDrainsPendingBatchWithOriginalPersistenceMetadata()
   testContextSnapshotOwnership()
   console.log('containerDetailAutoSaveQueue tests passed')
 }

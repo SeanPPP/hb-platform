@@ -1,4 +1,6 @@
 using AutoMapper;
+using System.Text.Json;
+using Microsoft.AspNetCore.DataProtection;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
@@ -27,6 +29,7 @@ namespace BlazorApp.Api.Services.React
         private readonly ITranslationService _translationService;
         private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
         private readonly ICurrentUserService _currentUserService;
+        private readonly IDataProtector _batchPreviewProtector;
 
         public ContainerReactService(
             SqlSugarContext context,
@@ -38,7 +41,8 @@ namespace BlazorApp.Api.Services.React
             IContainerHqSyncService containerHqSyncService,
             ITranslationService translationService,
             IWarehouseProductChangeHistoryService changeHistoryService,
-            ICurrentUserService currentUserService
+            ICurrentUserService currentUserService,
+            IDataProtectionProvider? dataProtectionProvider = null
         )
         {
             _context = context;
@@ -51,6 +55,8 @@ namespace BlazorApp.Api.Services.React
             _translationService = translationService;
             _changeHistoryService = changeHistoryService;
             _currentUserService = currentUserService;
+            _batchPreviewProtector = (dataProtectionProvider ?? new EphemeralDataProtectionProvider())
+                .CreateProtector("ContainerDetailBatchPreview.v1");
         }
 
         private bool IsValidEnglishName(string? englishName)
@@ -1477,6 +1483,7 @@ namespace BlazorApp.Api.Services.React
             }
             await FillContainerDetailCategoryNamesAsync(items, cancellationToken);
             FillContainerDetailProductImages(items);
+            await AttachContainerDetailFieldTokensAsync(items);
             return new ContainerDetailQueryResultDto
             {
                 Items = items,
@@ -1518,7 +1525,86 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
             await FillContainerDetailCategoryNamesAsync(ordered, cancellationToken);
             FillContainerDetailProductImages(ordered);
+            await AttachContainerDetailFieldTokensAsync(ordered);
             return ordered;
+        }
+
+        private async Task AttachContainerDetailFieldTokensAsync(
+            IEnumerable<ContainerDetailDto> items
+        )
+        {
+            var detailItems = items.ToList();
+            var productCodes = detailItems
+                .Select(item => item.商品编码)
+                .Where(code => !string.IsNullOrWhiteSpace(code))
+                .Select(code => code!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            // 历史 SQLite 查询 fixture 只建明细投影依赖表，不一定包含分店价格表。
+            // 仅在 SQLite 已确认表不存在时将它视为空集合；SQL Server 和其它 provider
+            // 仍直接查询，生产结构缺失或连接错误必须原样失败，不能被并发令牌逻辑吞掉。
+            var optionalRelationTables = await GetOptionalFieldTokenRelationTablesAsync();
+            var storeRows = productCodes.Count == 0 || !optionalRelationTables.StoreRetailPrice
+                ? new List<StoreRetailPrice>()
+                : await _context.Db.Queryable<StoreRetailPrice>()
+                    .Where(item => item.ProductCode != null && productCodes.Contains(item.ProductCode))
+                    .ToListAsync();
+            var productSetRows = productCodes.Count == 0 || !optionalRelationTables.ProductSetCode
+                ? new List<ProductSetCode>()
+                : await _context.Db.Queryable<ProductSetCode>()
+                    .Where(item => item.ProductCode != null && productCodes.Contains(item.ProductCode))
+                    .ToListAsync();
+            var storeMultiCodeRows = productCodes.Count == 0 || !optionalRelationTables.StoreMultiCodeProduct
+                ? new List<StoreMultiCodeProduct>()
+                : await _context.Db.Queryable<StoreMultiCodeProduct>()
+                    .Where(item => item.ProductCode != null && productCodes.Contains(item.ProductCode))
+                    .ToListAsync();
+            var storeRowsByProduct = storeRows
+                .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
+                .GroupBy(item => item.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => (IEnumerable<StoreRetailPrice>)group.ToList(), StringComparer.OrdinalIgnoreCase);
+            var productSetRowsByProduct = productSetRows
+                .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
+                .GroupBy(item => item.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => (IEnumerable<ProductSetCode>)group.ToList(), StringComparer.OrdinalIgnoreCase);
+            var storeMultiCodeRowsByProduct = storeMultiCodeRows
+                .Where(item => !string.IsNullOrWhiteSpace(item.ProductCode))
+                .GroupBy(item => item.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => (IEnumerable<StoreMultiCodeProduct>)group.ToList(), StringComparer.OrdinalIgnoreCase);
+            foreach (var item in detailItems)
+            {
+                // 查询完成后统一补齐令牌，确保筛选、分页和套装/多码投影共用同一口径。
+                item.ServerFieldTokens = ContainerDetailFieldConcurrencyGuard.CreateDetailTokens(
+                    item,
+                    item.商品编码 != null && storeRowsByProduct.TryGetValue(item.商品编码, out var rows)
+                        ? rows
+                        : null,
+                    item.商品编码 != null && productSetRowsByProduct.TryGetValue(item.商品编码, out var setRows)
+                        ? setRows
+                        : null,
+                    item.商品编码 != null && storeMultiCodeRowsByProduct.TryGetValue(item.商品编码, out var multiRows)
+                        ? multiRows
+                        : null
+                );
+            }
+        }
+
+        private async Task<(bool StoreRetailPrice, bool ProductSetCode, bool StoreMultiCodeProduct)> GetOptionalFieldTokenRelationTablesAsync()
+        {
+            if (_context.Db.CurrentConnectionConfig.DbType != DbType.Sqlite)
+            {
+                return (true, true, true);
+            }
+
+            var existingTables = await _context.Db.Ado.SqlQueryAsync<string>(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('StoreRetailPrice', 'ProductSetCode', 'StoreMultiCodeProduct')"
+            );
+            var tableSet = existingTables.ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return (
+                tableSet.Contains("StoreRetailPrice"),
+                tableSet.Contains("ProductSetCode"),
+                tableSet.Contains("StoreMultiCodeProduct")
+            );
         }
 
         private static void ApplyContainerDetailMatches(
@@ -1591,6 +1677,15 @@ namespace BlazorApp.Api.Services.React
                         WarehouseOEMPrice = wp.OEMPrice,
                         ReadonlyOemPrice = lp.ProductCode == null ? dp.OEMPrice : wp.OEMPrice,
                         WarehouseIsActive = wp.IsActive,
+                        ServerTokenDomesticMiddlePackQuantity = dp.MiddlePackQuantity,
+                        ServerTokenTargetCategoryGuid = cd.TargetWarehouseCategoryGUID,
+                        ServerTokenLocalCategoryGuid = lp.WarehouseCategoryGUID,
+                        ServerTokenLocalProductName = lp.ProductName,
+                        ServerTokenLocalEnglishName = lp.EnglishName,
+                        ServerTokenDomesticEnglishName = dp.EnglishProductName,
+                        ServerTokenLocalPurchasePrice = lp.PurchasePrice,
+                        ServerTokenLocalRetailPrice = lp.RetailPrice,
+                        ServerTokenDetailIsActive = cd.IsActive,
                         商品信息 = new ContainerProductInfoDto
                         {
                             商品编码 = dp.ProductCode,
@@ -2481,6 +2576,243 @@ namespace BlazorApp.Api.Services.React
             );
         }
 
+        private bool IsContainerDetailConcurrencyTokenRequired() =>
+            _configuration.GetValue<bool>("ContainerDetailConcurrency:RequireTokens");
+
+        private bool IsContainerDetailFieldConcurrencyEnabled() =>
+            _configuration.GetValue<bool>("ContainerDetailConcurrency:Enabled");
+
+        private static bool HasMissingExpectedFieldTokens(
+            IEnumerable<UpdateContainerDetailDto>? updates
+        )
+        {
+            return updates?.Any(update =>
+                EnumerateFieldIntents(update).Any(intent =>
+                    !TryGetFieldToken(update.ExpectedServerFieldTokens, intent.Field, out _)
+                )
+            ) == true;
+        }
+
+        private static UpdateContainerDetailDto RemoveConflictingFieldIntents(
+            UpdateContainerDetailDto update,
+            IReadOnlyDictionary<string, ContainerDetailFieldSnapshot> snapshots,
+            ContainerDetailBatchUpdateResultDto result,
+            ICollection<ContainerDetailFieldOverrideIntent> overrideAuditIntents,
+            Func<ContainerDetailFieldIntent, bool>? relatedTargetsAlreadyAtSubmittedValue = null
+        )
+        {
+            var rejectedFields = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var intent in EnumerateFieldIntents(update))
+            {
+                if (!TryGetFieldToken(update.ExpectedServerFieldTokens, intent.Field, out var expectedToken))
+                {
+                    // 未升级客户端在兼容开关关闭时继续走旧保存语义；开关开启时已在事务前统一拒绝。
+                    continue;
+                }
+
+                snapshots.TryGetValue(intent.Field, out var snapshot);
+                snapshot ??= new ContainerDetailFieldSnapshot(null);
+                var currentToken = ContainerDetailFieldConcurrencyGuard.CreateToken(
+                    update.HGUID, intent.Field, snapshot.Value, snapshot.RelatedValue
+                );
+                TryGetFieldToken(
+                    update.OverrideAcknowledgements,
+                    intent.Field,
+                    out var acknowledgement
+                );
+                var resolution = ContainerDetailFieldConcurrencyGuard.Resolve(
+                    update.HGUID,
+                    intent.Field,
+                    expectedToken,
+                    acknowledgement,
+                    currentToken,
+                    snapshot.Value,
+                    intent.SubmittedValue,
+                    snapshot.RelatedValue != null,
+                    relatedTargetsAlreadyAtSubmittedValue?.Invoke(intent) == true
+                );
+                if (resolution.Allowed)
+                {
+                    if (resolution.Overridden)
+                    {
+                        overrideAuditIntents.Add(
+                            new ContainerDetailFieldOverrideIntent(
+                                update.HGUID,
+                                intent.Field,
+                                snapshot.Value,
+                                intent.SubmittedValue,
+                                acknowledgement ?? currentToken
+                            )
+                        );
+                    }
+                    continue;
+                }
+
+                rejectedFields.Add(intent.Field);
+                result.Conflicts.Add(resolution.Conflict!);
+            }
+
+            return rejectedFields.Count == 0
+                ? update
+                : CloneWithRejectedDirectFields(update, rejectedFields);
+        }
+
+        private static IEnumerable<ContainerDetailFieldIntent> EnumerateFieldIntents(
+            UpdateContainerDetailDto update
+        )
+        {
+            if (update.调整浮率.HasValue)
+                yield return new("调整浮率", update.调整浮率.Value);
+            if (update.国内价格.HasValue)
+                yield return new("国内价格", update.国内价格.Value);
+            if (update.进口价格.HasValue)
+                yield return new("进口价格", update.进口价格.Value);
+            if (update.运输成本.HasValue)
+                yield return new("运输成本", update.运输成本.Value);
+            if (update.贴牌价格.HasValue)
+                yield return new("贴牌价格", update.贴牌价格.Value);
+            if (update.单件装箱数.HasValue)
+                yield return new("单件装箱数", update.单件装箱数.Value);
+            if (update.中包数.HasValue)
+                yield return new("中包数", update.中包数.Value);
+            if (update.单件体积.HasValue)
+                yield return new("单件体积", update.单件体积.Value);
+            if (update.装柜数量.HasValue)
+                yield return new("装柜数量", update.装柜数量.Value);
+            if (update.合计装柜体积.HasValue)
+                yield return new("合计装柜体积", update.合计装柜体积.Value);
+            if (update.合计装柜金额.HasValue)
+                yield return new("合计装柜金额", update.合计装柜金额.Value);
+            if (update.IsActive.HasValue)
+                yield return new("IsActive", update.IsActive.Value);
+            if (update.ProductCategoryGUID != null || update.ClearProductCategory == true)
+                yield return new(
+                    "ProductCategoryGUID",
+                    update.ClearProductCategory == true ? null : update.ProductCategoryGUID
+                );
+            if (update.备注 != null)
+                yield return new("备注", update.备注);
+            if (!string.IsNullOrWhiteSpace(update.商品名称))
+                yield return new("商品名称", update.商品名称);
+            if (update.ClearEnglishName == true || !string.IsNullOrWhiteSpace(update.英文名称))
+                yield return new("英文名称", update.ClearEnglishName == true ? null : update.英文名称);
+        }
+
+        // 这些字段会读取或写入货柜明细以外的商品主档/关系行；busy 商品只能保留纯明细字段。
+        private static bool IsRelatedSyncField(string field) => field is
+            "进口价格" or "贴牌价格" or "IsActive" or "中包数" or "ProductCategoryGUID" or "商品名称" or "英文名称";
+
+        /// <summary>
+        /// 只有确实会同步关联商品，或客户端携带了关联字段复合基线令牌时，才进入商品锁域。
+        /// Web 单字段自动保存虽禁止回写主档，仍需锁内读取关联快照来校验用户开始编辑时看到的令牌；
+        /// 服务端纯明细批量重算没有字段令牌，不应被无关的商品成本任务阻塞。
+        /// </summary>
+        private static bool RequiresRelatedSnapshotLock(UpdateContainerDetailDto update) =>
+            EnumerateFieldIntents(update).Any(intent =>
+                IsRelatedSyncField(intent.Field)
+                && (
+                    update.SkipRelatedProductSync != true
+                    || TryGetFieldToken(update.ExpectedServerFieldTokens, intent.Field, out _)
+                )
+            );
+
+        /// <summary>
+        /// 丢失响应后的进口价重试仅在全部简单同步目标已达目标值时幂等放行。
+        /// 套装/多码存在时仍交给结构重算路径判定，避免把分配规则变化误判为“同值”。
+        /// </summary>
+        private static bool AreImportSyncTargetsAtPrice(
+            WarehouseProduct? warehouseProduct,
+            Product? localProduct,
+            IEnumerable<StoreRetailPrice>? storeRetailPrices,
+            IEnumerable<ProductSetCode>? productSetCodes,
+            IEnumerable<StoreMultiCodeProduct>? storeMultiCodeProducts,
+            decimal price,
+            bool setAndMultiTargetsAlreadyAtExpectedPrice = false
+        )
+        {
+            if ((warehouseProduct != null && (warehouseProduct.IsDeleted || warehouseProduct.ImportPrice != price))
+                || (localProduct != null && (localProduct.IsDeleted || localProduct.PurchasePrice != price))
+                || (storeRetailPrices ?? Enumerable.Empty<StoreRetailPrice>()).Any(row =>
+                    !row.IsDeleted && row.PurchasePrice != price))
+            {
+                return false;
+            }
+
+            // Type1 的分摊和门店多码还依赖关系结构/零售价；保守拒绝会促使客户端获取新令牌，
+            // 绝不以“明细同价”静默覆盖已变化的子项成本。
+            return setAndMultiTargetsAlreadyAtExpectedPrice || (
+                !(productSetCodes ?? Enumerable.Empty<ProductSetCode>())
+                       .Any(row => row.SetType is 1 or 2)
+                   && !(storeMultiCodeProducts ?? Enumerable.Empty<StoreMultiCodeProduct>()).Any()
+            );
+        }
+
+        private static bool TryGetFieldToken(
+            IReadOnlyDictionary<string, string>? tokens,
+            string field,
+            out string? token
+        )
+        {
+            token = null;
+            if (tokens == null)
+            {
+                return false;
+            }
+
+            foreach (var entry in tokens)
+            {
+                if (!string.Equals(entry.Key, field, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                token = entry.Value;
+                return !string.IsNullOrWhiteSpace(token);
+            }
+            return false;
+        }
+
+        private static UpdateContainerDetailDto CloneWithRejectedDirectFields(
+            UpdateContainerDetailDto update,
+            ISet<string> rejectedFields
+        ) => new()
+        {
+            HGUID = update.HGUID,
+            ExpectedServerFieldTokens = update.ExpectedServerFieldTokens,
+            OverrideAcknowledgements = update.OverrideAcknowledgements,
+            调整浮率 = rejectedFields.Contains("调整浮率") ? null : update.调整浮率,
+            国内价格 = rejectedFields.Contains("国内价格") ? null : update.国内价格,
+            进口价格 = rejectedFields.Contains("进口价格") ? null : update.进口价格,
+            运输成本 = rejectedFields.Contains("运输成本") ? null : update.运输成本,
+            商品名称 = rejectedFields.Contains("商品名称") ? null : update.商品名称,
+            英文名称 = rejectedFields.Contains("英文名称") ? null : update.英文名称,
+            ClearEnglishName = rejectedFields.Contains("英文名称") ? false : update.ClearEnglishName,
+            ProductCategoryGUID = rejectedFields.Contains("ProductCategoryGUID") ? null : update.ProductCategoryGUID,
+            ClearProductCategory = rejectedFields.Contains("ProductCategoryGUID") ? false : update.ClearProductCategory,
+            贴牌价格 = rejectedFields.Contains("贴牌价格") ? null : update.贴牌价格,
+            单件装箱数 = rejectedFields.Contains("单件装箱数") ? null : update.单件装箱数,
+            中包数 = rejectedFields.Contains("中包数") ? null : update.中包数,
+            单件体积 = rejectedFields.Contains("单件体积") ? null : update.单件体积,
+            装柜数量 = rejectedFields.Contains("装柜数量") ? null : update.装柜数量,
+            合计装柜体积 = rejectedFields.Contains("合计装柜体积") ? null : update.合计装柜体积,
+            合计装柜金额 = rejectedFields.Contains("合计装柜金额") ? null : update.合计装柜金额,
+            IsActive = rejectedFields.Contains("IsActive") ? null : update.IsActive,
+            备注 = rejectedFields.Contains("备注") ? null : update.备注,
+            SkipRelatedProductSync = update.SkipRelatedProductSync,
+        };
+
+        private sealed record ContainerDetailFieldIntent(
+            string Field,
+            object? SubmittedValue
+        );
+
+        private sealed record ContainerDetailFieldOverrideIntent(
+            string Hguid,
+            string Field,
+            object? ServerValue,
+            object? OverrideValue,
+            string ConfirmationToken
+        );
+
         private async Task<ContainerDetailBatchUpdateResultDto> BatchUpdateDetailsCoreAsync(
             List<UpdateContainerDetailDto> updates,
             bool countValidNoOps,
@@ -2488,6 +2820,11 @@ namespace BlazorApp.Api.Services.React
             string? containerGuid
         )
         {
+            if (IsContainerDetailConcurrencyTokenRequired() && HasMissingExpectedFieldTokens(updates))
+            {
+                throw new ContainerDetailConcurrencyTokenRequiredException();
+            }
+
             if (updates == null || updates.Count == 0)
             {
                 return await BatchUpdateDetailsAttemptAsync(
@@ -2581,12 +2918,122 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
+        private async Task AcquireContainerDetailConcurrencyRowLocksAsync(
+            IEnumerable<string> keys,
+            bool lockAssociatedProducts = false
+        )
+        {
+            if (_context.Db.CurrentConnectionConfig.DbType != DbType.SqlServer)
+            {
+                // SQLite 测试环境不支持 SQL Server 锁提示；外层事务与 ContainerMutationLock 仍保持原有语义。
+                return;
+            }
+
+            var normalizedKeys = keys
+                .Where(key => !string.IsNullOrWhiteSpace(key))
+                .Select(key => key.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(key => key, StringComparer.Ordinal)
+                .ToList();
+            if (normalizedKeys.Count == 0)
+            {
+                return;
+            }
+
+            if (lockAssociatedProducts)
+            {
+                await AcquireSqlServerUpdateHoldLocksAsync(
+                    "[dbo].[WarehouseProduct]",
+                    "[ProductCode]",
+                    normalizedKeys
+                );
+                await AcquireSqlServerUpdateHoldLocksAsync(
+                    "[dbo].[DomesticProduct]",
+                    "[ProductCode]",
+                    normalizedKeys
+                );
+                await AcquireSqlServerUpdateHoldLocksAsync(
+                    "[dbo].[Product]",
+                    "[ProductCode]",
+                    normalizedKeys
+                );
+                await AcquireSqlServerUpdateHoldLocksAsync(
+                    "[dbo].[StoreRetailPrice]",
+                    "[ProductCode]",
+                    normalizedKeys
+                );
+                await AcquireSqlServerUpdateHoldLocksAsync(
+                    "[dbo].[ProductSetCode]",
+                    "[ProductCode]",
+                    normalizedKeys
+                );
+                await AcquireSqlServerUpdateHoldLocksAsync(
+                    "[dbo].[StoreMultiCodeProduct]",
+                    "[ProductCode]",
+                    normalizedKeys
+                );
+                return;
+            }
+
+            await AcquireSqlServerUpdateHoldLocksAsync(
+                "[dbo].[ContainerDetail]",
+                "[DetailCode]",
+                normalizedKeys
+            );
+        }
+
+        private async Task AcquireContainerDetailScopeHoldLockAsync(string containerGuid)
+        {
+            if (_context.Db.CurrentConnectionConfig.DbType != DbType.SqlServer)
+            {
+                return;
+            }
+            var parameters = new[] { new SugarParameter("@ContainerGuid", containerGuid) };
+            // 先锁货柜头，再对整个货柜范围持有键范围锁；筛选 scope 的新增/删除必须在预览校验前可见。
+            await _context.Db.Ado.ExecuteCommandAsync(
+                "SELECT [ContainerCode] FROM [dbo].[Container] WITH (UPDLOCK, HOLDLOCK) WHERE [ContainerCode] = @ContainerGuid",
+                parameters
+            );
+            await _context.Db.Ado.ExecuteCommandAsync(
+                "SELECT [DetailCode] FROM [dbo].[ContainerDetail] WITH (UPDLOCK, HOLDLOCK) WHERE [ContainerCode] = @ContainerGuid ORDER BY [DetailCode]",
+                parameters
+            );
+        }
+
+        private async Task AcquireSqlServerUpdateHoldLocksAsync(
+            string tableName,
+            string keyColumn,
+            IReadOnlyList<string> keys
+        )
+        {
+            const int chunkSize = 500;
+            foreach (var chunk in keys.Chunk(chunkSize))
+            {
+                var parameters = new List<SugarParameter>();
+                var parameterNames = new List<string>();
+                for (var index = 0; index < chunk.Length; index++)
+                {
+                    var parameterName = $"@concurrencyKey{index}";
+                    parameterNames.Add(parameterName);
+                    parameters.Add(new SugarParameter(parameterName, chunk[index]));
+                }
+
+                // 资源键已稳定排序；UPDLOCK/HOLDLOCK 将明细及关联商品的读取锁持有到本事务提交，
+                // 防止未遵循业务 app lock 的并发写入穿透字段令牌校验。
+                var sql = $"SELECT {keyColumn} FROM {tableName} WITH (UPDLOCK, HOLDLOCK) "
+                    + $"WHERE {keyColumn} IN ({string.Join(", ", parameterNames)}) "
+                    + $"ORDER BY {keyColumn}";
+                await _context.Db.Ado.ExecuteCommandAsync(sql, parameters);
+            }
+        }
+
         private async Task<ContainerDetailBatchUpdateResultDto> BatchUpdateDetailsAttemptAsync(
             List<UpdateContainerDetailDto> updates,
             bool countValidNoOps,
             bool repairMissingStoreRelations,
             string? containerGuid,
-            ContainerMutationLockScope? mutationLock
+            ContainerMutationLockScope? mutationLock,
+            SetChildPurchasePriceLockScope? preAcquiredSetChildPurchasePriceLock = null
         )
         {
             try
@@ -2661,6 +3108,7 @@ namespace BlazorApp.Api.Services.React
 
                 // 第一步：查询需要更新的明细记录
                 var hguids = updates.Select(u => u.HGUID).Distinct().ToList();
+                await AcquireContainerDetailConcurrencyRowLocksAsync(hguids);
                 var allExistingDetails = await _context.Db.Queryable<ContainerDetail>()
                     .Where(d => hguids.Contains(d.DetailCode) && !d.IsDeleted)
                     .ToListAsync();
@@ -2693,6 +3141,250 @@ namespace BlazorApp.Api.Services.React
 
                 // 构建明细编码到明细实体的映射，便于快速查找
                 var detailMap = details.ToDictionary(d => d.DetailCode, d => d);
+                var overrideAuditIntents = new List<ContainerDetailFieldOverrideIntent>();
+                // 套装子项服务固定遵循 app lock → Product/Store/关系行锁。只有本次确实提交了
+                // 关联字段的商品才需要进入该锁域；备注、数量等纯明细保存不能被商品成本任务拖慢。
+                // ProductCode 不允许由本接口更新，因此锁内明细上的编码就是稳定资源键。
+                var tokenProductCodes = updates
+                    .Where(update =>
+                        RequiresRelatedSnapshotLock(update)
+                        && detailMap.TryGetValue(update.HGUID, out var detail)
+                        && !string.IsNullOrWhiteSpace(detail.ProductCode)
+                    )
+                    .Select(update => detailMap[update.HGUID].ProductCode!.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(productCode => productCode, StringComparer.Ordinal)
+                    .ToList();
+                SetChildPurchasePriceLockScope? setChildPurchasePriceLock = null;
+                SetChildPurchasePriceLockScope? detailedImportLock = null;
+                var busyImportProductCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (tokenProductCodes.Count > 0)
+                {
+                    if (repairMissingStoreRelations)
+                    {
+                        var partialLock = await SetChildPurchasePriceMutationLock
+                            .AcquireProductsPartiallyAsync(_context.Db, tokenProductCodes);
+                        detailedImportLock = partialLock.LockScope;
+                        busyImportProductCodes.UnionWith(partialLock.BusyProductCodes);
+                    }
+                    else if (preAcquiredSetChildPurchasePriceLock != null)
+                    {
+                        setChildPurchasePriceLock = preAcquiredSetChildPurchasePriceLock;
+                    }
+                    else
+                    {
+                        setChildPurchasePriceLock = await SetChildPurchasePriceMutationLock
+                            .AcquireProductsAsync(_context.Db, tokenProductCodes);
+                    }
+                }
+                // 详细保存允许部分成功：未拿到 app lock 的商品只能读取明细，绝不取得其关联行锁；
+                // 该商品的进口价随后返回 BUSY，避免与持锁的套装重算形成交叉等待。
+                var rowLockedTokenProductCodes = repairMissingStoreRelations
+                    ? tokenProductCodes.Where(code => !busyImportProductCodes.Contains(code)).ToList()
+                    : tokenProductCodes;
+                await AcquireContainerDetailConcurrencyRowLocksAsync(
+                    rowLockedTokenProductCodes,
+                    lockAssociatedProducts: true
+                );
+                var tokenDomesticProducts = rowLockedTokenProductCodes.Count == 0
+                    ? new List<DomesticProduct>()
+                    : await _context.Db.Queryable<DomesticProduct>()
+                        .Where(product => product.ProductCode != null && rowLockedTokenProductCodes.Contains(product.ProductCode))
+                        .ToListAsync();
+                var tokenWarehouseProducts = rowLockedTokenProductCodes.Count == 0
+                    ? new List<WarehouseProduct>()
+                    : await _context.Db.Queryable<WarehouseProduct>()
+                        .Where(product => product.ProductCode != null && rowLockedTokenProductCodes.Contains(product.ProductCode))
+                        .ToListAsync();
+                var tokenLocalProducts = rowLockedTokenProductCodes.Count == 0
+                    ? new List<Product>()
+                    : await _context.Db.Queryable<Product>()
+                        .Where(product => product.ProductCode != null && rowLockedTokenProductCodes.Contains(product.ProductCode))
+                        .ToListAsync();
+                var optionalRelationTables = await GetOptionalFieldTokenRelationTablesAsync();
+                var tokenStoreRetailPrices = rowLockedTokenProductCodes.Count == 0 || !optionalRelationTables.StoreRetailPrice
+                    ? new List<StoreRetailPrice>()
+                    : await _context.Db.Queryable<StoreRetailPrice>()
+                        .Where(price => price.ProductCode != null && rowLockedTokenProductCodes.Contains(price.ProductCode))
+                        .ToListAsync();
+                var tokenProductSetCodes = rowLockedTokenProductCodes.Count == 0 || !optionalRelationTables.ProductSetCode
+                    ? new List<ProductSetCode>()
+                    : await _context.Db.Queryable<ProductSetCode>()
+                        .Where(row => rowLockedTokenProductCodes.Contains(row.ProductCode))
+                        .ToListAsync();
+                var tokenStoreMultiCodeProducts = rowLockedTokenProductCodes.Count == 0 || !optionalRelationTables.StoreMultiCodeProduct
+                    ? new List<StoreMultiCodeProduct>()
+                    : await _context.Db.Queryable<StoreMultiCodeProduct>()
+                        .Where(row => row.ProductCode != null && rowLockedTokenProductCodes.Contains(row.ProductCode))
+                        .ToListAsync();
+                var tokenDomesticProductMap = tokenDomesticProducts
+                    .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                    .ToDictionary(product => product.ProductCode!, product => product, StringComparer.OrdinalIgnoreCase);
+                var tokenWarehouseProductMap = tokenWarehouseProducts
+                    .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                    .ToDictionary(product => product.ProductCode!, product => product, StringComparer.OrdinalIgnoreCase);
+                var tokenLocalProductMap = tokenLocalProducts
+                    .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                    .ToDictionary(product => product.ProductCode!, product => product, StringComparer.OrdinalIgnoreCase);
+                var tokenStoreRetailPriceMap = tokenStoreRetailPrices
+                    .Where(price => !string.IsNullOrWhiteSpace(price.ProductCode))
+                    .GroupBy(price => price.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => (IEnumerable<StoreRetailPrice>)group.ToList(), StringComparer.OrdinalIgnoreCase);
+                var tokenProductSetCodeMap = tokenProductSetCodes
+                    .Where(row => !string.IsNullOrWhiteSpace(row.ProductCode))
+                    .GroupBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => (IEnumerable<ProductSetCode>)group.ToList(), StringComparer.OrdinalIgnoreCase);
+                var tokenStoreMultiCodeProductMap = tokenStoreMultiCodeProducts
+                    .Where(row => !string.IsNullOrWhiteSpace(row.ProductCode))
+                    .GroupBy(row => row.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                    .ToDictionary(group => group.Key, group => (IEnumerable<StoreMultiCodeProduct>)group.ToList(), StringComparer.OrdinalIgnoreCase);
+                var importReplayWithSettledChildren = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var replayLock = repairMissingStoreRelations ? detailedImportLock : setChildPurchasePriceLock;
+                if (replayLock != null)
+                {
+                    foreach (var group in updates
+                        .Where(update => update.进口价格.HasValue && detailMap.ContainsKey(update.HGUID))
+                        .Select(update => new { Update = update, Detail = detailMap[update.HGUID] })
+                        .Where(item => !string.IsNullOrWhiteSpace(item.Detail.ProductCode))
+                        .GroupBy(item => item.Detail.ProductCode!.Trim(), StringComparer.OrdinalIgnoreCase))
+                    {
+                        var submittedPrices = group.Select(item => item.Update.进口价格!.Value).Distinct().ToList();
+                        if (submittedPrices.Count != 1 || busyImportProductCodes.Contains(group.Key))
+                        {
+                            continue;
+                        }
+                        var submittedPrice = submittedPrices[0];
+                        tokenWarehouseProductMap.TryGetValue(group.Key, out var warehouse);
+                        tokenLocalProductMap.TryGetValue(group.Key, out var local);
+                        tokenStoreRetailPriceMap.TryGetValue(group.Key, out var stores);
+                        // 先证明主档/分店主成本已到提交值，再复用 SetChild 的 dry-run 算法核验所有子项。
+                        if (!AreImportSyncTargetsAtPrice(warehouse, local, stores, null, null, submittedPrice))
+                        {
+                            continue;
+                        }
+                        var preview = await new SetChildPurchasePriceService(_context.Db)
+                            .PreviewLockedAsync(replayLock, new[] { group.Key });
+                        if (preview.ProductSetCode.PendingUpdateCount == 0
+                            && preview.StoreMultiCodeProduct.PendingUpdateCount == 0
+                            && preview.ProductSetCode.SkippedGroupCount == 0
+                            && preview.StoreMultiCodeProduct.SkippedGroupCount == 0
+                            && preview.Errors.Count == 0)
+                        {
+                            importReplayWithSettledChildren.Add(group.Key);
+                        }
+                    }
+                }
+                bool RelatedTargetsAlreadyAtSubmittedValue(
+                    ContainerDetail detail,
+                    ContainerDetailFieldIntent intent
+                )
+                {
+                    var productCode = detail.ProductCode;
+                    if (string.IsNullOrWhiteSpace(productCode))
+                    {
+                        return true;
+                    }
+                    tokenWarehouseProductMap.TryGetValue(productCode, out var warehouse);
+                    tokenDomesticProductMap.TryGetValue(productCode, out var domestic);
+                    tokenLocalProductMap.TryGetValue(productCode, out var local);
+                    tokenStoreRetailPriceMap.TryGetValue(productCode, out var stores);
+                    tokenProductSetCodeMap.TryGetValue(productCode, out var setRows);
+                    tokenStoreMultiCodeProductMap.TryGetValue(productCode, out var multiRows);
+                    return intent.Field switch
+                    {
+                        "进口价格" when intent.SubmittedValue is decimal price =>
+                            AreImportSyncTargetsAtPrice(
+                                warehouse, local, stores, setRows, multiRows, price
+                                , importReplayWithSettledChildren.Contains(productCode)
+                            ),
+                        "贴牌价格" when intent.SubmittedValue is decimal price =>
+                            (warehouse == null || warehouse.OEMPrice == price)
+                            && (local == null || local.RetailPrice == price),
+                        "IsActive" when intent.SubmittedValue is bool isActive =>
+                            warehouse == null || warehouse.IsActive == isActive,
+                        "ProductCategoryGUID" =>
+                            local == null || ContainerDetailFieldConcurrencyGuard.BusinessValuesEqual(
+                                local.WarehouseCategoryGUID,
+                                intent.SubmittedValue
+                            ),
+                        "中包数" when intent.SubmittedValue is decimal middlePack =>
+                            (warehouse == null || warehouse.MinOrderQuantity == decimal.ToInt32(middlePack))
+                            && (domestic == null || domestic.MiddlePackQuantity == decimal.ToInt32(middlePack)),
+                        "商品名称" =>
+                            domestic == null || ContainerDetailFieldConcurrencyGuard.BusinessValuesEqual(
+                                domestic.ProductName,
+                                intent.SubmittedValue
+                            ),
+                        "英文名称" =>
+                            (local == null || ContainerDetailFieldConcurrencyGuard.BusinessValuesEqual(local.ProductName, intent.SubmittedValue))
+                            && (local == null || ContainerDetailFieldConcurrencyGuard.BusinessValuesEqual(local.EnglishName, intent.SubmittedValue))
+                            && (domestic == null || ContainerDetailFieldConcurrencyGuard.BusinessValuesEqual(domestic.EnglishProductName, intent.SubmittedValue)),
+                        _ => true,
+                    };
+                }
+                if (repairMissingStoreRelations && busyImportProductCodes.Count > 0)
+                {
+                    var rejectedBusyFields = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var update in updates.Where(update =>
+                        detailMap.TryGetValue(update.HGUID, out var detail)
+                        && !string.IsNullOrWhiteSpace(detail.ProductCode)
+                        && busyImportProductCodes.Contains(detail.ProductCode.Trim())))
+                    {
+                        var fields = EnumerateFieldIntents(update)
+                            .Where(intent => IsRelatedSyncField(intent.Field))
+                            .Select(intent => intent.Field)
+                            .ToHashSet(StringComparer.Ordinal);
+                        if (fields.Count == 0) continue;
+                        rejectedBusyFields[update.HGUID] = fields;
+                        foreach (var field in fields)
+                            result.ValidationErrors.Add(new ContainerDetailBatchUpdateValidationErrorDto
+                            {
+                                HGUID = update.HGUID, Field = field,
+                                Code = SetChildPurchasePriceMutationLock.BusyErrorCode,
+                                Message = "关联商品正在被其他操作更新，请稍后重试",
+                            });
+                    }
+                    updates = updates.Select(update => rejectedBusyFields.TryGetValue(update.HGUID, out var fields)
+                        ? CloneWithRejectedDirectFields(update, fields) : update).ToList();
+                }
+                // 在同一货柜互斥事务内以刚读取的行值校验字段基线；冲突字段从本次意图中剔除，
+                // 其余字段仍按原有部分成功语义写入，避免不同字段的编辑互相阻塞。
+                if (IsContainerDetailFieldConcurrencyEnabled())
+                {
+                    updates = updates
+                        .Select(update =>
+                            detailMap.TryGetValue(update.HGUID, out var detail)
+                                ? RemoveConflictingFieldIntents(
+                                    update,
+                                    ContainerDetailFieldConcurrencyGuard.CreateSnapshots(
+                                        detail,
+                                        detail.ProductCode != null && tokenWarehouseProductMap.TryGetValue(detail.ProductCode, out var warehouseProduct)
+                                            ? warehouseProduct
+                                            : null,
+                                        detail.ProductCode != null && tokenDomesticProductMap.TryGetValue(detail.ProductCode, out var domesticProduct)
+                                            ? domesticProduct
+                                            : null,
+                                        detail.ProductCode != null && tokenLocalProductMap.TryGetValue(detail.ProductCode, out var localProduct)
+                                            ? localProduct
+                                            : null,
+                                        detail.ProductCode != null && tokenStoreRetailPriceMap.TryGetValue(detail.ProductCode, out var storeRetailPrices)
+                                            ? storeRetailPrices
+                                            : null,
+                                        detail.ProductCode != null && tokenProductSetCodeMap.TryGetValue(detail.ProductCode, out var productSetCodes)
+                                            ? productSetCodes
+                                            : null,
+                                        detail.ProductCode != null && tokenStoreMultiCodeProductMap.TryGetValue(detail.ProductCode, out var storeMultiCodeProducts)
+                                            ? storeMultiCodeProducts
+                                            : null
+                                    ),
+                                    result,
+                                    overrideAuditIntents,
+                                    intent => RelatedTargetsAlreadyAtSubmittedValue(detail, intent)
+                                )
+                                : update
+                        )
+                        .ToList();
+                }
                 var changedDetails = new List<ContainerDetail>();
                 var updatedRequestGuids = new HashSet<string>();
                 var existingDetailUpdates = updates
@@ -2817,6 +3509,7 @@ namespace BlazorApp.Api.Services.React
                         || update.合计装柜金额.HasValue
                         || HasAcceptedActive(update)
                         || update.ProductCategoryGUID != null
+                        || update.ClearProductCategory == true
                         || update.备注 != null;
                     if (countValidNoOps && hasDirectDetailIntent)
                     {
@@ -2915,12 +3608,14 @@ namespace BlazorApp.Api.Services.React
                         remarkWrites.Add(update.HGUID);
                         changed = true;
                     }
-                    if (update.ProductCategoryGUID != null)
+                    if (update.ProductCategoryGUID != null || update.ClearProductCategory == true)
                     {
-                        var nextCategoryGuid = GetValidatedCategoryGuidForWrite(
-                            update.ProductCategoryGUID,
-                            validatedTargetCategoryGuids
-                        );
+                        var nextCategoryGuid = update.ClearProductCategory == true
+                            ? null
+                            : GetValidatedCategoryGuidForWrite(
+                                update.ProductCategoryGUID,
+                                validatedTargetCategoryGuids
+                            );
                         if (detail.TargetWarehouseCategoryGUID != nextCategoryGuid)
                         {
                             // 目标分类先落在货柜明细上；未匹配新商品创建时会继承它。
@@ -3004,17 +3699,21 @@ namespace BlazorApp.Api.Services.React
                     .Select(x => x!)
                     .ToList();
 
-                var productCodes = validDetailUpdates
-                    .Select(x => x.ProductCode!)
-                    .Distinct()
-                    .ToList();
                 var auditBatchGuid = Guid.NewGuid();
                 var auditActorName = _currentUserService.GetCurrentUsername();
                 var auditActorGuid = _currentUserService.GetCurrentUserGuid();
                 var now = DateTime.UtcNow;
                 // SkipRelatedProductSync 只允许写货柜明细，关联主数据回填必须统一走这个过滤集合。
                 var relatedSyncDetailUpdates = validDetailUpdates
-                    .Where(x => x.Update.SkipRelatedProductSync != true)
+                    .Where(x =>
+                        x.Update.SkipRelatedProductSync != true
+                        && EnumerateFieldIntents(x.Update).Any(intent => IsRelatedSyncField(intent.Field))
+                    )
+                    .ToList();
+                // 纯货柜明细字段（尤其 partial busy 商品）不进入任何关联表读取、同步或商品变更历史。
+                var productCodes = relatedSyncDetailUpdates
+                    .Select(x => x.ProductCode!)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
                 // 预加载商品数据：既用于名称回写，也用于判断价格同步是否是已有商品。
@@ -3245,18 +3944,22 @@ namespace BlazorApp.Api.Services.React
 
                 foreach (var item in relatedSyncDetailUpdates)
                 {
-                    if (item.Update.ProductCategoryGUID == null)
+                    if (
+                        item.Update.ProductCategoryGUID == null
+                        && item.Update.ClearProductCategory != true
+                    )
                     {
                         continue;
                     }
 
-                    var nextCategoryGuid = GetValidatedCategoryGuidForWrite(
-                        item.Update.ProductCategoryGUID,
-                        validatedTargetCategoryGuids
-                    );
+                    var nextCategoryGuid = item.Update.ClearProductCategory == true
+                        ? null
+                        : GetValidatedCategoryGuidForWrite(
+                            item.Update.ProductCategoryGUID,
+                            validatedTargetCategoryGuids
+                        );
                     if (
-                        nextCategoryGuid != null
-                        && localProductMap.TryGetValue(item.ProductCode!, out var localProduct)
+                        localProductMap.TryGetValue(item.ProductCode!, out var localProduct)
                         && localProduct.WarehouseCategoryGUID != nextCategoryGuid
                     )
                     {
@@ -3523,33 +4226,17 @@ namespace BlazorApp.Api.Services.React
                             }
                         }
 
-                        SetChildPurchasePriceLockScope? setChildPurchasePriceLock = null;
-                        SetChildPurchasePriceLockScope? detailedImportLock = null;
                         if (repairMissingStoreRelations)
                         {
-                            if (repairPurchasePrices.Count > 0)
+                            foreach (var productCode in busyImportProductCodes)
                             {
-                                var partialLock = await SetChildPurchasePriceMutationLock
-                                    .AcquireProductsPartiallyAsync(
-                                        _context.Db,
-                                        repairPurchasePrices.Keys
-                                    );
-                                detailedImportLock = partialLock.LockScope;
-                                foreach (var productCode in partialLock.BusyProductCodes)
-                                {
-                                    RejectImportPriceForProduct(
-                                        productCode,
-                                        SetChildPurchasePriceMutationLock.BusyErrorCode,
-                                        "套装子项成本正在被其他操作更新，请稍后重试"
-                                    );
-                                    repairPurchasePrices.Remove(productCode);
-                                }
+                                RejectImportPriceForProduct(
+                                    productCode,
+                                    SetChildPurchasePriceMutationLock.BusyErrorCode,
+                                    "套装子项成本正在被其他操作更新，请稍后重试"
+                                );
+                                repairPurchasePrices.Remove(productCode);
                             }
-                        }
-                        else if (productCodes.Count > 0)
-                        {
-                            setChildPurchasePriceLock = await SetChildPurchasePriceMutationLock
-                                .AcquireProductsAsync(_context.Db, productCodes);
                         }
 
                         // 快照必须在同一事务内、任何业务写入前读取；需成本同步的商品已先取得业务锁。
@@ -3953,6 +4640,55 @@ namespace BlazorApp.Api.Services.React
                             );
                         }
 
+                        // 字段令牌阶段的“允许覆盖”只是候选；随后还可能因同商品意图、名称校验、
+                        // 套装/多码结构等规则拒绝该字段。审计只能记录最终被接受（含幂等成功）的覆盖，
+                        // 不能把未写入的候选覆盖伪装成已发生的业务操作。
+                        var acceptedOverrideAuditIntents = overrideAuditIntents
+                            .Where(intent =>
+                            {
+                                var fieldErrors = result.ValidationErrors
+                                    .Where(error =>
+                                        string.Equals(error.HGUID, intent.Hguid, StringComparison.OrdinalIgnoreCase)
+                                        && string.Equals(error.Field, intent.Field, StringComparison.Ordinal)
+                                    )
+                                    .ToList();
+                                if (fieldErrors.Count == 0)
+                                {
+                                    return true;
+                                }
+
+                                // 中文英文名在“清空英文名称”同时提交时只是对非法输入的提示，
+                                // 最终清空意图仍会实际写入，应保留覆盖审计；其它字段错误均表示该字段被拒绝。
+                                return intent.Field == "英文名称"
+                                    && fieldErrors.All(error => error.Code == "CONTAINS_CHINESE")
+                                    && updates.Any(update =>
+                                        string.Equals(update.HGUID, intent.Hguid, StringComparison.OrdinalIgnoreCase)
+                                        && update.ClearEnglishName == true
+                                    );
+                            })
+                            .ToList();
+                        if (acceptedOverrideAuditIntents.Count > 0)
+                        {
+                            // 审计与被确认的业务写入处于同一事务，任何后续失败都会同时回滚。
+                            await _context.Db.Insertable(
+                                acceptedOverrideAuditIntents.Select(intent => new ContainerDetailFieldOverrideAudit
+                                {
+                                    Id = Guid.NewGuid(),
+                                    ContainerGuid = containerGuid
+                                        ?? detailMap[intent.Hguid].ContainerCode,
+                                    DetailHguid = intent.Hguid,
+                                    Field = intent.Field,
+                                    ServerValue = JsonSerializer.Serialize(intent.ServerValue),
+                                    OverrideValue = JsonSerializer.Serialize(intent.OverrideValue),
+                                    ConfirmationToken = intent.ConfirmationToken,
+                                    ActorUserGuid = auditActorGuid ?? string.Empty,
+                                    ActorName = auditActorName,
+                                    OccurredAtUtc = now,
+                                    BatchGuid = auditBatchGuid,
+                                }).ToList()
+                            ).ExecuteCommandAsync();
+                        }
+
                         var afterSnapshots = await _changeHistoryService.CaptureSnapshotsAsync(productCodes);
                         await _changeHistoryService.RecordChangesAsync(
                             beforeSnapshots,
@@ -4209,6 +4945,423 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
         }
 
+        public async Task<ContainerDetailBatchPreviewResultDto> PreviewBatchActionAsync(
+            string containerGuid,
+            ContainerDetailBatchPreviewRequestDto request
+        )
+        {
+            var operation = NormalizeBatchOperation(request.Operation);
+            var hguids = await ResolveContainerDetailBatchScopeHguidsAsync(containerGuid, request.Scope);
+            var details = hguids.Count == 0
+                ? new List<ContainerDetail>()
+                : await _context.Db.Queryable<ContainerDetail>()
+                    .Where(detail => hguids.Contains(detail.DetailCode) && detail.ContainerCode == containerGuid && !detail.IsDeleted)
+                    .ToListAsync();
+            var expiresAt = DateTime.UtcNow.AddMinutes(5);
+            var parameters = NormalizePreviewParameters(operation, request.Parameters);
+            var fingerprints = await CreateBatchPreviewFingerprintsAsync(containerGuid, operation, details, parameters);
+            var payload = new ContainerDetailBatchPreviewPayload
+            {
+                UserGuid = _currentUserService.GetCurrentUserGuid() ?? string.Empty,
+                ContainerGuid = containerGuid,
+                Operation = operation,
+                Parameters = parameters,
+                Scope = NormalizeBatchScope(request.Scope),
+                DetailFingerprints = fingerprints,
+                ExpiresAtUtc = expiresAt,
+            };
+            return new ContainerDetailBatchPreviewResultDto
+            {
+                AffectedCount = details.Count,
+                FieldSummary = GetBatchOperationFields(operation, parameters),
+                PreviewToken = _batchPreviewProtector.Protect(JsonSerializer.Serialize(payload)),
+                ExpiresAt = expiresAt,
+            };
+        }
+
+        private async Task EnsureBatchPreviewAsync(
+            string containerGuid,
+            string operation,
+            ContainerDetailBatchScopeDto request,
+            string parameters,
+            IReadOnlyCollection<ContainerDetail> details
+        )
+        {
+            if (string.IsNullOrWhiteSpace(request.PreviewToken))
+            {
+                if (IsContainerDetailConcurrencyTokenRequired())
+                    throw new ContainerDetailConcurrencyTokenRequiredException();
+                return;
+            }
+            ContainerDetailBatchPreviewPayload? payload;
+            try
+            {
+                payload = JsonSerializer.Deserialize<ContainerDetailBatchPreviewPayload>(
+                    _batchPreviewProtector.Unprotect(request.PreviewToken)
+                );
+            }
+            catch (Exception exception)
+            {
+                throw new ContainerDetailBatchPreviewConflictException("批量预览令牌无效或已过期", exception);
+            }
+            var currentUserGuid = _currentUserService.GetCurrentUserGuid() ?? string.Empty;
+            var fingerprints = await CreateBatchPreviewFingerprintsAsync(containerGuid, operation, details, parameters);
+            if (payload == null
+                || payload.ExpiresAtUtc < DateTime.UtcNow
+                || !string.Equals(payload.UserGuid, currentUserGuid, StringComparison.Ordinal)
+                || !string.Equals(payload.ContainerGuid, containerGuid, StringComparison.Ordinal)
+                || !string.Equals(payload.Operation, operation, StringComparison.Ordinal)
+                || !string.Equals(payload.Parameters, parameters, StringComparison.Ordinal)
+                || !string.Equals(payload.Scope, NormalizeBatchScope(request), StringComparison.Ordinal)
+                || !payload.DetailFingerprints.SequenceEqual(fingerprints, StringComparer.Ordinal))
+            {
+                throw new ContainerDetailBatchPreviewConflictException("批量范围或目标数据已变化，请重新预览");
+            }
+        }
+
+        private static string NormalizeBatchOperation(string? operation) => operation?.Trim().ToLowerInvariant() switch
+        {
+            "apply-float-rate" or "apply-prices" or "recalculate-costs" or "backfill-last-prices" or "delete-details" or "set-status" or "assign-category" => operation.Trim().ToLowerInvariant(),
+            _ => throw new InvalidOperationException("不支持的批量操作"),
+        };
+
+        private static string NormalizePreviewParameters(
+            string operation,
+            IReadOnlyDictionary<string, JsonElement>? parameters
+        )
+        {
+            var normalized = (parameters ?? new Dictionary<string, JsonElement>())
+                .Where(item => !string.IsNullOrWhiteSpace(item.Key))
+                .ToDictionary(
+                    item => item.Key.Trim(),
+                    item => NormalizeJsonParameter(item.Value),
+                    StringComparer.Ordinal
+                );
+            if (operation == "apply-prices")
+            {
+                // Web/Mobile 的 undefined 字段不会进入 JSON；执行端仍有两个可空参数，
+                // 因此预览必须补齐缺省键，避免只改一个价格时令牌被错误判为过期。
+                return $"importPrice={normalized.GetValueOrDefault("importPrice", "<null>")}&oemPrice={normalized.GetValueOrDefault("oemPrice", "<null>")}";
+            }
+            if (operation == "set-status")
+            {
+                return $"isActive={normalized.GetValueOrDefault("isActive", "<null>")}";
+            }
+            if (operation == "assign-category")
+            {
+                var categoryGuid = normalized.GetValueOrDefault("categoryGuid", "<null>");
+                return $"categoryGuid={(categoryGuid == "<null>" ? categoryGuid : NormalizeCategoryGuid(categoryGuid) ?? "<null>")}";
+            }
+            return string.Join("&", normalized
+                .OrderBy(item => item.Key, StringComparer.Ordinal)
+                .Select(item => $"{item.Key}={item.Value}"));
+        }
+
+        private static string NormalizeJsonParameter(JsonElement value) => value.ValueKind switch
+        {
+            JsonValueKind.Number when value.TryGetDecimal(out var decimalValue) => decimalValue.ToString("G29", System.Globalization.CultureInfo.InvariantCulture),
+            JsonValueKind.String => value.GetString()?.Trim() ?? "<null>",
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            JsonValueKind.Null or JsonValueKind.Undefined => "<null>",
+            _ => value.GetRawText(),
+        };
+
+        private static string NormalizeBatchScope(ContainerDetailBatchScopeDto scope) =>
+            JsonSerializer.Serialize(new
+            {
+                selectedHguids = scope.SelectedHguids
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Select(value => value.Trim())
+                    .OrderBy(value => value, StringComparer.Ordinal)
+                    .ToList(),
+                query = scope.Query,
+            });
+
+        private static string CreateBatchPreviewFingerprint(
+            ContainerDetail detail,
+            string operation,
+            string parameters
+        )
+        {
+            var includesImportPrice = HasBatchPreviewParameter(parameters, "importPrice");
+            var includesOemPrice = HasBatchPreviewParameter(parameters, "oemPrice");
+            var value = operation switch
+            {
+                "apply-float-rate" or "recalculate-costs" => $"{detail.AdjustmentRate}|{detail.TransportCost}|{detail.ImportPrice}|{detail.DomesticPrice}|{detail.TotalVolume}|{detail.LoadingQuantity}",
+                "apply-prices" => $"{(includesImportPrice ? detail.ImportPrice : null)}|{(includesOemPrice ? detail.OEMPrice : null)}|{detail.ProductCode}",
+                "backfill-last-prices" => $"{detail.LastImportPrice}|{detail.LastOEMPrice}|{detail.ProductCode}",
+                "set-status" => $"{detail.IsActive}|{detail.ProductCode}",
+                "assign-category" => $"{detail.TargetWarehouseCategoryGUID}|{detail.ProductCode}",
+                _ => $"{detail.AdjustmentRate}|{detail.DomesticPrice}|{detail.ImportPrice}|{detail.OEMPrice}|{detail.TransportCost}|{detail.PackingQuantity}|{detail.UnitVolume}|{detail.LoadingQuantity}|{detail.TotalVolume}|{detail.TotalAmount}|{detail.Remarks}|{detail.ProductCode}",
+            };
+            return ContainerDetailFieldConcurrencyGuard.CreateToken(detail.DetailCode, $"batch:{operation}", value, null);
+        }
+
+        private async Task<List<string>> CreateBatchPreviewFingerprintsAsync(
+            string containerGuid,
+            string operation,
+            IReadOnlyCollection<ContainerDetail> details,
+            string parameters
+        )
+        {
+            if (operation == "delete-details")
+            {
+                // 删除会使用户基于整行快照作出的判断失效。这里复用字段守卫的完整快照，
+                // 让任何可编辑列或会被详细保存同步的关联主档/分店价格变化都令预览失效。
+                return await CreateDeleteDetailsPreviewFingerprintsAsync(details);
+            }
+
+            var fingerprints = details.OrderBy(detail => detail.DetailCode, StringComparer.Ordinal)
+                .Select(detail => CreateBatchPreviewFingerprint(detail, operation, parameters)).ToList();
+            if (operation is "apply-float-rate" or "recalculate-costs")
+            {
+                var container = await _context.Db.Queryable<Container>()
+                    .Where(item => item.ContainerCode == containerGuid && !item.IsDeleted)
+                    .Select(item => new { item.ExchangeRate, item.ShippingFee, item.TotalVolume })
+                    .FirstAsync();
+                fingerprints.Add(ContainerDetailFieldConcurrencyGuard.CreateToken(
+                    containerGuid, "batch:container", $"{container?.ExchangeRate}|{container?.ShippingFee}|{container?.TotalVolume}", null
+                ));
+            }
+            if (operation is "apply-prices" or "backfill-last-prices" or "set-status" or "assign-category")
+            {
+                var productCodes = details.Select(detail => detail.ProductCode).Where(code => !string.IsNullOrWhiteSpace(code)).Select(code => code!).Distinct().OrderBy(code => code, StringComparer.Ordinal).ToList();
+                if (productCodes.Count > 0)
+                {
+                    var includesImportPrice = HasBatchPreviewParameter(parameters, "importPrice");
+                    var includesOemPrice = HasBatchPreviewParameter(parameters, "oemPrice");
+                    if (operation is "apply-prices" or "backfill-last-prices" or "set-status")
+                    {
+                        var warehouseProducts = await _context.Db.Queryable<WarehouseProduct>()
+                            .Where(product => product.ProductCode != null && productCodes.Contains(product.ProductCode) && !product.IsDeleted)
+                            .Select(product => new { product.ProductCode, product.ImportPrice, product.OEMPrice, product.IsActive })
+                            .ToListAsync();
+                        fingerprints.AddRange(warehouseProducts.OrderBy(product => product.ProductCode, StringComparer.Ordinal)
+                            .Select(product => ContainerDetailFieldConcurrencyGuard.CreateToken(
+                                product.ProductCode!,
+                                "batch:warehouse",
+                                operation switch
+                                {
+                                    "apply-prices" => $"{(includesImportPrice ? product.ImportPrice : null)}|{(includesOemPrice ? product.OEMPrice : null)}",
+                                    "backfill-last-prices" => $"{product.ImportPrice}|{product.OEMPrice}",
+                                    _ => product.IsActive,
+                                },
+                                null
+                            )));
+                    }
+
+                    // 批量改价会在同一事务同步 Product 与所有分店价格行；这些行也属于预览快照，
+                    // 否则明细未变而主档已被他人更新时，执行仍可能静默覆盖关联价格。
+                    if (operation == "apply-prices")
+                    {
+                        var products = await _context.Db.Queryable<Product>()
+                            .Where(product => product.ProductCode != null && productCodes.Contains(product.ProductCode) && !product.IsDeleted)
+                            .Select(product => new { product.ProductCode, product.PurchasePrice, product.RetailPrice })
+                            .ToListAsync();
+                        fingerprints.AddRange(products.OrderBy(product => product.ProductCode, StringComparer.Ordinal)
+                            .Select(product => ContainerDetailFieldConcurrencyGuard.CreateToken(product.ProductCode!, "batch:product", $"{(includesImportPrice ? product.PurchasePrice : null)}|{(includesOemPrice ? product.RetailPrice : null)}", null)));
+
+                        if (includesImportPrice)
+                        {
+                            var storeRetailPrices = await _context.Db.Queryable<StoreRetailPrice>()
+                                .Where(price => price.ProductCode != null && productCodes.Contains(price.ProductCode))
+                                .Select(price => new { price.UUID, price.StoreCode, price.ProductCode, price.PurchasePrice, price.IsActive, price.IsDeleted })
+                                .ToListAsync();
+                            fingerprints.AddRange(storeRetailPrices
+                                .OrderBy(price => price.ProductCode, StringComparer.Ordinal)
+                                .ThenBy(price => price.UUID, StringComparer.Ordinal)
+                                .Select(price => ContainerDetailFieldConcurrencyGuard.CreateToken(price.UUID, "batch:store-retail", $"{price.StoreCode}|{price.ProductCode}|{price.PurchasePrice}|{price.IsActive}|{price.IsDeleted}", null)));
+
+                            // 套装和多码关系既会被回写成本，也会参与分配；批量进口价预览必须绑定它们。
+                            var setRows = await _context.Db.Queryable<ProductSetCode>()
+                                .Where(row => productCodes.Contains(row.ProductCode))
+                                .ToListAsync();
+                            var multiRows = await _context.Db.Queryable<StoreMultiCodeProduct>()
+                                .Where(row => row.ProductCode != null && productCodes.Contains(row.ProductCode))
+                                .ToListAsync();
+                            fingerprints.AddRange(setRows
+                                .Where(row => row.SetType == 1 || row.SetType == 2)
+                                .OrderBy(row => row.ProductCode, StringComparer.Ordinal)
+                                .ThenBy(row => row.SetCodeId, StringComparer.Ordinal)
+                                .Select(row => ContainerDetailFieldConcurrencyGuard.CreateToken(row.SetCodeId, "batch:product-set", $"{row.ProductCode}|{row.SetProductCode}|{row.SetType}|{row.SetRetailPrice}|{row.SetPurchasePrice}|{row.IsActive}|{row.IsDeleted}", null)));
+                            fingerprints.AddRange(multiRows
+                                .OrderBy(row => row.ProductCode, StringComparer.Ordinal)
+                                .ThenBy(row => row.StoreCode, StringComparer.Ordinal)
+                                .ThenBy(row => row.UUID, StringComparer.Ordinal)
+                                .Select(row => ContainerDetailFieldConcurrencyGuard.CreateToken(row.UUID, "batch:store-multi", $"{row.StoreCode}|{row.ProductCode}|{row.MultiCodeProductCode}|{row.MultiCodeRetailPrice}|{row.PurchasePrice}|{row.IsActive}|{row.IsDeleted}", null)));
+                        }
+                    }
+                    else if (operation == "assign-category")
+                    {
+                        var products = await _context.Db.Queryable<Product>()
+                            .Where(product => product.ProductCode != null && productCodes.Contains(product.ProductCode) && !product.IsDeleted)
+                            .Select(product => new { product.ProductCode, product.WarehouseCategoryGUID })
+                            .ToListAsync();
+                        fingerprints.AddRange(products.OrderBy(product => product.ProductCode, StringComparer.Ordinal)
+                            .Select(product => ContainerDetailFieldConcurrencyGuard.CreateToken(product.ProductCode!, "batch:product-category", product.WarehouseCategoryGUID, null)));
+                    }
+                }
+            }
+            return fingerprints;
+        }
+
+        private static bool HasBatchPreviewParameter(string parameters, string name) =>
+            parameters.Split('&', StringSplitOptions.None)
+                .Any(entry => string.Equals(entry.Split('=', 2)[0], name, StringComparison.Ordinal) && !entry.EndsWith("=<null>", StringComparison.Ordinal));
+
+        private async Task<List<string>> CreateDeleteDetailsPreviewFingerprintsAsync(
+            IReadOnlyCollection<ContainerDetail> details
+        )
+        {
+            var productCodes = GetNormalizedProductCodes(details);
+            if (productCodes.Count == 0)
+            {
+                return details
+                    .OrderBy(detail => detail.DetailCode, StringComparer.Ordinal)
+                    .Select(detail => CreateDeleteDetailsPreviewFingerprint(detail, null, null, null, null, null, null))
+                    .ToList();
+            }
+
+            var domesticProducts = await _context.Db.Queryable<DomesticProduct>()
+                .Where(product => product.ProductCode != null && productCodes.Contains(product.ProductCode))
+                .ToListAsync();
+            var warehouseProducts = await _context.Db.Queryable<WarehouseProduct>()
+                .Where(product => product.ProductCode != null && productCodes.Contains(product.ProductCode))
+                .ToListAsync();
+            var localProducts = await _context.Db.Queryable<Product>()
+                .Where(product => product.ProductCode != null && productCodes.Contains(product.ProductCode))
+                .ToListAsync();
+            var storeRetailPrices = await _context.Db.Queryable<StoreRetailPrice>()
+                .Where(price => price.ProductCode != null && productCodes.Contains(price.ProductCode))
+                .ToListAsync();
+            var productSetCodes = await _context.Db.Queryable<ProductSetCode>()
+                .Where(row => productCodes.Contains(row.ProductCode))
+                .ToListAsync();
+            var storeMultiCodeProducts = await _context.Db.Queryable<StoreMultiCodeProduct>()
+                .Where(row => row.ProductCode != null && productCodes.Contains(row.ProductCode))
+                .ToListAsync();
+
+            var domesticByCode = domesticProducts
+                .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                .ToDictionary(product => product.ProductCode!, StringComparer.OrdinalIgnoreCase);
+            var warehouseByCode = warehouseProducts
+                .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                .ToDictionary(product => product.ProductCode!, StringComparer.OrdinalIgnoreCase);
+            var localByCode = localProducts
+                .Where(product => !string.IsNullOrWhiteSpace(product.ProductCode))
+                .ToDictionary(product => product.ProductCode!, StringComparer.OrdinalIgnoreCase);
+            var storeByCode = storeRetailPrices
+                .Where(price => !string.IsNullOrWhiteSpace(price.ProductCode))
+                .GroupBy(price => price.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => (IEnumerable<StoreRetailPrice>)group.ToList(),
+                    StringComparer.OrdinalIgnoreCase
+                );
+            var setByCode = productSetCodes
+                .Where(row => !string.IsNullOrWhiteSpace(row.ProductCode))
+                .GroupBy(row => row.ProductCode, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => (IEnumerable<ProductSetCode>)group.ToList(), StringComparer.OrdinalIgnoreCase);
+            var multiByCode = storeMultiCodeProducts
+                .Where(row => !string.IsNullOrWhiteSpace(row.ProductCode))
+                .GroupBy(row => row.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => (IEnumerable<StoreMultiCodeProduct>)group.ToList(), StringComparer.OrdinalIgnoreCase);
+
+            return details
+                .OrderBy(detail => detail.DetailCode, StringComparer.Ordinal)
+                .Select(detail =>
+                {
+                    var productCode = detail.ProductCode?.Trim();
+                    return CreateDeleteDetailsPreviewFingerprint(
+                        detail,
+                        productCode != null && warehouseByCode.TryGetValue(productCode, out var warehouse)
+                            ? warehouse
+                            : null,
+                        productCode != null && domesticByCode.TryGetValue(productCode, out var domestic)
+                            ? domestic
+                            : null,
+                        productCode != null && localByCode.TryGetValue(productCode, out var local)
+                            ? local
+                            : null,
+                        productCode != null && storeByCode.TryGetValue(productCode, out var stores)
+                            ? stores
+                            : null,
+                        productCode != null && setByCode.TryGetValue(productCode, out var setRows)
+                            ? setRows
+                            : null,
+                        productCode != null && multiByCode.TryGetValue(productCode, out var multiRows)
+                            ? multiRows
+                            : null
+                    );
+                })
+                .ToList();
+        }
+
+        private static string CreateDeleteDetailsPreviewFingerprint(
+            ContainerDetail detail,
+            WarehouseProduct? warehouseProduct,
+            DomesticProduct? domesticProduct,
+            Product? localProduct,
+            IEnumerable<StoreRetailPrice>? storeRetailPrices,
+            IEnumerable<ProductSetCode>? productSetCodes,
+            IEnumerable<StoreMultiCodeProduct>? storeMultiCodeProducts
+        )
+        {
+            var fieldTokens = ContainerDetailFieldConcurrencyGuard.CreateTokens(
+                detail.DetailCode,
+                ContainerDetailFieldConcurrencyGuard.CreateSnapshots(
+                    detail,
+                    warehouseProduct,
+                    domesticProduct,
+                    localProduct,
+                    storeRetailPrices,
+                    productSetCodes,
+                    storeMultiCodeProducts
+                )
+            );
+            var completeSnapshot = string.Join(
+                "|",
+                fieldTokens
+                    .OrderBy(item => item.Key, StringComparer.Ordinal)
+                    .Select(item => $"{item.Key}={item.Value}")
+            );
+            return ContainerDetailFieldConcurrencyGuard.CreateToken(
+                detail.DetailCode,
+                "batch:delete-details",
+                completeSnapshot,
+                null
+            );
+        }
+
+        private static List<string> GetBatchOperationFields(string operation, string parameters) => operation switch
+        {
+            "apply-float-rate" or "recalculate-costs" => new() { "调整浮率", "运输成本", "进口价格" },
+            "apply-prices" => new[]
+                {
+                    HasBatchPreviewParameter(parameters, "importPrice") ? "进口价格" : null,
+                    HasBatchPreviewParameter(parameters, "oemPrice") ? "贴牌价格" : null,
+                }
+                .Where(field => field != null)
+                .Select(field => field!)
+                .ToList(),
+            "backfill-last-prices" => new() { "LastImportPrice", "LastOEMPrice" },
+            "set-status" => new() { "IsActive" },
+            "assign-category" => new() { "ProductCategoryGUID" },
+            _ => new() { "删除明细" },
+        };
+
+        private sealed class ContainerDetailBatchPreviewPayload
+        {
+            public string UserGuid { get; set; } = string.Empty;
+            public string ContainerGuid { get; set; } = string.Empty;
+            public string Operation { get; set; } = string.Empty;
+            public string Parameters { get; set; } = string.Empty;
+            public string Scope { get; set; } = string.Empty;
+            public List<string> DetailFingerprints { get; set; } = new();
+            public DateTime ExpiresAtUtc { get; set; }
+        }
+
         private static decimal? CalculateScopedTransportCost(
             ContainerDetail detail,
             Container container
@@ -4262,7 +5415,8 @@ namespace BlazorApp.Api.Services.React
             string containerGuid,
             ContainerDetailBatchScopeDto request,
             Func<Container?, List<ContainerDetail>, List<UpdateContainerDetailDto>> buildUpdates,
-            string operation
+            string operation,
+            string parameters
         )
         {
             var deadlockRetryCount = 0;
@@ -4276,21 +5430,36 @@ namespace BlazorApp.Api.Services.React
                         new[] { containerGuid }
                     );
 
-                    // 作用范围、货柜成本字段和明细计算输入必须在同一把货柜锁内重新解析。
+                    // 先锁货柜头和该货柜的明细键范围；后续筛选范围、令牌重算及写入都在同一事务中完成。
+                    // 不能在 preview 校验后才取得行锁，否则仍有校验到实际更新之间的 TOCTOU 窗口。
+                    await AcquireContainerDetailScopeHoldLockAsync(containerGuid);
+
+                    // 作用范围、货柜成本字段和明细计算输入必须在同一事务和稳定资源顺序内重新解析。
                     var container = await _context
                         .Db.Queryable<Container>()
                         .Where(item => item.ContainerCode == containerGuid && !item.IsDeleted)
                         .FirstAsync();
-                    var hguids = await ResolveContainerDetailBatchScopeHguidsAsync(
+                    var scopedHguids = await ResolveContainerDetailBatchScopeHguidsAsync(
                         containerGuid,
                         request
                     );
-                    var details = hguids.Count == 0
+                    await AcquireContainerDetailConcurrencyRowLocksAsync(scopedHguids);
+
+                    // 键范围锁后再次解析 scope；任一筛选目标变化都必须整批拒绝，而不是沿用预览时的集合。
+                    var lockedHguids = await ResolveContainerDetailBatchScopeHguidsAsync(
+                        containerGuid,
+                        request
+                    );
+                    if (!HaveSameNormalizedKeys(scopedHguids, lockedHguids))
+                    {
+                        throw new ContainerDetailBatchPreviewConflictException("批量范围已变化，请重新预览");
+                    }
+                    var details = lockedHguids.Count == 0
                         ? new List<ContainerDetail>()
                         : await _context
                             .Db.Queryable<ContainerDetail>()
                             .Where(detail =>
-                                hguids.Contains(detail.DetailCode)
+                                lockedHguids.Contains(detail.DetailCode)
                                 && detail.ContainerCode == containerGuid
                                 && !detail.IsDeleted
                             )
@@ -4300,13 +5469,52 @@ namespace BlazorApp.Api.Services.React
                         details.Select(detail => detail.ContainerCode)
                     );
 
+                    // scoped apply-prices 的关联行锁也必须遵从套装服务的 app lock → 行锁顺序。
+                    // 先基于锁内明细和即将执行的实际写入意图取得商品业务锁，并显式交给 Attempt 复用。
                     var updates = buildUpdates(container, details);
+                    // 仅会同步关联商品的字段进入商品锁域。调浮率/重算成本带 SkipRelated 且无客户端
+                    // 字段令牌，预览指纹也只依赖货柜和明细，因此不应等待无关的套装成本 app lock。
+                    var scopedProductCodeByHguid = details
+                        .Where(detail => !string.IsNullOrWhiteSpace(detail.ProductCode))
+                        .ToDictionary(
+                            detail => detail.DetailCode,
+                            detail => detail.ProductCode!.Trim(),
+                            StringComparer.OrdinalIgnoreCase
+                        );
+                    var relatedSyncProductCodes = updates
+                        .Where(update =>
+                            update.SkipRelatedProductSync != true
+                            && EnumerateFieldIntents(update).Any(intent =>
+                                IsRelatedSyncField(intent.Field)
+                            )
+                            && scopedProductCodeByHguid.ContainsKey(update.HGUID)
+                        )
+                        .Select(update => scopedProductCodeByHguid[update.HGUID])
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(productCode => productCode, StringComparer.Ordinal)
+                        .ToList();
+                    var scopedImportLock = relatedSyncProductCodes.Count == 0
+                        ? null
+                        : await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                            _context.Db,
+                            relatedSyncProductCodes
+                        );
+                    if (relatedSyncProductCodes.Count > 0)
+                    {
+                        await AcquireContainerDetailConcurrencyRowLocksAsync(
+                            relatedSyncProductCodes,
+                            lockAssociatedProducts: true
+                        );
+                    }
+                    await EnsureBatchPreviewAsync(containerGuid, operation, request, parameters, details);
+
                     var updateResult = await BatchUpdateDetailsAttemptAsync(
                         updates,
                         countValidNoOps: false,
                         repairMissingStoreRelations: false,
                         containerGuid: containerGuid,
-                        mutationLock: mutationLock
+                        mutationLock: mutationLock,
+                        preAcquiredSetChildPurchasePriceLock: scopedImportLock
                     );
 
                     await _context.Db.Ado.CommitTranAsync();
@@ -4338,6 +5546,33 @@ namespace BlazorApp.Api.Services.React
                 }
             }
         }
+
+        private static bool HaveSameNormalizedKeys(
+            IEnumerable<string> first,
+            IEnumerable<string> second
+        ) => first
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.Ordinal)
+            .SequenceEqual(
+                second
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .Select(value => value.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(value => value, StringComparer.Ordinal),
+                StringComparer.OrdinalIgnoreCase
+            );
+
+        private static List<string> GetNormalizedProductCodes(
+            IEnumerable<ContainerDetail> details
+        ) => details
+            .Select(detail => detail.ProductCode)
+            .Where(code => !string.IsNullOrWhiteSpace(code))
+            .Select(code => code!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(code => code, StringComparer.Ordinal)
+            .ToList();
 
         private static void EnsureContainerCostInputs(Container container)
         {
@@ -4394,7 +5629,8 @@ namespace BlazorApp.Api.Services.React
                         })
                         .ToList();
                 },
-                "按筛选范围批量调浮率"
+                "apply-float-rate",
+                $"floatRate={request.FloatRate.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}"
             );
         }
 
@@ -4433,7 +5669,55 @@ namespace BlazorApp.Api.Services.React
                         })
                         .ToList();
                 },
-                "按筛选范围批量改价"
+                "apply-prices",
+                $"importPrice={request.ImportPrice?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "<null>"}&oemPrice={request.OemPrice?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "<null>"}"
+            );
+        }
+
+        public async Task<int> SetStatusByScopeAsync(
+            string containerGuid,
+            ContainerDetailSetStatusRequestDto request
+        )
+        {
+            if (!request.IsActive.HasValue)
+            {
+                return 0;
+            }
+
+            return await ExecuteScopedBatchUpdateUnderContainerLockAsync(
+                containerGuid,
+                request,
+                (_, details) => details
+                    .Select(detail => new UpdateContainerDetailDto
+                    {
+                        HGUID = detail.DetailCode,
+                        IsActive = request.IsActive.Value,
+                    })
+                    .ToList(),
+                "set-status",
+                request.IsActive.Value ? "isActive=true" : "isActive=false"
+            );
+        }
+
+        public async Task<int> AssignCategoryByScopeAsync(
+            string containerGuid,
+            ContainerDetailAssignCategoryRequestDto request
+        )
+        {
+            var normalizedCategoryGuid = NormalizeCategoryGuid(request.CategoryGuid);
+            return await ExecuteScopedBatchUpdateUnderContainerLockAsync(
+                containerGuid,
+                request,
+                (_, details) => details
+                    .Select(detail => new UpdateContainerDetailDto
+                    {
+                        HGUID = detail.DetailCode,
+                        ProductCategoryGUID = normalizedCategoryGuid,
+                        ClearProductCategory = normalizedCategoryGuid == null,
+                    })
+                    .ToList(),
+                "assign-category",
+                $"categoryGuid={normalizedCategoryGuid ?? "<null>"}"
             );
         }
 
@@ -4483,7 +5767,8 @@ namespace BlazorApp.Api.Services.React
                         })
                         .ToList();
                 },
-                "按筛选范围重算成本"
+                "recalculate-costs",
+                string.Empty
             );
         }
 
@@ -4499,33 +5784,44 @@ namespace BlazorApp.Api.Services.React
                     _context.Db,
                     new[] { containerGuid }
                 );
-                var hguids = await ResolveContainerDetailBatchScopeHguidsAsync(
+                await AcquireContainerDetailScopeHoldLockAsync(containerGuid);
+                var scopedHguids = await ResolveContainerDetailBatchScopeHguidsAsync(
                     containerGuid,
                     request
                 );
-                if (hguids.Count == 0)
+                await AcquireContainerDetailConcurrencyRowLocksAsync(scopedHguids);
+                var lockedHguids = await ResolveContainerDetailBatchScopeHguidsAsync(
+                    containerGuid,
+                    request
+                );
+                if (!HaveSameNormalizedKeys(scopedHguids, lockedHguids))
                 {
-                    await _context.Db.Ado.CommitTranAsync();
-                    return 0;
+                    throw new ContainerDetailBatchPreviewConflictException("批量范围已变化，请重新预览");
                 }
 
-                // 选中明细必须在持锁后重读并再次收敛到路由货柜，避免旧筛选结果跨柜写入。
+                // 选中明细必须在范围锁后重读并再次收敛到路由货柜，避免旧筛选结果跨柜写入。
                 var details = await _context
                     .Db.Queryable<ContainerDetail>()
                     .Where(detail =>
-                        hguids.Contains(detail.DetailCode)
+                        lockedHguids.Contains(detail.DetailCode)
                         && detail.ContainerCode == containerGuid
                         && !detail.IsDeleted
                     )
                     .ToListAsync();
                 mutationLock.EnsureCovers(_context.Db, details.Select(detail => detail.ContainerCode));
+                var productCodes = GetNormalizedProductCodes(details);
+                await AcquireContainerDetailConcurrencyRowLocksAsync(
+                    productCodes,
+                    lockAssociatedProducts: true
+                );
+                await EnsureBatchPreviewAsync(
+                    containerGuid,
+                    "backfill-last-prices",
+                    request,
+                    string.Empty,
+                    details
+                );
 
-                var productCodes = details
-                    .Select(detail => detail.ProductCode)
-                    .Where(code => !string.IsNullOrWhiteSpace(code))
-                    .Select(code => code!)
-                    .Distinct()
-                    .ToList();
                 if (productCodes.Count == 0)
                 {
                     await _context.Db.Ado.CommitTranAsync();
@@ -5106,6 +6402,53 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[React] 批量删除货柜明细失败");
+                throw;
+            }
+        }
+
+        public async Task<int> BatchDeleteDetailsScopedAsync(
+            string containerGuid,
+            ContainerDetailBatchScopeDto request
+        )
+        {
+            await _context.Db.Ado.BeginTranAsync();
+            try
+            {
+                var mutationLock = await ContainerMutationLock.AcquireContainersAsync(_context.Db, new[] { containerGuid });
+                await AcquireContainerDetailScopeHoldLockAsync(containerGuid);
+                var scopedHguids = await ResolveContainerDetailBatchScopeHguidsAsync(containerGuid, request);
+                await AcquireContainerDetailConcurrencyRowLocksAsync(scopedHguids);
+                var lockedHguids = await ResolveContainerDetailBatchScopeHguidsAsync(containerGuid, request);
+                if (!HaveSameNormalizedKeys(scopedHguids, lockedHguids))
+                {
+                    throw new ContainerDetailBatchPreviewConflictException("批量范围已变化，请重新预览");
+                }
+                var details = lockedHguids.Count == 0 ? new List<ContainerDetail>() : await _context.Db.Queryable<ContainerDetail>()
+                    .Where(detail => lockedHguids.Contains(detail.DetailCode) && detail.ContainerCode == containerGuid && !detail.IsDeleted)
+                    .ToListAsync();
+                mutationLock.EnsureCovers(_context.Db, details.Select(detail => detail.ContainerCode));
+                // 删除预览包含整行与所有同步关联资源，校验前先以固定顺序取得相同行锁，
+                // 防止关联价格/分类在令牌重算与 DELETE 之间穿透。
+                await AcquireContainerDetailConcurrencyRowLocksAsync(
+                    GetNormalizedProductCodes(details),
+                    lockAssociatedProducts: true
+                );
+                await EnsureBatchPreviewAsync(containerGuid, "delete-details", request, string.Empty, details);
+                if (details.Count == 0)
+                {
+                    await _context.Db.Ado.CommitTranAsync();
+                    return 0;
+                }
+                var deleted = await _context.Db.Deleteable<ContainerDetail>()
+                    .Where(detail => lockedHguids.Contains(detail.DetailCode) && detail.ContainerCode == containerGuid)
+                    .ExecuteCommandAsync();
+                await RefreshContainerSummariesAsync(mutationLock, new[] { containerGuid });
+                await _context.Db.Ado.CommitTranAsync();
+                return deleted;
+            }
+            catch (Exception exception)
+            {
+                await RollbackContainerMutationTransactionSafelyAsync(exception);
                 throw;
             }
         }
