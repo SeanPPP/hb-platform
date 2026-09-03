@@ -4126,6 +4126,201 @@ function registerReportRoutes(
   holder: AppRouteStateHolder,
 ) {
   const state = () => holder.current;
+  // 审核模式也必须遵守真实报表的完整性包络，避免 mock 让缺元数据的旧响应误通过页面门禁。
+  const freshReportMetadata = () => ({
+    statisticStatus: "Fresh",
+    statisticMessage: null,
+    statisticUpdatedAt: state().now,
+    cacheVersion: "ios-review-report-v1",
+  });
+  const roundReportAmount = (value: number) => Math.round(value * 100) / 100;
+  const getQueryValues = (query: URLSearchParams, key: string) =>
+    query
+      .getAll(key)
+      .flatMap((value) => value.split(","))
+      .map((value) => value.trim())
+      .filter(Boolean);
+  const getScopedStores = (query: URLSearchParams) => {
+    const branchCodes = getQueryValues(query, "branchCodes");
+    if (branchCodes.length === 0) return IOS_REVIEW_STORES;
+    const branchCodeSet = new Set(branchCodes);
+    return IOS_REVIEW_STORES.filter((store) => branchCodeSet.has(store.storeCode));
+  };
+  const getReportDateRange = (query: URLSearchParams) => {
+    const dayMs = 24 * 60 * 60 * 1000;
+    const toUtcDay = (value: string | null) => {
+      if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+      const utcMs = Date.parse(`${value}T00:00:00.000Z`);
+      if (
+        !Number.isFinite(utcMs)
+        || new Date(utcMs).toISOString().slice(0, 10) !== value
+      ) {
+        return null;
+      }
+      return utcMs;
+    };
+    const fallbackDay = toUtcDay(state().today)!;
+    const startDay = toUtcDay(query.get("startDate")) ?? fallbackDay;
+    const endDay = toUtcDay(query.get("endDate")) ?? startDay;
+    if (endDay < startDay) return [];
+    return Array.from(
+      { length: Math.floor((endDay - startDay) / dayMs) + 1 },
+      (_, index) => new Date(startDay + index * dayMs).toISOString().slice(0, 10),
+    );
+  };
+  const getStoreFixtureRank = (storeCode: string) => {
+    const index = IOS_REVIEW_STORES.findIndex(
+      (store) => store.storeCode === storeCode,
+    );
+    return index < 0 ? 0 : IOS_REVIEW_STORES.length - index;
+  };
+  const getStoreScale = (query: URLSearchParams) => {
+    const branchCodes = getQueryValues(query, "branchCodes");
+    if (branchCodes.length === 0) return 1;
+    const allStoreWeight = IOS_REVIEW_STORES.reduce(
+      (total, store) => total + getStoreFixtureRank(store.storeCode),
+      0,
+    );
+    const scopedStoreWeight = getScopedStores(query).reduce(
+      (total, store) => total + getStoreFixtureRank(store.storeCode),
+      0,
+    );
+    return scopedStoreWeight / allStoreWeight;
+  };
+  const getDailyStorePerformanceFixture = (
+    date: string,
+    storeCode: string,
+  ) => {
+    const descendingIndex = getStoreFixtureRank(storeCode) - 1;
+    const utcDay = Math.floor(
+      Date.parse(`${date}T00:00:00.000Z`) / (24 * 60 * 60 * 1000),
+    );
+    const weekdayOffset = ((utcDay % 7) + 7) % 7;
+    return {
+      revenue: 1250 + descendingIndex * 375 + weekdayOffset * 60,
+      revenueLY: 1100 + descendingIndex * 300 + weekdayOffset * 45,
+      transactions: 42 + descendingIndex * 8 + weekdayOffset,
+      transactionsLY: 38 + descendingIndex * 7 + weekdayOffset,
+    };
+  };
+  const sumStorePerformanceFixtures = (
+    dates: string[],
+    storeCodes: string[],
+  ) => dates.reduce(
+    (dateTotals, date) => {
+      const dailyTotals = storeCodes.reduce(
+        (storeTotals, storeCode) => {
+          const fixture = getDailyStorePerformanceFixture(date, storeCode);
+          storeTotals.revenue += fixture.revenue;
+          storeTotals.revenueLY += fixture.revenueLY;
+          storeTotals.transactions += fixture.transactions;
+          storeTotals.transactionsLY += fixture.transactionsLY;
+          return storeTotals;
+        },
+        { revenue: 0, revenueLY: 0, transactions: 0, transactionsLY: 0 },
+      );
+      dateTotals.revenue += dailyTotals.revenue;
+      dateTotals.revenueLY += dailyTotals.revenueLY;
+      dateTotals.transactions += dailyTotals.transactions;
+      dateTotals.transactionsLY += dailyTotals.transactionsLY;
+      return dateTotals;
+    },
+    { revenue: 0, revenueLY: 0, transactions: 0, transactionsLY: 0 },
+  );
+  const distributeReportTotal = (
+    total: number,
+    weights: number[],
+    fractionDigits: number,
+  ) => {
+    const unit = 10 ** fractionDigits;
+    const totalUnits = Math.round(total * unit);
+    const weightTotal = weights.reduce((sum, weight) => sum + weight, 0);
+    let distributedUnits = 0;
+    return weights.map((weight, index) => {
+      const units = index === weights.length - 1
+        ? totalUnits - distributedUnits
+        : Math.round(totalUnits * weight / weightTotal);
+      distributedUnits += units;
+      return units / unit;
+    });
+  };
+  // 报表 fixture 与全局商品集合隔离，既能覆盖审核页面的数据密度，也不会污染扫码、促销等业务演示。
+  const reportSupplierFixtures = Array.from({ length: 8 }, (_, index) => {
+    const totalAmount = 1250 - index * 85;
+    const compareTotalAmount = 1100 - index * 70;
+    const grossMarginRate = 0.3 + (index % 4) * 0.015;
+    const compareGrossMarginRate = 0.28 + (index % 3) * 0.012;
+    const costAmount = roundReportAmount(totalAmount * (1 - grossMarginRate));
+    const compareCostAmount = roundReportAmount(
+      compareTotalAmount * (1 - compareGrossMarginRate),
+    );
+    const orderCount = 8 + index;
+    const compareOrderCount = 7 + index;
+    return {
+      supplierCode: `REV-SUP-${String(index + 1).padStart(3, "0")}`,
+      supplierName: `Review Supplier ${String(index + 1).padStart(2, "0")}`,
+      totalAmount,
+      costAmount,
+      grossProfit: roundReportAmount(totalAmount - costAmount),
+      grossMarginRate,
+      compareTotalAmount,
+      compareCostAmount,
+      compareGrossProfit: roundReportAmount(compareTotalAmount - compareCostAmount),
+      compareGrossMarginRate,
+      totalQuantity: 36 + index * 5,
+      storeCount: IOS_REVIEW_STORES.length,
+      orderCount,
+      compareOrderCount,
+      averageTransaction: roundReportAmount(totalAmount / orderCount),
+      compareAverageTransaction: roundReportAmount(
+        compareTotalAmount / compareOrderCount,
+      ),
+    };
+  });
+  const reportProductFixtures = Array.from({ length: 24 }, (_, index) => {
+    const salesAmount = 2400 - index * 60;
+    const compareSalesAmount = 2160 - index * 52;
+    const grossMarginRate = 0.32 + (index % 5) * 0.012;
+    const compareGrossMarginRate = 0.3 + (index % 4) * 0.01;
+    const hasCost = index !== 23;
+    const costAmount = hasCost
+      ? roundReportAmount(salesAmount * (1 - grossMarginRate))
+      : null;
+    const compareCostAmount = hasCost
+      ? roundReportAmount(compareSalesAmount * (1 - compareGrossMarginRate))
+      : null;
+    const quantity = 60 - index;
+    const compareQuantity = 54 - index;
+    return {
+      productCode: `REV-RPT-PROD-${String(index + 1).padStart(3, "0")}`,
+      itemNumber: `RPT-${String(index + 1).padStart(5, "0")}`,
+      productName: `Review Report Product ${String(index + 1).padStart(2, "0")}`,
+      supplierCode: reportSupplierFixtures[index % reportSupplierFixtures.length]!.supplierCode,
+      // 前 8 项覆盖中国供应商范围，确保审核模式也能发现供应商页签串数回归。
+      supplierScope: index < reportSupplierFixtures.length ? "china" : "australia",
+      productImage: null,
+      quantity,
+      compareQuantity,
+      salesAmount,
+      compareSalesAmount,
+      costAmount,
+      compareCostAmount,
+      grossProfit:
+        costAmount === null ? null : roundReportAmount(salesAmount - costAmount),
+      compareGrossProfit:
+        compareCostAmount === null
+          ? null
+          : roundReportAmount(compareSalesAmount - compareCostAmount),
+      grossMarginRate: hasCost ? grossMarginRate : null,
+      compareGrossMarginRate: hasCost ? compareGrossMarginRate : null,
+      averageUnitPrice: roundReportAmount(salesAmount / quantity),
+      compareAverageUnitPrice: roundReportAmount(
+        compareSalesAmount / compareQuantity,
+      ),
+      orderCount: 18 + index,
+      compareOrderCount: 16 + index,
+    };
+  });
   register(
     transport,
     ["GET"],
@@ -4141,128 +4336,377 @@ function registerReportRoutes(
     transport,
     ["GET"],
     "/react/v1/dashboard/executive-branch-performance",
-    () => ({
-      data: {
-        items: IOS_REVIEW_STORES.map((store, index) => ({
+    ({ query }) => {
+      const dates = getReportDateRange(query);
+      const items = getScopedStores(query).map((store) => {
+        return {
           branchCode: store.storeCode,
           branchName: store.storeName,
-          revenue: 1250 + index * 375,
-          revenueLY: 1100 + index * 300,
-          transactions: 42 + index * 8,
-          transactionsLY: 38 + index * 7,
-        })),
-      },
-    }),
+          ...sumStorePerformanceFixtures(dates, [store.storeCode]),
+        };
+      });
+      return {
+        data: {
+          ...freshReportMetadata(),
+          statisticsPending: false,
+          statisticsExpectedBranchCount: items.length,
+          statisticsSnapshotBranchCount: items.length,
+          items,
+        },
+      };
+    },
   );
   register(
     transport,
     ["GET"],
     "/react/v1/dashboard/executive-hourly-traffic",
-    () => ({
-      data: {
-        items: [9, 10, 11, 12, 13].map((hour, index) => ({
-          hour,
-          revenue: 180 + index * 35,
-          revenueLY: 160 + index * 30,
-          transactions: 6 + index,
-          transactionsLY: 5 + index,
-        })),
-      },
-    }),
+    ({ query }) => {
+      const scopedTotals = sumStorePerformanceFixtures(
+        getReportDateRange(query),
+        getScopedStores(query).map((store) => store.storeCode),
+      );
+      // 与设计原型一致：完整营业时段为 08:00–21:00，共 14 段。
+      const weights = Array.from(
+        { length: 14 },
+        (_, index) => 4 + Math.max(0, 7 - Math.abs(index - 8)) + (index % 3) * 0.8,
+      );
+      const compareWeights = weights.map(
+        (weight, index) => weight * (0.94 + (index % 5) * 0.022),
+      );
+      // 末段接收分配后的余数，确保 14 段在分/整数精度上与摘要严格守恒。
+      const revenueByHour = distributeReportTotal(
+        scopedTotals.revenue,
+        weights,
+        2,
+      );
+      const revenueLYByHour = distributeReportTotal(
+        scopedTotals.revenueLY,
+        compareWeights,
+        2,
+      );
+      const transactionsByHour = distributeReportTotal(
+        scopedTotals.transactions,
+        weights,
+        0,
+      );
+      const transactionsLYByHour = distributeReportTotal(
+        scopedTotals.transactionsLY,
+        compareWeights,
+        0,
+      );
+      const items = weights.map((_, index) => ({
+        hour: index + 8,
+        revenue: revenueByHour[index]!,
+        revenueLY: revenueLYByHour[index]!,
+        transactions: transactionsByHour[index]!,
+        transactionsLY: transactionsLYByHour[index]!,
+      }));
+      return {
+        data: {
+          ...freshReportMetadata(),
+          statisticsPending: false,
+          statisticsExpectedItemCount: items.length,
+          statisticsSnapshotItemCount: items.length,
+          items,
+        },
+      };
+    },
   );
   register(
     transport,
     ["GET"],
     "/react/v1/dashboard/branch-daily-performance",
-    () => ({
-      data: {
-        items: IOS_REVIEW_STORES.map((store, index) => ({
-          date: state().today,
-          branchCode: store.storeCode,
-          branchName: store.storeName,
-          revenue: 1250 + index * 375,
-          revenueLY: 1100 + index * 300,
-          transactions: 42 + index * 8,
-          transactionsLY: 38 + index * 7,
-        })),
-      },
-    }),
+    ({ query }) => {
+      const scopedStores = getScopedStores(query);
+      const items = getReportDateRange(query).flatMap((date) => {
+        return scopedStores.map((store) => {
+          return {
+            date,
+            branchCode: store.storeCode,
+            branchName: store.storeName,
+            ...getDailyStorePerformanceFixture(date, store.storeCode),
+          };
+        });
+      });
+      return {
+        data: {
+          ...freshReportMetadata(),
+          statisticsPending: false,
+          statisticsExpectedItemCount: items.length,
+          statisticsSnapshotItemCount: items.length,
+          items,
+        },
+      };
+    },
   );
   register(
     transport,
     ["GET"],
     /^\/react\/v1\/dashboard\/(?:china-supplier-sales-rank|supplier-sales-rank)$/i,
-    () => ({
-      data: {
-        items: [
-          {
-            supplierCode: "REV-SUP-001",
-            supplierName: "Demo Supplier",
-            totalAmount: 1250,
-            compareTotalAmount: 1100,
-            totalQuantity: 36,
-            storeCount: 3,
-            orderCount: 8,
-            compareOrderCount: 7,
-            averageTransaction: 156.25,
-            compareAverageTransaction: 157.14,
-          },
-        ],
-      },
-    }),
+    ({ query }) => {
+      const storeScale = getStoreScale(query);
+      const storeCount = getScopedStores(query).length;
+      const items = reportSupplierFixtures.map((supplier) => {
+        if (storeScale === 1) return clone(supplier);
+        const totalAmount = roundReportAmount(supplier.totalAmount * storeScale);
+        const compareTotalAmount = roundReportAmount(
+          supplier.compareTotalAmount * storeScale,
+        );
+        const costAmount = roundReportAmount(supplier.costAmount * storeScale);
+        const compareCostAmount = roundReportAmount(
+          supplier.compareCostAmount * storeScale,
+        );
+        const orderCount = storeCount === 0
+          ? 0
+          : Math.max(1, Math.round(supplier.orderCount * storeScale));
+        const compareOrderCount = storeCount === 0
+          ? 0
+          : Math.max(1, Math.round(supplier.compareOrderCount * storeScale));
+        return {
+          ...supplier,
+          totalAmount,
+          compareTotalAmount,
+          costAmount,
+          compareCostAmount,
+          grossProfit: roundReportAmount(totalAmount - costAmount),
+          compareGrossProfit: roundReportAmount(
+            compareTotalAmount - compareCostAmount,
+          ),
+          grossMarginRate: storeCount === 0 ? 0 : supplier.grossMarginRate,
+          compareGrossMarginRate:
+            storeCount === 0 ? 0 : supplier.compareGrossMarginRate,
+          totalQuantity: Math.round(supplier.totalQuantity * storeScale),
+          storeCount,
+          orderCount,
+          compareOrderCount,
+          averageTransaction:
+            orderCount > 0 ? roundReportAmount(totalAmount / orderCount) : 0,
+          compareAverageTransaction:
+            compareOrderCount > 0
+              ? roundReportAmount(compareTotalAmount / compareOrderCount)
+              : 0,
+        };
+      });
+      return {
+        data: {
+          ...freshReportMetadata(),
+          items,
+        },
+      };
+    },
   );
   register(
     transport,
     ["GET"],
     "/react/v1/dashboard/enhanced-sales-product-details",
-    () => ({
-      data: page(
-        state().products.map((product, index) => ({
-          ...product,
-          quantity: 12 + index * 4,
-          compareQuantity: 10 + index * 3,
-          salesAmount: 240 + index * 80,
-          compareSalesAmount: 210 + index * 70,
-        })),
-      ),
-    }),
+    ({ query }) => {
+      // Mobile 当前发送 pageIndex；审核验收脚本也使用 pageNumber，两者采用同一套真实分页语义。
+      const pageNumber = Number(
+        query.get("pageNumber") ?? query.get("pageIndex") ?? 1,
+      );
+      const pageSize = Number(query.get("pageSize") ?? 20);
+      const supplierCodes = new Set([
+        ...getQueryValues(query, "localSupplierCodes"),
+        ...getQueryValues(query, "chinaSupplierCodes"),
+      ]);
+      const supplierScope = query.get("supplierScope")?.trim().toLocaleLowerCase() ?? "";
+      const productSearch = query.get("productSearch")?.trim().toLocaleLowerCase() ?? "";
+      const storeScale = getStoreScale(query);
+      const filteredRows = reportProductFixtures
+        .filter((product) => supplierScope !== "china" || product.supplierScope === "china")
+        .filter((product) =>
+          supplierCodes.size === 0 || supplierCodes.has(product.supplierCode),
+        )
+        .filter((product) => {
+          if (!productSearch) return true;
+          return `${product.productCode} ${product.itemNumber} ${product.productName}`
+            .toLocaleLowerCase()
+            .includes(productSearch);
+        })
+        .map((product) => {
+          if (storeScale === 1) return clone(product);
+          const salesAmount = roundReportAmount(product.salesAmount * storeScale);
+          const compareSalesAmount = roundReportAmount(
+            product.compareSalesAmount * storeScale,
+          );
+          const costAmount = product.costAmount === null
+            ? null
+            : roundReportAmount(product.costAmount * storeScale);
+          const compareCostAmount = product.compareCostAmount === null
+            ? null
+            : roundReportAmount(product.compareCostAmount * storeScale);
+          const quantity = Math.round(product.quantity * storeScale);
+          const compareQuantity = Math.round(product.compareQuantity * storeScale);
+          return {
+            ...product,
+            quantity,
+            compareQuantity,
+            salesAmount,
+            compareSalesAmount,
+            costAmount,
+            compareCostAmount,
+            grossProfit:
+              costAmount === null ? null : roundReportAmount(salesAmount - costAmount),
+            compareGrossProfit:
+              compareCostAmount === null
+                ? null
+                : roundReportAmount(compareSalesAmount - compareCostAmount),
+            grossMarginRate:
+              costAmount === null
+                ? null
+                : storeScale === 0 ? 0 : product.grossMarginRate,
+            compareGrossMarginRate:
+              compareCostAmount === null
+                ? null
+                : storeScale === 0 ? 0 : product.compareGrossMarginRate,
+            averageUnitPrice:
+              quantity > 0 ? roundReportAmount(salesAmount / quantity) : 0,
+            compareAverageUnitPrice:
+              compareQuantity > 0
+                ? roundReportAmount(compareSalesAmount / compareQuantity)
+                : 0,
+            orderCount: Math.round(product.orderCount * storeScale),
+            compareOrderCount: Math.round(product.compareOrderCount * storeScale),
+          };
+        });
+      const result = pagedSlice(filteredRows, pageNumber, pageSize);
+      return {
+        data: {
+          ...freshReportMetadata(),
+          ...result,
+          pageIndex: result.pageNumber,
+        },
+      };
+    },
   );
   register(
     transport,
     ["GET"],
     /^\/react\/v1\/dashboard\/(?:china-supplier-store-sales|supplier-store-sales)$/i,
-    () => ({
-      data: {
-        items: IOS_REVIEW_STORES.map((store, index) => ({
+    ({ query }) => {
+      const supplierCode =
+        query.get("supplierCodes")?.split(",")[0]?.trim() ||
+        reportSupplierFixtures[0]!.supplierCode;
+      const supplierIndex = Math.max(
+        0,
+        reportSupplierFixtures.findIndex(
+          (supplier) => supplier.supplierCode === supplierCode,
+        ),
+      );
+      const supplier =
+        reportSupplierFixtures[supplierIndex] ?? reportSupplierFixtures[0]!;
+      const items = IOS_REVIEW_STORES.map((store, index) => {
+        const scale = 1 + supplierIndex * 0.04;
+        const totalAmount = roundReportAmount((720 + index * 120) * scale);
+        const compareTotalAmount = roundReportAmount((650 + index * 100) * scale);
+        const grossMarginRate = 0.3 + ((supplierIndex + index) % 4) * 0.01;
+        const compareGrossMarginRate =
+          0.28 + ((supplierIndex + index) % 3) * 0.01;
+        const costAmount = roundReportAmount(
+          totalAmount * (1 - grossMarginRate),
+        );
+        const compareCostAmount = roundReportAmount(
+          compareTotalAmount * (1 - compareGrossMarginRate),
+        );
+        const orderCount = 6 + index;
+        const compareOrderCount = 5 + index;
+        return {
           branchCode: store.storeCode,
           branchName: store.storeName,
-          supplierCode: "REV-SUP-001",
-          supplierName: "Demo Supplier",
-          totalAmount: 720 + index * 120,
-          compareTotalAmount: 650 + index * 100,
+          supplierCode: supplier.supplierCode,
+          supplierName: supplier.supplierName,
+          totalAmount,
+          costAmount,
+          grossProfit: roundReportAmount(totalAmount - costAmount),
+          grossMarginRate,
+          compareTotalAmount,
+          compareCostAmount,
+          compareGrossProfit: roundReportAmount(
+            compareTotalAmount - compareCostAmount,
+          ),
+          compareGrossMarginRate,
           totalQuantity: 24 + index * 4,
-          orderCount: 6 + index,
-          compareOrderCount: 5 + index,
-        })),
-      },
-    }),
+          orderCount,
+          compareOrderCount,
+          averageTransaction: roundReportAmount(totalAmount / orderCount),
+          compareAverageTransaction: roundReportAmount(
+            compareTotalAmount / compareOrderCount,
+          ),
+        };
+      });
+      return {
+        data: {
+          ...freshReportMetadata(),
+          items,
+        },
+      };
+    },
   );
   register(
     transport,
     ["GET"],
     "/react/v1/dashboard/product-sales-by-branches",
-    () => ({
-      data: {
-        items: IOS_REVIEW_STORES.map((store, index) => ({
+    ({ query }) => {
+      const productCode =
+        query.get("productCode") || reportProductFixtures[0]!.productCode;
+      const productIndex = Math.max(
+        0,
+        reportProductFixtures.findIndex(
+          (product) => product.productCode === productCode,
+        ),
+      );
+      const product =
+        reportProductFixtures[productIndex] ?? reportProductFixtures[0]!;
+      const hasCost = product.costAmount !== null;
+      const items = IOS_REVIEW_STORES.map((store, index) => {
+        const quantity = 12 + index;
+        const compareQuantity = 10 + index;
+        const salesAmount = 240 + index * 50;
+        const compareSalesAmount = 210 + index * 40;
+        const grossMarginRate = 0.32 + ((productIndex + index) % 5) * 0.01;
+        const compareGrossMarginRate =
+          0.3 + ((productIndex + index) % 4) * 0.01;
+        const costAmount = hasCost
+          ? roundReportAmount(salesAmount * (1 - grossMarginRate))
+          : null;
+        const compareCostAmount = hasCost
+          ? roundReportAmount(
+              compareSalesAmount * (1 - compareGrossMarginRate),
+            )
+          : null;
+        return {
           branchCode: store.storeCode,
           branchName: store.storeName,
-          quantity: 12 + index,
-          compareQuantity: 10 + index,
+          productCode: product.productCode,
+          quantity,
+          compareQuantity,
           salesAmount: 240 + index * 50,
           compareSalesAmount: 210 + index * 40,
-        })),
-      },
-    }),
+          costAmount,
+          compareCostAmount,
+          grossProfit:
+            costAmount === null
+              ? null
+              : roundReportAmount(salesAmount - costAmount),
+          compareGrossProfit:
+            compareCostAmount === null
+              ? null
+              : roundReportAmount(compareSalesAmount - compareCostAmount),
+          grossMarginRate: hasCost ? grossMarginRate : null,
+          compareGrossMarginRate: hasCost ? compareGrossMarginRate : null,
+          averageUnitPrice: roundReportAmount(salesAmount / quantity),
+          compareAverageUnitPrice: roundReportAmount(
+            compareSalesAmount / compareQuantity,
+          ),
+        };
+      });
+      return {
+        data: {
+          ...freshReportMetadata(),
+          items,
+        },
+      };
+    },
   );
   register(
     transport,

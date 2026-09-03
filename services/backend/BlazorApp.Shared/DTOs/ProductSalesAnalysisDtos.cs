@@ -1,6 +1,32 @@
 namespace BlazorApp.Shared.DTOs
 {
     /// <summary>
+    /// 商品日分店统计的只读完整性状态。
+    /// 旧报表接口保留原有 data 形状，仅在外层附加此状态的字段。
+    /// </summary>
+    public class ProductReportStatisticStatusDto
+    {
+        public string StatisticStatus { get; set; } = "Pending";
+        public string? StatisticMessage { get; set; }
+        public DateTime? StatisticUpdatedAt { get; set; }
+        public string CacheVersion { get; set; } = "none";
+    }
+
+    /// <summary>
+    /// 旧商品报表 GET 接口的统一外层包络。
+    /// 保留 data 的既有业务形状，同时无条件提供统计完整性元数据。
+    /// </summary>
+    public class ProductReportResponseDto<T>
+    {
+        public bool Success { get; set; } = true;
+        public T? Data { get; set; }
+        public string? StatisticStatus { get; set; }
+        public string? StatisticMessage { get; set; }
+        public DateTime? StatisticUpdatedAt { get; set; }
+        public string? CacheVersion { get; set; }
+    }
+
+    /// <summary>
     /// 商品销量分析通用请求。
     /// 所有 POST 接口共用同一请求体，按端点取用相关字段。
     /// </summary>
