@@ -8,9 +8,11 @@ using BlazorApp.Api.Interfaces;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HBweb;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
@@ -54,6 +56,7 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
             typeof(StoreRetailPrice),
             typeof(ProductSetCode),
             typeof(StoreMultiCodeProduct),
+            typeof(StoreClearancePrice),
             typeof(Store)
         );
         _db.Ado.ExecuteCommand(
@@ -154,7 +157,8 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
         var service = new Mock<IStoreProductMaintenanceReactService>(MockBehavior.Strict);
         var controller = new ReactStoreProductMaintenanceController(
             service.Object, Mock.Of<IDeviceRegistrationService>(), Mock.Of<IMapper>(),
-            CreateSqlSugarContext(_db), NullLogger<ReactStoreProductMaintenanceController>.Instance
+            CreateSqlSugarContext(_db), NullLogger<ReactStoreProductMaintenanceController>.Instance,
+            Mock.Of<IAuthorizationService>()
         )
         {
             ControllerContext = new ControllerContext
@@ -184,7 +188,8 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
             .ReturnsAsync(ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>.OK(new()));
         var controller = new ReactStoreProductMaintenanceController(
             service.Object, Mock.Of<IDeviceRegistrationService>(), Mock.Of<IMapper>(),
-            CreateSqlSugarContext(_db), NullLogger<ReactStoreProductMaintenanceController>.Instance
+            CreateSqlSugarContext(_db), NullLogger<ReactStoreProductMaintenanceController>.Instance,
+            CreateSuccessfulAuthorizationService()
         )
         {
             ControllerContext = new ControllerContext
@@ -205,6 +210,638 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task Controller_登录编辑缺少StoreProductsEdit权限时拒绝且不调用服务()
+    {
+        var service = new Mock<IStoreProductMaintenanceReactService>(MockBehavior.Strict);
+        var authorization = new Mock<IAuthorizationService>(MockBehavior.Strict);
+        authorization.Setup(item => item.AuthorizeAsync(
+                It.IsAny<ClaimsPrincipal>(),
+                null,
+                Permissions.StoreProducts.Edit
+            ))
+            .ReturnsAsync(AuthorizationResult.Failed());
+        var controller = new ReactStoreProductMaintenanceController(
+            service.Object,
+            Mock.Of<IDeviceRegistrationService>(),
+            Mock.Of<IMapper>(),
+            CreateSqlSugarContext(_db),
+            NullLogger<ReactStoreProductMaintenanceController>.Instance,
+            authorization.Object
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim(ClaimTypes.Name, "warehouse-manager"),
+                        new Claim(ClaimTypes.Role, "WarehouseManager"),
+                    }, "test")),
+                },
+            },
+        };
+
+        Assert.IsType<ForbidResult>(await controller.UpdateStorePrice("price-1", new()));
+        authorization.VerifyAll();
+        service.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task UpdateProductTypeAsync_成功提交时入队全局类型事件并保留设备授权分店()
+    {
+        const string productCode = "P-TYPE-HQ-EVENT";
+        await SeedMultiCodeParentAsync(productCode, 20m, 20m);
+        var calls = new List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)>();
+        var (writer, status) = CreateCapturingProjectionWriter(calls);
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .UpdateProductTypeAsync(
+                productCode,
+                new UpdateStoreProductTypeDto { ProductType = 1, StoreCode = StoreCode },
+                "device:test-device",
+                new List<string> { StoreCode }
+            );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Same(status, result.Data!.HqSync);
+        var request = AssertMutationRequest(
+            calls,
+            ProductMaintenanceHqOperationKinds.ProductTypeUpdated,
+            Array.Empty<string>(),
+            new[] { StoreCode },
+            new[] { ProductMaintenanceHqFieldMasks.ProductType }
+        );
+        Assert.Empty(request.Tombstones);
+        Assert.Equal("test-device", request.RequestedByDeviceId);
+        Assert.Null(request.RequestedByUserGuid);
+    }
+
+    [Fact]
+    public async Task UpdateMultiCodeAsync_成功提交时仅入队当前店多码事件()
+    {
+        const string productCode = "P-MULTI-HQ-EVENT";
+        await SeedMultiCodeParentAsync(productCode, 20m, 20m);
+        var set = BuildMultiCodeSetCode(productCode, "A", 10m, setType: 2);
+        var row = BuildMultiCodeStoreRow(productCode, "A", 10m, 20m);
+        await _db.Insertable(set).ExecuteCommandAsync();
+        await _db.Insertable(row).ExecuteCommandAsync();
+        var calls = new List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)>();
+        var (writer, status) = CreateCapturingProjectionWriter(calls);
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .UpdateMultiCodeAsync(
+                row.UUID,
+                new UpdateStoreProductMultiCodeDto
+                {
+                    RetailPrice = 25m,
+                    IsAutoPricing = false,
+                    IsSpecialProduct = true,
+                    IsActive = true,
+                },
+                "device:test-device",
+                new List<string> { StoreCode }
+            );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Same(status, result.Data!.HqSync);
+        var request = AssertMutationRequest(
+            calls,
+            ProductMaintenanceHqOperationKinds.ProductCodesUpdated,
+            new[] { StoreCode },
+            new[] { StoreCode },
+            new[] { ProductMaintenanceHqFieldMasks.StoreMultiCodes }
+        );
+        Assert.Empty(request.Tombstones);
+        Assert.Equal("test-device", request.RequestedByDeviceId);
+    }
+
+    [Fact]
+    public async Task UpdateMultiCodeAsync_旧版无SetCode关联记录可原子更新条码并入队当前店事件()
+    {
+        const string productCode = "P-LEGACY-MULTI-BARCODE";
+        await SeedMultiCodeParentAsync(productCode, 20m, 20m);
+        var row = BuildMultiCodeStoreRow(productCode, "LEGACY", 20m, 10m);
+        await _db.Insertable(row).ExecuteCommandAsync();
+        var calls = new List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)>();
+        var (writer, status) = CreateCapturingProjectionWriter(calls);
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .UpdateMultiCodeAsync(
+                row.UUID,
+                new UpdateStoreProductMultiCodeDto { Barcode = "  LEGACY-BARCODE-UPDATED  " },
+                "device:test-device",
+                new List<string> { StoreCode }
+            );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal("LEGACY-BARCODE-UPDATED", result.Data!.Barcode);
+        Assert.Same(status, result.Data.HqSync);
+        var persisted = await _db.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(x => x.UUID == row.UUID);
+        Assert.Equal("LEGACY-BARCODE-UPDATED", persisted.MultiBarcode);
+        AssertMutationRequest(
+            calls,
+            ProductMaintenanceHqOperationKinds.ProductCodesUpdated,
+            new[] { StoreCode },
+            new[] { StoreCode },
+            new[] { ProductMaintenanceHqFieldMasks.StoreMultiCodes }
+        );
+    }
+
+    [Fact]
+    public async Task UpdateMultiCodeAsync_拒绝空白条码且不修改旧版记录()
+    {
+        const string productCode = "P-LEGACY-MULTI-BARCODE-INVALID";
+        await SeedMultiCodeParentAsync(productCode, 20m, 20m);
+        var row = BuildMultiCodeStoreRow(productCode, "LEGACY", 20m, 10m);
+        await _db.Insertable(row).ExecuteCommandAsync();
+
+        var result = await CreateService().UpdateMultiCodeAsync(
+            row.UUID,
+            new UpdateStoreProductMultiCodeDto { Barcode = "   " },
+            "device:test-device",
+            new List<string> { StoreCode }
+        );
+
+        Assert.False(result.Success);
+        Assert.Contains("条码不能为空", result.Message);
+        var persisted = await _db.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(x => x.UUID == row.UUID);
+        Assert.Equal(row.MultiBarcode, persisted.MultiBarcode);
+    }
+
+    [Fact]
+    public async Task CreateSetCodeAsync_成功提交时按实际投影店入队全局与门店多码事件()
+    {
+        const string productCode = "P-CREATE-SET-HQ-EVENT";
+        await SeedMultiCodeParentAsync(productCode, 20m, 20m);
+        await EnsureActiveStoreAsync();
+        var calls = new List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)>();
+        var (writer, status) = CreateCapturingProjectionWriter(calls);
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .CreateSetCodeAsync(
+                new CreateStoreProductSetCodeDto
+                {
+                    ProductCode = productCode,
+                    StoreCode = StoreCode,
+                    ProductType = 1,
+                    Barcode = "BAR-NEW",
+                    RetailPrice = 10m,
+                    IsActive = true,
+                },
+                "device:test-device",
+                new List<string> { StoreCode }
+            );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Same(status, result.Data!.HqSync);
+        var request = AssertMutationRequest(
+            calls,
+            ProductMaintenanceHqOperationKinds.ProductCodesUpdated,
+            new[] { StoreCode },
+            new[] { StoreCode },
+            new[]
+            {
+                ProductMaintenanceHqFieldMasks.ProductSetCodes,
+                ProductMaintenanceHqFieldMasks.StoreMultiCodes,
+            }
+        );
+        Assert.Empty(request.Tombstones);
+    }
+
+    [Fact]
+    public async Task CreateSetCodeAsync_目标商品不属于授权分店时拒绝全局条码创建()
+    {
+        const string productCode = "P-CREATE-SET-SCOPE";
+        await SeedMultiCodeParentAsync(productCode, 20m, 20m);
+        var calls = new List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)>();
+        var (writer, _) = CreateCapturingProjectionWriter(calls);
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .CreateSetCodeAsync(
+                new CreateStoreProductSetCodeDto
+                {
+                    ProductCode = productCode,
+                    StoreCode = "S02",
+                    ProductType = 1,
+                    Barcode = "BAR-UNAUTHORIZED",
+                    RetailPrice = 10m,
+                    IsActive = true,
+                },
+                "device:other-store-device",
+                new List<string> { "S02" }
+            );
+
+        Assert.False(result.Success);
+        Assert.Contains("无权", result.Message);
+        Assert.Empty(calls);
+        Assert.Equal(0, await _db.Queryable<ProductSetCode>()
+            .Where(item => item.ProductCode == productCode && !item.IsDeleted)
+            .CountAsync());
+    }
+
+    [Fact]
+    public async Task UpdateSetCodeAsync_成功提交时按实际投影店入队全局与门店多码事件()
+    {
+        const string productCode = "P-UPDATE-SET-HQ-EVENT";
+        await SeedMultiCodeParentAsync(productCode, 20m, 20m);
+        await EnsureActiveStoreAsync();
+        var set = BuildMultiCodeSetCode(productCode, "A", 10m, setType: 1);
+        await _db.Insertable(set).ExecuteCommandAsync();
+        await _db.Insertable(BuildMultiCodeStoreRow(productCode, "A", 10m, 20m))
+            .ExecuteCommandAsync();
+        var calls = new List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)>();
+        var (writer, status) = CreateCapturingProjectionWriter(calls);
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .UpdateSetCodeAsync(
+                set.SetCodeId,
+                new UpdateStoreProductSetCodeDto
+                {
+                    StoreCode = StoreCode,
+                    Barcode = "BAR-UPDATED",
+                    RetailPrice = 12m,
+                    IsActive = true,
+                },
+                "device:test-device",
+                new List<string> { StoreCode }
+            );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Same(status, result.Data!.HqSync);
+        var request = AssertMutationRequest(
+            calls,
+            ProductMaintenanceHqOperationKinds.ProductCodesUpdated,
+            new[] { StoreCode },
+            new[] { StoreCode },
+            new[]
+            {
+                ProductMaintenanceHqFieldMasks.ProductSetCodes,
+                ProductMaintenanceHqFieldMasks.StoreMultiCodes,
+            }
+        );
+        Assert.Empty(request.Tombstones);
+    }
+
+    [Fact]
+    public async Task UpdateSetCodeAsync_目标商品不属于授权分店时拒绝全局条码修改()
+    {
+        const string productCode = "P-UPDATE-SET-SCOPE";
+        await SeedMultiCodeParentAsync(productCode, 20m, 20m);
+        var set = BuildMultiCodeSetCode(productCode, "A", 10m, setType: 1);
+        await _db.Insertable(set).ExecuteCommandAsync();
+        var calls = new List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)>();
+        var (writer, _) = CreateCapturingProjectionWriter(calls);
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .UpdateSetCodeAsync(
+                set.SetCodeId,
+                new UpdateStoreProductSetCodeDto
+                {
+                    StoreCode = "S02",
+                    Barcode = "BAR-UNAUTHORIZED",
+                    RetailPrice = 12m,
+                    IsActive = true,
+                },
+                "device:other-store-device",
+                new List<string> { "S02" }
+            );
+
+        Assert.False(result.Success);
+        Assert.Contains("无权", result.Message);
+        Assert.Empty(calls);
+        var persisted = await _db.Queryable<ProductSetCode>()
+            .SingleAsync(item => item.SetCodeId == set.SetCodeId);
+        Assert.Equal(set.SetBarcode, persisted.SetBarcode);
+        Assert.Equal(set.SetRetailPrice, persisted.SetRetailPrice);
+    }
+
+    [Fact]
+    public async Task DeleteSetCodeAsync_成功提交时入队全局停用墓碑并保留设备授权分店()
+    {
+        const string productCode = "P-DELETE-SET-HQ-EVENT";
+        await SeedMultiCodeParentAsync(productCode, 20m, 20m);
+        var set = BuildMultiCodeSetCode(productCode, "A", 10m, setType: 1);
+        var storeRow = BuildMultiCodeStoreRow(productCode, "A", 10m, 20m);
+        await _db.Insertable(set).ExecuteCommandAsync();
+        await _db.Insertable(storeRow).ExecuteCommandAsync();
+        var calls = new List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)>();
+        var (writer, status) = CreateCapturingProjectionWriter(calls);
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .DeleteSetCodeAsync(
+                set.SetCodeId,
+                "device:test-device",
+                new List<string> { StoreCode }
+            );
+
+        Assert.True(result.Success, result.Message);
+        Assert.True(result.Data!.Deleted);
+        Assert.Same(status, result.Data.HqSync);
+        var request = AssertMutationRequest(
+            calls,
+            ProductMaintenanceHqOperationKinds.ProductCodesDeleted,
+            Array.Empty<string>(),
+            new[] { StoreCode },
+            Array.Empty<string>()
+        );
+        var tombstone = Assert.Single(request.Tombstones);
+        Assert.Equal(ProductMaintenanceHqResourceKinds.ProductSetCode, tombstone.ResourceKind);
+        Assert.Null(tombstone.StoreCode);
+        Assert.Equal(set.SetProductCode, tombstone.BusinessKey);
+        Assert.True((await _db.Queryable<ProductSetCode>()
+            .SingleAsync(item => item.SetCodeId == set.SetCodeId)).IsDeleted);
+        Assert.Equal(0, await _db.Queryable<StoreMultiCodeProduct>()
+            .Where(item => item.UUID == storeRow.UUID)
+            .CountAsync());
+    }
+
+    [Fact]
+    public async Task DeleteSetCodeAsync_仅有其他分店权限时拒绝且不删除全局条码()
+    {
+        const string productCode = "P-DELETE-SET-SCOPE";
+        await SeedMultiCodeParentAsync(productCode, 20m, 20m);
+        var set = BuildMultiCodeSetCode(productCode, "A", 10m, setType: 1);
+        var storeRow = BuildMultiCodeStoreRow(productCode, "A", 10m, 20m);
+        await _db.Insertable(set).ExecuteCommandAsync();
+        await _db.Insertable(storeRow).ExecuteCommandAsync();
+        var calls = new List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)>();
+        var (writer, _) = CreateCapturingProjectionWriter(calls);
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .DeleteSetCodeAsync(
+                set.SetCodeId,
+                "device:other-store-device",
+                new List<string> { "S02" }
+            );
+
+        Assert.False(result.Success);
+        Assert.Contains("无权", result.Message);
+        Assert.Empty(calls);
+        Assert.False((await _db.Queryable<ProductSetCode>()
+            .SingleAsync(item => item.SetCodeId == set.SetCodeId)).IsDeleted);
+        Assert.Equal(1, await _db.Queryable<StoreMultiCodeProduct>()
+            .Where(item => item.UUID == storeRow.UUID && !item.IsDeleted)
+            .CountAsync());
+    }
+
+    [Fact]
+    public async Task UpsertClearancePriceAsync_非空价格成功提交时入队当前店精确事件()
+    {
+        await SeedAsync("200", 5m, 10m, 0.9m, DateTime.UtcNow.AddDays(-2));
+        var calls = new List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)>();
+        var (writer, status) = CreateCapturingProjectionWriter(calls);
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .UpsertClearancePriceAsync(
+                ProductCode,
+                new UpsertStoreProductClearancePriceDto
+                {
+                    StoreCode = StoreCode,
+                    ClearancePrice = 7.5m,
+                },
+                "device:test-device",
+                new List<string> { StoreCode }
+            );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Same(status, result.Data!.HqSync);
+        var request = AssertMutationRequest(
+            calls,
+            ProductMaintenanceHqOperationKinds.ClearancePriceUpdated,
+            new[] { StoreCode },
+            new[] { StoreCode },
+            new[] { ProductMaintenanceHqFieldMasks.StoreClearancePrice }
+        );
+        Assert.Empty(request.Tombstones);
+        var persisted = await _db.Queryable<StoreClearancePrice>().SingleAsync();
+        Assert.Equal(7.5m, persisted.ClearancePrice);
+    }
+
+    [Fact]
+    public async Task UpsertClearancePriceAsync_目标商品不属于授权分店时拒绝写入()
+    {
+        await SeedAsync("200", 5m, 10m, 0.9m, DateTime.UtcNow.AddDays(-2));
+        var calls = new List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)>();
+        var (writer, _) = CreateCapturingProjectionWriter(calls);
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .UpsertClearancePriceAsync(
+                ProductCode,
+                new UpsertStoreProductClearancePriceDto
+                {
+                    StoreCode = "S02",
+                    ClearancePrice = 7.5m,
+                },
+                "device:other-store-device",
+                new List<string> { "S02" }
+            );
+
+        Assert.False(result.Success);
+        Assert.Contains("无权", result.Message);
+        Assert.Empty(calls);
+        Assert.Equal(0, await _db.Queryable<StoreClearancePrice>()
+            .Where(item => item.ProductCode == ProductCode && !item.IsDeleted)
+            .CountAsync());
+    }
+
+    [Fact]
+    public async Task UpdateStorePriceAsync_成功提交时入队当前店完整价格与多码事件()
+    {
+        await SeedAsync("200", 5m, 10m, 0.9m, DateTime.UtcNow.AddDays(-2));
+        var calls = new List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)>();
+        var (writer, status) = CreateCapturingProjectionWriter(calls);
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .UpdateStorePriceAsync(
+                StorePriceUuid,
+                new UpdateStoreProductPriceDto
+                {
+                    PurchasePrice = 6m,
+                    RetailPrice = 12m,
+                    DiscountRate = 0.8m,
+                    IsAutoPricing = false,
+                    IsSpecialProduct = true,
+                    IsActive = true,
+                },
+                "device:test-device",
+                new List<string> { StoreCode }
+            );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Same(status, result.Data!.HqSync);
+        var request = AssertMutationRequest(
+            calls,
+            ProductMaintenanceHqOperationKinds.StorePriceUpdated,
+            new[] { StoreCode },
+            new[] { StoreCode },
+            ProductMaintenanceHqFieldMasks.StorePriceAndMultiCode
+        );
+        Assert.Empty(request.Tombstones);
+        Assert.Equal("test-device", request.RequestedByDeviceId);
+    }
+
+    [Fact]
+    public async Task UpdateStorePriceAsync_HQ入队失败时回滚门店价格且公开错误不含数据库详情()
+    {
+        await SeedAsync("200", 5m, 10m, 0.9m, DateTime.UtcNow.AddDays(-2));
+        var writer = new Mock<IProductMaintenanceHqProjectionWriter>(MockBehavior.Strict);
+        writer.Setup(item => item.EnqueueAsync(
+                _db,
+                It.IsAny<ProductMaintenanceHqMutationRequest>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ThrowsAsync(new ProductMaintenanceHqEnqueueException("HQ 同步任务创建失败，请稍后重试"));
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .UpdateStorePriceAsync(
+                StorePriceUuid,
+                new UpdateStoreProductPriceDto
+                {
+                    PurchasePrice = 99m,
+                    RetailPrice = 88m,
+                    DiscountRate = 0.1m,
+                    IsAutoPricing = false,
+                    IsSpecialProduct = true,
+                    IsActive = false,
+                },
+                "device:test-device",
+                new List<string> { StoreCode }
+            );
+
+        Assert.False(result.Success);
+        Assert.Contains("HQ 同步任务创建失败，请稍后重试", result.Message);
+        Assert.DoesNotContain("SqlException", result.Message, StringComparison.OrdinalIgnoreCase);
+        var persisted = await GetStorePriceAsync();
+        Assert.Equal(5m, persisted.PurchasePrice);
+        Assert.Equal(10m, persisted.StoreRetailPriceValue);
+        Assert.Equal(0.9m, persisted.DiscountRate);
+        writer.VerifyAll();
+    }
+
+    [Fact]
+    public async Task UpdateStorePriceAsync_未知数据库异常仅返回安全通用文案()
+    {
+        await SeedAsync("200", 5m, 10m, 0.9m, DateTime.UtcNow.AddDays(-2));
+        var writer = new Mock<IProductMaintenanceHqProjectionWriter>(MockBehavior.Strict);
+        writer.Setup(item => item.EnqueueAsync(
+                _db,
+                It.IsAny<ProductMaintenanceHqMutationRequest>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ThrowsAsync(new InvalidOperationException("SqlException: invalid object dbo.ProductHqSyncOutbox"));
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .UpdateStorePriceAsync(
+                StorePriceUuid,
+                new UpdateStoreProductPriceDto
+                {
+                    PurchasePrice = 99m,
+                    RetailPrice = 88m,
+                    DiscountRate = 0.1m,
+                    IsAutoPricing = false,
+                    IsSpecialProduct = true,
+                    IsActive = false,
+                },
+                "device:test-device",
+                new List<string> { StoreCode }
+            );
+
+        Assert.False(result.Success);
+        Assert.Equal("更新分店商品失败，请稍后重试", result.Message);
+        Assert.DoesNotContain("SqlException", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ProductHqSyncOutbox", result.Message, StringComparison.OrdinalIgnoreCase);
+        var persisted = await GetStorePriceAsync();
+        Assert.Equal(5m, persisted.PurchasePrice);
+        Assert.Equal(10m, persisted.StoreRetailPriceValue);
+        Assert.Equal(0.9m, persisted.DiscountRate);
+        writer.VerifyAll();
+    }
+
+    [Fact]
+    public async Task UpdateStorePriceAsync_响应投影失败时回滚本地事务且不误报成功()
+    {
+        await SeedAsync("200", 5m, 10m, 0.9m, DateTime.UtcNow.AddDays(-2));
+        var calls = new List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)>();
+        var (writer, _) = CreateCapturingProjectionWriter(calls);
+        _autoPricingService
+            .Setup(service => service.FindStrategyForPriceAsync(
+                It.IsAny<decimal>(),
+                It.IsAny<string?>(),
+                It.IsAny<string?>()
+            ))
+            .ThrowsAsync(new InvalidOperationException("response projection failed"));
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .UpdateStorePriceAsync(
+                StorePriceUuid,
+                new UpdateStoreProductPriceDto
+                {
+                    PurchasePrice = 99m,
+                    RetailPrice = 88m,
+                    DiscountRate = 0.1m,
+                    IsAutoPricing = false,
+                    IsSpecialProduct = true,
+                    IsActive = false,
+                },
+                "device:test-device",
+                new List<string> { StoreCode }
+            );
+
+        Assert.False(result.Success);
+        Assert.Equal("更新分店商品失败，请稍后重试", result.Message);
+        Assert.Single(calls);
+        var persisted = await GetStorePriceAsync();
+        Assert.Equal(5m, persisted.PurchasePrice);
+        Assert.Equal(10m, persisted.StoreRetailPriceValue);
+        Assert.Equal(0.9m, persisted.DiscountRate);
+        writer.VerifyAll();
+    }
+
+    [Fact]
+    public async Task UpsertClearancePriceAsync_删除入队失败时回滚本地清货价()
+    {
+        await SeedAsync("200", 5m, 10m, 0.9m, DateTime.UtcNow.AddDays(-2));
+        await _db.Insertable(new StoreClearancePrice
+        {
+            UUID = "clearance-rollback",
+            StoreCode = StoreCode,
+            ProductCode = ProductCode,
+            ClearanceBarcode = "CLR-ROLLBACK",
+            ClearancePrice = 7.5m,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        var writer = new Mock<IProductMaintenanceHqProjectionWriter>(MockBehavior.Strict);
+        writer.Setup(item => item.EnqueueAsync(
+                _db,
+                It.IsAny<ProductMaintenanceHqMutationRequest>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ThrowsAsync(new ProductMaintenanceHqEnqueueException("HQ 同步任务创建失败，请稍后重试"));
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .UpsertClearancePriceAsync(
+                ProductCode,
+                new UpsertStoreProductClearancePriceDto
+                {
+                    StoreCode = StoreCode,
+                    ClearancePrice = null,
+                },
+                "device:test-device",
+                new List<string> { StoreCode }
+            );
+
+        Assert.False(result.Success);
+        var persisted = await _db.Queryable<StoreClearancePrice>()
+            .SingleAsync(item => item.UUID == "clearance-rollback");
+        Assert.Equal(7.5m, persisted.ClearancePrice);
+        Assert.False(persisted.IsDeleted);
+        writer.VerifyAll();
+    }
+
+    [Fact]
     public async Task SaveSetCodeSnapshotAsync_提交增删改时原子更新并同步投影()
     {
         const string productCode = "P-SNAPSHOT-SAVE";
@@ -217,8 +854,17 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
         var retained = BuildMultiCodeSetCode(productCode, "RETAIN", 10m, setType: 1);
         var removed = BuildMultiCodeSetCode(productCode, "REMOVE", 20m, setType: 1);
         await _db.Insertable(new[] { retained, removed }).ExecuteCommandAsync();
+        var calls = new List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)>();
+        var (writer, status) = CreateCapturingProjectionWriter(calls);
+        var currentUser = new Mock<ICurrentUserService>();
+        currentUser.Setup(item => item.GetCurrentUsername()).Returns("super-admin");
+        currentUser.Setup(item => item.GetCurrentUserGuid()).Returns("super-admin-guid");
 
-        var result = await CreateService().SaveSetCodeSnapshotAsync(
+        var result = await CreateService(
+                hqProjectionWriter: writer.Object,
+                currentUserService: currentUser.Object
+            )
+            .SaveSetCodeSnapshotAsync(
             new SaveStoreProductSetCodeSnapshotDto
             {
                 ProductCode = productCode,
@@ -259,6 +905,25 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
         Assert.Equal(2, await _db.Queryable<StoreMultiCodeProduct>()
             .Where(item => item.ProductCode == productCode && !item.IsDeleted)
             .CountAsync());
+        Assert.Same(status, result.Data.HqSync);
+        var request = AssertMutationRequest(
+            calls,
+            ProductMaintenanceHqOperationKinds.SetCodeSnapshot,
+            new[] { StoreCode },
+            null,
+            new[]
+            {
+                ProductMaintenanceHqFieldMasks.ProductType,
+                ProductMaintenanceHqFieldMasks.ProductSetCodes,
+                ProductMaintenanceHqFieldMasks.StoreMultiCodes,
+            }
+        );
+        var tombstone = Assert.Single(request.Tombstones);
+        Assert.Equal(ProductMaintenanceHqResourceKinds.ProductSetCode, tombstone.ResourceKind);
+        Assert.Null(tombstone.StoreCode);
+        Assert.Equal(removed.SetProductCode, tombstone.BusinessKey);
+        Assert.Equal("super-admin-guid", request.RequestedByUserGuid);
+        Assert.Null(request.RequestedByDeviceId);
     }
 
     [Fact]
@@ -667,6 +1332,220 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
     }
 
     [Fact]
+    public async Task SyncWarehousePriceAsync_真实写入分支同事务入队并返回HqSync()
+    {
+        await SeedAsync("200", 5m, 10m, 0.9m, DateTime.UtcNow.AddDays(-2), 6.5m, 12m);
+        var status = new ProductHqSyncOperationStatusDto
+        {
+            OperationId = "warehouse-operation",
+            Status = ProductHqSyncOutboxStatuses.Pending,
+            ProductCode = ProductCode,
+            StoreCode = StoreCode,
+            Retryable = true,
+        };
+        var writer = new Mock<IProductMaintenanceHqProjectionWriter>(MockBehavior.Strict);
+        writer.Setup(item => item.EnqueueAsync(
+                _db,
+                It.Is<ProductMaintenanceHqMutationRequest>(request =>
+                    request.OperationKind == ProductMaintenanceHqOperationKinds.WarehousePriceSynced
+                    && request.ProductCode == ProductCode
+                    && request.TargetStoreCodes!.SequenceEqual(new[] { StoreCode })
+                    && request.AuthorizedStoreCodes!.SequenceEqual(new[] { StoreCode })
+                    && request.FieldMask.SequenceEqual(
+                        ProductMaintenanceHqFieldMasks.StorePriceAndMultiCode
+                    )
+                    && request.Tombstones.Count == 0
+                    && request.RequestedByDeviceId == "test-device"
+                    && request.RequestedByUserGuid == null
+                ),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(status);
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .SyncWarehousePriceAsync(
+                StorePriceUuid,
+                new SyncStoreProductWarehousePriceRequestDto(),
+                "device:test-device",
+                new List<string> { StoreCode }
+            );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Same(status, result.Data!.HqSync);
+        writer.VerifyAll();
+    }
+
+    [Fact]
+    public async Task SyncWarehousePriceAsync_无变化成功分支不入队且HqSync为空()
+    {
+        await SeedAsync("225", 5m, 10m, 0.9m, DateTime.UtcNow.AddDays(-2), 6m, 12m);
+        var writer = new Mock<IProductMaintenanceHqProjectionWriter>(MockBehavior.Strict);
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .SyncWarehousePriceAsync(
+                StorePriceUuid,
+                new SyncStoreProductWarehousePriceRequestDto(),
+                "device:test-device",
+                new List<string> { StoreCode }
+            );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Null(result.Data!.HqSync);
+        writer.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task UpsertClearancePriceAsync_空价格物理删除本地记录并同事务入队精确墓碑()
+    {
+        await SeedAsync("200", 5m, 10m, 0.9m, DateTime.UtcNow.AddDays(-2));
+        await _db.Insertable(new StoreClearancePrice
+        {
+            UUID = "clearance-1",
+            StoreCode = StoreCode,
+            ProductCode = ProductCode,
+            ClearanceBarcode = "CLR-1",
+            ClearancePrice = 7.5m,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        var status = new ProductHqSyncOperationStatusDto
+        {
+            OperationId = "clearance-operation",
+            Status = ProductHqSyncOutboxStatuses.Pending,
+            ProductCode = ProductCode,
+            StoreCode = StoreCode,
+            Retryable = true,
+        };
+        var writer = new Mock<IProductMaintenanceHqProjectionWriter>(MockBehavior.Strict);
+        writer.Setup(item => item.EnqueueAsync(
+                _db,
+                It.Is<ProductMaintenanceHqMutationRequest>(request =>
+                    request.OperationKind == ProductMaintenanceHqOperationKinds.ClearancePriceDeleted
+                    && request.TargetStoreCodes!.SequenceEqual(new[] { StoreCode })
+                    && request.AuthorizedStoreCodes!.SequenceEqual(new[] { StoreCode })
+                    && request.FieldMask.SequenceEqual(
+                        new[] { ProductMaintenanceHqFieldMasks.StoreClearancePrice }
+                    )
+                    && request.Tombstones.Single().ResourceKind
+                        == ProductMaintenanceHqResourceKinds.StoreClearancePrice
+                    && request.Tombstones.Single().StoreCode == StoreCode
+                    && request.Tombstones.Single().BusinessKey == "CLR-1"
+                    && request.RequestedByDeviceId == "test-device"
+                ),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(status);
+
+        var result = await CreateService(hqProjectionWriter: writer.Object)
+            .UpsertClearancePriceAsync(
+                ProductCode,
+                new UpsertStoreProductClearancePriceDto
+                {
+                    StoreCode = StoreCode,
+                    ClearancePrice = null,
+                },
+                "device:test-device",
+                new List<string> { StoreCode }
+            );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Same(status, result.Data!.HqSync);
+        Assert.Equal(0, await _db.Queryable<StoreClearancePrice>()
+            .Where(item => item.ProductCode == ProductCode && item.StoreCode == StoreCode)
+            .CountAsync());
+        writer.VerifyAll();
+    }
+
+    [Fact]
+    public async Task UpsertClearancePriceAsync_已有重复记录清空时删除全部业务键记录()
+    {
+        await SeedAsync("200", 5m, 10m, 0.9m, DateTime.UtcNow.AddDays(-2));
+        await _db.Insertable(new[]
+        {
+            new StoreClearancePrice
+            {
+                UUID = "clearance-duplicate-a",
+                StoreCode = StoreCode,
+                ProductCode = ProductCode,
+                ClearanceBarcode = "CLR-A",
+                ClearancePrice = 7.5m,
+                IsDeleted = false,
+            },
+            new StoreClearancePrice
+            {
+                UUID = "clearance-duplicate-b",
+                StoreCode = StoreCode,
+                ProductCode = ProductCode,
+                ClearanceBarcode = "CLR-B",
+                ClearancePrice = 8.5m,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().UpsertClearancePriceAsync(
+            ProductCode,
+            new UpsertStoreProductClearancePriceDto
+            {
+                StoreCode = StoreCode,
+                ClearancePrice = null,
+            },
+            "device:test-device",
+            new List<string> { StoreCode }
+        );
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(0, await _db.Queryable<StoreClearancePrice>()
+            .Where(item => item.ProductCode == ProductCode && item.StoreCode == StoreCode)
+            .CountAsync());
+    }
+
+    [Fact]
+    public async Task UpsertClearancePriceAsync_已有重复记录更新时收敛为单条最新记录()
+    {
+        await SeedAsync("200", 5m, 10m, 0.9m, DateTime.UtcNow.AddDays(-2));
+        await _db.Insertable(new[]
+        {
+            new StoreClearancePrice
+            {
+                UUID = "clearance-duplicate-old",
+                StoreCode = StoreCode,
+                ProductCode = ProductCode,
+                ClearanceBarcode = "CLR-OLD",
+                ClearancePrice = 7.5m,
+                CreatedAt = DateTime.UtcNow.AddDays(-2),
+                IsDeleted = false,
+            },
+            new StoreClearancePrice
+            {
+                UUID = "clearance-duplicate-new",
+                StoreCode = StoreCode,
+                ProductCode = ProductCode,
+                ClearanceBarcode = "CLR-NEW",
+                ClearancePrice = 8.5m,
+                CreatedAt = DateTime.UtcNow.AddDays(-1),
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+
+        var result = await CreateService().UpsertClearancePriceAsync(
+            ProductCode,
+            new UpsertStoreProductClearancePriceDto
+            {
+                StoreCode = StoreCode,
+                ClearancePrice = 6.25m,
+            },
+            "device:test-device",
+            new List<string> { StoreCode }
+        );
+
+        Assert.True(result.Success, result.Message);
+        var rows = await _db.Queryable<StoreClearancePrice>()
+            .Where(item => item.ProductCode == ProductCode && item.StoreCode == StoreCode)
+            .ToListAsync();
+        var row = Assert.Single(rows);
+        Assert.Equal(6.25m, row.ClearancePrice);
+    }
+
+    [Fact]
     public async Task SyncWarehousePriceAsync_主记录只写价格与更新审计列()
     {
         await SeedAsync("200", 5m, 10m, 0.25m, DateTime.UtcNow.AddDays(-2), 6.5m, 12m);
@@ -1052,7 +1931,8 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
             Mock.Of<IDeviceRegistrationService>(),
             Mock.Of<IMapper>(),
             CreateSqlSugarContext(_db),
-            NullLogger<ReactStoreProductMaintenanceController>.Instance
+            NullLogger<ReactStoreProductMaintenanceController>.Instance,
+            CreateSuccessfulAuthorizationService()
         )
         {
             ControllerContext = new ControllerContext
@@ -1275,7 +2155,9 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
     }
 
     private StoreProductMaintenanceReactService CreateService(
-        IWarehouseProductChangeHistoryService? historyService = null
+        IWarehouseProductChangeHistoryService? historyService = null,
+        IProductMaintenanceHqProjectionWriter? hqProjectionWriter = null,
+        ICurrentUserService? currentUserService = null
     )
     {
         return new StoreProductMaintenanceReactService(
@@ -1284,8 +2166,81 @@ public sealed class StoreProductMaintenanceWarehousePriceSyncTests : IDisposable
             _autoPricingService.Object,
             _cache,
             historyService ?? WarehouseProductChangeHistoryTestDouble.CreateNoop(),
-            Mock.Of<ICurrentUserService>()
+            currentUserService ?? Mock.Of<ICurrentUserService>(),
+            hqProjectionWriter ?? CreateSuccessfulProjectionWriter()
         );
+    }
+
+    private static (
+        Mock<IProductMaintenanceHqProjectionWriter> Writer,
+        ProductHqSyncOperationStatusDto Status
+    ) CreateCapturingProjectionWriter(
+        List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)> calls
+    )
+    {
+        var status = new ProductHqSyncOperationStatusDto
+        {
+            OperationId = Guid.NewGuid().ToString("N"),
+            Status = ProductHqSyncOutboxStatuses.Pending,
+            Retryable = true,
+        };
+        var writer = new Mock<IProductMaintenanceHqProjectionWriter>(MockBehavior.Strict);
+        writer.Setup(item => item.EnqueueAsync(
+                It.IsAny<ISqlSugarClient>(),
+                It.IsAny<ProductMaintenanceHqMutationRequest>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback<ISqlSugarClient, ProductMaintenanceHqMutationRequest, CancellationToken>(
+                (db, request, _) => calls.Add((db, request))
+            )
+            .ReturnsAsync(status);
+        return (writer, status);
+    }
+
+    private ProductMaintenanceHqMutationRequest AssertMutationRequest(
+        List<(ISqlSugarClient Db, ProductMaintenanceHqMutationRequest Request)> calls,
+        string operationKind,
+        IReadOnlyCollection<string>? targetStoreCodes,
+        IReadOnlyCollection<string>? authorizedStoreCodes,
+        IReadOnlyCollection<string> fieldMask
+    )
+    {
+        var call = Assert.Single(calls);
+        Assert.Same(_db, call.Db);
+        Assert.Equal(operationKind, call.Request.OperationKind);
+        Assert.Equal(targetStoreCodes, call.Request.TargetStoreCodes);
+        Assert.Equal(authorizedStoreCodes, call.Request.AuthorizedStoreCodes);
+        Assert.Equal(fieldMask, call.Request.FieldMask);
+        return call.Request;
+    }
+
+    private static IProductMaintenanceHqProjectionWriter CreateSuccessfulProjectionWriter()
+    {
+        var writer = new Mock<IProductMaintenanceHqProjectionWriter>();
+        writer.Setup(item => item.EnqueueAsync(
+                It.IsAny<ISqlSugarClient>(),
+                It.IsAny<ProductMaintenanceHqMutationRequest>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(new ProductHqSyncOperationStatusDto
+            {
+                OperationId = Guid.NewGuid().ToString("N"),
+                Status = ProductHqSyncOutboxStatuses.Pending,
+                Retryable = true,
+            });
+        return writer.Object;
+    }
+
+    private static IAuthorizationService CreateSuccessfulAuthorizationService()
+    {
+        var authorization = new Mock<IAuthorizationService>();
+        authorization.Setup(item => item.AuthorizeAsync(
+                It.IsAny<ClaimsPrincipal>(),
+                It.IsAny<object?>(),
+                It.IsAny<string>()
+            ))
+            .ReturnsAsync(AuthorizationResult.Success());
+        return authorization.Object;
     }
 
     private async Task EnsureActiveStoreAsync()

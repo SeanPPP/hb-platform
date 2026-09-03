@@ -46,6 +46,10 @@ internal interface ISchemaMigrationRuntime
 
     Task VerifyContainerDetailQueryIndexesAsync(CancellationToken cancellationToken);
 
+    Task ApplyProductHqSyncOutboxAsync(CancellationToken cancellationToken);
+
+    Task VerifyProductHqSyncOutboxAsync(CancellationToken cancellationToken);
+
     Task ApplyPosmBaselineAsync(CancellationToken cancellationToken);
 
     Task ApplyMobileDeviceActivationAsync(CancellationToken cancellationToken);
@@ -71,6 +75,8 @@ internal sealed class DeviceActivationSchemaMismatchException : Exception;
 internal sealed class ContainerDetailQueryIndexSchemaMismatchException : Exception;
 
 internal sealed class ContainerDetailCollaborationSchemaMismatchException : Exception;
+
+internal sealed class ProductHqSyncOutboxSchemaMismatchException : Exception;
 
 internal sealed class SchemaBaselineSqlFailureException(string stepId) : Exception
 {
@@ -258,6 +264,35 @@ internal sealed class SqlServerSchemaMigrationRuntime : ISchemaMigrationRuntime
         catch (SqlException exception) when (exception.Number is >= 51530 and <= 51539)
         {
             throw new ContainerDetailQueryIndexSchemaMismatchException();
+        }
+    }
+
+    public async Task ApplyProductHqSyncOutboxAsync(CancellationToken cancellationToken)
+    {
+        await SqlServerSchemaMigrationStore.ExecuteBatchAsync(
+            _mainDatabase.ConnectionString,
+            ProductHqSyncOutboxSchemaMigrator.SqlServerApplySql,
+            _commandTimeoutSeconds,
+            cancellationToken
+        );
+        // 只有严格签名通过后，协调器才允许把此步骤写入迁移账本。
+        await VerifyProductHqSyncOutboxAsync(cancellationToken);
+    }
+
+    public async Task VerifyProductHqSyncOutboxAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await SqlServerSchemaMigrationStore.ExecuteReadOnlyBatchAsync(
+                _mainDatabase.ConnectionString,
+                ProductHqSyncOutboxSchemaMigrator.SqlServerVerifySql,
+                _commandTimeoutSeconds,
+                cancellationToken
+            );
+        }
+        catch (SqlException exception) when (exception.Number is >= 51071 and <= 51081)
+        {
+            throw new ProductHqSyncOutboxSchemaMismatchException();
         }
     }
 

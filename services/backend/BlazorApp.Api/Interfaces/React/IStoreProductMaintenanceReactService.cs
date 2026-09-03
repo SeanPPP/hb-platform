@@ -92,7 +92,7 @@ namespace BlazorApp.Api.Interfaces.React
             List<string>? accessibleStoreCodes
         );
 
-        Task<ApiResponse<bool>> DeleteSetCodeAsync(
+        Task<ApiResponse<DeleteStoreProductSetCodeResultDto>> DeleteSetCodeAsync(
             string setCodeId,
             string updatedBy,
             List<string>? accessibleStoreCodes

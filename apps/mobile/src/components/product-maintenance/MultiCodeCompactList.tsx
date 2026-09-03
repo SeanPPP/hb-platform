@@ -69,31 +69,35 @@ export function MultiCodeCompactList({
           </View>
         ) : null}
 
-        {items.map((item, index) => (
-          <View key={item.setCodeId || item.uuid} style={styles.row}>
-            <Text variant="bodySmall" style={styles.rowNumber}>
-              {index + 1}
-            </Text>
-            <Pressable style={styles.barcodeCell} onPress={() => onEditItemBarcode(item.setCodeId)}>
-              <Text variant="bodyMedium" style={styles.barcodeText} numberOfLines={1}>
-                {item.barcode ?? "--"}
+        {items.map((item, index) => {
+          // 历史多码可能没有 setCodeId，交互必须稳定地回传 UUID，不能误命中首行。
+          const itemId = item.setCodeId || item.uuid;
+          return (
+            <View key={itemId} style={styles.row}>
+              <Text variant="bodySmall" style={styles.rowNumber}>
+                {index + 1}
               </Text>
-            </Pressable>
-            <Pressable style={styles.priceCell} onPress={() => onEditItemRetailPrice(item.setCodeId)}>
-              <Text variant="bodyMedium" style={styles.priceText}>
-                {formatPrice(item.retailPrice)}
-              </Text>
-            </Pressable>
-            <IconButton
-              icon="printer-outline"
-              size={18}
-              onPress={() => onPrintItem(item.setCodeId)}
-              loading={printingItemId === item.setCodeId}
-              disabled={printingItemId === item.setCodeId}
-              style={styles.printButton}
-            />
-          </View>
-        ))}
+              <Pressable style={styles.barcodeCell} onPress={() => onEditItemBarcode(itemId)}>
+                <Text variant="bodyMedium" style={styles.barcodeText} numberOfLines={1}>
+                  {item.barcode ?? "--"}
+                </Text>
+              </Pressable>
+              <Pressable style={styles.priceCell} onPress={() => onEditItemRetailPrice(itemId)}>
+                <Text variant="bodyMedium" style={styles.priceText}>
+                  {formatPrice(item.retailPrice)}
+                </Text>
+              </Pressable>
+              <IconButton
+                icon="printer-outline"
+                size={18}
+                onPress={() => onPrintItem(itemId)}
+                loading={printingItemId === itemId}
+                disabled={printingItemId === itemId}
+                style={styles.printButton}
+              />
+            </View>
+          );
+        })}
 
         {hasMore && onLoadMore ? (
           <Button

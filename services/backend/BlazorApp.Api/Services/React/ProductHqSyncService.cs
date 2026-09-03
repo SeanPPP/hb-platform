@@ -1153,6 +1153,20 @@ namespace BlazorApp.Api.Services.React
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
+                // 必须在读取 HQ 分店和主档存在性前取得跨写路径商品锁，
+                // 防止窄投影与完整推送并发进入 update-if-zero-insert 分支。
+                await using var hqMutationLock = await ProductHqMutationExecutionLock.AcquireAsync(
+                    hqDb,
+                    activeProductCodes
+                );
+                if (hqMutationLock == null)
+                {
+                    return ApiResponse<PushProductsToHqResult>.Error(
+                        "商品 HQ 同步正忙，请稍后重试",
+                        SetChildPurchasePriceMutationLock.BusyErrorCode
+                    );
+                }
+
                 var activeStoreCodes = (await hqDb.Queryable<HqBranch>()
                     .Select(row => row.BranchCode)
                     .ToListAsync())

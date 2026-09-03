@@ -82,6 +82,8 @@ public sealed class SchemaMigrationCoordinatorTests
         Assert.Contains("ApplyBrowserExtensionSessionGrantAsync", runtimeMethods);
         Assert.Contains("ApplyContainerDetailQueryIndexesAsync", runtimeMethods);
         Assert.Contains("VerifyContainerDetailQueryIndexesAsync", runtimeMethods);
+        Assert.Contains("ApplyProductHqSyncOutboxAsync", runtimeMethods);
+        Assert.Contains("VerifyProductHqSyncOutboxAsync", runtimeMethods);
         Assert.Contains("ApplyPosmBaselineAsync", runtimeMethods);
         Assert.Contains("ApplyMobileDeviceActivationAsync", runtimeMethods);
         Assert.Contains("VerifyMobileDeviceActivationSchemaAsync", runtimeMethods);
@@ -296,6 +298,7 @@ public sealed class SchemaMigrationCoordinatorTests
 
         Assert.Contains("CheckLedgerAsync", checkMethod, StringComparison.Ordinal);
         Assert.Contains("VerifyContainerDetailQueryIndexesAsync", checkMethod, StringComparison.Ordinal);
+        Assert.Contains("VerifyProductHqSyncOutboxAsync", checkMethod, StringComparison.Ordinal);
         Assert.Contains("VerifyDeviceActivationSchemaAsync", checkMethod, StringComparison.Ordinal);
         Assert.Contains("VerifyMobileDeviceActivationSchemaAsync", checkMethod, StringComparison.Ordinal);
         Assert.DoesNotContain("CreateTable", checkMethod, StringComparison.Ordinal);
@@ -308,10 +311,21 @@ public sealed class SchemaMigrationCoordinatorTests
         // 两个账本查询 + 已登记迁移的精确签名 VerifySql，启动门禁不能重新扫描/写入 schema。
         Assert.Equal(2, CountOccurrences(checkMethod, "CheckLedgerAsync"));
         Assert.Equal(1, CountOccurrences(checkMethod, "VerifyContainerDetailQueryIndexesAsync"));
+        Assert.Equal(1, CountOccurrences(checkMethod, "VerifyProductHqSyncOutboxAsync"));
         Assert.Equal(1, CountOccurrences(checkMethod, "VerifyDeviceActivationSchemaAsync"));
         Assert.Equal(1, CountOccurrences(checkMethod, "VerifyMobileDeviceActivationSchemaAsync"));
         Assert.Contains("DeviceActivationCodeSchema.VerifySql", runtimeSource, StringComparison.Ordinal);
         Assert.Contains("MobileDeviceActivationSchema.VerifySql", runtimeSource, StringComparison.Ordinal);
+        Assert.Contains(
+            "ProductHqSyncOutboxSchemaMigrator.SqlServerVerifySql",
+            runtimeSource,
+            StringComparison.Ordinal
+        );
+        Assert.Contains(
+            "exception.Number is >= 51071 and <= 51081",
+            runtimeSource,
+            StringComparison.Ordinal
+        );
     }
 
     [Fact]
@@ -330,6 +344,10 @@ public sealed class SchemaMigrationCoordinatorTests
         runtime.MarkApplied(
             SchemaDatabase.Main,
             SchemaMigrationCoordinator.ContainerDetailCollaborationMigrationId
+        );
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.ProductHqSyncOutboxMigrationId
         );
         runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
         runtime.MarkApplied(
@@ -390,6 +408,42 @@ public sealed class SchemaMigrationCoordinatorTests
         Assert.True(result.Success);
         Assert.Contains($"Apply:Main:{SchemaMigrationCoordinator.ContainerDetailCollaborationMigrationId}", runtime.Events);
         Assert.Contains($"Record:Main:{SchemaMigrationCoordinator.ContainerDetailCollaborationMigrationId}", runtime.Events);
+    }
+
+    [Fact]
+    public async Task MigrateAsync_所有既有主库步骤已记账_仍执行并记账ProductHqOutbox迁移()
+    {
+        var runtime = new FakeSchemaMigrationRuntime();
+        runtime.MarkApplied(SchemaDatabase.Main, SchemaMigrationCoordinator.MainMigrationId);
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.BrowserExtensionSessionGrantMigrationId
+        );
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.ContainerDetailQueryIndexesMigrationId
+        );
+        runtime.MarkApplied(
+            SchemaDatabase.Main,
+            SchemaMigrationCoordinator.ContainerDetailCollaborationMigrationId
+        );
+        runtime.MarkApplied(SchemaDatabase.Posm, SchemaMigrationCoordinator.PosmMigrationId);
+        runtime.MarkApplied(
+            SchemaDatabase.Posm,
+            SchemaMigrationCoordinator.MobileDeviceActivationMigrationId
+        );
+
+        var result = await CreateCoordinator(runtime).MigrateAsync(CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Contains(
+            $"Apply:Main:{SchemaMigrationCoordinator.ProductHqSyncOutboxMigrationId}",
+            runtime.Events
+        );
+        Assert.Contains(
+            $"Record:Main:{SchemaMigrationCoordinator.ProductHqSyncOutboxMigrationId}",
+            runtime.Events
+        );
     }
 
     [Fact]
@@ -565,6 +619,7 @@ public sealed class SchemaMigrationCoordinatorTests
                 "Check:Main:20260830.001-browser-extension-session-grant",
                 "Check:Main:20260902.001-container-detail-query-indexes",
                 "Check:Main:20260903.001-container-detail-collaboration",
+                "Check:Main:20260903.001-product-hq-sync-outbox",
                 "Check:Posm:20260827.001-hbweb-posm-baseline",
                 "Check:Posm:20260831.001-mobile-device-activation",
                 "Verify",
@@ -719,6 +774,7 @@ public sealed class SchemaMigrationCoordinatorTests
         public Exception? MobileVerifyException { get; init; }
         public Exception? ContainerDetailIndexesVerifyException { get; init; }
         public Exception? ContainerDetailCollaborationVerifyException { get; init; }
+        public Exception? ProductHqOutboxVerifyException { get; init; }
 
         public void MarkApplied(SchemaDatabase database, string migrationId) =>
             _applied.Add((database, migrationId));
@@ -796,6 +852,13 @@ public sealed class SchemaMigrationCoordinatorTests
             cancellationToken
         );
 
+        public Task ApplyProductHqSyncOutboxAsync(CancellationToken cancellationToken) =>
+            ApplyAsync(
+                SchemaDatabase.Main,
+                SchemaMigrationCoordinator.ProductHqSyncOutboxMigrationId,
+                cancellationToken
+            );
+
         public Task VerifyContainerDetailCollaborationAsync(CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -863,6 +926,18 @@ public sealed class SchemaMigrationCoordinatorTests
             if (ContainerDetailIndexesVerifyException is not null)
             {
                 throw ContainerDetailIndexesVerifyException;
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public Task VerifyProductHqSyncOutboxAsync(CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Events.Add("VerifyProductHqOutbox");
+            if (ProductHqOutboxVerifyException is not null)
+            {
+                throw ProductHqOutboxVerifyException;
             }
 
             return Task.CompletedTask;

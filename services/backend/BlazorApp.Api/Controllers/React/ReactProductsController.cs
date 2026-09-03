@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Claims;
 using System.Threading.Tasks;
 using BlazorApp.Api.Data;
 using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
+using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Helper;
@@ -25,18 +27,21 @@ namespace BlazorApp.Api.Controllers.React
         private readonly ILogger<ReactProductsController> _logger;
         private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
         private readonly ICurrentUserService _currentUserService;
+        private readonly IProductMaintenanceHqProjectionWriter _hqProjectionWriter;
 
         public ReactProductsController(
             SqlSugarContext context,
             ILogger<ReactProductsController> logger,
             IWarehouseProductChangeHistoryService changeHistoryService,
-            ICurrentUserService currentUserService
+            ICurrentUserService currentUserService,
+            IProductMaintenanceHqProjectionWriter hqProjectionWriter
         )
         {
             _context = context;
             _logger = logger;
             _changeHistoryService = changeHistoryService;
             _currentUserService = currentUserService;
+            _hqProjectionWriter = hqProjectionWriter;
         }
 
         private static string NormalizeLocalSupplierCode(string? value)
@@ -173,11 +178,26 @@ namespace BlazorApp.Api.Controllers.React
                         }
                     );
 
+                    var hqSync = await _hqProjectionWriter.EnqueueAsync(
+                        db,
+                        new ProductMaintenanceHqMutationRequest
+                        {
+                            OperationKind = ProductMaintenanceHqOperationKinds.ProductCreated,
+                            ProductCode = product.ProductCode!,
+                            TargetStoreCodes = null,
+                            FieldMask = new[] { ProductMaintenanceHqFieldMasks.All },
+                            RequestedByUserGuid = ResolveRequestedByUserGuid(),
+                            Source = "react-products.create-with-prices",
+                            OccurredAtUtc = now,
+                        }
+                    );
+
                     await db.Ado.CommitTranAsync();
                     var result = new CreateProductWithPricesResultDto
                     {
                         ProductCode = product.ProductCode!,
                         StoreProductCodes = storeProductCodes,
+                        HqSync = hqSync,
                     };
                     return Ok(new { success = true, data = result });
                 }
@@ -199,7 +219,7 @@ namespace BlazorApp.Api.Controllers.React
         /// 仅更新分店进货价，不更新零售价
         /// </summary>
         [HttpPost("update-purchase")]
-        [Authorize(Roles = "Admin,WarehouseManager")]
+        [Authorize(Policy = Permissions.StoreProducts.Edit)]
         public async Task<IActionResult> UpdatePurchase([FromBody] UpdatePurchaseRequestDto dto)
         {
             try
@@ -213,38 +233,175 @@ namespace BlazorApp.Api.Controllers.React
                     return BadRequest(new { success = false, message = "参数不完整" });
                 }
 
-                var db = _context.Db;
-                var entity = await db.Queryable<StoreRetailPrice>()
-                    .Where(x =>
-                        x.StoreCode == dto.StoreCode
-                        && x.ProductCode == dto.ProductCode
-                        && x.IsDeleted == false
+                var storeCode = dto.StoreCode.Trim();
+                var productCode = dto.ProductCode.Trim();
+                var storeAccess = await ResolveStoreAccessAsync();
+                if (
+                    !storeAccess.IsAllowed
+                    || (
+                        storeAccess.StoreCodes != null
+                        && !storeAccess.StoreCodes.Contains(storeCode, StringComparer.Ordinal)
                     )
-                    .FirstAsync();
-                if (entity == null)
+                )
                 {
-                    return NotFound(new { success = false, message = "分店价格不存在" });
+                    return Forbid();
                 }
 
-                entity.PurchasePrice = dto.NewPurchasePrice;
-                entity.UpdatedAt = DateTime.UtcNow;
-                entity.UpdatedBy = User.Identity?.Name ?? "system";
-                await db.Updateable(entity).ExecuteCommandAsync();
-
-                return Ok(
-                    new
+                var db = _context.Db;
+                await db.Ado.BeginTranAsync();
+                try
+                {
+                    await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        db,
+                        new[] { productCode }
+                    );
+                    var entity = await db.Queryable<StoreRetailPrice>()
+                        .Where(x =>
+                            x.StoreCode == storeCode
+                            && x.ProductCode == productCode
+                            && x.IsDeleted == false
+                        )
+                        .FirstAsync();
+                    if (entity == null)
                     {
-                        success = true,
-                        data = new { currentPurchasePrice = entity.PurchasePrice },
+                        await db.Ado.RollbackTranAsync();
+                        return NotFound(new { success = false, message = "分店价格不存在" });
                     }
-                );
+
+                    entity.PurchasePrice = dto.NewPurchasePrice;
+                    entity.UpdatedAt = DateTime.UtcNow;
+                    entity.UpdatedBy = User.Identity?.Name ?? "system";
+                    // 该入口只拥有进货价；字段级更新避免覆盖并发保存的零售价和门店策略。
+                    var affected = await db.Updateable(entity)
+                        .UpdateColumns(item => new
+                        {
+                            item.PurchasePrice,
+                            item.UpdatedAt,
+                            item.UpdatedBy,
+                        })
+                        .ExecuteCommandAsync();
+                    if (affected == 0)
+                    {
+                        throw new InvalidOperationException("分店价格更新未写入任何记录");
+                    }
+
+                    var hqSync = await _hqProjectionWriter.EnqueueAsync(
+                        db,
+                        new ProductMaintenanceHqMutationRequest
+                        {
+                            OperationKind = ProductMaintenanceHqOperationKinds.StorePriceUpdated,
+                            ProductCode = productCode,
+                            TargetStoreCodes = new[] { storeCode },
+                            AuthorizedStoreCodes = storeAccess.StoreCodes,
+                            FieldMask = ProductMaintenanceHqFieldMasks.StorePriceAndMultiCode,
+                            RequestedByUserGuid = ResolveRequestedByUserGuid(),
+                            Source = "react-products.update-purchase",
+                            OccurredAtUtc = entity.UpdatedAt ?? DateTime.UtcNow,
+                        }
+                    );
+                    await db.Ado.CommitTranAsync();
+
+                    return Ok(
+                        new
+                        {
+                            success = true,
+                            data = new
+                            {
+                                currentPurchasePrice = entity.PurchasePrice,
+                                hqSync,
+                            },
+                        }
+                    );
+                }
+                catch
+                {
+                    await db.Ado.RollbackTranAsync();
+                    throw;
+                }
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新分店进货价失败");
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                {
+                    return Conflict(new
+                    {
+                        success = false,
+                        errorCode = SetChildPurchasePriceMutationLock.BusyErrorCode,
+                        message = "商品价格正在被其他操作更新，请稍后重试",
+                    });
+                }
                 return StatusCode(500, new { success = false, message = "更新失败" });
             }
         }
+
+        private string? ResolveRequestedByUserGuid() =>
+            _currentUserService.GetCurrentUserGuid()
+            ?? User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+
+        private async Task<StoreAccessScope> ResolveStoreAccessAsync()
+        {
+            if (HasElevatedStoreAccess())
+            {
+                return new StoreAccessScope(true, null);
+            }
+
+            var userGuid = ResolveRequestedByUserGuid();
+            if (string.IsNullOrWhiteSpace(userGuid))
+            {
+                var username = User.Identity?.Name;
+                if (!string.IsNullOrWhiteSpace(username))
+                {
+                    userGuid = await _context.Db.Queryable<User>()
+                        .Where(item => item.Username == username && !item.IsDeleted)
+                        .Select(item => item.UserGUID)
+                        .FirstAsync();
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(userGuid))
+            {
+                return new StoreAccessScope(false, Array.Empty<string>());
+            }
+
+            var storeCodes = await _context.Db.Queryable<UserStore>()
+                .InnerJoin<Store>((userStore, store) => userStore.StoreGUID == store.StoreGUID)
+                .Where((userStore, store) =>
+                    userStore.UserGUID == userGuid
+                    && !userStore.IsDeleted
+                    && !store.IsDeleted
+                )
+                .Select((userStore, store) => store.StoreCode)
+                .ToListAsync();
+            var normalizedStoreCodes = storeCodes
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .ToArray();
+            return new StoreAccessScope(true, normalizedStoreCodes);
+        }
+
+        private bool HasElevatedStoreAccess() =>
+            HasSuperAdminRole()
+            || HasRole("Manager")
+            || HasRole("WarehouseManager")
+            || HasRole("WarehouseStaff");
+
+        private bool HasSuperAdminRole() =>
+            User.Claims.Any(claim =>
+                claim.Type == ClaimTypes.Role && Permissions.IsSuperAdminRole(claim.Value)
+            );
+
+        private bool HasRole(string role) =>
+            User.Claims.Any(claim =>
+                claim.Type == ClaimTypes.Role
+                && claim.Value.Equals(role, StringComparison.OrdinalIgnoreCase)
+            );
+
+        private sealed record StoreAccessScope(
+            bool IsAllowed,
+            IReadOnlyCollection<string>? StoreCodes
+        );
     }
 
     public class UpdatePurchaseRequestDto

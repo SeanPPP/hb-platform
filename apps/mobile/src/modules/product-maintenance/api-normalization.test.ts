@@ -69,6 +69,14 @@ const result = normalizeCreateProductWithPricesResult({
     StoreProductCodes: {
       S01: "SP-01",
     },
+    HqSync: {
+      OperationId: "operation-create-1",
+      Status: "pending",
+      ProductCode: "PROD-01",
+      AttemptCount: 0,
+      Retryable: true,
+      Message: "本地已保存，正在更新 HQ",
+    },
   },
 });
 
@@ -77,4 +85,19 @@ assertDeepEqual(
   result.storeProductCodes,
   { S01: "SP-01" },
   "create result normalizes store product codes"
+);
+assertDeepEqual(
+  result.hqSync,
+  {
+    operationId: "operation-create-1",
+    status: "pending",
+    productCode: "PROD-01",
+    storeCode: null,
+    attemptCount: 0,
+    nextAttemptAt: null,
+    retryable: true,
+    errorCode: null,
+    message: "本地已保存，正在更新 HQ",
+  },
+  "create result normalizes HQ sync operation"
 );
