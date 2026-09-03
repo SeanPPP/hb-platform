@@ -1025,6 +1025,7 @@
     let visibilityObserver = null;
     let scanTimer = null;
     let scanInterval = null;
+    let gfaLayoutStyle = null;
     function readItemNumber(card) {
       let el = card;
       if (itemCfg.selector) {
@@ -1034,6 +1035,36 @@
       }
       const raw = itemCfg.source === "attribute" ? el.getAttribute(itemCfg.attribute) : el.textContent;
       return applyTransforms2(raw, itemCfg.transforms);
+    }
+    function ensureGfaLayoutStyle() {
+      if (gfaLayoutStyle?.isConnected) return;
+      const existing = document.querySelector("style[data-hb-sro-gfa-layout]");
+      if (existing) {
+        gfaLayoutStyle = existing;
+        return;
+      }
+      gfaLayoutStyle = document.createElement("style");
+      gfaLayoutStyle.setAttribute("data-hb-sro-gfa-layout", "");
+      gfaLayoutStyle.textContent = `
+.list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content {
+  height: auto !important;
+  min-height: 100px;
+}
+.list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content > a.list-content[href*="/product/view?id="] {
+  height: auto !important;
+}
+.list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content > a.list-content[href*="/product/view?id="] .list-detail {
+  height: auto !important;
+}
+@media (max-width: 500px) {
+  .list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content {
+    padding-bottom: 46px !important;
+  }
+  .list-row[data-product] > .content > [data-hb-sro-host] {
+    margin-right: 0 !important;
+  }
+}`;
+      (document.head || document.documentElement).appendChild(gfaLayoutStyle);
     }
     function mountHost(card) {
       let mountEl = card;
@@ -1048,7 +1079,8 @@
       const host = document.createElement("div");
       host.setAttribute("data-hb-sro-host", "");
       const isGfaFixedHeightRow = profile.supplierCode === "236" && card.matches(".list-row[data-product]");
-      host.style.cssText = isGfaFixedHeightRow ? "display:block;margin:0 235px 0 0;position:relative;z-index:2;transform:translateY(-100%);pointer-events:none;" : "display:block;margin:4px 0;";
+      if (isGfaFixedHeightRow) ensureGfaLayoutStyle();
+      host.style.cssText = isGfaFixedHeightRow ? "display:block;margin:4px 235px 0 0;position:relative;z-index:2;pointer-events:none;" : "display:block;margin:4px 0;";
       mountEl.insertAdjacentElement(pos, host);
       return host;
     }
