@@ -72,7 +72,8 @@ internal sealed class NoOpLinklyCloudCredentialService : ILinklyCloudCredentialS
         throw new NotSupportedException();
 }
 
-internal sealed class NoOpLinklyCloudBackendAsyncService : ILinklyCloudBackendAsyncService
+internal sealed class NoOpLinklyCloudBackendAsyncService(
+    LinklyCloudBackendHealthResponse? healthResponse = null) : ILinklyCloudBackendAsyncService
 {
     public Task<LinklyCloudBackendSessionResponse> StartTransactionAsync(
         string storeCode,
@@ -103,7 +104,9 @@ internal sealed class NoOpLinklyCloudBackendAsyncService : ILinklyCloudBackendAs
         string storeCode,
         string deviceCode,
         string environment,
-        CancellationToken cancellationToken) => throw new NotSupportedException();
+        CancellationToken cancellationToken) => healthResponse is null
+            ? throw new NotSupportedException()
+            : Task.FromResult(healthResponse);
 
     public Task<LinklyCloudBackendLogonTestResponse> RunLogonTestAsync(
         string storeCode,
@@ -158,6 +161,81 @@ internal sealed class NoOpLinklyCloudBackendAsyncService : ILinklyCloudBackendAs
         string type,
         string? authorizationHeader,
         JsonElement payload,
+        CancellationToken cancellationToken) => throw new NotSupportedException();
+}
+
+internal sealed class FixedLinklyCloudTerminalModeService(string mode) : ILinklyCloudTerminalService
+{
+    public int ModeCalls { get; private set; }
+
+    public string? LastEnvironment { get; private set; }
+
+    public string? LastStoreCode { get; private set; }
+
+    public Task<string> GetConfigurationModeAsync(
+        string environment,
+        string storeCode,
+        CancellationToken cancellationToken)
+    {
+        ModeCalls++;
+        LastEnvironment = environment;
+        LastStoreCode = storeCode;
+        return Task.FromResult(mode);
+    }
+
+    public Task<LinklyCloudTerminalListResponse> GetTerminalsAsync(
+        string storeCode,
+        string deviceCode,
+        string environment,
+        CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    public Task<LinklyCloudTerminalSelectionResponse> SelectTerminalAsync(
+        string storeCode,
+        string deviceCode,
+        LinklyCloudTerminalSelectionRequest request,
+        string? updatedBy,
+        CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    public Task<LinklyCloudTerminalPairResponse> PairTerminalAsync(
+        string storeCode,
+        string deviceCode,
+        Guid terminalId,
+        LinklyCloudBackendPairRequest request,
+        string? updatedBy,
+        CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    public Task<LinklyCloudTerminalPaymentContext?> ResolvePaymentTerminalAsync(
+        string environment,
+        string storeCode,
+        string deviceCode,
+        Guid? terminalId,
+        long? selectionRevision,
+        CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    public Task<LinklyCloudTerminalRecord?> GetTerminalAsync(
+        string environment,
+        string storeCode,
+        Guid terminalId,
+        CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    public Task<LinklyCloudTerminalOperationLease> AcquireOperationLeaseAsync(
+        string environment,
+        string storeCode,
+        string deviceCode,
+        LinklyCloudTerminalPaymentContext terminalContext,
+        CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    public Task ReleaseOperationLeaseAsync(
+        string environment,
+        string storeCode,
+        Guid terminalId,
+        Guid leaseId,
+        CancellationToken cancellationToken) => throw new NotSupportedException();
+
+    public Task<bool> RecordHealthAsync(
+        LinklyCloudTerminalPaymentContext terminalContext,
+        string healthStatus,
+        DateTime checkedAt,
         CancellationToken cancellationToken) => throw new NotSupportedException();
 }
 

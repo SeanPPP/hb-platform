@@ -24,6 +24,10 @@ import {
   type PaymentAttemptService,
 } from "@hb/pos-payments-core/features/payments/payment-attempt-service";
 import type { DurableVoucherPreparationService } from "@/features/payments/runtime/voucher-preparation";
+import type {
+  LinklyPaymentTerminalSelectionBindingPort,
+  LinklyPaymentTerminalSelectionExpectation,
+} from "@/features/payments/linkly";
 import { calculateCashSettlement } from "@/features/sales/domain";
 
 export const PAYMENT_PERMISSION = Object.freeze({
@@ -227,6 +231,7 @@ export type PaymentCheckoutErrorCode =
   | "PAYMENT_TENDER_METHOD_ALREADY_ACTIVE"
   | "PAYMENT_CHECKOUT_FAILED"
   | "PAYMENT_PREPARED_ACTION_RECOVERY_REQUIRED"
+  | "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT"
   | "SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED"
   | "VOUCHER_CONTEXT_NOT_PREPARED";
 
@@ -283,6 +288,8 @@ export type StartPaymentCheckoutInput = Readonly<{
   amount: Money;
   /** 仅 provider=voucher 时允许；返回快照永远不会包含该字段。 */
   voucherCode?: string;
+  /** Linkly 只接收支付页已经展示并确认的安全终端选择快照。 */
+  linklyTerminalSelection?: LinklyPaymentTerminalSelectionExpectation;
 }>;
 
 export type ResumePreparedPaymentInput = Readonly<{
@@ -290,6 +297,7 @@ export type ResumePreparedPaymentInput = Readonly<{
   provider: PaymentProvider;
   amount: Money;
   voucherCode?: string;
+  linklyTerminalSelection?: LinklyPaymentTerminalSelectionExpectation;
 }>;
 
 export type RecoverPaymentCheckoutInput = Readonly<{
@@ -380,6 +388,7 @@ export type PaymentCheckoutRuntimeOptions = Readonly<{
   trustedSession: PaymentTrustedSessionGuard;
   permissions: PaymentPermissionGuard;
   voucherPreparation?: PaymentCheckoutVoucherPreparationPort;
+  linklyPaymentSelection?: LinklyPaymentTerminalSelectionBindingPort;
 }>;
 
 export class PaymentCheckoutRuntimeError extends Error {
@@ -820,12 +829,22 @@ export class PaymentCheckoutRuntime implements PaymentCheckoutRuntimePort {
     // provider 边界前最后一次复核，确保券上下文、draft、lease 和可信会话仍一致。
     await this.assertProviderAction(input.provider);
     await this.assertExact(lease);
-    const result = await this.options.mixed.addOnlineTender({
+    const submit = () => this.options.mixed.addOnlineTender({
       actionId: input.actionId,
       orderGuid: draft.orderGuid,
       provider: input.provider,
       amount: input.amount,
     });
+    const result =
+      input.provider === "linkly-cloud" &&
+      input.linklyTerminalSelection &&
+      this.options.linklyPaymentSelection
+        ? await this.options.linklyPaymentSelection.runWithSelection(
+            draft.orderGuid,
+            input.linklyTerminalSelection,
+            submit,
+          )
+        : await submit();
     if (result.status !== "completed") {
       await this.assertProviderAction(input.provider);
       await this.assertExact(lease);
@@ -1407,6 +1426,14 @@ function startSignature(
     input.amount.currency,
     input.amount.cents,
     input.expectedCartRevision,
+    input.linklyTerminalSelection?.environment ?? "",
+    input.linklyTerminalSelection?.mode ?? "",
+    input.linklyTerminalSelection?.mode === "Active"
+      ? input.linklyTerminalSelection.terminalId
+      : "",
+    input.linklyTerminalSelection?.mode === "Active"
+      ? input.linklyTerminalSelection.selectionRevision
+      : "",
   ].join("|");
 }
 
@@ -1823,6 +1850,7 @@ const STABLE_MIXED_ERRORS = new Set<PaymentCheckoutErrorCode>([
   "PAYMENT_START_FAILED",
   "PAYMENT_STATUS_UNKNOWN",
   "PAYMENT_TERMINAL_AWAITED",
+  "LINKLY_CLOUD_TERMINAL_SELECTION_CONFLICT",
   "SQUARE_SANDBOX_AMOUNT_LIMIT_EXCEEDED",
   "APPROVED_COMPLETION_REQUIRED",
   "APPROVED_COMPLETION_FAILED",

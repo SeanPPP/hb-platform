@@ -112,10 +112,14 @@ public sealed record LinklyCloudBackendTransactionRequest(
     string Environment,
     string TxnType,
     long AmtPurchase,
-    IReadOnlyDictionary<string, string>? PurchaseAnalysisData);
+    IReadOnlyDictionary<string, string>? PurchaseAnalysisData,
+    Guid? TerminalId = null,
+    long? SelectionRevision = null);
 
 public sealed record LinklyCloudBackendSettlementRequest(
-    string Environment);
+    string Environment,
+    Guid? TerminalId = null,
+    long? SelectionRevision = null);
 
 public sealed record LinklyCloudBackendRecoverRequest(
     string Environment);
@@ -165,7 +169,9 @@ public sealed record LinklyCloudBackendSessionResponse(
     string OperationType = "Transaction",
     bool? OperationSuccess = null,
     string? SettlementData = null,
-    IReadOnlyList<string>? SettlementReceiptTexts = null)
+    IReadOnlyList<string>? SettlementReceiptTexts = null,
+    Guid? TerminalId = null,
+    string? TerminalDisplayName = null)
 {
     public LinklyCloudBackendCardTransactionDto? CardTransaction { get; init; }
 }

@@ -205,6 +205,127 @@ test("付款内容滚动区采用系统键盘避让且金额输入仍禁用软�
   );
 });
 
+test("Linkly Cloud 多终端允许预选忙碌终端，未配对与未知结果期间禁用", async () => {
+  const harness = createUiPresenter({
+    selectedMethod: "linkly-cloud",
+    linklyTerminals: {
+      kind: "ready",
+      environment: "Sandbox",
+      snapshot: {
+        environment: "Sandbox",
+        mode: "Active",
+        selectedTerminalId: "terminal-1",
+        selectionRevision: 5,
+        terminals: [
+          linklyTerminal("terminal-1", 1, "Front"),
+          linklyTerminal("terminal-2", 2, "Returns"),
+          { ...linklyTerminal("terminal-busy", 3, "Busy"), isBusy: true },
+          {
+            ...linklyTerminal("terminal-unpaired", 4, "Unpaired"),
+            pairingState: "Unpaired",
+            isReady: false,
+          },
+        ],
+      },
+      errorCode: null,
+    },
+  });
+  const screen = await render(
+    <PaymentScreen
+      locale="en"
+      presenter={harness.presenter}
+      showStatusStrip={false}
+    />,
+  );
+
+  expect(screen.getByTestId("payment-linkly-terminal-selector")).toBeTruthy();
+  expect(screen.getByText("Front · Lane 1")).toBeTruthy();
+  expect(
+    screen.getByTestId("payment-linkly-terminal-terminal-2").props
+      .accessibilityState.disabled,
+  ).toBe(false);
+  expect(
+    screen.getByTestId("payment-linkly-terminal-terminal-busy").props
+      .accessibilityState.disabled,
+  ).toBe(false);
+  expect(
+    screen.getByTestId("payment-linkly-terminal-terminal-unpaired").props
+      .accessibilityState.disabled,
+  ).toBe(true);
+
+  await fireEvent.press(
+    screen.getByTestId("payment-linkly-terminal-terminal-2"),
+  );
+  expect(harness.spies.selectLinklyTerminal).toHaveBeenCalledWith("terminal-2");
+  await fireEvent.press(
+    screen.getByTestId("payment-linkly-terminal-terminal-busy"),
+  );
+  expect(harness.spies.selectLinklyTerminal).toHaveBeenCalledWith(
+    "terminal-busy",
+  );
+
+  await act(async () => {
+    harness.publish({
+      ...harness.presenter.getState(),
+      phase: "unknown",
+      runtimeStatus: "unknown",
+    });
+  });
+  expect(
+    screen.getByTestId("payment-linkly-terminal-terminal-2").props
+      .accessibilityState.disabled,
+  ).toBe(true);
+});
+
+test("Linkly Cloud 零终端阻止支付，单终端只显示当前终端而隐藏切换器", async () => {
+  const zero = createUiPresenter({
+    selectedMethod: "linkly-cloud",
+    linklyTerminals: {
+      kind: "ready",
+      environment: "Sandbox",
+      snapshot: {
+        environment: "Sandbox",
+        mode: "Active",
+        selectedTerminalId: null,
+        selectionRevision: 1,
+        terminals: [],
+      },
+      errorCode: null,
+    },
+  });
+  const zeroScreen = await render(
+    <PaymentScreen locale="zh" presenter={zero.presenter} showStatusStrip={false} />,
+  );
+  expect(zeroScreen.getByTestId("payment-linkly-terminal-empty")).toHaveTextContent(
+    "没有可用的 Linkly 云端刷卡机。",
+  );
+  expect(
+    zeroScreen.getByTestId("payment-method-linkly-cloud").props
+      .accessibilityState.disabled,
+  ).toBe(true);
+  await zeroScreen.unmount();
+
+  const single = createUiPresenter({
+    linklyTerminals: {
+      kind: "ready",
+      environment: "Sandbox",
+      snapshot: {
+        environment: "Sandbox",
+        mode: "Active",
+        selectedTerminalId: "terminal-1",
+        selectionRevision: 2,
+        terminals: [linklyTerminal("terminal-1", 1, "Front")],
+      },
+      errorCode: null,
+    },
+  });
+  const singleScreen = await render(
+    <PaymentScreen locale="en" presenter={single.presenter} showStatusStrip={false} />,
+  );
+  expect(singleScreen.queryByTestId("payment-linkly-terminal-selector")).toBeNull();
+  expect(singleScreen.getByText("Front · Lane 1")).toBeTruthy();
+});
+
 test("横屏付款台保持 44pt 触控，礼券输入只安全遮罩且成功后不回显", async () => {
   const runtime = new ScreenPaymentRuntime();
   runtime.startImpl = async () =>
@@ -3057,6 +3178,22 @@ function createUiPresenter(
       publish({ ...state, selectedMethod: method });
       return true;
     }),
+    selectLinklyTerminal: jest.fn(async (terminalId: string) => {
+      const resource = state.linklyTerminals;
+      if (!resource?.snapshot) return false;
+      publish({
+        ...state,
+        linklyTerminals: {
+          ...resource,
+          snapshot: {
+            ...resource.snapshot,
+            selectedTerminalId: terminalId,
+            selectionRevision: resource.snapshot.selectionRevision + 1,
+          },
+        },
+      });
+      return true;
+    }),
     setAmountText: jest.fn((value: string) => {
       publish({ ...state, amountText: value });
     }),
@@ -3110,6 +3247,23 @@ function createUiPresenter(
     ...spies,
   };
   return { presenter, publish, spies };
+}
+
+function linklyTerminal(
+  terminalId: string,
+  laneNo: number,
+  displayName: string,
+) {
+  return {
+    terminalId,
+    laneNo,
+    displayName,
+    pairingState: "Ready" as const,
+    isBusy: false,
+    isReady: true,
+    lastHealthStatus: "Ready",
+    lastHealthAt: null,
+  };
 }
 
 class ScreenPaymentRuntime implements PaymentCheckoutRuntimePort {

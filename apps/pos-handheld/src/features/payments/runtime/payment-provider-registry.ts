@@ -8,6 +8,7 @@ import type {
 import {
   LinklyCloudBackendApi,
   LinklyCloudBackendProvider,
+  type LinklyTerminalSelectionPort,
 } from "@/features/payments/linkly/linkly-cloud-backend";
 import {
   PaymentAttemptStateError,
@@ -204,6 +205,7 @@ export type PaymentProviderRegistryDependencies = Readonly<{
   voucherConfiguration: VoucherRuntimeConfigurationPort;
   voucherProtectedTokens: VoucherProtectedTokenPort;
   voucherContextProvider: VoucherPaymentContextProvider;
+  linklyTerminalSelection?: LinklyTerminalSelectionPort;
 }>;
 
 export async function createConfiguredPaymentProviderRegistry(
@@ -235,13 +237,18 @@ export async function createConfiguredPaymentProviderRegistry(
 
   const linklyConfiguration = normalizeLinklyConfiguration(linkly);
   if (linklyConfiguration.kind === "configured") {
+    const linklyApi = new LinklyCloudBackendApi(dependencies.transport);
     entries.set(
       "linkly-cloud",
       configured(
         "linkly-cloud",
         new LinklyCloudBackendProvider(
-          new LinklyCloudBackendApi(dependencies.transport),
-          Object.freeze(linklyConfiguration.value),
+          linklyApi,
+          Object.freeze({
+            ...linklyConfiguration.value,
+            terminalSelection:
+              dependencies.linklyTerminalSelection ?? linklyApi,
+          }),
         ),
       ),
     );

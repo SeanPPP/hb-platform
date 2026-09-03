@@ -2482,6 +2482,9 @@
   <data name="linkly.backend.activeSessionRequiresRecovery" xml:space="preserve">
     <value>当前终端已有未完成刷卡交易。请先恢复上一笔交易，或请主管确认 Linkly 后台后再开始新的支付。</value>
   </data>
+  <data name="linkly.backend.terminalSelectionChanged" xml:space="preserve">
+    <value>所选 Linkly 刷卡机已发生变化。请确认当前显示的刷卡机后重新发起付款。</value>
+  </data>
   <data name="linkly.backend.sendKeyFailed" xml:space="preserve">
     <value>刷卡机操作发送失败，请重试或恢复交易。</value>
   </data>
@@ -3023,4 +3026,10 @@
   <data name="cardRecovery.center.transactionStatus.cancelled" xml:space="preserve"><value>已取消</value></data>
   <data name="cardRecovery.center.transactionStatus.failed" xml:space="preserve"><value>失败</value></data>
   <data name="cardRecovery.center.transactionStatus.abandoned" xml:space="preserve"><value>已放弃</value></data>
+  <data name="payment.linklyTerminal.title" xml:space="preserve"><value>LINKLY 刷卡机</value></data>
+  <data name="payment.linklyTerminal.none" xml:space="preserve"><value>尚未选择刷卡机</value></data>
+  <data name="payment.linklyTerminal.noneReady" xml:space="preserve"><value>当前没有已就绪的 Linkly Cloud 刷卡机。</value></data>
+  <data name="payment.linklyTerminal.display" xml:space="preserve"><value>Lane {0} · {1}</value></data>
+  <data name="payment.linklyTerminal.switchBlocked" xml:space="preserve"><value>刷卡交易进行中或结果未决时不能切换刷卡机。</value></data>
+  <data name="payment.linklyTerminal.selected" xml:space="preserve"><value>后续付款将使用 {0}。</value></data>
 </root>

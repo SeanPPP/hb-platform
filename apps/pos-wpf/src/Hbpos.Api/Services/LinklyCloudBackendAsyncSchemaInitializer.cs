@@ -22,7 +22,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncSchemaInitializer(
 
         DECLARE @SchemaLockResult INT;
         EXEC @SchemaLockResult = sys.sp_getapplock
-            @Resource = N'Hbpos.LinklyCloudBackendAsync.Schema.v1',
+            @Resource = N'Hbpos.LinklyCloud.Schema.v2',
             @LockMode = N'Exclusive',
             @LockOwner = N'Transaction',
             @LockTimeout = 60000;
@@ -36,6 +36,7 @@ public sealed class SqlSugarLinklyCloudBackendAsyncSchemaInitializer(
                 [Environment] NVARCHAR(32) NOT NULL,
                 [StoreCode] NVARCHAR(32) NOT NULL,
                 [DeviceCode] NVARCHAR(64) NOT NULL,
+                [TerminalId] UNIQUEIDENTIFIER NULL,
                 [SessionId] NVARCHAR(64) NOT NULL,
                 [Status] NVARCHAR(32) NOT NULL,
                 [TxnRef] NVARCHAR(16) NULL,
@@ -70,6 +71,12 @@ public sealed class SqlSugarLinklyCloudBackendAsyncSchemaInitializer(
 
         IF OBJECT_ID(N'[dbo].[POSM_LinklyCloudBackendSession]', N'U') IS NOT NULL
         BEGIN
+            IF COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'TerminalId') IS NULL
+            BEGIN
+                ALTER TABLE [dbo].[POSM_LinklyCloudBackendSession]
+                    ADD [TerminalId] UNIQUEIDENTIFIER NULL;
+            END;
+
             IF COL_LENGTH(N'dbo.POSM_LinklyCloudBackendSession', N'DisplayText') IS NULL
             BEGIN
                 ALTER TABLE [dbo].[POSM_LinklyCloudBackendSession]
@@ -212,6 +219,42 @@ public sealed class SqlSugarLinklyCloudBackendAsyncSchemaInitializer(
                     ON [dbo].[POSM_LinklyCloudBackendSession] ([Environment], [StoreCode], [TxnRef])
                     WHERE [TxnRef] IS NOT NULL;
             END;
+
+            IF NOT EXISTS (
+                SELECT 1
+                FROM sys.indexes
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[POSM_LinklyCloudBackendSession]', N'U')
+                  AND [name] = N'UX_POSM_LinklyCloudBackendSession_ActiveCloudTerminal')
+            BEGIN
+                CREATE UNIQUE INDEX [UX_POSM_LinklyCloudBackendSession_ActiveCloudTerminal]
+                    ON [dbo].[POSM_LinklyCloudBackendSession] ([Environment], [StoreCode], [TerminalId])
+                    WHERE [IsActive] = 1 AND [TerminalId] IS NOT NULL;
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1
+                FROM sys.indexes
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[POSM_LinklyCloudBackendSession]', N'U')
+                  AND [name] = N'IX_POSM_LinklyCloudBackendSession_DeviceRecovery')
+            BEGIN
+                CREATE INDEX [IX_POSM_LinklyCloudBackendSession_DeviceRecovery]
+                    ON [dbo].[POSM_LinklyCloudBackendSession]
+                        ([Environment], [StoreCode], [DeviceCode], [IsActive], [Status], [ClientAcknowledgedAt])
+                    INCLUDE ([UpdatedAt]);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1
+                FROM sys.indexes
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[POSM_LinklyCloudBackendSession]', N'U')
+                  AND [name] = N'IX_POSM_LinklyCloudBackendSession_TerminalRecovery')
+            BEGIN
+                CREATE INDEX [IX_POSM_LinklyCloudBackendSession_TerminalRecovery]
+                    ON [dbo].[POSM_LinklyCloudBackendSession]
+                        ([Environment], [StoreCode], [TerminalId], [IsActive], [Status], [ClientAcknowledgedAt])
+                    INCLUDE ([UpdatedAt])
+                    WHERE [TerminalId] IS NOT NULL;
+            END;
         END;
 
         IF OBJECT_ID(N'[dbo].[POSM_LinklyCloudBackendTerminal]', N'U') IS NULL
@@ -241,6 +284,168 @@ public sealed class SqlSugarLinklyCloudBackendAsyncSchemaInitializer(
                 CREATE UNIQUE INDEX [UX_POSM_LinklyCloudBackendTerminal_Scope]
                     ON [dbo].[POSM_LinklyCloudBackendTerminal] ([Environment], [StoreCode], [DeviceCode]);
             END;
+        END;
+
+        IF OBJECT_ID(N'[dbo].[POSM_LinklyCloudTerminal]', N'U') IS NULL
+        BEGIN
+            CREATE TABLE [dbo].[POSM_LinklyCloudTerminal] (
+                [TerminalId] UNIQUEIDENTIFIER NOT NULL CONSTRAINT [PK_POSM_LinklyCloudTerminal] PRIMARY KEY,
+                [Environment] NVARCHAR(32) NOT NULL,
+                [StoreCode] NVARCHAR(32) NOT NULL,
+                [LaneNo] INT NOT NULL,
+                [DisplayName] NVARCHAR(128) NOT NULL,
+                [Username] NVARCHAR(128) NOT NULL,
+                [Password] NVARCHAR(2048) NOT NULL,
+                [Secret] NVARCHAR(2048) NULL,
+                [CredentialProtectionVersion] TINYINT NOT NULL
+                    CONSTRAINT [DF_POSM_LinklyCloudTerminal_CredentialProtectionVersion] DEFAULT (1),
+                [PosId] NVARCHAR(64) NULL,
+                [PairingState] NVARCHAR(32) NOT NULL CONSTRAINT [DF_POSM_LinklyCloudTerminal_PairingState] DEFAULT (N'Unpaired'),
+                [PairingAttemptId] UNIQUEIDENTIFIER NULL,
+                [PairingLeaseExpiresAt] DATETIME2(7) NULL,
+                [LastHealthStatus] NVARCHAR(32) NULL,
+                [LastHealthAt] DATETIME2(7) NULL,
+                [CreatedAt] DATETIME2(7) NOT NULL CONSTRAINT [DF_POSM_LinklyCloudTerminal_CreatedAt] DEFAULT (SYSUTCDATETIME()),
+                [UpdatedAt] DATETIME2(7) NOT NULL CONSTRAINT [DF_POSM_LinklyCloudTerminal_UpdatedAt] DEFAULT (SYSUTCDATETIME()),
+                [CreatedBy] NVARCHAR(128) NULL,
+                [UpdatedBy] NVARCHAR(128) NULL,
+                CONSTRAINT [CK_POSM_LinklyCloudTerminal_Environment] CHECK ([Environment] IN (N'Production', N'Sandbox')),
+                CONSTRAINT [CK_POSM_LinklyCloudTerminal_PairingState] CHECK ([PairingState] IN (N'Unpaired', N'Ready', N'Unknown', N'NeedsRepair')),
+                CONSTRAINT [CK_POSM_LinklyCloudTerminal_CredentialProtectionVersion]
+                    CHECK ([CredentialProtectionVersion] IN (0, 1)),
+                CONSTRAINT [UX_POSM_LinklyCloudTerminal_Scope_LaneNo] UNIQUE ([Environment], [StoreCode], [LaneNo]),
+                CONSTRAINT [UX_POSM_LinklyCloudTerminal_Scope_Username] UNIQUE ([Environment], [StoreCode], [Username]),
+                CONSTRAINT [UX_POSM_LinklyCloudTerminal_Scope_DisplayName] UNIQUE ([Environment], [StoreCode], [DisplayName])
+            );
+        END;
+
+        IF OBJECT_ID(N'[dbo].[POSM_LinklyCloudTerminal]', N'U') IS NOT NULL
+        BEGIN
+            IF COL_LENGTH(N'dbo.POSM_LinklyCloudTerminal', N'PairingAttemptId') IS NULL
+            BEGIN
+                ALTER TABLE [dbo].[POSM_LinklyCloudTerminal]
+                    ADD [PairingAttemptId] UNIQUEIDENTIFIER NULL;
+            END;
+
+            IF COL_LENGTH(N'dbo.POSM_LinklyCloudTerminal', N'PairingLeaseExpiresAt') IS NULL
+            BEGIN
+                ALTER TABLE [dbo].[POSM_LinklyCloudTerminal]
+                    ADD [PairingLeaseExpiresAt] DATETIME2(7) NULL;
+            END;
+
+            -- 历史行统一标记为 version 0，禁止初始化过程自动读取、复制或迁移明文凭据。
+            IF COL_LENGTH(N'dbo.POSM_LinklyCloudTerminal', N'CredentialProtectionVersion') IS NULL
+            BEGIN
+                ALTER TABLE [dbo].[POSM_LinklyCloudTerminal]
+                    ADD [CredentialProtectionVersion] TINYINT NOT NULL
+                    CONSTRAINT [DF_POSM_LinklyCloudTerminal_CredentialProtectionVersion]
+                    DEFAULT (0) WITH VALUES;
+            END;
+
+            IF COL_LENGTH(N'dbo.POSM_LinklyCloudTerminal', N'Password') < 4096
+                ALTER TABLE [dbo].[POSM_LinklyCloudTerminal]
+                    ALTER COLUMN [Password] NVARCHAR(2048) NOT NULL;
+
+            IF COL_LENGTH(N'dbo.POSM_LinklyCloudTerminal', N'Secret') < 4096
+                ALTER TABLE [dbo].[POSM_LinklyCloudTerminal]
+                    ALTER COLUMN [Secret] NVARCHAR(2048) NULL;
+
+            IF OBJECT_ID(N'[dbo].[CK_POSM_LinklyCloudTerminal_CredentialProtectionVersion]', N'C') IS NULL
+                ALTER TABLE [dbo].[POSM_LinklyCloudTerminal] WITH CHECK
+                    ADD CONSTRAINT [CK_POSM_LinklyCloudTerminal_CredentialProtectionVersion]
+                    CHECK ([CredentialProtectionVersion] IN (0, 1));
+
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[POSM_LinklyCloudTerminal]', N'U')
+                  AND [name] = N'UX_POSM_LinklyCloudTerminal_Scope_LaneNo')
+            BEGIN
+                CREATE UNIQUE INDEX [UX_POSM_LinklyCloudTerminal_Scope_LaneNo]
+                    ON [dbo].[POSM_LinklyCloudTerminal] ([Environment], [StoreCode], [LaneNo]);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[POSM_LinklyCloudTerminal]', N'U')
+                  AND [name] = N'UX_POSM_LinklyCloudTerminal_Scope_Username')
+            BEGIN
+                CREATE UNIQUE INDEX [UX_POSM_LinklyCloudTerminal_Scope_Username]
+                    ON [dbo].[POSM_LinklyCloudTerminal] ([Environment], [StoreCode], [Username]);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[POSM_LinklyCloudTerminal]', N'U')
+                  AND [name] = N'UX_POSM_LinklyCloudTerminal_Scope_DisplayName')
+            BEGIN
+                CREATE UNIQUE INDEX [UX_POSM_LinklyCloudTerminal_Scope_DisplayName]
+                    ON [dbo].[POSM_LinklyCloudTerminal] ([Environment], [StoreCode], [DisplayName]);
+            END;
+        END;
+
+        IF OBJECT_ID(N'[dbo].[POSM_LinklyCloudDeviceSelection]', N'U') IS NULL
+        BEGIN
+            CREATE TABLE [dbo].[POSM_LinklyCloudDeviceSelection] (
+                [Environment] NVARCHAR(32) NOT NULL,
+                [StoreCode] NVARCHAR(32) NOT NULL,
+                [DeviceCode] NVARCHAR(64) NOT NULL,
+                [TerminalId] UNIQUEIDENTIFIER NOT NULL,
+                [Revision] BIGINT NOT NULL CONSTRAINT [DF_POSM_LinklyCloudDeviceSelection_Revision] DEFAULT (1),
+                [UpdatedAt] DATETIME2(7) NOT NULL CONSTRAINT [DF_POSM_LinklyCloudDeviceSelection_UpdatedAt] DEFAULT (SYSUTCDATETIME()),
+                [UpdatedBy] NVARCHAR(128) NULL,
+                CONSTRAINT [PK_POSM_LinklyCloudDeviceSelection] PRIMARY KEY ([Environment], [StoreCode], [DeviceCode]),
+                CONSTRAINT [CK_POSM_LinklyCloudDeviceSelection_Environment] CHECK ([Environment] IN (N'Production', N'Sandbox')),
+                CONSTRAINT [FK_POSM_LinklyCloudDeviceSelection_Terminal]
+                    FOREIGN KEY ([TerminalId]) REFERENCES [dbo].[POSM_LinklyCloudTerminal] ([TerminalId])
+            );
+        END;
+
+        IF OBJECT_ID(N'[dbo].[POSM_LinklyCloudDeviceSelection]', N'U') IS NOT NULL
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[POSM_LinklyCloudDeviceSelection]', N'U')
+                  AND [name] = N'UX_POSM_LinklyCloudDeviceSelection_Scope_Terminal')
+            BEGIN
+                -- 历史重复属于需要人工确认的支付终端归属冲突，禁止初始化过程自动改写。
+                IF EXISTS (
+                    SELECT 1
+                    FROM [dbo].[POSM_LinklyCloudDeviceSelection]
+                    GROUP BY [Environment], [StoreCode], [TerminalId]
+                    HAVING COUNT_BIG(*) > 1)
+                    THROW 51004, 'Linkly Cloud terminal is already assigned to another POS.', 1;
+
+                CREATE UNIQUE INDEX [UX_POSM_LinklyCloudDeviceSelection_Scope_Terminal]
+                    ON [dbo].[POSM_LinklyCloudDeviceSelection] ([Environment], [StoreCode], [TerminalId]);
+            END;
+        END;
+
+        IF OBJECT_ID(N'[dbo].[POSM_LinklyCloudConfigurationMode]', N'U') IS NULL
+        BEGIN
+            CREATE TABLE [dbo].[POSM_LinklyCloudConfigurationMode] (
+                [Environment] NVARCHAR(32) NOT NULL,
+                [StoreCode] NVARCHAR(32) NOT NULL,
+                [Mode] NVARCHAR(16) NOT NULL CONSTRAINT [DF_POSM_LinklyCloudConfigurationMode_Mode] DEFAULT (N'Legacy'),
+                [LegacyPairingAttemptId] UNIQUEIDENTIFIER NULL,
+                [LegacyPairingLeaseExpiresAt] DATETIME2(7) NULL,
+                [UpdatedAt] DATETIME2(7) NOT NULL CONSTRAINT [DF_POSM_LinklyCloudConfigurationMode_UpdatedAt] DEFAULT (SYSUTCDATETIME()),
+                [UpdatedBy] NVARCHAR(128) NULL,
+                CONSTRAINT [PK_POSM_LinklyCloudConfigurationMode] PRIMARY KEY ([Environment], [StoreCode]),
+                CONSTRAINT [CK_POSM_LinklyCloudConfigurationMode_Environment] CHECK ([Environment] IN (N'Production', N'Sandbox')),
+                CONSTRAINT [CK_POSM_LinklyCloudConfigurationMode_Mode] CHECK ([Mode] IN (N'Legacy', N'Draft', N'Active'))
+            );
+        END;
+
+        IF COL_LENGTH(N'dbo.POSM_LinklyCloudConfigurationMode', N'LegacyPairingAttemptId') IS NULL
+        BEGIN
+            ALTER TABLE [dbo].[POSM_LinklyCloudConfigurationMode]
+                ADD [LegacyPairingAttemptId] UNIQUEIDENTIFIER NULL;
+        END;
+
+        IF COL_LENGTH(N'dbo.POSM_LinklyCloudConfigurationMode', N'LegacyPairingLeaseExpiresAt') IS NULL
+        BEGIN
+            ALTER TABLE [dbo].[POSM_LinklyCloudConfigurationMode]
+                ADD [LegacyPairingLeaseExpiresAt] DATETIME2(7) NULL;
         END;
 
         IF OBJECT_ID(N'[dbo].[POSM_LinklyCloudBackendNotification]', N'U') IS NULL

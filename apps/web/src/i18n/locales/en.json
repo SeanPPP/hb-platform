@@ -733,9 +733,10 @@
   },
   "paymentTerminalSettings": {
     "title": "Payment Terminal Settings",
-    "subtitle": "Manage Square and Linkly Cloud credentials for production and sandbox.",
+    "subtitle": "Manage Square tokens and one-to-one Linkly Cloud terminal credentials for production and sandbox.",
     "squareTitle": "Square Token",
     "linklyTitle": "Linkly Cloud Credential",
+    "linklyTerminalsTitle": "Linkly Cloud Terminals",
     "store": "Store",
     "username": "Username",
     "password": "Password",
@@ -750,12 +751,68 @@
     "loadFailed": "Failed to load payment terminal settings",
     "noPermission": "The current account does not have permission to manage system settings.",
     "selectStoreRequired": "Please select a store first",
+    "laneNo": "Lane",
+    "terminalName": "Terminal name",
+    "credential": "Credential",
+    "passwordSaved": "Password saved",
+    "pairingState": "Pairing",
+    "health": "Health",
+    "selectedDevices": "Selected POS",
+    "addTerminal": "Add terminal",
+    "addTerminalTitle": "Add Linkly terminal",
+    "editTerminalTitle": "Edit terminal - {{name}}",
+    "activate": "Activate multi-terminal",
+    "activateConfirmTitle": "Activate this store and environment?",
+    "activateConfirmDescription": "The legacy shared credential will stop accepting updates after activation.",
+    "activationSuccess": "Linkly multi-terminal configuration activated",
+    "activationFailed": "Failed to activate Linkly multi-terminal configuration",
+    "selectionSaved": "Initial terminal selection saved",
+    "selectionReleased": "POS initial terminal selection released",
+    "oneCredentialPerTerminal": "Each Linkly Lane username and password must belong to exactly one physical payment terminal.",
+    "noTerminals": "No Linkly terminals configured",
+    "deviceSelectionsTitle": "POS initial terminal selection",
+    "deviceSelectionsDescription": "Choose the terminal each enabled POS uses by default. Cashiers can switch between available terminals in the POS app.",
+    "deviceCode": "POS device",
+    "deviceSystem": "System",
+    "deviceStatus": "Status",
+    "deviceEnabled": "Enabled",
+    "deviceDisabled": "Disabled",
+    "deviceMissing": "Device record missing",
+    "initialTerminal": "Initial terminal",
+    "selectTerminal": "Select a terminal",
+    "releaseSelection": "Release assignment",
+    "releaseSelectionConfirmTitle": "Release this terminal assignment?",
+    "releaseSelectionConfirmDescription": "{{deviceCode}} is disabled or missing. This releases its reserved physical Linkly terminal and cannot be undone without a new assignment.",
+    "assignedToDevice": "Assigned to {{deviceCode}}",
+    "duplicateAssignmentWarning": "A Linkly terminal is assigned to more than one POS. Resolve the duplicate assignment before activation.",
+    "noDevices": "No POS devices registered for this store",
+    "blankKeepsCredential": "Leave blank to keep the current server credential.",
+    "editCredentialHint": "Current username: {{username}}. Changing a username or password clears the pairing and requires a new Pair Code.",
+    "configurationModes": {
+      "Legacy": "Legacy",
+      "Draft": "Draft",
+      "Active": "Active"
+    },
+    "modeDescriptions": {
+      "Legacy": "This store still uses the legacy shared credential. Adding the first terminal starts a draft without copying legacy secrets.",
+      "Draft": "Complete terminal pairing and initial POS selections before activation.",
+      "Active": "One-to-one terminal credentials are active for this store and environment."
+    },
+    "pairingStates": {
+      "Unpaired": "Unpaired",
+      "Ready": "Ready",
+      "Unknown": "Unknown",
+      "NeedsRepair": "Needs repair"
+    },
     "environments": {
       "Production": "Production",
       "Sandbox": "Sandbox"
     },
     "validation": {
-      "username": "Please enter the Linkly username"
+      "username": "Please enter the Linkly username",
+      "password": "Please enter the Linkly password",
+      "laneNo": "Please enter a Lane number from 1 to 9999",
+      "terminalName": "Please enter a terminal name"
     }
   },
   "emergencyLoginKeys": {

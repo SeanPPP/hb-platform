@@ -15,6 +15,7 @@ using BlazorApp.Api.Middleware;
 using BlazorApp.Api.Models;
 using BlazorApp.Api.Repositories;
 using BlazorApp.Api.Repositories.Interfaces;
+using BlazorApp.Shared.Security;
 using BlazorApp.Api.Services; // 业务服务层
 using BlazorApp.Api.Services.Attendance;
 using BlazorApp.Api.Services.Background; // 后台定时服务
@@ -277,6 +278,37 @@ builder.Services.AddSingleton(
 builder.Services.AddSingleton(
     BlazorApp.Api.Security.AttendancePunchAuthorizationDataProtection.CreateProtector(
         attendanceQrDataProtectionProvider));
+
+var linklyCredentialDataProtectionKeysPath = builder.Configuration.GetValue<string>(
+    "LinklyCloudCredentialDataProtection:KeysPath");
+if (string.IsNullOrWhiteSpace(linklyCredentialDataProtectionKeysPath))
+{
+    // 关键逻辑：Linkly 终端凭据需被 Admin 与 POS API 共同解密，生产不能落入容器临时目录。
+    if (builder.Environment.IsProduction())
+    {
+        throw new InvalidOperationException(
+            "生产环境必须配置 LinklyCloudCredentialDataProtection:KeysPath。");
+    }
+
+    linklyCredentialDataProtectionKeysPath = Path.Combine(
+        "App_Data",
+        "LinklyCloudCredentialDataProtectionKeys");
+}
+
+if (!Path.IsPathRooted(linklyCredentialDataProtectionKeysPath))
+{
+    linklyCredentialDataProtectionKeysPath = Path.Combine(
+        builder.Environment.ContentRootPath,
+        linklyCredentialDataProtectionKeysPath);
+}
+
+Directory.CreateDirectory(linklyCredentialDataProtectionKeysPath);
+var linklyCredentialDataProtectionProvider =
+    BlazorApp.Api.Security.LinklyCloudTerminalCredentialDataProtection.CreateProvider(
+        linklyCredentialDataProtectionKeysPath);
+builder.Services.AddSingleton<ILinklyCloudTerminalCredentialProtector>(
+    BlazorApp.Api.Security.LinklyCloudTerminalCredentialDataProtection.CreateProtector(
+        linklyCredentialDataProtectionProvider));
 
 builder.Services.Configure<TencentCloudSettings>(builder.Configuration.GetSection("TencentCloud"));
 builder.Services.Configure<ApplicationLoggingOptions>(

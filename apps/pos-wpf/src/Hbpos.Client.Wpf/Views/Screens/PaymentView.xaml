@@ -731,6 +731,63 @@
                         </Style.Triggers>
                     </Style>
                 </StackPanel.Style>
+                <Border Background="#FFF8FAFD"
+                        BorderBrush="#FFD4DCE8"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        Padding="10"
+                        Margin="0,0,0,10"
+                        Visibility="{Binding IsLinklyCloudTerminalSelectorVisible, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <StackPanel>
+                        <Grid Margin="0,0,0,6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="{loc:Loc payment.linklyTerminal.title}"
+                                       FontSize="10"
+                                       FontWeight="Black"
+                                       Foreground="{StaticResource PosMutedForegroundBrush}"
+                                       VerticalAlignment="Center" />
+                            <Button Grid.Column="1"
+                                    Click="RefreshLinklyCloudTerminals_Click"
+                                    Width="30"
+                                    Height="30"
+                                    Padding="0"
+                                    Style="{StaticResource TitleBarButtonStyle}"
+                                    AutomationProperties.Name="Refresh Linkly terminals">
+                                <materialDesign:PackIcon Kind="Refresh" Width="17" Height="17" />
+                            </Button>
+                        </Grid>
+                        <ComboBox ItemsSource="{Binding LinklyCloudTerminals}"
+                                  SelectedItem="{Binding SelectedLinklyCloudTerminal, Mode=TwoWay}"
+                                  IsEnabled="{Binding CanSwitchLinklyCloudTerminal}"
+                                  SelectionChanged="LinklyCloudTerminal_SelectionChanged"
+                                  MinHeight="40"
+                                  Padding="8,5"
+                                  AutomationProperties.AutomationId="PaymentLinklyCloudTerminalSelector">
+                            <ComboBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid MinWidth="210">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Background="#FFE9EFF9" CornerRadius="4" Padding="6,2" Margin="0,0,8,0">
+                                            <TextBlock Text="{Binding LaneNo, StringFormat=Lane {0}}" FontSize="10" FontWeight="Black" />
+                                        </Border>
+                                        <TextBlock Grid.Column="1" Text="{Binding DisplayName}" VerticalAlignment="Center" FontWeight="Bold" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ComboBox.ItemTemplate>
+                        </ComboBox>
+                        <TextBlock Text="{Binding LinklyCloudTerminalStatusText}"
+                                   FontSize="10"
+                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                   TextWrapping="Wrap"
+                                   Margin="2,5,2,0" />
+                    </StackPanel>
+                </Border>
                 <Button Command="{Binding SelectCashCommand}" AutomationProperties.AutomationId="AddCashTenderButton" Style="{StaticResource CashMethodButtonStyle}">
                     <Grid Style="{StaticResource PaymentMethodContentGridStyle}">
                         <Grid.ColumnDefinitions>

@@ -11,7 +11,7 @@ namespace Hbpos.Client.Tests;
 public sealed class LinklyBackendTerminalClientTask2BTests
 {
     [Fact]
-    public async Task PurchaseAsync_takes_over_preflight_active_card_session_then_starts_new_transaction_once()
+    public async Task PurchaseAsync_takes_over_preflight_active_card_session_but_requires_manual_retry()
     {
         var requests = new List<HttpRequestMessage>();
         var takeoverInvocations = new List<string?>();
@@ -36,13 +36,10 @@ public sealed class LinklyBackendTerminalClientTask2BTests
 
         var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
 
-        Assert.True(result.Approved);
-        Assert.Equal("new-session-1", result.SessionId);
+        Assert.False(result.Approved);
+        Assert.Equal("linkly.backend.activeSessionRequiresRecovery", result.StatusKey);
         Assert.Equal(["active-session-1"], takeoverInvocations);
-        Assert.Equal(1, requests.Count(request => request.Method == HttpMethod.Post));
-        Assert.Equal(
-            "https://api.example/api/v1/linkly/cloud-backend/transactions",
-            Assert.Single(requests, request => request.Method == HttpMethod.Post).RequestUri!.AbsoluteUri);
+        Assert.DoesNotContain(requests, request => request.Method == HttpMethod.Post);
     }
 
     [Fact]
@@ -105,7 +102,7 @@ public sealed class LinklyBackendTerminalClientTask2BTests
     }
 
     [Fact]
-    public async Task PurchaseAsync_takes_over_conflict_once_then_retries_start_exactly_once()
+    public async Task PurchaseAsync_takes_over_conflict_once_but_requires_manual_retry()
     {
         var requests = new List<HttpRequestMessage>();
         var takeoverInvocations = new List<string?>();
@@ -117,7 +114,7 @@ public sealed class LinklyBackendTerminalClientTask2BTests
             {
                 1 => new HttpResponseMessage(HttpStatusCode.NotFound),
                 2 =>
-                    new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new StringContent("""{"success":false,"message":"Active session exists."}""", Encoding.UTF8, "application/json") },
+                    new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new StringContent("""{"success":false,"errorCode":"LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION","message":"Active session exists."}""", Encoding.UTF8, "application/json") },
                 3 => JsonResponse(ActiveSessionJson("conflict-session-1", "TXN-OLD")),
                 4 => JsonResponse(ApprovedSessionJson("new-session-1", "TXN-NEW", "1000")),
                 _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
@@ -133,14 +130,14 @@ public sealed class LinklyBackendTerminalClientTask2BTests
 
         var result = await client.PurchaseAsync(10m, CreateSession(), CreateSettings());
 
-        Assert.True(result.Approved);
-        Assert.Equal("new-session-1", result.SessionId);
+        Assert.False(result.Approved);
+        Assert.Equal("linkly.backend.activeSessionRequiresRecovery", result.StatusKey);
         Assert.Equal(["conflict-session-1"], takeoverInvocations);
-        Assert.Equal(2, requests.Count(request => request.Method == HttpMethod.Post));
+        Assert.Equal(1, requests.Count(request => request.Method == HttpMethod.Post));
     }
 
     [Fact]
-    public async Task PurchaseAsync_rejects_second_conflict_without_second_takeover()
+    public async Task PurchaseAsync_stops_after_first_conflict_takeover_without_second_post()
     {
         var requests = new List<HttpRequestMessage>();
         var takeoverInvocations = new List<string?>();
@@ -152,7 +149,7 @@ public sealed class LinklyBackendTerminalClientTask2BTests
             {
                 1 => new HttpResponseMessage(HttpStatusCode.NotFound),
                 2 or 4 =>
-                    new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new StringContent("""{"success":false,"message":"Active session exists."}""", Encoding.UTF8, "application/json") },
+                    new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new StringContent("""{"success":false,"errorCode":"LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION","message":"Active session exists."}""", Encoding.UTF8, "application/json") },
                 3 or 5 => JsonResponse(ActiveSessionJson("conflict-session-1", "TXN-OLD")),
                 _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
             };
@@ -171,11 +168,11 @@ public sealed class LinklyBackendTerminalClientTask2BTests
         Assert.False(result.ResultUnknown);
         Assert.Equal("linkly.backend.activeSessionRequiresRecovery", result.StatusKey);
         Assert.Equal(["conflict-session-1"], takeoverInvocations);
-        Assert.Equal(2, requests.Count(request => request.Method == HttpMethod.Post));
+        Assert.Equal(1, requests.Count(request => request.Method == HttpMethod.Post));
     }
 
     [Fact]
-    public async Task PurchaseAsync_captures_different_session_after_second_conflict_without_third_start()
+    public async Task PurchaseAsync_does_not_start_second_post_after_conflict_takeover()
     {
         var requests = new List<HttpRequestMessage>();
         var takeoverInvocations = new List<string?>();
@@ -187,7 +184,7 @@ public sealed class LinklyBackendTerminalClientTask2BTests
             {
                 1 => new HttpResponseMessage(HttpStatusCode.NotFound),
                 2 or 4 =>
-                    new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new StringContent("""{"success":false,"message":"Active session exists."}""", Encoding.UTF8, "application/json") },
+                    new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new StringContent("""{"success":false,"errorCode":"LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION","message":"Active session exists."}""", Encoding.UTF8, "application/json") },
                 3 => JsonResponse(ActiveSessionJson("conflict-session-1", "TXN-OLD-1")),
                 5 => JsonResponse(ActiveSessionJson("conflict-session-2", "TXN-OLD-2")),
                 _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
@@ -206,8 +203,8 @@ public sealed class LinklyBackendTerminalClientTask2BTests
         Assert.False(result.Approved);
         Assert.False(result.ResultUnknown);
         Assert.Equal("linkly.backend.activeSessionRequiresRecovery", result.StatusKey);
-        Assert.Equal(["conflict-session-1", "conflict-session-2"], takeoverInvocations);
-        Assert.Equal(2, requests.Count(request => request.Method == HttpMethod.Post));
+        Assert.Equal(["conflict-session-1"], takeoverInvocations);
+        Assert.Equal(1, requests.Count(request => request.Method == HttpMethod.Post));
     }
 
     [Fact]
@@ -222,7 +219,7 @@ public sealed class LinklyBackendTerminalClientTask2BTests
             {
                 1 => new HttpResponseMessage(HttpStatusCode.NotFound),
                 2 =>
-                    new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new StringContent("""{"success":false,"message":"Active session exists."}""", Encoding.UTF8, "application/json") },
+                    new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new StringContent("""{"success":false,"errorCode":"LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION","message":"Active session exists."}""", Encoding.UTF8, "application/json") },
                 3 => JsonResponse(ActiveSessionJson("conflict-session-1", "TXN-OLD")),
                 _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
             };
@@ -252,7 +249,7 @@ public sealed class LinklyBackendTerminalClientTask2BTests
             {
                 1 => new HttpResponseMessage(HttpStatusCode.NotFound),
                 2 =>
-                    new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new StringContent("""{"success":false,"message":"Active session exists."}""", Encoding.UTF8, "application/json") },
+                    new HttpResponseMessage(HttpStatusCode.Conflict) { Content = new StringContent("""{"success":false,"errorCode":"LINKLY_CLOUD_BACKEND_ACTIVE_TRANSACTION","message":"Active session exists."}""", Encoding.UTF8, "application/json") },
                 3 => throw new HttpRequestException("Active session lookup failed."),
                 _ => throw new InvalidOperationException($"Unexpected request: {request.RequestUri}")
             };

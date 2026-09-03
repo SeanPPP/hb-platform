@@ -67,6 +67,8 @@ services:
       - DataProtection__KeysPath=/app/App_Data/DataProtectionKeys
       # 考勤二维码使用独立 key ring，仅向需要互通的考勤服务共享。
       - AttendanceQrDataProtection__KeysPath=/app/App_Data/AttendanceQrDataProtectionKeys
+      # Linkly 多终端密码与配对 Secret 使用独立 ring，Admin 与 POS API 必须挂载同一受控目录。
+      - LinklyCloudCredentialDataProtection__KeysPath=/app/App_Data/LinklyCloudCredentialDataProtectionKeys
       # EAS webhook secret 只从服务器 .env 注入；profile 白名单固定允许生产与预览构建回写。
       - EasWebhook__Secret=${EAS_WEBHOOK_SECRET}
       - EasWebhook__AllowedAccountName=${EAS_WEBHOOK_ALLOWED_ACCOUNT_NAME}
@@ -96,6 +98,7 @@ services:
       - hb-api-logs:/app/logs
       - ./data-protection-keys:/app/App_Data/DataProtectionKeys
       - ${ATTENDANCE_QR_DATA_PROTECTION_KEYS_HOST_PATH:?required}:/app/App_Data/AttendanceQrDataProtectionKeys
+      - ${LINKLY_CLOUD_CREDENTIAL_DATA_PROTECTION_KEYS_HOST_PATH:?required}:/app/App_Data/LinklyCloudCredentialDataProtectionKeys
     restart: unless-stopped
     networks: &hb-api-networks
       - hb-network

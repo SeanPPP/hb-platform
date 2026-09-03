@@ -31,6 +31,7 @@ import {
   type SettingsLinklyPairingPort,
   type SettingsLinklyPairResult,
   type SettingsLinklySetupControlPort,
+  type SettingsLinklyTerminalSelectionSnapshot,
   type SettingsSnapshot,
   type SettingsSquareSetupControlPort,
 } from "./index";
@@ -927,6 +928,69 @@ describe("SettingsScreen", () => {
     ]);
   });
 
+  it("Linkly 多终端列表显示 Lane 状态并可持久切换后配对指定终端", async () => {
+    const port = new ScreenSettingsPort();
+    port.linklySetup.multiTerminal = true;
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    await screen.findByTestId("settings-linkly-terminal-terminal-1");
+    expect(screen.getByText("前台 · Lane 1")).toBeTruthy();
+    expect(screen.getByText("退货台 · Lane 2")).toBeTruthy();
+    expect(
+      screen.getByTestId("settings-linkly-terminal-terminal-2").props
+        .accessibilityState.disabled,
+    ).toBe(false);
+
+    await fireEvent.press(
+      screen.getByTestId("settings-linkly-terminal-terminal-2"),
+    );
+    await waitFor(() =>
+      expect(port.linklySetup.selectedTerminalId).toBe("terminal-2"),
+    );
+    await fireEvent.changeText(
+      screen.getByTestId("settings-linkly-pair-code"),
+      "654321",
+    );
+    await fireEvent.press(screen.getByTestId("settings-linkly-pair"));
+    await fireEvent.press(await screen.findByTestId("settings-confirm"));
+
+    expect(port.linklyPairing.pairCalls).toEqual([
+      {
+        environment: "Production",
+        terminalId: "terminal-2",
+        pairCode: "654321",
+      },
+    ]);
+  });
+
+  it("Linkly 忙碌终端仍可持久预选", async () => {
+    const port = new ScreenSettingsPort();
+    port.linklySetup.multiTerminal = true;
+    port.linklySetup.busyTerminalId = "terminal-2";
+    const presenter = createPresenter(port);
+    await presenter.load();
+    const screen = await render(
+      <SettingsScreen locale="zh" presenter={presenter} />,
+    );
+
+    await fireEvent.press(screen.getByTestId("settings-nav-payments"));
+    const busyTerminal = await screen.findByTestId(
+      "settings-linkly-terminal-terminal-2",
+    );
+    expect(busyTerminal.props.accessibilityState.disabled).toBe(false);
+    await fireEvent.press(busyTerminal);
+
+    await waitFor(() =>
+      expect(port.linklySetup.selectedTerminalId).toBe("terminal-2"),
+    );
+    expect(screen.getByText("正在处理其他交易")).toBeTruthy();
+  });
+
   it("Linkly 配置无效或读取失败时设置页仍保持禁用", async () => {
     for (const blockerCode of [
       "LINKLY_CONFIGURATION_INVALID",
@@ -995,7 +1059,7 @@ describe("SettingsScreen", () => {
     expect(screen.getByTestId("settings-linkly-store-credentials")).toBeTruthy();
     expect(screen.getByText(/Ready.*STORE-01/)).toBeTruthy();
     expect(screen.getByTestId("settings-linkly-current-pairing")).toBeTruthy();
-    expect(screen.getByText("Not paired")).toBeTruthy();
+    expect(screen.getAllByText("Not paired").length).toBeGreaterThan(0);
     expect(screen.getByTestId("settings-linkly-backend-ready")).toBeTruthy();
     expect(screen.getByText("Not ready")).toBeTruthy();
     expect(screen.getByTestId("settings-linkly-refresh")).toBeTruthy();
@@ -1018,7 +1082,11 @@ describe("SettingsScreen", () => {
 
     await waitFor(() =>
       expect(port.linklyPairing.pairCalls).toEqual([
-        { environment: "Production", pairCode: "123456" },
+        {
+          environment: "Production",
+          terminalId: "terminal-1",
+          pairCode: "123456",
+        },
       ]),
     );
     expect(screen.getByTestId("settings-linkly-pair-code").props.value).toBe(
@@ -2088,6 +2156,7 @@ class ScreenSettingsPort implements SettingsControlPort {
     if (action.kind === "pair-linkly") {
       const result = await this.linklyPairing.pair(
         action.environment,
+        action.terminalId,
         action.pairCode,
       );
       return result.status === "unknown"
@@ -2180,6 +2249,10 @@ function clearPendingWorkSnapshot(): PendingWorkSnapshot {
 
 class ScreenLinklySetupControlPort implements SettingsLinklySetupControlPort {
   public ready = false;
+  public multiTerminal = false;
+  public busyTerminalId: string | null = null;
+  public selectedTerminalId = "terminal-1";
+  public selectionRevision = 1;
 
   public async readState(
     environment: "Sandbox" | "Production",
@@ -2209,11 +2282,42 @@ class ScreenLinklySetupControlPort implements SettingsLinklySetupControlPort {
     };
   }
 
+  public async readTerminals(
+    environment: "Sandbox" | "Production",
+  ): Promise<SettingsLinklyTerminalSelectionSnapshot> {
+    return {
+      environment,
+      mode: "Active",
+      selectedTerminalId: this.selectedTerminalId,
+      selectionRevision: this.selectionRevision,
+      terminals: (this.multiTerminal
+        ? [
+            terminal("terminal-1", 1, "前台", this.ready),
+            terminal("terminal-2", 2, "退货台", true),
+          ]
+        : [terminal("terminal-1", 1, "前台", this.ready)]).map((item) => ({
+          ...item,
+          isBusy: item.terminalId === this.busyTerminalId,
+        })),
+    };
+  }
+
+  public async selectTerminal(
+    environment: "Sandbox" | "Production",
+    terminalId: string,
+    expectedRevision: number,
+  ): Promise<SettingsLinklyTerminalSelectionSnapshot> {
+    this.selectedTerminalId = terminalId;
+    this.selectionRevision = expectedRevision + 1;
+    return this.readTerminals(environment);
+  }
+
 }
 
 class ScreenLinklyPairingPort implements SettingsLinklyPairingPort {
   public readonly pairCalls: {
     environment: "Sandbox" | "Production";
+    terminalId: string;
     pairCode: string;
   }[] = [];
 
@@ -2221,12 +2325,31 @@ class ScreenLinklyPairingPort implements SettingsLinklyPairingPort {
 
   public async pair(
     environment: "Sandbox" | "Production",
+    terminalId: string,
     pairCode: string,
   ): Promise<SettingsLinklyPairResult> {
-    this.pairCalls.push({ environment, pairCode });
+    this.pairCalls.push({ environment, terminalId, pairCode });
     this.setup.ready = true;
     return { status: "completed" };
   }
+}
+
+function terminal(
+  terminalId: string,
+  laneNo: number,
+  displayName: string,
+  ready: boolean,
+) {
+  return {
+    terminalId,
+    laneNo,
+    displayName,
+    pairingState: ready ? ("Ready" as const) : ("Unpaired" as const),
+    isBusy: false,
+    isReady: ready,
+    lastHealthStatus: ready ? "ready" : null,
+    lastHealthAt: null,
+  };
 }
 
 function snapshot(): SettingsSnapshot {

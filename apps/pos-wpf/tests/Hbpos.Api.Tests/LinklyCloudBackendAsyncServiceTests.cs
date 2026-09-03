@@ -15,6 +15,560 @@ namespace Hbpos.Api.Tests;
     {
         Assert.Contains("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE", SqlSugarLinklyCloudBackendAsyncRepository.TryCreateSessionSql, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("WITH (UPDLOCK, HOLDLOCK)", SqlSugarLinklyCloudBackendAsyncRepository.TryCreateSessionSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[Revision] = @SelectionRevision", SqlSugarLinklyCloudBackendAsyncRepository.TryCreateSessionSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[UpdatedAt] = @TerminalUpdatedAt", SqlSugarLinklyCloudBackendAsyncRepository.TryCreateSessionSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("POSM_LinklyCloudConfigurationMode", SqlSugarLinklyCloudBackendAsyncRepository.TryCreateSessionSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[TerminalId] = @TerminalId", SqlSugarLinklyCloudBackendAsyncRepository.TryCreateSessionSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[PairingState] = N'Ready'", SqlSugarLinklyCloudBackendAsyncRepository.TryCreateSessionSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[CredentialProtectionVersion] = 1", SqlSugarLinklyCloudBackendAsyncRepository.TryCreateSessionSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[PairingAttemptId] IS NULL", SqlSugarLinklyCloudBackendAsyncRepository.TryCreateSessionSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[PairingLeaseExpiresAt] <= @UpdatedAt", SqlSugarLinklyCloudBackendAsyncRepository.TryCreateSessionSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("LTRIM(RTRIM([Secret]))", SqlSugarLinklyCloudBackendAsyncRepository.TryCreateSessionSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("LTRIM(RTRIM([PosId]))", SqlSugarLinklyCloudBackendAsyncRepository.TryCreateSessionSql, StringComparison.OrdinalIgnoreCase);
+        var sql = SqlSugarLinklyCloudBackendAsyncRepository.TryCreateSessionSql;
+        var sessionIndex = sql.IndexOf("POSM_LinklyCloudBackendSession", StringComparison.OrdinalIgnoreCase);
+        var terminalIndex = sql.IndexOf("POSM_LinklyCloudTerminal", StringComparison.OrdinalIgnoreCase);
+        var selectionIndex = sql.IndexOf("POSM_LinklyCloudDeviceSelection", StringComparison.OrdinalIgnoreCase);
+        var modeIndex = sql.IndexOf("POSM_LinklyCloudConfigurationMode", StringComparison.OrdinalIgnoreCase);
+        Assert.True(sessionIndex >= 0 && terminalIndex > sessionIndex && selectionIndex > terminalIndex && modeIndex > selectionIndex);
+    }
+
+    [Fact]
+    public void Legacy_pairing_and_credential_writes_are_fenced_by_the_configuration_mode_row()
+    {
+        Assert.Contains("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE", SqlSugarLinklyCloudBackendTerminalCredentialRepository.AcquireLegacyPairingLeaseSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("POSM_LinklyCloudConfigurationMode", SqlSugarLinklyCloudBackendTerminalCredentialRepository.AcquireLegacyPairingLeaseSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("WITH (UPDLOCK, HOLDLOCK)", SqlSugarLinklyCloudBackendTerminalCredentialRepository.AcquireLegacyPairingLeaseSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("INSERT INTO [dbo].[POSM_LinklyCloudConfigurationMode]", SqlSugarLinklyCloudBackendTerminalCredentialRepository.AcquireLegacyPairingLeaseSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("THROW 51005", SqlSugarLinklyCloudBackendTerminalCredentialRepository.AcquireLegacyPairingLeaseSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("THROW 51007", SqlSugarLinklyCloudBackendTerminalCredentialRepository.AcquireLegacyPairingLeaseSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[LegacyPairingAttemptId]", SqlSugarLinklyCloudBackendTerminalCredentialRepository.AcquireLegacyPairingLeaseSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[LegacyPairingLeaseExpiresAt]", SqlSugarLinklyCloudBackendTerminalCredentialRepository.AcquireLegacyPairingLeaseSql, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE", SqlSugarLinklyCloudBackendTerminalCredentialRepository.CompleteLegacyPairingSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[LegacyPairingAttemptId] = @AttemptId", SqlSugarLinklyCloudBackendTerminalCredentialRepository.CompleteLegacyPairingSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("@ExistingLeaseExpiresAt <= @Now", SqlSugarLinklyCloudBackendTerminalCredentialRepository.CompleteLegacyPairingSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("THROW 51005", SqlSugarLinklyCloudBackendTerminalCredentialRepository.CompleteLegacyPairingSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("THROW 51006", SqlSugarLinklyCloudBackendTerminalCredentialRepository.CompleteLegacyPairingSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[LegacyPairingAttemptId] = NULL", SqlSugarLinklyCloudBackendTerminalCredentialRepository.CompleteLegacyPairingSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("SELECT TOP 1", SqlSugarLinklyCloudBackendTerminalCredentialRepository.CompleteLegacyPairingSql, StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("POSM_LinklyCloudConfigurationMode", SqlSugarLinklyCloudBackendTerminalCredentialRepository.UpsertSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("WITH (UPDLOCK, HOLDLOCK)", SqlSugarLinklyCloudBackendTerminalCredentialRepository.UpsertSql, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("THROW 51005", SqlSugarLinklyCloudBackendTerminalCredentialRepository.UpsertSql, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("status")]
+    [InlineData("logon")]
+    public async Task Active_terminal_test_is_blocked_by_physical_terminal_session_before_upstream_call(string operation)
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new InMemoryLinklyCloudBackendAsyncRepository();
+        await repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-A",
+            TerminalId = terminalId,
+            SessionId = "active-on-terminal",
+            Status = "Pending",
+            IsActive = true,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.OK, "{}");
+        var terminalService = new FixedLinklyCloudTerminalService(
+            terminalId,
+            "Front Counter",
+            9,
+            repository);
+        var service = CreateService(
+            transport,
+            repository: repository,
+            terminalService: terminalService);
+
+        if (operation == "status")
+        {
+            await Assert.ThrowsAsync<LinklyCloudBackendActiveTransactionException>(() =>
+                service.RunStatusTestAsync("S01", "POS-B", "Sandbox", terminalId, 9, CancellationToken.None));
+        }
+        else
+        {
+            await Assert.ThrowsAsync<LinklyCloudBackendActiveTransactionException>(() =>
+                service.RunLogonTestAsync("S01", "POS-B", "Sandbox", terminalId, 9, CancellationToken.None));
+        }
+
+        Assert.Null(transport.LastStatus);
+        Assert.Null(transport.LastLogon);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.OK, false)]
+    [InlineData(HttpStatusCode.BadRequest, false)]
+    [InlineData(HttpStatusCode.RequestTimeout, true)]
+    [InlineData(HttpStatusCode.GatewayTimeout, true)]
+    [InlineData(HttpStatusCode.InternalServerError, true)]
+    public async Task Active_status_test_releases_only_unambiguous_http_response_leases(
+        HttpStatusCode statusCode,
+        bool leaseMustRemain)
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var leaseState = new TerminalOperationLeaseState();
+        var terminalService = new FixedLinklyCloudTerminalService(
+            terminalId,
+            "Front Counter",
+            9,
+            leaseState: leaseState);
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(statusCode, "{}");
+        var service = CreateService(transport, terminalService: terminalService);
+
+        await service.RunStatusTestAsync(
+            "S01", "POS-01", "Sandbox", terminalId, 9, CancellationToken.None);
+
+        Assert.Equal(leaseMustRemain, leaseState.LeaseId is not null);
+        Assert.Equal(terminalId, transport.LastStatus?.TerminalId);
+        Assert.Equal(leaseMustRemain ? 0 : 1, terminalService.HealthWriteAttempts.Count);
+    }
+
+    [Theory]
+    [InlineData("T0", "APPROVED", "Healthy")]
+    [InlineData("05", "DECLINED", "Unhealthy")]
+    public async Task Active_status_test_records_the_last_definitive_physical_terminal_health(
+        string responseCode,
+        string responseText,
+        string expectedHealth)
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var terminalService = new FixedLinklyCloudTerminalService(terminalId, "Front Counter", 9);
+        var service = CreateService(
+            new CapturingLinklyCloudBackendAsyncTransport(
+                HttpStatusCode.OK,
+                $$"""
+                {
+                  "Response": {
+                    "Success": {{(expectedHealth == "Healthy").ToString().ToLowerInvariant()}},
+                    "ResponseCode": "{{responseCode}}",
+                    "ResponseText": "{{responseText}}"
+                  }
+                }
+                """),
+            terminalService: terminalService);
+
+        await service.RunStatusTestAsync(
+            "S01", "POS-01", "Sandbox", terminalId, 9, CancellationToken.None);
+
+        var health = Assert.Single(terminalService.HealthWriteAttempts);
+        Assert.Equal(expectedHealth, health.Status);
+        Assert.Equal(terminalId, health.TerminalId);
+        Assert.Equal(new DateTime(2026, 9, 2, 0, 0, 0, DateTimeKind.Utc), health.ExpectedUpdatedAt);
+    }
+
+    [Fact]
+    public async Task Active_status_test_ignores_unknown_terminal_outcomes_for_last_health()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var terminalService = new FixedLinklyCloudTerminalService(terminalId, "Front Counter", 9);
+        var service = CreateService(
+            new CapturingLinklyCloudBackendAsyncTransport(
+                HttpStatusCode.OK,
+                terminalTestException: new HttpRequestException("network")),
+            terminalService: terminalService);
+
+        var response = await service.RunStatusTestAsync(
+            "S01", "POS-01", "Sandbox", terminalId, 9, CancellationToken.None);
+
+        Assert.Equal((int)HttpStatusCode.RequestTimeout, response.HttpStatus);
+        Assert.Empty(terminalService.HealthWriteAttempts);
+    }
+
+    [Fact]
+    public async Task Active_status_test_health_cas_conflict_does_not_change_completed_test_result()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var terminalService = new FixedLinklyCloudTerminalService(terminalId, "Front Counter", 9)
+        {
+            RecordHealthResult = false
+        };
+        var service = CreateService(
+            new CapturingLinklyCloudBackendAsyncTransport(
+                HttpStatusCode.OK,
+                """{"Response":{"Success":true,"ResponseCode":"T0","ResponseText":"APPROVED"}}"""),
+            terminalService: terminalService);
+
+        var response = await service.RunStatusTestAsync(
+            "S01", "POS-01", "Sandbox", terminalId, 9, CancellationToken.None);
+
+        Assert.True(response.Succeeded);
+        Assert.Single(terminalService.HealthWriteAttempts);
+    }
+
+    [Fact]
+    public async Task Active_logon_test_binds_transport_gate_to_physical_terminal_and_releases_success_lease()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var leaseState = new TerminalOperationLeaseState();
+        var terminalService = new FixedLinklyCloudTerminalService(
+            terminalId,
+            "Front Counter",
+            9,
+            leaseState: leaseState);
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(
+            HttpStatusCode.OK,
+            """{"Response":{"Success":true,"ResponseCode":"00","ResponseText":"APPROVED"}}""");
+        var service = CreateService(transport, terminalService: terminalService);
+
+        await service.RunLogonTestAsync(
+            "S01", "POS-01", "Sandbox", terminalId, 9, CancellationToken.None);
+
+        Assert.Equal(terminalId, transport.LastLogon?.TerminalId);
+        Assert.Null(leaseState.LeaseId);
+        Assert.Equal("Healthy", Assert.Single(terminalService.HealthWriteAttempts).Status);
+    }
+
+    [Fact]
+    public async Task Active_logon_test_records_unhealthy_for_a_definitive_failure()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var terminalService = new FixedLinklyCloudTerminalService(terminalId, "Front Counter", 9);
+        var service = CreateService(
+            new CapturingLinklyCloudBackendAsyncTransport(
+                HttpStatusCode.OK,
+                """{"Response":{"ResponseCode":"01","ResponseText":"DECLINED"}}"""),
+            terminalService: terminalService);
+
+        var response = await service.RunLogonTestAsync(
+            "S01", "POS-01", "Sandbox", terminalId, 9, CancellationToken.None);
+
+        Assert.False(response.Succeeded);
+        Assert.Equal("Unhealthy", Assert.Single(terminalService.HealthWriteAttempts).Status);
+    }
+
+    [Theory]
+    [InlineData("network")]
+    [InlineData("cancel")]
+    public async Task Active_status_test_preserves_lease_after_ambiguous_transport_exception(string failure)
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var leaseState = new TerminalOperationLeaseState();
+        var terminalService = new FixedLinklyCloudTerminalService(
+            terminalId,
+            "Front Counter",
+            9,
+            leaseState: leaseState);
+        Exception exception = failure == "network"
+            ? new HttpRequestException("network")
+            : new TaskCanceledException("timeout");
+        var service = CreateService(
+            new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.OK, terminalTestException: exception),
+            terminalService: terminalService);
+
+        var response = await service.RunStatusTestAsync(
+            "S01", "POS-01", "Sandbox", terminalId, 9, CancellationToken.None);
+
+        Assert.Equal((int)HttpStatusCode.RequestTimeout, response.HttpStatus);
+        Assert.NotNull(leaseState.LeaseId);
+    }
+
+    [Fact]
+    public async Task Active_status_test_releases_lease_when_token_fails_before_terminal_request()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var leaseState = new TerminalOperationLeaseState();
+        var terminalService = new FixedLinklyCloudTerminalService(
+            terminalId,
+            "Front Counter",
+            9,
+            leaseState: leaseState);
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.OK, "{}");
+        var service = CreateService(
+            transport,
+            new ThrowingLinklyCloudBackendTokenProvider("token failed"),
+            terminalService: terminalService);
+
+        await Assert.ThrowsAsync<LinklyCloudBackendValidationException>(() =>
+            service.RunStatusTestAsync(
+                "S01", "POS-01", "Sandbox", terminalId, 9, CancellationToken.None));
+
+        Assert.Null(leaseState.LeaseId);
+        Assert.Null(transport.LastStatus);
+    }
+
+    [Fact]
+    public async Task Ambiguous_status_lease_blocks_second_service_instance_until_expiry()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var leaseState = new TerminalOperationLeaseState();
+        var firstTerminalService = new FixedLinklyCloudTerminalService(
+            terminalId, "Front Counter", 9, leaseState: leaseState);
+        var secondTerminalService = new FixedLinklyCloudTerminalService(
+            terminalId, "Front Counter", 9, leaseState: leaseState);
+        var firstService = CreateService(
+            new CapturingLinklyCloudBackendAsyncTransport(
+                HttpStatusCode.OK,
+                terminalTestException: new HttpRequestException("network")),
+            terminalService: firstTerminalService);
+        var secondTransport = new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.OK, "{}");
+        var secondService = CreateService(secondTransport, terminalService: secondTerminalService);
+
+        await firstService.RunStatusTestAsync(
+            "S01", "POS-01", "Sandbox", terminalId, 9, CancellationToken.None);
+        await Assert.ThrowsAsync<LinklyCloudBackendActiveTransactionException>(() =>
+            secondService.RunStatusTestAsync(
+                "S01", "POS-02", "Sandbox", terminalId, 9, CancellationToken.None));
+        Assert.Null(secondTransport.LastStatus);
+
+        leaseState.ExpiresAt = DateTime.UtcNow.AddTicks(-1);
+        await secondService.RunStatusTestAsync(
+            "S01", "POS-02", "Sandbox", terminalId, 9, CancellationToken.None);
+
+        Assert.NotNull(secondTransport.LastStatus);
+        Assert.Null(leaseState.LeaseId);
+    }
+
+    [Fact]
+    public async Task Active_terminal_operation_lease_blocks_transaction_transport_creation()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var leaseState = new TerminalOperationLeaseState();
+        var repository = new TerminalLeaseAwareBackendRepository(leaseState);
+        var terminalService = new FixedLinklyCloudTerminalService(
+            terminalId,
+            "Front Counter",
+            9,
+            repository,
+            leaseState);
+        var context = await terminalService.ResolvePaymentTerminalAsync(
+            "Sandbox", "S01", "POS-01", terminalId, 9, CancellationToken.None);
+        Assert.NotNull(context);
+        _ = await terminalService.AcquireOperationLeaseAsync(
+            "Sandbox", "S01", "POS-01", context!, CancellationToken.None);
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted);
+        var service = CreateService(
+            transport,
+            repository: repository,
+            terminalService: terminalService);
+
+        await Assert.ThrowsAsync<LinklyCloudBackendActiveTransactionException>(() =>
+            service.StartTransactionAsync(
+                "S01",
+                "POS-01",
+                new LinklyCloudBackendTransactionRequest("Sandbox", "P", 1000, null, terminalId, 9),
+                CancellationToken.None));
+
+        Assert.Null(transport.LastTransaction);
+    }
+
+    [Fact]
+    public async Task StartTransactionAsync_active_mode_binds_session_and_token_to_selected_terminal()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new InMemoryLinklyCloudBackendAsyncRepository();
+        var tokenProvider = new CapturingLinklyCloudBackendTokenProvider();
+        var terminalService = new FixedLinklyCloudTerminalService(terminalId, "Front Counter", 9);
+        var service = CreateService(
+            new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted),
+            tokenProvider,
+            repository: repository,
+            terminalService: terminalService);
+
+        var response = await service.StartTransactionAsync(
+            "S01",
+            "POS-01",
+            new LinklyCloudBackendTransactionRequest(
+                "Sandbox", "P", 1000, null, terminalId, 9),
+            CancellationToken.None);
+
+        Assert.Equal(terminalId, response.TerminalId);
+        Assert.Equal("Front Counter", response.TerminalDisplayName);
+        Assert.Contains(terminalId, tokenProvider.TerminalCalls);
+        var active = await repository.GetActiveSessionByTerminalAsync(
+            "Sandbox", "S01", terminalId, CancellationToken.None);
+        Assert.NotNull(active);
+        Assert.Equal("POS-01", active!.DeviceCode);
+    }
+
+    [Fact]
+    public async Task StartSettlementAsync_active_mode_binds_session_and_token_to_selected_terminal()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new InMemoryLinklyCloudBackendAsyncRepository();
+        var tokenProvider = new CapturingLinklyCloudBackendTokenProvider();
+        var service = CreateService(
+            new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted),
+            tokenProvider,
+            repository: repository,
+            terminalService: new FixedLinklyCloudTerminalService(terminalId, "Front Counter", 9));
+
+        var response = await service.StartSettlementAsync(
+            "S01",
+            "POS-01",
+            new LinklyCloudBackendSettlementRequest("Sandbox", terminalId, 9),
+            CancellationToken.None);
+
+        Assert.Equal("Settlement", response.OperationType);
+        Assert.Equal(terminalId, response.TerminalId);
+        Assert.Equal("Front Counter", response.TerminalDisplayName);
+        Assert.Contains(terminalId, tokenProvider.TerminalCalls);
+    }
+
+    [Fact]
+    public async Task GetActiveSessionAsync_uses_non_sensitive_terminal_metadata()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new InMemoryLinklyCloudBackendAsyncRepository();
+        await repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            TerminalId = terminalId,
+            SessionId = "active-terminal-session",
+            Status = "Pending",
+            IsActive = true,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        var service = CreateService(
+            new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted),
+            repository: repository,
+            terminalService: new FixedLinklyCloudTerminalService(
+                terminalId,
+                "Front Counter",
+                9,
+                failCredentialMaterialization: true));
+
+        var response = await service.GetActiveSessionAsync(
+            "S01", "POS-01", "Sandbox", CancellationToken.None);
+
+        Assert.NotNull(response);
+        Assert.Equal(terminalId, response!.TerminalId);
+        Assert.Equal("Front Counter", response.TerminalDisplayName);
+    }
+
+    [Fact]
+    public async Task AcknowledgeSessionAsync_returns_after_persisting_when_credentials_cannot_materialize()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new InMemoryLinklyCloudBackendAsyncRepository();
+        await repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            TerminalId = terminalId,
+            SessionId = "completed-terminal-session",
+            Status = "Completed",
+            TransactionSuccess = true,
+            IsActive = false,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        var service = CreateService(
+            new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted),
+            repository: repository,
+            terminalService: new FixedLinklyCloudTerminalService(
+                terminalId,
+                "Front Counter",
+                9,
+                failCredentialMaterialization: true));
+
+        var response = await service.AcknowledgeSessionAsync(
+            "S01", "POS-01", "Sandbox", "completed-terminal-session", CancellationToken.None);
+        var persisted = await repository.GetSessionAsync(
+            "Sandbox", "S01", "POS-01", "completed-terminal-session", CancellationToken.None);
+
+        Assert.NotNull(response.ClientAcknowledgedAt);
+        Assert.NotNull(persisted?.ClientAcknowledgedAt);
+        Assert.Equal("Front Counter", response.TerminalDisplayName);
+    }
+
+    [Fact]
+    public async Task MarkReceiptPrintedAsync_returns_after_persisting_when_credentials_cannot_materialize()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new InMemoryLinklyCloudBackendAsyncRepository();
+        await repository.UpsertSessionAsync(new LinklyCloudBackendSessionRecord
+        {
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            DeviceCode = "POS-01",
+            TerminalId = terminalId,
+            SessionId = "receipt-terminal-session",
+            Status = "Completed",
+            ReceiptText = "MERCHANT RECEIPT",
+            TransactionSuccess = true,
+            IsActive = false,
+            UpdatedAt = DateTimeOffset.UtcNow
+        }, CancellationToken.None);
+        var service = CreateService(
+            new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted),
+            repository: repository,
+            terminalService: new FixedLinklyCloudTerminalService(
+                terminalId,
+                "Front Counter",
+                9,
+                failCredentialMaterialization: true));
+
+        var response = await service.MarkReceiptPrintedAsync(
+            "S01",
+            "POS-01",
+            "receipt-terminal-session",
+            new LinklyCloudBackendMarkReceiptPrintedRequest("Sandbox"),
+            CancellationToken.None);
+        var persisted = await repository.GetSessionAsync(
+            "Sandbox", "S01", "POS-01", "receipt-terminal-session", CancellationToken.None);
+
+        Assert.NotNull(response.ReceiptPrintedAt);
+        Assert.NotNull(persisted?.ReceiptPrintedAt);
+        Assert.Equal("Front Counter", response.TerminalDisplayName);
+    }
+
+    [Fact]
+    public async Task StartTransactionAsync_blocks_second_pos_using_same_selected_terminal()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new InMemoryLinklyCloudBackendAsyncRepository();
+        var terminalService = new FixedLinklyCloudTerminalService(terminalId, "Front Counter", 9);
+        var service = CreateService(
+            new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted),
+            repository: repository,
+            terminalService: terminalService);
+        var request = new LinklyCloudBackendTransactionRequest(
+            "Sandbox", "P", 1000, null, terminalId, 9);
+
+        await service.StartTransactionAsync("S01", "POS-01", request, CancellationToken.None);
+
+        await Assert.ThrowsAsync<LinklyCloudBackendActiveTransactionException>(() =>
+            service.StartTransactionAsync("S01", "POS-02", request, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RecoverAsync_uses_terminal_bound_to_existing_session()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var repository = new InMemoryLinklyCloudBackendAsyncRepository();
+        var tokenProvider = new CapturingLinklyCloudBackendTokenProvider();
+        var transport = new CapturingLinklyCloudBackendAsyncTransport(HttpStatusCode.Accepted);
+        var service = CreateService(
+            transport,
+            tokenProvider,
+            repository: repository,
+            terminalService: new FixedLinklyCloudTerminalService(terminalId, "Front Counter", 9));
+        var started = await service.StartTransactionAsync(
+            "S01",
+            "POS-01",
+            new LinklyCloudBackendTransactionRequest(
+                "Sandbox", "P", 1000, null, terminalId, 9),
+            CancellationToken.None);
+
+        var recovered = await service.RecoverAsync(
+            "S01",
+            "POS-01",
+            started.SessionId,
+            new LinklyCloudBackendRecoverRequest("Sandbox"),
+            CancellationToken.None);
+
+        Assert.Equal(terminalId, recovered.TerminalId);
+        Assert.Equal([terminalId, terminalId], tokenProvider.TerminalCalls);
+        Assert.Equal(started.SessionId, transport.LastRecover?.SessionId);
     }
 
     [Fact]
@@ -1552,6 +2106,155 @@ namespace Hbpos.Api.Tests;
     }
 
     [Fact]
+    public async Task TokenProvider_terminal_overload_uses_physical_terminal_credentials_only()
+    {
+        var terminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        var credentialRepository = new CapturingCredentialRepository(null);
+        var legacyTerminalRepository = new CapturingTerminalCredentialRepository();
+        var cloudTerminalRepository = new FixedCloudTerminalRepository(new LinklyCloudTerminalRecord
+        {
+            TerminalId = terminalId,
+            Environment = "Sandbox",
+            StoreCode = "S01",
+            LaneNo = 1,
+            DisplayName = "Front",
+            Username = "lane-user",
+            Password = "lane-password",
+            Secret = "physical-terminal-secret",
+            PosId = "11111111-1111-4111-8111-111111111111",
+            PairingState = "Ready"
+        });
+        var handler = new CapturingTokenHttpMessageHandler();
+        var provider = new HttpLinklyCloudBackendTokenProvider(
+            credentialRepository,
+            legacyTerminalRepository,
+            new HttpClient(handler),
+            Options.Create(new LinklyCloudBackendAsyncOptions
+            {
+                SandboxAuthBaseUrl = "https://auth.sandbox.example/v1/",
+                SandboxRestBaseUrl = "https://rest.sandbox.example/v1/",
+                SandboxPosVendorId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                PosName = "HBPOS",
+                PosVersion = "2026.5.1"
+            }),
+            cloudTerminalRepository: cloudTerminalRepository);
+
+        var token = await provider.GetTokenAsync(
+            "Sandbox", "S01", "POS-99", terminalId, CancellationToken.None);
+
+        Assert.Equal("token-for-111111111111", token.AccessToken);
+        Assert.Empty(credentialRepository.Calls);
+        Assert.Empty(legacyTerminalRepository.Calls);
+        var body = Assert.Single(handler.RequestBodies).RootElement;
+        Assert.Equal("physical-terminal-secret", body.GetProperty("secret").GetString());
+        Assert.Equal("11111111-1111-4111-8111-111111111111", body.GetProperty("posId").GetString());
+    }
+
+    [Fact]
+    public async Task TokenProvider_active_mode_without_terminal_id_fails_closed_before_legacy_lookup()
+    {
+        var credentialRepository = new CapturingCredentialRepository(new LinklyCloudCredentialRecord
+        {
+            StoreCode = "S01",
+            Environment = "Sandbox",
+            Username = "legacy-user",
+            Password = "legacy-password",
+            UpdatedAt = DateTime.UtcNow
+        });
+        var legacyTerminalRepository = new CapturingTerminalCredentialRepository(
+            new LinklyCloudBackendTerminalCredentialRecord
+            {
+                Environment = "Sandbox",
+                StoreCode = "S01",
+                DeviceCode = "POS-01",
+                Secret = "legacy-secret",
+                PosId = "11111111-1111-4111-8111-111111111111"
+            });
+        var cloudTerminalRepository = new FixedCloudTerminalRepository(new LinklyCloudTerminalRecord
+        {
+            TerminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+            Environment = "Sandbox",
+            StoreCode = "S01"
+        });
+        var handler = new CapturingTokenHttpMessageHandler();
+        var provider = new HttpLinklyCloudBackendTokenProvider(
+            credentialRepository,
+            legacyTerminalRepository,
+            new HttpClient(handler),
+            Options.Create(new LinklyCloudBackendAsyncOptions
+            {
+                SandboxAuthBaseUrl = "https://auth.sandbox.example/v1/",
+                SandboxRestBaseUrl = "https://rest.sandbox.example/v1/",
+                SandboxPosVendorId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                PosName = "HBPOS",
+                PosVersion = "2026.5.1"
+            }),
+            cloudTerminalRepository: cloudTerminalRepository);
+
+        var exception = await Assert.ThrowsAsync<LinklyCloudTerminalSelectionConflictException>(() =>
+            provider.GetTokenAsync("Sandbox", "S01", "POS-01", CancellationToken.None));
+
+        Assert.Equal("Active Linkly Cloud multi-terminal mode requires terminalId.", exception.Message);
+        Assert.Empty(credentialRepository.Calls);
+        Assert.Empty(legacyTerminalRepository.Calls);
+        Assert.Empty(handler.RequestBodies);
+        Assert.Equal(1, cloudTerminalRepository.ModeCalls);
+    }
+
+    [Theory]
+    [InlineData("Legacy")]
+    [InlineData("Draft")]
+    public async Task TokenProvider_non_active_mode_keeps_legacy_credentials_compatible(string mode)
+    {
+        var credentialRepository = new CapturingCredentialRepository(new LinklyCloudCredentialRecord
+        {
+            StoreCode = "S01",
+            Environment = "Sandbox",
+            Username = "legacy-user",
+            Password = "legacy-password",
+            UpdatedAt = DateTime.UtcNow
+        });
+        var legacyTerminalRepository = new CapturingTerminalCredentialRepository(
+            new LinklyCloudBackendTerminalCredentialRecord
+            {
+                Environment = "Sandbox",
+                StoreCode = "S01",
+                DeviceCode = "POS-01",
+                Secret = "legacy-secret",
+                PosId = "11111111-1111-4111-8111-111111111111"
+            });
+        var cloudTerminalRepository = new FixedCloudTerminalRepository(
+            new LinklyCloudTerminalRecord
+            {
+                TerminalId = Guid.Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+                Environment = "Sandbox",
+                StoreCode = "S01"
+            },
+            mode);
+        var provider = new HttpLinklyCloudBackendTokenProvider(
+            credentialRepository,
+            legacyTerminalRepository,
+            new HttpClient(new CapturingTokenHttpMessageHandler()),
+            Options.Create(new LinklyCloudBackendAsyncOptions
+            {
+                SandboxAuthBaseUrl = "https://auth.sandbox.example/v1/",
+                SandboxRestBaseUrl = "https://rest.sandbox.example/v1/",
+                SandboxPosVendorId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                PosName = "HBPOS",
+                PosVersion = "2026.5.1"
+            }),
+            cloudTerminalRepository: cloudTerminalRepository);
+
+        var token = await provider.GetTokenAsync(
+            "Sandbox", "S01", "POS-01", CancellationToken.None);
+
+        Assert.Equal("token-for-111111111111", token.AccessToken);
+        Assert.Single(credentialRepository.Calls);
+        Assert.Single(legacyTerminalRepository.Calls);
+        Assert.Equal(1, cloudTerminalRepository.ModeCalls);
+    }
+
+    [Fact]
     public async Task TokenProvider_uses_fixed_production_pos_vendor_id()
     {
         var credentialRepository = new CapturingCredentialRepository(new LinklyCloudCredentialRecord
@@ -2358,7 +3061,12 @@ namespace Hbpos.Api.Tests;
         Assert.Equal("S01", requestLog.RootElement.GetProperty("details").GetProperty("storeCode").GetString());
         Assert.Equal("POS-01", requestLog.RootElement.GetProperty("details").GetProperty("deviceCode").GetString());
         Assert.Equal("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", requestLog.RootElement.GetProperty("request").GetProperty("posId").GetString());
-        Assert.Equal(13, requestLog.RootElement.GetProperty("request").GetProperty("secret").GetProperty("secretLength").GetInt32());
+        var secretMetadata = requestLog.RootElement.GetProperty("request").GetProperty("secret");
+        Assert.Equal(13, secretMetadata.GetProperty("secretLength").GetInt32());
+        Assert.Equal(
+            new[] { "hasSecret", "secretLength" },
+            secretMetadata.EnumerateObject().Select(property => property.Name).Order().ToArray());
+        Assert.False(secretMetadata.TryGetProperty("secretPreview", out _));
         Assert.DoesNotContain("secret-pos-01", logger.Lines, StringComparer.Ordinal);
 
         using var successLog = FindLinklyLog(logger.Lines, "terminal-credential", "succeeded");
@@ -2821,7 +3529,8 @@ namespace Hbpos.Api.Tests;
         ILinklyCloudCredentialRepository? credentialRepository = null,
         ILinklyCloudBackendTerminalCredentialRepository? terminalCredentialRepository = null,
         string? sandboxNotificationBearer = "sandbox-notify",
-        ILogger<LinklyCloudBackendAsyncService>? logger = null)
+        ILogger<LinklyCloudBackendAsyncService>? logger = null,
+        ILinklyCloudTerminalService? terminalService = null)
     {
         repository ??= new InMemoryLinklyCloudBackendAsyncRepository();
         credentialRepository ??= new CapturingCredentialRepository(new LinklyCloudCredentialRecord
@@ -2852,7 +3561,8 @@ namespace Hbpos.Api.Tests;
                 SandboxNotificationBearer = sandboxNotificationBearer,
                 PublicNotificationBaseUrl = publicNotificationBaseUrl
             }),
-            logger);
+            logger,
+            terminalService);
     }
 
     private static LinklyCloudBackendTransactionRequest CreateTransactionRequest()
@@ -2888,8 +3598,9 @@ namespace Hbpos.Api.Tests;
         ILinklyCloudCredentialRepository credentialRepository,
         ILinklyCloudBackendTerminalCredentialRepository terminalCredentialRepository,
         IOptions<LinklyCloudBackendAsyncOptions> options,
-        ILogger<LinklyCloudBackendAsyncService>? logger = null)
-        : LinklyCloudBackendAsyncService(repository, transport, tokenProvider, credentialRepository, terminalCredentialRepository, options, logger)
+        ILogger<LinklyCloudBackendAsyncService>? logger = null,
+        ILinklyCloudTerminalService? terminalService = null)
+        : LinklyCloudBackendAsyncService(repository, transport, tokenProvider, credentialRepository, terminalCredentialRepository, options, logger, terminalService)
     {
         public ILinklyCloudBackendAsyncRepository Repository { get; } = repository;
     }
@@ -2898,7 +3609,8 @@ namespace Hbpos.Api.Tests;
         HttpStatusCode responseStatusCode,
         string? responseBody = null,
         HttpStatusCode? getTransactionStatusCode = null,
-        string? getTransactionBody = null) : ILinklyCloudBackendAsyncTransport
+        string? getTransactionBody = null,
+        Exception? terminalTestException = null) : ILinklyCloudBackendAsyncTransport
     {
         public LinklyCloudBackendNotificationRequest? LastNotification { get; private set; }
 
@@ -2956,6 +3668,11 @@ namespace Hbpos.Api.Tests;
             LinklyCloudBackendTransportSessionRequest request,
             CancellationToken cancellationToken)
         {
+            if (terminalTestException is not null)
+            {
+                throw terminalTestException;
+            }
+
             LastLogon = request;
             return Task.FromResult(new LinklyCloudBackendTransportResponse(responseStatusCode, responseBody));
         }
@@ -2964,6 +3681,11 @@ namespace Hbpos.Api.Tests;
             LinklyCloudBackendTransportStatusRequest request,
             CancellationToken cancellationToken)
         {
+            if (terminalTestException is not null)
+            {
+                throw terminalTestException;
+            }
+
             LastStatus = request;
             return Task.FromResult(new LinklyCloudBackendTransportResponse(responseStatusCode, responseBody));
         }
@@ -3144,6 +3866,8 @@ namespace Hbpos.Api.Tests;
     {
         public List<(string Environment, string StoreCode, string DeviceCode)> Calls { get; } = [];
 
+        public List<Guid> TerminalCalls { get; } = [];
+
         public Task<LinklyCloudBackendToken> GetTokenAsync(
             string environment,
             string storeCode,
@@ -3155,6 +3879,264 @@ namespace Hbpos.Api.Tests;
                 $"https://server-rest.example/{deviceCode}/",
                 $"server-token-{deviceCode}"));
         }
+
+        public Task<LinklyCloudBackendToken> GetTokenAsync(
+            string environment,
+            string storeCode,
+            string deviceCode,
+            Guid? terminalId,
+            CancellationToken cancellationToken)
+        {
+            if (terminalId.HasValue)
+            {
+                TerminalCalls.Add(terminalId.Value);
+            }
+
+            return GetTokenAsync(environment, storeCode, deviceCode, cancellationToken);
+        }
+    }
+
+    private sealed class FixedLinklyCloudTerminalService(
+        Guid terminalId,
+        string displayName,
+        long revision,
+        ILinklyCloudBackendAsyncRepository? sessionRepository = null,
+        TerminalOperationLeaseState? leaseState = null,
+        bool failCredentialMaterialization = false) : ILinklyCloudTerminalService
+    {
+        private readonly ILinklyCloudBackendAsyncRepository _sessionRepository =
+            sessionRepository ?? new InMemoryLinklyCloudBackendAsyncRepository();
+        private readonly TerminalOperationLeaseState _leaseState = leaseState ?? new TerminalOperationLeaseState();
+        private readonly LinklyCloudTerminalPaymentContext _context = new(
+            new LinklyCloudTerminalRecord
+            {
+                TerminalId = terminalId,
+                Environment = "Sandbox",
+                StoreCode = "S01",
+                LaneNo = 1,
+                DisplayName = displayName,
+                Username = "lane-user",
+                Password = "lane-password",
+                Secret = "terminal-secret",
+                CredentialProtectionVersion =
+                    BlazorApp.Shared.Security.LinklyCloudTerminalCredentialDataProtection.CurrentVersion,
+                PosId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                PairingState = "Ready",
+                UpdatedAt = new DateTime(2026, 9, 2, 0, 0, 0, DateTimeKind.Utc)
+            },
+            new LinklyCloudDeviceSelectionRecord
+            {
+                Environment = "Sandbox",
+                StoreCode = "S01",
+                DeviceCode = "POS-01",
+                TerminalId = terminalId,
+                Revision = revision
+            });
+
+        public List<HealthWriteAttempt> HealthWriteAttempts { get; } = [];
+
+        public bool RecordHealthResult { get; init; } = true;
+
+        public Task<LinklyCloudTerminalPaymentContext?> ResolvePaymentTerminalAsync(
+            string environment,
+            string storeCode,
+            string deviceCode,
+            Guid? requestedTerminalId,
+            long? selectionRevision,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult<LinklyCloudTerminalPaymentContext?>(_context);
+        }
+
+        public Task<LinklyCloudTerminalListResponse> GetTerminalsAsync(
+            string storeCode, string deviceCode, string environment, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<string> GetConfigurationModeAsync(
+            string environment, string storeCode, CancellationToken cancellationToken) =>
+            Task.FromResult("Active");
+
+        public Task<LinklyCloudTerminalSelectionResponse> SelectTerminalAsync(
+            string storeCode, string deviceCode, LinklyCloudTerminalSelectionRequest request, string? updatedBy, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<LinklyCloudTerminalPairResponse> PairTerminalAsync(
+            string storeCode, string deviceCode, Guid requestedTerminalId, LinklyCloudBackendPairRequest request, string? updatedBy, CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<LinklyCloudTerminalRecord?> GetTerminalAsync(
+            string environment,
+            string storeCode,
+            Guid requestedTerminalId,
+            CancellationToken cancellationToken)
+        {
+            if (failCredentialMaterialization)
+            {
+                throw new LinklyCloudTerminalCredentialUnavailableException();
+            }
+
+            return Task.FromResult<LinklyCloudTerminalRecord?>(_context.Terminal with
+            {
+                PairingAttemptId = _leaseState.LeaseId,
+                PairingLeaseExpiresAt = _leaseState.ExpiresAt
+            });
+        }
+
+        public Task<string?> GetTerminalDisplayNameAsync(
+            string environment,
+            string storeCode,
+            Guid requestedTerminalId,
+            CancellationToken cancellationToken) => Task.FromResult<string?>(displayName);
+
+        public async Task<LinklyCloudTerminalOperationLease> AcquireOperationLeaseAsync(
+            string environment,
+            string storeCode,
+            string deviceCode,
+            LinklyCloudTerminalPaymentContext terminalContext,
+            CancellationToken cancellationToken)
+        {
+            var blockingSession = await _sessionRepository.GetBlockingSessionByTerminalAsync(
+                environment,
+                storeCode,
+                terminalContext.Terminal.TerminalId,
+                cancellationToken);
+            if (blockingSession is not null)
+            {
+                throw new LinklyCloudBackendActiveTransactionException(blockingSession.SessionId);
+            }
+
+            lock (_leaseState.Gate)
+            {
+                var now = DateTime.UtcNow;
+                if (_leaseState.LeaseId is not null && _leaseState.ExpiresAt > now)
+                {
+                    throw new LinklyCloudBackendActiveTransactionException(null);
+                }
+
+                _leaseState.LeaseId = Guid.NewGuid();
+                _leaseState.ExpiresAt = now.AddMinutes(9);
+                return new LinklyCloudTerminalOperationLease(
+                    _leaseState.LeaseId.Value,
+                    terminalContext.Terminal.TerminalId,
+                    _leaseState.ExpiresAt.Value);
+            }
+        }
+
+        public Task ReleaseOperationLeaseAsync(
+            string environment,
+            string storeCode,
+            Guid requestedTerminalId,
+            Guid leaseId,
+            CancellationToken cancellationToken)
+        {
+            lock (_leaseState.Gate)
+            {
+                if (_leaseState.LeaseId == leaseId)
+                {
+                    _leaseState.LeaseId = null;
+                    _leaseState.ExpiresAt = null;
+                }
+            }
+
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> RecordHealthAsync(
+            LinklyCloudTerminalPaymentContext terminalContext,
+            string healthStatus,
+            DateTime checkedAt,
+            CancellationToken cancellationToken)
+        {
+            HealthWriteAttempts.Add(new HealthWriteAttempt(
+                terminalContext.Terminal.TerminalId,
+                terminalContext.Terminal.UpdatedAt ?? throw new InvalidOperationException(),
+                healthStatus,
+                checkedAt));
+            return Task.FromResult(RecordHealthResult);
+        }
+    }
+
+    private sealed class TerminalOperationLeaseState
+    {
+        public object Gate { get; } = new();
+
+        public Guid? LeaseId { get; set; }
+
+        public DateTime? ExpiresAt { get; set; }
+    }
+
+    private sealed record HealthWriteAttempt(
+        Guid TerminalId,
+        DateTime ExpectedUpdatedAt,
+        string Status,
+        DateTime CheckedAt);
+
+    private sealed class TerminalLeaseAwareBackendRepository(TerminalOperationLeaseState leaseState)
+        : ILinklyCloudBackendAsyncRepository
+    {
+        private readonly InMemoryLinklyCloudBackendAsyncRepository _inner = new();
+
+        public Task<bool> TryCreateSessionAsync(
+            LinklyCloudBackendSessionRecord session,
+            CancellationToken cancellationToken)
+        {
+            lock (leaseState.Gate)
+            {
+                if (leaseState.LeaseId is not null && leaseState.ExpiresAt > DateTime.UtcNow)
+                {
+                    return Task.FromResult(false);
+                }
+            }
+
+            return _inner.TryCreateSessionAsync(session, cancellationToken);
+        }
+
+        public Task UpsertSessionAsync(LinklyCloudBackendSessionRecord session, CancellationToken cancellationToken) =>
+            _inner.UpsertSessionAsync(session, cancellationToken);
+
+        public Task<LinklyCloudBackendSessionRecord?> GetSessionAsync(
+            string environment, string storeCode, string deviceCode, string sessionId, CancellationToken cancellationToken) =>
+            _inner.GetSessionAsync(environment, storeCode, deviceCode, sessionId, cancellationToken);
+
+        public Task<LinklyCloudBackendSessionRecord?> GetSessionByEnvironmentSessionIdAsync(
+            string environment, string sessionId, CancellationToken cancellationToken) =>
+            _inner.GetSessionByEnvironmentSessionIdAsync(environment, sessionId, cancellationToken);
+
+        public Task<LinklyCloudBackendSessionRecord?> GetActiveSessionAsync(
+            string environment, string storeCode, string deviceCode, CancellationToken cancellationToken) =>
+            _inner.GetActiveSessionAsync(environment, storeCode, deviceCode, cancellationToken);
+
+        public Task<LinklyCloudBackendSessionRecord?> GetActiveSessionByTerminalAsync(
+            string environment, string storeCode, Guid terminalId, CancellationToken cancellationToken) =>
+            _inner.GetActiveSessionByTerminalAsync(environment, storeCode, terminalId, cancellationToken);
+
+        public Task<LinklyCloudBackendSessionRecord?> GetBlockingSessionByTerminalAsync(
+            string environment, string storeCode, Guid terminalId, CancellationToken cancellationToken) =>
+            _inner.GetBlockingSessionByTerminalAsync(environment, storeCode, terminalId, cancellationToken);
+
+        public Task<LinklyCloudBackendSessionRecord?> GetResumableSessionAsync(
+            string environment, string storeCode, string deviceCode, CancellationToken cancellationToken) =>
+            _inner.GetResumableSessionAsync(environment, storeCode, deviceCode, cancellationToken);
+
+        public Task<LinklyCloudBackendSessionRecord?> AcknowledgeSessionAsync(
+            string environment,
+            string storeCode,
+            string deviceCode,
+            string sessionId,
+            DateTimeOffset acknowledgedAt,
+            CancellationToken cancellationToken) =>
+            _inner.AcknowledgeSessionAsync(
+                environment, storeCode, deviceCode, sessionId, acknowledgedAt, cancellationToken);
+
+        public Task AddNotificationAsync(
+            LinklyCloudBackendNotificationRecord notification,
+            CancellationToken cancellationToken) =>
+            _inner.AddNotificationAsync(notification, cancellationToken);
+
+        public Task<IReadOnlyList<LinklyCloudBackendNotificationRecord>> GetNotificationsAsync(
+            string environment,
+            string storeCode,
+            string deviceCode,
+            string sessionId,
+            CancellationToken cancellationToken) =>
+            _inner.GetNotificationsAsync(environment, storeCode, deviceCode, sessionId, cancellationToken);
     }
 
     private sealed class ThrowingLinklyCloudBackendTokenProvider(string message) : ILinklyCloudBackendTokenProvider
@@ -3214,6 +4196,107 @@ namespace Hbpos.Api.Tests;
         }
     }
 
+    private sealed class FixedCloudTerminalRepository(
+        LinklyCloudTerminalRecord terminal,
+        string mode = "Active")
+        : ILinklyCloudTerminalRepository
+    {
+        public int ModeCalls { get; private set; }
+
+        public Task<IReadOnlyList<LinklyCloudTerminalRecord>> ListAsync(
+            string environment, string storeCode, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<LinklyCloudTerminalRecord>>([terminal]);
+
+        public Task<LinklyCloudTerminalRecord?> GetAsync(
+            string environment, string storeCode, Guid terminalId, CancellationToken cancellationToken) =>
+            Task.FromResult<LinklyCloudTerminalRecord?>(
+                terminal.Environment == environment &&
+                terminal.StoreCode == storeCode &&
+                terminal.TerminalId == terminalId
+                    ? terminal
+                    : null);
+
+        public Task<LinklyCloudDeviceSelectionRecord?> GetSelectionAsync(
+            string environment, string storeCode, string deviceCode, CancellationToken cancellationToken) =>
+            Task.FromResult<LinklyCloudDeviceSelectionRecord?>(null);
+
+        public Task<LinklyCloudDeviceSelectionRecord> UpsertSelectionAsync(
+            string environment,
+            string storeCode,
+            string deviceCode,
+            Guid terminalId,
+            long? expectedRevision,
+            DateTime updatedAt,
+            string? updatedBy,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<string> GetConfigurationModeAsync(
+            string environment, string storeCode, CancellationToken cancellationToken)
+        {
+            ModeCalls++;
+            return Task.FromResult(mode);
+        }
+
+        public Task<LinklyCloudTerminalRecord?> TryBeginPairingAsync(
+            string environment,
+            string storeCode,
+            Guid terminalId,
+            Guid pairingAttemptId,
+            DateTime pairingLeaseExpiresAt,
+            DateTime expectedUpdatedAt,
+            DateTime updatedAt,
+            string? updatedBy,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<LinklyCloudTerminalRecord> UpdatePairingAsync(
+            string environment,
+            string storeCode,
+            Guid terminalId,
+            Guid expectedPairingAttemptId,
+            DateTime expectedUpdatedAt,
+            string pairingState,
+            string? secret,
+            string? posId,
+            DateTime updatedAt,
+            string? updatedBy,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task ReleasePairingLeaseAsync(
+            string environment,
+            string storeCode,
+            Guid terminalId,
+            Guid expectedPairingAttemptId,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<bool> TryAcquireOperationLeaseAsync(
+            string environment,
+            string storeCode,
+            string deviceCode,
+            Guid terminalId,
+            long expectedSelectionRevision,
+            DateTime expectedTerminalUpdatedAt,
+            Guid operationLeaseId,
+            DateTime operationLeaseExpiresAt,
+            DateTime now,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task ReleaseOperationLeaseAsync(
+            string environment,
+            string storeCode,
+            Guid terminalId,
+            Guid expectedOperationLeaseId,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+
+        public Task<bool> TryRecordHealthAsync(
+            string environment,
+            string storeCode,
+            Guid terminalId,
+            DateTime expectedTerminalUpdatedAt,
+            string healthStatus,
+            DateTime checkedAt,
+            CancellationToken cancellationToken) => throw new NotSupportedException();
+    }
+
     private sealed class CapturingTerminalCredentialRepository(
         params LinklyCloudBackendTerminalCredentialRecord[] credentials) : ILinklyCloudBackendTerminalCredentialRepository
     {
@@ -3267,6 +4350,19 @@ namespace Hbpos.Api.Tests;
             existing.UpdatedBy = updatedBy;
             return Task.FromResult(existing);
         }
+
+        public Task AcquireLegacyPairingLeaseAsync(
+            string environment, string storeCode, Guid attemptId, DateTime leaseExpiresAt,
+            DateTime now, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task ReleaseLegacyPairingLeaseAsync(
+            string environment, string storeCode, Guid attemptId,
+            CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<LinklyCloudBackendTerminalCredentialRecord> CompleteLegacyPairingAsync(
+            string environment, string storeCode, string deviceCode, Guid attemptId, DateTime now,
+            string secret, string posId, string? updatedBy, CancellationToken cancellationToken) =>
+            UpsertAsync(environment, storeCode, deviceCode, secret, posId, now, updatedBy, cancellationToken);
     }
 
     private sealed class CapturingTokenHttpMessageHandler : HttpMessageHandler

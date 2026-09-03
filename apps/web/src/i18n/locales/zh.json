@@ -733,9 +733,10 @@
   },
   "paymentTerminalSettings": {
     "title": "支付终端配置",
-    "subtitle": "管理 Square 和 Linkly Cloud 的生产/沙盒凭据。",
+    "subtitle": "管理 Square Token，以及生产/沙盒环境下一机一凭据的 Linkly Cloud 终端。",
     "squareTitle": "Square Token",
     "linklyTitle": "Linkly Cloud Credential",
+    "linklyTerminalsTitle": "Linkly Cloud 终端",
     "store": "门店",
     "username": "用户名",
     "password": "密码",
@@ -750,12 +751,68 @@
     "loadFailed": "加载支付终端配置失败",
     "noPermission": "当前账号没有系统设置管理权限。",
     "selectStoreRequired": "请先选择门店",
+    "laneNo": "Lane 编号",
+    "terminalName": "终端名称",
+    "credential": "凭据",
+    "passwordSaved": "已保存密码",
+    "pairingState": "配对状态",
+    "health": "健康状态",
+    "selectedDevices": "已选择 POS",
+    "addTerminal": "新增终端",
+    "addTerminalTitle": "新增 Linkly 终端",
+    "editTerminalTitle": "编辑终端 - {{name}}",
+    "activate": "启用多终端",
+    "activateConfirmTitle": "确认启用当前门店与环境？",
+    "activateConfirmDescription": "启用后将停止接受旧共享凭据的更新。",
+    "activationSuccess": "Linkly 多终端配置已启用",
+    "activationFailed": "启用 Linkly 多终端配置失败",
+    "selectionSaved": "POS 初始终端已保存",
+    "selectionReleased": "POS 初始终端分配已解除",
+    "oneCredentialPerTerminal": "每组 Linkly Lane 用户名和密码只能对应一台实体刷卡机。",
+    "noTerminals": "尚未配置 Linkly 终端",
+    "deviceSelectionsTitle": "POS 初始终端选择",
+    "deviceSelectionsDescription": "为每台已启用 POS 指定默认刷卡机；收银员仍可在 POS 端切换可用终端。",
+    "deviceCode": "POS 设备",
+    "deviceSystem": "系统",
+    "deviceStatus": "状态",
+    "deviceEnabled": "已启用",
+    "deviceDisabled": "已禁用",
+    "deviceMissing": "设备记录缺失",
+    "initialTerminal": "初始终端",
+    "selectTerminal": "选择终端",
+    "releaseSelection": "解除分配",
+    "releaseSelectionConfirmTitle": "确认解除终端分配？",
+    "releaseSelectionConfirmDescription": "{{deviceCode}} 已禁用或记录缺失。解除后将释放其占用的实体 Linkly 刷卡机；如需恢复，必须重新分配。",
+    "assignedToDevice": "已由 {{deviceCode}} 占用",
+    "duplicateAssignmentWarning": "同一台 Linkly 刷卡机被分配给了多台 POS，请先解除重复分配再启用。",
+    "noDevices": "当前门店没有已注册 POS 设备",
+    "blankKeepsCredential": "留空将保留服务器上现有凭据。",
+    "editCredentialHint": "当前用户名：{{username}}。修改用户名或密码会清除配对，必须重新输入 Pair Code。",
+    "configurationModes": {
+      "Legacy": "旧配置",
+      "Draft": "草稿",
+      "Active": "已启用"
+    },
+    "modeDescriptions": {
+      "Legacy": "当前门店仍使用旧共享凭据；新增第一台终端会进入草稿，但不会复制旧密钥。",
+      "Draft": "请先完成终端配对及每台 POS 的初始选择，再启用多终端。",
+      "Active": "当前门店与环境已启用一机一凭据的 Linkly 终端配置。"
+    },
+    "pairingStates": {
+      "Unpaired": "未配对",
+      "Ready": "可用",
+      "Unknown": "状态未知",
+      "NeedsRepair": "需要重配"
+    },
     "environments": {
       "Production": "生产",
       "Sandbox": "沙盒"
     },
     "validation": {
-      "username": "请输入 Linkly 用户名"
+      "username": "请输入 Linkly 用户名",
+      "password": "请输入 Linkly 密码",
+      "laneNo": "请输入 1 到 9999 的 Lane 编号",
+      "terminalName": "请输入终端名称"
     }
   },
   "emergencyLoginKeys": {
