@@ -115,10 +115,10 @@
   height: auto !important;
   min-height: 100px;
 }
-.list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content > a.list-content[href*="/product/view?id="] {
+.list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content > a[href*="/product/view?id="] > .list-content {
   height: auto !important;
 }
-.list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content > a.list-content[href*="/product/view?id="] .list-detail {
+.list-row[data-product]:has(> .content > [data-hb-sro-host]) > .content > a[href*="/product/view?id="] > .list-content .list-detail {
   height: auto !important;
 }
 @media (max-width: 500px) {
