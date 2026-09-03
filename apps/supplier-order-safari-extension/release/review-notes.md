@@ -11,6 +11,6 @@ Review path:
 5. From the signed-in HB SHOP page or the Safari toolbar, open the Supplier Order Assistant. It should recognise the website account without asking for credentials again; then select the authorised store.
 6. In Safari, visit https://www.meteorparty.com.au/Party-Favors/Party-Favors-Allfavors. This supplier page does not require a supplier login.
 7. Allow the extension to access the supplier site, then tap the HB Safari toolbar icon.
-8. Verify the full assistant, in-page product entry, purchase records, sales records and supplier ranking.
+8. Verify the full assistant, in-page product entry, purchase records, sales records, the mutually exclusive TOP 10% / TOP 20% / TOP 30% sales bands, and the paginated supplier TOP 30% ranking. The ranking supports 60/90-day periods and page sizes of 50, 100 or 200.
 
 The app does not automatically place supplier orders or modify supplier accounts. Reviewer contact details and account credentials must be entered only in App Store Connect secure fields and must not be added to this repository.
