@@ -26,7 +26,6 @@ export interface PrimaryNavigationItem {
     | "chart-box-outline"
     | "account-circle-outline";
   active: boolean;
-  locked: boolean;
 }
 
 export type PrimaryNavigationAction = "none" | "dismiss-to" | "navigate";
@@ -35,7 +34,7 @@ export function resolvePrimaryNavigationAction(
   activeRouteName: string | undefined,
   item: PrimaryNavigationItem
 ): PrimaryNavigationAction {
-  if (item.locked || activeRouteName === item.targetRouteName) {
+  if (activeRouteName === item.targetRouteName) {
     return "none";
   }
 
@@ -85,48 +84,70 @@ export function buildPrimaryNavigation({
   isDeviceMode = false,
 }: BuildPrimaryNavigationOptions): PrimaryNavigationItem[] {
   const visibleRoutes = new Set(visibleRouteNames);
-  const activeKey = resolveActivePrimaryKey(activeRouteName);
+  const visiblePrimaryKeys = new Set<PrimaryNavigationKey>(["workbench", "me"]);
 
-  return [
+  if (visibleRoutes.has("product-query")) {
+    visiblePrimaryKeys.add("scan");
+  }
+  if (!isDeviceMode && visibleRoutes.has("attendance-personal")) {
+    visiblePrimaryKeys.add("attendance");
+  }
+  if (!isDeviceMode && visibleRoutes.has("reports")) {
+    visiblePrimaryKeys.add("reports");
+  }
+
+  const requestedActiveKey = resolveActivePrimaryKey(activeRouteName);
+  const activeKey = visiblePrimaryKeys.has(requestedActiveKey)
+    ? requestedActiveKey
+    : "workbench";
+  const items: PrimaryNavigationItem[] = [
     {
       key: "workbench",
       targetRouteName: "workbench",
       labelKey: "tabs.workbench",
       icon: "view-dashboard-outline",
       active: activeKey === "workbench",
-      locked: false,
     },
-    {
+  ];
+
+  // 底栏只呈现当前会话真正可进入的主入口；工作台和我的保留为本地安全壳。
+  if (visiblePrimaryKeys.has("scan")) {
+    items.push({
       key: "scan",
       targetRouteName: "product-query",
       labelKey: "tabs.scan",
       icon: "barcode-scan",
       active: activeKey === "scan",
-      locked: !visibleRoutes.has("product-query"),
-    },
-    {
+    });
+  }
+
+  if (visiblePrimaryKeys.has("attendance")) {
+    items.push({
       key: "attendance",
       targetRouteName: "attendance-personal",
       labelKey: "tabs.checkIn",
       icon: "clock-outline",
       active: activeKey === "attendance",
-      locked: isDeviceMode || !visibleRoutes.has("attendance-personal"),
-    },
-    {
+    });
+  }
+
+  if (visiblePrimaryKeys.has("reports")) {
+    items.push({
       key: "reports",
       targetRouteName: "reports",
       labelKey: "tabs.reports",
       icon: "chart-box-outline",
       active: activeKey === "reports",
-      locked: isDeviceMode || !visibleRoutes.has("reports"),
-    },
-    {
-      key: "me",
-      targetRouteName: "settings",
-      labelKey: "tabs.me",
-      icon: "account-circle-outline",
-      active: activeKey === "me",
-      locked: false,
-    },
-  ];
+    });
+  }
+
+  items.push({
+    key: "me",
+    targetRouteName: "settings",
+    labelKey: "tabs.me",
+    icon: "account-circle-outline",
+    active: activeKey === "me",
+  });
+
+  return items;
 }

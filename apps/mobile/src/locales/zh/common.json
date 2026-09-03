@@ -35,7 +35,6 @@
     "checkIn": "打卡",
     "reports": "报表",
     "me": "我的",
-    "lockedLabel": "{{label}}，当前模式无权限",
     "home": "商品",
     "store": "门店",
     "orders": "订单",

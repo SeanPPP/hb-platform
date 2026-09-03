@@ -226,19 +226,20 @@ export function useStores() {
     () => ({
       async selectStore(store: Store | null) {
         if (isDeviceMode && deviceBoundStore) {
-          setSelectedStore(deviceBoundStore);
           await AppAsyncStorage.setString(STORE_SELECTION_STORAGE_KEY, deviceBoundStore.storeCode);
+          setSelectedStore(deviceBoundStore);
           return;
         }
-
-        setSelectedStore(store);
-        setCartSummary(null);
 
         if (store?.storeCode) {
           await AppAsyncStorage.setString(STORE_SELECTION_STORAGE_KEY, store.storeCode);
         } else {
           await AppAsyncStorage.removeItem(STORE_SELECTION_STORAGE_KEY);
         }
+
+        // 先确保持久化成功，避免写入失败后内存门店与购物车被部分切换。
+        setSelectedStore(store);
+        setCartSummary(null);
       },
     }),
     [deviceBoundStore, isDeviceMode, setCartSummary, setSelectedStore]
