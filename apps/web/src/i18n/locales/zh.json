@@ -285,6 +285,20 @@
       "oemPrice": "零售价",
       "warehouseStatus": "仓库状态"
     },
+    "freightCalculator": {
+      "modes": {
+        "standard68": "68 m³ 标准运费",
+        "perCbm": "每 m³ 单价"
+      },
+      "placeholders": {
+        "standard68": "输入 68 m³ 报价",
+        "perCbm": "输入每 m³ 单价"
+      },
+      "preview": "当前 {{volume}} m³ → 运费 {{freight}}",
+      "invalidVolume": "总体积无效，无法换算运费",
+      "invalidInput": "请输入大于或等于 0 的有效报价",
+      "refreshFailed": "无法读取最新总体积，运费未保存"
+    },
     "matchTypes": {
       "productCode": "商品编码匹配",
       "supplierItem": "候选需确认",

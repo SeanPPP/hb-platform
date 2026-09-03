@@ -464,6 +464,39 @@
   color: #1677ff;
 }
 
+.container-detail-freight-calculator {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(100%, 280px);
+  min-width: 210px;
+}
+
+.container-detail-freight-mode {
+  display: flex;
+  max-width: 100%;
+}
+
+.container-detail-freight-mode .ant-radio-button-wrapper {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-inline: 8px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.container-detail-freight-input {
+  width: 100%;
+}
+
+.container-detail-freight-feedback {
+  display: block;
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .container-detail-page-small .ant-card-body {
   padding: 12px;
 }
@@ -478,6 +511,16 @@
 
 .container-detail-page-small .ant-descriptions table {
   min-width: 720px;
+}
+
+.container-detail-page-small .container-detail-freight-calculator {
+  width: 220px;
+  min-width: 0;
+}
+
+.container-detail-page-small .container-detail-freight-mode .ant-radio-button-wrapper {
+  padding-inline: 6px;
+  font-size: 12px;
 }
 
 .container-detail-page-small .container-detail-stats {
