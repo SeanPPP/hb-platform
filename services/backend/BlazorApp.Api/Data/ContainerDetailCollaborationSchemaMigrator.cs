@@ -81,8 +81,12 @@ DECLARE @NormalizedAppendOnlyTrigger nvarchar(max) = LOWER(
         COALESCE(OBJECT_DEFINITION(OBJECT_ID(N'[dbo].[TR_ContainerDetailFieldOverrideAudit_AppendOnly]')), N''),
         CHAR(13), N''), CHAR(10), N''), CHAR(9), N''), N' ', N'')
 );
-IF @NormalizedAppendOnlyTrigger COLLATE Latin1_General_100_BIN2
-    <> N'createoraltertrigger[dbo].[tr_containerdetailfieldoverrideaudit_appendonly]on[dbo].[containerdetailfieldoverrideaudit]insteadofupdate,deleteasbeginthrow51110,n''containerdetailfieldoverrideauditisappend-only.'',1;end' COLLATE Latin1_General_100_BIN2
+-- SQL Server 会把 CREATE OR ALTER 创建的模块持久化为 CREATE 定义；两种 DDL 头部语义等价，
+-- 但表、事件、正文、错误号和错误文本仍使用 BIN2 做完整逐字校验。
+IF @NormalizedAppendOnlyTrigger COLLATE Latin1_General_100_BIN2 NOT IN (
+    N'createoraltertrigger[dbo].[tr_containerdetailfieldoverrideaudit_appendonly]on[dbo].[containerdetailfieldoverrideaudit]insteadofupdate,deleteasbeginthrow51110,n''containerdetailfieldoverrideauditisappend-only.'',1;end',
+    N'createtrigger[dbo].[tr_containerdetailfieldoverrideaudit_appendonly]on[dbo].[containerdetailfieldoverrideaudit]insteadofupdate,deleteasbeginthrow51110,n''containerdetailfieldoverrideauditisappend-only.'',1;end'
+)
     THROW 51549, N'ContainerDetailFieldOverrideAudit append-only trigger is incompatible.', 1;
 """;
 

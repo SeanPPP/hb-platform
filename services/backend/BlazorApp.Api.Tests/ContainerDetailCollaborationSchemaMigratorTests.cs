@@ -36,6 +36,7 @@ public sealed class ContainerDetailCollaborationSchemaMigratorTests
         Assert.Contains("@NormalizedAppendOnlyTrigger", sql, StringComparison.Ordinal);
         Assert.Contains("COLLATE Latin1_General_100_BIN2", sql, StringComparison.Ordinal);
         Assert.Contains("createoraltertrigger[dbo].[tr_containerdetailfieldoverrideaudit_appendonly]", sql, StringComparison.Ordinal);
+        Assert.Contains("createtrigger[dbo].[tr_containerdetailfieldoverrideaudit_appendonly]", sql, StringComparison.Ordinal);
         Assert.DoesNotContain("NOT LIKE N'%INSTEAD OF UPDATE, DELETE%'", sql, StringComparison.Ordinal);
     }
 

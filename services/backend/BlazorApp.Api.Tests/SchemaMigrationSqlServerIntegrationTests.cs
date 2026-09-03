@@ -50,18 +50,6 @@ public sealed class SchemaMigrationSqlServerIntegrationTests
         Assert.Equal(SchemaExitCodes.SchemaNotReady, emptyDatabaseCheck.ExitCode);
 
         var migrated = await coordinator.MigrateAsync(CancellationToken.None);
-        if (
-            !migrated.Success
-            && migrated.DiagnosticCode
-                == SchemaDiagnosticCodes.ContainerDetailCollaborationIncompatible
-        )
-        {
-            // 仅在隔离 SQL 测试失败时重放只读签名检查，让 CI 显示固定错误号与固定文案。
-            await ExecuteNonQueryAsync(
-                databases.MainConnectionString,
-                ContainerDetailCollaborationSchemaMigrator.VerifySql
-            );
-        }
         Assert.True(migrated.Success, migrated.DiagnosticCode);
         Assert.Equal(SchemaExitCodes.Success, migrated.ExitCode);
 
