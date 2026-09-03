@@ -1047,7 +1047,8 @@
       }
       const host = document.createElement("div");
       host.setAttribute("data-hb-sro-host", "");
-      host.style.cssText = "display:block;margin:4px 0;";
+      const isGfaFixedHeightRow = profile.supplierCode === "236" && card.matches(".list-row[data-product]");
+      host.style.cssText = isGfaFixedHeightRow ? "display:block;margin:0 235px 0 0;position:relative;z-index:2;transform:translateY(-100%);pointer-events:none;" : "display:block;margin:4px 0;";
       mountEl.insertAdjacentElement(pos, host);
       return host;
     }
@@ -1055,7 +1056,7 @@
       const root = host.attachShadow({ mode: "closed" });
       const style = document.createElement("style");
       style.textContent = [
-        ".hb-btn{all:unset;box-sizing:border-box;display:inline-block;max-width:100%;padding:4px 8px;border-radius:4px;border:1px solid #d5d5d5;background:#fafafa;color:#333;cursor:pointer;font:12px/1.5 system-ui,sans-serif;white-space:normal;overflow-wrap:anywhere;}",
+        ".hb-btn{all:unset;box-sizing:border-box;display:inline-block;max-width:100%;padding:4px 8px;border-radius:4px;border:1px solid #d5d5d5;background:#fafafa;color:#333;cursor:pointer;font:12px/1.5 system-ui,sans-serif;white-space:normal;overflow-wrap:anywhere;pointer-events:auto;}",
         ".hb-btn:focus-visible{outline:2px solid #2563eb;outline-offset:2px;}",
         ".hb-order{color:#c62828;font-weight:600;}",
         ".hb-sales{color:#1565c0;font-weight:600;}",
