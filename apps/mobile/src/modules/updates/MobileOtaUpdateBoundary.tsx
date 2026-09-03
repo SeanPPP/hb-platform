@@ -1,12 +1,23 @@
-import type { ReactNode } from "react";
+import { createContext, useContext, type ReactNode } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { ActivityIndicator, Button, Surface, Text } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import {
   getMobileOtaBoundaryMode,
+  type MobileOtaManualCheckResult,
   type MobileOtaUpdateDecision,
 } from "./mobile-ota-update";
+
+type MobileOtaManualCheck = () => Promise<MobileOtaManualCheckResult>;
+
+const MobileOtaManualCheckContext = createContext<MobileOtaManualCheck>(
+  async () => Object.freeze({ status: "disabled" }),
+);
+
+export function useMobileOtaManualCheck() {
+  return useContext(MobileOtaManualCheckContext);
+}
 
 type MobileOtaUpdateBoundaryProps = Readonly<{
   enabled: boolean;
@@ -17,6 +28,7 @@ type MobileOtaUpdateBoundaryProps = Readonly<{
   downloaded: boolean;
   decision: MobileOtaUpdateDecision | null;
   lastError: string | null;
+  onManualCheck: MobileOtaManualCheck;
   onDownload: () => void;
   onRestart: () => void;
   onRetry: () => void;
@@ -31,7 +43,13 @@ export function MobileOtaUpdateBoundary(props: MobileOtaUpdateBoundaryProps) {
     state: props.decision?.state ?? null,
   });
 
-  if (mode === "content") return props.children;
+  if (mode === "content") {
+    return (
+      <MobileOtaManualCheckContext.Provider value={props.onManualCheck}>
+        {props.children}
+      </MobileOtaManualCheckContext.Provider>
+    );
+  }
 
   if (mode === "checking") {
     return (
