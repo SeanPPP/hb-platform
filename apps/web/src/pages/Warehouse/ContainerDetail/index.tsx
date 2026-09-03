@@ -129,6 +129,7 @@ import {
   buildPendingContainerDetailSavePlan,
   buildContainerDetailTagStats,
   buildContainerDetailHqPushSelection,
+  calculateContainerFreight,
   calculateContainerDetailImportPrice,
   calculateContainerDetailTotalAmount,
   calculateContainerDetailTotalVolume,
@@ -140,6 +141,7 @@ import {
   CONTAINER_DETAIL_INITIAL_PAGE_SIZE,
   CONTAINER_DETAIL_PAGE_SIZE_OPTIONS,
   DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
+  deriveContainerFreightInput,
   getContainerDetailCostMissingFields,
   getContainerDetailBatchCategoryProductCodes,
   buildContainerDetailTranslationUpdates,
@@ -176,6 +178,8 @@ import {
   hasContainerDetailProductCodeConflict,
   isContainerDetailColumnOrderCustomized,
   isContainerDetailSortField,
+  isValidContainerFreightVolume,
+  normalizeContainerFreightInput,
   mergeContainerDetailColumnOrder,
   mergeContainerDetailLoadedItems,
   moveContainerDetailColumnOrder,
@@ -184,6 +188,7 @@ import {
   matchesContainerDetailSelectedTags,
   prepareContainerDetailWholeExportRows,
   rollbackContainerDetailWarehouseStatuses,
+  resolveContainerFreightPreview,
   settleScopedContainerDetailSave,
   resolveContainerDetailFullPage,
   resolveContainerDetailInitialPage,
@@ -192,6 +197,7 @@ import {
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS,
   type ContainerDetailEditableCellDirection,
+  type ContainerFreightInputMode,
   type ContainerDetailColumnFilters,
   type ContainerDetailCostMissingField,
   type ContainerDetailExportColumnKey,
@@ -764,6 +770,7 @@ export default function ContainerDetailPage() {
   }))
   const [remoteTagStats, setRemoteTagStats] = useState<ContainerDetailTagStats>(EMPTY_CONTAINER_DETAIL_TAG_STATS)
   const [savingHeader, setSavingHeader] = useState(false)
+  const savingHeaderRef = useRef(false)
   const [container, setContainer] = useState<ContainerMain | null>(null)
   const [rows, setRows] = useState<ContainerDetail[]>([])
   const [changeHistoryProduct, setChangeHistoryProduct] = useState<{
@@ -961,10 +968,40 @@ export default function ContainerDetailPage() {
     预计到岸日期?: Dayjs | null
     实际到货日期?: Dayjs | null
     汇率?: number
-    运费?: number
     备注?: string
     状态?: number
   }>({})
+  const [freightInputMode, setFreightInputMode] = useState<ContainerFreightInputMode>('standard68')
+  const [freightInputValue, setFreightInputValue] = useState<number>()
+  const [freightInputDirty, setFreightInputDirty] = useState(false)
+  const freightVolumeValid = isValidContainerFreightVolume(container?.总体积)
+  const freightPreviewValue = useMemo(
+    () => resolveContainerFreightPreview(
+      container?.运费,
+      freightInputValue,
+      container?.总体积,
+      freightInputMode,
+      freightInputDirty,
+    ),
+    [container?.总体积, container?.运费, freightInputDirty, freightInputMode, freightInputValue],
+  )
+
+  const handleFreightInputModeChange = (nextMode: ContainerFreightInputMode) => {
+    if (nextMode === freightInputMode) return
+    // 模式切换只改变报价的显示口径，保留当前换算出的最终运费和修改状态。
+    setFreightInputValue(normalizeContainerFreightInput(
+      deriveContainerFreightInput(freightPreviewValue, container?.总体积, nextMode),
+      nextMode,
+    ))
+    setFreightInputMode(nextMode)
+  }
+
+  const handleFreightInputChange = (value: number | null) => {
+    const nextValue = value ?? undefined
+    if (Object.is(nextValue, freightInputValue)) return
+    setFreightInputValue(nextValue)
+    setFreightInputDirty(true)
+  }
   const columnDragSensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
@@ -1434,10 +1471,15 @@ export default function ContainerDetailPage() {
         预计到岸日期: info.预计到岸日期 ? dayjs(info.预计到岸日期) : null,
         实际到货日期: info.实际到货日期 ? dayjs(info.实际到货日期) : null,
         汇率: info.汇率,
-        运费: info.运费,
         备注: info.备注,
         状态: info.状态,
       })
+      setFreightInputMode('standard68')
+      setFreightInputValue(normalizeContainerFreightInput(
+        deriveContainerFreightInput(info.运费, info.总体积, 'standard68'),
+        'standard68',
+      ))
+      setFreightInputDirty(false)
     } catch (error) {
       if (headerLoadRequestIdRef.current !== currentRequestId) {
         return
@@ -3125,37 +3167,64 @@ export default function ContainerDetailPage() {
   }
 
   const saveHeader = async () => {
-    if (!containerGuid || !access.canEditContainer) return
-    if (!await drainAutoSavesBeforeAction()) return
-    const nextContainerNumber = headerForm.货柜编号?.trim()
-    if (!nextContainerNumber) {
-      message.error(t('containers.placeholders.enterContainerNumber', '请输入货柜编号'))
-      return
-    }
-    const nextCostContainer = {
-      ...container,
-      汇率: headerForm.汇率,
-      运费: headerForm.运费,
-    }
-    const shouldRecalculateCosts =
-      (container?.汇率 ?? undefined) !== (headerForm.汇率 ?? undefined) ||
-      (container?.运费 ?? undefined) !== (headerForm.运费 ?? undefined)
-    if (shouldRecalculateCosts && showCostRecalculateWarning(getContainerDetailCostMissingFields(nextCostContainer))) {
-      return
-    }
-
-    const updatePayload: UpdateContainerRequest = {
-      货柜编号: nextContainerNumber,
-      装柜日期: headerForm.装柜日期 ? headerForm.装柜日期.format('YYYY-MM-DD') : undefined,
-      预计到岸日期: headerForm.预计到岸日期 ? headerForm.预计到岸日期.format('YYYY-MM-DD') : undefined,
-      实际到货日期: headerForm.实际到货日期 ? headerForm.实际到货日期.format('YYYY-MM-DD') : undefined,
-      汇率: headerForm.汇率,
-      运费: headerForm.运费,
-      备注: headerForm.备注,
-      状态: headerForm.状态,
-    }
+    if (!containerGuid || !access.canEditContainer || savingHeaderRef.current) return
+    savingHeaderRef.current = true
     setSavingHeader(true)
     try {
+      if (!await drainAutoSavesBeforeAction()) return
+      const nextContainerNumber = headerForm.货柜编号?.trim()
+      if (!nextContainerNumber) {
+        message.error(t('containers.placeholders.enterContainerNumber', '请输入货柜编号'))
+        return
+      }
+      let freightComparisonContainer = container
+      let nextFreight = container?.运费
+      if (freightInputDirty) {
+        try {
+          const latestContainer = await getContainerDetail(containerGuid)
+          if (!isValidContainerFreightVolume(latestContainer.总体积)) {
+            message.error(t('containers.freightCalculator.invalidVolume'))
+            return
+          }
+          const calculatedFreight = calculateContainerFreight(
+            freightInputValue,
+            latestContainer.总体积,
+            freightInputMode,
+          )
+          if (calculatedFreight === undefined) {
+            message.error(t('containers.freightCalculator.invalidInput'))
+            return
+          }
+          freightComparisonContainer = latestContainer
+          nextFreight = calculatedFreight
+        } catch (error) {
+          console.error(error)
+          message.error(t('containers.freightCalculator.refreshFailed'))
+          return
+        }
+      }
+      const nextCostContainer = {
+        ...freightComparisonContainer,
+        汇率: headerForm.汇率,
+        运费: nextFreight,
+      }
+      const shouldRecalculateCosts =
+        (freightComparisonContainer?.汇率 ?? undefined) !== (headerForm.汇率 ?? undefined) ||
+        (freightComparisonContainer?.运费 ?? undefined) !== (nextFreight ?? undefined)
+      if (shouldRecalculateCosts && showCostRecalculateWarning(getContainerDetailCostMissingFields(nextCostContainer))) {
+        return
+      }
+
+      const updatePayload: UpdateContainerRequest = {
+        货柜编号: nextContainerNumber,
+        装柜日期: headerForm.装柜日期 ? headerForm.装柜日期.format('YYYY-MM-DD') : undefined,
+        预计到岸日期: headerForm.预计到岸日期 ? headerForm.预计到岸日期.format('YYYY-MM-DD') : undefined,
+        实际到货日期: headerForm.实际到货日期 ? headerForm.实际到货日期.format('YYYY-MM-DD') : undefined,
+        汇率: headerForm.汇率,
+        运费: nextFreight,
+        备注: headerForm.备注,
+        状态: headerForm.状态,
+      }
       try {
         await updateContainer(containerGuid, updatePayload)
       } catch (error) {
@@ -3163,6 +3232,21 @@ export default function ContainerDetailPage() {
         message.error(error instanceof Error ? error.message : t('containers.messages.headerSaveFailed'))
         return
       }
+
+      const submittedTotalVolume = freightComparisonContainer?.总体积
+      // PUT 已成功即以提交结果更新本地基准，避免后续 reload 失败时旧报价被再次提交。
+      setContainer((current) => current ? {
+        ...current,
+        总体积: submittedTotalVolume ?? current.总体积,
+        汇率: headerForm.汇率,
+        运费: nextFreight,
+      } : current)
+      setFreightInputMode('standard68')
+      setFreightInputValue(normalizeContainerFreightInput(
+        deriveContainerFreightInput(nextFreight, submittedTotalVolume, 'standard68'),
+        'standard68',
+      ))
+      setFreightInputDirty(false)
 
       if (shouldRecalculateCosts) {
         try {
@@ -3184,6 +3268,7 @@ export default function ContainerDetailPage() {
         message.error(error instanceof Error ? error.message : t('containers.messages.loadDetailFailed'))
       }
     } finally {
+      savingHeaderRef.current = false
       setSavingHeader(false)
     }
   }
@@ -5731,7 +5816,57 @@ export default function ContainerDetailPage() {
                 {headerEditing ? <InputNumber value={headerForm.汇率} precision={4} controls={false} onChange={(value) => setHeaderForm((prev) => ({ ...prev, 汇率: value ?? undefined }))} /> : formatNumber(container?.汇率, 4)}
               </Descriptions.Item>
               <Descriptions.Item label={t('containers.fields.freight')}>
-                {headerEditing ? <InputNumber value={headerForm.运费} precision={2} controls={false} onChange={(value) => setHeaderForm((prev) => ({ ...prev, 运费: value ?? undefined }))} /> : formatNumber(container?.运费)}
+                {headerEditing ? (
+                  <div className="container-detail-freight-calculator">
+                    <Radio.Group
+                      className="container-detail-freight-mode"
+                      aria-label={t('containers.fields.freight')}
+                      size="small"
+                      optionType="button"
+                      buttonStyle="solid"
+                      value={freightInputMode}
+                      options={[
+                        {
+                          value: 'standard68',
+                          label: t('containers.freightCalculator.modes.standard68'),
+                        },
+                        {
+                          value: 'perCbm',
+                          label: t('containers.freightCalculator.modes.perCbm'),
+                        },
+                      ]}
+                      onChange={(event) => handleFreightInputModeChange(event.target.value as ContainerFreightInputMode)}
+                    />
+                    <InputNumber
+                      className="container-detail-freight-input"
+                      aria-label={t(`containers.freightCalculator.modes.${freightInputMode}`)}
+                      value={freightInputValue}
+                      min={0}
+                      precision={freightInputMode === 'perCbm' ? 4 : 2}
+                      step={freightInputMode === 'perCbm' ? 0.0001 : 0.01}
+                      controls={false}
+                      disabled={!freightVolumeValid}
+                      placeholder={t(`containers.freightCalculator.placeholders.${freightInputMode}`)}
+                      onChange={handleFreightInputChange}
+                    />
+                    {!freightVolumeValid ? (
+                      <Typography.Text role="alert" type="danger" className="container-detail-freight-feedback">
+                        {t('containers.freightCalculator.invalidVolume')}
+                      </Typography.Text>
+                    ) : freightInputDirty && freightPreviewValue === undefined ? (
+                      <Typography.Text role="alert" type="danger" className="container-detail-freight-feedback">
+                        {t('containers.freightCalculator.invalidInput')}
+                      </Typography.Text>
+                    ) : (
+                      <Typography.Text role="status" aria-live="polite" type="secondary" className="container-detail-freight-feedback">
+                        {t('containers.freightCalculator.preview', {
+                          volume: formatNumber(container?.总体积, 4),
+                          freight: formatNumber(freightPreviewValue),
+                        })}
+                      </Typography.Text>
+                    )}
+                  </div>
+                ) : formatNumber(container?.运费)}
               </Descriptions.Item>
               {/* 合计金额来自货柜主表汇总，编辑态也保持只读。 */}
               <Descriptions.Item label={t('containers.fields.domesticPriceTotal')}>{formatCurrency(container?.合计金额, '¥')}</Descriptions.Item>

@@ -285,6 +285,20 @@
       "oemPrice": "RRP",
       "warehouseStatus": "Warehouse Status"
     },
+    "freightCalculator": {
+      "modes": {
+        "standard68": "68 m³ quote",
+        "perCbm": "Per m³"
+      },
+      "placeholders": {
+        "standard68": "Enter 68 m³ quote",
+        "perCbm": "Enter price per m³"
+      },
+      "preview": "Current {{volume}} m³ → Freight {{freight}}",
+      "invalidVolume": "Total volume is invalid; freight cannot be calculated",
+      "invalidInput": "Enter a valid quote greater than or equal to 0",
+      "refreshFailed": "Could not load the latest total volume; freight was not saved"
+    },
     "matchTypes": {
       "productCode": "Product Code",
       "supplierItem": "Candidate",
