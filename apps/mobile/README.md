@@ -30,7 +30,7 @@ HBWEB_API_TOKEN=<hbsvc-manage-app-downloads-token> \
 node scripts/publish-ota-update.mjs \
   --environment preview \
   --platform all \
-  --runtime-version 1.0.3 \
+  --runtime-version 1.0.4 \
   --message "验证 Mobile OTA"
 ```
 
@@ -49,7 +49,7 @@ node scripts/publish-ota-update.mjs \
 node scripts/publish-ota-update.mjs \
   --environment production \
   --platform ios \
-  --runtime-version 1.0.3 \
+  --runtime-version 1.0.4 \
   --message "iOS 回滚重发" \
   --rollback-of-release-id <source-release-uuid>
 ```
@@ -61,7 +61,7 @@ printf '%s' "$TEMP_ADMIN_JWT" | node scripts/publish-ota-update.mjs \
   --access-token-stdin \
   --environment production \
   --platform ios \
-  --runtime-version 1.0.3 \
+  --runtime-version 1.0.4 \
   --message "iOS 修复"
 ```
 
