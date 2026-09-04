@@ -166,20 +166,8 @@ public sealed class MobileDeviceActivationCodeManagementService :
                 "MOBILE_ACTIVATION_STORE_UNAVAILABLE");
         }
 
-        var users = await _mainDb.Queryable<User>()
-            .InnerJoin<UserStore>((user, userStore) => user.UserGUID == userStore.UserGUID)
-            .Where((user, userStore) =>
-                user.IsActive
-                && !user.IsDeleted
-                && !userStore.IsDeleted
-                && userStore.StoreGUID == store.StoreGUID)
-            .Select((user, userStore) => new
-            {
-                user.UserGUID,
-                user.Username,
-                user.FullName,
-            })
-            .Distinct()
+        var users = await MobileDeviceActivationQueries
+            .BuildManageableAccountsQuery(_mainDb, store.StoreGUID)
             .ToListAsync();
 
         if (!IsTrueAdministrator() && users.Count > 0)

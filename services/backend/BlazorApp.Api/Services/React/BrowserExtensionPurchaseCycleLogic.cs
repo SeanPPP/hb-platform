@@ -158,6 +158,8 @@ public static partial class BrowserExtensionPurchaseCycleSqlBuilder
         var normalizedStoreCode = NormalizeCode(storeCode, "分店代码");
         var normalizedSupplierCode = NormalizeCode(supplierCode, "供应商代码");
         var normalizedItems = NormalizeItemNumbers(itemNumbers);
+        // GFA 页面编码的下划线转换为斜线后对应 HB ProductCode，而不是 Product.ItemNumber。
+        var matchByProductCode = normalizedSupplierCode == "236";
         var valuesSql = string.Join(
             ",\n        ",
             normalizedItems.Select((_, index) => $"(@Item{index})")
@@ -166,6 +168,7 @@ public static partial class BrowserExtensionPurchaseCycleSqlBuilder
         {
             new("@StoreCode", normalizedStoreCode),
             new("@SupplierCode", normalizedSupplierCode),
+            new("@MatchByProductCode", matchByProductCode),
             new("@Cutoff", today.AddMonths(-12).ToDateTime(TimeOnly.MinValue)),
             new("@Today", today.ToDateTime(TimeOnly.MinValue)),
         };
@@ -188,7 +191,16 @@ public static partial class BrowserExtensionPurchaseCycleSqlBuilder
                     MAX(CASE WHEN storeProduct.UUID IS NULL THEN NULL ELSE NULLIF(p.ProductName, N'') END) AS ProductName
                 FROM RequestedItems requested
                 LEFT JOIN [Product] p
-                    ON UPPER(LTRIM(RTRIM(p.ItemNumber))) = requested.ItemNumber
+                    ON (
+                        (
+                            @MatchByProductCode = 0
+                            AND UPPER(LTRIM(RTRIM(p.ItemNumber))) = requested.ItemNumber
+                        )
+                        OR (
+                            @MatchByProductCode = 1
+                            AND UPPER(LTRIM(RTRIM(COALESCE(p.ProductCode, N'')))) = requested.ItemNumber
+                        )
+                    )
                     AND COALESCE(p.IsDeleted, 0) = 0
                 -- 商品匹配必须同时满足供应商、货号和分店，不能只依赖商品主表的默认供应商。
                 LEFT JOIN [StoreRetailPrice] storeProduct
@@ -214,7 +226,16 @@ public static partial class BrowserExtensionPurchaseCycleSqlBuilder
                     ON p.ProductCode = NULLIF(d.ProductCode, N'')
                     AND COALESCE(p.IsDeleted, 0) = 0
                 INNER JOIN RequestedItems requested
-                    ON UPPER(LTRIM(RTRIM(COALESCE(d.ItemNumber, p.ItemNumber)))) = requested.ItemNumber
+                    ON (
+                        (
+                            @MatchByProductCode = 0
+                            AND UPPER(LTRIM(RTRIM(COALESCE(d.ItemNumber, p.ItemNumber)))) = requested.ItemNumber
+                        )
+                        OR (
+                            @MatchByProductCode = 1
+                            AND UPPER(LTRIM(RTRIM(COALESCE(NULLIF(d.ProductCode, N''), p.ProductCode, N'')))) = requested.ItemNumber
+                        )
+                    )
                 LEFT JOIN ProductMatches pm
                     ON pm.ItemNumber = requested.ItemNumber
                 WHERE
@@ -313,15 +334,26 @@ public static partial class BrowserExtensionPurchaseCycleSqlBuilder
         var normalizedStoreCode = NormalizeCode(storeCode, "分店代码");
         var normalizedSupplierCode = NormalizeCode(supplierCode, "供应商代码");
         var normalizedItemNumber = NormalizeItemNumbers(new[] { itemNumber })[0];
+        // 与摘要查询保持同一匹配规则，确保 GFA 点击后能够读取对应 ProductCode 的采购明细。
+        var matchByProductCode = normalizedSupplierCode == "236";
         var sql = """
             WITH ProductMatch AS (
                 SELECT TOP (1)
-                    UPPER(LTRIM(RTRIM(p.ItemNumber))) AS ItemNumber,
+                    @ItemNumber AS ItemNumber,
                     NULLIF(p.ProductCode, N'') AS ProductCode,
                     NULLIF(p.ProductName, N'') AS ProductName
                 FROM [Product] p
                 WHERE
-                    UPPER(LTRIM(RTRIM(p.ItemNumber))) = @ItemNumber
+                    (
+                        (
+                            @MatchByProductCode = 0
+                            AND UPPER(LTRIM(RTRIM(p.ItemNumber))) = @ItemNumber
+                        )
+                        OR (
+                            @MatchByProductCode = 1
+                            AND UPPER(LTRIM(RTRIM(COALESCE(p.ProductCode, N'')))) = @ItemNumber
+                        )
+                    )
                     AND UPPER(LTRIM(RTRIM(COALESCE(p.LocalSupplierCode, N'')))) = @SupplierCode
                     AND COALESCE(p.IsDeleted, 0) = 0
                 ORDER BY COALESCE(p.UpdatedAt, p.CreatedAt) DESC, p.UUID DESC
@@ -342,12 +374,21 @@ public static partial class BrowserExtensionPurchaseCycleSqlBuilder
                 ON p.ProductCode = NULLIF(d.ProductCode, N'')
                 AND COALESCE(p.IsDeleted, 0) = 0
             LEFT JOIN ProductMatch pm
-                ON pm.ItemNumber = UPPER(LTRIM(RTRIM(COALESCE(d.ItemNumber, p.ItemNumber))))
+                ON pm.ItemNumber = @ItemNumber
             WHERE
                 COALESCE(d.IsDeleted, 0) = 0
                 AND UPPER(LTRIM(RTRIM(COALESCE(h.StoreCode, N'')))) = @StoreCode
                 AND UPPER(LTRIM(RTRIM(COALESCE(h.SupplierCode, N'')))) = @SupplierCode
-                AND UPPER(LTRIM(RTRIM(COALESCE(d.ItemNumber, p.ItemNumber)))) = @ItemNumber
+                AND (
+                    (
+                        @MatchByProductCode = 0
+                        AND UPPER(LTRIM(RTRIM(COALESCE(d.ItemNumber, p.ItemNumber)))) = @ItemNumber
+                    )
+                    OR (
+                        @MatchByProductCode = 1
+                        AND UPPER(LTRIM(RTRIM(COALESCE(NULLIF(d.ProductCode, N''), p.ProductCode, N'')))) = @ItemNumber
+                    )
+                )
                 AND COALESCE(h.InboundDate, h.OrderDate, h.CreatedAt) IS NOT NULL
                 AND CAST(COALESCE(h.InboundDate, h.OrderDate, h.CreatedAt) AS date) >= @Cutoff
                 AND CAST(COALESCE(h.InboundDate, h.OrderDate, h.CreatedAt) AS date) < DATEADD(day, 1, @Today)
@@ -361,6 +402,7 @@ public static partial class BrowserExtensionPurchaseCycleSqlBuilder
             {
                 new("@StoreCode", normalizedStoreCode),
                 new("@SupplierCode", normalizedSupplierCode),
+                new("@MatchByProductCode", matchByProductCode),
                 new("@ItemNumber", normalizedItemNumber),
                 new("@Cutoff", cutoff.ToDateTime(TimeOnly.MinValue)),
                 new("@Today", today.ToDateTime(TimeOnly.MinValue)),

@@ -200,21 +200,100 @@ public sealed class MobileDeviceActivationServiceSqlSugarTests
     }
 
     [Fact]
-    public void JoinQueries_KeepSqlSugarAliasesConsistent()
+    public void SqlServerRegistrationProjection_UsesExplicitColumnAliases()
     {
-        var source = ReadServiceSource();
+        using var db = CreateSqlServerClient();
+        var sql = MobileDeviceActivationQueries
+            .BuildRegistrationStateQuery(db, 42)
+            .ToSql().Key;
 
-        Assert.Contains(".Select((user, userStore, store) =>", source, StringComparison.Ordinal);
-        Assert.Contains(".Select((userStore, store) => userStore.StoreGUID)", source, StringComparison.Ordinal);
-        Assert.Contains(".Select((userRole, role) => role.RoleName)", source, StringComparison.Ordinal);
-        Assert.Contains(".OrderBy((userStore, store) => userStore.IsPrimary ? 0 : 1)", source, StringComparison.Ordinal);
-        Assert.Contains(".OrderBy((userStore, store) => store.StoreCode)", source, StringComparison.Ordinal);
+        AssertSqlContains(
+            sql,
+            "[ID] AS [DeviceRegistrationId]",
+            "[设备硬件识别码] AS [HardwareId]",
+            "[系统设备编号] AS [DeviceCode]",
+            "[分店代码] AS [StoreCode]",
+            "[设备系统] AS [DeviceSystem]",
+            "[设备类型] AS [DeviceType]",
+            "[设备状态] AS [DeviceStatus]");
+    }
 
-        Assert.DoesNotContain(".Select((user, _, store) =>", source, StringComparison.Ordinal);
-        Assert.DoesNotContain(".Select((userStore, _) =>", source, StringComparison.Ordinal);
-        Assert.DoesNotContain(".Select((_, role) =>", source, StringComparison.Ordinal);
-        Assert.DoesNotContain(".OrderBy((userStore, _) =>", source, StringComparison.Ordinal);
-        Assert.DoesNotContain(".OrderBy((_, store) =>", source, StringComparison.Ordinal);
+    [Fact]
+    public void SqlServerTwoTableSelects_KeepJoinAliasesConsistent()
+    {
+        using var db = CreateSqlServerClient();
+
+        var manageableAccountsSql = MobileDeviceActivationQueries
+            .BuildManageableAccountsQuery(db, "store-guid")
+            .ToSql().Key;
+        var assignedStoreIdsSql = MobileDeviceActivationQueries
+            .BuildAssignedStoreCountQuery(db, "user-guid")
+            .ToSql().Key;
+        var activeRolesSql = MobileDeviceActivationQueries
+            .BuildActiveRolesQuery(db, "user-guid")
+            .ToSql().Key;
+
+        AssertSqlContains(
+            manageableAccountsSql,
+            "[User] [user]",
+            "JOIN [UserStore] [userStore]",
+            "[user].[UserGUID] AS [UserGUID]",
+            "[user].[Username] AS [Username]",
+            "[user].[FullName] AS [FullName]");
+        AssertSqlContains(
+            assignedStoreIdsSql,
+            "[UserStore] [userStore]",
+            "JOIN [Store] [store]",
+            "DISTINCT",
+            "[userStore].[StoreGUID]");
+        AssertSqlContains(
+            activeRolesSql,
+            "[UserRole] [userRole]",
+            "JOIN [Role] [role]",
+            "DISTINCT",
+            "[role].[RoleName]");
+    }
+
+    [Fact]
+    public void SqlServerThreeTableSelect_KeepsJoinAliasesConsistent()
+    {
+        using var db = CreateSqlServerClient();
+        var sql = MobileDeviceActivationQueries
+            .BuildActiveTargetQuery(db, "1042", "user-guid")
+            .ToSql().Key;
+
+        AssertSqlContains(
+            sql,
+            "[User] [user]",
+            "JOIN [UserStore] [userStore]",
+            "JOIN [Store] [store]",
+            "[user].[UserGUID] AS [UserGuid]",
+            "[user].[Username] AS [Username]",
+            "[user].[Email] AS [Email]",
+            "[user].[FullName] AS [FullName]",
+            "[store].[StoreCode] AS [StoreCode]",
+            "[store].[StoreName] AS [StoreName]");
+    }
+
+    [Fact]
+    public void SqlServerAssignedStoreOrderingAndProjection_KeepJoinAliasesConsistent()
+    {
+        using var db = CreateSqlServerClient();
+        var sql = MobileDeviceActivationQueries
+            .BuildAssignedStoresQuery(db, "user-guid")
+            .ToSql().Key;
+
+        AssertSqlContains(
+            sql,
+            "[UserStore] [userStore]",
+            "JOIN [Store] [store]",
+            "[store].[StoreGUID] AS [StoreGuid]",
+            "[store].[StoreCode] AS [StoreCode]",
+            "[store].[StoreName] AS [StoreName]",
+            "[userStore].[IsPrimary] AS [IsPrimary]",
+            "ORDER BY",
+            "[userStore].[IsPrimary]",
+            "[store].[StoreCode] ASC");
     }
 
     private static MobileDeviceActivationService CreateService(ISqlSugarClient db) =>
@@ -223,6 +302,17 @@ public sealed class MobileDeviceActivationServiceSqlSugarTests
             CreateContext<SqlSugarContext>(db),
             new ThrowingTokenIssuer(),
             NullLogger<MobileDeviceActivationService>.Instance);
+
+    private static SqlSugarClient CreateSqlServerClient() =>
+        new(new ConnectionConfig
+        {
+            ConnectionString =
+                "Server=127.0.0.1;Database=hb_platform_sql_generation;"
+                + "User Id=test;Password=test;TrustServerCertificate=True;",
+            DbType = DbType.SqlServer,
+            IsAutoCloseConnection = true,
+            InitKeyType = InitKeyType.Attribute,
+        });
 
     private static TContext CreateContext<TContext>(ISqlSugarClient db)
         where TContext : class
@@ -251,18 +341,12 @@ public sealed class MobileDeviceActivationServiceSqlSugarTests
     private static T ReadProperty<T>(object instance, string propertyName) =>
         Assert.IsType<T>(instance.GetType().GetProperty(propertyName)!.GetValue(instance));
 
-    private static string ReadServiceSource([CallerFilePath] string testSourcePath = "")
+    private static void AssertSqlContains(string sql, params string[] expectedFragments)
     {
-        var testProject = Path.GetDirectoryName(testSourcePath)
-            ?? throw new InvalidOperationException("Test source directory is unavailable.");
-        var backendRoot = Directory.GetParent(testProject)?.FullName
-            ?? throw new InvalidOperationException("Backend source directory is unavailable.");
-        return File.ReadAllText(Path.Combine(
-            backendRoot,
-            "BlazorApp.Api",
-            "Services",
-            "MobileDeviceActivation",
-            "MobileDeviceActivationService.cs"));
+        foreach (var fragment in expectedFragments)
+        {
+            Assert.Contains(fragment, sql, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     private sealed class ThrowingTokenIssuer : IMobileDeviceAccountTokenIssuer
