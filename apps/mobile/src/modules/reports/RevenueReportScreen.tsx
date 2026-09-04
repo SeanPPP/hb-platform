@@ -24,6 +24,7 @@ import {
 } from "react-native-paper";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { MonthDatePickerField } from "@/components/attendance/MonthDatePicker";
+import { fetchProductReportStoreOptions } from "@/modules/product-report/api";
 import {
   BranchRevenueRow,
   DailyRevenueRow,
@@ -62,6 +63,10 @@ import {
   type ReportLoadCacheState,
   type ReportLoadPerformanceMeasurement,
 } from "@/modules/reports/report-load-performance";
+import {
+  getCashierEnabledStoreCodes,
+  getCashierScopedBranchCodes,
+} from "@/modules/reports/cashier-enabled-store-scope";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 
 type Drilldown =
@@ -91,7 +96,7 @@ type SummaryListItem =
   | { type: "table-header" }
   | { type: "branch"; row: BranchRevenueRow; rank: number };
 
-function buildQuery(period: RevenuePeriod, branchCode?: string) {
+function buildQuery(period: RevenuePeriod, branchCodes: readonly string[]) {
   const compareMode =
     period.mode === "day"
       ? "lastYearSameWeekday"
@@ -105,7 +110,7 @@ function buildQuery(period: RevenuePeriod, branchCode?: string) {
     compareStartDate: comparePeriod.startDate,
     compareEndDate: comparePeriod.endDate,
     compareMode: period.mode === "month" ? "ByDate" as const : "ByWeek" as const,
-    branchCodes: branchCode ? [branchCode] : undefined,
+    branchCodes: [...branchCodes],
   };
 }
 
@@ -375,19 +380,43 @@ export function RevenueReportScreen({
     }, [mode, selectedDate]),
   );
 
-  const summaryQueryEnabled = isRevenuePeriodAvailable(period, dateBounds);
+  const cashierStoreOptionsQuery = useQuery({
+    queryKey: ["reports", "cashier-enabled-stores"],
+    queryFn: ({ signal }) => fetchProductReportStoreOptions({ signal }),
+    ...REPORT_QUERY_OPTIONS,
+  });
+  const cashierEnabledStoreCodes = useMemo(
+    () => getCashierEnabledStoreCodes(cashierStoreOptionsQuery.data ?? []),
+    [cashierStoreOptionsQuery.data],
+  );
+  const cashierStoreScopeVersion = cashierStoreOptionsQuery.dataUpdatedAt;
+  const revenuePeriodAvailable = isRevenuePeriodAvailable(period, dateBounds);
+  const cashierStoreScopeEmpty =
+    cashierStoreOptionsQuery.isSuccess && cashierEnabledStoreCodes.length === 0;
+  const summaryQueryEnabled =
+    revenuePeriodAvailable
+    && cashierStoreOptionsQuery.isSuccess
+    && !cashierStoreOptionsQuery.isFetching
+    && cashierEnabledStoreCodes.length > 0;
+  const summaryQueryTerminallyBlocked =
+    !revenuePeriodAvailable
+    || cashierStoreOptionsQuery.isError
+    || cashierStoreScopeEmpty;
   useLayoutEffect(() => {
-    if (reportNavigationActionId === null || summaryQueryEnabled) return;
+    if (reportNavigationActionId === null || !summaryQueryTerminallyBlocked) return;
     discardReportNavigationStart("revenue", reportNavigationActionId);
-  }, [reportNavigationActionId, summaryQueryEnabled]);
+  }, [reportNavigationActionId, summaryQueryTerminallyBlocked]);
 
   const startRevenueLoad = useCallback((cacheState: ReportLoadCacheState) => {
     revenueLoadTimer.start(cacheState, "revenue");
   }, [revenueLoadTimer]);
-  const queryParams = useMemo(() => buildQuery(period), [period]);
+  const queryParams = useMemo(
+    () => buildQuery(period, cashierEnabledStoreCodes),
+    [cashierEnabledStoreCodes, period],
+  );
   const summaryQueryKey = useMemo(
-    () => ["reports", "revenue-summary", queryParams] as const,
-    [queryParams],
+    () => ["reports", "revenue-summary", cashierStoreScopeVersion, queryParams] as const,
+    [cashierStoreScopeVersion, queryParams],
   );
   const summaryQuery = useQuery({
     queryKey: summaryQueryKey,
@@ -447,6 +476,46 @@ export function RevenueReportScreen({
     };
   }, [revenueLoadTimer, summaryQueryKey]);
 
+  useLayoutEffect(() => {
+    if (cashierStoreOptionsQuery.isFetching) {
+      // 白名单重验期间隐藏旧范围交互；保留下钻意图，成功后仅在分店仍有效时恢复。
+      setBranchPickerVisible(false);
+      return;
+    }
+    if (cashierStoreOptionsQuery.isError) {
+      // 白名单不可用时关闭下钻，避免继续展示或重试上一次范围的缓存明细。
+      setDrilldown(null);
+      return;
+    }
+    if (!cashierStoreOptionsQuery.isSuccess) return;
+
+    if (
+      selectedBranchCode
+      && getCashierScopedBranchCodes(cashierEnabledStoreCodes, selectedBranchCode).length === 0
+    ) {
+      setSelectedBranchCode(null);
+    }
+    if (
+      drilldown
+      && getCashierScopedBranchCodes(
+        cashierEnabledStoreCodes,
+        drilldown.branch.branchCode,
+      ).length === 0
+    ) {
+      setDrilldown(null);
+    }
+    if (cashierEnabledStoreCodes.length === 0) {
+      setBranchPickerVisible(false);
+    }
+  }, [
+    cashierEnabledStoreCodes,
+    cashierStoreOptionsQuery.isError,
+    cashierStoreOptionsQuery.isFetching,
+    cashierStoreOptionsQuery.isSuccess,
+    drilldown,
+    selectedBranchCode,
+  ]);
+
   const completeRevenueLoad = useCallback(() => {
     if (!revenueBranchVisibleRef.current) return;
     const measurement = revenueLoadTimer.markFirstRowVisible();
@@ -492,13 +561,25 @@ export function RevenueReportScreen({
     summaryQueryKey,
   ]);
 
-  const detailParams = useMemo(
-    () => buildQuery(period, drilldown?.branch.branchCode),
-    [drilldown?.branch.branchCode, period]
+  const detailBranchCodes = useMemo(
+    () => getCashierScopedBranchCodes(
+      cashierEnabledStoreCodes,
+      drilldown?.branch.branchCode,
+    ),
+    [cashierEnabledStoreCodes, drilldown?.branch.branchCode],
   );
+  const detailParams = useMemo(
+    () => buildQuery(period, detailBranchCodes),
+    [detailBranchCodes, period]
+  );
+  const detailQueryEnabled =
+    Boolean(drilldown)
+    && cashierStoreOptionsQuery.isSuccess
+    && !cashierStoreOptionsQuery.isFetching
+    && detailBranchCodes.length > 0;
   const detailQueryKey = useMemo(
-    () => ["reports", drilldown?.type, detailParams] as const,
-    [detailParams, drilldown?.type],
+    () => ["reports", drilldown?.type, cashierStoreScopeVersion, detailParams] as const,
+    [cashierStoreScopeVersion, detailParams, drilldown?.type],
   );
   const detailQuery = useQuery<RevenueDetailSnapshot<DetailRow>>({
     queryKey: detailQueryKey,
@@ -553,7 +634,7 @@ export function RevenueReportScreen({
         throw error;
       }
     },
-    enabled: Boolean(drilldown),
+    enabled: detailQueryEnabled,
     ...REPORT_QUERY_OPTIONS,
   });
   useLayoutEffect(() => {
@@ -606,13 +687,33 @@ export function RevenueReportScreen({
     };
   }, [detailLoadGate, detailQueryKey, drilldown, recordDetailMeasurement]);
 
+  const summaryLoading =
+    cashierStoreOptionsQuery.isFetching
+    || (summaryQueryEnabled && summaryQuery.isLoading);
+  const summaryError = cashierStoreOptionsQuery.isError || summaryQuery.isError;
+  const summaryRefreshing =
+    cashierStoreOptionsQuery.isRefetching || summaryQuery.isRefetching;
+  const retrySummary = () => {
+    if (cashierStoreOptionsQuery.isFetching) return;
+    // 先重验权威白名单，新 revision 会自动重试对应范围的业务查询。
+    void cashierStoreOptionsQuery.refetch();
+  };
+  const retryDetail = () => {
+    if (detailQueryEnabled) {
+      void cashierStoreOptionsQuery.refetch();
+    }
+  };
+
   const refresh = () => {
     if (onRefreshReport) {
       // 嵌入报告中心时统一走控制器，避免下拉与页头刷新并发。
       void onRefreshReport();
       return;
     }
-    void Promise.all([summaryQuery.refetch(), onRefreshFreshness?.()]);
+    void Promise.all([
+      cashierStoreOptionsQuery.refetch(),
+      onRefreshFreshness?.(),
+    ]);
   };
 
   const setPeriodMode = (nextMode: RevenuePeriodMode) => {
@@ -660,12 +761,12 @@ export function RevenueReportScreen({
     period.startDate === previousShortcutPeriod.startDate && period.endDate === previousShortcutPeriod.endDate;
 
   const rows = useMemo(() => {
-    if (summaryQuery.isLoading || summaryQuery.isError) return [];
+    if (summaryLoading || summaryError) return [];
     if (summaryQuery.data?.isComplete) return summaryQuery.data.rows;
     return lastCompleteSummaryRef.current?.queryKey === summaryQueryKey
       ? lastCompleteSummaryRef.current.rows
       : [];
-  }, [summaryQuery.data, summaryQuery.isError, summaryQuery.isLoading, summaryQueryKey]);
+  }, [summaryError, summaryLoading, summaryQuery.data, summaryQueryKey]);
   const summaryPending = summaryQuery.data !== undefined && !summaryQuery.data.isComplete;
   const summaryPollingExhausted = summaryPending && Boolean(summaryQuery.data?.pollingExhausted);
   const selectedBranch = useMemo(
@@ -905,6 +1006,11 @@ export function RevenueReportScreen({
                   style={styles.branchFilterButton}
                   accessibilityRole="button"
                   accessibilityLabel={t("reports.actions.selectBranch")}
+                  disabled={
+                    !cashierStoreOptionsQuery.isSuccess
+                    || cashierStoreOptionsQuery.isFetching
+                    || cashierStoreScopeEmpty
+                  }
                   onPress={() => setBranchPickerVisible(true)}
                 >
                   <View style={styles.branchFilterTextBlock}>
@@ -972,18 +1078,20 @@ export function RevenueReportScreen({
               </Text>
               <View style={styles.rankingActions}>
                 <Text variant="bodySmall" style={[styles.muted, styles.rankingStatusText]} numberOfLines={1}>
-                  {summaryPending
+                  {summaryLoading
+                    ? t("reports.states.refreshingStatistics")
+                    : summaryPending
                     ? t(summaryPollingExhausted
                         ? "reports.states.statisticsIncomplete"
                         : "reports.states.refreshingStatistics")
                     : `${t("reports.branchCount", { count: visibleRows.length })} · ${t("reports.metrics.revenue")} ↓`}
                 </Text>
-                {summaryPollingExhausted ? (
+                {summaryPollingExhausted && summaryQueryEnabled && !summaryError ? (
                   <IconButton
                     icon="refresh"
                     size={18}
                     accessibilityLabel={t("actions.retry")}
-                    onPress={() => void summaryQuery.refetch()}
+                    onPress={retrySummary}
                     style={styles.rankingSearchButton}
                   />
                 ) : null}
@@ -1021,16 +1129,20 @@ export function RevenueReportScreen({
           </View>
         }
         stickyHeaderIndices={[1]}
-        refreshControl={<RefreshControl refreshing={summaryQuery.isRefetching} onRefresh={refresh} />}
+        refreshControl={<RefreshControl refreshing={summaryRefreshing} onRefresh={refresh} />}
         ListFooterComponent={
           <>
-            {summaryQuery.isLoading ? (
+            {summaryLoading ? (
               <View style={styles.summaryTableState}>
                 <StateBox label={t("reports.states.refreshingStatistics")} loading />
               </View>
-            ) : summaryQuery.isError ? (
+            ) : summaryError ? (
               <View style={styles.summaryTableState}>
-                <StateBox label={t("reports.states.errorTitle")} actionLabel={t("actions.retry")} onAction={() => summaryQuery.refetch()} />
+                <StateBox label={t("reports.states.errorTitle")} actionLabel={t("actions.retry")} onAction={retrySummary} />
+              </View>
+            ) : cashierStoreScopeEmpty ? (
+              <View style={styles.summaryTableState}>
+                <StateBox label={t("reports.states.noCashierEnabledStores")} />
               </View>
             ) : summaryPending ? (
               <View style={styles.summaryTableState}>
@@ -1039,7 +1151,7 @@ export function RevenueReportScreen({
                     ? "reports.states.statisticsIncomplete"
                     : "reports.states.refreshingStatistics")}
                   actionLabel={summaryPollingExhausted ? t("actions.retry") : undefined}
-                  onAction={summaryPollingExhausted ? () => summaryQuery.refetch() : undefined}
+                  onAction={summaryPollingExhausted ? retrySummary : undefined}
                 />
               </View>
             ) : visibleRows.length === 0 ? (
@@ -1062,7 +1174,7 @@ export function RevenueReportScreen({
 
       <Portal>
         <Modal
-          visible={Boolean(drilldown)}
+          visible={Boolean(drilldown) && detailQueryEnabled}
           onDismiss={() => setDrilldown(null)}
           contentContainerStyle={styles.bottomSheet}
         >
@@ -1127,14 +1239,14 @@ export function RevenueReportScreen({
             {detailQuery.isLoading ? (
               <StateBox label={t("loading")} loading />
             ) : detailQuery.isError ? (
-              <StateBox label={t("reports.states.errorTitle")} actionLabel={t("actions.retry")} onAction={() => detailQuery.refetch()} />
+              <StateBox label={t("reports.states.errorTitle")} actionLabel={t("actions.retry")} onAction={retryDetail} />
             ) : detailPending ? (
               <StateBox
                 label={t(detailPollingExhausted
                   ? "reports.states.statisticsIncomplete"
                   : "reports.states.refreshingStatistics")}
                 actionLabel={detailPollingExhausted ? t("actions.retry") : undefined}
-                onAction={detailPollingExhausted ? () => detailQuery.refetch() : undefined}
+                onAction={detailPollingExhausted ? retryDetail : undefined}
               />
             ) : detailRows.length === 0 ? (
               <StateBox label={t("reports.states.empty")} />
@@ -1156,7 +1268,11 @@ export function RevenueReportScreen({
         </Modal>
 
         <Modal
-          visible={branchPickerVisible}
+          visible={
+            branchPickerVisible
+            && cashierStoreOptionsQuery.isSuccess
+            && !cashierStoreOptionsQuery.isFetching
+          }
           onDismiss={() => setBranchPickerVisible(false)}
           contentContainerStyle={styles.branchPickerSheet}
         >
