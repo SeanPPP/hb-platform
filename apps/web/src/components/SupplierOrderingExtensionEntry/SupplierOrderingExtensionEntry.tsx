@@ -205,7 +205,9 @@ export default function SupplierOrderingExtensionEntry({
     : checking
       ? t('supplierOrderingExtension.checking')
       : !installed
-        ? t('supplierOrderingExtension.statusNotInstalled')
+        ? experience === 'ios-safari'
+          ? t('supplierOrderingExtension.statusSafariNotConnected')
+          : t('supplierOrderingExtension.statusNotInstalled')
         : isForced
           ? t('supplierOrderingExtension.statusForcedUpdate')
           : isOptional
@@ -297,12 +299,20 @@ export default function SupplierOrderingExtensionEntry({
     if (!release) {
       return <p className="soe-unavailable">{t('supplierOrderingExtension.checking')}</p>
     }
+    if (experience === 'ios-safari' && release.safariStoreUrl && !installed) {
+      return null
+    }
+    if (experience === 'ios-safari' && installed && !isForced && !isOptional) {
+      return null
+    }
 
     return (
       <div className="soe-install-list">
         {experience === 'desktop-edge' ? renderInstallLink('edge') : null}
         {experience === 'desktop-chrome' ? renderInstallLink('chrome') : null}
-        {experience === 'ios-safari' ? renderInstallLink('safari') : null}
+        {experience === 'ios-safari' && (!installed || isForced || isOptional)
+          ? renderInstallLink('safari')
+          : null}
       </div>
     )
   }
@@ -331,7 +341,7 @@ export default function SupplierOrderingExtensionEntry({
         onCancel={() => setDialogOpen(false)}
         footer={null}
       >
-        <div className="soe-dialog-status">
+        <div className="soe-dialog-status" aria-live="polite">
           <span className={`soe-entry-dot soe-entry-dot--${tone}`} aria-hidden="true" />
           <span className="soe-dialog-status-text">{statusLabel}</span>
           {installed && installedVersion ? (
@@ -342,7 +352,7 @@ export default function SupplierOrderingExtensionEntry({
           {installedBrowser ? (
             <span className="soe-dialog-browser">{installedBrowser}</span>
           ) : null}
-          {supportsExtension ? (
+          {supportsExtension && !(experience === 'ios-safari' && release?.safariStoreUrl && !installed) ? (
             <Button size="small" className="soe-dialog-recheck" onClick={runHandshake}>
               {t('supplierOrderingExtension.recheck')}
             </Button>
@@ -353,15 +363,56 @@ export default function SupplierOrderingExtensionEntry({
           <p className="soe-unsupported-hint" role="status">{unsupportedMessage}</p>
         ) : renderSupportedInstallContent()}
 
-        {experience === 'ios-safari' && release?.safariStoreUrl ? (
-          <div className="soe-safari-guide">
-            <div className="soe-safari-guide-title">{t('supplierOrderingExtension.safariInstallIntro')}</div>
-            <ol>
-              <li>{t('supplierOrderingExtension.safariInstallStepStore')}</li>
-              <li>{t('supplierOrderingExtension.safariInstallStepEnable')}</li>
-              <li>{t('supplierOrderingExtension.safariInstallStepWebsite')}</li>
+        {experience === 'ios-safari' && release?.safariStoreUrl && !installed ? (
+          <section className="soe-safari-guide" aria-labelledby="soe-safari-guide-title">
+            <div id="soe-safari-guide-title" className="soe-safari-guide-title">
+              {t('supplierOrderingExtension.safariInstallIntro')}
+            </div>
+            <p className="soe-safari-guide-description">
+              {t('supplierOrderingExtension.safariInstallDescription')}
+            </p>
+            <ol className="soe-safari-steps" role="list">
+              <li className="soe-safari-step">
+                <span className="soe-safari-step-number" aria-hidden="true">1</span>
+                <div className="soe-safari-step-content">
+                  <div className="soe-safari-step-title">
+                    {t('supplierOrderingExtension.safariInstallStepStoreTitle')}
+                  </div>
+                  <p>{t('supplierOrderingExtension.safariInstallStepStore')}</p>
+                  {renderInstallLink('safari')}
+                </div>
+              </li>
+              <li className="soe-safari-step">
+                <span className="soe-safari-step-number" aria-hidden="true">2</span>
+                <div className="soe-safari-step-content">
+                  <div className="soe-safari-step-title">
+                    {t('supplierOrderingExtension.safariInstallStepEnableTitle')}
+                  </div>
+                  <p>{t('supplierOrderingExtension.safariInstallStepEnable')}</p>
+                </div>
+              </li>
+              <li className="soe-safari-step">
+                <span className="soe-safari-step-number" aria-hidden="true">3</span>
+                <div className="soe-safari-step-content">
+                  <div className="soe-safari-step-title">
+                    {t('supplierOrderingExtension.safariInstallStepWebsiteTitle')}
+                  </div>
+                  <p>{t('supplierOrderingExtension.safariInstallStepWebsite')}</p>
+                </div>
+              </li>
             </ol>
-          </div>
+            <Button
+              block
+              className="soe-safari-recheck"
+              loading={checking}
+              onClick={runHandshake}
+            >
+              {t('supplierOrderingExtension.safariInstallRecheck')}
+            </Button>
+            <p className="soe-safari-recheck-hint">
+              {t('supplierOrderingExtension.safariInstallRecheckHint')}
+            </p>
+          </section>
         ) : null}
 
         {supportsExtension && release?.releaseNotes?.[noteLang] ? (
@@ -378,9 +429,16 @@ export default function SupplierOrderingExtensionEntry({
         ) : null}
 
         {installed && !isForced ? (
-          <Button block type="primary" className="soe-open" onClick={handleOpenAssistant}>
-            {t('supplierOrderingExtension.openAssistant')}
-          </Button>
+          <div className="soe-ready-actions">
+            {experience === 'ios-safari' ? (
+              <p className="soe-ready-description">
+                {t('supplierOrderingExtension.safariReadyDescription')}
+              </p>
+            ) : null}
+            <Button block type="primary" className="soe-open" onClick={handleOpenAssistant}>
+              {t('supplierOrderingExtension.openAssistant')}
+            </Button>
+          </div>
         ) : null}
       </Modal>
     </div>

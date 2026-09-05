@@ -548,16 +548,12 @@ public sealed class PaymentTerminalSettingsService(
             );
         }
 
-        var device = await posmContext.Db.Queryable<POSM_设备注册信息表>()
-            .Where(row => row.系统设备编号 == normalizedDeviceCode
-                && row.分店代码 == scope.StoreCode
-                && row.设备类型 == "POS")
-            .Select(row => new PaymentTerminalDeviceCandidate
-            {
-                DeviceCode = row.系统设备编号,
-                DeviceSystem = row.设备系统,
-                Enabled = row.设备状态 == 1 && row.是否允许交易,
-            })
+        var device = await SelectLinklyDeviceCandidates(
+                posmContext.Db.Queryable<POSM_设备注册信息表>()
+                    .Where(row => row.系统设备编号 == normalizedDeviceCode
+                        && row.分店代码 == scope.StoreCode
+                        && row.设备类型 == "POS")
+            )
             .FirstAsync();
         if (device is null || !device.Enabled)
         {
@@ -822,16 +818,12 @@ public sealed class PaymentTerminalSettingsService(
                 return LinklySelectionRevisionConflict();
             }
 
-            var device = await posmContext.Db.Queryable<POSM_设备注册信息表>()
-                .Where(row => row.系统设备编号 == normalizedDeviceCode
-                    && row.分店代码 == scope.StoreCode
-                    && row.设备类型 == "POS")
-                .Select(row => new PaymentTerminalDeviceCandidate
-                {
-                    DeviceCode = row.系统设备编号,
-                    DeviceSystem = row.设备系统,
-                    Enabled = row.设备状态 == 1 && row.是否允许交易,
-                })
+            var device = await SelectLinklyDeviceCandidates(
+                    posmContext.Db.Queryable<POSM_设备注册信息表>()
+                        .Where(row => row.系统设备编号 == normalizedDeviceCode
+                            && row.分店代码 == scope.StoreCode
+                            && row.设备类型 == "POS")
+                )
                 .FirstAsync();
             if (device?.Enabled == true)
             {
@@ -1104,14 +1096,10 @@ public sealed class PaymentTerminalSettingsService(
         var selectionRows = await posmContext.Db.Queryable<PaymentLinklyDeviceSelectionRecord>()
             .Where(row => row.StoreCode == storeCode && row.Environment == environment)
             .ToListAsync();
-        var deviceRows = await posmContext.Db.Queryable<POSM_设备注册信息表>()
-            .Where(row => row.分店代码 == storeCode && row.设备类型 == "POS")
-            .Select(row => new PaymentTerminalDeviceCandidate
-            {
-                DeviceCode = row.系统设备编号,
-                DeviceSystem = row.设备系统,
-                Enabled = row.设备状态 == 1 && row.是否允许交易,
-            })
+        var deviceRows = await SelectLinklyDeviceCandidates(
+                posmContext.Db.Queryable<POSM_设备注册信息表>()
+                    .Where(row => row.分店代码 == storeCode && row.设备类型 == "POS")
+            )
             .ToListAsync();
 
         var selectionsByDevice = selectionRows.ToDictionary(
@@ -1287,6 +1275,19 @@ public sealed class PaymentTerminalSettingsService(
         return db.CurrentConnectionConfig.DbType == SqlSugar.DbType.SqlServer
             ? query.With(SqlWith.UpdLock)
             : query;
+    }
+
+    internal static ISugarQueryable<PaymentTerminalDeviceCandidate> SelectLinklyDeviceCandidates(
+        ISugarQueryable<POSM_设备注册信息表> query
+    )
+    {
+        return query.Select(row => new PaymentTerminalDeviceCandidate
+        {
+            DeviceCode = row.系统设备编号,
+            DeviceSystem = row.设备系统,
+            DeviceStatus = row.设备状态,
+            AllowsTransactions = row.是否允许交易,
+        });
     }
 
     private async Task EnsureLinklyConfigurationDraftAsync(
@@ -1649,10 +1650,14 @@ public sealed class PaymentTerminalSettingsService(
         public bool IsActive { get; set; }
     }
 
-    private sealed class PaymentTerminalDeviceCandidate
+    internal sealed class PaymentTerminalDeviceCandidate
     {
         public string DeviceCode { get; set; } = string.Empty;
         public string DeviceSystem { get; set; } = string.Empty;
-        public bool Enabled { get; set; }
+        public int DeviceStatus { get; set; }
+        public bool AllowsTransactions { get; set; }
+
+        // SQL Server 不能在 SELECT 中直接返回布尔谓词；原始列落地后再计算启用状态。
+        public bool Enabled => DeviceStatus == 1 && AllowsTransactions;
     }
 }

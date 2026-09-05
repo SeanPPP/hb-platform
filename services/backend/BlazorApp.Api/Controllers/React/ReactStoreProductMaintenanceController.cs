@@ -24,13 +24,15 @@ namespace BlazorApp.Api.Controllers.React
         private readonly IMapper _mapper;
         private readonly ISqlSugarClient _db;
         private readonly ILogger<ReactStoreProductMaintenanceController> _logger;
+        private readonly IAuthorizationService _authorizationService;
 
         public ReactStoreProductMaintenanceController(
             IStoreProductMaintenanceReactService service,
             IDeviceRegistrationService deviceRegistrationService,
             IMapper mapper,
             SqlSugarContext context,
-            ILogger<ReactStoreProductMaintenanceController> logger
+            ILogger<ReactStoreProductMaintenanceController> logger,
+            IAuthorizationService authorizationService
         )
         {
             _service = service;
@@ -38,6 +40,7 @@ namespace BlazorApp.Api.Controllers.React
             _mapper = mapper;
             _db = context.Db;
             _logger = logger;
+            _authorizationService = authorizationService;
         }
 
         [HttpPost("lookup")]
@@ -243,6 +246,8 @@ namespace BlazorApp.Api.Controllers.React
             {
                 return Unauthorized(ApiResponse<StoreProductStorePriceDto>.Error(access.Message));
             }
+            var permissionFailure = await RequireEditPermissionAsync();
+            if (permissionFailure != null) return permissionFailure;
 
             var result = await _service.UpdateStorePriceAsync(
                 uuid,
@@ -266,6 +271,8 @@ namespace BlazorApp.Api.Controllers.React
                     ApiResponse<SyncStoreProductWarehousePriceResultDto>.Error(access.Message)
                 );
             }
+            var permissionFailure = await RequireEditPermissionAsync();
+            if (permissionFailure != null) return permissionFailure;
 
             var result = await _service.SyncWarehousePriceAsync(
                 uuid,
@@ -292,6 +299,8 @@ namespace BlazorApp.Api.Controllers.React
             {
                 return Unauthorized(ApiResponse<StoreProductTypeUpdateResultDto>.Error(access.Message));
             }
+            var permissionFailure = await RequireEditPermissionAsync();
+            if (permissionFailure != null) return permissionFailure;
 
             var result = await _service.UpdateProductTypeAsync(
                 productCode,
@@ -313,6 +322,8 @@ namespace BlazorApp.Api.Controllers.React
             {
                 return Unauthorized(ApiResponse<StoreProductMultiCodeDto>.Error(access.Message));
             }
+            var permissionFailure = await RequireEditPermissionAsync();
+            if (permissionFailure != null) return permissionFailure;
 
             var result = await _service.UpdateMultiCodeAsync(
                 uuid,
@@ -331,6 +342,8 @@ namespace BlazorApp.Api.Controllers.React
             {
                 return Unauthorized(ApiResponse<StoreProductSetCodeDto>.Error(access.Message));
             }
+            var permissionFailure = await RequireEditPermissionAsync();
+            if (permissionFailure != null) return permissionFailure;
 
             var result = await _service.CreateSetCodeAsync(request, access.ActorLabel, access.StoreCodes);
             return BuildMutationResult(result);
@@ -347,6 +360,8 @@ namespace BlazorApp.Api.Controllers.React
             {
                 return Unauthorized(ApiResponse<StoreProductSetCodeDto>.Error(access.Message));
             }
+            var permissionFailure = await RequireEditPermissionAsync();
+            if (permissionFailure != null) return permissionFailure;
 
             var result = await _service.UpdateSetCodeAsync(
                 setCodeId,
@@ -363,8 +378,10 @@ namespace BlazorApp.Api.Controllers.React
             var access = await ResolveAccessContextAsync();
             if (!access.IsAllowed)
             {
-                return Unauthorized(ApiResponse<bool>.Error(access.Message));
+                return Unauthorized(ApiResponse<DeleteStoreProductSetCodeResultDto>.Error(access.Message));
             }
+            var permissionFailure = await RequireEditPermissionAsync();
+            if (permissionFailure != null) return permissionFailure;
 
             var result = await _service.DeleteSetCodeAsync(setCodeId, access.ActorLabel, access.StoreCodes);
             return BuildMutationResult(result);
@@ -386,6 +403,8 @@ namespace BlazorApp.Api.Controllers.React
             {
                 return Unauthorized(ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>.Error(access.Message));
             }
+            var permissionFailure = await RequireEditPermissionAsync();
+            if (permissionFailure != null) return permissionFailure;
 
             var result = await _service.SaveSetCodeSnapshotAsync(
                 request,
@@ -413,6 +432,8 @@ namespace BlazorApp.Api.Controllers.React
             {
                 return Unauthorized(ApiResponse<StoreProductClearancePriceDto>.Error(access.Message));
             }
+            var permissionFailure = await RequireEditPermissionAsync();
+            if (permissionFailure != null) return permissionFailure;
 
             var result = await _service.UpsertClearancePriceAsync(
                 productCode,
@@ -560,6 +581,22 @@ namespace BlazorApp.Api.Controllers.React
                 DeviceAuthMs = deviceAuthSw.ElapsedMilliseconds,
                 DeviceLoadMs = deviceLoadSw.ElapsedMilliseconds,
             };
+        }
+
+        private async Task<IActionResult?> RequireEditPermissionAsync()
+        {
+            if (User?.Identity?.IsAuthenticated != true)
+            {
+                // 匿名绑定设备继续由既有设备授权与分店范围校验控制。
+                return null;
+            }
+
+            var authorized = await _authorizationService.AuthorizeAsync(
+                User,
+                resource: null,
+                Permissions.StoreProducts.Edit
+            );
+            return authorized.Succeeded ? null : Forbid();
         }
 
         private IActionResult BuildMutationResult<T>(ApiResponse<T> result)

@@ -125,6 +125,33 @@ public sealed class ContainerHqSyncServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SyncIncrementalAsync_明细换柜_应更新目标柜且不误删旧柜其它明细()
+    {
+        var startDate = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);
+        await SeedLocalContainerAsync("C-OLD");
+        await SeedLocalDetailAsync("D-MOVE", "C-OLD");
+        await SeedLocalDetailAsync("D-STAY", "C-OLD");
+        await SeedHqContainerAsync(
+            "C-NEW",
+            "CONT-NEW",
+            loadingDate: startDate.AddDays(-10),
+            lastModifyDate: startDate.AddDays(1)
+        );
+        await SeedHqDetailAsync("D-MOVE", "C-NEW", "P-MOVE", startDate.AddDays(1));
+
+        var result = await CreateService().SyncIncrementalAsync(startDate);
+
+        Assert.True(result.IsSuccess, result.Message);
+        var moved = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(detail => detail.DetailCode == "D-MOVE");
+        var stayed = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(detail => detail.DetailCode == "D-STAY");
+        Assert.Equal("C-NEW", moved.ContainerCode);
+        Assert.False(stayed.IsDeleted);
+        Assert.Equal("C-OLD", stayed.ContainerCode);
+    }
+
+    [Fact]
     public async Task SyncIncrementalAsync_HQ明细缺HGUID_应该返回数据质量错误且不写DETAIL回退主键()
     {
         var startDate = new DateTime(2026, 5, 1, 0, 0, 0, DateTimeKind.Utc);

@@ -6,6 +6,7 @@ using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.POSM;
 using LinklyCredentialDataProtection = BlazorApp.Api.Security.LinklyCloudTerminalCredentialDataProtection;
 using LinklyCredentialProtector = BlazorApp.Shared.Security.ILinklyCloudTerminalCredentialProtector;
 using Microsoft.AspNetCore.Authorization;
@@ -1274,6 +1275,34 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
         Assert.Contains(
             "WITH (UPDLOCK, HOLDLOCK)",
             PaymentTerminalSettingsService.LinklyConfigurationModeUpdateLockSql,
+            StringComparison.OrdinalIgnoreCase
+        );
+    }
+
+    [Fact]
+    public void LinklyDeviceCandidateProjection_UsesSqlServerScalarColumns()
+    {
+        using var sqlServerDb = new SqlSugarClient(new ConnectionConfig
+        {
+            ConnectionString = "Server=localhost;Database=test;User Id=test;Password=test;TrustServerCertificate=True;",
+            DbType = SqlSugar.DbType.SqlServer,
+            IsAutoCloseConnection = true,
+            InitKeyType = InitKeyType.Attribute,
+            MoreSettings = new ConnMoreSettings { IsWithNoLockQuery = true },
+        });
+
+        var sql = PaymentTerminalSettingsService.SelectLinklyDeviceCandidates(
+                sqlServerDb.Queryable<POSM_设备注册信息表>()
+                    .Where(row => row.分店代码 == "001" && row.设备类型 == "POS")
+            )
+            .ToSql().Key;
+        var selectClause = sql[..sql.IndexOf("FROM", StringComparison.OrdinalIgnoreCase)];
+
+        Assert.DoesNotContain(" AS [Enabled]", selectClause, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("[设备状态] AS [DeviceStatus]", selectClause, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "[是否允许交易] AS [AllowsTransactions]",
+            selectClause,
             StringComparison.OrdinalIgnoreCase
         );
     }

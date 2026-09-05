@@ -17,6 +17,13 @@ namespace BlazorApp.Api.Services.React
 {
     public class StoreProductMaintenanceReactService : IStoreProductMaintenanceReactService
     {
+        // 仅显式标记的业务错误允许返回客户端；数据库和事务异常只记录服务端日志。
+        private sealed class StoreProductMaintenanceBusinessException : InvalidOperationException
+        {
+            public StoreProductMaintenanceBusinessException(string message)
+                : base(message) { }
+        }
+
         public const string SetCodeSnapshotConflictErrorCode = "SET_CODE_SNAPSHOT_CONFLICT";
         private readonly ISqlSugarClient _db;
         private readonly ILogger<StoreProductMaintenanceReactService> _logger;
@@ -24,6 +31,7 @@ namespace BlazorApp.Api.Services.React
         private readonly IMemoryCache _cache;
         private readonly IWarehouseProductChangeHistoryService _changeHistoryService;
         private readonly ICurrentUserService _currentUserService;
+        private readonly IProductMaintenanceHqProjectionWriter _hqProjectionWriter;
         private const string PricingStrategiesCacheKey = "StoreProductMaintenance:PricingStrategies:Active";
         private static readonly TimeSpan PricingStrategiesCacheDuration = TimeSpan.FromSeconds(60);
 
@@ -33,7 +41,8 @@ namespace BlazorApp.Api.Services.React
             IAutoPricingService autoPricingService,
             IMemoryCache cache,
             IWarehouseProductChangeHistoryService changeHistoryService,
-            ICurrentUserService currentUserService
+            ICurrentUserService currentUserService,
+            IProductMaintenanceHqProjectionWriter hqProjectionWriter
         )
         {
             _db = context.Db;
@@ -42,6 +51,7 @@ namespace BlazorApp.Api.Services.React
             _cache = cache;
             _changeHistoryService = changeHistoryService;
             _currentUserService = currentUserService;
+            _hqProjectionWriter = hqProjectionWriter;
         }
 
         public async Task<ApiResponse<List<StoreProductLookupItemDto>>> LookupAsync(
@@ -493,6 +503,8 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<StoreProductStorePriceDto>.Error("折扣率必须在 0 到 1 之间");
                 }
 
+                ProductHqSyncOperationStatusDto? hqSync = null;
+                StoreProductStorePriceDto? dto = null;
                 await _db.Ado.BeginTranAsync();
                 try
                 {
@@ -506,11 +518,11 @@ namespace BlazorApp.Api.Services.React
                         .FirstAsync();
                     if (entity == null)
                     {
-                        throw new InvalidOperationException("分店商品记录在等待业务锁期间已变化");
+                        throw new StoreProductMaintenanceBusinessException("分店商品记录在等待业务锁期间已变化");
                     }
                     if (!CanAccessStore(entity.StoreCode, accessibleStoreCodes))
                     {
-                        throw new InvalidOperationException("当前账号或设备无权修改该分店商品");
+                        throw new StoreProductMaintenanceBusinessException("当前账号或设备无权修改该分店商品");
                     }
 
                     entity.PurchasePrice = request.PurchasePrice;
@@ -555,6 +567,17 @@ namespace BlazorApp.Api.Services.React
                         })
                         .ExecuteCommandAsync();
                     await SyncCurrentStoreProjectedRecordsAsync(entity, updatedBy, lockScope);
+                    hqSync = await EnqueueHqProjectionAsync(
+                        ProductMaintenanceHqOperationKinds.StorePriceUpdated,
+                        entity.ProductCode!,
+                        new[] { entity.StoreCode! },
+                        ProductMaintenanceHqFieldMasks.StorePriceAndMultiCode,
+                        "react-store-product-maintenance.update-store-price",
+                        updatedBy,
+                        accessibleStoreCodes
+                    );
+                    dto = await BuildStorePriceDtoAsync(entity, entity.SupplierCode);
+                    dto.HqSync = hqSync;
                     await _db.Ado.CommitTranAsync();
                 }
                 catch
@@ -563,15 +586,16 @@ namespace BlazorApp.Api.Services.React
                     throw;
                 }
 
-                var dto = await BuildStorePriceDtoAsync(entity, entity.SupplierCode);
-                return ApiResponse<StoreProductStorePriceDto>.OK(dto, "保存成功");
+                return ApiResponse<StoreProductStorePriceDto>.OK(dto!, "保存成功");
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新分店商品失败: {Uuid}", uuid);
                 if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
                     return BuildSetChildPurchasePriceBusyResponse<StoreProductStorePriceDto>();
-                return ApiResponse<StoreProductStorePriceDto>.Error($"更新分店商品失败: {ex.Message}");
+                return ApiResponse<StoreProductStorePriceDto>.Error(
+                    ResolveSafeMutationFailureMessage(ex, "更新分店商品失败，请稍后重试")
+                );
             }
         }
 
@@ -767,6 +791,7 @@ namespace BlazorApp.Api.Services.React
 
             var purchaseUpdated = purchaseChanged;
             var retailUpdated = request.ConfirmRetailPrice && retailChanged;
+            ProductHqSyncOperationStatusDto? hqSync = null;
             if (purchaseUpdated || retailUpdated)
             {
                 var previousIsAutoPricing = entity.IsAutoPricing;
@@ -837,6 +862,15 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 await SyncCurrentStoreProjectedPriceRecordsAsync(entity, updatedBy, lockScope);
+                hqSync = await EnqueueHqProjectionAsync(
+                    ProductMaintenanceHqOperationKinds.WarehousePriceSynced,
+                    entity.ProductCode!,
+                    new[] { entity.StoreCode! },
+                    ProductMaintenanceHqFieldMasks.StorePriceAndMultiCode,
+                    "react-store-product-maintenance.sync-warehouse-price",
+                    updatedBy,
+                    accessibleStoreCodes
+                );
             }
 
             var confirmationRequired = !request.ConfirmRetailPrice && retailChanged;
@@ -854,6 +888,7 @@ namespace BlazorApp.Api.Services.React
                 previousRetailPrice,
                 discountRate
             );
+            result.HqSync = hqSync;
             return ApiResponse<SyncStoreProductWarehousePriceResultDto>.OK(result);
         }
 
@@ -1286,6 +1321,7 @@ namespace BlazorApp.Api.Services.React
                         StringComparison.OrdinalIgnoreCase
                     );
 
+                ProductHqSyncOperationStatusDto? hqSync = null;
                 await _db.Ado.BeginTranAsync();
                 try
                 {
@@ -1298,14 +1334,14 @@ namespace BlazorApp.Api.Services.React
                         .FirstAsync();
                     if (product == null)
                     {
-                        throw new InvalidOperationException("商品在等待业务锁期间已变化");
+                        throw new StoreProductMaintenanceBusinessException("商品在等待业务锁期间已变化");
                     }
                     if (product.ProductType != request.ProductType
                         && await _db.Queryable<ProductSetCode>()
                             .Where(item => item.ProductCode == normalizedProductCode && !item.IsDeleted)
                             .AnyAsync())
                     {
-                        throw new InvalidOperationException("商品已有多码/套装条码，不能直接切换商品类型");
+                        throw new StoreProductMaintenanceBusinessException("商品已有多码/套装条码，不能直接切换商品类型");
                     }
                     domesticProduct = await _db.Queryable<DomesticProduct>()
                         .Where(item => item.ProductCode == normalizedProductCode && !item.IsDeleted)
@@ -1352,6 +1388,15 @@ namespace BlazorApp.Api.Services.React
                             OccurredAtUtc = now,
                         }
                     );
+                    hqSync = await EnqueueHqProjectionAsync(
+                        ProductMaintenanceHqOperationKinds.ProductTypeUpdated,
+                        normalizedProductCode,
+                        Array.Empty<string>(),
+                        new[] { ProductMaintenanceHqFieldMasks.ProductType },
+                        "react-store-product-maintenance.update-product-type",
+                        updatedBy,
+                        accessibleStoreCodes
+                    );
                     await _db.Ado.CommitTranAsync();
                 }
                 catch
@@ -1366,6 +1411,7 @@ namespace BlazorApp.Api.Services.React
                         ProductCode = normalizedProductCode,
                         ProductType = request.ProductType,
                         ProductTypeLabel = NormalizeProductTypeLabel(request.ProductType.ToString()),
+                        HqSync = hqSync,
                     },
                     "保存成功"
                 );
@@ -1373,7 +1419,9 @@ namespace BlazorApp.Api.Services.React
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新商品类型失败: {ProductCode}", productCode);
-                return ApiResponse<StoreProductTypeUpdateResultDto>.Error($"更新商品类型失败: {ex.Message}");
+                return ApiResponse<StoreProductTypeUpdateResultDto>.Error(
+                    ResolveSafeMutationFailureMessage(ex, "更新商品类型失败，请稍后重试")
+                );
             }
         }
 
@@ -1405,6 +1453,16 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<StoreProductMultiCodeDto>.Error("零售价不能为负数");
                 }
 
+                var requestedBarcode = request.Barcode?.Trim();
+                if (request.Barcode != null && string.IsNullOrWhiteSpace(requestedBarcode))
+                {
+                    return ApiResponse<StoreProductMultiCodeDto>.Error("条码不能为空");
+                }
+                if (requestedBarcode?.Length > 50)
+                {
+                    return ApiResponse<StoreProductMultiCodeDto>.Error("条码长度不能超过 50 个字符");
+                }
+
                 var expectedStoreCode = entity.StoreCode;
                 var expectedProductCode = entity.ProductCode;
                 var expectedMultiCodeProductCode = entity.MultiCodeProductCode;
@@ -1420,6 +1478,8 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 string? supplierCode = null;
+                ProductHqSyncOperationStatusDto? hqSync = null;
+                StoreProductMultiCodeDto? dto = null;
                 await _db.Ado.BeginTranAsync();
                 try
                 {
@@ -1450,13 +1510,13 @@ namespace BlazorApp.Api.Services.React
                         )
                     )
                     {
-                        throw new InvalidOperationException(
+                        throw new StoreProductMaintenanceBusinessException(
                             "分店多码记录在等待业务锁期间已离开原门店商品关系"
                         );
                     }
                     if (!CanAccessStore(entity.StoreCode, accessibleStoreCodes))
                     {
-                        throw new InvalidOperationException("当前账号或设备无权修改该分店多码");
+                        throw new StoreProductMaintenanceBusinessException("当前账号或设备无权修改该分店多码");
                     }
 
                     var isDerivedCostRelation = await _db.Queryable<ProductSetCode>()
@@ -1472,13 +1532,18 @@ namespace BlazorApp.Api.Services.React
                         && request.PurchasePrice.Value < 0
                     )
                     {
-                        throw new InvalidOperationException("进货价不能为负数");
+                        throw new StoreProductMaintenanceBusinessException("进货价不能为负数");
                     }
 
                     // 只要业务键曾归属于 Type1/Type2，成本就不能由客户端决定；停用或软删除关系也不得借编辑入口改写旧成本。
                     if (!isDerivedCostRelation)
                     {
                         entity.PurchasePrice = request.PurchasePrice;
+                    }
+                    if (requestedBarcode != null)
+                    {
+                        // 旧数据可能没有 ProductSetCode，只能按当前门店多码 UUID 原子更新条码。
+                        entity.MultiBarcode = requestedBarcode;
                     }
                     entity.MultiCodeRetailPrice = request.RetailPrice;
                     if (request.IsAutoPricing.HasValue)
@@ -1528,6 +1593,7 @@ namespace BlazorApp.Api.Services.React
                     var affectedRows = await _db.Updateable(entity)
                         .UpdateColumns(x => new
                         {
+                            x.MultiBarcode,
                             x.PurchasePrice,
                             x.MultiCodeRetailPrice,
                             x.IsAutoPricing,
@@ -1546,7 +1612,7 @@ namespace BlazorApp.Api.Services.React
                         .ExecuteCommandAsync();
                     if (affectedRows != 1)
                     {
-                        throw new InvalidOperationException("分店多码记录在事务内已变化");
+                        throw new StoreProductMaintenanceBusinessException("分店多码记录在事务内已变化");
                     }
 
                     // 普通多码更新也必须验证同一门店商品组，任何无法重算都会由当前事务整体回滚。
@@ -1571,8 +1637,19 @@ namespace BlazorApp.Api.Services.React
                         .FirstAsync();
                     if (entity == null)
                     {
-                        throw new InvalidOperationException("分店多码记录在重算后已变化");
+                        throw new StoreProductMaintenanceBusinessException("分店多码记录在重算后已变化");
                     }
+                    hqSync = await EnqueueHqProjectionAsync(
+                        ProductMaintenanceHqOperationKinds.ProductCodesUpdated,
+                        expectedProductCode,
+                        new[] { expectedStoreCode },
+                        new[] { ProductMaintenanceHqFieldMasks.StoreMultiCodes },
+                        "react-store-product-maintenance.update-multi-code",
+                        updatedBy,
+                        accessibleStoreCodes
+                    );
+                    dto = await BuildLegacyMultiCodeDtoAsync(entity, supplierCode);
+                    dto.HqSync = hqSync;
                     await _db.Ado.CommitTranAsync();
                 }
                 catch
@@ -1581,15 +1658,16 @@ namespace BlazorApp.Api.Services.React
                     throw;
                 }
 
-                var dto = await BuildLegacyMultiCodeDtoAsync(entity, supplierCode);
-                return ApiResponse<StoreProductMultiCodeDto>.OK(dto, "保存成功");
+                return ApiResponse<StoreProductMultiCodeDto>.OK(dto!, "保存成功");
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新分店多码失败: {Uuid}", uuid);
                 if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
                     return BuildSetChildPurchasePriceBusyResponse<StoreProductMultiCodeDto>();
-                return ApiResponse<StoreProductMultiCodeDto>.Error($"更新分店多码失败: {ex.Message}");
+                return ApiResponse<StoreProductMultiCodeDto>.Error(
+                    ResolveSafeMutationFailureMessage(ex, "更新分店多码失败，请稍后重试")
+                );
             }
         }
 
@@ -1624,6 +1702,8 @@ namespace BlazorApp.Api.Services.React
                 var normalizedProductCode = request.ProductCode.Trim();
                 Product? product = null;
                 ProductSetCode? setCode = null;
+                ProductHqSyncOperationStatusDto? hqSync = null;
+                StoreProductSetCodeDto? refreshed = null;
                 await _db.Ado.BeginTranAsync();
                 try
                 {
@@ -1645,9 +1725,14 @@ namespace BlazorApp.Api.Services.React
                         .Where(x => x.ProductCode == normalizedProductCode && !x.IsDeleted)
                         .Select(x => x.SetItemNumber)
                         .ToListAsync();
-                    var lockedMainPrice = request.ProductType == 2
-                        ? await QueryStorePriceByStoreAsync(normalizedProductCode, request.StoreCode)
-                        : null;
+                    var lockedMainPrice = await QueryStorePriceByStoreAsync(
+                        normalizedProductCode,
+                        request.StoreCode
+                    );
+                    if (accessibleStoreCodes != null && lockedMainPrice == null)
+                    {
+                        throw new StoreProductMaintenanceBusinessException("当前账号或设备无权修改该分店商品");
+                    }
                     var now = DateTime.UtcNow;
                     setCode = new ProductSetCode
                     {
@@ -1677,6 +1762,24 @@ namespace BlazorApp.Api.Services.React
                     };
                     await _db.Insertable(setCode).ExecuteCommandAsync();
                     await SyncSetCodeAcrossStoresAsync(setCode, updatedBy, lockScope);
+                    var hqStoreCodes = await QueryProductProjectionStoreCodesAsync(
+                        normalizedProductCode
+                    );
+                    hqSync = await EnqueueHqProjectionAsync(
+                        ProductMaintenanceHqOperationKinds.ProductCodesUpdated,
+                        normalizedProductCode,
+                        hqStoreCodes,
+                        BuildSetCodeHqFieldMask(hqStoreCodes),
+                        "react-store-product-maintenance.create-set-code",
+                        updatedBy,
+                        accessibleStoreCodes
+                    );
+                    refreshed = await QueryProjectedSetCodeAsync(
+                        setCode.SetCodeId,
+                        request.StoreCode,
+                        product.LocalSupplierCode
+                    );
+                    refreshed.HqSync = hqSync;
                     await _db.Ado.CommitTranAsync();
                 }
                 catch
@@ -1685,19 +1788,16 @@ namespace BlazorApp.Api.Services.React
                     throw;
                 }
 
-                var refreshed = await QueryProjectedSetCodeAsync(
-                    setCode!.SetCodeId,
-                    request.StoreCode,
-                    product!.LocalSupplierCode
-                );
-                return ApiResponse<StoreProductSetCodeDto>.OK(refreshed, "保存成功");
+                return ApiResponse<StoreProductSetCodeDto>.OK(refreshed!, "保存成功");
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "新增条码失败: {ProductCode}", request.ProductCode);
                 if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
                     return BuildSetChildPurchasePriceBusyResponse<StoreProductSetCodeDto>();
-                return ApiResponse<StoreProductSetCodeDto>.Error($"新增条码失败: {ex.Message}");
+                return ApiResponse<StoreProductSetCodeDto>.Error(
+                    ResolveSafeMutationFailureMessage(ex, "新增条码失败，请稍后重试")
+                );
             }
         }
 
@@ -1729,6 +1829,10 @@ namespace BlazorApp.Api.Services.React
                 }
 
                 var mainStorePrice = await QueryStorePriceByStoreAsync(setCode.ProductCode, request.StoreCode);
+                if (accessibleStoreCodes != null && mainStorePrice == null)
+                {
+                    return ApiResponse<StoreProductSetCodeDto>.Error("当前账号或设备无权修改该分店商品");
+                }
                 setCode.SetBarcode = request.Barcode?.Trim();
                 setCode.SetRetailPrice = setCode.SetType == 2
                     ? mainStorePrice?.StoreRetailPriceValue
@@ -1744,6 +1848,8 @@ namespace BlazorApp.Api.Services.React
 
                 setCode.UpdatedAt = DateTime.UtcNow;
                 setCode.UpdatedBy = updatedBy;
+                ProductHqSyncOperationStatusDto? hqSync = null;
+                StoreProductSetCodeDto? refreshed = null;
                 await _db.Ado.BeginTranAsync();
                 try
                 {
@@ -1759,18 +1865,23 @@ namespace BlazorApp.Api.Services.React
                         .FirstAsync();
                     if (setCode == null)
                     {
-                        throw new InvalidOperationException("条码记录在等待业务锁期间已变化");
+                        throw new StoreProductMaintenanceBusinessException("条码记录在等待业务锁期间已变化");
+                    }
+                    var lockedMainStorePrice = await QueryStorePriceByStoreAsync(
+                        setCode.ProductCode,
+                        request.StoreCode
+                    );
+                    if (accessibleStoreCodes != null && lockedMainStorePrice == null)
+                    {
+                        throw new StoreProductMaintenanceBusinessException("当前账号或设备无权修改该分店商品");
                     }
                     setCode.SetBarcode = pendingBarcode;
                     setCode.SetRetailPrice = setCode.SetType == 2
-                        ? (await QueryStorePriceByStoreAsync(setCode.ProductCode, request.StoreCode))?.StoreRetailPriceValue
+                        ? lockedMainStorePrice?.StoreRetailPriceValue
                         : pendingRetailPrice;
                     if (setCode.SetType == 2)
                     {
-                        setCode.SetPurchasePrice = (await QueryStorePriceByStoreAsync(
-                            setCode.ProductCode,
-                            request.StoreCode
-                        ))?.PurchasePrice;
+                        setCode.SetPurchasePrice = lockedMainStorePrice?.PurchasePrice;
                     }
                     setCode.IsActive = pendingIsActive;
                     setCode.UpdatedAt = DateTime.UtcNow;
@@ -1787,6 +1898,28 @@ namespace BlazorApp.Api.Services.React
                         })
                         .ExecuteCommandAsync();
                     await SyncSetCodeAcrossStoresAsync(setCode, updatedBy, lockScope);
+                    var hqStoreCodes = await QueryProductProjectionStoreCodesAsync(
+                        setCode.ProductCode
+                    );
+                    hqSync = await EnqueueHqProjectionAsync(
+                        ProductMaintenanceHqOperationKinds.ProductCodesUpdated,
+                        setCode.ProductCode,
+                        hqStoreCodes,
+                        BuildSetCodeHqFieldMask(hqStoreCodes),
+                        "react-store-product-maintenance.update-set-code",
+                        updatedBy,
+                        accessibleStoreCodes
+                    );
+                    var supplierCode = await _db.Queryable<Product>()
+                        .Where(p => p.ProductCode == setCode.ProductCode && !p.IsDeleted)
+                        .Select(p => p.LocalSupplierCode)
+                        .FirstAsync();
+                    refreshed = await QueryProjectedSetCodeAsync(
+                        setCode.SetCodeId,
+                        request.StoreCode,
+                        supplierCode
+                    );
+                    refreshed.HqSync = hqSync;
                     await _db.Ado.CommitTranAsync();
                 }
                 catch
@@ -1795,19 +1928,16 @@ namespace BlazorApp.Api.Services.React
                     throw;
                 }
 
-                var supplierCode = await _db.Queryable<Product>()
-                    .Where(p => p.ProductCode == setCode.ProductCode && !p.IsDeleted)
-                    .Select(p => p.LocalSupplierCode)
-                    .FirstAsync();
-                var refreshed = await QueryProjectedSetCodeAsync(setCode.SetCodeId, request.StoreCode, supplierCode);
-                return ApiResponse<StoreProductSetCodeDto>.OK(refreshed, "保存成功");
+                return ApiResponse<StoreProductSetCodeDto>.OK(refreshed!, "保存成功");
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "更新条码失败: {SetCodeId}", setCodeId);
                 if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
                     return BuildSetChildPurchasePriceBusyResponse<StoreProductSetCodeDto>();
-                return ApiResponse<StoreProductSetCodeDto>.Error($"更新条码失败: {ex.Message}");
+                return ApiResponse<StoreProductSetCodeDto>.Error(
+                    ResolveSafeMutationFailureMessage(ex, "更新条码失败，请稍后重试")
+                );
             }
         }
 
@@ -2049,6 +2179,26 @@ namespace BlazorApp.Api.Services.React
                     var projectionMap = projections.ToDictionary(
                         item => ResolveSetProductCode(item.MultiCodeProductCode, item.UUID), item => item, StringComparer.Ordinal
                     );
+                    var hqStoreCodes = await QueryProductProjectionStoreCodesAsync(productCode);
+                    var hqFields = BuildSetCodeHqFieldMask(hqStoreCodes).ToList();
+                    hqFields.Insert(0, ProductMaintenanceHqFieldMasks.ProductType);
+                    var tombstones = removedItems
+                        .Select(item => new ProductHqSyncOutboxTombstoneDto(
+                            ProductMaintenanceHqResourceKinds.ProductSetCode,
+                            null,
+                            ResolveSetProductCode(item.SetProductCode, item.SetCodeId)
+                        ))
+                        .ToList();
+                    var hqSync = await EnqueueHqProjectionAsync(
+                        ProductMaintenanceHqOperationKinds.SetCodeSnapshot,
+                        productCode,
+                        hqStoreCodes,
+                        hqFields,
+                        "react-store-product-maintenance.save-set-code-snapshot",
+                        actor,
+                        accessibleStoreCodes,
+                        tombstones
+                    );
                     await _db.Ado.CommitTranAsync();
                     return ApiResponse<SaveStoreProductSetCodeSnapshotResultDto>.OK(new()
                     {
@@ -2058,6 +2208,7 @@ namespace BlazorApp.Api.Services.React
                             projectionMap.TryGetValue(ResolveSetProductCode(item.SetProductCode, item.SetCodeId), out var projection);
                             return BuildSetCodeDto(item, projection);
                         }).ToList(),
+                        HqSync = hqSync,
                     }, "保存成功");
                 }
                 catch
@@ -2077,7 +2228,7 @@ namespace BlazorApp.Api.Services.React
             }
         }
 
-        public async Task<ApiResponse<bool>> DeleteSetCodeAsync(
+        public async Task<ApiResponse<DeleteStoreProductSetCodeResultDto>> DeleteSetCodeAsync(
             string setCodeId,
             string updatedBy,
             List<string>? accessibleStoreCodes
@@ -2090,18 +2241,26 @@ namespace BlazorApp.Api.Services.React
                     .FirstAsync();
                 if (setCode == null)
                 {
-                    return ApiResponse<bool>.Error("条码记录不存在");
+                    return ApiResponse<DeleteStoreProductSetCodeResultDto>.Error("条码记录不存在");
                 }
 
                 if (accessibleStoreCodes != null && accessibleStoreCodes.Count == 0)
                 {
-                    return ApiResponse<bool>.Error("当前账号或设备无权修改该分店商品");
+                    return ApiResponse<DeleteStoreProductSetCodeResultDto>.Error("当前账号或设备无权修改该分店商品");
+                }
+                if (
+                    accessibleStoreCodes != null
+                    && await QueryStorePriceAsync(setCode.ProductCode, accessibleStoreCodes) == null
+                )
+                {
+                    return ApiResponse<DeleteStoreProductSetCodeResultDto>.Error("当前账号或设备无权修改该分店商品");
                 }
 
                 setCode.IsDeleted = true;
                 setCode.IsActive = false;
                 setCode.UpdatedAt = DateTime.UtcNow;
                 setCode.UpdatedBy = updatedBy;
+                ProductHqSyncOperationStatusDto? hqSync = null;
                 await _db.Ado.BeginTranAsync();
                 try
                 {
@@ -2114,7 +2273,14 @@ namespace BlazorApp.Api.Services.React
                         .FirstAsync();
                     if (setCode == null)
                     {
-                        throw new InvalidOperationException("条码记录在等待业务锁期间已变化");
+                        throw new StoreProductMaintenanceBusinessException("条码记录在等待业务锁期间已变化");
+                    }
+                    if (
+                        accessibleStoreCodes != null
+                        && await QueryStorePriceAsync(setCode.ProductCode, accessibleStoreCodes) == null
+                    )
+                    {
+                        throw new StoreProductMaintenanceBusinessException("当前账号或设备无权修改该分店商品");
                     }
                     setCode.IsDeleted = true;
                     setCode.IsActive = false;
@@ -2144,6 +2310,23 @@ namespace BlazorApp.Api.Services.React
                             );
                         EnsureNoSkippedStoreSetGroups(writeback);
                     }
+                    hqSync = await EnqueueHqProjectionAsync(
+                        ProductMaintenanceHqOperationKinds.ProductCodesDeleted,
+                        setCode.ProductCode,
+                        Array.Empty<string>(),
+                        Array.Empty<string>(),
+                        "react-store-product-maintenance.delete-set-code",
+                        updatedBy,
+                        accessibleStoreCodes,
+                        new[]
+                        {
+                            new ProductHqSyncOutboxTombstoneDto(
+                                ProductMaintenanceHqResourceKinds.ProductSetCode,
+                                null,
+                                setProductCode
+                            ),
+                        }
+                    );
                     await _db.Ado.CommitTranAsync();
                 }
                 catch
@@ -2152,14 +2335,23 @@ namespace BlazorApp.Api.Services.React
                     throw;
                 }
 
-                return ApiResponse<bool>.OK(true, "删除成功");
+                return ApiResponse<DeleteStoreProductSetCodeResultDto>.OK(
+                    new DeleteStoreProductSetCodeResultDto
+                    {
+                        Deleted = true,
+                        HqSync = hqSync,
+                    },
+                    "删除成功"
+                );
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "删除条码失败: {SetCodeId}", setCodeId);
                 if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
-                    return BuildSetChildPurchasePriceBusyResponse<bool>();
-                return ApiResponse<bool>.Error($"删除条码失败: {ex.Message}");
+                    return BuildSetChildPurchasePriceBusyResponse<DeleteStoreProductSetCodeResultDto>();
+                return ApiResponse<DeleteStoreProductSetCodeResultDto>.Error(
+                    ResolveSafeMutationFailureMessage(ex, "删除条码失败，请稍后重试")
+                );
             }
         }
 
@@ -2178,60 +2370,147 @@ namespace BlazorApp.Api.Services.React
                     return ApiResponse<StoreProductClearancePriceDto>.Error("当前账号或设备无权修改该分店商品");
                 }
 
-                var product = await _db.Queryable<Product>()
-                    .Where(p => p.ProductCode == productCode && !p.IsDeleted)
-                    .FirstAsync();
-                if (product == null)
+                await _db.Ado.BeginTranAsync();
+                try
                 {
-                    return ApiResponse<StoreProductClearancePriceDto>.Error("商品不存在");
-                }
-
-                var entity = await _db.Queryable<StoreClearancePrice>()
-                    .Where(x =>
-                        x.ProductCode == productCode
-                        && x.StoreCode == request.StoreCode
-                        && !x.IsDeleted
+                    await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                        _db,
+                        new[] { productCode }
+                    );
+                    if (
+                        accessibleStoreCodes != null
+                        && await QueryStorePriceByStoreAsync(productCode, request.StoreCode) == null
                     )
-                    .FirstAsync();
-
-                if (entity == null)
-                {
-                    operation = "create";
-                    entity = new StoreClearancePrice
                     {
-                        UUID = UuidHelper.GenerateUuid7(),
-                        StoreCode = request.StoreCode,
-                        ProductCode = productCode,
-                        ClearanceBarcode = await GenerateClearanceBarcodeAsync(request.StoreCode),
-                        CreatedAt = DateTime.UtcNow,
-                        UpdatedAt = DateTime.UtcNow,
-                        CreatedBy = updatedBy,
-                        UpdatedBy = updatedBy,
-                        IsDeleted = false,
-                    };
-                    entity.ClearancePrice = request.ClearancePrice;
-                    await _db.Insertable(entity).ExecuteCommandAsync();
+                        await _db.Ado.RollbackTranAsync();
+                        return ApiResponse<StoreProductClearancePriceDto>.Error(
+                            "当前账号或设备无权修改该分店商品"
+                        );
+                    }
+                    var product = await _db.Queryable<Product>()
+                        .Where(p => p.ProductCode == productCode && !p.IsDeleted)
+                        .FirstAsync();
+                    if (product == null)
+                    {
+                        await _db.Ado.RollbackTranAsync();
+                        return ApiResponse<StoreProductClearancePriceDto>.Error("商品不存在");
+                    }
+
+                    var entities = await _db.Queryable<StoreClearancePrice>()
+                        .Where(x =>
+                            x.ProductCode == productCode
+                            && x.StoreCode == request.StoreCode
+                            && !x.IsDeleted
+                        )
+                        .OrderBy(x => x.CreatedAt)
+                        .OrderBy(x => x.UUID)
+                        .ToListAsync();
+                    var entity = entities.FirstOrDefault();
+                    ProductHqSyncOperationStatusDto hqSync;
+                    if (!request.ClearancePrice.HasValue)
+                    {
+                        operation = "delete";
+                        entity ??= new StoreClearancePrice
+                        {
+                            UUID = string.Empty,
+                            StoreCode = request.StoreCode,
+                            ProductCode = productCode,
+                        };
+                        if (entities.Count > 0)
+                        {
+                            await _db.Deleteable<StoreClearancePrice>()
+                                .Where(item =>
+                                    item.ProductCode == productCode
+                                    && item.StoreCode == request.StoreCode
+                                    && !item.IsDeleted
+                                )
+                                .ExecuteCommandAsync();
+                        }
+                        entity.ClearancePrice = null;
+                        hqSync = await EnqueueHqProjectionAsync(
+                            ProductMaintenanceHqOperationKinds.ClearancePriceDeleted,
+                            productCode,
+                            new[] { request.StoreCode.Trim() },
+                            new[] { ProductMaintenanceHqFieldMasks.StoreClearancePrice },
+                            "react-store-product-maintenance.delete-clearance-price",
+                            updatedBy,
+                            accessibleStoreCodes,
+                            new[]
+                            {
+                                new ProductHqSyncOutboxTombstoneDto(
+                                    ProductMaintenanceHqResourceKinds.StoreClearancePrice,
+                                    request.StoreCode.Trim(),
+                                    entity.ClearanceBarcode ?? productCode
+                                ),
+                            }
+                        );
+                    }
+                    else
+                    {
+                        if (entity == null)
+                        {
+                            operation = "create";
+                            entity = new StoreClearancePrice
+                            {
+                                UUID = UuidHelper.GenerateUuid7(),
+                                StoreCode = request.StoreCode,
+                                ProductCode = productCode,
+                                ClearanceBarcode = await GenerateClearanceBarcodeAsync(request.StoreCode),
+                                CreatedAt = DateTime.UtcNow,
+                                UpdatedAt = DateTime.UtcNow,
+                                CreatedBy = updatedBy,
+                                UpdatedBy = updatedBy,
+                                IsDeleted = false,
+                                ClearancePrice = request.ClearancePrice,
+                            };
+                            await _db.Insertable(entity).ExecuteCommandAsync();
+                        }
+                        else
+                        {
+                            entity.ClearancePrice = request.ClearancePrice;
+                            entity.UpdatedAt = DateTime.UtcNow;
+                            entity.UpdatedBy = updatedBy;
+                            await _db.Updateable(entity).ExecuteCommandAsync();
+                            if (entities.Count > 1)
+                            {
+                                await _db.Deleteable<StoreClearancePrice>()
+                                    .Where(item =>
+                                        item.ProductCode == productCode
+                                        && item.StoreCode == request.StoreCode
+                                        && !item.IsDeleted
+                                        && item.UUID != entity.UUID
+                                    )
+                                    .ExecuteCommandAsync();
+                            }
+                        }
+                        hqSync = await EnqueueHqProjectionAsync(
+                            ProductMaintenanceHqOperationKinds.ClearancePriceUpdated,
+                            productCode,
+                            new[] { request.StoreCode.Trim() },
+                            new[] { ProductMaintenanceHqFieldMasks.StoreClearancePrice },
+                            "react-store-product-maintenance.upsert-clearance-price",
+                            updatedBy,
+                            accessibleStoreCodes
+                        );
+                    }
+
+                    var result = await BuildClearancePriceDtoAsync(entity);
+                    result.HqSync = hqSync;
+                    await _db.Ado.CommitTranAsync();
+                    _logger.LogInformation(
+                        "StoreProductMaintenance clearance price saved productCode={ProductCode} storeCode={StoreCode} operation={Operation} clearanceBarcode={ClearanceBarcode} targetTable=StoreClearancePrice noMultiCodeProjection=true",
+                        productCode,
+                        request.StoreCode,
+                        operation,
+                        entity.ClearanceBarcode
+                    );
+                    return ApiResponse<StoreProductClearancePriceDto>.OK(result, "保存成功");
                 }
-                else
+                catch
                 {
-                    entity.ClearancePrice = request.ClearancePrice;
-                    entity.UpdatedAt = DateTime.UtcNow;
-                    entity.UpdatedBy = updatedBy;
-                    await _db.Updateable(entity).ExecuteCommandAsync();
+                    await _db.Ado.RollbackTranAsync();
+                    throw;
                 }
-
-                _logger.LogInformation(
-                    "StoreProductMaintenance clearance price saved productCode={ProductCode} storeCode={StoreCode} operation={Operation} clearanceBarcode={ClearanceBarcode} targetTable=StoreClearancePrice noMultiCodeProjection=true",
-                    productCode,
-                    request.StoreCode,
-                    operation,
-                    entity.ClearanceBarcode
-                );
-
-                return ApiResponse<StoreProductClearancePriceDto>.OK(
-                    await BuildClearancePriceDtoAsync(entity),
-                    "保存成功"
-                );
             }
             catch (Exception ex)
             {
@@ -2242,9 +2521,72 @@ namespace BlazorApp.Api.Services.React
                     request.StoreCode,
                     operation
                 );
-                return ApiResponse<StoreProductClearancePriceDto>.Error($"保存清货价失败: {ex.Message}");
+                if (SetChildPurchasePriceMutationLock.TryResolveConflict(ex, out _))
+                {
+                    return BuildSetChildPurchasePriceBusyResponse<StoreProductClearancePriceDto>();
+                }
+                return ApiResponse<StoreProductClearancePriceDto>.Error("保存清货价失败，请稍后重试");
             }
         }
+
+        private Task<ProductHqSyncOperationStatusDto> EnqueueHqProjectionAsync(
+            string operationKind,
+            string productCode,
+            IReadOnlyCollection<string>? targetStoreCodes,
+            IReadOnlyCollection<string> fieldMask,
+            string source,
+            string updatedBy,
+            IReadOnlyCollection<string>? authorizedStoreCodes,
+            IReadOnlyCollection<ProductHqSyncOutboxTombstoneDto>? tombstones = null
+        )
+        {
+            var isDevice = updatedBy.StartsWith("device:", StringComparison.OrdinalIgnoreCase);
+            return _hqProjectionWriter.EnqueueAsync(
+                _db,
+                new ProductMaintenanceHqMutationRequest
+                {
+                    OperationKind = operationKind,
+                    ProductCode = productCode,
+                    TargetStoreCodes = targetStoreCodes,
+                    AuthorizedStoreCodes = authorizedStoreCodes,
+                    FieldMask = fieldMask,
+                    Tombstones = tombstones ?? Array.Empty<ProductHqSyncOutboxTombstoneDto>(),
+                    RequestedByUserGuid = isDevice ? null : _currentUserService.GetCurrentUserGuid(),
+                    RequestedByDeviceId = isDevice ? updatedBy["device:".Length..] : null,
+                    Source = source,
+                    OccurredAtUtc = DateTime.UtcNow,
+                }
+            );
+        }
+
+        private async Task<IReadOnlyCollection<string>> QueryProductProjectionStoreCodesAsync(
+            string productCode
+        )
+        {
+            var storeCodes = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(item =>
+                    item.ProductCode == productCode
+                    && item.StoreCode != null
+                    && !item.IsDeleted
+                )
+                .Select(item => item.StoreCode)
+                .ToListAsync();
+            return storeCodes
+                .Where(item => !string.IsNullOrWhiteSpace(item))
+                .Select(item => item!.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static IReadOnlyCollection<string> BuildSetCodeHqFieldMask(
+            IReadOnlyCollection<string> storeCodes
+        ) => storeCodes.Count == 0
+            ? new[] { ProductMaintenanceHqFieldMasks.ProductSetCodes }
+            : new[]
+            {
+                ProductMaintenanceHqFieldMasks.ProductSetCodes,
+                ProductMaintenanceHqFieldMasks.StoreMultiCodes,
+            };
 
         private async Task<StoreRetailPrice?> QueryStorePriceAsync(
             string productCode,
@@ -3608,6 +3950,26 @@ namespace BlazorApp.Api.Services.React
             );
         }
 
+        private static string ResolveSafeMutationFailureMessage(
+            Exception exception,
+            string fallbackMessage
+        )
+        {
+            if (exception is ProductMaintenanceHqEnqueueException or StoreProductMaintenanceBusinessException)
+            {
+                return exception.Message;
+            }
+
+            // 成本重算服务的这个固定前缀属于可操作的业务冲突；其余异常不得透传内部细节。
+            return exception is InvalidOperationException
+                && exception.Message.StartsWith(
+                    "套装子项成本无法完整重算，主商品:",
+                    StringComparison.Ordinal
+                )
+                ? exception.Message
+                : fallbackMessage;
+        }
+
         private static void EnsureNoSkippedStoreSetGroups(
             SetChildPurchasePriceWritebackResultDto writeback
         )
@@ -3621,7 +3983,7 @@ namespace BlazorApp.Api.Services.React
             }
 
             // 目标门店套装组不能带着未分摊的子项成本提交，交由外层事务整体回滚。
-            throw new InvalidOperationException(
+            throw new StoreProductMaintenanceBusinessException(
                 writeback.Errors.FirstOrDefault()?.Reason ?? "目标套装组无法重算"
             );
         }

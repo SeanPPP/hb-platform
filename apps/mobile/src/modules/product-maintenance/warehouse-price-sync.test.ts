@@ -83,11 +83,25 @@ const pascalSnapshot = normalizeWarehousePriceSyncResponse({
     DiscountRate: 15,
     PreviousDiscountedRetailPrice: 5.95,
     NewDiscountedRetailPrice: 6.8,
+    HqSync: {
+      OperationId: "operation-warehouse-1",
+      Status: "pending",
+      ProductCode: "P-WAREHOUSE",
+      StoreCode: "S02",
+      AttemptCount: 0,
+      Retryable: true,
+      Message: "pending",
+    },
   },
 });
 
 assertEqual(pascalSnapshot.storePrice?.discountRate, 0.15, "Pascal response normalizes percent discount");
 assertEqual(pascalSnapshot.newDiscountedRetailPrice, 6.8, "Pascal response normalizes discounted price");
+assertEqual(
+  pascalSnapshot.hqSync?.operationId,
+  "operation-warehouse-1",
+  "warehouse mutation exposes its HQ sync operation"
+);
 
 const nullSnapshot = normalizeWarehousePriceSyncResponse(null);
 assertDeepEqual(

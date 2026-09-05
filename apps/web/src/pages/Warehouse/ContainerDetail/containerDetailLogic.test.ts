@@ -103,6 +103,7 @@ import {
   matchesContainerDetailTagFilter,
   normalizeContainerDetailPushToHqPayload,
   normalizeContainerDetailEnglishNameForSave,
+  resolveContainerDetailPendingPriceOnBlur,
   resolveContainerDetailOemPrice,
   DEFAULT_CONTAINER_DETAIL_FLOAT_RATE,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
@@ -1275,6 +1276,42 @@ assertEqual(
   '保存英文名称时应保留内部空白、连字符、撇号、缩写和词内大小写',
 )
 
+assertEqual(
+  resolveContainerDetailPendingPriceOnBlur('15', 12.82),
+  15,
+  '失焦时 DOM 价格与 React 草稿不同时应补交两位精度价格',
+)
+assertEqual(
+  resolveContainerDetailPendingPriceOnBlur('15.004', 12.82),
+  15,
+  '失焦兜底应按价格控件的两位精度规范化',
+)
+assertEqual(
+  resolveContainerDetailPendingPriceOnBlur('15.00', 15),
+  undefined,
+  '正常 onChange 已更新 React 草稿时失焦不应重复提交',
+)
+assertEqual(
+  resolveContainerDetailPendingPriceOnBlur('  ', 12.82),
+  undefined,
+  '空输入失焦时不能误转成零',
+)
+assertEqual(
+  resolveContainerDetailPendingPriceOnBlur('invalid', 12.82),
+  undefined,
+  '非法输入失焦时不应进入价格草稿',
+)
+assertEqual(
+  resolveContainerDetailPendingPriceOnBlur('-1', 12.82),
+  undefined,
+  '负数失焦时不应绕过价格控件下限',
+)
+assertEqual(
+  resolveContainerDetailPendingPriceOnBlur('0', undefined),
+  0,
+  '合法零价格必须和空输入区分',
+)
+
 let pendingDetailPatches: PendingContainerDetailPatchMap = {}
 pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
   hguid: 'detail-1',
@@ -1756,7 +1793,7 @@ assertDeepEqual(
     supplierItemMatched: 1,
     unmatched: 1,
   },
-  '统计栏应按当前基础结果统计全部、新商品、已有商品、缺零售价、进口价异常、上下架和商品类型数量',
+  '统计栏应按当前基础结果统计全部、新商品、已有商品、异常、上下架、商品类型和权威匹配类型数量',
 )
 assertEqual(matchesContainerDetailTagFilter(tagRows[0], 'new'), true, '新商品 tag 应匹配是否新商品行')
 assertEqual(matchesContainerDetailTagFilter(tagRows[2], 'new'), false, '新商品 tag 不应匹配已有商品行')
@@ -1855,6 +1892,13 @@ assertDeepEqual(columnState({ productTypes: ['normal'] }), ['column-201', 'colum
 assertEqual(getContainerDetailProductTypeFilterKey({ id: 204, hguid: 'column-204', 商品信息: { 商品类型: '多码商品' } }), 'multi', '商品类型过滤键应支持多码商品')
 assertDeepEqual(columnState({ newProductStates: ['new'] }), ['column-202'], '新商品列头过滤应支持筛出新商品')
 assertDeepEqual(columnState({ matchTypes: ['supplierItem'] }), ['column-203'], '匹配方式列头过滤应支持供应商编码加货号匹配')
+assertEqual(
+  buildContainerDetailTagStats(
+    applyContainerDetailColumnState(columnStateRows, { matchTypes: ['supplierItem'] }),
+  ).all,
+  1,
+  '全量模式标签统计应先应用列筛选，但不应用 SelectedTags 自身',
+)
 assertDeepEqual(columnState({ warehouseStatus: ['inactive'] }), ['column-202', 'column-203'], '仓库状态列头过滤应把非 true 视为下架')
 assertDeepEqual(columnState({ middlePackQuantity: { min: 1, max: 20 } }), ['column-201'], '中包数列头范围过滤应读取仓库商品最小订货量')
 assertDeepEqual(columnState({ containerQuantity: { min: 500, max: 2000 } }), ['column-201'], '装柜数量列头范围过滤应同时支持最小值和最大值')
@@ -1991,6 +2035,27 @@ assertEqual(
   '存在标签筛选时不得复用无筛选首页',
 )
 
+assertEqual(
+  canReuseContainerDetailInitialPage({
+    filters: { matchTypes: ['supplierItem'] },
+    selectedTags: [],
+    sortState: { field: 'itemNumber', order: 'ascend' },
+    pageSize: 100,
+  }),
+  false,
+  '列筛选存在时不能把默认首屏误当作当前分页结果',
+)
+assertEqual(
+  canReuseContainerDetailInitialPage({
+    filters: {},
+    selectedTags: [],
+    sortState: { field: 'domesticPrice', order: 'descend' },
+    pageSize: 100,
+  }),
+  false,
+  '非默认排序不能复用默认排序首屏',
+)
+
 assertDeepEqual(
   buildContainerDetailQuery({
     containerGuid: 'CONTAINER-QUERY',
@@ -2083,6 +2148,30 @@ assertDeepEqual(
     includeStats: false,
   },
   '追加页查询应允许显式跳过 total 和标签统计',
+)
+
+assertDeepEqual(
+  buildContainerDetailQuery({
+    containerGuid: 'CONTAINER-PAGED-STATS',
+    filters: { matchTypes: ['supplierItem'] },
+    selectedTags: ['new', 'normal'],
+    pageNumber: 1,
+    pageSize: 100,
+    includeItems: false,
+    includeTotal: true,
+    includeStats: true,
+  }),
+  {
+    containerGuid: 'CONTAINER-PAGED-STATS',
+    pageNumber: 1,
+    pageSize: 100,
+    includeItems: false,
+    includeTotal: true,
+    includeStats: true,
+    matchTypes: ['supplierItem'],
+    selectedTags: ['new', 'normal'],
+  },
+  '分页统计请求应发送完整筛选和标签，但允许不返回明细行',
 )
 
 assertDeepEqual(
@@ -2335,6 +2424,16 @@ assertEqual(getContainerDetailMatchType({ id: 308, hguid: 'match-308', 是否新
 assertEqual(getContainerDetailMatchType({ id: 309, hguid: 'match-309', 是否新商品: false }), 'unmatched', '缺少匹配方式的已有商品不能默认显示商品编码匹配')
 assertEqual(
   getContainerDetailMatchType({
+    id: 3091,
+    hguid: 'match-3091',
+    matchType: 'productCode',
+    hasProductCodeConflict: true,
+  }),
+  'productCode',
+  '普通加载应直接信任服务端权威 matchType，不能再按冲突字段二次分类',
+)
+assertEqual(
+  getContainerDetailMatchType({
     id: 310,
     hguid: 'match-310',
     MatchType: 'ProductCode',
@@ -2421,6 +2520,21 @@ const warehouseProductServiceSource = readFileSync('src/services/warehouseProduc
 const posProductTypeSource = readFileSync('src/types/posProduct.ts', 'utf8')
 const zhLocale = JSON.parse(readFileSync('src/i18n/locales/zh.json', 'utf8'))
 const enLocale = JSON.parse(readFileSync('src/i18n/locales/en.json', 'utf8'))
+assertEqual(
+  !pageSource.includes('const reconcileLoadedMatchStatus = async') &&
+    !pageSource.includes('void reconcileLoadedMatchStatus(') &&
+    (pageSource.match(/await detectProducts\(/g) ?? []).length === 1,
+  true,
+  '普通加载、翻页、筛选和排序不得自动调用 detectProducts，显式“匹配国内数据”仍保留一次调用',
+)
+assertEqual(
+  pageSource.includes('pageSize: CONTAINER_DETAIL_INITIAL_PAGE_SIZE') &&
+    pageSource.includes('includeTotal: true') &&
+    pageSource.includes('includeStats: false') &&
+    !pageSource.includes('startDetailReadAhead('),
+  true,
+  '首屏应只加载 100 行和精确 total，且不并发预读第 2 页或统计',
+)
 assertEqual(
   pageSource.includes('PDF 对外分享时不展示汇率和运费金额；Excel 仍保留完整核对信息。') &&
     pageSource.includes("const summaryRows: NonNullable<ContainerExportOptions['summary']>['rows'] = format === 'pdf'") &&
@@ -3170,7 +3284,7 @@ assertEqual(
     !pageSource.includes("onBlur={(event) => void saveRowPatch(row, { 英文名称: event.target.value })") &&
     pageSource.includes("status={validationError || saveFailure || concurrencyConflict ? 'error' : undefined}"),
   true,
-  '单行英文名称应进入保存明细队列，不再失焦自动保存，并为中文或空白草稿显示错误状态',
+  '单行英文名称应进入保存明细队列，不再失焦自动保存，并为本地校验或服务器失败显示错误状态',
 )
 assertEqual(
   pageSource.includes('setSelectedRowKeys([])'),
@@ -4865,7 +4979,7 @@ assertEqual(
     pageSource.includes('applyPendingDetailDraftState(restoredDraft, false)') &&
     pageSource.includes('}, [active, currentUserGuid, containerGuid])'),
   true,
-  '同一货柜刷新或筛选重载应重新覆盖未保存草稿，仅切换货柜时清空旧草稿',
+  '同一货柜刷新或筛选重载应重新覆盖未保存草稿；切换货柜时立即隐藏旧行并恢复新货柜草稿',
 )
 assertEqual(
   pageSource.includes('settleScopedContainerDetailSave(') &&
@@ -5275,7 +5389,11 @@ assertEqual(
     pageSource.includes('const [detailLayoutMetrics, setDetailLayoutMetrics] = useState') &&
     pageSource.includes("querySelector('.ant-table-thead')") &&
     pageSource.includes("querySelector('.ant-table-footer')") &&
+    pageSource.includes("querySelector('.ant-table-pagination')") &&
+    pageSource.includes('window.getComputedStyle(tablePaginationElement)') &&
     pageSource.includes('horizontalScrollbarHeight') &&
+    pageSource.includes('paginationHeight') &&
+    pageSource.includes('paginationMarginHeight') &&
     !pageSource.includes("window.addEventListener('scroll', scheduleMeasure") &&
     !pageSource.includes("window.removeEventListener('scroll', scheduleMeasure") &&
     !pageSource.includes("window.addEventListener('scroll', scheduleMeasure, true)") &&
@@ -5284,7 +5402,13 @@ assertEqual(
     pageSource.includes('toolbarHeight: detailLayoutMetrics.toolbarHeight,') &&
     pageSource.includes('tableChromeHeight: detailLayoutMetrics.tableChromeHeight,'),
   true,
-  '货柜明细表格高度应只根据工具栏和表格头尾实测高度动态计算，不监听滚动',
+  '货柜明细表格高度应根据工具栏、表格头尾和分页器实测高度动态计算，不监听滚动',
+)
+assertEqual(
+  pageSource.includes("const layoutDetailLoadMode: ContainerDetailLoadMode = detailPagingState.containerGuid === containerGuid") &&
+    pageSource.includes('[gridContentElement, tableRegionElement, toolbarElement, detailTableRenderKey, exporting, exportProgress, layoutDetailLoadMode]'),
+  true,
+  '从 probe/full 切换到 paged 并挂载分页器后应主动重新测量表格高度',
 )
 assertEqual(
   pageSource.includes('const [detailTableRenderKey, setDetailTableRenderKey] = useState(0)') &&
@@ -5598,6 +5722,14 @@ assertEqual(
     pageSource.includes('openSetCodeModal(row)'),
   true,
   '货柜明细商品类型列应使用彩色 Tag，套装商品 Tag 应可点击打开套装多码弹窗',
+)
+assertEqual(
+  pageSource.includes('const handlePendingImportPriceBlur = (') &&
+    pageSource.includes('resolveContainerDetailPendingPriceOnBlur(') &&
+    pageSource.includes("markPendingDetailPatch(row, { 进口价格: value })") &&
+    pageSource.includes('onBlur={(event) => handlePendingImportPriceBlur(row, event.currentTarget.value)}'),
+  true,
+  '进口价格失焦时应把仅停留在 DOM 的有效值补入 React 持久草稿',
 )
 assertEqual(
   setCodeHookSource.includes('getContainerDomesticSetCodes(productCode, abortController.signal)') &&

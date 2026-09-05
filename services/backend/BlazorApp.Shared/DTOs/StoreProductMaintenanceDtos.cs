@@ -66,6 +66,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? Rate { get; set; }
         public string? StrategySourceLabel { get; set; }
         public string? StrategyRuleLabel { get; set; }
+        public ProductHqSyncOperationStatusDto? HqSync { get; set; }
     }
 
     public class StoreProductMultiCodeDto
@@ -86,6 +87,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? Rate { get; set; }
         public string? StrategySourceLabel { get; set; }
         public string? StrategyRuleLabel { get; set; }
+        public ProductHqSyncOperationStatusDto? HqSync { get; set; }
     }
 
     public class StoreProductClearancePriceDto
@@ -96,6 +98,7 @@ namespace BlazorApp.Shared.DTOs
         public string? ProductCode { get; set; }
         public string? ClearanceBarcode { get; set; }
         public decimal? ClearancePrice { get; set; }
+        public ProductHqSyncOperationStatusDto? HqSync { get; set; }
     }
 
     public class StoreProductSetCodeDto
@@ -111,6 +114,7 @@ namespace BlazorApp.Shared.DTOs
         public int SetType { get; set; }
         public string? SetTypeDescription { get; set; }
         public bool IsActive { get; set; }
+        public ProductHqSyncOperationStatusDto? HqSync { get; set; }
     }
 
     public class UpdateStoreProductPriceDto
@@ -147,6 +151,7 @@ namespace BlazorApp.Shared.DTOs
         public decimal? DiscountRate { get; set; }
         public decimal? PreviousDiscountedRetailPrice { get; set; }
         public decimal? NewDiscountedRetailPrice { get; set; }
+        public ProductHqSyncOperationStatusDto? HqSync { get; set; }
     }
 
     public class EvaluateStoreProductAutoPricingDto
@@ -182,10 +187,12 @@ namespace BlazorApp.Shared.DTOs
         public string ProductCode { get; set; } = string.Empty;
         public int ProductType { get; set; }
         public string? ProductTypeLabel { get; set; }
+        public ProductHqSyncOperationStatusDto? HqSync { get; set; }
     }
 
     public class UpdateStoreProductMultiCodeDto
     {
+        public string? Barcode { get; set; }
         public decimal? PurchasePrice { get; set; }
         public decimal? RetailPrice { get; set; }
         public bool? IsAutoPricing { get; set; }
@@ -236,6 +243,13 @@ namespace BlazorApp.Shared.DTOs
         public string StoreCode { get; set; } = string.Empty;
         public int ProductType { get; set; }
         public List<StoreProductSetCodeDto> Items { get; set; } = new();
+        public ProductHqSyncOperationStatusDto? HqSync { get; set; }
+    }
+
+    public class DeleteStoreProductSetCodeResultDto
+    {
+        public bool Deleted { get; set; }
+        public ProductHqSyncOperationStatusDto? HqSync { get; set; }
     }
 
     public class UpsertStoreProductClearancePriceDto

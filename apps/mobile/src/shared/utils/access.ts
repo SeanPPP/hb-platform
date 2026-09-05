@@ -345,8 +345,7 @@ export function buildAccess(currentUser?: CurrentUser | null): AccessControl {
     PERMISSIONS.SeasonalCards.Remaining.SubmitManagedStore
   );
   const canCreateStoreProducts =
-    hasPermission(PERMISSIONS.StoreProducts.Create) ||
-    hasPermission(PERMISSIONS.StoreProducts.Edit);
+    hasPermission(PERMISSIONS.StoreProducts.Create);
   const canManageAttendance = canViewAttendanceManagement;
 
   return {

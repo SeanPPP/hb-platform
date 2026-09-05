@@ -105,4 +105,17 @@ internal sealed class ProductCostRecalculationService
             groups,
             updatedBy
         );
+
+    internal Task<React.SetChildStoreRelationRepairResult> RepairMissingStoreRelationsLockedAsync(
+        ProductCostMutationLockScope lockScope,
+        IReadOnlyDictionary<string, decimal> requestedParentPurchasePrices,
+        string updatedBy,
+        IEnumerable<(string? StoreCode, string? ProductCode)>? exactStoreGroups = null
+    ) =>
+        _inner.RepairMissingStoreRelationsLockedAsync(
+            lockScope.Inner,
+            requestedParentPurchasePrices,
+            updatedBy,
+            exactStoreGroups
+        );
 }

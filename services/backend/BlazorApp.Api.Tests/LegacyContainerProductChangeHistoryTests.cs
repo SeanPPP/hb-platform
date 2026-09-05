@@ -35,6 +35,7 @@ public sealed class LegacyContainerProductChangeHistoryTests : IDisposable
             InitKeyType = InitKeyType.Attribute,
         });
         _db.CodeFirst.InitTables(
+            typeof(Container),
             typeof(ContainerDetail),
             typeof(DomesticProduct),
             typeof(WarehouseProduct),
@@ -215,6 +216,72 @@ public sealed class LegacyContainerProductChangeHistoryTests : IDisposable
         Assert.Empty(await _db.Queryable<WarehouseProductChangeHistory>().ToListAsync());
     }
 
+    [Fact]
+    public async Task 义乌明细换柜_应在同一事务刷新旧柜和新柜汇总()
+    {
+        await _db.Insertable(new[]
+        {
+            new Container
+            {
+                ContainerCode = "OLD-CONTAINER",
+                TotalPieces = 99,
+                TotalQuantity = 99,
+                TotalAmount = 99,
+                TotalVolume = 99,
+                IsDeleted = false,
+            },
+            new Container
+            {
+                ContainerCode = "NEW-CONTAINER",
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+        await _db.Insertable(new ContainerDetail
+        {
+            DetailCode = "MOVE-DETAIL",
+            ContainerCode = "OLD-CONTAINER",
+            ProductCode = "MOVE-PRODUCT",
+            LoadingPieces = 2,
+            LoadingQuantity = 4,
+            TotalAmount = 12,
+            TotalVolume = 3,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        var mapper = new Mock<IMapper>();
+        mapper.Setup(item => item.Map(
+                It.IsAny<YiwuContainerDetailDto>(),
+                It.IsAny<ContainerDetail>()
+            ))
+            .Callback<YiwuContainerDetailDto, ContainerDetail>((_, detail) =>
+            {
+                detail.ContainerCode = "NEW-CONTAINER";
+            })
+            .Returns<YiwuContainerDetailDto, ContainerDetail>((_, detail) => detail);
+
+        var service = CreateYiwuService(CreateRealHistory("测试用户", "test-user"), mapper: mapper.Object);
+        var success = await service.UpdateContainerDetailAsync(new YiwuContainerDetailDto
+        {
+            DetailCode = "MOVE-DETAIL",
+            ContainerCode = "NEW-CONTAINER",
+        });
+
+        Assert.True(success);
+        var oldContainer = await _db.Queryable<Container>()
+            .SingleAsync(container => container.ContainerCode == "OLD-CONTAINER");
+        var newContainer = await _db.Queryable<Container>()
+            .SingleAsync(container => container.ContainerCode == "NEW-CONTAINER");
+        var movedDetail = await _db.Queryable<ContainerDetail>()
+            .SingleAsync(detail => detail.DetailCode == "MOVE-DETAIL");
+        Assert.Equal(0, oldContainer.TotalPieces);
+        Assert.Equal(0, oldContainer.TotalQuantity);
+        Assert.Equal(0, oldContainer.TotalAmount);
+        Assert.Equal(0, oldContainer.TotalVolume);
+        Assert.Equal(movedDetail.LoadingPieces, newContainer.TotalPieces);
+        Assert.Equal(movedDetail.LoadingQuantity, newContainer.TotalQuantity);
+        Assert.Equal(movedDetail.TotalAmount ?? 0, newContainer.TotalAmount);
+        Assert.Equal(movedDetail.TotalVolume ?? 0, newContainer.TotalVolume);
+    }
+
     private ContainerService CreateContainerService(
         IWarehouseProductChangeHistoryService history,
         string actorName = "测试用户",
@@ -230,9 +297,10 @@ public sealed class LegacyContainerProductChangeHistoryTests : IDisposable
     private YiwuContainerService CreateYiwuService(
         IWarehouseProductChangeHistoryService history,
         string actorName = "测试用户",
-        string actorGuid = "test-user-guid") => new(
+        string actorGuid = "test-user-guid",
+        IMapper? mapper = null) => new(
         CreateContext(),
-        Mock.Of<IMapper>(),
+        mapper ?? Mock.Of<IMapper>(),
         NullLogger<YiwuContainerService>.Instance,
         new ContainerExportService(NullLogger<ContainerExportService>.Instance, new HttpClient()),
         Mock.Of<ITranslationService>(),

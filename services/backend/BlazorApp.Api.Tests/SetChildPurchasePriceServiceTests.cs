@@ -997,6 +997,125 @@ public sealed class SetChildPurchasePriceServiceTests : IDisposable
         Assert.Contains(result.Errors, x => x.Reason.Contains("套装总进货价为空或0"));
     }
 
+    [Fact]
+    public async Task RepairMissingStoreRelationsLockedAsync_指定精确组时只补齐目标门店()
+    {
+        await SeedMissingStoreRelationsForTwoStoresAsync();
+
+        await _db.Ado.BeginTranAsync();
+        SetChildStoreRelationRepairResult result;
+        try
+        {
+            var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                _db,
+                new[] { "P-SET" }
+            );
+            result = await new SetChildPurchasePriceService(_db)
+                .RepairMissingStoreRelationsLockedAsync(
+                    lockScope,
+                    new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["P-SET"] = 10m,
+                    },
+                    "测试管理员",
+                    new (string? StoreCode, string? ProductCode)[]
+                    {
+                        (StoreCode: "S01", ProductCode: "P-SET"),
+                    }
+                );
+            await _db.Ado.CommitTranAsync();
+        }
+        catch
+        {
+            await _db.Ado.RollbackTranAsync();
+            throw;
+        }
+
+        var targetRows = await _db.Queryable<StoreMultiCodeProduct>()
+            .Where(row => row.StoreCode == "S01" && row.ProductCode == "P-SET")
+            .ToListAsync();
+        var otherStoreRows = await _db.Queryable<StoreMultiCodeProduct>()
+            .Where(row => row.StoreCode == "S02" && row.ProductCode == "P-SET")
+            .ToListAsync();
+
+        Assert.Empty(result.Failures);
+        Assert.Equal(1, result.AutoRepairedStoreGroupCount);
+        Assert.Equal(2, result.AutoRepairedRelationCount);
+        Assert.Equal(2, targetRows.Count);
+        Assert.Empty(otherStoreRows);
+    }
+
+    [Fact]
+    public async Task RepairMissingStoreRelationsLockedAsync_未指定精确组时保留全部候选门店行为()
+    {
+        await SeedMissingStoreRelationsForTwoStoresAsync();
+
+        await _db.Ado.BeginTranAsync();
+        SetChildStoreRelationRepairResult result;
+        try
+        {
+            var lockScope = await SetChildPurchasePriceMutationLock.AcquireProductsAsync(
+                _db,
+                new[] { "P-SET" }
+            );
+            result = await new SetChildPurchasePriceService(_db)
+                .RepairMissingStoreRelationsLockedAsync(
+                    lockScope,
+                    new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["P-SET"] = 10m,
+                    },
+                    "测试管理员"
+                );
+            await _db.Ado.CommitTranAsync();
+        }
+        catch
+        {
+            await _db.Ado.RollbackTranAsync();
+            throw;
+        }
+
+        var rows = await _db.Queryable<StoreMultiCodeProduct>()
+            .Where(row => row.ProductCode == "P-SET")
+            .ToListAsync();
+        var orderedStoreCodes = rows
+            .OrderBy(row => row.StoreCode, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.MultiCodeProductCode, StringComparer.OrdinalIgnoreCase)
+            .Select(row => row.StoreCode)
+            .ToArray();
+
+        Assert.Empty(result.Failures);
+        Assert.Equal(2, result.AutoRepairedStoreGroupCount);
+        Assert.Equal(4, result.AutoRepairedRelationCount);
+        Assert.Equal(new[] { "S01", "S01", "S02", "S02" }, orderedStoreCodes);
+    }
+
+    [Fact]
+    public void ResolveFailedRepairProductCodes_超过错误明细上限时保守拒绝全部计划商品()
+    {
+        var validation = new SetChildPurchasePriceWritebackResultDto();
+        validation.StoreMultiCodeProduct.SkippedGroupCount = 101;
+        validation.Errors = Enumerable.Range(0, 100)
+            .Select(index => new SetChildPurchasePriceWritebackError
+            {
+                TableName = "StoreMultiCodeProduct",
+                StoreCode = $"S{index:000}",
+                ProductCode = "P-FIRST",
+                Reason = "门店子项结构异常",
+            })
+            .ToList();
+
+        // 第 101 条错误属于 P-AFTER-LIMIT，但展示明细已达到上限，无法从 Errors 归因。
+        var failedProductCodes = SetChildPurchasePriceService.ResolveFailedRepairProductCodes(
+            validation,
+            new[] { "P-FIRST", "P-AFTER-LIMIT" }
+        );
+
+        Assert.Equal(2, failedProductCodes.Count);
+        Assert.Contains("P-FIRST", failedProductCodes);
+        Assert.Contains("P-AFTER-LIMIT", failedProductCodes);
+    }
+
     public void Dispose()
     {
         _db.Dispose();
@@ -1043,6 +1162,23 @@ public sealed class SetChildPurchasePriceServiceTests : IDisposable
         {
             BuildStoreRow("STORE-A", "CHILD-A", 20m, 50m),
             BuildStoreRow("STORE-B", "CHILD-B", 30m, 50m),
+        }).ExecuteCommandAsync();
+    }
+
+    private async Task SeedMissingStoreRelationsForTwoStoresAsync()
+    {
+        await SeedCompleteSetAsync();
+        await _db.Deleteable<StoreMultiCodeProduct>().ExecuteCommandAsync();
+        await _db.Insertable(new StoreRetailPrice
+        {
+            UUID = "STORE-PRICE-S02",
+            StoreCode = "S02",
+            ProductCode = "P-SET",
+            StoreProductCode = "S02-P-SET",
+            PurchasePrice = 30m,
+            StoreRetailPriceValue = 90m,
+            IsActive = true,
+            IsDeleted = false,
         }).ExecuteCommandAsync();
     }
 
