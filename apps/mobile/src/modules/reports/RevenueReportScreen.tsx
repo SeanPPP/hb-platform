@@ -1079,7 +1079,7 @@ export function RevenueReportScreen({
               <View style={styles.rankingActions}>
                 <Text variant="bodySmall" style={[styles.muted, styles.rankingStatusText]} numberOfLines={1}>
                   {summaryLoading
-                    ? t("reports.states.refreshingStatistics")
+                    ? t("loading")
                     : summaryPending
                     ? t(summaryPollingExhausted
                         ? "reports.states.statisticsIncomplete"
@@ -1134,7 +1134,7 @@ export function RevenueReportScreen({
           <>
             {summaryLoading ? (
               <View style={styles.summaryTableState}>
-                <StateBox label={t("reports.states.refreshingStatistics")} loading />
+                <StateBox label={t("loading")} loading />
               </View>
             ) : summaryError ? (
               <View style={styles.summaryTableState}>
