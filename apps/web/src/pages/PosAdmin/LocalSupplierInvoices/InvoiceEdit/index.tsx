@@ -551,6 +551,7 @@ export default function InvoiceEditPage() {
 
   /* ---- 涨跌过滤 ---- */
   const [priceFilter, setPriceFilter] = useState<PriceFilter>('all')
+  const [productTypeFilter, setProductTypeFilter] = useState<'all' | 'unknown' | 0 | 1 | 2>('all')
   const [productStatusFilter, setProductStatusFilter] = useState<StatusFilterValue<ProductStatusFilter>>('all')
   const [barcodeStatusFilter, setBarcodeStatusFilter] = useState<StatusFilterValue<BarcodeStatusFilter>>('all')
   const [actionTypeFilter, setActionTypeFilter] = useState<ActionTypeFilterValue>('all')
@@ -858,10 +859,25 @@ export default function InvoiceEditPage() {
   // 状态统计始终基于全部明细计算，不受当前搜索和过滤条件影响。
   const detailStatusStats = useMemo(() => getDetailStatusStats(details, rowActions), [details, rowActions])
 
+  const productTypeStats = useMemo(() => [
+    { value: 0 as const, label: t('posAdmin.products.normalProduct', '单品'), color: 'default' },
+    { value: 1 as const, label: t('posAdmin.products.setProduct', '套装'), color: 'blue' },
+    { value: 2 as const, label: t('posAdmin.products.multiCodeProductShort', '多码'), color: 'purple' },
+    { value: 'unknown' as const, label: t('common.unknown', '未知'), color: 'default' },
+  ].map((option) => ({
+    ...option,
+    count: details.filter((detail) => option.value === 'unknown'
+      ? ![0, 1, 2].includes(detail.productType ?? -1)
+      : detail.productType === option.value).length,
+  })), [details, t])
+
   // 过滤后数据
   const filteredDetails = useMemo(
     () =>
-      filterInvoiceDetails(details, {
+      filterInvoiceDetails(details.filter((detail) => productTypeFilter === 'all'
+        || (productTypeFilter === 'unknown'
+          ? ![0, 1, 2].includes(detail.productType ?? -1)
+          : detail.productType === productTypeFilter)), {
         searchText,
         priceFilter,
         productStatusFilter,
@@ -869,7 +885,7 @@ export default function InvoiceEditPage() {
         actionTypeFilter,
         rowActions,
     }),
-    [details, searchText, priceFilter, productStatusFilter, barcodeStatusFilter, actionTypeFilter, rowActions],
+    [details, searchText, priceFilter, productTypeFilter, productStatusFilter, barcodeStatusFilter, actionTypeFilter, rowActions],
   )
   const inlineNavigationDetails = useMemo(
     () =>
@@ -993,6 +1009,7 @@ export default function InvoiceEditPage() {
   const handleClearAllOuterFilters = useCallback(() => {
     setSearchText('')
     setPriceFilter('all')
+    setProductTypeFilter('all')
     setProductStatusFilter('all')
     setBarcodeStatusFilter('all')
     setActionTypeFilter('all')
@@ -1031,6 +1048,16 @@ export default function InvoiceEditPage() {
         color: 'green',
         label: t('posAdmin.invoiceDetail.activePriceDownFilter', '降价'),
         onClose: () => setPriceFilter('all'),
+      })
+    }
+
+    if (productTypeFilter !== 'all') {
+      const option = productTypeStats.find((item) => item.value === productTypeFilter)
+      tags.push({
+        key: 'product-type',
+        color: option?.color,
+        label: `${t('posAdmin.products.productTypeLabel', '商品类型')}：${option?.label}`,
+        onClose: () => setProductTypeFilter('all'),
       })
     }
 
@@ -1086,6 +1113,8 @@ export default function InvoiceEditPage() {
     priceFilter,
     productStatusFilter,
     productStatusFilterLabels,
+    productTypeFilter,
+    productTypeStats,
     searchText,
     t,
   ])
@@ -2609,6 +2638,20 @@ export default function InvoiceEditPage() {
       ),
     },
     {
+      title: renderCompactHeader(t('posAdmin.products.productTypeLabel', '商品类型')),
+      dataIndex: 'productType',
+      width: 82,
+      align: 'center',
+      render: (value: number | null | undefined) => {
+        // 仅显示主档返回的类型，不能按订单操作或副码数量推断。
+        if (value == null) return '--'
+        if (value === 0) return <Tag>{t('posAdmin.products.normalProduct', '单品')}</Tag>
+        if (value === 1) return <Tag color="blue">{t('posAdmin.products.setProduct', '套装')}</Tag>
+        if (value === 2) return <Tag color="purple">{t('posAdmin.products.multiCodeProductShort', '多码')}</Tag>
+        return <Tag>{value}</Tag>
+      },
+    },
+    {
       title: renderCompactHeader(t('posAdmin.invoiceDetail.quantity', '数量')),
       dataIndex: 'quantity',
       width: 58,
@@ -3050,6 +3093,24 @@ export default function InvoiceEditPage() {
         <div style={{ marginBottom: 12 }}>
           <Space wrap size={8}>
             <span style={{ fontWeight: 500 }}>{t('posAdmin.invoiceDetail.statusStatsTitle', '状态统计')}</span>
+            <span style={{ color: '#595959' }}>{t('posAdmin.products.productTypeLabel', '商品类型')}</span>
+            <Tag
+              color="blue"
+              style={getStatusStatsTagStyle(productTypeFilter === 'all')}
+              onClick={() => setProductTypeFilter('all')}
+            >
+              {t('posAdmin.invoiceDetail.statusStatsAll', '全部 {{count}}', { count: details.length })}
+            </Tag>
+            {productTypeStats.filter((option) => option.value !== 'unknown' || option.count > 0).map((option) => (
+              <Tag
+                key={option.value}
+                color={option.color}
+                style={getStatusStatsTagStyle(productTypeFilter === option.value)}
+                onClick={() => setProductTypeFilter(productTypeFilter === option.value ? 'all' : option.value)}
+              >
+                {option.label} {option.count}
+              </Tag>
+            ))}
             <span style={{ color: '#595959' }}>{t('posAdmin.invoiceDetail.productStatusLabel', '商品状态')}</span>
             <Tag
               color={statusStatsTagColors.product.all}
@@ -3287,7 +3348,7 @@ export default function InvoiceEditPage() {
           columns={columns}
           pagination={false}
           onChange={handleTableChange}
-          scroll={{ x: 1600, y: tableScrollY }}
+          scroll={{ x: 1682, y: tableScrollY }}
           className="invoice-detail-compact-table"
           rowSelection={{
             fixed: true,

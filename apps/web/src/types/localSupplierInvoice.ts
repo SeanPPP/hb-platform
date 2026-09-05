@@ -54,6 +54,8 @@ export interface LocalSupplierInvoiceItemDto {
   barcode?: string
   additionalBarcodes?: string[]
   productName?: string
+  /** 商品主档当前类型；未匹配主档时为空，仅用于展示。 */
+  productType?: number | null
   specification?: string
   unit?: string
   quantity?: number
