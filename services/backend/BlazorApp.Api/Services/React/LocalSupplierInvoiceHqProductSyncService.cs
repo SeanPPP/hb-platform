@@ -239,7 +239,8 @@ namespace BlazorApp.Api.Services.React
                 .ToList();
             var targetStoreCodes = (request.TargetStoreCodes ?? new List<string>())
                 .Where(x => !string.IsNullOrWhiteSpace(x))
-                .Distinct()
+                .Select(x => x.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
             if (detailGuids.Count == 0)
@@ -275,19 +276,47 @@ namespace BlazorApp.Api.Services.React
                 if (details.Count == 0)
                     return ApiResponse<UpdateHqProductsResult>.Error("未找到要更新的明细", "NOT_FOUND", result);
 
-                var activeStoreCodes = await db.Queryable<Store>()
-                    .Where(x => x.IsActive && x.IsDeleted == false)
-                    .Select(x => x.StoreCode)
+                // 保留停用和软删除档案用于目标校验；仅 HBweb 完全没有档案的分店允许跳过。
+                var localStores = await db.Queryable<Store>()
+                    .Select(x => new { x.StoreCode, x.IsActive, x.IsDeleted })
                     .ToListAsync();
-                activeStoreCodes = activeStoreCodes
-                    .Where(x => !string.IsNullOrWhiteSpace(x))
-                    .Distinct()
+                var localStoreCodes = localStores
+                    .Where(x => !string.IsNullOrWhiteSpace(x.StoreCode))
+                    .Select(x => x.StoreCode.Trim())
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                var skippedStoreCodes = targetStoreCodes
+                    .Where(storeCode => !localStoreCodes.Contains(storeCode))
                     .ToList();
-                if (activeStoreCodes.Count == 0)
-                    return ApiResponse<UpdateHqProductsResult>.Error("未找到启用分店", "NO_ACTIVE_STORE", result);
+                if (skippedStoreCodes.Count > 0)
+                {
+                    _logger.LogInformation(
+                        "更新HQ商品跳过HBweb无档案分店 InvoiceGuid={InvoiceGuid} StoreCodes={StoreCodes}",
+                        invoiceGuid,
+                        string.Join(", ", skippedStoreCodes)
+                    );
+                }
+                targetStoreCodes = targetStoreCodes.Where(localStoreCodes.Contains).ToList();
+                if (targetStoreCodes.Count == 0)
+                {
+                    return ApiResponse<UpdateHqProductsResult>.Error(
+                        "没有可更新的 HBweb 分店",
+                        "VALIDATION_ERROR",
+                        result
+                    );
+                }
+
+                var activeStoreCodes = localStores
+                    .Where(x => x.IsActive && !x.IsDeleted && !string.IsNullOrWhiteSpace(x.StoreCode))
+                    .Select(x => x.StoreCode.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var activeStoreCodeMap = activeStoreCodes.ToDictionary(
+                    storeCode => storeCode,
+                    StringComparer.OrdinalIgnoreCase
+                );
 
                 var invalidTargetStores = targetStoreCodes
-                    .Where(storeCode => !activeStoreCodes.Contains(storeCode))
+                    .Where(storeCode => !activeStoreCodeMap.ContainsKey(storeCode))
                     .ToList();
                 if (invalidTargetStores.Count > 0)
                 {
@@ -297,11 +326,14 @@ namespace BlazorApp.Api.Services.React
                         result
                     );
                 }
+                // 使用 HBweb 档案中的规范编码，后续所有 HQ 分店写入共用同一目标集合。
+                targetStoreCodes = targetStoreCodes.Select(storeCode => activeStoreCodeMap[storeCode]).ToList();
 
                 var updateItems = new List<PreparedSyncItem>();
                 var candidateProductCodes = details.Select(_ => UuidHelper.GenerateUuid7()).ToList();
                 var auditBatchGuid = Guid.NewGuid();
                 var hbwebCreatedBeforeLocalTransaction = result.HbwebCreated;
+                var relationRepair = new SetChildStoreRelationRepairResult();
                 await db.Ado.BeginTranAsync();
                 try
                 {
@@ -338,8 +370,67 @@ namespace BlazorApp.Api.Services.React
                     );
                     if (preparedProductCodes.Count > 0)
                     {
-                        // 即使本次只推送 HQ 字段，也不能绕过本地坏组；无法校正时整笔本地事务回滚。
-                        await new SetChildPurchasePriceService(db).RecalculateLockedAsync(
+                        var costWriteback = new SetChildPurchasePriceService(db);
+                        var preparedProducts = updateItems
+                            .Where(item => !string.IsNullOrWhiteSpace(item.Product.ProductCode))
+                            .GroupBy(item => item.Product.ProductCode!.Trim(), StringComparer.OrdinalIgnoreCase)
+                            .ToDictionary(group => group.Key, group => group.First().Product, StringComparer.OrdinalIgnoreCase);
+                        var warehouseCostProductCodes = preparedProducts
+                            .Where(pair => pair.Value.PurchasePrice.GetValueOrDefault() <= 0m)
+                            .Select(pair => pair.Key)
+                            .ToList();
+                        var warehouseRows = new List<WarehouseProduct>();
+                        foreach (var codeBatch in warehouseCostProductCodes.Chunk(LocalWriteBatchSize))
+                        {
+                            var codes = codeBatch.ToList();
+                            warehouseRows.AddRange(
+                                await db.Queryable<WarehouseProduct>()
+                                    .Where(row => codes.Contains(row.ProductCode) && !row.IsDeleted)
+                                    .ToListAsync()
+                            );
+                        }
+                        var warehousePurchasePrices = warehouseRows
+                            .GroupBy(row => row.ProductCode.Trim(), StringComparer.OrdinalIgnoreCase)
+                            .ToDictionary(
+                                group => group.Key,
+                                group => group.First().ImportPrice.GetValueOrDefault(),
+                                StringComparer.OrdinalIgnoreCase
+                            );
+                        // 补齐门禁与正式全局重算使用同一成本来源，不把本单进货价写入既有主档。
+                        var repairPurchasePrices = preparedProducts.ToDictionary(
+                            pair => pair.Key,
+                            pair => pair.Value.PurchasePrice.GetValueOrDefault() > 0m
+                                ? pair.Value.PurchasePrice!.Value
+                                : warehousePurchasePrices.GetValueOrDefault(pair.Key),
+                            StringComparer.OrdinalIgnoreCase
+                        );
+                        // 明确覆盖全部 HBweb 启用分店，包括尚无门店主价格和多码投影的组。
+                        var repairGroups = activeStoreCodes
+                            .SelectMany(storeCode => preparedProductCodes.Select(productCode =>
+                                (StoreCode: (string?)storeCode, ProductCode: (string?)productCode)
+                            ))
+                            .ToList();
+                        relationRepair = await costWriteback.RepairMissingStoreRelationsLockedAsync(
+                            childCostLockScope,
+                            repairPurchasePrices,
+                            updatedBy,
+                            exactStoreGroups: repairGroups
+                        );
+                        if (relationRepair.Failures.Count > 0)
+                        {
+                            var reasons = string.Join(
+                                "；",
+                                relationRepair.Failures.Values
+                                    .OrderBy(failure => failure.ProductCode, StringComparer.OrdinalIgnoreCase)
+                                    .Select(failure =>
+                                        $"{failure.ProductCode} / 分店 {failure.StoreCode ?? "启用分店"} [{failure.Code}]: {failure.Message}"
+                                    )
+                            );
+                            throw new InvalidOperationException($"门店套装或多码关系无法安全补齐。{reasons}");
+                        }
+
+                        // 补齐不替代严格校验；成本或结构仍不合法时，新增关系随本地事务整体回滚。
+                        await costWriteback.RecalculateLockedAsync(
                             childCostLockScope,
                             preparedProductCodes,
                             activeStoreCodes,
@@ -366,6 +457,15 @@ namespace BlazorApp.Api.Services.React
                     throw;
                 }
 
+                if (relationRepair.AutoRepairedRelationCount > 0)
+                {
+                    _logger.LogInformation(
+                        "更新HQ商品已提交门店子项补齐 InvoiceGuid={InvoiceGuid} RepairedGroupCount={RepairedGroupCount} RepairedRelationCount={RepairedRelationCount}",
+                        invoiceGuid,
+                        relationRepair.AutoRepairedStoreGroupCount,
+                        relationRepair.AutoRepairedRelationCount
+                    );
+                }
                 updateItems = await AttachDomesticSupplierCodesAsync(db, updateItems);
 
                 foreach (var item in updateItems)
