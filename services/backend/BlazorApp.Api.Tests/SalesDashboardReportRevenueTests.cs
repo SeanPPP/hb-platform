@@ -1046,6 +1046,151 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     }
 
     [Fact]
+    public async Task GetExecutiveBranchPerformanceAsync_历史日期StoreSales完成快照跳过来源覆盖扫描()
+    {
+        var currentDate = new DateTime(2026, 7, 14);
+        var compareDate = new DateTime(2025, 7, 15);
+        await SeedStoreAsync("S1", "Store A");
+        await SeedStoreSalesStatisticAsync(currentDate, "S1", "Store A", 88m, 1);
+        await SeedStoreSalesStatisticAsync(compareDate, "S1", "Store A", 66m, 1);
+        await _localDb.Insertable(new[]
+        {
+            CreateFreshStoreRefreshState(currentDate),
+            CreateFreshStoreRefreshState(compareDate),
+        }).ExecuteCommandAsync();
+        var coverageReadCount = 0;
+        var service = CreateService();
+        service.PosmStoreSalesCoverageReadTestInterceptor = () => coverageReadCount += 1;
+        _hbSalesDb.Aop.OnLogExecuting = (_, _) => throw new InvalidOperationException("历史完成快照不得读取 HBSales 来源");
+        var result = await service.GetExecutiveBranchPerformanceAsync(
+            new DateRangeDto
+            {
+                StartDate = currentDate,
+                EndDate = currentDate,
+                CompareStartDate = compareDate,
+                CompareEndDate = compareDate,
+            },
+            branchCodes: new List<string> { "S1" }
+        );
+
+        Assert.False(result.StatisticsPending);
+        Assert.Equal(88m, Assert.Single(result.Items).Revenue);
+        Assert.Equal(66m, Assert.Single(result.Items).RevenueLY);
+        Assert.Equal(0, coverageReadCount);
+    }
+
+    [Theory]
+    [InlineData(null, true, true, true)]
+    [InlineData(SalesStatisticRefreshStatus.Running, true, true, true)]
+    [InlineData(SalesStatisticRefreshStatus.Failed, true, true, true)]
+    [InlineData(SalesStatisticRefreshStatus.Stale, true, true, true)]
+    [InlineData(SalesStatisticRefreshStatus.Fresh, false, true, true)]
+    [InlineData(SalesStatisticRefreshStatus.Fresh, true, false, true)]
+    [InlineData(SalesStatisticRefreshStatus.Fresh, true, true, false)]
+    public async Task GetBranchDailyPerformanceAsync_历史快照证明不完整时仍核验来源(
+        string? status, bool completed, bool aggregated, bool hasStatisticRows)
+    {
+        var date = DateTime.Today.AddDays(-2);
+        await SeedStoreAsync("S1", "Store A");
+        await SeedPosmOrderWithPaymentAsync("uncertified", date.AddHours(10), "S1", 88m, 1);
+        if (hasStatisticRows)
+            await SeedStoreSalesStatisticAsync(date, "S1", "Store A", 88m, 1);
+        if (status != null)
+        {
+            var state = CreateFreshStoreRefreshState(date);
+            state.Status = status;
+            state.CompletedAtUtc = completed ? DateTime.UtcNow : null;
+            state.LastAggregatedAtUtc = aggregated ? DateTime.UtcNow : null;
+            await _localDb.Insertable(state).ExecuteCommandAsync();
+        }
+
+        var coverageReads = 0;
+        var service = CreateService();
+        service.PosmStoreSalesCoverageReadTestInterceptor = () => coverageReads++;
+        service.StoreStatisticsRefreshTestInterceptor = _ => Task.CompletedTask;
+        var result = await service.GetBranchDailyPerformanceAsync(
+            new DateRangeDto { StartDate = date, EndDate = date }, new List<string> { "S1" });
+
+        Assert.True(coverageReads > 0);
+        Assert.Equal(!hasStatisticRows, result.StatisticsPending);
+    }
+
+    [Fact]
+    public async Task GetBranchDailyPerformanceAsync_当天即使有完成快照仍核验来源()
+    {
+        var date = DateTime.Today;
+        await SeedStoreAsync("S1", "Store A");
+        await SeedStoreSalesStatisticAsync(date, "S1", "Store A", 88m, 1);
+        await SeedPosmOrderWithPaymentAsync("today-fresh", date.AddHours(1), "S1", 88m, 1);
+        await _localDb.Insertable(CreateFreshStoreRefreshState(date)).ExecuteCommandAsync();
+
+        var coverageReads = 0;
+        var service = CreateService();
+        service.PosmStoreSalesCoverageReadTestInterceptor = () => coverageReads++;
+        var result = await service.GetBranchDailyPerformanceAsync(
+            new DateRangeDto { StartDate = date, EndDate = date }, new List<string> { "S1" });
+
+        Assert.False(result.StatisticsPending);
+        Assert.Equal(1, coverageReads);
+    }
+
+    [Fact]
+    public async Task GetBranchDailyPerformanceAsync_混合区间只扫描未完成日期的来源()
+    {
+        var first = DateTime.Today.AddDays(-4);
+        var middle = first.AddDays(1);
+        var last = first.AddDays(2);
+        await SeedStoreAsync("S1", "Store A");
+        foreach (var date in new[] { first, middle, last })
+            await SeedStoreSalesStatisticAsync(date, "S1", "Store A", 88m, 1);
+        await _localDb.Insertable(new[]
+        {
+            CreateFreshStoreRefreshState(first), CreateFreshStoreRefreshState(last),
+        }).ExecuteCommandAsync();
+        await SeedPosmOrderWithPaymentAsync("mixed-middle", middle.AddHours(10), "S1", 88m, 1);
+
+        var coverageReads = 0;
+        var refreshDates = new List<DateTime>();
+        var service = CreateService();
+        service.PosmStoreSalesCoverageReadTestInterceptor = () => coverageReads++;
+        service.StoreStatisticsRefreshTestInterceptor = date =>
+        {
+            refreshDates.Add(date);
+            return Task.CompletedTask;
+        };
+        var result = await service.GetBranchDailyPerformanceAsync(
+            new DateRangeDto { StartDate = first, EndDate = last }, new List<string> { "S1" });
+
+        Assert.False(result.StatisticsPending);
+        Assert.Equal(3, result.Items.Count);
+        Assert.Equal(264m, result.Items.Sum(row => row.Revenue));
+        Assert.Equal(1, coverageReads);
+        // 已完成的首尾日期没有原始来源；若仍扫描整个区间，就会误触发它们的补算。
+        Assert.Empty(refreshDates);
+    }
+
+    [Fact]
+    public async Task GetExecutiveBranchPerformanceAsync_完成历史快照保留授权范围内零销售分店()
+    {
+        var date = DateTime.Today.AddDays(-2);
+        await SeedStoreAsync("S1", "Store A");
+        await SeedStoreAsync("S2", "Store B");
+        await SeedStoreSalesStatisticAsync(date, "S1", "Store A", 88m, 1);
+        await _localDb.Insertable(CreateFreshStoreRefreshState(date)).ExecuteCommandAsync();
+        var service = CreateService();
+        service.PosmStoreSalesCoverageReadTestInterceptor = () => throw new InvalidOperationException("不应读取来源");
+
+        var result = await service.GetExecutiveBranchPerformanceAsync(
+            new DateRangeDto { StartDate = date, EndDate = date }, branchCodes: new List<string> { "S1", "S2" });
+
+        Assert.False(result.StatisticsPending);
+        Assert.Equal(2, result.StatisticsExpectedBranchCount);
+        Assert.Equal(2, result.Items.Count);
+        Assert.Equal(88m, result.Items.Single(row => row.BranchCode == "S1").Revenue);
+        Assert.Equal(0m, result.Items.Single(row => row.BranchCode == "S2").Revenue);
+    }
+
+    [Fact]
     public async Task GetBranchDailyPerformanceAsync_快速补算漏写真实销售分店时仍返回待完成包络()
     {
         var date = new DateTime(2026, 7, 10);
@@ -4097,6 +4242,15 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
     private static SalesStatisticRefreshState CreateFreshProductRefreshState(DateTime date) => new()
     {
         StatisticType = SalesStatisticType.ProductStoreDaily,
+        Date = date,
+        Status = SalesStatisticRefreshStatus.Fresh,
+        LastAggregatedAtUtc = DateTime.UtcNow,
+        CompletedAtUtc = DateTime.UtcNow,
+    };
+
+    private static SalesStatisticRefreshState CreateFreshStoreRefreshState(DateTime date) => new()
+    {
+        StatisticType = SalesStatisticType.StoreSales,
         Date = date,
         Status = SalesStatisticRefreshStatus.Fresh,
         LastAggregatedAtUtc = DateTime.UtcNow,

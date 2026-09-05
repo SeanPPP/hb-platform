@@ -4222,8 +4222,17 @@ namespace BlazorApp.Api.Services.React
 
         private async Task<string> GetStatisticsCacheVersionAsync()
         {
-            var freshness = await GetStatisticsFreshnessAsync();
-            var scheduledVersion = freshness.LastSuccessfulAtUtc?.Ticks.ToString() ?? "none";
+            // 缓存只依赖最近成功完成时间，无需额外读取最新任务的运行状态。
+            var completedAt = await _context.Db.Queryable<ScheduledTaskLog>()
+                .Where(task =>
+                    task.TaskType == TaskType.UpdateCurrentHourStatistics
+                    && task.Status == ScheduledTaskStatus.Success
+                    && task.CompletedAt != null
+                )
+                .OrderByDescending(task => task.CompletedAt)
+                .Select(task => task.CompletedAt)
+                .FirstAsync();
+            var scheduledVersion = completedAt?.Ticks.ToString() ?? "none";
             var generation = Volatile.Read(ref GetReportStatisticsCacheGenerationState().Value);
             return $"{scheduledVersion}:g{generation}";
         }
@@ -4715,6 +4724,79 @@ namespace BlazorApp.Api.Services.React
             if (expectedDates.Count == 0)
                 return new List<DateTime>();
 
+            // 历史日期的 StoreSales 完成快照已经由后台任务写入状态表；只要统计表确实有行，
+            // 这里无需为了每次报表请求再次扫描 POSM/HBSales 原始单据。当天或未认证日期仍走来源身份核验。
+            var certifiedDates = await GetCertifiedStoreStatisticDatesAsync(expectedDates);
+            var uncertifiedDates = expectedDates
+                .Where(date => !certifiedDates.Contains(date.Date))
+                .ToList();
+            if (uncertifiedDates.Count == 0)
+                return new List<DateTime>();
+
+            var missingDates = new List<DateTime>();
+            foreach (var segment in EnumerateContiguousDateSegments(uncertifiedDates))
+            {
+                missingDates.AddRange(
+                    await GetMissingStoreStatisticDatesFromSourceAsync(
+                        segment.StartDate,
+                        segment.EndDate,
+                        branchCodes
+                    )
+                );
+            }
+
+            return missingDates.Distinct().OrderBy(date => date).ToList();
+        }
+
+        private async Task<HashSet<DateTime>> GetCertifiedStoreStatisticDatesAsync(
+            IReadOnlyCollection<DateTime> expectedDates
+        )
+        {
+            var historicalDates = expectedDates
+                .Select(date => date.Date)
+                .Where(date => date < DateTime.Today)
+                .Distinct()
+                .ToList();
+            if (historicalDates.Count == 0)
+                return new HashSet<DateTime>();
+
+            var startDate = historicalDates.Min();
+            var endExclusive = historicalDates.Max().AddDays(1);
+            var certifiedStateDates = await _context.Db.Queryable<SalesStatisticRefreshState>()
+                .Where(state =>
+                    state.StatisticType == SalesStatisticType.StoreSales
+                    && state.Date >= startDate
+                    && state.Date < endExclusive
+                    && state.Status == SalesStatisticRefreshStatus.Fresh
+                    && state.CompletedAtUtc.HasValue
+                    && state.LastAggregatedAtUtc.HasValue
+                    // 仅有完成标记还不够；没有统计行的日期继续核验零销售或漏写。
+                    && SqlFunc.Subqueryable<StoreSalesStatistic>()
+                        .Where(statistic =>
+                            statistic.Date >= state.Date.Date
+                            && statistic.Date < state.Date.Date.AddDays(1)
+                        )
+                        .Any()
+                )
+                .Select(state => state.Date)
+                .ToListAsync();
+            var expectedDateSet = historicalDates.ToHashSet();
+            return certifiedStateDates
+                .Select(date => date.Date)
+                .Where(expectedDateSet.Contains)
+                .ToHashSet();
+        }
+
+        private async Task<List<DateTime>> GetMissingStoreStatisticDatesFromSourceAsync(
+            DateTime startDate,
+            DateTime endDate,
+            List<string> branchCodes
+        )
+        {
+            var expectedDates = EnumerateReportDates(startDate, endDate);
+            if (expectedDates.Count == 0)
+                return new List<DateTime>();
+
             var query = _context.Db.Queryable<StoreSalesStatistic>()
                 .Where(s => s.Date >= startDate && s.Date <= endDate);
             if (branchCodes.Count > 0)
@@ -4742,6 +4824,34 @@ namespace BlazorApp.Api.Services.React
                 rows,
                 expectedSalesBranchesByDate
             );
+        }
+
+        private static IEnumerable<(DateTime StartDate, DateTime EndDate)> EnumerateContiguousDateSegments(
+            IReadOnlyCollection<DateTime> dates
+        )
+        {
+            DateTime? segmentStart = null;
+            DateTime? previousDate = null;
+            foreach (var date in dates.Select(value => value.Date).Distinct().OrderBy(value => value))
+            {
+                if (!segmentStart.HasValue)
+                {
+                    segmentStart = date;
+                    previousDate = date;
+                    continue;
+                }
+
+                if (date != previousDate!.Value.AddDays(1))
+                {
+                    yield return (segmentStart.Value, previousDate.Value);
+                    segmentStart = date;
+                }
+
+                previousDate = date;
+            }
+
+            if (segmentStart.HasValue)
+                yield return (segmentStart.Value, previousDate!.Value);
         }
 
         private async Task<List<DateTime>> GetMissingHourlyStatisticDatesAsync(
