@@ -40,6 +40,10 @@ services:
       # 中央策略先登记并验证后再启用；关闭时原生更新继续使用 PosIpad 本地策略。
       - AppUpdate__CentralPolicyEnabled=${HBPOS_APP_UPDATE_CENTRAL_POLICY_ENABLED:-false}
       - AppUpdate__CheckApiKey=${WPF_APP_UPDATE_CHECK_API_KEY:?required}
+      # 设备请求经本地授权验证后转发中心，不向收银端暴露服务间密钥。
+      - RemoteMaintenance__Enabled=${REMOTE_MAINTENANCE_ENABLED:-false}
+      - RemoteMaintenance__CenterBaseUrl=https://hotbargain.vip/
+      - RemoteMaintenance__InterApiKey=${REMOTE_MAINTENANCE_INTER_API_KEY:-}
       - CashierAuthorization__Mode=${HBPOS_CASHIER_AUTHORIZATION_MODE:-Audit}
       # App Review 默认关闭；仅在审核窗口从服务器 .env 注入专用门店、UTC 到期时间和开通码 SHA-256。
       - PosIpadAppReview__Enabled=${HBPOS_IPAD_APP_REVIEW_ENABLED:-false}

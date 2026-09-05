@@ -1,0 +1,33 @@
+name: rustdesk-server
+
+# 固定官方版本和摘要；密钥与注册数据库必须挂载到进程实际工作目录。
+x-rustdesk: &rustdesk
+  image: rustdesk/rustdesk-server:1.1.16@sha256:8ecdab65deb7c84652a626380e31d11a8f1fbafd97916d57f95c20628f943c00
+  restart: unless-stopped
+  working_dir: /root
+  volumes:
+    - /www/rustdesk-server/data:/root
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: '3'
+
+services:
+  rustdesk-server:
+    <<: *rustdesk
+    container_name: rustdesk-server
+    command: [hbbs, -r, 'hotbargain.vip:21117', -k, _]
+    ports:
+      - '21115:21115/tcp'
+      - '21116:21116/tcp'
+      - '21116:21116/udp'
+    depends_on:
+      - rustdesk-relay
+
+  rustdesk-relay:
+    <<: *rustdesk
+    container_name: rustdesk-relay
+    command: [hbbr, -k, _]
+    ports:
+      - '21117:21117/tcp'

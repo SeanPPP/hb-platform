@@ -49,6 +49,7 @@ internal sealed class MainChildViewModelFactory
     private readonly ISharedHeldOrderRepository? _sharedHeldOrderRepository;
     private readonly ISharedHeldOrderPublicationWorker? _sharedHeldOrderPublicationWorker;
     private readonly IStoreReceiptProfileApiClient? _storeReceiptProfileApiClient;
+    private readonly IRemoteMaintenanceService? _remoteMaintenanceService;
 
     public MainChildViewModelFactory(
         IDeviceRegistrationWorkflowService deviceRegistrationWorkflowService,
@@ -89,7 +90,8 @@ internal sealed class MainChildViewModelFactory
         ISharedHeldOrderApiClient? sharedHeldOrderApiClient = null,
         ISharedHeldOrderRepository? sharedHeldOrderRepository = null,
         ISharedHeldOrderPublicationWorker? sharedHeldOrderPublicationWorker = null,
-        IStoreReceiptProfileApiClient? storeReceiptProfileApiClient = null)
+        IStoreReceiptProfileApiClient? storeReceiptProfileApiClient = null,
+        IRemoteMaintenanceService? remoteMaintenanceService = null)
     {
         _deviceRegistrationWorkflowService = deviceRegistrationWorkflowService;
         _receiptQueryService = receiptQueryService;
@@ -130,6 +132,7 @@ internal sealed class MainChildViewModelFactory
         _sharedHeldOrderRepository = sharedHeldOrderRepository;
         _sharedHeldOrderPublicationWorker = sharedHeldOrderPublicationWorker;
         _storeReceiptProfileApiClient = storeReceiptProfileApiClient;
+        _remoteMaintenanceService = remoteMaintenanceService;
     }
 
     public DeviceRegistrationViewModel CreateDeviceRegistrationViewModel(
@@ -430,7 +433,8 @@ internal sealed class MainChildViewModelFactory
             apiServerSettings: _apiServerSettings,
             operationAuthorizationService: _operationAuthorizationService,
             storeReceiptProfileApiClient: _storeReceiptProfileApiClient,
-            session: session);
+            session: session,
+            remoteMaintenanceService: _remoteMaintenanceService);
     }
 
     public CustomerDisplayViewModel CreateCustomerDisplayViewModel()

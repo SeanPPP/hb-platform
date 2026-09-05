@@ -77,6 +77,7 @@ public static class ServiceRegistration
         services.AddOptions<InstallmentCrossDeviceLifecycleOptions>();
         services.AddOptions<SharedHeldOrderOptions>();
         services.AddOptions<DeviceActivationOptions>();
+        services.AddOptions<RemoteMaintenanceGatewayOptions>();
         services.AddOptions<SquareTerminalRestOptions>()
             .Validate(
                 options => SquareTerminalRestOptions.IsValidApiVersion(options.ApiVersion),
@@ -108,6 +109,8 @@ public static class ServiceRegistration
             services.Configure<SharedHeldOrderOptions>(configuration.GetSection("SharedHeldOrders"));
             services.Configure<DeviceActivationOptions>(
                 configuration.GetSection(DeviceActivationOptions.SectionName));
+            services.Configure<RemoteMaintenanceGatewayOptions>(
+                configuration.GetSection(RemoteMaintenanceGatewayOptions.SectionName));
         }
 
         services.AddScoped<HbposSqlSugarContext>();
@@ -117,6 +120,7 @@ public static class ServiceRegistration
         services.AddScoped<IDeviceRegistrationRepository, SqlSugarDeviceRegistrationRepository>();
         services.AddScoped<IPosIpadAppReviewAuthorizationBoundary, PosIpadAppReviewAuthorizationBoundary>();
         services.AddScoped<IDeviceService, DeviceService>();
+        services.AddHttpClient<IRemoteMaintenanceGateway, RemoteMaintenanceGateway>();
         services.AddScoped<IDeviceActivationCodeService, DeviceActivationCodeService>();
         services.AddScoped<IDeviceAuthorizationService, DeviceAuthorizationService>();
         services.AddScoped<

@@ -37,7 +37,7 @@ using Microsoft.IdentityModel.Tokens; // JWT令牌验证
 // ===================== 应用程序入口点 =====================
 // 创建WebApplicationBuilder实例，读取命令行参数和配置文件
 // 这是ASP.NET Core 6+的新式启动方式，替代了传统的Startup.cs
-// 显式数据库模式仅支持 --schema=migrate 与 --schema=check。
+// 显式数据库模式仅支持 --schema=migrate、--schema=check 与 --schema=remote-maintenance。
 var schemaCommand = SchemaCommand.Parse(args);
 if (schemaCommand.Mode == SchemaCommandMode.Invalid)
 {
@@ -73,6 +73,7 @@ if (schemaCommand.Mode != SchemaCommandMode.Server)
     builder.Services.AddScoped<SqlSugarContext>();
     builder.Services.AddScoped<POSMSqlSugarContext>();
     builder.Services.AddScoped<SchemaMigrationCoordinator>();
+    builder.Services.AddScoped<RemoteMaintenanceSchemaMigrator>();
 
     WebApplication schemaApp;
     try
@@ -86,10 +87,9 @@ if (schemaCommand.Mode != SchemaCommandMode.Server)
         return;
     }
 
-    var explicitSchemaResult = await ExecuteSchemaOperationAsync(
-        schemaApp.Services,
-        schemaCommand.Mode
-    );
+    var explicitSchemaResult = schemaCommand.Mode is SchemaCommandMode.RemoteMaintenance or SchemaCommandMode.RemoteMaintenanceCheck
+        ? await ExecuteRemoteMaintenanceSchemaOperationAsync(schemaApp.Services, schemaCommand.Mode == SchemaCommandMode.RemoteMaintenanceCheck)
+        : await ExecuteSchemaOperationAsync(schemaApp.Services, schemaCommand.Mode);
     if (!explicitSchemaResult.Success)
     {
         schemaApp.Logger.LogError(
@@ -244,6 +244,10 @@ builder.Services
     )
     // SMTP 密码需要跨重启/部署解密，key ring 必须落在稳定目录，目录本身不提交到 git。
     .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath));
+// 远程维护 secret 复用主后端持久化 key ring，仅在代码层使用独立 purpose 隔离。
+builder.Services.AddSingleton<BlazorApp.Api.Security.RemoteMaintenanceSecretProtector>(sp =>
+    BlazorApp.Api.Security.RemoteMaintenanceDataProtection.CreateProtector(
+        sp.GetRequiredService<IDataProtectionProvider>()));
 
 var attendanceQrDataProtectionKeysPath = builder.Configuration.GetValue<string>(
     "AttendanceQrDataProtection:KeysPath");
@@ -700,6 +704,10 @@ builder.Services.Configure<AppUpdatePolicyOptions>(
 builder.Services.Configure<BrowserExtensionOptions>(
     builder.Configuration.GetSection(BrowserExtensionOptions.SectionName)
 );
+builder.Services.Configure<RemoteMaintenanceOptions>(
+    builder.Configuration.GetSection(RemoteMaintenanceOptions.SectionName));
+builder.Services.AddScoped<RemoteMaintenanceService>();
+builder.Services.AddScoped<RemoteMaintenanceSchemaReadiness>();
 builder.Services
     .AddOptions<PosHandheldUpdatePolicyOptions>()
     .Bind(builder.Configuration.GetSection("PosHandheldUpdatePolicy"))
@@ -1242,6 +1250,40 @@ static async Task<SchemaOperationResult> ExecuteSchemaOperationAsync(
             SchemaExitCodes.DatabaseFailure,
             SchemaDiagnosticCodes.DatabaseFailure
         );
+    }
+    finally
+    {
+        Console.CancelKeyPress -= cancelHandler;
+    }
+}
+
+static async Task<SchemaOperationResult> ExecuteRemoteMaintenanceSchemaOperationAsync(
+    IServiceProvider services,
+    bool checkOnly
+)
+{
+    using var schemaCancellation = new CancellationTokenSource();
+    ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
+    {
+        eventArgs.Cancel = true;
+        schemaCancellation.Cancel();
+    };
+    Console.CancelKeyPress += cancelHandler;
+    try
+    {
+        using var scope = services.CreateScope();
+        var migrator = scope.ServiceProvider.GetRequiredService<RemoteMaintenanceSchemaMigrator>();
+        return checkOnly
+            ? await migrator.CheckAsync(schemaCancellation.Token)
+            : await migrator.MigrateAsync(schemaCancellation.Token);
+    }
+    catch (OperationCanceledException)
+    {
+        return SchemaOperationResult.Failure(SchemaExitCodes.Cancelled, SchemaDiagnosticCodes.Cancelled);
+    }
+    catch (Exception)
+    {
+        return SchemaOperationResult.Failure(SchemaExitCodes.DatabaseFailure, SchemaDiagnosticCodes.DatabaseFailure);
     }
     finally
     {

@@ -308,6 +308,12 @@ namespace BlazorApp.Shared.Constants
             }
         }
 
+        public static class RemoteMaintenance
+        {
+            public const string View = "RemoteMaintenance.View";
+            public const string Manage = "RemoteMaintenance.Manage";
+        }
+
         public static class LocalPurchase
         {
             public const string View = "LocalPurchase.View";

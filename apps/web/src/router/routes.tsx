@@ -76,6 +76,7 @@ const LocalSupplierInvoiceSalesAnalysisPage = lazy(() => import('../pages/PosAdm
 const LocalSupplierPurchaseSalesAnalysisPage = lazy(() => import('../pages/PosAdmin/LocalSupplierPurchaseSalesAnalysis'))
 const InvoiceEditPage = lazy(() => import('../pages/PosAdmin/LocalSupplierInvoices/InvoiceEdit'))
 const SystemAppDownloadsPage = lazy(() => import('../pages/System/AppDownloads'))
+const SystemRemoteMaintenancePage = lazy(() => import('../pages/System/RemoteMaintenance'))
 const SystemCenterLogsPage = lazy(() => import('../pages/System/CenterLogs'))
 const SystemPerformanceBaselinePage = lazy(() => import('../pages/System/PerformanceBaseline'))
 const EmergencyLoginKeysPage = lazy(() => import('../pages/System/EmergencyLoginKeys'))
@@ -297,6 +298,17 @@ export const appRoutes: AppRouteItem[] = [
           accessKey: 'canViewAppDownloads',
         },
         element: <SystemAppDownloadsPage />,
+      },
+      {
+        path: '/system/remote-maintenance',
+        meta: {
+          title: 'menu.remoteMaintenance',
+          icon: 'BuildOutlined',
+          // 离开含临时凭据的页面时卸载，及时清空内存密码与轮询。
+          keepAlive: false,
+          accessKey: 'isAdmin',
+        },
+        element: <SystemRemoteMaintenancePage />,
       },
       {
         path: '/system/wpf-versions',

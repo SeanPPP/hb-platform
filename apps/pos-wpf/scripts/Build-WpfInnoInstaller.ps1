@@ -83,6 +83,8 @@ $outputRootFull = Resolve-FullPath $OutputRoot
 $versionOutputRoot = Join-Path $outputRootFull $normalizedVersion
 $publishDir = Join-Path $versionOutputRoot 'publish'
 $projectPath = Join-Path $RepoRoot 'apps\pos-wpf\src\Hbpos.Client.Wpf\Hbpos.Client.Wpf.csproj'
+$remoteStatusProjectPath = Join-Path $RepoRoot 'apps\pos-wpf\src\Hbpos.RemoteStatus\Hbpos.RemoteStatus.csproj'
+$remoteSetupProjectPath = Join-Path $RepoRoot 'apps\pos-wpf\src\Hbpos.RemoteMaintenance.Setup\Hbpos.RemoteMaintenance.Setup.csproj'
 $innoScript = Join-Path $RepoRoot 'apps\pos-wpf\installer\inno\Hbpos.Client.Wpf.iss'
 $iscc = Find-Iscc
 # 中文注释：旧 MSI ProductCode 是卸载边界，构建期先校验，避免坏 GUID 进入门店安装包。
@@ -127,6 +129,36 @@ dotnet publish $projectPath `
     -p:DebugType=None `
     -p:DebugSymbols=false `
     -o $publishDir
+
+# 中文注释：WPF 必须通过 all-users Inno 安装到 Program Files，helper 与状态服务
+# 才能从受保护目录运行。仅把 Setup DLL 放进 WPF 输出会导致运行时找不到可提权的 EXE。
+$remotePublishRoot = Join-Path $versionOutputRoot 'remote-maintenance'
+$remoteStatusPublishDir = Join-Path $remotePublishRoot 'agent'
+$remoteSetupPublishDir = Join-Path $remotePublishRoot 'helper'
+dotnet publish $remoteStatusProjectPath `
+    -c $Configuration `
+    -r win-x64 `
+    --self-contained true `
+    -p:PublishSingleFile=true `
+    -p:IncludeNativeLibrariesForSelfExtract=true `
+    -p:EnableWindowsTargeting=true `
+    -o $remoteStatusPublishDir
+dotnet publish $remoteSetupProjectPath `
+    -c $Configuration `
+    -r win-x64 `
+    --self-contained true `
+    -p:PublishSingleFile=true `
+    -p:IncludeNativeLibrariesForSelfExtract=true `
+    -p:EnableWindowsTargeting=true `
+    -o $remoteSetupPublishDir
+
+$statusExe = Join-Path $remoteStatusPublishDir 'Hbpos.RemoteStatus.exe'
+$helperExe = Join-Path $remoteSetupPublishDir 'Hbpos.RemoteMaintenance.Setup.exe'
+if (!(Test-Path -LiteralPath $statusExe) -or !(Test-Path -LiteralPath $helperExe)) {
+    throw "Remote maintenance publish output is incomplete; expected self-contained agent and helper EXEs."
+}
+Copy-Item -LiteralPath $statusExe -Destination $publishDir -Force
+Copy-Item -LiteralPath $helperExe -Destination $publishDir -Force
 
 $mainExe = Join-Path $publishDir 'Hbpos.Client.Wpf.exe'
 if (!(Test-Path -LiteralPath $mainExe)) {
