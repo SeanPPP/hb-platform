@@ -20,7 +20,7 @@ BEGIN
         [LastOperationId] uniqueidentifier NULL,
         [MonitorTokenHash] nvarchar(128) NULL,
         [CredentialCiphertext] nvarchar(2048) NULL,
-        [CommitResponseCiphertext] nvarchar(8192) NULL,
+    [CommitResponseCiphertext] nvarchar(max) NULL,
         [IsDeleted] bit NOT NULL CONSTRAINT [DF_HBweb_RemoteMaintenanceDevice_IsDeleted] DEFAULT 0
     );
 END;

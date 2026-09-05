@@ -57,7 +57,8 @@ public sealed class RemoteMaintenanceDevice
     [SugarColumn(Length = 2048, IsNullable = true)]
     public string? CredentialCiphertext { get; set; }
 
-    [SugarColumn(Length = 8192, IsNullable = true)]
+    // SQL Server 的 nvarchar 固定长度最多 4000；加密操作响应使用 max 保存。
+    [SugarColumn(ColumnDataType = "nvarchar(max)", IsNullable = true)]
     public string? CommitResponseCiphertext { get; set; }
 
     [SugarColumn(IsNullable = false)]
