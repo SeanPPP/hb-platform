@@ -145,6 +145,7 @@ public sealed class ProductHqSyncOutboxTests : IDisposable
     }
 
     [ProductHqSyncSqlServerFact]
+    [Trait("Category", "SQL")]
     public async Task SQLServer_HQ商品执行锁_独立连接同商品互斥且释放后可重取()
     {
         var connectionString = Environment.GetEnvironmentVariable("HB_TEST_SQLSERVER_CONNECTION")!;
