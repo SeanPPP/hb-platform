@@ -43,6 +43,7 @@
     <Compile Include="DeviceRegistrationReactServiceTests.cs" />
     <Compile Include="DeviceActivationCodeManagementTests.cs" />
     <Compile Include="RemoteMaintenanceContractTests.cs" />
+    <Compile Include="RemoteMaintenanceSchemaReadinessTests.cs" />
     <Compile Include="SchemaMigrationCoordinatorTests.cs" />
     <Compile Include="SchemaMigrationSqlServerIntegrationTests.cs" />
     <Compile Include="SchemaCommandProcessTests.cs" />

@@ -22,7 +22,10 @@ public sealed class RemoteMaintenanceSchemaReadiness(SqlSugarContext context, IL
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return await context.Db.Ado.GetIntAsync(ReadinessSql, cancellationToken) == 1;
+            // 此重载第二参数是 SQL 参数，不接受 CancellationToken；显式传空参数避免错误绑定。
+            var ready = await context.Db.Ado.GetIntAsync(ReadinessSql, Array.Empty<SqlSugar.SugarParameter>());
+            cancellationToken.ThrowIfCancellationRequested();
+            return ready == 1;
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception exception)
