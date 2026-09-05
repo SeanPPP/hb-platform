@@ -194,7 +194,8 @@ namespace BlazorApp.Api.Services.React
             SetChildPurchasePriceLockScope lockScope,
             IReadOnlyDictionary<string, decimal> requestedParentPurchasePrices,
             string updatedBy,
-            IEnumerable<(string? StoreCode, string? ProductCode)>? exactStoreGroups = null
+            IEnumerable<(string? StoreCode, string? ProductCode)>? exactStoreGroups = null,
+            bool allowType2StoreParentPurchasePrice = false
         )
         {
             var normalizedPurchasePrices = requestedParentPurchasePrices
@@ -419,8 +420,24 @@ namespace BlazorApp.Api.Services.React
                     );
                     continue;
                 }
-                if (normalizedPurchasePrices[productCode] <= 0m)
+                if (
+                    allowType2StoreParentPurchasePrice
+                    && productSetRows.Any(row => row.SetType != 2)
+                )
                 {
+                    repairResult.AddFailure(
+                        productCode,
+                        "SET_CHILD_STORE_RELATION_INVALID",
+                        "只有纯 Type2 多码商品允许按门店主商品成本补齐投影"
+                    );
+                    continue;
+                }
+                if (
+                    !allowType2StoreParentPurchasePrice
+                    && normalizedPurchasePrices[productCode] <= 0m
+                )
+                {
+                    // 货柜和进货单等既有入口仍要求请求中的主商品进口价有效，不改变其 Type1/混合关系门禁。
                     repairResult.AddFailure(
                         productCode,
                         "SET_CHILD_COST_RECALCULATION_INCOMPLETE",
@@ -540,6 +557,26 @@ namespace BlazorApp.Api.Services.React
                     if (missingCodes.Count == 0)
                     {
                         continue;
+                    }
+
+                    var storeParentPurchasePrice = matchingStorePrices?
+                        .SingleOrDefault()
+                        ?.PurchasePrice;
+                    if (
+                        allowType2StoreParentPurchasePrice
+                        && storeParentPurchasePrice.GetValueOrDefault() <= 0m
+                        && normalizedPurchasePrices[productCode] <= 0m
+                    )
+                    {
+                        // 精确门店补齐必须采用与正式重算相同的成本优先级：门店主成本优先，再回退全局主档或仓库成本。
+                        repairResult.AddFailure(
+                            productCode,
+                            "SET_CHILD_COST_RECALCULATION_INCOMPLETE",
+                            $"分店 {storeCode} 主商品成本为空或0",
+                            storeCode
+                        );
+                        productFailed = true;
+                        break;
                     }
 
                     // 两个来源字段各自允许 50 字符，但目标组合业务键只有 50；先拒绝，避免 SQL Server 截断异常回滚整批保存。

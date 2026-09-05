@@ -2668,6 +2668,228 @@ public sealed class ProductPushToHqServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task PushToHqAsync_纯Type2投影完整且全局成本为零_按目标门店父成本重算()
+    {
+        await SeedProductGraphAsync();
+        var service = CreateService();
+        var initial = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+        Assert.True(initial.Success, initial.Message);
+
+        await _localDb.Updateable<Product>()
+            .SetColumns(row => new Product { PurchasePrice = 0m })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+        await _localDb.Insertable(new WarehouseProduct
+        {
+            ProductCode = "HB001",
+            ImportPrice = 0m,
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new[]
+        {
+            new StoreRetailPrice
+            {
+                UUID = "store-price-complete-s01",
+                StoreCode = "S01",
+                ProductCode = "HB001",
+                StoreProductCode = "S01HB001",
+                PurchasePrice = 9m,
+                StoreRetailPriceValue = 10m,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new StoreRetailPrice
+            {
+                UUID = "store-price-complete-s02",
+                StoreCode = "S02",
+                ProductCode = "HB001",
+                StoreProductCode = "S02HB001",
+                PurchasePrice = 8m,
+                StoreRetailPriceValue = 11m,
+                IsActive = true,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+
+        var response = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+            TargetStoreCodes = new List<string> { "S01" },
+            UpdateFields = new List<string> { "storeMultiCodes" },
+        });
+
+        Assert.True(response.Success, response.Message);
+        var localS01 = await _localDb.Queryable<StoreMultiCodeProduct>()
+            .SingleAsync(row => row.StoreCode == "S01" && row.ProductCode == "HB001");
+        Assert.Equal(9m, localS01.PurchasePrice);
+
+        var hqS01 = await _hqDb.Queryable<DIC_分店一品多码表>()
+            .SingleAsync(row => row.H商品编码 == "HB001" && row.H分店代码 == "S01");
+        Assert.Equal(9m, hqS01.H进货价);
+
+        var hqS02 = await _hqDb.Queryable<DIC_分店一品多码表>()
+            .SingleAsync(row => row.H商品编码 == "HB001" && row.H分店代码 == "S02");
+        Assert.Equal(2.5m, hqS02.H进货价);
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_纯Type2多码目标门店投影缺失_补齐并按门店父成本重算()
+    {
+        await SeedProductGraphAsync();
+        await _localDb.Insertable(new[]
+        {
+            new StoreRetailPrice
+            {
+                UUID = "store-price-s01",
+                StoreCode = "S01",
+                ProductCode = "HB001",
+                StoreProductCode = "S01HB001",
+                PurchasePrice = 7m,
+                StoreRetailPriceValue = 10m,
+                IsActive = true,
+                IsDeleted = false,
+            },
+            new StoreRetailPrice
+            {
+                UUID = "store-price-s02",
+                StoreCode = "S02",
+                ProductCode = "HB001",
+                StoreProductCode = "S02HB001",
+                PurchasePrice = 8m,
+                StoreRetailPriceValue = 11m,
+                IsActive = true,
+                IsDeleted = false,
+            },
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new ProductSetCode
+        {
+            SetCodeId = "set-2",
+            ProductCode = "HB001",
+            SetProductCode = "HB001-M2",
+            SetItemNumber = "HB001-M2",
+            SetBarcode = "952700000004",
+            SetPurchasePrice = 1m,
+            SetRetailPrice = 5m,
+            SetQuantity = 1,
+            SetType = 2,
+            IsActive = true,
+            IsDeleted = false,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new[]
+        {
+            new StoreMultiCodeProduct
+            {
+                StoreCode = "S01",
+                ProductCode = "HB001",
+                MultiCodeProductCode = "HB001-M2",
+                StoreMultiCodeProductCode = "S01HB001-M2",
+            },
+            new StoreMultiCodeProduct
+            {
+                StoreCode = "S02",
+                ProductCode = "HB001",
+                MultiCodeProductCode = "HB001-M2",
+                StoreMultiCodeProductCode = "S02HB001-M2",
+            },
+        }).ExecuteCommandAsync();
+        var service = CreateService();
+        var initial = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+        });
+        Assert.True(initial.Success, initial.Message);
+
+        await _localDb.Updateable<Product>()
+            .SetColumns(row => new Product { PurchasePrice = 0m })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<WarehouseProduct>()
+            .SetColumns(row => new WarehouseProduct { ImportPrice = 0m })
+            .Where(row => row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+        await _localDb.Deleteable<StoreMultiCodeProduct>()
+            .Where(row => row.StoreCode == "S01" && row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+        await _localDb.Updateable<StoreRetailPrice>()
+            .SetColumns(row => new StoreRetailPrice { PurchasePrice = 9m })
+            .Where(row => row.StoreCode == "S01" && row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+
+        var response = await service.PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+            TargetStoreCodes = new List<string> { "S01" },
+            UpdateFields = new List<string> { "storeMultiCodes" },
+        });
+
+        Assert.True(response.Success, response.Message);
+        var localS01 = await _localDb.Queryable<StoreMultiCodeProduct>()
+            .Where(row => row.StoreCode == "S01" && row.ProductCode == "HB001")
+            .ToListAsync();
+        Assert.Equal(2, localS01.Count);
+        Assert.All(localS01, row => Assert.Equal(9m, row.PurchasePrice));
+
+        var hqS01 = await _hqDb.Queryable<DIC_分店一品多码表>()
+            .Where(row => row.H商品编码 == "HB001" && row.H分店代码 == "S01")
+            .ToListAsync();
+        Assert.Equal(2, hqS01.Count);
+        Assert.All(hqS01, row => Assert.Equal(9m, row.H进货价));
+
+        var hqS02 = await _hqDb.Queryable<DIC_分店一品多码表>()
+            .Where(row => row.H商品编码 == "HB001" && row.H分店代码 == "S02")
+            .ToListAsync();
+        Assert.Equal(2, hqS02.Count);
+        Assert.All(hqS02, row => Assert.Equal(8m, row.H进货价));
+    }
+
+    [Fact]
+    public async Task PushToHqAsync_存在未知关系类型且门店投影缺失_不得按纯Type2自动补齐()
+    {
+        await SeedProductGraphAsync();
+        await _localDb.Insertable(new ProductSetCode
+        {
+            SetCodeId = "set-unknown",
+            ProductCode = "HB001",
+            SetProductCode = "HB001-UNKNOWN",
+            SetItemNumber = "HB001-UNKNOWN",
+            SetBarcode = "952700000099",
+            SetPurchasePrice = 1m,
+            SetRetailPrice = 2m,
+            SetQuantity = 1,
+            SetType = 99,
+            IsActive = true,
+            IsDeleted = false,
+            CreatedAt = DateTime.UtcNow,
+            UpdatedAt = DateTime.UtcNow,
+        }).ExecuteCommandAsync();
+        await _localDb.Deleteable<StoreMultiCodeProduct>()
+            .Where(row => row.StoreCode == "S01" && row.ProductCode == "HB001")
+            .ExecuteCommandAsync();
+
+        var response = await CreateService().PushToHqAsync(new PushProductsToHqRequest
+        {
+            ProductCodes = new List<string> { "HB001" },
+            UpdateFields = new List<string> { "storeMultiCodes" },
+        });
+
+        Assert.False(response.Success);
+        Assert.Contains("门店子项不完整", response.Message);
+        Assert.Equal(
+            0,
+            await _localDb.Queryable<StoreMultiCodeProduct>()
+                .Where(row => row.StoreCode == "S01" && row.ProductCode == "HB001")
+                .CountAsync()
+        );
+        Assert.Equal(0, await _hqDb.Queryable<DIC_商品信息字典表>().CountAsync());
+        Assert.Equal(0, await _hqDb.Queryable<DIC_分店一品多码表>().CountAsync());
+    }
+
+    [Fact]
     public async Task PushToHqAsync_已有商品只更新目标分店供应商且商品主档同步更新()
     {
         await SeedProductGraphAsync();
