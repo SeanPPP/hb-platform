@@ -1274,20 +1274,145 @@ namespace BlazorApp.Api.Services.React
 
                     var targetStoresForExistingProducts =
                         targetStoreResolution.StoreCodes ?? activeStoreCodes;
-                    var exactStoreGroups = activeProductCodes.SelectMany(productCode =>
-                        (existingHqProductCodesForScope.Contains(productCode)
-                                ? targetStoresForExistingProducts
-                                : activeStoreCodes)
-                            .Select(storeCode =>
-                                (StoreCode: (string?)storeCode, ProductCode: (string?)productCode)
-                            )
-                    );
-                    var recalculation = await new SetChildPurchasePriceService(localDb)
-                        .RecalculateStoreGroupsLockedAsync(
-                            localLockScope,
-                            exactStoreGroups,
-                            ResolveSetChildPurchasePriceActor(null)
+                    var exactStoreGroups = activeProductCodes
+                        .SelectMany(productCode =>
+                            (existingHqProductCodesForScope.Contains(productCode)
+                                    ? targetStoresForExistingProducts
+                                    : activeStoreCodes)
+                                .Select(storeCode =>
+                                    (StoreCode: (string?)storeCode, ProductCode: (string?)productCode)
+                                )
+                        )
+                        .ToList();
+                    var costWriteback = new SetChildPurchasePriceService(localDb);
+
+                    // 普通多码（Type2）的成本可以由同维度主商品确定，但 HQ 分店行仍需稳定的本地投影身份。
+                    // 只在本次已锁定的精确目标组内补齐纯 Type2 商品；Type1 或混合关系继续走严格完整性校验。
+                    var activeSetRows = new List<ProductSetCode>();
+                    foreach (var codeBatch in activeProductCodes.Chunk(HqCodeBatchSize))
+                    {
+                        var codes = codeBatch.ToList();
+                        activeSetRows.AddRange(
+                            await localDb.Queryable<ProductSetCode>()
+                                .Where(row =>
+                                    codes.Contains(row.ProductCode)
+                                    && row.IsActive
+                                    && !row.IsDeleted
+                                )
+                                .ToListAsync()
                         );
+                    }
+                    var type2OnlyProductCodes = activeSetRows
+                        .Where(row => !string.IsNullOrWhiteSpace(row.ProductCode))
+                        .GroupBy(row => row.ProductCode.Trim(), StringComparer.OrdinalIgnoreCase)
+                        .Where(group => group.All(row => row.SetType == 2))
+                        .Select(group => group.Key)
+                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                    var repairGroups = exactStoreGroups
+                        .Where(group =>
+                            group.ProductCode != null
+                            && type2OnlyProductCodes.Contains(group.ProductCode)
+                        )
+                        .ToList();
+
+                    if (repairGroups.Count > 0)
+                    {
+                        var repairProductCodes = repairGroups
+                            .Select(group => group.ProductCode!)
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+                        var warehouseRows = new List<WarehouseProduct>();
+                        foreach (var codeBatch in repairProductCodes.Chunk(HqCodeBatchSize))
+                        {
+                            var codes = codeBatch.ToList();
+                            warehouseRows.AddRange(
+                                await localDb.Queryable<WarehouseProduct>()
+                                    .Where(row =>
+                                        codes.Contains(row.ProductCode) && !row.IsDeleted
+                                    )
+                                    .ToListAsync()
+                            );
+                        }
+                        var warehouseImportPrices = warehouseRows
+                            .Where(row =>
+                                !string.IsNullOrWhiteSpace(row.ProductCode)
+                                && row.ImportPrice.GetValueOrDefault() > 0m
+                            )
+                            .GroupBy(row => row.ProductCode.Trim(), StringComparer.OrdinalIgnoreCase)
+                            .ToDictionary(
+                                group => group.Key,
+                                group => group.First().ImportPrice!.Value,
+                                StringComparer.OrdinalIgnoreCase
+                            );
+                        var repairPurchasePrices = products
+                            .Select(product => new
+                            {
+                                ProductCode = NormalizeCode(product.ProductCode),
+                                Product = product,
+                            })
+                            .Where(item =>
+                                item.ProductCode != null
+                                && type2OnlyProductCodes.Contains(item.ProductCode)
+                            )
+                            .ToDictionary(
+                                item => item.ProductCode!,
+                                item => item.Product.PurchasePrice.GetValueOrDefault() > 0m
+                                    ? item.Product.PurchasePrice!.Value
+                                    : warehouseImportPrices.GetValueOrDefault(item.ProductCode!),
+                                StringComparer.OrdinalIgnoreCase
+                            );
+                        // Repair 内部按商品编码构造 SQL IN 条件；沿用 HQ 查询批次，避免大批量推送超过 SQL Server 参数上限。
+                        foreach (var repairProductBatch in repairProductCodes.Chunk(HqCodeBatchSize))
+                        {
+                            var batchProductCodes = repairProductBatch.ToHashSet(
+                                StringComparer.OrdinalIgnoreCase
+                            );
+                            var batchPurchasePrices = repairPurchasePrices
+                                .Where(pair => batchProductCodes.Contains(pair.Key))
+                                .ToDictionary(
+                                    pair => pair.Key,
+                                    pair => pair.Value,
+                                    StringComparer.OrdinalIgnoreCase
+                                );
+                            var batchGroups = repairGroups
+                                .Where(group =>
+                                    group.ProductCode != null
+                                    && batchProductCodes.Contains(group.ProductCode)
+                                )
+                                .ToList();
+                            var repair =
+                                await costWriteback.RepairMissingStoreRelationsLockedAsync(
+                                    localLockScope,
+                                    batchPurchasePrices,
+                                    ResolveSetChildPurchasePriceActor(null),
+                                    exactStoreGroups: batchGroups,
+                                    allowType2StoreParentPurchasePrice: true
+                                );
+                            if (repair.Failures.Count > 0)
+                            {
+                                var reasons = string.Join(
+                                    "；",
+                                    repair.Failures.Values
+                                        .OrderBy(
+                                            failure => failure.ProductCode,
+                                            StringComparer.OrdinalIgnoreCase
+                                        )
+                                        .Select(failure =>
+                                            $"{failure.ProductCode} / 分店 {failure.StoreCode ?? "目标分店"} [{failure.Code}]: {failure.Message}"
+                                        )
+                                );
+                                throw new InvalidOperationException(
+                                    $"目标分店多码关系无法安全补齐。{reasons}"
+                                );
+                            }
+                        }
+                    }
+
+                    var recalculation = await costWriteback.RecalculateStoreGroupsLockedAsync(
+                        localLockScope,
+                        exactStoreGroups,
+                        ResolveSetChildPurchasePriceActor(null)
+                    );
                     EnsureSetChildPurchasePriceRecalculated(
                         recalculation,
                         activeProductCodes
