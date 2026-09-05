@@ -165,7 +165,7 @@ a.soe-install-link:hover { border-color: #2563eb; color: inherit; }
 
 .soe-safari-guide {
   margin-bottom: 14px;
-  padding: 12px 14px;
+  padding: 14px;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   background: #f8fafc;
@@ -173,18 +173,104 @@ a.soe-install-link:hover { border-color: #2563eb; color: inherit; }
 }
 
 .soe-safari-guide-title {
-  margin-bottom: 6px;
   color: #111827;
   font-weight: 600;
 }
 
-.soe-safari-guide ol {
-  margin: 0;
-  padding-left: 20px;
+.soe-safari-guide-description {
+  margin: 4px 0 12px;
+  color: #4b5563;
+  line-height: 1.55;
 }
 
-.soe-safari-guide li + li {
-  margin-top: 5px;
+.soe-safari-steps {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.soe-safari-step {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.soe-safari-step-number {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #e8eef8;
+  color: #17365d;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.soe-safari-step-content {
+  min-width: 0;
+}
+
+.soe-safari-step-title {
+  color: #111827;
+  font-weight: 600;
+  line-height: 28px;
+}
+
+.soe-safari-step-content p {
+  margin: 2px 0 0;
+  color: #4b5563;
+  line-height: 1.55;
+}
+
+.soe-safari-step-content .soe-install-link {
+  min-height: 44px;
+  margin-top: 8px;
+  border-color: #d94b1d;
+  background: #d94b1d;
+  color: #fff;
+  box-shadow: none;
+}
+
+.soe-safari-step-content a.soe-install-link:hover,
+.soe-safari-step-content a.soe-install-link:focus-visible {
+  border-color: #b93812;
+  background: #b93812;
+  color: #fff;
+}
+
+.soe-safari-step-content a.soe-install-link:focus-visible {
+  outline: 2px solid rgb(217 75 29 / 30%);
+  outline-offset: 2px;
+}
+
+.soe-safari-recheck.ant-btn {
+  min-height: 44px;
+  margin-top: 14px;
+  border-color: #94a3b8;
+  color: #17365d;
+  box-shadow: none;
+}
+
+.soe-safari-recheck.ant-btn:hover,
+.soe-safari-recheck.ant-btn:focus-visible {
+  border-color: #17365d;
+  color: #17365d;
+}
+
+.soe-safari-step-content .soe-install-link-badge {
+  background: rgb(255 255 255 / 18%);
+  color: #fff;
+}
+
+.soe-safari-recheck-hint {
+  margin: 7px 0 0;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .soe-notes {
@@ -196,7 +282,16 @@ a.soe-install-link:hover { border-color: #2563eb; color: inherit; }
 .soe-notes-title { font-weight: 600; color: #111827; margin-bottom: 6px; }
 .soe-notes p { margin: 0; color: #4b5563; white-space: pre-wrap; }
 
-.soe-open { margin-top: 4px; }
+.soe-ready-description {
+  margin: 0 0 10px;
+  color: #374151;
+  line-height: 1.55;
+}
+
+.soe-open.ant-btn {
+  min-height: 44px;
+  margin-top: 4px;
+}
 
 @keyframes soe-pulse {
   0%, 100% { opacity: 1; }
@@ -205,6 +300,16 @@ a.soe-install-link:hover { border-color: #2563eb; color: inherit; }
 
 @media (prefers-reduced-motion: reduce) {
   .soe-entry-dot { animation: none !important; }
+}
+
+/* iPad 横屏会使用桌面导航，但仍需保留适合手指点击的触控区域。 */
+@media (any-pointer: coarse) {
+  .soe-entry--desktop .soe-entry-trigger.ant-btn {
+    min-height: 44px;
+    height: 44px;
+    padding-inline: 12px;
+    touch-action: manipulation;
+  }
 }
 
 @media (max-width: 576px) {
@@ -220,5 +325,9 @@ a.soe-install-link:hover { border-color: #2563eb; color: inherit; }
 
   .soe-dialog-version {
     margin-left: 0;
+  }
+
+  .soe-safari-guide {
+    padding: 12px;
   }
 }

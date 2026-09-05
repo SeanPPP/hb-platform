@@ -162,6 +162,20 @@ export function normalizeContainerDetailEnglishNameForSave(englishName: string) 
   ))
 }
 
+export function resolveContainerDetailPendingPriceOnBlur(
+  rawValue: string,
+  currentValue: number | undefined,
+) {
+  const normalizedValue = rawValue.trim().replace(/,/g, '')
+  if (!normalizedValue) return undefined
+
+  const parsedValue = Number(normalizedValue)
+  if (!Number.isFinite(parsedValue) || parsedValue < 0) return undefined
+
+  const value = Number(parsedValue.toFixed(2))
+  return value === currentValue ? undefined : value
+}
+
 export function getSubmittedContainerDetailFields(update: UpdateContainerDetailRequest) {
   const fields = CONTAINER_DETAIL_DRAFT_FIELDS.filter((field) => field in update)
   if (update.ClearEnglishName === true && !fields.includes(CONTAINER_DETAIL_ENGLISH_NAME_FIELD)) {

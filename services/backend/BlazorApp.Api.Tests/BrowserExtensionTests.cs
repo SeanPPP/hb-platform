@@ -758,7 +758,7 @@ public sealed class BrowserExtensionProfileCatalogTests
         var compose = File.ReadAllText(composePath);
 
         Assert.Contains(
-            "BrowserExtension__SafariStoreUrl=${BROWSER_EXTENSION_SAFARI_STORE_URL:-}",
+            "BrowserExtension__SafariStoreUrl=${BROWSER_EXTENSION_SAFARI_STORE_URL:-https://apps.apple.com/au/app/hb-supplier-order/id6803740010}",
             compose,
             StringComparison.Ordinal
         );
