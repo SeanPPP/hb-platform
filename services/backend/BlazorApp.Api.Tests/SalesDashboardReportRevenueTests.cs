@@ -1562,6 +1562,83 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         Assert.NotEqual(currentOnly.CacheVersion, withCompare.CacheVersion);
     }
 
+    [Theory]
+    [InlineData(36)]
+    [InlineData(366)]
+    public async Task GetProductReportStatisticStatusAsync_供应商快照状态支持长区间并识别同期缺口(int dayCount)
+    {
+        var currentStart = new DateTime(2026, 7, 1);
+        var compareStart = new DateTime(2025, 7, 1);
+        var completedAt = new DateTime(2026, 8, 10, 1, 2, 3, DateTimeKind.Utc);
+        var types = new[]
+        {
+            SalesStatisticType.ProductStoreDaily,
+            SalesStatisticType.AustralianSupplierStoreSales,
+            SalesStatisticType.ChinaSupplierStoreSales,
+        };
+        static SalesStatisticRefreshState State(
+            string type,
+            DateTime date,
+            DateTime completedAt
+        ) => new()
+        {
+            StatisticType = type,
+            Date = date,
+            Status = SalesStatisticRefreshStatus.Fresh,
+            LastAggregatedAtUtc = completedAt,
+            CompletedAtUtc = completedAt,
+            SourceProductVersion = "product-version-36d",
+        };
+
+        var currentStates = Enumerable.Range(0, dayCount)
+            .SelectMany(offset => types.Select(type => State(type, currentStart.AddDays(offset), completedAt)))
+            .ToList();
+        await _localDb.Insertable(currentStates).ExecuteCommandAsync();
+
+        var currentOnly = await CreateService(useSupplierRollups: true).GetProductReportStatisticStatusAsync(
+            new DateRangeDto
+            {
+                StartDate = currentStart,
+                EndDate = currentStart.AddDays(dayCount - 1),
+            }
+        );
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, currentOnly.StatisticStatus);
+
+        // 同期第 36 天缺国内供应商状态；366 天本期/同期交集复用已写入的状态行。
+        // 超过旧 35 天上限时不能再被空日期集合误判 Fresh。
+        var compareStates = Enumerable.Range(0, dayCount)
+            .Where(offset => compareStart.AddDays(offset) < currentStart
+                || compareStart.AddDays(offset) > currentStart.AddDays(dayCount - 1))
+            .SelectMany(offset => types
+                .Where(type => !(type == SalesStatisticType.ChinaSupplierStoreSales && offset == 35))
+                .Select(type => State(type, compareStart.AddDays(offset), completedAt)))
+            .ToList();
+        await _localDb.Insertable(compareStates).ExecuteCommandAsync();
+
+        var withCompare = await CreateService(useSupplierRollups: true).GetProductReportStatisticStatusAsync(
+            new DateRangeDto
+            {
+                StartDate = currentStart,
+                EndDate = currentStart.AddDays(dayCount - 1),
+                CompareStartDate = compareStart,
+                CompareEndDate = compareStart.AddDays(dayCount - 1),
+            }
+        );
+        Assert.Equal(SalesStatisticRefreshStatus.Pending, withCompare.StatisticStatus);
+    }
+
+    [Fact]
+    public async Task GetProductReportStatisticStatusAsync_供应商快照超限日期不能以空枚举标记完整()
+    {
+        var start = new DateTime(2026, 1, 1);
+        await Assert.ThrowsAsync<ArgumentException>(() => CreateService(useSupplierRollups: true)
+            .GetProductReportStatisticStatusAsync(new DateRangeDto
+            {
+                StartDate = start,
+                EndDate = start.AddDays(366),
+            }));
+    }
+
     [Fact]
     public async Task GetProductReportStatisticStatusAsync_失败状态不回显内部错误()
     {
@@ -4913,15 +4990,21 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         }
     }
 
-    private SalesDashboardReactService CreateService()
+    private SalesDashboardReactService CreateService(bool useSupplierRollups = false)
     {
         var localContext = CreateSqlSugarContext(_localDb);
         var posmContext = CreatePosmSqlSugarContext(_posmDb);
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Reports:UseSupplierRollups"] = useSupplierRollups ? "true" : "false",
+            })
+            .Build();
         var services = new ServiceCollection()
             .AddSingleton(localContext)
             .AddSingleton(posmContext)
             .AddSingleton(new HBSalesRecordSqlSugarContext(_hbSalesDb))
-            .AddSingleton<IConfiguration>(new ConfigurationBuilder().Build())
+            .AddSingleton<IConfiguration>(configuration)
             .AddSingleton<ILogger<SalesStatisticsJobService>>(
                 NullLogger<SalesStatisticsJobService>.Instance
             )
@@ -4934,7 +5017,8 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             Mock.Of<IMapper>(),
             NullLogger<SalesDashboardReactService>.Instance,
             new MemoryCache(new MemoryCacheOptions()),
-            services.GetRequiredService<IServiceScopeFactory>()
+            services.GetRequiredService<IServiceScopeFactory>(),
+            configuration
         );
     }
 
@@ -5012,6 +5096,383 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
             _posmConnection.Dispose();
             _hbSalesConnection.Dispose();
         }
+    }
+
+    [Fact]
+    public async Task SalesDetailColumns_供应商栏保留候选并传递授权分店范围()
+    {
+        List<string>? capturedBranches = null;
+        string? capturedBranch = null;
+        var service = new Mock<ISalesDashboardReactService>();
+        service.Setup(item => item.GetProductReportStatisticStatusAsync(It.IsAny<DateRangeDto>()))
+            .ReturnsAsync(new ProductReportStatisticStatusDto
+            {
+                StatisticStatus = SalesStatisticRefreshStatus.Fresh,
+                CacheVersion = "detail-v1",
+            });
+        service.Setup(item => item.GetSalesDetailColumnsAsync(
+                It.IsAny<DateRangeDto>(), SalesDetailKind.Australia, SalesDetailSection.Suppliers,
+                It.IsAny<List<string>?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+                It.IsAny<string?>(), 1, 20, It.IsAny<ProductReportStatisticStatusDto?>(), It.IsAny<CancellationToken>()
+            ))
+            .Callback<DateRangeDto, SalesDetailKind, SalesDetailSection, List<string>?, string?, string?, string?, string?, int, int, ProductReportStatisticStatusDto?, CancellationToken>(
+                (_, _, _, branches, branch, _, _, _, _, _, _, _) =>
+                {
+                    capturedBranches = branches;
+                    capturedBranch = branch;
+                })
+            .ReturnsAsync(new SalesDetailSectionResultDto
+            {
+                Rows = new List<SalesDetailRowDto> { new() { Code = "AU1", Name = "Supplier", Revenue = 12m } },
+                Total = 1,
+            });
+        var controller = CreateSalesDetailColumnsController(service.Object, CreateUserService(new[] { "S1", "S2" }));
+
+        var response = await controller.GetSalesDetailColumns(
+            SalesDetailKind.Australia,
+            new DateTime(2026, 9, 1),
+            new DateTime(2026, 9, 6),
+            branchCodes: new List<string> { "S1", "S2", "S9" },
+            selectedBranchCode: "S1",
+            section: "suppliers"
+        );
+
+        var envelope = AssertOk(response).Value!;
+        var data = (SalesDetailSectionResultDto)envelope.GetType().GetProperty("Data")!.GetValue(envelope)!;
+        Assert.Single(data.Rows);
+        Assert.Equal(new[] { "S1", "S2" }, capturedBranches);
+        Assert.Equal("S1", capturedBranch);
+    }
+
+    [Fact]
+    public async Task SalesDetailColumns_未授权分店和未Fresh不执行聚合()
+    {
+        var service = new Mock<ISalesDashboardReactService>(MockBehavior.Strict);
+        service.Setup(item => item.GetProductReportStatisticStatusAsync(It.IsAny<DateRangeDto>()))
+            .ReturnsAsync(new ProductReportStatisticStatusDto
+            {
+                StatisticStatus = SalesStatisticRefreshStatus.Pending,
+                StatisticMessage = "pending",
+                CacheVersion = "pending-v1",
+            });
+        var controller = CreateSalesDetailColumnsController(service.Object, CreateUserService(new[] { "S1" }));
+
+        var denied = await controller.GetSalesDetailColumns(
+            SalesDetailKind.Australia,
+            new DateTime(2026, 9, 1),
+            new DateTime(2026, 9, 6),
+            selectedBranchCode: "S2",
+            section: "summary"
+        );
+        var deniedValue = AssertOk(denied).Value!;
+        var deniedData = (SalesDetailSectionResultDto)deniedValue.GetType().GetProperty("Data")!.GetValue(deniedValue)!;
+        Assert.Empty(deniedData.Rows);
+        service.Verify(item => item.GetProductReportStatisticStatusAsync(It.IsAny<DateRangeDto>()), Times.Never);
+
+        var pending = await controller.GetSalesDetailColumns(
+            SalesDetailKind.Australia,
+            new DateTime(2026, 9, 1),
+            new DateTime(2026, 9, 6),
+            selectedBranchCode: "S1",
+            section: "summary"
+        );
+        var pendingValue = AssertOk(pending).Value!;
+        Assert.Equal(SalesStatisticRefreshStatus.Pending, GetStringProperty(pendingValue, "StatisticStatus"));
+        service.Verify(item => item.GetSalesDetailColumnsAsync(
+            It.IsAny<DateRangeDto>(), It.IsAny<SalesDetailKind>(), It.IsAny<SalesDetailSection>(),
+            It.IsAny<List<string>?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(),
+            It.IsAny<string?>(), It.IsAny<int>(), It.IsAny<int>(), It.IsAny<ProductReportStatisticStatusDto?>(), It.IsAny<CancellationToken>()
+        ), Times.Never);
+    }
+
+    [Fact]
+    public async Task SalesDetailColumns_取消请求在状态读取前终止()
+    {
+        var service = new Mock<ISalesDashboardReactService>(MockBehavior.Strict);
+        var controller = CreateSalesDetailColumnsController(service.Object, CreateUserService(new[] { "S1" }));
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => controller.GetSalesDetailColumns(
+            SalesDetailKind.Australia,
+            new DateTime(2026, 9, 1),
+            new DateTime(2026, 9, 6),
+            section: "summary",
+            cancellationToken: cancellation.Token
+        ));
+    }
+
+    [Fact]
+    public void SalesDetailColumns_沿用商品移动报表权限策略()
+    {
+        var authorize = typeof(SalesDetailColumnsController)
+            .GetCustomAttributes(typeof(AuthorizeAttribute), inherit: true)
+            .Cast<AuthorizeAttribute>()
+            .Single();
+
+        Assert.Equal(Permissions.Reports.ProductMovementView, authorize.Policy);
+    }
+
+    [Fact]
+    public async Task SalesDetailColumns_拒绝非法枚举和超长不成对日期()
+    {
+        var service = new Mock<ISalesDashboardReactService>(MockBehavior.Strict);
+        var controller = CreateSalesDetailColumnsController(service.Object, CreateUserService(new[] { "S1" }));
+
+        var invalidKind = await controller.GetSalesDetailColumns(
+            (SalesDetailKind)99, new DateTime(2026, 9, 1), new DateTime(2026, 9, 1)
+        );
+        Assert.IsType<BadRequestObjectResult>(invalidKind);
+
+        var tooLong = await controller.GetSalesDetailColumns(
+            SalesDetailKind.Australia, new DateTime(2025, 1, 1), new DateTime(2026, 1, 2)
+        );
+        Assert.IsType<BadRequestObjectResult>(tooLong);
+
+        var unpairedCompare = await controller.GetSalesDetailColumns(
+            SalesDetailKind.Australia, new DateTime(2026, 9, 1), new DateTime(2026, 9, 6),
+            compareStartDate: new DateTime(2026, 8, 1)
+        );
+        Assert.IsType<BadRequestObjectResult>(unpairedCompare);
+
+        var invalidSection = await controller.GetSalesDetailColumns(
+            SalesDetailKind.Australia, new DateTime(2026, 9, 1), new DateTime(2026, 9, 1),
+            section: "999"
+        );
+        Assert.IsType<BadRequestObjectResult>(invalidSection);
+
+        var negativeSection = await controller.GetSalesDetailColumns(
+            SalesDetailKind.Australia, new DateTime(2026, 9, 1), new DateTime(2026, 9, 1),
+            section: "-1"
+        );
+        Assert.IsType<BadRequestObjectResult>(negativeSection);
+    }
+
+    [Fact]
+    public async Task SalesDetailColumns_商品关键词支持供应商词且分页汇总不丢失()
+    {
+        var currentDate = new DateTime(2026, 7, 1);
+        var compareDate = new DateTime(2025, 7, 1);
+        await SeedStoreAsync("S1", "分店一");
+        await SeedLocalSupplierAsync("AUS-HB", "Hot Bargain");
+        await SeedProductAsync("P-HB-1", "HB-WOVEN-1", "9300000000001");
+        await _localDb.Updateable<Product>()
+            .SetColumns(product => product.LocalSupplierCode == "AUS-HB")
+            .Where(product => product.ProductCode == "P-HB-1")
+            .ExecuteCommandAsync();
+        await SeedProductStoreDailySalesAsync(currentDate, "S1", "AUS-HB", "P-HB-1", "Woven Bag", 20m, 4, 2,
+            barcode: "9300000000001", totalCost: 12m, grossProfit: 8m);
+        await SeedProductStoreDailySalesAsync(compareDate, "S1", "AUS-HB", "P-HB-1", "Woven Bag", 10m, 2, 1,
+            barcode: "9300000000001", totalCost: 6m, grossProfit: 4m);
+
+        var result = await CreateService().GetSalesDetailColumnsAsync(
+            new DateRangeDto
+            {
+                StartDate = currentDate,
+                EndDate = currentDate,
+                CompareStartDate = compareDate,
+                CompareEndDate = compareDate,
+            },
+            SalesDetailKind.Australia,
+            SalesDetailSection.Products,
+            branchCodes: new List<string> { "S1" },
+            selectedBranchCode: "S1",
+            search: "9300000000001 Hot Bargain",
+            pageIndex: 1,
+            pageSize: 1
+        );
+
+        var row = Assert.Single(result.Rows);
+        Assert.Equal("P-HB-1", row.Code);
+        Assert.Equal(20m, row.Revenue);
+        Assert.Equal(10m, row.CompareRevenue);
+        Assert.Equal(5m, row.AverageUnitPrice);
+        Assert.Equal(5m, row.CompareAverageUnitPrice);
+        Assert.Equal(8m, row.GrossProfit);
+        Assert.Equal(0.4m, row.GrossMarginRate);
+        Assert.Equal(1, result.Total);
+        Assert.Equal(20m, result.Summary!.Revenue);
+    }
+
+    [Fact]
+    public async Task SalesDetailColumns_澳洲口径归并直接中国编码且份额分母不重复()
+    {
+        var date = new DateTime(2026, 7, 1);
+        await SeedStoreAsync("S1", "分店一");
+        await SeedLocalSupplierAsync("AUS-ONE", "澳洲供应商");
+        await SeedChinaSupplierAsync("CN-ONE", "中国供应商");
+        await _localDb.Updateable<ChinaSupplier>()
+            .SetColumns(row => row.IsDeleted == true)
+            .Where(row => row.SupplierCode == "CN-ONE")
+            .ExecuteCommandAsync();
+        await SeedSupplierMappingAsync("P-CN-LEGACY", "200", "CN-ONE");
+        await SeedProductStoreDailySalesAsync(date, "S1", "AUS-ONE", "P-AU", "澳洲商品", 60m, 6, 3);
+        await SeedProductStoreDailySalesAsync(date, "S1", "200", "P-CN-LEGACY", "国内旧编码", 20m, 2, 1);
+        await SeedProductStoreDailySalesAsync(date, "S1", "CN-ONE", "P-CN-DIRECT", "国内直接编码", 20m, 2, 1);
+        var range = new DateRangeDto { StartDate = date, EndDate = date };
+        var service = CreateService();
+
+        var australia = await service.GetSalesDetailColumnsAsync(
+            range, SalesDetailKind.Australia, SalesDetailSection.Suppliers,
+            branchCodes: new List<string> { "S1" }, selectedBranchCode: "S1"
+        );
+        var domesticAustraliaRow = Assert.Single(australia.Rows, row => row.Code == "200");
+        Assert.Equal(40m, domesticAustraliaRow.Revenue);
+        Assert.Equal(0.4m, domesticAustraliaRow.Share);
+        Assert.Equal(100m, australia.Summary!.Revenue);
+
+        var china = await service.GetSalesDetailColumnsAsync(
+            range, SalesDetailKind.China, SalesDetailSection.Suppliers,
+            branchCodes: new List<string> { "S1" }, selectedBranchCode: "S1"
+        );
+        var domesticChinaRow = Assert.Single(china.Rows, row => row.Code == "CN-ONE");
+        Assert.Equal(40m, domesticChinaRow.Revenue);
+        Assert.Equal("中国供应商", domesticChinaRow.Name);
+        Assert.Equal(1m, domesticChinaRow.Share);
+        Assert.Equal(0.4m, domesticChinaRow.ChinaShare);
+
+        var products = await service.GetSalesDetailColumnsAsync(
+            range, SalesDetailKind.Australia, SalesDetailSection.Products,
+            branchCodes: new List<string> { "S1" }, selectedBranchCode: "S1", pageSize: 10
+        );
+        Assert.Contains(products.Rows, row => row.Code == "P-CN-DIRECT" && row.Revenue == 20m);
+
+        var topProductPage = await service.GetSalesDetailColumnsAsync(
+            range, SalesDetailKind.Australia, SalesDetailSection.Products,
+            branchCodes: new List<string> { "S1" }, selectedBranchCode: "S1", pageIndex: 1, pageSize: 1
+        );
+        var topProduct = Assert.Single(topProductPage.Rows);
+        Assert.Equal("P-AU", topProduct.Code);
+        Assert.Equal(60m, topProduct.Revenue);
+        Assert.Equal(3, topProductPage.Total);
+    }
+
+    [Fact]
+    public async Task SalesDetailColumns_超过2100个商品关键词仍由数据库筛选分页()
+    {
+        var date = new DateTime(2026, 7, 1);
+        await SeedStoreAsync("S1", "分店一");
+        await SeedProductsAsync(
+            Enumerable.Range(0, 2205)
+                .Select(index => ($"P-BULK-{index:0000}", $"BULK-SEARCH-{index:0000}", $"930000000{index:0000}"))
+        );
+        await SeedProductStoreDailySalesAsync(
+            date, "S1", "AUS-BULK", "P-BULK-2204", "BULK-SEARCH-2204", 12m, 2, 1,
+            barcode: "9300000002204"
+        );
+
+        var result = await CreateService().GetSalesDetailColumnsAsync(
+            new DateRangeDto { StartDate = date, EndDate = date },
+            SalesDetailKind.Australia,
+            SalesDetailSection.Products,
+            branchCodes: new List<string> { "S1" },
+            search: "BULK-SEARCH",
+            pageIndex: 1,
+            pageSize: 1
+        );
+
+        Assert.Equal(1, result.Total);
+        Assert.Equal("P-BULK-2204", Assert.Single(result.Rows).Code);
+    }
+
+    [Fact]
+    public async Task SalesDetailColumns_无商品主表和旧映射仍支持直接中国供应商多词搜索()
+    {
+        var date = new DateTime(2026, 7, 1);
+        await SeedStoreAsync("S1", "分店一");
+        await SeedChinaSupplierAsync("CN-DIRECT", "Direct China Supplier");
+        // 故意不写 Product 与 POSM 旧 200 映射，验证统计事实自身字段可检索。
+        await SeedProductStoreDailySalesAsync(
+            date, "S1", "CN-DIRECT", "P-NO-CATALOG", "Direct China Widget", 18m, 3, 1,
+            barcode: "BC-DIRECT"
+        );
+
+        var result = await CreateService().GetSalesDetailColumnsAsync(
+            new DateRangeDto { StartDate = date, EndDate = date },
+            SalesDetailKind.China,
+            SalesDetailSection.Products,
+            branchCodes: new List<string> { "S1" },
+            search: "CN-DIRECT China"
+        );
+
+        var row = Assert.Single(result.Rows);
+        Assert.Equal("P-NO-CATALOG", row.Code);
+        Assert.Equal(18m, row.Revenue);
+        Assert.Equal(1, result.Total);
+    }
+
+    [Fact]
+    public async Task SalesDetailColumns_超过2100个旧映射供应商词使用单参数集合搜索()
+    {
+        var date = new DateTime(2026, 7, 1);
+        await SeedStoreAsync("S1", "分店一");
+        await SeedChinaSupplierAsync("CN-MAP-BULK", "Mapped China Bulk");
+        await SeedSupplierMappingsAsync(
+            Enumerable.Range(0, 2205)
+                .Select(index => ($"P-MAP-{index:0000}", "200", "CN-MAP-BULK"))
+        );
+        // 只保留最后一个商品有销售，候选映射仍超过 2100。
+        await SeedProductStoreDailySalesAsync(
+            date, "S1", "200", "P-MAP-2204", "Mapped China Widget", 21m, 3, 1
+        );
+
+        var result = await CreateService().GetSalesDetailColumnsAsync(
+            new DateRangeDto { StartDate = date, EndDate = date },
+            SalesDetailKind.China,
+            SalesDetailSection.Products,
+            branchCodes: new List<string> { "S1" },
+            search: "CN-MAP-BULK China",
+            pageSize: 1
+        );
+
+        Assert.Equal(1, result.Total);
+        Assert.Equal("P-MAP-2204", Assert.Single(result.Rows).Code);
+    }
+
+    [Fact]
+    public async Task SalesDetailColumns_商品主表命中但统计事实不命中时不放宽关键词()
+    {
+        var date = new DateTime(2026, 7, 1);
+        await SeedStoreAsync("S1", "分店一");
+        await SeedProductAsync("P-MATCH", "MATCH-TOKEN", "BC-MATCH");
+        await SeedProductAsync("P-OTHER", "OTHER", "BC-OTHER");
+        await SeedProductStoreDailySalesAsync(date, "S1", "AUS-ONE", "P-OTHER", "Other", 9m, 1, 1);
+        var service = CreateService();
+        var range = new DateRangeDto { StartDate = date, EndDate = date };
+
+        var empty = await service.GetSalesDetailColumnsAsync(
+            range, SalesDetailKind.Australia, SalesDetailSection.Products,
+            branchCodes: new List<string> { "S1" }, search: "MATCH-TOKEN"
+        );
+        Assert.Empty(empty.Rows);
+
+        await SeedProductStoreDailySalesAsync(date, "S1", "AUS-ONE", "P-MATCH", "Match", 11m, 1, 1);
+        var matched = await CreateService().GetSalesDetailColumnsAsync(
+            range, SalesDetailKind.Australia, SalesDetailSection.Products,
+            branchCodes: new List<string> { "S1" }, search: "MATCH-TOKEN"
+        );
+        Assert.Equal("P-MATCH", Assert.Single(matched.Rows).Code);
+    }
+
+    private static SalesDetailColumnsController CreateSalesDetailColumnsController(
+        ISalesDashboardReactService service,
+        IUserService userService
+    )
+    {
+        var controller = new SalesDetailColumnsController(
+            service,
+            userService,
+            NullLogger<SalesDetailColumnsController>.Instance
+        );
+        var httpContext = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(new ClaimsIdentity(
+                new[] { new Claim(ClaimTypes.NameIdentifier, "user-1") },
+                "TestAuth"
+            )),
+        };
+        controller.ControllerContext = new ControllerContext { HttpContext = httpContext };
+        return controller;
     }
 
     private static IUserService CreateUserService(IEnumerable<string> storeCodes)
