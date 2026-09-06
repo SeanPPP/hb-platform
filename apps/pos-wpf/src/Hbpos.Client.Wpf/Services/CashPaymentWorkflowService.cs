@@ -1394,6 +1394,10 @@ public sealed class CashPaymentWorkflowService(
                         authorization,
                         CancellationToken.None,
                         refundSubmissionToken: refundSubmissionToken);
+                    // 明确的取消或拒绝已经耐久落库后才能释放云端 session，避免终端被未确认终态长期占用。
+                    await AcknowledgeCompletedCardAttemptAsync(
+                        attempt.AttemptGuid,
+                        CancellationToken.None);
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
                 {
