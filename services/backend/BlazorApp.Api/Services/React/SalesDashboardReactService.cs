@@ -3469,249 +3469,253 @@ namespace BlazorApp.Api.Services.React
                     normalizedBranchCodes
                 );
 
-                var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
-                var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
-                var statisticsVersion = await GetStatisticsCacheVersionAsync();
-                var cacheKey =
-                    $"ExecutiveBranchPerformance_{statisticsVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{topN?.ToString() ?? "all"}_{string.Join(",", displayBranchCodes.OrderBy(code => code, StringComparer.OrdinalIgnoreCase))}";
+                return await ReadReportSnapshotAsync(async () =>
+                {
 
-                if (
-                    statisticsRefreshState == StatisticsRefreshState.NotNeeded
-                    &&
-                    _cache.TryGetValue<ExecutiveBranchPerformanceResultDto>(
-                        cacheKey,
-                        out var cachedResult
+                    var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
+                    var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
+                    var statisticsVersion = await GetStatisticsCacheVersionAsync();
+                    var cacheKey =
+                        $"ExecutiveBranchPerformance_{statisticsVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{topN?.ToString() ?? "all"}_{string.Join(",", displayBranchCodes.OrderBy(code => code, StringComparer.OrdinalIgnoreCase))}";
+
+                    if (
+                        statisticsRefreshState == StatisticsRefreshState.NotNeeded
+                        &&
+                        _cache.TryGetValue<ExecutiveBranchPerformanceResultDto>(
+                            cacheKey,
+                            out var cachedResult
+                        )
+                        && cachedResult != null
                     )
-                    && cachedResult != null
-                )
-                {
-                    _logger.LogInformation("从缓存获取 Executive 分店业绩: {CacheKey}", cacheKey);
-                    return cachedResult;
-                }
-
-                var startDate = dateRange.StartDate.Date;
-                var endDate = dateRange.EndDate.Date;
-
-                // 使用 StoreSalesStatistic 表查询分店销售数据
-                var branchCurrentQuery = _context
-                    .Db.Queryable<StoreSalesStatistic>()
-                    .Where(s => s.Date >= startDate && s.Date <= endDate);
-
-                if (displayBranchCodes.Count > 0)
-                {
-                    branchCurrentQuery = branchCurrentQuery.Where(s =>
-                        displayBranchCodes.Contains(s.BranchCode)
-                    );
-                }
-                else
-                {
-                    branchCurrentQuery = branchCurrentQuery.Where(s => false);
-                }
-
-                var currentData = await branchCurrentQuery
-                    .GroupBy(s => s.BranchCode)
-                    .Select(s => new
                     {
-                        BranchCode = s.BranchCode,
-                        BranchName = SqlFunc.AggregateMax(s.BranchName),
-                        Revenue = SqlFunc.AggregateSum(s.TotalAmount),
-                        OrderCount = SqlFunc.AggregateSum(s.OrderCount),
-                    })
-                    .ToListAsync();
+                        _logger.LogInformation("从缓存获取 Executive 分店业绩: {CacheKey}", cacheKey);
+                        return cachedResult;
+                    }
 
-                var lyDict = new Dictionary<string, (decimal RevenueLY, int OrderCountLY)>(
-                    StringComparer.OrdinalIgnoreCase
-                );
-                if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
-                {
-                    var lyStartDate = dateRange.CompareStartDate.Value.Date;
-                    var lyEndDate = dateRange.CompareEndDate.Value.Date;
+                    var startDate = dateRange.StartDate.Date;
+                    var endDate = dateRange.EndDate.Date;
 
-                    var lyQuery = _context
+                    // 使用 StoreSalesStatistic 表查询分店销售数据
+                    var branchCurrentQuery = _context
                         .Db.Queryable<StoreSalesStatistic>()
-                        .Where(s => s.Date >= lyStartDate && s.Date <= lyEndDate);
+                        .Where(s => s.Date >= startDate && s.Date <= endDate);
 
                     if (displayBranchCodes.Count > 0)
                     {
-                        lyQuery = lyQuery.Where(s => displayBranchCodes.Contains(s.BranchCode));
-                    }
-                    else
-                    {
-                        lyQuery = lyQuery.Where(s => false);
-                    }
-
-                    var lyData = await lyQuery
-                        .GroupBy(s => s.BranchCode)
-                        .Select(s => new
-                        {
-                            BranchCode = s.BranchCode,
-                            RevenueLY = SqlFunc.AggregateSum(s.TotalAmount),
-                            OrderCountLY = SqlFunc.AggregateSum(s.OrderCount),
-                        })
-                        .ToListAsync();
-
-                    lyDict = lyData.ToDictionary(
-                        s => s.BranchCode,
-                        s => (s.RevenueLY, s.OrderCountLY),
-                        StringComparer.OrdinalIgnoreCase
-                    );
-                }
-
-                // 构建结果并排序
-                IEnumerable<ExecutiveBranchPerformanceDto> result = currentData
-                    .Select(
-                        (item, index) =>
-                            new ExecutiveBranchPerformanceDto
-                            {
-                                Rank = index + 1,
-                                BranchCode = item.BranchCode,
-                                BranchName = string.IsNullOrWhiteSpace(item.BranchName)
-                                    ? item.BranchCode
-                                    : item.BranchName,
-                                Revenue = item.Revenue,
-                                RevenueLY = lyDict.TryGetValue(item.BranchCode, out var lyItem)
-                                    ? lyItem.RevenueLY
-                                    : 0,
-                                OrderCount = item.OrderCount,
-                                OrderCountLY = lyDict.TryGetValue(item.BranchCode, out var lyItem2)
-                                    ? lyItem2.OrderCountLY
-                                    : 0,
-                                // AOV 在内存侧计算，避免统计表出现 0 单数时触发数据库除零。
-                                Aov = item.OrderCount > 0 ? item.Revenue / item.OrderCount : 0,
-                                AovLY = lyDict.TryGetValue(item.BranchCode, out var lyItem3)
-                                    && lyItem3.OrderCountLY > 0
-                                        ? lyItem3.RevenueLY / lyItem3.OrderCountLY
-                                        : 0,
-                            }
-                    );
-
-                if (displayBranchCodes.Count > 0)
-                {
-                    var snapshotBranchCodes = currentData
-                        .Where(item => !string.IsNullOrWhiteSpace(item.BranchCode))
-                        .Select(item => item.BranchCode)
-                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                    var zeroSalesBranchCodes = displayBranchCodes
-                        .Where(code => !snapshotBranchCodes.Contains(code))
-                        .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-                    if (zeroSalesBranchCodes.Count > 0)
-                    {
-                        // 授权范围是普通用户可见分店的权威集合；统计表不会为零销售分店逐日落行时，仍须保留零值排行行。
-                        var branchNameMap = normalizedBranchCodes.Count == 0
-                            ? activeStoreNameMap
-                            : await GetStoreNameMapAsync(zeroSalesBranchCodes);
-                        result = result.Concat(zeroSalesBranchCodes.Select(code =>
-                            new ExecutiveBranchPerformanceDto
-                            {
-                                BranchCode = code,
-                                BranchName = branchNameMap.TryGetValue(code, out var branchName)
-                                    && !string.IsNullOrWhiteSpace(branchName)
-                                        ? branchName
-                                        : code,
-                                Revenue = 0,
-                                RevenueLY = lyDict.TryGetValue(code, out var lyItem)
-                                    ? lyItem.RevenueLY
-                                    : 0,
-                                OrderCount = 0,
-                                OrderCountLY = lyDict.TryGetValue(code, out var lyItem2)
-                                    ? lyItem2.OrderCountLY
-                                    : 0,
-                                Aov = 0,
-                                AovLY = lyDict.TryGetValue(code, out var lyItem3)
-                                    && lyItem3.OrderCountLY > 0
-                                        ? lyItem3.RevenueLY / lyItem3.OrderCountLY
-                                        : 0,
-                            }
-                        ));
-                    }
-                }
-
-                result = result
-                    .OrderByDescending(x => x.Revenue)
-                    .ThenBy(x => x.BranchCode, StringComparer.OrdinalIgnoreCase);
-
-                if (topN.HasValue && topN.Value > 0)
-                {
-                    result = result.Take(topN.Value);
-                }
-
-                var rankedResult = result
-                    .Select(
-                        (item, index) =>
-                            new ExecutiveBranchPerformanceDto
-                            {
-                                Rank = index + 1,
-                                BranchCode = item.BranchCode,
-                                BranchName = item.BranchName,
-                                Revenue = item.Revenue,
-                                RevenueLY = item.RevenueLY,
-                                OrderCount = item.OrderCount,
-                                OrderCountLY = item.OrderCountLY,
-                                Aov = item.Aov,
-                                AovLY = item.AovLY,
-                            }
-                    )
-                    .ToList();
-
-                var expectedBranchCount = displayBranchCodes.Count;
-                if (topN.HasValue && topN.Value > 0)
-                {
-                    expectedBranchCount = Math.Min(expectedBranchCount, topN.Value);
-                }
-                var hasSourceBranchIdentityGap = false;
-                var sourceBranchIdentityUnverified = false;
-                if (statisticsRefreshState != StatisticsRefreshState.NotNeeded)
-                {
-                    var sourceBranchCodes = await GetExpectedExecutiveBranchCodesAsync(
-                        startDate,
-                        endDate,
-                        normalizedBranchCodes
-                    );
-                    if (sourceBranchCodes != null)
-                    {
-                        // 不能只比较行数：授权分店的零值补行会让“少写真实销售分店”伪装成完整。
-                        // 必须按实际聚合来源的分店身份核验统计快照，并同时识别缺失和陈旧分店行。
-                        var statisticSnapshotBranchCodes = currentData
-                            .Where(item => !string.IsNullOrWhiteSpace(item.BranchCode))
-                            .Select(item => item.BranchCode)
-                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                        var displayedSourceBranchCodes = sourceBranchCodes
-                            .Where(displayBranchCodes.Contains)
-                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-                        hasSourceBranchIdentityGap = !displayedSourceBranchCodes.SetEquals(
-                            statisticSnapshotBranchCodes
+                        branchCurrentQuery = branchCurrentQuery.Where(s =>
+                            displayBranchCodes.Contains(s.BranchCode)
                         );
                     }
                     else
                     {
-                        // 快速补算后的 POSM 来源身份无法核验时，不能证明统计快照完整；必须 fail closed 且禁止缓存。
-                        sourceBranchIdentityUnverified = true;
+                        branchCurrentQuery = branchCurrentQuery.Where(s => false);
                     }
-                }
 
-                var response = new ExecutiveBranchPerformanceResultDto
-                {
-                    Items = rankedResult,
-                    StatisticsPending = statisticsRefreshState == StatisticsRefreshState.Pending
-                        || rankedResult.Count < expectedBranchCount
-                        || hasSourceBranchIdentityGap
-                        || sourceBranchIdentityUnverified,
-                    StatisticsExpectedBranchCount = expectedBranchCount,
-                    StatisticsSnapshotBranchCount = rankedResult.Count,
-                };
+                    var currentData = await branchCurrentQuery
+                        .GroupBy(s => s.BranchCode)
+                        .Select(s => new
+                        {
+                            BranchCode = s.BranchCode,
+                            BranchName = SqlFunc.AggregateMax(s.BranchName),
+                            Revenue = SqlFunc.AggregateSum(s.TotalAmount),
+                            OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                        })
+                        .ToListAsync();
 
-                // 缓存结果
-                var cacheOptions = new MemoryCacheEntryOptions()
-                    .SetAbsoluteExpiration(RANKING_CACHE_DURATION)
-                    .SetSlidingExpiration(TimeSpan.FromMinutes(5));
+                    var lyDict = new Dictionary<string, (decimal RevenueLY, int OrderCountLY)>(
+                        StringComparer.OrdinalIgnoreCase
+                    );
+                    if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+                    {
+                        var lyStartDate = dateRange.CompareStartDate.Value.Date;
+                        var lyEndDate = dateRange.CompareEndDate.Value.Date;
 
-                if (!response.StatisticsPending)
-                {
-                    _cache.Set(cacheKey, response, cacheOptions);
-                }
+                        var lyQuery = _context
+                            .Db.Queryable<StoreSalesStatistic>()
+                            .Where(s => s.Date >= lyStartDate && s.Date <= lyEndDate);
 
-                return response;
+                        if (displayBranchCodes.Count > 0)
+                        {
+                            lyQuery = lyQuery.Where(s => displayBranchCodes.Contains(s.BranchCode));
+                        }
+                        else
+                        {
+                            lyQuery = lyQuery.Where(s => false);
+                        }
+
+                        var lyData = await lyQuery
+                            .GroupBy(s => s.BranchCode)
+                            .Select(s => new
+                            {
+                                BranchCode = s.BranchCode,
+                                RevenueLY = SqlFunc.AggregateSum(s.TotalAmount),
+                                OrderCountLY = SqlFunc.AggregateSum(s.OrderCount),
+                            })
+                            .ToListAsync();
+
+                        lyDict = lyData.ToDictionary(
+                            s => s.BranchCode,
+                            s => (s.RevenueLY, s.OrderCountLY),
+                            StringComparer.OrdinalIgnoreCase
+                        );
+                    }
+
+                    // 构建结果并排序
+                    IEnumerable<ExecutiveBranchPerformanceDto> result = currentData
+                        .Select(
+                            (item, index) =>
+                                new ExecutiveBranchPerformanceDto
+                                {
+                                    Rank = index + 1,
+                                    BranchCode = item.BranchCode,
+                                    BranchName = string.IsNullOrWhiteSpace(item.BranchName)
+                                        ? item.BranchCode
+                                        : item.BranchName,
+                                    Revenue = item.Revenue,
+                                    RevenueLY = lyDict.TryGetValue(item.BranchCode, out var lyItem)
+                                        ? lyItem.RevenueLY
+                                        : 0,
+                                    OrderCount = item.OrderCount,
+                                    OrderCountLY = lyDict.TryGetValue(item.BranchCode, out var lyItem2)
+                                        ? lyItem2.OrderCountLY
+                                        : 0,
+                                    // AOV 在内存侧计算，避免统计表出现 0 单数时触发数据库除零。
+                                    Aov = item.OrderCount > 0 ? item.Revenue / item.OrderCount : 0,
+                                    AovLY = lyDict.TryGetValue(item.BranchCode, out var lyItem3)
+                                        && lyItem3.OrderCountLY > 0
+                                            ? lyItem3.RevenueLY / lyItem3.OrderCountLY
+                                            : 0,
+                                }
+                        );
+
+                    if (displayBranchCodes.Count > 0)
+                    {
+                        var snapshotBranchCodes = currentData
+                            .Where(item => !string.IsNullOrWhiteSpace(item.BranchCode))
+                            .Select(item => item.BranchCode)
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                        var zeroSalesBranchCodes = displayBranchCodes
+                            .Where(code => !snapshotBranchCodes.Contains(code))
+                            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+                        if (zeroSalesBranchCodes.Count > 0)
+                        {
+                            // 授权范围是普通用户可见分店的权威集合；统计表不会为零销售分店逐日落行时，仍须保留零值排行行。
+                            var branchNameMap = normalizedBranchCodes.Count == 0
+                                ? activeStoreNameMap
+                                : await GetStoreNameMapAsync(zeroSalesBranchCodes);
+                            result = result.Concat(zeroSalesBranchCodes.Select(code =>
+                                new ExecutiveBranchPerformanceDto
+                                {
+                                    BranchCode = code,
+                                    BranchName = branchNameMap.TryGetValue(code, out var branchName)
+                                        && !string.IsNullOrWhiteSpace(branchName)
+                                            ? branchName
+                                            : code,
+                                    Revenue = 0,
+                                    RevenueLY = lyDict.TryGetValue(code, out var lyItem)
+                                        ? lyItem.RevenueLY
+                                        : 0,
+                                    OrderCount = 0,
+                                    OrderCountLY = lyDict.TryGetValue(code, out var lyItem2)
+                                        ? lyItem2.OrderCountLY
+                                        : 0,
+                                    Aov = 0,
+                                    AovLY = lyDict.TryGetValue(code, out var lyItem3)
+                                        && lyItem3.OrderCountLY > 0
+                                            ? lyItem3.RevenueLY / lyItem3.OrderCountLY
+                                            : 0,
+                                }
+                            ));
+                        }
+                    }
+
+                    result = result
+                        .OrderByDescending(x => x.Revenue)
+                        .ThenBy(x => x.BranchCode, StringComparer.OrdinalIgnoreCase);
+
+                    if (topN.HasValue && topN.Value > 0)
+                    {
+                        result = result.Take(topN.Value);
+                    }
+
+                    var rankedResult = result
+                        .Select(
+                            (item, index) =>
+                                new ExecutiveBranchPerformanceDto
+                                {
+                                    Rank = index + 1,
+                                    BranchCode = item.BranchCode,
+                                    BranchName = item.BranchName,
+                                    Revenue = item.Revenue,
+                                    RevenueLY = item.RevenueLY,
+                                    OrderCount = item.OrderCount,
+                                    OrderCountLY = item.OrderCountLY,
+                                    Aov = item.Aov,
+                                    AovLY = item.AovLY,
+                                }
+                        )
+                        .ToList();
+
+                    var expectedBranchCount = displayBranchCodes.Count;
+                    if (topN.HasValue && topN.Value > 0)
+                    {
+                        expectedBranchCount = Math.Min(expectedBranchCount, topN.Value);
+                    }
+                    var hasSourceBranchIdentityGap = false;
+                    var sourceBranchIdentityUnverified = false;
+                    if (statisticsRefreshState != StatisticsRefreshState.NotNeeded)
+                    {
+                        var sourceBranchCodes = await GetExpectedExecutiveBranchCodesAsync(
+                            startDate,
+                            endDate,
+                            normalizedBranchCodes
+                        );
+                        if (sourceBranchCodes != null)
+                        {
+                            // 不能只比较行数：授权分店的零值补行会让“少写真实销售分店”伪装成完整。
+                            // 必须按实际聚合来源的分店身份核验统计快照，并同时识别缺失和陈旧分店行。
+                            var statisticSnapshotBranchCodes = currentData
+                                .Where(item => !string.IsNullOrWhiteSpace(item.BranchCode))
+                                .Select(item => item.BranchCode)
+                                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                            var displayedSourceBranchCodes = sourceBranchCodes
+                                .Where(displayBranchCodes.Contains)
+                                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                            hasSourceBranchIdentityGap = !displayedSourceBranchCodes.SetEquals(
+                                statisticSnapshotBranchCodes
+                            );
+                        }
+                        else
+                        {
+                            // 快速补算后的 POSM 来源身份无法核验时，不能证明统计快照完整；必须 fail closed 且禁止缓存。
+                            sourceBranchIdentityUnverified = true;
+                        }
+                    }
+
+                    var response = new ExecutiveBranchPerformanceResultDto
+                    {
+                        Items = rankedResult,
+                        StatisticsPending = statisticsRefreshState == StatisticsRefreshState.Pending
+                            || rankedResult.Count < expectedBranchCount
+                            || hasSourceBranchIdentityGap
+                            || sourceBranchIdentityUnverified,
+                        StatisticsExpectedBranchCount = expectedBranchCount,
+                        StatisticsSnapshotBranchCount = rankedResult.Count,
+                    };
+
+                    // 缓存结果
+                    var cacheOptions = new MemoryCacheEntryOptions()
+                        .SetAbsoluteExpiration(RANKING_CACHE_DURATION)
+                        .SetSlidingExpiration(TimeSpan.FromMinutes(5));
+
+                    if (!response.StatisticsPending)
+                    {
+                        _cache.Set(cacheKey, response, cacheOptions);
+                    }
+
+                    return response;
+                });
             }
             catch (Exception ex)
             {
@@ -3743,122 +3747,150 @@ namespace BlazorApp.Api.Services.React
                     dateRange,
                     normalizedBranchCodes
                 );
-                // 快速补算任务即使已结束，也必须重查来源/统计覆盖；不能把“完成”当作“完整”。
-                // 稳定统计已在 Ensure 中完成一次覆盖核验，此处不重复扫描 POSM，允许尽早命中缓存。
-                var hourlyStatisticsStillMissing = new List<DateTime>();
-                if (statisticsRefreshState == StatisticsRefreshState.Completed)
+
+                return await ReadReportSnapshotAsync(async () =>
                 {
-                    hourlyStatisticsStillMissing = await GetMissingHourlyStatisticDatesAsync(
-                        dateRange.StartDate.Date,
-                        dateRange.EndDate.Date,
-                        normalizedBranchCodes
-                    );
-                    if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+                    // 快速补算任务即使已结束，也必须重查来源/统计覆盖；不能把“完成”当作“完整”。
+                    // 稳定统计已在 Ensure 中完成一次覆盖核验，此处不重复扫描 POSM，允许尽早命中缓存。
+                    var hourlyStatisticsStillMissing = new List<DateTime>();
+                    if (statisticsRefreshState == StatisticsRefreshState.Completed)
                     {
-                        hourlyStatisticsStillMissing.AddRange(await GetMissingHourlyStatisticDatesAsync(
-                            dateRange.CompareStartDate.Value.Date,
-                            dateRange.CompareEndDate.Value.Date,
+                        hourlyStatisticsStillMissing = await GetMissingHourlyStatisticDatesAsync(
+                            dateRange.StartDate.Date,
+                            dateRange.EndDate.Date,
                             normalizedBranchCodes
-                        ));
+                        );
+                        if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+                        {
+                            hourlyStatisticsStillMissing.AddRange(await GetMissingHourlyStatisticDatesAsync(
+                                dateRange.CompareStartDate.Value.Date,
+                                dateRange.CompareEndDate.Value.Date,
+                                normalizedBranchCodes
+                            ));
+                        }
                     }
-                }
-                var statisticsPending = statisticsRefreshState == StatisticsRefreshState.Pending
-                    || hourlyStatisticsStillMissing.Count > 0;
+                    var statisticsPending = statisticsRefreshState == StatisticsRefreshState.Pending
+                        || hourlyStatisticsStillMissing.Count > 0;
 
-                var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
-                var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
-                var statisticsVersion = await GetStatisticsCacheVersionAsync();
-                var cacheKey =
-                    $"ExecutiveHourlyTraffic_{statisticsVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", normalizedBranchCodes)}";
+                    var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
+                    var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
+                    var statisticsVersion = await GetStatisticsCacheVersionAsync();
+                    var cacheKey =
+                        $"ExecutiveHourlyTraffic_{statisticsVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", normalizedBranchCodes)}";
 
-                if (
-                    statisticsRefreshState == StatisticsRefreshState.NotNeeded
-                    &&
-                    _cache.TryGetValue<ExecutiveReportResultDto<ExecutiveHourlyTrafficDto>>(
-                        cacheKey,
-                        out var cachedResult
+                    if (
+                        statisticsRefreshState == StatisticsRefreshState.NotNeeded
+                        &&
+                        _cache.TryGetValue<ExecutiveReportResultDto<ExecutiveHourlyTrafficDto>>(
+                            cacheKey,
+                            out var cachedResult
+                        )
+                        && cachedResult != null
+                        && !cachedResult.StatisticsPending
                     )
-                    && cachedResult != null
-                    && !cachedResult.StatisticsPending
-                )
-                {
-                    _logger.LogInformation("从缓存获取 Executive 每小时流量: {CacheKey}", cacheKey);
-                    return cachedResult;
-                }
-
-                var startDate = dateRange.StartDate.Date;
-                var endDate = dateRange.EndDate.Date;
-
-                var query = _context
-                    .Db.Queryable<HourlySalesStatistic>()
-                    .Where(s =>
-                        s.Date >= startDate
-                        && s.Date <= endDate
-                        && s.BranchCode != null
-                        && s.BranchCode != "ALL"
-                    );
-
-                if (normalizedBranchCodes.Count > 0)
-                {
-                    query = query.Where(s =>
-                        s.BranchCode != null && normalizedBranchCodes.Contains(s.BranchCode)
-                    );
-                }
-
-                var hourlyData = (await query
-                    .GroupBy(s => new { s.BranchCode, s.Hour })
-                    .Select(s => new
                     {
-                        BranchCode = s.BranchCode,
-                        BranchName = SqlFunc.AggregateMax(s.BranchName),
-                        Hour = s.Hour,
-                        Revenue = SqlFunc.AggregateSum(s.TotalAmount),
-                        OrderCount = SqlFunc.AggregateSum(s.OrderCount ?? 0),
-                    })
-                    .OrderBy(s => s.BranchCode)
-                    .ToListAsync())
-                    .OrderBy(x => x.BranchCode)
-                    .ThenBy(x => x.Hour)
-                    .ToList();
+                        _logger.LogInformation("从缓存获取 Executive 每小时流量: {CacheKey}", cacheKey);
+                        return cachedResult;
+                    }
 
-                var lyDict = new Dictionary<
-                    (string BranchCode, int Hour),
-                    (string BranchCode, string BranchName, decimal Revenue, int OrderCount)
-                >();
-                if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
-                {
-                    var lyStartDate = dateRange.CompareStartDate.Value.Date;
-                    var lyEndDate = dateRange.CompareEndDate.Value.Date;
+                    var startDate = dateRange.StartDate.Date;
+                    var endDate = dateRange.EndDate.Date;
 
-                    var lyQuery = _context
+                    var query = _context
                         .Db.Queryable<HourlySalesStatistic>()
                         .Where(s =>
-                            s.Date >= lyStartDate
-                            && s.Date <= lyEndDate
+                            s.Date >= startDate
+                            && s.Date <= endDate
                             && s.BranchCode != null
                             && s.BranchCode != "ALL"
                         );
 
                     if (normalizedBranchCodes.Count > 0)
                     {
-                        lyQuery = lyQuery.Where(s =>
+                        query = query.Where(s =>
                             s.BranchCode != null && normalizedBranchCodes.Contains(s.BranchCode)
                         );
                     }
 
-                    var lyHourlyData = await lyQuery
+                    var hourlyData = (await query
                         .GroupBy(s => new { s.BranchCode, s.Hour })
                         .Select(s => new
                         {
                             BranchCode = s.BranchCode,
                             BranchName = SqlFunc.AggregateMax(s.BranchName),
                             Hour = s.Hour,
-                            RevenueLY = SqlFunc.AggregateSum(s.TotalAmount),
-                            OrderCountLY = SqlFunc.AggregateSum(s.OrderCount ?? 0),
+                            Revenue = SqlFunc.AggregateSum(s.TotalAmount),
+                            OrderCount = SqlFunc.AggregateSum(s.OrderCount ?? 0),
                         })
-                        .ToListAsync();
+                        .OrderBy(s => s.BranchCode)
+                        .ToListAsync())
+                        .OrderBy(x => x.BranchCode)
+                        .ThenBy(x => x.Hour)
+                        .ToList();
 
-                    lyDict = lyHourlyData
+                    var lyDict = new Dictionary<
+                        (string BranchCode, int Hour),
+                        (string BranchCode, string BranchName, decimal Revenue, int OrderCount)
+                    >();
+                    if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+                    {
+                        var lyStartDate = dateRange.CompareStartDate.Value.Date;
+                        var lyEndDate = dateRange.CompareEndDate.Value.Date;
+
+                        var lyQuery = _context
+                            .Db.Queryable<HourlySalesStatistic>()
+                            .Where(s =>
+                                s.Date >= lyStartDate
+                                && s.Date <= lyEndDate
+                                && s.BranchCode != null
+                                && s.BranchCode != "ALL"
+                            );
+
+                        if (normalizedBranchCodes.Count > 0)
+                        {
+                            lyQuery = lyQuery.Where(s =>
+                                s.BranchCode != null && normalizedBranchCodes.Contains(s.BranchCode)
+                            );
+                        }
+
+                        var lyHourlyData = await lyQuery
+                            .GroupBy(s => new { s.BranchCode, s.Hour })
+                            .Select(s => new
+                            {
+                                BranchCode = s.BranchCode,
+                                BranchName = SqlFunc.AggregateMax(s.BranchName),
+                                Hour = s.Hour,
+                                RevenueLY = SqlFunc.AggregateSum(s.TotalAmount),
+                                OrderCountLY = SqlFunc.AggregateSum(s.OrderCount ?? 0),
+                            })
+                            .ToListAsync();
+
+                        lyDict = lyHourlyData
+                            .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
+                            .GroupBy(row => (
+                                BranchCode: row.BranchCode!.Trim().ToUpperInvariant(),
+                                Hour: row.Hour
+                            ))
+                            .ToDictionary(
+                                group => group.Key,
+                                group =>
+                                {
+                                    var branchCode = group.First().BranchCode!.Trim();
+                                    var branchName = group
+                                        .Select(row => row.BranchName)
+                                        .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
+                                        ?? branchCode;
+                                    return (
+                                        BranchCode: branchCode,
+                                        BranchName: branchName,
+                                        Revenue: group.Sum(row => row.RevenueLY),
+                                        OrderCount: group.Sum(row => row.OrderCountLY)
+                                    );
+                                }
+                            );
+                    }
+
+                    var currentDict = hourlyData
                         .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
                         .GroupBy(row => (
                             BranchCode: row.BranchCode!.Trim().ToUpperInvariant(),
@@ -3876,110 +3908,86 @@ namespace BlazorApp.Api.Services.React
                                 return (
                                     BranchCode: branchCode,
                                     BranchName: branchName,
-                                    Revenue: group.Sum(row => row.RevenueLY),
-                                    OrderCount: group.Sum(row => row.OrderCountLY)
+                                    Revenue: group.Sum(row => row.Revenue),
+                                    OrderCount: group.Sum(row => row.OrderCount)
                                 );
                             }
                         );
-                }
-
-                var currentDict = hourlyData
-                    .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
-                    .GroupBy(row => (
-                        BranchCode: row.BranchCode!.Trim().ToUpperInvariant(),
-                        Hour: row.Hour
-                    ))
-                    .ToDictionary(
-                        group => group.Key,
-                        group =>
+                    var unionKeys = currentDict.Keys
+                        .Union(lyDict.Keys)
+                        .OrderBy(key => key.BranchCode, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(key => key.Hour)
+                        .ToList();
+                    var items = unionKeys
+                        .GroupBy(key => key.BranchCode, StringComparer.OrdinalIgnoreCase)
+                        .Select(branchGroup =>
                         {
-                            var branchCode = group.First().BranchCode!.Trim();
-                            var branchName = group
-                                .Select(row => row.BranchName)
-                                .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
-                                ?? branchCode;
-                            return (
-                                BranchCode: branchCode,
-                                BranchName: branchName,
-                                Revenue: group.Sum(row => row.Revenue),
-                                OrderCount: group.Sum(row => row.OrderCount)
+                            var currentRepresentative = branchGroup
+                                .Where(currentDict.ContainsKey)
+                                .Select(key => currentDict[key])
+                                .FirstOrDefault();
+                            var compareRepresentative = branchGroup
+                                .Where(lyDict.ContainsKey)
+                                .Select(key => lyDict[key])
+                                .FirstOrDefault();
+                            var branchCode = !string.IsNullOrWhiteSpace(currentRepresentative.BranchCode)
+                                ? currentRepresentative.BranchCode
+                                : compareRepresentative.BranchCode;
+                            var branchName = !string.IsNullOrWhiteSpace(currentRepresentative.BranchName)
+                                ? currentRepresentative.BranchName
+                                : !string.IsNullOrWhiteSpace(compareRepresentative.BranchName)
+                                    ? compareRepresentative.BranchName
+                                    : branchCode;
+                            var branchMaxRevenue = branchGroup.Max(key =>
+                                currentDict.TryGetValue(key, out var current) ? current.Revenue : 0m
                             );
-                        }
-                    );
-                var unionKeys = currentDict.Keys
-                    .Union(lyDict.Keys)
-                    .OrderBy(key => key.BranchCode, StringComparer.OrdinalIgnoreCase)
-                    .ThenBy(key => key.Hour)
-                    .ToList();
-                var items = unionKeys
-                    .GroupBy(key => key.BranchCode, StringComparer.OrdinalIgnoreCase)
-                    .Select(branchGroup =>
-                    {
-                        var currentRepresentative = branchGroup
-                            .Where(currentDict.ContainsKey)
-                            .Select(key => currentDict[key])
-                            .FirstOrDefault();
-                        var compareRepresentative = branchGroup
-                            .Where(lyDict.ContainsKey)
-                            .Select(key => lyDict[key])
-                            .FirstOrDefault();
-                        var branchCode = !string.IsNullOrWhiteSpace(currentRepresentative.BranchCode)
-                            ? currentRepresentative.BranchCode
-                            : compareRepresentative.BranchCode;
-                        var branchName = !string.IsNullOrWhiteSpace(currentRepresentative.BranchName)
-                            ? currentRepresentative.BranchName
-                            : !string.IsNullOrWhiteSpace(compareRepresentative.BranchName)
-                                ? compareRepresentative.BranchName
-                                : branchCode;
-                        var branchMaxRevenue = branchGroup.Max(key =>
-                            currentDict.TryGetValue(key, out var current) ? current.Revenue : 0m
-                        );
-                        var peakThreshold = branchMaxRevenue * 0.8m;
+                            var peakThreshold = branchMaxRevenue * 0.8m;
 
-                        return branchGroup.Select(key =>
-                        {
-                            var current = currentDict.TryGetValue(key, out var currentValue)
-                                ? currentValue
-                                : (BranchCode: branchCode, BranchName: branchName, Revenue: 0m, OrderCount: 0);
-                            var compare = lyDict.TryGetValue(key, out var compareValue)
-                                ? compareValue
-                                : (BranchCode: branchCode, BranchName: branchName, Revenue: 0m, OrderCount: 0);
-                            return new ExecutiveHourlyTrafficDto
+                            return branchGroup.Select(key =>
                             {
-                                Hour = $"{key.Hour:D2}:00",
-                                BranchCode = branchCode,
-                                BranchName = branchName,
-                                Revenue = current.Revenue,
-                                RevenueLY = compare.Revenue,
-                                OrderCount = current.OrderCount,
-                                OrderCountLY = compare.OrderCount,
-                                Percentage = branchMaxRevenue > 0
-                                    ? (int)(current.Revenue * 100 / branchMaxRevenue)
-                                    : 0,
-                                IsPeak = branchMaxRevenue > 0
-                                    && current.Revenue >= peakThreshold,
-                            };
-                        });
-                    })
-                    .SelectMany(x => x)
-                    .ToList();
+                                var current = currentDict.TryGetValue(key, out var currentValue)
+                                    ? currentValue
+                                    : (BranchCode: branchCode, BranchName: branchName, Revenue: 0m, OrderCount: 0);
+                                var compare = lyDict.TryGetValue(key, out var compareValue)
+                                    ? compareValue
+                                    : (BranchCode: branchCode, BranchName: branchName, Revenue: 0m, OrderCount: 0);
+                                return new ExecutiveHourlyTrafficDto
+                                {
+                                    Hour = $"{key.Hour:D2}:00",
+                                    BranchCode = branchCode,
+                                    BranchName = branchName,
+                                    Revenue = current.Revenue,
+                                    RevenueLY = compare.Revenue,
+                                    OrderCount = current.OrderCount,
+                                    OrderCountLY = compare.OrderCount,
+                                    Percentage = branchMaxRevenue > 0
+                                        ? (int)(current.Revenue * 100 / branchMaxRevenue)
+                                        : 0,
+                                    IsPeak = branchMaxRevenue > 0
+                                        && current.Revenue >= peakThreshold,
+                                };
+                            });
+                        })
+                        .SelectMany(x => x)
+                        .ToList();
 
-                // 缓存结果
-                var cacheOptions = new MemoryCacheEntryOptions()
-                    .SetAbsoluteExpiration(RANKING_CACHE_DURATION)
-                    .SetSlidingExpiration(TimeSpan.FromMinutes(5));
+                    // 缓存结果
+                    var cacheOptions = new MemoryCacheEntryOptions()
+                        .SetAbsoluteExpiration(RANKING_CACHE_DURATION)
+                        .SetSlidingExpiration(TimeSpan.FromMinutes(5));
 
-                var response = CreateExecutiveReportResult(
-                    items,
-                    statisticsPending
-                );
+                    var response = CreateExecutiveReportResult(
+                        items,
+                        statisticsPending
+                    );
 
-                if (!response.StatisticsPending)
-                {
-                    _cache.Set(cacheKey, response, cacheOptions);
-                }
+                    if (!response.StatisticsPending)
+                    {
+                        _cache.Set(cacheKey, response, cacheOptions);
+                    }
 
-                return response;
+                    return response;
+                });
             }
             catch (Exception ex)
             {
@@ -4010,210 +4018,214 @@ namespace BlazorApp.Api.Services.React
                     dateRange,
                     normalizedBranchCodes
                 );
-                // 与排行相同，分店日表须按 POSM 销售分店身份复核，避免补零行掩盖漏写统计。
-                // 稳定统计已在 Ensure 中完成一次覆盖核验，此处不重复扫描 POSM，允许尽早命中缓存。
-                var storeStatisticsStillMissing = new List<DateTime>();
-                if (statisticsRefreshState == StatisticsRefreshState.Completed)
+
+                return await ReadReportSnapshotAsync(async () =>
                 {
-                    storeStatisticsStillMissing = await GetMissingStoreStatisticDatesAsync(
-                        dateRange.StartDate.Date,
-                        dateRange.EndDate.Date,
-                        normalizedBranchCodes
-                    );
-                    if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+                    // 与排行相同，分店日表须按 POSM 销售分店身份复核，避免补零行掩盖漏写统计。
+                    // 稳定统计已在 Ensure 中完成一次覆盖核验，此处不重复扫描 POSM，允许尽早命中缓存。
+                    var storeStatisticsStillMissing = new List<DateTime>();
+                    if (statisticsRefreshState == StatisticsRefreshState.Completed)
                     {
-                        storeStatisticsStillMissing.AddRange(await GetMissingStoreStatisticDatesAsync(
-                            dateRange.CompareStartDate.Value.Date,
-                            dateRange.CompareEndDate.Value.Date,
+                        storeStatisticsStillMissing = await GetMissingStoreStatisticDatesAsync(
+                            dateRange.StartDate.Date,
+                            dateRange.EndDate.Date,
                             normalizedBranchCodes
-                        ));
+                        );
+                        if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+                        {
+                            storeStatisticsStillMissing.AddRange(await GetMissingStoreStatisticDatesAsync(
+                                dateRange.CompareStartDate.Value.Date,
+                                dateRange.CompareEndDate.Value.Date,
+                                normalizedBranchCodes
+                            ));
+                        }
                     }
-                }
-                var statisticsPending = statisticsRefreshState == StatisticsRefreshState.Pending
-                    || storeStatisticsStillMissing.Count > 0;
+                    var statisticsPending = statisticsRefreshState == StatisticsRefreshState.Pending
+                        || storeStatisticsStillMissing.Count > 0;
 
-                var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
-                var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
-                var statisticsVersion = await GetStatisticsCacheVersionAsync();
-                var cacheKey =
-                    $"BranchDailyPerformance_{statisticsVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", normalizedBranchCodes)}";
+                    var compareStartStr = dateRange.CompareStartDate?.ToString("yyyyMMdd") ?? "null";
+                    var compareEndStr = dateRange.CompareEndDate?.ToString("yyyyMMdd") ?? "null";
+                    var statisticsVersion = await GetStatisticsCacheVersionAsync();
+                    var cacheKey =
+                        $"BranchDailyPerformance_{statisticsVersion}_{dateRange.StartDate:yyyyMMdd}_{dateRange.EndDate:yyyyMMdd}_{compareStartStr}_{compareEndStr}_{string.Join(",", normalizedBranchCodes)}";
 
-                if (
-                    statisticsRefreshState == StatisticsRefreshState.NotNeeded
-                    &&
-                    _cache.TryGetValue<ExecutiveReportResultDto<BranchDailyPerformanceDto>>(
-                        cacheKey,
-                        out var cachedResult
+                    if (
+                        statisticsRefreshState == StatisticsRefreshState.NotNeeded
+                        &&
+                        _cache.TryGetValue<ExecutiveReportResultDto<BranchDailyPerformanceDto>>(
+                            cacheKey,
+                            out var cachedResult
+                        )
+                        && cachedResult != null
+                        && !cachedResult.StatisticsPending
                     )
-                    && cachedResult != null
-                    && !cachedResult.StatisticsPending
-                )
-                {
-                    _logger.LogInformation("从缓存获取分店每日营业额: {CacheKey}", cacheKey);
-                    return cachedResult;
-                }
-
-                var startDate = dateRange.StartDate.Date;
-                var endDate = dateRange.EndDate.Date;
-
-                var currentQuery = _context
-                    .Db.Queryable<StoreSalesStatistic>()
-                    .Where(s => s.Date >= startDate && s.Date <= endDate);
-
-                if (normalizedBranchCodes.Count > 0)
-                {
-                    currentQuery = currentQuery.Where(s =>
-                        normalizedBranchCodes.Contains(s.BranchCode)
-                    );
-                }
-
-                var currentData = await currentQuery
-                    .GroupBy(s => new { s.Date, s.BranchCode, s.BranchName })
-                    .Select(s => new
                     {
-                        Date = s.Date,
-                        BranchCode = s.BranchCode,
-                        BranchName = s.BranchName,
-                        Revenue = SqlFunc.AggregateSum(s.TotalAmount),
-                        OrderCount = SqlFunc.AggregateSum(s.OrderCount),
-                    })
-                    .ToListAsync();
+                        _logger.LogInformation("从缓存获取分店每日营业额: {CacheKey}", cacheKey);
+                        return cachedResult;
+                    }
 
-                var lyDict = new Dictionary<
-                    (string BranchCode, DateTime Date),
-                    (string BranchCode, string BranchName, decimal Revenue, int OrderCount)
-                >();
-                if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
-                {
-                    var lyStartDate = dateRange.CompareStartDate.Value.Date;
-                    var lyEndDate = dateRange.CompareEndDate.Value.Date;
+                    var startDate = dateRange.StartDate.Date;
+                    var endDate = dateRange.EndDate.Date;
 
-                    var lyQuery = _context
+                    var currentQuery = _context
                         .Db.Queryable<StoreSalesStatistic>()
-                        .Where(s => s.Date >= lyStartDate && s.Date <= lyEndDate);
+                        .Where(s => s.Date >= startDate && s.Date <= endDate);
 
                     if (normalizedBranchCodes.Count > 0)
                     {
-                        lyQuery = lyQuery.Where(s => normalizedBranchCodes.Contains(s.BranchCode));
+                        currentQuery = currentQuery.Where(s =>
+                            normalizedBranchCodes.Contains(s.BranchCode)
+                        );
                     }
 
-                    var lyData = await lyQuery
-                        .GroupBy(s => new { s.Date, s.BranchCode })
+                    var currentData = await currentQuery
+                        .GroupBy(s => new { s.Date, s.BranchCode, s.BranchName })
                         .Select(s => new
                         {
                             Date = s.Date,
                             BranchCode = s.BranchCode,
-                            BranchName = SqlFunc.AggregateMax(s.BranchName),
+                            BranchName = s.BranchName,
                             Revenue = SqlFunc.AggregateSum(s.TotalAmount),
                             OrderCount = SqlFunc.AggregateSum(s.OrderCount),
                         })
                         .ToListAsync();
 
-                    lyDict = lyData
-                        .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
-                        .Select(row => new
+                    var lyDict = new Dictionary<
+                        (string BranchCode, DateTime Date),
+                        (string BranchCode, string BranchName, decimal Revenue, int OrderCount)
+                    >();
+                    if (dateRange.CompareStartDate.HasValue && dateRange.CompareEndDate.HasValue)
+                    {
+                        var lyStartDate = dateRange.CompareStartDate.Value.Date;
+                        var lyEndDate = dateRange.CompareEndDate.Value.Date;
+
+                        var lyQuery = _context
+                            .Db.Queryable<StoreSalesStatistic>()
+                            .Where(s => s.Date >= lyStartDate && s.Date <= lyEndDate);
+
+                        if (normalizedBranchCodes.Count > 0)
                         {
-                            Row = row,
-                            CurrentDate = startDate.AddDays((row.Date.Date - lyStartDate).Days),
-                        })
-                        .Where(item => item.CurrentDate >= startDate && item.CurrentDate <= endDate)
-                        .GroupBy(item => (
-                            BranchCode: item.Row.BranchCode.Trim().ToUpperInvariant(),
-                            Date: item.CurrentDate
+                            lyQuery = lyQuery.Where(s => normalizedBranchCodes.Contains(s.BranchCode));
+                        }
+
+                        var lyData = await lyQuery
+                            .GroupBy(s => new { s.Date, s.BranchCode })
+                            .Select(s => new
+                            {
+                                Date = s.Date,
+                                BranchCode = s.BranchCode,
+                                BranchName = SqlFunc.AggregateMax(s.BranchName),
+                                Revenue = SqlFunc.AggregateSum(s.TotalAmount),
+                                OrderCount = SqlFunc.AggregateSum(s.OrderCount),
+                            })
+                            .ToListAsync();
+
+                        lyDict = lyData
+                            .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
+                            .Select(row => new
+                            {
+                                Row = row,
+                                CurrentDate = startDate.AddDays((row.Date.Date - lyStartDate).Days),
+                            })
+                            .Where(item => item.CurrentDate >= startDate && item.CurrentDate <= endDate)
+                            .GroupBy(item => (
+                                BranchCode: item.Row.BranchCode.Trim().ToUpperInvariant(),
+                                Date: item.CurrentDate
+                            ))
+                            .ToDictionary(
+                                group => group.Key,
+                                group =>
+                                {
+                                    var branchCode = group.First().Row.BranchCode.Trim();
+                                    var branchName = group
+                                        .Select(item => item.Row.BranchName)
+                                        .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
+                                        ?? branchCode;
+                                    return (
+                                        BranchCode: branchCode,
+                                        BranchName: branchName,
+                                        Revenue: group.Sum(item => item.Row.Revenue),
+                                        OrderCount: group.Sum(item => item.Row.OrderCount)
+                                    );
+                                }
+                            );
+                    }
+
+                    // 按当前区间和对比区间的相同偏移天数配对，兼容同周和同月份规则。
+                    var currentDict = currentData
+                        .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
+                        .GroupBy(row => (
+                            BranchCode: row.BranchCode.Trim().ToUpperInvariant(),
+                            Date: row.Date.Date
                         ))
                         .ToDictionary(
                             group => group.Key,
                             group =>
                             {
-                                var branchCode = group.First().Row.BranchCode.Trim();
+                                var branchCode = group.First().BranchCode.Trim();
                                 var branchName = group
-                                    .Select(item => item.Row.BranchName)
+                                    .Select(row => row.BranchName)
                                     .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
                                     ?? branchCode;
                                 return (
                                     BranchCode: branchCode,
                                     BranchName: branchName,
-                                    Revenue: group.Sum(item => item.Row.Revenue),
-                                    OrderCount: group.Sum(item => item.Row.OrderCount)
+                                    Revenue: group.Sum(row => row.Revenue),
+                                    OrderCount: group.Sum(row => row.OrderCount)
                                 );
                             }
                         );
-                }
-
-                // 按当前区间和对比区间的相同偏移天数配对，兼容同周和同月份规则。
-                var currentDict = currentData
-                    .Where(row => !string.IsNullOrWhiteSpace(row.BranchCode))
-                    .GroupBy(row => (
-                        BranchCode: row.BranchCode.Trim().ToUpperInvariant(),
-                        Date: row.Date.Date
-                    ))
-                    .ToDictionary(
-                        group => group.Key,
-                        group =>
+                    var items = currentDict.Keys
+                        .Union(lyDict.Keys)
+                        .Select(key =>
                         {
-                            var branchCode = group.First().BranchCode.Trim();
-                            var branchName = group
-                                .Select(row => row.BranchName)
-                                .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name))
-                                ?? branchCode;
-                            return (
-                                BranchCode: branchCode,
-                                BranchName: branchName,
-                                Revenue: group.Sum(row => row.Revenue),
-                                OrderCount: group.Sum(row => row.OrderCount)
-                            );
-                        }
+                            var current = currentDict.TryGetValue(key, out var currentValue)
+                                ? currentValue
+                                : default;
+                            var compare = lyDict.TryGetValue(key, out var compareValue)
+                                ? compareValue
+                                : default;
+                            var branchCode = !string.IsNullOrWhiteSpace(current.BranchCode)
+                                ? current.BranchCode
+                                : compare.BranchCode;
+                            var branchName = !string.IsNullOrWhiteSpace(current.BranchName)
+                                ? current.BranchName
+                                : !string.IsNullOrWhiteSpace(compare.BranchName)
+                                    ? compare.BranchName
+                                    : branchCode;
+
+                            return new BranchDailyPerformanceDto
+                            {
+                                Date = key.Date,
+                                BranchCode = branchCode,
+                                BranchName = branchName,
+                                Revenue = current.Revenue,
+                                RevenueLY = compare.Revenue,
+                                OrderCount = current.OrderCount,
+                                OrderCountLY = compare.OrderCount,
+                            };
+                        })
+                        .OrderBy(row => row.Date)
+                        .ThenByDescending(row => row.Revenue)
+                        .ThenBy(row => row.BranchCode, StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+
+                    var cacheOptions = new MemoryCacheEntryOptions()
+                        .SetAbsoluteExpiration(RANKING_CACHE_DURATION)
+                        .SetSlidingExpiration(TimeSpan.FromMinutes(5));
+
+                    var response = CreateExecutiveReportResult(
+                        items,
+                        statisticsPending
                     );
-                var items = currentDict.Keys
-                    .Union(lyDict.Keys)
-                    .Select(key =>
+
+                    if (!response.StatisticsPending)
                     {
-                        var current = currentDict.TryGetValue(key, out var currentValue)
-                            ? currentValue
-                            : default;
-                        var compare = lyDict.TryGetValue(key, out var compareValue)
-                            ? compareValue
-                            : default;
-                        var branchCode = !string.IsNullOrWhiteSpace(current.BranchCode)
-                            ? current.BranchCode
-                            : compare.BranchCode;
-                        var branchName = !string.IsNullOrWhiteSpace(current.BranchName)
-                            ? current.BranchName
-                            : !string.IsNullOrWhiteSpace(compare.BranchName)
-                                ? compare.BranchName
-                                : branchCode;
+                        _cache.Set(cacheKey, response, cacheOptions);
+                    }
 
-                        return new BranchDailyPerformanceDto
-                        {
-                            Date = key.Date,
-                            BranchCode = branchCode,
-                            BranchName = branchName,
-                            Revenue = current.Revenue,
-                            RevenueLY = compare.Revenue,
-                            OrderCount = current.OrderCount,
-                            OrderCountLY = compare.OrderCount,
-                        };
-                    })
-                    .OrderBy(row => row.Date)
-                    .ThenByDescending(row => row.Revenue)
-                    .ThenBy(row => row.BranchCode, StringComparer.OrdinalIgnoreCase)
-                    .ToList();
-
-                var cacheOptions = new MemoryCacheEntryOptions()
-                    .SetAbsoluteExpiration(RANKING_CACHE_DURATION)
-                    .SetSlidingExpiration(TimeSpan.FromMinutes(5));
-
-                var response = CreateExecutiveReportResult(
-                    items,
-                    statisticsPending
-                );
-
-                if (!response.StatisticsPending)
-                {
-                    _cache.Set(cacheKey, response, cacheOptions);
-                }
-
-                return response;
+                    return response;
+                });
             }
             catch (Exception ex)
             {
@@ -4777,32 +4789,35 @@ namespace BlazorApp.Api.Services.React
             List<string> branchCodes
         )
         {
-            var expectedDates = EnumerateReportDates(startDate, endDate);
-            if (expectedDates.Count == 0)
-                return new List<DateTime>();
-
-            // 历史日期的 StoreSales 完成快照已经由后台任务写入状态表；只要统计表确实有行，
-            // 这里无需为了每次报表请求再次扫描 POSM/HBSales 原始单据。当天或未认证日期仍走来源身份核验。
-            var certifiedDates = await GetCertifiedStoreStatisticDatesAsync(expectedDates);
-            var uncertifiedDates = expectedDates
-                .Where(date => !certifiedDates.Contains(date.Date))
-                .ToList();
-            if (uncertifiedDates.Count == 0)
-                return new List<DateTime>();
-
-            var missingDates = new List<DateTime>();
-            foreach (var segment in EnumerateContiguousDateSegments(uncertifiedDates))
+            return await ReadReportSnapshotAsync(async () =>
             {
-                missingDates.AddRange(
-                    await GetMissingStoreStatisticDatesFromSourceAsync(
-                        segment.StartDate,
-                        segment.EndDate,
-                        branchCodes
-                    )
-                );
-            }
+                var expectedDates = EnumerateReportDates(startDate, endDate);
+                if (expectedDates.Count == 0)
+                    return new List<DateTime>();
 
-            return missingDates.Distinct().OrderBy(date => date).ToList();
+                // 历史日期的 StoreSales 完成快照已经由后台任务写入状态表；只要统计表确实有行，
+                // 这里无需为了每次报表请求再次扫描 POSM/HBSales 原始单据。当天或未认证日期仍走来源身份核验。
+                var certifiedDates = await GetCertifiedStoreStatisticDatesAsync(expectedDates);
+                var uncertifiedDates = expectedDates
+                    .Where(date => !certifiedDates.Contains(date.Date))
+                    .ToList();
+                if (uncertifiedDates.Count == 0)
+                    return new List<DateTime>();
+
+                var missingDates = new List<DateTime>();
+                foreach (var segment in EnumerateContiguousDateSegments(uncertifiedDates))
+                {
+                    missingDates.AddRange(
+                        await GetMissingStoreStatisticDatesFromSourceAsync(
+                            segment.StartDate,
+                            segment.EndDate,
+                            branchCodes
+                        )
+                    );
+                }
+
+                return missingDates.Distinct().OrderBy(date => date).ToList();
+            });
         }
 
         private async Task<HashSet<DateTime>> GetCertifiedStoreStatisticDatesAsync(
@@ -4917,44 +4932,47 @@ namespace BlazorApp.Api.Services.React
             List<string> branchCodes
         )
         {
-            var expectedDates = EnumerateReportDates(startDate, endDate);
-            if (expectedDates.Count == 0)
-                return new List<DateTime>();
-
-            var query = _context.Db.Queryable<HourlySalesStatistic>()
-                .Where(s => s.Date >= startDate && s.Date <= endDate);
-            if (branchCodes.Count > 0)
+            return await ReadReportSnapshotAsync(async () =>
             {
-                query = query.Where(s => s.BranchCode != null && branchCodes.Contains(s.BranchCode));
-            }
+                var expectedDates = EnumerateReportDates(startDate, endDate);
+                if (expectedDates.Count == 0)
+                    return new List<DateTime>();
 
-            var rows = await query
-                .Select(s => new StatisticDateBranchHourRow
+                var query = _context.Db.Queryable<HourlySalesStatistic>()
+                    .Where(s => s.Date >= startDate && s.Date <= endDate);
+                if (branchCodes.Count > 0)
                 {
-                    Date = s.Date,
-                    BranchCode = s.BranchCode,
-                    Hour = s.Hour,
-                    OrderCount = s.OrderCount ?? 0,
-                    TotalAmount = s.TotalAmount,
-                })
-                .ToListAsync();
+                    query = query.Where(s => s.BranchCode != null && branchCodes.Contains(s.BranchCode));
+                }
 
-            var expectedSalesBranchesByDate = await GetPosmStoreSalesBranchCodesByDateAsync(
-                startDate,
-                endDate,
-                branchCodes
-            );
-            if (expectedSalesBranchesByDate == null)
-            {
-                // POSM 来源覆盖无法确认时，保守触发重算；不能把局部小时统计误认为完整。
-                return expectedDates;
-            }
+                var rows = await query
+                    .Select(s => new StatisticDateBranchHourRow
+                    {
+                        Date = s.Date,
+                        BranchCode = s.BranchCode,
+                        Hour = s.Hour,
+                        OrderCount = s.OrderCount ?? 0,
+                        TotalAmount = s.TotalAmount,
+                    })
+                    .ToListAsync();
 
-            return GetMissingHourlyDatesFromRows(
-                expectedDates,
-                rows,
-                expectedSalesBranchesByDate
-            );
+                var expectedSalesBranchesByDate = await GetPosmStoreSalesBranchCodesByDateAsync(
+                    startDate,
+                    endDate,
+                    branchCodes
+                );
+                if (expectedSalesBranchesByDate == null)
+                {
+                    // POSM 来源覆盖无法确认时，保守触发重算；不能把局部小时统计误认为完整。
+                    return expectedDates;
+                }
+
+                return GetMissingHourlyDatesFromRows(
+                    expectedDates,
+                    rows,
+                    expectedSalesBranchesByDate
+                );
+            });
         }
 
         private async Task<Dictionary<DateTime, HashSet<string>>?> GetStoreSalesSourceBranchCodesByDateAsync(
@@ -5609,51 +5627,57 @@ namespace BlazorApp.Api.Services.React
             IEnumerable<string>? chinaSupplierCodes = null
         )
         {
-            var supplierCodes = NormalizeCodes(chinaSupplierCodes);
-            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
-            // 未指定国内供应商代码时读取全部 200 映射；否则按每批最多 500 个代码分次 Contains 再合并。
-            if (!supplierCodes.Any())
+            // 映射同步可能正在写入；显式关闭 NOLOCK，在 POSM 的已提交快照中读取整份映射。
+            return await ReadReportSnapshotOnConnectionAsync(_posmContext.Db, async () =>
             {
-                var allRows = await _posmContext
-                    .Db.Queryable<PosmProductSupplierMapping>()
-                    .Where(m =>
-                        !m.IsDeleted
-                        && m.LocalSupplierCode == "200"
-                        && m.ChinaSupplierCode != null
-                        && m.ChinaSupplierCode != ""
-                    )
-                    .Select(m => new ChinaSupplierProductMapRow
-                    {
-                        ProductCode = m.ProductCode,
-                        ChinaSupplierCode = m.ChinaSupplierCode ?? string.Empty,
-                    })
-                    .ToListAsync();
-                MergeChinaSupplierProductMap(result, allRows);
+                var supplierCodes = NormalizeCodes(chinaSupplierCodes);
+                var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+                // 未指定国内供应商代码时读取全部 200 映射；否则按每批最多 500 个代码分次 Contains 再合并。
+                if (!supplierCodes.Any())
+                {
+                    var allRows = await _posmContext
+                        .Db.Queryable<PosmProductSupplierMapping>()
+                        .With(SqlWith.Null)
+                        .Where(m =>
+                            !m.IsDeleted
+                            && m.LocalSupplierCode == "200"
+                            && m.ChinaSupplierCode != null
+                            && m.ChinaSupplierCode != ""
+                        )
+                        .Select(m => new ChinaSupplierProductMapRow
+                        {
+                            ProductCode = m.ProductCode,
+                            ChinaSupplierCode = m.ChinaSupplierCode ?? string.Empty,
+                        })
+                        .ToListAsync();
+                    MergeChinaSupplierProductMap(result, allRows);
+                    return result;
+                }
+
+                foreach (var batch in BatchProductSalesCodes(supplierCodes))
+                {
+                    var batchCodes = batch.ToList();
+                    var rows = await _posmContext
+                        .Db.Queryable<PosmProductSupplierMapping>()
+                        .With(SqlWith.Null)
+                        .Where(m =>
+                            !m.IsDeleted
+                            && m.LocalSupplierCode == "200"
+                            && m.ChinaSupplierCode != null
+                            && batchCodes.Contains(m.ChinaSupplierCode)
+                        )
+                        .Select(m => new ChinaSupplierProductMapRow
+                        {
+                            ProductCode = m.ProductCode,
+                            ChinaSupplierCode = m.ChinaSupplierCode ?? string.Empty,
+                        })
+                        .ToListAsync();
+                    MergeChinaSupplierProductMap(result, rows);
+                }
+
                 return result;
-            }
-
-            foreach (var batch in BatchProductSalesCodes(supplierCodes))
-            {
-                var batchCodes = batch.ToList();
-                var rows = await _posmContext
-                    .Db.Queryable<PosmProductSupplierMapping>()
-                    .Where(m =>
-                        !m.IsDeleted
-                        && m.LocalSupplierCode == "200"
-                        && m.ChinaSupplierCode != null
-                        && batchCodes.Contains(m.ChinaSupplierCode)
-                    )
-                    .Select(m => new ChinaSupplierProductMapRow
-                    {
-                        ProductCode = m.ProductCode,
-                        ChinaSupplierCode = m.ChinaSupplierCode ?? string.Empty,
-                    })
-                    .ToListAsync();
-                MergeChinaSupplierProductMap(result, rows);
-            }
-
-            return result;
+            });
         }
 
         private static void MergeChinaSupplierProductMap(

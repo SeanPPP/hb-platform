@@ -16,6 +16,7 @@ public sealed class RemoteMaintenanceServiceTests
         var result = await fixture.Service.InstallAsync(fixture.Session);
 
         Assert.True(result.Succeeded);
+        Assert.Equal("settings.remoteMaintenance.result.configured", result.Message);
         Assert.Equal("rustdesk-123", fixture.Api.CommittedRustdeskIds.Single());
         Assert.Equal(new[] { "install", "configure" }, fixture.Launcher.Stages);
     }
@@ -33,6 +34,7 @@ public sealed class RemoteMaintenanceServiceTests
         var first = await fixture.Service.InstallAsync(fixture.Session);
 
         Assert.True(first.Succeeded);
+        Assert.Equal("settings.remoteMaintenance.result.configured", first.Message);
         Assert.Equal(operationId, fixture.Api.PreparedOperations.Single());
         Assert.Equal(password, fixture.Api.CommittedPasswords.Single());
         Assert.Equal(1, fixture.Launcher.Stages.Count(x => x == "install"));
@@ -50,6 +52,7 @@ public sealed class RemoteMaintenanceServiceTests
         var result = await fixture.Service.InstallAsync(fixture.Session);
 
         Assert.True(result.Succeeded);
+        Assert.Equal("settings.remoteMaintenance.result.restored", result.Message);
         Assert.Empty(fixture.Launcher.Stages.Where(x => x == "install"));
         Assert.Equal(new[] { "configure" }, fixture.Launcher.Stages);
         Assert.Equal(operationId, fixture.Api.CommittedOperations.Single());
@@ -66,6 +69,7 @@ public sealed class RemoteMaintenanceServiceTests
         var result = await fixture.Service.InstallAsync(fixture.Session);
 
         Assert.True(result.Succeeded);
+        Assert.Equal("settings.remoteMaintenance.result.serviceRestored", result.Message);
         Assert.Equal(new[] { "configure" }, fixture.Launcher.Stages);
         Assert.Equal(operationId, fixture.Launcher.OperationIds.Single());
     }
@@ -89,6 +93,7 @@ public sealed class RemoteMaintenanceServiceTests
         var result = await fixture.Service.InstallAsync(fixture.Session);
 
         Assert.False(result.Succeeded);
+        Assert.Equal("settings.remoteMaintenance.result.configurationFailed", result.Message);
         var cleanup = Assert.Single(fixture.Launcher.FailClosedRequests);
         Assert.False(cleanup.RustDeskInstalled);
         Assert.False(cleanup.StatusAgentInstalled);
@@ -104,6 +109,7 @@ public sealed class RemoteMaintenanceServiceTests
         var result = await fixture.Service.InstallAsync(fixture.Session);
 
         Assert.False(result.Succeeded);
+        Assert.Equal("settings.remoteMaintenance.result.configurationFailed", result.Message);
         var cleanup = Assert.Single(fixture.Launcher.FailClosedRequests);
         Assert.True(cleanup.RustDeskInstalled);
         Assert.False(cleanup.StatusAgentInstalled);

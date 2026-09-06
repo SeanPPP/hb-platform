@@ -153,8 +153,8 @@ export function canActivateLinklyConfiguration(management?: LinklyTerminalManage
 
   const enabledDevices = management.devices.filter((device) => device.enabled)
   const selectedTerminalIds = enabledDevices.flatMap((device) => device.terminalId ? [device.terminalId] : [])
-  return selectedTerminalIds.length === enabledDevices.length
-    && new Set(selectedTerminalIds).size === selectedTerminalIds.length
+  // 未选择 Cloud 终端的 POS 可使用其他连接方式，不作为启用前置条件。
+  return new Set(selectedTerminalIds).size === selectedTerminalIds.length
     && selectedTerminalIds.every((terminalId) => readyTerminalIds.has(terminalId))
 }
 

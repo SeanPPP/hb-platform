@@ -1,8 +1,10 @@
-﻿using Hbpos.Client.Wpf.Services;
+﻿using Hbpos.Client.Wpf.Models;
+using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.ViewModels;
 using Hbpos.Client.Wpf.Localization;
 using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Stores;
+using Hbpos.RemoteMaintenance.Setup;
 
 namespace Hbpos.Client.Tests;
 
@@ -2413,6 +2415,153 @@ public sealed class SettingsViewModelTests
         Assert.Equal("\u5C31\u7EEA\u3002", viewModel.StatusMessage);
         Assert.Equal("\u6570\u636E\u7EF4\u62A4", viewModel.DataMaintenanceTitleText);
         Assert.Equal("\u66F4\u6362\u5206\u5E97\u6CE8\u518C", viewModel.DeviceRegistrationTitleText);
+    }
+
+    [Theory]
+    [InlineData("notInstalled", "notInstalled")]
+    [InlineData("running", "running")]
+    [InlineData("starting", "starting")]
+    [InlineData("stopping", "stopping")]
+    [InlineData("stopped", "stopped")]
+    [InlineData("checkFailed", "checkFailed")]
+    [InlineData("unexpected-internal-status", "unknown")]
+    public async Task Remote_maintenance_status_uses_localized_allowlist_text(string serviceStatus, string expectedStatusKey)
+    {
+        var localization = new LocalizationService();
+        var internalDetail = "internal path C:\\secrets\\remote-maintenance.log";
+        var remoteService = new FakeRemoteMaintenanceService
+        {
+            Status = new RemoteMaintenanceStatus(
+                serviceStatus is "running" or "starting" or "stopping" or "stopped",
+                "rustdesk-test-id",
+                "1.4.9",
+                serviceStatus,
+                internalDetail)
+        };
+        using var viewModel = new SettingsViewModel(
+            new FakeCardTerminalSetupService(),
+            localization,
+            remoteMaintenanceService: remoteService);
+
+        await viewModel.SelectRemoteMaintenanceCommand.ExecuteAsync(null);
+
+        Assert.Equal(
+            localization.T("settings.remoteMaintenance.status." + expectedStatusKey),
+            viewModel.RemoteMaintenanceStatusText);
+        Assert.Equal(
+            localization.T("settings.remoteMaintenance.detail." + expectedStatusKey),
+            viewModel.RemoteMaintenanceDetailText);
+        Assert.DoesNotContain(internalDetail, viewModel.RemoteMaintenanceStatusText, StringComparison.Ordinal);
+        Assert.DoesNotContain(internalDetail, viewModel.RemoteMaintenanceDetailText, StringComparison.Ordinal);
+        Assert.DoesNotContain("[[", viewModel.RemoteMaintenanceStatusText, StringComparison.Ordinal);
+        Assert.DoesNotContain("[[", viewModel.RemoteMaintenanceDetailText, StringComparison.Ordinal);
+
+        localization.SetCulture("zh-CN");
+
+        Assert.Equal(
+            localization.T("settings.remoteMaintenance.status." + expectedStatusKey),
+            viewModel.RemoteMaintenanceStatusText);
+        Assert.Equal(
+            localization.T("settings.remoteMaintenance.detail." + expectedStatusKey),
+            viewModel.RemoteMaintenanceDetailText);
+        Assert.DoesNotContain(internalDetail, viewModel.RemoteMaintenanceDetailText, StringComparison.Ordinal);
+        localization.SetCulture("en-US");
+    }
+
+    [Fact]
+    public async Task Remote_maintenance_localized_properties_raise_notifications_and_install_result_relocalizes()
+    {
+        var localization = new LocalizationService();
+        var remoteService = new FakeRemoteMaintenanceService
+        {
+            Status = new RemoteMaintenanceStatus(false, string.Empty, string.Empty, "notInstalled"),
+            InstallResult = new RemoteMaintenanceProvisionResult(
+                true,
+                "settings.remoteMaintenance.result.configured",
+                new RemoteMaintenanceStatus(true, "rustdesk-test-id", "1.4.9", "running"))
+        };
+        using var viewModel = new SettingsViewModel(
+            new FakeCardTerminalSetupService(),
+            localization,
+            remoteMaintenanceService: remoteService);
+
+        await viewModel.SelectRemoteMaintenanceCommand.ExecuteAsync(null);
+
+        Assert.Equal("Remote maintenance", viewModel.RemoteMaintenanceTitleText);
+        Assert.Equal(
+            localization.T("settings.remoteMaintenance.description"),
+            viewModel.RemoteMaintenanceDescriptionText);
+        Assert.Contains("RustDesk", viewModel.RemoteMaintenanceDescriptionText, StringComparison.Ordinal);
+        Assert.Equal("Install remote maintenance", viewModel.RemoteMaintenanceActionText);
+        Assert.Equal("Not installed", viewModel.RemoteMaintenanceStatusText);
+
+        var changedProperties = new List<string>();
+        viewModel.PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName is not null)
+            {
+                changedProperties.Add(args.PropertyName);
+            }
+        };
+
+        localization.SetCulture("zh-CN");
+
+        Assert.Equal("远程维护", viewModel.RemoteMaintenanceTitleText);
+        Assert.Equal(
+            localization.T("settings.remoteMaintenance.description"),
+            viewModel.RemoteMaintenanceDescriptionText);
+        Assert.Contains("后台状态服务", viewModel.RemoteMaintenanceDescriptionText, StringComparison.Ordinal);
+        Assert.Equal("安装远程维护", viewModel.RemoteMaintenanceActionText);
+        Assert.Equal("未安装", viewModel.RemoteMaintenanceStatusText);
+        Assert.Contains(nameof(SettingsViewModel.RemoteMaintenanceTitleText), changedProperties);
+        Assert.Contains(nameof(SettingsViewModel.RemoteMaintenanceDescriptionText), changedProperties);
+        Assert.Contains(nameof(SettingsViewModel.RemoteMaintenanceActionText), changedProperties);
+        Assert.Contains(nameof(SettingsViewModel.RemoteMaintenanceStatusText), changedProperties);
+        Assert.Contains(nameof(SettingsViewModel.RemoteMaintenanceDetailText), changedProperties);
+
+        changedProperties.Clear();
+        await viewModel.InstallRemoteMaintenanceCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, remoteService.InstallCallCount);
+        Assert.True(viewModel.IsRemoteMaintenanceConfigured);
+        Assert.Equal("检查并恢复", viewModel.RemoteMaintenanceActionText);
+        Assert.Contains(nameof(SettingsViewModel.IsRemoteMaintenanceConfigured), changedProperties);
+        Assert.Contains(nameof(SettingsViewModel.RemoteMaintenanceActionText), changedProperties);
+        Assert.Contains(nameof(SettingsViewModel.RemoteMaintenanceStatusText), changedProperties);
+        Assert.Contains(nameof(SettingsViewModel.RemoteMaintenanceDetailText), changedProperties);
+        Assert.Equal("远程维护已完成配置，状态服务将在后台上报设备状态。", viewModel.StatusMessage);
+
+        localization.SetCulture("en-US");
+        Assert.Equal("Check and restore", viewModel.RemoteMaintenanceActionText);
+        Assert.Equal(
+            "Remote maintenance is configured. The status service will report device status in the background.",
+            viewModel.StatusMessage);
+    }
+
+    private sealed class FakeRemoteMaintenanceService : IRemoteMaintenanceService
+    {
+        public RemoteMaintenanceStatus Status { get; set; } =
+            new(false, string.Empty, string.Empty, "notInstalled");
+
+        public RemoteMaintenanceProvisionResult InstallResult { get; set; } =
+            new(
+                false,
+                "settings.remoteMaintenance.result.configurationFailed",
+                new(false, string.Empty, string.Empty, "notInstalled"));
+
+        public int InstallCallCount { get; private set; }
+
+        public Task<RemoteMaintenanceStatus> GetStatusAsync(CancellationToken cancellationToken = default) =>
+            Task.FromResult(Status);
+
+        public Task<RemoteMaintenanceProvisionResult> InstallAsync(
+            PosSessionState session,
+            CancellationToken cancellationToken = default)
+        {
+            InstallCallCount++;
+            Status = InstallResult.Status;
+            return Task.FromResult(InstallResult);
+        }
     }
 
     private sealed class FakeCardTerminalSetupService(

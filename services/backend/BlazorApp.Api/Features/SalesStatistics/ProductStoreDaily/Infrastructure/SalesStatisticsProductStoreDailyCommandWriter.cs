@@ -123,6 +123,16 @@ internal sealed class SalesStatisticsProductStoreDailyCommandWriter
                     effectiveSourceWatermark,
                     overwriteLastSourceUploadTime: atomicStoreStatistics != null
                 );
+                if (productVersion == null)
+                {
+                    // 诊断用失败结果已经替换商品行时，撤销旧发布版本。下一次排队不能把
+                    // 这些未通过对账的商品行误认成仍与两张供应商表一致的旧完整快照。
+                    await context.Db.Updateable<SalesStatisticRefreshState>()
+                        .SetColumns(row => row.SourceProductVersion == null)
+                        .Where(row => row.StatisticType == SalesStatisticType.ProductStoreDaily
+                            && row.Date >= input.TargetDate.Date && row.Date < input.TargetDate.Date.AddDays(1))
+                        .ExecuteCommandAsync();
+                }
                 if (atomicStoreStatistics != null)
                 {
                     await SalesStatisticsProductStoreDailyStateSlice.UpsertStatisticStateAsync(

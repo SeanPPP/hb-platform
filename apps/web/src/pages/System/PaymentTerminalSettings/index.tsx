@@ -433,7 +433,7 @@ export default function PaymentTerminalSettingsPage() {
       title: t('common.action'),
       key: 'actions',
       width: 130,
-      render: (_, device) => !device.enabled && device.terminalId && device.revision > 0 ? (
+      render: (_, device) => device.terminalId && device.revision > 0 ? (
         <Popconfirm
           title={t('paymentTerminalSettings.releaseSelectionConfirmTitle')}
           description={t('paymentTerminalSettings.releaseSelectionConfirmDescription', { deviceCode: device.deviceCode })}

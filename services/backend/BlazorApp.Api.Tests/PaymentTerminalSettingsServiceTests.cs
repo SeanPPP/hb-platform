@@ -783,6 +783,18 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
         Assert.Empty(released.Data!.Devices);
         Assert.Equal(0, await _posmDb.Ado.GetIntAsync("SELECT COUNT(*) FROM POSM_LinklyCloudDeviceSelection"));
 
+        var repeatedRelease = await service.DeleteLinklyDeviceSelectionAsync(
+            "POS-DISABLED",
+            new DeleteLinklyDeviceSelectionDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                ExpectedRevision = 7,
+            },
+            "admin"
+        );
+        Assert.True(repeatedRelease.Success);
+
         SeedPosDevice("POS-REPLACEMENT", "001");
         var replacement = await service.SetLinklyDeviceSelectionAsync(
             "POS-REPLACEMENT",
@@ -820,7 +832,7 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
             "admin"
         );
         var terminalId = created.Data!.Terminals.Single().TerminalId;
-        Assert.True((await service.SetLinklyDeviceSelectionAsync(
+        var selected = await service.SetLinklyDeviceSelectionAsync(
             "POS-01",
             new UpdateLinklyDeviceSelectionDto
             {
@@ -828,7 +840,9 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
                 Environment = "Production",
                 TerminalId = terminalId,
             },
-            "admin")).Success);
+            "admin");
+        Assert.True(selected.Success);
+        var selectedRevision = selected.Data!.Devices.Single(device => device.DeviceCode == "POS-01").Revision;
 
         var stale = await service.DeleteLinklyDeviceSelectionAsync(
             "POS-01",
@@ -849,12 +863,24 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
             {
                 StoreCode = "001",
                 Environment = "Production",
-                ExpectedRevision = 1,
+                ExpectedRevision = selectedRevision,
             },
             "admin"
         );
-        Assert.False(enabledDevice.Success);
-        Assert.Equal("LINKLY_DEVICE_SELECTION_RELEASE_NOT_ALLOWED", enabledDevice.ErrorCode);
+        Assert.True(enabledDevice.Success);
+        Assert.Null(enabledDevice.Data!.Devices.Single(device => device.DeviceCode == "POS-01").TerminalId);
+
+        var rebound = await service.SetLinklyDeviceSelectionAsync(
+            "POS-01",
+            new UpdateLinklyDeviceSelectionDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                TerminalId = terminalId,
+            },
+            "admin");
+        Assert.True(rebound.Success);
+        var reboundRevision = rebound.Data!.Devices.Single(device => device.DeviceCode == "POS-01").Revision;
 
         await _posmDb.Ado.ExecuteCommandAsync(
             "UPDATE POSM_设备注册信息表 SET 设备状态 = 0, 是否允许交易 = 0 WHERE 系统设备编号 = 'POS-01'"
@@ -875,7 +901,7 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
             {
                 StoreCode = "001",
                 Environment = "Production",
-                ExpectedRevision = 1,
+                ExpectedRevision = reboundRevision,
             },
             "admin"
         );
@@ -909,7 +935,7 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
             {
                 StoreCode = "001",
                 Environment = "Production",
-                ExpectedRevision = 1,
+                ExpectedRevision = reboundRevision,
             },
             "admin"
         );
@@ -923,13 +949,215 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
             {
                 StoreCode = "001",
                 Environment = "Production",
-                ExpectedRevision = 1,
+                ExpectedRevision = reboundRevision,
             },
             "admin"
         );
         Assert.False(blocked.Success);
         Assert.Equal("LINKLY_TERMINAL_SESSION_ACTIVE", blocked.ErrorCode);
         Assert.Equal(1, await _posmDb.Ado.GetIntAsync("SELECT COUNT(*) FROM POSM_LinklyCloudDeviceSelection"));
+    }
+
+    [Fact]
+    public async Task DeleteLinklyDeviceSelectionAsync_InActiveModeKeepsOtherCloudPosAssigned()
+    {
+        var service = CreateService();
+        SeedStore("001", "City Store");
+        SeedPosDevice("POS-01", "001");
+        SeedPosDevice("POS-02", "001");
+        var first = await service.CreateLinklyTerminalAsync(
+            new CreateLinklyTerminalDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                LaneNo = 1,
+                DisplayName = "Front Counter",
+                Username = "test-user-001",
+                Password = "lane-secret",
+            },
+            "admin");
+        var second = await service.CreateLinklyTerminalAsync(
+            new CreateLinklyTerminalDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                LaneNo = 2,
+                DisplayName = "Back Counter",
+                Username = "test-user-002",
+                Password = "lane-secret",
+            },
+            "admin");
+        var firstId = first.Data!.Terminals.Single().TerminalId;
+        var secondId = second.Data!.Terminals.Single(terminal => terminal.LaneNo == 2).TerminalId;
+        await _posmDb.Ado.ExecuteCommandAsync(
+            "UPDATE POSM_LinklyCloudTerminal SET PairingState = 'Ready', Secret = 'paired-secret', PosId = 'POS-1' WHERE TerminalId IN (@FirstId, @SecondId)",
+            new SugarParameter("@FirstId", firstId),
+            new SugarParameter("@SecondId", secondId));
+
+        var firstSelection = await service.SetLinklyDeviceSelectionAsync(
+            "POS-01",
+            new UpdateLinklyDeviceSelectionDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                TerminalId = firstId,
+            },
+            "admin");
+        Assert.True(firstSelection.Success);
+        var firstRevision = firstSelection.Data!.Devices.Single(device => device.DeviceCode == "POS-01").Revision;
+        Assert.True((await service.SetLinklyDeviceSelectionAsync(
+            "POS-02",
+            new UpdateLinklyDeviceSelectionDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                TerminalId = secondId,
+            },
+            "admin")).Success);
+        Assert.True((await service.ActivateLinklyConfigurationAsync(
+            new ActivateLinklyConfigurationDto { StoreCode = "001", Environment = "Production" },
+            "admin")).Success);
+
+        var cleared = await service.DeleteLinklyDeviceSelectionAsync(
+            "POS-01",
+            new DeleteLinklyDeviceSelectionDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                ExpectedRevision = firstRevision,
+            },
+            "admin");
+
+        Assert.True(cleared.Success);
+        Assert.Equal("Active", cleared.Data!.Mode);
+        Assert.Null(cleared.Data.Devices.Single(device => device.DeviceCode == "POS-01").TerminalId);
+        Assert.Equal(secondId, cleared.Data.Devices.Single(device => device.DeviceCode == "POS-02").TerminalId);
+    }
+
+    [Fact]
+    public async Task SetAndDeleteLinklyDeviceSelectionAsync_RejectsStaleRevisionAfterRebind()
+    {
+        var service = CreateService();
+        SeedStore("001", "City Store");
+        SeedPosDevice("POS-01", "001");
+        var created = await service.CreateLinklyTerminalAsync(
+            new CreateLinklyTerminalDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                LaneNo = 1,
+                DisplayName = "Front Counter",
+                Username = "test-user-001",
+                Password = "lane-secret",
+            },
+            "admin");
+        var terminalId = created.Data!.Terminals.Single().TerminalId;
+
+        var first = await service.SetLinklyDeviceSelectionAsync(
+            "POS-01",
+            new UpdateLinklyDeviceSelectionDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                TerminalId = terminalId,
+            },
+            "admin");
+        Assert.True(first.Success);
+        var firstRevision = first.Data!.Devices.Single(device => device.DeviceCode == "POS-01").Revision;
+        Assert.InRange(firstRevision, 2, BlazorApp.Shared.Security.LinklyCloudSelectionRevision.MaxJsSafeRevision);
+
+        Assert.True((await service.DeleteLinklyDeviceSelectionAsync(
+            "POS-01",
+            new DeleteLinklyDeviceSelectionDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                ExpectedRevision = firstRevision,
+            },
+            "admin")).Success);
+
+        var rebound = await service.SetLinklyDeviceSelectionAsync(
+            "POS-01",
+            new UpdateLinklyDeviceSelectionDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                TerminalId = terminalId,
+            },
+            "admin");
+        Assert.True(rebound.Success);
+        var reboundRevision = rebound.Data!.Devices.Single(device => device.DeviceCode == "POS-01").Revision;
+        Assert.InRange(reboundRevision, 2, BlazorApp.Shared.Security.LinklyCloudSelectionRevision.MaxJsSafeRevision);
+        Assert.NotEqual(firstRevision, reboundRevision);
+
+        var staleDelete = await service.DeleteLinklyDeviceSelectionAsync(
+            "POS-01",
+            new DeleteLinklyDeviceSelectionDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                ExpectedRevision = firstRevision,
+            },
+            "admin");
+
+        Assert.False(staleDelete.Success);
+        Assert.Equal("LINKLY_SELECTION_REVISION_CONFLICT", staleDelete.ErrorCode);
+        var current = (await service.GetLinklyTerminalManagementAsync("001", "Production"))
+            .Data!.Devices.Single(device => device.DeviceCode == "POS-01");
+        Assert.Equal(terminalId, current.TerminalId);
+        Assert.Equal(reboundRevision, current.Revision);
+    }
+
+    [Fact]
+    public async Task ActivateLinklyConfigurationAsync_RejectsSelectedUnreadyPosButAllowsUnselectedPos()
+    {
+        var service = CreateService();
+        SeedStore("001", "City Store");
+        SeedPosDevice("POS-01", "001");
+        SeedPosDevice("POS-02", "001");
+        var ready = await service.CreateLinklyTerminalAsync(
+            new CreateLinklyTerminalDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                LaneNo = 1,
+                DisplayName = "Front Counter",
+                Username = "test-user-001",
+                Password = "lane-secret",
+            },
+            "admin");
+        var unready = await service.CreateLinklyTerminalAsync(
+            new CreateLinklyTerminalDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                LaneNo = 2,
+                DisplayName = "Back Counter",
+                Username = "test-user-002",
+                Password = "lane-secret",
+            },
+            "admin");
+        var readyId = ready.Data!.Terminals.Single().TerminalId;
+        var unreadyId = unready.Data!.Terminals.Single(terminal => terminal.LaneNo == 2).TerminalId;
+        await _posmDb.Ado.ExecuteCommandAsync(
+            "UPDATE POSM_LinklyCloudTerminal SET PairingState = 'Ready', Secret = 'paired-secret', PosId = 'POS-1' WHERE TerminalId = @TerminalId",
+            new SugarParameter("@TerminalId", readyId));
+        Assert.True((await service.SetLinklyDeviceSelectionAsync(
+            "POS-01",
+            new UpdateLinklyDeviceSelectionDto
+            {
+                StoreCode = "001",
+                Environment = "Production",
+                TerminalId = unreadyId,
+            },
+            "admin")).Success);
+
+        var result = await service.ActivateLinklyConfigurationAsync(
+            new ActivateLinklyConfigurationDto { StoreCode = "001", Environment = "Production" },
+            "admin");
+
+        Assert.False(result.Success);
+        Assert.Equal("LINKLY_DEVICE_SELECTION_REQUIRED", result.ErrorCode);
     }
 
     [Fact]
@@ -966,6 +1194,7 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
             "admin"
         );
         Assert.True(selected.Success);
+        var selectedRevision = selected.Data!.Devices.Single(device => device.DeviceCode == "POS-01").Revision;
         Assert.True((await service.ActivateLinklyConfigurationAsync(
             new ActivateLinklyConfigurationDto { StoreCode = "001", Environment = "Production" },
             "admin")).Success);
@@ -981,7 +1210,7 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
                 StoreCode = "001",
                 Environment = "Production",
                 TerminalId = terminalId,
-                ExpectedRevision = 1,
+                ExpectedRevision = selectedRevision,
             },
             "admin"
         );
@@ -991,7 +1220,7 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task ActivateLinklyConfigurationAsync_RequiresReadyTerminalAndEveryEnabledPosSelection()
+    public async Task ActivateLinklyConfigurationAsync_AllowsEnabledPosWithoutCloudSelection()
     {
         var service = CreateService();
         SeedStore("001", "City Store");
@@ -1015,12 +1244,13 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
             new SugarParameter("@TerminalId", terminalId)
         );
 
-        var blocked = await service.ActivateLinklyConfigurationAsync(
+        var activatedWithoutSelection = await service.ActivateLinklyConfigurationAsync(
             new ActivateLinklyConfigurationDto { StoreCode = "001", Environment = "Production" },
             "admin"
         );
-        Assert.False(blocked.Success);
-        Assert.Equal("LINKLY_DEVICE_SELECTION_REQUIRED", blocked.ErrorCode);
+        Assert.True(activatedWithoutSelection.Success);
+        Assert.Equal("Active", activatedWithoutSelection.Data!.Mode);
+        Assert.Null(activatedWithoutSelection.Data.Devices.Single(device => device.DeviceCode == "POS-01").TerminalId);
 
         var selected = await service.SetLinklyDeviceSelectionAsync(
             "POS-01",
@@ -1038,7 +1268,8 @@ public sealed class PaymentTerminalSettingsServiceTests : IDisposable
         );
 
         Assert.True(selected.Success);
-        Assert.Equal(1, selected.Data!.Devices.Single(device => device.DeviceCode == "POS-01").Revision);
+        var selectedRevision = selected.Data!.Devices.Single(device => device.DeviceCode == "POS-01").Revision;
+        Assert.InRange(selectedRevision, 2, BlazorApp.Shared.Security.LinklyCloudSelectionRevision.MaxJsSafeRevision);
         Assert.False(selected.Data.Devices.Single(device => device.DeviceCode == "POS-DISABLED").Enabled);
         Assert.True(activated.Success);
         Assert.Equal("Active", activated.Data!.Mode);

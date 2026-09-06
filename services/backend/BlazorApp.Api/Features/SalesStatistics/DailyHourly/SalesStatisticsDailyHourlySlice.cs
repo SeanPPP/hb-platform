@@ -65,9 +65,7 @@ namespace BlazorApp.Api.Services
             await UpdateHourlyStatistics(currentDate, currentHour);
             // 更新每日统计数据
             await UpdateDailyStatistics(currentDate.ToString("yyyy-MM-dd"));
-            // 更新分店统计数据
-            await _storeDaily.UpdateStoreStatistics(currentDate);
-            // 商品快照完成后在同一派生写入边界发布澳洲/中国供应商表，避免旧入口重复重建。
+            // 当天分店、商品和两类供应商由同一来源快照原子发布，避免先切换分店表。
             await _productEntry.UpdateProductStoreDailyStatistics(currentDate);
 
             _logger.LogInformation(

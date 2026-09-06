@@ -51,6 +51,8 @@ namespace BlazorApp.Api.Data
                     {
                         IsAutoRemoveDataCache = true,
                         IsWithNoLockQuery = true,
+                        // 统计一致快照必须遵守事务隔离级别，禁止全局 NOLOCK 绕过已提交版本。
+                        DisableWithNoLockWithTran = true,
                     },
                 }
             );

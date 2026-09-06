@@ -2260,7 +2260,7 @@
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
-                                <TextBlock Grid.Row="0" Text="本机状态" Style="{StaticResource SettingsLabelStyle}" />
+                                <TextBlock Grid.Row="0" Text="{loc:Loc settings.remoteMaintenance.localStatus}" Style="{StaticResource SettingsLabelStyle}" />
                                 <Border Grid.Row="1"
                                         Background="#FFF6F8FB"
                                         BorderBrush="{StaticResource PosBorderBrush}"
@@ -2295,7 +2295,7 @@
                                             <TextBlock Text="{Binding RemoteMaintenanceActionText}" Foreground="White" />
                                         </StackPanel>
                                     </Button>
-                                    <TextBlock Text="安装需要 Windows UAC 授权；配置成功后服务独立运行，不阻塞收银。"
+                                    <TextBlock Text="{loc:Loc settings.remoteMaintenance.installHint}"
                                                FontSize="10"
                                                Foreground="{StaticResource PosMutedForegroundBrush}"
                                                TextWrapping="Wrap"

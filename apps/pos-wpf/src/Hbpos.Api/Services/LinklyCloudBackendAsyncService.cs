@@ -5837,7 +5837,11 @@ public sealed class SqlSugarLinklyCloudBackendAsyncRepository(
             new SugarParameter("@DeviceCode", session.DeviceCode),
             new SugarParameter("@TerminalId", session.TerminalId),
             new SugarParameter("@SelectionRevision", session.SelectionRevision),
-            new SugarParameter("@TerminalUpdatedAt", session.TerminalUpdatedAt),
+            // Active 模式用该时间做 DATETIME2(7) 终端 CAS；显式类型避免 SqlSugar 将高精度值降为 datetime。
+            new SugarParameter("@TerminalUpdatedAt", session.TerminalUpdatedAt)
+            {
+                DbType = System.Data.DbType.DateTime2
+            },
             new SugarParameter("@SessionId", session.SessionId),
             new SugarParameter("@Status", session.Status),
             new SugarParameter("@TxnRef", session.TxnRef),

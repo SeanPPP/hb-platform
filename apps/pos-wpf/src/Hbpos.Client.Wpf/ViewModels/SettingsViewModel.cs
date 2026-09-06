@@ -504,15 +504,29 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public bool IsRemoteMaintenanceConfigured => _remoteMaintenanceStatus?.IsConfigured == true;
 
-    public string RemoteMaintenanceStatusText => _remoteMaintenanceStatus?.ServiceStatus ?? "notInstalled";
+    private string RemoteMaintenanceStatusKey => (_remoteMaintenanceStatus?.ServiceStatus ?? "notInstalled") switch
+    {
+        "notInstalled" => "notInstalled",
+        "running" => "running",
+        "starting" => "starting",
+        "stopping" => "stopping",
+        "stopped" => "stopped",
+        "checkFailed" => "checkFailed",
+        _ => "unknown"
+    };
 
-    public string RemoteMaintenanceDetailText => _remoteMaintenanceStatus?.Detail ?? "尚未配置远程维护。";
+    public string RemoteMaintenanceStatusText => T("settings.remoteMaintenance.status." + RemoteMaintenanceStatusKey);
 
-    public string RemoteMaintenanceTitleText => "远程维护";
+    // 服务返回的诊断文本不直接展示，避免切换语言后残留中文或泄露内部路径。
+    public string RemoteMaintenanceDetailText => T("settings.remoteMaintenance.detail." +
+        (_remoteMaintenanceService is null && _remoteMaintenanceStatus is not null ? "serviceUnavailable" : RemoteMaintenanceStatusKey));
 
-    public string RemoteMaintenanceDescriptionText => "安装并维护本机 RustDesk 与独立状态服务，收银员退出后仍可在线。";
+    public string RemoteMaintenanceTitleText => T("settings.remoteMaintenance.title");
 
-    public string RemoteMaintenanceActionText => IsRemoteMaintenanceConfigured ? "检查并恢复" : "安装远程维护";
+    public string RemoteMaintenanceDescriptionText => T("settings.remoteMaintenance.description");
+
+    public string RemoteMaintenanceActionText => T(IsRemoteMaintenanceConfigured
+        ? "settings.remoteMaintenance.restore" : "settings.remoteMaintenance.install");
 
     private RemoteMaintenanceStatus? _remoteMaintenanceStatus;
 
@@ -1546,7 +1560,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     {
         if (_remoteMaintenanceService is null)
         {
-            _remoteMaintenanceStatus = new RemoteMaintenanceStatus(false, string.Empty, string.Empty, "notInstalled", "远程维护服务未注册。");
+            _remoteMaintenanceStatus = new RemoteMaintenanceStatus(false, string.Empty, string.Empty, "notInstalled");
         }
         else
         {
@@ -1554,6 +1568,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         }
 
         OnPropertyChanged(nameof(IsRemoteMaintenanceConfigured));
+        OnPropertyChanged(nameof(RemoteMaintenanceActionText));
         OnPropertyChanged(nameof(RemoteMaintenanceStatusText));
         OnPropertyChanged(nameof(RemoteMaintenanceDetailText));
         RaiseCommandStates();
@@ -1563,7 +1578,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     {
         if (_remoteMaintenanceService is null)
         {
-            _remoteMaintenanceStatus = new RemoteMaintenanceStatus(false, string.Empty, string.Empty, "notInstalled", "远程维护服务未注册。");
+            _remoteMaintenanceStatus = new RemoteMaintenanceStatus(false, string.Empty, string.Empty, "notInstalled");
             OnPropertyChanged(nameof(RemoteMaintenanceDetailText));
             return;
         }
@@ -1572,8 +1587,9 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         {
             var result = await _remoteMaintenanceService.InstallAsync(Session);
             _remoteMaintenanceStatus = result.Status;
-            SetStatusOverride(result.Message);
+            SetStatus(result.Message);
             OnPropertyChanged(nameof(IsRemoteMaintenanceConfigured));
+            OnPropertyChanged(nameof(RemoteMaintenanceActionText));
             OnPropertyChanged(nameof(RemoteMaintenanceStatusText));
             OnPropertyChanged(nameof(RemoteMaintenanceDetailText));
         }, "install remote maintenance");
@@ -1660,6 +1676,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(SettingsSubtitleText));
         OnPropertyChanged(nameof(DataMaintenanceTitleText));
         OnPropertyChanged(nameof(DeviceRegistrationTitleText));
+        OnPropertyChanged(nameof(RemoteMaintenanceTitleText));
+        OnPropertyChanged(nameof(RemoteMaintenanceDescriptionText));
+        OnPropertyChanged(nameof(RemoteMaintenanceActionText));
+        OnPropertyChanged(nameof(RemoteMaintenanceStatusText));
+        OnPropertyChanged(nameof(RemoteMaintenanceDetailText));
         OnPropertyChanged(nameof(SquareTitleText));
         OnPropertyChanged(nameof(LinklyTitleText));
         RaiseActivePaymentProviderProperties();

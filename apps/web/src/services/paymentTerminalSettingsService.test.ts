@@ -1,6 +1,7 @@
 import {
   activateLinklyConfiguration,
   createLinklyTerminal,
+  deleteLinklyDeviceSelection,
   getLinklyTerminals,
   updateLinklyDeviceSelection,
   updateLinklyTerminal,
@@ -106,6 +107,21 @@ try {
     'activation should use the fixed endpoint',
   )
   assertEqual(calls[4]?.init?.method, 'POST', 'activation should use POST')
+
+  await deleteLinklyDeviceSelection('POS /01', {
+    storeCode: '001',
+    environment: 'Production',
+    expectedRevision: 2,
+  })
+  assertEqual(
+    calls[5]?.url,
+    '/api/react/v1/payment-terminal-settings/linkly-device-selections/POS%20%2F01',
+    'clearing should address the selected POS with an encoded device code',
+  )
+  assertEqual(calls[5]?.init?.method, 'DELETE', 'clearing should use DELETE')
+  assertEqual(readBody(calls[5]).storeCode, '001', 'clearing must retain the store scope')
+  assertEqual(readBody(calls[5]).environment, 'Production', 'clearing must retain the environment scope')
+  assertEqual(readBody(calls[5]).expectedRevision, 2, 'clearing must carry the selection revision')
 
   console.log('paymentTerminalSettingsService.test: ok')
 } finally {

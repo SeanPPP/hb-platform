@@ -4,6 +4,7 @@ using BlazorApp.Api.Data;
 using BlazorApp.Api.Services;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
+using BlazorApp.Shared.Models.POSM;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -80,6 +81,51 @@ public sealed class SqlSugarContextNoLockTransactionTests
 
         Assert.All(snapshotSql, sql => Assert.False(ContainsNoLock(sql), sql));
     }
+
+    [Theory]
+    [InlineData(IsolationLevel.Snapshot)]
+    [InlineData(IsolationLevel.Serializable)]
+    public void PosmSqlServerConfig_统计来源查询在事务内遵守隔离级别(IsolationLevel isolationLevel)
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["ConnectionStrings:HBPOSMConnection"] =
+                    "Server=127.0.0.1;Database=hb_posm_sql_generation;Integrated Security=True;TrustServerCertificate=True",
+            })
+            .Build();
+        var context = new POSMSqlSugarContext(
+            configuration,
+            Mock.Of<ICurrentUserService>(),
+            NullLogger<POSMSqlSugarContext>.Instance
+        );
+        Assert.All(BuildPosmStatisticsSourceSql(context), sql => Assert.True(ContainsNoLock(sql), sql));
+
+        // 使用真实生产连接配置生成 SQL，验证连接级规则同时覆盖单表和联表查询，无需连接数据库。
+        var transaction = new Mock<DbTransaction>();
+        transaction.SetupGet(item => item.IsolationLevel).Returns(isolationLevel);
+        context.Db.Ado.Transaction = transaction.Object;
+        try
+        {
+            Assert.All(BuildPosmStatisticsSourceSql(context), sql => Assert.False(ContainsNoLock(sql), sql));
+        }
+        finally
+        {
+            context.Db.Ado.Transaction = null;
+        }
+
+        Assert.All(BuildPosmStatisticsSourceSql(context), sql => Assert.True(ContainsNoLock(sql), sql));
+    }
+
+    private static IReadOnlyList<string> BuildPosmStatisticsSourceSql(POSMSqlSugarContext context) =>
+        [
+            context.Db.Queryable<SalesOrder>()
+                .LeftJoin<SalesOrderDetail>((order, detail) => order.OrderGuid == detail.OrderGuid)
+                .ToSql().Key,
+            context.Db.Queryable<PaymentDetail>().ToSql().Key,
+            context.Db.Queryable<SalesReturnRecord>().ToSql().Key,
+            context.Db.Queryable<PosmProductSupplierMapping>().ToSql().Key,
+        ];
 
     private static SqlSugarContext CreateProductionSqlServerContext()
     {

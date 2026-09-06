@@ -16,10 +16,45 @@ namespace BlazorApp.Api.Services.React;
 public partial class SalesDashboardReactService
 {
     private readonly bool _useSupplierRollups;
+    private readonly Dictionary<ISqlSugarClient, bool> _reportSnapshotIsolationAvailability = new(ReferenceEqualityComparer.Instance);
     private static readonly ConditionalWeakTable<IMemoryCache, ConcurrentDictionary<string, Lazy<Task<object>>>>
         CompleteReportReads = new();
 
     private sealed class ReportSnapshotChangedException : Exception { }
+
+    private Task<T> ReadReportSnapshotAsync<T>(Func<Task<T>> read) =>
+        ReadReportSnapshotOnConnectionAsync(_context.Db, read);
+
+    private async Task<T> ReadReportSnapshotOnConnectionAsync<T>(ISqlSugarClient db, Func<Task<T>> read)
+    {
+        if (db.CurrentConnectionConfig.DbType != DbType.SqlServer || db.Ado.Transaction != null)
+            return await read();
+
+        // 只使用数据库已经启用的快照能力；不在报表请求中修改数据库隔离设置。
+        if (!_reportSnapshotIsolationAvailability.TryGetValue(db, out var available))
+        {
+            available = await db.Ado.GetIntAsync(
+                "SELECT snapshot_isolation_state FROM sys.databases WHERE database_id = DB_ID()") == 1;
+            _reportSnapshotIsolationAvailability[db] = available;
+        }
+        if (!available)
+            return await read();
+
+        // 后台替换统计的写锁不能阻塞前台；数据与完成版本必须来自同一个已提交快照。
+        await db.Ado.BeginTranAsync(System.Data.IsolationLevel.Snapshot);
+        try
+        {
+            var result = await read();
+            await db.Ado.CommitTranAsync();
+            return result;
+        }
+        catch
+        {
+            if (db.Ado.Transaction != null)
+                await db.Ado.RollbackTranAsync();
+            throw;
+        }
+    }
 
     internal sealed class SupplierRollupReadRow
     {
@@ -42,15 +77,23 @@ public partial class SalesDashboardReactService
         if (range.CompareStartDate.HasValue && range.CompareEndDate.HasValue)
             dates.AddRange(EnumerateReportDates(range.CompareStartDate.Value.Date, range.CompareEndDate.Value.Date));
         var requestedDates = dates.Distinct().OrderBy(date => date).ToList();
-        var first = requestedDates[0];
-        var end = requestedDates[^1].AddDays(1);
+        var currentStart = range.StartDate.Date;
+        var currentEnd = range.EndDate.Date.AddDays(1);
+        var hasCompare = range.CompareStartDate.HasValue && range.CompareEndDate.HasValue;
+        var compareStart = hasCompare ? range.CompareStartDate!.Value.Date : currentStart;
+        var compareEnd = hasCompare ? range.CompareEndDate!.Value.Date.AddDays(1) : currentEnd;
         var types = new[] { SalesStatisticType.ProductStoreDaily, SalesStatisticType.AustralianSupplierStoreSales, SalesStatisticType.ChinaSupplierStoreSales };
-        // 一次读取三类状态；前台三个组件使用同一版本定义，禁止拼接不同批次的数据。
-        var states = (await _context.Db.Queryable<SalesStatisticRefreshState>()
-            .Where(state => state.Date >= first && state.Date < end && types.Contains(state.StatisticType))
-            .ToListAsync()).Where(state => requestedDates.Contains(state.Date.Date)).ToList();
+        // 只读取本期与同期的三类状态；不能把两段日期之间整年的状态也物化到内存。
+        var states = (await ReadReportSnapshotAsync(() => _context.Db.Queryable<SalesStatisticRefreshState>()
+            .Where(state => types.Contains(state.StatisticType)
+                && ((state.Date >= currentStart && state.Date < currentEnd)
+                    || (state.Date >= compareStart && state.Date < compareEnd)))
+            .ToListAsync())).Where(state => requestedDates.Contains(state.Date.Date)).ToList();
         var source = string.Join("|", states.OrderBy(state => state.Date).ThenBy(state => state.StatisticType)
-            .Select(state => $"{state.StatisticType}:{state.Date:yyyyMMdd}:{state.Status}:{state.LastAggregatedAtUtc?.Ticks}:{state.CompletedAtUtc?.Ticks}:{state.SourceProductVersion}"));
+            .Select(state => state.StatisticType == SalesStatisticType.ProductStoreDaily
+                // 排队/运行状态是下一批的执行进度，不应使已发布且三表一致的快照缓存失效。
+                ? $"{state.StatisticType}:{state.Date:yyyyMMdd}:{state.LastAggregatedAtUtc?.Ticks}:{state.SourceProductVersion}"
+                : $"{state.StatisticType}:{state.Date:yyyyMMdd}:{state.Status}:{state.LastAggregatedAtUtc?.Ticks}:{state.CompletedAtUtc?.Ticks}:{state.SourceProductVersion}"));
         var result = new ProductReportStatisticStatusDto
         {
             CacheVersion = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(source))),
@@ -68,7 +111,11 @@ public partial class SalesDashboardReactService
         foreach (var date in requestedDates)
         {
             var product = states.SingleOrDefault(state => state.Date.Date == date && state.StatisticType == SalesStatisticType.ProductStoreDaily);
-            if (product == null || product.Status != SalesStatisticRefreshStatus.Fresh || !product.CompletedAtUtc.HasValue || !product.LastAggregatedAtUtc.HasValue)
+            if (product == null || !product.LastAggregatedAtUtc.HasValue)
+                return result;
+            var completedProduct = product.Status == SalesStatisticRefreshStatus.Fresh && product.CompletedAtUtc.HasValue;
+            var refreshingProduct = product.Status == SalesStatisticRefreshStatus.Queued || product.Status == SalesStatisticRefreshStatus.Running;
+            if (!completedProduct && !refreshingProduct)
                 return result;
             var productVersion = SupplierStatisticVersion.GetProductVersion(product);
             if (string.IsNullOrWhiteSpace(productVersion))
@@ -124,10 +171,15 @@ public partial class SalesDashboardReactService
             // 共享计算拥有自己的 DI scope；调用端取消不会释放正在服务其他请求的数据库上下文。
             using var scope = _serviceScopeFactory?.CreateScope();
             var executor = scope?.ServiceProvider.GetService<ISalesDashboardReactService>() as SalesDashboardReactService ?? this;
-            var value = await read(executor);
-            var after = await executor.GetProductReportStatisticStatusAsync(range);
-            if (!IsProductStatisticFresh(after) || after.CacheVersion != before.CacheVersion)
-                throw new ReportSnapshotChangedException();
+            var value = await executor.ReadReportSnapshotAsync(async () =>
+            {
+                var data = await read(executor);
+                var after = await executor.GetProductReportStatisticStatusAsync(range);
+                if (!IsProductStatisticFresh(after) || after.CacheVersion != before.CacheVersion)
+                    throw new ReportSnapshotChangedException();
+                return data;
+            });
+            // 完整快照读取成功并结束事务后，才允许其他请求复用结果。
             _cache.Set(key, value, DETAIL_CACHE_DURATION);
             return value;
         }, LazyThreadSafetyMode.ExecutionAndPublication));
@@ -177,6 +229,9 @@ public partial class SalesDashboardReactService
         Filter("SupplierCode", "@suppliers", suppliers);
         var branchSelect = byBranch ? "[BranchCode]" : "''";
         var branchGroup = byBranch ? ", [BranchCode]" : "";
+        // 日、周、月的行数相差很大；按本次日期生成计划，避免月报复用日查询的嵌套循环计划。
+        var queryOption = _context.Db.CurrentConnectionConfig.DbType == DbType.SqlServer
+            ? "OPTION (RECOMPILE)" : string.Empty;
         var sql = $"""
             SELECT [SupplierCode], {branchSelect} AS BranchCode,
                 SUM([TotalAmount]) AS TotalAmount, SUM([TotalQuantity]) AS TotalQuantity,
@@ -189,6 +244,7 @@ public partial class SalesDashboardReactService
             FROM [{table}]
             WHERE [Date] >= @start AND [Date] < @end {filters}
             GROUP BY [SupplierCode]{branchGroup}
+            {queryOption}
             """;
         var result = await _context.Db.Ado.SqlQueryAsync<SupplierRollupReadRow>(sql, parameters.ToArray());
         if (result.Any(row => row.InvalidRowCount > 0))

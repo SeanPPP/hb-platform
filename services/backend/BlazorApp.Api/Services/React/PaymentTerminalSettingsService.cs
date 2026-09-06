@@ -660,7 +660,7 @@ public sealed class PaymentTerminalSettingsService(
                     Environment = scope.Environment!,
                     DeviceCode = normalizedDeviceCode,
                     TerminalId = request.TerminalId,
-                    Revision = 1,
+                    Revision = LinklyCloudSelectionRevision.CreateInitial(),
                     UpdatedAt = now,
                     UpdatedBy = updater,
                 }).ExecuteCommandAsync();
@@ -758,7 +758,21 @@ public sealed class PaymentTerminalSettingsService(
             .FirstAsync();
         if (selectionSnapshot is null)
         {
-            return LinklySelectionRevisionConflict();
+            if (await HasBlockingLinklyDeviceSessionAsync(
+                    normalizedDeviceCode,
+                    scope.StoreCode!,
+                    scope.Environment!))
+            {
+                return ApiResponse<LinklyTerminalManagementDto>.Error(
+                    "该 POS 仍有进行中或待确认的 Linkly 交易，请先完成恢复",
+                    "LINKLY_TERMINAL_SESSION_ACTIVE"
+                );
+            }
+
+            return ApiResponse<LinklyTerminalManagementDto>.OK(
+                await BuildLinklyTerminalManagementAsync(scope.StoreCode!, scope.Environment!),
+                "该 POS 未绑定 Linkly 初始终端"
+            );
         }
 
         var now = DateTime.UtcNow;
@@ -816,22 +830,6 @@ public sealed class PaymentTerminalSettingsService(
             {
                 await posmContext.Db.Ado.RollbackTranAsync();
                 return LinklySelectionRevisionConflict();
-            }
-
-            var device = await SelectLinklyDeviceCandidates(
-                    posmContext.Db.Queryable<POSM_设备注册信息表>()
-                        .Where(row => row.系统设备编号 == normalizedDeviceCode
-                            && row.分店代码 == scope.StoreCode
-                            && row.设备类型 == "POS")
-                )
-                .FirstAsync();
-            if (device?.Enabled == true)
-            {
-                await posmContext.Db.Ado.RollbackTranAsync();
-                return ApiResponse<LinklyTerminalManagementDto>.Error(
-                    "已启用且允许交易的 POS 必须保留初始 Linkly 终端；请直接切换终端",
-                    "LINKLY_DEVICE_SELECTION_RELEASE_NOT_ALLOWED"
-                );
             }
 
             var affected = await posmContext.Db.Deleteable<PaymentLinklyDeviceSelectionRecord>()
@@ -939,13 +937,14 @@ public sealed class PaymentTerminalSettingsService(
 
             var missingSelection = management.Devices.Any(device =>
                 device.Enabled
-                && (!device.TerminalId.HasValue || !readyIds.Contains(device.TerminalId.Value))
+                && device.TerminalId.HasValue
+                && !readyIds.Contains(device.TerminalId.Value)
             );
             if (missingSelection)
             {
                 await posmContext.Db.Ado.RollbackTranAsync();
                 return ApiResponse<LinklyTerminalManagementDto>.Error(
-                    "所有启用中的 POS 必须先选择一台已配对终端",
+                    "已选择 Linkly 的 POS 必须对应一台已配对终端",
                     "LINKLY_DEVICE_SELECTION_REQUIRED"
                 );
             }
