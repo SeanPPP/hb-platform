@@ -3409,8 +3409,32 @@ public sealed class SalesDashboardReportRevenueTests : IDisposable
         Assert.Equal($"product-{status.ToLowerInvariant()}", GetStringProperty(value, "CacheVersion"));
         serviceMock.Verify(
             service => service.GetProductReportStatisticStatusAsync(It.IsAny<DateRangeDto>()),
-            Times.Once
+            Times.Exactly(2)
         );
+    }
+
+    [Theory]
+    [InlineData(SalesStatisticRefreshStatus.Fresh, SalesStatisticRefreshStatus.Pending)]
+    [InlineData(SalesStatisticRefreshStatus.Failed, SalesStatisticRefreshStatus.Failed)]
+    public async Task 商品摘要读取时版本变化不能返回完整新版本(string afterStatus, string expectedStatus)
+    {
+        var serviceMock = new Mock<ISalesDashboardReactService>();
+        serviceMock.Setup(service => service.GetExecutiveBranchPerformanceAsync(
+                It.IsAny<DateRangeDto>(), It.IsAny<int?>(), It.IsAny<List<string>?>()))
+            .ReturnsAsync(new ExecutiveBranchPerformanceResultDto());
+        serviceMock.SetupSequence(service => service.GetProductReportStatisticStatusAsync(It.IsAny<DateRangeDto>()))
+            .ReturnsAsync(new ProductReportStatisticStatusDto
+            {
+                StatisticStatus = SalesStatisticRefreshStatus.Fresh, CacheVersion = "before",
+            })
+            .ReturnsAsync(new ProductReportStatisticStatusDto
+            {
+                StatisticStatus = afterStatus, CacheVersion = "after",
+            });
+        var controller = CreateController(serviceMock.Object, CreateUserService(new[] { "S1" }));
+        var response = await controller.GetExecutiveBranchPerformance(
+            new DateTime(2026, 7, 1), new DateTime(2026, 7, 1), includeProductStatisticMetadata: true);
+        Assert.Equal(expectedStatus, GetStringProperty(AssertOk(response).Value!, "StatisticStatus"));
     }
 
     [Fact]

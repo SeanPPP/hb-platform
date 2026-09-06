@@ -279,7 +279,7 @@ namespace BlazorApp.Api.Services.React
     /// 销售仪表板 React 服务
     /// 为 React 前端提供销售统计数据的查询功能
     /// </summary>
-    public class SalesDashboardReactService : ISalesDashboardReactService
+    public partial class SalesDashboardReactService : ISalesDashboardReactService
     {
         private readonly SqlSugarContext _context;
         private readonly POSMSqlSugarContext _posmContext;
@@ -351,7 +351,8 @@ namespace BlazorApp.Api.Services.React
             IMapper mapper,
             ILogger<SalesDashboardReactService> logger,
             IMemoryCache cache,
-            IServiceScopeFactory? serviceScopeFactory = null
+            IServiceScopeFactory? serviceScopeFactory = null,
+            IConfiguration? configuration = null
         )
         {
             _context = context;
@@ -360,6 +361,8 @@ namespace BlazorApp.Api.Services.React
             _logger = logger;
             _cache = cache;
             _serviceScopeFactory = serviceScopeFactory;
+            // 回填完成后单独切换读取；新增字段和后台写入可以先于新读取部署。
+            _useSupplierRollups = configuration?.GetValue<bool>("Reports:UseSupplierRollups") ?? false;
         }
 
         /// <summary>
@@ -920,6 +923,9 @@ namespace BlazorApp.Api.Services.React
                 if (!IsProductStatisticFresh(statisticStatus))
                     return new List<SupplierSalesRankDto>();
 
+                if (_useSupplierRollups)
+                    return await GetSupplierRankFromRollupsAsync(dateRange, branchCodes, topN, supplierCode, statisticStatus);
+
                 var cacheKey = SalesDashboardCacheKeys.SupplierRank(
                     dateRange,
                     branchCodes,
@@ -1169,6 +1175,9 @@ namespace BlazorApp.Api.Services.React
                 ValidateDateRange(dateRange);
                 if (!IsProductStatisticFresh(statisticStatus))
                     return new List<ChinaSupplierSalesRankDto>();
+
+                if (_useSupplierRollups)
+                    return await GetChinaSupplierRankFromRollupsAsync(dateRange, branchCodes, topN, supplierCode, statisticStatus);
 
                 var cacheKey = SalesDashboardCacheKeys.ChinaSupplierRank(
                     dateRange,
@@ -1439,6 +1448,9 @@ namespace BlazorApp.Api.Services.React
                 ValidateDateRange(dateRange);
                 if (!IsProductStatisticFresh(statisticStatus))
                     return new List<SupplierStoreSalesDto>();
+
+                if (_useSupplierRollups)
+                    return await GetSupplierStoresFromRollupsAsync(dateRange, supplierCodes, branchCodes, statisticStatus);
 
                 var cacheKey = SalesDashboardCacheKeys.SupplierStore(
                     dateRange,
@@ -2288,6 +2300,24 @@ namespace BlazorApp.Api.Services.React
                     normalizedProductSearch = null;
                 }
 
+                if (_useSupplierRollups && _context.Db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+                {
+                    // 大范围商品和中国商品共用数据库分页，并在读前读后校验完整统计版本。
+                    return await ReadCompleteReportAsync(
+                        dateRange,
+                        statisticStatus,
+                        version => SalesDashboardCacheKeys.EnhancedProductDetail(
+                            dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes,
+                            pageIndex, pageSize, normalizedProductSearch, version, chinaSupplierScope),
+                        service => service.GetEnhancedSalesProductDetailsSqlServerAsync(
+                            dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes,
+                            pageIndex, pageSize, normalizedProductSearch, chinaSupplierScope),
+                        () => new PagedSalesProductDetailWithDiscountDto
+                        {
+                            Data = new(), Total = 0, PageIndex = pageIndex, PageSize = pageSize,
+                        });
+                }
+
                 _logger.LogInformation(
                     "[GetEnhancedSalesProductDetailsAsync] Processing request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, HasSupplierFilter={HasSupplierFilter}, HasProductSearch={HasProductSearch}, ChinaSupplierScope={ChinaSupplierScope}",
                     dateRange.StartDate,
@@ -2567,21 +2597,42 @@ namespace BlazorApp.Api.Services.React
             ProductReportStatisticStatusDto statisticStatus
         )
         {
+            ValidateDateRange(dateRange);
+            if (branchCodes != null && NormalizeCodes(branchCodes).Count == 0)
+                return new List<ProductBranchSalesDto>();
+            if (_useSupplierRollups)
+                return await ReadCompleteReportAsync(
+                    dateRange, statisticStatus,
+                    version => SalesDashboardCacheKeys.ProductBranch(dateRange, productCode, branchCodes, version),
+                    service => service.GetProductSalesByAllBranchesCoreAsync(dateRange, productCode, branchCodes, statisticStatus, useCache: false),
+                    () => new List<ProductBranchSalesDto>());
+            return await GetProductSalesByAllBranchesCoreAsync(dateRange, productCode, branchCodes, statisticStatus);
+        }
+
+        private async Task<List<ProductBranchSalesDto>> GetProductSalesByAllBranchesCoreAsync(
+            DateRangeDto dateRange,
+            string productCode,
+            List<string>? branchCodes,
+            ProductReportStatisticStatusDto statisticStatus,
+            bool useCache = true
+        )
+        {
             try
             {
                 ValidateDateRange(dateRange);
                 if (!IsProductStatisticFresh(statisticStatus))
                     return new List<ProductBranchSalesDto>();
 
-                var cacheKey = SalesDashboardCacheKeys.ProductBranch(
+                // 完整版本读取由外层校验后统一缓存，不能把旧路径缓存晋升为完整快照。
+                var cacheKey = useCache ? SalesDashboardCacheKeys.ProductBranch(
                     dateRange,
                     productCode,
                     branchCodes,
                     statisticStatus.CacheVersion
-                );
+                ) : string.Empty;
 
                 if (
-                    _cache.TryGetValue<List<ProductBranchSalesDto>>(cacheKey, out var cachedResult)
+                    useCache && _cache.TryGetValue<List<ProductBranchSalesDto>>(cacheKey, out var cachedResult)
                     && cachedResult != null
                     && cachedResult.Count != 0
                 )
@@ -2719,16 +2770,19 @@ namespace BlazorApp.Api.Services.React
                     .ThenByDescending(x => x.CompareSalesAmount)
                     .ToList();
 
-                var cacheOptions = new MemoryCacheEntryOptions()
-                    .SetAbsoluteExpiration(DETAIL_CACHE_DURATION)
-                    .SetSlidingExpiration(TimeSpan.FromMinutes(1));
+                if (useCache)
+                {
+                    var cacheOptions = new MemoryCacheEntryOptions()
+                        .SetAbsoluteExpiration(DETAIL_CACHE_DURATION)
+                        .SetSlidingExpiration(TimeSpan.FromMinutes(1));
 
-                _cache.Set(cacheKey, result, cacheOptions);
-                _logger.LogInformation(
-                    "产品各分店销售数据已缓存: {CacheKey}, 过期时间: {Expiration}",
-                    cacheKey,
-                    DateTime.Now.Add(DETAIL_CACHE_DURATION)
-                );
+                    _cache.Set(cacheKey, result, cacheOptions);
+                    _logger.LogInformation(
+                        "产品各分店销售数据已缓存: {CacheKey}, 过期时间: {Expiration}",
+                        cacheKey,
+                        DateTime.Now.Add(DETAIL_CACHE_DURATION)
+                    );
+                }
 
                 return result;
             }
@@ -2777,6 +2831,9 @@ namespace BlazorApp.Api.Services.React
                 ValidateDateRange(dateRange);
                 if (!IsProductStatisticFresh(statisticStatus))
                     return new List<ChinaSupplierStoreSalesDto>();
+
+                if (_useSupplierRollups)
+                    return await GetChinaSupplierStoresFromRollupsAsync(dateRange, supplierCodes, branchCodes, statisticStatus);
 
                 var cacheKey = SalesDashboardCacheKeys.ChinaSupplierStore(
                     dateRange,
@@ -7621,6 +7678,8 @@ namespace BlazorApp.Api.Services.React
         )
         {
             ValidateDateRange(dateRange);
+            if (_useSupplierRollups)
+                return await GetSupplierBackedProductReportStatusAsync(dateRange);
             var currentStatus = await GetProductStatisticStatusAsync(
                 dateRange.StartDate.Date,
                 dateRange.EndDate.Date

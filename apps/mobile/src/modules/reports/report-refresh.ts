@@ -8,7 +8,8 @@ export function getReportStoreScopeRefreshQueryOptions(tab: ReportTab) {
     queryKey: tab === "revenue"
       ? ["reports", "cashier-enabled-stores"] as const
       : ["product-report", "stores"] as const,
-    exact: true as const,
+    // 账号身份是查询键的后缀；只重验当前页签仍活跃的账号范围。
+    exact: false as const,
     type: "active" as const,
   };
 }

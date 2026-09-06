@@ -561,33 +561,6 @@ namespace BlazorApp.Api.Services
                         },
                         false
                     );
-                    await RunStep(
-                        SalesStatisticType.AustralianSupplierStoreSales,
-                        "澳洲供应商门店统计",
-                        () => SalesStatisticsSupplierStoreSlice
-                            .UpdateAustralianSupplierStoreStatisticsWithContext(
-                                context,
-                                posmContext,
-                                logger,
-                                date,
-                                null,
-                                null
-                            )
-                    );
-                    await RunStep(
-                        SalesStatisticType.ChinaSupplierStoreSales,
-                        "中国供应商门店统计",
-                        () => SalesStatisticsSupplierStoreSlice
-                            .UpdateChinaSupplierStoreStatisticsWithContext(
-                                context,
-                                posmContext,
-                                logger,
-                                date,
-                                null,
-                                null
-                            )
-                    );
-
                     logger.LogInformation(
                         "日期 {Date} 完整刷新完成",
                         date.ToString("yyyy-MM-dd")

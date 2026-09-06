@@ -59,6 +59,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             typeof(SupplierSalesStatistic),
             typeof(StoreSupplierSalesDetail),
             typeof(AustralianSupplierStoreSalesDetail),
+            typeof(ChinaSupplierStoreSalesDetail),
             typeof(ProductStoreDailySalesStatistic),
             typeof(SalesStatisticRefreshState),
             typeof(ScheduledTaskLease),
@@ -172,6 +173,191 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         await CreateService().UpdateProductStoreDailyStatistics(new DateTime(2026, 1, 2));
 
         Assert.Equal(originalTimeoutSeconds, _localDb.Ado.CommandTimeOut);
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_供应商版本使用落库后的商品快照()
+    {
+        var targetDate = new DateTime(2026, 1, 2);
+        await SeedSaleAsync(
+            orderGuid: "ORDER-VERSION-PERSISTED",
+            detailGuid: "DETAIL-VERSION-PERSISTED",
+            productCode: "P-VERSION-PERSISTED",
+            branchCode: "1004",
+            orderTime: targetDate.AddHours(10),
+            quantity: 1,
+            actualAmount: 10m,
+            supplierCode: "112"
+        );
+        await SeedStoreSalesStatisticAsync(targetDate, "1004", 10m, 1);
+
+        await CreateService().UpdateProductStoreDailyStatistics(targetDate);
+
+        var rows = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+        var state = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(row => row.Date == targetDate && row.StatisticType == SalesStatisticType.ProductStoreDaily)
+            .FirstAsync();
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, state!.Status);
+        Assert.Equal(SupplierStatisticVersion.ComputeProductVersion(rows), state!.SourceProductVersion);
+    }
+
+    [Fact]
+    public async Task SupplierStoreSummary_仅直接中国码时仍加载澳洲200名称()
+    {
+        await _localDb.Insertable(new HBLocalSupplier
+        {
+            Guid = "LOCAL-200-DIRECT-ONLY",
+            LocalSupplierCode = "200",
+            Name = "国内归属",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new ChinaSupplier
+        {
+            Guid = "CHINA-DIRECT-ONLY",
+            SupplierCode = "CN-ONLY",
+            SupplierName = "直接中国供应商",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+
+        var date = new DateTime(2026, 1, 4);
+        var rows = new[]
+        {
+            new ProductStoreDailySalesStatistic
+            {
+                Date = date,
+                BranchCode = "1004",
+                SupplierCode = "CN-ONLY",
+                ProductCode = "P-DIRECT-ONLY",
+                ProductName = "直接中国商品",
+                TotalAmount = 10m,
+                TotalQuantity = 1,
+                OrderCount = 1,
+                TotalCost = 4m,
+                GrossProfit = 6m,
+            },
+        };
+
+        var result = await new SalesStatisticsSupplierStoreSummaryService()
+            .BuildFromProductStatisticsAsync(
+                CreateSqlSugarContext(_localDb),
+                CreatePosmSqlSugarContext(_posmDb),
+                rows,
+                date);
+
+        var australian = Assert.Single(result.Australian);
+        Assert.Equal("200", australian.SupplierCode);
+        Assert.Equal("国内归属", australian.SupplierName);
+        var china = Assert.Single(result.China);
+        Assert.Equal("CN-ONLY", china.SupplierCode);
+        Assert.Equal("直接中国供应商", china.SupplierName);
+    }
+
+    [Fact]
+    public async Task UpdateCurrentHourStatistics_重试应通过完成商品快照各派生一次供应商汇总()
+    {
+        var date = DateTime.Now.Date;
+        var australianDeleteCount = 0;
+        var chinaDeleteCount = 0;
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (!sql.Contains("DELETE", StringComparison.OrdinalIgnoreCase))
+                return;
+            if (sql.Contains("AustralianSupplierStoreSalesDetail", StringComparison.OrdinalIgnoreCase))
+                australianDeleteCount++;
+            if (sql.Contains("ChinaSupplierStoreSalesDetail", StringComparison.OrdinalIgnoreCase))
+                chinaDeleteCount++;
+        };
+        try
+        {
+            await CreateService().UpdateCurrentHourStatistics();
+            await CreateService().UpdateCurrentHourStatistics();
+        }
+        finally
+        {
+            _localDb.Aop.OnLogExecuting = null;
+        }
+
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(row => row.Date == date)
+            .ToListAsync();
+        Assert.Contains(states, state => state.StatisticType == SalesStatisticType.ProductStoreDaily
+            && state.Status == SalesStatisticRefreshStatus.Fresh);
+        Assert.Contains(states, state => state.StatisticType == SalesStatisticType.AustralianSupplierStoreSales
+            && state.Status == SalesStatisticRefreshStatus.Fresh);
+        Assert.Contains(states, state => state.StatisticType == SalesStatisticType.ChinaSupplierStoreSales
+            && state.Status == SalesStatisticRefreshStatus.Fresh);
+        Assert.Equal(2, australianDeleteCount);
+        Assert.Equal(2, chinaDeleteCount);
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_中国供应商写入失败时澳洲表和四类发布应整体回滚()
+    {
+        var date = new DateTime(2026, 1, 5);
+        await SeedSaleAsync("ROLLBACK-SUPPLIER", "ROLLBACK-SUPPLIER-DETAIL", "P-ROLLBACK", "1004", date.AddHours(9), 1, 10m, "CN-FAIL");
+        await SeedStoreSalesStatisticAsync(date, "1004", 10m, 1);
+        await _localDb.Insertable(new ChinaSupplier
+        {
+            Guid = "CHINA-ROLLBACK",
+            SupplierCode = "CN-FAIL",
+            SupplierName = "新中国",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new AustralianSupplierStoreSalesDetail
+        {
+            Date = date, BranchCode = "1004", SupplierCode = "200", SupplierName = "旧澳洲", TotalAmount = 99m,
+            TotalQuantity = 9, OrderCount = 9, UpdateTime = date,
+        }).ExecuteCommandAsync();
+        await _localDb.Insertable(new ChinaSupplierStoreSalesDetail
+        {
+            Date = date, BranchCode = "1004", SupplierCode = "CN-OLD", SupplierName = "旧中国", TotalAmount = 88m,
+            TotalQuantity = 8, OrderCount = 8, UpdateTime = date,
+        }).ExecuteCommandAsync();
+        await SeedRefreshStateAsync(date, SalesStatisticRefreshStatus.Fresh, lastSourceUploadTime: date.AddHours(1), statisticType: SalesStatisticType.AustralianSupplierStoreSales);
+        await SeedRefreshStateAsync(date, SalesStatisticRefreshStatus.Fresh, lastSourceUploadTime: date.AddHours(1), statisticType: SalesStatisticType.ChinaSupplierStoreSales);
+        await SeedRefreshStateAsync(date, SalesStatisticRefreshStatus.Fresh, lastSourceUploadTime: date.AddHours(1), statisticType: SalesStatisticType.StoreSales);
+
+        var injected = 0;
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sql.Contains("ChinaSupplierStoreSalesDetail", StringComparison.OrdinalIgnoreCase)
+                && sql.Contains("DELETE", StringComparison.OrdinalIgnoreCase)
+                && Interlocked.Exchange(ref injected, 1) == 0)
+                throw new InvalidOperationException("测试注入中国供应商写入失败");
+        };
+        try
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(
+                () => CreateService().UpdateProductStoreDailyStatistics(date));
+        }
+        finally
+        {
+            _localDb.Aop.OnLogExecuting = null;
+        }
+
+        var australian = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == date).FirstAsync();
+        var china = await _localDb.Queryable<ChinaSupplierStoreSalesDetail>()
+            .Where(row => row.Date == date).FirstAsync();
+        Assert.Equal(99m, australian!.TotalAmount);
+        Assert.Equal(88m, china!.TotalAmount);
+        var productRows = await _localDb.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.Date == date).ToListAsync();
+        var store = await _localDb.Queryable<StoreSalesStatistic>()
+            .Where(row => row.Date == date && row.BranchCode == "1004").FirstAsync();
+        Assert.Empty(productRows);
+        Assert.Equal(10m, store!.TotalAmount);
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(row => row.Date == date).ToListAsync();
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh,
+            states.Single(row => row.StatisticType == SalesStatisticType.AustralianSupplierStoreSales).Status);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh,
+            states.Single(row => row.StatisticType == SalesStatisticType.ChinaSupplierStoreSales).Status);
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh,
+            states.Single(row => row.StatisticType == SalesStatisticType.StoreSales).Status);
+        Assert.Contains(states, row => row.StatisticType == SalesStatisticType.ProductStoreDaily
+            && row.Status == SalesStatisticRefreshStatus.Failed);
     }
 
     [Fact]
@@ -507,22 +693,52 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         var service = CreateService();
         var snapshot = await service.Load2025HBSalesBatchSnapshotAsync([targetDate]);
 
-        await service.Update2025StoreAndProductStatisticsFromBatchSnapshotAsync(targetDate, snapshot);
+        var stableFence = await service.Update2025StoreAndProductStatisticsFromBatchSnapshotAsync(targetDate, snapshot);
         var provisionalStates = await _localDb.Queryable<SalesStatisticRefreshState>().Where(row => row.Date == targetDate).ToListAsync();
         Assert.All(provisionalStates, state => Assert.Equal("ProvisionalFresh", state.Status));
 
-        await service.Finalize2025BatchSnapshotDateAsync(targetDate);
+        await service.Finalize2025BatchSnapshotDateAsync(stableFence);
         var freshStates = await _localDb.Queryable<SalesStatisticRefreshState>().Where(row => row.Date == targetDate).ToListAsync();
         Assert.All(freshStates, state => Assert.Equal(SalesStatisticRefreshStatus.Fresh, state.Status));
 
-        var detail = await _hbSalesDb.Queryable<SalesOrderDetailRecord>().Where(row => row.ID == 831).FirstAsync();
+        var failedDate = targetDate.AddDays(1);
+        await SeedHBSalesAsync(832, failedDate, "CHANGED", "1004", "200", 1m, 10m, "1");
+        var failedSnapshot = await service.Load2025HBSalesBatchSnapshotAsync([failedDate]);
+        var failedFence = await service.Update2025StoreAndProductStatisticsFromBatchSnapshotAsync(failedDate, failedSnapshot);
+        var detail = await _hbSalesDb.Queryable<SalesOrderDetailRecord>().Where(row => row.ID == 832).FirstAsync();
         detail!.B数量 = 2m;
         await _hbSalesDb.Updateable(detail).ExecuteCommandAsync();
-        var postSnapshot = await service.Load2025HBSalesBatchSnapshotAsync([targetDate]);
-        Assert.NotEqual(snapshot.GetSignature(targetDate), postSnapshot.GetSignature(targetDate));
-        await service.Fail2025BatchSnapshotDatesAsync([targetDate], "测试：批末 HBSales 签名变化");
-        var failedStates = await _localDb.Queryable<SalesStatisticRefreshState>().Where(row => row.Date == targetDate).ToListAsync();
+        var postSnapshot = await service.Load2025HBSalesBatchSnapshotAsync([failedDate]);
+        Assert.NotEqual(failedSnapshot.GetSignature(failedDate), postSnapshot.GetSignature(failedDate));
+        await service.Fail2025BatchSnapshotDatesAsync([failedFence], "测试：批末 HBSales 签名变化");
+        var failedStates = await _localDb.Queryable<SalesStatisticRefreshState>().Where(row => row.Date == failedDate).ToListAsync();
         Assert.All(failedStates, state => Assert.Equal(SalesStatisticRefreshStatus.Failed, state.Status));
+    }
+
+    [Fact]
+    public async Task HBSales批次旧fence在新批次替换后不能Finalize或Fail()
+    {
+        var targetDate = new DateTime(2025, 4, 30);
+        await SeedHBSalesAsync(833, targetDate, "FENCE-A", "1004", "200", 1m, 10m, "1");
+        var service = CreateService();
+        var snapshotA = await service.Load2025HBSalesBatchSnapshotAsync([targetDate]);
+        var fenceA = await service.Update2025StoreAndProductStatisticsFromBatchSnapshotAsync(targetDate, snapshotA);
+
+        var detail = await _hbSalesDb.Queryable<SalesOrderDetailRecord>().Where(row => row.ID == 833).FirstAsync();
+        detail!.B数量 = 2m;
+        await _hbSalesDb.Updateable(detail).ExecuteCommandAsync();
+        var snapshotB = await service.Load2025HBSalesBatchSnapshotAsync([targetDate]);
+        var fenceB = await service.Update2025StoreAndProductStatisticsFromBatchSnapshotAsync(targetDate, snapshotB);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.Finalize2025BatchSnapshotDateAsync(fenceA));
+        await service.Fail2025BatchSnapshotDatesAsync([fenceA], "旧批次不应失败新批次");
+
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+        Assert.All(states, state => Assert.Equal(SalesStatisticRefreshStatus.ProvisionalFresh, state.Status));
+        var productState = states.Single(state => state.StatisticType == SalesStatisticType.ProductStoreDaily);
+        Assert.Equal(fenceB.States.Single(state => state.StatisticType == SalesStatisticType.ProductStoreDaily).SourceProductVersion,
+            productState.SourceProductVersion);
     }
 
     [Fact]
@@ -3177,316 +3393,249 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task UpdateAustralianSupplierStoreStatistics_空映射供应商应合并到Unknown避免空主键冲突()
-    {
-        var targetDate = new DateTime(2026, 7, 6);
-        await SeedSaleAsync(
-            orderGuid: "ORDER-AUS-UNKNOWN-MISSING",
-            detailGuid: "DETAIL-AUS-UNKNOWN-MISSING",
-            productCode: "P-AUS-UNKNOWN-MISSING",
-            branchCode: "1007",
-            orderTime: targetDate.AddHours(9),
-            quantity: 1,
-            actualAmount: 5m,
-            supplierCode: string.Empty
-        );
-        await SeedSaleAsync(
-            orderGuid: "ORDER-AUS-UNKNOWN-EMPTY",
-            detailGuid: "DETAIL-AUS-UNKNOWN-EMPTY",
-            productCode: "P-AUS-UNKNOWN-EMPTY",
-            branchCode: "1007",
-            orderTime: targetDate.AddHours(10),
-            quantity: 2,
-            actualAmount: 8m,
-            supplierCode: string.Empty
-        );
-        await SeedPosmProductSupplierMappingAsync("P-AUS-UNKNOWN-EMPTY", string.Empty, null);
-        await SeedSaleAsync(
-            orderGuid: "ORDER-AUS-UNKNOWN-WHITESPACE",
-            detailGuid: "DETAIL-AUS-UNKNOWN-WHITESPACE",
-            productCode: "P-AUS-UNKNOWN-WHITESPACE",
-            branchCode: "1007",
-            orderTime: targetDate.AddHours(11),
-            quantity: 3,
-            actualAmount: 12m,
-            supplierCode: string.Empty
-        );
-        await SeedPosmProductSupplierMappingAsync("P-AUS-UNKNOWN-WHITESPACE", " ", null);
-
-        await CreateService().UpdateAustralianSupplierStoreStatistics(targetDate);
-
-        var rows = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
-            .Where(row => row.Date == targetDate && row.BranchCode == "1007")
-            .ToListAsync();
-
-        var row = Assert.Single(rows);
-        Assert.Equal("UNKNOWN", row.SupplierCode);
-        Assert.Equal("未匹配供应商", row.SupplierName);
-        Assert.Equal(25m, row.TotalAmount);
-        Assert.Equal(6, row.TotalQuantity);
-        Assert.Equal(3, row.OrderCount);
-    }
-
-    [Fact]
-    public async Task UpdateAustralianSupplierStoreStatistics_映射为空时应回退明细供应商并按主键聚合订单数去重()
-    {
-        var targetDate = new DateTime(2026, 7, 6);
-        await SeedOrderAsync("ORDER-AUS-FALLBACK", "1007", targetDate.AddHours(12), 99);
-        await SeedSaleDetailAsync(
-            orderGuid: "ORDER-AUS-FALLBACK",
-            detailGuid: "DETAIL-AUS-FALLBACK-1",
-            productCode: "P-AUS-FALLBACK-1",
-            quantity: 2,
-            actualAmount: 9m,
-            supplierCode: "112"
-        );
-        await SeedSaleDetailAsync(
-            orderGuid: "ORDER-AUS-FALLBACK",
-            detailGuid: "DETAIL-AUS-FALLBACK-2",
-            productCode: "P-AUS-FALLBACK-2",
-            quantity: 3,
-            actualAmount: 11m,
-            supplierCode: "112"
-        );
-        await SeedPaymentAsync("PAY-AUS-FALLBACK", "ORDER-AUS-FALLBACK", 20m, targetDate.AddHours(12).AddMinutes(1));
-        await SeedPosmProductSupplierMappingAsync("P-AUS-FALLBACK-2", string.Empty, null);
-
-        await CreateService().UpdateAustralianSupplierStoreStatistics(targetDate);
-
-        var row = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
-            .Where(row =>
-                row.Date == targetDate
-                && row.BranchCode == "1007"
-                && row.SupplierCode == "112"
-            )
-            .FirstAsync();
-
-        Assert.NotNull(row);
-        Assert.Equal(20m, row!.TotalAmount);
-        Assert.Equal(5, row.TotalQuantity);
-        Assert.Equal(1, row.OrderCount);
-    }
-
-    [Fact]
-    public async Task UpdateAustralianSupplierStoreStatistics_金额应按订单支付金额分摊()
-    {
-        var targetDate = new DateTime(2026, 7, 6);
-        await SeedOrderAsync("ORDER-AUS-ALLOC", "1007", targetDate.AddHours(12), 3);
-        await SeedSaleDetailAsync(
-            orderGuid: "ORDER-AUS-ALLOC",
-            detailGuid: "DETAIL-AUS-ALLOC-1",
-            productCode: "P-AUS-ALLOC-1",
-            quantity: 1,
-            actualAmount: 30m,
-            supplierCode: "112"
-        );
-        await SeedSaleDetailAsync(
-            orderGuid: "ORDER-AUS-ALLOC",
-            detailGuid: "DETAIL-AUS-ALLOC-2",
-            productCode: "P-AUS-ALLOC-2",
-            quantity: 2,
-            actualAmount: 40m,
-            supplierCode: "113"
-        );
-        await SeedPaymentAsync("PAY-AUS-ALLOC", "ORDER-AUS-ALLOC", 72.14m, targetDate.AddHours(12).AddMinutes(1));
-
-        await CreateService().UpdateAustralianSupplierStoreStatistics(targetDate);
-
-        var totalAmount = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
-            .Where(row => row.Date == targetDate && row.BranchCode == "1007")
-            .SumAsync(row => row.TotalAmount);
-
-        Assert.InRange(Math.Abs(totalAmount - 72.14m), 0m, 0.0001m);
-    }
-
-    [Fact]
-    public async Task UpdateAustralianSupplierStoreStatistics_局部供应商过滤应按Trim后编码匹配()
-    {
-        var targetDate = new DateTime(2026, 7, 6);
-        await SeedSaleAsync(
-            orderGuid: "ORDER-AUS-TRIM-FILTER",
-            detailGuid: "DETAIL-AUS-TRIM-FILTER",
-            productCode: "P-AUS-TRIM-FILTER",
-            branchCode: "1007",
-            orderTime: targetDate.AddHours(12),
-            quantity: 2,
-            actualAmount: 18m,
-            supplierCode: string.Empty
-        );
-        await SeedPosmProductSupplierMappingAsync("P-AUS-TRIM-FILTER", " 112 ", null);
-
-        await CreateService().UpdateAustralianSupplierStoreStatistics(
-            targetDate,
-            supplierCodes: new List<string> { "112" }
-        );
-
-        var row = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
-            .Where(row =>
-                row.Date == targetDate
-                && row.BranchCode == "1007"
-                && row.SupplierCode == "112"
-            )
-            .FirstAsync();
-
-        Assert.NotNull(row);
-        Assert.Equal(18m, row!.TotalAmount);
-        Assert.Equal(2, row.TotalQuantity);
-        Assert.Equal(1, row.OrderCount);
-    }
-
-    [Fact]
-    public async Task UpdateAustralianSupplierStoreStatistics_局部供应商刷新不应删除其他供应商旧统计()
+    public async Task UpdateAustralianSupplierStoreStatistics_缺少完成商品快照时拒绝且保留旧表()
     {
         var targetDate = new DateTime(2026, 7, 6);
         await SeedAustralianSupplierStoreSalesDetailAsync(targetDate, "1007", "999", 99m, 9);
-        await SeedSaleAsync(
-            orderGuid: "ORDER-AUS-PARTIAL-112",
-            detailGuid: "DETAIL-AUS-PARTIAL-112",
-            productCode: "P-AUS-PARTIAL-112",
-            branchCode: "1007",
-            orderTime: targetDate.AddHours(12),
-            quantity: 2,
-            actualAmount: 18m,
-            supplierCode: "112"
-        );
+        var before = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
 
-        await CreateService().UpdateAustralianSupplierStoreStatistics(
-            targetDate,
-            supplierCodes: new List<string> { "112" }
-        );
+        await Assert.ThrowsAsync<InvalidOperationException>(() => CreateService().UpdateAustralianSupplierStoreStatistics(targetDate));
 
-        var rows = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
-            .Where(row => row.Date == targetDate && row.BranchCode == "1007")
-            .OrderBy(row => row.SupplierCode)
-            .ToListAsync();
-
-        Assert.Contains(rows, row => row.SupplierCode == "112" && row.TotalAmount == 18m);
-        Assert.Contains(rows, row => row.SupplierCode == "999" && row.TotalAmount == 99m);
+        var after = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+        Assert.Equal(before.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)),
+            after.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)));
     }
 
     [Fact]
-    public async Task UpdateAustralianSupplierStoreStatistics_局部刷新应清理旧空白供应商主键()
+    public async Task UpdateAustralianSupplierStoreStatistics_缺少完成商品快照时不回扫订单()
     {
         var targetDate = new DateTime(2026, 7, 6);
-        await SeedAustralianSupplierStoreSalesDetailAsync(targetDate, "1007", string.Empty, 99m, 9);
-        await SeedSaleAsync(
-            orderGuid: "ORDER-AUS-PARTIAL-BLANK",
-            detailGuid: "DETAIL-AUS-PARTIAL-BLANK",
-            productCode: "P-AUS-PARTIAL-BLANK",
-            branchCode: "1007",
-            orderTime: targetDate.AddHours(12),
-            quantity: 2,
-            actualAmount: 18m,
-            supplierCode: "112"
-        );
+        await SeedAustralianSupplierStoreSalesDetailAsync(targetDate, "1007", "999", 99m, 9);
+        var before = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
 
-        await CreateService().UpdateAustralianSupplierStoreStatistics(
-            targetDate,
-            supplierCodes: new List<string> { "112" }
-        );
+        await Assert.ThrowsAsync<InvalidOperationException>(() => CreateService().UpdateAustralianSupplierStoreStatistics(targetDate));
 
-        var rows = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
-            .Where(row => row.Date == targetDate && row.BranchCode == "1007")
-            .OrderBy(row => row.SupplierCode)
-            .ToListAsync();
-
-        var row = Assert.Single(rows);
-        Assert.Equal("112", row.SupplierCode);
-        Assert.Equal(18m, row.TotalAmount);
+        var after = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+        Assert.Equal(before.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)),
+            after.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)));
     }
 
     [Fact]
-    public async Task UpdateAustralianSupplierStoreStatistics_空订单号不应回退为明细行数()
+    public async Task UpdateAustralianSupplierStoreStatistics_缺少完成商品快照时不按支付金额重算()
     {
         var targetDate = new DateTime(2026, 7, 6);
-        await SeedSaleAsync(
-            orderGuid: string.Empty,
-            detailGuid: "DETAIL-AUS-BLANK-ORDER",
-            productCode: "P-AUS-BLANK-ORDER",
-            branchCode: "1007",
-            orderTime: targetDate.AddHours(12),
-            quantity: 1,
-            actualAmount: 6m,
-            supplierCode: "112"
-        );
+        await SeedAustralianSupplierStoreSalesDetailAsync(targetDate, "1007", "999", 99m, 9);
+        var before = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => CreateService().UpdateAustralianSupplierStoreStatistics(targetDate));
+
+        var after = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+        Assert.Equal(before.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)),
+            after.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)));
+    }
+
+    [Fact]
+    public async Task UpdateAustralianSupplierStoreStatistics_缺少完成商品快照时拒绝局部刷新()
+    {
+        var targetDate = new DateTime(2026, 7, 6);
+        await SeedAustralianSupplierStoreSalesDetailAsync(targetDate, "1007", "999", 99m, 9);
+        var before = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => CreateService().UpdateAustralianSupplierStoreStatistics(targetDate));
+
+        var after = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+        Assert.Equal(before.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)),
+            after.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)));
+    }
+
+    [Fact]
+    public async Task UpdateAustralianSupplierStoreStatistics_缺少完成商品快照时局部刷新保留旧表()
+    {
+        var targetDate = new DateTime(2026, 7, 6);
+        await SeedAustralianSupplierStoreSalesDetailAsync(targetDate, "1007", "999", 99m, 9);
+        var before = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => CreateService().UpdateAustralianSupplierStoreStatistics(targetDate));
+
+        var after = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+        Assert.Equal(before.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)),
+            after.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)));
+    }
+
+    [Fact]
+    public async Task UpdateAustralianSupplierStoreStatistics_缺少完成商品快照时不清理旧空白主键()
+    {
+        var targetDate = new DateTime(2026, 7, 6);
+        await SeedAustralianSupplierStoreSalesDetailAsync(targetDate, "1007", "999", 99m, 9);
+        var before = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => CreateService().UpdateAustralianSupplierStoreStatistics(targetDate));
+
+        var after = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+        Assert.Equal(before.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)),
+            after.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)));
+    }
+
+    [Fact]
+    public async Task UpdateAustralianSupplierStoreStatistics_缺少完成商品快照时不回退空订单号()
+    {
+        var targetDate = new DateTime(2026, 7, 6);
+        await SeedAustralianSupplierStoreSalesDetailAsync(targetDate, "1007", "999", 99m, 9);
+        var before = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => CreateService().UpdateAustralianSupplierStoreStatistics(targetDate));
+
+        var after = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+        Assert.Equal(before.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)),
+            after.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)));
+    }
+
+    [Fact]
+    public async Task UpdateAustralianSupplierStoreStatisticsWithContext_缺少完成商品快照时拒绝()
+    {
+        var targetDate = new DateTime(2026, 7, 6);
+        await SeedAustralianSupplierStoreSalesDetailAsync(targetDate, "1007", "999", 99m, 9);
+        var before = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => InvokeAustralianSupplierStoreStatisticsWithContextAsync(targetDate, null, null));
+
+        var after = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+        Assert.Equal(before.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)),
+            after.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)));
+    }
+
+    [Fact]
+    public async Task UpdateAustralianSupplierStoreStatisticsWithContext_缺少完成商品快照时局部刷新拒绝()
+    {
+        var targetDate = new DateTime(2026, 7, 6);
+        await SeedAustralianSupplierStoreSalesDetailAsync(targetDate, "1007", "999", 99m, 9);
+        var before = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => InvokeAustralianSupplierStoreStatisticsWithContextAsync(targetDate, null, new List<string> { "112" }));
+
+        var after = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+        Assert.Equal(before.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)),
+            after.Select(row => (row.BranchCode, row.SupplierCode, row.TotalAmount, row.TotalQuantity)));
+    }
+
+    [Fact]
+    public async Task UpdateAustralianSupplierStoreStatistics_完成商品快照才派生并保留历史成本()
+    {
+        var targetDate = new DateTime(2026, 7, 6);
+        await SeedCompletedProductSnapshotAsync(targetDate, new ProductStoreDailySalesStatistic
+        {
+            Date = targetDate,
+            BranchCode = "1007",
+            SupplierCode = "112",
+            ProductCode = "P-SNAPSHOT-AUS",
+            TotalAmount = 18m,
+            TotalQuantity = 2,
+            OrderCount = 1,
+            TotalCost = 6m,
+            GrossProfit = 12m,
+            CostSource = "STORE_RETAIL",
+        });
 
         await CreateService().UpdateAustralianSupplierStoreStatistics(targetDate);
 
         var row = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
-            .Where(row =>
-                row.Date == targetDate
-                && row.BranchCode == "1007"
-                && row.SupplierCode == "112"
-            )
+            .Where(item => item.Date == targetDate && item.BranchCode == "1007" && item.SupplierCode == "112")
             .FirstAsync();
-
         Assert.NotNull(row);
-        Assert.Equal(0m, row!.TotalAmount);
-        Assert.Equal(1, row.TotalQuantity);
-        Assert.Equal(0, row.OrderCount);
+        Assert.Equal(18m, row!.TotalAmount);
+        Assert.Equal(6m, row.TotalCost);
+        Assert.Equal(12m, row.GrossProfit);
+        Assert.Equal(1, row.StatisticRowCount);
+        Assert.Equal(1, row.CostedRowCount);
+        Assert.Equal(1, row.GrossProfitRowCount);
     }
 
     [Fact]
-    public async Task UpdateAustralianSupplierStoreStatisticsWithContext_应清理旧空供应商主键()
+    public async Task UpdateAustralianSupplierStoreStatistics_商品版本变化时拒绝并保持旧表()
     {
         var targetDate = new DateTime(2026, 7, 6);
-        await SeedAustralianSupplierStoreSalesDetailAsync(targetDate, "1007", string.Empty, 99m, 9);
-        await SeedSaleAsync(
-            orderGuid: "ORDER-AUS-CONTEXT-UNKNOWN",
-            detailGuid: "DETAIL-AUS-CONTEXT-UNKNOWN",
-            productCode: "P-AUS-CONTEXT-UNKNOWN",
-            branchCode: "1007",
-            orderTime: targetDate.AddHours(12),
-            quantity: 2,
-            actualAmount: 8m,
-            supplierCode: string.Empty
-        );
+        await SeedAustralianSupplierStoreSalesDetailAsync(targetDate, "1007", "112", 99m, 9);
+        var product = new ProductStoreDailySalesStatistic
+        {
+            Date = targetDate,
+            BranchCode = "1007",
+            SupplierCode = "112",
+            ProductCode = "P-SNAPSHOT-VERSION",
+            TotalAmount = 18m,
+            TotalQuantity = 2,
+            OrderCount = 1,
+            TotalCost = 6m,
+            GrossProfit = 12m,
+        };
+        await SeedCompletedProductSnapshotAsync(targetDate, product);
+        product.TotalAmount = 19m;
+        await _localDb.Updateable(product).ExecuteCommandAsync();
 
-        await InvokeAustralianSupplierStoreStatisticsWithContextAsync(targetDate, null, null);
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => CreateService().UpdateAustralianSupplierStoreStatistics(targetDate));
 
-        var rows = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
-            .Where(row => row.Date == targetDate && row.BranchCode == "1007")
-            .OrderBy(row => row.SupplierCode)
-            .ToListAsync();
-
-        var row = Assert.Single(rows);
-        Assert.Equal("UNKNOWN", row.SupplierCode);
-        Assert.Equal("未匹配供应商", row.SupplierName);
-        Assert.Equal(8m, row.TotalAmount);
-        Assert.Equal(2, row.TotalQuantity);
-        Assert.Equal(1, row.OrderCount);
+        var row = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
+            .Where(item => item.Date == targetDate && item.BranchCode == "1007" && item.SupplierCode == "112")
+            .FirstAsync();
+        Assert.Equal(99m, row!.TotalAmount);
     }
 
     [Fact]
-    public async Task UpdateAustralianSupplierStoreStatisticsWithContext_局部刷新应清理旧空白供应商主键()
+    public async Task UpdateAustralianSupplierStoreStatistics_历史状态无版本时在同一事务补齐版本()
     {
         var targetDate = new DateTime(2026, 7, 6);
-        await SeedAustralianSupplierStoreSalesDetailAsync(targetDate, "1007", string.Empty, 99m, 9);
-        await SeedSaleAsync(
-            orderGuid: "ORDER-AUS-CONTEXT-PARTIAL-BLANK",
-            detailGuid: "DETAIL-AUS-CONTEXT-PARTIAL-BLANK",
-            productCode: "P-AUS-CONTEXT-PARTIAL-BLANK",
-            branchCode: "1007",
-            orderTime: targetDate.AddHours(12),
-            quantity: 2,
-            actualAmount: 18m,
-            supplierCode: "112"
-        );
+        var product = new ProductStoreDailySalesStatistic
+        {
+            Date = targetDate,
+            BranchCode = "1007",
+            SupplierCode = "112",
+            ProductCode = "P-SNAPSHOT-LEGACY",
+            TotalAmount = 18m,
+            TotalQuantity = 2,
+            OrderCount = 1,
+            TotalCost = 6m,
+            GrossProfit = 12m,
+        };
+        await SeedCompletedProductSnapshotAsync(targetDate, product);
+        await _localDb.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => row.SourceProductVersion == null)
+            .Where(row => row.Date == targetDate && row.StatisticType == SalesStatisticType.ProductStoreDaily)
+            .ExecuteCommandAsync();
 
-        await InvokeAustralianSupplierStoreStatisticsWithContextAsync(
-            targetDate,
-            null,
-            new List<string> { "112" }
-        );
+        await CreateService().UpdateAustralianSupplierStoreStatistics(targetDate);
 
-        var rows = await _localDb.Queryable<AustralianSupplierStoreSalesDetail>()
-            .Where(row => row.Date == targetDate && row.BranchCode == "1007")
-            .OrderBy(row => row.SupplierCode)
+        var expectedVersion = SupplierStatisticVersion.ComputeProductVersion(new[] { product });
+        var productState = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(row => row.Date == targetDate && row.StatisticType == SalesStatisticType.ProductStoreDaily)
+            .FirstAsync();
+        var supplierStates = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(row => row.Date == targetDate
+                && (row.StatisticType == SalesStatisticType.AustralianSupplierStoreSales
+                    || row.StatisticType == SalesStatisticType.ChinaSupplierStoreSales))
             .ToListAsync();
-
-        var row = Assert.Single(rows);
-        Assert.Equal("112", row.SupplierCode);
-        Assert.Equal(18m, row.TotalAmount);
+        Assert.Equal(expectedVersion, productState!.SourceProductVersion);
+        Assert.Equal(2, supplierStates.Count);
+        Assert.All(supplierStates, state => Assert.Equal(expectedVersion, state.SourceProductVersion));
     }
 
     [Fact]
@@ -4205,6 +4354,26 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
                 && s.Date < targetDate.Date.AddDays(1)
             )
             .FirstAsync();
+    }
+
+    private async Task SeedCompletedProductSnapshotAsync(
+        DateTime date,
+        params ProductStoreDailySalesStatistic[] rows)
+    {
+        await _localDb.Insertable(rows.ToList()).ExecuteCommandAsync();
+        var version = SupplierStatisticVersion.ComputeProductVersion(rows);
+        await _localDb.Insertable(new SalesStatisticRefreshState
+        {
+            StatisticType = SalesStatisticType.ProductStoreDaily,
+            Date = date.Date,
+            Status = SalesStatisticRefreshStatus.Fresh,
+            SourceTimeZone = "POSM_LOCAL",
+            SourceProductVersion = version,
+            LastAggregatedAtUtc = DateTime.UtcNow,
+            LastCheckedAtUtc = DateTime.UtcNow,
+            CompletedAtUtc = DateTime.UtcNow,
+            LastSourceUploadTime = date.Date.AddHours(12),
+        }).ExecuteCommandAsync();
     }
 
     private async Task SeedRefreshStateAsync(

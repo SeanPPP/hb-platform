@@ -26,13 +26,7 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
         var targetDate = date.Date;
         var nextDate = targetDate.AddDays(1);
         var posmWatermark = preloadedPosmSnapshot == null
-            ? await posmContext.Db.Queryable<SalesOrder>()
-                .Where(order => order.Status != null
-                    && (order.Status == 1 || order.Status == 4)
-                    && order.OrderTime != null
-                    && order.OrderTime >= targetDate
-                    && order.OrderTime < nextDate)
-                .MaxAsync(order => order.LastUploadTime)
+            ? await SalesStatisticsProductStoreDailyStateSlice.QueryDailyPosmSourceWatermarkAsync(posmContext, targetDate)
             : SalesStatisticsProductStoreDailyDomainRules.GetPosmSnapshotWatermark(
                 preloadedPosmSnapshot
             );

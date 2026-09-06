@@ -65,8 +65,17 @@ import {
   type ReportLoadCacheState,
   type ReportLoadPerformanceMeasurement,
 } from "@/modules/reports/report-load-performance";
+import {
+  createReportSnapshotKey,
+  formatReportSnapshotTime,
+  getCompleteReportSnapshot,
+  isReportScopeValid,
+  saveCompleteReportSnapshot,
+  type CompleteReportSnapshot,
+} from "@/modules/reports/report-snapshot";
 import { PRODUCT_PAGE_SIZE, SUPPLIER_PAGE_SIZE, getPageRows } from "@/modules/product-report/pagination";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { useAuthStore } from "@/store/auth-store";
 
 type Drilldown =
   | { type: "supplier"; kind: SupplierReportKind; supplier: SupplierReportRow }
@@ -89,6 +98,12 @@ interface ProductPageSummary {
 }
 
 const MAIN_REPORT_CACHE_VERSION_REFETCH_LIMIT = 2;
+
+type CompleteProductMainReport = {
+  totalRevenue: ProductReportTotalRevenue;
+  supplier: ProductReportSnapshot<SupplierReportRow[]>;
+  product: ProductReportSnapshot<ProductReportProductPage>;
+};
 
 function formatCount(value: number) {
   return Math.round(value).toLocaleString("en-AU");
@@ -268,6 +283,9 @@ export function ProductReportScreen({
   const { t } = useAppTranslation("common");
   const { height, width } = useWindowDimensions();
   const queryClient = useQueryClient();
+  const accountIdentity = useAuthStore((state) => state.isAuthenticated
+    ? state.user?.userGuid || state.user?.userGUID || ""
+    : "");
   const productLoadTimer = useRef(new ReportLoadPerformanceTimer()).current;
   const productLoadActiveRef = useRef(false);
   const productLoadSessionKeyRef = useRef<object | null>(null);
@@ -281,6 +299,13 @@ export function ProductReportScreen({
   const drilldownRequestGenerationRef = useRef(0);
   const drilldownPhysicalRowVisibleRef = useRef(false);
   const drilldownPhysicalPresentationReadyRef = useRef(false);
+  const completeMainReportSnapshotsRef = useRef(
+    new Map<string, CompleteReportSnapshot<CompleteProductMainReport>>(),
+  ).current;
+  const completeDrilldownSnapshotsRef = useRef(
+    new Map<string, CompleteReportSnapshot<SupplierBranchBreakdownRow[] | ProductBranchBreakdownRow[]>>(),
+  ).current;
+  const previousScopeCodesRef = useRef("");
   const mainReportVersionSyncRef = useRef<{ sessionKey: object | null; attemptCount: number }>({
     sessionKey: null,
     attemptCount: 0,
@@ -306,18 +331,32 @@ export function ProductReportScreen({
   );
 
   const storeOptionsQuery = useQuery({
-    queryKey: ["product-report", "stores"],
+    queryKey: ["product-report", "stores", accountIdentity],
     queryFn: ({ signal }) => fetchProductReportStoreOptions({ signal }),
     ...REPORT_QUERY_OPTIONS,
+    enabled: Boolean(accountIdentity),
   });
   const cashierEnabledStoreCodes = useMemo(
     () => getCashierEnabledStoreCodes(storeOptionsQuery.data ?? []),
     [storeOptionsQuery.data],
   );
   const cashierStoreScopeVersion = storeOptionsQuery.dataUpdatedAt;
+  const reportScopeValid = isReportScopeValid(accountIdentity, storeOptionsQuery, cashierEnabledStoreCodes);
   const branchCodes = useMemo(
     () => getCashierScopedBranchCodes(cashierEnabledStoreCodes, selectedStoreCode),
     [cashierEnabledStoreCodes, selectedStoreCode],
+  );
+
+  // 权限范围重验期间仍可展示同条件的完整快照；重验失败会同步关闭显示门槛。
+  const snapshotQueryParams = useMemo(
+    () => reportScopeValid && dateRangeValid && branchCodes.length > 0
+      ? buildProductReportDateQuery(activeRange, branchCodes) : null,
+    [activeRange, branchCodes, dateRangeValid, reportScopeValid],
+  );
+  const drilldownSnapshotQueryParams = useMemo(
+    () => reportScopeValid && dateRangeValid
+      ? buildProductReportDateQuery(activeRange, cashierEnabledStoreCodes) : null,
+    [activeRange, cashierEnabledStoreCodes, dateRangeValid, reportScopeValid],
   );
 
   const queryParams = useMemo(
@@ -407,17 +446,18 @@ export function ProductReportScreen({
     [selectedSupplierCode]
   );
   const totalRevenueQueryKey = useMemo(
-    () => ["product-report", "total-revenue", cashierStoreScopeVersion, queryParams] as const,
-    [cashierStoreScopeVersion, queryParams],
+    () => ["product-report", "total-revenue", accountIdentity, cashierStoreScopeVersion, queryParams] as const,
+    [accountIdentity, cashierStoreScopeVersion, queryParams],
   );
   const supplierQueryKey = useMemo(
-    () => ["product-report", "suppliers", kind, cashierStoreScopeVersion, queryParams] as const,
-    [cashierStoreScopeVersion, kind, queryParams],
+    () => ["product-report", "suppliers", accountIdentity, kind, cashierStoreScopeVersion, queryParams] as const,
+    [accountIdentity, cashierStoreScopeVersion, kind, queryParams],
   );
   const productQueryKey = useMemo(
     () => [
       "product-report",
       "products",
+      accountIdentity,
       kind,
       cashierStoreScopeVersion,
       queryParams,
@@ -425,11 +465,32 @@ export function ProductReportScreen({
       productSearch,
       productPage,
     ] as const,
-    [cashierStoreScopeVersion, kind, productPage, productSearch, queryParams, supplierFilterCodes],
+    [accountIdentity, cashierStoreScopeVersion, kind, productPage, productSearch, queryParams, supplierFilterCodes],
   );
   const productLoadSessionKey = useMemo(
     () => ({ totalRevenueQueryKey, supplierQueryKey, productQueryKey }),
     [productQueryKey, supplierQueryKey, totalRevenueQueryKey],
+  );
+  const mainReportSnapshotKey = useMemo(
+    () => snapshotQueryParams
+      ? createReportSnapshotKey({
+          accountIdentity,
+          tab: "product",
+          period: range.key,
+          startDate: snapshotQueryParams.startDate,
+          endDate: snapshotQueryParams.endDate,
+          compareStartDate: snapshotQueryParams.compareStartDate,
+          compareEndDate: snapshotQueryParams.compareEndDate,
+          compareMode: snapshotQueryParams.compareMode,
+          branchCodes: snapshotQueryParams.branchCodes ?? [],
+          supplierKind: kind,
+          supplierCode: selectedSupplierCode,
+          search: productSearch,
+          page: productPage,
+          pageSize: PRODUCT_PAGE_SIZE,
+        })
+      : null,
+    [accountIdentity, kind, productPage, productSearch, snapshotQueryParams, range.key, selectedSupplierCode],
   );
 
   const startProductLoad = useCallback((cacheState: ReportLoadCacheState) => {
@@ -509,12 +570,6 @@ export function ProductReportScreen({
     ...REPORT_QUERY_OPTIONS,
   });
 
-  const supplierRows = supplierQuery.data?.data ?? [];
-  const supplierPageCount = Math.max(1, Math.ceil(supplierRows.length / SUPPLIER_PAGE_SIZE));
-  const supplierPageRows = getPageRows(supplierRows, supplierPage, SUPPLIER_PAGE_SIZE);
-  const supplierSubtotal = supplierRows.reduce((sum, row) => sum + row.revenue, 0);
-  const supplierCompareSubtotal = supplierRows.reduce((sum, row) => sum + row.compareRevenue, 0);
-  const totalRevenue = totalRevenueQuery.data ?? { revenue: 0, compareRevenue: 0 };
   const totalRevenueStatisticsPending =
     totalRevenueQuery.isLoading || (
       totalRevenueQuery.data !== undefined
@@ -550,7 +605,6 @@ export function ProductReportScreen({
     placeholderData: keepPreviousData,
     ...REPORT_QUERY_OPTIONS,
   });
-  const productSectionLoading = productQuery.isLoading || productQuery.isPlaceholderData;
   const mainReportCacheVersionState = getProductReportCacheVersionState([
     totalRevenueQuery.data,
     supplierQuery.data,
@@ -652,6 +706,85 @@ export function ProductReportScreen({
   const mainReportRequestError =
     storeOptionsQuery.isError || totalRevenueQuery.isError || supplierQuery.isError || productQuery.isError;
 
+  const mainReportCurrentComplete =
+    reportScopeValid && dateRangeValid && !mainReportRequestError
+    && !productQuery.isPlaceholderData
+    && totalRevenueQuery.data?.isComplete === true
+    && supplierQuery.data?.isComplete === true
+    && productQuery.data?.isComplete === true
+    && mainReportCacheVersionState === "aligned"
+    && !mainReportQueriesFetching;
+  useLayoutEffect(() => {
+    if (!mainReportSnapshotKey || !mainReportCurrentComplete) return;
+    saveCompleteReportSnapshot(
+      completeMainReportSnapshotsRef,
+      mainReportSnapshotKey,
+      {
+        totalRevenue: totalRevenueQuery.data!,
+        supplier: supplierQuery.data!,
+        product: productQuery.data!,
+      },
+      {
+        statisticUpdatedAt:
+          totalRevenueQuery.data?.statisticUpdatedAt
+          ?? supplierQuery.data?.statisticUpdatedAt
+          ?? productQuery.data?.statisticUpdatedAt
+          ?? null,
+        cacheVersion: totalRevenueQuery.data?.cacheVersion ?? null,
+      },
+    );
+  }, [
+    completeMainReportSnapshotsRef,
+    mainReportCurrentComplete,
+    mainReportSnapshotKey,
+    productQuery.data,
+    supplierQuery.data,
+    totalRevenueQuery.data,
+  ]);
+  useLayoutEffect(() => {
+    const scopeFingerprint = JSON.stringify([accountIdentity, cashierEnabledStoreCodes]);
+    if (previousScopeCodesRef.current !== ""
+      && previousScopeCodesRef.current !== scopeFingerprint) {
+      // 授权门店范围变化代表权限边界变化，旧范围的内存快照必须立即失效。
+      completeMainReportSnapshotsRef.clear();
+      completeDrilldownSnapshotsRef.clear();
+      setDrilldown(null);
+    }
+    previousScopeCodesRef.current = scopeFingerprint;
+    if (!reportScopeValid) {
+      completeMainReportSnapshotsRef.clear();
+      completeDrilldownSnapshotsRef.clear();
+      setDrilldown(null);
+    }
+  }, [
+    accountIdentity,
+    reportScopeValid,
+    cashierStoreScopeVersion,
+    cashierEnabledStoreCodes,
+    completeDrilldownSnapshotsRef,
+    completeMainReportSnapshotsRef,
+    storeOptionsQuery.isError,
+  ]);
+  const mainReportSnapshot = mainReportSnapshotKey
+    ? getCompleteReportSnapshot(completeMainReportSnapshotsRef, mainReportSnapshotKey)
+    : undefined;
+  const mainReportHasSnapshot = mainReportSnapshot !== undefined;
+  const displayedMainReport = mainReportCurrentComplete
+    ? {
+        totalRevenue: totalRevenueQuery.data!,
+        supplier: supplierQuery.data!,
+        product: productQuery.data!,
+      }
+    : mainReportSnapshot?.data;
+  const supplierRows = displayedMainReport?.supplier.data ?? [];
+  const supplierPageCount = Math.max(1, Math.ceil(supplierRows.length / SUPPLIER_PAGE_SIZE));
+  const supplierPageRows = getPageRows(supplierRows, supplierPage, SUPPLIER_PAGE_SIZE);
+  const supplierSubtotal = supplierRows.reduce((sum, row) => sum + row.revenue, 0);
+  const supplierCompareSubtotal = supplierRows.reduce((sum, row) => sum + row.compareRevenue, 0);
+  const totalRevenue = displayedMainReport?.totalRevenue ?? { revenue: 0, compareRevenue: 0 };
+  const productSectionLoading = !mainReportHasSnapshot
+    && (productQuery.isLoading || productQuery.isPlaceholderData);
+
   const completeProductLoad = useCallback(() => {
     if (!firstProductReportDataVisibleRef.current) return;
     const measurement = productLoadTimer.markFirstRowVisible();
@@ -735,8 +868,11 @@ export function ProductReportScreen({
     totalRevenueQuery.data,
     totalRevenueQuery.isFetching,
   ]);
-  const productRows = useMemo(() => productQuery.data?.data.rows ?? [], [productQuery.data]);
-  const productTotal = productQuery.data?.data.total ?? 0;
+  const productRows = useMemo(
+    () => displayedMainReport?.product.data.rows ?? [],
+    [displayedMainReport?.product.data.rows],
+  );
+  const productTotal = displayedMainReport?.product.data.total ?? 0;
   const productPageSummary = useMemo<ProductPageSummary>(() => {
     const currentSales = productRows.reduce((sum, row) => sum + row.salesAmount, 0);
     const compareSales = productRows.reduce((sum, row) => sum + row.compareSalesAmount, 0);
@@ -807,21 +943,61 @@ export function ProductReportScreen({
     () => [
       "product-report",
       "supplier-branches",
+      accountIdentity,
       cashierStoreScopeVersion,
       drilldown,
       supplierBranchQueryParams,
     ] as const,
-    [cashierStoreScopeVersion, drilldown, supplierBranchQueryParams],
+    [accountIdentity, cashierStoreScopeVersion, drilldown, supplierBranchQueryParams],
   );
   const productBranchQueryKey = useMemo(
     () => [
       "product-report",
       "product-branches",
+      accountIdentity,
       cashierStoreScopeVersion,
       drilldown,
       productBranchQueryParams,
     ] as const,
-    [cashierStoreScopeVersion, drilldown, productBranchQueryParams],
+    [accountIdentity, cashierStoreScopeVersion, drilldown, productBranchQueryParams],
+  );
+  const supplierBranchSnapshotKey = useMemo(
+    () => drilldown?.type === "supplier" && drilldownSnapshotQueryParams
+      ? createReportSnapshotKey({
+          accountIdentity,
+          tab: "product",
+          detail: "supplier-branches",
+          period: range.key,
+          startDate: drilldownSnapshotQueryParams.startDate,
+          endDate: drilldownSnapshotQueryParams.endDate,
+          compareStartDate: drilldownSnapshotQueryParams.compareStartDate,
+          compareEndDate: drilldownSnapshotQueryParams.compareEndDate,
+          compareMode: drilldownSnapshotQueryParams.compareMode,
+          branchCodes: drilldownSnapshotQueryParams.branchCodes ?? [],
+          supplierKind: drilldown.kind,
+          supplierCode: drilldown.supplier.supplierCode,
+        })
+      : null,
+    [accountIdentity, drilldown, range.key, drilldownSnapshotQueryParams],
+  );
+  const productBranchSnapshotKey = useMemo(
+    () => drilldown?.type === "product" && drilldownSnapshotQueryParams
+      ? createReportSnapshotKey({
+          accountIdentity,
+          tab: "product",
+          detail: "product-branches",
+          period: range.key,
+          startDate: drilldownSnapshotQueryParams.startDate,
+          endDate: drilldownSnapshotQueryParams.endDate,
+          compareStartDate: drilldownSnapshotQueryParams.compareStartDate,
+          compareEndDate: drilldownSnapshotQueryParams.compareEndDate,
+          compareMode: drilldownSnapshotQueryParams.compareMode,
+          branchCodes: drilldownSnapshotQueryParams.branchCodes ?? [],
+          supplierKind: "product",
+          supplierCode: drilldown.product.productCode,
+        })
+      : null,
+    [accountIdentity, drilldown, drilldownSnapshotQueryParams, range.key],
   );
   const startDrilldownLoad = useCallback((
     queryKey: readonly unknown[],
@@ -949,9 +1125,47 @@ export function ProductReportScreen({
     : drilldownKind === "product"
       ? productBranchQueryKey
       : null;
+  const activeDrilldownSnapshotKey = drilldownKind === "supplier"
+    ? supplierBranchSnapshotKey
+    : drilldownKind === "product"
+      ? productBranchSnapshotKey
+      : null;
+  const activeDrilldownSnapshot = activeDrilldownSnapshotKey
+    ? getCompleteReportSnapshot(completeDrilldownSnapshotsRef, activeDrilldownSnapshotKey)
+    : undefined;
+  const displayedSupplierBranchRows = reportScopeValid && drilldownKind === "supplier"
+    ? (supplierBranchQuery.data?.isComplete && !supplierBranchQuery.isFetching && !supplierBranchQuery.isError
+      ? supplierBranchQuery.data.data
+      : (activeDrilldownSnapshot?.data as SupplierBranchBreakdownRow[] | undefined) ?? [])
+    : [];
+  const displayedProductBranchRows = reportScopeValid && drilldownKind === "product"
+    ? (productBranchQuery.data?.isComplete && !productBranchQuery.isFetching && !productBranchQuery.isError
+      ? productBranchQuery.data.data
+      : (activeDrilldownSnapshot?.data as ProductBranchBreakdownRow[] | undefined) ?? [])
+    : [];
+  useLayoutEffect(() => {
+    if (!reportScopeValid || !activeDrilldownSnapshotKey || !activeDrilldownQuery?.data?.isComplete
+      || activeDrilldownQuery.isFetching || activeDrilldownQuery.isError) return;
+    saveCompleteReportSnapshot(
+      completeDrilldownSnapshotsRef,
+      activeDrilldownSnapshotKey,
+      activeDrilldownQuery.data.data,
+      {
+        statisticUpdatedAt: activeDrilldownQuery.data.statisticUpdatedAt,
+        cacheVersion: activeDrilldownQuery.data.cacheVersion,
+      },
+    );
+  }, [
+    reportScopeValid,
+    activeDrilldownQuery?.data,
+    activeDrilldownQuery?.isFetching,
+    activeDrilldownQuery?.isError,
+    activeDrilldownSnapshotKey,
+    completeDrilldownSnapshotsRef,
+  ]);
   // 弹窗状态按当前下钻类型取值，避免另一个禁用查询把内容渲染成空白。
   const isDrilldownLoading =
-    activeDrilldownQuery?.isLoading
+    activeDrilldownQuery?.isLoading && displayedSupplierBranchRows.length === 0 && displayedProductBranchRows.length === 0
     || Boolean(
       activeDrilldownQuery?.data !== undefined
       && !activeDrilldownQuery.data.isComplete
@@ -969,6 +1183,8 @@ export function ProductReportScreen({
       : drilldownKind === "product"
         ? productBranchQuery.isError
         : false;
+  const drilldownShowingSnapshot = activeDrilldownSnapshot !== undefined
+    && (Boolean(activeDrilldownQuery?.isFetching) || Boolean(isDrilldownError) || Boolean(isDrilldownStatisticsIncomplete));
   const recordDrilldownMeasurement = useCallback((measurement: ReportLoadPerformanceMeasurement | null) => {
     if (!measurement || !drilldownLoadKindRef.current) return;
     recordReportLoadPerformance(
@@ -1012,7 +1228,8 @@ export function ProductReportScreen({
       || drilldownLoadQueryKeyRef.current !== activeDrilldownQueryKey
     ) return;
     if (isDrilldownError) {
-      // 错误态会隐藏旧缓存行；同 key 重试不能继承已经不可见的行状态。
+      // 同条件完整快照仍在时保留旧行；只有没有快照才清空物理可见状态。
+      if (displayedSupplierBranchRows.length > 0 || displayedProductBranchRows.length > 0) return;
       drilldownPhysicalRowVisibleRef.current = false;
       drilldownLoadGate.setFirstRowVisible(false);
       return;
@@ -1038,6 +1255,8 @@ export function ProductReportScreen({
     activeDrilldownQueryKey,
     drilldownLoadGate,
     isDrilldownError,
+    displayedProductBranchRows.length,
+    displayedSupplierBranchRows.length,
     recordDrilldownMeasurement,
   ]);
   const retryDrilldown = () => {
@@ -1364,7 +1583,7 @@ export function ProductReportScreen({
           <View style={styles.stateBox}>
             <Text variant="bodyMedium">{t("productReport.states.invalidDate")}</Text>
           </View>
-        ) : mainReportRequestError ? (
+        ) : mainReportRequestError && !mainReportHasSnapshot ? (
           <ErrorState
             label={t("productReport.states.error")}
             retryLabel={t("actions.retry")}
@@ -1373,9 +1592,9 @@ export function ProductReportScreen({
               void storeOptionsQuery.refetch();
             }}
           />
-        ) : mainReportStatisticsPending ? (
+        ) : mainReportStatisticsPending && !mainReportHasSnapshot ? (
           <LoadingState label={t("reports.states.refreshingStatistics")} />
-        ) : mainReportStatisticsIncomplete ? (
+        ) : mainReportStatisticsIncomplete && !mainReportHasSnapshot ? (
           <ErrorState
             label={t("reports.states.statisticsIncomplete")}
             retryLabel={t("actions.retry")}
@@ -1388,6 +1607,14 @@ export function ProductReportScreen({
           <EmptyState label={t("reports.states.noCashierEnabledStores")} />
         ) : (
           <>
+            {mainReportHasSnapshot && (mainReportQueriesFetching || mainReportRequestError || mainReportStatisticsPending || mainReportStatisticsIncomplete) ? (
+              <Text variant="labelSmall" style={styles.snapshotNotice}>
+                {t("reports.states.showingSnapshot", {
+                  time: formatReportSnapshotTime(mainReportSnapshot?.statisticUpdatedAt ?? null)
+                    ?? t("reports.freshness.noSuccess"),
+                })}
+              </Text>
+            ) : null}
             {productSectionLoading ? (
               <View style={[styles.productSummaryCard, styles.productSummaryLoading]}>
                 <ActivityIndicator size="small" />
@@ -1415,7 +1642,7 @@ export function ProductReportScreen({
                 previousLabel={t("productReport.actions.previous")}
                 nextLabel={t("productReport.actions.next")}
               />
-              {supplierQuery.isLoading ? (
+              {supplierQuery.isLoading && !mainReportHasSnapshot ? (
                 <LoadingState label={t("productReport.states.loading")} />
               ) : (
                 <FrozenHorizontalTable>
@@ -1548,18 +1775,25 @@ export function ProductReportScreen({
       <BranchDrilldownModal
         visible={
           Boolean(drilldown)
-          && storeOptionsQuery.isSuccess
-          && !storeOptionsQuery.isFetching
+          && reportScopeValid
         }
         title={
           drilldown?.type === "supplier"
             ? t("productReport.drilldown.supplier")
             : t("productReport.drilldown.product")
         }
-        supplierRows={supplierBranchQuery.data?.data ?? []}
-        productRows={productBranchQuery.data?.data ?? []}
+        supplierRows={displayedSupplierBranchRows}
+        productRows={displayedProductBranchRows}
         isLoading={isDrilldownLoading}
-        isError={isDrilldownError || isDrilldownStatisticsIncomplete}
+        isError={(isDrilldownError || isDrilldownStatisticsIncomplete)
+          && displayedSupplierBranchRows.length === 0
+          && displayedProductBranchRows.length === 0}
+        snapshotNotice={drilldownShowingSnapshot
+          ? t("reports.states.showingSnapshot", {
+              time: formatReportSnapshotTime(activeDrilldownSnapshot?.statisticUpdatedAt ?? null)
+                ?? t("reports.freshness.noSuccess"),
+            })
+          : undefined}
         onRetry={retryDrilldown}
         onDismiss={() => setDrilldown(null)}
         closeLabel={t("actions.close")}
@@ -1794,6 +2028,7 @@ function BranchDrilldownModal({
   growthNewLabel,
   costPendingLabel,
   onFirstDataVisibilityChange,
+  snapshotNotice,
 }: {
   visible: boolean;
   title: string;
@@ -1811,6 +2046,7 @@ function BranchDrilldownModal({
   growthNewLabel: string;
   costPendingLabel: string;
   onFirstDataVisibilityChange: (visible: boolean) => void;
+  snapshotNotice?: string;
 }) {
   const { t } = useAppTranslation("common");
   const { height: windowHeight } = useWindowDimensions();
@@ -1874,6 +2110,7 @@ function BranchDrilldownModal({
         <Text variant="titleMedium" style={styles.modalTitle}>
           {title}
         </Text>
+        {snapshotNotice ? <Text variant="labelSmall" style={styles.snapshotNotice}>{snapshotNotice}</Text> : null}
         {isLoading ? (
           <LoadingState label={t("productReport.states.loading")} />
         ) : isError ? (
@@ -2099,6 +2336,10 @@ const styles = StyleSheet.create({
   },
   muted: {
     color: "#6B7280",
+  },
+  snapshotNotice: {
+    color: "#B45309",
+    marginBottom: 4,
   },
   filterBar: {
     flexDirection: "row",

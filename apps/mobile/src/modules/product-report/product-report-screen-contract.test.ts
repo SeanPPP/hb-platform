@@ -19,8 +19,8 @@ assert.match(
 );
 assert.equal(
   (source.match(/buildProductReportDateQuery\(activeRange, cashierEnabledStoreCodes\)/g) ?? []).length,
-  2,
-  "供应商与商品分店下钻都必须显式限定在全部收银启用分店",
+  3,
+  "供应商与商品分店下钻及完整快照都必须显式限定在全部收银启用分店",
 );
 assert.match(
   source,
@@ -185,23 +185,23 @@ assert.match(
 );
 assert.match(
   source.slice(reportContentStart),
-  /mainReportStatisticsPending \? \([\s\S]*?<LoadingState label=\{t\("reports\.states\.refreshingStatistics"\)\}/,
-  "供应商或商品主表处于非 Fresh 追数时，页面不得进入行级渲染",
+  /mainReportStatisticsPending && !mainReportHasSnapshot \? \([\s\S]*?<LoadingState label=\{t\("reports\.states\.refreshingStatistics"\)\}/,
+  "首次无完整快照时，供应商或商品主表处于非 Fresh 追数必须停在 Loading",
 );
 assert.match(
   source.slice(reportContentStart),
-  /mainReportRequestError \? \([\s\S]*?<ErrorState[\s\S]*?resetMainReportVersionSync\(\);[\s\S]*?void storeOptionsQuery\.refetch\(\);/,
-  "任一首屏请求失败时必须在汇总卡前显示统一重试，并先重验收银启用范围",
+  /mainReportRequestError && !mainReportHasSnapshot \? \([\s\S]*?<ErrorState[\s\S]*?resetMainReportVersionSync\(\);[\s\S]*?void storeOptionsQuery\.refetch\(\);/,
+  "首次无完整快照时，任一首屏请求失败才显示统一重试",
 );
 assert.match(
   source.slice(reportContentStart),
-  /mainReportStatisticsIncomplete \? \([\s\S]*?<ErrorState[\s\S]*?reports\.states\.statisticsIncomplete[\s\S]*?resetMainReportVersionSync\(\);[\s\S]*?void storeOptionsQuery\.refetch\(\);/,
-  "任何主表轮询耗尽为非 Fresh 时，页面必须显示先重验白名单的重试，而非空表",
+  /mainReportStatisticsIncomplete && !mainReportHasSnapshot \? \([\s\S]*?<ErrorState[\s\S]*?reports\.states\.statisticsIncomplete[\s\S]*?resetMainReportVersionSync\(\);[\s\S]*?void storeOptionsQuery\.refetch\(\);/,
+  "首次无完整快照时，主表轮询耗尽才显示重试",
 );
 assert.match(
   source,
-  /supplierQuery\.data\?\.data \?\? \[\][\s\S]*?productQuery\.data\?\.data\.rows \?\? \[\]/,
-  "主表业务行必须从 Fresh 快照 data 解包，不能把根级空 data 当业务空结果",
+  /displayedMainReport\?\.supplier\.data \?\? \[\][\s\S]*?displayedMainReport\?\.product\.data\.rows \?\? \[\]/,
+  "主表业务行必须来自同条件完整快照，不能把根级空 data 当业务空结果",
 );
 assert.match(
   source,
@@ -210,8 +210,8 @@ assert.match(
 );
 assert.match(
   source,
-  /supplierRows=\{supplierBranchQuery\.data\?\.data \?\? \[\]\}[\s\S]*?productRows=\{productBranchQuery\.data\?\.data \?\? \[\]\}/,
-  "下钻行数据必须从统计快照 data 解包，非 Fresh 不得渲染为空业务表",
+  /supplierRows=\{displayedSupplierBranchRows\}[\s\S]*?productRows=\{displayedProductBranchRows\}/,
+  "下钻行数据必须来自同条件完整快照，非 Fresh 不得渲染为空业务表",
 );
 assert.doesNotMatch(
   productRowSource,

@@ -44,6 +44,16 @@ assert.equal(
   "wait",
   "已有协调请求在途时不得重复发起 refetch",
 );
+let versionSyncAttempts = 0;
+for (let round = 0; round < 2; round++) {
+  assert.equal(getProductReportCacheVersionSyncDecision("mismatch", versionSyncAttempts, false, 2), "refetch");
+  versionSyncAttempts++;
+  const intermediate = getProductReportCacheVersionSyncDecision("aligned", versionSyncAttempts, true, 2);
+  if (intermediate === "ready") versionSyncAttempts = 0;
+  assert.equal(intermediate, "wait", "整组请求尚未完成时的短暂版本对齐不能清零重试次数");
+}
+assert.equal(getProductReportCacheVersionSyncDecision("mismatch", versionSyncAttempts, false, 2), "exhausted");
+assert.equal(getProductReportCacheVersionSyncDecision("aligned", versionSyncAttempts, false, 2), "ready");
 assert.equal(
   getProductReportCacheVersionState([
     { isComplete: true, cacheVersion: "batch-42" },

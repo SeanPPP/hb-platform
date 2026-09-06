@@ -174,7 +174,8 @@
       "noCashierEnabledStores": "暂无启用收银的分店",
       "refreshingStatistics": "统计补算中，正在自动刷新...",
       "statisticsIncomplete": "统计补算尚未完成，请重试",
-      "errorTitle": "营业额数据加载失败"
+      "errorTitle": "营业额数据加载失败",
+      "showingSnapshot": "刷新期间显示 {{time}} 的完整快照"
     },
     "accessibility": {
       "openHourlyDetail": "查看 {{branch}} 分时营业额明细",
