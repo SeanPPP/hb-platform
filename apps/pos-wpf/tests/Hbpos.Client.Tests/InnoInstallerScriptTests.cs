@@ -61,6 +61,32 @@ public sealed class InnoInstallerScriptTests
     }
 
     [Fact]
+    public void Build_script_places_self_contained_helper_and_agent_in_all_users_publish_output()
+    {
+        var script = ReadRepoFile("apps/pos-wpf/scripts/Build-WpfInnoInstaller.ps1");
+
+        Assert.Contains("Hbpos.RemoteStatus\\Hbpos.RemoteStatus.csproj", script);
+        Assert.Contains("Hbpos.RemoteMaintenance.Setup\\Hbpos.RemoteMaintenance.Setup.csproj", script);
+        Assert.Contains("--self-contained true", script);
+        Assert.Contains("-p:PublishSingleFile=true", script);
+        Assert.Contains("-p:IncludeNativeLibrariesForSelfExtract=true", script);
+        Assert.Contains("Copy-Item -LiteralPath $statusExe -Destination $publishDir", script);
+        Assert.Contains("Copy-Item -LiteralPath $helperExe -Destination $publishDir", script);
+    }
+
+    [Fact]
+    public void Remote_publish_script_refuses_non_empty_output_instead_of_recursive_delete()
+    {
+        var script = ReadRepoFile("apps/pos-wpf/scripts/Publish-RemoteMaintenance.ps1");
+
+        Assert.Contains("输出目录必须为空", script);
+        Assert.DoesNotContain("Remove-Item -LiteralPath $OutputDirectory -Recurse", script);
+        Assert.Contains("WpfOutputDirectory", script);
+        Assert.Contains("IncludeNativeLibrariesForSelfExtract=true", script);
+        Assert.Contains("ordinary", script);
+    }
+
+    [Fact]
     public void Inno_script_uses_versioned_icon_file_for_shell_shortcuts()
     {
         var script = ReadRepoFile("apps/pos-wpf/installer/inno/Hbpos.Client.Wpf.iss");

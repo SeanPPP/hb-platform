@@ -89,6 +89,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
     private readonly IPosRuntimeStatusApiClient? _runtimeStatusApiClient;
     private readonly CashierSessionRefreshService? _cashierSessionRefreshService;
+    private readonly IRemoteMaintenanceService? _remoteMaintenanceService;
     private readonly Dispatcher? _uiDispatcher;
     private readonly ISharedHeldOrderCoordinator? _sharedHeldOrderCoordinator;
     private readonly ISharedHeldOrderApiClient? _sharedHeldOrderApiClient;
@@ -430,7 +431,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         ISharedHeldOrderRepository? sharedHeldOrderRepository = null,
         ISharedHeldOrderPublicationWorker? sharedHeldOrderPublicationWorker = null,
         IStoreReceiptProfileApiClient? storeReceiptProfileApiClient = null,
-        CashierSessionRefreshService? cashierSessionRefreshService = null)
+        CashierSessionRefreshService? cashierSessionRefreshService = null,
+        IRemoteMaintenanceService? remoteMaintenanceService = null)
     {
         _core = core;
         _infra = infra;
@@ -505,6 +507,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         }
         _runtimeStatusApiClient = runtimeStatusApiClient;
         _cashierSessionRefreshService = cashierSessionRefreshService;
+        _remoteMaintenanceService = remoteMaintenanceService;
         var applicationDispatcher = Application.Current?.Dispatcher;
         // 主界面只绑定到构造它的 WPF Dispatcher，避免之后误用其他测试或退出流程遗留的全局 Application。
         _uiDispatcher = applicationDispatcher?.CheckAccess() == true
@@ -653,7 +656,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
              sharedHeldOrderApiClient: _sharedHeldOrderApiClient,
              sharedHeldOrderRepository: _sharedHeldOrderRepository,
              sharedHeldOrderPublicationWorker: _sharedHeldOrderPublicationWorker,
-             storeReceiptProfileApiClient: _storeReceiptProfileApiClient);
+             storeReceiptProfileApiClient: _storeReceiptProfileApiClient,
+             remoteMaintenanceService: _remoteMaintenanceService);
 
     private CardRecoveryPresenter CreateCardRecoveryPresenter() =>
         new(

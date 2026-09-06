@@ -4158,6 +4158,119 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/remote-maintenance/prepare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["RemoteMaintenancePrepareRequest"];
+                    "text/json": components["schemas"]["RemoteMaintenancePrepareRequest"];
+                    "application/*+json": components["schemas"]["RemoteMaintenancePrepareRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/remote-maintenance/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: {
+                content: {
+                    "application/json": components["schemas"]["RemoteMaintenanceCommitRequest"];
+                    "text/json": components["schemas"]["RemoteMaintenanceCommitRequest"];
+                    "application/*+json": components["schemas"]["RemoteMaintenanceCommitRequest"];
+                };
+            };
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/remote-maintenance/artifacts/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    kind: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description OK */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/square/token": {
         parameters: {
             query?: never;
@@ -6792,6 +6905,18 @@ export interface components {
         };
         /** @enum {string} */
         ProviderSubmissionState: "NotSubmitted" | "Submitted" | "Unknown";
+        RemoteMaintenanceCommitRequest: {
+            /** Format: uuid */
+            operationId?: string;
+            rustdeskId?: string | null;
+            clientVersion?: string | null;
+            password?: string | null;
+        };
+        RemoteMaintenancePrepareRequest: {
+            /** Format: uuid */
+            operationId?: string;
+            computerName?: string | null;
+        };
         SellableItemDto: {
             storeCode?: string | null;
             productCode?: string | null;

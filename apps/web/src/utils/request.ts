@@ -8,6 +8,7 @@ export interface RequestOptions {
   data?: unknown | FormData
   headers?: Record<string, string>
   signal?: AbortSignal
+  cache?: RequestCache
   skipAuthRedirect?: boolean
 }
 
@@ -133,7 +134,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
 }
 
 async function rawFetch<T>(url: string, options: RequestOptions = {}): Promise<{ response: Response; payload: T }> {
-  const { method = 'GET', params, data, headers, signal } = options
+  const { method = 'GET', params, data, headers, signal, cache } = options
   const requestUrl = buildRequestUrl(url, params)
   const isFormDataBody = typeof FormData !== 'undefined' && data instanceof FormData
   const response = await fetch(requestUrl, {
@@ -146,6 +147,7 @@ async function rawFetch<T>(url: string, options: RequestOptions = {}): Promise<{
     },
     body: data ? (isFormDataBody ? data : JSON.stringify(data)) : undefined,
     signal,
+    cache,
   })
 
   const payload = await parseResponse<T>(response)

@@ -5,6 +5,10 @@ internal enum SchemaCommandMode
     Server,
     Check,
     Migrate,
+    RemoteMaintenance,
+    RemoteMaintenanceCheck,
+    RustDeskClient,
+    RustDeskClientCheck,
     Invalid,
 }
 
@@ -12,6 +16,8 @@ internal sealed record SchemaCommand(SchemaCommandMode Mode, string? Error)
 {
     private const string CheckArgument = "--schema=check";
     private const string MigrateArgument = "--schema=migrate";
+    private const string RemoteMaintenanceArgument = "--schema=remote-maintenance";
+    private const string RemoteMaintenanceCheckArgument = "--schema=remote-maintenance-check";
 
     public static SchemaCommand Parse(IEnumerable<string> args)
     {
@@ -36,6 +42,10 @@ internal sealed record SchemaCommand(SchemaCommandMode Mode, string? Error)
         {
             CheckArgument => new SchemaCommand(SchemaCommandMode.Check, null),
             MigrateArgument => new SchemaCommand(SchemaCommandMode.Migrate, null),
+            RemoteMaintenanceArgument => new SchemaCommand(SchemaCommandMode.RemoteMaintenance, null),
+            RemoteMaintenanceCheckArgument => new SchemaCommand(SchemaCommandMode.RemoteMaintenanceCheck, null),
+            "--schema=rustdesk-client" => new SchemaCommand(SchemaCommandMode.RustDeskClient, null),
+            "--schema=rustdesk-client-check" => new SchemaCommand(SchemaCommandMode.RustDeskClientCheck, null),
             _ => Invalid("SCHEMA_COMMAND_INVALID"),
         };
     }

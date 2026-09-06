@@ -101,6 +101,12 @@ jobs:
             throw "Hbpos.Client.Tests 失败，退出码：$LASTEXITCODE"
           }
 
+      - name: 运行远程维护服务测试
+        shell: pwsh
+        run: |
+          dotnet test apps/pos-wpf/tests/Hbpos.RemoteStatus.Tests/Hbpos.RemoteStatus.Tests.csproj --configuration Release
+          if ($LASTEXITCODE -ne 0) { throw '远程维护服务测试失败。' }
+
       - name: 运行 WPF UI Release 测试
         shell: pwsh
         run: |
@@ -244,6 +250,8 @@ jobs:
             .artifacts/wpf-release/${{ steps.version.outputs.normalized }}/Hbpos.Client.Wpf-${{ steps.version.outputs.normalized }}-x64.exe
             .artifacts/wpf-release/${{ steps.version.outputs.normalized }}/Hbpos.Client.Wpf-${{ steps.version.outputs.normalized }}-x64.exe.sha256
             .artifacts/wpf-release/${{ steps.version.outputs.normalized }}/build-report.json
+            .artifacts/wpf-release/${{ steps.version.outputs.normalized }}/publish/Hbpos.RemoteStatus.exe
+            .artifacts/wpf-release/${{ steps.version.outputs.normalized }}/publish/Hbpos.RemoteMaintenance.Setup.exe
           if-no-files-found: error
           retention-days: 14
 
