@@ -154,6 +154,9 @@ foreach (var date in dates)
         commitAsync: () => context.Db.Ado.CommitTranAsync(),
         rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
         logger: NullLogger.Instance, operationName: "供应商历史回填");
+    await VerifyPersistedAsync(context, date, build, productVersion, productStatus);
+    Console.WriteLine(JsonSerializer.Serialize(new { date = date.ToString("yyyy-MM-dd"), verified = true,
+        australianRows = build.Australian.Count, chinaRows = build.China.Count, productVersion }));
 }
 
 string? GetOption(string name)
@@ -183,6 +186,34 @@ static void GuardReadOnly(ISqlSugarClient db, string name, bool allowWrites)
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase))
             throw new InvalidOperationException($"{name} dry-run 拒绝非 SELECT SQL");
     };
+}
+
+// 每日提交后回读两张表的全部业务指标及三类状态；只有落库结果一致才推进到下一日。
+static async Task VerifyPersistedAsync(SqlSugarContext context, DateTime date,
+    SupplierStoreStatisticBuildResult expected, string version, string status)
+{
+    var australian = await context.Db.Queryable<AustralianSupplierStoreSalesDetail>()
+        .Where(row => row.Date >= date && row.Date < date.AddDays(1)).ToListAsync();
+    var china = await context.Db.Queryable<ChinaSupplierStoreSalesDetail>()
+        .Where(row => row.Date >= date && row.Date < date.AddDays(1)).ToListAsync();
+    string? Number(decimal? value) => value?.ToString("G29", System.Globalization.CultureInfo.InvariantCulture);
+    RollupVerificationRow Australian(AustralianSupplierStoreSalesDetail row) => new(row.Date.Date, row.BranchCode,
+        row.SupplierCode, row.SupplierName, Number(row.TotalAmount), row.TotalQuantity, row.OrderCount,
+        Number(row.TotalCost), Number(row.GrossProfit), row.StatisticRowCount, row.CostedRowCount, row.GrossProfitRowCount);
+    RollupVerificationRow China(ChinaSupplierStoreSalesDetail row) => new(row.Date.Date, row.BranchCode,
+        row.SupplierCode, row.SupplierName, Number(row.TotalAmount), row.TotalQuantity, row.OrderCount,
+        Number(row.TotalCost), Number(row.GrossProfit), row.StatisticRowCount, row.CostedRowCount, row.GrossProfitRowCount);
+    string Fingerprint(IEnumerable<RollupVerificationRow> rows) => JsonSerializer.Serialize(rows
+        .OrderBy(row => row.Date).ThenBy(row => row.Branch, StringComparer.Ordinal).ThenBy(row => row.Supplier, StringComparer.Ordinal));
+    if (Fingerprint(australian.Select(Australian)) != Fingerprint(expected.Australian.Select(Australian))
+        || Fingerprint(china.Select(China)) != Fingerprint(expected.China.Select(China)))
+        throw new InvalidOperationException($"供应商回填落库指标核对失败: {date:yyyy-MM-dd}");
+    var types = new[] { SalesStatisticType.ProductStoreDaily, SalesStatisticType.AustralianSupplierStoreSales, SalesStatisticType.ChinaSupplierStoreSales };
+    var states = await context.Db.Queryable<SalesStatisticRefreshState>()
+        .Where(row => row.Date >= date && row.Date < date.AddDays(1) && types.Contains(row.StatisticType)).ToListAsync();
+    if (states.Count != 3 || states.Any(row => row.Status != status || row.SourceProductVersion != version
+        || !row.CompletedAtUtc.HasValue || !row.LastAggregatedAtUtc.HasValue))
+        throw new InvalidOperationException($"供应商回填落库版本核对失败: {date:yyyy-MM-dd}");
 }
 
 static async Task ValidateBackupAsync(ISqlSugarClient db, string backupPath, string restorePath, IReadOnlyList<DateTime> dates)
@@ -248,3 +279,7 @@ sealed class BackupMetrics
     public int ChecksumXor { get; set; }
     public long ChecksumSum { get; set; }
 }
+
+sealed record RollupVerificationRow(DateTime Date, string Branch, string Supplier, string? Name,
+    string? Amount, int Quantity, int? Orders, string? Cost, string? Profit,
+    int? Rows, int? CostedRows, int? ProfitRows);
