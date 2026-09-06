@@ -43,6 +43,9 @@
     <Compile Include="DeviceRegistrationReactServiceTests.cs" />
     <Compile Include="DeviceActivationCodeManagementTests.cs" />
     <Compile Include="RemoteMaintenanceContractTests.cs" />
+    <Compile Include="RustDeskCompatControllerTests.cs" />
+    <Compile Include="RustDeskCompatServiceTests.cs" />
+    <Compile Include="RustDeskClientSchemaTests.cs" />
     <Compile Include="RemoteMaintenanceSchemaReadinessTests.cs" />
     <Compile Include="SchemaMigrationCoordinatorTests.cs" />
     <Compile Include="SchemaMigrationSqlServerIntegrationTests.cs" />
