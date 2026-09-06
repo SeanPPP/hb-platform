@@ -2856,6 +2856,133 @@ public sealed class CashPaymentWorkflowServiceTests
     }
 
     [Theory]
+    [InlineData("C0", "TXN CANCELLED", LocalCardPaymentAttemptStatus.Cancelled)]
+    [InlineData("TM", "OPERATOR CANCELLED", LocalCardPaymentAttemptStatus.Declined)]
+    public async Task Definitive_cloud_card_failure_acknowledges_session_after_final_result_is_persisted(
+        string responseCode,
+        string responseText,
+        LocalCardPaymentAttemptStatus expectedStatus)
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-CANCELLED-ACK", "Cancelled Ack Tea", "930CANCELLEDACK", 10m));
+        var attempts = new RecordingCardPaymentAttemptRepository();
+        var linklyAttemptContextAccessor = new LinklyPaymentAttemptContextAccessor();
+        var terminal = new BindingCardTerminalClient(
+            linklyAttemptContextAccessor,
+            new PaymentAuthorizationResult(
+                false,
+                "ANZBACKEND:TXN-CANCELLED:session=backend-session-cancelled:environment=Sandbox",
+                "ANZ Linkly Cloud transaction was cancelled.",
+                null,
+                [
+                    new CardTransactionDto(
+                        "ANZ",
+                        "TXN-CANCELLED",
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        responseCode,
+                        responseText,
+                        null,
+                        DateTimeOffset.UtcNow,
+                        10m,
+                        null)
+                ],
+                "ANZ",
+                "Sandbox",
+                LinklyConnectionMode.CloudBackendAsync.ToString(),
+                "P",
+                "backend-session-cancelled",
+                "TXN-CANCELLED",
+                responseCode,
+                responseText),
+            beforeBind: () => { },
+            afterBind: () => { });
+        var backend = new RecordingLinklyBackendTerminalClient();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()),
+            linklyPaymentAttemptContextAccessor: linklyAttemptContextAccessor,
+            linklyBackendTerminalClient: backend);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(result.Succeeded);
+        var cancelledAttempt = Assert.Single(attempts.Attempts);
+        Assert.Equal(expectedStatus, cancelledAttempt.Status);
+        Assert.NotNull(cancelledAttempt.CompletedAt);
+        Assert.NotNull(cancelledAttempt.AcknowledgedAt);
+        Assert.Equal("backend-session-cancelled", backend.AcknowledgedSessionId);
+        Assert.Equal(CardTerminalEnvironment.Sandbox, backend.AcknowledgedSettings?.Environment);
+    }
+
+    [Fact]
+    public async Task Definitive_cloud_card_failure_does_not_acknowledge_when_final_result_persistence_fails()
+    {
+        var cart = new PosCartService();
+        cart.AddItem(CreateItem("SKU-CANCELLED-NO-ACK", "Cancelled No Ack Tea", "930CANCELLEDNOACK", 10m));
+        var attempts = new RecordingCardPaymentAttemptRepository
+        {
+            UpdateOutcomeException = new InvalidOperationException("attempt outcome write failed")
+        };
+        var linklyAttemptContextAccessor = new LinklyPaymentAttemptContextAccessor();
+        var terminal = new BindingCardTerminalClient(
+            linklyAttemptContextAccessor,
+            new PaymentAuthorizationResult(
+                false,
+                "ANZBACKEND:TXN-NO-ACK:session=backend-session-no-ack:environment=Sandbox",
+                "ANZ Linkly Cloud transaction was cancelled.",
+                null,
+                [new CardTransactionDto("ANZ", "TXN-NO-ACK", null, null, null, null, null, "TM", "OPERATOR CANCELLED", null, DateTimeOffset.UtcNow, 10m, null)],
+                "ANZ",
+                "Sandbox",
+                LinklyConnectionMode.CloudBackendAsync.ToString(),
+                "P",
+                "backend-session-no-ack",
+                "TXN-NO-ACK",
+                "TM",
+                "OPERATOR CANCELLED"),
+            beforeBind: () => { },
+            afterBind: () => { });
+        var backend = new RecordingLinklyBackendTerminalClient();
+        var workflow = new CashPaymentWorkflowService(
+            new CashCheckoutService(),
+            new RecordingOrderRepository(),
+            new StubSyncQueueRepository(pendingCount: 1),
+            cardTerminalClient: terminal,
+            cardPaymentAttemptRepository: attempts,
+            cardTerminalSettingsProvider: new StaticCardTerminalSettingsProvider(CreateBackendLinklySettings()),
+            linklyPaymentAttemptContextAccessor: linklyAttemptContextAccessor,
+            linklyBackendTerminalClient: backend);
+        var session = new PosSessionState("HB POS", "S001", "Main Store", "POS-01", "C001", "Alice", true, 0);
+
+        var result = await workflow.AddTenderAsync(
+            PaymentMethodKind.Card,
+            session,
+            10m,
+            [],
+            "10.00",
+            cartSnapshot: cart.CreateSnapshot());
+
+        Assert.False(result.Succeeded);
+        Assert.Null(Assert.Single(attempts.Attempts).AcknowledgedAt);
+        Assert.Null(backend.AcknowledgedSessionId);
+    }
+
+    [Theory]
     [InlineData("oom")]
     [InlineData("stack")]
     public async Task Card_order_post_commit_acknowledge_propagates_fatal_exception(string fatalKind)
