@@ -35,7 +35,10 @@ namespace BlazorApp.Api.Services
         out costSource
     );
 
-    internal sealed record ProductStatisticStatusResult(string Status, string? ErrorMessage);
+    internal sealed record ProductStatisticStatusResult(
+        string Status,
+        string? ErrorMessage,
+        string? SourceProductVersion = null);
 
     internal static async Task<ProductStatisticStatusResult> BuildProductStatisticStatusAsync(
         SqlSugarContext context,
@@ -95,7 +98,10 @@ namespace BlazorApp.Api.Services
             branchDiagnostics
         );
 
-        return new ProductStatisticStatusResult(reconciliation.Status, reconciliation.ErrorMessage);
+        return new ProductStatisticStatusResult(
+            reconciliation.Status,
+            reconciliation.ErrorMessage,
+            SupplierStatisticVersion.ComputeProductVersion(statisticsList));
     }
 
     internal static async Task UpsertProductStatisticStateAsync(
@@ -126,6 +132,9 @@ namespace BlazorApp.Api.Services
             existing.Status = status.Status;
             existing.LastSourceUploadTime = lastSourceUploadTime;
             existing.SourceTimeZone = "POSM_LOCAL";
+            existing.SourceProductVersion = IsCompletedProductStatus(status.Status)
+                ? status.SourceProductVersion
+                : null;
             existing.LastAggregatedAtUtc = DateTime.UtcNow;
             existing.LastCheckedAtUtc = DateTime.UtcNow;
             existing.ErrorMessage = status.ErrorMessage;
@@ -146,6 +155,9 @@ namespace BlazorApp.Api.Services
             ? lastSourceUploadTime
             : lastSourceUploadTime ?? existing.LastSourceUploadTime;
         existing.SourceTimeZone = "POSM_LOCAL";
+        if (IsCompletedProductStatus(status.Status)
+            && !string.IsNullOrWhiteSpace(status.SourceProductVersion))
+            existing.SourceProductVersion = status.SourceProductVersion;
         existing.LastAggregatedAtUtc = DateTime.UtcNow;
         existing.LastCheckedAtUtc = DateTime.UtcNow;
         existing.ErrorMessage = status.ErrorMessage;
@@ -167,7 +179,8 @@ namespace BlazorApp.Api.Services
         string status,
         DateTime? lastSourceUploadTime,
         string? errorMessage,
-        bool overwriteLastSourceUploadTime = false
+        bool overwriteLastSourceUploadTime = false,
+        string? sourceProductVersion = null
     )
     {
         var now = DateTime.UtcNow;
@@ -193,6 +206,9 @@ namespace BlazorApp.Api.Services
         var state = existing!;
 
         state.Status = status;
+        if ((status == SalesStatisticRefreshStatus.Fresh || status == ProvisionalFreshStatus)
+            && !string.IsNullOrWhiteSpace(sourceProductVersion))
+            state.SourceProductVersion = sourceProductVersion;
         state.LastSourceUploadTime = overwriteLastSourceUploadTime
             ? lastSourceUploadTime
             : lastSourceUploadTime ?? state.LastSourceUploadTime;
@@ -218,6 +234,9 @@ namespace BlazorApp.Api.Services
             await context.Db.Updateable(state).ExecuteCommandAsync();
         }
     }
+
+    private static bool IsCompletedProductStatus(string status) =>
+        status == SalesStatisticRefreshStatus.Fresh || status == SalesStatisticRefreshStatus.ProvisionalFresh;
 
     internal static async Task<DateTime?> QueryDailyPosmSourceWatermarkAsync(
         POSMSqlSugarContext posmContext,

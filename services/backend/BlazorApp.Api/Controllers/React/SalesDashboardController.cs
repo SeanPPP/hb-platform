@@ -1242,6 +1242,11 @@ namespace BlazorApp.Api.Controllers.React
                     CompareMode = compareMode,
                 };
 
+                // 商品报告分三次读取，必须确认摘要读取期间统计版本没有变化。
+                var productStatusBefore = includeProductStatisticMetadata
+                    ? await _service.GetProductReportStatisticStatusAsync(dateRange)
+                    : null;
+
                 // 调用服务获取 Executive 分店业绩
                 var result = await _service.GetExecutiveBranchPerformanceAsync(
                     dateRange,
@@ -1252,6 +1257,13 @@ namespace BlazorApp.Api.Controllers.React
                 {
                     // 仅商品移动端显式请求时读取商品统计状态，避免普通营业额排行多一次统计表查询。
                     var statisticStatus = await _service.GetProductReportStatisticStatusAsync(dateRange);
+                    if (productStatusBefore != null && IsProductStatisticFresh(statisticStatus)
+                        && (!IsProductStatisticFresh(productStatusBefore)
+                            || statisticStatus.CacheVersion != productStatusBefore.CacheVersion))
+                    {
+                        statisticStatus.StatisticStatus = SalesStatisticRefreshStatus.Pending;
+                        statisticStatus.StatisticMessage = "统计版本正在更新。";
+                    }
                     return Ok(new
                     {
                         success = true,

@@ -24,7 +24,7 @@ namespace BlazorApp.Api.Services
             _productSupport = productSupport;
         }
 
-    internal async Task UpdateProductStoreDailyStatisticsWithContext(
+    internal async Task<ProductStoreDailyBatchFence?> UpdateProductStoreDailyStatisticsWithContext(
         SqlSugarContext context,
         POSMSqlSugarContext posmContext,
         HBSalesRecordSqlSugarContext? hbSalesContext,
@@ -50,15 +50,33 @@ namespace BlazorApp.Api.Services
                 context, posmContext, hbSalesContext, logger, targetDate,
                 preloadedHBSalesRows, preloadedPosmSnapshot);
             var build = new SalesStatisticsProductStoreDailyBuilder().Build(input);
-            var status = await new SalesStatisticsProductStoreDailyCommandWriter().PersistAsync(
-                context, logger, input, build, atomicStoreStatistics, sourceWatermarkOverride,
-                validateSourceWatermarkBeforeCommitAsync,
+            var sourceWatermarkValidator = validateSourceWatermarkBeforeCommitAsync;
+            if (sourceWatermarkValidator == null && targetDate.Year != 2025)
+            {
+                // 普通日入口没有外层协调器回调时，仍须在事务前后复核同一日 POSM 水位。
+                // 2025 入口由原子协调器提供同时覆盖 POSM/HBSales 的签名校验。
+                sourceWatermarkValidator = async () =>
+                {
+                    var currentWatermark = await SalesStatisticsProductStoreDailyStateSlice
+                        .QueryDailyPosmSourceWatermarkAsync(posmContext, targetDate);
+                    if (currentWatermark != input.LastSourceUploadTime)
+                    {
+                        throw new InvalidOperationException(
+                            $"商品分店每日统计构建期间来源水位发生变化，拒绝提交: {targetDate:yyyy-MM-dd}");
+                    }
+                };
+            }
+            var persistResult = await new SalesStatisticsProductStoreDailyCommandWriter().PersistAsync(
+                context, posmContext, logger, input, build, atomicStoreStatistics, sourceWatermarkOverride,
+                sourceWatermarkValidator,
                 atomicSuccessStatusOverride,
                 expectedJobId,
                 validateExecutionOwnershipBeforeCommitAsync);
+            var status = persistResult.Status;
             logger.LogInformation(
                 "商品分店每日统计更新完成: {Date}, 总记录: {Total}, 状态: {Status}",
                 targetDate, build.Statistics.Count, status.Status);
+            return persistResult.BatchFence;
         }
         catch (Exception ex)
         {
@@ -95,7 +113,7 @@ namespace BlazorApp.Api.Services
     }
 
     // 拆分迁移期间保留旧实现作为行为对照；下一步删除其重复逻辑。
-    internal async Task Update2025StoreAndProductStatisticsAtomically(
+    internal async Task<ProductStoreDailyBatchFence> Update2025StoreAndProductStatisticsAtomically(
         SqlSugarContext context,
         POSMSqlSugarContext posmContext,
         HBSalesRecordSqlSugarContext? hbSalesContext,
@@ -172,7 +190,8 @@ namespace BlazorApp.Api.Services
             );
             logger.LogInformation("2025 Runner store build 完成: {Date}, {ElapsedMilliseconds}ms", targetDate, storeBuildStopwatch.ElapsedMilliseconds);
             var productBuildStopwatch = Stopwatch.StartNew();
-            await UpdateProductStoreDailyStatisticsWithContext(
+            var sourceValidationInvocation = 0;
+            var persistResult = await UpdateProductStoreDailyStatisticsWithContext(
                 context,
                 posmContext,
                 requiredHBSalesContext,
@@ -183,6 +202,7 @@ namespace BlazorApp.Api.Services
                 async () =>
                 {
                     var postSignatureStopwatch = Stopwatch.StartNew();
+                    var isPreCommitValidation = Interlocked.Exchange(ref sourceValidationInvocation, 1) == 0;
                     if (preloadedPosmSnapshot != null)
                     {
                         // 提交前只复核同日来源；四张表逐表比较，任一张漂移都拒绝写入 HBweb。
@@ -199,11 +219,18 @@ namespace BlazorApp.Api.Services
                         // 批量路径把 HBSales 放到批末一次复核；日内仍必须独立复核 POSM。
                         ? await SalesStatisticsProductStoreDailyStateSlice
                             .QueryDailyPosmSourceWatermarkAsync(posmContext, targetDate)
-                        : await SalesStatisticsProductStoreDailyStateSlice.QueryDailySourceWatermarkAsync(
-                            posmContext,
-                            requiredHBSalesContext,
-                            targetDate
-                        );
+                        : isPreCommitValidation
+                            // pre 阶段复用已装载 HBSales 行，避免在事务前重复扫描同一批明细；
+                            // post 阶段重新查两来源，检测构建窗口内的漂移。
+                            ? SalesStatisticsProductStoreDailyDomainRules.GetLatestSourceTime(
+                                await SalesStatisticsProductStoreDailyStateSlice
+                                    .QueryDailyPosmSourceWatermarkAsync(posmContext, targetDate),
+                                SalesStatisticsProductStoreDailyDomainRules.GetHBSalesSourceWatermark(hbSalesRows))
+                            : await SalesStatisticsProductStoreDailyStateSlice.QueryDailySourceWatermarkAsync(
+                                posmContext,
+                                requiredHBSalesContext,
+                                targetDate
+                            );
                     var sourceWatermarkToCompare = deferHBSalesStabilityToBatchEnd
                         ? prePosmSourceWatermark
                         : preSourceWatermark;
@@ -222,6 +249,8 @@ namespace BlazorApp.Api.Services
                 validateExecutionOwnershipAsync
             );
             logger.LogInformation("2025 Runner product build 完成: {Date}, {ElapsedMilliseconds}ms", targetDate, productBuildStopwatch.ElapsedMilliseconds);
+            return persistResult ?? throw new InvalidOperationException(
+                $"2025 原子统计未返回批次 fence: {targetDate:yyyy-MM-dd}");
         }
         catch (Exception ex)
         {
@@ -245,12 +274,13 @@ namespace BlazorApp.Api.Services
         DateTime? effectiveSourceWatermark,
         Exception originalException,
         Guid? expectedJobId = null,
-        Func<Task>? validateExecutionOwnershipAsync = null
+        Func<Task>? validateExecutionOwnershipAsync = null,
+        ProductStoreDailyBatchFence? expectedBatchFence = null
     )
     {
         try
         {
-            // 主统计事务已回滚或尚未开始；此处独立事务保证两类 Failed 状态成对提交。
+            // 主统计事务已回滚或尚未开始；此处独立事务保证商品、分店及两类供应商 Failed 状态成对提交。
             await SalesStatisticsTransactionExecutor.ExecuteAsync(
                 beginAsync: () => context.Db.Ado.BeginTranAsync(),
                 workAsync: async () =>
@@ -261,6 +291,23 @@ namespace BlazorApp.Api.Services
                         expectedJobId);
                     if (validateExecutionOwnershipAsync != null)
                         await validateExecutionOwnershipAsync();
+                    if (expectedBatchFence != null)
+                    {
+                        var states = await context.Db.Queryable<SalesStatisticRefreshState>()
+                            .Where(state =>
+                                state.Date >= targetDate.Date
+                                && state.Date < targetDate.Date.AddDays(1)
+                                && (state.StatisticType == SalesStatisticType.ProductStoreDaily
+                                    || state.StatisticType == SalesStatisticType.StoreSales
+                                    || state.StatisticType == SalesStatisticType.AustralianSupplierStoreSales
+                                    || state.StatisticType == SalesStatisticType.ChinaSupplierStoreSales))
+                            .With(SqlWith.UpdLock)
+                            .ToListAsync();
+                        SalesStatisticsProductStoreDailyBatchFenceOperations.Validate(
+                            states,
+                            expectedBatchFence,
+                            ProvisionalFreshStatus);
+                    }
                     await SalesStatisticsProductStoreDailyStateSlice.UpsertProductStatisticStateAsync(
                         context,
                         targetDate,
@@ -280,11 +327,29 @@ namespace BlazorApp.Api.Services
                         originalException.Message,
                         overwriteLastSourceUploadTime: true
                     );
+                    await SalesStatisticsProductStoreDailyStateSlice.UpsertStatisticStateAsync(
+                        context,
+                        SalesStatisticType.AustralianSupplierStoreSales,
+                        targetDate,
+                        SalesStatisticRefreshStatus.Failed,
+                        effectiveSourceWatermark,
+                        originalException.Message,
+                        overwriteLastSourceUploadTime: true
+                    );
+                    await SalesStatisticsProductStoreDailyStateSlice.UpsertStatisticStateAsync(
+                        context,
+                        SalesStatisticType.ChinaSupplierStoreSales,
+                        targetDate,
+                        SalesStatisticRefreshStatus.Failed,
+                        effectiveSourceWatermark,
+                        originalException.Message,
+                        overwriteLastSourceUploadTime: true
+                    );
                 },
                 commitAsync: () => context.Db.Ado.CommitTranAsync(),
                 rollbackAsync: () => context.Db.Ado.RollbackTranAsync(),
                 logger: logger,
-                operationName: "2025 双表统计失败状态写入"
+                operationName: "2025 四类统计失败状态写入"
             );
         }
         catch (Exception stateException)

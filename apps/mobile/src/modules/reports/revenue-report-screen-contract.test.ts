@@ -29,7 +29,7 @@ assert.match(
 );
 assert.match(
   source,
-  /const cashierStoreScopeVersion = cashierStoreOptionsQuery\.dataUpdatedAt;[\s\S]*?\["reports", "revenue-summary", cashierStoreScopeVersion, queryParams\]/,
+  /const cashierStoreScopeVersion = cashierStoreOptionsQuery\.dataUpdatedAt;[\s\S]*?\["reports", "revenue-summary", accountIdentity, cashierStoreScopeVersion, queryParams\]/,
   "即使白名单内容未变，每次权威回读也必须用新 revision 自动刷新营业额数据",
 );
 assert.match(
@@ -256,12 +256,12 @@ assert.match(
 );
 assert.match(
   screenSource,
-  /lastCompleteSummaryRef[\s\S]*?summaryQuery\.data\.isComplete[\s\S]*?lastCompleteSummaryRef\.current\s*=/,
+  /if \(!reportScopeValid \|\| summaryQuery\.isError[\s\S]*?if \(!summaryQuery\.data\.isComplete\)[\s\S]*?saveCompleteReportSnapshot\(/,
   "营业额排行必须只保存已确认完整的快照",
 );
 assert.match(
   screenSource,
-  /summaryQuery\.data\?\.isComplete[\s\S]*?summaryQuery\.data\.rows[\s\S]*?lastCompleteSummaryRef\.current\?\.queryKey === summaryQueryKey/,
+  /getReportSnapshotDisplay\([\s\S]*?getCompleteReportSnapshot\(completeSummarySnapshotsRef, summarySnapshotKey\)[\s\S]*?snapshot\.isComplete \? snapshot\.rows : undefined,[\s\S]*?reportScopeValid/,
   "补算未完成时只能保留同查询上一次完整排行，不能展示本次部分快照",
 );
 assert.doesNotMatch(

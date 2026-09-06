@@ -377,6 +377,7 @@ namespace BlazorApp.Api.Data
                 EnsureLocalSupplierImageBaseUrlColumn();
                 EnsureStoreContactEmailColumn();
                 EnsureSalesStatisticRefreshStateJobColumns();
+                EnsureSupplierStatisticColumns();
                 EnsureInvoiceEmailConfigurationMultiAccountSchema();
                 EnsureContainerDetailSchemaColumns();
                 EnsureDomesticSetTemplateEnabledSupplierNameUniqueIndex();
@@ -877,6 +878,26 @@ namespace BlazorApp.Api.Data
             EnsureColumn(tableName, "RequestedAtUtc", "datetime2", "timestamp", "datetime");
             EnsureColumn(tableName, "StartedAtUtc", "datetime2", "timestamp", "datetime");
             EnsureColumn(tableName, "CompletedAtUtc", "datetime2", "timestamp", "datetime");
+            EnsureColumn(tableName, "SourceProductVersion", "nvarchar(64)", "varchar(64)", "varchar(64)");
+        }
+
+        private void EnsureSupplierStatisticColumns()
+        {
+            foreach (var entityType in new[]
+                     {
+                         typeof(AustralianSupplierStoreSalesDetail),
+                         typeof(ChinaSupplierStoreSalesDetail),
+                     })
+            {
+                var tableName = _db.EntityMaintenance.GetTableName(entityType);
+                if (!IsKnownTable(tableName))
+                    continue;
+                EnsureColumn(tableName, "TotalCost", "decimal(18, 4)", "numeric(18, 4)", "decimal(18, 4)");
+                EnsureColumn(tableName, "GrossProfit", "decimal(18, 4)", "numeric(18, 4)", "decimal(18, 4)");
+                EnsureColumn(tableName, "StatisticRowCount", "int", "integer", "integer");
+                EnsureColumn(tableName, "CostedRowCount", "int", "integer", "integer");
+                EnsureColumn(tableName, "GrossProfitRowCount", "int", "integer", "integer");
+            }
         }
 
         private void EnsureInvoiceEmailConfigurationMultiAccountSchema()

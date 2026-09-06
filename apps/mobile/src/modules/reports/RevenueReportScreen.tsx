@@ -64,10 +64,20 @@ import {
   type ReportLoadPerformanceMeasurement,
 } from "@/modules/reports/report-load-performance";
 import {
+  createReportSnapshotKey,
+  formatReportSnapshotTime,
+  getCompleteReportSnapshot,
+  getReportSnapshotDisplay,
+  isReportScopeValid,
+  saveCompleteReportSnapshot,
+  type CompleteReportSnapshot,
+} from "@/modules/reports/report-snapshot";
+import {
   getCashierEnabledStoreCodes,
   getCashierScopedBranchCodes,
 } from "@/modules/reports/cashier-enabled-store-scope";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
+import { useAuthStore } from "@/store/auth-store";
 
 type Drilldown =
   | { type: "hourly"; branch: BranchRevenueRow }
@@ -336,6 +346,9 @@ export function RevenueReportScreen({
   const { t } = useAppTranslation("common");
   const insets = useSafeAreaInsets();
   const queryClient = useQueryClient();
+  const accountIdentity = useAuthStore((state) => state.isAuthenticated
+    ? state.user?.userGuid || state.user?.userGUID || ""
+    : "");
   const revenueLoadTimer = useRef(new ReportLoadPerformanceTimer()).current;
   const revenueLoadQueryKeyRef = useRef<readonly unknown[] | null>(null);
   const revenueRequestGenerationRef = useRef(0);
@@ -346,10 +359,13 @@ export function RevenueReportScreen({
   const detailLoadTypeRef = useRef<Drilldown["type"] | null>(null);
   const detailPhysicalRowVisibleRef = useRef(false);
   const detailPhysicalPresentationReadyRef = useRef(false);
-  const lastCompleteSummaryRef = useRef<{
-    queryKey: readonly unknown[];
-    rows: BranchRevenueRow[];
-  } | null>(null);
+  const completeSummarySnapshotsRef = useRef(
+    new Map<string, CompleteReportSnapshot<BranchRevenueRow[]>>(),
+  ).current;
+  const completeDetailSnapshotsRef = useRef(
+    new Map<string, CompleteReportSnapshot<DetailRow[]>>(),
+  ).current;
+  const previousRevenueScopeCodesRef = useRef("");
   const summaryViewabilityConfig = useRef({
     itemVisiblePercentThreshold: 50,
     minimumViewTime: 16,
@@ -381,20 +397,23 @@ export function RevenueReportScreen({
   );
 
   const cashierStoreOptionsQuery = useQuery({
-    queryKey: ["reports", "cashier-enabled-stores"],
+    queryKey: ["reports", "cashier-enabled-stores", accountIdentity],
     queryFn: ({ signal }) => fetchProductReportStoreOptions({ signal }),
     ...REPORT_QUERY_OPTIONS,
+    enabled: Boolean(accountIdentity),
   });
   const cashierEnabledStoreCodes = useMemo(
     () => getCashierEnabledStoreCodes(cashierStoreOptionsQuery.data ?? []),
     [cashierStoreOptionsQuery.data],
   );
   const cashierStoreScopeVersion = cashierStoreOptionsQuery.dataUpdatedAt;
+  const reportScopeValid = isReportScopeValid(accountIdentity, cashierStoreOptionsQuery, cashierEnabledStoreCodes);
   const revenuePeriodAvailable = isRevenuePeriodAvailable(period, dateBounds);
   const cashierStoreScopeEmpty =
     cashierStoreOptionsQuery.isSuccess && cashierEnabledStoreCodes.length === 0;
   const summaryQueryEnabled =
-    revenuePeriodAvailable
+    reportScopeValid
+    && revenuePeriodAvailable
     && cashierStoreOptionsQuery.isSuccess
     && !cashierStoreOptionsQuery.isFetching
     && cashierEnabledStoreCodes.length > 0;
@@ -415,8 +434,22 @@ export function RevenueReportScreen({
     [cashierEnabledStoreCodes, period],
   );
   const summaryQueryKey = useMemo(
-    () => ["reports", "revenue-summary", cashierStoreScopeVersion, queryParams] as const,
-    [cashierStoreScopeVersion, queryParams],
+    () => ["reports", "revenue-summary", accountIdentity, cashierStoreScopeVersion, queryParams] as const,
+    [accountIdentity, cashierStoreScopeVersion, queryParams],
+  );
+  const summarySnapshotKey = useMemo(
+    () => createReportSnapshotKey({
+      accountIdentity,
+      tab: "revenue",
+      period: period.mode,
+      startDate: queryParams.startDate,
+      endDate: queryParams.endDate,
+      compareStartDate: queryParams.compareStartDate,
+      compareEndDate: queryParams.compareEndDate,
+      compareMode: queryParams.compareMode,
+      branchCodes: queryParams.branchCodes ?? [],
+    }),
+    [accountIdentity, period.mode, queryParams],
   );
   const summaryQuery = useQuery({
     queryKey: summaryQueryKey,
@@ -462,6 +495,31 @@ export function RevenueReportScreen({
     enabled: summaryQueryEnabled,
     ...REPORT_QUERY_OPTIONS,
   });
+  useLayoutEffect(() => {
+    const scopeFingerprint = JSON.stringify([accountIdentity, cashierEnabledStoreCodes]);
+    if (previousRevenueScopeCodesRef.current !== ""
+      && previousRevenueScopeCodesRef.current !== scopeFingerprint) {
+      // 收银授权范围变化或身份切换后，旧分店数据不可继续下钻或显示。
+      completeSummarySnapshotsRef.clear();
+      completeDetailSnapshotsRef.clear();
+      setDrilldown(null);
+    }
+    previousRevenueScopeCodesRef.current = scopeFingerprint;
+    if (!reportScopeValid) {
+      completeSummarySnapshotsRef.clear();
+      completeDetailSnapshotsRef.clear();
+      setDrilldown(null);
+    }
+  }, [
+    accountIdentity,
+    reportScopeValid,
+    cashierStoreOptionsQuery.isError,
+    cashierStoreOptionsQuery.isSuccess,
+    cashierEnabledStoreCodes,
+    cashierStoreScopeVersion,
+    completeDetailSnapshotsRef,
+    completeSummarySnapshotsRef,
+  ]);
   useLayoutEffect(() => {
     if (revenueLoadQueryKeyRef.current !== summaryQueryKey) {
       revenueLoadQueryKeyRef.current = summaryQueryKey;
@@ -535,17 +593,26 @@ export function RevenueReportScreen({
   ).current;
 
   useLayoutEffect(() => {
-    if (summaryQuery.data === undefined) return;
+    if (!reportScopeValid || summaryQuery.isError || summaryQuery.data === undefined) return;
+    // React Query 在重新请求时会暂留上一份 data；它不能提前结束本次新请求的计时。
+    if (summaryQuery.isFetching) return;
     if (!summaryQuery.data.isComplete) {
       // 有界追数仍未完成时明确结束本次样本，避免性能会话悬挂或把部分快照记为成功。
       revenueLoadTimer.fail();
       return;
     }
-    // 只保留已经确认完整的排行；同 key 刷新不完整时可以继续显示这份可信快照。
-    lastCompleteSummaryRef.current = {
-      queryKey: summaryQueryKey,
-      rows: summaryQuery.data.rows,
-    };
+    // 三组营业额视图共用同一份完整快照；刷新中的半包络不会覆盖它。
+    if (!summaryQuery.isFetching) {
+      saveCompleteReportSnapshot(
+        completeSummarySnapshotsRef,
+        summarySnapshotKey,
+        summaryQuery.data.rows,
+        {
+          statisticUpdatedAt: summaryQuery.data.statisticUpdatedAt,
+          cacheVersion: summaryQuery.data.cacheVersion,
+        },
+      );
+    }
     revenueLoadTimer.markDataNormalized();
     if (summaryQuery.data.rows.length === 0) {
       // 最终完整空快照没有“首条业务数据”，结束会话但不伪造成功事件。
@@ -554,10 +621,15 @@ export function RevenueReportScreen({
     }
     completeRevenueLoad();
   }, [
+    reportScopeValid,
     completeRevenueLoad,
+    completeSummarySnapshotsRef,
     revenueLoadTimer,
     summaryQuery.data,
     summaryQuery.dataUpdatedAt,
+    summaryQuery.isFetching,
+    summaryQuery.isError,
+    summarySnapshotKey,
     summaryQueryKey,
   ]);
 
@@ -573,13 +645,29 @@ export function RevenueReportScreen({
     [detailBranchCodes, period]
   );
   const detailQueryEnabled =
-    Boolean(drilldown)
+    reportScopeValid
+    && Boolean(drilldown)
     && cashierStoreOptionsQuery.isSuccess
     && !cashierStoreOptionsQuery.isFetching
     && detailBranchCodes.length > 0;
   const detailQueryKey = useMemo(
-    () => ["reports", drilldown?.type, cashierStoreScopeVersion, detailParams] as const,
-    [cashierStoreScopeVersion, detailParams, drilldown?.type],
+    () => ["reports", drilldown?.type, accountIdentity, cashierStoreScopeVersion, detailParams] as const,
+    [accountIdentity, cashierStoreScopeVersion, detailParams, drilldown?.type],
+  );
+  const detailSnapshotKey = useMemo(
+    () => createReportSnapshotKey({
+      accountIdentity,
+      tab: "revenue",
+      detail: drilldown?.type ?? "",
+      period: period.mode,
+      startDate: detailParams.startDate,
+      endDate: detailParams.endDate,
+      compareStartDate: detailParams.compareStartDate,
+      compareEndDate: detailParams.compareEndDate,
+      compareMode: detailParams.compareMode,
+      branchCodes: detailParams.branchCodes ?? [],
+    }),
+    [accountIdentity, detailParams, drilldown?.type, period.mode],
   );
   const detailQuery = useQuery<RevenueDetailSnapshot<DetailRow>>({
     queryKey: detailQueryKey,
@@ -761,12 +849,13 @@ export function RevenueReportScreen({
     period.startDate === previousShortcutPeriod.startDate && period.endDate === previousShortcutPeriod.endDate;
 
   const rows = useMemo(() => {
-    if (summaryLoading || summaryError) return [];
-    if (summaryQuery.data?.isComplete) return summaryQuery.data.rows;
-    return lastCompleteSummaryRef.current?.queryKey === summaryQueryKey
-      ? lastCompleteSummaryRef.current.rows
-      : [];
-  }, [summaryError, summaryLoading, summaryQuery.data, summaryQueryKey]);
+    return getReportSnapshotDisplay(
+      summaryQuery,
+      getCompleteReportSnapshot(completeSummarySnapshotsRef, summarySnapshotKey),
+      (snapshot) => snapshot.isComplete ? snapshot.rows : undefined,
+      reportScopeValid,
+    ) ?? [];
+  }, [completeSummarySnapshotsRef, reportScopeValid, summaryQuery, summarySnapshotKey]);
   const summaryPending = summaryQuery.data !== undefined && !summaryQuery.data.isComplete;
   const summaryPollingExhausted = summaryPending && Boolean(summaryQuery.data?.pollingExhausted);
   const selectedBranch = useMemo(
@@ -793,19 +882,30 @@ export function RevenueReportScreen({
       `${row.branchName} ${row.branchCode}`.toLocaleLowerCase().includes(search),
     );
   }, [branchSearch, scopedRows]);
-  // 详情表仅渲染明确完整的统计包络；半成品、裸数组和缺元数据都会收敛为空状态。
-  const detailRows = detailQuery.data?.isComplete ? detailQuery.data.rows : [];
+  // 半成品或失败刷新只替换状态，不覆盖同条件下最后一份完整明细。
+  const detailSnapshot = reportScopeValid ? getCompleteReportSnapshot(completeDetailSnapshotsRef, detailSnapshotKey) : undefined;
+  const completeDetailRows = detailQuery.data?.isComplete ? detailQuery.data.rows : [];
+  const detailRows = getReportSnapshotDisplay(
+    detailQuery,
+    detailSnapshot,
+    (snapshot) => snapshot.isComplete ? completeDetailRows : undefined,
+    reportScopeValid,
+  ) ?? [];
+  const detailShowingSnapshot = detailSnapshot !== undefined
+    && (detailQuery.isFetching || !detailQuery.data?.isComplete || detailQuery.isError);
   const detailPending = detailQuery.data !== undefined && !detailQuery.data.isComplete;
   const detailPollingExhausted = detailPending && Boolean(detailQuery.data?.pollingExhausted);
   useLayoutEffect(() => {
     if (
-      !drilldown
+      !reportScopeValid
+      || !drilldown
       || detailQuery.data === undefined
       || detailQuery.isFetching
       || detailLoadQueryKeyRef.current !== detailQueryKey
     ) return;
     if (detailQuery.isError) {
-      // 错误态会隐藏旧缓存行；物理可见状态必须同步归零，供同 key 重试恢复。
+      // 有旧完整快照时保留物理行可见状态；没有快照才进入空错误态。
+      if (detailRows.length > 0) return;
       detailPhysicalRowVisibleRef.current = false;
       detailLoadGate.setFirstRowVisible(false);
       return;
@@ -823,8 +923,20 @@ export function RevenueReportScreen({
       detailLoadGate.cancel();
       return;
     }
-    recordDetailMeasurement(detailLoadGate.markDataNormalized());
+    if (!detailQuery.isFetching) {
+      saveCompleteReportSnapshot(
+        completeDetailSnapshotsRef,
+        detailSnapshotKey,
+        detailQuery.data.rows,
+        {
+          statisticUpdatedAt: detailQuery.data.statisticUpdatedAt,
+          cacheVersion: detailQuery.data.cacheVersion,
+        },
+      );
+      recordDetailMeasurement(detailLoadGate.markDataNormalized());
+    }
   }, [
+    reportScopeValid,
     detailLoadGate,
     detailQuery.data,
     detailQuery.dataUpdatedAt,
@@ -832,6 +944,8 @@ export function RevenueReportScreen({
     detailQuery.isFetching,
     detailQueryKey,
     detailRows.length,
+    completeDetailSnapshotsRef,
+    detailSnapshotKey,
     drilldown,
     recordDetailMeasurement,
   ]);
@@ -1078,7 +1192,9 @@ export function RevenueReportScreen({
               </Text>
               <View style={styles.rankingActions}>
                 <Text variant="bodySmall" style={[styles.muted, styles.rankingStatusText]} numberOfLines={1}>
-                  {summaryLoading
+                  {summaryRefreshing
+                    ? t("reports.states.refreshingStatistics")
+                    : summaryLoading
                     ? t("loading")
                     : summaryPending
                     ? t(summaryPollingExhausted
@@ -1086,6 +1202,15 @@ export function RevenueReportScreen({
                         : "reports.states.refreshingStatistics")
                     : `${t("reports.branchCount", { count: visibleRows.length })} · ${t("reports.metrics.revenue")} ↓`}
                 </Text>
+                {completeSummarySnapshotsRef.has(summarySnapshotKey) && (summaryRefreshing || summaryError || summaryPending) ? (
+                  <Text variant="labelSmall" style={styles.snapshotNotice}>
+                    {t("reports.states.showingSnapshot", {
+                      time: formatReportSnapshotTime(
+                        completeSummarySnapshotsRef.get(summarySnapshotKey)?.statisticUpdatedAt ?? null,
+                      ) ?? t("reports.freshness.noSuccess"),
+                    })}
+                  </Text>
+                ) : null}
                 {summaryPollingExhausted && summaryQueryEnabled && !summaryError ? (
                   <IconButton
                     icon="refresh"
@@ -1132,11 +1257,11 @@ export function RevenueReportScreen({
         refreshControl={<RefreshControl refreshing={summaryRefreshing} onRefresh={refresh} />}
         ListFooterComponent={
           <>
-            {summaryLoading ? (
+            {summaryLoading && rows.length === 0 ? (
               <View style={styles.summaryTableState}>
                 <StateBox label={t("loading")} loading />
               </View>
-            ) : summaryError ? (
+            ) : summaryError && rows.length === 0 ? (
               <View style={styles.summaryTableState}>
                 <StateBox label={t("reports.states.errorTitle")} actionLabel={t("actions.retry")} onAction={retrySummary} />
               </View>
@@ -1144,7 +1269,7 @@ export function RevenueReportScreen({
               <View style={styles.summaryTableState}>
                 <StateBox label={t("reports.states.noCashierEnabledStores")} />
               </View>
-            ) : summaryPending ? (
+            ) : summaryPending && rows.length === 0 ? (
               <View style={styles.summaryTableState}>
                 <StateBox
                   label={t(summaryPollingExhausted
@@ -1236,11 +1361,11 @@ export function RevenueReportScreen({
                 <TableText numeric style={styles.headerText}>{t("reports.metrics.averageTransaction")}</TableText>
               </View>
             </View>
-            {detailQuery.isLoading ? (
+            {detailQuery.isLoading && detailRows.length === 0 ? (
               <StateBox label={t("loading")} loading />
-            ) : detailQuery.isError ? (
+            ) : detailQuery.isError && detailRows.length === 0 ? (
               <StateBox label={t("reports.states.errorTitle")} actionLabel={t("actions.retry")} onAction={retryDetail} />
-            ) : detailPending ? (
+            ) : detailPending && detailRows.length === 0 ? (
               <StateBox
                 label={t(detailPollingExhausted
                   ? "reports.states.statisticsIncomplete"
@@ -1251,7 +1376,16 @@ export function RevenueReportScreen({
             ) : detailRows.length === 0 ? (
               <StateBox label={t("reports.states.empty")} />
             ) : (
-              <FlatList
+              <>
+                {detailShowingSnapshot ? (
+                  <Text variant="labelSmall" style={styles.snapshotNotice}>
+                    {t("reports.states.showingSnapshot", {
+                      time: formatReportSnapshotTime(detailSnapshot?.statisticUpdatedAt ?? null)
+                        ?? t("reports.freshness.noSuccess"),
+                    })}
+                  </Text>
+                ) : null}
+                <FlatList
                 data={detailRows}
                 keyExtractor={(item) => item.id}
                 renderItem={({ item, index }) => renderDetailRow(item, index)}
@@ -1262,7 +1396,8 @@ export function RevenueReportScreen({
                 onViewableItemsChanged={onDetailViewableItemsChanged}
                 bounces={false}
                 style={styles.modalList}
-              />
+                />
+              </>
             )}
           </View>
         </Modal>
@@ -1419,6 +1554,10 @@ const styles = StyleSheet.create({
   positiveText: {
     color: "#16A34A",
     fontWeight: "700",
+  },
+  snapshotNotice: {
+    color: "#B45309",
+    marginTop: 2,
   },
   sectionTitle: {
     color: "#111827",

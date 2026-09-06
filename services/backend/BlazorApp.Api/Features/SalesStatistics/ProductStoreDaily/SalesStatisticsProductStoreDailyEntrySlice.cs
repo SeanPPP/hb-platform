@@ -158,7 +158,7 @@ namespace BlazorApp.Api.Services
     /// 使用既有批量快照刷新单个 2025 日期。提交状态先标记为 ProvisionalFresh，
     /// 必须由 Runner 的批末签名复核后再显式升级为 Fresh。
     /// </summary>
-    public async Task Update2025StoreAndProductStatisticsFromBatchSnapshotAsync(
+    public async Task<ProductStoreDailyBatchFence> Update2025StoreAndProductStatisticsFromBatchSnapshotAsync(
         DateTime date,
         HBSales2025BatchSnapshot snapshot
     )
@@ -181,7 +181,7 @@ namespace BlazorApp.Api.Services
             posmSnapshot.Signature.Payments.RowCount,
             posmSnapshot.Signature.SalesReturns.RowCount
         );
-        await _productRefresh.Update2025StoreAndProductStatisticsAtomically(
+        return await _productRefresh.Update2025StoreAndProductStatisticsAtomically(
             _context,
             _posmContext,
             GetHBSalesContextFor2025(targetDate),
@@ -198,9 +198,10 @@ namespace BlazorApp.Api.Services
     /// <summary>
     /// 批末签名一致后，把一日双状态从 ProvisionalFresh 成对提升为 Fresh。
     /// </summary>
-    public async Task Finalize2025BatchSnapshotDateAsync(DateTime date)
+    public async Task Finalize2025BatchSnapshotDateAsync(ProductStoreDailyBatchFence expectedFence)
     {
-        var targetDate = date.Date;
+        ArgumentNullException.ThrowIfNull(expectedFence);
+        var targetDate = expectedFence.Date.Date;
         await SalesStatisticsTransactionExecutor.ExecuteAsync(
             beginAsync: () => _context.Db.Ado.BeginTranAsync(),
             workAsync: async () =>
@@ -210,35 +211,22 @@ namespace BlazorApp.Api.Services
                         state.Date >= targetDate
                         && state.Date < targetDate.AddDays(1)
                         && (state.StatisticType == SalesStatisticType.ProductStoreDaily
-                            || state.StatisticType == SalesStatisticType.StoreSales)
+                            || state.StatisticType == SalesStatisticType.StoreSales
+                            || state.StatisticType == SalesStatisticType.AustralianSupplierStoreSales
+                            || state.StatisticType == SalesStatisticType.ChinaSupplierStoreSales)
                     )
+                    .With(SqlWith.UpdLock)
                     .ToListAsync();
-                var productState = states.FirstOrDefault(state =>
-                    state.StatisticType == SalesStatisticType.ProductStoreDaily
-                );
-                var storeState = states.FirstOrDefault(state =>
-                    state.StatisticType == SalesStatisticType.StoreSales
-                );
-                if (productState?.Status != ProvisionalFreshStatus
-                    || storeState?.Status != ProvisionalFreshStatus
-                    || productState.LastSourceUploadTime != storeState.LastSourceUploadTime)
-                {
-                    throw new InvalidOperationException(
-                        $"批末复核前双状态不是成对 ProvisionalFresh: {targetDate:yyyy-MM-dd}"
-                    );
-                }
-
+                SalesStatisticsProductStoreDailyBatchFenceOperations.Validate(states, expectedFence, ProvisionalFreshStatus);
                 // 批末确认只升级状态，不重写水位；水位仍精确绑定到预载快照和 POSM pre/post 复核。
-                productState.Status = SalesStatisticRefreshStatus.Fresh;
-                productState.ErrorMessage = null;
-                productState.LastCheckedAtUtc = DateTime.UtcNow;
-                productState.CompletedAtUtc = DateTime.UtcNow;
-                storeState.Status = SalesStatisticRefreshStatus.Fresh;
-                storeState.ErrorMessage = null;
-                storeState.LastCheckedAtUtc = DateTime.UtcNow;
-                storeState.CompletedAtUtc = DateTime.UtcNow;
-                await _context.Db.Updateable(productState).ExecuteCommandAsync();
-                await _context.Db.Updateable(storeState).ExecuteCommandAsync();
+                foreach (var state in states)
+                {
+                    state.Status = SalesStatisticRefreshStatus.Fresh;
+                    state.ErrorMessage = null;
+                    state.LastCheckedAtUtc = DateTime.UtcNow;
+                    state.CompletedAtUtc = DateTime.UtcNow;
+                    await _context.Db.Updateable(state).ExecuteCommandAsync();
+                }
             },
             commitAsync: () => _context.Db.Ado.CommitTranAsync(),
             rollbackAsync: () => _context.Db.Ado.RollbackTranAsync(),
@@ -251,26 +239,30 @@ namespace BlazorApp.Api.Services
     /// 批末签名不一致时使指定日期不能作为可跳过的 Fresh 断点继续使用。
     /// </summary>
     public Task Fail2025BatchSnapshotDatesAsync(
-        IReadOnlyCollection<DateTime> dates,
+        IReadOnlyCollection<ProductStoreDailyBatchFence> fences,
         string errorMessage
     )
     {
-        return Fail2025BatchSnapshotDatesSequentiallyAsync(dates, errorMessage);
+        return Fail2025BatchSnapshotDatesSequentiallyAsync(fences, errorMessage);
     }
 
     internal async Task Fail2025BatchSnapshotDatesSequentiallyAsync(
-        IReadOnlyCollection<DateTime> dates,
+        IReadOnlyCollection<ProductStoreDailyBatchFence> fences,
         string errorMessage
     )
     {
-        foreach (var date in dates.Select(date => date.Date).Distinct().OrderBy(date => date))
+        foreach (var fence in fences.OrderBy(item => item.Date))
         {
+            var sourceWatermark = fence.States
+                .Single(state => state.StatisticType == SalesStatisticType.ProductStoreDaily)
+                .LastSourceUploadTime;
             await _productRefresh.Persist2025AtomicFailureStatesAsync(
                 _context,
                 _logger,
-                date,
-                null,
-                new InvalidOperationException(errorMessage)
+                fence.Date,
+                sourceWatermark,
+                new InvalidOperationException(errorMessage),
+                expectedBatchFence: fence
             );
         }
     }

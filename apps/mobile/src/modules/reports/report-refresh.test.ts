@@ -30,7 +30,7 @@ assert.equal(revenueOptions.predicate({ queryKey: ["reports", "revenue-summary"]
 
 const revenueScopeOptions = getReportStoreScopeRefreshQueryOptions("revenue");
 assert.deepEqual(revenueScopeOptions.queryKey, ["reports", "cashier-enabled-stores"]);
-assert.equal(revenueScopeOptions.exact, true);
+assert.equal(revenueScopeOptions.exact, false);
 assert.equal(revenueScopeOptions.type, "active");
 
 const productOptions = getReportRefreshQueryOptions("product");
@@ -42,7 +42,7 @@ assert.equal(productOptions.predicate({ queryKey: ["reports", "revenue-summary"]
 
 const productScopeOptions = getReportStoreScopeRefreshQueryOptions("product");
 assert.deepEqual(productScopeOptions.queryKey, ["product-report", "stores"]);
-assert.equal(productScopeOptions.exact, true);
+assert.equal(productScopeOptions.exact, false);
 assert.equal(productScopeOptions.type, "active");
 
 async function run() {
@@ -93,7 +93,7 @@ async function run() {
   const scopeQueryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  const scopeQueryKey = ["reports", "cashier-enabled-stores"] as const;
+  const scopeQueryKey = ["reports", "cashier-enabled-stores", "account-A"] as const;
   const scopeCodes = ["1001"] as const;
   let scopeRequestCount = 0;
   let releaseScopeRevalidation: (() => void) | undefined;
@@ -144,11 +144,29 @@ async function run() {
   });
   assert.equal(scopedRevenueRequestCount, 1, "初始活跃范围只应发起一次营业额请求");
 
-  const scopeRevalidation = scopeObserver.refetch();
+  let inactiveAccountReads = 0;
+  await scopeQueryClient.fetchQuery({
+    queryKey: ["reports", "cashier-enabled-stores", "account-B"],
+    queryFn: async () => { inactiveAccountReads++; return ["1002"]; },
+  });
+  let productScopeReads = 0;
+  const productScopeObserver = new QueryObserver(scopeQueryClient, {
+    queryKey: ["product-report", "stores", "account-A"],
+    queryFn: async () => { productScopeReads++; return ["1001"]; },
+    staleTime: Infinity,
+  });
+  const unsubscribeProductScope = productScopeObserver.subscribe(() => undefined);
+  await waitFor(() => productScopeReads === 1, "对照商品范围应完成初次请求");
+  const scopeRevalidation = scopeQueryClient.refetchQueries(
+    getReportStoreScopeRefreshQueryOptions("revenue"), reportRefetchOptions,
+  );
   await waitFor(
     () => scopeRequestCount === 2 && scopeObserver.getCurrentResult().isFetching,
     "收银启用范围重验必须真实处于 in-flight 状态",
   );
+  assert.equal(inactiveAccountReads, 1, "刷新不能唤醒旧账号的非活跃范围查询");
+  assert.equal(productScopeReads, 1, "营业额刷新不能重验商品页签的范围");
+  unsubscribeProductScope();
   scopedRevenueObserver.setOptions({
     queryKey: scopedRevenueQueryKey,
     queryFn: async () => {
