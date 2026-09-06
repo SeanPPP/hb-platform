@@ -225,6 +225,39 @@ public sealed class RemoteMaintenanceServiceTests
         Assert.Equal(0, fixture.Downloader.VerifiedCount);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Registration_timeout_reports_registration_failure_and_preserves_cleanup(bool recovering)
+    {
+        using var fixture = new Fixture();
+        fixture.Launcher.InstallWritesId = true;
+        fixture.Launcher.InstallRustDeskInstalled = true;
+        fixture.Launcher.InstallStatusAgentInstalled = true;
+        fixture.Api.CommitFailure = new TaskCanceledException("HTTP timeout");
+        if (recovering)
+        {
+            await fixture.WriteStateAsync(fixture.State(Guid.NewGuid(),
+                RemoteMaintenanceOperationState.InstalledPendingCommit, "rustdesk-123", null));
+        }
+
+        var result = await fixture.Service.InstallAsync(fixture.Session);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("settings.remoteMaintenance.result.registrationFailed", result.Message);
+        Assert.DoesNotContain("configure", fixture.Launcher.Stages);
+        if (!recovering)
+        {
+            var cleanup = Assert.Single(fixture.Launcher.FailClosedRequests);
+            Assert.True(cleanup.RustDeskInstalled);
+            Assert.True(cleanup.StatusAgentInstalled);
+        }
+        else
+        {
+            Assert.Empty(fixture.Launcher.Stages);
+        }
+    }
+
     private sealed class RecordingProgress(List<RemoteMaintenanceStage> stages) : IProgress<RemoteMaintenanceStage>
     {
         public void Report(RemoteMaintenanceStage value) => stages.Add(value);
@@ -299,6 +332,7 @@ public sealed class RemoteMaintenanceServiceTests
 
         public sealed class FakeApi : IRemoteMaintenanceApiClient
         {
+            public Exception? CommitFailure { get; set; }
             public List<Guid> PreparedOperations { get; } = [];
             public List<Guid> CommittedOperations { get; } = [];
             public List<string> CommittedPasswords { get; } = [];
@@ -314,6 +348,7 @@ public sealed class RemoteMaintenanceServiceTests
                 CommittedOperations.Add(request.OperationId);
                 CommittedPasswords.Add(request.Password);
                 CommittedRustdeskIds.Add(request.RustdeskId);
+                if (CommitFailure is not null) throw CommitFailure;
                 return Task.FromResult(new RemoteMaintenanceCommitResponse(Guid.NewGuid(), "monitor-token", "https://example.test/heartbeat"));
             }
         }

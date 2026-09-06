@@ -247,18 +247,19 @@ public sealed class RemoteMaintenanceService(
                 "settings.remoteMaintenance.result.configured",
                 new RemoteMaintenanceStatus(true, rustdeskId, prepare.ArtifactManifest.RustDesk.Version, "running"));
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested &&
-            stage is RemoteMaintenanceStage.Preparing or RemoteMaintenanceStage.DownloadingRustDesk or RemoteMaintenanceStage.DownloadingStatusAgent)
-        {
-            // HTTP 超时不等于用户取消，保留当前阶段供用户重试。
-            return new RemoteMaintenanceProvisionResult(false, FailureMessage(stage), await GetSafeStatusAsync());
-        }
         catch (OperationCanceledException)
         {
             if (installation is not null && operationId != Guid.Empty)
             {
                 try { await uacHelperLauncher.RunAsync(_helperPath, _journalPath, operationId, "fail-closed", CancellationToken.None); }
                 catch { /* 取消也不能把未提交的无人值守服务静默留下，helper 失败由下一次恢复读取 journal。 */ }
+            }
+            // HTTP 超时不等于用户取消；登记超时仍先停用本次已安装的服务，再提示恢复。
+            if (!cancellationToken.IsCancellationRequested &&
+                stage is RemoteMaintenanceStage.Preparing or RemoteMaintenanceStage.DownloadingRustDesk or
+                    RemoteMaintenanceStage.DownloadingStatusAgent or RemoteMaintenanceStage.Registering)
+            {
+                return new RemoteMaintenanceProvisionResult(false, FailureMessage(stage), await GetSafeStatusAsync());
             }
             throw;
         }
