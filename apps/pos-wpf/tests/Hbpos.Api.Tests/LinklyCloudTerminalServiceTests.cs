@@ -1,12 +1,40 @@
 using System.Net;
+using BlazorApp.Shared.Security;
 using Hbpos.Api.Services;
 using Hbpos.Contracts.Linkly;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Options;
+using SqlSugar;
 
 namespace Hbpos.Api.Tests;
 
 public sealed class LinklyCloudTerminalServiceTests
 {
+    [Fact]
+    public void Sql_repository_datetime_parameters_preserve_datetime2_precision()
+    {
+        var value = new DateTime(2026, 9, 6, 3, 57, 54, 558, DateTimeKind.Utc)
+            .AddTicks(8675);
+        var sqlSugar = new SqlSugarClient(new ConnectionConfig
+        {
+            DbType = SqlSugar.DbType.SqlServer,
+            ConnectionString = "Server=127.0.0.1,1;Database=NoConnect;Connect Timeout=1"
+        });
+
+        var parameter = SqlSugarLinklyCloudTerminalRepository.DateTime2Parameter("@At", value);
+        var converted = Assert.IsType<SqlParameter>(
+            Assert.Single(sqlSugar.Ado.ToIDbDataParameter(new[] { parameter })));
+        var defaultConverted = Assert.IsType<SqlParameter>(
+            Assert.Single(sqlSugar.Ado.ToIDbDataParameter(
+                new[] { new SugarParameter("@DefaultAt", value) })));
+
+        Assert.Equal(System.Data.DbType.DateTime2, parameter.DbType);
+        Assert.Equal(value, parameter.Value);
+        Assert.Equal(System.Data.SqlDbType.DateTime2, converted.SqlDbType);
+        Assert.Equal(System.Data.SqlDbType.DateTime, defaultConverted.SqlDbType);
+        Assert.NotEqual(value, new System.Data.SqlTypes.SqlDateTime(value).Value);
+    }
+
     [Fact]
     public void Sql_repository_readiness_fences_require_current_credential_version()
     {
@@ -41,6 +69,27 @@ public sealed class LinklyCloudTerminalServiceTests
         var terminalIndex = sql.IndexOf("POSM_LinklyCloudTerminal", StringComparison.OrdinalIgnoreCase);
         var selectionIndex = sql.IndexOf("POSM_LinklyCloudDeviceSelection", StringComparison.OrdinalIgnoreCase);
         Assert.True(sessionIndex >= 0 && terminalIndex > sessionIndex && selectionIndex > terminalIndex);
+    }
+
+    [Fact]
+    public void Sql_repository_selection_insert_uses_opaque_js_safe_revision()
+    {
+        var sql = SqlSugarLinklyCloudTerminalRepository.UpsertSelectionSql;
+
+        Assert.Contains("@NewRevision", sql, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(
+            "@TerminalId, 1, @UpdatedAt",
+            sql,
+            StringComparison.OrdinalIgnoreCase);
+
+        var revisions = Enumerable.Range(0, 16)
+            .Select(_ => LinklyCloudSelectionRevision.CreateInitial())
+            .ToArray();
+        Assert.All(revisions, revision =>
+        {
+            Assert.InRange(revision, 2, LinklyCloudSelectionRevision.MaxJsSafeRevision);
+        });
+        Assert.Equal(revisions.Length, revisions.Distinct().Count());
     }
 
     [Theory]
@@ -628,17 +677,17 @@ public sealed class LinklyCloudTerminalServiceTests
                 StoreCode = "S01",
                 DeviceCode = "POS-01",
                 TerminalId = terminalId,
-                Revision = 8
+                Revision = LinklyCloudSelectionRevision.CreateInitial()
             }
         };
         var service = CreateService(repository);
 
         await Assert.ThrowsAsync<LinklyCloudTerminalSelectionConflictException>(() =>
             service.ResolvePaymentTerminalAsync(
-                "Production", "S01", "POS-01", terminalId, 7, CancellationToken.None));
+                "Production", "S01", "POS-01", terminalId, 1, CancellationToken.None));
 
         var resolved = await service.ResolvePaymentTerminalAsync(
-            "Production", "S01", "POS-01", terminalId, 8, CancellationToken.None);
+            "Production", "S01", "POS-01", terminalId, repository.Selection.Revision, CancellationToken.None);
 
         Assert.NotNull(resolved);
         Assert.Equal(terminalId, resolved.Terminal.TerminalId);

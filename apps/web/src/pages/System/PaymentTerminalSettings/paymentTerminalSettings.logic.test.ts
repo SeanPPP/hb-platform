@@ -162,8 +162,34 @@ const activationBase = {
 assertEqual(canActivateLinklyConfiguration(activationBase), true, 'ready terminal and complete selections can activate')
 assertEqual(
   canActivateLinklyConfiguration({ ...activationBase, devices: [{ ...activationBase.devices[0], terminalId: null }] }),
+  true,
+  'enabled devices using other connection methods do not need a Cloud selection',
+)
+assertEqual(
+  canActivateLinklyConfiguration({
+    ...activationBase,
+    devices: [activationBase.devices[0], { ...activationBase.devices[0], deviceCode: 'POS-LOCAL', terminalId: null }],
+  }),
+  true,
+  'Cloud and non-Cloud POS devices can coexist during activation',
+)
+assertEqual(
+  canActivateLinklyConfiguration({ ...activationBase, terminals: [] }),
   false,
-  'enabled device without selection blocks activation',
+  'activation still requires a ready Cloud terminal',
+)
+assertEqual(
+  canActivateLinklyConfiguration({
+    ...activationBase,
+    devices: [{ ...activationBase.devices[0], terminalId: 'unpaired-terminal' }],
+  }),
+  false,
+  'a selected terminal must still be ready',
+)
+assertEqual(
+  canActivateLinklyConfiguration({ ...activationBase, mode: 'Active' }),
+  false,
+  'an active configuration cannot be activated again',
 )
 assertEqual(
   canActivateLinklyConfiguration({

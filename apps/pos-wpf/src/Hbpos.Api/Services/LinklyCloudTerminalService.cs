@@ -1006,7 +1006,7 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
 
             INSERT INTO [dbo].[POSM_LinklyCloudDeviceSelection]
                 ([Environment], [StoreCode], [DeviceCode], [TerminalId], [Revision], [UpdatedAt], [UpdatedBy])
-            VALUES (@Environment, @StoreCode, @DeviceCode, @TerminalId, 1, @UpdatedAt, @UpdatedBy);
+            VALUES (@Environment, @StoreCode, @DeviceCode, @TerminalId, @NewRevision, @UpdatedAt, @UpdatedBy);
         END;
         COMMIT TRANSACTION;
         """;
@@ -1403,6 +1403,9 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
     {
         try
         {
+            var newRevision = expectedRevision is null or 0
+                ? LinklyCloudSelectionRevision.CreateInitial()
+                : 0;
             await dbContext.PosmDb.Ado.ExecuteCommandAsync(
                 UpsertSelectionSql,
                 new SugarParameter("@Environment", environment),
@@ -1410,7 +1413,8 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
                 new SugarParameter("@DeviceCode", deviceCode),
                 new SugarParameter("@TerminalId", terminalId),
                 new SugarParameter("@ExpectedRevision", expectedRevision),
-                new SugarParameter("@UpdatedAt", updatedAt),
+                new SugarParameter("@NewRevision", newRevision),
+                DateTime2Parameter("@UpdatedAt", updatedAt),
                 new SugarParameter("@UpdatedBy", updatedBy));
         }
         catch (Exception ex) when (IsTerminalAssignmentViolation(ex))
@@ -1468,9 +1472,9 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
             new SugarParameter("@StoreCode", storeCode),
             new SugarParameter("@TerminalId", terminalId),
             new SugarParameter("@PairingAttemptId", pairingAttemptId),
-            new SugarParameter("@PairingLeaseExpiresAt", pairingLeaseExpiresAt),
-            new SugarParameter("@ExpectedUpdatedAt", expectedUpdatedAt),
-            new SugarParameter("@UpdatedAt", updatedAt),
+            DateTime2Parameter("@PairingLeaseExpiresAt", pairingLeaseExpiresAt),
+            DateTime2Parameter("@ExpectedUpdatedAt", expectedUpdatedAt),
+            DateTime2Parameter("@UpdatedAt", updatedAt),
             new SugarParameter("@UpdatedBy", updatedBy));
         return stored is null ? null : MaterializeRuntimeTerminalWithLogging(stored);
     }
@@ -1542,13 +1546,13 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
                 "@CredentialProtectionVersion",
                 LinklyCloudTerminalCredentialDataProtection.CurrentVersion),
             new SugarParameter("@PosId", posId),
-            new SugarParameter("@UpdatedAt", updatedAt),
+            DateTime2Parameter("@UpdatedAt", updatedAt),
             new SugarParameter("@UpdatedBy", updatedBy),
             new SugarParameter("@Environment", environment),
             new SugarParameter("@StoreCode", storeCode),
             new SugarParameter("@TerminalId", terminalId),
             new SugarParameter("@ExpectedPairingAttemptId", expectedPairingAttemptId),
-            new SugarParameter("@ExpectedUpdatedAt", expectedUpdatedAt));
+            DateTime2Parameter("@ExpectedUpdatedAt", expectedUpdatedAt));
         if (updated is null)
         {
             throw new LinklyCloudTerminalPairingConflictException();
@@ -1576,10 +1580,10 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
             new SugarParameter("@DeviceCode", deviceCode),
             new SugarParameter("@TerminalId", terminalId),
             new SugarParameter("@ExpectedSelectionRevision", expectedSelectionRevision),
-            new SugarParameter("@ExpectedTerminalUpdatedAt", expectedTerminalUpdatedAt),
+            DateTime2Parameter("@ExpectedTerminalUpdatedAt", expectedTerminalUpdatedAt),
             new SugarParameter("@OperationLeaseId", operationLeaseId),
-            new SugarParameter("@OperationLeaseExpiresAt", operationLeaseExpiresAt),
-            new SugarParameter("@Now", now));
+            DateTime2Parameter("@OperationLeaseExpiresAt", operationLeaseExpiresAt),
+            DateTime2Parameter("@Now", now));
         return result?.Acquired == true;
     }
 
@@ -1645,9 +1649,9 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
             new SugarParameter("@Environment", environment),
             new SugarParameter("@StoreCode", storeCode),
             new SugarParameter("@TerminalId", terminalId),
-            new SugarParameter("@ExpectedTerminalUpdatedAt", expectedTerminalUpdatedAt),
+            DateTime2Parameter("@ExpectedTerminalUpdatedAt", expectedTerminalUpdatedAt),
             new SugarParameter("@HealthStatus", healthStatus),
-            new SugarParameter("@CheckedAt", checkedAt));
+            DateTime2Parameter("@CheckedAt", checkedAt));
         return affected == 1;
     }
 
@@ -1665,5 +1669,9 @@ public sealed class SqlSugarLinklyCloudTerminalRepository(
     {
         public string? DisplayName { get; set; }
     }
+
+    // DATETIME2(7) 需要显式绑定；默认 datetime 会舍入时间戳，破坏终端配置的 CAS。
+    internal static SugarParameter DateTime2Parameter(string name, DateTime value) =>
+        new(name, value) { DbType = System.Data.DbType.DateTime2 };
 
 }
