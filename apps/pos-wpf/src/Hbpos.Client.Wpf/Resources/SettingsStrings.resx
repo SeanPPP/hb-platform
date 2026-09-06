@@ -267,7 +267,20 @@
   <data name="settings.remoteMaintenance.install" xml:space="preserve"><value>Install remote maintenance</value></data>
   <data name="settings.remoteMaintenance.restore" xml:space="preserve"><value>Check and restore</value></data>
   <data name="settings.remoteMaintenance.localStatus" xml:space="preserve"><value>Local service status</value></data>
-  <data name="settings.remoteMaintenance.installHint" xml:space="preserve"><value>Windows administrator approval (UAC) is required. Once configured, the services run in the background without interrupting checkout.</value></data>
+  <data name="settings.remoteMaintenance.installHint" xml:space="preserve"><value>Downloads and verifies the required programs in the background, then requests Windows administrator approval (UAC). Once configured, the services run independently in the background.</value></data>
+  <data name="settings.remoteMaintenance.progress.preparing" xml:space="preserve"><value>Getting remote maintenance installation details. Please wait…</value></data>
+  <data name="settings.remoteMaintenance.progress.downloadingRustDesk" xml:space="preserve"><value>Downloading and verifying RustDesk in the background (1/2)…</value></data>
+  <data name="settings.remoteMaintenance.progress.downloadingStatusAgent" xml:space="preserve"><value>Downloading and verifying the status service in the background (2/2)…</value></data>
+  <data name="settings.remoteMaintenance.progress.downloadedInstalling" xml:space="preserve"><value>Required programs downloaded and verified. Requesting Windows approval and installing. Select Yes in the approval window.</value></data>
+  <data name="settings.remoteMaintenance.progress.registering" xml:space="preserve"><value>Programs installed. Registering this device for remote maintenance…</value></data>
+  <data name="settings.remoteMaintenance.progress.configuring" xml:space="preserve"><value>Configuring and starting the status service. Select Yes if Windows requests approval.</value></data>
+  <data name="settings.remoteMaintenance.result.preparationFailed" xml:space="preserve"><value>Could not get remote maintenance installation details. Check your connection or contact an administrator, then retry.</value></data>
+  <data name="settings.remoteMaintenance.result.downloadFailed" xml:space="preserve"><value>The remote maintenance download did not complete. Check your connection and retry.</value></data>
+  <data name="settings.remoteMaintenance.result.downloadVerificationFailed" xml:space="preserve"><value>Downloaded files failed verification. Installation was stopped. Please retry the download.</value></data>
+  <data name="settings.remoteMaintenance.result.installationFailed" xml:space="preserve"><value>Required programs downloaded and verified, but installation did not complete. Check the POS installation folder and Windows installation permissions, then retry.</value></data>
+  <data name="settings.remoteMaintenance.result.registrationFailed" xml:space="preserve"><value>Programs installed, but device registration did not complete. Check your connection and retry recovery.</value></data>
+  <data name="settings.remoteMaintenance.result.uacCanceled" xml:space="preserve"><value>Windows installation approval was canceled. Retry and select Yes in the approval window.</value></data>
+  <data name="settings.remoteMaintenance.result.componentsMissing" xml:space="preserve"><value>POS is missing remote maintenance installation components. Repair it using the complete POS installer and retry.</value></data>
   <data name="settings.remoteMaintenance.status.notInstalled" xml:space="preserve"><value>Not installed</value></data>
   <data name="settings.remoteMaintenance.status.running" xml:space="preserve"><value>Running</value></data>
   <data name="settings.remoteMaintenance.status.starting" xml:space="preserve"><value>Starting</value></data>

@@ -31,7 +31,8 @@ public sealed class WindowsRemoteMaintenanceUacHelperLauncher : IRemoteMaintenan
                 WindowStyle = ProcessWindowStyle.Hidden
             }
         };
-        process.Start();
+        // ShellExecute 可能等待 UAC 决策；放到工作线程，保持下载完成提示与界面可刷新。
+        await Task.Run(() => process.Start(), cancellationToken);
         await process.WaitForExitAsync(cancellationToken);
         return process.ExitCode;
     }
