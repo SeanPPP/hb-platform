@@ -434,6 +434,11 @@ public sealed class CardPaymentRecoveryService(
         LocalCardPaymentAttempt refundAttempt,
         CancellationToken cancellationToken)
     {
+        if (IsFinalFailureAwaitingAcknowledgement(refundAttempt))
+        {
+            return await RetryFinalFailureAcknowledgementAsync(settings, refundAttempt, cancellationToken);
+        }
+
         if (string.Equals(
                 refundAttempt.ResponseCode,
                 CardRefundSupervisorResolutionCodes.ConfirmedRefunded,
@@ -530,6 +535,11 @@ public sealed class CardPaymentRecoveryService(
         LocalCardPaymentAttempt attempt,
         CancellationToken cancellationToken)
     {
+        if (IsFinalFailureAwaitingAcknowledgement(attempt))
+        {
+            return await RetryFinalFailureAcknowledgementAsync(settings, attempt, cancellationToken);
+        }
+
         if (IsHistoricalSupervisorNotPaidAwaitingAcknowledgement(attempt))
         {
             return await ReplayHistoricalSupervisorNotPaidAcknowledgementAsync(
@@ -1058,6 +1068,12 @@ public sealed class CardPaymentRecoveryService(
                 mode,
                 attempt,
                 cancellationToken);
+        }
+
+        // 已落库失败的收尾只重试 ack，必须在终态门禁和任何重新查询/草稿恢复之前处理。
+        if (IsFinalFailureAwaitingAcknowledgement(attempt))
+        {
+            return await RetryFinalFailureAcknowledgementAsync(settings, attempt, cancellationToken);
         }
 
         // 定点恢复必须先在 MarkRecovering 前拒绝真正终态，避免重复进入恢复并覆盖已落库结果。
@@ -4000,6 +4016,37 @@ public sealed class CardPaymentRecoveryService(
             "CardRecovery",
             $"recover acknowledge retry attemptGuid={attempt.AttemptGuid} sessionId={LogValue(attempt.SessionId)} txnRef={LogValue(attempt.TxnRef)}");
         await TryAcknowledgeAsync(settings, attempt, attempt.SessionId!, attempt.TxnRef, cancellationToken);
+    }
+
+    private static bool IsFinalFailureAwaitingAcknowledgement(LocalCardPaymentAttempt attempt) =>
+        string.Equals(attempt.Processor, nameof(CardProcessorKind.Linkly), StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(attempt.ConnectionMode, nameof(LinklyConnectionMode.CloudBackendAsync), StringComparison.OrdinalIgnoreCase) &&
+        attempt.OperationKind is "Sale" or "Refund" &&
+        attempt.Status is LocalCardPaymentAttemptStatus.Declined or LocalCardPaymentAttemptStatus.Cancelled or
+            LocalCardPaymentAttemptStatus.Failed or LocalCardPaymentAttemptStatus.TimedOut &&
+        attempt.CompletedAt is not null &&
+        attempt.AcknowledgedAt is null &&
+        !string.IsNullOrWhiteSpace(attempt.SessionId) &&
+        attempt.RecoveryPhase == CardRecoveryPhases.None &&
+        !(attempt.ResponseCode?.StartsWith("SUPERVISOR_", StringComparison.Ordinal) ?? false);
+
+    private async Task<CardPaymentRecoveryResult> RetryFinalFailureAcknowledgementAsync(
+        CardTerminalSettings settings,
+        LocalCardPaymentAttempt attempt,
+        CancellationToken cancellationToken)
+    {
+        // 失败事实已完成本地提交；只释放原 session，不重新查询、扣款/退款或发布购物车草稿。
+        var acknowledged = await TryAcknowledgeAsync(
+            settings, attempt, attempt.SessionId!, attempt.TxnRef, cancellationToken);
+        LogRecoveryResult(settings, attempt, null,
+            acknowledged ? CardPaymentRecoveryOutcome.None : CardPaymentRecoveryOutcome.Unknown,
+            acknowledged ? "final-failure-acknowledged" : "final-failure-ack-pending");
+        return acknowledged
+            ? CardPaymentRecoveryResult.None
+            : new CardPaymentRecoveryResult(
+                CardPaymentRecoveryOutcome.Unknown,
+                T("cardRecovery.linkly.activeSessionAcknowledgeFailed", "The previous Linkly result was confirmed, but POS could not clear it with Linkly. Try recovery again or ask a supervisor before charging again."),
+                DialogDetails: BuildDialogDetails(attempt));
     }
 
     private async Task<bool> TryPersistAcknowledgedMarkerAsync(
