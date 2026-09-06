@@ -530,6 +530,20 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     private RemoteMaintenanceStatus? _remoteMaintenanceStatus;
 
+    private string? _remoteMaintenanceProgressKey;
+    private bool _isRemoteMaintenanceInstalling;
+
+    public string RemoteMaintenanceProgressText => _remoteMaintenanceProgressKey is null
+        ? string.Empty : T(_remoteMaintenanceProgressKey);
+
+    public bool HasRemoteMaintenanceProgress => _remoteMaintenanceProgressKey is not null;
+
+    public bool IsRemoteMaintenanceInstalling
+    {
+        get => _isRemoteMaintenanceInstalling;
+        private set => SetProperty(ref _isRemoteMaintenanceInstalling, value);
+    }
+
     public bool IsDebugTestSalesDataResetVisible
     {
         get
@@ -1585,14 +1599,58 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
         await RunBusyAsync(async () =>
         {
-            var result = await _remoteMaintenanceService.InstallAsync(Session);
-            _remoteMaintenanceStatus = result.Status;
-            SetStatus(result.Message);
-            OnPropertyChanged(nameof(IsRemoteMaintenanceConfigured));
-            OnPropertyChanged(nameof(RemoteMaintenanceActionText));
-            OnPropertyChanged(nameof(RemoteMaintenanceStatusText));
-            OnPropertyChanged(nameof(RemoteMaintenanceDetailText));
+            IsRemoteMaintenanceInstalling = true;
+            var acceptingProgress = true;
+            SetRemoteMaintenanceProgress("settings.remoteMaintenance.progress.preparing");
+            // Progress 在 WPF UI 上下文回调；结束后忽略已排队的旧阶段，避免覆盖最终结果。
+            var progress = new Progress<RemoteMaintenanceStage>(stage =>
+            {
+                if (!acceptingProgress) return;
+                SetRemoteMaintenanceProgress(stage switch
+                {
+                    RemoteMaintenanceStage.DownloadingRustDesk => "settings.remoteMaintenance.progress.downloadingRustDesk",
+                    RemoteMaintenanceStage.DownloadingStatusAgent => "settings.remoteMaintenance.progress.downloadingStatusAgent",
+                    RemoteMaintenanceStage.DownloadedInstalling => "settings.remoteMaintenance.progress.downloadedInstalling",
+                    RemoteMaintenanceStage.Registering => "settings.remoteMaintenance.progress.registering",
+                    RemoteMaintenanceStage.Configuring => "settings.remoteMaintenance.progress.configuring",
+                    _ => "settings.remoteMaintenance.progress.preparing"
+                });
+            });
+            try
+            {
+                var result = await _remoteMaintenanceService.InstallAsync(Session, progress: progress);
+                acceptingProgress = false;
+                _remoteMaintenanceStatus = result.Status;
+                SetRemoteMaintenanceProgress(result.Message);
+                OnPropertyChanged(nameof(IsRemoteMaintenanceConfigured));
+                OnPropertyChanged(nameof(RemoteMaintenanceActionText));
+                OnPropertyChanged(nameof(RemoteMaintenanceStatusText));
+                OnPropertyChanged(nameof(RemoteMaintenanceDetailText));
+            }
+            catch (OperationCanceledException)
+            {
+                acceptingProgress = false;
+                SetRemoteMaintenanceProgress("settings.status.operationCanceled");
+            }
+            catch
+            {
+                acceptingProgress = false;
+                SetRemoteMaintenanceProgress("settings.remoteMaintenance.result.configurationFailed");
+            }
+            finally
+            {
+                acceptingProgress = false;
+                IsRemoteMaintenanceInstalling = false;
+            }
         }, "install remote maintenance");
+    }
+
+    private void SetRemoteMaintenanceProgress(string key)
+    {
+        _remoteMaintenanceProgressKey = key;
+        OnPropertyChanged(nameof(RemoteMaintenanceProgressText));
+        OnPropertyChanged(nameof(HasRemoteMaintenanceProgress));
+        SetStatus(key);
     }
 
     private void ReturnToPos()
@@ -1682,6 +1740,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(RemoteMaintenanceStatusText));
         OnPropertyChanged(nameof(RemoteMaintenanceDetailText));
         OnPropertyChanged(nameof(SquareTitleText));
+        OnPropertyChanged(nameof(RemoteMaintenanceProgressText));
         OnPropertyChanged(nameof(LinklyTitleText));
         RaiseActivePaymentProviderProperties();
         OnPropertyChanged(nameof(LinklyCloudSecretStatusText));

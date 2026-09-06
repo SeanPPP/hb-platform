@@ -267,7 +267,20 @@
   <data name="settings.remoteMaintenance.install" xml:space="preserve"><value>安装远程维护</value></data>
   <data name="settings.remoteMaintenance.restore" xml:space="preserve"><value>检查并恢复</value></data>
   <data name="settings.remoteMaintenance.localStatus" xml:space="preserve"><value>本机服务状态</value></data>
-  <data name="settings.remoteMaintenance.installHint" xml:space="preserve"><value>安装需要 Windows 管理员授权（UAC）；配置完成后服务在后台独立运行，不影响收银。</value></data>
+  <data name="settings.remoteMaintenance.installHint" xml:space="preserve"><value>点击后将在后台下载并校验所需程序，下载完成后提示 Windows 管理员授权（UAC）。配置完成后服务在后台独立运行。</value></data>
+  <data name="settings.remoteMaintenance.progress.preparing" xml:space="preserve"><value>正在获取远程维护安装信息，请稍候…</value></data>
+  <data name="settings.remoteMaintenance.progress.downloadingRustDesk" xml:space="preserve"><value>正在后台下载并校验 RustDesk（1/2）…</value></data>
+  <data name="settings.remoteMaintenance.progress.downloadingStatusAgent" xml:space="preserve"><value>正在后台下载并校验状态服务（2/2）…</value></data>
+  <data name="settings.remoteMaintenance.progress.downloadedInstalling" xml:space="preserve"><value>所需程序已下载完成并通过校验。正在请求 Windows 授权并安装，请在授权窗口中选择“是”。</value></data>
+  <data name="settings.remoteMaintenance.progress.registering" xml:space="preserve"><value>程序已安装，正在登记远程维护设备…</value></data>
+  <data name="settings.remoteMaintenance.progress.configuring" xml:space="preserve"><value>正在配置并启动状态服务；若出现 Windows 授权窗口，请选择“是”。</value></data>
+  <data name="settings.remoteMaintenance.result.preparationFailed" xml:space="preserve"><value>未能获取远程维护安装信息，请检查网络或联系管理员后重试。</value></data>
+  <data name="settings.remoteMaintenance.result.downloadFailed" xml:space="preserve"><value>远程维护程序下载未完成，请检查网络后重试。</value></data>
+  <data name="settings.remoteMaintenance.result.downloadVerificationFailed" xml:space="preserve"><value>下载文件校验未通过，已停止安装，请重试下载。</value></data>
+  <data name="settings.remoteMaintenance.result.installationFailed" xml:space="preserve"><value>所需程序已下载并通过校验，但安装未完成。请检查 POS 安装目录和 Windows 安装权限后重试。</value></data>
+  <data name="settings.remoteMaintenance.result.registrationFailed" xml:space="preserve"><value>程序已安装，但设备登记未完成。请检查网络后重试恢复。</value></data>
+  <data name="settings.remoteMaintenance.result.uacCanceled" xml:space="preserve"><value>Windows 安装授权已取消。请重试，并在授权窗口中选择“是”。</value></data>
+  <data name="settings.remoteMaintenance.result.componentsMissing" xml:space="preserve"><value>POS 缺少远程维护安装组件，请使用完整 POS 安装包修复后重试。</value></data>
   <data name="settings.remoteMaintenance.status.notInstalled" xml:space="preserve"><value>未安装</value></data>
   <data name="settings.remoteMaintenance.status.running" xml:space="preserve"><value>运行中</value></data>
   <data name="settings.remoteMaintenance.status.starting" xml:space="preserve"><value>正在启动</value></data>

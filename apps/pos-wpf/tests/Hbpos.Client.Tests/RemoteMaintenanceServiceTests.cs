@@ -93,7 +93,7 @@ public sealed class RemoteMaintenanceServiceTests
         var result = await fixture.Service.InstallAsync(fixture.Session);
 
         Assert.False(result.Succeeded);
-        Assert.Equal("settings.remoteMaintenance.result.configurationFailed", result.Message);
+        Assert.Equal("settings.remoteMaintenance.result.installationFailed", result.Message);
         var cleanup = Assert.Single(fixture.Launcher.FailClosedRequests);
         Assert.False(cleanup.RustDeskInstalled);
         Assert.False(cleanup.StatusAgentInstalled);
@@ -109,10 +109,158 @@ public sealed class RemoteMaintenanceServiceTests
         var result = await fixture.Service.InstallAsync(fixture.Session);
 
         Assert.False(result.Succeeded);
-        Assert.Equal("settings.remoteMaintenance.result.configurationFailed", result.Message);
+        Assert.Equal("settings.remoteMaintenance.result.installationFailed", result.Message);
         var cleanup = Assert.Single(fixture.Launcher.FailClosedRequests);
         Assert.True(cleanup.RustDeskInstalled);
         Assert.False(cleanup.StatusAgentInstalled);
+    }
+
+    [Fact]
+    public async Task Download_success_is_reported_only_after_both_files_verify_and_before_uac()
+    {
+        using var fixture = new Fixture();
+        fixture.Launcher.InstallWritesId = true;
+        var stages = new List<RemoteMaintenanceStage>();
+        fixture.Downloader.BeforeDownload = artifact =>
+        {
+            Assert.DoesNotContain(RemoteMaintenanceStage.DownloadedInstalling, stages);
+            Assert.Empty(fixture.Launcher.Stages);
+            Assert.Equal(artifact.FileName == "rustdesk.exe"
+                ? RemoteMaintenanceStage.DownloadingRustDesk : RemoteMaintenanceStage.DownloadingStatusAgent, stages.Last());
+        };
+        fixture.Launcher.BeforeStage = stage =>
+        {
+            if (stage == "install")
+            {
+                Assert.Equal(2, fixture.Downloader.VerifiedCount);
+                Assert.Equal(RemoteMaintenanceStage.DownloadedInstalling, stages.Last());
+            }
+        };
+
+        var result = await fixture.Service.InstallAsync(fixture.Session, progress: new RecordingProgress(stages));
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(new[]
+        {
+            RemoteMaintenanceStage.Preparing, RemoteMaintenanceStage.DownloadingRustDesk,
+            RemoteMaintenanceStage.DownloadingStatusAgent, RemoteMaintenanceStage.DownloadedInstalling,
+            RemoteMaintenanceStage.Registering, RemoteMaintenanceStage.Configuring
+        }, stages);
+    }
+
+    [Theory]
+    [InlineData("rustdesk.exe", false)]
+    [InlineData("agent.exe", false)]
+    [InlineData("agent.exe", true)]
+    public async Task Failed_download_never_reports_success_or_launches_uac(string fileName, bool verificationFailure)
+    {
+        using var fixture = new Fixture();
+        var stages = new List<RemoteMaintenanceStage>();
+        fixture.Downloader.BeforeDownload = artifact =>
+        {
+            if (artifact.FileName != fileName) return;
+            if (verificationFailure) throw new InvalidDataException("private download details");
+            throw new HttpRequestException("private download details");
+        };
+
+        var result = await fixture.Service.InstallAsync(fixture.Session, progress: new RecordingProgress(stages));
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(verificationFailure ? "settings.remoteMaintenance.result.downloadVerificationFailed"
+            : "settings.remoteMaintenance.result.downloadFailed", result.Message);
+        Assert.DoesNotContain(RemoteMaintenanceStage.DownloadedInstalling, stages);
+        Assert.Empty(fixture.Launcher.Stages);
+        Assert.Empty(fixture.Api.CommittedOperations);
+    }
+
+    [Fact]
+    public async Task Download_timeout_is_reported_as_download_failure()
+    {
+        using var fixture = new Fixture();
+        fixture.Downloader.BeforeDownload = _ => throw new TaskCanceledException("HTTP timeout");
+
+        var result = await fixture.Service.InstallAsync(fixture.Session);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("settings.remoteMaintenance.result.downloadFailed", result.Message);
+        Assert.Empty(fixture.Launcher.Stages);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Helper_launch_failure_distinguishes_uac_cancellation_from_missing_components(bool canceled)
+    {
+        using var fixture = new Fixture();
+        fixture.Launcher.BeforeStage = stage =>
+        {
+            if (stage != "install") return;
+            if (canceled) throw new System.ComponentModel.Win32Exception(1223);
+            throw new FileNotFoundException("private helper path");
+        };
+
+        var result = await fixture.Service.InstallAsync(fixture.Session);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(canceled ? "settings.remoteMaintenance.result.uacCanceled"
+            : "settings.remoteMaintenance.result.componentsMissing", result.Message);
+        Assert.Empty(fixture.Api.CommittedOperations);
+    }
+
+    [Theory]
+    [InlineData(RemoteMaintenanceOperationState.InstalledPendingCommit)]
+    [InlineData(RemoteMaintenanceOperationState.Committed)]
+    public async Task Recovery_reports_its_stage_without_claiming_a_new_download(RemoteMaintenanceOperationState state)
+    {
+        using var fixture = new Fixture();
+        var stages = new List<RemoteMaintenanceStage>();
+        await fixture.WriteStateAsync(fixture.State(Guid.NewGuid(), state, "rustdesk-123",
+            state == RemoteMaintenanceOperationState.Committed ? fixture.Protect("monitor-token") : null));
+
+        var result = await fixture.Service.InstallAsync(fixture.Session, progress: new RecordingProgress(stages));
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(RemoteMaintenanceStage.Configuring, stages.Last());
+        Assert.DoesNotContain(RemoteMaintenanceStage.DownloadedInstalling, stages);
+        Assert.Equal(0, fixture.Downloader.VerifiedCount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Registration_timeout_reports_registration_failure_and_preserves_cleanup(bool recovering)
+    {
+        using var fixture = new Fixture();
+        fixture.Launcher.InstallWritesId = true;
+        fixture.Launcher.InstallRustDeskInstalled = true;
+        fixture.Launcher.InstallStatusAgentInstalled = true;
+        fixture.Api.CommitFailure = new TaskCanceledException("HTTP timeout");
+        if (recovering)
+        {
+            await fixture.WriteStateAsync(fixture.State(Guid.NewGuid(),
+                RemoteMaintenanceOperationState.InstalledPendingCommit, "rustdesk-123", null));
+        }
+
+        var result = await fixture.Service.InstallAsync(fixture.Session);
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("settings.remoteMaintenance.result.registrationFailed", result.Message);
+        Assert.DoesNotContain("configure", fixture.Launcher.Stages);
+        if (!recovering)
+        {
+            var cleanup = Assert.Single(fixture.Launcher.FailClosedRequests);
+            Assert.True(cleanup.RustDeskInstalled);
+            Assert.True(cleanup.StatusAgentInstalled);
+        }
+        else
+        {
+            Assert.Empty(fixture.Launcher.Stages);
+        }
+    }
+
+    private sealed class RecordingProgress(List<RemoteMaintenanceStage> stages) : IProgress<RemoteMaintenanceStage>
+    {
+        public void Report(RemoteMaintenanceStage value) => stages.Add(value);
     }
 
     private sealed class Fixture : IDisposable
@@ -184,6 +332,7 @@ public sealed class RemoteMaintenanceServiceTests
 
         public sealed class FakeApi : IRemoteMaintenanceApiClient
         {
+            public Exception? CommitFailure { get; set; }
             public List<Guid> PreparedOperations { get; } = [];
             public List<Guid> CommittedOperations { get; } = [];
             public List<string> CommittedPasswords { get; } = [];
@@ -199,17 +348,22 @@ public sealed class RemoteMaintenanceServiceTests
                 CommittedOperations.Add(request.OperationId);
                 CommittedPasswords.Add(request.Password);
                 CommittedRustdeskIds.Add(request.RustdeskId);
+                if (CommitFailure is not null) throw CommitFailure;
                 return Task.FromResult(new RemoteMaintenanceCommitResponse(Guid.NewGuid(), "monitor-token", "https://example.test/heartbeat"));
             }
         }
 
         public sealed class FakeDownloader : IRemoteMaintenanceArtifactDownloader
         {
+            public Action<RemoteMaintenanceArtifact>? BeforeDownload { get; set; }
+            public int VerifiedCount { get; private set; }
             public Task<string> DownloadAndVerifyAsync(RemoteMaintenanceArtifact artifact, string destinationDirectory, CancellationToken cancellationToken = default)
             {
+                BeforeDownload?.Invoke(artifact);
                 Directory.CreateDirectory(destinationDirectory);
                 var path = Path.Combine(destinationDirectory, artifact.FileName);
                 File.WriteAllBytes(path, [1]);
+                VerifiedCount++;
                 return Task.FromResult(path);
             }
         }
@@ -225,6 +379,7 @@ public sealed class RemoteMaintenanceServiceTests
 
         public sealed class FakeLauncher(RemoteMaintenanceJournal journal) : IRemoteMaintenanceUacHelperLauncher
         {
+            public Action<string>? BeforeStage { get; set; }
             public List<string> Stages { get; } = [];
             public List<Guid> OperationIds { get; } = [];
             public List<RemoteMaintenanceInstallationResult> FailClosedRequests { get; } = [];
@@ -237,6 +392,7 @@ public sealed class RemoteMaintenanceServiceTests
             {
                 Stages.Add(stage);
                 OperationIds.Add(operationId);
+                BeforeStage?.Invoke(stage);
                 if (stage == "install" && CancelInstall) throw new OperationCanceledException(cancellationToken);
                 if (stage == "fail-closed")
                 {

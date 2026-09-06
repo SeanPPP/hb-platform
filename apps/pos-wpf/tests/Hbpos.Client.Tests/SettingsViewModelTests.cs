@@ -2538,8 +2538,73 @@ public sealed class SettingsViewModelTests
             viewModel.StatusMessage);
     }
 
+    [Fact]
+    public async Task Remote_maintenance_shows_download_progress_and_keeps_final_result_after_late_callbacks()
+    {
+        var localization = new LocalizationService();
+        localization.SetCulture("zh-CN");
+        var completion = new TaskCompletionSource<RemoteMaintenanceProvisionResult>();
+        var remoteService = new FakeRemoteMaintenanceService { InstallHandler = _ => completion.Task };
+        using var viewModel = new SettingsViewModel(new FakeCardTerminalSetupService(), localization,
+            remoteMaintenanceService: remoteService);
+        var context = new RemoteMaintenanceUiContext();
+        var previous = SynchronizationContext.Current;
+        Task installTask;
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(context);
+            installTask = viewModel.InstallRemoteMaintenanceCommand.ExecuteAsync(null);
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+
+        Assert.True(viewModel.IsRemoteMaintenanceInstalling);
+        Assert.True(viewModel.HasRemoteMaintenanceProgress);
+        Assert.False(viewModel.InstallRemoteMaintenanceCommand.CanExecute(null));
+        remoteService.LastProgress!.Report(RemoteMaintenanceStage.DownloadingRustDesk);
+        context.RunQueued();
+        Assert.Contains("正在后台下载", viewModel.RemoteMaintenanceProgressText);
+        Assert.DoesNotContain("下载完成", viewModel.RemoteMaintenanceProgressText);
+
+        remoteService.LastProgress.Report(RemoteMaintenanceStage.DownloadedInstalling);
+        context.RunQueued();
+        Assert.Contains("已下载完成并通过校验", viewModel.RemoteMaintenanceProgressText);
+        Assert.Equal(viewModel.RemoteMaintenanceProgressText, viewModel.StatusMessage);
+
+        completion.SetResult(new RemoteMaintenanceProvisionResult(false,
+            "settings.remoteMaintenance.result.installationFailed", remoteService.Status));
+        context.RunQueued();
+        await installTask.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(viewModel.IsRemoteMaintenanceInstalling);
+        Assert.Contains("但安装未完成", viewModel.RemoteMaintenanceProgressText);
+
+        remoteService.LastProgress.Report(RemoteMaintenanceStage.DownloadingRustDesk);
+        context.RunQueued();
+        Assert.Contains("但安装未完成", viewModel.RemoteMaintenanceProgressText);
+        localization.SetCulture("en-US");
+        Assert.Contains("installation did not complete", viewModel.RemoteMaintenanceProgressText);
+        Assert.Equal(viewModel.RemoteMaintenanceProgressText, viewModel.StatusMessage);
+    }
+
+    private sealed class RemoteMaintenanceUiContext : SynchronizationContext
+    {
+        private readonly System.Collections.Concurrent.ConcurrentQueue<(SendOrPostCallback Callback, object? State)> _callbacks = new();
+        public override void Post(SendOrPostCallback callback, object? state) => _callbacks.Enqueue((callback, state));
+        public void RunQueued()
+        {
+            var previous = Current;
+            try
+            {
+                SetSynchronizationContext(this);
+                while (_callbacks.TryDequeue(out var item)) item.Callback(item.State);
+            }
+            finally { SetSynchronizationContext(previous); }
+        }
+    }
+
     private sealed class FakeRemoteMaintenanceService : IRemoteMaintenanceService
     {
+        public Func<IProgress<RemoteMaintenanceStage>?, Task<RemoteMaintenanceProvisionResult>>? InstallHandler { get; set; }
+        public IProgress<RemoteMaintenanceStage>? LastProgress { get; private set; }
         public RemoteMaintenanceStatus Status { get; set; } =
             new(false, string.Empty, string.Empty, "notInstalled");
 
@@ -2556,9 +2621,12 @@ public sealed class SettingsViewModelTests
 
         public Task<RemoteMaintenanceProvisionResult> InstallAsync(
             PosSessionState session,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            IProgress<RemoteMaintenanceStage>? progress = null)
         {
             InstallCallCount++;
+            LastProgress = progress;
+            if (InstallHandler is not null) return InstallHandler(progress);
             Status = InstallResult.Status;
             return Task.FromResult(InstallResult);
         }

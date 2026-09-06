@@ -2295,6 +2295,19 @@
                                             <TextBlock Text="{Binding RemoteMaintenanceActionText}" Foreground="White" />
                                         </StackPanel>
                                     </Button>
+                                    <StackPanel Margin="0,12,0,0"
+                                                Visibility="{Binding HasRemoteMaintenanceProgress, Converter={StaticResource BoolToVis}}">
+                                        <ProgressBar Height="4"
+                                                     IsIndeterminate="{Binding IsRemoteMaintenanceInstalling}"
+                                                     Visibility="{Binding IsRemoteMaintenanceInstalling, Converter={StaticResource BoolToVis}}"
+                                                     Margin="0,0,0,8" />
+                                        <TextBlock Text="{Binding RemoteMaintenanceProgressText}"
+                                                   FontSize="12"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{StaticResource PosTextBrush}"
+                                                   TextWrapping="Wrap"
+                                                   AutomationProperties.LiveSetting="Polite" />
+                                    </StackPanel>
                                     <TextBlock Text="{loc:Loc settings.remoteMaintenance.installHint}"
                                                FontSize="10"
                                                Foreground="{StaticResource PosMutedForegroundBrush}"

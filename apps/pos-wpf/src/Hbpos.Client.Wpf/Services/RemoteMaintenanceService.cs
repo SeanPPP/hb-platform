@@ -4,6 +4,16 @@ using Hbpos.RemoteMaintenance.Setup;
 
 namespace Hbpos.Client.Wpf.Services;
 
+public enum RemoteMaintenanceStage
+{
+    Preparing,
+    DownloadingRustDesk,
+    DownloadingStatusAgent,
+    DownloadedInstalling,
+    Registering,
+    Configuring
+}
+
 public sealed record RemoteMaintenanceProvisionResult(
     bool Succeeded,
     // 返回稳定的资源键，由界面按当前语言渲染；语言切换时无需重跑安装。
@@ -16,7 +26,8 @@ public interface IRemoteMaintenanceService
 
     Task<RemoteMaintenanceProvisionResult> InstallAsync(
         PosSessionState session,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        IProgress<RemoteMaintenanceStage>? progress = null);
 }
 
 /// <summary>
@@ -39,7 +50,8 @@ public sealed class RemoteMaintenanceService(
 
     public async Task<RemoteMaintenanceProvisionResult> InstallAsync(
         PosSessionState session,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IProgress<RemoteMaintenanceStage>? progress = null)
     {
         if (string.IsNullOrWhiteSpace(session.StoreCode) || string.IsNullOrWhiteSpace(session.DeviceCode))
         {
@@ -52,16 +64,24 @@ public sealed class RemoteMaintenanceService(
         await _operationGate.WaitAsync(cancellationToken);
         RemoteMaintenanceInstallationResult? installation = null;
         var operationId = Guid.Empty;
+        var stage = RemoteMaintenanceStage.Preparing;
+        void ReportStage(RemoteMaintenanceStage value)
+        {
+            stage = value;
+            progress?.Report(value);
+        }
         try
         {
+            ReportStage(RemoteMaintenanceStage.Preparing);
             var existing = await journal.ReadAsync(cancellationToken);
             if (existing?.State == RemoteMaintenanceOperationState.InstalledPendingCommit)
             {
-                return await ResumePendingCommitAsync(existing, cancellationToken);
+                return await ResumePendingCommitAsync(existing, cancellationToken, ReportStage);
             }
 
             if (existing?.State == RemoteMaintenanceOperationState.Committed)
             {
+                ReportStage(RemoteMaintenanceStage.Configuring);
                 var existingConfigureCode = await uacHelperLauncher.RunAsync(
                     _helperPath,
                     _journalPath,
@@ -121,10 +141,12 @@ public sealed class RemoteMaintenanceService(
                 "HBPOS",
                 "RemoteMaintenance",
                 operationId.ToString("N"));
+            ReportStage(RemoteMaintenanceStage.DownloadingRustDesk);
             var rustDeskPath = await artifactDownloader.DownloadAndVerifyAsync(
                 prepare.ArtifactManifest.RustDesk,
                 dataDirectory,
                 cancellationToken);
+            ReportStage(RemoteMaintenanceStage.DownloadingStatusAgent);
             var agentPath = await artifactDownloader.DownloadAndVerifyAsync(
                 prepare.ArtifactManifest.StatusAgent,
                 dataDirectory,
@@ -151,6 +173,8 @@ public sealed class RemoteMaintenanceService(
             // helper 会把实际触及的服务写回 journal；预检查拒绝时两个标志保持 false，
             // 部分安装失败时则由 helper 在第一次修改前写入对应的清理标志。
             installation = new RemoteMaintenanceInstallationResult(false, false, string.Empty, prepare.ArtifactManifest.RustDesk.Version, dataDirectory);
+            // 两个 EXE 均通过大小与哈希校验后才提示下载完成；随后进入 Windows 授权与安装。
+            ReportStage(RemoteMaintenanceStage.DownloadedInstalling);
             var helperCode = await uacHelperLauncher.RunAsync(_helperPath, _journalPath, operationId, "install", cancellationToken);
             if (helperCode != 0)
             {
@@ -185,6 +209,7 @@ public sealed class RemoteMaintenanceService(
                     true),
                 cancellationToken);
 
+            ReportStage(RemoteMaintenanceStage.Registering);
             var commit = await apiClient.CommitAsync(
                 new RemoteMaintenanceCommitRequest(
                     operationId,
@@ -211,6 +236,7 @@ public sealed class RemoteMaintenanceService(
                     true,
                     true),
                 cancellationToken);
+            ReportStage(RemoteMaintenanceStage.Configuring);
             var configureCode = await uacHelperLauncher.RunAsync(_helperPath, _journalPath, operationId, "configure", cancellationToken);
             if (configureCode != 0)
             {
@@ -227,6 +253,13 @@ public sealed class RemoteMaintenanceService(
             {
                 try { await uacHelperLauncher.RunAsync(_helperPath, _journalPath, operationId, "fail-closed", CancellationToken.None); }
                 catch { /* 取消也不能把未提交的无人值守服务静默留下，helper 失败由下一次恢复读取 journal。 */ }
+            }
+            // HTTP 超时不等于用户取消；登记超时仍先停用本次已安装的服务，再提示恢复。
+            if (!cancellationToken.IsCancellationRequested &&
+                stage is RemoteMaintenanceStage.Preparing or RemoteMaintenanceStage.DownloadingRustDesk or
+                    RemoteMaintenanceStage.DownloadingStatusAgent or RemoteMaintenanceStage.Registering)
+            {
+                return new RemoteMaintenanceProvisionResult(false, FailureMessage(stage), await GetSafeStatusAsync());
             }
             throw;
         }
@@ -247,9 +280,14 @@ public sealed class RemoteMaintenanceService(
             // 状态提示只给用户可理解的固定文案；异常原文可能包含服务器细节或路径。
             return new RemoteMaintenanceProvisionResult(
                 false,
-                ex is RemoteMaintenanceApiException api && api.StatusCode is 401 or 403
-                    ? "settings.remoteMaintenance.result.authorizationExpired"
-                    : "settings.remoteMaintenance.result.configurationFailed",
+                ex switch
+                {
+                    RemoteMaintenanceApiException { StatusCode: 401 or 403 } => "settings.remoteMaintenance.result.authorizationExpired",
+                    System.ComponentModel.Win32Exception { NativeErrorCode: 1223 } => "settings.remoteMaintenance.result.uacCanceled",
+                    FileNotFoundException when stage is RemoteMaintenanceStage.DownloadedInstalling or RemoteMaintenanceStage.Configuring => "settings.remoteMaintenance.result.componentsMissing",
+                    InvalidDataException when stage is RemoteMaintenanceStage.DownloadingRustDesk or RemoteMaintenanceStage.DownloadingStatusAgent => "settings.remoteMaintenance.result.downloadVerificationFailed",
+                    _ => FailureMessage(stage)
+                },
                 await GetSafeStatusAsync());
         }
         finally
@@ -260,7 +298,8 @@ public sealed class RemoteMaintenanceService(
 
     private async Task<RemoteMaintenanceProvisionResult> ResumePendingCommitAsync(
         RemoteMaintenanceJournalState state,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Action<RemoteMaintenanceStage> reportStage)
     {
         if (state.Config is null || state.ArtifactManifest is null ||
             state.RustDeskArtifactPath is null || state.StatusAgentArtifactPath is null ||
@@ -275,6 +314,7 @@ public sealed class RemoteMaintenanceService(
             return new RemoteMaintenanceProvisionResult(false, "settings.remoteMaintenance.result.journalReinstallRequired", await GetSafeStatusAsync());
         }
 
+        reportStage(RemoteMaintenanceStage.Registering);
         var commit = await apiClient.CommitAsync(
             new RemoteMaintenanceCommitRequest(state.OperationId, state.RustdeskId, state.ClientVersion, password),
             cancellationToken);
@@ -285,12 +325,22 @@ public sealed class RemoteMaintenanceService(
             HeartbeatUrl = commit.HeartbeatUrl,
             UpdatedAtUtc = DateTimeOffset.UtcNow
         }, cancellationToken);
+        reportStage(RemoteMaintenanceStage.Configuring);
         var helperCode = await uacHelperLauncher.RunAsync(_helperPath, _journalPath, state.OperationId, "configure", cancellationToken);
         return new RemoteMaintenanceProvisionResult(
             helperCode == 0,
             helperCode == 0 ? "settings.remoteMaintenance.result.restored" : "settings.remoteMaintenance.result.restorePending",
             await GetSafeStatusAsync());
     }
+
+    private static string FailureMessage(RemoteMaintenanceStage stage) => stage switch
+    {
+        RemoteMaintenanceStage.Preparing => "settings.remoteMaintenance.result.preparationFailed",
+        RemoteMaintenanceStage.DownloadingRustDesk or RemoteMaintenanceStage.DownloadingStatusAgent => "settings.remoteMaintenance.result.downloadFailed",
+        RemoteMaintenanceStage.DownloadedInstalling => "settings.remoteMaintenance.result.installationFailed",
+        RemoteMaintenanceStage.Registering => "settings.remoteMaintenance.result.registrationFailed",
+        _ => "settings.remoteMaintenance.result.serviceRestoreFailed"
+    };
 
     private async Task<RemoteMaintenanceStatus> GetSafeStatusAsync()
     {
