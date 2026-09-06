@@ -59,6 +59,20 @@ public sealed class RemoteMaintenanceSafetyTests
         Assert.Equal(32, Convert.FromHexString(WindowsRemoteMaintenanceInstaller.TrustedRustDeskSha256).Length);
     }
 
+    [Fact]
+    public async Task FailClosed只停止已实际触及的服务()
+    {
+        var control = new RecordingServiceControl();
+        var installer = new WindowsRemoteMaintenanceInstaller(new NoopCommandRunner(), control);
+        var empty = new RemoteMaintenanceInstallationResult(false, false, "", "1.4.9", "data");
+        await installer.FailClosedAsync(empty);
+        Assert.Empty(control.StoppedServices);
+
+        var rustDeskOnly = new RemoteMaintenanceInstallationResult(true, false, "", "1.4.9", "data");
+        await installer.FailClosedAsync(rustDeskOnly);
+        Assert.Equal(new[] { "RustDesk" }, control.StoppedServices);
+    }
+
     private sealed class CaptureHandler : HttpMessageHandler
     {
         public string? Url { get; private set; }
@@ -88,6 +102,24 @@ public sealed class RemoteMaintenanceSafetyTests
                 _ => throw new InvalidOperationException("unexpected command")
             };
             return Task.FromResult(new RemoteMaintenanceCommandResult(0, output, ""));
+        }
+    }
+
+    private sealed class NoopCommandRunner : IRemoteMaintenanceCommandRunner
+    {
+        public Task<int> RunAsync(string fileName, string arguments, CancellationToken cancellationToken) => Task.FromResult(0);
+    }
+
+    private sealed class RecordingServiceControl : IRemoteMaintenanceServiceControl
+    {
+        public List<string> StoppedServices { get; } = [];
+        public Task<string?> QueryAsync(string serviceName, CancellationToken cancellationToken) => Task.FromResult<string?>(null);
+        public Task<int> CreateOrUpdateAsync(string serviceName, string binaryPath, string accountName, CancellationToken cancellationToken) => Task.FromResult(0);
+        public Task<int> StartAsync(string serviceName, CancellationToken cancellationToken) => Task.FromResult(0);
+        public Task<int> StopAsync(string serviceName, CancellationToken cancellationToken)
+        {
+            StoppedServices.Add(serviceName);
+            return Task.FromResult(0);
         }
     }
 }

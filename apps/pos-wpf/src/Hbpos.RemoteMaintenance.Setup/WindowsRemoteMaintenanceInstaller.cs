@@ -127,7 +127,8 @@ public sealed class WindowsRemoteMaintenanceServiceControl(IRemoteMaintenanceCom
 /// <summary>只允许公司服务器和官方固定版本；提权时重新校验，绝不执行 journal 指定的任意文件。</summary>
 public sealed class WindowsRemoteMaintenanceInstaller(
     IRemoteMaintenanceCommandRunner commandRunner,
-    IRemoteMaintenanceServiceControl serviceControl) : IRemoteMaintenanceInstaller
+    IRemoteMaintenanceServiceControl serviceControl,
+    Func<RemoteMaintenanceInstallationResult, Task>? progressWriter = null) : IRemoteMaintenanceInstaller
 {
     internal const string StatusServiceName = "HBPOSRemoteStatus";
     private const string RustDeskServiceName = "RustDesk";
@@ -151,7 +152,8 @@ public sealed class WindowsRemoteMaintenanceInstaller(
         EnsureProtectedProgramPath(StatusProgramDirectory);
         ApplyDirectoryAcl(StatusProgramDirectory, localServiceCanRead: true);
         var staged = Path.Combine(StatusProgramDirectory, "rustdesk-install-" + Guid.NewGuid().ToString("N") + ".exe");
-        var modified = false;
+        var rustDeskTouched = false;
+        var statusAgentTouched = false;
         try
         {
             // 源文件打开期间禁止写入/删除，复制到管理员目录后再验证并执行，封住校验到执行的替换窗口。
@@ -164,7 +166,10 @@ public sealed class WindowsRemoteMaintenanceInstaller(
             await using (var check = File.OpenRead(staged))
                 if (!string.Equals(Convert.ToHexString(await SHA256.HashDataAsync(check, cancellationToken)), TrustedRustDeskSha256, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("RustDesk 官方文件哈希错误。");
-            modified = true;
+            // 外部配置预检查在此之前完成；从实际触发 RustDesk 安装起才允许外层清理该服务。
+            if (progressWriter is not null)
+                await progressWriter(new(true, false, string.Empty, request.ClientVersion, request.DataDirectory));
+            rustDeskTouched = true;
             if (await commandRunner.RunAsync(staged, "--silent-install", cancellationToken) != 0)
                 throw new InvalidOperationException("RustDesk 安装未完成。");
             for (var i = 0; !File.Exists(InstalledRustDesk) && i < 30; i++) await Task.Delay(500, cancellationToken);
@@ -181,6 +186,10 @@ public sealed class WindowsRemoteMaintenanceInstaller(
                 JsonSerializer.Serialize(request.Prepare.Config), cancellationToken);
             var rustdeskId = await GetRustdeskIdAsync(cancellationToken);
             if (string.IsNullOrEmpty(rustdeskId)) throw new InvalidOperationException("无法取得 RustDesk ID。");
+            // 停止旧状态服务是本次安装对它的第一次实际修改，失败时也必须保留清理依据。
+            if (progressWriter is not null)
+                await progressWriter(new(true, true, rustdeskId, request.ClientVersion, request.DataDirectory));
+            statusAgentTouched = true;
             if (await serviceControl.StopAsync(StatusServiceName, cancellationToken) != 0)
                 throw new InvalidOperationException("旧状态服务无法停止。");
             var statusBinary = Path.Combine(StatusProgramDirectory, "Hbpos.RemoteStatus.exe");
@@ -192,11 +201,10 @@ public sealed class WindowsRemoteMaintenanceInstaller(
         }
         catch
         {
-            if (modified)
-            {
-                await serviceControl.StopAsync(StatusServiceName, CancellationToken.None);
-                await serviceControl.StopAsync(RustDeskServiceName, CancellationToken.None);
-            }
+            if (statusAgentTouched)
+                try { await serviceControl.StopAsync(StatusServiceName, CancellationToken.None); } catch { }
+            if (rustDeskTouched)
+                try { await serviceControl.StopAsync(RustDeskServiceName, CancellationToken.None); } catch { }
             throw;
         }
         finally { if (File.Exists(staged)) File.Delete(staged); }

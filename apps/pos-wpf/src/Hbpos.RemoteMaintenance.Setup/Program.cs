@@ -36,7 +36,22 @@ public static class Program
 
             var installer = new WindowsRemoteMaintenanceInstaller(
                 new WindowsRemoteMaintenanceCommandRunner(),
-                new WindowsRemoteMaintenanceServiceControl(new WindowsRemoteMaintenanceCommandRunner()));
+                new WindowsRemoteMaintenanceServiceControl(new WindowsRemoteMaintenanceCommandRunner()),
+                async progress =>
+                {
+                    // helper 以管理员身份运行；把已实际触及的服务写回用户 journal，
+                    // 使外层 fail-closed 能区分预检查拒绝与部分安装失败。
+                    var current = await journal.ReadAsync(CancellationToken.None);
+                    if (current is null || current.OperationId != operationId)
+                        throw new InvalidOperationException("远程维护安装进度无法安全写入 journal。");
+                    await journal.WriteAsync(current with
+                    {
+                        RustDeskInstalled = progress.RustDeskInstalled,
+                        StatusAgentInstalled = progress.StatusAgentInstalled,
+                        RustdeskId = string.IsNullOrWhiteSpace(progress.RustdeskId) ? current.RustdeskId : progress.RustdeskId,
+                        UpdatedAtUtc = DateTimeOffset.UtcNow
+                    }, CancellationToken.None);
+                });
             if (args[3] == "install")
             {
                 var password = new DpapiRemoteMaintenanceSecretProtector().Unprotect(state.ProtectedPassword);
@@ -59,10 +74,12 @@ public static class Program
                 // 放入结果；helper 不得再次执行 journal 指向的用户可写安装包。
                 var rustdeskId = result.RustdeskId;
                 if (string.IsNullOrWhiteSpace(rustdeskId)) return Emit(false, "install", operationId, 4);
-                journal.WriteAsync(state with
+                journal.WriteAsync((journal.ReadAsync(CancellationToken.None).GetAwaiter().GetResult() ?? state) with
                 {
                     State = RemoteMaintenanceOperationState.InstalledPendingCommit,
                     RustdeskId = rustdeskId,
+                    RustDeskInstalled = result.RustDeskInstalled,
+                    StatusAgentInstalled = result.StatusAgentInstalled,
                     UpdatedAtUtc = DateTimeOffset.UtcNow
                 }).GetAwaiter().GetResult();
                 return Emit(result.RustDeskInstalled && result.StatusAgentInstalled, "install", operationId,
@@ -72,7 +89,11 @@ public static class Program
             if (args[3] == "fail-closed")
             {
                 installer.FailClosedAsync(new RemoteMaintenanceInstallationResult(
-                    true, true, state.RustdeskId, state.ClientVersion, state.DataDirectory)).GetAwaiter().GetResult();
+                    state.RustDeskInstalled,
+                    state.StatusAgentInstalled,
+                    state.RustdeskId,
+                    state.ClientVersion,
+                    state.DataDirectory)).GetAwaiter().GetResult();
                 return Emit(true, "fail-closed", operationId, 0);
             }
 

@@ -80,6 +80,35 @@ public sealed class RemoteMaintenanceServiceTests
         Assert.Contains("fail-closed", fixture.Launcher.Stages);
     }
 
+    [Fact]
+    public async Task Helper_rejection_does_not_request_cleanup_for_preexisting_services()
+    {
+        using var fixture = new Fixture();
+        fixture.Launcher.InstallExitCode = 4;
+
+        var result = await fixture.Service.InstallAsync(fixture.Session);
+
+        Assert.False(result.Succeeded);
+        var cleanup = Assert.Single(fixture.Launcher.FailClosedRequests);
+        Assert.False(cleanup.RustDeskInstalled);
+        Assert.False(cleanup.StatusAgentInstalled);
+    }
+
+    [Fact]
+    public async Task Partial_install_failure_keeps_cleanup_for_components_already_touched()
+    {
+        using var fixture = new Fixture();
+        fixture.Launcher.InstallExitCode = 4;
+        fixture.Launcher.InstallRustDeskInstalled = true;
+
+        var result = await fixture.Service.InstallAsync(fixture.Session);
+
+        Assert.False(result.Succeeded);
+        var cleanup = Assert.Single(fixture.Launcher.FailClosedRequests);
+        Assert.True(cleanup.RustDeskInstalled);
+        Assert.False(cleanup.StatusAgentInstalled);
+    }
+
     private sealed class Fixture : IDisposable
     {
         private readonly string _root = Path.Combine(Path.GetTempPath(), "hbpos-remote-test-" + Guid.NewGuid().ToString("N"));
@@ -192,19 +221,48 @@ public sealed class RemoteMaintenanceServiceTests
         {
             public List<string> Stages { get; } = [];
             public List<Guid> OperationIds { get; } = [];
+            public List<RemoteMaintenanceInstallationResult> FailClosedRequests { get; } = [];
             public bool InstallWritesId { get; set; }
             public bool CancelInstall { get; set; }
+            public int InstallExitCode { get; set; }
+            public bool InstallRustDeskInstalled { get; set; }
+            public bool InstallStatusAgentInstalled { get; set; }
             public async Task<int> RunAsync(string helperPath, string journalPath, Guid operationId, string stage, CancellationToken cancellationToken = default)
             {
                 Stages.Add(stage);
                 OperationIds.Add(operationId);
                 if (stage == "install" && CancelInstall) throw new OperationCanceledException(cancellationToken);
+                if (stage == "fail-closed")
+                {
+                    var state = await journal.ReadAsync(CancellationToken.None) ?? throw new InvalidOperationException();
+                    FailClosedRequests.Add(new RemoteMaintenanceInstallationResult(
+                        state.RustDeskInstalled,
+                        state.StatusAgentInstalled,
+                        state.RustdeskId,
+                        state.ClientVersion,
+                        state.DataDirectory ?? string.Empty));
+                    return 0;
+                }
                 if (stage == "install" && InstallWritesId)
                 {
                     var state = await journal.ReadAsync(cancellationToken) ?? throw new InvalidOperationException();
-                    await journal.WriteAsync(state with { RustdeskId = "rustdesk-123" }, cancellationToken);
+                    await journal.WriteAsync(state with
+                    {
+                        RustdeskId = "rustdesk-123",
+                        RustDeskInstalled = InstallRustDeskInstalled,
+                        StatusAgentInstalled = InstallStatusAgentInstalled
+                    }, cancellationToken);
                 }
-                return 0;
+                if (stage == "install" && (InstallRustDeskInstalled || InstallStatusAgentInstalled))
+                {
+                    var state = await journal.ReadAsync(cancellationToken) ?? throw new InvalidOperationException();
+                    await journal.WriteAsync(state with
+                    {
+                        RustDeskInstalled = InstallRustDeskInstalled,
+                        StatusAgentInstalled = InstallStatusAgentInstalled
+                    }, cancellationToken);
+                }
+                return stage == "install" ? InstallExitCode : 0;
             }
         }
     }

@@ -26,7 +26,10 @@ public sealed record RemoteMaintenanceJournalState(
     string? RustDeskArtifactPath = null,
     string? StatusAgentArtifactPath = null,
     string? DataDirectory = null,
-    RemoteMaintenanceArtifactManifest? ArtifactManifest = null);
+    RemoteMaintenanceArtifactManifest? ArtifactManifest = null,
+    // 仅记录本次事务实际触及的服务；预检查拒绝时两个标志都保持 false。
+    bool RustDeskInstalled = false,
+    bool StatusAgentInstalled = false);
 
 public interface IRemoteMaintenanceSecretProtector
 {

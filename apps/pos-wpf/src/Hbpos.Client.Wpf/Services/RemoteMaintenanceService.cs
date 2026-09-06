@@ -147,9 +147,9 @@ public sealed class RemoteMaintenanceService(
                     prepare.ArtifactManifest),
                 cancellationToken);
 
-            // 在启动 helper 前就标记为需要 fail-closed。UAC 取消、helper 崩溃或本地
-            // 状态读取失败都不能留下无人值守 RustDesk。
-            installation = new RemoteMaintenanceInstallationResult(true, true, string.Empty, prepare.ArtifactManifest.RustDesk.Version, dataDirectory);
+            // helper 会把实际触及的服务写回 journal；预检查拒绝时两个标志保持 false，
+            // 部分安装失败时则由 helper 在第一次修改前写入对应的清理标志。
+            installation = new RemoteMaintenanceInstallationResult(false, false, string.Empty, prepare.ArtifactManifest.RustDesk.Version, dataDirectory);
             var helperCode = await uacHelperLauncher.RunAsync(_helperPath, _journalPath, operationId, "install", cancellationToken);
             if (helperCode != 0)
             {
@@ -163,7 +163,7 @@ public sealed class RemoteMaintenanceService(
             {
                 throw new InvalidOperationException("RustDesk ID 读取失败。");
             }
-            installation = installation with { RustdeskId = rustdeskId };
+            installation = new RemoteMaintenanceInstallationResult(true, true, rustdeskId, prepare.ArtifactManifest.RustDesk.Version, dataDirectory);
             await journal.WriteAsync(
                 new RemoteMaintenanceJournalState(
                     operationId,
@@ -179,7 +179,9 @@ public sealed class RemoteMaintenanceService(
                     rustDeskPath,
                     agentPath,
                     dataDirectory,
-                    prepare.ArtifactManifest),
+                    prepare.ArtifactManifest,
+                    true,
+                    true),
                 cancellationToken);
 
             var commit = await apiClient.CommitAsync(
@@ -204,7 +206,9 @@ public sealed class RemoteMaintenanceService(
                     rustDeskPath,
                     agentPath,
                     dataDirectory,
-                    prepare.ArtifactManifest),
+                    prepare.ArtifactManifest,
+                    true,
+                    true),
                 cancellationToken);
             var configureCode = await uacHelperLauncher.RunAsync(_helperPath, _journalPath, operationId, "configure", cancellationToken);
             if (configureCode != 0)
