@@ -6,6 +6,7 @@ namespace Hbpos.Client.Wpf.Services;
 
 public sealed record RemoteMaintenanceProvisionResult(
     bool Succeeded,
+    // 返回稳定的资源键，由界面按当前语言渲染；语言切换时无需重跑安装。
     string Message,
     RemoteMaintenanceStatus Status);
 
@@ -44,7 +45,7 @@ public sealed class RemoteMaintenanceService(
         {
             return new RemoteMaintenanceProvisionResult(
                 false,
-                "当前设备尚未完成激活，无法配置远程维护。",
+                "settings.remoteMaintenance.result.activationRequired",
                 await GetStatusAsync(cancellationToken));
         }
 
@@ -69,7 +70,7 @@ public sealed class RemoteMaintenanceService(
                     cancellationToken);
                 return new RemoteMaintenanceProvisionResult(
                     existingConfigureCode == 0,
-                    existingConfigureCode == 0 ? "远程维护状态服务已恢复。" : "远程维护状态服务恢复失败，请稍后重试。",
+                    existingConfigureCode == 0 ? "settings.remoteMaintenance.result.serviceRestored" : "settings.remoteMaintenance.result.serviceRestoreFailed",
                     await GetStatusAsync(cancellationToken));
             }
 
@@ -85,7 +86,7 @@ public sealed class RemoteMaintenanceService(
                 // 不能生成新密码/新 operationId，否则会留下中心孤儿操作。
                 return new RemoteMaintenanceProvisionResult(
                     false,
-                    "远程维护恢复记录无法解密，请联系管理员清理后重试。",
+                    "settings.remoteMaintenance.result.journalDecryptFailed",
                     await GetSafeStatusAsync());
             }
 
@@ -217,7 +218,7 @@ public sealed class RemoteMaintenanceService(
             }
             return new RemoteMaintenanceProvisionResult(
                 true,
-                "远程维护已完成配置，状态服务将在后台发送心跳。",
+                "settings.remoteMaintenance.result.configured",
                 new RemoteMaintenanceStatus(true, rustdeskId, prepare.ArtifactManifest.RustDesk.Version, "running"));
         }
         catch (OperationCanceledException)
@@ -247,8 +248,8 @@ public sealed class RemoteMaintenanceService(
             return new RemoteMaintenanceProvisionResult(
                 false,
                 ex is RemoteMaintenanceApiException api && api.StatusCode is 401 or 403
-                    ? "远程维护授权已失效，请重新激活设备后重试。"
-                    : "远程维护配置未完成，请稍后重试。",
+                    ? "settings.remoteMaintenance.result.authorizationExpired"
+                    : "settings.remoteMaintenance.result.configurationFailed",
                 await GetSafeStatusAsync());
         }
         finally
@@ -265,13 +266,13 @@ public sealed class RemoteMaintenanceService(
             state.RustDeskArtifactPath is null || state.StatusAgentArtifactPath is null ||
             string.IsNullOrWhiteSpace(state.RustdeskId) || string.IsNullOrWhiteSpace(state.ClientVersion))
         {
-            return new RemoteMaintenanceProvisionResult(false, "远程维护恢复记录不完整，请重新安装。", await GetSafeStatusAsync());
+            return new RemoteMaintenanceProvisionResult(false, "settings.remoteMaintenance.result.journalIncomplete", await GetSafeStatusAsync());
         }
 
         var password = secretProtector.Unprotect(state.ProtectedPassword);
         if (string.IsNullOrWhiteSpace(password))
         {
-            return new RemoteMaintenanceProvisionResult(false, "远程维护恢复记录无法解密，请重新安装。", await GetSafeStatusAsync());
+            return new RemoteMaintenanceProvisionResult(false, "settings.remoteMaintenance.result.journalReinstallRequired", await GetSafeStatusAsync());
         }
 
         var commit = await apiClient.CommitAsync(
@@ -287,7 +288,7 @@ public sealed class RemoteMaintenanceService(
         var helperCode = await uacHelperLauncher.RunAsync(_helperPath, _journalPath, state.OperationId, "configure", cancellationToken);
         return new RemoteMaintenanceProvisionResult(
             helperCode == 0,
-            helperCode == 0 ? "远程维护已恢复。" : "远程维护已登记，但状态服务待恢复。",
+            helperCode == 0 ? "settings.remoteMaintenance.result.restored" : "settings.remoteMaintenance.result.restorePending",
             await GetSafeStatusAsync());
     }
 
