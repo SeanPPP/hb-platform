@@ -111,6 +111,8 @@
     <Compile Include="WarehouseProductRecordQueryServiceTests.cs" />
     <Compile Include="WarehouseProductRecordAuthorizationTests.cs" />
     <Compile Include="SalesDashboardReportRevenueTests.cs" />
+    <Compile Include="SupplierReportReadTests.cs" />
+    <Compile Include="ProductReportPagingSqlTests.cs" />
     <Compile Include="ProductMovementReportSqlBuilderTests.cs" />
     <Compile Include="LocalSupplierInvoiceSalesAnalysisSqlBuilderTests.cs" />
     <Compile Include="LocalPurchaseDashboardTests.cs" />
@@ -129,6 +131,7 @@
     <Compile Include="GiantServiceArchitectureContractTests.cs" />
     <Compile Include="ProductWarehouseArchitectureContractTests.cs" />
     <Compile Include="SalesStatisticsArchitectureContractTests.cs" />
+    <Compile Include="SalesStatisticsSupplierStoreSummaryTests.cs" />
     <Compile Include="LocalSupplierInvoicesArchitectureContractTests.cs" />
     <Compile Include="LocalSupplierInvoicesTransactionContractTests.cs" />
     <Compile Include="StoreOrderProductListTests.cs" />

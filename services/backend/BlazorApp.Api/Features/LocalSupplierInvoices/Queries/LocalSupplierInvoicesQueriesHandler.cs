@@ -611,6 +611,8 @@ namespace BlazorApp.Api.Features.LocalSupplierInvoices
                                 BarcodeStatus = d.BarcodeStatus,
                                 BarcodeMatchCount = d.BarcodeMatchCount,
                                 ProductImage = p.ProductImage,
+                                // 类型实时读取商品主档；保留历史明细，但不展示已删除主档的类型。
+                                ProductType = p.IsDeleted == false ? p.ProductType : null,
                                 ActivityType = d.ActivityType,
                                 DiscountRate = d.DiscountRate,
                                 AutoPricing = d.AutoPricing,
@@ -701,6 +703,8 @@ namespace BlazorApp.Api.Features.LocalSupplierInvoices
                                 BarcodeStatus = d.BarcodeStatus,
                                 BarcodeMatchCount = d.BarcodeMatchCount,
                                 ProductImage = p.ProductImage,
+                                // 与非分页明细保持一致，不从副码或待执行操作推断商品类型。
+                                ProductType = p.IsDeleted == false ? p.ProductType : null,
                                 ActivityType = d.ActivityType,
                                 DiscountRate = d.DiscountRate,
                                 AutoPricing = d.AutoPricing,

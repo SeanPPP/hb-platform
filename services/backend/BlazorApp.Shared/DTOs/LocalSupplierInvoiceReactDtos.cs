@@ -112,6 +112,8 @@ namespace BlazorApp.Shared.DTOs
 
     public class LocalSupplierInvoiceItemDto
     {
+        /// <summary>当前商品主档类型，仅查询展示；未匹配或主档已删除时为空。</summary>
+        public int? ProductType { get; set; }
         public string DetailGUID { get; set; } = string.Empty;
         public string? InvoiceGUID { get; set; }
         public string? StoreCode { get; set; }

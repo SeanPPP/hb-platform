@@ -629,10 +629,10 @@ namespace BlazorApp.Api.Services
             SalesStatisticsProductStoreDailySourceReader.LoadPosmSupplierMappingInBatchesAsync(
                 posmContext,
                 productCodes);
-        public Task Update2025StoreAndProductStatisticsFromBatchSnapshotAsync(DateTime date, HBSales2025BatchSnapshot snapshot) =>
+        public Task<ProductStoreDailyBatchFence> Update2025StoreAndProductStatisticsFromBatchSnapshotAsync(DateTime date, HBSales2025BatchSnapshot snapshot) =>
             _application.Update2025StoreAndProductStatisticsFromBatchSnapshotAsync(date, snapshot.Canonical);
-        public Task Finalize2025BatchSnapshotDateAsync(DateTime date) => _application.Finalize2025BatchSnapshotDateAsync(date);
-        public Task Fail2025BatchSnapshotDatesAsync(IReadOnlyCollection<DateTime> dates, string errorMessage) => _application.Fail2025BatchSnapshotDatesAsync(dates, errorMessage);
+        public Task Finalize2025BatchSnapshotDateAsync(ProductStoreDailyBatchFence expectedFence) => _application.Finalize2025BatchSnapshotDateAsync(expectedFence);
+        public Task Fail2025BatchSnapshotDatesAsync(IReadOnlyCollection<ProductStoreDailyBatchFence> fences, string errorMessage) => _application.Fail2025BatchSnapshotDatesAsync(fences, errorMessage);
         public async Task<ProductStoreDailyRecalculationSubmitResult> SubmitProductStoreDailyRecalculationAsync(IEnumerable<DateTime> dates, string? requestedBy, int maxConcurrency = 3)
         {
             using var scope = (_serviceScopeFactory ?? throw new InvalidOperationException("此兼容门面未配置持久任务队列作用域工厂")).CreateScope();
@@ -698,7 +698,7 @@ namespace BlazorApp.Api.Services
                     ToCanonicalProductStoreDailySourceRow
                 ));
 
-        private Task Update2025StoreAndProductStatisticsAtomically(
+        private Task<ProductStoreDailyBatchFence> Update2025StoreAndProductStatisticsAtomically(
             SqlSugarContext context,
             POSMSqlSugarContext posmContext,
             HBSalesRecordSqlSugarContext? hbSalesContext,

@@ -83,9 +83,13 @@ const completeHourlyDetail = normalizeHourlyRevenueSnapshot({
   statisticsPending: false,
   statisticsExpectedItemCount: 1,
   statisticsSnapshotItemCount: 1,
+  statisticUpdatedAt: "2026-09-06T01:02:03Z",
+  cacheVersion: "v-report-1",
 });
 assert.equal(completeHourlyDetail.isComplete, true, "分时完整包络才可以进入首行可见计时");
 assert.equal(completeHourlyDetail.rows[0]?.hour, 9);
+assert.equal(completeHourlyDetail.statisticUpdatedAt, "2026-09-06T01:02:03Z");
+assert.equal(completeHourlyDetail.cacheVersion, "v-report-1");
 
 const completeDailyDetail = normalizeDailyRevenueSnapshot({
   items: [{ Date: "2026-07-04", BranchCode: "S1", Revenue: 150, OrderCount: 7 }],
@@ -149,6 +153,8 @@ function createBranchSnapshot(count: number, pending: boolean, expected = 28) {
     statisticsPending: pending,
     statisticsExpectedBranchCount: expected,
     statisticsSnapshotBranchCount: count,
+    statisticUpdatedAt: "2026-09-06T01:02:03Z",
+    cacheVersion: "v-report-1",
   });
 }
 
@@ -158,6 +164,8 @@ assert.equal(partialSnapshot.statisticsPending, true);
 assert.equal(partialSnapshot.statisticsExpectedBranchCount, 28);
 assert.equal(partialSnapshot.statisticsSnapshotBranchCount, 5);
 assert.equal(partialSnapshot.isComplete, false);
+assert.equal(partialSnapshot.statisticUpdatedAt, "2026-09-06T01:02:03Z");
+assert.equal(partialSnapshot.cacheVersion, "v-report-1");
 
 const countMismatchSnapshot = createBranchSnapshot(20, false);
 assert.equal(

@@ -11,6 +11,8 @@ services:
       - ASPNETCORE_ENVIRONMENT=Production
       - ASPNETCORE_URLS=http://+:5002
       - ASPNETCORE_HTTP_PORTS=5002
+      # 完成供应商历史回填并核对版本后再开启，关闭即可切回既有统计读取路径。
+      - Reports__UseSupplierRollups=${REPORTS_USE_SUPPLIER_ROLLUPS:-false}
       # 生产连接字符串只从服务器 .env 注入，避免把敏感值写入 compose。
       - ConnectionStrings__DefaultConnection=${CONNECTION_STRING_DEFAULT}
       - ConnectionStrings__StoreHzgHQConnection=${CONNECTION_STRING_STORE_HQ}

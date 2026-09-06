@@ -23,6 +23,10 @@ namespace BlazorApp.Shared.Models
         [SugarColumn(Length = 40, IsNullable = false)]
         public string SourceTimeZone { get; set; } = "POSM_LOCAL";
 
+        /// <summary>供应商汇总所消费的已完成商品日统计版本。</summary>
+        [SugarColumn(Length = 64, IsNullable = true)]
+        public string? SourceProductVersion { get; set; }
+
         [SugarColumn(IsNullable = true)]
         public DateTime? LastAggregatedAtUtc { get; set; }
 
@@ -80,5 +84,6 @@ namespace BlazorApp.Shared.Models
         public const string Fresh = "Fresh";
         public const string Stale = "Stale";
         public const string Failed = "Failed";
+        public const string ProvisionalFresh = "ProvisionalFresh";
     }
 }

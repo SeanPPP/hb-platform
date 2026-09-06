@@ -32,6 +32,8 @@ export interface ExecutiveBranchPerformanceSnapshot {
   isComplete: boolean;
   pollingExhausted: boolean;
   pollingAttemptCount: number;
+  statisticUpdatedAt: string | null;
+  cacheVersion: string | null;
 }
 
 export interface ExecutiveBranchPerformancePollingOptions {
@@ -50,6 +52,8 @@ export interface RevenueDetailSnapshot<Row> {
   isComplete: boolean;
   pollingExhausted: boolean;
   pollingAttemptCount: number;
+  statisticUpdatedAt: string | null;
+  cacheVersion: string | null;
 }
 
 export interface RevenueDetailPollingOptions {
@@ -222,6 +226,10 @@ function getBranchSnapshotRecord(payload: unknown) {
         "StatisticsExpectedBranchCount",
         "statisticsSnapshotBranchCount",
         "StatisticsSnapshotBranchCount",
+        "statisticUpdatedAt",
+        "StatisticUpdatedAt",
+        "cacheVersion",
+        "CacheVersion",
       ) !== undefined
     ) {
       return record;
@@ -392,6 +400,10 @@ export function normalizeExecutiveBranchPerformance(
     isComplete,
     pollingExhausted: false,
     pollingAttemptCount: 1,
+    statisticUpdatedAt: asString(
+      pick(snapshot ?? {}, "statisticUpdatedAt", "StatisticUpdatedAt", "statisticsUpdatedAt", "StatisticsUpdatedAt"),
+    ).trim() || null,
+    cacheVersion: asString(pick(snapshot ?? {}, "cacheVersion", "CacheVersion")).trim() || null,
   };
 }
 
@@ -467,6 +479,10 @@ function normalizeRevenueDetailSnapshot<Row>(
     isComplete,
     pollingExhausted: false,
     pollingAttemptCount: 1,
+    statisticUpdatedAt: asString(
+      pick(snapshot ?? {}, "statisticUpdatedAt", "StatisticUpdatedAt", "statisticsUpdatedAt", "StatisticsUpdatedAt"),
+    ).trim() || null,
+    cacheVersion: asString(pick(snapshot ?? {}, "cacheVersion", "CacheVersion")).trim() || null,
   };
 }
 

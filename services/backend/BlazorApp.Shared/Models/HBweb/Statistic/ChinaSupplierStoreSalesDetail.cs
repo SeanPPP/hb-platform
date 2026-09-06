@@ -26,6 +26,22 @@ namespace BlazorApp.Shared.Models
         [SugarColumn(IsNullable = true)]
         public int? OrderCount { get; set; }
 
+        // 成本来自商品分店日统计快照；没有成本的行不伪造为 0。
+        [SugarColumn(IsNullable = true)]
+        public decimal? TotalCost { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public decimal? GrossProfit { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public int? StatisticRowCount { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public int? CostedRowCount { get; set; }
+
+        [SugarColumn(IsNullable = true)]
+        public int? GrossProfitRowCount { get; set; }
+
         [SugarColumn(IsNullable = false)]
         public DateTime UpdateTime { get; set; } = DateTime.Now;
     }

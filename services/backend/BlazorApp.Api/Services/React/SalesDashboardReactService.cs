@@ -279,7 +279,7 @@ namespace BlazorApp.Api.Services.React
     /// 销售仪表板 React 服务
     /// 为 React 前端提供销售统计数据的查询功能
     /// </summary>
-    public class SalesDashboardReactService : ISalesDashboardReactService
+    public partial class SalesDashboardReactService : ISalesDashboardReactService
     {
         private readonly SqlSugarContext _context;
         private readonly POSMSqlSugarContext _posmContext;
@@ -351,7 +351,8 @@ namespace BlazorApp.Api.Services.React
             IMapper mapper,
             ILogger<SalesDashboardReactService> logger,
             IMemoryCache cache,
-            IServiceScopeFactory? serviceScopeFactory = null
+            IServiceScopeFactory? serviceScopeFactory = null,
+            IConfiguration? configuration = null
         )
         {
             _context = context;
@@ -360,6 +361,8 @@ namespace BlazorApp.Api.Services.React
             _logger = logger;
             _cache = cache;
             _serviceScopeFactory = serviceScopeFactory;
+            // 回填完成后单独切换读取；新增字段和后台写入可以先于新读取部署。
+            _useSupplierRollups = configuration?.GetValue<bool>("Reports:UseSupplierRollups") ?? false;
         }
 
         /// <summary>
@@ -920,6 +923,9 @@ namespace BlazorApp.Api.Services.React
                 if (!IsProductStatisticFresh(statisticStatus))
                     return new List<SupplierSalesRankDto>();
 
+                if (_useSupplierRollups)
+                    return await GetSupplierRankFromRollupsAsync(dateRange, branchCodes, topN, supplierCode, statisticStatus);
+
                 var cacheKey = SalesDashboardCacheKeys.SupplierRank(
                     dateRange,
                     branchCodes,
@@ -1169,6 +1175,9 @@ namespace BlazorApp.Api.Services.React
                 ValidateDateRange(dateRange);
                 if (!IsProductStatisticFresh(statisticStatus))
                     return new List<ChinaSupplierSalesRankDto>();
+
+                if (_useSupplierRollups)
+                    return await GetChinaSupplierRankFromRollupsAsync(dateRange, branchCodes, topN, supplierCode, statisticStatus);
 
                 var cacheKey = SalesDashboardCacheKeys.ChinaSupplierRank(
                     dateRange,
@@ -1439,6 +1448,9 @@ namespace BlazorApp.Api.Services.React
                 ValidateDateRange(dateRange);
                 if (!IsProductStatisticFresh(statisticStatus))
                     return new List<SupplierStoreSalesDto>();
+
+                if (_useSupplierRollups)
+                    return await GetSupplierStoresFromRollupsAsync(dateRange, supplierCodes, branchCodes, statisticStatus);
 
                 var cacheKey = SalesDashboardCacheKeys.SupplierStore(
                     dateRange,
@@ -2288,6 +2300,24 @@ namespace BlazorApp.Api.Services.React
                     normalizedProductSearch = null;
                 }
 
+                if (_useSupplierRollups && _context.Db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+                {
+                    // 大范围商品和中国商品共用数据库分页，并在读前读后校验完整统计版本。
+                    return await ReadCompleteReportAsync(
+                        dateRange,
+                        statisticStatus,
+                        version => SalesDashboardCacheKeys.EnhancedProductDetail(
+                            dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes,
+                            pageIndex, pageSize, normalizedProductSearch, version, chinaSupplierScope),
+                        service => service.GetEnhancedSalesProductDetailsSqlServerAsync(
+                            dateRange, branchCodes, localSupplierCodes, chinaSupplierCodes,
+                            pageIndex, pageSize, normalizedProductSearch, chinaSupplierScope),
+                        () => new PagedSalesProductDetailWithDiscountDto
+                        {
+                            Data = new(), Total = 0, PageIndex = pageIndex, PageSize = pageSize,
+                        });
+                }
+
                 _logger.LogInformation(
                     "[GetEnhancedSalesProductDetailsAsync] Processing request: StartDate={StartDate}, EndDate={EndDate}, CompareStartDate={CompareStartDate}, CompareEndDate={CompareEndDate}, HasSupplierFilter={HasSupplierFilter}, HasProductSearch={HasProductSearch}, ChinaSupplierScope={ChinaSupplierScope}",
                     dateRange.StartDate,
@@ -2567,21 +2597,42 @@ namespace BlazorApp.Api.Services.React
             ProductReportStatisticStatusDto statisticStatus
         )
         {
+            ValidateDateRange(dateRange);
+            if (branchCodes != null && NormalizeCodes(branchCodes).Count == 0)
+                return new List<ProductBranchSalesDto>();
+            if (_useSupplierRollups)
+                return await ReadCompleteReportAsync(
+                    dateRange, statisticStatus,
+                    version => SalesDashboardCacheKeys.ProductBranch(dateRange, productCode, branchCodes, version),
+                    service => service.GetProductSalesByAllBranchesCoreAsync(dateRange, productCode, branchCodes, statisticStatus, useCache: false),
+                    () => new List<ProductBranchSalesDto>());
+            return await GetProductSalesByAllBranchesCoreAsync(dateRange, productCode, branchCodes, statisticStatus);
+        }
+
+        private async Task<List<ProductBranchSalesDto>> GetProductSalesByAllBranchesCoreAsync(
+            DateRangeDto dateRange,
+            string productCode,
+            List<string>? branchCodes,
+            ProductReportStatisticStatusDto statisticStatus,
+            bool useCache = true
+        )
+        {
             try
             {
                 ValidateDateRange(dateRange);
                 if (!IsProductStatisticFresh(statisticStatus))
                     return new List<ProductBranchSalesDto>();
 
-                var cacheKey = SalesDashboardCacheKeys.ProductBranch(
+                // 完整版本读取由外层校验后统一缓存，不能把旧路径缓存晋升为完整快照。
+                var cacheKey = useCache ? SalesDashboardCacheKeys.ProductBranch(
                     dateRange,
                     productCode,
                     branchCodes,
                     statisticStatus.CacheVersion
-                );
+                ) : string.Empty;
 
                 if (
-                    _cache.TryGetValue<List<ProductBranchSalesDto>>(cacheKey, out var cachedResult)
+                    useCache && _cache.TryGetValue<List<ProductBranchSalesDto>>(cacheKey, out var cachedResult)
                     && cachedResult != null
                     && cachedResult.Count != 0
                 )
@@ -2719,16 +2770,19 @@ namespace BlazorApp.Api.Services.React
                     .ThenByDescending(x => x.CompareSalesAmount)
                     .ToList();
 
-                var cacheOptions = new MemoryCacheEntryOptions()
-                    .SetAbsoluteExpiration(DETAIL_CACHE_DURATION)
-                    .SetSlidingExpiration(TimeSpan.FromMinutes(1));
+                if (useCache)
+                {
+                    var cacheOptions = new MemoryCacheEntryOptions()
+                        .SetAbsoluteExpiration(DETAIL_CACHE_DURATION)
+                        .SetSlidingExpiration(TimeSpan.FromMinutes(1));
 
-                _cache.Set(cacheKey, result, cacheOptions);
-                _logger.LogInformation(
-                    "产品各分店销售数据已缓存: {CacheKey}, 过期时间: {Expiration}",
-                    cacheKey,
-                    DateTime.Now.Add(DETAIL_CACHE_DURATION)
-                );
+                    _cache.Set(cacheKey, result, cacheOptions);
+                    _logger.LogInformation(
+                        "产品各分店销售数据已缓存: {CacheKey}, 过期时间: {Expiration}",
+                        cacheKey,
+                        DateTime.Now.Add(DETAIL_CACHE_DURATION)
+                    );
+                }
 
                 return result;
             }
@@ -2777,6 +2831,9 @@ namespace BlazorApp.Api.Services.React
                 ValidateDateRange(dateRange);
                 if (!IsProductStatisticFresh(statisticStatus))
                     return new List<ChinaSupplierStoreSalesDto>();
+
+                if (_useSupplierRollups)
+                    return await GetChinaSupplierStoresFromRollupsAsync(dateRange, supplierCodes, branchCodes, statisticStatus);
 
                 var cacheKey = SalesDashboardCacheKeys.ChinaSupplierStore(
                     dateRange,
@@ -4222,8 +4279,17 @@ namespace BlazorApp.Api.Services.React
 
         private async Task<string> GetStatisticsCacheVersionAsync()
         {
-            var freshness = await GetStatisticsFreshnessAsync();
-            var scheduledVersion = freshness.LastSuccessfulAtUtc?.Ticks.ToString() ?? "none";
+            // 缓存只依赖最近成功完成时间，无需额外读取最新任务的运行状态。
+            var completedAt = await _context.Db.Queryable<ScheduledTaskLog>()
+                .Where(task =>
+                    task.TaskType == TaskType.UpdateCurrentHourStatistics
+                    && task.Status == ScheduledTaskStatus.Success
+                    && task.CompletedAt != null
+                )
+                .OrderByDescending(task => task.CompletedAt)
+                .Select(task => task.CompletedAt)
+                .FirstAsync();
+            var scheduledVersion = completedAt?.Ticks.ToString() ?? "none";
             var generation = Volatile.Read(ref GetReportStatisticsCacheGenerationState().Value);
             return $"{scheduledVersion}:g{generation}";
         }
@@ -4715,6 +4781,79 @@ namespace BlazorApp.Api.Services.React
             if (expectedDates.Count == 0)
                 return new List<DateTime>();
 
+            // 历史日期的 StoreSales 完成快照已经由后台任务写入状态表；只要统计表确实有行，
+            // 这里无需为了每次报表请求再次扫描 POSM/HBSales 原始单据。当天或未认证日期仍走来源身份核验。
+            var certifiedDates = await GetCertifiedStoreStatisticDatesAsync(expectedDates);
+            var uncertifiedDates = expectedDates
+                .Where(date => !certifiedDates.Contains(date.Date))
+                .ToList();
+            if (uncertifiedDates.Count == 0)
+                return new List<DateTime>();
+
+            var missingDates = new List<DateTime>();
+            foreach (var segment in EnumerateContiguousDateSegments(uncertifiedDates))
+            {
+                missingDates.AddRange(
+                    await GetMissingStoreStatisticDatesFromSourceAsync(
+                        segment.StartDate,
+                        segment.EndDate,
+                        branchCodes
+                    )
+                );
+            }
+
+            return missingDates.Distinct().OrderBy(date => date).ToList();
+        }
+
+        private async Task<HashSet<DateTime>> GetCertifiedStoreStatisticDatesAsync(
+            IReadOnlyCollection<DateTime> expectedDates
+        )
+        {
+            var historicalDates = expectedDates
+                .Select(date => date.Date)
+                .Where(date => date < DateTime.Today)
+                .Distinct()
+                .ToList();
+            if (historicalDates.Count == 0)
+                return new HashSet<DateTime>();
+
+            var startDate = historicalDates.Min();
+            var endExclusive = historicalDates.Max().AddDays(1);
+            var certifiedStateDates = await _context.Db.Queryable<SalesStatisticRefreshState>()
+                .Where(state =>
+                    state.StatisticType == SalesStatisticType.StoreSales
+                    && state.Date >= startDate
+                    && state.Date < endExclusive
+                    && state.Status == SalesStatisticRefreshStatus.Fresh
+                    && state.CompletedAtUtc.HasValue
+                    && state.LastAggregatedAtUtc.HasValue
+                    // 仅有完成标记还不够；没有统计行的日期继续核验零销售或漏写。
+                    && SqlFunc.Subqueryable<StoreSalesStatistic>()
+                        .Where(statistic =>
+                            statistic.Date >= state.Date.Date
+                            && statistic.Date < state.Date.Date.AddDays(1)
+                        )
+                        .Any()
+                )
+                .Select(state => state.Date)
+                .ToListAsync();
+            var expectedDateSet = historicalDates.ToHashSet();
+            return certifiedStateDates
+                .Select(date => date.Date)
+                .Where(expectedDateSet.Contains)
+                .ToHashSet();
+        }
+
+        private async Task<List<DateTime>> GetMissingStoreStatisticDatesFromSourceAsync(
+            DateTime startDate,
+            DateTime endDate,
+            List<string> branchCodes
+        )
+        {
+            var expectedDates = EnumerateReportDates(startDate, endDate);
+            if (expectedDates.Count == 0)
+                return new List<DateTime>();
+
             var query = _context.Db.Queryable<StoreSalesStatistic>()
                 .Where(s => s.Date >= startDate && s.Date <= endDate);
             if (branchCodes.Count > 0)
@@ -4742,6 +4881,34 @@ namespace BlazorApp.Api.Services.React
                 rows,
                 expectedSalesBranchesByDate
             );
+        }
+
+        private static IEnumerable<(DateTime StartDate, DateTime EndDate)> EnumerateContiguousDateSegments(
+            IReadOnlyCollection<DateTime> dates
+        )
+        {
+            DateTime? segmentStart = null;
+            DateTime? previousDate = null;
+            foreach (var date in dates.Select(value => value.Date).Distinct().OrderBy(value => value))
+            {
+                if (!segmentStart.HasValue)
+                {
+                    segmentStart = date;
+                    previousDate = date;
+                    continue;
+                }
+
+                if (date != previousDate!.Value.AddDays(1))
+                {
+                    yield return (segmentStart.Value, previousDate.Value);
+                    segmentStart = date;
+                }
+
+                previousDate = date;
+            }
+
+            if (segmentStart.HasValue)
+                yield return (segmentStart.Value, previousDate!.Value);
         }
 
         private async Task<List<DateTime>> GetMissingHourlyStatisticDatesAsync(
@@ -7511,6 +7678,8 @@ namespace BlazorApp.Api.Services.React
         )
         {
             ValidateDateRange(dateRange);
+            if (_useSupplierRollups)
+                return await GetSupplierBackedProductReportStatusAsync(dateRange);
             var currentStatus = await GetProductStatisticStatusAsync(
                 dateRange.StartDate.Date,
                 dateRange.EndDate.Date

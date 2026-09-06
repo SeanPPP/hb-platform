@@ -13,6 +13,7 @@ using BlazorApp.Api.Services.Background;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.HBweb;
 using BlazorApp.Shared.Models.POSM;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -56,6 +57,10 @@ public sealed class SalesDashboardBestSellersTests : IDisposable
             typeof(StoreRetailPrice),
             typeof(StoreSalesStatistic),
             typeof(StoreSupplierSalesDetail),
+            // 商品日统计会原子派生供应商汇总，测试库需包含完整的读写表。
+            typeof(HBLocalSupplier),
+            typeof(AustralianSupplierStoreSalesDetail),
+            typeof(ChinaSupplierStoreSalesDetail),
             typeof(ProductStoreDailySalesStatistic),
             typeof(SalesStatisticRefreshState),
             typeof(ChinaSupplier)

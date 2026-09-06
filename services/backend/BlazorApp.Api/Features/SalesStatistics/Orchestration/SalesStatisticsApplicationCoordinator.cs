@@ -85,7 +85,7 @@ internal sealed class SalesStatisticsApplicationCoordinator :
             _orchestration
         );
         _supplierStore = new SalesStatisticsSupplierStoreSlice(shared);
-        _dailyHourly = new SalesStatisticsDailyHourlySlice(shared, _storeDaily, _supplierStore);
+        _dailyHourly = new SalesStatisticsDailyHourlySlice(shared, _storeDaily, _productEntry);
         _supplier = new SalesStatisticsSupplierSlice(shared);
         _supplierBatch = new SalesStatisticsSupplierBatchSlice(
             shared,
@@ -154,18 +154,18 @@ internal sealed class SalesStatisticsApplicationCoordinator :
             branchCodes
         );
 
-    internal Task Update2025StoreAndProductStatisticsFromBatchSnapshotAsync(
+    internal Task<ProductStoreDailyBatchFence> Update2025StoreAndProductStatisticsFromBatchSnapshotAsync(
         DateTime date,
         HBSales2025BatchSnapshot snapshot) =>
         _productEntry.Update2025StoreAndProductStatisticsFromBatchSnapshotAsync(date, snapshot);
 
-    internal Task Finalize2025BatchSnapshotDateAsync(DateTime date) =>
-        _productEntry.Finalize2025BatchSnapshotDateAsync(date);
+    internal Task Finalize2025BatchSnapshotDateAsync(ProductStoreDailyBatchFence expectedFence) =>
+        _productEntry.Finalize2025BatchSnapshotDateAsync(expectedFence);
 
     internal Task Fail2025BatchSnapshotDatesAsync(
-        IReadOnlyCollection<DateTime> dates,
+        IReadOnlyCollection<ProductStoreDailyBatchFence> fences,
         string errorMessage) =>
-        _productEntry.Fail2025BatchSnapshotDatesAsync(dates, errorMessage);
+        _productEntry.Fail2025BatchSnapshotDatesAsync(fences, errorMessage);
 
     internal Task RefreshRecentProductStoreDailyStatistics(int days = 7) =>
         _productEntry.RefreshRecentProductStoreDailyStatistics(days);
@@ -251,7 +251,7 @@ internal sealed class SalesStatisticsApplicationCoordinator :
         DateTime date) =>
         _productSupport.GetProductStoreDailyReturnAdjustmentsAsync(date);
 
-    internal Task Update2025StoreAndProductStatisticsAtomicallyAsync(
+    internal Task<ProductStoreDailyBatchFence> Update2025StoreAndProductStatisticsAtomicallyAsync(
         SqlSugarContext context,
         POSMSqlSugarContext posmContext,
         HBSalesRecordSqlSugarContext? hbSalesContext,

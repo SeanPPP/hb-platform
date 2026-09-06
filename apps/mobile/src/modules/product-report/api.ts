@@ -53,8 +53,10 @@ export function getProductReportCacheVersionSyncDecision(
   isFetching: boolean,
   maxAttempts: number,
 ): ProductReportCacheVersionSyncDecision {
+  // 在途请求可能暂时与旧缓存对齐；整组完成前不能清零协调重试次数。
+  if (isFetching) return "wait";
   if (state === "aligned") return "ready";
-  if (state !== "mismatch" || isFetching) return "wait";
+  if (state !== "mismatch") return "wait";
   return attemptCount < Math.max(0, maxAttempts) ? "refetch" : "exhausted";
 }
 
@@ -591,8 +593,8 @@ function summarizeExecutiveBranchPerformance(
     pollingAttemptCount: snapshot.pollingAttemptCount,
     statisticStatus: snapshot.isComplete ? "Fresh" : "Pending",
     statisticMessage: null,
-    statisticUpdatedAt: null,
-    cacheVersion: null,
+    statisticUpdatedAt: snapshot.statisticUpdatedAt,
+    cacheVersion: snapshot.cacheVersion,
   };
 }
 

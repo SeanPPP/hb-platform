@@ -14,16 +14,16 @@ namespace BlazorApp.Api.Services
     internal sealed class SalesStatisticsDailyHourlySlice : SalesStatisticsSliceBase
     {
         private readonly SalesStatisticsStoreDailySlice _storeDaily;
-        private readonly SalesStatisticsSupplierStoreSlice _supplierStore;
+        private readonly SalesStatisticsProductStoreDailyEntrySlice _productEntry;
 
         public SalesStatisticsDailyHourlySlice(
             SalesStatisticsSliceContext shared,
             SalesStatisticsStoreDailySlice storeDaily,
-            SalesStatisticsSupplierStoreSlice supplierStore)
+            SalesStatisticsProductStoreDailyEntrySlice productEntry)
             : base(shared)
         {
             _storeDaily = storeDaily;
-            _supplierStore = supplierStore;
+            _productEntry = productEntry;
         }
 
     internal static async Task ExecuteTransactionSafelyAsync(
@@ -67,12 +67,8 @@ namespace BlazorApp.Api.Services
             await UpdateDailyStatistics(currentDate.ToString("yyyy-MM-dd"));
             // 更新分店统计数据
             await _storeDaily.UpdateStoreStatistics(currentDate);
-            // await UpdateSupplierStatistics(currentDate);
-            // await UpdateStoreSupplierStatistics(currentDate);
-            // 更新澳洲供应商门店统计数据
-            await _supplierStore.UpdateAustralianSupplierStoreStatistics(currentDate);
-            // 更新中国供应商门店统计数据
-            await _supplierStore.UpdateChinaSupplierStoreStatistics(currentDate);
+            // 商品快照完成后在同一派生写入边界发布澳洲/中国供应商表，避免旧入口重复重建。
+            await _productEntry.UpdateProductStoreDailyStatistics(currentDate);
 
             _logger.LogInformation(
                 "当前小时统计数据更新完成: {Date} {Hour}",

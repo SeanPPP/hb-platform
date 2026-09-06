@@ -56,6 +56,73 @@ namespace BlazorApp.Api.Tests
             );
         }
 
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task GetDetails_商品类型读取当前主档且不按条码或订单操作推断(bool paged)
+        {
+            var cases = new (string Code, int? Type, bool Deleted)[]
+            {
+                ("P-NORMAL", 0, false),
+                ("P-SET", 1, false),
+                ("P-MULTI", 2, false),
+                ("P-NULL", null, false),
+                ("P-DELETED", 2, true),
+            };
+            foreach (var item in cases)
+            {
+                await _db.Insertable(new Product
+                {
+                    UUID = item.Code,
+                    ProductCode = item.Code,
+                    Barcode = "SHARED-BARCODE",
+                    ProductType = item.Type,
+                    IsDeleted = item.Deleted,
+                }).ExecuteCommandAsync();
+            }
+
+            var codes = cases.Select(item => item.Code).Concat(new[] { "P-MISSING", null }).ToArray();
+            for (var i = 0; i < codes.Length; i++)
+            {
+                await _db.Insertable(new StoreLocalSupplierInvoiceDetails
+                {
+                    DetailGUID = $"type-detail-{i}",
+                    InvoiceGUID = "invoice-product-type",
+                    ProductCode = codes[i],
+                    Barcode = "SHARED-BARCODE",
+                    AdditionalBarcodesJson = "[\"OTHER-BARCODE\"]",
+                    ActivityType = 2,
+                    IsDeleted = false,
+                }).ExecuteCommandAsync();
+            }
+
+            async Task<List<LocalSupplierInvoiceItemDto>> ReadAsync()
+            {
+                if (paged)
+                {
+                    var response = await CreateService().GetDetailsGridAsync("invoice-product-type", new GridRequestDto { PageSize = 50 });
+                    Assert.True(response.Success, response.Message);
+                    return response.Items!;
+                }
+                var result = await CreateService().GetDetailsAsync("invoice-product-type");
+                Assert.True(result.Success, result.Message);
+                return result.Data!;
+            }
+
+            var details = (await ReadAsync()).ToDictionary(item => item.DetailGUID);
+            Assert.Equal(7, details.Count);
+            Assert.Equal(0, details["type-detail-0"].ProductType);
+            Assert.Equal(1, details["type-detail-1"].ProductType);
+            Assert.Equal(2, details["type-detail-2"].ProductType);
+            foreach (var i in new[] { 3, 4, 5, 6 })
+                Assert.Null(details[$"type-detail-{i}"].ProductType);
+
+            // 再次读取应反映主档最新类型，不在进货单中保存类型快照。
+            await _db.Updateable<Product>().SetColumns(item => item.ProductType == 2)
+                .Where(item => item.ProductCode == "P-NORMAL").ExecuteCommandAsync();
+            Assert.Equal(2, (await ReadAsync()).Single(item => item.DetailGUID == "type-detail-0").ProductType);
+        }
+
         [Fact]
         public async Task UpdateAsync_ChangingStoreAndSupplier_CascadesTrimmedCodesToInvoiceAndDetails()
         {
