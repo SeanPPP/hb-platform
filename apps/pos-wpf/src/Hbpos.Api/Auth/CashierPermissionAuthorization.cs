@@ -28,6 +28,7 @@ public static class CashierAuthorizationPolicies
     public const string SpecialProductsView = "Cashier.SpecialProductsView";
     public const string SpecialProductsManage = "Cashier.SpecialProductsManage";
     public const string DeviceRegistration = "Cashier.DeviceRegistration";
+    public const string RemoteMaintenance = "Cashier.RemoteMaintenance";
     public const string DeviceRegistrationReset = "Cashier.DeviceRegistrationReset";
     public const string OperationAuditView = "Cashier.OperationAuditView";
     public const string HoldOrder = "Cashier.HoldOrder";
@@ -62,6 +63,8 @@ public static class CashierAuthorizationPolicies
         Add(options, SpecialProductsView, Permissions.PosTerminal.SpecialProducts.View);
         Add(options, SpecialProductsManage, Permissions.PosTerminal.SpecialProducts.Manage);
         Add(options, DeviceRegistration, Permissions.PosTerminal.Settings.DeviceRegistration);
+        // 远程维护面向已登录 cashier，但不要求可委派的设备设置权限；ticket 仍必须绑定当前设备。
+        AddCashierTicketOnly(options, RemoteMaintenance);
         AddFreshEmployee(
             options,
             DeviceRegistrationReset,
@@ -132,13 +135,24 @@ public static class CashierAuthorizationPolicies
                 MaximumTicketAge: maximumTicketAge));
         });
     }
+
+    private static void AddCashierTicketOnly(AuthorizationOptions options, string name)
+    {
+        options.AddPolicy(name, policy =>
+        {
+            policy.RequireAuthenticatedUser();
+            policy.AddRequirements(new CashierPermissionRequirement([], RequireCashierTicket: true, RequireHardwareBoundTicket: true));
+        });
+    }
 }
 
 public sealed record CashierPermissionRequirement(
     string[] PermissionCodes,
     bool RequireFreshOnlineTicket = false,
     bool RequireActiveEmployee = false,
-    TimeSpan? MaximumTicketAge = null) : IAuthorizationRequirement;
+    TimeSpan? MaximumTicketAge = null,
+    bool RequireCashierTicket = false,
+    bool RequireHardwareBoundTicket = false) : IAuthorizationRequirement;
 
 public static class CashierAuthorizationContext
 {
@@ -205,6 +219,9 @@ public sealed class CashierPermissionAuthorizationHandler(
             string.Equals(ticket.DeviceCode, deviceCode, StringComparison.OrdinalIgnoreCase) &&
             (!requirement.RequireFreshOnlineTicket ||
              (!string.IsNullOrWhiteSpace(ticket.HardwareId) &&
+              string.Equals(ticket.HardwareId, deviceHardwareId, StringComparison.Ordinal))) &&
+            (!requirement.RequireHardwareBoundTicket ||
+             (!string.IsNullOrWhiteSpace(ticket.HardwareId) &&
               string.Equals(ticket.HardwareId, deviceHardwareId, StringComparison.Ordinal))))
         {
             var nowUtc = DateTimeOffset.UtcNow;
@@ -220,7 +237,7 @@ public sealed class CashierPermissionAuthorizationHandler(
 
             // 只有真正校验收银员票据时才解析数据库服务，普通设备认证端点不会提前连接数据库。
             var cashierService = httpContext!.RequestServices.GetRequiredService<ICashierService>();
-            var hasPermission = await cashierService.HasAnyPermissionAsync(
+            var hasPermission = requirement.RequireCashierTicket || await cashierService.HasAnyPermissionAsync(
                     ticket.UserGuid,
                     ticket.StoreCode,
                     requirement.PermissionCodes,
@@ -243,7 +260,8 @@ public sealed class CashierPermissionAuthorizationHandler(
             }
         }
 
-        if (!requirement.RequireFreshOnlineTicket
+        if (!requirement.RequireCashierTicket
+            && !requirement.RequireFreshOnlineTicket
             && EmergencyLoginTokenCodec.HasSupportedPrefix(token)
             && !await IsAppReviewDeviceAsync())
         {
@@ -267,7 +285,8 @@ public sealed class CashierPermissionAuthorizationHandler(
             configuration?["CashierAuthorization:Mode"],
             "Audit",
             StringComparison.OrdinalIgnoreCase);
-        if (!requirement.RequireFreshOnlineTicket
+        if (!requirement.RequireCashierTicket
+            && !requirement.RequireFreshOnlineTicket
             && isAuditMode
             && !await IsAppReviewDeviceAsync())
         {

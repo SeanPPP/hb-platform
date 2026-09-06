@@ -55,7 +55,7 @@ dotnet build "$project" --configuration Release --no-restore
 dotnet test "$project" \
   --configuration Release \
   --no-build \
-  --filter 'FullyQualifiedName~BlazorApp.Api.Tests.SchemaMigrationSqlServerIntegrationTests' \
+  --filter 'FullyQualifiedName~BlazorApp.Api.Tests.SchemaMigrationSqlServerIntegrationTests|FullyQualifiedName~BlazorApp.Api.Tests.RustDeskClientSchemaTests.SqlServerMigrationIsIdempotentAndRejectsMissingColumns' \
   --logger 'trx;LogFileName=schema-migration-sql.trx' \
   --results-directory "$results_root"
 node scripts/ci/assert-trx-tests.mjs \

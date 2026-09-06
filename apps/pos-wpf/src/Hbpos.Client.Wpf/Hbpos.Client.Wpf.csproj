@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Hbpos.Contracts\Hbpos.Contracts.csproj" />
+    <ProjectReference Include="..\Hbpos.RemoteMaintenance.Setup\Hbpos.RemoteMaintenance.Setup.csproj" />
     <ProjectReference Include="..\..\..\..\services\backend\BlazorApp.Shared\BlazorApp.Shared.csproj" />
   </ItemGroup>
 
@@ -41,6 +42,4 @@
   </ItemGroup>
 
 </Project>
-
-
 

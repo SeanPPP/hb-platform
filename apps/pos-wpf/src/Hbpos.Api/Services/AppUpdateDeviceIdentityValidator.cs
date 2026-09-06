@@ -9,16 +9,29 @@ public interface IAppUpdateDeviceIdentityValidator
         string hardwareId,
         string authorizationCode,
         CancellationToken cancellationToken);
+
+    Task<AppUpdateValidatedDeviceIdentity?> ValidateAsync(
+        string hardwareId,
+        string authorizationCode,
+        string storeCode,
+        string deviceCode,
+        CancellationToken cancellationToken) =>
+        ValidateAsync(hardwareId, authorizationCode, cancellationToken);
 }
 
-public sealed record AppUpdateValidatedDeviceIdentity(string HardwareId);
+public sealed record AppUpdateValidatedDeviceIdentity(
+    string HardwareId,
+    string? StoreCode = null,
+    string? DeviceCode = null);
 
 internal sealed record AppUpdateDeviceRegistrationSnapshot(
     string? HardwareId,
     string? AuthorizationCode,
     int DeviceStatus,
     string? DeviceType,
-    string? DeviceSystem);
+    string? DeviceSystem,
+    string? StoreCode = null,
+    string? DeviceCode = null);
 
 public sealed class AppUpdateDeviceIdentityValidator : IAppUpdateDeviceIdentityValidator
 {
@@ -30,6 +43,8 @@ public sealed class AppUpdateDeviceIdentityValidator : IAppUpdateDeviceIdentityV
         SELECT TOP 1
             [设备硬件识别码] AS HardwareId,
             [设备授权码] AS AuthorizationCode,
+            [分店代码] AS StoreCode,
+            [系统设备编号] AS DeviceCode,
             [设备状态] AS DeviceStatus,
             [设备类型] AS DeviceType,
             [设备系统] AS DeviceSystem
@@ -59,8 +74,28 @@ public sealed class AppUpdateDeviceIdentityValidator : IAppUpdateDeviceIdentityV
         string authorizationCode,
         CancellationToken cancellationToken)
     {
+        return await ValidateCoreAsync(hardwareId, authorizationCode, null, null, cancellationToken);
+    }
+
+    public Task<AppUpdateValidatedDeviceIdentity?> ValidateAsync(
+        string hardwareId,
+        string authorizationCode,
+        string storeCode,
+        string deviceCode,
+        CancellationToken cancellationToken) =>
+        ValidateCoreAsync(hardwareId, authorizationCode, storeCode, deviceCode, cancellationToken);
+
+    private async Task<AppUpdateValidatedDeviceIdentity?> ValidateCoreAsync(
+        string hardwareId,
+        string authorizationCode,
+        string? storeCode,
+        string? deviceCode,
+        CancellationToken cancellationToken)
+    {
         var normalizedHardwareId = Normalize(hardwareId);
         var normalizedAuthorizationCode = Normalize(authorizationCode);
+        var normalizedStoreCode = Normalize(storeCode);
+        var normalizedDeviceCode = Normalize(deviceCode);
         if (string.IsNullOrEmpty(normalizedHardwareId) || string.IsNullOrEmpty(normalizedAuthorizationCode))
         {
             return null;
@@ -75,6 +110,8 @@ public sealed class AppUpdateDeviceIdentityValidator : IAppUpdateDeviceIdentityV
         // 关键逻辑：先按原始硬件号取全局最新记录，再检查授权码、状态和平台，禁止旧授权或旧启用行回退命中。
         if (registration is null ||
             !string.Equals(registration.AuthorizationCode?.Trim(), normalizedAuthorizationCode, StringComparison.Ordinal) ||
+            (!string.IsNullOrEmpty(normalizedStoreCode) && !string.Equals(registration.StoreCode?.Trim(), normalizedStoreCode, StringComparison.OrdinalIgnoreCase)) ||
+            (!string.IsNullOrEmpty(normalizedDeviceCode) && !string.Equals(registration.DeviceCode?.Trim(), normalizedDeviceCode, StringComparison.OrdinalIgnoreCase)) ||
             registration.DeviceStatus != EnabledStatus ||
             !string.Equals(registration.DeviceType, PosDeviceType, StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(registration.DeviceSystem, WindowsDeviceSystem, StringComparison.OrdinalIgnoreCase) ||
@@ -83,7 +120,7 @@ public sealed class AppUpdateDeviceIdentityValidator : IAppUpdateDeviceIdentityV
             return null;
         }
 
-        return new AppUpdateValidatedDeviceIdentity(registration.HardwareId!.Trim());
+        return new AppUpdateValidatedDeviceIdentity(registration.HardwareId!.Trim(), registration.StoreCode?.Trim(), registration.DeviceCode?.Trim());
     }
 
     private static async Task<AppUpdateDeviceRegistrationSnapshot?> LoadLatestRegistrationAsync(
@@ -103,7 +140,9 @@ public sealed class AppUpdateDeviceIdentityValidator : IAppUpdateDeviceIdentityV
                 registration.AuthorizationCode,
                 registration.DeviceStatus,
                 registration.DeviceType,
-                registration.DeviceSystem);
+                registration.DeviceSystem,
+                registration.StoreCode,
+                registration.DeviceCode);
     }
 
     private static string Normalize(string? value) => (value ?? string.Empty).Trim();
@@ -113,6 +152,10 @@ public sealed class AppUpdateDeviceIdentityValidator : IAppUpdateDeviceIdentityV
         public string? HardwareId { get; set; }
 
         public string? AuthorizationCode { get; set; }
+
+        public string? StoreCode { get; set; }
+
+        public string? DeviceCode { get; set; }
 
         public int DeviceStatus { get; set; }
 

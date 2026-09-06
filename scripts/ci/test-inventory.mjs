@@ -166,6 +166,8 @@ async function runWebEsbuild(files, appRoot) {
         jsx: 'automatic',
         define: { 'import.meta.env': '{}' },
         external: ['vite', '@vitejs/plugin-react'],
+        // 路由测试会加载页面依赖；Node 不注入样式，图片仍保留为可用 URL。
+        loader: { '.css': 'empty', '.png': 'dataurl' },
         banner: {
           js: 'import { createRequire as __ciCreateRequire } from "node:module"; const require = __ciCreateRequire(import.meta.url);',
         },

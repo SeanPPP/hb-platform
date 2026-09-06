@@ -8,6 +8,7 @@ using Hbpos.Client.Wpf.Models;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Contracts.Linkly;
 using Hbpos.Contracts.Stores;
+using Hbpos.RemoteMaintenance.Setup;
 
 namespace Hbpos.Client.Wpf.ViewModels;
 
@@ -16,7 +17,8 @@ public enum SettingsCategory
     DataMaintenance,
     PaymentTerminal,
     ReceiptPrinter,
-    DeviceRegistration
+    DeviceRegistration,
+    RemoteMaintenance
 }
 
 public enum LinklySettingsMode
@@ -78,6 +80,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     private readonly ICashierSessionContext _cashierSessionContext;
     private readonly bool _enforcePermissions;
     private readonly IOperationAuthorizationService? _operationAuthorizationService;
+    private readonly IRemoteMaintenanceService? _remoteMaintenanceService;
     private readonly DataMaintenanceSection _dataMaintenanceSection;
     private readonly ReceiptPrinterSection _receiptPrinterSection;
     private CardTerminalConfiguration _loadedConfiguration = CardTerminalConfiguration.Default;
@@ -222,7 +225,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         bool enforcePermissionsWhenNoCashier = false,
         ApiServerSettingsViewModel? apiServerSettings = null,
         IOperationAuthorizationService? operationAuthorizationService = null,
-        PosSessionState? session = null)
+        PosSessionState? session = null,
+        IRemoteMaintenanceService? remoteMaintenanceService = null)
     {
         _setupService = setupService;
         _localization = localization;
@@ -241,6 +245,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         _cashierSessionContext = cashierSessionContext ?? new CashierSessionContext();
         _enforcePermissions = enforcePermissionsWhenNoCashier;
         _operationAuthorizationService = operationAuthorizationService;
+        _remoteMaintenanceService = remoteMaintenanceService;
         Session = session ?? new PosSessionState("HB POS", string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, false, 0, _cashierSessionContext.CurrentSession);
         AppUpdateChannelText = string.IsNullOrWhiteSpace(appUpdateChannel)
             ? "production"
@@ -302,6 +307,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         SelectPaymentTerminalCommand = new AsyncRelayCommand(() => SelectCategoryAsync(SettingsCategory.PaymentTerminal, Permissions.PosTerminal.Settings.PaymentTerminal));
         SelectReceiptPrinterCommand = new AsyncRelayCommand(() => SelectCategoryAsync(SettingsCategory.ReceiptPrinter, Permissions.PosTerminal.Settings.ReceiptPrinter));
         SelectDeviceRegistrationCommand = new AsyncRelayCommand(() => SelectCategoryAsync(SettingsCategory.DeviceRegistration, Permissions.PosTerminal.Settings.DeviceRegistration));
+        SelectRemoteMaintenanceCommand = new AsyncRelayCommand(SelectRemoteMaintenanceAsync);
         LoadCommand = new AsyncRelayCommand(LoadAsync);
         LoadLocationsCommand = new AsyncRelayCommand(LoadLocationsAsync, CanLoadLocations);
         LoadDevicesCommand = new AsyncRelayCommand(LoadDevicesAsync, CanLoadDevices);
@@ -328,6 +334,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ResetTestSalesDataCommand = new AsyncRelayCommand(ResetTestSalesDataAsync, CanResetTestSalesData);
         ReregisterDeviceCommand = new AsyncRelayCommand(ReregisterDeviceAsync, CanReregisterDevice);
         CheckForAppUpdateCommand = new AsyncRelayCommand(CheckForAppUpdateAsync, CanCheckForAppUpdate);
+        InstallRemoteMaintenanceCommand = new AsyncRelayCommand(InstallRemoteMaintenanceAsync, CanInstallRemoteMaintenance);
         TestLinklyTransactionStatusCommand = new AsyncRelayCommand(TestLinklyTransactionStatusAsync, CanTestLinklyTransactionStatus);
         BackCommand = new RelayCommand(ReturnToPos, () => _returnToPos is not null);
         ResetLinklyModePriority(CardTerminalConfiguration.Default.LinklyConnectionModePriority);
@@ -429,6 +436,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public IRelayCommand SelectDeviceRegistrationCommand { get; }
 
+    public IAsyncRelayCommand SelectRemoteMaintenanceCommand { get; }
+
     public IAsyncRelayCommand SaveReceiptPrinterCommand { get; }
 
     public IAsyncRelayCommand TestReceiptPrinterCommand { get; }
@@ -445,6 +454,8 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public IAsyncRelayCommand CheckForAppUpdateCommand { get; }
 
+    public IAsyncRelayCommand InstallRemoteMaintenanceCommand { get; }
+
     public IRelayCommand BackCommand { get; }
 
     public string ScreenTitleText => T("settings.title");
@@ -455,6 +466,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         SettingsCategory.PaymentTerminal => T("settings.subtitle.paymentTerminal"),
         SettingsCategory.ReceiptPrinter => T("settings.subtitle.receiptPrinter"),
         SettingsCategory.DeviceRegistration => T("settings.subtitle.deviceRegistration"),
+        SettingsCategory.RemoteMaintenance => RemoteMaintenanceTitleText,
         _ => T("settings.title")
     };
 
@@ -487,6 +499,22 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
     public bool IsReceiptPrinterSelected => SelectedCategory == SettingsCategory.ReceiptPrinter;
 
     public bool IsDeviceRegistrationSelected => SelectedCategory == SettingsCategory.DeviceRegistration;
+
+    public bool IsRemoteMaintenanceSelected => SelectedCategory == SettingsCategory.RemoteMaintenance;
+
+    public bool IsRemoteMaintenanceConfigured => _remoteMaintenanceStatus?.IsConfigured == true;
+
+    public string RemoteMaintenanceStatusText => _remoteMaintenanceStatus?.ServiceStatus ?? "notInstalled";
+
+    public string RemoteMaintenanceDetailText => _remoteMaintenanceStatus?.Detail ?? "尚未配置远程维护。";
+
+    public string RemoteMaintenanceTitleText => "远程维护";
+
+    public string RemoteMaintenanceDescriptionText => "安装并维护本机 RustDesk 与独立状态服务，收银员退出后仍可在线。";
+
+    public string RemoteMaintenanceActionText => IsRemoteMaintenanceConfigured ? "检查并恢复" : "安装远程维护";
+
+    private RemoteMaintenanceStatus? _remoteMaintenanceStatus;
 
     public bool IsDebugTestSalesDataResetVisible
     {
@@ -1503,6 +1531,54 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         return _dataMaintenanceSection.CanCheckForAppUpdate();
     }
 
+    private bool CanInstallRemoteMaintenance()
+    {
+        return !IsBusy && (!_enforcePermissions || _cashierSessionContext.CurrentSession is not null);
+    }
+
+    private async Task SelectRemoteMaintenanceAsync()
+    {
+        SelectedCategory = SettingsCategory.RemoteMaintenance;
+        await LoadRemoteMaintenanceStatusAsync();
+    }
+
+    private async Task LoadRemoteMaintenanceStatusAsync()
+    {
+        if (_remoteMaintenanceService is null)
+        {
+            _remoteMaintenanceStatus = new RemoteMaintenanceStatus(false, string.Empty, string.Empty, "notInstalled", "远程维护服务未注册。");
+        }
+        else
+        {
+            _remoteMaintenanceStatus = await _remoteMaintenanceService.GetStatusAsync();
+        }
+
+        OnPropertyChanged(nameof(IsRemoteMaintenanceConfigured));
+        OnPropertyChanged(nameof(RemoteMaintenanceStatusText));
+        OnPropertyChanged(nameof(RemoteMaintenanceDetailText));
+        RaiseCommandStates();
+    }
+
+    private async Task InstallRemoteMaintenanceAsync()
+    {
+        if (_remoteMaintenanceService is null)
+        {
+            _remoteMaintenanceStatus = new RemoteMaintenanceStatus(false, string.Empty, string.Empty, "notInstalled", "远程维护服务未注册。");
+            OnPropertyChanged(nameof(RemoteMaintenanceDetailText));
+            return;
+        }
+
+        await RunBusyAsync(async () =>
+        {
+            var result = await _remoteMaintenanceService.InstallAsync(Session);
+            _remoteMaintenanceStatus = result.Status;
+            SetStatusOverride(result.Message);
+            OnPropertyChanged(nameof(IsRemoteMaintenanceConfigured));
+            OnPropertyChanged(nameof(RemoteMaintenanceStatusText));
+            OnPropertyChanged(nameof(RemoteMaintenanceDetailText));
+        }, "install remote maintenance");
+    }
+
     private void ReturnToPos()
     {
         // 离开设置页时取消目录维护请求，给无限 HTTP 超时提供真实的用户退出路径。
@@ -1614,6 +1690,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(IsPaymentTerminalSelected));
         OnPropertyChanged(nameof(IsReceiptPrinterSelected));
         OnPropertyChanged(nameof(IsDeviceRegistrationSelected));
+        OnPropertyChanged(nameof(IsRemoteMaintenanceSelected));
     }
 
     private async Task LoadReceiptPrinterSettingsAsync()
@@ -1998,6 +2075,7 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
         ResetTestSalesDataCommand.NotifyCanExecuteChanged();
         ReregisterDeviceCommand.NotifyCanExecuteChanged();
         CheckForAppUpdateCommand.NotifyCanExecuteChanged();
+        InstallRemoteMaintenanceCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(CanSaveLinklyCloudCredentialFromView));
         OnPropertyChanged(nameof(CanPairLinklyCloudFromView));
         OnPropertyChanged(nameof(CanCancelLinklyCloudPairingFromView));

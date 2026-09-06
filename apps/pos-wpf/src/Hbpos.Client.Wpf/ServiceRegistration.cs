@@ -4,6 +4,7 @@ using Hbpos.Client.Wpf.Localization;
 using Hbpos.Client.Wpf.Services;
 using Hbpos.Client.Wpf.Services.Facades;
 using Hbpos.Client.Wpf.ViewModels;
+using Hbpos.RemoteMaintenance.Setup;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -60,6 +61,16 @@ public static class ServiceRegistration
         services.AddSingleton<DeviceAuthorizationState>();
         services.AddTransient<DeviceAuthorizationMessageHandler>();
         services.AddSingleton<ILocalAppSettingsRepository, LocalAppSettingsRepository>();
+        services.AddSingleton<IRemoteMaintenanceSecretProtector, DpapiRemoteMaintenanceSecretProtector>();
+        services.AddSingleton(sp => new RemoteMaintenanceJournal(
+            Path.Combine(localDataDirectory, "remote-maintenance.journal"),
+            sp.GetRequiredService<IRemoteMaintenanceSecretProtector>()));
+        services.AddSingleton<IRemoteMaintenanceCommandRunner, WindowsRemoteMaintenanceCommandRunner>();
+        services.AddSingleton<IRemoteMaintenanceServiceControl, WindowsRemoteMaintenanceServiceControl>();
+        services.AddSingleton<IRemoteMaintenanceUacHelperLauncher, WindowsRemoteMaintenanceUacHelperLauncher>();
+        services.AddSingleton<IRemoteMaintenanceInstaller, WindowsRemoteMaintenanceInstaller>();
+        services.AddSingleton<IRemoteMaintenanceArtifactDownloader, RemoteMaintenanceArtifactDownloader>();
+        services.AddSingleton<IRemoteMaintenanceService, RemoteMaintenanceService>();
         services.AddSingleton<IAppShutdownCoordinator, AppShutdownCoordinator>();
         services.AddSingleton<ICashierSessionContext, CashierSessionContext>();
         services.AddSingleton<IEmergencyLoginPublicKeyCache, EmergencyLoginPublicKeyCache>();
@@ -211,6 +222,14 @@ public static class ServiceRegistration
             client.BaseAddress = initialApiAddress;
             client.Timeout = TimeSpan.FromSeconds(3);
         })
+        .AddRuntimeApiEndpoint()
+        .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
+        services.AddHttpClient<IRemoteMaintenanceApiClient, RemoteMaintenanceApiClient>(client =>
+        {
+            client.BaseAddress = initialApiAddress;
+            client.Timeout = TimeSpan.FromSeconds(30);
+        })
+        .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false })
         .AddRuntimeApiEndpoint()
         .AddHttpMessageHandler<DeviceAuthorizationMessageHandler>();
         services.AddHttpClient<IConnectivityApiClient, ConnectivityApiClient>(client =>
@@ -575,7 +594,8 @@ public static class ServiceRegistration
                 sharedHeldOrderRepository: sp.GetRequiredService<ISharedHeldOrderRepository>(),
                 sharedHeldOrderPublicationWorker: sp.GetRequiredService<ISharedHeldOrderPublicationWorker>(),
                 storeReceiptProfileApiClient: sp.GetRequiredService<IStoreReceiptProfileApiClient>(),
-                cashierSessionRefreshService: sp.GetRequiredService<CashierSessionRefreshService>());
+                cashierSessionRefreshService: sp.GetRequiredService<CashierSessionRefreshService>(),
+                remoteMaintenanceService: sp.GetRequiredService<IRemoteMaintenanceService>());
             viewModel.ConfigureAuditSyncCenter(
                 sp.GetRequiredService<ClientLogOutboxStore>(),
                 sp.GetRequiredService<OperationAuditUploadService>(),

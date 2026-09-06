@@ -208,6 +208,11 @@
                             <materialDesign:PackIcon Kind="ServerNetwork" Width="18" Height="18" Margin="0,0,8,0" />
                             <TextBlock Text="{Binding DeviceRegistrationTitleText}" FontWeight="Bold" />
                         </StackPanel>
+                        <StackPanel Orientation="Horizontal"
+                                    Visibility="{Binding IsRemoteMaintenanceSelected, Converter={StaticResource BoolToVis}}">
+                            <materialDesign:PackIcon Kind="RemoteDesktop" Width="18" Height="18" Margin="0,0,8,0" />
+                            <TextBlock Text="{Binding RemoteMaintenanceTitleText}" FontWeight="Bold" />
+                        </StackPanel>
                     </Grid>
                 </Border>
             </Grid>
@@ -292,6 +297,22 @@
                                                      Margin="0,0,12,0"
                                                      Foreground="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}" />
                             <TextBlock Text="{loc:Loc settings.category.deviceRegistrationNav}"
+                                       FontWeight="Bold"
+                                       VerticalAlignment="Center"
+                                       Foreground="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}" />
+                        </StackPanel>
+                    </Button>
+
+                    <Button Command="{Binding SelectRemoteMaintenanceCommand}"
+                            Tag="{Binding IsRemoteMaintenanceSelected}"
+                            Style="{StaticResource SettingsCategoryButtonStyle}">
+                        <StackPanel Orientation="Horizontal">
+                            <materialDesign:PackIcon Kind="RemoteDesktop"
+                                                     Width="21"
+                                                     Height="21"
+                                                     Margin="0,0,12,0"
+                                                     Foreground="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}" />
+                            <TextBlock Text="{Binding RemoteMaintenanceTitleText}"
                                        FontWeight="Bold"
                                        VerticalAlignment="Center"
                                        Foreground="{Binding RelativeSource={RelativeSource AncestorType=Button}, Path=Foreground}" />
@@ -2193,6 +2214,88 @@
                                         </StackPanel>
                                     </Button>
                                     <TextBlock Text="{loc:Loc settings.deviceRegistration.deviceReuse}"
+                                               FontSize="10"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,10,0,0" />
+                                </StackPanel>
+                            </Grid>
+                        </Border>
+                    </Grid>
+
+                    <Grid Visibility="{Binding IsRemoteMaintenanceSelected, Converter={StaticResource BoolToVis}}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+                        <Border Grid.Row="0" Style="{StaticResource SettingsActionCardStyle}" Margin="0,0,0,16">
+                            <DockPanel>
+                                <Border DockPanel.Dock="Left"
+                                        Width="58"
+                                        Height="58"
+                                        Background="#FFEAF2FF"
+                                        CornerRadius="10"
+                                        Margin="0,0,18,0">
+                                    <materialDesign:PackIcon Kind="RemoteDesktop"
+                                                             Width="34"
+                                                             Height="34"
+                                                             Foreground="{StaticResource PosPrimaryBrush}"
+                                                             HorizontalAlignment="Center"
+                                                             VerticalAlignment="Center" />
+                                </Border>
+                                <StackPanel VerticalAlignment="Center">
+                                    <TextBlock Text="{Binding RemoteMaintenanceTitleText}" FontSize="21" FontWeight="Black" />
+                                    <TextBlock Text="{Binding RemoteMaintenanceDescriptionText}"
+                                               FontSize="11"
+                                               Foreground="{StaticResource PosMutedForegroundBrush}"
+                                               TextWrapping="Wrap"
+                                               Margin="0,4,0,0" />
+                                </StackPanel>
+                            </DockPanel>
+                        </Border>
+                        <Border Grid.Row="1" Style="{StaticResource SettingsActionCardStyle}">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Text="本机状态" Style="{StaticResource SettingsLabelStyle}" />
+                                <Border Grid.Row="1"
+                                        Background="#FFF6F8FB"
+                                        BorderBrush="{StaticResource PosBorderBrush}"
+                                        BorderThickness="1"
+                                        CornerRadius="8"
+                                        Padding="14,12"
+                                        Margin="0,0,0,18">
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding RemoteMaintenanceStatusText}"
+                                                   FontSize="18"
+                                                   FontWeight="Black"
+                                                   Foreground="{StaticResource PosTextBrush}" />
+                                        <TextBlock Text="{Binding RemoteMaintenanceDetailText}"
+                                                   FontSize="11"
+                                                   Foreground="{StaticResource PosMutedForegroundBrush}"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,5,0,0" />
+                                    </StackPanel>
+                                </Border>
+                                <StackPanel Grid.Row="2">
+                                    <Button Command="{Binding InstallRemoteMaintenanceCommand}"
+                                            Style="{StaticResource PosPrimaryButtonStyle}"
+                                            Height="46"
+                                            HorizontalAlignment="Left"
+                                            MinWidth="190">
+                                        <StackPanel Orientation="Horizontal">
+                                            <materialDesign:PackIcon Kind="Download"
+                                                                     Width="18"
+                                                                     Height="18"
+                                                                     Margin="0,0,8,0"
+                                                                     Foreground="White" />
+                                            <TextBlock Text="{Binding RemoteMaintenanceActionText}" Foreground="White" />
+                                        </StackPanel>
+                                    </Button>
+                                    <TextBlock Text="安装需要 Windows UAC 授权；配置成功后服务独立运行，不阻塞收银。"
                                                FontSize="10"
                                                Foreground="{StaticResource PosMutedForegroundBrush}"
                                                TextWrapping="Wrap"

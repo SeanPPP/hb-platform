@@ -30,6 +30,26 @@ services:
       - BrowserExtension__SafariStoreUrl=${BROWSER_EXTENSION_SAFARI_STORE_URL:-https://apps.apple.com/au/app/hb-supplier-order/id6803740010}
       # WPF 更新检查密钥只从服务器 .env 注入，禁止写入仓库。
       - WpfAppUpdate__CheckApiKey=${WPF_APP_UPDATE_CHECK_API_KEY:?required}
+      # 远程维护仅在迁移、安装包校验与客户端验收准备好后启用；秘密只从服务器注入。
+      - RemoteMaintenance__Enabled=${REMOTE_MAINTENANCE_ENABLED:-false}
+      - RemoteMaintenance__IdServer=hotbargain.vip:21116
+      - RemoteMaintenance__RelayServer=hotbargain.vip:21117
+      - RemoteMaintenance__PublicKey=${REMOTE_MAINTENANCE_PUBLIC_KEY:-}
+      - RemoteMaintenance__InterApiKey=${REMOTE_MAINTENANCE_INTER_API_KEY:-}
+      - RemoteMaintenance__HeartbeatBaseUrl=https://hotbargain.vip
+      - RemoteMaintenance__OnlineThresholdSeconds=60
+      - RemoteMaintenance__HeartbeatMinIntervalSeconds=10
+      - RemoteMaintenance__ArtifactRootPath=/app/App_Data/RemoteMaintenance/artifacts
+      - RemoteMaintenance__RustdeskArtifact__Version=${REMOTE_MAINTENANCE_RUSTDESK_VERSION:-}
+      - RemoteMaintenance__RustdeskArtifact__FileName=${REMOTE_MAINTENANCE_RUSTDESK_FILE:-}
+      - RemoteMaintenance__RustdeskArtifact__Path=${REMOTE_MAINTENANCE_RUSTDESK_FILE:-}
+      - RemoteMaintenance__RustdeskArtifact__Sha256=${REMOTE_MAINTENANCE_RUSTDESK_SHA256:-}
+      - RemoteMaintenance__RustdeskArtifact__SizeBytes=${REMOTE_MAINTENANCE_RUSTDESK_SIZE:-0}
+      - RemoteMaintenance__StatusAgentArtifact__Version=${REMOTE_MAINTENANCE_AGENT_VERSION:-}
+      - RemoteMaintenance__StatusAgentArtifact__FileName=${REMOTE_MAINTENANCE_AGENT_FILE:-}
+      - RemoteMaintenance__StatusAgentArtifact__Path=${REMOTE_MAINTENANCE_AGENT_FILE:-}
+      - RemoteMaintenance__StatusAgentArtifact__Sha256=${REMOTE_MAINTENANCE_AGENT_SHA256:-}
+      - RemoteMaintenance__StatusAgentArtifact__SizeBytes=${REMOTE_MAINTENANCE_AGENT_SIZE:-0}
       # 中心日志状态与保留策略显式写入生产 compose，外部项目摘要只从 .env 注入。
       - ApplicationLogging__Enabled=true
       - ApplicationLogging__DefaultProjectCode=HBBBackend
@@ -99,6 +119,7 @@ services:
     volumes: &hb-api-volumes
       - hb-api-logs:/app/logs
       - ./data-protection-keys:/app/App_Data/DataProtectionKeys
+      - /www/HBWeb/remote-maintenance/artifacts:/app/App_Data/RemoteMaintenance/artifacts:ro
       - ${ATTENDANCE_QR_DATA_PROTECTION_KEYS_HOST_PATH:?required}:/app/App_Data/AttendanceQrDataProtectionKeys
       - ${LINKLY_CLOUD_CREDENTIAL_DATA_PROTECTION_KEYS_HOST_PATH:?required}:/app/App_Data/LinklyCloudCredentialDataProtectionKeys
     restart: unless-stopped

@@ -1,0 +1,23 @@
+.remote-maintenance-filters .ant-input {
+  width: 220px;
+}
+
+.remote-maintenance-filters .ant-select {
+  min-width: 150px;
+}
+
+.remote-maintenance-hint {
+  font-size: 11px;
+}
+
+@media (max-width: 640px) {
+  .remote-maintenance-filters .ant-input,
+  .remote-maintenance-filters .ant-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .remote-maintenance-filters .ant-space-item {
+    flex: 1 1 100%;
+  }
+}

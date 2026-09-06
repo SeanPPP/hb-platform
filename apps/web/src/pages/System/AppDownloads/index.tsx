@@ -45,6 +45,7 @@ import {
 import { formatAppDownloadLocalDateTime } from './time'
 import AppUpdatePolicyPanel from './AppUpdatePolicyPanel'
 import ServiceApiTokensPanel from './ServiceApiTokensPanel'
+import RustDeskDownloadEntry from './RustDeskDownloadEntry'
 import { MeasuredTable } from '../../../components/MeasuredTable'
 
 function formatVersion(build?: MobileAppBuild | null) {
@@ -100,6 +101,7 @@ function getMirrorStatusColor(status: AppDownloadMirrorStatus) {
 export default function AppDownloadsPage() {
   const { t } = useTranslation()
   const canManageAppDownloads = useAuthStore((state) => state.access.canManageAppDownloads)
+  const isAdmin = useAuthStore((state) => state.access.isAdmin)
   const [latest, setLatest] = useState<MobileAppBuild | null>(null)
   const [items, setItems] = useState<MobileAppBuild[]>([])
   const [buildLoading, setBuildLoading] = useState(false)
@@ -401,6 +403,7 @@ export default function AppDownloadsPage() {
 
   return (
     <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      {isAdmin ? <RustDeskDownloadEntry /> : null}
       <AppUpdatePolicyPanel canManage={canManageAppDownloads} />
 
       <Card title={t('system.appDownloads.latestTitle')} extra={latestActions} loading={buildLoading}>
