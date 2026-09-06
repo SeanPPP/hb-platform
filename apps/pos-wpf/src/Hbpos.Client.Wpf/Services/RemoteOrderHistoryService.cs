@@ -169,8 +169,7 @@ public sealed class OrderHistoryApiClient(HttpClient httpClient) : IOrderHistory
             ("soldTo", request.SoldTo?.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture)),
             ("keyword", request.Keyword),
             ("take", request.Take.ToString(CultureInfo.InvariantCulture)));
-
-        using var queryTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            using var queryTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         queryTimeout.CancelAfter(QueryTimeout);
         try
         {
