@@ -1690,10 +1690,25 @@ async function run() {
   assert.equal(productDetail.setCodes.length, 1);
   assert.equal(productDetail.multiCodes.length, 1);
 
-  await request(
+  const storePriceMutation = await request(
     "PUT",
     `/react/v1/store-product-maintenance/store-prices/${productDetail.storePrice.uuid}`,
     { retailPrice: 13.75, purchasePrice: 5.5 },
+  );
+  assert.equal(storePriceMutation.hqSync?.status, "pending");
+  assert.equal(storePriceMutation.hqSync?.productCode, "REV-PROD-001");
+  const completedHqSync = await request(
+    "GET",
+    `/react/v1/store-product-maintenance/hq-sync/${storePriceMutation.hqSync.operationId}`,
+  );
+  assert.equal(completedHqSync.status, "succeeded");
+  await assert.rejects(
+    () => request(
+      "POST",
+      `/react/v1/store-product-maintenance/hq-sync/${storePriceMutation.hqSync.operationId}/retry`,
+    ),
+    /IOS_REVIEW_HQ_SYNC_RETRY_NOT_ALLOWED/,
+    "Review adapter 必须与真实接口一致，只允许 blocked 操作人工重试",
   );
   productDetail = await getProductDetail();
   assert.equal(productDetail.storePrice.retailPrice, 13.75);
@@ -1715,13 +1730,23 @@ async function run() {
   assert.equal(productDetail.storePrice.purchasePrice, 5.8);
   assert.equal(productDetail.storePrice.retailPrice, 14.5);
 
-  await request(
+  const clearanceMutation = await request(
     "PUT",
     "/react/v1/store-product-maintenance/products/REV-PROD-001/clearance-price",
     { storeCode: "REV001", clearancePrice: 9.25 },
   );
+  assert.equal(clearanceMutation.hqSync?.status, "pending");
   productDetail = await getProductDetail();
   assert.equal(productDetail.clearancePrice.clearancePrice, 9.25);
+  const clearedClearanceMutation = await request(
+    "PUT",
+    "/react/v1/store-product-maintenance/products/REV-PROD-001/clearance-price",
+    { storeCode: "REV001", clearancePrice: null },
+  );
+  assert.equal(clearedClearanceMutation.clearancePrice, null);
+  assert.equal(clearedClearanceMutation.hqSync?.status, "pending");
+  productDetail = await getProductDetail();
+  assert.equal(productDetail.clearancePrice, null);
 
   const createdSetCode = await request(
     "POST",
@@ -1747,6 +1772,8 @@ async function run() {
       isActive: true,
     },
   );
+  assert.equal(createdSetCode.hqSync?.status, "pending");
+  assert.equal(createdMultiCode.hqSync?.status, "pending");
   assert.ok(createdMultiCode.uuid, "productType=2 必须返回 multi code uuid");
   const multiCodePage = await request(
     "GET",
@@ -1805,8 +1832,8 @@ async function run() {
 
   await request(
     "PUT",
-    "/react/v1/store-product-maintenance/set-codes/review-multi-001",
-    { retailPrice: 11.25, isActive: true },
+    "/react/v1/store-product-maintenance/multi-codes/review-multi-001",
+    { barcode: "9330000000062", retailPrice: 11.25, isActive: true },
   );
   const updatedMultiCodePage = await request(
     "GET",
@@ -1817,6 +1844,13 @@ async function run() {
       (item: { uuid: string }) => item.uuid === "review-multi-001",
     )?.retailPrice,
     11.25,
+  );
+  assert.equal(
+    updatedMultiCodePage.items.find(
+      (item: { uuid: string }) => item.uuid === "review-multi-001",
+    )?.barcode,
+    "9330000000062",
+    "没有 setCodeId 的历史多码必须通过 UUID 端点保存条码",
   );
 
   const createdLeave = await request(

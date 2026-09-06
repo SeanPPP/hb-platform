@@ -34,9 +34,11 @@ import type { ColumnsType } from 'antd/es/table'
 import {
   AppstoreAddOutlined,
   LinkOutlined,
+  QrcodeOutlined,
   ReloadOutlined,
   SaveOutlined,
 } from '@ant-design/icons'
+import { QRCodeSVG } from '@rc-component/qrcode'
 import { appUpdatePolicyService } from '../../../services/appUpdatePolicyService'
 import type {
   AppUpdateApp,
@@ -211,6 +213,7 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
   const [otaSaving, setOtaSaving] = useState(false)
   const [registerApp, setRegisterApp] = useState<AppUpdateApp | null>(null)
   const [registerSaving, setRegisterSaving] = useState(false)
+  const [qrRelease, setQrRelease] = useState<IosAppStoreRelease | null>(null)
   const [handheldRefreshVersion, setHandheldRefreshVersion] = useState(0)
   const [mobileOtaRefreshVersion, setMobileOtaRefreshVersion] = useState(0)
   const laneRequestsRef = useRef<Record<LoadLaneKey, LatestRequestLane>>({
@@ -225,6 +228,9 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
   const ipadTargetScope = Form.useWatch('targetScope', ipadForm) ?? 'all'
   const otaEnabled = Form.useWatch('enabled', otaForm) ?? false
   const otaTargetScope = Form.useWatch('targetScope', otaForm) ?? 'all'
+  const qrReleaseUrl = qrRelease
+    ? safeExternalUrl(qrRelease.appStoreUrl, ['apps.apple.com', 'itunes.apple.com'])
+    : null
 
   const runLoadLane = useCallback(async <T,>(
     key: LoadLaneKey,
@@ -807,7 +813,10 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
     })
   }
 
-  function nativeReleaseColumns(policy: NativeUpdatePolicy): ColumnsType<IosAppStoreRelease> {
+  function nativeReleaseColumns(
+    policy: NativeUpdatePolicy,
+    app: AppUpdateApp,
+  ): ColumnsType<IosAppStoreRelease> {
     return [
       {
         title: t('system.appDownloads.updatePolicy.status'),
@@ -847,23 +856,35 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
       {
         title: t('column.action'),
         key: 'action',
-        width: 150,
+        width: app === 'mobile-ios' ? 300 : 150,
         render: (_value, release) => {
           const url = safeExternalUrl(
             release.appStoreUrl,
             ['apps.apple.com', 'itunes.apple.com'],
           )
           return (
-            <Button
-              size="small"
-              icon={<LinkOutlined />}
-              disabled={!url}
-              href={url ?? undefined}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {t('system.appDownloads.updatePolicy.openStore')}
-            </Button>
+            <Space size={4} wrap>
+              <Button
+                size="small"
+                icon={<LinkOutlined />}
+                disabled={!url}
+                href={url ?? undefined}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                {t('system.appDownloads.updatePolicy.openStore')}
+              </Button>
+              {app === 'mobile-ios' ? (
+                <Button
+                  size="small"
+                  icon={<QrcodeOutlined />}
+                  disabled={!url}
+                  onClick={() => setQrRelease(release)}
+                >
+                  {t('system.appDownloads.updatePolicy.viewInstallQrCode')}
+                </Button>
+              ) : null}
+            </Space>
           )
         },
       },
@@ -1311,10 +1332,10 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
             metricId="system.app-downloads.app-update-policy-panel.table-1"
             rowKey="id"
             size="small"
-            columns={nativeReleaseColumns(policy)}
+            columns={nativeReleaseColumns(policy, app)}
             dataSource={releases}
             loading={loadState.loading}
-            scroll={{ x: 860 }}
+            scroll={{ x: app === 'mobile-ios' ? 1010 : 860 }}
             locale={{
               emptyText: <Empty description={t('system.appDownloads.updatePolicy.noReleases')} />,
             }}
@@ -1564,6 +1585,45 @@ export default function AppUpdatePolicyPanel({ canManage }: AppUpdatePolicyPanel
         ) : null}
         <Tabs items={tabs} destroyInactiveTabPane={false} />
       </Card>
+
+      <Modal
+        open={Boolean(qrRelease)}
+        title={t('system.appDownloads.updatePolicy.appStoreQrCodeTitle')}
+        footer={null}
+        onCancel={() => setQrRelease(null)}
+        destroyOnHidden
+        width={420}
+      >
+        {qrRelease && qrReleaseUrl ? (
+          <Space
+            direction="vertical"
+            size={16}
+            style={{ width: '100%', alignItems: 'center' }}
+          >
+            {/* 四模块静区直接写入 SVG，确保手机相机在不同背景下稳定识别。 */}
+            <QRCodeSVG
+              value={qrReleaseUrl}
+              size={280}
+              marginSize={4}
+              level="M"
+              title={t('system.appDownloads.updatePolicy.appStoreQrCodeAccessibleTitle', {
+                version: formatNativeReleaseLabel(qrRelease),
+              })}
+              style={{ display: 'block', width: '100%', maxWidth: 280, height: 'auto' }}
+            />
+            <Typography.Text strong>{formatNativeReleaseLabel(qrRelease)}</Typography.Text>
+            <Typography.Text type="secondary" style={{ textAlign: 'center' }}>
+              {t('system.appDownloads.updatePolicy.appStoreQrCodeHint')}
+            </Typography.Text>
+            <Typography.Text
+              copyable={{ text: qrReleaseUrl }}
+              style={{ maxWidth: '100%', textAlign: 'center', wordBreak: 'break-all' }}
+            >
+              {qrReleaseUrl}
+            </Typography.Text>
+          </Space>
+        ) : null}
+      </Modal>
 
       <Modal
         open={registerApp !== null}

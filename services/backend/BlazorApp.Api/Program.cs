@@ -918,6 +918,13 @@ builder.Services.AddSingleton<IProductStoreSyncJobService, ProductStoreSyncJobSe
 builder.Services.AddSingleton<IProductPushToHqJobService, ProductPushToHqJobService>();
 builder.Services.AddSingleton<IStorePriceTransferJobService, StorePriceTransferJobService>();
 builder.Services.AddScoped<IProductHqSyncService, ProductHqSyncService>(); // 商品HQ解耦同步服务
+builder.Services.Configure<ProductHqSyncOutboxOptions>(
+    builder.Configuration.GetSection(ProductHqSyncOutboxOptions.SectionName)
+);
+builder.Services.AddScoped<IProductHqSyncOutboxQueue, ProductHqSyncOutboxQueue>();
+builder.Services.AddScoped<IProductMaintenanceHqProjectionWriter, ProductMaintenanceHqProjectionWriter>();
+builder.Services.AddScoped<IProductHqSyncOutboxExecutor, ProductMaintenanceHqSyncOutboxExecutor>();
+builder.Services.AddHostedService<ProductHqSyncOutboxWorker>();
 builder.Services.AddScoped<IWarehouseStorePriceSyncService, WarehouseStorePriceSyncService>();
 builder.Services.AddSingleton<IWarehouseStorePriceSyncJobService, WarehouseStorePriceSyncJobService>();
 builder.Services.AddScoped<IProductSetCodeReactService, ProductSetCodeReactService>();

@@ -3727,6 +3727,42 @@ namespace BlazorApp.Api.Services.React
                     productMap = products.ToDictionary(p => p.ProductCode, p => p);
                 }
 
+                foreach (var item in relatedSyncDetailUpdates)
+                {
+                    if (productMap.ContainsKey(item.ProductCode!))
+                    {
+                        continue;
+                    }
+
+                    // 名称和中包数的权威写入目标是国内商品主档；目标缺失时必须返回字段级错误，
+                    // 不能让部分成功响应把未落库的字段静默当作已处理。
+                    if (!string.IsNullOrWhiteSpace(item.Update.商品名称))
+                    {
+                        result.ValidationErrors.Add(
+                            new ContainerDetailBatchUpdateValidationErrorDto
+                            {
+                                HGUID = item.Update.HGUID,
+                                Field = "商品名称",
+                                Code = "RELATED_PRODUCT_NOT_FOUND",
+                                Message = "关联国内商品不存在，无法更新商品名称",
+                            }
+                        );
+                    }
+
+                    if (item.Update.中包数.HasValue)
+                    {
+                        result.ValidationErrors.Add(
+                            new ContainerDetailBatchUpdateValidationErrorDto
+                            {
+                                HGUID = item.Update.HGUID,
+                                Field = "中包数",
+                                Code = "RELATED_PRODUCT_NOT_FOUND",
+                                Message = "关联国内商品不存在，无法更新中包数",
+                            }
+                        );
+                    }
+                }
+
                 var warehouseProductMap = new Dictionary<string, WarehouseProduct>();
                 if (productCodes.Count > 0)
                 {

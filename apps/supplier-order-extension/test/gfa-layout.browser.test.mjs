@@ -127,13 +127,15 @@ function cardMarkup(id, wrapperClass, { gfa = true } = {}) {
       <div id="${id}" class="list-row"${gfa ? ' data-product="CO_SCKBEC"' : ''}>
         <div class="main-img">IMAGE</div>
         <div class="content">
-          <a class="list-content" href="/product/view?id=CO_SCKBEC">
-            <h4>BYS SKIN BRIGHTENING EYE CREAM 30ML BYS</h4>
-            <div class="list-detail">
-              <ul>
-                <li><span class="detail-label">Code</span><span class="detail-value">CO_SCKBEC</span></li>
-                <li><span class="detail-label">Pack Size</span><span class="detail-value">6</span></li>
-              </ul>
+          <a href="/product/view?id=CO_SCKBEC">
+            <div class="list-content">
+              <h4>BYS SKIN BRIGHTENING EYE CREAM 30ML BYS</h4>
+              <div class="list-detail">
+                <ul>
+                  <li><span class="detail-label">Code</span><span class="detail-value">CO_SCKBEC</span></li>
+                  <li><span class="detail-label">Pack Size</span><span class="detail-value">6</span></li>
+                </ul>
+              </div>
             </div>
           </a>
           <div data-hb-sro-host></div>
@@ -267,7 +269,9 @@ test('GFA 摘要在 100/150px 与窄屏商品行中完整显示且不遮挡原�
     assert.equal(wide.small.hostMarginRight, '235px');
 
     assertNoOverlap(narrow.small);
+    assertNoOverlap(narrow.regular);
     assert.equal(narrow.small.hostMarginRight, '0px');
+    assert.equal(narrow.regular.hostMarginRight, '0px');
     assert.ok(narrow.small.cardHeight > wide.small.cardHeight, '窄屏必须为底部操作区保留独立空间');
 
     assert.equal(wide.nonGfa.contentHeight, 100, '无 GFA data-product 的行不得被全局样式扩高');

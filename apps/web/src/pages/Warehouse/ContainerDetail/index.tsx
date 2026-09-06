@@ -200,6 +200,7 @@ import {
   settleScopedContainerDetailSave,
   resolveContainerDetailFullPage,
   resolveContainerDetailInitialPage,
+  resolveContainerDetailPendingPriceOnBlur,
   CONTAINER_DETAIL_EXPORT_COLUMNS,
   ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
   DEFAULT_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
@@ -3074,6 +3075,15 @@ export default function ContainerDetailPage() {
     queuePendingDetailUpdates([{ hguid: row.hguid, ...patch }])
   }
 
+  const handlePendingImportPriceBlur = (row: ContainerDetail, rawValue: string) => {
+    const currentValue = rowsRef.current.find((item) => rowKey(item) === rowKey(row))?.进口价格
+    const value = resolveContainerDetailPendingPriceOnBlur(rawValue, currentValue)
+    if (value === undefined) return
+
+    // 兼容只改变原生输入值、未触发 React onChange 的粘贴工具，失焦时补入持久草稿。
+    markPendingDetailPatch(row, { 进口价格: value })
+  }
+
   const getDetailSaveFailedMessage = () => t('containers.messages.detailSaveFailed', '货柜明细保存失败，请稍后重试')
 
   const handleDetailSaveError = (error: unknown) => {
@@ -5771,6 +5781,7 @@ export default function ContainerDetailPage() {
                 : t('containers.fields.importPrice')}
               title={concurrencyConflict?.message ?? saveFailure?.message}
               onChange={(value) => markPendingDetailPatch(row, { 进口价格: value == null ? undefined : Number(value) })}
+              onBlur={(event) => handlePendingImportPriceBlur(row, event.currentTarget.value)}
               onKeyDown={(event) => handleEditableCellKeyDown(row, 'importPrice', event)}
             />
           )))

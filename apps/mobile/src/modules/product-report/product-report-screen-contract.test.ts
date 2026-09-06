@@ -7,6 +7,42 @@ const directory = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(directory, "product-report-screen.tsx"), "utf8");
 const hubSource = readFileSync(join(directory, "../reports/reports-hub-screen.tsx"), "utf8");
 
+assert.match(
+  source,
+  /getCashierEnabledStoreCodes\(storeOptionsQuery\.data \?\? \[\]\)/,
+  "商品报告必须以 Store.IsActive 分店选项生成同一份收银启用白名单",
+);
+assert.match(
+  source,
+  /getCashierScopedBranchCodes\(cashierEnabledStoreCodes, selectedStoreCode\)/,
+  "商品报告的单店筛选必须受收银启用白名单约束",
+);
+assert.equal(
+  (source.match(/buildProductReportDateQuery\(activeRange, cashierEnabledStoreCodes\)/g) ?? []).length,
+  2,
+  "供应商与商品分店下钻都必须显式限定在全部收银启用分店",
+);
+assert.match(
+  source,
+  /storeOptionsQuery\.isSuccess[\s\S]*?branchCodes\.length > 0[\s\S]*?enabled: Boolean\(queryParams\)/,
+  "白名单未完成、为空或单店选择已失效时不得执行商品报告主查询",
+);
+assert.match(
+  source,
+  /const cashierStoreScopeVersion = storeOptionsQuery\.dataUpdatedAt;/,
+  "商品报告必须以白名单权威回读时间作为查询 revision",
+);
+assert.equal(
+  (source.match(/cashierStoreScopeVersion/g) ?? []).length >= 7,
+  true,
+  "白名单 revision 必须覆盖变量定义、三个主查询和两个分店下钻查询",
+);
+assert.match(
+  source,
+  /const mainReportStatisticsPending =\s*storeOptionsQuery\.isFetching/,
+  "白名单后台重验期间必须隐藏商品报告旧缓存",
+);
+
 function assertSourceOrder(scope: string, markers: string[], message: string) {
   let previousIndex = -1;
   markers.forEach((marker) => {
@@ -44,8 +80,28 @@ assert.match(
 );
 assert.match(
   source,
-  /useLayoutEffect\(\(\) => \{\s*if \(reportNavigationActionId === null \|\| queryParams !== null\) return;\s*discardReportNavigationStart\("product", reportNavigationActionId\);[\s\S]*?\}, \[queryParams, reportNavigationActionId\]\);/,
-  "商品主查询参数为空时必须按 expected actionId 清理；有效或在途查询不得提前清理",
+  /if \(reportNavigationActionId === null\) return;[\s\S]*?if \(dateRangeValid && storeOptionsQuery\.isPending\) return;[\s\S]*?!dateRangeValid[\s\S]*?storeOptionsQuery\.isError[\s\S]*?storeOptionsQuery\.isSuccess && cashierEnabledStoreCodes\.length === 0[\s\S]*?discardReportNavigationStart\("product", reportNavigationActionId\)/,
+  "商品报告只在日期无效或白名单已失败、已确认为空时清理 marker，白名单加载中不得提前清理",
+);
+assert.match(
+  source,
+  /storeOptionsQuery\.isFetching[\s\S]*?!storeOptionsQuery\.isSuccess[\s\S]*?!selectedStoreCode[\s\S]*?branchCodes\.length > 0[\s\S]*?setSelectedStoreCode\(undefined\)[\s\S]*?setDrilldown\(null\)/,
+  "已停用的陈旧单店选择必须先阻断请求，再清除选择和下钻",
+);
+assert.equal(
+  (source.match(/void storeOptionsQuery\.refetch\(\);/g) ?? []).length >= 3,
+  true,
+  "刷新、错误重试和未完成重试都必须先重验收银启用白名单",
+);
+assert.doesNotMatch(
+  source,
+  /totalRevenueQuery\.refetch\(\)|supplierQuery\.refetch\(\)|productQuery\.refetch\(\)/,
+  "白名单重验与业务请求不得并发；成功回读后必须由 scope revision 自动触发业务查询",
+);
+assert.match(
+  source,
+  /storeOptionsQuery\.isSuccess && cashierEnabledStoreCodes\.length === 0[\s\S]*?reports\.states\.noCashierEnabledStores/,
+  "零启用收银分店必须显示明确空态",
 );
 
 const pickerSource = source.slice(pickerStart, pickerEnd);
@@ -134,13 +190,13 @@ assert.match(
 );
 assert.match(
   source.slice(reportContentStart),
-  /mainReportRequestError \? \([\s\S]*?<ErrorState[\s\S]*?totalRevenueQuery\.refetch\(\)[\s\S]*?supplierQuery\.refetch\(\)[\s\S]*?productQuery\.refetch\(\)/,
-  "任一首屏请求失败时必须在汇总卡前显示统一重试，不能用缺失数据计算零值汇总",
+  /mainReportRequestError \? \([\s\S]*?<ErrorState[\s\S]*?resetMainReportVersionSync\(\);[\s\S]*?void storeOptionsQuery\.refetch\(\);/,
+  "任一首屏请求失败时必须在汇总卡前显示统一重试，并先重验收银启用范围",
 );
 assert.match(
   source.slice(reportContentStart),
-  /mainReportStatisticsIncomplete \? \([\s\S]*?<ErrorState[\s\S]*?reports\.states\.statisticsIncomplete[\s\S]*?supplierQuery\.refetch\(\)[\s\S]*?productQuery\.refetch\(\)/,
-  "任何主表轮询耗尽为非 Fresh 时，页面必须显示重试而非空表",
+  /mainReportStatisticsIncomplete \? \([\s\S]*?<ErrorState[\s\S]*?reports\.states\.statisticsIncomplete[\s\S]*?resetMainReportVersionSync\(\);[\s\S]*?void storeOptionsQuery\.refetch\(\);/,
+  "任何主表轮询耗尽为非 Fresh 时，页面必须显示先重验白名单的重试，而非空表",
 );
 assert.match(
   source,

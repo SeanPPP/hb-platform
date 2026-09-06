@@ -53,6 +53,40 @@ export function buildServiceApiTokenEnvSnippet(
   return [`HBWEB_API_BASE_URL=${normalizedBaseUrl}`, `HBWEB_API_TOKEN=${token.trim()}`].join('\n')
 }
 
+function normalizeServiceApiTokenFilterValue(value: unknown) {
+  return String(value ?? '').trim().toLowerCase()
+}
+
+export function matchesServiceApiTokenTextFilter(value: unknown, filterValue: unknown) {
+  const normalizedFilter = normalizeServiceApiTokenFilterValue(filterValue)
+  if (!normalizedFilter) {
+    return true
+  }
+
+  return normalizeServiceApiTokenFilterValue(value).includes(normalizedFilter)
+}
+
+export function matchesServiceApiTokenScopeFilter(
+  scopes: readonly string[] | null | undefined,
+  filterValue: unknown,
+) {
+  const expectedScope = String(filterValue ?? '').trim()
+  if (!expectedScope) {
+    return true
+  }
+
+  return (scopes ?? []).some((scope) => scope === expectedScope)
+}
+
+export function matchesServiceApiTokenStatusFilter(status: unknown, filterValue: unknown) {
+  const expectedStatus = normalizeServiceApiTokenFilterValue(filterValue)
+  if (!expectedStatus) {
+    return true
+  }
+
+  return normalizeServiceApiTokenFilterValue(status) === expectedStatus
+}
+
 export function resolveServiceApiTokenStatusColor(status?: ServiceApiTokenStatus | null) {
   switch ((status ?? '').toLowerCase()) {
     case 'active':

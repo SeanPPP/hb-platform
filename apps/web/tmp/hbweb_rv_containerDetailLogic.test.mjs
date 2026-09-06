@@ -111,6 +111,62 @@ var CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY = "__ALL_CONTAINER_DETAIL_CATEGORIE
 var CONTAINER_DETAIL_UNCATEGORIZED_FILTER_KEY = "__UNCATEGORIZED_CONTAINER_DETAIL_CATEGORIES__";
 var DEFAULT_CONTAINER_DETAIL_FLOAT_RATE = 1.3;
 var CONTAINER_DETAIL_ENGLISH_NAME_FIELD = "\u82F1\u6587\u540D\u79F0";
+var CONTAINER_DETAIL_INITIAL_PAGE_SIZE = 100;
+var CONTAINER_DETAIL_FULL_LOAD_LIMIT = 200;
+var CONTAINER_DETAIL_DEFAULT_PAGE_SIZE = 100;
+var CONTAINER_DETAIL_PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1e3];
+function resolveContainerDetailInitialPage(result) {
+  if (result.itemsTotal <= CONTAINER_DETAIL_FULL_LOAD_LIMIT) {
+    return {
+      mode: "full",
+      items: result.items,
+      itemsTotal: result.itemsTotal,
+      requiresFullLoad: result.items.length < result.itemsTotal
+    };
+  }
+  return {
+    mode: "paged",
+    // 大货柜直接复用首屏 100 行，避免再请求同一个第 1 页。
+    items: result.items,
+    itemsTotal: result.itemsTotal,
+    requiresFullLoad: false
+  };
+}
+function canReuseContainerDetailInitialPage({
+  filters,
+  selectedTags,
+  sortState,
+  pageSize
+}) {
+  if (pageSize !== CONTAINER_DETAIL_DEFAULT_PAGE_SIZE || sortState.field !== "itemNumber" || sortState.order !== "ascend") return false;
+  const query = buildContainerDetailQuery({
+    containerGuid: "__probe__",
+    filters,
+    selectedTags,
+    sortState,
+    pageNumber: 1,
+    pageSize
+  });
+  const scopeKeys = Object.keys(query).filter((key) => ![
+    "containerGuid",
+    "pageNumber",
+    "pageSize",
+    "sortBy",
+    "sortOrder"
+  ].includes(key));
+  return scopeKeys.length === 0;
+}
+function normalizeContainerDetailEnglishNameForSave(englishName) {
+  return englishName.trim().replace(/\S+/gu, (word) => word.replace(/\p{Script=Latin}/u, (letter) => letter.toUpperCase()));
+}
+function resolveContainerDetailPendingPriceOnBlur(rawValue, currentValue) {
+  const normalizedValue = rawValue.trim().replace(/,/g, "");
+  if (!normalizedValue) return void 0;
+  const parsedValue = Number(normalizedValue);
+  if (!Number.isFinite(parsedValue) || parsedValue < 0) return void 0;
+  const value = Number(parsedValue.toFixed(2));
+  return value === currentValue ? void 0 : value;
+}
 function hasPendingContainerDetailFields(patch) {
   return patch.\u8FDB\u53E3\u4EF7\u683C != null || patch.\u8D34\u724C\u4EF7\u683C != null || patch.\u82F1\u6587\u540D\u79F0 !== void 0 || patch.ClearEnglishName === true;
 }
@@ -170,7 +226,7 @@ function buildPendingContainerDetailSavePlan(pendingPatches) {
     if (patch.ClearEnglishName === true) {
       update.ClearEnglishName = true;
     } else if (patch.\u82F1\u6587\u540D\u79F0 !== void 0) {
-      const englishName = patch.\u82F1\u6587\u540D\u79F0.trim();
+      const englishName = normalizeContainerDetailEnglishNameForSave(patch.\u82F1\u6587\u540D\u79F0);
       if (englishName) {
         update.\u82F1\u6587\u540D\u79F0 = englishName;
       } else {
@@ -200,10 +256,30 @@ function hasValidationError(validationErrors, hguid, field) {
 function removeSavedPendingField(currentPatch, submittedPatch, field) {
   if (!(field in submittedPatch)) return;
   if (field === "\u82F1\u6587\u540D\u79F0") {
-    if (currentPatch.\u82F1\u6587\u540D\u79F0?.trim() === submittedPatch.\u82F1\u6587\u540D\u79F0) delete currentPatch.\u82F1\u6587\u540D\u79F0;
+    if (currentPatch.\u82F1\u6587\u540D\u79F0 !== void 0 && normalizeContainerDetailEnglishNameForSave(currentPatch.\u82F1\u6587\u540D\u79F0) === submittedPatch.\u82F1\u6587\u540D\u79F0) {
+      delete currentPatch.\u82F1\u6587\u540D\u79F0;
+    }
     return;
   }
   if (currentPatch[field] === submittedPatch[field]) delete currentPatch[field];
+}
+function buildContainerDetailSuccessfulEnglishNameUpdates(currentPatches, submittedUpdates, validationErrors) {
+  return submittedUpdates.flatMap((submittedUpdate) => {
+    const submittedEnglishName = submittedUpdate.\u82F1\u6587\u540D\u79F0;
+    if (submittedEnglishName === void 0 || hasValidationError(
+      validationErrors,
+      submittedUpdate.hguid,
+      CONTAINER_DETAIL_ENGLISH_NAME_FIELD
+    )) {
+      return [];
+    }
+    const currentPatch = currentPatches[submittedUpdate.hguid];
+    if (currentPatch?.ClearEnglishName === true) return [];
+    if (currentPatch?.\u82F1\u6587\u540D\u79F0 !== void 0 && normalizeContainerDetailEnglishNameForSave(currentPatch.\u82F1\u6587\u540D\u79F0) !== submittedEnglishName) {
+      return [];
+    }
+    return [{ hguid: submittedUpdate.hguid, \u82F1\u6587\u540D\u79F0: submittedEnglishName }];
+  });
 }
 function clearSavedPendingContainerDetailFields(current, submittedUpdates, validationErrors) {
   const next = { ...current };
@@ -379,6 +455,33 @@ var DEFAULT_CONTAINER_DETAIL_PDF_EXPORT_COLUMN_KEYS = [
   "englishName",
   "oemPrice"
 ];
+var ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS = [
+  "index",
+  "productImage",
+  "itemNumber",
+  "barcode",
+  "englishName",
+  "oemPrice",
+  "productName",
+  "categoryName",
+  "containerPieces",
+  "packingQuantity",
+  "containerQuantity",
+  "unitVolume",
+  "domesticPrice",
+  "transportCost",
+  "unitTransportCost",
+  "floatRate",
+  "middlePackQuantity",
+  "importPrice",
+  "lastImportPrice",
+  "lastOEMPrice",
+  "productType",
+  "newProduct",
+  "matchType",
+  "warehouseStatus",
+  "remark"
+];
 var CONTAINER_DETAIL_EXPORT_COLUMNS = [
   { key: "index", labelKey: "containers.export.indexColumn", fallbackLabel: "\u5E8F\u53F7", width: 8, valueType: "integer" },
   { key: "itemNumber", labelKey: "containers.fields.itemNumber", fallbackLabel: "\u8D27\u53F7", width: 18, valueType: "text" },
@@ -395,7 +498,18 @@ var CONTAINER_DETAIL_EXPORT_COLUMNS = [
   { key: "domesticPrice", labelKey: "containers.fields.domesticPrice", fallbackLabel: "\u56FD\u5185\u4EF7\u683C", width: 12, valueType: "money" },
   { key: "lastImportPrice", labelKey: "containers.fields.warehouseImportPrice", fallbackLabel: "\u5B9E\u65F6\u8FDB\u8D27\u4EF7", width: 14, valueType: "money" },
   { key: "lastOEMPrice", labelKey: "containers.fields.lastOEMPrice", fallbackLabel: "\u5B9E\u65F6\u96F6\u552E\u4EF7", width: 14, valueType: "money" },
-  { key: "oemPrice", labelKey: "containers.fields.oemPrice", fallbackLabel: "\u96F6\u552E\u4EF7", width: 12, valueType: "money" }
+  { key: "oemPrice", labelKey: "containers.fields.oemPrice", fallbackLabel: "\u96F6\u552E\u4EF7", width: 12, valueType: "money" },
+  { key: "categoryName", labelKey: "containers.fields.category", fallbackLabel: "\u5206\u7C7B", width: 24, valueType: "text" },
+  { key: "packingQuantity", labelKey: "containers.fields.packingQuantity", fallbackLabel: "\u5355\u4EF6\u88C5\u7BB1\u6570", width: 14, valueType: "integer" },
+  { key: "transportCost", labelKey: "containers.fields.transportCost", fallbackLabel: "\u8FD0\u8F93\u6210\u672C", width: 14, valueType: "money" },
+  { key: "unitTransportCost", labelKey: "containers.fields.unitTransportCost", fallbackLabel: "\u5355\u4EF6\u8FD0\u8F93\u6210\u672C", width: 16, valueType: "money" },
+  { key: "floatRate", labelKey: "containers.fields.floatRate", fallbackLabel: "\u8C03\u6574\u6D6E\u7387", width: 12, valueType: "number" },
+  { key: "importPrice", labelKey: "containers.fields.importPrice", fallbackLabel: "\u8FDB\u53E3\u4EF7\u683C", width: 12, valueType: "money" },
+  { key: "productType", labelKey: "containers.fields.productType", fallbackLabel: "\u7C7B\u578B", width: 14, valueType: "text" },
+  { key: "newProduct", labelKey: "containers.fields.newProduct", fallbackLabel: "\u65B0\u5546\u54C1", width: 12, valueType: "text" },
+  { key: "matchType", labelKey: "containers.fields.matchType", fallbackLabel: "\u5339\u914D\u65B9\u5F0F", width: 16, valueType: "text" },
+  { key: "warehouseStatus", labelKey: "containers.fields.warehouseStatus", fallbackLabel: "\u4ED3\u5E93\u72B6\u6001", width: 12, valueType: "text" },
+  { key: "remark", labelKey: "containers.fields.remark", fallbackLabel: "\u5907\u6CE8", width: 24, valueType: "text" }
 ];
 var containerDetailSortFields = /* @__PURE__ */ new Set([
   "itemNumber",
@@ -553,19 +667,6 @@ function getContainerDetailProductCode(row) {
 function firstTrimmedValue(...values) {
   return values.map((value) => value?.trim()).find((value) => Boolean(value));
 }
-function getContainerDetailLocalProductCode(row) {
-  return firstTrimmedValue(row.localProductCode, row.LocalProductCode);
-}
-function getContainerDetailDomesticProductCode(row) {
-  return firstTrimmedValue(row.domesticProductCode, row.DomesticProductCode, getContainerDetailProductCode(row));
-}
-function hasContainerDetailProductCodeConflict(row) {
-  const explicit = row.hasProductCodeConflict ?? row.HasProductCodeConflict;
-  if (explicit != null) return Boolean(explicit);
-  const localProductCode = normalizeMatchKey(getContainerDetailLocalProductCode(row));
-  const domesticProductCode = normalizeMatchKey(getContainerDetailDomesticProductCode(row));
-  return Boolean(localProductCode && domesticProductCode && localProductCode !== domesticProductCode);
-}
 function getContainerDetailCategoryName(row) {
   return firstTrimmedValue(
     row.categoryName,
@@ -657,9 +758,6 @@ function getContainerDetailBatchCategoryProductCodes(rows2) {
   return { productCodes, skippedMissingCodeCount };
 }
 function getContainerDetailMatchType(row) {
-  if (hasContainerDetailProductCodeConflict(row)) {
-    return "supplierItem";
-  }
   const raw = row.matchType ?? row.MatchType;
   const normalized = raw?.trim().toLowerCase();
   if (normalized === "productcode" || normalized === "product_code" || normalized === "\u5546\u54C1\u7F16\u7801") {
@@ -725,14 +823,17 @@ function getContainerDetailExportColumns(selectedKeys = DEFAULT_CONTAINER_DETAIL
   }
   return columns;
 }
-function getContainerDetailUnitVolume(row) {
-  return row.\u5355\u4EF6\u4F53\u79EF ?? row.\u5546\u54C1\u4FE1\u606F?.\u5355\u4EF6\u4F53\u79EF ?? 0;
+function getContainerDetailUnitVolume(row, missingNumericValue = 0) {
+  return row.\u5355\u4EF6\u4F53\u79EF ?? row.\u5546\u54C1\u4FE1\u606F?.\u5355\u4EF6\u4F53\u79EF ?? missingNumericValue;
 }
-function getContainerDetailTotalVolume(row) {
-  const unitVolume = getContainerDetailUnitVolume(row);
-  return row.\u5408\u8BA1\u88C5\u67DC\u4F53\u79EF ?? (row.\u88C5\u67DC\u4EF6\u6570 ?? 0) * unitVolume;
+function getContainerDetailTotalVolume(row, missingNumericValue = 0) {
+  const unitVolume = row.\u5355\u4EF6\u4F53\u79EF ?? row.\u5546\u54C1\u4FE1\u606F?.\u5355\u4EF6\u4F53\u79EF;
+  return row.\u5408\u8BA1\u88C5\u67DC\u4F53\u79EF ?? (row.\u88C5\u67DC\u4EF6\u6570 != null && unitVolume != null ? row.\u88C5\u67DC\u4EF6\u6570 * unitVolume : missingNumericValue);
 }
-function buildContainerDetailExportRow(row, index = 0) {
+function buildContainerDetailExportRow(row, index = 0, options = {}) {
+  const missingNumericValue = options.missingNumericValue ?? 0;
+  const matchType = getContainerDetailMatchType(row);
+  const productType = getContainerDetailProductType(row);
   return {
     index: index + 1,
     itemNumber: getContainerDetailItemNumber(row) ?? "",
@@ -741,19 +842,30 @@ function buildContainerDetailExportRow(row, index = 0) {
     productImage: getContainerDetailImageUrl(row) ?? "",
     productName: getContainerDetailProductName(row) ?? "",
     englishName: getContainerDetailEnglishName(row) ?? "",
-    containerPieces: row.\u88C5\u67DC\u4EF6\u6570 ?? 0,
-    containerQuantity: row.\u88C5\u67DC\u6570\u91CF ?? 0,
-    unitVolume: getContainerDetailUnitVolume(row),
-    totalVolume: getContainerDetailTotalVolume(row),
-    middlePackQuantity: row.\u4E2D\u5305\u6570 ?? 0,
-    domesticPrice: row.\u56FD\u5185\u4EF7\u683C ?? 0,
-    lastImportPrice: getContainerDetailRealtimeImportPrice(row) ?? 0,
-    lastOEMPrice: getContainerDetailRealtimeRetailPrice(row) ?? 0,
-    oemPrice: getContainerDetailVisibleOemPrice(row) ?? 0
+    categoryName: getContainerDetailCategoryPath(row) ?? getContainerDetailCategoryName(row) ?? "",
+    containerPieces: row.\u88C5\u67DC\u4EF6\u6570 ?? missingNumericValue,
+    packingQuantity: row.\u5355\u4EF6\u88C5\u7BB1\u6570 ?? missingNumericValue,
+    containerQuantity: row.\u88C5\u67DC\u6570\u91CF ?? missingNumericValue,
+    unitVolume: getContainerDetailUnitVolume(row, missingNumericValue),
+    totalVolume: getContainerDetailTotalVolume(row, missingNumericValue),
+    middlePackQuantity: row.\u4E2D\u5305\u6570 ?? missingNumericValue,
+    domesticPrice: row.\u56FD\u5185\u4EF7\u683C ?? missingNumericValue,
+    transportCost: row.\u8FD0\u8F93\u6210\u672C ?? missingNumericValue,
+    unitTransportCost: calculateContainerDetailUnitTransportCost(row) ?? missingNumericValue,
+    floatRate: row.\u8C03\u6574\u6D6E\u7387 ?? missingNumericValue,
+    importPrice: row.\u8FDB\u53E3\u4EF7\u683C ?? missingNumericValue,
+    lastImportPrice: getContainerDetailRealtimeImportPrice(row) ?? missingNumericValue,
+    lastOEMPrice: getContainerDetailRealtimeRetailPrice(row) ?? missingNumericValue,
+    oemPrice: getContainerDetailVisibleOemPrice(row) ?? missingNumericValue,
+    productType: options.getProductTypeLabel?.(productType) ?? productType,
+    newProduct: row.\u662F\u5426\u65B0\u5546\u54C1 ? options.newProductLabel ?? "\u65B0\u5546\u54C1" : options.existingProductLabel ?? "\u5DF2\u6709\u5546\u54C1",
+    matchType: options.getMatchTypeLabel?.(matchType) ?? matchType,
+    warehouseStatus: row.warehouseIsActive === true ? options.activeLabel ?? "\u4E0A\u67B6" : options.inactiveLabel ?? "\u4E0B\u67B6",
+    remark: row.\u5907\u6CE8 ?? ""
   };
 }
-function buildContainerDetailExportRows(rows2) {
-  return rows2.map(buildContainerDetailExportRow);
+function buildContainerDetailExportRows(rows2, options = {}) {
+  return rows2.map((row, index) => buildContainerDetailExportRow(row, index, options));
 }
 function withContainerDetailEnglishName(row, englishName) {
   return {
@@ -854,7 +966,10 @@ function buildContainerDetailTagStats(rows2) {
     normal: 0,
     set: 0,
     multi: 0,
-    setChild: 0
+    setChild: 0,
+    productCodeMatched: 0,
+    supplierItemMatched: 0,
+    unmatched: 0
   };
   rows2.forEach((row) => {
     if (matchesContainerDetailTagFilter(row, "new")) stats.new += 1;
@@ -865,6 +980,10 @@ function buildContainerDetailTagStats(rows2) {
     if (matchesContainerDetailTagFilter(row, "inactive")) stats.inactive += 1;
     const productType = getContainerDetailProductTypeFilterKey(row);
     stats[productType] += 1;
+    const matchType = getContainerDetailMatchType(row);
+    if (matchType === "productCode") stats.productCodeMatched += 1;
+    else if (matchType === "supplierItem") stats.supplierItemMatched += 1;
+    else stats.unmatched += 1;
   });
   return stats;
 }
@@ -966,6 +1085,35 @@ function applyContainerDetailColumnState(rows2, filters, sortState) {
     return sortState.order === "ascend" ? result : -result;
   }).map((item) => item.row);
 }
+function prepareContainerDetailWholeExportRows(rows2, pendingPatches, sortState) {
+  return applyContainerDetailColumnState(
+    applyPendingContainerDetailPatches(rows2, pendingPatches),
+    {},
+    sortState
+  );
+}
+function applyContainerDetailLocalExportValues(rows2, localRows) {
+  const localRowsByGuid = new Map(
+    localRows.filter((row) => Boolean(row.hguid)).map((row) => [row.hguid, row])
+  );
+  return rows2.map((row) => {
+    const localRow = row.hguid ? localRowsByGuid.get(row.hguid) : void 0;
+    if (!localRow) return row;
+    return mergeContainerDetailPatch(row, {
+      \u5546\u54C1\u540D\u79F0: localRow.\u5546\u54C1\u540D\u79F0,
+      \u5355\u4EF6\u88C5\u7BB1\u6570: localRow.\u5355\u4EF6\u88C5\u7BB1\u6570,
+      \u5355\u4EF6\u4F53\u79EF: localRow.\u5355\u4EF6\u4F53\u79EF,
+      \u4E2D\u5305\u6570: localRow.\u4E2D\u5305\u6570,
+      \u8C03\u6574\u6D6E\u7387: localRow.\u8C03\u6574\u6D6E\u7387,
+      \u88C5\u67DC\u6570\u91CF: localRow.\u88C5\u67DC\u6570\u91CF,
+      \u5408\u8BA1\u88C5\u67DC\u4F53\u79EF: localRow.\u5408\u8BA1\u88C5\u67DC\u4F53\u79EF,
+      \u5408\u8BA1\u88C5\u67DC\u91D1\u989D: localRow.\u5408\u8BA1\u88C5\u67DC\u91D1\u989D,
+      \u8FD0\u8F93\u6210\u672C: localRow.\u8FD0\u8F93\u6210\u672C,
+      \u8FDB\u53E3\u4EF7\u683C: localRow.\u8FDB\u53E3\u4EF7\u683C,
+      \u5907\u6CE8: localRow.\u5907\u6CE8
+    });
+  });
+}
 function assignQueryValue(target, key, value) {
   target[key] = value;
 }
@@ -991,9 +1139,11 @@ function assignNumberRange(target, minKey, maxKey, range) {
 function buildContainerDetailQuery({
   containerGuid,
   filters,
+  selectedTags,
   sortState,
   pageNumber,
   pageSize,
+  includeItems,
   includeTotal,
   includeStats
 }) {
@@ -1002,6 +1152,9 @@ function buildContainerDetailQuery({
     pageNumber,
     pageSize
   };
+  if (includeItems != null) {
+    query.includeItems = includeItems;
+  }
   if (includeTotal != null) {
     query.includeTotal = includeTotal;
   }
@@ -1017,6 +1170,11 @@ function buildContainerDetailQuery({
   assignNonEmptyArray(query, "newProductStates", filters.newProductStates);
   assignNonEmptyArray(query, "matchTypes", filters.matchTypes);
   assignNonEmptyArray(query, "warehouseStatus", filters.warehouseStatus);
+  assignNonEmptyArray(
+    query,
+    "selectedTags",
+    selectedTags?.filter((tag) => tag !== "all")
+  );
   assignNumberRange(query, "containerPiecesMin", "containerPiecesMax", filters.containerPieces);
   assignNumberRange(query, "middlePackQuantityMin", "middlePackQuantityMax", filters.middlePackQuantity);
   assignNumberRange(query, "containerQuantityMin", "containerQuantityMax", filters.containerQuantity);
@@ -1112,6 +1270,31 @@ function applyContainerDetailEnglishNameUpdates(rows2, updates) {
 function roundToDigits(value, digits) {
   const base = 10 ** digits;
   return Math.round((value + Number.EPSILON) * base) / base;
+}
+var STANDARD_CONTAINER_VOLUME_CBM = 68;
+function isValidContainerFreightAmount(value) {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+function isValidContainerFreightVolume(value) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+function calculateContainerFreight(inputValue, totalVolume, mode) {
+  if (!isValidContainerFreightAmount(inputValue) || !isValidContainerFreightVolume(totalVolume)) {
+    return void 0;
+  }
+  const freight = mode === "perCbm" ? inputValue * totalVolume : inputValue * totalVolume / STANDARD_CONTAINER_VOLUME_CBM;
+  if (!Number.isFinite(freight)) {
+    return void 0;
+  }
+  const roundedFreight = roundToDigits(freight, 2);
+  return Number.isFinite(roundedFreight) ? roundedFreight : void 0;
+}
+function deriveContainerFreightInput(freight, totalVolume, mode) {
+  if (!isValidContainerFreightAmount(freight) || !isValidContainerFreightVolume(totalVolume)) {
+    return void 0;
+  }
+  const inputValue = mode === "perCbm" ? freight / totalVolume : freight * STANDARD_CONTAINER_VOLUME_CBM / totalVolume;
+  return Number.isFinite(inputValue) ? inputValue : void 0;
 }
 function isPlainRecord(value) {
   return typeof value === "object" && value !== null;
@@ -1483,6 +1666,42 @@ assertEqual(
   false,
   "\u8D27\u67DC\u660E\u7EC6\u9ED8\u8BA4\u5BFC\u51FA\u5217\u4E0D\u5E94\u5305\u542B\u56FE\u7247\u5217\uFF0C\u907F\u514D\u9ED8\u8BA4\u5BFC\u51FA\u53D8\u6162"
 );
+assertDeepEqual(
+  ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS,
+  [
+    "index",
+    "productImage",
+    "itemNumber",
+    "barcode",
+    "englishName",
+    "oemPrice",
+    "productName",
+    "categoryName",
+    "containerPieces",
+    "packingQuantity",
+    "containerQuantity",
+    "unitVolume",
+    "domesticPrice",
+    "transportCost",
+    "unitTransportCost",
+    "floatRate",
+    "middlePackQuantity",
+    "importPrice",
+    "lastImportPrice",
+    "lastOEMPrice",
+    "productType",
+    "newProduct",
+    "matchType",
+    "warehouseStatus",
+    "remark"
+  ],
+  "\u5168\u90E8\u5BFC\u51FA\u5E94\u56FA\u5B9A\u5305\u542B\u5F53\u524D\u660E\u7EC6\u8868\u5168\u90E8\u4E1A\u52A1\u5217\uFF0C\u5E76\u53EA\u5D4C\u5165\u5546\u54C1\u56FE\u7247"
+);
+assertEqual(
+  ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS.includes("barcodeImage"),
+  false,
+  "\u5168\u90E8\u5BFC\u51FA\u5E94\u4FDD\u7559\u6761\u7801\u6587\u672C\uFF0C\u4E0D\u989D\u5916\u751F\u6210\u6761\u7801\u56FE\u7247"
+);
 var updateFieldOptions = ["importPrice", "oemPrice", "storeRetailPrice"];
 assertDeepEqual(
   getUpdateFieldSelectionState(["importPrice"], updateFieldOptions),
@@ -1830,7 +2049,9 @@ var exportRow = buildContainerDetailExportRow({
   \u662F\u5426\u65B0\u5546\u54C1: true,
   matchType: "productCode",
   \u88C5\u67DC\u4EF6\u6570: 3,
+  \u5355\u4EF6\u88C5\u7BB1\u6570: 240,
   \u88C5\u67DC\u6570\u91CF: 720,
+  \u4E2D\u5305\u6570: 12,
   \u56FD\u5185\u4EF7\u683C: 2.3,
   \u8C03\u6574\u6D6E\u7387: 1.2,
   \u8FD0\u8F93\u6210\u672C: 0.08,
@@ -1843,6 +2064,8 @@ var exportRow = buildContainerDetailExportRow({
   \u5355\u4EF6\u4F53\u79EF: 0.1188,
   \u5408\u8BA1\u88C5\u67DC\u4F53\u79EF: 0.3564,
   warehouseIsActive: true,
+  categoryName: "\u6536\u7EB3",
+  categoryPath: "\u5BB6\u5C45 > \u6536\u7EB3",
   \u5907\u6CE8: "\u4F18\u5148\u4E0A\u67B6",
   \u5546\u54C1\u4FE1\u606F: {
     \u8D27\u53F7: "HB291-005",
@@ -1853,6 +2076,13 @@ var exportRow = buildContainerDetailExportRow({
     \u5546\u54C1\u7C7B\u578B: "\u5957\u88C5\u5546\u54C1",
     \u96F6\u552E\u4EF7\u683C: 9.99
   }
+}, 0, {
+  getProductTypeLabel: (value) => `\u7C7B\u578B:${value}`,
+  getMatchTypeLabel: (value) => `\u5339\u914D:${value}`,
+  newProductLabel: "\u65B0\u5546\u54C1",
+  existingProductLabel: "\u5DF2\u6709\u5546\u54C1",
+  activeLabel: "\u4E0A\u67B6",
+  inactiveLabel: "\u4E0B\u67B6"
 });
 assertDeepEqual(
   {
@@ -1862,13 +2092,25 @@ assertDeepEqual(
     productImage: exportRow.productImage,
     productName: exportRow.productName,
     englishName: exportRow.englishName,
+    categoryName: exportRow.categoryName,
     containerPieces: exportRow.containerPieces,
+    packingQuantity: exportRow.packingQuantity,
     containerQuantity: exportRow.containerQuantity,
     unitVolume: exportRow.unitVolume,
     totalVolume: exportRow.totalVolume,
+    transportCost: exportRow.transportCost,
+    unitTransportCost: exportRow.unitTransportCost,
+    floatRate: exportRow.floatRate,
+    middlePackQuantity: exportRow.middlePackQuantity,
+    importPrice: exportRow.importPrice,
     lastImportPrice: exportRow.lastImportPrice,
     lastOEMPrice: exportRow.lastOEMPrice,
-    oemPrice: exportRow.oemPrice
+    oemPrice: exportRow.oemPrice,
+    productType: exportRow.productType,
+    newProduct: exportRow.newProduct,
+    matchType: exportRow.matchType,
+    warehouseStatus: exportRow.warehouseStatus,
+    remark: exportRow.remark
   },
   {
     itemNumber: "HB291-005",
@@ -1877,15 +2119,118 @@ assertDeepEqual(
     productImage: "https://cdn.example.com/info-image.jpg",
     productName: "\u660E\u7EC6\u540D\u79F0",
     englishName: "Detail Name",
+    categoryName: "\u5BB6\u5C45 > \u6536\u7EB3",
     containerPieces: 3,
+    packingQuantity: 240,
     containerQuantity: 720,
     unitVolume: 0.1188,
     totalVolume: 0.3564,
+    transportCost: 0.08,
+    unitTransportCost: 19.2,
+    floatRate: 1.2,
+    middlePackQuantity: 12,
+    importPrice: 0.67,
     lastImportPrice: 0.52,
     lastOEMPrice: 4.8,
-    oemPrice: 3.5
+    oemPrice: 3.5,
+    productType: "\u7C7B\u578B:\u5957\u88C5\u5546\u54C1",
+    newProduct: "\u65B0\u5546\u54C1",
+    matchType: "\u5339\u914D:productCode",
+    warehouseStatus: "\u4E0A\u67B6",
+    remark: "\u4F18\u5148\u4E0A\u67B6"
   },
-  "\u8D27\u67DC\u660E\u7EC6\u5BFC\u51FA\u884C\u5E94\u6309 Excel \u6A21\u677F\u8BFB\u53D6\u9875\u9762\u5C55\u793A\u5B57\u6BB5\u3001\u4F53\u79EF\u5B57\u6BB5\u548C\u5B9E\u65F6\u4ED3\u5E93\u4EF7\uFF0C\u4E14\u65B0\u5546\u54C1\u96F6\u552E\u4EF7\u5E94\u4F7F\u7528\u660E\u7EC6\u4E1A\u52A1\u4EF7"
+  "\u8D27\u67DC\u660E\u7EC6\u5BFC\u51FA\u884C\u5E94\u5B8C\u6574\u8BFB\u53D6\u9875\u9762\u4E1A\u52A1\u5B57\u6BB5\u3001\u5206\u7C7B\u8DEF\u5F84\u548C\u672C\u5730\u5316\u679A\u4E3E\u503C\uFF0C\u4E14\u65B0\u5546\u54C1\u96F6\u552E\u4EF7\u5E94\u4F7F\u7528\u660E\u7EC6\u4E1A\u52A1\u4EF7"
+);
+var wholeExportRows = prepareContainerDetailWholeExportRows(
+  [
+    { id: 201, hguid: "whole-export-b", \u82F1\u6587\u540D\u79F0: "Bravo", \u8FDB\u53E3\u4EF7\u683C: 2 },
+    { id: 202, hguid: "whole-export-a", \u82F1\u6587\u540D\u79F0: "Zulu", \u8FDB\u53E3\u4EF7\u683C: 3 }
+  ],
+  {
+    "whole-export-a": { hguid: "whole-export-a", \u82F1\u6587\u540D\u79F0: "Alpha", \u8FDB\u53E3\u4EF7\u683C: 0 }
+  },
+  { field: "englishName", order: "ascend" }
+);
+assertDeepEqual(
+  wholeExportRows.map((row) => ({ hguid: row.hguid, englishName: row.\u82F1\u6587\u540D\u79F0, importPrice: row.\u8FDB\u53E3\u4EF7\u683C })),
+  [
+    { hguid: "whole-export-a", englishName: "Alpha", importPrice: 0 },
+    { hguid: "whole-export-b", englishName: "Bravo", importPrice: 2 }
+  ],
+  "\u5168\u90E8\u5BFC\u51FA\u5E94\u5FFD\u7565\u9875\u9762\u7B5B\u9009\uFF0C\u5408\u5E76\u672A\u4FDD\u5B58\u8349\u7A3F\u540E\u6309\u5F53\u524D\u6392\u5E8F\u8F93\u51FA\uFF0C\u5E76\u4FDD\u7559\u6709\u6548\u7684 0 \u503C"
+);
+var wholeExportLocalRows = applyContainerDetailLocalExportValues(
+  [{
+    id: 204,
+    hguid: "whole-export-local",
+    \u5546\u54C1\u540D\u79F0: "\u670D\u52A1\u7AEF\u65B0\u540D\u79F0",
+    \u5546\u54C1\u56FE\u7247: "https://cdn.example.com/fresh.jpg",
+    \u56FD\u5185\u4EF7\u683C: 99,
+    \u5355\u4EF6\u88C5\u7BB1\u6570: 10,
+    \u5355\u4EF6\u4F53\u79EF: 0.1,
+    \u88C5\u67DC\u6570\u91CF: 20,
+    \u8FD0\u8F93\u6210\u672C: 1,
+    \u8FDB\u53E3\u4EF7\u683C: 2,
+    \u5907\u6CE8: "\u670D\u52A1\u7AEF\u5907\u6CE8"
+  }],
+  [{
+    id: 204,
+    hguid: "whole-export-local",
+    \u5546\u54C1\u540D\u79F0: "\u9875\u9762\u7F16\u8F91\u540D\u79F0",
+    \u5546\u54C1\u56FE\u7247: "https://cdn.example.com/stale.jpg",
+    \u56FD\u5185\u4EF7\u683C: 1,
+    \u5355\u4EF6\u88C5\u7BB1\u6570: 24,
+    \u5355\u4EF6\u4F53\u79EF: 0.2,
+    \u8C03\u6574\u6D6E\u7387: 1.3,
+    \u4E2D\u5305\u6570: 6,
+    \u88C5\u67DC\u6570\u91CF: 48,
+    \u5408\u8BA1\u88C5\u67DC\u4F53\u79EF: 0.4,
+    \u5408\u8BA1\u88C5\u67DC\u91D1\u989D: 9.6,
+    \u8FD0\u8F93\u6210\u672C: 0.5,
+    \u8FDB\u53E3\u4EF7\u683C: 0.9,
+    \u5907\u6CE8: "\u9875\u9762\u672A\u4FDD\u5B58\u5907\u6CE8"
+  }]
+);
+assertDeepEqual(
+  {
+    productName: wholeExportLocalRows[0].\u5546\u54C1\u540D\u79F0,
+    packingQuantity: wholeExportLocalRows[0].\u5355\u4EF6\u88C5\u7BB1\u6570,
+    unitVolume: wholeExportLocalRows[0].\u5355\u4EF6\u4F53\u79EF,
+    floatRate: wholeExportLocalRows[0].\u8C03\u6574\u6D6E\u7387,
+    middlePackQuantity: wholeExportLocalRows[0].\u4E2D\u5305\u6570,
+    containerQuantity: wholeExportLocalRows[0].\u88C5\u67DC\u6570\u91CF,
+    totalVolume: wholeExportLocalRows[0].\u5408\u8BA1\u88C5\u67DC\u4F53\u79EF,
+    totalAmount: wholeExportLocalRows[0].\u5408\u8BA1\u88C5\u67DC\u91D1\u989D,
+    transportCost: wholeExportLocalRows[0].\u8FD0\u8F93\u6210\u672C,
+    importPrice: wholeExportLocalRows[0].\u8FDB\u53E3\u4EF7\u683C,
+    remark: wholeExportLocalRows[0].\u5907\u6CE8,
+    productImage: wholeExportLocalRows[0].\u5546\u54C1\u56FE\u7247,
+    domesticPrice: wholeExportLocalRows[0].\u56FD\u5185\u4EF7\u683C
+  },
+  {
+    productName: "\u9875\u9762\u7F16\u8F91\u540D\u79F0",
+    packingQuantity: 24,
+    unitVolume: 0.2,
+    floatRate: 1.3,
+    middlePackQuantity: 6,
+    containerQuantity: 48,
+    totalVolume: 0.4,
+    totalAmount: 9.6,
+    transportCost: 0.5,
+    importPrice: 0.9,
+    remark: "\u9875\u9762\u672A\u4FDD\u5B58\u5907\u6CE8",
+    productImage: "https://cdn.example.com/fresh.jpg",
+    domesticPrice: 99
+  },
+  "\u5168\u90E8\u5BFC\u51FA\u53EA\u5E94\u8986\u76D6\u9875\u9762\u53EF\u7F16\u8F91\u53CA\u8054\u52A8\u5B57\u6BB5\uFF0C\u56FE\u7247\u548C\u56FD\u5185\u4EF7\u7B49\u975E\u7F16\u8F91\u5B57\u6BB5\u5FC5\u987B\u4FDD\u7559\u65B0\u670D\u52A1\u7AEF\u5FEB\u7167"
+);
+assertEqual(
+  buildContainerDetailExportRows(
+    [{ id: 203, hguid: "whole-export-missing" }],
+    { missingNumericValue: "" }
+  )[0].domesticPrice,
+  "",
+  "\u5168\u90E8\u5BFC\u51FA\u5E94\u5C06\u7F3A\u5931\u6570\u503C\u4FDD\u7559\u4E3A\u7A7A\u767D\uFF0C\u800C\u4E0D\u662F\u4F2A\u9020\u4E3A 0"
 );
 assertEqual(
   resolveContainerDetailOemPrice({ id: 103, hguid: "oem-warehouse", \u8D34\u724C\u4EF7\u683C: 2.2, warehouseOEMPrice: 6.6 }),
@@ -1984,15 +2329,26 @@ assertDeepEqual(
       productImage: "",
       productName: "",
       englishName: "",
+      categoryName: "",
       containerPieces: 0,
+      packingQuantity: 0,
       containerQuantity: 0,
       unitVolume: 0,
       totalVolume: 0,
       middlePackQuantity: 0,
       domesticPrice: 0,
+      transportCost: 0,
+      unitTransportCost: 0,
+      floatRate: 0,
+      importPrice: 0,
       lastImportPrice: 0,
       lastOEMPrice: 0,
-      oemPrice: 0
+      oemPrice: 0,
+      productType: "\u666E\u901A\u5546\u54C1",
+      newProduct: "\u5DF2\u6709\u5546\u54C1",
+      matchType: "unmatched",
+      warehouseStatus: "\u4E0B\u67B6",
+      remark: ""
     }
   ],
   "\u8D27\u67DC\u660E\u7EC6\u5BFC\u51FA\u884C\u7F3A\u5931\u5B57\u6BB5\u65F6\u5E94\u4F7F\u7528\u7A33\u5B9A\u7A7A\u503C\u6216 0\uFF0C\u907F\u514D Excel \u5BFC\u51FA\u62A5\u9519"
@@ -2329,6 +2685,51 @@ var clearedRows = applyContainerDetailEnglishNameUpdates(rows, [
 ]);
 assertEqual(clearedRows[0].\u82F1\u6587\u540D\u79F0, void 0, "\u6E05\u9664\u540E\u672C\u5730\u884C\u660E\u7EC6\u7EA7\u82F1\u6587\u540D\u79F0\u5E94\u4E3A\u7A7A");
 assertEqual(clearedRows[0].\u5546\u54C1\u4FE1\u606F?.\u82F1\u6587\u540D\u79F0, void 0, "\u6E05\u9664\u540E\u672C\u5730\u884C\u5546\u54C1\u4FE1\u606F\u82F1\u6587\u540D\u79F0\u5E94\u4E3A\u7A7A");
+assertEqual(
+  normalizeContainerDetailEnglishNameForSave("  christmas wool ball  "),
+  "Christmas Wool Ball",
+  "\u4FDD\u5B58\u82F1\u6587\u540D\u79F0\u65F6\u5E94\u53BB\u9664\u9996\u5C3E\u7A7A\u767D\u5E76\u9010\u8BCD\u5927\u5199\u9996\u4E2A\u62C9\u4E01\u5B57\u6BCD"
+);
+assertEqual(
+  normalizeContainerDetailEnglishNameForSave("  six-color  card	with\nx'mas X'MAS TPR mIXed  "),
+  "Six-color  Card	With\nX'mas X'MAS TPR MIXed",
+  "\u4FDD\u5B58\u82F1\u6587\u540D\u79F0\u65F6\u5E94\u4FDD\u7559\u5185\u90E8\u7A7A\u767D\u3001\u8FDE\u5B57\u7B26\u3001\u6487\u53F7\u3001\u7F29\u5199\u548C\u8BCD\u5185\u5927\u5C0F\u5199"
+);
+assertEqual(
+  resolveContainerDetailPendingPriceOnBlur("15", 12.82),
+  15,
+  "\u5931\u7126\u65F6 DOM \u4EF7\u683C\u4E0E React \u8349\u7A3F\u4E0D\u540C\u65F6\u5E94\u8865\u4EA4\u4E24\u4F4D\u7CBE\u5EA6\u4EF7\u683C"
+);
+assertEqual(
+  resolveContainerDetailPendingPriceOnBlur("15.004", 12.82),
+  15,
+  "\u5931\u7126\u515C\u5E95\u5E94\u6309\u4EF7\u683C\u63A7\u4EF6\u7684\u4E24\u4F4D\u7CBE\u5EA6\u89C4\u8303\u5316"
+);
+assertEqual(
+  resolveContainerDetailPendingPriceOnBlur("15.00", 15),
+  void 0,
+  "\u6B63\u5E38 onChange \u5DF2\u66F4\u65B0 React \u8349\u7A3F\u65F6\u5931\u7126\u4E0D\u5E94\u91CD\u590D\u63D0\u4EA4"
+);
+assertEqual(
+  resolveContainerDetailPendingPriceOnBlur("  ", 12.82),
+  void 0,
+  "\u7A7A\u8F93\u5165\u5931\u7126\u65F6\u4E0D\u80FD\u8BEF\u8F6C\u6210\u96F6"
+);
+assertEqual(
+  resolveContainerDetailPendingPriceOnBlur("invalid", 12.82),
+  void 0,
+  "\u975E\u6CD5\u8F93\u5165\u5931\u7126\u65F6\u4E0D\u5E94\u8FDB\u5165\u4EF7\u683C\u8349\u7A3F"
+);
+assertEqual(
+  resolveContainerDetailPendingPriceOnBlur("-1", 12.82),
+  void 0,
+  "\u8D1F\u6570\u5931\u7126\u65F6\u4E0D\u5E94\u7ED5\u8FC7\u4EF7\u683C\u63A7\u4EF6\u4E0B\u9650"
+);
+assertEqual(
+  resolveContainerDetailPendingPriceOnBlur("0", void 0),
+  0,
+  "\u5408\u6CD5\u96F6\u4EF7\u683C\u5FC5\u987B\u548C\u7A7A\u8F93\u5165\u533A\u5206"
+);
 var pendingDetailPatches = {};
 pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
   hguid: "detail-1",
@@ -2340,7 +2741,7 @@ pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
 });
 pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
   hguid: "detail-2",
-  \u82F1\u6587\u540D\u79F0: "  Valid English Name  "
+  \u82F1\u6587\u540D\u79F0: "  valid english name  "
 });
 pendingDetailPatches = mergePendingContainerDetailPatch(pendingDetailPatches, {
   hguid: "detail-3",
@@ -2433,6 +2834,66 @@ assertDeepEqual(
   },
   "\u4FDD\u5B58\u8BA1\u5212\u5E94\u6309\u660E\u7EC6\u53BB\u91CD\u7EDF\u8BA1\uFF0C\u5E76\u628A\u7A7A\u767D\u82F1\u6587\u540D\u79F0\u4FDD\u7559\u4E3A\u672C\u5730\u6821\u9A8C\u9519\u8BEF"
 );
+assertDeepEqual(
+  clearSavedPendingContainerDetailFields(
+    {
+      "title-case-detail": {
+        hguid: "title-case-detail",
+        \u82F1\u6587\u540D\u79F0: "christmas wool ball"
+      }
+    },
+    [{ hguid: "title-case-detail", \u82F1\u6587\u540D\u79F0: "Christmas Wool Ball" }],
+    []
+  ),
+  {},
+  "\u6210\u529F\u63D0\u4EA4\u7684\u9010\u8BCD\u5927\u5199\u82F1\u6587\u540D\u79F0\u5E94\u6309\u540C\u4E00\u89C4\u8303\u6E05\u9664\u539F\u59CB\u5C0F\u5199\u8349\u7A3F"
+);
+var successfulEnglishNameUpdates = buildContainerDetailSuccessfulEnglishNameUpdates(
+  {
+    "save-success": { hguid: "save-success", \u82F1\u6587\u540D\u79F0: "christmas wool ball" },
+    "edited-during-save": { hguid: "edited-during-save", \u82F1\u6587\u540D\u79F0: "newer english name" },
+    "cleared-during-save": { hguid: "cleared-during-save", ClearEnglishName: true },
+    "field-failure": { hguid: "field-failure", \u82F1\u6587\u540D\u79F0: "failed english name" },
+    "row-failure": { hguid: "row-failure", \u82F1\u6587\u540D\u79F0: "missing detail" }
+  },
+  [
+    { hguid: "save-success", \u82F1\u6587\u540D\u79F0: "Christmas Wool Ball" },
+    { hguid: "edited-during-save", \u82F1\u6587\u540D\u79F0: "Old English Name" },
+    { hguid: "cleared-during-save", \u82F1\u6587\u540D\u79F0: "Old English Name" },
+    { hguid: "field-failure", \u82F1\u6587\u540D\u79F0: "Failed English Name" },
+    { hguid: "row-failure", \u82F1\u6587\u540D\u79F0: "Missing Detail" }
+  ],
+  [
+    {
+      hguid: "field-failure",
+      field: "\u82F1\u6587\u540D\u79F0",
+      code: "CONTAINS_CHINESE",
+      message: "\u82F1\u6587\u540D\u79F0\u4E0D\u80FD\u5305\u542B\u4E2D\u6587"
+    },
+    {
+      hguid: "row-failure",
+      field: "*",
+      code: "DETAIL_NOT_FOUND",
+      message: "\u8D27\u67DC\u660E\u7EC6\u4E0D\u5B58\u5728"
+    }
+  ]
+);
+assertDeepEqual(
+  successfulEnglishNameUpdates,
+  [{ hguid: "save-success", \u82F1\u6587\u540D\u79F0: "Christmas Wool Ball" }],
+  "\u6210\u529F\u56DE\u663E\u5E94\u6392\u9664\u5B57\u6BB5\u5931\u8D25\u3001\u6574\u884C\u5931\u8D25\u53CA\u4FDD\u5B58\u671F\u95F4\u4EA7\u751F\u7684\u65B0\u540D\u79F0\u6216\u6E05\u7A7A\u610F\u56FE"
+);
+var savedEnglishNameRows = applyContainerDetailEnglishNameUpdates(
+  [{
+    id: 51,
+    hguid: "save-success",
+    \u82F1\u6587\u540D\u79F0: "christmas wool ball",
+    \u5546\u54C1\u4FE1\u606F: { \u82F1\u6587\u540D\u79F0: "christmas wool ball" }
+  }],
+  successfulEnglishNameUpdates
+);
+assertEqual(savedEnglishNameRows[0].\u82F1\u6587\u540D\u79F0, "Christmas Wool Ball", "\u6210\u529F\u56DE\u663E\u5E94\u66F4\u65B0\u660E\u7EC6\u7EA7\u82F1\u6587\u540D\u79F0");
+assertEqual(savedEnglishNameRows[0].\u5546\u54C1\u4FE1\u606F?.\u82F1\u6587\u540D\u79F0, "Christmas Wool Ball", "\u6210\u529F\u56DE\u663E\u5E94\u540C\u6B65\u5546\u54C1\u4FE1\u606F\u82F1\u6587\u540D\u79F0");
 var remainingPendingDetailPatches = clearSavedPendingContainerDetailFields(
   pendingDetailPatches,
   pendingDetailSavePlan.detailUpdates,
@@ -2701,10 +3162,10 @@ assertEqual(
   "\u5F53\u524D\u5217\u4E0D\u5B58\u5728\u65F6\u4E0D\u5E94\u79FB\u52A8"
 );
 var tagRows = [
-  { id: 31, hguid: "tag-31", \u662F\u5426\u65B0\u5546\u54C1: true, \u8D34\u724C\u4EF7\u683C: 0, \u8FDB\u53E3\u4EF7\u683C: 1, warehouseIsActive: true },
-  { id: 32, hguid: "tag-32", \u662F\u5426\u65B0\u5546\u54C1: true, \u8D34\u724C\u4EF7\u683C: 0, warehouseOEMPrice: 2, \u8FDB\u53E3\u4EF7\u683C: 0, warehouseIsActive: false, \u5546\u54C1\u4FE1\u606F: { \u5546\u54C1\u7C7B\u578B: "\u5957\u88C5\u5546\u54C1" } },
-  { id: 33, hguid: "tag-33", \u662F\u5426\u65B0\u5546\u54C1: false, \u8D34\u724C\u4EF7\u683C: 3, \u8FDB\u53E3\u4EF7\u683C: 4, warehouseIsActive: true, \u5546\u54C1\u4FE1\u606F: { \u5546\u54C1\u7C7B\u578B: "\u591A\u7801\u5546\u54C1" } },
-  { id: 34, hguid: "tag-34", \u662F\u5426\u65B0\u5546\u54C1: false, \u8D34\u724C\u4EF7\u683C: 0, \u8FDB\u53E3\u4EF7\u683C: void 0, warehouseIsActive: void 0, \u5546\u54C1\u7C7B\u578B: "\u5957\u88C5\u5B50\u5546\u54C1" }
+  { id: 31, hguid: "tag-31", \u662F\u5426\u65B0\u5546\u54C1: true, \u8D34\u724C\u4EF7\u683C: 0, \u8FDB\u53E3\u4EF7\u683C: 1, warehouseIsActive: true, matchType: "productCode" },
+  { id: 32, hguid: "tag-32", \u662F\u5426\u65B0\u5546\u54C1: true, \u8D34\u724C\u4EF7\u683C: 0, warehouseOEMPrice: 2, \u8FDB\u53E3\u4EF7\u683C: 0, warehouseIsActive: false, matchType: "supplierItem", \u5546\u54C1\u4FE1\u606F: { \u5546\u54C1\u7C7B\u578B: "\u5957\u88C5\u5546\u54C1" } },
+  { id: 33, hguid: "tag-33", \u662F\u5426\u65B0\u5546\u54C1: false, \u8D34\u724C\u4EF7\u683C: 3, \u8FDB\u53E3\u4EF7\u683C: 4, warehouseIsActive: true, matchType: "unmatched", \u5546\u54C1\u4FE1\u606F: { \u5546\u54C1\u7C7B\u578B: "\u591A\u7801\u5546\u54C1" } },
+  { id: 34, hguid: "tag-34", \u662F\u5426\u65B0\u5546\u54C1: false, \u8D34\u724C\u4EF7\u683C: 0, \u8FDB\u53E3\u4EF7\u683C: void 0, warehouseIsActive: void 0, matchType: "productCode", \u5546\u54C1\u7C7B\u578B: "\u5957\u88C5\u5B50\u5546\u54C1" }
 ];
 assertDeepEqual(
   buildContainerDetailTagStats(tagRows),
@@ -2719,9 +3180,12 @@ assertDeepEqual(
     normal: 1,
     set: 1,
     multi: 1,
-    setChild: 1
+    setChild: 1,
+    productCodeMatched: 2,
+    supplierItemMatched: 1,
+    unmatched: 1
   },
-  "\u7EDF\u8BA1\u680F\u5E94\u6309\u5F53\u524D\u57FA\u7840\u7ED3\u679C\u7EDF\u8BA1\u5168\u90E8\u3001\u65B0\u5546\u54C1\u3001\u5DF2\u6709\u5546\u54C1\u3001\u7F3A\u96F6\u552E\u4EF7\u3001\u8FDB\u53E3\u4EF7\u5F02\u5E38\u3001\u4E0A\u4E0B\u67B6\u548C\u5546\u54C1\u7C7B\u578B\u6570\u91CF"
+  "\u7EDF\u8BA1\u680F\u5E94\u6309\u5F53\u524D\u57FA\u7840\u7ED3\u679C\u7EDF\u8BA1\u5168\u90E8\u3001\u65B0\u5546\u54C1\u3001\u5DF2\u6709\u5546\u54C1\u3001\u5F02\u5E38\u3001\u4E0A\u4E0B\u67B6\u3001\u5546\u54C1\u7C7B\u578B\u548C\u6743\u5A01\u5339\u914D\u7C7B\u578B\u6570\u91CF"
 );
 assertEqual(matchesContainerDetailTagFilter(tagRows[0], "new"), true, "\u65B0\u5546\u54C1 tag \u5E94\u5339\u914D\u662F\u5426\u65B0\u5546\u54C1\u884C");
 assertEqual(matchesContainerDetailTagFilter(tagRows[2], "new"), false, "\u65B0\u5546\u54C1 tag \u4E0D\u5E94\u5339\u914D\u5DF2\u6709\u5546\u54C1\u884C");
@@ -2817,6 +3281,13 @@ assertDeepEqual(columnState({ productTypes: ["normal"] }), ["column-201", "colum
 assertEqual(getContainerDetailProductTypeFilterKey({ id: 204, hguid: "column-204", \u5546\u54C1\u4FE1\u606F: { \u5546\u54C1\u7C7B\u578B: "\u591A\u7801\u5546\u54C1" } }), "multi", "\u5546\u54C1\u7C7B\u578B\u8FC7\u6EE4\u952E\u5E94\u652F\u6301\u591A\u7801\u5546\u54C1");
 assertDeepEqual(columnState({ newProductStates: ["new"] }), ["column-202"], "\u65B0\u5546\u54C1\u5217\u5934\u8FC7\u6EE4\u5E94\u652F\u6301\u7B5B\u51FA\u65B0\u5546\u54C1");
 assertDeepEqual(columnState({ matchTypes: ["supplierItem"] }), ["column-203"], "\u5339\u914D\u65B9\u5F0F\u5217\u5934\u8FC7\u6EE4\u5E94\u652F\u6301\u4F9B\u5E94\u5546\u7F16\u7801\u52A0\u8D27\u53F7\u5339\u914D");
+assertEqual(
+  buildContainerDetailTagStats(
+    applyContainerDetailColumnState(columnStateRows, { matchTypes: ["supplierItem"] })
+  ).all,
+  1,
+  "\u5168\u91CF\u6A21\u5F0F\u6807\u7B7E\u7EDF\u8BA1\u5E94\u5148\u5E94\u7528\u5217\u7B5B\u9009\uFF0C\u4F46\u4E0D\u5E94\u7528 SelectedTags \u81EA\u8EAB"
+);
 assertDeepEqual(columnState({ warehouseStatus: ["inactive"] }), ["column-202", "column-203"], "\u4ED3\u5E93\u72B6\u6001\u5217\u5934\u8FC7\u6EE4\u5E94\u628A\u975E true \u89C6\u4E3A\u4E0B\u67B6");
 assertDeepEqual(columnState({ middlePackQuantity: { min: 1, max: 20 } }), ["column-201"], "\u4E2D\u5305\u6570\u5217\u5934\u8303\u56F4\u8FC7\u6EE4\u5E94\u8BFB\u53D6\u4ED3\u5E93\u5546\u54C1\u6700\u5C0F\u8BA2\u8D27\u91CF");
 assertDeepEqual(columnState({ containerQuantity: { min: 500, max: 2e3 } }), ["column-201"], "\u88C5\u67DC\u6570\u91CF\u5217\u5934\u8303\u56F4\u8FC7\u6EE4\u5E94\u540C\u65F6\u652F\u6301\u6700\u5C0F\u503C\u548C\u6700\u5927\u503C");
@@ -2838,6 +3309,105 @@ assertDeepEqual(
 assertDeepEqual(columnState({}, { field: "transportCost", order: "ascend" }), ["column-203", "column-201", "column-202"], "\u6570\u5B57\u6392\u5E8F\u5E94\u628A\u7A7A\u503C\u6392\u5728\u6700\u540E");
 assertDeepEqual(columnState({}, { field: "warehouseStatus", order: "descend" }), ["column-201", "column-202", "column-203"], "\u4ED3\u5E93\u72B6\u6001\u6392\u5E8F\u5E94\u652F\u6301\u4E0A\u67B6\u4F18\u5148\u4E14\u540C\u503C\u4FDD\u6301\u539F\u59CB\u987A\u5E8F");
 assertDeepEqual(columnState({}, { field: "matchType", order: "ascend" }), ["column-201", "column-203", "column-202"], "\u5339\u914D\u65B9\u5F0F\u6392\u5E8F\u5E94\u6309\u5546\u54C1\u7F16\u7801\u3001\u4F9B\u5E94\u5546\u8D27\u53F7\u3001\u672A\u5339\u914D\u7A33\u5B9A\u6392\u5E8F");
+assertDeepEqual(
+  {
+    initialPageSize: CONTAINER_DETAIL_INITIAL_PAGE_SIZE,
+    fullLoadLimit: CONTAINER_DETAIL_FULL_LOAD_LIMIT,
+    defaultPageSize: CONTAINER_DETAIL_DEFAULT_PAGE_SIZE,
+    options: CONTAINER_DETAIL_PAGE_SIZE_OPTIONS
+  },
+  {
+    initialPageSize: 100,
+    fullLoadLimit: 200,
+    defaultPageSize: 100,
+    options: [50, 100, 200, 500, 1e3]
+  },
+  "\u8D27\u67DC\u660E\u7EC6\u9996\u5C4F\u5927\u5C0F\u3001\u5168\u91CF\u9608\u503C\u3001\u9ED8\u8BA4\u5206\u9875\u548C\u53EF\u9009\u6863\u4F4D\u5FC5\u987B\u4FDD\u6301\u56FA\u5B9A\u4EA7\u54C1\u5951\u7EA6"
+);
+var initialPageRows = Array.from({ length: 100 }, (_, index) => ({
+  id: index + 1,
+  hguid: `initial-${index + 1}`
+}));
+assertDeepEqual(
+  resolveContainerDetailInitialPage({ items: initialPageRows, itemsTotal: 100 }),
+  {
+    mode: "full",
+    items: initialPageRows,
+    itemsTotal: 100,
+    requiresFullLoad: false
+  },
+  "\u6709\u6548\u660E\u7EC6\u6070\u597D 100 \u6761\u65F6\u9996\u5C4F\u5DF2\u7ECF\u5B8C\u6574\uFF0C\u4E0D\u5E94\u91CD\u590D\u67E5\u8BE2 200 \u6761"
+);
+assertDeepEqual(
+  resolveContainerDetailInitialPage({ items: initialPageRows, itemsTotal: 101 }),
+  {
+    mode: "full",
+    items: initialPageRows,
+    itemsTotal: 101,
+    requiresFullLoad: true
+  },
+  "\u6709\u6548\u660E\u7EC6\u8FBE\u5230 101 \u6761\u65F6\u5E94\u7EE7\u7EED\u62C9\u53D6 200 \u6761\u5B8C\u6574\u96C6"
+);
+assertDeepEqual(
+  resolveContainerDetailInitialPage({ items: initialPageRows, itemsTotal: 200 }),
+  {
+    mode: "full",
+    items: initialPageRows,
+    itemsTotal: 200,
+    requiresFullLoad: true
+  },
+  "\u6709\u6548\u660E\u7EC6\u6070\u597D 200 \u6761\u65F6\u5E94\u7EE7\u7EED\u62C9\u53D6 200 \u6761\u5B8C\u6574\u96C6\u5E76\u8FDB\u5165\u672C\u5730\u6A21\u5F0F"
+);
+assertDeepEqual(
+  resolveContainerDetailInitialPage({ items: initialPageRows, itemsTotal: 201 }),
+  {
+    mode: "paged",
+    items: initialPageRows,
+    itemsTotal: 201,
+    requiresFullLoad: false
+  },
+  "\u6709\u6548\u660E\u7EC6\u8FBE\u5230 201 \u6761\u65F6\u5E94\u76F4\u63A5\u590D\u7528\u9996\u5C4F 100 \u884C\u8FDB\u5165\u670D\u52A1\u7AEF\u5206\u9875"
+);
+assertEqual(
+  canReuseContainerDetailInitialPage({
+    filters: {},
+    selectedTags: [],
+    sortState: { field: "itemNumber", order: "ascend" },
+    pageSize: 100
+  }),
+  true,
+  "\u65E0\u7B5B\u9009\u3001\u65E0\u6807\u7B7E\u3001\u9ED8\u8BA4\u6392\u5E8F\u548C\u9ED8\u8BA4\u9875\u5927\u5C0F\u5E94\u590D\u7528\u9996\u5C4F 100 \u884C"
+);
+assertEqual(
+  canReuseContainerDetailInitialPage({
+    filters: { matchTypes: ["supplierItem"] },
+    selectedTags: [],
+    sortState: { field: "itemNumber", order: "ascend" },
+    pageSize: 100
+  }),
+  false,
+  "\u5217\u7B5B\u9009\u5B58\u5728\u65F6\u4E0D\u80FD\u628A\u9ED8\u8BA4\u9996\u5C4F\u8BEF\u5F53\u4F5C\u5F53\u524D\u5206\u9875\u7ED3\u679C"
+);
+assertEqual(
+  canReuseContainerDetailInitialPage({
+    filters: {},
+    selectedTags: ["active"],
+    sortState: { field: "itemNumber", order: "ascend" },
+    pageSize: 100
+  }),
+  false,
+  "\u6807\u7B7E\u5B58\u5728\u65F6\u4E0D\u80FD\u590D\u7528\u65E0\u6807\u7B7E\u9996\u5C4F"
+);
+assertEqual(
+  canReuseContainerDetailInitialPage({
+    filters: {},
+    selectedTags: [],
+    sortState: { field: "domesticPrice", order: "descend" },
+    pageSize: 100
+  }),
+  false,
+  "\u975E\u9ED8\u8BA4\u6392\u5E8F\u4E0D\u80FD\u590D\u7528\u9ED8\u8BA4\u6392\u5E8F\u9996\u5C4F"
+);
 assertDeepEqual(
   buildContainerDetailQuery({
     containerGuid: "CONTAINER-QUERY",
@@ -2928,6 +3498,29 @@ assertDeepEqual(
     includeStats: false
   },
   "\u8FFD\u52A0\u9875\u67E5\u8BE2\u5E94\u5141\u8BB8\u663E\u5F0F\u8DF3\u8FC7 total \u548C\u6807\u7B7E\u7EDF\u8BA1"
+);
+assertDeepEqual(
+  buildContainerDetailQuery({
+    containerGuid: "CONTAINER-PAGED-STATS",
+    filters: { matchTypes: ["supplierItem"] },
+    selectedTags: ["new", "normal"],
+    pageNumber: 1,
+    pageSize: 100,
+    includeItems: false,
+    includeTotal: true,
+    includeStats: true
+  }),
+  {
+    containerGuid: "CONTAINER-PAGED-STATS",
+    pageNumber: 1,
+    pageSize: 100,
+    includeItems: false,
+    includeTotal: true,
+    includeStats: true,
+    matchTypes: ["supplierItem"],
+    selectedTags: ["new", "normal"]
+  },
+  "\u5206\u9875\u7EDF\u8BA1\u8BF7\u6C42\u5E94\u53D1\u9001\u5B8C\u6574\u7B5B\u9009\u548C\u6807\u7B7E\uFF0C\u4F46\u5141\u8BB8\u4E0D\u8FD4\u56DE\u660E\u7EC6\u884C"
 );
 assertDeepEqual(
   buildContainerDetailQuery({
@@ -3174,6 +3767,16 @@ assertEqual(getContainerDetailMatchType({ id: 308, hguid: "match-308", \u662F\u5
 assertEqual(getContainerDetailMatchType({ id: 309, hguid: "match-309", \u662F\u5426\u65B0\u5546\u54C1: false }), "unmatched", "\u7F3A\u5C11\u5339\u914D\u65B9\u5F0F\u7684\u5DF2\u6709\u5546\u54C1\u4E0D\u80FD\u9ED8\u8BA4\u663E\u793A\u5546\u54C1\u7F16\u7801\u5339\u914D");
 assertEqual(
   getContainerDetailMatchType({
+    id: 3091,
+    hguid: "match-3091",
+    matchType: "productCode",
+    hasProductCodeConflict: true
+  }),
+  "productCode",
+  "\u666E\u901A\u52A0\u8F7D\u5E94\u76F4\u63A5\u4FE1\u4EFB\u670D\u52A1\u7AEF\u6743\u5A01 matchType\uFF0C\u4E0D\u80FD\u518D\u6309\u51B2\u7A81\u5B57\u6BB5\u4E8C\u6B21\u5206\u7C7B"
+);
+assertEqual(
+  getContainerDetailMatchType({
     id: 310,
     hguid: "match-310",
     MatchType: "ProductCode",
@@ -3260,6 +3863,16 @@ var posProductTypeSource = readFileSync("src/types/posProduct.ts", "utf8");
 var zhLocale = JSON.parse(readFileSync("src/i18n/locales/zh.json", "utf8"));
 var enLocale = JSON.parse(readFileSync("src/i18n/locales/en.json", "utf8"));
 assertEqual(
+  !pageSource.includes("const reconcileLoadedMatchStatus = async") && !pageSource.includes("void reconcileLoadedMatchStatus(") && (pageSource.match(/await detectProducts\(/g) ?? []).length === 1,
+  true,
+  "\u666E\u901A\u52A0\u8F7D\u3001\u7FFB\u9875\u3001\u7B5B\u9009\u548C\u6392\u5E8F\u4E0D\u5F97\u81EA\u52A8\u8C03\u7528 detectProducts\uFF0C\u663E\u5F0F\u201C\u5339\u914D\u56FD\u5185\u6570\u636E\u201D\u4ECD\u4FDD\u7559\u4E00\u6B21\u8C03\u7528"
+);
+assertEqual(
+  pageSource.includes("pageSize: CONTAINER_DETAIL_INITIAL_PAGE_SIZE") && pageSource.includes("includeTotal: true") && pageSource.includes("includeStats: false") && !pageSource.includes("startDetailReadAhead("),
+  true,
+  "\u9996\u5C4F\u5E94\u53EA\u52A0\u8F7D 100 \u884C\u548C\u7CBE\u786E total\uFF0C\u4E14\u4E0D\u5E76\u53D1\u9884\u8BFB\u7B2C 2 \u9875\u6216\u7EDF\u8BA1"
+);
+assertEqual(
   pageSource.includes("PDF \u5BF9\u5916\u5206\u4EAB\u65F6\u4E0D\u5C55\u793A\u6C47\u7387\u548C\u8FD0\u8D39\u91D1\u989D\uFF1BExcel \u4ECD\u4FDD\u7559\u5B8C\u6574\u6838\u5BF9\u4FE1\u606F\u3002") && pageSource.includes("const summaryRows: NonNullable<ContainerExportOptions['summary']>['rows'] = format === 'pdf'") && pageSource.includes(": baseSummaryRows"),
   true,
   "\u8D27\u67DC\u660E\u7EC6 PDF \u57FA\u7840\u4FE1\u606F\u4E0D\u5E94\u5C55\u793A\u6C47\u7387\u548C\u8FD0\u8D39\u91D1\u989D\uFF0CExcel \u5E94\u4FDD\u7559\u5B8C\u6574\u6458\u8981"
@@ -3274,6 +3887,14 @@ function getLocaleValue(source, key) {
 }
 var containerDetailExportLabelKeys = CONTAINER_DETAIL_EXPORT_COLUMNS.map((column) => column.labelKey);
 var requiredContainerI18nKeys = [
+  "containers.freightCalculator.modes.standard68",
+  "containers.freightCalculator.modes.perCbm",
+  "containers.freightCalculator.placeholders.standard68",
+  "containers.freightCalculator.placeholders.perCbm",
+  "containers.freightCalculator.preview",
+  "containers.freightCalculator.invalidVolume",
+  "containers.freightCalculator.invalidInput",
+  "containers.freightCalculator.refreshFailed",
   "containers.actions.batchUpdateFloatRate",
   "containers.actions.batchUpdatePrices",
   "containers.actions.showReadonlyOemPrice",
@@ -3282,7 +3903,11 @@ var requiredContainerI18nKeys = [
   "containers.actions.matchDomesticData",
   "containers.actions.alignDomesticProductCode",
   "containers.actions.previewImage",
+  "containers.actions.exportAllExcelWithImages",
+  "containers.actions.retryAutoSave",
   "containers.text.loadedRows",
+  "containers.text.autoSavingFields",
+  "containers.text.autoSaveFailedFields",
   "containers.text.warehouseInventoriesCreated",
   "containers.text.warehouseInventoriesUpdated",
   "containers.text.skippedNewProducts",
@@ -3299,9 +3924,14 @@ var requiredContainerI18nKeys = [
   "containers.modals.savePendingDetailsNewRetailHint",
   "containers.modals.savePendingDetailsInvalidEnglishHint",
   "containers.modals.savePendingDetailsRetryHint",
+  "containers.modals.exportWholeContainerTitle",
+  "containers.modals.exportWholeContainerContent",
   "containers.messages.selectedRowsHidden",
   "containers.messages.savePendingDetailsFirst",
   "containers.messages.detailSaveFailed",
+  "containers.messages.detailNotFound",
+  "containers.messages.detailSaveContextMissing",
+  "containers.messages.productNameRequired",
   "containers.messages.noPendingDetails",
   "containers.messages.detailsSaved",
   "containers.messages.detailFieldsNotSaved",
@@ -3330,6 +3960,13 @@ var requiredContainerI18nKeys = [
   "containers.messages.createProductFailed",
   "containers.messages.purchasePricesUpdateFailed",
   "containers.messages.newProductCannotToggleWarehouseStatus",
+  "containers.messages.detailsExportedWithImageFailures",
+  "containers.messages.exportLoadingAllDetails",
+  "containers.messages.exportPreparingImages",
+  "containers.messages.exportWritingWorkbook",
+  "containers.messages.exportGeneratingFile",
+  "containers.messages.exportGeneratingPdf",
+  "containers.messages.exportComplete",
   "containers.messages.newProductsSkippedForWarehouseStatus",
   "containers.modals.batchUpdateFloatRateTitle",
   "containers.modals.batchUpdatePricesTitle",
@@ -3340,6 +3977,8 @@ var requiredContainerI18nKeys = [
   "containers.modals.alignDomesticProductCodeConflictHint",
   "containers.modals.rowCategoryTitle",
   "containers.export.summaryTitle",
+  "containers.export.productImageDownloadFailed",
+  "containers.export.productImageMissing",
   ...containerDetailExportLabelKeys,
   "containers.setCode.pricesTitle",
   "containers.setCode.missingProductCode",
@@ -3406,7 +4045,18 @@ assertDeepEqual(
     "RMB Cost",
     "Current Purchase Price",
     "Current Retail Price",
-    "RRP"
+    "RRP",
+    "Category",
+    "QTY/CTN",
+    "TP-cost/ unit",
+    "TP-cost/ CTN",
+    "Float Rate",
+    "Import Price",
+    "Type",
+    "New Product",
+    "Match Type",
+    "Warehouse Status",
+    "Remark"
   ],
   "\u82F1\u6587\u6A21\u5F0F\u5BFC\u51FA\u5217\u9009\u62E9\u5F39\u7A97\u548C Excel \u8868\u5934\u5E94\u5168\u90E8\u4F7F\u7528\u82F1\u6587 locale\uFF0C\u4E0D\u80FD\u56DE\u9000\u5230\u4E2D\u6587 fallback"
 );
@@ -3876,14 +4526,14 @@ assertEqual(
   "\u5339\u914D\u56FD\u5185\u6570\u636E\u68C0\u6D4B\u8BF7\u6C42\u5E94\u4F7F\u7528\u884C\u4F9B\u5E94\u5546\u7F16\u7801\u4E14\u4E0D\u518D\u63D0\u4EA4\u6761\u7801\u515C\u5E95"
 );
 assertEqual(
-  pageSource.includes("void reconcileLoadedMatchStatus(result.items, currentReconcileGeneration)") && pageSource.includes("products.filter((row) => getContainerDetailProductCode(row) || getContainerDetailItemNumber(row))") && pageSource.includes("buildContainerDetailMatchStatusUpdates(rowsNeedingMatchStatus, detected)") && pageSource.includes("\u52A0\u8F7D\u6001\u53EA\u6821\u6B63\u8868\u683C\u5C55\u793A\u72B6\u6001\uFF0C\u4E0D\u5199\u5E93"),
+  !pageSource.includes("reconcileLoadedMatchStatus") && !pageSource.includes("buildContainerDetailMatchStatusUpdates(rowsNeedingMatchStatus, detected)") && pageSource.includes("const detected = await detectProducts(detectionItems)"),
   true,
-  "\u9875\u9762\u52A0\u8F7D\u540E\u5E94\u5BF9\u5F53\u524D\u61D2\u52A0\u8F7D\u5757\u53EA\u8BFB\u6821\u6B63\u5339\u914D\u72B6\u6001\uFF0C\u907F\u514D\u65E7\u9519\u8BEF MatchType \u7559\u5728\u8868\u683C\u4E2D\u4E14\u907F\u514D\u5199\u5E93"
+  "\u666E\u901A\u9875\u9762\u52A0\u8F7D\u5E94\u76F4\u63A5\u4F7F\u7528\u540E\u7AEF\u6743\u5A01 MatchType\uFF0C\u53EA\u6709\u663E\u5F0F\u5339\u914D\u56FD\u5185\u6570\u636E\u64CD\u4F5C\u53EF\u4EE5\u8C03\u7528 detectProducts"
 );
 assertEqual(
-  pageSource.includes("const containerDetailReconcileGenerationRef = useRef(0)") && pageSource.includes("const currentReconcileGeneration = containerDetailReconcileGenerationRef.current") && pageSource.includes("if (containerDetailReconcileGenerationRef.current !== reconcileGeneration)") && !pageSource.includes("containerDetailLoadRequestIdRef.current !== requestId)"),
+  pageSource.includes("const currentRequestId = containerDetailLoadRequestIdRef.current + 1") && pageSource.includes("controller.signal.aborted") && pageSource.includes("containerDetailLoadRequestIdRef.current === currentRequestId") && pageSource.includes("currentContainerGuidRef.current === containerGuid"),
   true,
-  "\u8FFD\u52A0\u9875\u4E4B\u95F4\u5E94\u5171\u4EAB\u5339\u914D\u6821\u6B63 generation\uFF1B\u53EA\u6709\u91CD\u7F6E\u3001\u5207\u6362\u6216\u79BB\u5F00\u9875\u9762\u624D\u80FD\u4F7F\u65E7\u6821\u6B63\u7ED3\u679C\u5931\u6548"
+  "\u7FFB\u9875\u3001\u7B5B\u9009\u548C\u6392\u5E8F\u8BF7\u6C42\u5E94\u4EE5 AbortSignal\u3001requestId \u548C\u8D27\u67DC GUID \u5171\u540C\u963B\u6B62\u65E7\u54CD\u5E94\u8986\u76D6"
 );
 assertEqual(
   pageSource.includes("SkipRelatedProductSync: true"),
@@ -3911,9 +4561,9 @@ assertEqual(
   "\u82F1\u6587\u540D\u79F0\u8F93\u5165\u6846\u81EA\u52A8\u6362\u884C\u6700\u591A\u663E\u793A 2 \u884C"
 );
 assertEqual(
-  pageSource.includes("onChange={(event) => markPendingDetailPatch(row, { \u82F1\u6587\u540D\u79F0: event.target.value })}") && !pageSource.includes("onBlur={(event) => void saveRowPatch(row, { \u82F1\u6587\u540D\u79F0: event.target.value })") && pageSource.includes("status={validationError ? 'error' : undefined}"),
+  pageSource.includes("onChange={(event) => markPendingDetailPatch(row, { \u82F1\u6587\u540D\u79F0: event.target.value })}") && !pageSource.includes("onBlur={(event) => void saveRowPatch(row, { \u82F1\u6587\u540D\u79F0: event.target.value })") && pageSource.includes("status={validationError || saveFailure ? 'error' : undefined}"),
   true,
-  "\u5355\u884C\u82F1\u6587\u540D\u79F0\u5E94\u8FDB\u5165\u4FDD\u5B58\u660E\u7EC6\u961F\u5217\uFF0C\u4E0D\u518D\u5931\u7126\u81EA\u52A8\u4FDD\u5B58\uFF0C\u5E76\u4E3A\u4E2D\u6587\u6216\u7A7A\u767D\u8349\u7A3F\u663E\u793A\u9519\u8BEF\u72B6\u6001"
+  "\u5355\u884C\u82F1\u6587\u540D\u79F0\u5E94\u8FDB\u5165\u4FDD\u5B58\u660E\u7EC6\u961F\u5217\uFF0C\u4E0D\u518D\u5931\u7126\u81EA\u52A8\u4FDD\u5B58\uFF0C\u5E76\u4E3A\u672C\u5730\u6821\u9A8C\u6216\u670D\u52A1\u5668\u5931\u8D25\u663E\u793A\u9519\u8BEF\u72B6\u6001"
 );
 assertEqual(
   pageSource.includes("setSelectedRowKeys([])"),
@@ -3921,9 +4571,9 @@ assertEqual(
   "\u7B5B\u9009\u6761\u4EF6\u53D8\u5316\u65F6\u5E94\u6E05\u7A7A\u5DF2\u9009\u660E\u7EC6\uFF0C\u907F\u514D\u9690\u85CF\u9009\u4E2D\u884C\u540E\u6279\u91CF\u64CD\u4F5C\u9000\u56DE\u4F5C\u7528\u4E8E\u5F53\u524D\u5168\u90E8\u53EF\u89C1\u884C"
 );
 assertEqual(
-  pageSource.includes("[active, activeLoadQueryKey]") && pageSource.includes("\u6807\u7B7E\u4E0D\u8FDB\u5165 detailQueryKey\uFF1B\u53EA\u6709\u975E\u6807\u7B7E\u8FDC\u7A0B\u7B5B\u9009\u53D8\u5316\u624D\u91CD\u7F6E\u61D2\u52A0\u8F7D\u7ED3\u679C\u3002"),
+  pageSource.includes("[active, activeLoadQueryKey, currentUserGuid]") && pageSource.includes("selectedTags: selectedTagFilters") && pageSource.includes("detailLoadMode === 'full'") && pageSource.includes("detailLoadMode === 'paged'"),
   true,
-  "\u8FDC\u7A0B\u91CD\u8F7D effect \u5E94\u76D1\u542C active \u548C base \u67E5\u8BE2 key\uFF0C\u6807\u7B7E\u5207\u6362\u4E0D\u5E94\u89E6\u53D1 reset reload"
+  "\u5168\u91CF\u6A21\u5F0F\u6807\u7B7E\u5E94\u5728\u672C\u5730\u5904\u7406\uFF1B\u5206\u9875\u6A21\u5F0F\u6807\u7B7E\u5FC5\u987B\u8FDB\u5165\u8FDC\u7A0B scope \u5E76\u89E6\u53D1\u53D7\u63A7\u91CD\u8F7D"
 );
 assertEqual(
   pageSource.includes("{ value: 'all', label: t('containers.filters.allTags'), color: 'blue' }"),
@@ -4275,6 +4925,8 @@ var pushToHqPollingSource = pageSource.slice(
 );
 assertEqual(pushToHqPollingSource.includes("loadData()"), false, "\u53D1\u9001\u5230 HQ job \u7EC8\u6001\u4E0D\u5E94\u91CD\u65B0\u52A0\u8F7D\u8D27\u67DC\u660E\u7EC6\u8868\u683C");
 assertEqual(pushToHqPollingSource.includes("showPushToHqResult"), false, "\u53D1\u9001\u5230 HQ job \u7EC8\u6001\u53EA\u4F7F\u7528\u53F3\u4E0A\u89D2\u901A\u77E5\uFF0C\u4E0D\u5E94\u518D\u5F39\u7ED3\u679C Modal");
+assertEqual(pushToHqPollingSource.includes("initialPollIntervalMs: 200"), true, "\u53D1\u9001\u5230 HQ \u524D 10 \u6B21 job \u67E5\u8BE2\u5E94\u663E\u5F0F\u4F7F\u7528 200ms \u5FEB\u901F\u8F6E\u8BE2\u95F4\u9694");
+assertEqual(pushToHqPollingSource.includes("initialPollAttempts: 10"), true, "\u53D1\u9001\u5230 HQ \u5FEB\u901F\u8F6E\u8BE2\u5E94\u663E\u5F0F\u9650\u5236\u4E3A\u524D 10 \u6B21\u67E5\u8BE2");
 assertEqual(pageSource.includes("message.warning(t('containers.messages.pushToHqSkippedNewProducts'"), false, "\u53D1\u9001\u5230 HQ \u4E0D\u5E94\u518D\u56E0\u9875\u9762\u65B0\u5546\u54C1\u72B6\u6001\u7ED9\u51FA\u8DF3\u8FC7 warning");
 assertEqual(pageSource.includes("\u53D1\u9001 HQ \u7684\u7ED3\u679C\u7EDF\u4E00\u6536\u655B\u5230\u53F3\u4E0A\u89D2\u901A\u77E5"), true, "\u53D1\u9001\u5230 HQ \u63D0\u4EA4\u5931\u8D25\u4E5F\u5E94\u4F7F\u7528\u53F3\u4E0A\u89D2\u901A\u77E5\u627F\u8F7D\u7ED3\u679C");
 assertEqual(pageSource.includes("message: t('posAdmin.products.pushToHqFailed', '\u53D1\u9001\u5230 HQ \u5931\u8D25')"), true, "\u540E\u7AEF\u660E\u786E\u5931\u8D25\u65F6\u5E94\u5C55\u793A\u5931\u8D25\u901A\u77E5\u800C\u4E0D\u662F\u90E8\u5206\u6210\u529F");
@@ -4393,9 +5045,9 @@ assertEqual(
   "\u4ED3\u5E93\u5546\u54C1\u6279\u91CF\u66F4\u65B0 service \u5E94\u6821\u9A8C\u6839\u54CD\u5E94\u5931\u8D25\uFF0C\u5931\u8D25\u65F6\u963B\u65AD\u540E\u7EED\u5199\u8868"
 );
 assertEqual(
-  warehouseProductServiceSource.includes("throw new Error(result.message || errors.join('\uFF1B') || '\u4ED3\u5E93\u6279\u91CF\u66F4\u65B0\u90E8\u5206\u5931\u8D25')"),
+  updateExistingPurchaseHandlerSource.includes("const warehouseFailedCount = Number(") && updateExistingPurchaseHandlerSource.includes("warehouseErrors.join('\uFF1B')") && updateExistingPurchaseHandlerSource.indexOf("warehouseErrors.join('\uFF1B')") < updateExistingPurchaseHandlerSource.indexOf("warehouseResult.message") && updateExistingPurchaseHandlerSource.indexOf("if (warehouseFailedCount > 0)") < updateExistingPurchaseHandlerSource.indexOf("await upsertRetailForActiveStores(retailUpdates)"),
   true,
-  "\u4ED3\u5E93\u5546\u54C1\u6279\u91CF\u66F4\u65B0 service \u5E94\u5728 failedCount/errors \u8868\u793A\u90E8\u5206\u5931\u8D25\u65F6\u629B\u9519"
+  "\u4ED3\u5E93\u5546\u54C1\u6279\u91CF\u66F4\u65B0\u9010\u9879\u5931\u8D25\u5E94\u7531\u8D27\u67DC\u8C03\u7528\u65B9\u663E\u5F0F\u4E2D\u6B62\uFF0C\u7981\u6B62\u7EE7\u7EED\u5199\u5206\u5E97\u4EF7\u683C"
 );
 assertEqual(
   pageSource.includes("!access.canEditContainer || !access.canManagePosProducts"),
@@ -4413,7 +5065,7 @@ assertEqual(
   "\u521B\u5EFA\u65B0\u5546\u54C1\u5E94\u4F7F\u7528 ref \u9501\u9632\u6B62\u8FDE\u7EED\u70B9\u51FB\u91CD\u590D\u63D0\u4EA4"
 );
 assertEqual(
-  pageSource.includes("pendingDetailSavePromisesRef") && pageSource.includes("failedDetailSaveKeysRef") && pageSource.includes("buildContainerDetailSaveFailureKeys(saveKey, patch)") && pageSource.includes("blurActiveContainerDetailEditableCell()") && pageSource.includes("flushPendingDetailSaves") && pageSource.includes("failedDetailSaveKeysRef.current.size > 0") && pageSource.indexOf("blurActiveContainerDetailEditableCell()") < pageSource.indexOf("await flushPendingDetailSaves()") && pageSource.indexOf("await flushPendingDetailSaves()") < pageSource.indexOf("const missingProductNameRows = findContainerDetailRowsMissingProductName(scopedRows)") && pageSource.indexOf("await flushPendingDetailSaves()") < pageSource.indexOf("const missingRetailPriceRows = findContainerDetailRowsMissingCreateProductRetailPrice(scopedRows)") && pageSource.indexOf("await flushPendingDetailSaves()") < pageSource.indexOf("const job = await createContainerProductCreationJob({"),
+  pageSource.includes("pendingDetailSavePromisesRef") && pageSource.includes("failedDetailSaveKeysRef") && pageSource.includes("autoSaveQueueRef") && pageSource.includes("await flushContainerDetailAutoSaves()") && pageSource.includes("blurActiveContainerDetailEditableCell()") && pageSource.includes("flushPendingDetailSaves") && pageSource.includes("failedDetailSaveKeysRef.current.size > 0") && pageSource.indexOf("blurActiveContainerDetailEditableCell()") < pageSource.indexOf("await flushPendingDetailSaves()") && pageSource.indexOf("await flushPendingDetailSaves()") < pageSource.indexOf("const missingProductNameRows = findContainerDetailRowsMissingProductName(scopedRows)") && pageSource.indexOf("await flushPendingDetailSaves()") < pageSource.indexOf("const missingRetailPriceRows = findContainerDetailRowsMissingCreateProductRetailPrice(scopedRows)") && pageSource.indexOf("await flushPendingDetailSaves()") < pageSource.indexOf("const job = await createContainerProductCreationJob({"),
   true,
   "\u521B\u5EFA\u65B0\u5546\u54C1\u524D\u5FC5\u987B\u5148\u89E6\u53D1\u7F16\u8F91\u5355\u5143\u683C blur \u5E76\u7B49\u5F85\u8D27\u67DC\u660E\u7EC6\u4FDD\u5B58\u5B8C\u6210\uFF0C\u907F\u514D\u540E\u53F0 job \u8BFB\u53D6\u65E7\u503C"
 );
@@ -4454,6 +5106,79 @@ var priceContainer = {
   \u8FD0\u8D39: 12e3,
   \u603B\u4F53\u79EF: 67.44
 };
+assertEqual(
+  calculateContainerFreight(13e3, 68.628, "standard68"),
+  13120.06,
+  "68 m\xB3 \u6807\u51C6\u8FD0\u8D39\u5E94\u6309\u5F53\u524D\u603B\u4F53\u79EF\u6298\u7B97\u5E76\u4FDD\u7559 2 \u4F4D\u5C0F\u6570"
+);
+assertEqual(
+  calculateContainerFreight(190, 68.628, "perCbm"),
+  13039.32,
+  "\u6BCF m\xB3 \u5355\u4EF7\u5E94\u4E58\u5F53\u524D\u603B\u4F53\u79EF\u5E76\u4FDD\u7559 2 \u4F4D\u5C0F\u6570"
+);
+assertEqual(
+  calculateContainerFreight(13e3, 68, "standard68"),
+  13e3,
+  "\u603B\u4F53\u79EF\u6B63\u597D\u4E3A 68 m\xB3 \u65F6\u6807\u51C6\u8FD0\u8D39\u5E94\u4FDD\u6301\u4E0D\u53D8"
+);
+assertEqual(
+  calculateContainerFreight(190, 63.125, "perCbm"),
+  calculateContainerFreight(190 * 68, 63.125, "standard68"),
+  "\u4E24\u79CD\u62A5\u4EF7\u6A21\u5F0F\u7684\u7B49\u4EF7\u503C\u5E94\u751F\u6210\u76F8\u540C\u6700\u7EC8\u8FD0\u8D39"
+);
+assertEqual(calculateContainerFreight(0, 68.628, "perCbm"), 0, "\u6BCF m\xB3 \u5355\u4EF7 0 \u5E94\u662F\u5408\u6CD5\u8F93\u5165");
+assertEqual(calculateContainerFreight(0, 68.628, "standard68"), 0, "68 m\xB3 \u6807\u51C6\u8FD0\u8D39 0 \u5E94\u662F\u5408\u6CD5\u8F93\u5165");
+for (const invalidInput of [void 0, null, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+  assertEqual(
+    calculateContainerFreight(invalidInput, 68.628, "standard68"),
+    void 0,
+    `\u65E0\u6548\u62A5\u4EF7 ${String(invalidInput)} \u4E0D\u5E94\u751F\u6210\u6700\u7EC8\u8FD0\u8D39`
+  );
+}
+assertEqual(
+  calculateContainerFreight(Number.MAX_VALUE, 68.628, "perCbm"),
+  void 0,
+  "\u62A5\u4EF7\u6362\u7B97\u6EA2\u51FA\u65F6\u4E0D\u5E94\u751F\u6210\u6700\u7EC8\u8FD0\u8D39"
+);
+for (const invalidVolume of [void 0, null, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+  assertEqual(
+    isValidContainerFreightVolume(invalidVolume),
+    false,
+    `\u65E0\u6548\u603B\u4F53\u79EF ${String(invalidVolume)} \u5E94\u88AB\u62D2\u7EDD`
+  );
+  assertEqual(
+    calculateContainerFreight(13e3, invalidVolume, "standard68"),
+    void 0,
+    `\u65E0\u6548\u603B\u4F53\u79EF ${String(invalidVolume)} \u4E0D\u5E94\u751F\u6210\u6700\u7EC8\u8FD0\u8D39`
+  );
+}
+var savedFreight = 13120.06;
+var savedVolume = 68.628;
+var standard68Input = deriveContainerFreightInput(savedFreight, savedVolume, "standard68");
+var perCbmInput = deriveContainerFreightInput(savedFreight, savedVolume, "perCbm");
+assertEqual(
+  calculateContainerFreight(standard68Input, savedVolume, "standard68"),
+  savedFreight,
+  "\u5DF2\u4FDD\u5B58\u8FD0\u8D39\u53CD\u7B97\u4E3A 68 m\xB3 \u62A5\u4EF7\u540E\u5E94\u80FD\u65E0\u635F\u6362\u56DE\u6700\u7EC8\u8FD0\u8D39"
+);
+assertEqual(
+  calculateContainerFreight(perCbmInput, savedVolume, "perCbm"),
+  savedFreight,
+  "\u5DF2\u4FDD\u5B58\u8FD0\u8D39\u53CD\u7B97\u4E3A\u6BCF m\xB3 \u5355\u4EF7\u540E\u5E94\u80FD\u65E0\u635F\u6362\u56DE\u6700\u7EC8\u8FD0\u8D39"
+);
+assertEqual(
+  calculateContainerFreight(
+    deriveContainerFreightInput(
+      calculateContainerFreight(standard68Input, savedVolume, "standard68"),
+      savedVolume,
+      "perCbm"
+    ),
+    savedVolume,
+    "perCbm"
+  ),
+  savedFreight,
+  "\u53CD\u590D\u5207\u6362\u62A5\u4EF7\u6A21\u5F0F\u4E0D\u5E94\u6539\u53D8\u6700\u7EC8\u8FD0\u8D39"
+);
 var priceRows = [
   {
     id: 101,
@@ -4659,7 +5384,7 @@ assertDeepEqual(
             precision={2}
             controls={false}`,
     "<InputNumber value={headerForm.\u6C47\u7387} precision={4} controls={false}",
-    "<InputNumber value={headerForm.\u8FD0\u8D39} precision={2} controls={false}"
+    "step={freightInputMode === 'perCbm' ? 0.0001 : 0.01}\n                      controls={false}"
   ].filter((snippet) => !pageSource.includes(snippet)),
   [],
   "\u8D27\u67DC\u660E\u7EC6\u9875\u6240\u6709\u53EF\u7F16\u8F91\u6570\u5B57\u8F93\u5165\u90FD\u5E94\u5173\u95ED\u52A0\u51CF\u6309\u94AE"
@@ -4669,6 +5394,56 @@ assertEqual(pageSource.includes("defaultValue={row.\u8FDB\u53E3\u4EF7\u683C}"), 
 assertEqual(pageSource.includes("const updatePayload: UpdateContainerRequest"), true, "\u4FDD\u5B58\u8D27\u67DC\u5934\u90E8\u5E94\u4F7F\u7528\u7A84\u66F4\u65B0 payload");
 assertEqual(pageSource.includes("await updateContainer(containerGuid, nextContainer)"), false, "\u4FDD\u5B58\u8D27\u67DC\u5934\u90E8\u4E0D\u80FD\u628A\u5B8C\u6574\u8D27\u67DC\u5BF9\u8C61\u53D1\u9001\u5230\u540E\u7AEF");
 assertEqual(
+  pageSource.includes("useState<ContainerFreightInputMode>('standard68')") && pageSource.includes("setFreightInputMode('standard68')") && pageSource.includes("deriveContainerFreightInput(info.\u8FD0\u8D39, info.\u603B\u4F53\u79EF, 'standard68')"),
+  true,
+  "\u8D27\u67DC\u52A0\u8F7D\u6216\u5237\u65B0\u540E\u5E94\u4EE5\u5DF2\u4FDD\u5B58\u6700\u7EC8\u8FD0\u8D39\u53CD\u7B97\u9ED8\u8BA4\u7684 68 m\xB3 \u6807\u51C6\u62A5\u4EF7"
+);
+assertEqual(
+  pageSource.includes("value={freightInputMode}") && pageSource.includes("aria-label={t('containers.fields.freight')}") && pageSource.includes("value={freightInputValue}") && pageSource.includes("setFreightInputDirty(true)") && pageSource.includes("t('containers.freightCalculator.preview'") && pageSource.includes('role="status" aria-live="polite"') && pageSource.includes('role="alert"'),
+  true,
+  "\u8FD0\u8D39\u6362\u7B97\u5E94\u4F7F\u7528\u72EC\u7ACB\u53D7\u63A7\u8349\u7A3F\uFF0C\u5E76\u5C55\u793A\u5F53\u524D\u603B\u4F53\u79EF\u5BF9\u5E94\u7684\u6700\u7EC8\u8FD0\u8D39\u9884\u89C8"
+);
+assertEqual(
+  pageSource.includes("disabled={!freightVolumeValid}") && pageSource.includes("t('containers.freightCalculator.invalidVolume')") && pageStyleSource.includes(".container-detail-freight-calculator") && pageStyleSource.includes(".container-detail-page-small .container-detail-freight-calculator"),
+  true,
+  "\u603B\u4F53\u79EF\u65E0\u6548\u65F6\u5E94\u7981\u7528\u62A5\u4EF7\u8F93\u5165\u3001\u663E\u793A\u884C\u5185\u539F\u56E0\uFF0C\u5E76\u63D0\u4F9B\u7A84\u5C4F\u6837\u5F0F"
+);
+assertEqual(
+  pageSource.includes("const handleFreightInputModeChange") && pageSource.includes("setFreightInputValue(deriveContainerFreightInput("),
+  true,
+  "\u5207\u6362\u62A5\u4EF7\u6A21\u5F0F\u5E94\u4ECE\u5F53\u524D\u6700\u7EC8\u8FD0\u8D39\u53CD\u7B97\u8F93\u5165\u663E\u793A"
+);
+{
+  const modeChangeStart = pageSource.indexOf("const handleFreightInputModeChange");
+  const inputChangeStart = pageSource.indexOf("const handleFreightInputChange", modeChangeStart);
+  const modeChangeSource = pageSource.slice(modeChangeStart, inputChangeStart);
+  assertEqual(
+    modeChangeStart >= 0 && inputChangeStart > modeChangeStart && !modeChangeSource.includes("setFreightInputDirty(true)"),
+    true,
+    "\u53EA\u5207\u6362\u62A5\u4EF7\u6A21\u5F0F\u4E0D\u80FD\u628A\u8FD0\u8D39\u8349\u7A3F\u6807\u8BB0\u4E3A\u5DF2\u4FEE\u6539"
+  );
+}
+assertEqual(
+  pageSource.includes("if (freightInputDirty) {") && pageSource.includes("const latestContainer = await getContainerDetail(containerGuid)") && pageSource.includes("\u8FD0\u8D39: nextFreight") && pageSource.indexOf("const latestContainer = await getContainerDetail(containerGuid)") < pageSource.indexOf("await updateContainer(containerGuid, updatePayload)"),
+  true,
+  "\u5DF2\u4FEE\u6539\u62A5\u4EF7\u4FDD\u5B58\u524D\u5E94\u8BFB\u53D6\u670D\u52A1\u7AEF\u6700\u65B0\u603B\u4F53\u79EF\uFF0C\u5E76\u4E14 payload \u53EA\u643A\u5E26\u6362\u7B97\u540E\u7684\u6700\u7EC8\u8FD0\u8D39"
+);
+{
+  const saveHeaderStart = pageSource.indexOf("const saveHeader = async () => {");
+  const saveHeaderEnd = pageSource.indexOf("const saveFloatRatePatch", saveHeaderStart);
+  const saveHeaderSource = pageSource.slice(saveHeaderStart, saveHeaderEnd);
+  assertEqual(
+    saveHeaderStart >= 0 && saveHeaderEnd > saveHeaderStart && saveHeaderSource.indexOf("savingHeaderRef.current = true") < saveHeaderSource.indexOf("await drainAutoSavesBeforeAction()") && saveHeaderSource.includes("savingHeaderRef.current = false"),
+    true,
+    "\u4FDD\u5B58\u8D27\u67DC\u5E94\u5728\u7B2C\u4E00\u4E2A await \u524D\u53D6\u5F97\u540C\u6B65\u4E92\u65A5\u9501\uFF0C\u5E76\u5728 finally \u4E2D\u91CA\u653E"
+  );
+  assertEqual(
+    saveHeaderSource.indexOf("await updateContainer(containerGuid, updatePayload)") < saveHeaderSource.indexOf("setFreightInputMode('standard68')") && saveHeaderSource.includes("setFreightInputDirty(false)") && saveHeaderSource.includes("\u8FD0\u8D39: nextFreight"),
+    true,
+    "PUT \u6210\u529F\u540E\u5E94\u7ACB\u5373\u66F4\u65B0\u672C\u5730\u6700\u7EC8\u8FD0\u8D39\u57FA\u51C6\u5E76\u6E05\u9664\u8349\u7A3F\uFF0C\u907F\u514D reload \u5931\u8D25\u540E\u91CD\u590D\u63D0\u4EA4\u65E7\u62A5\u4EF7"
+  );
+}
+assertEqual(
   pageSource.includes("t('containers.fields.domesticPriceTotal')") && pageSource.includes("formatCurrency(container?.\u5408\u8BA1\u91D1\u989D, '\xA5')"),
   true,
   "\u8D27\u67DC\u5934\u90E8\u57FA\u7840\u4FE1\u606F\u5E94\u53EA\u8BFB\u5C55\u793A\u56FD\u5185\u4EF7\u683C\u5408\u8BA1\u5E76\u4F7F\u7528\u4EBA\u6C11\u5E01\u683C\u5F0F"
@@ -4677,7 +5452,7 @@ assertEqual(
   const headerFormInitStart = pageSource.indexOf("setHeaderForm({");
   const headerFormInitEnd = pageSource.indexOf("    } catch (error) {", headerFormInitStart);
   const headerUpdatePayloadStart = pageSource.indexOf("const updatePayload: UpdateContainerRequest = {");
-  const headerUpdatePayloadEnd = pageSource.indexOf("    setSavingHeader(true)", headerUpdatePayloadStart);
+  const headerUpdatePayloadEnd = pageSource.indexOf("await updateContainer(containerGuid, updatePayload)", headerUpdatePayloadStart);
   assertEqual(
     headerFormInitStart >= 0 && headerFormInitEnd > headerFormInitStart && headerUpdatePayloadStart >= 0 && headerUpdatePayloadEnd > headerUpdatePayloadStart,
     true,
@@ -4692,7 +5467,7 @@ assertEqual(
     headerUpdatePayloadEnd
   );
   assertEqual(
-    !headerFormInitSource.includes("\u5408\u8BA1\u91D1\u989D") && !headerUpdatePayloadSource.includes("\u5408\u8BA1\u91D1\u989D") && !headerUpdatePayloadSource.includes("...headerForm"),
+    !headerFormInitSource.includes("\u5408\u8BA1\u91D1\u989D") && !headerFormInitSource.includes("\u8FD0\u8D39: info.\u8FD0\u8D39") && !headerUpdatePayloadSource.includes("\u5408\u8BA1\u91D1\u989D") && !headerUpdatePayloadSource.includes("freightInputMode") && !headerUpdatePayloadSource.includes("freightInputValue") && !headerUpdatePayloadSource.includes("freightInputDirty") && !headerUpdatePayloadSource.includes("...headerForm"),
     true,
     "\u56FD\u5185\u4EF7\u683C\u5408\u8BA1\u6765\u81EA\u4E3B\u8868\u6C47\u603B\uFF0C\u53EA\u8BFB\u5B57\u6BB5\u4E0D\u80FD\u8FDB\u5165 headerForm \u521D\u59CB\u5316\u3001\u4FDD\u5B58 payload \u6216\u88AB\u6574\u5305\u5C55\u5F00"
   );
@@ -4762,9 +5537,9 @@ assertEqual(
   "\u8D27\u67DC\u660E\u7EC6\u8868\u683C\u5E94\u4F7F\u7528\u5217\u5934\u8FC7\u6EE4\u548C\u6392\u5E8F\u540E\u7684 displayRows"
 );
 assertEqual(
-  pageSource.includes("applyContainerDetailColumnState(filteredRows, {}, sortState)"),
+  pageSource.includes("detailLoadMode === 'full'") && pageSource.includes("applyCurrentClientFilters(baseFilteredRows)") && pageSource.includes("sortState,") && pageSource.includes("const pagedDetailQuery = useMemo(() => buildContainerDetailQuery({"),
   true,
-  "\u8D27\u67DC\u660E\u7EC6\u5217\u5934\u6392\u5E8F\u5E94\u5728\u524D\u7AEF\u5BF9\u5F53\u524D\u5DF2\u52A0\u8F7D\u53EF\u89C1\u884C\u6392\u5E8F"
+  "\u8D27\u67DC\u660E\u7EC6\u5217\u5934\u6392\u5E8F\u5E94\u5728\u5168\u91CF\u6A21\u5F0F\u672C\u5730\u6267\u884C\uFF0C\u5728\u5206\u9875\u6A21\u5F0F\u8FDB\u5165\u540E\u7AEF\u67E5\u8BE2"
 );
 assertEqual(
   pageSource.includes("getCategoryTree") && pageSource.includes("batchAssignProducts") && pageSource.includes("buildWarehouseCategoryLookup") && pageSource.includes("getWarehouseProductCategoryTooltip") && pageSource.includes("formatWarehouseCategoryNodeName"),
@@ -4772,9 +5547,9 @@ assertEqual(
   "\u8D27\u67DC\u660E\u7EC6\u5E94\u52A0\u8F7D\u5206\u7C7B\u6811\u3001\u590D\u7528\u5206\u7C7B\u8DEF\u5F84 Tooltip helper \u548C\u56FD\u9645\u5316\u540D\u79F0 helper\uFF0C\u5E76\u8C03\u7528\u6279\u91CF\u5206\u7C7B\u670D\u52A1"
 );
 assertEqual(
-  !pageSource.includes("const [itemNumberFilter, setItemNumberFilter]") && !pageSource.includes("const [categoryFilterValue, setCategoryFilterValue]") && pageSource.includes("baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))") && pageSource.includes("applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)") && !pageSource.includes("applyContainerDetailCategoryFilter(textFilteredRows, categoryFilterValue, categoryLookup)") && !pageSource.includes("categoryFilterValue, sortState"),
+  !pageSource.includes("const [itemNumberFilter, setItemNumberFilter]") && !pageSource.includes("const [categoryFilterValue, setCategoryFilterValue]") && pageSource.includes("sourceRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))") && pageSource.includes("applyContainerDetailColumnState(nextTagFilteredRows, columnFilters, sortState)") && !pageSource.includes("applyContainerDetailCategoryFilter(textFilteredRows, categoryFilterValue, categoryLookup)") && pageSource.includes("selectedTags: selectedTagFilters"),
   true,
-  "\u9876\u90E8\u8FC7\u6EE4\u6761\u79FB\u9664\u540E\uFF0C\u6807\u7B7E\u5FEB\u89C8\u548C\u5217\u5934\u6587\u5B57\u8FC7\u6EE4\u4ECD\u5E94\u5728\u524D\u7AEF\u8FC7\u6EE4\u5DF2\u52A0\u8F7D\u884C\uFF0C\u5206\u7C7B\u548C\u6392\u5E8F\u4E0D\u5E94\u8FDB\u5165\u8FDC\u7A0B\u52A0\u8F7D\u67E5\u8BE2\u4F9D\u8D56"
+  "\u9876\u90E8\u8FC7\u6EE4\u6761\u79FB\u9664\u540E\uFF0C\u5168\u91CF\u6A21\u5F0F\u5E94\u672C\u5730\u8FC7\u6EE4\uFF0C\u5206\u9875\u6A21\u5F0F\u5E94\u628A\u5B8C\u6574\u5217\u7B5B\u9009\u548C\u6807\u7B7E\u4EA4\u7ED9\u540E\u7AEF"
 );
 assertEqual(
   !pageSource.includes("placeholder={t('containers.filters.allCategories'") && !pageSource.includes("options={categoryFilterOptions}") && !pageSource.includes("setCategoryFilterValue(value || CONTAINER_DETAIL_ALL_CATEGORY_FILTER_KEY)") && !pageSource.includes("buildContainerDetailCategoryOptions(categories, t, i18n.language)") && pageSource.includes("textFilterProps('itemNumber', t('containers.placeholders.filterItemNumber'))"),
@@ -4788,18 +5563,19 @@ assertEqual(
 );
 assertEqual(
   (() => {
-    const baseQueryStart = pageSource.indexOf("const baseDetailQuery = useMemo(() => buildContainerDetailQuery({");
-    const queryEnd = pageSource.indexOf("const baseDetailQueryKey", baseQueryStart);
-    const baseQuerySource = pageSource.slice(baseQueryStart, queryEnd);
-    return baseQueryStart >= 0 && queryEnd > baseQueryStart && !pageSource.includes("const scopedDetailQuery = useMemo(() => buildContainerDetailQuery({") && !pageSource.includes("const scopedFullDetailQuery = useMemo(() => buildContainerDetailQuery({") && !baseQuerySource.includes("selectedTags") && baseQuerySource.includes("filters: remoteColumnFilters") && pageSource.includes("const detailQuery = baseDetailQuery") && pageSource.includes("const detailQueryKey = baseDetailQueryKey") && pageSource.includes("const activeLoadQueryKey = detailQueryKey");
+    const initialStart = pageSource.indexOf("const initialDetailQuery = useMemo(() => buildContainerDetailQuery({");
+    const fullStart = pageSource.indexOf("const fullDetailQuery = useMemo(() => buildContainerDetailQuery({");
+    const pagedStart = pageSource.indexOf("const pagedDetailQuery = useMemo(() => buildContainerDetailQuery({");
+    const statsStart = pageSource.indexOf("const pagedDetailStatsQuery = useMemo(() => buildContainerDetailQuery({");
+    return initialStart >= 0 && fullStart > initialStart && pagedStart > fullStart && statsStart > pagedStart && pageSource.includes("pageSize: CONTAINER_DETAIL_INITIAL_PAGE_SIZE") && pageSource.includes("pageSize: CONTAINER_DETAIL_FULL_LOAD_LIMIT") && pageSource.includes("pageSize: detailPageSize") && pageSource.includes("selectedTags: selectedTagFilters");
   })(),
   true,
-  "\u660E\u7EC6\u52A0\u8F7D\u67E5\u8BE2\u5E94\u53EA\u4FDD\u7559\u65E0\u6807\u7B7E base \u67E5\u8BE2\uFF0C\u6807\u7B7E\u5207\u6362\u4E0D\u5E94\u8FDB\u5165\u8FDC\u7A0B\u67E5\u8BE2 key"
+  "\u660E\u7EC6\u52A0\u8F7D\u5E94\u533A\u5206\u9996\u5C4F 100\u3001\u5B8C\u6574 200\u3001\u670D\u52A1\u7AEF\u5206\u9875\u548C\u5EF6\u8FDF\u7EDF\u8BA1\u56DB\u7C7B\u67E5\u8BE2"
 );
 assertEqual(
-  pageSource.includes("const shouldComputeDetailMeta = mode === 'reset'") && pageSource.includes("includeTotal: shouldComputeDetailMeta") && pageSource.includes("includeStats: shouldComputeDetailMeta") && pageSource.includes("if (result.totalComputed !== false) {") && pageSource.includes("if (result.statsComputed !== false) {"),
+  pageSource.includes("includeItems: false") && pageSource.includes("schedulePagedDetailStats") && pageSource.includes("includeTotal: true") && pageSource.includes("includeStats: true") && pageSource.includes("if (result.totalComputed !== false) {") && pageSource.includes("if (result.statsComputed !== false) {"),
   true,
-  "\u8D27\u67DC\u660E\u7EC6\u9996\u5C4F\u624D\u5E94\u8BF7\u6C42 total/tagStats\uFF0C\u8FFD\u52A0\u9875\u4E0D\u5E94\u8986\u76D6\u9996\u5C4F\u7EDF\u8BA1"
+  "\u5206\u9875\u884C\u8BF7\u6C42\u5B8C\u6210\u540E\u5E94\u4EE5 includeItems=false \u7684\u72EC\u7ACB\u8BF7\u6C42\u8865 total \u548C TagStats"
 );
 assertEqual(
   (() => {
@@ -4813,14 +5589,34 @@ assertEqual(
   "\u540E\u53F0\u6279\u91CF\u62C9\u5168\u91CF\u660E\u7EC6\u65F6\u5E94\u8DF3\u8FC7 total/tagStats \u5E76\u4F9D\u8D56 hasMore"
 );
 assertEqual(
-  !pageSource.includes("itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber") && pageSource.includes("const remoteColumnFilters = useMemo<ContainerDetailColumnFilters>(() => omitContainerDetailTextFilters(columnFilters), [columnFilters])"),
+  pageSource.includes("key: 'allExcelWithImages'") && pageSource.includes("t('containers.actions.exportAllExcelWithImages'") && pageSource.includes("void exportDetails(ALL_CONTAINER_DETAIL_EXPORT_COLUMN_KEYS, 'excel', 'wholeContainer')"),
   true,
-  "\u9876\u90E8\u8D27\u53F7\u548C\u5217\u5934\u6587\u5B57\u7B5B\u9009\u4E0D\u5E94\u5408\u5E76\u8FDB\u8FDC\u7A0B\u67E5\u8BE2\u6761\u4EF6"
+  "\u5BFC\u51FA\u83DC\u5355\u5E94\u63D0\u4F9B\u72EC\u7ACB\u7684\u5168\u90E8\u5BFC\u51FA\u5165\u53E3\uFF0C\u5E76\u56FA\u5B9A\u4F7F\u7528\u5168\u4E1A\u52A1\u5217\u53CA\u5546\u54C1\u56FE\u7247"
 );
 assertEqual(
-  pageSource.includes("baseFilteredRows.filter((row) => matchesContainerDetailSelectedTags(row, selectedTagFilters))") && pageSource.includes("applyContainerDetailLoadedTextFilters(tagFilteredRows, '', columnFilters)") && pageSource.includes("hasLoadedFullBaseDetailQuery ? localBaseTagStats : remoteTagStats") && pageSource.includes("return await fetchAllRowsForCurrentQuery()") && pageSource.includes("setBatchModalScopeRows(scopedRows)") && pageSource.includes("buildDetailBatchScope(batchModalScopeRows)") && pageSource.includes("selectedHguids: getRowsHguids(scopeRows)") && pageSource.includes("...baseDetailQuery,"),
+  pageSource.includes("index: 'containers.columns.index'") && pageSource.includes("productName: 'containers.fields.productName'") && pageSource.includes("containerPieces: 'containers.fields.containerPieces'") && pageSource.includes("containerQuantity: 'containers.fields.containerQuantity'"),
   true,
-  "\u6807\u7B7E\u5E94\u59CB\u7EC8\u8FDB\u5165\u524D\u7AEF\u8FC7\u6EE4\u94FE\u8DEF\uFF0C\u6279\u91CF\u4F5C\u7528\u57DF\u548C\u5168\u91CF\u62C9\u53D6\u5E94\u4F7F\u7528 base \u67E5\u8BE2\u540E\u5728\u524D\u7AEF\u6536\u655B HGUID"
+  "\u5168\u90E8\u5BFC\u51FA\u7684\u5386\u53F2\u6A21\u677F\u5217\u5E94\u6539\u7528\u5F53\u524D\u660E\u7EC6\u8868\u5934\u6587\u6848\uFF0C\u907F\u514D\u663E\u793A\u5E8F\u53F7\u3001\u4E2D\u6587\u540D\u79F0\u7B49\u65E7\u540D\u79F0"
+);
+assertEqual(
+  (() => {
+    const exportStart = pageSource.indexOf("const exportDetails = async (");
+    const exportEnd = pageSource.indexOf("const handleExportMenuClick", exportStart);
+    const exportSource = pageSource.slice(exportStart, exportEnd);
+    return pageSource.includes("exportScope === 'wholeContainer'") && exportSource.indexOf("await waitForPendingDetailSavesForExport()") >= 0 && exportSource.indexOf("await waitForPendingDetailSavesForExport()") < exportSource.indexOf("fetchAllRowsForWholeContainerExport()") && !exportSource.includes("await flushPendingDetailSaves()") && !pageSource.includes("mergeContainerDetailLoadedItems(allRows, baseFilteredRows)") && pageSource.includes("applyContainerDetailLocalExportValues(allRows, baseFilteredRows)") && pageSource.includes("pendingDetailPatchesRef.current") && pageSource.includes("prepareContainerDetailWholeExportRows");
+  })(),
+  true,
+  "\u5168\u90E8\u5BFC\u51FA\u5E94\u7B49\u5F85\u9875\u9762\u81EA\u52A8\u4FDD\u5B58\u7ED3\u675F\u4F46\u4E0D\u88AB\u4FDD\u5B58\u5931\u8D25\u963B\u65AD\uFF0C\u518D\u5206\u9875\u8BFB\u53D6\u6574\u67DC\u3001\u9009\u62E9\u6027\u53E0\u52A0\u672C\u5730\u503C\u548C\u8349\u7A3F\u5E76\u4FDD\u7559\u5F53\u524D\u6392\u5E8F"
+);
+assertEqual(
+  !pageSource.includes("itemNumber: itemNumberFilter.trim() || columnFilters.itemNumber") && !pageSource.includes("omitContainerDetailTextFilters(columnFilters)") && pageSource.includes("filters: columnFilters"),
+  true,
+  "\u5206\u9875\u6A21\u5F0F\u5E94\u628A\u5217\u5934\u6587\u5B57\u7B5B\u9009\u7EB3\u5165\u8FDC\u7A0B\u67E5\u8BE2\uFF0C\u4FDD\u8BC1\u5168\u5C40\u7ED3\u679C\u800C\u4E0D\u662F\u53EA\u8FC7\u6EE4\u5F53\u524D\u9875"
+);
+assertEqual(
+  pageSource.includes("const tagStats = detailLoadMode === 'full' ? localBaseTagStats : remoteTagStats") && pageSource.includes("selectedTags: selectedTagFilters") && pageSource.includes("return await fetchAllRowsForCurrentQuery()") && pageSource.includes("setBatchModalScopeRows(scopedRows)") && pageSource.includes("buildDetailBatchScope(batchModalScopeRows)") && pageSource.includes("selectedHguids: getRowsHguids(scopeRows)") && pageSource.includes("return overlayPendingDetailChanges(allRows)"),
+  true,
+  "\u5206\u9875\u6807\u7B7E\u548C\u6279\u91CF\u5168\u91CF\u4F5C\u7528\u57DF\u5E94\u7531\u540E\u7AEF\u5168\u5C40\u7B5B\u9009\uFF0C\u968F\u540E\u53E0\u52A0\u5F53\u524D\u8349\u7A3F\u5E76\u6536\u655B HGUID"
 );
 assertEqual(
   pageSource.includes("columnFilters") && pageSource.includes("sortState"),
@@ -4838,7 +5634,7 @@ assertEqual(
   "\u5173\u952E\u4E1A\u52A1\u5217\u5E94\u6302\u8F7D\u5217\u5934\u6392\u5E8F\u6216\u8FC7\u6EE4\u914D\u7F6E"
 );
 assertEqual(
-  pageSource.includes("const CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS = ['englishName', 'packingQuantity', 'unitVolume', 'middlePackQuantity', 'floatRate', 'importPrice', 'oemPrice', 'remark'] as const") && pageSource.includes("patchRow(rowKey(row), { \u4E2D\u5305\u6570: value == null ? undefined : Number(value) })") && pageSource.includes("saveRowPatch(row, { \u4E2D\u5305\u6570: event.target.value ? Number(event.target.value) : undefined })"),
+  pageSource.includes("const CONTAINER_DETAIL_EDITABLE_COLUMN_KEYS = ['englishName', 'packingQuantity', 'unitVolume', 'middlePackQuantity', 'floatRate', 'importPrice', 'oemPrice', 'remark'] as const") && pageSource.includes("patchAutoSaveRow(row, { \u4E2D\u5305\u6570: value == null ? undefined : Number(value) })") && pageSource.includes("restoreAutoSaveEditBaseline(row, '\u4E2D\u5305\u6570')") && pageSource.includes("saveRowPatch(row, { \u4E2D\u5305\u6570: Number(event.target.value) })"),
   true,
   "\u4E2D\u5305\u6570\u5217\u5E94\u4F5C\u4E3A\u53EF\u7F16\u8F91\u6570\u5B57\u5217\u4FDD\u5B58\u5230\u8D27\u67DC\u660E\u7EC6\u66F4\u65B0\u63A5\u53E3"
 );
@@ -4858,9 +5654,44 @@ assertEqual(
   "\u5355\u4EF6\u4F53\u79EF\u884C\u5185\u8F93\u5165\u548C\u53EA\u8BFB\u663E\u793A\u5E94\u4FDD\u7559 3 \u4F4D\u5C0F\u6570"
 );
 assertEqual(
-  pageSource.includes("patchRow(rowKey(row), { \u5355\u4EF6\u88C5\u7BB1\u6570: row.\u5355\u4EF6\u88C5\u7BB1\u6570 })") && pageSource.includes("patchRow(rowKey(row), { \u5355\u4EF6\u4F53\u79EF: row.\u5355\u4EF6\u4F53\u79EF })") && pageSource.includes("const savePackageMetricPatch = async (row: ContainerDetail, patch: Partial<ContainerDetail>) => {") && pageSource.includes("showCostRecalculateWarning(getContainerDetailCostMissingFields(container))") && pageSource.includes("update.SkipRelatedProductSync = true") && pageSource.includes("savePackageMetricPatch(row, { \u5355\u4EF6\u88C5\u7BB1\u6570: Number(event.target.value) })") && pageSource.includes("savePackageMetricPatch(row, { \u5355\u4EF6\u4F53\u79EF: Number(event.target.value) })"),
+  pageSource.includes("restoreAutoSaveEditBaseline(row, '\u5355\u4EF6\u88C5\u7BB1\u6570')") && pageSource.includes("restoreAutoSaveEditBaseline(row, '\u5355\u4EF6\u4F53\u79EF')") && pageSource.includes("const savePackageMetricPatch = async (row: ContainerDetail, patch: Partial<ContainerDetail>) => {") && pageSource.includes("showCostRecalculateWarning(getContainerDetailCostMissingFields(container))") && pageSource.includes("update.SkipRelatedProductSync = true") && pageSource.includes("savePackageMetricPatch(row, { \u5355\u4EF6\u88C5\u7BB1\u6570: Number(event.target.value) })") && pageSource.includes("savePackageMetricPatch(row, { \u5355\u4EF6\u4F53\u79EF: Number(event.target.value) })"),
   true,
   "\u5355\u4EF6\u88C5\u7BB1\u6570\u548C\u5355\u4EF6\u4F53\u79EF\u6E05\u7A7A\u65F6\u5E94\u56DE\u6EDA\u5F53\u524D\u503C\uFF0C\u7CFB\u7EDF\u91CD\u7B97\u8FDB\u8D27\u4EF7\u4E0D\u80FD\u540C\u6B65\u4ED3\u5E93\u8868"
+);
+assertEqual(
+  pageSource.includes("const autoSaveEditBaselineRef = useRef<Map<string, unknown>>(new Map())") && pageSource.includes("onFocus={() => captureAutoSaveEditBaseline(row, '\u4E2D\u5305\u6570', row.\u4E2D\u5305\u6570)}") && pageSource.includes("if (!event.target.value.trim()) {\n                restoreAutoSaveEditBaseline(row, '\u4E2D\u5305\u6570')") && !pageSource.includes("saveRowPatch(row, { \u4E2D\u5305\u6570: event.target.value ? Number(event.target.value) : undefined })"),
+  true,
+  "\u4E2D\u5305\u6570\u6E05\u7A7A\u65F6\u5FC5\u987B\u6062\u590D\u805A\u7126\u524D\u503C\u4E14\u4E0D\u5165\u961F\uFF0C\u907F\u514D undefined \u88AB JSON \u7701\u7565\u540E\u8BEF\u5224\u4FDD\u5B58\u6210\u529F"
+);
+assertEqual(
+  pageSource.includes("createContainerDetailAutoSaveQueue({") && pageSource.includes("buildContainerDetailAutoSaveContextKey(containerGuid, draftIdentity)") && pageSource.includes("buildContainerDetailAutoSaveUpdate(latestRow, intent.patch, contextSnapshot.container)") && pageSource.includes("autoSaveContextSnapshotsRef.current.get(contextKey)") && pageSource.includes("await flushContainerDetailAutoSaves()") && pageSource.includes("autoSaveSnapshot.failureCount > 0") && pageSource.includes("aria-invalid={Boolean(saveFailure)}") && pageSource.includes("t('containers.actions.retryAutoSave', '\u91CD\u8BD5')"),
+  true,
+  "\u884C\u5185\u5373\u65F6\u4FDD\u5B58\u5E94\u6309\u8D27\u67DC\u4E0A\u4E0B\u6587\u4E32\u884C\u5408\u5E76\u3001\u53D1\u9001\u524D\u8BFB\u53D6\u6700\u65B0\u5FEB\u7167\uFF0C\u5E76\u63D0\u4F9B\u5B57\u6BB5\u5931\u8D25\u4E0E\u663E\u5F0F\u91CD\u8BD5\u72B6\u6001"
+);
+assertEqual(
+  pageSource.includes("isContainerDetailAutoSaveContextCurrent(") && pageSource.includes("lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid") && pageSource.includes("visibleContainerGuidRef.current === containerGuid") && pageSource.includes("if (!autoSaveContextSnapshotsRef.current.has(nextAutoSaveContextKey))") && pageSource.includes("autoSaveQueueRef.current?.discardContext(previousAutoSaveContextKey)") && pageSource.includes("const lifecycleAction = resolveContainerDetailAutoSaveLifecycleAction(active, contextKey)") && pageSource.includes("if (lifecycleAction === 'discard') {") && pageSource.includes("if (lifecycleAction !== 'attach') return") && pageSource.includes("autoSaveQueueRef.current?.attachContext(contextKey)") && pageSource.includes("resolveContainerDetailAutoSaveLifecycleAction(containerDetailTabActiveRef.current, contextKey) !== 'attach'"),
+  true,
+  "A\u2192B\u2192A \u5207\u9875\u53EA\u53EF\u7531 active KeepAlive \u5B9E\u4F8B attach\uFF1Binactive \u5E94 detach \u4E14\u8FDF\u5230 blur \u4E0D\u5F97\u62A2\u5360\u961F\u5217"
+);
+assertEqual(
+  pageSource.includes("const loadedItemsWithDraft = applyPendingContainerDetailPatches(") && pageSource.includes("const shouldOverlayCurrentAutoSaves = isContainerDetailAutoSaveContextCurrent(") && pageSource.includes("autoSaveQueueRef.current?.getUnsettledPatches(currentAutoSaveContextKey)") && pageSource.includes("return applyContainerDetailAutoSavePatches(") && pageSource.indexOf("const loadedItemsWithDraft = applyPendingContainerDetailPatches(") < pageSource.indexOf("return applyContainerDetailAutoSavePatches("),
+  true,
+  "\u5168\u91CF\u6216\u5206\u9875\u54CD\u5E94\u5E94\u5148\u53E0\u52A0\u624B\u52A8\u8349\u7A3F\uFF0C\u518D\u53EA\u7528\u5F53\u524D\u4E0A\u4E0B\u6587\u7684 pending/running/failure \u6700\u65B0\u503C\u8986\u76D6\u670D\u52A1\u5668\u54CD\u5E94"
+);
+assertEqual(
+  pageSource.includes("onBatchSuccess: (contextKey) => {") && pageSource.includes("if (contextKey !== autoSaveContextKeyRef.current) return") && pageSource.includes("const activeItemLoad = detailAbortControllerRef.current") && pageSource.includes("activeItemLoad.abort()") && pageSource.includes("containerDetailLoadRequestIdRef.current += 1") && pageSource.includes("const isCurrentRequest = () => (") && pageSource.includes("if (!isCurrentRequest()) return") && pageSource.includes("if (detailResetRequestRef.current === controller) {") && pageSource.includes("setDetailLoading(false)"),
+  true,
+  "\u81EA\u52A8\u4FDD\u5B58\u6210\u529F\u5E94\u5728\u6E05 running overlay \u524D\u4EC5\u5E9F\u5F03\u5F53\u524D\u4E0A\u4E0B\u6587\u7684 item query\uFF0C\u65E7\u56DE\u5305\u9759\u9ED8\u7ED3\u675F\u4E14 loading \u6B63\u5E38\u6536\u5C3E"
+);
+assertEqual(
+  !pageSource.includes("autoSaveQueueRef.current?.clearFailures(\n      autoSaveContextKeyRef.current,"),
+  true,
+  "\u81EA\u52A8\u4FDD\u5B58\u5931\u8D25\u5FC5\u987B\u4FDD\u7559\u5230\u65B0 revision \u5165\u961F\u6216\u663E\u5F0F\u91CD\u8BD5\uFF0C\u8F93\u5165\u4E2D\u9014\u4E0D\u5F97\u63D0\u524D\u89E3\u9664\u4F9D\u8D56\u963B\u585E"
+);
+assertEqual(
+  pageSource.includes("if (!productName) {") && pageSource.includes("t('containers.messages.productNameRequired', '\u5546\u54C1\u540D\u79F0\u4E0D\u80FD\u4E3A\u7A7A')") && pageSource.includes("onChange={(event) => setEditingProductNameValue(event.target.value)}") && !pageSource.includes("autoSaveQueueRef.current?.clearFailures(\n                    autoSaveContextKeyRef.current,\n                    row.hguid,\n                    ['\u5546\u54C1\u540D\u79F0']"),
+  true,
+  "\u5546\u54C1\u540D\u79F0\u7A7A\u767D\u63D0\u4EA4\u4E0D\u5F97\u5165\u961F\uFF0C\u7F16\u8F91\u7F13\u51B2\u6216 Escape \u4E0D\u5F97\u63D0\u524D\u6E05\u9664\u539F\u4FDD\u5B58\u5931\u8D25\u72B6\u6001"
 );
 assertEqual(
   containerDetailLogicSource.includes("export type PendingContainerDetailPatch =") && pageSource.includes("const [pendingDetailPatches, setPendingDetailPatches] = useState<PendingContainerDetailPatchMap>({})") && pageSource.includes("const [detailSaveSubmitting, setDetailSaveSubmitting] = useState(false)") && pageSource.includes("const markPendingDetailPatch = (") && pageSource.includes("const buildPendingDetailSavePlan = (): PendingContainerDetailPageSavePlan | null => {") && pageSource.includes("const confirmSavePendingDetails = (plan: PendingContainerDetailPageSavePlan) => new Promise<boolean>") && pageSource.includes("const executePendingDetailSavePlan = async (plan: PendingContainerDetailPageSavePlan) => {") && pageSource.includes("const savePendingDetails = async () => {"),
@@ -4868,9 +5699,14 @@ assertEqual(
   "\u8D27\u67DC\u660E\u7EC6\u9875\u5E94\u7EDF\u4E00\u7EF4\u62A4\u4EF7\u683C\u548C\u82F1\u6587\u540D\u79F0\u7684\u624B\u52A8\u5F85\u4FDD\u5B58\u72B6\u6001"
 );
 assertEqual(
-  containerDetailLogicSource.includes("if (patch.\u8FDB\u53E3\u4EF7\u683C != null) update.\u8FDB\u53E3\u4EF7\u683C = patch.\u8FDB\u53E3\u4EF7\u683C") && containerDetailLogicSource.includes("if (patch.\u8D34\u724C\u4EF7\u683C != null) update.\u8D34\u724C\u4EF7\u683C = patch.\u8D34\u724C\u4EF7\u683C") && containerDetailLogicSource.includes("update.\u82F1\u6587\u540D\u79F0 = englishName") && containerDetailLogicSource.includes("update.ClearEnglishName = true") && pageSource.includes("batchUpdateDetails(plan.detailUpdates),") && pageSource.includes("failedPendingDetailSaveKeysRef.current,") && !pageSource.includes("await batchUpdateWarehouseProducts(plan.warehouseUpdates)") && !pageSource.includes("t('containers.messages.missingWarehouseProductCodeForRetailPrice'") && pageSource.includes("const confirmed = await confirmSavePendingDetails(savePlan)") && pageSource.includes("await executePendingDetailSavePlan(savePlan)") && pageSource.includes("clearSavedPendingContainerDetailFields(current, plan.detailUpdates, result.validationErrors)") && pageSource.includes("t('containers.messages.detailsSaved'"),
+  containerDetailLogicSource.includes("if (patch.\u8FDB\u53E3\u4EF7\u683C != null) update.\u8FDB\u53E3\u4EF7\u683C = patch.\u8FDB\u53E3\u4EF7\u683C") && containerDetailLogicSource.includes("if (patch.\u8D34\u724C\u4EF7\u683C != null) update.\u8D34\u724C\u4EF7\u683C = patch.\u8D34\u724C\u4EF7\u683C") && containerDetailLogicSource.includes("update.\u82F1\u6587\u540D\u79F0 = englishName") && containerDetailLogicSource.includes("update.ClearEnglishName = true") && pageSource.includes("batchUpdateDetails(plan.detailUpdates),") && pageSource.includes("failedPendingDetailSaveKeysRef.current,") && !pageSource.includes("await batchUpdateWarehouseProducts(plan.warehouseUpdates)") && !pageSource.includes("t('containers.messages.missingWarehouseProductCodeForRetailPrice'") && pageSource.includes("const confirmed = await confirmSavePendingDetails(savePlan)") && pageSource.includes("await executePendingDetailSavePlan(savePlan)") && pageSource.includes("settleContainerDetailDraftSaveSuccess(") && pageSource.includes("plan.detailUpdates,") && pageSource.includes("validationErrors,") && pageSource.includes("t('containers.messages.detailsSaved'"),
   true,
   "\u4FDD\u5B58\u660E\u7EC6\u5E94\u7EDF\u4E00\u63D0\u4EA4\u4EF7\u683C\u548C\u82F1\u6587\u540D\u79F0\uFF0C\u5E76\u6309\u540E\u7AEF\u5B57\u6BB5\u6821\u9A8C\u7ED3\u679C\u4EC5\u6E05\u9664\u5DF2\u4FDD\u5B58\u5185\u5BB9"
+);
+assertEqual(
+  pageSource.includes("buildContainerDetailSuccessfulEnglishNameUpdates(") && pageSource.includes("pendingDetailPatchesRef.current,") && pageSource.includes("plan.detailUpdates,") && pageSource.includes("result.validationErrors,") && pageSource.includes("applyContainerDetailEnglishNameUpdates(items, successfulEnglishNameUpdates)"),
+  true,
+  "\u4FDD\u5B58\u6210\u529F\u540E\u5E94\u6309\u6700\u65B0\u8349\u7A3F\u548C\u5B57\u6BB5\u7EA7\u9519\u8BEF\u7B5B\u9009\u9010\u8BCD\u5927\u5199\u56DE\u663E\uFF0C\u4E0D\u80FD\u8986\u76D6\u5E76\u53D1\u7F16\u8F91"
 );
 assertEqual(
   pageSource.includes("Modal.confirm({") && pageSource.includes("t('containers.modals.savePendingDetailsTitle', '\u786E\u8BA4\u4FDD\u5B58\u660E\u7EC6')") && pageSource.includes("t('containers.modals.savePendingDetailsUpdateTitle', '\u66F4\u65B0\u8BF4\u660E')") && pageSource.includes("'containers.modals.savePendingDetailsSummary'") && pageSource.includes("t('containers.modals.savePendingDetailsExistingRetailHint'") && pageSource.includes("'containers.modals.savePendingDetailsInvalidEnglishHint'") && pageSource.includes("t('containers.modals.savePendingDetailsRetryHint'"),
@@ -4905,6 +5741,19 @@ assertEqual(
   columnsSource.includes("\u96F6\u552E\u4EF7\u53EA\u8BFB\u5355\u5143\u683C\uFF1A\u65B0\u5546\u54C1\u663E\u793A\u660E\u7EC6\u4EF7\uFF0C\u5DF2\u6709\u5546\u54C1\u663E\u793A\u4ED3\u5E93\u5B9E\u65F6\u4EF7") && pageSource.includes("value={getContainerDetailVisibleOemPrice(row)}") && pageSource.includes("warehouseOEMPrice: patch.\u8D34\u724C\u4EF7\u683C") && !columnsSource.includes("source === 'warehouse'") && !pageSource.includes("className={getOemPriceSourceClassName(row)}") && !pageStyleSource.includes(".container-detail-oem-price-cell-warehouse") && !pageStyleSource.includes(".container-detail-oem-price-cell-fallback"),
   true,
   "\u96F6\u552E\u4EF7\u5E94\u6309\u65B0\u5546\u54C1/\u5DF2\u6709\u5546\u54C1\u5206\u6D41\u663E\u793A\u548C\u7F16\u8F91\uFF0C\u4E0D\u518D\u6CBF\u7528\u4ED3\u5E93\u5FEB\u7167\u6765\u6E90\u5E95\u8272"
+);
+var retailPriceColumnsSource = pageSource.slice(
+  pageSource.indexOf("renderColumnTitle('oemPrice'"),
+  pageSource.indexOf("renderColumnTitle('newProduct'")
+);
+assertEqual(
+  !retailPriceColumnsSource.includes('className="container-detail-price-cell"') && !pageStyleSource.includes(".container-detail-price-cell {") && pageSource.includes("virtual") && pageStyleSource.includes(
+    ".container-detail-table .ant-table-tbody-virtual-holder-inner .ant-table-row {\n  align-items: center;\n}"
+  ) && pageStyleSource.includes(
+    ".container-detail-table .ant-table-tbody-virtual-holder-inner .ant-table-row > .ant-table-cell-fix-left {\n  align-self: stretch;\n  align-content: center;\n}"
+  ) && !pageStyleSource.includes(".ant-table-tbody > tr > td .ant-input-number-input"),
+  true,
+  "\u865A\u62DF\u8868\u683C\u884C\u5E94\u5782\u76F4\u5C45\u4E2D\u5355\u5143\u683C\uFF0C\u4E14\u56FA\u5B9A\u5217\u5FC5\u987B\u62C9\u4F38\u5230\u5B8C\u6574\u884C\u9AD8\u4EE5\u906E\u6321\u6A2A\u5411\u6EDA\u52A8\u5185\u5BB9"
 );
 assertEqual(
   pageSource.includes("handleWarehouseStatusChange"),
@@ -4988,9 +5837,9 @@ assertEqual(
   "\u672C\u9875\u6279\u91CF\u7FFB\u8BD1\u3001\u6279\u91CF\u4FEE\u6539\u548C\u6279\u91CF\u6E05\u9664\u82F1\u6587\u540D\u79F0\u90FD\u5E94\u8FDB\u5165\u4FDD\u5B58\u660E\u7EC6\u961F\u5217\uFF0C\u4E0D\u80FD\u7ACB\u5373\u843D\u5E93"
 );
 assertEqual(
-  pageSource.includes("applyPendingContainerDetailPatches(result.items, pendingDetailPatchesRef.current)") && pageSource.includes("pendingDetailContainerGuidRef.current !== containerGuid") && !pageSource.includes("setPendingDetailPatches({})"),
+  pageSource.includes("const loadedItemsWithDraft = applyPendingContainerDetailPatches(") && pageSource.includes("items,\n      pendingDetailPatchesRef.current,") && pageSource.includes("detailRowsContainerGuidRef.current !== containerGuid") && pageSource.includes("scopeContainerDetailRowsToContainer(rows, detailRowsContainerGuidRef.current, containerGuid)") && pageSource.includes("readContainerDetailDraft(") && pageSource.includes("\u53EA\u6709\u5207\u6362\u8D27\u67DC\u624D\u6E05\u7A7A\u65E7\u884C") && !pageSource.includes("setPendingDetailPatches({})"),
   true,
-  "\u540C\u4E00\u8D27\u67DC\u5237\u65B0\u6216\u7B5B\u9009\u91CD\u8F7D\u5E94\u91CD\u65B0\u8986\u76D6\u672A\u4FDD\u5B58\u8349\u7A3F\uFF0C\u4EC5\u5207\u6362\u8D27\u67DC\u65F6\u6E05\u7A7A\u65E7\u8349\u7A3F"
+  "\u540C\u4E00\u8D27\u67DC\u5237\u65B0\u6216\u7B5B\u9009\u91CD\u8F7D\u5E94\u91CD\u65B0\u8986\u76D6\u672A\u4FDD\u5B58\u8349\u7A3F\uFF1B\u5207\u6362\u8D27\u67DC\u65F6\u7ACB\u5373\u9690\u85CF\u65E7\u884C\u5E76\u6062\u590D\u65B0\u8D27\u67DC\u8349\u7A3F"
 );
 assertEqual(
   pageSource.includes("settleScopedContainerDetailSave(") && pageSource.includes("detailRequestIdAtSaveStart") && pageSource.includes("abortControllerToken: detailAbortControllerRef.current") && pageSource.includes("scopedSave.shouldInvalidateDetailLoad") && pageSource.includes("scopedSave.shouldReloadCurrentDetail") && pageSource.includes("await reloadCurrentDetailRef.current()") && pageSource.includes("detailControllerAtSaveStart?.abort()") && pageSource.includes("containerDetailLoadRequestIdRef.current += 1"),
@@ -4998,7 +5847,7 @@ assertEqual(
   "\u4FDD\u5B58\u6210\u529F\u540E\u5E94\u5E9F\u5F03\u4FDD\u5B58\u524D\u7684\u65E7\u67E5\u8BE2\uFF1B\u82E5\u671F\u95F4\u542F\u52A8\u8FC7\u65B0\u67E5\u8BE2\uFF0C\u5219\u6309\u5F53\u524D\u6761\u4EF6\u91CD\u8F7D\u907F\u514D\u65E7\u5FEB\u7167\u8986\u76D6"
 );
 assertEqual(
-  pageSource.includes("failedPendingDetailSaveKeysRef") && pageSource.includes("reconcilePendingContainerDetailSaveFailureKeys(") && pageSource.includes("failedPendingDetailSaveKeysRef.current.size > 0") && pageSource.includes("pendingDetailSavePromisesRef.current.clear()") && pageSource.includes("currentContainerGuidRef.current === saveContainerGuid"),
+  pageSource.includes("failedPendingDetailSaveKeysRef") && pageSource.includes("reconcileContainerDetailDraftFailures(") && pageSource.includes("failedPendingDetailSaveKeysRef.current.size > 0") && pageSource.includes("pendingDetailSavePromisesRef.current.clear()") && pageSource.includes("currentContainerGuidRef.current === saveContainerGuid") && pageSource.includes("pendingDetailDraftIdentityRef.current === saveDraftIdentity"),
   true,
   "\u7EDF\u4E00\u4FDD\u5B58\u5931\u8D25\u72B6\u6001\u5E94\u6309\u5F53\u524D\u8349\u7A3F\u5B57\u6BB5\u53CA\u8D27\u67DC\u4F5C\u7528\u57DF\u6E05\u7406\uFF0C\u4E0D\u80FD\u6C61\u67D3\u540E\u7EED\u610F\u56FE\u6216\u65B0\u8D27\u67DC"
 );
@@ -5013,9 +5862,9 @@ assertEqual(
   "\u56FE\u7247\u548C\u7F16\u53F7\u5217\u4E0D\u5E94\u6DFB\u52A0\u65E0\u610F\u4E49\u5217\u5934\u8FC7\u6EE4\u914D\u7F6E"
 );
 assertEqual(
-  pageSource.includes("buildContainerDetailFloatRateUpdates([row], container, value)"),
+  pageSource.includes("\u8C03\u6574\u6D6E\u7387: value ?? latestRow.\u8C03\u6574\u6D6E\u7387 ?? DEFAULT_CONTAINER_DETAIL_FLOAT_RATE") && pageSource.includes("const updatesCost = updatesPackageMetric || '\u8C03\u6574\u6D6E\u7387' in patch") && pageSource.includes("buildContainerDetailAutoSaveUpdate(latestRow, intent.patch, contextSnapshot.container)"),
   true,
-  "\u5355\u884C\u4FDD\u5B58\u6D6E\u7387\u5E94\u4F7F\u7528\u539F\u59CB\u884C\u8BA1\u7B97\u53D8\u5316\uFF0C\u4E0D\u80FD\u63D0\u524D\u8986\u76D6\u6D6E\u7387\u5BFC\u81F4\u4E0D\u5199\u5E93"
+  "\u5355\u884C\u6D6E\u7387\u5E94\u63D0\u4EA4\u76F4\u63A5\u5B57\u6BB5\u610F\u56FE\uFF0C\u5E76\u5728\u961F\u5217\u51FA\u961F\u65F6\u6309\u6700\u65B0\u884C\u91CD\u7B97\u6210\u672C\uFF0C\u907F\u514D\u63D0\u524D\u8986\u76D6\u5BFC\u81F4\u6F0F\u4FDD\u5B58"
 );
 assertEqual(
   pageSource.includes("recalculateContainerCostsByScope(containerGuid, buildDetailBatchScope())"),
@@ -5023,9 +5872,9 @@ assertEqual(
   "\u8D27\u67DC\u660E\u7EC6\u9875\u4E0D\u5E94\u518D\u66B4\u9732\u72EC\u7ACB\u91CD\u7B97\u6210\u672C scope \u5199\u56DE\u5165\u53E3"
 );
 assertEqual(
-  pageSource.includes("await loadDetailChunk(1, 'reset')"),
+  pageSource.includes("const reloadCurrentDetail = async () => {") && pageSource.includes("await loadDetailRows(detailLoadMode === 'paged' ? 'paged' : 'probe')") && pageSource.includes("await reloadCurrentDetailRef.current()"),
   true,
-  "\u91CD\u7B97\u6210\u672C\u5199\u56DE\u6210\u529F\u540E\u5E94\u91CD\u8F7D\u5F53\u524D\u67E5\u8BE2\u9996\u5757"
+  "\u5199\u56DE\u6210\u529F\u540E\u5E94\u6309\u5F53\u524D\u5206\u9875 scope \u5237\u65B0\uFF1B\u5168\u91CF\u6A21\u5F0F\u5219\u91CD\u65B0\u63A2\u6D4B\u9608\u503C"
 );
 assertEqual(pageSource.includes("t('containers.messages.missingFreightForCost'"), true, "\u7F3A\u5C11\u8FD0\u8D39\u65F6\u5E94\u901A\u8FC7 i18n \u63D0\u793A\u4E14\u4E0D\u5199\u5E93");
 assertEqual(pageSource.includes("t('containers.messages.missingTotalVolumeForCost'"), true, "\u7F3A\u5C11\u603B\u4F53\u79EF\u65F6\u5E94\u901A\u8FC7 i18n \u63D0\u793A\u4E14\u4E0D\u5199\u5E93");
@@ -5235,22 +6084,27 @@ assertEqual(
   "\u8D27\u67DC\u660E\u7EC6\u8868\u683C\u5E94\u6309\u5F53\u524D\u663E\u793A\u987A\u5E8F\u7ED9\u5076\u6570\u89C6\u89C9\u884C\u6DFB\u52A0\u9694\u884C\u8272 class"
 );
 assertEqual(
-  pageSource.includes("const CONTAINER_DETAIL_PAGE_SIZE = 50") && pageSource.includes("pagination={false}") && pageSource.includes("virtual") && pageSource.includes("onScroll={handleDetailTableScroll}"),
+  pageSource.includes("pagination={detailLoadMode === 'paged' ? {") && pageSource.includes("current: detailPageNumber") && pageSource.includes("pageSize: detailPageSize") && pageSource.includes("total: detailItemsTotal") && pageSource.includes("showSizeChanger: true") && pageSource.includes("pageSizeOptions: [...CONTAINER_DETAIL_PAGE_SIZE_OPTIONS]") && pageSource.includes("virtual") && pageSource.includes("onScroll={handleDetailTableScroll}"),
   true,
-  "\u8D27\u67DC\u660E\u7EC6\u5E94\u5173\u95ED\u53EF\u89C1\u5206\u9875\u5668\uFF0C\u4F7F\u7528 50 \u6761\u5185\u90E8\u61D2\u52A0\u8F7D\u5757\u548C\u865A\u62DF\u6EDA\u52A8"
+  "\u5927\u8D27\u67DC\u5E94\u663E\u793A\u7D27\u51D1\u53D7\u63A7\u5206\u9875\u5668\u548C\u56FA\u5B9A\u9875\u5927\u5C0F\u6863\u4F4D\uFF0C\u540C\u65F6\u4FDD\u7559\u865A\u62DF\u8868\u683C"
 );
 var stickyControlsStart = pageSource.indexOf('className="container-detail-sticky-controls"');
 var detailTableStart = pageSource.indexOf('className="container-detail-table"', stickyControlsStart);
 var stickyControlsSource = pageSource.slice(stickyControlsStart, detailTableStart);
 assertEqual(
-  stickyControlsStart >= 0 && detailTableStart > stickyControlsStart && pageSource.includes('<Card className="container-detail-grid-card">') && pageSource.includes('className="container-detail-table-region"') && !pageSource.includes('className="container-detail-scroll-spacer"') && stickyControlsSource.includes('className="container-detail-toolbar"') && stickyControlsSource.includes('className="container-detail-action-row"') && stickyControlsSource.includes('className="container-detail-action-meta"') && stickyControlsSource.includes('className="container-detail-bulk-row"') && stickyControlsSource.includes("<ContainerTagFilters") && stickyControlsSource.includes('{exporting ? <Progress percent={exportProgress} size="small" /> : null}'),
+  stickyControlsStart >= 0 && detailTableStart > stickyControlsStart && pageSource.includes('<Card className="container-detail-grid-card">') && pageSource.includes('className="container-detail-table-region"') && !pageSource.includes('className="container-detail-scroll-spacer"') && stickyControlsSource.includes('className="container-detail-toolbar"') && stickyControlsSource.includes('className="container-detail-action-row"') && stickyControlsSource.includes('className="container-detail-action-meta"') && stickyControlsSource.includes('className="container-detail-bulk-row"') && stickyControlsSource.includes("<ContainerTagFilters") && stickyControlsSource.includes('className="container-detail-export-progress"') && stickyControlsSource.includes('<Progress percent={exportProgress} size="small" />'),
   true,
   "\u8D27\u67DC\u660E\u7EC6\u64CD\u4F5C\u6309\u94AE\u3001\u72B6\u6001\u4FE1\u606F\u3001\u6279\u91CF\u64CD\u4F5C\u3001\u7EDF\u8BA1\u6807\u7B7E\u548C\u5BFC\u51FA\u8FDB\u5EA6\u5E94\u5728\u8868\u683C\u524D\u7684\u7D27\u51D1 sticky \u63A7\u5236\u533A\u5185"
 );
 assertEqual(
-  pageSource.includes("ref={setGridContentElement}") && pageSource.includes("ref={setToolbarElement}") && pageSource.includes("ref={setTableRegionElement}") && pageSource.includes("ResizeObserver") && pageSource.includes("const [detailLayoutMetrics, setDetailLayoutMetrics] = useState") && pageSource.includes("querySelector('.ant-table-thead')") && pageSource.includes("querySelector('.ant-table-footer')") && pageSource.includes("horizontalScrollbarHeight") && !pageSource.includes("window.addEventListener('scroll', scheduleMeasure") && !pageSource.includes("window.removeEventListener('scroll', scheduleMeasure") && !pageSource.includes("window.addEventListener('scroll', scheduleMeasure, true)") && pageSource.includes("calculateContainerDetailTableScrollY({") && !pageSource.includes("contentTop: detailLayoutMetrics.contentTop,") && pageSource.includes("toolbarHeight: detailLayoutMetrics.toolbarHeight,") && pageSource.includes("tableChromeHeight: detailLayoutMetrics.tableChromeHeight,"),
+  pageSource.includes("ref={setGridContentElement}") && pageSource.includes("ref={setToolbarElement}") && pageSource.includes("ref={setTableRegionElement}") && pageSource.includes("ResizeObserver") && pageSource.includes("const [detailLayoutMetrics, setDetailLayoutMetrics] = useState") && pageSource.includes("querySelector('.ant-table-thead')") && pageSource.includes("querySelector('.ant-table-footer')") && pageSource.includes("querySelector('.ant-table-pagination')") && pageSource.includes("window.getComputedStyle(tablePaginationElement)") && pageSource.includes("horizontalScrollbarHeight") && pageSource.includes("paginationHeight") && pageSource.includes("paginationMarginHeight") && !pageSource.includes("window.addEventListener('scroll', scheduleMeasure") && !pageSource.includes("window.removeEventListener('scroll', scheduleMeasure") && !pageSource.includes("window.addEventListener('scroll', scheduleMeasure, true)") && pageSource.includes("calculateContainerDetailTableScrollY({") && !pageSource.includes("contentTop: detailLayoutMetrics.contentTop,") && pageSource.includes("toolbarHeight: detailLayoutMetrics.toolbarHeight,") && pageSource.includes("tableChromeHeight: detailLayoutMetrics.tableChromeHeight,"),
   true,
-  "\u8D27\u67DC\u660E\u7EC6\u8868\u683C\u9AD8\u5EA6\u5E94\u53EA\u6839\u636E\u5DE5\u5177\u680F\u548C\u8868\u683C\u5934\u5C3E\u5B9E\u6D4B\u9AD8\u5EA6\u52A8\u6001\u8BA1\u7B97\uFF0C\u4E0D\u76D1\u542C\u6EDA\u52A8"
+  "\u8D27\u67DC\u660E\u7EC6\u8868\u683C\u9AD8\u5EA6\u5E94\u6839\u636E\u5DE5\u5177\u680F\u3001\u8868\u683C\u5934\u5C3E\u548C\u5206\u9875\u5668\u5B9E\u6D4B\u9AD8\u5EA6\u52A8\u6001\u8BA1\u7B97\uFF0C\u4E0D\u76D1\u542C\u6EDA\u52A8"
+);
+assertEqual(
+  pageSource.includes("const layoutDetailLoadMode: ContainerDetailLoadMode = detailPagingState.containerGuid === containerGuid") && pageSource.includes("[gridContentElement, tableRegionElement, toolbarElement, detailTableRenderKey, exporting, exportProgress, layoutDetailLoadMode]"),
+  true,
+  "\u4ECE probe/full \u5207\u6362\u5230 paged \u5E76\u6302\u8F7D\u5206\u9875\u5668\u540E\u5E94\u4E3B\u52A8\u91CD\u65B0\u6D4B\u91CF\u8868\u683C\u9AD8\u5EA6"
 );
 assertEqual(
   pageSource.includes("const [detailTableRenderKey, setDetailTableRenderKey] = useState(0)") && pageSource.includes("const lastDetailTableScrollTopRef = useRef(0)") && pageSource.includes("const wasContainerDetailTabActiveRef = useRef(active)") && pageSource.includes("if (!active || wasActive || rows.length === 0)") && pageSource.includes("window.requestAnimationFrame(() => {") && pageSource.includes("setDetailTableRenderKey((value) => value + 1)") && pageSource.includes("detailTableRef.current?.scrollTo?.({ top: scrollTop })") && pageSource.includes("key={`${containerGuid}-${detailTableRenderKey}`}"),
@@ -5258,62 +6112,45 @@ assertEqual(
   "\u8D27\u67DC\u660E\u7EC6 Tab \u5207\u56DE\u65F6\u5E94\u91CD\u6302\u8F7D AntD \u865A\u62DF\u8868\u683C\u5E76\u6062\u590D\u6EDA\u52A8\u4F4D\u7F6E\uFF0C\u907F\u514D KeepAlive \u9690\u85CF\u540E body \u7A7A\u767D"
 );
 assertEqual(
-  pageSource.includes("lastDetailTableScrollTopRef.current = target.scrollTop") && pageSource.includes("shouldLoadNextContainerDetailChunk({") && pageSource.includes("void loadNextDetailChunk()"),
+  pageSource.includes("lastDetailTableScrollTopRef.current = target.scrollTop") && !pageSource.includes("shouldLoadNextContainerDetailChunk({") && !pageSource.includes("void loadNextDetailChunk()"),
   true,
-  "\u8D27\u67DC\u660E\u7EC6\u8868\u683C\u6EDA\u52A8\u5904\u7406\u5E94\u4FDD\u5B58\u6EDA\u52A8\u4F4D\u7F6E\uFF0C\u5E76\u5728\u8FDB\u5165\u9884\u52A0\u8F7D\u533A\u65F6\u52A0\u8F7D\u4E0B\u4E00\u5757"
+  "\u8D27\u67DC\u660E\u7EC6\u8868\u683C\u6EDA\u52A8\u53EA\u5E94\u4FDD\u5B58\u4F4D\u7F6E\uFF0C\u4E0D\u80FD\u518D\u9690\u5F0F\u8FFD\u52A0\u4E0B\u4E00\u5757"
 );
 assertEqual(
-  pageSource.includes("const detailAppendRequestRef = useRef<") && pageSource.includes("const detailResetRequestRef = useRef<") && pageSource.includes("startContainerDetailAppendRequest(") && pageSource.includes("cancelContainerDetailAppendRequest(detailAppendRequestRef.current)") && pageSource.includes("finishContainerDetailAppendRequest(") && pageSource.includes("detailAppendRequestRef.current = appendStart.request") && pageSource.includes("|| detailResetRequestRef.current"),
+  !pageSource.includes("const detailAppendRequestRef = useRef<") && !pageSource.includes("const detailReadAheadRequestRef = useRef<") && pageSource.includes("const detailResetRequestRef = useRef<") && pageSource.includes("detailAbortControllerRef.current?.abort()") && pageSource.includes("containerDetailLoadRequestIdRef.current += 1"),
   true,
-  "\u8D27\u67DC\u660E\u7EC6\u8FFD\u52A0\u52A0\u8F7D\u5E94\u540C\u6B65\u9632\u91CD\u5165\u3001\u907F\u8BA9\u91CD\u7F6E\u8BF7\u6C42\uFF0C\u5E76\u53EA\u5141\u8BB8\u8BF7\u6C42\u6240\u6709\u8005\u91CA\u653E token"
+  "\u53D7\u63A7\u5206\u9875\u5E94\u79FB\u9664\u8FFD\u52A0/\u524D\u8BFB\u8BF7\u6C42\u72B6\u6001\uFF0C\u53EA\u4FDD\u7559\u53EF\u53D6\u6D88\u4E14\u5E26 generation \u7684\u5F53\u524D\u9875\u8BF7\u6C42"
 );
 assertEqual(
-  pageSource.includes("const detailReadAheadRequestRef = useRef<") && pageSource.includes("const startDetailReadAhead = (pageNumber: number) =>") && pageSource.includes("startContainerDetailReadAheadRequest(") && pageSource.includes("resetReadAheadRequest = startDetailReadAhead(pageNumber + 1)") && pageSource.includes("detailReadAheadRequestRef.current?.key === requestKey") && pageSource.includes("await readAheadRequest.promise") && pageSource.includes("startDetailReadAhead(result.pageNumber + 1)") && pageSource.includes("startDetailReadAhead(detailPageNumber + 1)") && pageSource.includes("cancelContainerDetailReadAheadRequest(detailReadAheadRequestRef.current)"),
+  !pageSource.includes("startDetailReadAhead") && !pageSource.includes("startContainerDetailReadAheadRequest") && !pageSource.includes("resetReadAheadRequest") && !pageSource.includes("readAheadRequest.promise"),
   true,
-  "\u8D27\u67DC\u660E\u7EC6\u5E94\u53EA\u4FDD\u7559\u4E0B\u4E00\u9875\u524D\u8BFB\u7F13\u5B58\uFF0C\u6EDA\u52A8\u6D88\u8D39\u540E\u63A5\u7EED\u9884\u53D6\u5E76\u5728\u5931\u6548\u65F6\u53D6\u6D88"
+  "\u9996\u5C4F\u548C\u7FFB\u9875\u5747\u4E0D\u5F97\u518D\u5E76\u53D1\u9884\u8BFB\u7B2C 2 \u9875"
 );
 assertEqual(
-  (() => {
-    const readAheadStart = pageSource.indexOf("const startDetailReadAhead = (pageNumber: number) =>");
-    const readAheadEnd = pageSource.indexOf("const loadDetailChunk = async", readAheadStart);
-    const readAheadSource = pageSource.slice(readAheadStart, readAheadEnd);
-    return readAheadStart >= 0 && readAheadEnd > readAheadStart && readAheadSource.includes("pageSize: CONTAINER_DETAIL_PAGE_SIZE") && readAheadSource.includes("includeTotal: false") && readAheadSource.includes("includeStats: false");
-  })(),
+  pageSource.includes("pageSize: CONTAINER_DETAIL_INITIAL_PAGE_SIZE") && pageSource.includes("includeTotal: true") && pageSource.includes("includeStats: false") && pageSource.includes("const initialResult = await queryContainerProducts(") && pageSource.includes("resolveContainerDetailInitialPage(initialResult)"),
   true,
-  "\u524D\u8BFB\u9875\u5FC5\u987B\u4FDD\u6301 50 \u6761\uFF0C\u5E76\u8DF3\u8FC7 total \u4E0E\u6807\u7B7E\u7EDF\u8BA1"
+  "\u9996\u5C4F\u53EA\u5E94\u8BF7\u6C42 100 \u884C\u548C\u7CBE\u786E total\uFF0C\u7528 200/201 \u9608\u503C\u51B3\u5B9A\u5168\u91CF\u6216\u5206\u9875"
 );
 assertEqual(
-  (() => {
-    const firstPageStart = pageSource.indexOf("const resultPromise = queryContainerProducts(");
-    const secondPageStart = pageSource.indexOf(
-      "resetReadAheadRequest = startDetailReadAhead(pageNumber + 1)",
-      firstPageStart
-    );
-    const firstPageAwait = pageSource.indexOf("result = await resultPromise", secondPageStart);
-    return firstPageStart >= 0 && secondPageStart > firstPageStart && firstPageAwait > secondPageStart;
-  })(),
+  pageSource.includes("const fullResult = await queryContainerProducts(") && pageSource.includes("pageSize: CONTAINER_DETAIL_FULL_LOAD_LIMIT") && pageSource.includes("if (!resolution.requiresFullLoad) {"),
   true,
-  "\u91CD\u7F6E\u67E5\u8BE2\u5E94\u5148\u542F\u52A8\u9996\u5C4F\u8BF7\u6C42\uFF0C\u518D\u5E76\u53D1\u7B2C 2 \u9875\u5E76\u7B49\u5F85\u9996\u5C4F\u7ED3\u679C"
+  "101\u2013200 \u6761\u624D\u5E94\u7EE7\u7EED\u62C9\u53D6 200 \u6761\u5B8C\u6574\u96C6\uFF0C100 \u6761\u4EE5\u5185\u4E0D\u5F97\u91CD\u590D\u8BF7\u6C42"
 );
 assertEqual(
-  pageSource.includes("void loadNextDetailChunk('auto')") && pageSource.includes("source === 'auto' && failedDetailAppendRequestKeyRef.current === requestKey") && pageSource.includes("detailResetRequestRef.current = null") && pageSource.includes("setDetailLoadingMore(false)"),
+  pageSource.includes("window.setTimeout(() => {") && pageSource.includes("includeItems: false") && pageSource.includes("schedulePagedDetailStats(pagedDetailStatsQuery") && pageSource.includes("detailStatsAbortControllerRef.current?.abort()"),
   true,
-  "\u6807\u7B7E\u81EA\u52A8\u8865\u9F50\u5931\u8D25\u540E\u5E94\u505C\u6B62\u81EA\u52A8\u91CD\u8BD5\uFF0C\u6E05\u7406\u65F6\u5E94\u540C\u6B65\u91CA\u653E\u52A0\u8F7D\u72B6\u6001"
+  "\u5206\u9875\u884C\u6E32\u67D3\u540E\u5E94\u5EF6\u8FDF\u53D1\u8D77\u53EF\u53D6\u6D88\u7684\u65E0 items \u7EDF\u8BA1\u8BF7\u6C42"
 );
-var detailQueryAutoReloadIndex = pageSource.indexOf("requestedDetailQueryKey: activeLoadQueryKey");
+var detailQueryAutoReloadIndex = pageSource.indexOf("lastLoadedContainerDetailSuccessRef.current.queryKey === activeLoadQueryKey");
 var detailLoadEffectIndex = pageSource.lastIndexOf("useEffect(() => {", detailQueryAutoReloadIndex);
 var detailLoadCancellationIndex = pageSource.indexOf(
   "const cancelDetailLoads = () =>",
   detailLoadEffectIndex
 );
-var skipDetailAutoReloadIndex = pageSource.lastIndexOf(
-  "if (shouldSkipDetailAutoReload({",
-  detailQueryAutoReloadIndex
-);
 assertEqual(
-  detailLoadEffectIndex >= 0 && detailLoadCancellationIndex >= detailLoadEffectIndex && detailLoadCancellationIndex < skipDetailAutoReloadIndex && pageSource.indexOf("return cancelDetailLoads", skipDetailAutoReloadIndex) >= 0,
+  detailLoadEffectIndex >= 0 && detailLoadCancellationIndex >= detailLoadEffectIndex && detailLoadCancellationIndex < detailQueryAutoReloadIndex && pageSource.indexOf("return cancelDetailLoads", detailQueryAutoReloadIndex) >= 0,
   true,
-  "KeepAlive \u547D\u4E2D\u7F13\u5B58\u8DF3\u8FC7\u91CD\u8F7D\u65F6\u4E5F\u5FC5\u987B\u6CE8\u518C\u8FFD\u52A0\u8BF7\u6C42\u53D6\u6D88\u51FD\u6570"
+  "KeepAlive \u547D\u4E2D\u76F8\u540C\u5206\u9875 queryKey \u8DF3\u8FC7\u91CD\u8F7D\u65F6\u4E5F\u5FC5\u987B\u4FDD\u7559\u5F53\u524D\u8BF7\u6C42\u53D6\u6D88\u6E05\u7406"
 );
 assertEqual(
   pageStyleSource.includes(".container-detail-table .ant-table-thead > tr > th"),
@@ -5346,7 +6183,7 @@ assertEqual(
   "\u8D27\u53F7\u590D\u5236\u533A\u57DF\u5E94\u4F7F\u7528\u65E0\u989D\u5916\u5305\u88C5\u5C42\u7684\u4E13\u5C5E nowrap \u5F39\u6027\u5BB9\u5668"
 );
 assertEqual(
-  pageSource.includes("<CopyableText value={getContainerDetailItemNumber(row)} />") && !pageSource.includes("<CopyableText value={getContainerDetailItemNumber(row)} maxWidth={90} />") && pageStyleSource.includes([
+  pageSource.includes("<CopyableText value={itemNumber} />") && !pageSource.includes("<CopyableText value={itemNumber} maxWidth={90} />") && pageStyleSource.includes([
     ".container-detail-copyable .ant-typography {",
     "  min-width: 0;",
     "  flex: 1 1 auto;",
@@ -5432,7 +6269,7 @@ assertEqual(
   "\u8D27\u67DC\u8BE6\u60C5\u5934\u90E8\u548C\u660E\u7EC6\u52A0\u8F7D\u5E94\u5206\u522B\u4F7F\u7528 request id \u4E0E AbortController \u9632\u6B62\u65E7\u8BF7\u6C42\u8986\u76D6\u65B0\u9875\u9762"
 );
 assertEqual(
-  pageSource.includes("if (headerLoadRequestIdRef.current !== currentRequestId)") && pageSource.includes("if (controller.signal.aborted || containerDetailLoadRequestIdRef.current !== currentRequestId)") && pageSource.includes("return"),
+  pageSource.includes("if (headerLoadRequestIdRef.current !== currentRequestId)") && pageSource.includes("const isCurrentRequest = () => (") && pageSource.includes("!controller.signal.aborted") && pageSource.includes("containerDetailLoadRequestIdRef.current === currentRequestId") && pageSource.includes("if (!isCurrentRequest()) return") && pageSource.includes("return"),
   true,
   "\u8D27\u67DC\u8BE6\u60C5\u8FC7\u671F\u8BF7\u6C42\u5B8C\u6210\u6216\u5931\u8D25\u540E\u5E94\u76F4\u63A5\u5FFD\u7565\uFF0C\u4E0D\u80FD\u5199\u5165 state \u6216\u5F39\u5931\u8D25\u63D0\u793A"
 );
@@ -5452,7 +6289,7 @@ assertEqual(
   "\u8D27\u67DC\u8BE6\u60C5\u5E94\u6709\u4E2D\u6587\u6CE8\u91CA\u8BF4\u660E\u79FB\u52A8\u7AEF route element \u590D\u7528\u65F6 GUID \u5FC5\u987B\u8DDF\u968F\u5F53\u524D URL"
 );
 assertEqual(
-  pageSource.includes("const lastLoadedContainerDetailSuccessRef = useRef<{ containerGuid: string; queryKey: string } | null>(null)") && pageSource.includes("lastLoadedContainerDetailSuccessRef.current = { containerGuid, queryKey: detailQueryKey }") && pageSource.includes("const loadedDetailQueryKey = lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid") && pageSource.includes("loadedDetailQueryKey: lastLoadedContainerDetailSuccessRef.current?.containerGuid === containerGuid") && !pageSource.includes("loadedDetailQueryKey: lastLoadedContainerDetailQueryKeyRef.current"),
+  pageSource.includes("const lastLoadedContainerDetailSuccessRef = useRef<{ containerGuid: string; queryKey: string } | null>(null)") && pageSource.includes("lastLoadedContainerDetailSuccessRef.current = {") && pageSource.includes("queryKey: pagedDetailQueryKey") && pageSource.includes("lastLoadedContainerDetailSuccessRef.current.queryKey === activeLoadQueryKey") && !pageSource.includes("loadedDetailQueryKey: lastLoadedContainerDetailQueryKeyRef.current"),
   true,
   "\u660E\u7EC6\u81EA\u52A8\u8DF3\u8FC7\u5224\u65AD\u53EA\u80FD\u4F7F\u7528\u660E\u7EC6\u6210\u529F\u52A0\u8F7D\u8BB0\u5F55\uFF0C\u4E0D\u80FD\u6CBF\u7528\u5934\u90E8\u52A0\u8F7D\u72B6\u6001\u6216\u65E7\u67E5\u8BE2 key"
 );
@@ -5465,6 +6302,11 @@ assertEqual(
   pageSource.includes("renderProductTypeTag(row)") && pageSource.includes("container-detail-product-type-tag-clickable") && pageSource.includes("productType === '\u5957\u88C5\u5546\u54C1'") && pageSource.includes("openSetCodeModal(row)"),
   true,
   "\u8D27\u67DC\u660E\u7EC6\u5546\u54C1\u7C7B\u578B\u5217\u5E94\u4F7F\u7528\u5F69\u8272 Tag\uFF0C\u5957\u88C5\u5546\u54C1 Tag \u5E94\u53EF\u70B9\u51FB\u6253\u5F00\u5957\u88C5\u591A\u7801\u5F39\u7A97"
+);
+assertEqual(
+  pageSource.includes("const handlePendingImportPriceBlur = (") && pageSource.includes("resolveContainerDetailPendingPriceOnBlur(") && pageSource.includes("markPendingDetailPatch(row, { \u8FDB\u53E3\u4EF7\u683C: value })") && pageSource.includes("onBlur={(event) => handlePendingImportPriceBlur(row, event.currentTarget.value)}"),
+  true,
+  "\u8FDB\u53E3\u4EF7\u683C\u5931\u7126\u65F6\u5E94\u628A\u4EC5\u505C\u7559\u5728 DOM \u7684\u6709\u6548\u503C\u8865\u5165 React \u6301\u4E45\u8349\u7A3F"
 );
 assertEqual(
   setCodeHookSource.includes("getContainerDomesticSetCodes(productCode, abortController.signal)") && setCodeHookSource.includes("setCodeAbortControllerRef.current?.abort()") && setCodeHookSource.includes("updateContainerDomesticSetCodePrices(productCode, changedSetCodePriceItems)"),

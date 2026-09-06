@@ -243,6 +243,28 @@ assertEqual(
 );
 
 assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "attendance-personal",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: false,
+    routeNames: ["home", "settings"],
+  }),
+  "/(shell)/workbench",
+  "账号没有个人考勤菜单时直达打卡必须回到工作台"
+);
+
+assertEqual(
+  resolveTabRouteCorrection({
+    currentRouteName: "reports",
+    hasAppliedDefaultRoute: true,
+    isDeviceMode: false,
+    routeNames: ["home", "settings"],
+  }),
+  "/(shell)/workbench",
+  "账号没有报表菜单时直达报表必须回到工作台"
+);
+
+assertEqual(
   resolveDefaultTabRoute({
     isDeviceMode: true,
     routeNames: [],

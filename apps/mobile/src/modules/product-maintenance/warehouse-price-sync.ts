@@ -4,6 +4,7 @@ import type {
   WarehousePriceSyncResult,
   WarehousePriceSyncStatus,
 } from "./types";
+import { normalizeHqSyncOperation } from "./hq-sync";
 
 const WAREHOUSE_SYNC_SUPPLIER_CODE = "200";
 const WAREHOUSE_SYNC_STATUSES = new Set<WarehousePriceSyncStatus>([
@@ -199,7 +200,7 @@ function normalizeStorePrice(payload: unknown): StorePriceEditable | null {
 
 export function normalizeWarehousePriceSyncResponse(payload: unknown): WarehousePriceSyncResult {
   const data = asRecord(unwrapWarehousePricePayload(payload)) ?? {};
-  return {
+  const result: WarehousePriceSyncResult = {
     status: normalizeStatus(readField(data, "status", "Status")),
     purchaseUpdated: Boolean(readField(data, "purchaseUpdated", "PurchaseUpdated")),
     retailUpdated: Boolean(readField(data, "retailUpdated", "RetailUpdated")),
@@ -227,6 +228,8 @@ export function normalizeWarehousePriceSyncResponse(payload: unknown): Warehouse
       readField(data, "newDiscountedRetailPrice", "NewDiscountedRetailPrice")
     ),
   };
+  const hqSync = normalizeHqSyncOperation(readField(data, "hqSync", "HqSync"));
+  return hqSync ? { ...result, hqSync } : result;
 }
 
 export function buildWarehousePriceSyncRequest(

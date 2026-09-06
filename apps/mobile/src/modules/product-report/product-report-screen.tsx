@@ -50,6 +50,10 @@ import {
   type ProductReportQuickRangeKey,
 } from "@/modules/product-report/date-ranges";
 import { formatMoney } from "@/modules/reports/format";
+import {
+  getCashierEnabledStoreCodes,
+  getCashierScopedBranchCodes,
+} from "@/modules/reports/cashier-enabled-store-scope";
 import { GROWTH_COLORS, formatGrowthRate, getGrowthTone } from "@/modules/reports/growth-rate";
 import { REPORT_QUERY_OPTIONS } from "@/modules/reports/report-config";
 import {
@@ -300,52 +304,128 @@ export function ProductReportScreen({
     () => (dateRangeValid ? getCustomProductReportRange(draftStartDate, draftEndDate) ?? range : range),
     [dateRangeValid, draftEndDate, draftStartDate, range]
   );
+
+  const storeOptionsQuery = useQuery({
+    queryKey: ["product-report", "stores"],
+    queryFn: ({ signal }) => fetchProductReportStoreOptions({ signal }),
+    ...REPORT_QUERY_OPTIONS,
+  });
+  const cashierEnabledStoreCodes = useMemo(
+    () => getCashierEnabledStoreCodes(storeOptionsQuery.data ?? []),
+    [storeOptionsQuery.data],
+  );
+  const cashierStoreScopeVersion = storeOptionsQuery.dataUpdatedAt;
   const branchCodes = useMemo(
-    () => (selectedStoreCode ? [selectedStoreCode] : undefined),
-    [selectedStoreCode]
+    () => getCashierScopedBranchCodes(cashierEnabledStoreCodes, selectedStoreCode),
+    [cashierEnabledStoreCodes, selectedStoreCode],
   );
 
   const queryParams = useMemo(
-    () => (dateRangeValid && activeRange ? buildProductReportDateQuery(activeRange, branchCodes) : null),
-    [activeRange, branchCodes, dateRangeValid]
+    // 收银启用门店白名单是业务查询的安全边界；未就绪、为空或旧选择失效时一律不回退到全店请求。
+    () => (
+      dateRangeValid
+      && activeRange
+      && storeOptionsQuery.isSuccess
+      && !storeOptionsQuery.isFetching
+      && branchCodes.length > 0
+        ? buildProductReportDateQuery(activeRange, branchCodes)
+        : null
+    ),
+    [activeRange, branchCodes, dateRangeValid, storeOptionsQuery.isFetching, storeOptionsQuery.isSuccess],
   );
   useLayoutEffect(() => {
-    if (reportNavigationActionId === null || queryParams !== null) return;
-    discardReportNavigationStart("product", reportNavigationActionId);
-  }, [queryParams, reportNavigationActionId]);
+    if (reportNavigationActionId === null) return;
+    // 白名单仍在加载时保留导航计时；否则会把真实首屏请求之前的点击起点提前丢弃。
+    if (dateRangeValid && storeOptionsQuery.isPending) return;
+    if (
+      !dateRangeValid
+      || storeOptionsQuery.isError
+      || (storeOptionsQuery.isSuccess && cashierEnabledStoreCodes.length === 0)
+    ) {
+      discardReportNavigationStart("product", reportNavigationActionId);
+    }
+  }, [cashierEnabledStoreCodes.length, dateRangeValid, reportNavigationActionId, storeOptionsQuery.isError, storeOptionsQuery.isPending, storeOptionsQuery.isSuccess]);
+
+  useEffect(() => {
+    if (
+      storeOptionsQuery.isFetching
+      || !storeOptionsQuery.isSuccess
+      || !selectedStoreCode
+      || branchCodes.length > 0
+    ) return;
+    // 门店在刷新期间被停用时，先阻断旧范围请求，再清空与旧选择相关的局部状态。
+    setSelectedStoreCode(undefined);
+    setSelectedSupplierCode(null);
+    setSupplierPage(1);
+    setProductPage(1);
+    setDrilldown(null);
+  }, [branchCodes.length, selectedStoreCode, storeOptionsQuery.isFetching, storeOptionsQuery.isSuccess]);
+
+  useEffect(() => {
+    if (storeOptionsQuery.isFetching) {
+      // 重验期间隐藏选择器，但保留下钻意图；成功后仅在新白名单仍有效时恢复。
+      setStoreModalVisible(false);
+      return;
+    }
+    if (
+      storeOptionsQuery.isSuccess
+      && cashierEnabledStoreCodes.length > 0
+    ) return;
+    // 白名单不可用时关闭下钻，避免展示上一次范围的缓存明细。
+    setDrilldown(null);
+    setStoreModalVisible(false);
+  }, [cashierEnabledStoreCodes.length, storeOptionsQuery.isFetching, storeOptionsQuery.isSuccess]);
+
   // 供应商营业额弹窗要看所有分店，不继承顶部单店筛选。
   const supplierBranchQueryParams = useMemo(
-    () => (dateRangeValid && activeRange ? buildProductReportDateQuery(activeRange) : null),
-    [activeRange, dateRangeValid]
+    () => (
+      dateRangeValid
+      && activeRange
+      && storeOptionsQuery.isSuccess
+      && !storeOptionsQuery.isFetching
+      && cashierEnabledStoreCodes.length > 0
+        ? buildProductReportDateQuery(activeRange, cashierEnabledStoreCodes)
+        : null
+    ),
+    [activeRange, cashierEnabledStoreCodes, dateRangeValid, storeOptionsQuery.isFetching, storeOptionsQuery.isSuccess],
   );
   // 商品分店弹窗也要完整分店数据，不继承顶部单店筛选。
   const productBranchQueryParams = useMemo(
-    () => (dateRangeValid && activeRange ? buildProductReportDateQuery(activeRange) : null),
-    [activeRange, dateRangeValid]
+    () => (
+      dateRangeValid
+      && activeRange
+      && storeOptionsQuery.isSuccess
+      && !storeOptionsQuery.isFetching
+      && cashierEnabledStoreCodes.length > 0
+        ? buildProductReportDateQuery(activeRange, cashierEnabledStoreCodes)
+        : null
+    ),
+    [activeRange, cashierEnabledStoreCodes, dateRangeValid, storeOptionsQuery.isFetching, storeOptionsQuery.isSuccess],
   );
   const supplierFilterCodes = useMemo(
     () => (selectedSupplierCode ? [selectedSupplierCode] : undefined),
     [selectedSupplierCode]
   );
   const totalRevenueQueryKey = useMemo(
-    () => ["product-report", "total-revenue", queryParams] as const,
-    [queryParams],
+    () => ["product-report", "total-revenue", cashierStoreScopeVersion, queryParams] as const,
+    [cashierStoreScopeVersion, queryParams],
   );
   const supplierQueryKey = useMemo(
-    () => ["product-report", "suppliers", kind, queryParams] as const,
-    [kind, queryParams],
+    () => ["product-report", "suppliers", kind, cashierStoreScopeVersion, queryParams] as const,
+    [cashierStoreScopeVersion, kind, queryParams],
   );
   const productQueryKey = useMemo(
     () => [
       "product-report",
       "products",
       kind,
+      cashierStoreScopeVersion,
       queryParams,
       supplierFilterCodes,
       productSearch,
       productPage,
     ] as const,
-    [kind, productPage, productSearch, queryParams, supplierFilterCodes],
+    [cashierStoreScopeVersion, kind, productPage, productSearch, queryParams, supplierFilterCodes],
   );
   const productLoadSessionKey = useMemo(
     () => ({ totalRevenueQueryKey, supplierQueryKey, productQueryKey }),
@@ -398,12 +478,6 @@ export function ProductReportScreen({
     productLoadTimer.fail();
     productLoadActiveRef.current = false;
   }, [productLoadSessionKey, productLoadTimer]);
-
-  const storeOptionsQuery = useQuery({
-    queryKey: ["product-report", "stores"],
-    queryFn: ({ signal }) => fetchProductReportStoreOptions({ signal }),
-    ...REPORT_QUERY_OPTIONS,
-  });
 
   const totalRevenueQuery = useQuery({
     queryKey: totalRevenueQueryKey,
@@ -495,6 +569,7 @@ export function ProductReportScreen({
   }, [productLoadSessionKey]);
 
   useEffect(() => {
+    if (!queryParams) return;
     let syncState = mainReportVersionSyncRef.current;
     if (syncState.sessionKey !== productLoadSessionKey) {
       syncState = { sessionKey: productLoadSessionKey, attemptCount: 0 };
@@ -529,6 +604,7 @@ export function ProductReportScreen({
     mainReportCacheVersionState,
     mainReportQueriesFetching,
     productLoadSessionKey,
+    queryParams,
     refetchMainReport,
   ]);
   const mainReportCacheVersionMismatch = mainReportCacheVersionState === "mismatch";
@@ -536,7 +612,8 @@ export function ProductReportScreen({
     mainReportVersionSyncRef.current.sessionKey === productLoadSessionKey
     && mainReportVersionSyncExhausted;
   const mainReportStatisticsPending =
-    totalRevenueStatisticsPending
+    storeOptionsQuery.isFetching
+    || totalRevenueStatisticsPending
     || supplierQuery.isLoading
     || productQuery.isLoading
     || (
@@ -573,7 +650,7 @@ export function ProductReportScreen({
       && !productQuery.isFetching
     );
   const mainReportRequestError =
-    totalRevenueQuery.isError || supplierQuery.isError || productQuery.isError;
+    storeOptionsQuery.isError || totalRevenueQuery.isError || supplierQuery.isError || productQuery.isError;
 
   const completeProductLoad = useCallback(() => {
     if (!firstProductReportDataVisibleRef.current) return;
@@ -727,12 +804,24 @@ export function ProductReportScreen({
   );
 
   const supplierBranchQueryKey = useMemo(
-    () => ["product-report", "supplier-branches", drilldown, supplierBranchQueryParams] as const,
-    [drilldown, supplierBranchQueryParams],
+    () => [
+      "product-report",
+      "supplier-branches",
+      cashierStoreScopeVersion,
+      drilldown,
+      supplierBranchQueryParams,
+    ] as const,
+    [cashierStoreScopeVersion, drilldown, supplierBranchQueryParams],
   );
   const productBranchQueryKey = useMemo(
-    () => ["product-report", "product-branches", drilldown, productBranchQueryParams] as const,
-    [drilldown, productBranchQueryParams],
+    () => [
+      "product-report",
+      "product-branches",
+      cashierStoreScopeVersion,
+      drilldown,
+      productBranchQueryParams,
+    ] as const,
+    [cashierStoreScopeVersion, drilldown, productBranchQueryParams],
   );
   const startDrilldownLoad = useCallback((
     queryKey: readonly unknown[],
@@ -952,12 +1041,12 @@ export function ProductReportScreen({
     recordDrilldownMeasurement,
   ]);
   const retryDrilldown = () => {
-    if (drilldownKind === "supplier") {
-      void supplierBranchQuery.refetch();
-      return;
-    }
-    if (drilldownKind === "product") {
-      void productBranchQuery.refetch();
+    if (
+      (drilldownKind === "supplier" && supplierBranchQueryParams)
+      || (drilldownKind === "product" && productBranchQueryParams)
+    ) {
+      // 先重验白名单，避免用上一次成功范围重试刚被停用的分店。
+      void storeOptionsQuery.refetch();
     }
   };
   const drilldownEmptyLabel =
@@ -1031,12 +1120,7 @@ export function ProductReportScreen({
       return;
     }
     void onRefreshFreshness?.();
-    storeOptionsQuery.refetch();
-    if (queryParams) {
-      totalRevenueQuery.refetch();
-      supplierQuery.refetch();
-      productQuery.refetch();
-    }
+    void storeOptionsQuery.refetch();
   };
 
   const isRefreshing =
@@ -1219,7 +1303,17 @@ export function ProductReportScreen({
         />
 
         <View style={styles.filterBar}>
-          <Button mode="outlined" compact icon="store-outline" onPress={() => setStoreModalVisible(true)}>
+          <Button
+            mode="outlined"
+            compact
+            icon="store-outline"
+            disabled={
+              !storeOptionsQuery.isSuccess
+              || storeOptionsQuery.isFetching
+              || cashierEnabledStoreCodes.length === 0
+            }
+            onPress={() => setStoreModalVisible(true)}
+          >
             {selectedStoreLabel}
           </Button>
           {selectedSupplierCode ? (
@@ -1276,9 +1370,7 @@ export function ProductReportScreen({
             retryLabel={t("actions.retry")}
             onRetry={() => {
               resetMainReportVersionSync();
-              void totalRevenueQuery.refetch();
-              void supplierQuery.refetch();
-              void productQuery.refetch();
+              void storeOptionsQuery.refetch();
             }}
           />
         ) : mainReportStatisticsPending ? (
@@ -1289,11 +1381,11 @@ export function ProductReportScreen({
             retryLabel={t("actions.retry")}
             onRetry={() => {
               resetMainReportVersionSync();
-              void totalRevenueQuery.refetch();
-              void supplierQuery.refetch();
-              void productQuery.refetch();
+              void storeOptionsQuery.refetch();
             }}
           />
+        ) : storeOptionsQuery.isSuccess && cashierEnabledStoreCodes.length === 0 ? (
+          <EmptyState label={t("reports.states.noCashierEnabledStores")} />
         ) : (
           <>
             {productSectionLoading ? (
@@ -1438,15 +1530,27 @@ export function ProductReportScreen({
       </ScrollView>
 
       <StorePickerModal
-        visible={isStoreModalVisible}
+        visible={
+          isStoreModalVisible
+          && storeOptionsQuery.isSuccess
+          && !storeOptionsQuery.isFetching
+        }
         labelAll={t("productReport.filters.allStores")}
-        options={storeOptionsQuery.data ?? []}
+        options={
+          storeOptionsQuery.isSuccess && !storeOptionsQuery.isFetching
+            ? storeOptionsQuery.data ?? []
+            : []
+        }
         selectedStoreCode={selectedStoreCode}
         onSelect={applyStore}
         onDismiss={() => setStoreModalVisible(false)}
       />
       <BranchDrilldownModal
-        visible={Boolean(drilldown)}
+        visible={
+          Boolean(drilldown)
+          && storeOptionsQuery.isSuccess
+          && !storeOptionsQuery.isFetching
+        }
         title={
           drilldown?.type === "supplier"
             ? t("productReport.drilldown.supplier")

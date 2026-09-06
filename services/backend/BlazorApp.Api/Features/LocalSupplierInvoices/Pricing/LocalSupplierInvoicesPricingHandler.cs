@@ -324,7 +324,8 @@ namespace BlazorApp.Api.Features.LocalSupplierInvoices
                 var totalUpdated = 0;
                 var targetStoreCodes = dto.TargetStoreCodes
                     .Where(storeCode => !string.IsNullOrWhiteSpace(storeCode))
-                    .Distinct()
+                    .Select(storeCode => storeCode.Trim())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
                 var productCodes = preLockDetails
@@ -415,9 +416,9 @@ namespace BlazorApp.Api.Features.LocalSupplierInvoices
                             StringComparer.OrdinalIgnoreCase
                         );
                     // 同一分店商品只保留最后一次计算结果，避免重复明细把同一价格记录反复加入大批量更新。
-                    var updateMap = new Dictionary<string, StorePriceUpdatePlan>();
-                    var insertMap = new Dictionary<string, StoreRetailPrice>();
-                    var productUpdateMap = new Dictionary<string, Product>();
+                    var updateMap = new Dictionary<string, StorePriceUpdatePlan>(StringComparer.OrdinalIgnoreCase);
+                    var insertMap = new Dictionary<string, StoreRetailPrice>(StringComparer.OrdinalIgnoreCase);
+                    var productUpdateMap = new Dictionary<string, Product>(StringComparer.OrdinalIgnoreCase);
                     var skipped = 0;
                     var skipMessages = new List<string>();
                     var now = DateTime.Now;
@@ -426,7 +427,7 @@ namespace BlazorApp.Api.Features.LocalSupplierInvoices
                     {
                         foreach (var detail in details)
                         {
-                            var productCode = detail.ProductCode;
+                            var productCode = detail.ProductCode?.Trim();
                             if (
                                 string.IsNullOrWhiteSpace(productCode)
                                 || !productsByCode.TryGetValue(productCode, out var product)
@@ -453,14 +454,15 @@ namespace BlazorApp.Api.Features.LocalSupplierInvoices
                     {
                         foreach (var detail in details)
                         {
-                            if (string.IsNullOrWhiteSpace(detail.ProductCode))
+                            var detailProductCode = detail.ProductCode?.Trim();
+                            if (string.IsNullOrWhiteSpace(detailProductCode))
                             {
                                 skipped++;
                                 skipMessages.Add($"{detail.DetailGUID}：{storeCode}：商品编码为空，已跳过");
                                 continue;
                             }
 
-                            var key = $"{storeCode}_{detail.ProductCode}";
+                            var key = $"{storeCode}_{detailProductCode}";
 
                             if (priceDict.TryGetValue(key, out var storePrice))
                             {
@@ -501,8 +503,8 @@ namespace BlazorApp.Api.Features.LocalSupplierInvoices
                                 {
                                     UUID = UuidHelper.GenerateUuid7(),
                                     StoreCode = storeCode,
-                                    ProductCode = detail.ProductCode,
-                                    StoreProductCode = storeCode + detail.ProductCode,
+                                    ProductCode = detailProductCode,
+                                    StoreProductCode = storeCode + detailProductCode,
                                     SupplierCode = detail.SupplierCode,
                                     IsActive = true,
                                     CreatedAt = now,
@@ -593,19 +595,117 @@ namespace BlazorApp.Api.Features.LocalSupplierInvoices
                     if (lockScope != null && (inserts.Count > 0 || updates.Count > 0 || productUpdates.Count > 0))
                     {
                         var costWriteback = new SetChildPurchasePriceService(db);
-                        // 先回算全局关系，再只回算本次精确门店商品组；没有门店主成本时会回退全局主成本，仍保持投影一致。
-                        await costWriteback.RecalculateGlobalLockedAsync(
-                            lockScope,
-                            productCodes,
-                            updatedBy
-                        );
-                        await costWriteback.RecalculateStoreGroupsLockedAsync(
-                            lockScope,
-                            targetStoreCodes.SelectMany(storeCode => productCodes.Select(productCode =>
-                                (StoreCode: (string?)storeCode, ProductCode: (string?)productCode)
-                            )),
-                            updatedBy
-                        );
+                        // 只按真正写入的门店价格实体构造业务组，禁止把被跳过的商品扩展进门店×商品笛卡尔积。
+                        var actualStoreProductGroups = inserts
+                            .Concat(updates.Select(update => update.Entity))
+                            .Where(price =>
+                                !string.IsNullOrWhiteSpace(price.StoreCode)
+                                && !string.IsNullOrWhiteSpace(price.ProductCode)
+                            )
+                            .Select(price =>
+                                (
+                                    StoreCode: (string?)price.StoreCode!.Trim(),
+                                    ProductCode: (string?)price.ProductCode!.Trim()
+                                )
+                            )
+                            .GroupBy(group => group.StoreCode!, StringComparer.OrdinalIgnoreCase)
+                            .SelectMany(storeGroup =>
+                                storeGroup
+                                    .GroupBy(group => group.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                                    .Select(productGroup => productGroup.First())
+                            )
+                            .ToList();
+                        var affectedProductCodes = actualStoreProductGroups
+                            .Select(group => group.ProductCode!)
+                            .Concat(productUpdateMap.Keys)
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+                        var repairPurchasePrices = productUpdateMap
+                            .Where(pair => LocalSupplierInvoicesRules.IsPositiveValue(pair.Value.PurchasePrice))
+                            .ToDictionary(
+                                pair => pair.Key,
+                                pair => pair.Value.PurchasePrice!.Value,
+                                StringComparer.OrdinalIgnoreCase
+                            );
+                        var repairGroups = actualStoreProductGroups
+                            .Where(group => repairPurchasePrices.ContainsKey(group.ProductCode!))
+                            .ToList();
+
+                        if (repairGroups.Count > 0)
+                        {
+                            var repair = await costWriteback.RepairMissingStoreRelationsLockedAsync(
+                                lockScope,
+                                repairPurchasePrices,
+                                updatedBy,
+                                repairGroups
+                            );
+                            _logger.LogInformation(
+                                "本地进货单 {InvoiceGuid} 更新到分店套装投影检查结果（事务尚未提交）：目标组 {TargetGroupCount}，拟补齐组 {RepairedGroupCount}，拟补齐关系 {RepairedRelationCount}，失败商品 {FailureCount}",
+                                dto.InvoiceGuid,
+                                repairGroups.Count,
+                                repair.AutoRepairedStoreGroupCount,
+                                repair.AutoRepairedRelationCount,
+                                repair.Failures.Count
+                            );
+                            if (repair.Failures.Count > 0)
+                            {
+                                var targetStoresByProduct = repairGroups
+                                    .GroupBy(
+                                        group => group.ProductCode!,
+                                        StringComparer.OrdinalIgnoreCase
+                                    )
+                                    .ToDictionary(
+                                        group => group.Key,
+                                        group => group
+                                            .Select(item => item.StoreCode!)
+                                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                                            .OrderBy(
+                                                storeCode => storeCode,
+                                                StringComparer.OrdinalIgnoreCase
+                                            )
+                                            .ToList(),
+                                        StringComparer.OrdinalIgnoreCase
+                                    );
+                                var reasons = string.Join(
+                                    "；",
+                                    repair.Failures.Values
+                                        .OrderBy(failure => failure.ProductCode, StringComparer.OrdinalIgnoreCase)
+                                        .Select(failure =>
+                                        {
+                                            var storeCodes = !string.IsNullOrWhiteSpace(failure.StoreCode)
+                                                ? failure.StoreCode
+                                                : targetStoresByProduct.TryGetValue(
+                                                    failure.ProductCode,
+                                                    out var targetStores
+                                                )
+                                                    ? string.Join(", ", targetStores)
+                                                    : "未知";
+                                            return $"{failure.ProductCode} / 分店 {storeCodes}: {failure.Message}";
+                                        })
+                                );
+                                throw new InvalidOperationException(
+                                    $"目标分店套装关系无法安全补齐。{reasons}"
+                                );
+                            }
+                        }
+
+                        // 先回算实际受影响商品的全局关系，再只回算本次实际写入的精确门店商品组。
+                        if (affectedProductCodes.Count > 0)
+                        {
+                            await costWriteback.RecalculateGlobalLockedAsync(
+                                lockScope,
+                                affectedProductCodes,
+                                updatedBy
+                            );
+                        }
+                        if (actualStoreProductGroups.Count > 0)
+                        {
+                            await costWriteback.RecalculateStoreGroupsLockedAsync(
+                                lockScope,
+                                actualStoreProductGroups,
+                                updatedBy
+                            );
+                        }
                     }
 
                     if (inserts.Count == 0 && updates.Count == 0)

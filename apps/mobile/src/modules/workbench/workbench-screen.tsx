@@ -1,4 +1,4 @@
-import { useCallback, useMemo, type ComponentProps } from "react";
+import { useCallback, useMemo, useState, type ComponentProps } from "react";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import {
@@ -16,6 +16,7 @@ import {
   Text,
 } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { StorePickerModal } from "@/components/ui/StorePickerModal";
 import { useAppNavigationAccess } from "@/modules/navigation/access-context";
 import { TAB_PATHS } from "@/modules/navigation/default-route";
 import { useAppNavigationStore } from "@/modules/navigation/store";
@@ -23,6 +24,9 @@ import {
   buildWorkbenchSections,
   type WorkbenchNavigationItem,
 } from "@/modules/navigation/workbench";
+import { useCartSummary } from "@/modules/shop/use-cart-summary";
+import { useStores } from "@/modules/shop/use-stores";
+import type { Store } from "@/modules/shop/types";
 import { useAppTranslation } from "@/shared/i18n/use-app-translation";
 import { HB_COLORS, HB_RADIUS, HB_SPACING } from "@/shared/theme/tokens";
 import { useAuthStore } from "@/store/auth-store";
@@ -162,7 +166,7 @@ function AccessState({ kind, onRetry }: AccessStateProps) {
 
 export function WorkbenchScreen() {
   const router = useRouter();
-  const { t } = useAppTranslation("workbench");
+  const { t } = useAppTranslation(["workbench", "common"]);
   const {
     orderedVisibleRouteNames,
     navigationErrorMessage,
@@ -174,8 +178,18 @@ export function WorkbenchScreen() {
   const fetchMenu = useAppNavigationStore((state) => state.fetchMenu);
   const currentUser = useAuthStore((state) => state.user);
   const deviceSession = useDeviceStore((state) => state.session);
-  const selectedStore = useCartStore((state) => state.selectedStore);
   const cartSummary = useCartStore((state) => state.cartSummary);
+  const {
+    stores,
+    selectedStore,
+    selectedStoreCode,
+    selectStore,
+    isLoading: storesLoading,
+    isError: storesLoadFailed,
+    isHydratingSelection,
+  } = useStores();
+  const cartSummaryQuery = useCartSummary(selectedStoreCode);
+  const [storePickerVisible, setStorePickerVisible] = useState(false);
 
   const sections = useMemo(
     () =>
@@ -200,7 +214,7 @@ export function WorkbenchScreen() {
     [itemsByRoute]
   );
 
-  const effectiveStoreCode = selectedStore?.storeCode
+  const effectiveStoreCode = selectedStoreCode
     ?? (isDeviceMode ? deviceSession?.storeCode : null);
   const effectiveStoreName = selectedStore?.storeName
     ?? (isDeviceMode ? deviceSession?.storeName : null);
@@ -211,11 +225,39 @@ export function WorkbenchScreen() {
   );
   const cartMatchesStore = Boolean(
     effectiveStoreCode
-    && (!cartSummary?.storeCode || cartSummary.storeCode === effectiveStoreCode)
+    && cartSummary
+    && cartSummary.storeCode === effectiveStoreCode
   );
-  const cartSkuCount = cartMatchesStore
-    ? cartSummary?.totalSku ?? cartSummary?.items.length ?? 0
-    : 0;
+  const queriedCart = cartSummaryQuery.data ?? null;
+  const queriedCartMatchesStore = Boolean(
+    effectiveStoreCode
+    && selectedStoreCode === effectiveStoreCode
+    && queriedCart
+    && (!queriedCart.storeCode || queriedCart.storeCode === effectiveStoreCode)
+  );
+  const cartSummaryFailed = cartSummaryQuery.isError || cartSummaryQuery.isRefetchError;
+  const scopedCart = cartSummaryFailed
+    ? null
+    : queriedCartMatchesStore
+      ? queriedCart
+      : cartMatchesStore
+        ? cartSummary
+        : null;
+  const cartSkuCount = scopedCart
+    ? scopedCart.totalSku ?? scopedCart.items.length ?? 0
+    : !cartSummaryFailed && cartSummaryQuery.isSuccess
+      ? 0
+      : null;
+  const cartSummaryLoading = Boolean(
+    effectiveStoreCode
+    && !scopedCart
+    && (cartSummaryQuery.isLoading || cartSummaryQuery.isFetching)
+  );
+  const storeSelectionLoading = storesLoading || isHydratingSelection;
+  const canSwitchStore = !isDeviceMode
+    && !storeSelectionLoading
+    && !storesLoadFailed
+    && stores.length > 1;
   const identityName = isDeviceMode
     ? deviceSession?.systemDeviceNumber?.trim()
       || deviceSession?.storeName?.trim()
@@ -239,6 +281,32 @@ export function WorkbenchScreen() {
       router.push(path as Parameters<typeof router.push>[0]);
     },
     [itemsByRoute, navigationErrorMessage, navigationLoading, router]
+  );
+
+  const handleSelectStore = useCallback(
+    async (store: Store | null) => {
+      if (!store || !canSwitchStore) {
+        setStorePickerVisible(false);
+        return;
+      }
+
+      if (store.storeCode === selectedStoreCode) {
+        setStorePickerVisible(false);
+        return;
+      }
+
+      try {
+        await selectStore(store);
+        setStorePickerVisible(false);
+      } catch (error) {
+        // 保留弹层，避免持久化失败时向用户暗示切店已经完整成功。
+        console.error("[workbench] failed to persist selected store", {
+          error,
+          storeCode: store.storeCode,
+        });
+      }
+    },
+    [canSwitchStore, selectStore, selectedStoreCode]
   );
 
   const retryMenu = useCallback(() => {
@@ -302,7 +370,22 @@ export function WorkbenchScreen() {
         </View>
 
         <Surface style={styles.summarySurface} elevation={0}>
-          <View style={styles.storeSummary}>
+          <Pressable
+            accessibilityRole={canSwitchStore ? "button" : undefined}
+            accessibilityLabel={t(
+              canSwitchStore
+                ? "accessibility.changeStore"
+                : "accessibility.currentStore",
+              { store: storeLabel }
+            )}
+            accessibilityHint={canSwitchStore ? t("accessibility.changeStoreHint") : undefined}
+            disabled={!canSwitchStore}
+            onPress={() => setStorePickerVisible(true)}
+            style={({ pressed }) => [
+              styles.storeSummary,
+              pressed && canSwitchStore ? styles.storeSummaryPressed : null,
+            ]}
+          >
             <MaterialCommunityIcons
               name="store-marker-outline"
               color={HB_COLORS.textSecondary}
@@ -312,11 +395,29 @@ export function WorkbenchScreen() {
               <Text variant="labelMedium" style={styles.summaryLabel}>
                 {t("summary.currentStore")}
               </Text>
-              <Text variant="bodyMedium" style={styles.storeValue}>
+              <Text variant="bodyMedium" style={styles.storeValue} numberOfLines={1}>
                 {storeLabel}
               </Text>
             </View>
-          </View>
+            {storeSelectionLoading && !isDeviceMode ? (
+              <ActivityIndicator
+                accessibilityLabel={t("accessibility.storesLoading")}
+                color={HB_COLORS.action}
+                size={18}
+              />
+            ) : canSwitchStore ? (
+              <View style={styles.storeAction}>
+                <Text variant="labelMedium" style={styles.storeActionText}>
+                  {t("summary.switchStore")}
+                </Text>
+                <MaterialCommunityIcons
+                  name="chevron-right"
+                  color={HB_COLORS.action}
+                  size={20}
+                />
+              </View>
+            ) : null}
+          </Pressable>
           <Divider />
           <View style={styles.metricsRow}>
             <View style={styles.metric}>
@@ -332,9 +433,20 @@ export function WorkbenchScreen() {
               <Text variant="labelMedium" style={styles.summaryLabel}>
                 {t("summary.cartSku")}
               </Text>
-              <Text variant="titleMedium" style={styles.metricValue}>
-                {t("summary.skuCount", { count: cartSkuCount })}
-              </Text>
+              {cartSummaryLoading ? (
+                <ActivityIndicator
+                  accessibilityLabel={t("summary.cartLoading")}
+                  color={HB_COLORS.action}
+                  size={20}
+                  style={styles.metricActivity}
+                />
+              ) : (
+                <Text variant="titleMedium" style={styles.metricValue}>
+                  {cartSkuCount == null
+                    ? "—"
+                    : t("summary.skuCount", { count: cartSkuCount })}
+                </Text>
+              )}
             </View>
           </View>
         </Surface>
@@ -424,6 +536,22 @@ export function WorkbenchScreen() {
           </>
         )}
       </ScrollView>
+      <StorePickerModal
+        visible={storePickerVisible}
+        stores={stores}
+        selectedStoreCode={selectedStoreCode}
+        title={t("summary.storePickerTitle")}
+        cancelLabel={t("common:actions.cancel")}
+        onDismiss={() => setStorePickerVisible(false)}
+        onSelectStore={handleSelectStore}
+        renderStoreLabel={(store) => (
+          <View style={styles.pickerStoreLabelWrap}>
+            <Text variant="bodyMedium" style={styles.pickerStoreLabel} numberOfLines={1}>
+              {formatStoreLabel(store.storeName, store.storeCode, store.storeCode)}
+            </Text>
+          </View>
+        )}
+      />
     </SafeAreaView>
   );
 }
@@ -498,8 +626,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: HB_SPACING.md,
     paddingVertical: HB_SPACING.sm,
   },
+  storeSummaryPressed: {
+    backgroundColor: "#EAF2FF",
+  },
   storeCopy: {
     flex: 1,
+    minWidth: 0,
     gap: 2,
   },
   summaryLabel: {
@@ -509,6 +641,16 @@ const styles = StyleSheet.create({
   storeValue: {
     color: HB_COLORS.textPrimary,
     fontWeight: "600",
+  },
+  storeAction: {
+    flexShrink: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: HB_SPACING.xxs,
+  },
+  storeActionText: {
+    color: HB_COLORS.action,
+    fontWeight: "700",
   },
   metricsRow: {
     flexDirection: "row",
@@ -529,6 +671,17 @@ const styles = StyleSheet.create({
     color: HB_COLORS.textPrimary,
     fontWeight: "700",
     fontVariant: ["tabular-nums"],
+  },
+  metricActivity: {
+    alignSelf: "flex-start",
+  },
+  pickerStoreLabelWrap: {
+    minHeight: INTERACTIVE_HEIGHT,
+    justifyContent: "center",
+  },
+  pickerStoreLabel: {
+    color: HB_COLORS.textPrimary,
+    fontWeight: "500",
   },
   sectionBlock: {
     gap: HB_SPACING.xs,

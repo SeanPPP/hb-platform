@@ -15,8 +15,16 @@ import {
   Typography,
   message,
 } from 'antd'
+import type { TableProps } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
-import { CopyOutlined, PlusOutlined, ReloadOutlined, StopOutlined } from '@ant-design/icons'
+import type { FilterDropdownProps, FilterValue } from 'antd/es/table/interface'
+import {
+  CopyOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  SearchOutlined,
+  StopOutlined,
+} from '@ant-design/icons'
 import {
   createServiceApiToken,
   getServiceApiTokens,
@@ -31,12 +39,29 @@ import { formatAppDownloadLocalDateTime } from './time'
 import {
   buildServiceApiTokenEnvSnippet,
   canRevokeServiceApiToken,
+  matchesServiceApiTokenScopeFilter,
+  matchesServiceApiTokenStatusFilter,
+  matchesServiceApiTokenTextFilter,
   resolveServiceApiTokenApiBaseUrl,
   resolveServiceApiTokenStatusColor,
 } from './serviceApiTokenPanelLogic'
 import { MeasuredTable } from '../../../components/MeasuredTable'
 
 const DEFAULT_TOKEN_PURPOSE: ServiceApiTokenPurpose = 'mobile-ota-publisher'
+const KNOWN_TOKEN_STATUSES = ['active', 'revoked', 'expired'] as const
+
+interface ServiceApiTokenColumnFilters {
+  name: string
+  tokenPrefix: string
+  scopes: string[]
+  status: string[]
+}
+
+function toStringFilterValues(value: FilterValue | null | undefined) {
+  return (value ?? [])
+    .map((item) => String(item).trim())
+    .filter(Boolean)
+}
 
 function resolveBrowserApiBaseUrl() {
   const envBaseUrl = (((import.meta as ImportMeta & { env?: ImportMetaEnv }).env?.VITE_API_BASE_URL) || '').trim()
@@ -58,6 +83,13 @@ export default function ServiceApiTokensPanel() {
   const [createdToken, setCreatedToken] = useState<ServiceApiTokenCreateResponse | null>(null)
   const [createdPurpose, setCreatedPurpose] = useState<ServiceApiTokenPurpose | null>(null)
   const [revokingId, setRevokingId] = useState<string | null>(null)
+  const [columnFilters, setColumnFilters] = useState<ServiceApiTokenColumnFilters>({
+    name: '',
+    tokenPrefix: '',
+    scopes: [],
+    status: [],
+  })
+  const [currentPage, setCurrentPage] = useState(1)
 
   async function copyText(value: string, successMessage: string, failedMessage: string) {
     try {
@@ -73,6 +105,7 @@ export default function ServiceApiTokensPanel() {
     setLoadFailed(false)
     try {
       setTokens(await getServiceApiTokens())
+      setCurrentPage(1)
     } catch {
       setLoadFailed(true)
       message.error(t('system.appDownloads.serviceTokens.loadFailed'))
@@ -137,23 +170,152 @@ export default function ServiceApiTokensPanel() {
       )
     : ''
 
+  const scopeFilterOptions = useMemo(() => {
+    const values = new Set(columnFilters.scopes)
+    tokens.forEach((token) => {
+      token.scopes.forEach((scope) => {
+        const normalizedScope = scope.trim()
+        if (normalizedScope) {
+          values.add(normalizedScope)
+        }
+      })
+    })
+
+    return Array.from(values)
+      .sort((left, right) => left.localeCompare(right))
+      .map((scope) => ({ text: scope, value: scope }))
+  }, [columnFilters.scopes, tokens])
+
+  const statusFilterOptions = useMemo(() => {
+    const values = new Set<string>(KNOWN_TOKEN_STATUSES)
+    columnFilters.status.forEach((status) => values.add(status.trim().toLowerCase()))
+    tokens.forEach((token) => {
+      const normalizedStatus = token.status.trim().toLowerCase()
+      if (normalizedStatus) {
+        values.add(normalizedStatus)
+      }
+    })
+
+    const extraStatuses = Array.from(values)
+      .filter((status) => !KNOWN_TOKEN_STATUSES.includes(status as (typeof KNOWN_TOKEN_STATUSES)[number]))
+      .sort((left, right) => left.localeCompare(right))
+
+    return [...KNOWN_TOKEN_STATUSES, ...extraStatuses].map((status) => ({
+      text: t(`system.appDownloads.serviceTokens.statuses.${status}`, status),
+      value: status,
+    }))
+  }, [columnFilters.status, t, tokens])
+
+  const filterIcon = (filtered?: boolean) => (
+    <SearchOutlined style={{ color: filtered ? '#1677ff' : undefined }} />
+  )
+
+  const makeTextFilterDropdown =
+    (columnLabel: string) =>
+    ({ selectedKeys, setSelectedKeys, confirm, clearFilters }: FilterDropdownProps) => {
+      const selectedValue = selectedKeys[0]
+      const inputValue = selectedValue == null ? '' : String(selectedValue)
+      const applyFilter = () => {
+        setCurrentPage(1)
+        confirm()
+      }
+      const resetFilter = () => {
+        setSelectedKeys([])
+        setCurrentPage(1)
+        if (clearFilters) {
+          clearFilters({ confirm: true, closeDropdown: true })
+        } else {
+          confirm()
+        }
+      }
+
+      return (
+        <div
+          style={{ padding: 8, width: 240 }}
+          onKeyDown={(event) => event.stopPropagation()}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Input
+              autoFocus
+              allowClear
+              aria-label={`${t('common.filter')} ${columnLabel}`}
+              placeholder={`${t('common.search')} ${columnLabel}`}
+              value={inputValue}
+              onChange={(event) =>
+                setSelectedKeys(event.target.value ? [event.target.value] : [])
+              }
+              onPressEnter={applyFilter}
+            />
+            <Space>
+              <Button
+                size="small"
+                type="primary"
+                icon={<SearchOutlined />}
+                onClick={applyFilter}
+              >
+                {t('common.search')}
+              </Button>
+              <Button size="small" onClick={resetFilter}>
+                {t('common.reset')}
+              </Button>
+            </Space>
+          </Space>
+        </div>
+      )
+    }
+
+  const handleTableChange: NonNullable<TableProps<ServiceApiToken>['onChange']> = (
+    pagination,
+    filters,
+    _sorter,
+    extra,
+  ) => {
+    const nameValues = toStringFilterValues(filters.name)
+    const tokenPrefixValues = toStringFilterValues(filters.tokenPrefix)
+    setColumnFilters({
+      name: nameValues[0] ?? '',
+      tokenPrefix: tokenPrefixValues[0] ?? '',
+      scopes: toStringFilterValues(filters.scopes),
+      status: toStringFilterValues(filters.status).map((status) => status.toLowerCase()),
+    })
+    setCurrentPage(extra.action === 'paginate' ? (pagination.current ?? 1) : 1)
+  }
+
   const columns: ColumnsType<ServiceApiToken> = [
     {
       title: t('system.appDownloads.serviceTokens.name'),
       dataIndex: 'name',
       width: 180,
+      filteredValue: columnFilters.name ? [columnFilters.name] : null,
+      filterDropdown: makeTextFilterDropdown(t('system.appDownloads.serviceTokens.name')),
+      filterIcon,
+      onFilter: (value, record) => matchesServiceApiTokenTextFilter(record.name, value),
       render: (value: string) => value || '--',
     },
     {
       title: t('system.appDownloads.serviceTokens.tokenPrefix'),
       dataIndex: 'tokenPrefix',
       width: 170,
+      filteredValue: columnFilters.tokenPrefix ? [columnFilters.tokenPrefix] : null,
+      filterDropdown: makeTextFilterDropdown(
+        t('system.appDownloads.serviceTokens.tokenPrefix'),
+      ),
+      filterIcon,
+      onFilter: (value, record) =>
+        matchesServiceApiTokenTextFilter(record.tokenPrefix, value),
       render: (value: string) => <Typography.Text code>{value || '--'}</Typography.Text>,
     },
     {
       title: t('system.appDownloads.serviceTokens.scopes'),
       dataIndex: 'scopes',
       width: 240,
+      filters: scopeFilterOptions,
+      filteredValue: columnFilters.scopes.length ? columnFilters.scopes : null,
+      filterSearch: true,
+      filterIcon,
+      onFilter: (value, record) =>
+        matchesServiceApiTokenScopeFilter(record.scopes, value),
       render: (scopes: string[]) => (
         <Space size={[4, 4]} wrap>
           {(scopes || []).map((scope) => (
@@ -166,6 +328,11 @@ export default function ServiceApiTokensPanel() {
       title: t('system.appDownloads.serviceTokens.status'),
       dataIndex: 'status',
       width: 120,
+      filters: statusFilterOptions,
+      filteredValue: columnFilters.status.length ? columnFilters.status : null,
+      filterIcon,
+      onFilter: (value, record) =>
+        matchesServiceApiTokenStatusFilter(record.status, value),
       render: (status: string) => (
         <Tag color={resolveServiceApiTokenStatusColor(status)}>
           {t(`system.appDownloads.serviceTokens.statuses.${status}`, status)}
@@ -252,7 +419,8 @@ export default function ServiceApiTokensPanel() {
           dataSource={tokens}
           scroll={{ x: 1500 }}
           locale={{ emptyText: <Empty description={t('system.appDownloads.serviceTokens.empty')} /> }}
-          pagination={{ pageSize: 5, showSizeChanger: false }}
+          pagination={{ current: currentPage, pageSize: 5, showSizeChanger: false }}
+          onChange={handleTableChange}
         />
       </Card>
 

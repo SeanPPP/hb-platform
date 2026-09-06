@@ -1314,26 +1314,8 @@ public sealed class MobileDeviceActivationService : IMobileDeviceActivationServi
         string userGuid,
         CancellationToken cancellationToken)
     {
-        var rows = await _mainDb.Queryable<User>()
-            .InnerJoin<UserStore>((user, userStore) => user.UserGUID == userStore.UserGUID)
-            .InnerJoin<Store>((user, userStore, store) => userStore.StoreGUID == store.StoreGUID)
-            .Where((user, userStore, store) =>
-                user.UserGUID == userGuid
-                && user.IsActive
-                && !user.IsDeleted
-                && !userStore.IsDeleted
-                && store.StoreCode == storeCode
-                && store.IsActive
-                && !store.IsDeleted)
-            .Select((user, _, store) => new ActivationTargetRow
-            {
-                UserGuid = user.UserGUID,
-                Username = user.Username,
-                Email = user.Email,
-                FullName = user.FullName,
-                StoreCode = store.StoreCode,
-                StoreName = store.StoreName,
-            })
+        var rows = await MobileDeviceActivationQueries
+            .BuildActiveTargetQuery(_mainDb, storeCode, userGuid)
             .ToListAsync(cancellationToken);
         return rows.FirstOrDefault();
     }
@@ -1341,64 +1323,53 @@ public sealed class MobileDeviceActivationService : IMobileDeviceActivationServi
     private async Task<int> CountAssignedStoresAsync(
         string userGuid,
         CancellationToken cancellationToken) =>
-        await _mainDb.Queryable<UserStore>()
-            .InnerJoin<Store>((userStore, store) => userStore.StoreGUID == store.StoreGUID)
-            .Where((userStore, store) =>
-                userStore.UserGUID == userGuid
-                && !userStore.IsDeleted
-                && store.IsActive
-                && !store.IsDeleted)
-            .Select((userStore, _) => userStore.StoreGUID)
-            .Distinct()
+        await MobileDeviceActivationQueries
+            .BuildAssignedStoreCountQuery(_mainDb, userGuid)
             .CountAsync(cancellationToken);
 
     private async Task<MobileDeviceRegistrationState?> LoadRegistrationStateAsync(
         int registrationId,
-        CancellationToken cancellationToken) =>
-        await _posmDb.Queryable<POSM_设备注册信息表>()
-            .Where(device => device.ID == registrationId)
-            .Select(device => new MobileDeviceRegistrationState(
-                device.ID,
-                device.设备硬件识别码,
-                device.系统设备编号,
-                device.分店代码 ?? string.Empty,
-                device.设备系统,
-                device.设备类型,
-                device.设备状态))
+        CancellationToken cancellationToken)
+    {
+        // SqlSugar 先投影到可无参构造的行模型，避免位置 record 中的空值表达式被误解析为列名。
+        var row = await MobileDeviceActivationQueries
+            .BuildRegistrationStateQuery(_posmDb, registrationId)
             .FirstAsync(cancellationToken);
+        return row is null
+            ? null
+            : new MobileDeviceRegistrationState(
+                row.DeviceRegistrationId,
+                row.HardwareId,
+                row.DeviceCode,
+                row.StoreCode ?? string.Empty,
+                row.DeviceSystem,
+                row.DeviceType,
+                row.DeviceStatus);
+    }
 
     private async Task<List<string>> LoadActiveRolesAsync(
         string userGuid,
         CancellationToken cancellationToken) =>
-        await _mainDb.Queryable<UserRole>()
-            .InnerJoin<Role>((userRole, role) => userRole.RoleGUID == role.RoleGUID)
-            .Where((userRole, role) =>
-                userRole.UserGUID == userGuid
-                && !userRole.IsDeleted
-                && role.IsActive
-                && !role.IsDeleted)
-            .Select((_, role) => role.RoleName)
-            .Distinct()
+        await MobileDeviceActivationQueries
+            .BuildActiveRolesQuery(_mainDb, userGuid)
             .ToListAsync(cancellationToken);
 
     private async Task<List<MobileDeviceSessionStoreDto>> LoadAssignedStoresAsync(
         string userGuid,
-        CancellationToken cancellationToken) =>
-        await _mainDb.Queryable<UserStore>()
-            .InnerJoin<Store>((userStore, store) => userStore.StoreGUID == store.StoreGUID)
-            .Where((userStore, store) =>
-                userStore.UserGUID == userGuid
-                && !userStore.IsDeleted
-                && store.IsActive
-                && !store.IsDeleted)
-            .OrderBy((userStore, _) => userStore.IsPrimary ? 0 : 1)
-            .OrderBy((_, store) => store.StoreCode)
-            .Select((userStore, store) => new MobileDeviceSessionStoreDto(
-                store.StoreGUID,
-                store.StoreCode,
-                store.StoreName,
-                userStore.IsPrimary))
+        CancellationToken cancellationToken)
+    {
+        // SqlSugar 多表投影先落到可无参构造的行模型，再在内存中创建只读 DTO。
+        var rows = await MobileDeviceActivationQueries
+            .BuildAssignedStoresQuery(_mainDb, userGuid)
             .ToListAsync(cancellationToken);
+        return rows
+            .Select(row => new MobileDeviceSessionStoreDto(
+                row.StoreGuid,
+                row.StoreCode,
+                row.StoreName,
+                row.IsPrimary))
+            .ToList();
+    }
 
     private static bool IsCurrentBinding(
         MobileDeviceAccountBinding binding,
@@ -1511,16 +1482,6 @@ public sealed class MobileDeviceActivationService : IMobileDeviceActivationServi
         public string DeviceType { get; set; } = string.Empty;
         public int DeviceStatus { get; set; }
         public string DeviceSystem { get; set; } = string.Empty;
-    }
-
-    private sealed class ActivationTargetRow
-    {
-        public string UserGuid { get; set; } = string.Empty;
-        public string Username { get; set; } = string.Empty;
-        public string Email { get; set; } = string.Empty;
-        public string? FullName { get; set; }
-        public string StoreCode { get; set; } = string.Empty;
-        public string StoreName { get; set; } = string.Empty;
     }
 
 }

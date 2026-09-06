@@ -129,8 +129,9 @@ test('GFA 商品行会为摘要扩展高度并保持商品明细与操作区互�
   assert.ok(mountHost.includes("card.matches('.list-row[data-product]')"));
   assert.ok(mountHost.includes('ensureGfaLayoutStyle()'));
   assert.ok(list.includes('height: auto !important'));
-  assert.ok(list.includes('a.list-content[href*="/product/view?id="]'));
-  assert.ok(list.includes('.list-detail'));
+  assert.ok(list.includes('a[href*="/product/view?id="] > .list-content'));
+  assert.ok(list.includes('> .list-content .list-detail'));
+  assert.ok(!list.includes('a.list-content[href*="/product/view?id="]'));
   assert.ok(list.includes('@media (max-width: 500px)'));
   assert.ok(list.includes('padding-bottom: 46px !important'));
   assert.ok(mountHost.includes('margin:4px 235px 0 0'));

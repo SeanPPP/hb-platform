@@ -3,6 +3,16 @@ export type ReportTab = "revenue" | "product";
 // 复用正在进行的刷新，避免页头与下拉同时触发时取消并重开请求。
 export const REPORT_REFETCH_OPTIONS = { cancelRefetch: false } as const;
 
+export function getReportStoreScopeRefreshQueryOptions(tab: ReportTab) {
+  return {
+    queryKey: tab === "revenue"
+      ? ["reports", "cashier-enabled-stores"] as const
+      : ["product-report", "stores"] as const,
+    exact: true as const,
+    type: "active" as const,
+  };
+}
+
 export function getReportRefreshQueryOptions(tab: ReportTab) {
   const queryKey = tab === "revenue" ? ["reports"] as const : ["product-report"] as const;
   return {
@@ -10,9 +20,11 @@ export function getReportRefreshQueryOptions(tab: ReportTab) {
     type: "active" as const,
     predicate: (query: { queryKey: readonly unknown[] }) => {
       if (tab === "revenue") {
-        return query.queryKey[0] === "reports" && query.queryKey[1] !== "statistics-freshness";
+        return query.queryKey[0] === "reports"
+          && query.queryKey[1] !== "statistics-freshness"
+          && query.queryKey[1] !== "cashier-enabled-stores";
       }
-      return query.queryKey[0] === "product-report";
+      return query.queryKey[0] === "product-report" && query.queryKey[1] !== "stores";
     },
   };
 }

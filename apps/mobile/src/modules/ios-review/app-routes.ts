@@ -24,6 +24,7 @@ interface AppRouteState {
   today: string;
   products: JsonRecord[];
   productDetails: Map<string, JsonRecord>;
+  hqSyncOperations: Map<string, JsonRecord>;
   carts: Map<string, JsonRecord>;
   orders: JsonRecord[];
   locations: JsonRecord[];
@@ -762,6 +763,7 @@ function createInitialState(now = new Date()): AppRouteState {
     today,
     products,
     productDetails,
+    hqSyncOperations: new Map(),
     carts,
     orders,
     locations,
@@ -943,6 +945,27 @@ function asRecord(value: unknown): JsonRecord {
 function nextId(state: AppRouteState, prefix: string) {
   state.sequence += 1;
   return `${prefix}-${state.sequence}`;
+}
+
+function createReviewHqSyncOperation(
+  state: AppRouteState,
+  productCode: unknown,
+  storeCode?: unknown,
+) {
+  const operationId = nextId(state, "review-hq-sync");
+  const operation = {
+    operationId,
+    status: "pending",
+    productCode: String(productCode ?? ""),
+    storeCode: storeCode == null ? null : String(storeCode),
+    attemptCount: 0,
+    nextAttemptAt: state.now,
+    retryable: true,
+    errorCode: null,
+    message: "Saved locally. Updating HQ.",
+  };
+  state.hqSyncOperations.set(operationId, operation);
+  return clone(operation);
 }
 
 function page(items: JsonRecord[], pageNumber = 1, pageSize = 20) {
@@ -2261,6 +2284,45 @@ export function registerIosReviewAppRoutes(
 
   register(
     transport,
+    ["GET"],
+    /^\/react\/v1\/store-product-maintenance\/hq-sync\/([^/]+)$/i,
+    ({ match }) => {
+      const operationId = decodeURIComponent(match?.[1] ?? "");
+      const operation = state().hqSyncOperations.get(operationId);
+      if (!operation) {
+        throw new Error(`IOS_REVIEW_HQ_SYNC_NOT_FOUND: ${operationId}`);
+      }
+      operation.status = "succeeded";
+      operation.nextAttemptAt = null;
+      operation.retryable = false;
+      operation.errorCode = null;
+      operation.message = "Saved and updated in HQ.";
+      return { data: clone(operation) };
+    },
+  );
+  register(
+    transport,
+    ["POST"],
+    /^\/react\/v1\/store-product-maintenance\/hq-sync\/([^/]+)\/retry$/i,
+    ({ match }) => {
+      const operationId = decodeURIComponent(match?.[1] ?? "");
+      const operation = state().hqSyncOperations.get(operationId);
+      if (!operation) {
+        throw new Error(`IOS_REVIEW_HQ_SYNC_NOT_FOUND: ${operationId}`);
+      }
+      if (operation.status !== "blocked") {
+        throw new Error(`IOS_REVIEW_HQ_SYNC_RETRY_NOT_ALLOWED: ${operationId}`);
+      }
+      operation.status = "pending";
+      operation.nextAttemptAt = state().now;
+      operation.retryable = true;
+      operation.errorCode = null;
+      operation.message = "Saved locally. Updating HQ.";
+      return { data: clone(operation) };
+    },
+  );
+  register(
+    transport,
     ["POST"],
     "/react/v1/store-product-maintenance/lookup",
     ({ body }) => {
@@ -2343,7 +2405,13 @@ export function registerIosReviewAppRoutes(
         String(product.productName ?? productCode),
       );
       return {
-        data: { productCode, product: clone(product), created: true },
+        data: {
+          productCode,
+          product: clone(product),
+          storeProductCodes: {},
+          created: true,
+          hqSync: createReviewHqSyncOperation(current, productCode),
+        },
         status: 201,
       };
     },
@@ -2361,7 +2429,16 @@ export function registerIosReviewAppRoutes(
       if (!detail) throw new Error(`IOS_REVIEW_STORE_PRICE_NOT_FOUND: ${uuid}`);
       Object.assign(detail.storePrice, asRecord(body), { uuid });
       mirrorUpdate(current, dataStore, "products", uuid, "Store price");
-      return { data: clone(detail.storePrice) };
+      return {
+        data: {
+          ...clone(detail.storePrice),
+          hqSync: createReviewHqSyncOperation(
+            current,
+            detail.productCode,
+            detail.storePrice.storeCode,
+          ),
+        },
+      };
     },
   );
   register(
@@ -2407,6 +2484,11 @@ export function registerIosReviewAppRoutes(
           discountRate: detail.storePrice.discountRate ?? 0,
           previousDiscountedRetailPrice: previousRetailPrice,
           newDiscountedRetailPrice: detail.storePrice.retailPrice,
+          hqSync: createReviewHqSyncOperation(
+            current,
+            detail.productCode,
+            detail.storePrice.storeCode,
+          ),
         },
       };
     },
@@ -2448,6 +2530,30 @@ export function registerIosReviewAppRoutes(
             productCode: code,
             productType: product.productType ?? 1,
             productTypeLabel: "Standard",
+            hqSync: createReviewHqSyncOperation(
+              state(),
+              code,
+              asRecord(body).storeCode,
+            ),
+          },
+        };
+      }
+      const clearancePayload = asRecord(body);
+      if (clearancePayload.clearancePrice == null) {
+        detail.clearancePrice = null;
+        return {
+          data: {
+            uuid: `review-clearance-${code}`,
+            storeCode: clearancePayload.storeCode ?? "REV001",
+            storeName: "Demo Brisbane",
+            productCode: code,
+            clearanceBarcode: null,
+            clearancePrice: null,
+            hqSync: createReviewHqSyncOperation(
+              state(),
+              code,
+              clearancePayload.storeCode,
+            ),
           },
         };
       }
@@ -2458,9 +2564,18 @@ export function registerIosReviewAppRoutes(
         productCode: code,
         clearanceBarcode:
           asRecord(body).clearanceBarcode ?? IOS_REVIEW_SAMPLE_BARCODE,
-        clearancePrice: asRecord(body).clearancePrice ?? 9.95,
+        clearancePrice: clearancePayload.clearancePrice,
       };
-      return { data: clone(detail.clearancePrice) };
+      return {
+        data: {
+          ...clone(detail.clearancePrice),
+          hqSync: createReviewHqSyncOperation(
+            state(),
+            code,
+            asRecord(body).storeCode,
+          ),
+        },
+      };
     },
   );
   register(
@@ -2497,7 +2612,17 @@ export function registerIosReviewAppRoutes(
         detail.multiCodes.push(item);
         detail.multiCodeCount = detail.multiCodes.length;
         mirrorCreate(current, dataStore, "products", item.uuid, "Multi code");
-        return { data: clone(item), status: 201 };
+        return {
+          data: {
+            ...clone(item),
+            hqSync: createReviewHqSyncOperation(
+              current,
+              payload.productCode,
+              payload.storeCode,
+            ),
+          },
+          status: 201,
+        };
       }
       const item = {
         setCodeId: nextId(current, "review-set-code"),
@@ -2515,7 +2640,17 @@ export function registerIosReviewAppRoutes(
       detail.setCodes.push(item);
       detail.setCodeCount = detail.setCodes.length;
       mirrorCreate(current, dataStore, "products", item.setCodeId, "Set code");
-      return { data: clone(item), status: 201 };
+      return {
+        data: {
+          ...clone(item),
+          hqSync: createReviewHqSyncOperation(
+            current,
+            payload.productCode,
+            payload.storeCode,
+          ),
+        },
+        status: 201,
+      };
     },
   );
   register(
@@ -2541,11 +2676,17 @@ export function registerIosReviewAppRoutes(
         (code: JsonRecord) => code[idKey] === id,
       );
       if (method === "DELETE") {
+        const removed = detail[collection][index];
+        const hqSync = createReviewHqSyncOperation(
+          state(),
+          removed?.productCode ?? detail.productCode,
+          removed?.storeCode,
+        );
         detail[collection].splice(index, 1);
         detail.setCodeCount = detail.setCodes.length;
         detail.multiCodeCount = detail.multiCodes.length;
         mirrorRemove(state(), dataStore, "products", id);
-        return { data: true };
+        return { data: { deleted: true, hqSync } };
       }
       const payload = asRecord(body);
       const values =
@@ -2562,7 +2703,16 @@ export function registerIosReviewAppRoutes(
         [idKey]: id,
       };
       mirrorUpdate(state(), dataStore, "products", id, "Product code");
-      return { data: clone(detail[collection][index]) };
+      return {
+        data: {
+          ...clone(detail[collection][index]),
+          hqSync: createReviewHqSyncOperation(
+            state(),
+            detail[collection][index].productCode ?? detail.productCode,
+            payload.storeCode ?? detail[collection][index].storeCode,
+          ),
+        },
+      };
     },
   );
 

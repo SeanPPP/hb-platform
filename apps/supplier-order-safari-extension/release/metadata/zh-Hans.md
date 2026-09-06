@@ -17,6 +17,12 @@ HB Supplier Order 面向经授权的 Hot Bargain 员工，在 iPhone 和 iPad �
 
 关键词：供应商,订货,采购,销售,库存,商务
 
+## 1.4.0 更新内容
+
+- 在支持的供应商商品页面显示全公司销量 TOP 10%、TOP 20% 和 TOP 30% 档位，包括没有采购记录的商品。
+- 将供应商热销榜扩展为分页 TOP 30%，显示全局名次，支持 60/90 天周期和每页 50、100、200 条。
+- 改进 GFA 供应商网站的商品编码匹配和页面内信息位置。
+
 隐私政策：https://hotbargain.vip/privacy/browser-extension
 
 支持页面：https://hotbargain.vip/support/hb-supplier-order

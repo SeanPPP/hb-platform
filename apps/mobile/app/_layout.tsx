@@ -224,6 +224,7 @@ export default function RootLayout() {
                   downloaded={mobileOtaUpdate.downloaded}
                   decision={mobileOtaUpdate.decision}
                   lastError={mobileOtaUpdate.lastError}
+                  onManualCheck={mobileOtaUpdate.checkManually}
                   onDownload={() => {
                     void mobileOtaUpdate.downloadRequired();
                   }}

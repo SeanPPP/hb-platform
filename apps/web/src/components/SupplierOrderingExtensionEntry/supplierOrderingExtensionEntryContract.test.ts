@@ -53,6 +53,7 @@ const requiredI18nKeys = [
   'name',
   'checking',
   'statusNotInstalled',
+  'statusSafariNotConnected',
   'statusInstalled',
   'statusOptionalUpdate',
   'statusForcedUpdate',
@@ -76,9 +77,16 @@ const requiredI18nKeys = [
   'androidUnsupported',
   'safariNotPublished',
   'safariInstallIntro',
+  'safariInstallDescription',
+  'safariInstallStepStoreTitle',
   'safariInstallStepStore',
+  'safariInstallStepEnableTitle',
   'safariInstallStepEnable',
+  'safariInstallStepWebsiteTitle',
   'safariInstallStepWebsite',
+  'safariInstallRecheck',
+  'safariInstallRecheckHint',
+  'safariReadyDescription',
 ]
 
 assert.ok(
@@ -122,20 +130,90 @@ assert.ok(
 )
 assert.ok(
   entry.includes('soe-safari-guide')
-    && entry.includes("experience === 'ios-safari' && release?.safariStoreUrl")
+    && entry.includes("experience === 'ios-safari' && release?.safariStoreUrl && !installed")
+    && entry.includes("t('supplierOrderingExtension.safariInstallStepStoreTitle')")
     && entry.includes("t('supplierOrderingExtension.safariInstallStepEnable')")
     && entry.includes("t('supplierOrderingExtension.safariInstallStepWebsite')"),
   'iOS Safari 仅在已配置商店地址时显示安装、启用和网站权限引导',
 )
 assert.ok(
-  entry.includes('supportsExtension ? (')
+  entry.includes('href={url}')
+    && entry.includes('target="_blank"')
+    && entry.includes('rel="noopener noreferrer"'),
+  'Safari 商店地址必须渲染为安全、可点击的外部链接',
+)
+assert.ok(
+  entry.includes("experience === 'ios-safari' && (!installed || isForced || isOptional)"),
+  'Safari 已连接且版本最新时不得继续展示重复的下载入口',
+)
+assert.ok(
+  entry.includes("experience === 'ios-safari' && installed && !isForced && !isOptional"),
+  'Safari 已连接且版本最新时不得保留空的下载区域',
+)
+assert.ok(
+  entry.includes("experience === 'ios-safari' && release.safariStoreUrl && !installed")
+    && entry.includes("? t('supplierOrderingExtension.safariNotPublished')"),
+  'Safari 商店地址为空时必须保留不可点击的未发布说明',
+)
+assert.ok(
+  entry.includes('className="soe-safari-recheck"')
+    && entry.includes("t('supplierOrderingExtension.safariInstallRecheck')")
+    && entry.includes('onClick={runHandshake}'),
+  'Safari 引导末尾必须提供就近的完成后重新检测操作',
+)
+assert.ok(
+  entry.includes('<ol className="soe-safari-steps" role="list">'),
+  'Safari/VoiceOver 必须保留三步引导的列表语义',
+)
+assert.ok(
+  entry.includes("t('supplierOrderingExtension.statusSafariNotConnected')")
+    && entry.includes('aria-live="polite"'),
+  'Safari 未连接状态必须准确表述，并让辅助技术获知检测结果',
+)
+assert.equal(
+  zhEntry?.openAssistant,
+  '打开供应商下单助手',
+  '成功操作不得再提示二次登录',
+)
+assert.equal(
+  enEntry?.openAssistant,
+  'Open Supplier Ordering Assistant',
+  '英文成功操作不得再提示二次登录',
+)
+assert.match(
+  String(zhEntry?.safariInstallStepEnable),
+  /iOS\/iPadOS 18[\s\S]*设置 → Apps → Safari → 扩展[\s\S]*iOS\/iPadOS 17[\s\S]*设置 → Safari → 扩展/,
+  '中文启用步骤必须同时覆盖 iOS/iPadOS 18 与 17',
+)
+assert.match(
+  String(enEntry?.safariInstallStepEnable),
+  /iOS\/iPadOS 18[\s\S]*Settings → Apps → Safari → Extensions[\s\S]*iOS\/iPadOS 17[\s\S]*Settings → Safari → Extensions/,
+  '英文启用步骤必须同时覆盖 iOS/iPadOS 18 与 17',
+)
+assert.match(
+  String(zhEntry?.safariInstallStepWebsite),
+  /https:\/\/hotbargain\.vip\/shop/,
+  '网站权限步骤必须返回精确的 /shop 地址',
+)
+assert.ok(
+  entry.includes("supportsExtension && !(experience === 'ios-safari' && release?.safariStoreUrl && !installed) ? (")
     && entry.includes("t('supplierOrderingExtension.recheck')"),
-  '只有受支持环境可以显示重新检测按钮',
+  '桌面与已连接状态必须保留重新检测入口，未连接 Safari 只显示步骤内操作',
 )
 assert.match(
   entryCss,
   /\.soe-entry--mobile-nav[\s\S]*?\.soe-entry-trigger\.ant-btn[\s\S]*?min-height:\s*44px/,
   '移动导航入口必须提供至少 44px 的触摸高度',
+)
+assert.match(
+  entryCss,
+  /@media\s*\(any-pointer:\s*coarse\)[\s\S]*?\.soe-entry--desktop\s+\.soe-entry-trigger\.ant-btn[\s\S]*?min-height:\s*44px/,
+  'iPad 等粗指针设备的宽屏入口必须提供至少 44px 的触摸高度',
+)
+assert.match(
+  entryCss,
+  /\.soe-safari-recheck\.ant-btn[\s\S]*?min-height:\s*44px/,
+  'Safari 完成后重新检测按钮必须提供至少 44px 的触摸高度',
 )
 
 console.log('supplierOrderingExtensionEntryContract.test: ok')

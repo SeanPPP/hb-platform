@@ -572,6 +572,7 @@ async function batchUpdateDetails(updates) {
       \u88C5\u67DC\u6570\u91CF: item.\u88C5\u67DC\u6570\u91CF,
       \u5408\u8BA1\u88C5\u67DC\u4F53\u79EF: item.\u5408\u8BA1\u88C5\u67DC\u4F53\u79EF,
       \u5408\u8BA1\u88C5\u67DC\u91D1\u989D: item.\u5408\u8BA1\u88C5\u67DC\u91D1\u989D,
+      \u5907\u6CE8: item.\u5907\u6CE8,
       IsActive: item.IsActive,
       SkipRelatedProductSync: item.SkipRelatedProductSync
     }))
@@ -580,6 +581,8 @@ async function batchUpdateDetails(updates) {
   return {
     totalUpdated: response.data?.totalUpdated ?? updates.length,
     totalRequested: response.data?.totalRequested ?? updates.length,
+    autoRepairedStoreGroupCount: response.data?.autoRepairedStoreGroupCount,
+    autoRepairedRelationCount: response.data?.autoRepairedRelationCount,
     validationErrors: (response.data?.validationErrors ?? []).filter((error) => Boolean(error.hguid && error.field && error.code && error.message)).map((error) => ({
       hguid: error.hguid,
       field: error.field,
@@ -768,6 +771,8 @@ try {
       data: {
         totalUpdated: 1,
         totalRequested: 1,
+        autoRepairedStoreGroupCount: 2,
+        autoRepairedRelationCount: 3,
         validationErrors: [{
           hguid: "D-CLEAR-EN",
           field: "\u82F1\u6587\u540D\u79F0",
@@ -785,6 +790,7 @@ try {
       hguid: "D-CLEAR-EN",
       ClearEnglishName: true,
       \u4E2D\u5305\u6570: 12,
+      \u5907\u6CE8: "\u8FDE\u7EED\u7F16\u8F91\u540E\u7684\u5907\u6CE8",
       ProductCategoryGUID: "CAT-TARGET",
       SkipRelatedProductSync: true
     }
@@ -798,8 +804,8 @@ try {
   assertEqual(capturedInit?.method, "POST", "batchUpdateDetails should use POST");
   assertDeepEqual(
     JSON.parse(String(capturedInit?.body)),
-    [{ HGUID: "D-CLEAR-EN", ClearEnglishName: true, ProductCategoryGUID: "CAT-TARGET", \u4E2D\u5305\u6570: 12, SkipRelatedProductSync: true }],
-    "batchUpdateDetails should send explicit fields including the related-product sync guard"
+    [{ HGUID: "D-CLEAR-EN", ClearEnglishName: true, ProductCategoryGUID: "CAT-TARGET", \u4E2D\u5305\u6570: 12, \u5907\u6CE8: "\u8FDE\u7EED\u7F16\u8F91\u540E\u7684\u5907\u6CE8", SkipRelatedProductSync: true }],
+    "batchUpdateDetails should send explicit fields including remark and the related-product sync guard"
   );
   assertDeepEqual(
     detailUpdateResult.validationErrors,
@@ -810,6 +816,14 @@ try {
       message: "\u82F1\u6587\u540D\u79F0\u4E0D\u80FD\u5305\u542B\u4E2D\u6587"
     }],
     "batchUpdateDetails should preserve structured validation errors for field-level retry"
+  );
+  assertDeepEqual(
+    {
+      autoRepairedStoreGroupCount: detailUpdateResult.autoRepairedStoreGroupCount,
+      autoRepairedRelationCount: detailUpdateResult.autoRepairedRelationCount
+    },
+    { autoRepairedStoreGroupCount: 2, autoRepairedRelationCount: 3 },
+    "batchUpdateDetails should preserve optional set and multi-code auto-repair statistics"
   );
   globalThis.fetch = async (input, init) => {
     capturedUrl = String(input);
@@ -877,7 +891,22 @@ try {
         hasMore: true,
         totalComputed: false,
         statsComputed: false,
-        tagStats: { all: 12, new: 3, existing: 9, noOemPrice: 1, abnormalImport: 2, active: 8, inactive: 4 }
+        tagStats: {
+          all: 12,
+          new: 3,
+          existing: 9,
+          noOemPrice: 1,
+          abnormalImport: 2,
+          active: 8,
+          inactive: 4,
+          normal: 9,
+          set: 1,
+          multi: 1,
+          setChild: 1,
+          productCodeMatched: 7,
+          supplierItemMatched: 4,
+          unmatched: 1
+        }
       }
     }), {
       status: 200,
@@ -888,11 +917,12 @@ try {
     pageNumber: 2,
     pageSize: 20,
     itemNumber: "HB308",
-    selectedTags: ["new", "inactive"],
+    selectedTags: ["new", "normal"],
     sortBy: "itemNumber",
     sortOrder: "ascend",
     includeTotal: false,
-    includeStats: false
+    includeStats: false,
+    includeItems: false
   }, abortController.signal);
   assertEqual(
     capturedUrl,
@@ -908,11 +938,12 @@ try {
       pageNumber: 2,
       pageSize: 20,
       itemNumber: "HB308",
-      selectedTags: ["new", "inactive"],
+      selectedTags: ["new", "normal"],
       sortBy: "itemNumber",
       sortOrder: "ascend",
       includeTotal: false,
-      includeStats: false
+      includeStats: false,
+      includeItems: false
     },
     "queryContainerProducts \u5E94\u53D1\u9001\u8FDC\u7A0B\u67E5\u8BE2 body \u4E14\u4FDD\u7559 containerGuid"
   );
@@ -926,7 +957,22 @@ try {
       hasMore: true,
       totalComputed: false,
       statsComputed: false,
-      tagStats: { all: 12, new: 3, existing: 9, noOemPrice: 1, abnormalImport: 2, active: 8, inactive: 4 }
+      tagStats: {
+        all: 12,
+        new: 3,
+        existing: 9,
+        noOemPrice: 1,
+        abnormalImport: 2,
+        active: 8,
+        inactive: 4,
+        normal: 9,
+        set: 1,
+        multi: 1,
+        setChild: 1,
+        productCodeMatched: 7,
+        supplierItemMatched: 4,
+        unmatched: 1
+      }
     },
     "queryContainerProducts \u5E94\u8FD4\u56DE data \u5185\u7684\u5206\u9875\u660E\u7EC6\u7ED3\u679C"
   );

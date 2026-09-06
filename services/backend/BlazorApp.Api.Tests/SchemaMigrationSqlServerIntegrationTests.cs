@@ -138,6 +138,159 @@ public sealed class SchemaMigrationSqlServerIntegrationTests
     }
 
     [SchemaMigrationSqlServerFact]
+    public async Task 旧POSM账本缺少Linkly步骤_迁移只补齐多终端结构并登记新版本()
+    {
+        await using var databases = await IsolatedSchemaDatabases.CreateAsync();
+        var coordinator = databases.CreateCoordinator();
+        Assert.True((await coordinator.MigrateAsync(CancellationToken.None)).Success);
+
+        await ExecuteNonQueryAsync(
+            databases.PosmConnectionString,
+            $"""
+            DELETE FROM [dbo].[{SqlServerSchemaMigrationRuntime.PosmHistoryTable}]
+            WHERE [MigrationId] = N'{SchemaMigrationCoordinator.LinklyMultiTerminalMigrationId}';
+
+            DROP TABLE [dbo].[POSM_LinklyCloudDeviceSelection];
+            DROP TABLE [dbo].[POSM_LinklyCloudConfigurationMode];
+            DROP TABLE [dbo].[POSM_LinklyCloudTerminal];
+            DROP INDEX [UX_POSM_LinklyCloudBackendSession_ActiveCloudTerminal]
+                ON [dbo].[POSM_LinklyCloudBackendSession];
+            DROP INDEX [IX_POSM_LinklyCloudBackendSession_TerminalRecovery]
+                ON [dbo].[POSM_LinklyCloudBackendSession];
+            ALTER TABLE [dbo].[POSM_LinklyCloudBackendSession]
+                DROP COLUMN [TerminalId];
+            """
+        );
+
+        var missing = await coordinator.CheckAsync(CancellationToken.None);
+        Assert.False(missing.Success);
+        Assert.Equal(SchemaExitCodes.SchemaNotReady, missing.ExitCode);
+        Assert.Equal(SchemaDiagnosticCodes.PosmMigrationMissing, missing.DiagnosticCode);
+
+        var migrated = await coordinator.MigrateAsync(CancellationToken.None);
+
+        Assert.True(migrated.Success, migrated.DiagnosticCode);
+        Assert.True(
+            await IsMigrationAppliedAsync(
+                databases.PosmConnectionString,
+                SqlServerSchemaMigrationRuntime.PosmHistoryTable,
+                SchemaMigrationCoordinator.LinklyMultiTerminalMigrationId
+            )
+        );
+        Assert.True(
+            await TableExistsAsync(databases.PosmConnectionString, "POSM_LinklyCloudTerminal")
+        );
+        Assert.True(
+            await TableExistsAsync(
+                databases.PosmConnectionString,
+                "POSM_LinklyCloudDeviceSelection"
+            )
+        );
+        Assert.True(
+            await TableExistsAsync(
+                databases.PosmConnectionString,
+                "POSM_LinklyCloudConfigurationMode"
+            )
+        );
+        Assert.True(
+            await ColumnExistsAsync(
+                databases.PosmConnectionString,
+                "POSM_LinklyCloudBackendSession",
+                "TerminalId"
+            )
+        );
+        Assert.True(
+            await IndexExistsAsync(
+                databases.PosmConnectionString,
+                "POSM_LinklyCloudBackendSession",
+                "UX_POSM_LinklyCloudBackendSession_ActiveCloudTerminal"
+            )
+        );
+        Assert.True((await coordinator.CheckAsync(CancellationToken.None)).Success);
+    }
+
+    [SchemaMigrationSqlServerFact]
+    public async Task Linkly同名错误Check或Cascade外键_检查返回稳定不兼容诊断()
+    {
+        await using var databases = await IsolatedSchemaDatabases.CreateAsync();
+        var coordinator = databases.CreateCoordinator();
+        Assert.True((await coordinator.MigrateAsync(CancellationToken.None)).Success);
+
+        await ExecuteNonQueryAsync(
+            databases.PosmConnectionString,
+            """
+            ALTER TABLE [dbo].[POSM_LinklyCloudConfigurationMode]
+                DROP CONSTRAINT [CK_POSM_LinklyCloudConfigurationMode_Mode];
+            ALTER TABLE [dbo].[POSM_LinklyCloudConfigurationMode] WITH CHECK
+                ADD CONSTRAINT [CK_POSM_LinklyCloudConfigurationMode_Mode]
+                CHECK ([Mode] IN (N'Legacy'));
+            ALTER TABLE [dbo].[POSM_LinklyCloudConfigurationMode]
+                CHECK CONSTRAINT [CK_POSM_LinklyCloudConfigurationMode_Mode];
+            """
+        );
+
+        var wrongCheck = await coordinator.CheckAsync(CancellationToken.None);
+        Assert.False(wrongCheck.Success);
+        Assert.Equal(SchemaExitCodes.SchemaNotReady, wrongCheck.ExitCode);
+        Assert.Equal(
+            SchemaDiagnosticCodes.LinklyMultiTerminalIncompatible,
+            wrongCheck.DiagnosticCode
+        );
+
+        await ExecuteNonQueryAsync(
+            databases.PosmConnectionString,
+            """
+            ALTER TABLE [dbo].[POSM_LinklyCloudConfigurationMode]
+                DROP CONSTRAINT [CK_POSM_LinklyCloudConfigurationMode_Mode];
+            ALTER TABLE [dbo].[POSM_LinklyCloudConfigurationMode] WITH CHECK
+                ADD CONSTRAINT [CK_POSM_LinklyCloudConfigurationMode_Mode]
+                CHECK ([Mode] IN (N'Legacy', N'Draft', N'Active') OR N'Active' = N'Active');
+            ALTER TABLE [dbo].[POSM_LinklyCloudConfigurationMode]
+                CHECK CONSTRAINT [CK_POSM_LinklyCloudConfigurationMode_Mode];
+            """
+        );
+
+        var tautologicalCheck = await coordinator.CheckAsync(CancellationToken.None);
+        Assert.False(tautologicalCheck.Success);
+        Assert.Equal(SchemaExitCodes.SchemaNotReady, tautologicalCheck.ExitCode);
+        Assert.Equal(
+            SchemaDiagnosticCodes.LinklyMultiTerminalIncompatible,
+            tautologicalCheck.DiagnosticCode
+        );
+
+        await ExecuteNonQueryAsync(
+            databases.PosmConnectionString,
+            """
+            ALTER TABLE [dbo].[POSM_LinklyCloudConfigurationMode]
+                DROP CONSTRAINT [CK_POSM_LinklyCloudConfigurationMode_Mode];
+            ALTER TABLE [dbo].[POSM_LinklyCloudConfigurationMode] WITH CHECK
+                ADD CONSTRAINT [CK_POSM_LinklyCloudConfigurationMode_Mode]
+                CHECK ([Mode] IN (N'Legacy', N'Draft', N'Active'));
+            ALTER TABLE [dbo].[POSM_LinklyCloudConfigurationMode]
+                CHECK CONSTRAINT [CK_POSM_LinklyCloudConfigurationMode_Mode];
+
+            ALTER TABLE [dbo].[POSM_LinklyCloudDeviceSelection]
+                DROP CONSTRAINT [FK_POSM_LinklyCloudDeviceSelection_Terminal];
+            ALTER TABLE [dbo].[POSM_LinklyCloudDeviceSelection] WITH CHECK
+                ADD CONSTRAINT [FK_POSM_LinklyCloudDeviceSelection_Terminal]
+                FOREIGN KEY ([TerminalId])
+                REFERENCES [dbo].[POSM_LinklyCloudTerminal]([TerminalId])
+                ON DELETE CASCADE;
+            ALTER TABLE [dbo].[POSM_LinklyCloudDeviceSelection]
+                CHECK CONSTRAINT [FK_POSM_LinklyCloudDeviceSelection_Terminal];
+            """
+        );
+
+        var cascadeForeignKey = await coordinator.CheckAsync(CancellationToken.None);
+        Assert.False(cascadeForeignKey.Success);
+        Assert.Equal(SchemaExitCodes.SchemaNotReady, cascadeForeignKey.ExitCode);
+        Assert.Equal(
+            SchemaDiagnosticCodes.LinklyMultiTerminalIncompatible,
+            cascadeForeignKey.DiagnosticCode
+        );
+    }
+
+    [SchemaMigrationSqlServerFact]
     public async Task 真实API进程_显式命令不监听且普通启动通过门禁后才监听()
     {
         await using var databases = await IsolatedSchemaDatabases.CreateAsync();
@@ -479,6 +632,52 @@ public sealed class SchemaMigrationSqlServerIntegrationTests
         command.CommandText =
             "SELECT CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.tables WHERE [schema_id] = SCHEMA_ID(N'dbo') AND [name] = @TableName) THEN 1 ELSE 0 END AS bit);";
         command.Parameters.AddWithValue("@TableName", tableName);
+        return Convert.ToBoolean(await command.ExecuteScalarAsync());
+    }
+
+    private static async Task<bool> ColumnExistsAsync(
+        string connectionString,
+        string tableName,
+        string columnName
+    )
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT CAST(CASE WHEN EXISTS (
+                SELECT 1
+                FROM sys.columns
+                WHERE [object_id] = OBJECT_ID(N'[dbo].[' + @TableName + N']', N'U')
+                  AND [name] = @ColumnName
+            ) THEN 1 ELSE 0 END AS bit);
+            """;
+        command.Parameters.AddWithValue("@TableName", tableName);
+        command.Parameters.AddWithValue("@ColumnName", columnName);
+        return Convert.ToBoolean(await command.ExecuteScalarAsync());
+    }
+
+    private static async Task<bool> IndexExistsAsync(
+        string connectionString,
+        string tableName,
+        string indexName
+    )
+    {
+        await using var connection = new SqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT CAST(CASE WHEN EXISTS (
+                SELECT 1
+                FROM sys.indexes AS i
+                JOIN sys.tables AS t ON t.[object_id] = i.[object_id]
+                WHERE t.[schema_id] = SCHEMA_ID(N'dbo')
+                  AND t.[name] = @TableName
+                  AND i.[name] = @IndexName
+            ) THEN 1 ELSE 0 END AS bit);
+            """;
+        command.Parameters.AddWithValue("@TableName", tableName);
+        command.Parameters.AddWithValue("@IndexName", indexName);
         return Convert.ToBoolean(await command.ExecuteScalarAsync());
     }
 

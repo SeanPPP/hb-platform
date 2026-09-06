@@ -23,5 +23,6 @@ namespace BlazorApp.Shared.DTOs
     {
         public string ProductCode { get; set; } = string.Empty;
         public Dictionary<string, string> StoreProductCodes { get; set; } = new Dictionary<string, string>();
+        public ProductHqSyncOperationStatusDto? HqSync { get; set; }
     }
 }

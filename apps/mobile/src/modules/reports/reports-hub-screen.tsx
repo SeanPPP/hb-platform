@@ -10,7 +10,7 @@ import { formatStatisticsFreshnessTime, useStatisticsFreshnessQuery } from "@/mo
 import {
   REPORT_REFETCH_OPTIONS,
   createReportRefreshController,
-  getReportRefreshQueryOptions,
+  getReportStoreScopeRefreshQueryOptions,
   type ReportTab,
 } from "@/modules/reports/report-refresh";
 import {
@@ -37,7 +37,7 @@ export function ReportsHubScreen() {
       (activeTab) => {
         const dependencies = refreshDependenciesRef.current;
         return dependencies.queryClient.refetchQueries(
-          getReportRefreshQueryOptions(activeTab),
+          getReportStoreScopeRefreshQueryOptions(activeTab),
           REPORT_REFETCH_OPTIONS,
         );
       },
@@ -66,11 +66,10 @@ export function ReportsHubScreen() {
       setFocusNavigationActionId(navigationActionId);
       if (navigationActionId === null) return;
 
-      // 常驻且已有缓存的报表不一定自动重新 query；显式刷新活动页签。
-      // 若 React Query 复用在途请求，计时器会在完整数据返回时延迟认领本次点击；
-      // 因此这里只在焦点会话结束时清理仍未认领的标记。
+      // 先重验收银启用门店范围；白名单的 dataUpdatedAt 会切换业务 query key 并自动取数。
+      // 这样不会在新范围返回前，用旧白名单并发刷新业务数据。
       void queryClient
-        .refetchQueries(getReportRefreshQueryOptions(tab), REPORT_REFETCH_OPTIONS)
+        .refetchQueries(getReportStoreScopeRefreshQueryOptions(tab), REPORT_REFETCH_OPTIONS)
         .catch(() => undefined);
 
       return () => {

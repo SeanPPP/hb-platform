@@ -16,7 +16,31 @@ export interface PricingEvaluationResult {
   strategyRuleLabel?: string | null;
 }
 
-export interface StorePriceEditable extends PricingEvaluationResult {
+export type ProductHqSyncStatus =
+  | "pending"
+  | "processing"
+  | "retrying"
+  | "succeeded"
+  | "blocked"
+  | "superseded";
+
+export interface ProductHqSyncOperation {
+  operationId: string;
+  status: ProductHqSyncStatus;
+  productCode: string;
+  storeCode: string | null;
+  attemptCount: number;
+  nextAttemptAt: string | null;
+  retryable: boolean;
+  errorCode: string | null;
+  message: string;
+}
+
+export interface ProductHqSyncCarrier {
+  hqSync?: ProductHqSyncOperation | null;
+}
+
+export interface StorePriceEditable extends PricingEvaluationResult, ProductHqSyncCarrier {
   uuid: string;
   storeCode?: string | null;
   storeName?: string | null;
@@ -31,7 +55,7 @@ export interface StorePriceEditable extends PricingEvaluationResult {
   isActive: boolean;
 }
 
-export interface MultiCodeEditableItem extends PricingEvaluationResult {
+export interface MultiCodeEditableItem extends PricingEvaluationResult, ProductHqSyncCarrier {
   uuid: string;
   setCodeId: string;
   storeCode?: string | null;
@@ -47,7 +71,7 @@ export interface MultiCodeEditableItem extends PricingEvaluationResult {
   isActive: boolean;
 }
 
-export interface ProductSetCodeItem {
+export interface ProductSetCodeItem extends ProductHqSyncCarrier {
   setCodeId: string;
   productCode: string;
   setProductCode: string;
@@ -61,7 +85,7 @@ export interface ProductSetCodeItem {
   isActive: boolean;
 }
 
-export interface StoreClearancePriceItem {
+export interface StoreClearancePriceItem extends ProductHqSyncCarrier {
   uuid: string;
   storeCode?: string | null;
   storeName?: string | null;
@@ -119,7 +143,7 @@ export interface CreateProductWithPricesRequest {
   isAutoPricing: boolean;
 }
 
-export interface CreateProductWithPricesResult {
+export interface CreateProductWithPricesResult extends ProductHqSyncCarrier {
   productCode: string;
   storeProductCodes: Record<string, string>;
 }
@@ -148,7 +172,7 @@ export interface WarehousePriceSyncRequest {
   expectedDiscountRate?: number | null;
 }
 
-export interface WarehousePriceSyncResult {
+export interface WarehousePriceSyncResult extends ProductHqSyncCarrier {
   status: WarehousePriceSyncStatus;
   purchaseUpdated: boolean;
   retailUpdated: boolean;
@@ -164,6 +188,8 @@ export interface WarehousePriceSyncResult {
 }
 
 export interface UpdateMultiCodeRequest {
+  // 旧多码没有 setCodeId，只能通过 UUID 端点保存条码。
+  barcode?: string;
   purchasePrice?: number | null;
   retailPrice?: number | null;
   isAutoPricing?: boolean;
@@ -217,8 +243,12 @@ export interface UpdateProductTypeRequest {
   storeCode?: string | null;
 }
 
-export interface UpdateProductTypeResult {
+export interface UpdateProductTypeResult extends ProductHqSyncCarrier {
   productCode: string;
   productType: number;
   productTypeLabel?: string | null;
+}
+
+export interface DeleteSetCodeResult extends ProductHqSyncCarrier {
+  deleted: boolean;
 }

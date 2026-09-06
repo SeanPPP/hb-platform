@@ -2627,10 +2627,178 @@ namespace BlazorApp.Api.Tests
 
             Assert.False(result.Success);
             Assert.Equal("UPDATE_ERROR", result.ErrorCode);
+            Assert.Contains("P001", result.Message);
+            Assert.Contains("S01", result.Message);
+            Assert.Contains("Type1/Type2", result.Message);
             Assert.Equal(1.11m, product.PurchasePrice);
             Assert.Equal(1.11m, storePrice.PurchasePrice);
             Assert.Equal(new decimal?[] { 0.50m, 1.11m }, globalCosts);
             Assert.Equal(0.75m, storeCost);
+        }
+
+        [Fact]
+        public async Task UpdateDetailsToStorePricesAsync_目标门店缺失套装投影时自动补齐且不扩展到其他门店()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            await SeedActiveSetRelationsAsync("P001", "AUTO");
+            await _db.Insertable(new StoreRetailPrice
+            {
+                UUID = "SRP-001-S02",
+                StoreCode = "S02",
+                ProductCode = "P001",
+                StoreProductCode = "S02P001",
+                SupplierCode = "SUP01",
+                PurchasePrice = 8.88m,
+                StoreRetailPriceValue = 9.99m,
+                IsActive = true,
+                IsDeleted = false,
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateDetailsToStorePricesAsync(
+                new UpdateToStorePricesRequest
+                {
+                    InvoiceGuid = "invoice-execute",
+                    DetailGuids = new List<string> { "detail-price" },
+                    TargetStoreCodes = new List<string> { "S01" },
+                    UpdateFields = new UpdateToStorePricesFields
+                    {
+                        UpdatePurchasePrice = true,
+                    },
+                },
+                "tester"
+            );
+
+            var product = await _db.Queryable<Product>().SingleAsync(x => x.ProductCode == "P001");
+            var targetStorePrice = await _db.Queryable<StoreRetailPrice>()
+                .SingleAsync(x => x.UUID == "SRP-001");
+            var targetRelations = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.StoreCode == "S01" && x.ProductCode == "P001")
+                .OrderBy(x => x.MultiCodeProductCode)
+                .ToListAsync();
+            var otherStoreRelations = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.StoreCode == "S02" && x.ProductCode == "P001")
+                .ToListAsync();
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(5.55m, product.PurchasePrice);
+            Assert.Equal(5.55m, targetStorePrice.PurchasePrice);
+            Assert.Equal(2, targetRelations.Count);
+            Assert.All(targetRelations, relation => Assert.Equal(5.55m, relation.PurchasePrice));
+            Assert.Empty(otherStoreRelations);
+        }
+
+        [Fact]
+        public async Task UpdateDetailsToStorePricesAsync_未实际写入的商品不参与套装补齐或重算()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            await SeedSecondExecutablePriceUpdateDetailAsync();
+            await SeedActiveSetRelationsAsync("P002", "SKIPPED");
+            await _db.Updateable<StoreLocalSupplierInvoiceDetails>()
+                .SetColumns(detail => detail.PurchasePrice == 0m)
+                .Where(detail => detail.DetailGUID == "detail-price-2")
+                .ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateDetailsToStorePricesAsync(
+                new UpdateToStorePricesRequest
+                {
+                    InvoiceGuid = "invoice-execute",
+                    DetailGuids = new List<string> { "detail-price", "detail-price-2" },
+                    TargetStoreCodes = new List<string> { "S01" },
+                    UpdateFields = new UpdateToStorePricesFields
+                    {
+                        UpdatePurchasePrice = true,
+                    },
+                },
+                "tester"
+            );
+
+            var skippedProduct = await _db.Queryable<Product>()
+                .SingleAsync(x => x.ProductCode == "P002");
+            var skippedStorePrice = await _db.Queryable<StoreRetailPrice>()
+                .SingleAsync(x => x.UUID == "SRP-002");
+            var skippedRelations = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.StoreCode == "S01" && x.ProductCode == "P002")
+                .ToListAsync();
+
+            Assert.True(result.Success, result.Message);
+            Assert.Equal(1, result.Data?.Updated);
+            Assert.Equal(1, result.Data?.Skipped);
+            Assert.Equal(1, result.Data?.UpdatedPurchasePrices);
+            Assert.Equal(2.22m, skippedProduct.PurchasePrice);
+            Assert.Equal(2.22m, skippedStorePrice.PurchasePrice);
+            Assert.Empty(skippedRelations);
+        }
+
+        [Fact]
+        public async Task UpdateDetailsToStorePricesAsync_不安全目标组回滚已补齐关系且只报告失败商品()
+        {
+            await SeedExecutablePriceUpdateAsync();
+            await SeedSecondExecutablePriceUpdateDetailAsync();
+            await SeedActiveSetRelationsAsync("P001", "SAFE");
+            await SeedActiveSetRelationsAsync("P002", "UNSAFE");
+            await _db.Insertable(new StoreMultiCodeProduct
+            {
+                UUID = "S01-P002-TOMBSTONE",
+                StoreCode = "S01",
+                ProductCode = "P002",
+                MultiCodeProductCode = "UNSAFE-CHILD-T1",
+                StoreMultiCodeProductCode = "S01UNSAFE-CHILD-T1",
+                MultiBarcode = "UNSAFE-BAR-T1",
+                PurchasePrice = 7.77m,
+                MultiCodeRetailPrice = 4m,
+                IsActive = false,
+                IsDeleted = true,
+                UpdatedBy = "历史操作人",
+            }).ExecuteCommandAsync();
+
+            var result = await CreateService().UpdateDetailsToStorePricesAsync(
+                new UpdateToStorePricesRequest
+                {
+                    InvoiceGuid = "invoice-execute",
+                    DetailGuids = new List<string> { "detail-price", "detail-price-2" },
+                    TargetStoreCodes = new List<string> { "S01" },
+                    UpdateFields = new UpdateToStorePricesFields
+                    {
+                        UpdatePurchasePrice = true,
+                    },
+                },
+                "tester"
+            );
+
+            var products = await _db.Queryable<Product>()
+                .Where(x => new[] { "P001", "P002" }.Contains(x.ProductCode))
+                .OrderBy(x => x.ProductCode)
+                .ToListAsync();
+            var storePrices = await _db.Queryable<StoreRetailPrice>()
+                .Where(x => new[] { "P001", "P002" }.Contains(x.ProductCode))
+                .OrderBy(x => x.ProductCode)
+                .ToListAsync();
+            var safeRelations = await _db.Queryable<StoreMultiCodeProduct>()
+                .Where(x => x.StoreCode == "S01" && x.ProductCode == "P001")
+                .ToListAsync();
+            var tombstone = await _db.Queryable<StoreMultiCodeProduct>()
+                .SingleAsync(x => x.UUID == "S01-P002-TOMBSTONE");
+
+            Assert.False(result.Success);
+            Assert.Equal("UPDATE_ERROR", result.ErrorCode);
+            Assert.Contains("P002", result.Message);
+            Assert.Contains("S01", result.Message);
+            Assert.Contains("停用或软删除", result.Message);
+            Assert.DoesNotContain("P001", result.Message);
+            Assert.Collection(
+                products,
+                product => Assert.Equal(1.11m, product.PurchasePrice),
+                product => Assert.Equal(2.22m, product.PurchasePrice)
+            );
+            Assert.Collection(
+                storePrices,
+                price => Assert.Equal(1.11m, price.PurchasePrice),
+                price => Assert.Equal(2.22m, price.PurchasePrice)
+            );
+            Assert.Empty(safeRelations);
+            Assert.False(tombstone.IsActive);
+            Assert.True(tombstone.IsDeleted);
+            Assert.Equal("历史操作人", tombstone.UpdatedBy);
         }
 
         [Fact]
@@ -2702,7 +2870,7 @@ namespace BlazorApp.Api.Tests
         }
 
         [Fact]
-        public async Task UpdateDetailsToStorePricesAsync_重复分店商品只更新一次()
+        public async Task UpdateDetailsToStorePricesAsync_大小写不同的重复分店商品只更新一次()
         {
             await SeedExecutablePriceUpdateAsync();
             await _db.Insertable(new StoreLocalSupplierInvoiceDetails
@@ -2715,7 +2883,7 @@ namespace BlazorApp.Api.Tests
                 ProductName = "Existing Product Duplicate",
                 Quantity = 1,
                 PurchasePrice = 7.77m,
-                ProductCode = "P001",
+                ProductCode = "p001",
                 StoreProductCode = "S01P001",
                 ExistingProductCount = 1,
                 BarcodeStatus = 2,
@@ -3622,6 +3790,37 @@ namespace BlazorApp.Api.Tests
             IsActive = true,
             IsDeleted = false,
         };
+
+        private async Task SeedActiveSetRelationsAsync(string productCode, string prefix)
+        {
+            await _db.Insertable(new[]
+            {
+                new ProductSetCode
+                {
+                    SetCodeId = $"{prefix}-TYPE1",
+                    ProductCode = productCode,
+                    SetProductCode = $"{prefix}-CHILD-T1",
+                    SetBarcode = $"{prefix}-BAR-T1",
+                    SetPurchasePrice = 99m,
+                    SetRetailPrice = 4m,
+                    SetType = 1,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+                new ProductSetCode
+                {
+                    SetCodeId = $"{prefix}-TYPE2",
+                    ProductCode = productCode,
+                    SetProductCode = $"{prefix}-CHILD-T2",
+                    SetBarcode = $"{prefix}-BAR-T2",
+                    SetPurchasePrice = 99m,
+                    SetRetailPrice = 5m,
+                    SetType = 2,
+                    IsActive = true,
+                    IsDeleted = false,
+                },
+            }).ExecuteCommandAsync();
+        }
 
         private async Task SeedStoreAndSupplierAsync()
         {

@@ -1,6 +1,6 @@
 # Internal TestFlight 验收清单
 
-构建：1.3.0 (2)，内部测试组，不创建外部测试组。
+构建：1.4.0 (3)，内部测试组，不创建外部测试组。
 
 必须分别在实体 iPhone 与实体 iPad 完成：
 
@@ -16,10 +16,11 @@
 - [ ] 授权过程中将 Safari 切到后台再回到前台，重新检查后状态和数据正确，无重复登录或崩溃。
 - [ ] 打开 https://www.meteorparty.com.au/Party-Favors/Party-Favors-Allfavors，无需供应商登录。
 - [ ] 授予该供应商站点权限，点击 Safari 工具栏 HB 图标可打开完整助手。
-- [ ] 验证网页内商品入口、采购记录、销售记录和供应商排行。
+- [ ] 验证网页内商品入口、采购记录、销售记录，以及商品的 TOP 10% / TOP 20% / TOP 30% 销量档位。
+- [ ] 验证供应商热销 TOP 30% 的 60/90 天切换、50/100/200 每页选择、跨页全局名次和窄屏分页布局。
 - [ ] 验证重新启动、供应商权限拒绝和网络失败的安全状态。
 - [ ] TestFlight 没有新增阻断崩溃。
 
-若失败，修复后只将 CURRENT_PROJECT_VERSION 递增为 3、4 等；MARKETING_VERSION 与扩展语义版本仍保持 1.3.0。
+若失败，修复后只将 CURRENT_PROJECT_VERSION 从 4 起继续递增；MARKETING_VERSION 与扩展语义版本仍保持 1.4.0。
 
 两台设备全部通过后，按授权直接进入正式 App Review 与 Unlisted 申请，不再追加发布确认。

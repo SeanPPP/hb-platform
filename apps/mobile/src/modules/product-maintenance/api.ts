@@ -5,11 +5,13 @@ import type {
   CreateProductWithPricesRequest,
   CreateProductWithPricesResult,
   CreateSetCodeRequest,
+  DeleteSetCodeResult,
   LocalSupplierOption,
   MultiCodeEditableItem,
   ProductDetail,
   ProductCodePage,
   ProductLookupItem,
+  ProductHqSyncOperation,
   ProductSetCodeItem,
   StoreClearancePriceItem,
   StorePriceEditable,
@@ -31,6 +33,7 @@ import {
   normalizeCreateProductWithPricesResult,
 } from "@/modules/product-maintenance/api-normalization";
 import { normalizeWarehousePriceSyncResponse } from "@/modules/product-maintenance/warehouse-price-sync";
+import { normalizeHqSyncOperation } from "@/modules/product-maintenance/hq-sync";
 
 const BASE_PATH = "/react/v1/store-product-maintenance";
 const PRODUCTS_PATH = "/react/v1/products";
@@ -101,7 +104,7 @@ function normalizeStorePrice(payload: unknown): StorePriceEditable | null {
   }
 
   const data = payload as Record<string, unknown>;
-  return {
+  const result: StorePriceEditable = {
     uuid: String(data.uuid ?? data.Uuid ?? ""),
     storeCode: (data.storeCode ?? data.StoreCode ?? null) as string | null,
     storeName: (data.storeName ?? data.StoreName ?? null) as string | null,
@@ -118,11 +121,13 @@ function normalizeStorePrice(payload: unknown): StorePriceEditable | null {
     strategySourceLabel: (data.strategySourceLabel ?? data.StrategySourceLabel ?? null) as string | null,
     strategyRuleLabel: (data.strategyRuleLabel ?? data.StrategyRuleLabel ?? null) as string | null,
   };
+  const hqSync = normalizeHqSyncOperation(data.hqSync ?? data.HqSync);
+  return hqSync ? { ...result, hqSync } : result;
 }
 
 function normalizeMultiCodeItem(payload: unknown): MultiCodeEditableItem {
   const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
-  return {
+  const result: MultiCodeEditableItem = {
     uuid: String(data.uuid ?? data.Uuid ?? ""),
     setCodeId: String(data.setCodeId ?? data.SetCodeId ?? ""),
     storeCode: (data.storeCode ?? data.StoreCode ?? null) as string | null,
@@ -141,11 +146,13 @@ function normalizeMultiCodeItem(payload: unknown): MultiCodeEditableItem {
     strategySourceLabel: (data.strategySourceLabel ?? data.StrategySourceLabel ?? null) as string | null,
     strategyRuleLabel: (data.strategyRuleLabel ?? data.StrategyRuleLabel ?? null) as string | null,
   };
+  const hqSync = normalizeHqSyncOperation(data.hqSync ?? data.HqSync);
+  return hqSync ? { ...result, hqSync } : result;
 }
 
 function normalizeSetCodeItem(payload: unknown): ProductSetCodeItem {
   const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
-  return {
+  const result: ProductSetCodeItem = {
     setCodeId: String(data.setCodeId ?? data.SetCodeId ?? ""),
     productCode: String(data.productCode ?? data.ProductCode ?? ""),
     setProductCode: String(data.setProductCode ?? data.SetProductCode ?? ""),
@@ -158,6 +165,8 @@ function normalizeSetCodeItem(payload: unknown): ProductSetCodeItem {
     setTypeDescription: (data.setTypeDescription ?? data.SetTypeDescription ?? null) as string | null,
     isActive: Boolean(data.isActive ?? data.IsActive),
   };
+  const hqSync = normalizeHqSyncOperation(data.hqSync ?? data.HqSync);
+  return hqSync ? { ...result, hqSync } : result;
 }
 
 function normalizeClearancePrice(payload: unknown): StoreClearancePriceItem | null {
@@ -166,7 +175,7 @@ function normalizeClearancePrice(payload: unknown): StoreClearancePriceItem | nu
   }
 
   const data = payload as Record<string, unknown>;
-  return {
+  const result: StoreClearancePriceItem = {
     uuid: String(data.uuid ?? data.Uuid ?? ""),
     storeCode: (data.storeCode ?? data.StoreCode ?? null) as string | null,
     storeName: (data.storeName ?? data.StoreName ?? null) as string | null,
@@ -174,6 +183,8 @@ function normalizeClearancePrice(payload: unknown): StoreClearancePriceItem | nu
     clearanceBarcode: (data.clearanceBarcode ?? data.ClearanceBarcode ?? null) as string | null,
     clearancePrice: toNumber(data.clearancePrice ?? data.ClearancePrice),
   };
+  const hqSync = normalizeHqSyncOperation(data.hqSync ?? data.HqSync);
+  return hqSync ? { ...result, hqSync } : result;
 }
 
 function normalizeDetail(payload: unknown): ProductDetail {
@@ -224,11 +235,13 @@ function normalizeAutoPricingEvaluation(payload: unknown): EvaluateAutoPricingRe
 
 function normalizeProductTypeUpdate(payload: unknown): UpdateProductTypeResult {
   const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, unknown>;
-  return {
+  const result: UpdateProductTypeResult = {
     productCode: String(data.productCode ?? data.ProductCode ?? ""),
     productType: Number(data.productType ?? data.ProductType ?? 0),
     productTypeLabel: (data.productTypeLabel ?? data.ProductTypeLabel ?? null) as string | null,
   };
+  const hqSync = normalizeHqSyncOperation(data.hqSync ?? data.HqSync);
+  return hqSync ? { ...result, hqSync } : result;
 }
 
 export async function lookupProducts(
@@ -429,12 +442,22 @@ export async function updateSetCode(
   return normalizeSetCodeItem(response.data);
 }
 
-export async function deleteSetCode(setCodeId: string): Promise<boolean> {
+export async function deleteSetCode(setCodeId: string): Promise<DeleteSetCodeResult> {
   const response = await apiClient.delete(
     `${BASE_PATH}/set-codes/${encodeURIComponent(setCodeId)}`,
     buildRequestConfig()
   );
-  return Boolean(response.data);
+  const data = response.data;
+  if (!data || typeof data !== "object") {
+    return { deleted: Boolean(data) };
+  }
+
+  const record = data as Record<string, unknown>;
+  const hqSync = normalizeHqSyncOperation(record.hqSync ?? record.HqSync);
+  return {
+    deleted: Boolean(record.deleted ?? record.Deleted),
+    ...(hqSync ? { hqSync } : {}),
+  };
 }
 
 export async function upsertClearancePrice(
@@ -447,4 +470,33 @@ export async function upsertClearancePrice(
     buildRequestConfig()
   );
   return normalizeClearancePrice(response.data)!;
+}
+
+export async function getProductHqSyncOperation(
+  operationId: string
+): Promise<ProductHqSyncOperation> {
+  const response = await apiClient.get(
+    `${BASE_PATH}/hq-sync/${encodeURIComponent(operationId)}`,
+    buildRequestConfig()
+  );
+  const operation = normalizeHqSyncOperation(response.data);
+  if (!operation) {
+    throw new Error("INVALID_HQ_SYNC_OPERATION");
+  }
+  return operation;
+}
+
+export async function retryProductHqSyncOperation(
+  operationId: string
+): Promise<ProductHqSyncOperation> {
+  const response = await apiClient.post(
+    `${BASE_PATH}/hq-sync/${encodeURIComponent(operationId)}/retry`,
+    {},
+    buildRequestConfig()
+  );
+  const operation = normalizeHqSyncOperation(response.data);
+  if (!operation) {
+    throw new Error("INVALID_HQ_SYNC_OPERATION");
+  }
+  return operation;
 }

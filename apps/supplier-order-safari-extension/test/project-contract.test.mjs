@@ -15,7 +15,7 @@ test('iOS Safari 项目版本、bundle ID 与部署目标保持一致', () => {
 
   assert.equal(pkg.version, sharedPkg.version);
   assert.equal(project.match(new RegExp(`MARKETING_VERSION = ${pkg.version.replaceAll('.', '\\.')};`, 'g'))?.length, 4);
-  assert.equal(project.match(/CURRENT_PROJECT_VERSION = 2;/g)?.length, 4);
+  assert.equal(project.match(/CURRENT_PROJECT_VERSION = 3;/g)?.length, 4);
   assert.ok(!project.includes('MACOSX_DEPLOYMENT_TARGET'));
   assert.ok(!project.includes('SDKROOT = macosx'));
   assert.ok(!project.includes('IPHONEOS_DEPLOYMENT_TARGET = 15.0'));
@@ -84,12 +84,20 @@ test('资源同步只更新商店版本并保留独立递增构建号', () => {
   assert.throws(() => synchronizeXcodeProjectVersions(source, '1.3.4-beta'), /版本格式/);
 });
 
-test('TestFlight 发布配置包含宿主元数据、公开入口和不透明 App Icon', () => {
+test('TestFlight 发布配置包含宿主元数据、公开入口、更新说明和不透明 App Icon', () => {
   const pkg = readJson('package.json');
   const hostInfo = read('xcode/HB Supplier Order Safari/HB Supplier Order Safari/Info.plist');
   const baseHostPage = read('xcode/HB Supplier Order Safari/HB Supplier Order Safari/Resources/Base.lproj/Main.html');
   const simplifiedHostPage = read('xcode/HB Supplier Order Safari/HB Supplier Order Safari/Resources/zh-Hans.lproj/Main.html');
   const releaseMetadata = readJson('release/app-store-connect.json');
+  const englishMetadata = read('release/metadata/en-AU.md');
+  const simplifiedMetadata = read('release/metadata/zh-Hans.md');
+  const englishWhatsNew = englishMetadata
+    .match(new RegExp(`## What's New in Version ${pkg.version}\\n\\n([\\s\\S]*?)\\n\\nPrivacy URL:`))?.[1]
+    .trim();
+  const simplifiedWhatsNew = simplifiedMetadata
+    .match(new RegExp(`## ${pkg.version} 更新内容\\n\\n([\\s\\S]*?)\\n\\n隐私政策：`))?.[1]
+    .trim();
   const archiveScript = read('script/archive.sh');
   const iconPath = 'xcode/HB Supplier Order Safari/HB Supplier Order Safari/Assets.xcassets/AppIcon.appiconset/universal-icon-1024@1x.png';
   const iconMetadata = execFileSync('sips', ['-g', 'pixelWidth', '-g', 'pixelHeight', '-g', 'hasAlpha', iconPath], {
@@ -105,6 +113,14 @@ test('TestFlight 发布配置包含宿主元数据、公开入口和不透明 Ap
   assert.match(iconMetadata, /pixelWidth:\s+1024/);
   assert.match(iconMetadata, /pixelHeight:\s+1024/);
   assert.match(iconMetadata, /hasAlpha:\s+no/);
+  assert.ok(englishMetadata.includes(`## What's New in Version ${pkg.version}`));
+  assert.ok(englishWhatsNew?.includes('TOP 30%'));
+  assert.ok(englishWhatsNew?.includes('GFA'));
+  assert.ok(englishWhatsNew.length <= 4000);
+  assert.ok(simplifiedMetadata.includes(`## ${pkg.version} 更新内容`));
+  assert.ok(simplifiedWhatsNew?.includes('TOP 30%'));
+  assert.ok(simplifiedWhatsNew?.includes('GFA'));
+  assert.ok(simplifiedWhatsNew.length <= 4000);
   assert.equal(pkg.scripts.archive, 'npm test && bash script/archive.sh');
   assert.ok(archiveScript.includes('-configuration Release'));
   assert.ok(archiveScript.includes('generic/platform=iOS'));
@@ -119,8 +135,8 @@ test('TestFlight 发布配置包含宿主元数据、公开入口和不透明 Ap
     bundleId: 'com.hotbargain.supplierorder.safari',
     extensionBundleId: 'com.hotbargain.supplierorder.safari.Extension',
     sku: 'HB-SUPPLIER-ORDER-IOS-2026',
-    version: '1.3.0',
-    buildNumber: 2,
+    version: '1.4.0',
+    buildNumber: 3,
     primaryLanguage: 'en-AU',
     category: 'BUSINESS',
     territories: ['AUS'],

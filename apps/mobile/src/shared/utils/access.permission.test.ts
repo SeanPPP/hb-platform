@@ -168,8 +168,8 @@ assertEqual(
 
 assertEqual(
   buildAccess(createUser(["StoreProducts.Edit"], ["StoreManager"])).canCreateStoreProducts,
-  true,
-  "StoreProducts.Edit direct grant enables store product creation capability"
+  false,
+  "StoreProducts.Edit alone does not enable store product creation capability"
 );
 
 assertEqual(

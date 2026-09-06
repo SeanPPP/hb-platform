@@ -8,9 +8,11 @@ using BlazorApp.Api.Interfaces.React;
 using BlazorApp.Api.Services;
 using BlazorApp.Api.Mappings.Profiles.React;
 using BlazorApp.Api.Services.React;
+using BlazorApp.Shared.Constants;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
 using BlazorApp.Shared.Models.HqEntities;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.Sqlite;
@@ -52,7 +54,8 @@ public sealed class ProductStoreRecordsTests : IDisposable
             typeof(StoreMultiCodeProduct),
             typeof(ProductSetCode),
             typeof(DomesticProduct),
-            typeof(ChinaSupplier)
+            typeof(ChinaSupplier),
+            typeof(UserStore)
         );
     }
 
@@ -1205,11 +1208,32 @@ public sealed class ProductStoreRecordsTests : IDisposable
     public async Task CreateWithPrices_LocalSupplierCode为空时默认写入200到商品和分店价格()
     {
         await SeedStoreAsync("S01", "分店一");
+        ProductMaintenanceHqMutationRequest? capturedRequest = null;
+        var expectedStatus = new ProductHqSyncOperationStatusDto
+        {
+            OperationId = "create-operation",
+            Status = ProductHqSyncOutboxStatuses.Pending,
+            Retryable = true,
+        };
+        var writer = new Mock<IProductMaintenanceHqProjectionWriter>(MockBehavior.Strict);
+        writer.Setup(item => item.EnqueueAsync(
+                _localDb,
+                It.IsAny<ProductMaintenanceHqMutationRequest>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .Callback<ISqlSugarClient, ProductMaintenanceHqMutationRequest, CancellationToken>(
+                (_, request, _) => capturedRequest = request
+            )
+            .ReturnsAsync(expectedStatus);
+        var currentUser = new Mock<ICurrentUserService>();
+        currentUser.Setup(item => item.GetCurrentUsername()).Returns("controller-user");
+        currentUser.Setup(item => item.GetCurrentUserGuid()).Returns("controller-user-guid");
         var controller = new ReactProductsController(
             CreateSqlSugarContext(_localDb),
             NullLogger<ReactProductsController>.Instance,
             WarehouseProductChangeHistoryTestDouble.CreateNoop(),
-            Mock.Of<ICurrentUserService>()
+            currentUser.Object,
+            writer.Object
         )
         {
             ControllerContext = new ControllerContext
@@ -1233,11 +1257,74 @@ public sealed class ProductStoreRecordsTests : IDisposable
             IsAutoPricing = false,
         });
 
-        Assert.IsType<OkObjectResult>(actionResult);
+        var okResult = Assert.IsType<OkObjectResult>(actionResult);
+        var payload = Assert.IsType<CreateProductWithPricesResultDto>(
+            okResult.Value!.GetType().GetProperty("data")!.GetValue(okResult.Value)
+        );
+        Assert.NotNull(payload.HqSync);
+        Assert.Same(expectedStatus, payload.HqSync);
+        Assert.NotNull(capturedRequest);
+        Assert.Equal(ProductMaintenanceHqOperationKinds.ProductCreated, capturedRequest!.OperationKind);
+        Assert.Null(capturedRequest.TargetStoreCodes);
+        Assert.Null(capturedRequest.AuthorizedStoreCodes);
+        Assert.Equal(new[] { ProductMaintenanceHqFieldMasks.All }, capturedRequest.FieldMask);
+        Assert.Empty(capturedRequest.Tombstones);
+        Assert.Equal("controller-user-guid", capturedRequest.RequestedByUserGuid);
+        Assert.Null(capturedRequest.RequestedByDeviceId);
         var product = await _localDb.Queryable<Product>().SingleAsync(item => item.ProductName == "控制器默认供应商商品");
         var storePrice = await _localDb.Queryable<StoreRetailPrice>().SingleAsync(item => item.ProductCode == product.ProductCode);
         Assert.Equal("200", product.LocalSupplierCode);
         Assert.Equal("200", storePrice.SupplierCode);
+        writer.VerifyAll();
+    }
+
+    [Fact]
+    public async Task CreateWithPrices_HQ入队失败时回滚商品与全部分店价格()
+    {
+        await SeedStoreAsync("S01", "分店一");
+        await SeedStoreAsync("S02", "分店二");
+        var writer = new Mock<IProductMaintenanceHqProjectionWriter>(MockBehavior.Strict);
+        writer.Setup(item => item.EnqueueAsync(
+                _localDb,
+                It.IsAny<ProductMaintenanceHqMutationRequest>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ThrowsAsync(new ProductMaintenanceHqEnqueueException("HQ 同步任务创建失败，请稍后重试"));
+        var controller = new ReactProductsController(
+            CreateSqlSugarContext(_localDb),
+            NullLogger<ReactProductsController>.Instance,
+            WarehouseProductChangeHistoryTestDouble.CreateNoop(),
+            Mock.Of<ICurrentUserService>(),
+            writer.Object
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim(ClaimTypes.Name, "controller-user"),
+                    }, "TestAuth")),
+                },
+            },
+        };
+
+        var actionResult = await controller.CreateWithPrices(new CreateProductWithPricesDto
+        {
+            ProductName = "必须整体回滚的商品",
+            PurchasePrice = 1.2m,
+            RetailPrice = 2.3m,
+            IsAutoPricing = false,
+        });
+
+        var failure = Assert.IsType<ObjectResult>(actionResult);
+        Assert.Equal(500, failure.StatusCode);
+        Assert.Equal(0, await _localDb.Queryable<Product>()
+            .Where(item => item.ProductName == "必须整体回滚的商品")
+            .CountAsync());
+        Assert.Equal(0, await _localDb.Queryable<StoreRetailPrice>().CountAsync());
+        writer.VerifyAll();
     }
 
     [Fact]
@@ -1251,7 +1338,8 @@ public sealed class ProductStoreRecordsTests : IDisposable
             CreateSqlSugarContext(_localDb),
             NullLogger<ReactProductsController>.Instance,
             WarehouseProductChangeHistoryTestDouble.CreateNoop(),
-            Mock.Of<ICurrentUserService>()
+            Mock.Of<ICurrentUserService>(),
+            CreateSuccessfulProjectionWriter()
         )
         {
             ControllerContext = new ControllerContext
@@ -1295,6 +1383,301 @@ public sealed class ProductStoreRecordsTests : IDisposable
         Assert.Equal("200", storePrices[0].SupplierCode);
         Assert.DoesNotContain(storePrices, item => item.StoreCode == "S02");
         Assert.DoesNotContain(storePrices, item => item.StoreCode == "S03");
+    }
+
+    [Fact]
+    public async Task UpdatePurchase_本地更新与当前门店HQ入队共用事务并返回公开操作状态()
+    {
+        await SeedStoreRetailPriceAsync("price-update-purchase", "P001", "S01", false, 1m, 2m);
+        var expectedStatus = new ProductHqSyncOperationStatusDto
+        {
+            OperationId = "operation-1",
+            Status = ProductHqSyncOutboxStatuses.Pending,
+            ProductCode = "P001",
+            StoreCode = "S01",
+            Retryable = true,
+        };
+        var writer = new Mock<IProductMaintenanceHqProjectionWriter>(MockBehavior.Strict);
+        writer.Setup(item => item.EnqueueAsync(
+                _localDb,
+                It.Is<ProductMaintenanceHqMutationRequest>(request =>
+                    request.OperationKind == ProductMaintenanceHqOperationKinds.StorePriceUpdated
+                    && request.ProductCode == "P001"
+                    && request.TargetStoreCodes!.SequenceEqual(new[] { "S01" })
+                    && request.AuthorizedStoreCodes == null
+                    && request.FieldMask.SequenceEqual(
+                        ProductMaintenanceHqFieldMasks.StorePriceAndMultiCode
+                    )
+                    && request.RequestedByUserGuid == "controller-user-guid"
+                ),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(expectedStatus);
+        var controller = new ReactProductsController(
+            CreateSqlSugarContext(_localDb),
+            NullLogger<ReactProductsController>.Instance,
+            WarehouseProductChangeHistoryTestDouble.CreateNoop(),
+            Mock.Of<ICurrentUserService>(),
+            writer.Object
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim(ClaimTypes.Name, "controller-user"),
+                        new Claim(ClaimTypes.NameIdentifier, "controller-user-guid"),
+                        new Claim(ClaimTypes.Role, "WarehouseManager"),
+                    }, "TestAuth")),
+                },
+            },
+        };
+
+        var action = await controller.UpdatePurchase(new UpdatePurchaseRequestDto
+        {
+            StoreCode = "S01",
+            ProductCode = "P001",
+            NewPurchasePrice = 6.25m,
+        });
+
+        var ok = Assert.IsType<OkObjectResult>(action);
+        var data = ok.Value!.GetType().GetProperty("data")!.GetValue(ok.Value);
+        Assert.NotNull(data);
+        Assert.Same(expectedStatus, data!.GetType().GetProperty("hqSync")!.GetValue(data));
+        Assert.Null(ok.Value.GetType().GetProperty("hqSync"));
+        Assert.Equal(
+            6.25m,
+            (await _localDb.Queryable<StoreRetailPrice>()
+                .SingleAsync(item => item.UUID == "price-update-purchase"))
+                .PurchasePrice
+        );
+        writer.VerifyAll();
+    }
+
+    [Fact]
+    public void UpdatePurchase_要求StoreProductsEdit权限而不是角色白名单()
+    {
+        var method = typeof(ReactProductsController).GetMethod(
+            nameof(ReactProductsController.UpdatePurchase),
+            BindingFlags.Instance | BindingFlags.Public
+        );
+
+        var authorize = Assert.Single(method!.GetCustomAttributes<AuthorizeAttribute>());
+        Assert.Equal(Permissions.StoreProducts.Edit, authorize.Policy);
+        Assert.Null(authorize.Roles);
+    }
+
+    [Fact]
+    public async Task UpdatePurchase_普通用户跨分店时拒绝且不写本地也不入队()
+    {
+        await SeedStoreAsync("S01", "分店一");
+        await SeedStoreAsync("S02", "分店二");
+        await _localDb.Insertable(new UserStore
+        {
+            UserStoreGUID = "user-store-controller-user-s01",
+            UserGUID = "controller-user-guid",
+            StoreGUID = "store-S01",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedStoreRetailPriceAsync("price-cross-store", "P001", "S02", false, 1m, 2m);
+
+        var writer = new Mock<IProductMaintenanceHqProjectionWriter>(MockBehavior.Strict);
+        var currentUser = new Mock<ICurrentUserService>();
+        currentUser.Setup(item => item.GetCurrentUserGuid()).Returns("controller-user-guid");
+        var controller = new ReactProductsController(
+            CreateSqlSugarContext(_localDb),
+            NullLogger<ReactProductsController>.Instance,
+            WarehouseProductChangeHistoryTestDouble.CreateNoop(),
+            currentUser.Object,
+            writer.Object
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim(ClaimTypes.Name, "controller-user"),
+                        new Claim(ClaimTypes.NameIdentifier, "controller-user-guid"),
+                    }, "TestAuth")),
+                },
+            },
+        };
+
+        var action = await controller.UpdatePurchase(new UpdatePurchaseRequestDto
+        {
+            StoreCode = "S02",
+            ProductCode = "P001",
+            NewPurchasePrice = 9.25m,
+        });
+
+        Assert.IsType<ForbidResult>(action);
+        Assert.Equal(
+            1m,
+            (await _localDb.Queryable<StoreRetailPrice>()
+                .SingleAsync(item => item.UUID == "price-cross-store"))
+                .PurchasePrice
+        );
+        writer.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task UpdatePurchase_普通用户当前分店成功且冻结授权范围()
+    {
+        await SeedStoreAsync("S01", "分店一");
+        await _localDb.Insertable(new UserStore
+        {
+            UserStoreGUID = "user-store-controller-user-current",
+            UserGUID = "controller-user-guid",
+            StoreGUID = "store-S01",
+            IsDeleted = false,
+        }).ExecuteCommandAsync();
+        await SeedStoreRetailPriceAsync("price-current-store", "P001", "S01", false, 1m, 2m);
+
+        var expectedStatus = new ProductHqSyncOperationStatusDto
+        {
+            OperationId = "operation-current-store",
+            Status = ProductHqSyncOutboxStatuses.Pending,
+            ProductCode = "P001",
+            StoreCode = "S01",
+            Retryable = true,
+        };
+        var writer = new Mock<IProductMaintenanceHqProjectionWriter>(MockBehavior.Strict);
+        writer.Setup(item => item.EnqueueAsync(
+                _localDb,
+                It.Is<ProductMaintenanceHqMutationRequest>(request =>
+                    request.ProductCode == "P001"
+                    && request.TargetStoreCodes!.SequenceEqual(new[] { "S01" })
+                    && request.AuthorizedStoreCodes!.SequenceEqual(new[] { "S01" })
+                ),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(expectedStatus);
+        var currentUser = new Mock<ICurrentUserService>();
+        currentUser.Setup(item => item.GetCurrentUserGuid()).Returns("controller-user-guid");
+        var controller = new ReactProductsController(
+            CreateSqlSugarContext(_localDb),
+            NullLogger<ReactProductsController>.Instance,
+            WarehouseProductChangeHistoryTestDouble.CreateNoop(),
+            currentUser.Object,
+            writer.Object
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim(ClaimTypes.Name, "controller-user"),
+                        new Claim(ClaimTypes.NameIdentifier, "controller-user-guid"),
+                    }, "TestAuth")),
+                },
+            },
+        };
+
+        var action = await controller.UpdatePurchase(new UpdatePurchaseRequestDto
+        {
+            StoreCode = "S01",
+            ProductCode = "P001",
+            NewPurchasePrice = 6.75m,
+        });
+
+        Assert.IsType<OkObjectResult>(action);
+        Assert.Equal(
+            6.75m,
+            (await _localDb.Queryable<StoreRetailPrice>()
+                .SingleAsync(item => item.UUID == "price-current-store"))
+                .PurchasePrice
+        );
+        writer.VerifyAll();
+    }
+
+    [Fact]
+    public async Task UpdatePurchase_只写进货价与审计列避免覆盖并发门店策略()
+    {
+        await SeedStoreRetailPriceAsync(
+            "price-narrow-update",
+            "P001",
+            "S01",
+            false,
+            1m,
+            2m,
+            discountRate: 0.82m,
+            isAutoPricing: true,
+            isSpecialProduct: true,
+            isActive: false
+        );
+        string? updateSql = null;
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (
+                sql.StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase)
+                && sql.Contains("StoreRetailPrice", StringComparison.OrdinalIgnoreCase)
+            )
+            {
+                updateSql = sql;
+            }
+        };
+        var controller = new ReactProductsController(
+            CreateSqlSugarContext(_localDb),
+            NullLogger<ReactProductsController>.Instance,
+            WarehouseProductChangeHistoryTestDouble.CreateNoop(),
+            Mock.Of<ICurrentUserService>(),
+            CreateSuccessfulProjectionWriter()
+        )
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(new[]
+                    {
+                        new Claim(ClaimTypes.Name, "warehouse-manager"),
+                        new Claim(ClaimTypes.Role, "WarehouseManager"),
+                    }, "TestAuth")),
+                },
+            },
+        };
+
+        var action = await controller.UpdatePurchase(new UpdatePurchaseRequestDto
+        {
+            StoreCode = "S01",
+            ProductCode = "P001",
+            NewPurchasePrice = 6.5m,
+        });
+
+        Assert.IsType<OkObjectResult>(action);
+        Assert.NotNull(updateSql);
+        var setClause = updateSql![..updateSql.IndexOf("WHERE", StringComparison.OrdinalIgnoreCase)];
+        Assert.Contains("PurchasePrice", setClause, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("UpdatedAt", setClause, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("UpdatedBy", setClause, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("StoreRetailPriceValue", setClause, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("DiscountRate", setClause, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("IsAutoPricing", setClause, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("IsSpecialProduct", setClause, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("IsActive", setClause, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static IProductMaintenanceHqProjectionWriter CreateSuccessfulProjectionWriter()
+    {
+        var writer = new Mock<IProductMaintenanceHqProjectionWriter>();
+        writer.Setup(item => item.EnqueueAsync(
+                It.IsAny<ISqlSugarClient>(),
+                It.IsAny<ProductMaintenanceHqMutationRequest>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(new ProductHqSyncOperationStatusDto
+            {
+                OperationId = Guid.NewGuid().ToString("N"),
+                Status = ProductHqSyncOutboxStatuses.Pending,
+                Retryable = true,
+            });
+        return writer.Object;
     }
 
     public void Dispose()

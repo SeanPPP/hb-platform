@@ -93,3 +93,17 @@ test("中英文设置文案同时提供新分组和诊断入口", () => {
     assert.equal(typeof locale.diagnostics.title, "string");
   }
 });
+
+test("设置页手动检查复用受控 OTA 唯一发布通道", () => {
+  const settings = read("app/(shell)/settings.tsx");
+  const layout = read("app/_layout.tsx");
+  const boundary = read("src/modules/updates/MobileOtaUpdateBoundary.tsx");
+  const hook = read("src/modules/updates/use-mobile-ota-update.ts");
+
+  assert.match(settings, /useMobileOtaManualCheck/);
+  assert.match(settings, /await checkMobileOtaUpdate\(\)/);
+  assert.doesNotMatch(settings, /checkAndDownloadAppUpdate/);
+  assert.match(layout, /onManualCheck=\{mobileOtaUpdate\.checkManually\}/);
+  assert.match(boundary, /MobileOtaManualCheckContext\.Provider/);
+  assert.match(hook, /optionalPromptTargetRef\.current = null;[\s\S]{0,500}await runCheckRef\.current\(\)/);
+});

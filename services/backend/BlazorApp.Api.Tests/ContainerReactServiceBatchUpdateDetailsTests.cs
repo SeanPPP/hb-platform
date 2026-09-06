@@ -2380,6 +2380,114 @@ public sealed class ContainerReactServiceBatchUpdateDetailsTests : IDisposable
     }
 
     [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_商品名称缺少关联国内商品_返回字段错误且不计成功()
+    {
+        await SeedDetailAsync("D-NAME-NO-DOMESTIC", "P-NAME-NO-DOMESTIC");
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-NAME-NO-DOMESTIC", 商品名称 = "新商品名称" },
+            }
+        );
+
+        Assert.Equal(0, result.TotalUpdated);
+        var error = Assert.Single(result.ValidationErrors);
+        Assert.Equal("D-NAME-NO-DOMESTIC", error.HGUID);
+        Assert.Equal("商品名称", error.Field);
+        Assert.Equal("RELATED_PRODUCT_NOT_FOUND", error.Code);
+        Assert.Equal("关联国内商品不存在，无法更新商品名称", error.Message);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_中包数缺少关联国内商品_返回字段错误且不计成功()
+    {
+        await SeedDetailAsync("D-MIDDLE-NO-DOMESTIC", "P-MIDDLE-NO-DOMESTIC");
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new() { HGUID = "D-MIDDLE-NO-DOMESTIC", 中包数 = 12m },
+            }
+        );
+
+        Assert.Equal(0, result.TotalUpdated);
+        var error = Assert.Single(result.ValidationErrors);
+        Assert.Equal("D-MIDDLE-NO-DOMESTIC", error.HGUID);
+        Assert.Equal("中包数", error.Field);
+        Assert.Equal("RELATED_PRODUCT_NOT_FOUND", error.Code);
+        Assert.Equal("关联国内商品不存在，无法更新中包数", error.Message);
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_名称和中包数都缺少关联国内商品_分别返回字段错误()
+    {
+        await SeedDetailAsync("D-RELATED-BOTH-MISSING", "P-RELATED-BOTH-MISSING");
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-RELATED-BOTH-MISSING",
+                    商品名称 = "新商品名称",
+                    中包数 = 15m,
+                },
+            }
+        );
+
+        Assert.Equal(0, result.TotalUpdated);
+        Assert.Collection(
+            result.ValidationErrors.OrderBy(error => error.Field),
+            error =>
+            {
+                Assert.Equal("D-RELATED-BOTH-MISSING", error.HGUID);
+                Assert.Equal("中包数", error.Field);
+                Assert.Equal("RELATED_PRODUCT_NOT_FOUND", error.Code);
+            },
+            error =>
+            {
+                Assert.Equal("D-RELATED-BOTH-MISSING", error.HGUID);
+                Assert.Equal("商品名称", error.Field);
+                Assert.Equal("RELATED_PRODUCT_NOT_FOUND", error.Code);
+            }
+        );
+    }
+
+    [Fact]
+    public async Task BatchUpdateDetailsDetailedAsync_关联字段失败时_其它明细字段仍按部分成功保存()
+    {
+        await SeedDetailAsync("D-RELATED-PARTIAL", "P-RELATED-PARTIAL");
+        var service = CreateService();
+
+        var result = await service.BatchUpdateDetailsDetailedAsync(
+            new List<UpdateContainerDetailDto>
+            {
+                new()
+                {
+                    HGUID = "D-RELATED-PARTIAL",
+                    商品名称 = "新商品名称",
+                    中包数 = 18m,
+                    备注 = "其它字段仍应保存",
+                },
+            }
+        );
+
+        var detail = await _localDb.Queryable<ContainerDetail>()
+            .SingleAsync(item => item.DetailCode == "D-RELATED-PARTIAL");
+        Assert.Equal(1, result.TotalUpdated);
+        Assert.Equal(2, result.ValidationErrors.Count);
+        Assert.All(
+            result.ValidationErrors,
+            error => Assert.Equal("RELATED_PRODUCT_NOT_FOUND", error.Code)
+        );
+        Assert.Equal("其它字段仍应保存", detail.Remarks);
+    }
+
+    [Fact]
     public async Task BatchUpdateDetailsAsync_已匹配商品中包数变化_应同步仓库和国内中包数且不改明细装箱数()
     {
         await SeedDetailAndProductAsync("D-MIN-ORDER", "P-MIN-ORDER", englishName: "Old English", middlePackQuantity: 6);

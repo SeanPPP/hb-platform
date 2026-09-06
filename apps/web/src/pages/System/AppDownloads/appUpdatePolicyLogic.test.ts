@@ -493,4 +493,53 @@ assertEqual(
   'iPad 原生策略激活前必须再次确认 Apple Lookup 未验证构建号',
 )
 
+const nativeReleaseActionSource = panelSource.slice(
+  panelSource.indexOf('function nativeReleaseColumns'),
+  panelSource.indexOf('const otaReleaseColumns'),
+)
+assertEqual(
+  nativeReleaseActionSource.includes("app === 'mobile-ios' ?"),
+  true,
+  '只有 Mobile iOS 发布行需要提供 App Store 安装二维码入口',
+)
+assertEqual(
+  nativeReleaseActionSource.includes('icon={<QrcodeOutlined />}')
+    && nativeReleaseActionSource.includes('onClick={() => setQrRelease(release)}')
+    && nativeReleaseActionSource.includes('disabled={!url}'),
+  true,
+  'Mobile iOS 二维码入口必须依赖当前行已经过白名单校验的 App Store URL',
+)
+assertEqual(
+  panelSource.includes('open={Boolean(qrRelease)}')
+    && panelSource.includes('onCancel={() => setQrRelease(null)}')
+    && panelSource.includes('<QRCodeSVG')
+    && panelSource.includes('value={qrReleaseUrl}')
+    && panelSource.includes('marginSize={4}')
+    && panelSource.includes('level="M"')
+    && panelSource.includes('copyable={{ text: qrReleaseUrl }}'),
+  true,
+  'App Store 安装二维码弹窗必须展示带四模块静区的二维码、版本信息和同一条可复制安全链接',
+)
+
+assertEqual(
+  zhLocale.system.appDownloads.updatePolicy.viewInstallQrCode,
+  '查看安装二维码',
+  '中文二维码操作必须明确用于安装',
+)
+assertEqual(
+  enLocale.system.appDownloads.updatePolicy.viewInstallQrCode,
+  'View Install QR Code',
+  '英文二维码操作必须明确用于安装',
+)
+for (const locale of [zhLocale, enLocale]) {
+  const copy = locale.system.appDownloads.updatePolicy
+  for (const key of ['appStoreQrCodeTitle', 'appStoreQrCodeHint', 'appStoreQrCodeAccessibleTitle']) {
+    assertEqual(
+      typeof copy[key],
+      'string',
+      `App Store 安装二维码必须定义多语言文案 ${key}`,
+    )
+  }
+}
+
 console.log('appUpdatePolicyLogic.test.ts: ok')

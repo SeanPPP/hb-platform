@@ -103,6 +103,7 @@ function PickerRow({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={label}
+          accessibilityState={{ selected }}
           onPress={onPress}
           style={styles.itemButton}
         >
@@ -110,6 +111,7 @@ function PickerRow({
         </Pressable>
       ) : (
         <Button
+          accessibilityState={{ selected }}
           mode="text"
           onPress={onPress}
           style={styles.itemButton}

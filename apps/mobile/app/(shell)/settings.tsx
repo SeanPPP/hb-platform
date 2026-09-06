@@ -48,10 +48,8 @@ import { resolveSettingsAuthMode, shouldShowProfileAction } from "@/modules/devi
 import { isIosReviewSessionActive } from "@/modules/ios-review/session";
 import { isRequiredLocationError } from "@/modules/attendance/required-location";
 import { buildAppUpdateInfoRows, formatAppPackageVersion } from "@/modules/updates/app-update-info";
-import {
-  checkAndDownloadAppUpdate,
-  getCurrentAppUpdateInfo,
-} from "@/modules/updates/app-update-runtime";
+import { getCurrentAppUpdateInfo } from "@/modules/updates/app-update-runtime";
+import { useMobileOtaManualCheck } from "@/modules/updates/MobileOtaUpdateBoundary";
 import {
   API_HOST_PRESETS,
   getCurrentApiHost,
@@ -367,6 +365,7 @@ function PrinterDeviceList({
 export default function Settings() {
   const router = useRouter();
   const { t, language } = useAppTranslation(["settings", "common"]);
+  const checkMobileOtaUpdate = useMobileOtaManualCheck();
   const user = useAuthStore((state) => state.user);
   const logout = useAuthStore((state) => state.logout);
   const loginDeviceAccount = useAuthStore((state) => state.loginDeviceAccount);
@@ -765,16 +764,14 @@ export default function Settings() {
     }
     setUpdateBusy(true);
     try {
-      // 手动检查只负责下载更新，避免在扫码、保存等操作中主动重载 App。
-      const result = await checkAndDownloadAppUpdate();
-      if (result.status === "downloaded") {
-        Alert.alert(t("dialogs.updateDownloadedTitle"), t("dialogs.updateDownloadedMessage"));
-      } else if (result.status === "not-available") {
+      // 与启动检查复用同一受控策略，确保唯一发布 channel 上的目标不会被遗漏。
+      const result = await checkMobileOtaUpdate();
+      if (result.status === "not-available") {
         Alert.alert(t("dialogs.updateNotAvailableTitle"), t("dialogs.updateNotAvailableMessage"));
-      } else if (result.status === "configuration-disabled") {
+      } else if (result.status === "disabled") {
         Alert.alert(t("dialogs.updateConfigurationDisabledTitle"), t("dialogs.updateConfigurationDisabledMessage"));
-      } else {
-        Alert.alert(t("dialogs.updateDisabledTitle"), t("dialogs.updateDisabledMessage"));
+      } else if (result.status === "failed") {
+        Alert.alert(t("dialogs.updateCheckFailedTitle"), t("dialogs.updateCheckFailedMessage"));
       }
     } catch (error) {
       Alert.alert(

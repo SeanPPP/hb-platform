@@ -10,9 +10,12 @@
   "summary": {
     "currentStore": "Current store",
     "noStore": "No store selected",
+    "switchStore": "Switch",
+    "storePickerTitle": "Switch store",
     "authorizedFunctions": "Authorised tools",
     "functionCount": "{{count}} available",
     "cartSku": "Cart SKUs",
+    "cartLoading": "Loading the current store cart",
     "skuCount": "{{count}} items"
   },
   "quickActions": {
@@ -64,6 +67,10 @@
   },
   "accessibility": {
     "openFunction": "Open {{title}}",
-    "functionCount": "{{title}}, {{count}} available tools"
+    "functionCount": "{{title}}, {{count}} available tools",
+    "currentStore": "Current store, {{store}}",
+    "changeStore": "Current store, {{store}}, switch store",
+    "changeStoreHint": "Opens the stores authorised for this account",
+    "storesLoading": "Loading available stores"
   }
 }

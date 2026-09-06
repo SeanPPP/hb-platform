@@ -3,7 +3,7 @@ import { ScrollView, StyleSheet, TextInput, View } from "react-native";
 import { CameraView } from "expo-camera";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
-import { Button, Card, Modal, Portal, RadioButton, Snackbar, Switch, Text } from "react-native-paper";
+import { ActivityIndicator, Button, Card, Modal, Portal, RadioButton, Snackbar, Switch, Text } from "react-native-paper";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { LookupResultSheet } from "@/components/product-maintenance/LookupResultSheet";
 import { LabelPrintCard } from "@/components/product-maintenance/LabelPrintCard";
@@ -36,10 +36,13 @@ import {
   createSetCode,
   evaluateAutoPricing,
   fetchActiveLocalSuppliers,
+  getProductHqSyncOperation,
   getProductCodes,
   getProductFastDetail,
   lookupProducts,
+  retryProductHqSyncOperation,
   syncWarehousePrice,
+  updateMultiCode,
   updateSetCode,
   updateProductType,
   updateStorePrice,
@@ -52,9 +55,20 @@ import type {
   LocalSupplierOption,
   MultiCodeEditableItem,
   ProductDetail,
+  ProductHqSyncOperation,
   ProductLookupItem,
-  ProductSetCodeItem,
 } from "@/modules/product-maintenance/types";
+import {
+  createProductDetailRequestCoordinator,
+  createProductHqSyncMutationCoordinator,
+  getHqSyncDisplayState,
+  getHqSyncPollDelayMs,
+  getHqSyncStatusFailurePollDelayMs,
+  isHqSyncInFlight,
+  isProductMaintenanceStoreScopeCurrent,
+  isRetryableHqSyncStatusHttpError,
+  type ProductHqSyncMutationToken,
+} from "@/modules/product-maintenance/hq-sync";
 import {
   buildWarehousePriceSyncRequest,
   createWarehousePriceSyncState,
@@ -286,6 +300,7 @@ interface BarcodeEditModalState {
 interface CodeAddModalState {
   codeType: "set" | "multi";
   value: string;
+  retailPrice: string;
 }
 
 interface CreateProductDraft {
@@ -297,6 +312,10 @@ interface CreateProductDraft {
   retailPrice: string;
   isSpecialProduct: boolean;
   isAutoPricing: boolean;
+}
+
+function getMultiCodeItemId(item: MultiCodeEditableItem): string {
+  return item.setCodeId || item.uuid;
 }
 
 const PRODUCT_TYPE_OPTIONS = [0, 1, 2] as const;
@@ -368,6 +387,8 @@ function ProductQueryContent() {
   const [saving, setSaving] = useState(false);
   const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [snackbarMessage, setSnackbarMessage] = useState("");
+  const [hqSyncOperation, setHqSyncOperation] = useState<ProductHqSyncOperation | null>(null);
+  const [hqSyncRetrying, setHqSyncRetrying] = useState(false);
   const [printingAction, setPrintingAction] = useState<PrintAction | null>(null);
   const [continuousPrintEnabled, setContinuousPrintEnabled] = useState(false);
   const [autoPrintOnLookupConfirm, setAutoPrintOnLookupConfirm] = useState(false);
@@ -422,6 +443,24 @@ function ProductQueryContent() {
     ((targetDetail: ProductDetail, options: DetailPostLoadOptions) => Promise<LookupFlowResult>) | null
   >(null);
   const saveClearanceRef = useRef<() => Promise<void>>(async () => {});
+  const saveMultiCodeRef = useRef<(itemId: string, retailPriceOverride?: number | null) => Promise<void>>(
+    async () => {}
+  );
+  const hqSyncOperationIdRef = useRef<string | null>(null);
+  const loadedDetailStoreCodeRef = useRef<string | null>(null);
+  const activeDetailProductCodeRef = useRef<string | null>(null);
+  const hqSyncMutationCoordinatorRef = useRef<ReturnType<
+    typeof createProductHqSyncMutationCoordinator
+  > | null>(null);
+  const detailRequestCoordinatorRef = useRef<ReturnType<
+    typeof createProductDetailRequestCoordinator
+  > | null>(null);
+  if (!hqSyncMutationCoordinatorRef.current) {
+    hqSyncMutationCoordinatorRef.current = createProductHqSyncMutationCoordinator();
+  }
+  if (!detailRequestCoordinatorRef.current) {
+    detailRequestCoordinatorRef.current = createProductDetailRequestCoordinator();
+  }
   const handledExternalQueryRef = useRef<string | null>(null);
   const [numericInputModal, setNumericInputModal] = useState<NumericInputModalState | null>(null);
   const warehousePriceInteractionLocked = isWarehousePriceInteractionLocked(
@@ -442,6 +481,171 @@ function ProductQueryContent() {
       },
     });
   }
+  const rememberHqSyncOperation = useCallback((operation: ProductHqSyncOperation) => {
+    hqSyncOperationIdRef.current = operation.operationId;
+    setHqSyncOperation(operation);
+  }, []);
+  const activateHqSyncScope = useCallback((productCode?: string | null, storeCode?: string | null) => {
+    detailRequestCoordinatorRef.current?.activate({ productCode, storeCode });
+    if (!hqSyncMutationCoordinatorRef.current?.activate({ productCode, storeCode })) {
+      return;
+    }
+
+    // 商品或分店切换后，旧 mutation 与轮询结果都不能重新占用当前页面提示。
+    hqSyncOperationIdRef.current = null;
+    setHqSyncOperation(null);
+  }, []);
+  const beginHqSyncMutation = useCallback(
+    (productCode?: string | null, storeCode?: string | null) => {
+      activateHqSyncScope(productCode, storeCode);
+      return hqSyncMutationCoordinatorRef.current!.begin();
+    },
+    [activateHqSyncScope]
+  );
+  const presentHqSyncOperation = useCallback(
+    (
+      mutation: ProductHqSyncMutationToken,
+      operation: ProductHqSyncOperation | null | undefined,
+      fallbackMessage?: string
+    ) => {
+      const resultScope = operation
+        ? {
+            productCode: operation.productCode,
+            storeCode: operation.storeCode ?? mutation.scope.storeCode,
+          }
+        : undefined;
+      if (!operation) {
+        // 没有 outbox operation 时只展示本地保存反馈，绝不能推进成功序号；
+        // 否则后发的普通响应会吞掉先发真实 HQ 同步任务。
+        if (!hqSyncMutationCoordinatorRef.current?.isCurrent(mutation)) {
+          return false;
+        }
+        if (fallbackMessage) {
+          setSnackbarMessage(fallbackMessage);
+        }
+        return false;
+      }
+
+      if (!hqSyncMutationCoordinatorRef.current?.succeed(mutation, resultScope)) {
+        return false;
+      }
+
+      rememberHqSyncOperation(operation);
+      if (operation.status === "succeeded") {
+        setSnackbarMessage(t("messages.hqSyncSucceeded"));
+      } else if (operation.status === "blocked") {
+        setSnackbarMessage(t("messages.hqSyncBlocked"));
+      } else if (operation.status === "retrying") {
+        setSnackbarMessage(t("messages.hqSyncRetrying"));
+      } else if (operation.status === "superseded") {
+        setSnackbarMessage(t("messages.hqSyncSuperseded"));
+      } else {
+        setSnackbarMessage(t("messages.hqSyncPending"));
+      }
+      return true;
+    },
+    [rememberHqSyncOperation, t]
+  );
+
+  useEffect(() => {
+    const initialOperation = hqSyncOperation;
+    if (!isFocused || !isHqSyncInFlight(initialOperation)) {
+      return;
+    }
+
+    let disposed = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let consecutiveStatusFailures = 0;
+
+    const poll = (current: ProductHqSyncOperation, delayMs = getHqSyncPollDelayMs(current)) => {
+      timer = setTimeout(async () => {
+        try {
+          const latest = await getProductHqSyncOperation(current.operationId);
+          if (disposed || hqSyncOperationIdRef.current !== latest.operationId) {
+            return;
+          }
+
+          consecutiveStatusFailures = 0;
+          setHqSyncOperation(latest);
+          if (latest.status === "succeeded") {
+            setSnackbarMessage(t("messages.hqSyncSucceeded"));
+            return;
+          }
+          if (latest.status === "blocked") {
+            setSnackbarMessage(t("messages.hqSyncBlocked"));
+            return;
+          }
+          if (latest.status === "superseded") {
+            setSnackbarMessage(t("messages.hqSyncSuperseded"));
+            return;
+          }
+          if (latest.status === "retrying" && current.status !== "retrying") {
+            setSnackbarMessage(t("messages.hqSyncRetrying"));
+          }
+          poll(latest);
+        } catch (error) {
+          if (disposed || hqSyncOperationIdRef.current !== current.operationId) {
+            return;
+          }
+
+          const status = isAxiosError(error) ? error.response?.status : undefined;
+          if (isAxiosError(error) && isRetryableHqSyncStatusHttpError(status)) {
+            // 网络、限流或服务端短暂失败不改变已保存事实，继续观察同一持久任务。
+            consecutiveStatusFailures += 1;
+            poll(
+              current,
+              getHqSyncStatusFailurePollDelayMs(consecutiveStatusFailures)
+            );
+            return;
+          }
+
+          // 403/404 或无效响应不会自行恢复，停止热循环并明确保留“本地已保存”的事实。
+          setHqSyncOperation({
+            ...current,
+            status: "blocked",
+            retryable: false,
+            errorCode: "HQ_SYNC_STATUS_UNAVAILABLE",
+            message: t("messages.hqSyncStatusUnavailable"),
+          });
+          setSnackbarMessage(t("messages.hqSyncStatusUnavailable"));
+        }
+      }, delayMs);
+    };
+
+    poll(initialOperation);
+    return () => {
+      disposed = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+    };
+  }, [hqSyncOperation, isFocused, t]);
+
+  const handleRetryHqSync = useCallback(async () => {
+    if (!hqSyncOperation || hqSyncOperation.status !== "blocked" || hqSyncRetrying) {
+      return;
+    }
+
+    const operationId = hqSyncOperation.operationId;
+    const mutation = beginHqSyncMutation(
+      hqSyncOperation.productCode,
+      hqSyncOperation.storeCode ?? selectedStoreCode
+    );
+    setHqSyncRetrying(true);
+    try {
+      const retried = await retryProductHqSyncOperation(operationId);
+      if (hqSyncOperationIdRef.current === operationId) {
+        presentHqSyncOperation(mutation, retried);
+      }
+    } catch (error) {
+      hqSyncMutationCoordinatorRef.current?.fail(mutation);
+      if (hqSyncOperationIdRef.current === operationId) {
+        setSnackbarMessage(getErrorMessage(error, "messages.hqSyncRetryFailed"));
+      }
+    } finally {
+      setHqSyncRetrying(false);
+    }
+  }, [beginHqSyncMutation, getErrorMessage, hqSyncOperation, hqSyncRetrying, presentHqSyncOperation, selectedStoreCode]);
   const invalidateActivePromotions = useCallback(() => {
     activePromotionCoordinatorRef.current?.invalidate();
   }, []);
@@ -460,12 +664,24 @@ function ProductQueryContent() {
         requestInFlight:
           lookupRequestInFlightRef.current || warehousePriceRequestInFlightRef.current,
         storeSelectionInFlight: storeSelectionInFlightRef.current,
-      }),
+      })
+      || saving
+      || Boolean(savingItemId)
+      || savingClearance
+      || productTypeSaving
+      || createProductSaving
+      || hqSyncRetrying,
     [
       autoPricingDialog,
       autoPricingDialogSaving,
       loading,
       lookupVisible,
+      createProductSaving,
+      hqSyncRetrying,
+      productTypeSaving,
+      saving,
+      savingClearance,
+      savingItemId,
       warehousePriceInteractionLocked,
     ]
   );
@@ -516,6 +732,10 @@ function ProductQueryContent() {
       if (!storeCode) {
         return;
       }
+      const request = detailRequestCoordinatorRef.current!.begin({
+        productCode: sourceDetail.productCode,
+        storeCode,
+      });
 
       const hasSetCodes = sourceDetail.setCodeCount > 0;
       const hasMultiCodes = sourceDetail.multiCodeCount > 0;
@@ -540,6 +760,9 @@ function ProductQueryContent() {
             nextPage,
             CODE_PAGE_SIZE
           );
+          if (!detailRequestCoordinatorRef.current?.isCurrent(request)) {
+            return;
+          }
           const applyPage = (current: ProductDetail | null) =>
             current?.productCode === sourceDetail.productCode
               ? {
@@ -571,6 +794,9 @@ function ProductQueryContent() {
           nextPage,
           CODE_PAGE_SIZE
         );
+        if (!detailRequestCoordinatorRef.current?.isCurrent(request)) {
+          return;
+        }
         const applyPage = (current: ProductDetail | null) =>
           current?.productCode === sourceDetail.productCode
             ? {
@@ -593,6 +819,9 @@ function ProductQueryContent() {
           };
         }
       } catch (error) {
+        if (!detailRequestCoordinatorRef.current?.isCurrent(request)) {
+          return;
+        }
         const fallback = t("messages.codesLoadFailed");
         let detail = "";
         if (isAxiosError(error) && !error.response) {
@@ -605,8 +834,10 @@ function ProductQueryContent() {
         setSnackbarMessage(detail ? `${fallback}: ${detail}` : fallback);
         playQueryFeedback("error");
       } finally {
-        setCodesLoading(false);
-        setCodesLoadingMore(false);
+        if (detailRequestCoordinatorRef.current?.isCurrent(request)) {
+          setCodesLoading(false);
+          setCodesLoadingMore(false);
+        }
       }
     },
     [playQueryFeedback, selectedStoreCode, t]
@@ -620,9 +851,20 @@ function ProductQueryContent() {
         return null;
       }
 
+      activateHqSyncScope(productCode, targetStoreCode);
       invalidateActivePromotions();
+      // 请求尚未返回时也记录其范围；其他 tab 换店可立即使慢响应失效。
+      activeDetailProductCodeRef.current = productCode;
+      loadedDetailStoreCodeRef.current = targetStoreCode;
+      const request = detailRequestCoordinatorRef.current!.begin({
+        productCode,
+        storeCode: targetStoreCode,
+      });
       console.log("[product-query] load detail", { selectedStoreCode: targetStoreCode });
       const payload = await getProductFastDetail(productCode, targetStoreCode);
+      if (!detailRequestCoordinatorRef.current?.isCurrent(request)) {
+        return null;
+      }
       loadActivePromotions(payload.productCode, targetStoreCode);
       setDetail(payload);
       setInitialDetail(cloneDetail(payload));
@@ -632,15 +874,64 @@ function ProductQueryContent() {
       setCodePage(1);
       setCodesHasMore(false);
       const detailWithCodes = await loadProductCodes(payload, 1, false, targetStoreCode);
+      if (!detailRequestCoordinatorRef.current?.isScopeActive({ productCode, storeCode: targetStoreCode })) {
+        return null;
+      }
       return detailWithCodes ?? payload;
     },
     [
+      activateHqSyncScope,
       invalidateActivePromotions,
       loadActivePromotions,
       loadProductCodes,
       selectedStoreCode,
       t,
     ]
+  );
+
+  const discardStaleDetailForStoreChange = useCallback(
+    (productCode?: string) => {
+      loadedDetailStoreCodeRef.current = null;
+      activeDetailProductCodeRef.current = null;
+      activateHqSyncScope(productCode, selectedStoreCode);
+      invalidateActivePromotions();
+      setDetail(null);
+      setInitialDetail(null);
+      setSelectedLookupProductCode(undefined);
+      setCodePage(1);
+      setCodesHasMore(false);
+    },
+    [activateHqSyncScope, invalidateActivePromotions, selectedStoreCode]
+  );
+
+  useEffect(() => {
+    const activeProductCode = detail?.productCode ?? activeDetailProductCodeRef.current;
+    if (!activeProductCode || storeSelectionInFlightRef.current) {
+      return;
+    }
+
+    if (isProductMaintenanceStoreScopeCurrent(loadedDetailStoreCodeRef.current, selectedStoreCode)) {
+      return;
+    }
+
+    // 其他 tab 修改全局分店后，本页不能继续保留旧店的可编辑 UUID。
+    discardStaleDetailForStoreChange(activeProductCode);
+  }, [detail?.productCode, discardStaleDetailForStoreChange, selectedStoreCode]);
+
+  const ensureCurrentDetailStoreScope = useCallback(
+    (sourceDetail: ProductDetail, recordStoreCode?: string | null) => {
+      const targetStoreCode = recordStoreCode ?? sourceDetail.storePrice?.storeCode ?? loadedDetailStoreCodeRef.current;
+      if (isProductMaintenanceStoreScopeCurrent(targetStoreCode, selectedStoreCode)) {
+        return true;
+      }
+
+      discardStaleDetailForStoreChange(sourceDetail.productCode);
+      if (selectedStoreCode) {
+        void loadDetail(sourceDetail.productCode, selectedStoreCode);
+      }
+      return false;
+    },
+    [discardStaleDetailForStoreChange, loadDetail, selectedStoreCode]
   );
 
   const canSelectStore = !isDeviceMode && stores.length > 0 && !isProductQueryBusy();
@@ -655,6 +946,7 @@ function ProductQueryContent() {
       setLoading(true);
       setStorePickerVisible(false);
       try {
+        activateHqSyncScope(detail?.productCode, store.storeCode);
         invalidateActivePromotions();
         await selectStore(store);
 
@@ -684,6 +976,7 @@ function ProductQueryContent() {
       }
     },
     [
+      activateHqSyncScope,
       detail?.productCode,
       getErrorMessage,
       invalidateActivePromotions,
@@ -759,6 +1052,7 @@ function ProductQueryContent() {
 
     setCreateProductSaving(true);
     let createdProductCode = "";
+    const mutation = beginHqSyncMutation(detail?.productCode, selectedStoreCode);
     try {
       const result = await createProductWithPrices(validation.payload);
       const nextKeyword =
@@ -768,14 +1062,24 @@ function ProductQueryContent() {
       setCreateProductVisible(false);
       setCreateProductDraft(EMPTY_CREATE_PRODUCT_DRAFT);
       setKeyword(nextKeyword);
-      setSnackbarMessage(t("createProduct.messages.created"));
+      presentHqSyncOperation(mutation, result.hqSync, t("createProduct.messages.created"));
     } catch (error) {
+      hqSyncMutationCoordinatorRef.current?.fail(mutation);
       setSnackbarMessage(getErrorMessage(error, "createProduct.messages.createFailed"));
       setCreateProductSaving(false);
       return;
     }
 
-    if (createdProductCode) {
+    if (createdProductCode && selectedStoreCode) {
+      // 创建 B 成功后不能继续把 A 留在可编辑详情中；即使 B 的回读暂时失败，
+      // HQ operation 仍独立保留，用户也不会误把后续操作提交给旧商品。
+      loadedDetailStoreCodeRef.current = null;
+      activeDetailProductCodeRef.current = null;
+      setDetail(null);
+      setInitialDetail(null);
+      setSelectedLookupProductCode(undefined);
+      setCodePage(1);
+      setCodesHasMore(false);
       try {
         await loadDetail(createdProductCode);
       } catch (error) {
@@ -784,7 +1088,7 @@ function ProductQueryContent() {
     }
 
     setCreateProductSaving(false);
-  }, [createProductDraft, getErrorMessage, loadDetail, t]);
+  }, [beginHqSyncMutation, createProductDraft, detail?.productCode, getErrorMessage, loadDetail, presentHqSyncOperation, selectedStoreCode, t]);
 
   const persistStorePrice = useCallback(
     async (
@@ -794,14 +1098,20 @@ function ProductQueryContent() {
       if (!sourceDetail.storePrice) {
         return null;
       }
+      if (!ensureCurrentDetailStoreScope(sourceDetail, sourceDetail.storePrice.storeCode)) {
+        return null;
+      }
 
       const nextStorePrice = {
         ...sourceDetail.storePrice,
         ...patch,
       };
+      const scope = { productCode: sourceDetail.productCode, storeCode: selectedStoreCode };
 
+      let savedStorePrice: NonNullable<ProductDetail["storePrice"]>;
+      const mutation = beginHqSyncMutation(sourceDetail.productCode, selectedStoreCode);
       try {
-        const savedStorePrice = await updateStorePrice(sourceDetail.storePrice.uuid, {
+        savedStorePrice = await updateStorePrice(sourceDetail.storePrice.uuid, {
           purchasePrice: nextStorePrice.purchasePrice ?? null,
           retailPrice: nextStorePrice.retailPrice ?? null,
           discountRate: normalizeDiscountRateValue(nextStorePrice.discountRate),
@@ -809,26 +1119,46 @@ function ProductQueryContent() {
           isSpecialProduct: nextStorePrice.isSpecialProduct,
           isActive: nextStorePrice.isActive,
         });
+      } catch (error) {
+        hqSyncMutationCoordinatorRef.current?.fail(mutation);
+        setSnackbarMessage(getErrorMessage(error, "messages.saveFailed"));
+        playQueryFeedback("error");
+        return null;
+      }
 
-        if (selectedStoreCode) {
+      presentHqSyncOperation(mutation, savedStorePrice.hqSync, t("messages.saved"));
+      // 保存已提交后仍可能切换商品/分店；旧响应只能保留其 HQ 状态，不能回写详情。
+      if (!detailRequestCoordinatorRef.current?.isScopeActive(scope)) {
+        return null;
+      }
+      const nextDetail = replaceStorePriceDetail(sourceDetail, savedStorePrice);
+      if (selectedStoreCode) {
+        const refreshRequest = detailRequestCoordinatorRef.current!.begin(scope);
+        try {
           const refreshed = await getProductFastDetail(sourceDetail.productCode, selectedStoreCode);
+          if (!detailRequestCoordinatorRef.current?.isCurrent(refreshRequest)) {
+            return null;
+          }
+          loadedDetailStoreCodeRef.current = selectedStoreCode;
           setDetail(refreshed);
           setInitialDetail(cloneDetail(refreshed));
           void loadProductCodes(refreshed, 1, false);
           return refreshed;
+        } catch (error) {
+          console.warn("[product-query] refresh after store price save failed", {
+            message: isAxiosError(error) ? error.message : String(error),
+          });
         }
+      }
 
-        const nextDetail = replaceStorePriceDetail(sourceDetail, savedStorePrice);
-        setDetail(nextDetail);
-        setInitialDetail(cloneDetail(nextDetail));
-        return nextDetail;
-      } catch (error) {
-        setSnackbarMessage(getErrorMessage(error, "messages.autoPricingUpdateFailed"));
-        playQueryFeedback("error");
+      if (!detailRequestCoordinatorRef.current?.isScopeActive(scope)) {
         return null;
       }
+      setDetail(nextDetail);
+      setInitialDetail(cloneDetail(nextDetail));
+      return nextDetail;
     },
-    [getErrorMessage, loadProductCodes, playQueryFeedback, selectedStoreCode]
+    [beginHqSyncMutation, ensureCurrentDetailStoreScope, getErrorMessage, loadProductCodes, playQueryFeedback, presentHqSyncOperation, selectedStoreCode, t]
   );
 
   const finishAutoPricingDialog = useCallback((result: AutoPricingDialogResolution) => {
@@ -966,7 +1296,7 @@ function ProductQueryContent() {
             multiMatch.retailPrice ??
             targetDetail.storePrice?.retailPrice ??
             null,
-          action: `multi:${multiMatch.setCodeId}`,
+          action: `multi:${getMultiCodeItemId(multiMatch)}`,
           printType: smallLabel ? "small" : null,
         });
       }
@@ -1077,6 +1407,9 @@ function ProductQueryContent() {
       targetDetail: ProductDetail,
       options: DetailPostLoadOptions
     ): Promise<LookupFlowResult> => {
+      if (!ensureCurrentDetailStoreScope(targetDetail, targetDetail.storePrice?.storeCode)) {
+        return DEFAULT_LOOKUP_FLOW_RESULT;
+      }
       const applicability = getWarehousePriceSyncApplicability(
         targetDetail.localSupplierCode,
         targetDetail.storePrice?.uuid
@@ -1107,6 +1440,10 @@ function ProductQueryContent() {
         return DEFAULT_LOOKUP_FLOW_RESULT;
       }
       warehousePriceRequestInFlightRef.current = true;
+      const mutation = beginHqSyncMutation(
+        targetDetail.productCode,
+        options.storeCodeOverride ?? selectedStoreCode
+      );
 
       setWarehousePriceSyncState((current) =>
         reduceWarehousePriceSyncState(current, { type: "preview_started" })
@@ -1120,6 +1457,8 @@ function ProductQueryContent() {
           expectedStoreRetailPrice: currentStorePrice.retailPrice ?? null,
           expectedDiscountRate: normalizeDiscountRateValue(currentStorePrice.discountRate),
         });
+        // 本地 mutation 此时已经提交，必须先保留 operation，再执行任何刷新或打印副作用。
+        presentHqSyncOperation(mutation, snapshot.hqSync);
 
         let latestDetail = snapshot.storePrice
           ? replaceStorePriceDetail(targetDetail, snapshot.storePrice)
@@ -1127,8 +1466,16 @@ function ProductQueryContent() {
 
         if (snapshot.purchaseUpdated) {
           // 后端同时更新派生条码价格；重新读取一次，确保主价和条码列表都使用同一新快照。
-          latestDetail =
-            (await loadDetail(targetDetail.productCode, options.storeCodeOverride)) ?? latestDetail;
+          try {
+            latestDetail =
+              (await loadDetail(targetDetail.productCode, options.storeCodeOverride)) ?? latestDetail;
+          } catch (error) {
+            console.warn("[product-query] refresh after warehouse price sync failed", {
+              message: isAxiosError(error) ? error.message : String(error),
+            });
+            setDetail(latestDetail);
+            setInitialDetail(cloneDetail(latestDetail));
+          }
           setSnackbarMessage(t("warehousePriceSync.purchaseUpdated"));
         } else if (snapshot.storePrice) {
           setDetail(latestDetail);
@@ -1138,7 +1485,6 @@ function ProductQueryContent() {
         setWarehousePriceSyncState((current) =>
           reduceWarehousePriceSyncState(current, { type: "preview_succeeded", snapshot })
         );
-
         if (snapshot.retailConfirmationRequired) {
           setWarehousePriceSyncContext({
             detail: latestDetail,
@@ -1163,9 +1509,16 @@ function ProductQueryContent() {
             snapshot,
             alreadyPrinted: false,
           });
-        const labelPrinted = shouldPrint
-          ? await smartAutoPrint(options.scanKeyword ?? "", latestDetail)
-          : false;
+        let labelPrinted = false;
+        if (shouldPrint) {
+          try {
+            labelPrinted = await smartAutoPrint(options.scanKeyword ?? "", latestDetail);
+          } catch (error) {
+            console.warn("[product-query] print after warehouse price sync failed", {
+              message: isAxiosError(error) ? error.message : String(error),
+            });
+          }
+        }
 
         return {
           keepCameraOpen: false,
@@ -1173,6 +1526,7 @@ function ProductQueryContent() {
           autoPricingStatus: "no_action",
         };
       } catch (error) {
+        hqSyncMutationCoordinatorRef.current?.fail(mutation);
         const message = getErrorMessage(error, "warehousePriceSync.previewFailed");
         setWarehousePriceSyncState((current) =>
           reduceWarehousePriceSyncState(current, { type: "preview_failed", message })
@@ -1190,10 +1544,14 @@ function ProductQueryContent() {
       }
     },
     [
+      beginHqSyncMutation,
+      ensureCurrentDetailStoreScope,
       getErrorMessage,
       loadDetail,
       maybeHandleAutoPricing,
       playQueryFeedback,
+      presentHqSyncOperation,
+      selectedStoreCode,
       smartAutoPrint,
       t,
     ]
@@ -1244,6 +1602,7 @@ function ProductQueryContent() {
         if (!items.length) {
           setDetail(null);
           setInitialDetail(null);
+          activateHqSyncScope();
           setSelectedLookupProductCode(undefined);
           setLookupSelectionSource(null);
           lookupSelectionOpenRef.current = false;
@@ -1300,6 +1659,7 @@ function ProductQueryContent() {
         });
         setDetail(null);
         setInitialDetail(null);
+        activateHqSyncScope();
         invalidateActivePromotions();
         lookupSelectionOpenRef.current = false;
         setLookupVisible(false);
@@ -1313,6 +1673,7 @@ function ProductQueryContent() {
       }
     },
     [
+      activateHqSyncScope,
       continuousPrintEnabled,
       invalidateActivePromotions,
       isProductQueryBusy,
@@ -1575,8 +1936,11 @@ function ProductQueryContent() {
     setKeyword("");
     setLookupItems([]);
     setSelectedLookupProductCode(undefined);
+    loadedDetailStoreCodeRef.current = null;
+    activeDetailProductCodeRef.current = null;
     setDetail(null);
     setInitialDetail(null);
+    activateHqSyncScope();
     invalidateActivePromotions();
     setLookupVisible(false);
     setLookupSelectionSource(null);
@@ -1584,7 +1948,7 @@ function ProductQueryContent() {
     setQueryFeedback({ type: "idle" });
     setWarehousePriceSyncContext(null);
     setWarehousePriceSyncState(createWarehousePriceSyncState());
-  }, [invalidateActivePromotions, isProductQueryBusy]);
+  }, [activateHqSyncScope, invalidateActivePromotions, isProductQueryBusy]);
 
   const handleConfirmLookup = useCallback(async () => {
     if (
@@ -1617,6 +1981,7 @@ function ProductQueryContent() {
       const message = getErrorMessage(error, "messages.lookupFailed");
       setDetail(null);
       setInitialDetail(null);
+      activateHqSyncScope();
       invalidateActivePromotions();
       setQueryFeedback({ type: "error", query: keyword.trim(), message });
       setSnackbarMessage(message);
@@ -1629,6 +1994,7 @@ function ProductQueryContent() {
       setLookupSelectionSource(null);
     }
   }, [
+    activateHqSyncScope,
     autoPrintOnLookupConfirm,
     autoPricingDialogSaving,
     invalidateActivePromotions,
@@ -1668,7 +2034,14 @@ function ProductQueryContent() {
     ) {
       return;
     }
+    if (!ensureCurrentDetailStoreScope(context.detail, context.detail.storePrice?.storeCode)) {
+      return;
+    }
     warehousePriceRequestInFlightRef.current = true;
+    const mutation = beginHqSyncMutation(
+      context.detail.productCode,
+      context.storeCodeOverride ?? selectedStoreCode
+    );
 
     setWarehousePriceSyncState((current) =>
       reduceWarehousePriceSyncState(current, { type: "confirm_started" })
@@ -1678,13 +2051,23 @@ function ProductQueryContent() {
         storePriceUuid,
         buildWarehousePriceSyncRequest(snapshot, true)
       );
+      // 确认 mutation 已完成；详情刷新或打印失败都不能丢失该持久同步任务。
+      presentHqSyncOperation(mutation, confirmed.hqSync);
       let latestDetail = confirmed.storePrice
         ? replaceStorePriceDetail(context.detail, confirmed.storePrice)
         : context.detail;
 
       // 零售价确认会同步派生条码，成功后统一读取最终详情再决定打印。
-      latestDetail =
-        (await loadDetail(context.detail.productCode, context.storeCodeOverride)) ?? latestDetail;
+      try {
+        latestDetail =
+          (await loadDetail(context.detail.productCode, context.storeCodeOverride)) ?? latestDetail;
+      } catch (error) {
+        console.warn("[product-query] refresh after warehouse price confirmation failed", {
+          message: isAxiosError(error) ? error.message : String(error),
+        });
+        setDetail(latestDetail);
+        setInitialDetail(cloneDetail(latestDetail));
+      }
       const shouldPrint =
         context.autoPrintEnabled &&
         shouldAutoPrintWarehousePrice({
@@ -1693,9 +2076,16 @@ function ProductQueryContent() {
           snapshot: confirmed,
           alreadyPrinted: context.alreadyPrinted,
         });
-      const labelPrinted = shouldPrint
-        ? await smartAutoPrint(context.scanKeyword, latestDetail)
-        : false;
+      let labelPrinted = false;
+      if (shouldPrint) {
+        try {
+          labelPrinted = await smartAutoPrint(context.scanKeyword, latestDetail);
+        } catch (error) {
+          console.warn("[product-query] print after warehouse price confirmation failed", {
+            message: isAxiosError(error) ? error.message : String(error),
+          });
+        }
+      }
 
       setWarehousePriceSyncState((current) =>
         reduceWarehousePriceSyncState(current, { type: "confirm_succeeded", snapshot: confirmed })
@@ -1713,8 +2103,16 @@ function ProductQueryContent() {
       }
       restoreScanAbility(context.scanSource);
     } catch (error) {
+      hqSyncMutationCoordinatorRef.current?.fail(mutation);
       let latestSnapshot = extractWarehousePriceSyncConflict(error);
       if (latestSnapshot) {
+        if (latestSnapshot.hqSync) {
+          const conflictMutation = beginHqSyncMutation(
+            context.detail.productCode,
+            context.storeCodeOverride ?? selectedStoreCode
+          );
+          presentHqSyncOperation(conflictMutation, latestSnapshot.hqSync);
+        }
         let latestDetail = latestSnapshot.storePrice
           ? replaceStorePriceDetail(context.detail, latestSnapshot.storePrice)
           : context.detail;
@@ -1724,6 +2122,10 @@ function ProductQueryContent() {
           const latestStorePrice = latestSnapshot.storePrice ?? latestDetail.storePrice;
           if (latestStorePrice?.uuid) {
             // 冲突响应缺字段时仅重新取一次预览，避免用户基于旧值确认。
+            const refreshMutation = beginHqSyncMutation(
+              context.detail.productCode,
+              context.storeCodeOverride ?? selectedStoreCode
+            );
             try {
               latestSnapshot = await syncWarehousePrice(latestStorePrice.uuid, {
                 confirmRetailPrice: false,
@@ -1736,7 +2138,9 @@ function ProductQueryContent() {
               latestDetail = latestSnapshot.storePrice
                 ? replaceStorePriceDetail(latestDetail, latestSnapshot.storePrice)
                 : latestDetail;
+              presentHqSyncOperation(refreshMutation, latestSnapshot.hqSync);
             } catch (refreshError) {
+              hqSyncMutationCoordinatorRef.current?.fail(refreshMutation);
               const message = getErrorMessage(refreshError, "warehousePriceSync.confirmFailed");
               setWarehousePriceSyncState((current) =>
                 reduceWarehousePriceSyncState(current, { type: "confirm_failed", message })
@@ -1764,7 +2168,13 @@ function ProductQueryContent() {
               alreadyPrinted: context.alreadyPrinted,
             });
           if (shouldPrint) {
-            await smartAutoPrint(context.scanKeyword, latestDetail);
+            try {
+              await smartAutoPrint(context.scanKeyword, latestDetail);
+            } catch (printError) {
+              console.warn("[product-query] print after warehouse conflict recovery failed", {
+                message: isAxiosError(printError) ? printError.message : String(printError),
+              });
+            }
           }
           setWarehousePriceSyncState((current) =>
             reduceWarehousePriceSyncState(current, {
@@ -1797,11 +2207,15 @@ function ProductQueryContent() {
       warehousePriceRequestInFlightRef.current = false;
     }
   }, [
+    beginHqSyncMutation,
+    ensureCurrentDetailStoreScope,
     getErrorMessage,
     loadDetail,
+    presentHqSyncOperation,
     restoreScanAbility,
     smartAutoPrint,
     t,
+    selectedStoreCode,
     warehousePriceSyncContext,
     warehousePriceSyncState.snapshot,
   ]);
@@ -1820,6 +2234,20 @@ function ProductQueryContent() {
     );
   }, []);
 
+  const refreshAfterCommittedProductMutation = useCallback(
+    async (productCode: string) => {
+      try {
+        await loadDetail(productCode);
+      } catch (error) {
+        // mutation 已提交；详情刷新失败不能把成功保存误报为失败。
+        console.warn("[product-query] refresh after committed product mutation failed", {
+          message: isAxiosError(error) ? error.message : String(error),
+        });
+      }
+    },
+    [loadDetail]
+  );
+
   const handleUpdateProductType = useCallback(
     async (productType: number) => {
       if (!detail?.productCode || !selectedStoreCode) {
@@ -1830,14 +2258,22 @@ function ProductQueryContent() {
         setProductTypeDialogVisible(false);
         return;
       }
+      if (!ensureCurrentDetailStoreScope(detail)) {
+        return;
+      }
 
       setProductTypeSaving(true);
+      const scope = { productCode: detail.productCode, storeCode: selectedStoreCode };
+      const mutation = beginHqSyncMutation(scope.productCode, scope.storeCode);
       try {
         const result = await updateProductType(detail.productCode, {
           productType,
           storeCode: selectedStoreCode,
         });
 
+        if (!detailRequestCoordinatorRef.current?.isScopeActive(scope)) {
+          return;
+        }
         setDetail((current) =>
           current
             ? {
@@ -1856,15 +2292,16 @@ function ProductQueryContent() {
               }
             : current
         );
-        setSnackbarMessage(t("messages.productTypeUpdated"));
+        presentHqSyncOperation(mutation, result.hqSync, t("messages.productTypeUpdated"));
         setProductTypeDialogVisible(false);
       } catch (error) {
+        hqSyncMutationCoordinatorRef.current?.fail(mutation);
         setSnackbarMessage(getErrorMessage(error, "messages.productTypeUpdateFailed"));
       } finally {
         setProductTypeSaving(false);
       }
     },
-    [detail, getErrorMessage, selectedStoreCode, t]
+    [beginHqSyncMutation, detail, ensureCurrentDetailStoreScope, getErrorMessage, presentHqSyncOperation, selectedStoreCode, t]
   );
 
   const handleToggleAutoPricing = useCallback(
@@ -2001,46 +2438,12 @@ function ProductQueryContent() {
     t,
   ]);
 
-  const handleChangeSetCode = useCallback((setCodeId: string, patch: Partial<ProductSetCodeItem>) => {
-    setDetail((current) =>
-      current
-        ? {
-            ...current,
-            setCodes: current.setCodes.map((item) => (item.setCodeId === setCodeId ? { ...item, ...patch } : item)),
-          }
-        : current
-    );
-  }, []);
-
-  const handleChangeSetCodeRetail = useCallback((setCodeId: string, value: string) => {
-    setDetail((current) =>
-      current
-        ? {
-            ...current,
-            setCodes: current.setCodes.map((item) =>
-              item.setCodeId === setCodeId
-                ? { ...item, setRetailPrice: value.trim() === "" ? null : Number(value) }
-                : item
-            ),
-          }
-        : current
-    );
-  }, []);
-
-  const handleChangeMultiCode = useCallback((setCodeId: string, patch: Partial<MultiCodeEditableItem>) => {
-    setDetail((current) =>
-      current
-        ? {
-            ...current,
-            multiCodes: current.multiCodes.map((item) => (item.setCodeId === setCodeId ? { ...item, ...patch } : item)),
-          }
-        : current
-    );
-  }, []);
-
   const handleSaveSetCode = useCallback(
-    async (setCodeId: string) => {
+    async (setCodeId: string, retailPriceOverride?: number | null) => {
       if (!detail?.productCode || !selectedStoreCode) {
+        return;
+      }
+      if (!ensureCurrentDetailStoreScope(detail)) {
         return;
       }
 
@@ -2050,28 +2453,33 @@ function ProductQueryContent() {
         return;
       }
 
-      if (target.setRetailPrice == null || !Number.isFinite(target.setRetailPrice)) {
+      const retailPrice = retailPriceOverride === undefined
+        ? target.setRetailPrice
+        : retailPriceOverride;
+      if (retailPrice == null || !Number.isFinite(retailPrice)) {
         setSnackbarMessage(t("messages.setCodeRetailRequired"));
         return;
       }
 
       setSavingItemId(setCodeId);
+      const mutation = beginHqSyncMutation(detail.productCode, selectedStoreCode);
       try {
-        await updateSetCode(setCodeId, {
+        const saved = await updateSetCode(setCodeId, {
           storeCode: selectedStoreCode,
           barcode: target.setBarcode.trim(),
-          retailPrice: target.setRetailPrice,
+          retailPrice,
           isActive: target.isActive,
         });
-        await loadDetail(detail.productCode);
-        setSnackbarMessage(t("messages.setCodeSaved"));
+        presentHqSyncOperation(mutation, saved.hqSync, t("messages.setCodeSaved"));
+        await refreshAfterCommittedProductMutation(detail.productCode);
       } catch (error) {
+        hqSyncMutationCoordinatorRef.current?.fail(mutation);
         setSnackbarMessage(getErrorMessage(error, "messages.setCodeSaveFailed"));
       } finally {
         setSavingItemId(null);
       }
     },
-    [detail, getErrorMessage, loadDetail, selectedStoreCode, t]
+    [beginHqSyncMutation, detail, ensureCurrentDetailStoreScope, getErrorMessage, presentHqSyncOperation, refreshAfterCommittedProductMutation, selectedStoreCode, t]
   );
 
   const openEditSetCodeBarcode = useCallback((setCodeId: string) => {
@@ -2099,50 +2507,49 @@ function ProductQueryContent() {
       value: formatFixedDecimal(target.setRetailPrice),
       allowDecimal: true,
       onConfirmValue: (value) => {
-        handleChangeSetCodeRetail(setCodeId, value);
-        if (detail?.productCode) {
-          void loadDetail(detail.productCode);
-        }
+        const retailPrice = value.trim() === "" ? null : Number(value);
+        void handleSaveSetCode(setCodeId, retailPrice);
       },
     });
-  }, [detail?.setCodes, detail?.productCode, handleChangeSetCodeRetail, loadDetail, openNumericInputModal, t]);
+  }, [detail?.setCodes, handleSaveSetCode, openNumericInputModal, t]);
 
   const openAddSetCode = useCallback(() => {
-    setCodeAddModal({ codeType: "set", value: "" });
+    setCodeAddModal({ codeType: "set", value: "", retailPrice: "" });
   }, []);
 
-  const openEditMultiCodeBarcode = useCallback((setCodeId: string) => {
-    const target = detail?.multiCodes.find((item) => item.setCodeId === setCodeId);
+  const openEditMultiCodeBarcode = useCallback((itemId: string) => {
+    const target = detail?.multiCodes.find((item) => getMultiCodeItemId(item) === itemId);
     if (!target) {
       return;
     }
     setBarcodeEditModal({
-      key: `multi-barcode-${setCodeId}`,
+      key: `multi-barcode-${itemId}`,
       title: t("multiCode.editBarcodeTitle"),
       value: target.barcode ?? "",
-      targetId: setCodeId,
+      targetId: itemId,
       codeType: "multi",
     });
   }, [detail?.multiCodes, t]);
 
-  const openEditMultiCodeRetailPrice = useCallback((setCodeId: string) => {
-    const target = detail?.multiCodes.find((item) => item.setCodeId === setCodeId);
+  const openEditMultiCodeRetailPrice = useCallback((itemId: string) => {
+    const target = detail?.multiCodes.find((item) => getMultiCodeItemId(item) === itemId);
     if (!target) {
       return;
     }
     openNumericInputModal({
-      key: `multi-retail-${setCodeId}`,
+      key: `multi-retail-${itemId}`,
       title: t("multiCode.editRetailTitle"),
       value: formatFixedDecimal(target.retailPrice),
       allowDecimal: true,
       onConfirmValue: (value) => {
-        handleChangeMultiCode(setCodeId, { retailPrice: value.trim() === "" ? null : Number(value) });
+        const retailPrice = value.trim() === "" ? null : Number(value);
+        void saveMultiCodeRef.current(itemId, retailPrice);
       },
     });
-  }, [detail?.multiCodes, handleChangeMultiCode, openNumericInputModal, t]);
+  }, [detail?.multiCodes, openNumericInputModal, t]);
 
   const openAddMultiCode = useCallback(() => {
-    setCodeAddModal({ codeType: "multi", value: "" });
+    setCodeAddModal({ codeType: "multi", value: "", retailPrice: "" });
   }, []);
 
   const handleConfirmBarcodeEdit = useCallback(async () => {
@@ -2159,55 +2566,119 @@ function ProductQueryContent() {
       return;
     }
 
+    const setTarget =
+      codeType === "set"
+        ? detail.setCodes.find((item) => item.setCodeId === targetId)
+        : null;
+    const multiTarget =
+      codeType === "multi"
+        ? detail.multiCodes.find((item) => getMultiCodeItemId(item) === targetId)
+        : null;
+    const setBackedRetailPrice = codeType === "set"
+      ? setTarget?.setRetailPrice
+      : multiTarget?.retailPrice;
+    if (
+      (codeType === "set" || Boolean(multiTarget?.setCodeId))
+      && (setBackedRetailPrice == null || !Number.isFinite(setBackedRetailPrice))
+    ) {
+      setSnackbarMessage(t("messages.setCodeRetailRequired"));
+      return;
+    }
+    if (codeType === "multi" && !multiTarget) {
+      setSnackbarMessage(t("messages.multiCodeSaveFailed"));
+      return;
+    }
+    if (!ensureCurrentDetailStoreScope(detail, multiTarget?.storeCode)) {
+      return;
+    }
+
     setSavingItemId(targetId);
     setBarcodeEditModal(null);
+    const mutation = beginHqSyncMutation(detail.productCode, selectedStoreCode);
     try {
-      await updateSetCode(targetId, {
-        storeCode: selectedStoreCode,
-        barcode: trimmed,
-        isActive: true,
-      });
-      await loadDetail(detail.productCode);
-      setSnackbarMessage(codeType === "set" ? t("messages.setCodeSaved") : t("messages.multiCodeSaved"));
+      const saved =
+        codeType === "multi" && multiTarget && !multiTarget.setCodeId
+          ? await updateMultiCode(multiTarget.uuid, {
+              barcode: trimmed,
+              purchasePrice: multiTarget.purchasePrice ?? null,
+              retailPrice: multiTarget.retailPrice ?? null,
+              isAutoPricing: multiTarget.isAutoPricing,
+              isSpecialProduct: multiTarget.isSpecialProduct,
+              isActive: multiTarget.isActive,
+            })
+          : await updateSetCode(targetId, {
+              storeCode: selectedStoreCode,
+              barcode: trimmed,
+              retailPrice: setBackedRetailPrice!,
+              isActive: codeType === "multi" ? (multiTarget?.isActive ?? true) : true,
+            });
+      presentHqSyncOperation(
+        mutation,
+        saved.hqSync,
+        codeType === "set" ? t("messages.setCodeSaved") : t("messages.multiCodeSaved")
+      );
+      await refreshAfterCommittedProductMutation(detail.productCode);
     } catch (error) {
-      setSnackbarMessage(getErrorMessage(error, "messages.setCodeSaveFailed"));
+      hqSyncMutationCoordinatorRef.current?.fail(mutation);
+      setSnackbarMessage(
+        getErrorMessage(
+          error,
+          codeType === "multi" ? "messages.multiCodeSaveFailed" : "messages.setCodeSaveFailed"
+        )
+      );
     } finally {
       setSavingItemId(null);
     }
-  }, [barcodeEditModal, detail?.productCode, getErrorMessage, loadDetail, selectedStoreCode, t]);
+  }, [barcodeEditModal, beginHqSyncMutation, detail, ensureCurrentDetailStoreScope, getErrorMessage, presentHqSyncOperation, refreshAfterCommittedProductMutation, selectedStoreCode, t]);
 
   const handleConfirmCodeAdd = useCallback(async () => {
     if (!codeAddModal || !detail?.productCode || !selectedStoreCode) {
       setCodeAddModal(null);
       return;
     }
+    if (!ensureCurrentDetailStoreScope(detail)) {
+      setCodeAddModal(null);
+      return;
+    }
 
-    const { codeType, value } = codeAddModal;
+    const { codeType, value, retailPrice: retailPriceInput } = codeAddModal;
     const trimmed = value.trim();
     if (!trimmed) {
       setSnackbarMessage(codeType === "set" ? t("messages.setCodeBarcodeRequired") : t("messages.multiCodeBarcodeRequired"));
       setCodeAddModal(null);
       return;
     }
+    const retailPrice = codeType === "set" ? parseDecimalInput(retailPriceInput) : null;
+    if (codeType === "set" && (retailPrice == null || retailPrice <= 0)) {
+      setSnackbarMessage(t("messages.setCodeRetailRequired"));
+      return;
+    }
 
     setSavingItemId(codeType === "set" ? "new-set" : "new-multi");
     setCodeAddModal(null);
+    const mutation = beginHqSyncMutation(detail.productCode, selectedStoreCode);
     try {
-      await createSetCode({
+      const created = await createSetCode({
         productCode: detail.productCode,
         storeCode: selectedStoreCode,
         productType: codeType === "set" ? 1 : 2,
         barcode: trimmed,
+        retailPrice,
         isActive: true,
       });
-      await loadDetail(detail.productCode);
-      setSnackbarMessage(codeType === "set" ? t("messages.setCodeCreated") : t("messages.multiCodeCreated"));
+      presentHqSyncOperation(
+        mutation,
+        created.hqSync,
+        codeType === "set" ? t("messages.setCodeCreated") : t("messages.multiCodeCreated")
+      );
+      await refreshAfterCommittedProductMutation(detail.productCode);
     } catch (error) {
+      hqSyncMutationCoordinatorRef.current?.fail(mutation);
       setSnackbarMessage(getErrorMessage(error, "messages.setCodeSaveFailed"));
     } finally {
       setSavingItemId(null);
     }
-  }, [codeAddModal, detail?.productCode, getErrorMessage, loadDetail, selectedStoreCode, t]);
+  }, [beginHqSyncMutation, codeAddModal, detail, ensureCurrentDetailStoreScope, getErrorMessage, presentHqSyncOperation, refreshAfterCommittedProductMutation, selectedStoreCode, t]);
 
   const openClearancePriceEditor = useCallback(() => {
     openNumericInputModal({
@@ -2223,34 +2694,54 @@ function ProductQueryContent() {
   }, [clearancePriceInput, openNumericInputModal, t]);
 
   const handleSaveMultiCode = useCallback(
-    async (setCodeId: string) => {
+    async (itemId: string, retailPriceOverride?: number | null) => {
       if (!detail?.productCode || !selectedStoreCode) {
         return;
       }
 
-      const target = detail.multiCodes.find((item) => item.setCodeId === setCodeId);
+      const target = detail.multiCodes.find((item) => getMultiCodeItemId(item) === itemId);
       if (!target || !target.barcode?.trim()) {
         setSnackbarMessage(t("messages.multiCodeBarcodeRequired"));
         return;
       }
+      if (!ensureCurrentDetailStoreScope(detail, target.storeCode)) {
+        return;
+      }
 
-      setSavingItemId(setCodeId);
+      const retailPrice = retailPriceOverride === undefined
+        ? target.retailPrice
+        : retailPriceOverride;
+      setSavingItemId(itemId);
+      const mutation = beginHqSyncMutation(detail.productCode, selectedStoreCode);
       try {
-        await updateSetCode(setCodeId, {
-          storeCode: selectedStoreCode,
-          barcode: target.barcode.trim(),
-          isActive: target.isActive,
-        });
-        await loadDetail(detail.productCode);
-        setSnackbarMessage(t("messages.multiCodeSaved"));
+        const saved = target.setCodeId
+          ? await updateSetCode(target.setCodeId, {
+              storeCode: selectedStoreCode,
+              barcode: target.barcode.trim(),
+              retailPrice: retailPrice ?? null,
+              isActive: target.isActive,
+            })
+          : await updateMultiCode(target.uuid, {
+              barcode: target.barcode.trim(),
+              purchasePrice: target.purchasePrice ?? null,
+              retailPrice: retailPrice ?? null,
+              isAutoPricing: target.isAutoPricing,
+              isSpecialProduct: target.isSpecialProduct,
+              isActive: target.isActive,
+            });
+        presentHqSyncOperation(mutation, saved.hqSync, t("messages.multiCodeSaved"));
+        await refreshAfterCommittedProductMutation(detail.productCode);
       } catch (error) {
+        hqSyncMutationCoordinatorRef.current?.fail(mutation);
         setSnackbarMessage(getErrorMessage(error, "messages.multiCodeSaveFailed"));
       } finally {
         setSavingItemId(null);
       }
     },
-    [detail, getErrorMessage, loadDetail, selectedStoreCode, t]
+    [beginHqSyncMutation, detail, ensureCurrentDetailStoreScope, getErrorMessage, presentHqSyncOperation, refreshAfterCommittedProductMutation, selectedStoreCode, t]
   );
+
+  saveMultiCodeRef.current = handleSaveMultiCode;
 
   const handleLoadMoreCodes = useCallback(() => {
     if (!detail || codesLoading || codesLoadingMore || !codesHasMore) {
@@ -2264,6 +2755,9 @@ function ProductQueryContent() {
     if (!detail?.productCode || !selectedStoreCode) {
       return;
     }
+    if (!ensureCurrentDetailStoreScope(detail, detail.clearancePrice?.storeCode)) {
+      return;
+    }
 
     const clearancePrice = parseDecimalInput(clearancePriceInput);
     if (clearancePriceInput.trim() && clearancePrice == null) {
@@ -2272,19 +2766,21 @@ function ProductQueryContent() {
     }
 
     setSavingClearance(true);
+    const mutation = beginHqSyncMutation(detail.productCode, selectedStoreCode);
     try {
-      await upsertClearancePrice(detail.productCode, {
+      const saved = await upsertClearancePrice(detail.productCode, {
         storeCode: selectedStoreCode,
         clearancePrice,
       });
-      await loadDetail(detail.productCode);
-      setSnackbarMessage(t("messages.clearanceSaved"));
+      presentHqSyncOperation(mutation, saved.hqSync, t("messages.clearanceSaved"));
+      await refreshAfterCommittedProductMutation(detail.productCode);
     } catch (error) {
+      hqSyncMutationCoordinatorRef.current?.fail(mutation);
       setSnackbarMessage(getErrorMessage(error, "messages.clearanceSaveFailed"));
     } finally {
       setSavingClearance(false);
     }
-  }, [clearancePriceInput, detail?.productCode, getErrorMessage, loadDetail, selectedStoreCode, t]);
+  }, [beginHqSyncMutation, clearancePriceInput, detail, ensureCurrentDetailStoreScope, getErrorMessage, presentHqSyncOperation, refreshAfterCommittedProductMutation, selectedStoreCode, t]);
 
   saveClearanceRef.current = handleSaveClearancePrice;
 
@@ -2295,7 +2791,7 @@ function ProductQueryContent() {
 
     setSaving(true);
     try {
-      const saved = await persistStorePrice(detail, {
+      await persistStorePrice(detail, {
         purchasePrice: detail.storePrice.purchasePrice ?? null,
         retailPrice: detail.storePrice.retailPrice ?? null,
         discountRate: normalizeDiscountRateValue(detail.storePrice.discountRate),
@@ -2303,15 +2799,12 @@ function ProductQueryContent() {
         isSpecialProduct: detail.storePrice.isSpecialProduct,
         isActive: detail.storePrice.isActive,
       });
-      if (saved) {
-        setSnackbarMessage(t("messages.saved"));
-      }
     } catch (error) {
       setSnackbarMessage(getErrorMessage(error, "messages.saveFailed"));
     } finally {
       setSaving(false);
     }
-  }, [detail, getErrorMessage, initialDetail, persistStorePrice, t]);
+  }, [detail, getErrorMessage, initialDetail, persistStorePrice]);
 
   const handleReset = useCallback(() => {
     setDetail(cloneDetail(initialDetail));
@@ -2345,12 +2838,12 @@ function ProductQueryContent() {
   );
 
   const handlePrintMultiCodeProduct = useCallback(
-    async (setCodeId: string) => {
+    async (itemId: string) => {
       if (!detail) {
         return;
       }
 
-      const target = detail.multiCodes.find((item) => item.setCodeId === setCodeId);
+      const target = detail.multiCodes.find((item) => getMultiCodeItemId(item) === itemId);
       if (!target?.barcode?.trim()) {
         setSnackbarMessage(t("messages.multiCodeBarcodeRequired"));
         return;
@@ -2359,7 +2852,7 @@ function ProductQueryContent() {
       await sendProductLabel(detail, {
         barcode: target.barcode.trim(),
         retailPrice: target.retailPrice ?? detail.storePrice?.retailPrice ?? null,
-        action: `multi:${setCodeId}`,
+        action: `multi:${itemId}`,
         printType: smallLabel ? "small" : null,
       });
     },
@@ -2432,6 +2925,7 @@ function ProductQueryContent() {
 
   const storePrice = detail?.storePrice;
   const clearancePrice = detail?.clearancePrice;
+  const hqSyncDisplay = hqSyncOperation ? getHqSyncDisplayState(hqSyncOperation) : null;
   const normalizedStoreDiscountRate = normalizeDiscountRateValue(storePrice?.discountRate);
   const hasActiveDiscount = Boolean(normalizedStoreDiscountRate && normalizedStoreDiscountRate > 0);
   const discountedRetailPrice = getDiscountedRetailPrice(
@@ -2546,6 +3040,48 @@ function ProductQueryContent() {
             <Button icon="plus" mode="contained-tonal" onPress={openCreateProductModal}>
               {t("createProduct.action")}
             </Button>
+          </View>
+        ) : null}
+        {hqSyncOperation && hqSyncDisplay?.visible ? (
+          <View
+            accessibilityLiveRegion="polite"
+            style={[
+              styles.hqSyncStatus,
+              hqSyncDisplay.tone === "warning" ? styles.hqSyncStatusWarning : null,
+            ]}
+          >
+            {hqSyncOperation.status === "blocked" ? null : (
+              <ActivityIndicator size={16} color="#2563EB" />
+            )}
+            <View style={styles.hqSyncStatusCopy}>
+              <Text variant="labelMedium" style={styles.hqSyncStatusTitle}>
+                {t(hqSyncDisplay.messageKey)}
+              </Text>
+              <Text variant="bodySmall" style={styles.hqSyncStatusMeta}>
+                {hqSyncOperation.storeCode
+                  ? t("messages.hqSyncProduct", {
+                      productCode: hqSyncOperation.productCode,
+                      storeCode: hqSyncOperation.storeCode,
+                    })
+                  : t("messages.hqSyncProductAllStores", {
+                      productCode: hqSyncOperation.productCode,
+                    })}
+                {hqSyncOperation.attemptCount > 0
+                  ? ` · ${t("messages.hqSyncAttempt", { count: hqSyncOperation.attemptCount })}`
+                  : ""}
+              </Text>
+            </View>
+            {hqSyncDisplay.canRetry ? (
+              <Button
+                compact
+                mode="text"
+                loading={hqSyncRetrying}
+                disabled={hqSyncRetrying}
+                onPress={() => void handleRetryHqSync()}
+              >
+                {t("messages.hqSyncRetry")}
+              </Button>
+            ) : null}
           </View>
         ) : null}
         {invoiceReturnState ? (
@@ -3108,6 +3644,19 @@ function ProductQueryContent() {
               autoFocus
               selectTextOnFocus
             />
+            {codeAddModal?.codeType === "set" ? (
+              <TextInput
+                style={styles.textEditInput}
+                value={codeAddModal.retailPrice}
+                onChangeText={(retailPrice) =>
+                  setCodeAddModal((current) =>
+                    current ? { ...current, retailPrice } : current
+                  )
+                }
+                placeholder={t("setCode.retail")}
+                keyboardType="decimal-pad"
+              />
+            ) : null}
             <View style={styles.textEditModalFooter}>
               <Button mode="text" onPress={() => setCodeAddModal(null)}>
                 {t("common:actions.cancel")}
@@ -3260,6 +3809,33 @@ const styles = StyleSheet.create({
   createProductBar: {
     alignItems: "flex-start",
     paddingTop: 8,
+  },
+  hqSyncStatus: {
+    minHeight: 48,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#BFDBFE",
+    backgroundColor: "#EFF6FF",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  hqSyncStatusWarning: {
+    borderColor: "#FDE68A",
+    backgroundColor: "#FFFBEB",
+  },
+  hqSyncStatusCopy: {
+    flex: 1,
+    gap: 1,
+  },
+  hqSyncStatusTitle: {
+    color: "#1F2937",
+    fontWeight: "700",
+  },
+  hqSyncStatusMeta: {
+    color: "#667085",
   },
   hiddenInput: {
     position: "absolute",

@@ -4,6 +4,7 @@ using BlazorApp.Api.Services;
 using BlazorApp.Api.Services.React;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -15,6 +16,68 @@ namespace BlazorApp.Api.Tests;
 
 public sealed class DataSyncReactControllerSyncResultContractTests
 {
+    [Fact]
+    public async Task SyncContainers_货柜锁错误码未带BUSY计数时_仍返回409并保留错误码()
+    {
+        var result = new SyncResult
+        {
+            IsSuccess = false,
+            Message = "同一货柜正在保存，请稍后重试",
+            ErrorCode = ContainerMutationLock.BusyErrorCode,
+            ErrorCount = 1,
+        };
+        var fullSyncService = new Mock<IDataSyncFullService>(MockBehavior.Strict);
+        fullSyncService
+            .Setup(service => service.SyncContainersFromHqAsync(50000, 10000))
+            .ReturnsAsync(result);
+        var controller = CreateController(fullSyncService.Object);
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext(),
+        };
+
+        var response = await controller.SyncContainers();
+
+        var conflict = Assert.IsType<ConflictObjectResult>(response);
+        var body = Assert.IsType<ApiResponse<SyncResult>>(conflict.Value);
+        Assert.False(body.Success);
+        Assert.Equal(ContainerMutationLock.BusyErrorCode, body.ErrorCode);
+        Assert.Equal(1, result.BusyErrorCount);
+        Assert.Same(result, body.Data);
+        Assert.Equal("1", controller.Response.Headers.RetryAfter);
+    }
+
+    [Fact]
+    public async Task SyncContainers_货柜锁显式BUSY计数时_409不得改写成商品锁错误码()
+    {
+        var result = new SyncResult
+        {
+            IsSuccess = false,
+            Message = "同一货柜正在保存，请稍后重试",
+            ErrorCode = ContainerMutationLock.BusyErrorCode,
+            ErrorCount = 1,
+            BusyErrorCount = 1,
+        };
+        var fullSyncService = new Mock<IDataSyncFullService>(MockBehavior.Strict);
+        fullSyncService
+            .Setup(service => service.SyncContainersFromHqAsync(50000, 10000))
+            .ReturnsAsync(result);
+        var controller = CreateController(fullSyncService.Object);
+        controller.ControllerContext = new ControllerContext
+        {
+            HttpContext = new DefaultHttpContext(),
+        };
+
+        var response = await controller.SyncContainers();
+
+        var conflict = Assert.IsType<ConflictObjectResult>(response);
+        var body = Assert.IsType<ApiResponse<SyncResult>>(conflict.Value);
+        Assert.False(body.Success);
+        Assert.Equal(ContainerMutationLock.BusyErrorCode, body.ErrorCode);
+        Assert.Same(result, body.Data);
+        Assert.Equal("1", controller.Response.Headers.RetryAfter);
+    }
+
     [Fact]
     public async Task SyncProductSetCodes_全BUSY且零提交时返回409并保留Data()
     {

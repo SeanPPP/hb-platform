@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **hb-platform** (122713 symbols, 480199 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **hb-platform-main** (127862 symbols, 497532 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
@@ -24,10 +24,10 @@ This project is indexed by GitNexus as **hb-platform** (122713 symbols, 480199 r
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/hb-platform/context` | Codebase overview, check index freshness |
-| `gitnexus://repo/hb-platform/clusters` | All functional areas |
-| `gitnexus://repo/hb-platform/processes` | All execution flows |
-| `gitnexus://repo/hb-platform/process/{name}` | Step-by-step execution trace |
+| `gitnexus://repo/hb-platform-main/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/hb-platform-main/clusters` | All functional areas |
+| `gitnexus://repo/hb-platform-main/processes` | All execution flows |
+| `gitnexus://repo/hb-platform-main/process/{name}` | Step-by-step execution trace |
 
 ## CLI
 
@@ -52,3 +52,4 @@ This project is indexed by GitNexus as **hb-platform** (122713 symbols, 480199 r
 ## Notes
 
 - 涉及 UI 层、界面、视觉或交互体验的任务，自动使用全局 `taste-skill` 技能。
+- 涉及网站访问、登录态页面、表单填写、后台操作、页面验证或其他浏览器自动化任务时，默认优先使用 `ego-browser`；仅在任务明确不依赖真实浏览器状态，或 `ego-browser` 已确认不可用时，才改用其他方式。

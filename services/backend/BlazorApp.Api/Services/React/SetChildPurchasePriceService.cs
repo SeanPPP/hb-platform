@@ -193,7 +193,9 @@ namespace BlazorApp.Api.Services.React
         internal async Task<SetChildStoreRelationRepairResult> RepairMissingStoreRelationsLockedAsync(
             SetChildPurchasePriceLockScope lockScope,
             IReadOnlyDictionary<string, decimal> requestedParentPurchasePrices,
-            string updatedBy
+            string updatedBy,
+            IEnumerable<(string? StoreCode, string? ProductCode)>? exactStoreGroups = null,
+            bool allowType2StoreParentPurchasePrice = false
         )
         {
             var normalizedPurchasePrices = requestedParentPurchasePrices
@@ -206,6 +208,42 @@ namespace BlazorApp.Api.Services.React
                 );
             var normalizedProducts = normalizedPurchasePrices.Keys.ToList();
             var repairResult = new SetChildStoreRelationRepairResult();
+            HashSet<string>? exactStoreProductKeys = null;
+            List<string>? exactStoreCodes = null;
+            if (exactStoreGroups != null)
+            {
+                var normalizedExactGroups = exactStoreGroups
+                    .Where(group =>
+                        !string.IsNullOrWhiteSpace(group.StoreCode)
+                        && !string.IsNullOrWhiteSpace(group.ProductCode)
+                    )
+                    .Select(group =>
+                        (
+                            StoreCode: group.StoreCode!.Trim(),
+                            ProductCode: group.ProductCode!.Trim()
+                        )
+                    )
+                    .Where(group => normalizedPurchasePrices.ContainsKey(group.ProductCode))
+                    .GroupBy(
+                        group => BuildKey(group.StoreCode, group.ProductCode),
+                        StringComparer.OrdinalIgnoreCase
+                    )
+                    .Select(group => group.First())
+                    .ToList();
+                exactStoreProductKeys = normalizedExactGroups
+                    .Select(group => BuildKey(group.StoreCode, group.ProductCode))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                exactStoreCodes = normalizedExactGroups
+                    .Select(group => group.StoreCode)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var exactProductCodes = normalizedExactGroups
+                    .Select(group => group.ProductCode)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                normalizedProducts = normalizedProducts
+                    .Where(exactProductCodes.Contains)
+                    .ToList();
+            }
             if (normalizedProducts.Count == 0)
             {
                 return repairResult;
@@ -225,20 +263,49 @@ namespace BlazorApp.Api.Services.React
                 .Where(row => row.SetType == 1)
                 .Select(row => row.ProductCode.Trim())
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            var allStoreRows = await _db.Queryable<StoreMultiCodeProduct>()
+            var allStoreRowsQuery = _db.Queryable<StoreMultiCodeProduct>()
                 .Where(row =>
                     row.ProductCode != null && normalizedProducts.Contains(row.ProductCode)
-                )
-                .ToListAsync();
-            var storePriceRows = await _db.Queryable<StoreRetailPrice>()
+                );
+            if (exactStoreCodes != null)
+            {
+                allStoreRowsQuery = allStoreRowsQuery.Where(row =>
+                    row.StoreCode != null && exactStoreCodes.Contains(row.StoreCode)
+                );
+            }
+            var allStoreRows = await allStoreRowsQuery.ToListAsync();
+            var storePriceRowsQuery = _db.Queryable<StoreRetailPrice>()
                 .Where(row =>
                     row.ProductCode != null
                     && normalizedProducts.Contains(row.ProductCode)
                     && row.StoreCode != null
                     && row.IsActive
                     && !row.IsDeleted
-                )
-                .ToListAsync();
+                );
+            if (exactStoreCodes != null)
+            {
+                storePriceRowsQuery = storePriceRowsQuery.Where(row =>
+                    row.StoreCode != null && exactStoreCodes.Contains(row.StoreCode)
+                );
+            }
+            var storePriceRows = await storePriceRowsQuery.ToListAsync();
+            if (exactStoreProductKeys != null)
+            {
+                allStoreRows = allStoreRows
+                    .Where(row =>
+                        !string.IsNullOrWhiteSpace(row.StoreCode)
+                        && !string.IsNullOrWhiteSpace(row.ProductCode)
+                        && exactStoreProductKeys.Contains(BuildKey(row.StoreCode!, row.ProductCode!))
+                    )
+                    .ToList();
+                storePriceRows = storePriceRows
+                    .Where(row =>
+                        !string.IsNullOrWhiteSpace(row.StoreCode)
+                        && !string.IsNullOrWhiteSpace(row.ProductCode)
+                        && exactStoreProductKeys.Contains(BuildKey(row.StoreCode!, row.ProductCode!))
+                    )
+                    .ToList();
+            }
             var products = await _db.Queryable<Product>()
                 .Where(row =>
                     row.ProductCode != null
@@ -286,9 +353,11 @@ namespace BlazorApp.Api.Services.React
                     StringComparer.OrdinalIgnoreCase
                 )
                 .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
-            var candidateKeys = activeStoreGroups.Keys
-                .Concat(storePriceGroups.Keys)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var candidateKeys = exactStoreProductKeys == null
+                ? activeStoreGroups.Keys
+                    .Concat(storePriceGroups.Keys)
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase)
+                : new HashSet<string>(exactStoreProductKeys, StringComparer.OrdinalIgnoreCase);
             var now = DateTime.UtcNow;
             var actor = string.IsNullOrWhiteSpace(updatedBy) ? "System" : updatedBy;
 
@@ -351,8 +420,24 @@ namespace BlazorApp.Api.Services.React
                     );
                     continue;
                 }
-                if (normalizedPurchasePrices[productCode] <= 0m)
+                if (
+                    allowType2StoreParentPurchasePrice
+                    && productSetRows.Any(row => row.SetType != 2)
+                )
                 {
+                    repairResult.AddFailure(
+                        productCode,
+                        "SET_CHILD_STORE_RELATION_INVALID",
+                        "只有纯 Type2 多码商品允许按门店主商品成本补齐投影"
+                    );
+                    continue;
+                }
+                if (
+                    !allowType2StoreParentPurchasePrice
+                    && normalizedPurchasePrices[productCode] <= 0m
+                )
+                {
+                    // 货柜和进货单等既有入口仍要求请求中的主商品进口价有效，不改变其 Type1/混合关系门禁。
                     repairResult.AddFailure(
                         productCode,
                         "SET_CHILD_COST_RECALCULATION_INCOMPLETE",
@@ -405,7 +490,8 @@ namespace BlazorApp.Api.Services.React
                         repairResult.AddFailure(
                             productCode,
                             "SET_CHILD_COST_RECALCULATION_INCOMPLETE",
-                            $"分店 {storeCode} 存在重复主商品价格记录"
+                            $"分店 {storeCode} 存在重复主商品价格记录",
+                            storeCode
                         );
                         productFailed = true;
                         break;
@@ -420,7 +506,8 @@ namespace BlazorApp.Api.Services.React
                         repairResult.AddFailure(
                             productCode,
                             "SET_CHILD_STORE_RELATION_INVALID",
-                            $"分店 {storeCode} 子项业务键为空"
+                            $"分店 {storeCode} 子项业务键为空",
+                            storeCode
                         );
                         productFailed = true;
                         break;
@@ -437,7 +524,8 @@ namespace BlazorApp.Api.Services.React
                         repairResult.AddFailure(
                             productCode,
                             "SET_CHILD_STORE_RELATION_INVALID",
-                            $"分店 {storeCode} 子项业务键重复: {duplicateChild.Key}"
+                            $"分店 {storeCode} 子项业务键重复: {duplicateChild.Key}",
+                            storeCode
                         );
                         productFailed = true;
                         break;
@@ -455,7 +543,8 @@ namespace BlazorApp.Api.Services.React
                         repairResult.AddFailure(
                             productCode,
                             "SET_CHILD_STORE_RELATION_INVALID",
-                            $"分店 {storeCode} 存在额外子项: {FormatCodeList(extraCodes)}"
+                            $"分店 {storeCode} 存在额外子项: {FormatCodeList(extraCodes)}",
+                            storeCode
                         );
                         productFailed = true;
                         break;
@@ -470,6 +559,26 @@ namespace BlazorApp.Api.Services.React
                         continue;
                     }
 
+                    var storeParentPurchasePrice = matchingStorePrices?
+                        .SingleOrDefault()
+                        ?.PurchasePrice;
+                    if (
+                        allowType2StoreParentPurchasePrice
+                        && storeParentPurchasePrice.GetValueOrDefault() <= 0m
+                        && normalizedPurchasePrices[productCode] <= 0m
+                    )
+                    {
+                        // 精确门店补齐必须采用与正式重算相同的成本优先级：门店主成本优先，再回退全局主档或仓库成本。
+                        repairResult.AddFailure(
+                            productCode,
+                            "SET_CHILD_COST_RECALCULATION_INCOMPLETE",
+                            $"分店 {storeCode} 主商品成本为空或0",
+                            storeCode
+                        );
+                        productFailed = true;
+                        break;
+                    }
+
                     // 两个来源字段各自允许 50 字符，但目标组合业务键只有 50；先拒绝，避免 SQL Server 截断异常回滚整批保存。
                     var oversizedChildCode = missingCodes.FirstOrDefault(childCode =>
                         storeCode.Length + childCode.Length > MaxStoreMultiCodeProductCodeLength
@@ -479,7 +588,8 @@ namespace BlazorApp.Api.Services.React
                         repairResult.AddFailure(
                             productCode,
                             "SET_CHILD_STORE_RELATION_INVALID",
-                            $"分店 {storeCode} 子项 {oversizedChildCode} 的组合业务键超过 {MaxStoreMultiCodeProductCodeLength} 字符"
+                            $"分店 {storeCode} 子项 {oversizedChildCode} 的组合业务键超过 {MaxStoreMultiCodeProductCodeLength} 字符",
+                            storeCode
                         );
                         productFailed = true;
                         break;
@@ -500,7 +610,8 @@ namespace BlazorApp.Api.Services.React
                             repairResult.AddFailure(
                                 productCode,
                                 "SET_CHILD_STORE_RELATION_TOMBSTONED",
-                                $"分店 {storeCode} 子项 {childCode} 已停用或软删除，未自动复活"
+                                $"分店 {storeCode} 子项 {childCode} 已停用或软删除，未自动复活",
+                                storeCode
                             );
                             productFailed = true;
                             break;
@@ -571,23 +682,17 @@ namespace BlazorApp.Api.Services.React
 
             var validation = await InspectStoreStructuresLockedAsync(
                 lockScope,
-                plannedRowsByProduct.Keys
+                plannedRowsByProduct.Keys,
+                exactStoreProductKeys
             );
             var validationErrorsByProduct = validation.Errors
                 .Where(error => !string.IsNullOrWhiteSpace(error.ProductCode))
-                .GroupBy(error => error.ProductCode!, StringComparer.OrdinalIgnoreCase)
+                .GroupBy(error => error.ProductCode!.Trim(), StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
-            var failedProductCodes = validationErrorsByProduct.Keys
-                .Intersect(plannedRowsByProduct.Keys, StringComparer.OrdinalIgnoreCase)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase);
-            if (
-                validation.StoreMultiCodeProduct.SkippedGroupCount > 0
-                && failedProductCodes.Count == 0
-            )
-            {
-                // 结构检查无法归属到具体商品时宁可撤销本批新增关系，避免带着未知坏数据继续重算。
-                failedProductCodes.UnionWith(plannedRowsByProduct.Keys);
-            }
+            var failedProductCodes = ResolveFailedRepairProductCodes(
+                validation,
+                plannedRowsByProduct.Keys
+            );
 
             var failedInsertedIds = failedProductCodes
                 .SelectMany(productCode => plannedRowsByProduct[productCode].Rows)
@@ -608,16 +713,14 @@ namespace BlazorApp.Api.Services.React
             {
                 if (failedProductCodes.Contains(productCode))
                 {
-                    var reason = validationErrorsByProduct.TryGetValue(
-                        productCode,
-                        out var errors
-                    )
-                        ? errors.First().Reason
-                        : "补齐后门店子项结构仍不完整";
+                    validationErrorsByProduct.TryGetValue(productCode, out var errors);
+                    var firstError = errors?.FirstOrDefault();
+                    var reason = firstError?.Reason ?? "补齐后门店子项结构仍不完整";
                     repairResult.AddFailure(
                         productCode,
                         "SET_CHILD_COST_RECALCULATION_INCOMPLETE",
-                        reason
+                        reason,
+                        firstError?.StoreCode
                     );
                     continue;
                 }
@@ -629,25 +732,74 @@ namespace BlazorApp.Api.Services.React
             return repairResult;
         }
 
+        internal static HashSet<string> ResolveFailedRepairProductCodes(
+            SetChildPurchasePriceWritebackResultDto validation,
+            IEnumerable<string?> plannedProductCodes
+        )
+        {
+            var plannedCodes = NormalizeCodes(plannedProductCodes)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var storeErrors = validation.Errors
+                .Where(error => string.Equals(
+                    error.TableName,
+                    "StoreMultiCodeProduct",
+                    StringComparison.OrdinalIgnoreCase
+                ))
+                .ToList();
+            var failedProductCodes = storeErrors
+                .Where(error =>
+                    !string.IsNullOrWhiteSpace(error.ProductCode)
+                    && plannedCodes.Contains(error.ProductCode.Trim())
+                )
+                .Select(error => error.ProductCode!.Trim())
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var hasUnattributedError = storeErrors.Any(error =>
+                string.IsNullOrWhiteSpace(error.ProductCode)
+                || !plannedCodes.Contains(error.ProductCode.Trim())
+            );
+            var hasTruncatedErrors =
+                validation.StoreMultiCodeProduct.SkippedGroupCount > storeErrors.Count;
+
+            if (
+                validation.StoreMultiCodeProduct.SkippedGroupCount > 0
+                && (hasTruncatedErrors || hasUnattributedError || failedProductCodes.Count == 0)
+            )
+            {
+                // 展示错误最多保留 100 条；一旦明细被截断或无法归属，必须保守撤销整批新增关系。
+                failedProductCodes.UnionWith(plannedCodes);
+            }
+
+            return failedProductCodes;
+        }
+
         /// <summary>
         /// 返回锁内结构检查结果而不抛业务完整性异常，供字段级部分成功入口使用。
         /// </summary>
         private async Task<SetChildPurchasePriceWritebackResultDto> InspectStoreStructuresLockedAsync(
             SetChildPurchasePriceLockScope lockScope,
-            IEnumerable<string?> productCodes
+            IEnumerable<string?> productCodes,
+            HashSet<string>? exactStoreProductKeys = null
         )
         {
             var normalizedProducts = NormalizeCodes(productCodes);
+            var exactStoreCodes = exactStoreProductKeys?
+                .Select(key => key.Split(KeySeparator, 2, StringSplitOptions.None))
+                .Where(parts => parts.Length == 2 && !string.IsNullOrWhiteSpace(parts[0]))
+                .Select(parts => parts[0].Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
             lockScope.EnsureCovers(_db, normalizedProducts);
             return await ExecuteCoreAsync(
                 new SetChildPurchasePriceWritebackRequestDto
                 {
                     ProductCodes = normalizedProducts,
+                    StoreCodes = exactStoreCodes,
                 },
                 dryRun: true,
                 updatedBy: null,
                 includeGlobal: false,
                 includeStores: true,
+                exactStoreProductKeys: exactStoreProductKeys,
                 validateStoreStructuresOnly: true
             );
         }
@@ -770,9 +922,18 @@ namespace BlazorApp.Api.Services.React
             }
 
             // 管理员预览/回写仍返回分组错误；业务写入入口必须抛错，让其现有事务整体回滚。
-            var affectedCodes = productCodes.Count == 0
-                ? "全部有效套装"
-                : string.Join(", ", productCodes);
+            var failedProductCodes = result.Errors
+                .Select(error => error.ProductCode?.Trim())
+                .Where(productCode => !string.IsNullOrWhiteSpace(productCode))
+                .Select(productCode => productCode!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(productCode => productCode, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var affectedCodes = failedProductCodes.Count > 0
+                ? string.Join(", ", failedProductCodes)
+                : productCodes.Count == 0
+                    ? "全部有效套装"
+                    : string.Join(", ", productCodes);
             var reasons = string.Join(
                 "；",
                 result.Errors.Select(error =>
@@ -1585,13 +1746,19 @@ namespace BlazorApp.Api.Services.React
         public Dictionary<string, SetChildStoreRelationRepairFailure> Failures { get; } =
             new(StringComparer.OrdinalIgnoreCase);
 
-        public void AddFailure(string productCode, string code, string message)
+        public void AddFailure(
+            string productCode,
+            string code,
+            string message,
+            string? storeCode = null
+        )
         {
             Failures.TryAdd(
                 productCode,
                 new SetChildStoreRelationRepairFailure
                 {
                     ProductCode = productCode,
+                    StoreCode = storeCode,
                     Code = code,
                     Message = message,
                 }
@@ -1602,6 +1769,7 @@ namespace BlazorApp.Api.Services.React
     internal sealed class SetChildStoreRelationRepairFailure
     {
         public string ProductCode { get; init; } = string.Empty;
+        public string? StoreCode { get; init; }
         public string Code { get; init; } = string.Empty;
         public string Message { get; init; } = string.Empty;
     }

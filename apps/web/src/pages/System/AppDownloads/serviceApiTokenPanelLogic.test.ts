@@ -3,6 +3,9 @@ import { join } from 'node:path'
 import {
   buildServiceApiTokenEnvSnippet,
   canRevokeServiceApiToken,
+  matchesServiceApiTokenScopeFilter,
+  matchesServiceApiTokenStatusFilter,
+  matchesServiceApiTokenTextFilter,
   resolveServiceApiTokenApiBaseUrl,
   resolveServiceApiTokenStatusColor,
 } from './serviceApiTokenPanelLogic'
@@ -10,6 +13,14 @@ import {
 function assertEqual<T>(actual: T, expected: T, message: string) {
   if (actual !== expected) {
     throw new Error(`${message}: expected ${String(expected)}, got ${String(actual)}`)
+  }
+}
+
+function assertDeepEqual(actual: unknown, expected: unknown, message: string) {
+  const actualJson = JSON.stringify(actual)
+  const expectedJson = JSON.stringify(expected)
+  if (actualJson !== expectedJson) {
+    throw new Error(`${message}: expected ${expectedJson}, got ${actualJson}`)
   }
 }
 
@@ -71,11 +82,143 @@ assertEqual(resolveServiceApiTokenStatusColor('revoked'), 'red', 'revoked 状态
 assertEqual(resolveServiceApiTokenStatusColor('expired'), 'orange', 'expired 状态应显示橙色')
 assertEqual(canRevokeServiceApiToken('active'), true, '仅 active token 可撤销')
 assertEqual(canRevokeServiceApiToken('revoked'), false, '已撤销 token 不再显示撤销动作')
+assertEqual(
+  matchesServiceApiTokenTextFilter('Mobile OTA Publisher', ' ota '),
+  true,
+  '文本筛选应忽略输入首尾空白与大小写',
+)
+assertEqual(
+  matchesServiceApiTokenTextFilter('hbsvc_kpeC_zuI-Y6S', 'PEC_ZUI'),
+  true,
+  'Token 前缀应支持大小写不敏感的中间片段匹配',
+)
+assertEqual(
+  matchesServiceApiTokenTextFilter('Mobile OTA Publisher', ''),
+  true,
+  '空文本筛选应视为未筛选',
+)
+assertEqual(
+  matchesServiceApiTokenTextFilter('Mobile OTA Publisher', 'quality'),
+  false,
+  '无关文本不得误命中',
+)
+assertEqual(
+  matchesServiceApiTokenScopeFilter(
+    ['System.ManageAppDownloads', 'Service.WriteReleaseEvents'],
+    'Service.WriteReleaseEvents',
+  ),
+  true,
+  'Scope 筛选应按数组完整成员匹配',
+)
+assertEqual(
+  matchesServiceApiTokenScopeFilter(
+    ['System.ManageAppDownloads'],
+    'ManageAppDownloads',
+  ),
+  false,
+  'Scope 筛选不得按部分字符串误命中',
+)
+assertEqual(
+  matchesServiceApiTokenStatusFilter('ACTIVE', 'active'),
+  true,
+  '状态筛选应在归一化大小写后精确匹配',
+)
+assertEqual(
+  matchesServiceApiTokenStatusFilter('active', 'revoked'),
+  false,
+  '不同状态不得误命中',
+)
+
+const filterFixture = [
+  {
+    id: 'mobile-active',
+    name: 'Mobile OTA Publisher',
+    tokenPrefix: 'hbsvc_mobile',
+    scopes: ['System.ManageAppDownloads'],
+    status: 'active',
+  },
+  {
+    id: 'deployment-revoked',
+    name: 'Deployment Acceptance Reporter',
+    tokenPrefix: 'hbsvc_deployment',
+    scopes: ['Service.WriteReleaseEvents'],
+    status: 'revoked',
+  },
+  {
+    id: 'quality-expired',
+    name: 'Quality CI Reporter',
+    tokenPrefix: 'hbsvc_quality',
+    scopes: ['Service.WritePerformanceMetrics'],
+    status: 'expired',
+  },
+]
+const selectedScopes = ['System.ManageAppDownloads', 'Service.WriteReleaseEvents']
+const selectedStatuses = ['active', 'revoked']
+const combinedMatches = filterFixture
+  .filter(
+    (token) =>
+      matchesServiceApiTokenTextFilter(token.name, 'reporter') &&
+      selectedScopes.some((scope) =>
+        matchesServiceApiTokenScopeFilter(token.scopes, scope),
+      ) &&
+      selectedStatuses.some((status) =>
+        matchesServiceApiTokenStatusFilter(token.status, status),
+      ),
+  )
+  .map((token) => token.id)
+assertDeepEqual(
+  combinedMatches,
+  ['deployment-revoked'],
+  '同列多选应为 OR，不同列筛选应为 AND',
+)
 
 const panelSource = readFileSync(join(process.cwd(), 'src/pages/System/AppDownloads/ServiceApiTokensPanel.tsx'), 'utf8')
 const typeSource = readFileSync(join(process.cwd(), 'src/types/serviceApiToken.ts'), 'utf8')
 const zh = JSON.parse(readFileSync(join(process.cwd(), 'src/i18n/locales/zh.json'), 'utf8'))
 const en = JSON.parse(readFileSync(join(process.cwd(), 'src/i18n/locales/en.json'), 'utf8'))
+
+for (const filterKey of ['name', 'tokenPrefix', 'scopes', 'status']) {
+  assertEqual(
+    panelSource.includes(`filteredValue: columnFilters.${filterKey}`),
+    true,
+    `${filterKey} 列必须接入受控筛选值`,
+  )
+}
+assertEqual(
+  panelSource.includes('matchesServiceApiTokenTextFilter(record.name'),
+  true,
+  '名称列必须接入文本包含筛选',
+)
+assertEqual(
+  panelSource.includes('matchesServiceApiTokenTextFilter(record.tokenPrefix'),
+  true,
+  'Token 前缀列必须仅用脱敏前缀接入文本筛选',
+)
+assertEqual(
+  panelSource.includes('matchesServiceApiTokenScopeFilter(record.scopes'),
+  true,
+  'Scopes 列必须接入完整成员筛选',
+)
+assertEqual(
+  panelSource.includes('matchesServiceApiTokenStatusFilter(record.status'),
+  true,
+  '状态列必须接入精确状态筛选',
+)
+assertEqual(
+  panelSource.includes('onChange={handleTableChange}'),
+  true,
+  '表格必须接管筛选和分页变化',
+)
+assertEqual(
+  panelSource.includes('current: currentPage'),
+  true,
+  '表格必须使用受控当前页以便筛选后回到第一页',
+)
+assertEqual(
+  panelSource.includes('clearFilters({ confirm: true, closeDropdown: true })'),
+  true,
+  '文本筛选重置必须确认清空受控筛选并关闭下拉框',
+)
 
 for (const purpose of ['quality-ci-reporter', 'deployment-acceptance-reporter']) {
   assertEqual(typeSource.includes(`| '${purpose}'`), true, `${purpose} 必须加入前端 purpose 类型白名单`)

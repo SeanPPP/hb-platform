@@ -194,7 +194,8 @@ public sealed class ProductChangeHistoryLegacyEntryPointTests : IDisposable
         CreateSqlSugarContext(_db),
         NullLogger<ReactProductsController>.Instance,
         historyService,
-        currentUserService
+        currentUserService,
+        CreateSuccessfulProjectionWriter()
     )
     {
         ControllerContext = new ControllerContext { HttpContext = new DefaultHttpContext() },
@@ -210,8 +211,26 @@ public sealed class ProductChangeHistoryLegacyEntryPointTests : IDisposable
         Mock.Of<IAutoPricingService>(),
         _cache,
         historyService,
-        CreateCurrentUserService(userGuid, username)
+        CreateCurrentUserService(userGuid, username),
+        CreateSuccessfulProjectionWriter()
     );
+
+    private static IProductMaintenanceHqProjectionWriter CreateSuccessfulProjectionWriter()
+    {
+        var writer = new Mock<IProductMaintenanceHqProjectionWriter>();
+        writer.Setup(item => item.EnqueueAsync(
+                It.IsAny<ISqlSugarClient>(),
+                It.IsAny<ProductMaintenanceHqMutationRequest>(),
+                It.IsAny<CancellationToken>()
+            ))
+            .ReturnsAsync(new ProductHqSyncOperationStatusDto
+            {
+                OperationId = Guid.NewGuid().ToString("N"),
+                Status = ProductHqSyncOutboxStatuses.Pending,
+                Retryable = true,
+            });
+        return writer.Object;
+    }
 
     private static Mock<IWarehouseProductChangeHistoryService> CreateHistoryService(
         List<WarehouseProductChangeHistoryContextDto>? contexts = null,

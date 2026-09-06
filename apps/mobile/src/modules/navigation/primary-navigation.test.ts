@@ -45,7 +45,6 @@ function compactPrimaryItems(
     labelKey: item.labelKey,
     icon: item.icon,
     active: item.active,
-    locked: item.locked,
   }));
 }
 
@@ -78,38 +77,33 @@ assert.deepEqual(
       targetRouteName: "workbench",
       labelKey: "tabs.workbench",
       active: true,
-      locked: false,
     },
     {
       key: "scan",
       targetRouteName: "product-query",
       labelKey: "tabs.scan",
       active: false,
-      locked: false,
     },
     {
       key: "attendance",
       targetRouteName: "attendance-personal",
       labelKey: "tabs.checkIn",
       active: false,
-      locked: false,
     },
     {
       key: "reports",
       targetRouteName: "reports",
       labelKey: "tabs.reports",
       active: false,
-      locked: false,
     },
     {
       key: "me",
       targetRouteName: "settings",
       labelKey: "tabs.me",
       active: false,
-      locked: false,
     },
   ],
-  "一级导航必须固定为工作台、扫码查询、打卡、报表、我的五项"
+  "全权限账号必须按工作台、扫码查询、打卡、报表、我的顺序显示五项"
 );
 assert.equal(
   accountPrimaryItems.every((item) => typeof item.icon === "string" && item.icon.length > 0),
@@ -157,6 +151,11 @@ const primaryItemsForNavigationActions = buildPrimaryNavigation({
   activeRouteName: "workbench",
   visibleRouteNames: fullMenu,
 });
+assert.equal(
+  primaryItemsForNavigationActions.every((item) => !("locked" in item)),
+  true,
+  "可见一级导航不得再携带锁定展示状态"
+);
 
 function primaryItem(key: "workbench" | "scan" | "attendance" | "reports" | "me") {
   const item = primaryItemsForNavigationActions.find((candidate) => candidate.key === key);
@@ -228,54 +227,71 @@ const devicePrimaryItems = compactPrimaryItems(
   [...fullMenu, "attendance-personal"],
   true
 );
-assert.equal(devicePrimaryItems[1]?.active, true, "设备模式扫码查询必须保持可用且高亮");
 assert.deepEqual(
-  devicePrimaryItems[2] && (({ icon: _icon, ...item }) => item)(devicePrimaryItems[2]),
-  {
-    key: "attendance",
-    targetRouteName: "attendance-personal",
-    labelKey: "tabs.checkIn",
-    active: false,
-    locked: true,
-  },
-  "设备模式即使收到个人考勤菜单，也必须锁定打卡入口"
+  devicePrimaryItems.map((item) => item.key),
+  ["workbench", "scan", "me"],
+  "设备模式即使收到个人考勤和报表菜单，也必须完全隐藏两个入口"
 );
 assert.equal(
-  resolvePrimaryNavigationAction(
-    "product-query",
-    buildPrimaryNavigation({
-      activeRouteName: "product-query",
-      visibleRouteNames: fullMenu,
-      isDeviceMode: true,
-    }).find((item) => item.key === "attendance")!
-  ),
-  "none",
-  "锁定的打卡入口不得返回任何可执行导航动作"
-);
-assert.equal(
-  devicePrimaryItems[3]?.locked,
+  devicePrimaryItems.find((item) => item.key === "scan")?.active,
   true,
-  "设备模式即使收到报表菜单，也必须锁定报表入口"
+  "设备模式扫码查询必须保持可用且高亮"
 );
 
 const attendanceUnavailableItems = compactPrimaryItems(
   "workbench",
   fullMenu.filter((routeName) => routeName !== "attendance-personal")
 );
-assert.equal(
-  attendanceUnavailableItems[2]?.locked,
-  true,
-  "只有考勤管理权限但没有个人考勤菜单时，不得解锁固定个人打卡目标"
+assert.deepEqual(
+  attendanceUnavailableItems.map((item) => item.key),
+  ["workbench", "scan", "reports", "me"],
+  "只有考勤管理权限但没有个人考勤菜单时，不得显示个人打卡入口"
+);
+
+const attendanceManagementOnlyItems = compactPrimaryItems(
+  "attendance-management",
+  ["workbench", "attendance-management", "settings"]
+);
+assert.deepEqual(
+  attendanceManagementOnlyItems.map((item) => ({
+    key: item.key,
+    active: item.active,
+  })),
+  [
+    { key: "workbench", active: true },
+    { key: "me", active: false },
+  ],
+  "个人打卡主入口不可见时，合法考勤管理页必须回落到工作台上下文"
 );
 
 const reportsUnavailableItems = compactPrimaryItems(
   "workbench",
   fullMenu.filter((routeName) => routeName !== "reports")
 );
-assert.equal(
-  reportsUnavailableItems[3]?.locked,
-  true,
-  "没有报表菜单时必须锁定固定报表入口"
+assert.deepEqual(
+  reportsUnavailableItems.map((item) => item.key),
+  ["workbench", "scan", "attendance", "me"],
+  "没有报表菜单时必须完全隐藏报表入口"
+);
+
+const orderAccountItems = compactPrimaryItems("workbench", [
+  "home",
+  "orders",
+  "cart",
+  "product-query",
+  "local-supplier-invoices",
+  "settings",
+]);
+assert.deepEqual(
+  orderAccountItems.map((item) => item.key),
+  ["workbench", "scan", "me"],
+  "无打卡与报表权限的账号只能显示工作台、扫码查询和我的"
+);
+
+assert.deepEqual(
+  compactPrimaryItems("workbench", ["home", "settings"]).map((item) => item.key),
+  ["workbench", "me"],
+  "没有任何可用业务主入口时只显示两个本地安全壳"
 );
 
 const sparseSections = buildWorkbenchSections([

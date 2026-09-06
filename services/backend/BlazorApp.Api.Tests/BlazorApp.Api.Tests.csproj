@@ -152,6 +152,8 @@
     <Compile Include="ProductStoreRecordsTests.cs" />
     <Compile Include="ProductPushToHqServiceTests.cs" />
     <Compile Include="ProductPushToHqJobServiceTests.cs" />
+    <Compile Include="ProductHqSyncOutboxTests.cs" />
+    <Compile Include="ProductMaintenanceHqProjectionWriterTests.cs" />
     <Compile Include="ProductSupplierImageBatchUpdateTests.cs" />
     <Compile Include="LocalSupplierHqSyncTests.cs" />
     <Compile Include="ProductIntegrityServiceTests.cs" />

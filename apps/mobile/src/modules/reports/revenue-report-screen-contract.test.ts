@@ -6,6 +6,37 @@ import { fileURLToPath } from "node:url";
 const directory = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(join(directory, "RevenueReportScreen.tsx"), "utf8");
 const hubSource = readFileSync(join(directory, "reports-hub-screen.tsx"), "utf8");
+
+assert.match(
+  source,
+  /const cashierStoreOptionsQuery = useQuery\(\{[\s\S]*?fetchProductReportStoreOptions\(\{ signal \}\)/,
+  "营业额报告必须先加载后端已按 Store.IsActive 筛选的分店白名单",
+);
+assert.match(
+  source,
+  /getCashierEnabledStoreCodes\(cashierStoreOptionsQuery\.data \?\? \[\]\)/,
+  "营业额报告必须把收银启用分店整理成显式查询范围",
+);
+assert.match(
+  source,
+  /buildQuery\(period, cashierEnabledStoreCodes\)/,
+  "营业额排行、搜索、分店数与汇总必须来自收银启用范围内的服务端结果",
+);
+assert.match(
+  source,
+  /cashierStoreOptionsQuery\.isSuccess[\s\S]*?cashierEnabledStoreCodes\.length > 0[\s\S]*?enabled: summaryQueryEnabled/,
+  "启用分店白名单未完成或为空时不得执行可能退化为全店的营业额查询",
+);
+assert.match(
+  source,
+  /const cashierStoreScopeVersion = cashierStoreOptionsQuery\.dataUpdatedAt;[\s\S]*?\["reports", "revenue-summary", cashierStoreScopeVersion, queryParams\]/,
+  "即使白名单内容未变，每次权威回读也必须用新 revision 自动刷新营业额数据",
+);
+assert.match(
+  source,
+  /const summaryLoading =\s*cashierStoreOptionsQuery\.isFetching/,
+  "白名单后台重验期间必须隐藏旧营业额业务行",
+);
 const screenStart = source.indexOf("export function RevenueReportScreen(");
 const modalStart = source.indexOf("      <Portal>", screenStart);
 
@@ -19,8 +50,8 @@ assert.match(
 );
 assert.match(
   hubSource,
-  /useFocusEffect\([\s\S]*?getPendingReportNavigationToken\(tab\)[\s\S]*?refetchQueries\([\s\S]*?getReportRefreshQueryOptions\(tab\)[\s\S]*?return \(\) => \{[\s\S]*?discardReportNavigationStart\(tab, navigationActionId\)/,
-  "返回常驻报告页时必须刷新活动页签，并只在焦点会话结束时清理仍未认领的 marker",
+  /useFocusEffect\([\s\S]*?getPendingReportNavigationToken\(tab\)[\s\S]*?refetchQueries\([\s\S]*?getReportStoreScopeRefreshQueryOptions\(tab\)[\s\S]*?return \(\) => \{[\s\S]*?discardReportNavigationStart\(tab, navigationActionId\)/,
+  "返回常驻报告页时必须先重验启用分店范围，并只在焦点会话结束时清理仍未认领的 marker",
 );
 assert.match(
   hubSource,
@@ -42,13 +73,13 @@ assert.match(
 );
 assert.match(
   source,
-  /reportNavigationActionId\?: number \| null;[\s\S]*?reportNavigationActionId = null[\s\S]*?const summaryQueryEnabled = isRevenuePeriodAvailable\(period, dateBounds\);/,
+  /reportNavigationActionId\?: number \| null;[\s\S]*?reportNavigationActionId = null[\s\S]*?const summaryQueryEnabled =[\s\S]*?revenuePeriodAvailable[\s\S]*?cashierStoreOptionsQuery\.isSuccess[\s\S]*?cashierEnabledStoreCodes\.length > 0;/,
   "营业额屏必须接收当前焦点 actionId，并显式判定主查询是否可执行",
 );
 assert.match(
   source,
-  /useLayoutEffect\(\(\) => \{\s*if \(reportNavigationActionId === null \|\| summaryQueryEnabled\) return;\s*discardReportNavigationStart\("revenue", reportNavigationActionId\);[\s\S]*?\}, \[reportNavigationActionId, summaryQueryEnabled\]\);/,
-  "营业额主查询不可执行时必须按 expected actionId 清理；有效或在途查询不得提前清理",
+  /const summaryQueryTerminallyBlocked =[\s\S]*?cashierStoreOptionsQuery\.isError[\s\S]*?cashierStoreScopeEmpty;[\s\S]*?if \(reportNavigationActionId === null \|\| !summaryQueryTerminallyBlocked\) return;[\s\S]*?discardReportNavigationStart\("revenue", reportNavigationActionId\)/,
+  "营业额只在日期无效或白名单已失败、已确认为空时清理 marker，白名单加载中不得提前清理",
 );
 assert.match(
   source,
@@ -173,14 +204,30 @@ assert.match(
 );
 assert.match(
   source.slice(modalStart),
-  /detailPending[\s\S]*?reports\.states\.statisticsIncomplete[\s\S]*?detailQuery\.refetch\(\)/,
+  /detailPending[\s\S]*?reports\.states\.statisticsIncomplete[\s\S]*?retryDetail/,
   "分时和逐日补算耗尽时必须明确提示并允许人工重试",
+);
+assert.match(
+  screenSource,
+  /const detailQueryEnabled =[\s\S]*?cashierStoreOptionsQuery\.isSuccess[\s\S]*?detailBranchCodes\.length > 0;[\s\S]*?enabled: detailQueryEnabled/,
+  "营业额下钻也必须在收银启用白名单内且白名单成功时才执行",
+);
+assert.match(
+  screenSource,
+  /const retryDetail = \(\) => \{\s*if \(detailQueryEnabled\) \{\s*void cashierStoreOptionsQuery\.refetch\(\)/,
+  "营业额下钻人工重试必须先重验白名单，再由新 revision 触发业务请求",
+);
+assert.doesNotMatch(
+  screenSource,
+  /summaryQuery\.refetch\(\)|detailQuery\.refetch\(\)/,
+  "营业额人工重试不得与权威白名单重验并发使用旧范围",
 );
 assert.match(flatListSource, /<MonthDatePickerField\s+compact/, "营业额日期控件必须使用紧凑模式，为排行保留首屏空间");
 assert.doesNotMatch(flatListSource, /supplierPage|pageSize|pagination|slice\(/i, "营业额分店排行不得分页或截断");
 assert.match(flatListSource, /<RefreshControl[\s\S]*?onRefresh=\{refresh\}/, "主列表必须保留下拉刷新");
-assert.match(flatListSource, /summaryQuery\.isLoading/, "主列表必须保留加载状态");
-assert.match(flatListSource, /summaryQuery\.isError/, "主列表必须保留错误状态");
+assert.match(flatListSource, /summaryLoading/, "主列表必须合并白名单与营业额加载状态");
+assert.match(flatListSource, /summaryError/, "主列表必须合并白名单与营业额错误状态");
+assert.match(flatListSource, /cashierStoreScopeEmpty[\s\S]*?noCashierEnabledStores/, "零启用收银分店必须显示明确空态");
 assert.match(flatListSource, /visibleRows\.length === 0/, "筛选后的主列表必须保留空状态");
 assert.match(
   screenSource,
@@ -224,7 +271,7 @@ assert.doesNotMatch(
 );
 assert.match(
   flatListSource,
-  /summaryPollingExhausted[\s\S]*?reports\.states\.statisticsIncomplete[\s\S]*?icon="refresh"[\s\S]*?summaryQuery\.refetch\(\)/,
+  /summaryPollingExhausted[\s\S]*?reports\.states\.statisticsIncomplete[\s\S]*?icon="refresh"[\s\S]*?retrySummary/,
   "有界轮询耗尽后必须明确停止自动刷新文案，并在排行标题提供重试",
 );
 assert.match(

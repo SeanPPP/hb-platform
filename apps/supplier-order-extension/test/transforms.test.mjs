@@ -43,6 +43,7 @@ test('after-colon 仅提取冒号后的内容，无冒号时 fail closed', () =>
 
 test('GFA 下划线货号转换为 HB 的斜线货号', () => {
   assert.equal(applyTransform('HO_ABN2BW', 'underscore-to-slash'), 'HO/ABN2BW');
+  assert.equal(applyTransform('HO_BPK2FL', 'underscore-to-slash'), 'HO/BPK2FL');
   assert.equal(applyTransform('AA_BB_CC', 'underscore-to-slash'), 'AA/BB/CC');
   assert.equal(isTransformAllowed('underscore-to-slash'), true);
 });

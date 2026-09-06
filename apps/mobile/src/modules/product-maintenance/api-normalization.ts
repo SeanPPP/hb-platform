@@ -3,6 +3,7 @@ import type {
   CreateProductWithPricesResult,
   LocalSupplierOption,
 } from "@/modules/product-maintenance/types";
+import { normalizeHqSyncOperation } from "@/modules/product-maintenance/hq-sync";
 
 function getEnvelopeData(payload: unknown): unknown {
   if (payload && typeof payload === "object" && "data" in payload) {
@@ -74,5 +75,6 @@ export function normalizeCreateProductWithPricesResult(
   return {
     productCode: String(data.productCode ?? data.ProductCode ?? ""),
     storeProductCodes,
+    hqSync: normalizeHqSyncOperation(data.hqSync ?? data.HqSync),
   };
 }

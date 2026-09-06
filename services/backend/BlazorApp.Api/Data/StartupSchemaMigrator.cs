@@ -14,6 +14,7 @@ namespace BlazorApp.Api.Data
             PreorderSchemaBootstrap.EnsureSupportedProvider(db.CurrentConnectionConfig.DbType);
             if (db.CurrentConnectionConfig.DbType == DbType.Sqlite)
             {
+                await ProductHqSyncOutboxSchemaMigrator.EnsureAsync(db, logger);
                 await EnsureWarehouseProductChangeHistorySqliteSchemaAsync(db, logger);
                 return;
             }
@@ -23,6 +24,7 @@ namespace BlazorApp.Api.Data
             }
 
             // 关键位置：统一串起所有启动兜底迁移，避免 Program.cs 只接入其中一条补列链路。
+            await ProductHqSyncOutboxSchemaMigrator.EnsureAsync(db, logger);
             await LocalSupplierInvoiceStartupSchemaMigrator.EnsureAsync(db, logger);
             await EnsureStoreTimeZoneSchemaAsync(db, logger);
             await EnsureStoreReturnPolicySchemaAsync(db, logger);
