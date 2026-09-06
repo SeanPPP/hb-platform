@@ -486,7 +486,8 @@ namespace BlazorApp.Api.Services
                         "分时统计",
                         () => UpdateHourlyStatisticsWithContext(context, posmContext, logger, date, null)
                     );
-                    if (date.Year != 2025)
+                    // 当天与 2025 日期都由商品入口原子发布分店表，不能提前独立替换。
+                    if (date.Year != 2025 && date.Date != DateTime.Today)
                     {
                         await RunStep(
                             SalesStatisticType.StoreSales,

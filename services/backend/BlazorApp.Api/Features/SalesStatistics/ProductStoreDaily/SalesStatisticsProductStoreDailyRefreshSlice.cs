@@ -41,17 +41,33 @@ namespace BlazorApp.Api.Services
     )
     {
         var targetDate = date.Date;
+        var useCurrentDaySnapshot = targetDate == DateTime.Today && targetDate.Year != 2025
+            && atomicStoreStatistics == null && preloadedPosmSnapshot == null
+            && validateSourceWatermarkBeforeCommitAsync == null;
+        DateTime? currentDaySourceWatermark = null;
         var originalCommandTimeout = context.Db.Ado.CommandTimeOut;
         context.Db.Ado.CommandTimeOut = Math.Max(originalCommandTimeout, CommandTimeoutSeconds);
         try
         {
             logger.LogInformation("开始更新商品分店每日统计: {Date}", targetDate);
-            var input = await new SalesStatisticsProductStoreDailySourceReader().LoadAsync(
-                context, posmContext, hbSalesContext, logger, targetDate,
-                preloadedHBSalesRows, preloadedPosmSnapshot);
+            ProductStoreDailyRefreshInput input = null!;
+            if (useCurrentDaySnapshot)
+            {
+                (input, atomicStoreStatistics) = await new SalesStatisticsProductStoreDailySourceReader()
+                    .LoadCurrentDaySnapshotAsync(context, posmContext, logger, targetDate,
+                        () => _productSupport.BuildStoreStatisticsAsync(
+                            context, posmContext, hbSalesContext, targetDate, null));
+                currentDaySourceWatermark = input.LastSourceUploadTime;
+            }
+            else
+            {
+                input = await new SalesStatisticsProductStoreDailySourceReader().LoadAsync(
+                    context, posmContext, hbSalesContext, logger, targetDate,
+                    preloadedHBSalesRows, preloadedPosmSnapshot);
+            }
             var build = new SalesStatisticsProductStoreDailyBuilder().Build(input);
             var sourceWatermarkValidator = validateSourceWatermarkBeforeCommitAsync;
-            if (sourceWatermarkValidator == null && targetDate.Year != 2025)
+            if (sourceWatermarkValidator == null && targetDate.Year != 2025 && !useCurrentDaySnapshot)
             {
                 // 普通日入口没有外层协调器回调时，仍须在事务前后复核同一日 POSM 水位。
                 // 2025 入口由原子协调器提供同时覆盖 POSM/HBSales 的签名校验。
@@ -80,7 +96,13 @@ namespace BlazorApp.Api.Services
         }
         catch (Exception ex)
         {
-            if (atomicStoreStatistics == null)
+            if (useCurrentDaySnapshot)
+            {
+                await Persist2025AtomicFailureStatesAsync(
+                    context, logger, targetDate, currentDaySourceWatermark, ex,
+                    expectedJobId, validateExecutionOwnershipBeforeCommitAsync);
+            }
+            else if (atomicStoreStatistics == null)
             {
                 try
                 {

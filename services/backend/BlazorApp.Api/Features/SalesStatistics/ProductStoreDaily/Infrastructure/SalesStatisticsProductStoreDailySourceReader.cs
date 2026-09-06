@@ -14,6 +14,37 @@ internal sealed class SalesStatisticsProductStoreDailySourceReader
     private const int StoreCostProductQueryBatchSize = 500;
     private const int PosmSupplierMappingQueryBatchSize = 500;
 
+    internal async Task<(ProductStoreDailyRefreshInput Input, List<StoreSalesStatistic> Stores)> LoadCurrentDaySnapshotAsync(
+        SqlSugarContext context,
+        POSMSqlSugarContext posmContext,
+        ILogger logger,
+        DateTime date,
+        Func<Task<List<StoreSalesStatistic>>> loadStoreStatisticsAsync)
+    {
+        if (date.Date != DateTime.Today || date.Year == 2025)
+            throw new ArgumentException("营业中快照只接受当天非 2025 日期", nameof(date));
+        if (posmContext.Db.Ado.Transaction != null)
+            throw new InvalidOperationException("当天统计快照必须独立持有 POSM 只读事务");
+        ProductStoreDailyRefreshInput input = null!;
+        List<StoreSalesStatistic> stores = null!;
+        // 营业期间允许新订单持续上传。支付汇总、商品明细及来源水位固定在同一快照，
+        // 新上传留给下一轮；主库写入开始前释放只读快照，避免占用来源事务过久。
+        await SalesStatisticsTransactionExecutor.ExecuteAsync(
+            beginAsync: () => posmContext.Db.Ado.BeginTranAsync(
+                posmContext.Db.CurrentConnectionConfig.DbType == DbType.SqlServer
+                    ? System.Data.IsolationLevel.Snapshot
+                    : System.Data.IsolationLevel.Serializable),
+            workAsync: async () =>
+            {
+                stores = await loadStoreStatisticsAsync();
+                input = await LoadAsync(context, posmContext, null, logger, date, null, null);
+            },
+            commitAsync: () => posmContext.Db.Ado.CommitTranAsync(),
+            rollbackAsync: () => posmContext.Db.Ado.RollbackTranAsync(),
+            logger: logger, operationName: "读取当天分店与商品一致快照");
+        return (input, stores);
+    }
+
     internal async Task<ProductStoreDailyRefreshInput> LoadAsync(
         SqlSugarContext context,
         POSMSqlSugarContext posmContext,

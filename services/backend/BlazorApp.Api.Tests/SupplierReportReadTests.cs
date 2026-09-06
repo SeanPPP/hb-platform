@@ -12,6 +12,7 @@ using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
+using Moq;
 using SqlSugar;
 using Xunit;
 
@@ -38,6 +39,98 @@ public sealed class SupplierReportReadTests : IDisposable
         _db.CodeFirst.InitTables<HBLocalSupplier>();
         _db.CodeFirst.InitTables<ChinaSupplier>();
         _db.CodeFirst.InitTables<Store>();
+    }
+
+    [Fact]
+    public async Task 快照读取完成后释放自有事务且嵌套读取不提前提交()
+    {
+        var (db, ado) = CreateSnapshotDb();
+        var service = CreateService(db: db.Object);
+        var result = await ReadSnapshot(service, async () =>
+        {
+            Assert.Equal(System.Data.IsolationLevel.Snapshot, ado.Object.Transaction.IsolationLevel);
+            var transaction = ado.Object.Transaction;
+            var nested = await ReadSnapshot(service, () => Task.FromResult(42));
+            Assert.Same(transaction, ado.Object.Transaction);
+            ado.Verify(value => value.CommitTranAsync(), Times.Never);
+            return nested;
+        });
+        Assert.Equal(42, result);
+        Assert.Null(ado.Object.Transaction);
+        ado.Verify(value => value.BeginTranAsync(System.Data.IsolationLevel.Snapshot), Times.Once);
+        ado.Verify(value => value.CommitTranAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task 快照读取失败回滚且后续请求可以重新读取()
+    {
+        var (db, ado) = CreateSnapshotDb();
+        var service = CreateService(db: db.Object);
+        var failure = new InvalidOperationException("模拟读取失败");
+        var actual = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            ReadSnapshot(service, () => Task.FromException<int>(failure)));
+        Assert.Same(failure, actual);
+        Assert.Null(ado.Object.Transaction);
+        ado.Verify(value => value.CommitTranAsync(), Times.Never);
+        ado.Verify(value => value.RollbackTranAsync(), Times.Once);
+        Assert.Equal(7, await ReadSnapshot(service, () => Task.FromResult(7)));
+        ado.Verify(value => value.CommitTranAsync(), Times.Once);
+    }
+
+    [Fact]
+    public async Task 未启用快照隔离时保持原读取且不更改数据库设置()
+    {
+        var (db, ado) = CreateSnapshotDb(available: false);
+        var service = CreateService(db: db.Object);
+        Assert.Equal(9, await ReadSnapshot(service, () => Task.FromResult(9)));
+        Assert.Equal(10, await ReadSnapshot(service, () => Task.FromResult(10)));
+        ado.Verify(value => value.BeginTranAsync(It.IsAny<System.Data.IsolationLevel>()), Times.Never);
+        ado.Verify(value => value.GetIntAsync(It.IsAny<string>(), It.IsAny<SugarParameter[]>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task 主库与映射库分别检查快照能力且不混用事务()
+    {
+        var (mainDb, mainAdo) = CreateSnapshotDb(available: false);
+        var (mappingDb, mappingAdo) = CreateSnapshotDb();
+        var service = CreateService(db: mainDb.Object);
+        await ReadSnapshot(service, () => Task.FromResult(1));
+        Func<Task<int>> read = () =>
+        {
+            Assert.Null(mainAdo.Object.Transaction);
+            Assert.Equal(System.Data.IsolationLevel.Snapshot, mappingAdo.Object.Transaction.IsolationLevel);
+            return Task.FromResult(2);
+        };
+        var result = (Task<int>)typeof(SalesDashboardReactService)
+            .GetMethod("ReadReportSnapshotOnConnectionAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .MakeGenericMethod(typeof(int)).Invoke(service, new object[] { mappingDb.Object, read })!;
+        Assert.Equal(2, await result);
+        Assert.Null(mappingAdo.Object.Transaction);
+        mainAdo.Verify(value => value.BeginTranAsync(It.IsAny<System.Data.IsolationLevel>()), Times.Never);
+        mappingAdo.Verify(value => value.CommitTranAsync(), Times.Once);
+    }
+
+    private static Task<int> ReadSnapshot(SalesDashboardReactService service, Func<Task<int>> read) =>
+        (Task<int>)typeof(SalesDashboardReactService).GetMethod("ReadReportSnapshotAsync", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .MakeGenericMethod(typeof(int)).Invoke(service, new object[] { read })!;
+
+    private static (Mock<ISqlSugarClient> Db, Mock<IAdo> Ado) CreateSnapshotDb(bool available = true)
+    {
+        var ado = new Mock<IAdo>(MockBehavior.Strict);
+        ado.SetupProperty(value => value.Transaction);
+        ado.Setup(value => value.GetIntAsync(It.IsAny<string>(), It.IsAny<SugarParameter[]>())).ReturnsAsync(available ? 1 : 0);
+        ado.Setup(value => value.BeginTranAsync(System.Data.IsolationLevel.Snapshot)).Callback(() =>
+        {
+            var transaction = new Mock<System.Data.IDbTransaction>();
+            transaction.SetupGet(value => value.IsolationLevel).Returns(System.Data.IsolationLevel.Snapshot);
+            ado.Object.Transaction = transaction.Object;
+        }).Returns(Task.CompletedTask);
+        ado.Setup(value => value.CommitTranAsync()).Callback(() => ado.Object.Transaction = null).Returns(Task.CompletedTask);
+        ado.Setup(value => value.RollbackTranAsync()).Callback(() => ado.Object.Transaction = null).Returns(Task.CompletedTask);
+        var db = new Mock<ISqlSugarClient>(MockBehavior.Strict);
+        db.SetupGet(value => value.Ado).Returns(ado.Object);
+        db.SetupGet(value => value.CurrentConnectionConfig).Returns(new ConnectionConfig { DbType = DbType.SqlServer });
+        return (db, ado);
     }
 
     [Fact]
@@ -95,6 +188,25 @@ public sealed class SupplierReportReadTests : IDisposable
     }
 
     [Fact]
+    public async Task 商品分页只保留本期同期授权分店内的遗留中国商品映射()
+    {
+        var compare = _day.AddYears(-1);
+        _db.Insertable(new[]
+        {
+            new ProductStoreDailySalesStatistic { Date = _day, BranchCode = "S1", ProductCode = "current", SupplierCode = "200" },
+            new ProductStoreDailySalesStatistic { Date = compare, BranchCode = "S1", ProductCode = "compare", SupplierCode = "200" },
+            new ProductStoreDailySalesStatistic { Date = _day.AddDays(1), BranchCode = "S1", ProductCode = "other-date", SupplierCode = "200" },
+            new ProductStoreDailySalesStatistic { Date = _day, BranchCode = "S2", ProductCode = "other-branch", SupplierCode = "200" },
+            new ProductStoreDailySalesStatistic { Date = _day, BranchCode = "S1", ProductCode = "direct-china", SupplierCode = "C001" },
+        }).ExecuteCommand();
+        var range = Range();
+        range.CompareStartDate = range.CompareEndDate = compare;
+        var codes = await CreateService().GetReportLegacyChinaProductCodesAsync(range, new() { "S1" });
+        Assert.Equal(new[] { "compare", "current" }, codes.OrderBy(value => value).ToArray());
+        Assert.Contains("CURRENT", codes);
+    }
+
+    [Fact]
     public async Task 任一行成本不完整则整个期间毛利为空()
     {
         SeedComplete(_day);
@@ -125,6 +237,48 @@ public sealed class SupplierReportReadTests : IDisposable
                 .Where(row => row.StatisticType == SalesStatisticType.ChinaSupplierStoreSales).ExecuteCommand();
         var status = await CreateService().GetProductReportStatisticStatusAsync(Range());
         Assert.Equal(SalesStatisticRefreshStatus.Pending, status.StatisticStatus);
+    }
+
+    [Fact]
+    public async Task 失败商品替换后的空发布版本在排队时不能复用供应商快照()
+    {
+        SeedComplete(_day);
+        SeedRow(_day, "S1", "250", 100, 5, 40);
+        _db.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => row.Status == SalesStatisticRefreshStatus.Queued)
+            .SetColumns(row => row.SourceProductVersion == null)
+            .SetColumns(row => row.CompletedAtUtc == null)
+            .Where(row => row.StatisticType == SalesStatisticType.ProductStoreDaily).ExecuteCommand();
+        var service = CreateService();
+        var status = await service.GetProductReportStatisticStatusAsync(Range());
+        Assert.Equal(SalesStatisticRefreshStatus.Pending, status.StatisticStatus);
+        Assert.Empty(await service.GetSupplierSalesRankAsync(Range(), null, 100));
+    }
+
+    [Theory]
+    [InlineData(SalesStatisticRefreshStatus.Queued)]
+    [InlineData(SalesStatisticRefreshStatus.Running)]
+    public async Task 后台刷新期间首次请求直接读取上次完整版本并复用缓存(string progress)
+    {
+        SeedComplete(_day);
+        SeedRow(_day, "S1", "250", 100, 5, 40);
+        var service = CreateService();
+        var before = await service.GetProductReportStatisticStatusAsync(Range());
+        _db.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => row.Status == progress)
+            .SetColumns(row => row.CompletedAtUtc == null)
+            .Where(row => row.StatisticType == SalesStatisticType.ProductStoreDaily).ExecuteCommand();
+        var reads = 0;
+        _db.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sql.Contains("FROM [AustralianSupplierStoreSalesDetail]", StringComparison.OrdinalIgnoreCase)) reads++;
+        };
+        var during = await service.GetProductReportStatisticStatusAsync(Range());
+        Assert.Equal(SalesStatisticRefreshStatus.Fresh, during.StatisticStatus);
+        Assert.Equal(before.CacheVersion, during.CacheVersion);
+        Assert.Equal(100m, Assert.Single(await service.GetSupplierSalesRankAsync(Range(), null, 100)).TotalAmount);
+        Assert.Equal(100m, Assert.Single(await service.GetSupplierSalesRankAsync(Range(), null, 100)).TotalAmount);
+        Assert.Equal(1, reads);
     }
 
     [Fact]
