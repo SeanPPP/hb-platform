@@ -1,6 +1,7 @@
 using System.Text.Json;
 using BlazorApp.Shared.DTOs;
 using BlazorApp.Shared.Models;
+using BlazorApp.Shared.Models.POSM;
 using SqlSugar;
 
 namespace BlazorApp.Api.Services.React;
@@ -66,18 +67,22 @@ public partial class SalesDashboardReactService
         var normalizedLocal = NormalizeCodes(chinaSupplierScope ? null : localSupplierCodes);
         var normalizedChina = NormalizeCodes(chinaSupplierCodes);
 
-        // 中国范围优先于遗留本地供应商参数；映射和供应商集合各读取一次，随后在同一 SQL 中复用。
-        var chinaProductMap = normalizedChina.Any()
-            ? await GetChinaSupplierProductMapAsync(normalizedChina)
-            : chinaSupplierScope
-                ? await GetChinaSupplierProductMapAsync()
-                : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        if (chinaSupplierScope && !normalizedChina.Any())
+        var chinaProductMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (chinaSupplierScope || normalizedChina.Any())
         {
-            normalizedChina = (await GetChinaSupplierCodeSetAsync(chinaProductMap.Values)).ToList();
-            if (!normalizedChina.Any())
+            // 先按本期/同期和授权分店确定遗留商品，避免为一页结果读取整份商品映射。
+            // 全部中国供应商代码单独读取，仍包含期间内只有直写统计行的供应商。
+            var legacyProducts = await GetReportLegacyChinaProductCodesAsync(dateRange, normalizedBranches);
+            var includeAllSuppliers = chinaSupplierScope && !normalizedChina.Any();
+            var mapping = await ReadReportChinaSupplierMappingsAsync(legacyProducts, includeAllSuppliers);
+            chinaProductMap = mapping.ProductMap;
+            if (includeAllSuppliers)
             {
-                return CreateEmptyProductPagingResult(pageIndex, pageSize);
+                normalizedChina = (await GetChinaSupplierCodeSetAsync(mapping.SupplierCodes)).ToList();
+                if (!normalizedChina.Any())
+                {
+                    return CreateEmptyProductPagingResult(pageIndex, pageSize);
+                }
             }
         }
 
@@ -151,38 +156,110 @@ public partial class SalesDashboardReactService
         return MapProductReportPagingRows(rows, pageIndex, pageSize);
     }
 
+    internal Task<(Dictionary<string, string> ProductMap, List<string> SupplierCodes)> ReadReportChinaSupplierMappingsAsync(
+        HashSet<string> productCodes, bool includeAllSupplierCodes)
+    {
+        return ReadReportSnapshotOnConnectionAsync(_posmContext.Db, async () =>
+        {
+            var query = _posmContext.Db.Queryable<PosmProductSupplierMapping>()
+                .With(SqlWith.Null)
+                .Where(row => !row.IsDeleted && row.LocalSupplierCode == CHINA_LOCAL_SUPPLIER_CODE
+                    && row.ChinaSupplierCode != null && row.ChinaSupplierCode != "");
+            // 即使期间没有遗留 200 商品，也必须保留完整代码集合来识别直写中国供应商行。
+            var suppliers = includeAllSupplierCodes
+                ? await query.Clone().Where(row => row.ProductCode != null && row.ProductCode.Trim() != "")
+                    .Select(row => row.ChinaSupplierCode!).Distinct().ToListAsync()
+                : new List<string>();
+            var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (productCodes.Count > 0 && _posmContext.Db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+            {
+                // 月报涉及上万商品，使用一个 JSON 参数做集合连接，避免数十批查询往返。
+                // 原始 SQL 不继承连接的 NOLOCK 默认值，仍由外层同一个 POSM 快照事务保护。
+                // OPENJSON 默认估算 50 行；哈希连接避免对上万个代码逐个执行动态索引查找。
+                var rows = await _posmContext.Db.Ado.SqlQueryAsync<ChinaSupplierProductMapRow>("""
+                    SELECT m.[ProductCode], m.[ChinaSupplierCode]
+                    FROM [posm_product_supplier_mapping] AS m
+                    INNER JOIN OPENJSON(@ProductCodes) WITH ([ProductCode] nvarchar(50) '$') AS requested
+                        ON requested.[ProductCode] COLLATE DATABASE_DEFAULT = m.[ProductCode]
+                    WHERE m.[IsDeleted] = 0 AND m.[LocalSupplierCode] = N'200'
+                        AND m.[ChinaSupplierCode] IS NOT NULL AND m.[ChinaSupplierCode] <> N''
+                    OPTION (RECOMPILE, HASH JOIN)
+                    """, new[] { new SugarParameter("@ProductCodes", JsonSerializer.Serialize(productCodes)) });
+                MergeChinaSupplierProductMap(map, rows);
+                return (map, suppliers);
+            }
+            foreach (var batch in BatchProductSalesCodes(productCodes))
+            {
+                var codes = batch.ToList();
+                var rows = await query.Clone().Where(row => codes.Contains(row.ProductCode))
+                    .Select(row => new ChinaSupplierProductMapRow
+                    {
+                        ProductCode = row.ProductCode,
+                        ChinaSupplierCode = row.ChinaSupplierCode!,
+                    }).ToListAsync();
+                MergeChinaSupplierProductMap(map, rows);
+            }
+            return (map, suppliers);
+        });
+    }
+
+    internal async Task<HashSet<string>> GetReportLegacyChinaProductCodesAsync(DateRangeDto range, List<string> branches)
+    {
+        var start = range.StartDate.Date;
+        var end = range.EndDate.Date.AddDays(1);
+        var compareStart = range.CompareStartDate?.Date ?? start;
+        var compareEnd = range.CompareEndDate?.Date.AddDays(1) ?? end;
+        var query = _context.Db.Queryable<ProductStoreDailySalesStatistic>()
+            .Where(row => row.SupplierCode == CHINA_LOCAL_SUPPLIER_CODE
+                && ((row.Date >= start && row.Date < end) || (row.Date >= compareStart && row.Date < compareEnd)));
+        if (branches.Count > 0)
+            query = query.Where(row => branches.Contains(row.BranchCode));
+        var selected = query.Select(row => row.ProductCode).Distinct();
+        if (_context.Db.CurrentConnectionConfig.DbType == DbType.SqlServer)
+        {
+            // 周/月与日范围相差很大，旧计划可能退化为供应商索引的全历史并行扫描。
+            var sql = selected.ToSql();
+            return (await _context.Db.Ado.SqlQueryAsync<string>(sql.Key + " OPTION (RECOMPILE)", sql.Value.ToArray()))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+        return (await selected.ToListAsync()).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
     internal static string BuildProductReportPagingSql(bool includeCompare)
     {
         // 排名只聚合销售额；页码确定后再读取本页的名称、数量和成本覆盖，避免对全部商品做宽行聚合。
         return $"""
             BEGIN TRY
             -- 筛选集合只解析一次；显式标记空筛选，避免逐商品重复执行 OPENJSON/NOT EXISTS。
-            SELECT DISTINCT CONVERT(nvarchar(100), [value]) AS [BranchCode]
-            INTO #ProductReportBranchFilter FROM OPENJSON(@Branches);
-            CREATE CLUSTERED INDEX [IX_ProductReportBranchFilter] ON #ProductReportBranchFilter ([BranchCode]);
-            SELECT DISTINCT CONVERT(nvarchar(100), [value]) AS [SupplierCode]
-            INTO #ProductReportLocalFilter FROM OPENJSON(@LocalSuppliers);
-            CREATE CLUSTERED INDEX [IX_ProductReportLocalFilter] ON #ProductReportLocalFilter ([SupplierCode]);
-            SELECT DISTINCT CONVERT(nvarchar(100), [value]) AS [SupplierCode]
-            INTO #ProductReportChinaFilter FROM OPENJSON(@ChinaSuppliers);
-            CREATE CLUSTERED INDEX [IX_ProductReportChinaFilter] ON #ProductReportChinaFilter ([SupplierCode]);
+            -- 快照事务不允许独立 CREATE INDEX；索引随临时表定义创建，避免中断一致性读取。
+            CREATE TABLE #ProductReportBranchFilter ([BranchCode] nvarchar(100) COLLATE DATABASE_DEFAULT,
+                INDEX [IX_ProductReportBranchFilter] CLUSTERED ([BranchCode]));
+            INSERT INTO #ProductReportBranchFilter SELECT DISTINCT CONVERT(nvarchar(100), [value]) FROM OPENJSON(@Branches);
+            CREATE TABLE #ProductReportLocalFilter ([SupplierCode] nvarchar(100) COLLATE DATABASE_DEFAULT,
+                INDEX [IX_ProductReportLocalFilter] CLUSTERED ([SupplierCode]));
+            INSERT INTO #ProductReportLocalFilter SELECT DISTINCT CONVERT(nvarchar(100), [value]) FROM OPENJSON(@LocalSuppliers);
+            CREATE TABLE #ProductReportChinaFilter ([SupplierCode] nvarchar(100) COLLATE DATABASE_DEFAULT,
+                INDEX [IX_ProductReportChinaFilter] CLUSTERED ([SupplierCode]));
+            INSERT INTO #ProductReportChinaFilter SELECT DISTINCT CONVERT(nvarchar(100), [value]) FROM OPENJSON(@ChinaSuppliers);
+            CREATE TABLE #ProductReportChinaMap ([ProductCode] nvarchar(100) COLLATE DATABASE_DEFAULT,
+                [ChinaSupplierCode] nvarchar(100) COLLATE DATABASE_DEFAULT,
+                INDEX [IX_ProductReportChinaMap_Product] CLUSTERED ([ProductCode]));
+            INSERT INTO #ProductReportChinaMap
             SELECT [ProductCode], [ChinaSupplierCode]
-            INTO #ProductReportChinaMap
             FROM OPENJSON(@ChinaProductMap)
             WITH
             (
                 [ProductCode] nvarchar(100) '$.ProductCode',
                 [ChinaSupplierCode] nvarchar(100) '$.ChinaSupplierCode'
             );
-            CREATE CLUSTERED INDEX [IX_ProductReportChinaMap_Product] ON #ProductReportChinaMap ([ProductCode]);
-
+            CREATE TABLE #ProductReportSearchProducts ([ProductCode] nvarchar(50) COLLATE DATABASE_DEFAULT,
+                INDEX [IX_ProductReportSearchProducts] CLUSTERED ([ProductCode]));
+            INSERT INTO #ProductReportSearchProducts
             SELECT DISTINCT product.[ProductCode]
-            INTO #ProductReportSearchProducts
             FROM [dbo].[Product] AS product
             WHERE @ProductSearch IS NOT NULL
                 AND (product.[ItemNumber] LIKE N'%' + @ProductSearch + N'%' ESCAPE N'\'
                     OR product.[Barcode] LIKE N'%' + @ProductSearch + N'%' ESCAPE N'\');
-            CREATE CLUSTERED INDEX [IX_ProductReportSearchProducts] ON #ProductReportSearchProducts ([ProductCode]);
 
             {BuildProductReportSourceCtes(includeCompare, pageOnly: false)}
             SELECT [ProductCode],
@@ -194,6 +271,9 @@ public partial class SalesDashboardReactService
             GROUP BY [ProductCode]
             OPTION (RECOMPILE);
 
+            CREATE TABLE #ProductReportPage ([HasData] bit NOT NULL, [TotalCount] int NOT NULL,
+                [RowNumber] bigint NOT NULL, [ProductCode] nvarchar(50) COLLATE DATABASE_DEFAULT,
+                INDEX [IX_ProductReportPage_Product] CLUSTERED ([ProductCode]));
             ;WITH Windowed AS
             (
                 SELECT a.*,
@@ -204,9 +284,9 @@ public partial class SalesDashboardReactService
                     ) AS [RowNumber]
                 FROM #ProductReportAggregates AS a
             )
+            INSERT INTO #ProductReportPage
             SELECT CAST(CASE WHEN windowed.[RowNumber] > @PageOffset THEN 1 ELSE 0 END AS bit) AS [HasData],
                 windowed.[TotalCount], windowed.[RowNumber], windowed.[ProductCode]
-            INTO #ProductReportPage
             FROM Windowed AS windowed
             WHERE
                 (
@@ -218,7 +298,6 @@ public partial class SalesDashboardReactService
                     windowed.[TotalCount] <= @PageOffset
                     AND windowed.[RowNumber] = 1
                 );
-            CREATE CLUSTERED INDEX [IX_ProductReportPage_Product] ON #ProductReportPage ([ProductCode]);
 
             {BuildProductReportSourceCtes(includeCompare, pageOnly: true)},
             Aggregated AS
@@ -262,6 +341,9 @@ public partial class SalesDashboardReactService
             DROP TABLE #ProductReportChinaFilter;
             END TRY
             BEGIN CATCH
+                -- 事务已不可提交时由外层回滚清理，避免 DROP 再次报错而掩盖原始异常。
+                IF XACT_STATE() <> -1
+                BEGIN
                 IF OBJECT_ID(N'tempdb..#ProductReportSearchProducts') IS NOT NULL
                     DROP TABLE #ProductReportSearchProducts;
                 IF OBJECT_ID(N'tempdb..#ProductReportPage') IS NOT NULL
@@ -276,6 +358,7 @@ public partial class SalesDashboardReactService
                     DROP TABLE #ProductReportLocalFilter;
                 IF OBJECT_ID(N'tempdb..#ProductReportChinaFilter') IS NOT NULL
                     DROP TABLE #ProductReportChinaFilter;
+                END;
                 THROW;
             END CATCH;
             """;

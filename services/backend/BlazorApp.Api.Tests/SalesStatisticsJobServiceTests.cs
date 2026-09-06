@@ -259,6 +259,7 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         var date = DateTime.Now.Date;
         var australianDeleteCount = 0;
         var chinaDeleteCount = 0;
+        var storeDeleteCount = 0;
         _localDb.Aop.OnLogExecuting = (sql, _) =>
         {
             if (!sql.Contains("DELETE", StringComparison.OrdinalIgnoreCase))
@@ -267,6 +268,8 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
                 australianDeleteCount++;
             if (sql.Contains("ChinaSupplierStoreSalesDetail", StringComparison.OrdinalIgnoreCase))
                 chinaDeleteCount++;
+            if (sql.Contains("StoreSalesStatistic", StringComparison.OrdinalIgnoreCase))
+                storeDeleteCount++;
         };
         try
         {
@@ -289,6 +292,100 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
             && state.Status == SalesStatisticRefreshStatus.Fresh);
         Assert.Equal(2, australianDeleteCount);
         Assert.Equal(2, chinaDeleteCount);
+        Assert.Equal(2, storeDeleteCount);
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_失败诊断行替换旧商品时撤销旧发布版本()
+    {
+        var date = new DateTime(2026, 1, 5);
+        await SeedCompletedProductSnapshotAsync(date, new ProductStoreDailySalesStatistic
+        {
+            Date = date, BranchCode = "1004", SupplierCode = "112", ProductCode = "P-OLD-COMPLETE",
+            TotalAmount = 1m, TotalQuantity = 1, OrderCount = 1,
+        });
+        await SeedStoreSalesStatisticAsync(date, "1004", 1m, 1);
+        await SeedSaleAsync("FAILED-REPLACEMENT", "FAILED-REPLACEMENT-DETAIL", "P-FAILED-NEW", "1004",
+            date.AddHours(9), 2, 500m, "112");
+        await CreateService().UpdateProductStoreDailyStatistics(date);
+        var state = await LoadRefreshStateAsync(date);
+        Assert.Equal(SalesStatisticRefreshStatus.Failed, state!.Status);
+        Assert.Null(state.SourceProductVersion);
+        Assert.Equal("P-FAILED-NEW", Assert.Single(await _localDb.Queryable<ProductStoreDailySalesStatistic>().ToListAsync()).ProductCode);
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_当天使用一致快照且新上传不取消已完成统计()
+    {
+        var date = DateTime.Today;
+        await SeedSaleAsync("TODAY-SNAPSHOT", "TODAY-SNAPSHOT-DETAIL", "P-TODAY", "1004",
+            date.AddHours(9), 2, 250m, "112");
+        await SeedStoreSalesStatisticAsync(date, "1004", 1m, 1);
+        var sourceReadsInTransaction = new List<bool>();
+        var laterUpload = DateTime.Now.AddMinutes(1);
+        var updatedSource = false;
+        _posmDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (!updatedSource && sql.TrimStart().StartsWith("SELECT", StringComparison.OrdinalIgnoreCase))
+                sourceReadsInTransaction.Add(_posmDb.Ado.Transaction != null);
+        };
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (updatedSource || !sql.StartsWith("DELETE", StringComparison.OrdinalIgnoreCase)
+                || !sql.Contains("ProductStoreDailySalesStatistic", StringComparison.OrdinalIgnoreCase))
+                return;
+            updatedSource = true;
+            Assert.Null(_posmDb.Ado.Transaction);
+            _posmDb.Updateable<SalesOrder>().SetColumns(row => row.LastUploadTime == laterUpload)
+                .Where(row => row.OrderGuid == "TODAY-SNAPSHOT").ExecuteCommand();
+        };
+        try { await CreateService().UpdateProductStoreDailyStatistics(date); }
+        finally { _localDb.Aop.OnLogExecuting = null; _posmDb.Aop.OnLogExecuting = null; }
+
+        Assert.True(updatedSource);
+        Assert.NotEmpty(sourceReadsInTransaction);
+        Assert.All(sourceReadsInTransaction, Assert.True);
+        Assert.Null(_posmDb.Ado.Transaction);
+        var store = Assert.Single(await _localDb.Queryable<StoreSalesStatistic>().ToListAsync());
+        var product = Assert.Single(await _localDb.Queryable<ProductStoreDailySalesStatistic>().ToListAsync());
+        var australian = Assert.Single(await _localDb.Queryable<AustralianSupplierStoreSalesDetail>().ToListAsync());
+        Assert.Equal(250m, store.TotalAmount);
+        Assert.Equal(store.TotalAmount, product.TotalAmount);
+        Assert.Equal(product.TotalAmount, australian.TotalAmount);
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>().Where(row => row.Date == date).ToListAsync();
+        Assert.Equal(4, states.Count);
+        Assert.All(states, row => Assert.Equal(SalesStatisticRefreshStatus.Fresh, row.Status));
+        Assert.All(states, row => Assert.NotEqual(laterUpload, row.LastSourceUploadTime));
+        Assert.Single(states.Where(row => row.StatisticType != SalesStatisticType.StoreSales)
+            .Select(row => row.SourceProductVersion).Distinct());
+    }
+
+    [Fact]
+    public async Task UpdateProductStoreDailyStatistics_当天派生写入失败回滚营业额和商品()
+    {
+        var date = DateTime.Today;
+        await SeedSaleAsync("TODAY-ROLLBACK", "TODAY-ROLLBACK-DETAIL", "P-TODAY-ROLLBACK", "1004",
+            date.AddHours(9), 2, 250m, "112");
+        await SeedStoreSalesStatisticAsync(date, "1004", 1m, 1);
+        await SeedAustralianSupplierStoreSalesDetailAsync(date, "1004", "112", 9m, 1);
+        _localDb.Aop.OnLogExecuting = (sql, _) =>
+        {
+            if (sql.StartsWith("DELETE", StringComparison.OrdinalIgnoreCase)
+                && sql.Contains("ChinaSupplierStoreSalesDetail", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("测试当天供应商写入失败");
+        };
+        try
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => CreateService().UpdateProductStoreDailyStatistics(date));
+        }
+        finally { _localDb.Aop.OnLogExecuting = null; }
+        Assert.Null(_posmDb.Ado.Transaction);
+        Assert.Equal(1m, (await _localDb.Queryable<StoreSalesStatistic>().FirstAsync()).TotalAmount);
+        Assert.Equal(9m, (await _localDb.Queryable<AustralianSupplierStoreSalesDetail>().FirstAsync()).TotalAmount);
+        Assert.Empty(await _localDb.Queryable<ProductStoreDailySalesStatistic>().ToListAsync());
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>().Where(row => row.Date == date).ToListAsync();
+        Assert.Equal(4, states.Count);
+        Assert.All(states, row => Assert.Equal(SalesStatisticRefreshStatus.Failed, row.Status));
     }
 
     [Fact]
@@ -3636,6 +3733,63 @@ public sealed class SalesStatisticsJobServiceTests : IDisposable
         Assert.Equal(expectedVersion, productState!.SourceProductVersion);
         Assert.Equal(2, supplierStates.Count);
         Assert.All(supplierStates, state => Assert.Equal(expectedVersion, state.SourceProductVersion));
+    }
+
+    [Fact]
+    public async Task SupplierSnapshotFence_同一商品版本的完成水位变化仍应拒绝旧批次()
+    {
+        var targetDate = new DateTime(2026, 7, 6);
+        await SeedCompletedProductSnapshotAsync(targetDate, new ProductStoreDailySalesStatistic
+        {
+            Date = targetDate, BranchCode = "1007", SupplierCode = "112", ProductCode = "P-FENCE",
+            TotalAmount = 18m, TotalQuantity = 2, OrderCount = 1, TotalCost = 6m, GrossProfit = 12m,
+        });
+        var context = CreateSqlSugarContext(_localDb);
+        var service = new SalesStatisticsSupplierStoreSummaryService();
+        var (_, version, _, _, fence) = await service.BuildFromCompletedProductSnapshotAsync(
+            context, CreatePosmSqlSugarContext(_posmDb), targetDate, DateTime.Now);
+        await _localDb.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => row.CompletedAtUtc == fence.CompletedAtUtc!.Value.AddSeconds(1))
+            .Where(row => row.Date == targetDate && row.StatisticType == SalesStatisticType.ProductStoreDaily)
+            .ExecuteCommandAsync();
+        await _localDb.Ado.BeginTranAsync();
+        try
+        {
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                service.EnsureProductVersionUnchangedAsync(context, targetDate, version, fence));
+            Assert.Contains("状态水位已变化", error.Message);
+        }
+        finally { await _localDb.Ado.RollbackTranAsync(); }
+    }
+
+    [Fact]
+    public async Task SupplierSnapshotFence_历史完成时间使用高精度参数且补齐版本()
+    {
+        var targetDate = new DateTime(2026, 7, 6);
+        await SeedCompletedProductSnapshotAsync(targetDate, new ProductStoreDailySalesStatistic
+        {
+            Date = targetDate, BranchCode = "1007", SupplierCode = "112", ProductCode = "P-FENCE-TIME",
+            TotalAmount = 18m, TotalQuantity = 2, OrderCount = 1, TotalCost = 6m, GrossProfit = 12m,
+        });
+        await _localDb.Updateable<SalesStatisticRefreshState>()
+            .SetColumns(row => row.SourceProductVersion == null)
+            .Where(row => row.Date == targetDate && row.StatisticType == SalesStatisticType.ProductStoreDaily)
+            .ExecuteCommandAsync();
+        System.Data.DbType? completionParameterType = null;
+        _localDb.Aop.OnLogExecuting = (sql, parameters) =>
+        {
+            if (sql.StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase))
+                completionParameterType ??= parameters.FirstOrDefault(p =>
+                    p.ParameterName == "@expectedCompletedAt")?.DbType;
+        };
+        try { await CreateService().UpdateAustralianSupplierStoreStatistics(targetDate); }
+        finally { _localDb.Aop.OnLogExecuting = null; }
+        Assert.Equal(System.Data.DbType.DateTime2, completionParameterType);
+        var states = await _localDb.Queryable<SalesStatisticRefreshState>()
+            .Where(row => row.Date == targetDate).ToListAsync();
+        Assert.Equal(3, states.Count);
+        Assert.Single(states.Select(row => row.SourceProductVersion).Distinct());
+        Assert.All(states, row => Assert.False(string.IsNullOrEmpty(row.SourceProductVersion)));
     }
 
     [Fact]

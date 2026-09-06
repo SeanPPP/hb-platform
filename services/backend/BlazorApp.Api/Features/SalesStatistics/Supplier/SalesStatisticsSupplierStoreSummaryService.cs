@@ -149,10 +149,13 @@ internal sealed class SalesStatisticsSupplierStoreSummaryService
                     && row.Date >= targetDate && row.Date < targetDate.AddDays(1)
                     && row.Status == state.Status
                     && row.LastAggregatedAtUtc == state.LastAggregatedAtUtc
-                    && row.CompletedAtUtc == state.CompletedAtUtc
                     && row.JobId == state.JobId
                     && row.LastSourceUploadTime == state.LastSourceUploadTime
                     && row.SourceProductVersion == null)
+                // 完成时间列是 datetime2(7)，必须保留原精度；默认 datetime 参数会将
+                // 旧状态的 100ns 尾数舍入，导致锁定且未变化的记录也无法通过版本 CAS。
+                .Where("[CompletedAtUtc] = @expectedCompletedAt", new[] { new SugarParameter(
+                    "@expectedCompletedAt", state.CompletedAtUtc) { DbType = System.Data.DbType.DateTime2 } })
                 .ExecuteCommandAsync();
             if (affectedRows != 1)
                 throw new InvalidOperationException($"商品分店每日统计状态在回填版本时已变化，拒绝发布供应商汇总: {targetDate:yyyy-MM-dd}");

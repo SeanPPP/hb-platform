@@ -119,6 +119,7 @@
     <Compile Include="SalesDashboardReportRevenueTests.cs" />
     <Compile Include="SupplierReportReadTests.cs" />
     <Compile Include="ProductReportPagingSqlTests.cs" />
+    <Compile Include="ProductReportChinaMappingTests.cs" />
     <Compile Include="ProductMovementReportSqlBuilderTests.cs" />
     <Compile Include="LocalSupplierInvoiceSalesAnalysisSqlBuilderTests.cs" />
     <Compile Include="LocalPurchaseDashboardTests.cs" />
