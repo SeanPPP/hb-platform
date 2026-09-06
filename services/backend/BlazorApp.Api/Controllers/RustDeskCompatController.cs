@@ -17,6 +17,7 @@ namespace BlazorApp.Api.Controllers;
 public sealed class RustDeskCompatController : ControllerBase
 {
     private const string CompanyAddressBookGuid = "hb-company-devices";
+    private const string CompanyDeviceGroupName = "公司设备";
     private const string BearerPrefix = "Bearer ";
 
     private readonly IRustDeskCompatService _service;
@@ -126,6 +127,103 @@ public sealed class RustDeskCompatController : ControllerBase
         catch (Exception ex)
         {
             _logger.LogError("RustDesk request failed ({ExceptionType}). {Operation}", ex.GetType().Name, "RustDesk 登出失败");
+            return StatusCode(StatusCodes.Status500InternalServerError,
+                new { error = "Request failed" });
+        }
+    }
+
+    // 官方客户端的设备组页与通讯录页使用不同协议，三个 GET 接口必须同时可用。
+    [HttpGet("device-group/accessible")]
+    public async Task<IActionResult> AccessibleDeviceGroups(
+        [FromQuery] int current = 1,
+        [FromQuery] int pageSize = 100,
+        CancellationToken cancellationToken = default)
+    {
+        var required = await RequireUserAsync(cancellationToken);
+        if (required.Failure is not null)
+        {
+            return required.Failure;
+        }
+
+        if (current < 1 || pageSize is < 1 or > 100)
+        {
+            return BadRequest(new { error = "Invalid group request" });
+        }
+
+        var data = new[] { new { name = CompanyDeviceGroupName } };
+        return Ok(new { total = 1, data = current == 1 ? data : [] });
+    }
+
+    [HttpGet("users")]
+    public async Task<IActionResult> AccessibleUsers(
+        [FromQuery] int current = 1,
+        [FromQuery] int pageSize = 100,
+        CancellationToken cancellationToken = default)
+    {
+        var required = await RequireUserAsync(cancellationToken);
+        if (required.Failure is not null)
+        {
+            return required.Failure;
+        }
+
+        if (current < 1 || pageSize is < 1 or > 100)
+        {
+            return BadRequest(new { error = "Invalid group request" });
+        }
+
+        // 设备统一放在公司组，不公开公司用户目录，也不虚构设备的账号归属。
+        return Ok(new { total = 0, data = Array.Empty<object>() });
+    }
+
+    [HttpGet("peers")]
+    public async Task<IActionResult> GroupPeers(
+        [FromQuery] int current = 1,
+        [FromQuery] int pageSize = 100,
+        CancellationToken cancellationToken = default)
+    {
+        var required = await RequireUserAsync(cancellationToken);
+        if (required.Failure is not null)
+        {
+            return required.Failure;
+        }
+
+        if (current < 1 || pageSize is < 1 or > 100)
+        {
+            return BadRequest(new { error = "Invalid group request" });
+        }
+
+        try
+        {
+            var peers = await _service.GetPeersAsync(required.User!, cancellationToken);
+            var data = peers
+                .Skip((int)Math.Min(int.MaxValue, ((long)current - 1) * pageSize))
+                .Take(pageSize)
+                .Select(peer => new
+                {
+                    id = peer.Id,
+                    // GroupModel 从 info 读取平台和设备名，不能直接复用通讯录的扁平 JSON。
+                    info = new
+                    {
+                        username = peer.Username,
+                        device_name = string.IsNullOrWhiteSpace(peer.Alias) ? peer.Hostname : peer.Alias,
+                        os = string.Equals(peer.Platform, "Mac OS", StringComparison.OrdinalIgnoreCase)
+                            ? "macos" : peer.Platform.ToLowerInvariant(),
+                    },
+                    device_group_name = CompanyDeviceGroupName,
+                    note = string.Empty,
+                })
+                .ToArray();
+            return Ok(new { total = peers.Count, data });
+        }
+        catch (InvalidOperationException ex)
+        {
+            _logger.LogWarning("RustDesk 设备组服务未就绪: {ExceptionType}", ex.GetType().Name);
+            return StatusCode(StatusCodes.Status503ServiceUnavailable,
+                new { error = "Service unavailable" });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError("RustDesk 设备组读取失败: {ExceptionType}", ex.GetType().Name);
             return StatusCode(StatusCodes.Status500InternalServerError,
                 new { error = "Request failed" });
         }

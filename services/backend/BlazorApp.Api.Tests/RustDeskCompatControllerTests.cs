@@ -210,6 +210,112 @@ public sealed class RustDeskCompatControllerTests
         Assert.True(response.Headers.CacheControl?.NoStore);
     }
 
+    [Fact]
+    public async Task Group_panel_loads_company_group_and_nested_mac_and_pos_payloads()
+    {
+        var service = new FakeRustDeskCompatService
+        {
+            Peers = [
+                new RustDeskPeer("100", "sean", "mac-host", "Mac OS", "公司 Mac", []),
+                new RustDeskPeer("200", "cashier", "POS-01", "Windows", "", []),
+            ],
+        };
+        await using var host = await RustDeskTestHost.StartAsync(service);
+        host.Client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr");
+
+        using var groups = await host.Client.GetAsync("/api/rustdesk/api/device-group/accessible?current=1&pageSize=100");
+        using var users = await host.Client.GetAsync("/api/rustdesk/api/users?current=1&pageSize=100&accessible=&status=1");
+        using var peers = await host.Client.GetAsync("/api/rustdesk/api/peers?current=1&pageSize=100&accessible=&status=1");
+        Assert.Equal(HttpStatusCode.OK, groups.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, users.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, peers.StatusCode);
+        Assert.True(peers.Headers.CacheControl?.NoStore);
+        var groupJson = await groups.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(1, groupJson.GetProperty("total").GetInt32());
+        var groupName = groupJson.GetProperty("data")[0].GetProperty("name").GetString();
+        Assert.Equal("公司设备", groupName);
+        // 公司设备按组共享，不把当前管理员伪装成每台设备的登录用户。
+        var userJson = await users.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(0, userJson.GetProperty("total").GetInt32());
+        Assert.Empty(userJson.GetProperty("data").EnumerateArray());
+        var peerText = await peers.Content.ReadAsStringAsync();
+        var peerJson = JsonDocument.Parse(peerText).RootElement;
+        Assert.Equal(2, peerJson.GetProperty("total").GetInt32());
+        var data = peerJson.GetProperty("data");
+        Assert.All(data.EnumerateArray(), peer => Assert.Equal(groupName, peer.GetProperty("device_group_name").GetString()));
+        Assert.Equal("100", data[0].GetProperty("id").GetString());
+        Assert.Equal("macos", data[0].GetProperty("info").GetProperty("os").GetString());
+        Assert.Equal("公司 Mac", data[0].GetProperty("info").GetProperty("device_name").GetString());
+        Assert.Equal("sean", data[0].GetProperty("info").GetProperty("username").GetString());
+        Assert.Equal("windows", data[1].GetProperty("info").GetProperty("os").GetString());
+        Assert.Equal("POS-01", data[1].GetProperty("info").GetProperty("device_name").GetString());
+        Assert.DoesNotContain("password", peerText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("hash", peerText, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("access_token", peerText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData("device-group/accessible")]
+    [InlineData("users")]
+    [InlineData("peers")]
+    public async Task Group_endpoints_require_dedicated_bearer_and_reject_invalid_paging(string path)
+    {
+        await using var host = await RustDeskTestHost.StartAsync(new FakeRustDeskCompatService());
+        var url = "/api/rustdesk/api/" + path;
+        using var anonymous = await host.Client.GetAsync(url);
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+        host.Client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "ordinary-hb-token");
+        using var wrongToken = await host.Client.GetAsync(url);
+        Assert.Equal(HttpStatusCode.Unauthorized, wrongToken.StatusCode);
+        host.Client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr");
+        foreach (var query in new[] { "current=0", "pageSize=0", "pageSize=101" })
+        {
+            using var invalid = await host.Client.GetAsync(url + "?" + query);
+            Assert.Equal(HttpStatusCode.BadRequest, invalid.StatusCode);
+        }
+        using var lastPage = await host.Client.GetAsync(url + "?current=2147483647&pageSize=100");
+        Assert.Equal(HttpStatusCode.OK, lastPage.StatusCode);
+        var json = await lastPage.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(path == "users" ? 0 : 1, json.GetProperty("total").GetInt32());
+        Assert.Empty(json.GetProperty("data").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Group_peers_preserve_total_across_pages()
+    {
+        var service = new FakeRustDeskCompatService
+        {
+            Peers = [new RustDeskPeer("1", "", "", "Windows", "One", []), new RustDeskPeer("2", "", "", "Mac OS", "Two", [])],
+        };
+        await using var host = await RustDeskTestHost.StartAsync(service);
+        host.Client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr");
+        using var response = await host.Client.GetAsync("/api/rustdesk/api/peers?current=2&pageSize=1");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var json = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal(2, json.GetProperty("total").GetInt32());
+        Assert.Single(json.GetProperty("data").EnumerateArray());
+        Assert.Equal("2", json.GetProperty("data")[0].GetProperty("id").GetString());
+    }
+
+    [Theory]
+    [InlineData("device-group/accessible")]
+    [InlineData("users")]
+    [InlineData("peers")]
+    public async Task Group_endpoints_return_generic_json_when_auth_service_is_not_ready(string path)
+    {
+        await using var host = await RustDeskTestHost.StartAsync(new FakeRustDeskCompatService { ThrowNotReady = true });
+        host.Client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr");
+        using var response = await host.Client.GetAsync("/api/rustdesk/api/" + path);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        var text = await response.Content.ReadAsStringAsync();
+        Assert.Equal("Service unavailable", JsonDocument.Parse(text).RootElement.GetProperty("error").GetString());
+        Assert.DoesNotContain("database secret", text);
+    }
+
     private sealed class RustDeskTestHost : IAsyncDisposable
     {
         private readonly WebApplication _app;

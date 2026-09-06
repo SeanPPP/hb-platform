@@ -9,6 +9,10 @@
 
 保存后通过“登录”输入现有 HBWeb 系统管理员账号。默认个人通讯录返回公司受管设备：已安装并回传 RustDesk ID 的有效 Windows POS，以及管理员显式登记的 Mac。通讯录只读；远程访问密码由连接时另行输入，不随通讯录同步。
 
+桌面端的“设备组”（电脑和手机图标）与“通讯录”（联系人图标）使用两套接口。设备组页依次读取 `GET /api/device-group/accessible`、`GET /api/users`、`GET /api/peers`，相对上述 API 地址追加路径。三者均需 RustDesk 专用会话并返回 `{ total, data }` 分页对象。公司受管设备统一放在“公司设备”组；用户目录为空，不虚构设备账号归属。设备组的设备数据使用 `info.os`、`info.device_name`、`info.username`，其中 Mac 平台值为 `macos`。
+
+若客户端登录成功而设备组页显示“获取组信息失败 HTTP 404”，先核对上述三个 GET 路由，不能只验证 `/api/ab/peers` 通讯录路由。修复部署后在设备组页点击刷新；在线状态仍由 hbbs 查询。
+
 ## 状态与登记范围
 
 在线状态由官方客户端向 `hbbs TCP 21115` 发送 `OnlineRequest` 查询，设备通过 `UDP 21116` 注册/保活。API 的心跳接口不会新增设备，不把陌生 hbbs 注册者自动视为公司设备。
