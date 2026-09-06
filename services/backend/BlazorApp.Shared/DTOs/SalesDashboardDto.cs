@@ -1024,6 +1024,66 @@ namespace BlazorApp.Shared.DTOs
     }
 
     /// <summary>
+    /// Sales Detail 三栏查询的业务范围。
+    /// </summary>
+    public enum SalesDetailKind
+    {
+        Australia,
+        China,
+    }
+
+    /// <summary>
+    /// Sales Detail 单栏查询类型。
+    /// </summary>
+    public enum SalesDetailSection
+    {
+        Suppliers,
+        Branches,
+        Products,
+        Summary,
+    }
+
+    /// <summary>
+    /// 三栏统一行 DTO。金额为 AUD，比例为 0..1。
+    /// </summary>
+    public sealed class SalesDetailRowDto
+    {
+        public string Code { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+        public string? ItemNumber { get; set; }
+        public string? ProductImage { get; set; }
+        public decimal Revenue { get; set; }
+        public decimal? CompareRevenue { get; set; }
+        public int Quantity { get; set; }
+        public int? CompareQuantity { get; set; }
+        public int? OrderCount { get; set; }
+        public int? CompareOrderCount { get; set; }
+        public decimal? AverageTransaction { get; set; }
+        public decimal? CompareAverageTransaction { get; set; }
+        public decimal? AverageUnitPrice { get; set; }
+        public decimal? CompareAverageUnitPrice { get; set; }
+        public decimal? GrossProfit { get; set; }
+        public decimal? CompareGrossProfit { get; set; }
+        public decimal? GrossMarginRate { get; set; }
+        public decimal? CompareGrossMarginRate { get; set; }
+        public decimal? Share { get; set; }
+        public decimal? CompareShare { get; set; }
+        public decimal? ChinaShare { get; set; }
+        public decimal? CompareChinaShare { get; set; }
+    }
+
+    /// <summary>
+    /// Sales Detail 单栏响应数据。Products 的 Summary 仅代表当前页。
+    /// </summary>
+    public sealed class SalesDetailSectionResultDto
+    {
+        public List<SalesDetailRowDto> Rows { get; set; } = new();
+        public int Total { get; set; }
+        public SalesDetailRowDto? Summary { get; set; }
+        public string? OrderCountNote { get; set; }
+    }
+
+    /// <summary>
     /// 澳洲供应商分店销售明细 DTO
     /// </summary>
     public class AustralianSupplierStoreSalesDetailDto

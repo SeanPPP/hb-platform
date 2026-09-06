@@ -6,6 +6,55 @@ namespace Hbpos.Client.Tests;
 
 public sealed class LocalCardPaymentAttemptRepositoryTests
 {
+    [Theory]
+    [InlineData("Sale")]
+    [InlineData("Refund")]
+    public async Task Final_acknowledgement_queue_excludes_ineligible_or_out_of_scope_failures(string operationKind)
+    {
+        var databasePath = CreateTempDatabasePath();
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalCardPaymentAttemptRepository(store);
+            var final = CreateAttempt(
+                status: LocalCardPaymentAttemptStatus.Declined,
+                sessionId: "SESSION-FINAL",
+                operationKind: operationKind) with
+            {
+                ConnectionMode = nameof(LinklyConnectionMode.CloudBackendAsync),
+                CompletedAt = DateTimeOffset.UtcNow
+            };
+            LocalCardPaymentAttempt[] excluded =
+            [
+                final with { AcknowledgedAt = DateTimeOffset.UtcNow },
+                final with { CompletedAt = null },
+                final with { RecoveryPhase = CardRecoveryPhases.FinalizePending },
+                final with { SessionId = null },
+                final with { SessionId = " " },
+                final with { ConnectionMode = nameof(LinklyConnectionMode.LocalIp) },
+                final with { ConnectionMode = nameof(LinklyConnectionMode.CloudDirectSync) },
+                final with { Status = LocalCardPaymentAttemptStatus.Abandoned },
+                final with { Processor = "Square" },
+                final with { StoreCode = "OTHER" },
+                final with { DeviceCode = "OTHER" },
+                final with { Environment = "Production" }
+            ];
+            foreach (var attempt in excluded)
+            {
+                await repository.CreateAsync(attempt with { AttemptGuid = Guid.NewGuid() });
+            }
+
+            Assert.Empty(await repository.GetOpenAttemptsAsync("S001", "POS-01", "sandbox"));
+            Assert.Null(await repository.GetLatestOpenAttemptAsync("S001", "POS-01", null, "sandbox"));
+            Assert.Empty(await repository.GetOpenRefundAttemptsAsync("S001", "POS-01", "sandbox"));
+        }
+        finally
+        {
+            DeleteTempDatabase(databasePath);
+        }
+    }
+
     [Fact]
     public async Task Local_schema_service_creates_local_card_payment_attempts_table_and_indexes()
     {

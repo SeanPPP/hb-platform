@@ -1458,6 +1458,7 @@ namespace BlazorApp.Api.Controllers.React
         /// <param name="branchCodes">分店代码列表（可选）</param>
         /// <returns>周业绩层级数据列表</returns>
         [HttpGet("weekly-performance-hierarchy")]
+        [Authorize(Policy = Permissions.Reports.View)]
         public async Task<IActionResult> GetWeeklyPerformanceHierarchy(
             [FromQuery] DateTime startDate,
             [FromQuery] DateTime endDate,
@@ -1469,6 +1470,26 @@ namespace BlazorApp.Api.Controllers.React
         {
             try
             {
+                ValidateWeeklyPerformanceDateRange(
+                    startDate,
+                    endDate,
+                    compareStartDate,
+                    compareEndDate,
+                    compareMode
+                );
+                var branchScope = await ResolveTargetBranchCodesAsync(branchCodes);
+                if (!branchScope.HasAccess)
+                    return Ok(new
+                    {
+                        success = true,
+                        data = new List<WeeklyPerformanceHierarchyDto>(),
+                        statisticsPending = false,
+                        statisticsExpectedItemCount = 0,
+                        statisticsSnapshotItemCount = 0,
+                        statisticStatus = "Fresh",
+                        cacheVersion = "scope-empty",
+                    });
+
                 var dateRange = new DateRangeDto
                 {
                     StartDate = startDate,
@@ -1480,15 +1501,64 @@ namespace BlazorApp.Api.Controllers.React
 
                 var result = await _service.GetWeeklyPerformanceHierarchyAsync(
                     dateRange,
-                    branchCodes
+                    branchScope.BranchCodes
                 );
-                return Ok(new { success = true, data = result });
+                return Ok(new
+                {
+                    success = true,
+                    data = result.Report.Items,
+                    result.Report.StatisticsPending,
+                    result.Report.StatisticsExpectedItemCount,
+                    result.Report.StatisticsSnapshotItemCount,
+                    statisticStatus = result.Report.StatisticsPending ? "Pending" : "Fresh",
+                    cacheVersion = result.CacheVersion,
+                });
+            }
+            catch (ArgumentException ex)
+            {
+                return BadRequest(new { success = false, message = ex.Message });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "GetWeeklyPerformanceHierarchy failed");
                 return StatusCode(500, new { success = false, message = "服务器内部错误" });
             }
+        }
+
+        private static void ValidateWeeklyPerformanceDateRange(
+            DateTime startDate,
+            DateTime endDate,
+            DateTime? compareStartDate,
+            DateTime? compareEndDate,
+            CompareMode compareMode
+        )
+        {
+            var currentStart = startDate.Date;
+            var currentEnd = endDate.Date;
+            if (currentStart > currentEnd)
+                throw new ArgumentException("开始日期不能晚于结束日期");
+
+            var currentDays = (currentEnd - currentStart).Days + 1;
+            if (currentDays > 366)
+                throw new ArgumentException("日期范围不能超过366天");
+
+            if (!Enum.IsDefined(typeof(CompareMode), compareMode))
+                throw new ArgumentException("对比模式无效");
+
+            if (compareStartDate.HasValue != compareEndDate.HasValue)
+                throw new ArgumentException("比较开始日期和结束日期必须同时提供");
+
+            if (!compareStartDate.HasValue)
+                return;
+
+            var compareStart = compareStartDate.Value.Date;
+            var compareEnd = compareEndDate!.Value.Date;
+            if (compareStart > compareEnd)
+                throw new ArgumentException("比较开始日期不能晚于比较结束日期");
+
+            var compareDays = (compareEnd - compareStart).Days + 1;
+            if (compareDays != currentDays)
+                throw new ArgumentException("当前日期范围与比较日期范围必须等长");
         }
 
         /// <summary>

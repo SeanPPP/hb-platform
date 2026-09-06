@@ -16,6 +16,136 @@ public sealed class CardPaymentRecoveryServiceTests
     private static readonly PosSessionState Session = new("HB POS", "S001", "Main Branch", "POS-01", "C001", "Alice", true, 0);
 
     [Theory]
+    [InlineData("Sale", LocalCardPaymentAttemptStatus.Cancelled, true)]
+    [InlineData("Sale", LocalCardPaymentAttemptStatus.Declined, true)]
+    [InlineData("Sale", LocalCardPaymentAttemptStatus.Failed, true)]
+    [InlineData("Sale", LocalCardPaymentAttemptStatus.TimedOut, true)]
+    [InlineData("Refund", LocalCardPaymentAttemptStatus.Cancelled, true)]
+    [InlineData("Refund", LocalCardPaymentAttemptStatus.Declined, true)]
+    [InlineData("Refund", LocalCardPaymentAttemptStatus.Failed, true)]
+    [InlineData("Refund", LocalCardPaymentAttemptStatus.TimedOut, true)]
+    [InlineData("Sale", LocalCardPaymentAttemptStatus.Cancelled, false)]
+    [InlineData("Sale", LocalCardPaymentAttemptStatus.Declined, false)]
+    [InlineData("Sale", LocalCardPaymentAttemptStatus.Failed, false)]
+    [InlineData("Sale", LocalCardPaymentAttemptStatus.TimedOut, false)]
+    [InlineData("Refund", LocalCardPaymentAttemptStatus.Cancelled, false)]
+    [InlineData("Refund", LocalCardPaymentAttemptStatus.Declined, false)]
+    [InlineData("Refund", LocalCardPaymentAttemptStatus.Failed, false)]
+    [InlineData("Refund", LocalCardPaymentAttemptStatus.TimedOut, false)]
+    public async Task Final_cloud_failure_remains_recoverable_until_acknowledgement_succeeds(
+        string operationKind,
+        LocalCardPaymentAttemptStatus finalStatus,
+        bool recoverLatest)
+    {
+        var databasePath = Path.Combine(Path.GetTempPath(), $"linkly-final-ack-{Guid.NewGuid():N}.db");
+        try
+        {
+            var store = new LocalSqliteStore(databasePath);
+            await new LocalSchemaService(store).InitializeAsync();
+            var repository = new LocalCardPaymentAttemptRepository(store);
+            var attempt = CreateAttempt("SESSION-FINAL-ACK", "TXN-FINAL-ACK") with
+            {
+                OperationKind = operationKind,
+                // 确认重试不依赖订单草稿，也不能恢复或覆盖当前购物车。
+                OrderDraftJson = "invalid draft"
+            };
+            await repository.CreateAsync(attempt);
+            await repository.UpdateOutcomeAsync(
+                attempt.AttemptGuid, finalStatus, "TM", "OPERATOR CANCELLED", null, attempt.UpdatedAt);
+            var backend = new FakeLinklyBackendTerminalClient
+            {
+                AcknowledgeException = new HttpRequestException("Temporary acknowledgement outage")
+            };
+            var orders = new FakeLocalOrderRepository();
+            CardPaymentRecoveryService CreateRecoveryService() => new(
+                new LocalCardPaymentAttemptRepository(new LocalSqliteStore(databasePath)),
+                new FakeCardTerminalSettingsProvider(), backend, new CashCheckoutService(),
+                orders, new FakeSyncQueueRepository());
+            var cart = CreateCurrentCart();
+            var revision = cart.Revision;
+            var service = CreateRecoveryService();
+
+            Assert.Single(await service.ListOpenAsync(Session));
+            var first = recoverLatest
+                ? await service.RecoverLatestAsync(cart, Session)
+                : await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+
+            Assert.Equal(CardPaymentRecoveryOutcome.Unknown, first.Outcome);
+            Assert.Equal(1, backend.AcknowledgeCallCount);
+            Assert.Single(await service.ListOpenAsync(Session));
+            var pending = await repository.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.Equal(finalStatus, pending!.Status);
+            Assert.Null(pending.AcknowledgedAt);
+            Assert.Equal(attempt.UpdatedAt, pending.CompletedAt);
+            Assert.Equal("TM", pending.ResponseCode);
+            Assert.Equal("OPERATOR CANCELLED", pending.ResponseText);
+
+            // 重建服务与仓储，模拟重启；必须只重试原 session 的确认。
+            backend.AcknowledgeException = null;
+            service = CreateRecoveryService();
+            var second = recoverLatest
+                ? await service.RecoverLatestAsync(cart, Session)
+                : await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+
+            Assert.Equal(CardPaymentRecoveryOutcome.None, second.Outcome);
+            Assert.Equal(2, backend.AcknowledgeCallCount);
+            Assert.Equal(attempt.SessionId, backend.AcknowledgedSessionId);
+            Assert.Empty(await service.ListOpenAsync(Session));
+            Assert.Null(await repository.GetLatestOpenAttemptAsync("S001", "POS-01", null, "Sandbox"));
+            Assert.Empty(await repository.GetOpenRefundAttemptsAsync("S001", "POS-01", "Sandbox"));
+            var saved = await repository.GetAttemptAsync(attempt.AttemptGuid);
+            Assert.NotNull(saved!.AcknowledgedAt);
+            Assert.Equal(finalStatus, saved.Status);
+            Assert.Equal(pending.CompletedAt, saved.CompletedAt);
+            Assert.Equal(pending.ResponseCode, saved.ResponseCode);
+            Assert.Equal(pending.ResponseText, saved.ResponseText);
+
+            await service.RecoverAttemptAsync(attempt.AttemptGuid, cart, Session);
+            Assert.Equal(2, backend.AcknowledgeCallCount);
+            Assert.Equal(0, backend.PurchaseCallCount);
+            Assert.Equal(0, backend.RefundCallCount);
+            Assert.Equal(0, backend.StatusCallCount);
+            Assert.Equal(0, backend.ResumeCallCount);
+            Assert.Equal(0, orders.SaveCount);
+            Assert.Equal(revision, cart.Revision);
+        }
+        finally
+        {
+            Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            File.Delete(databasePath);
+        }
+    }
+
+    [Fact]
+    public async Task Final_cloud_failure_retries_after_local_acknowledgement_marker_write_fails()
+    {
+        var attempt = CreateAttempt("SESSION-MARKER-RETRY", "TXN-MARKER", LocalCardPaymentAttemptStatus.Declined) with
+        {
+            CompletedAt = DateTimeOffset.UtcNow
+        };
+        var repository = new FakeCardPaymentAttemptRepository(attempt)
+        {
+            MarkAcknowledgedException = new InvalidOperationException("Local write unavailable")
+        };
+        var backend = new FakeLinklyBackendTerminalClient();
+        var service = CreateService(repository, new FakeLocalOrderRepository(), backend);
+
+        var first = await service.RecoverAttemptAsync(attempt.AttemptGuid, new PosCartService(), Session);
+        Assert.Equal(CardPaymentRecoveryOutcome.Unknown, first.Outcome);
+        Assert.Null(repository.AcknowledgedAt);
+        Assert.Equal(1, backend.AcknowledgeCallCount);
+
+        repository = new FakeCardPaymentAttemptRepository((await repository.GetAttemptAsync(attempt.AttemptGuid))!);
+        service = CreateService(repository, new FakeLocalOrderRepository(), backend);
+        var second = await service.RecoverAttemptAsync(attempt.AttemptGuid, new PosCartService(), Session);
+        Assert.Equal(CardPaymentRecoveryOutcome.None, second.Outcome);
+        Assert.Equal(2, backend.AcknowledgeCallCount);
+        Assert.NotNull(repository.AcknowledgedAt);
+        Assert.Equal(LocalCardPaymentAttemptStatus.Declined, repository.Status);
+        Assert.Equal(0, repository.MarkRecoveringCallCount);
+    }
+
+    [Theory]
     [InlineData(LocalCardPaymentAttemptStatus.Declined)]
     [InlineData(LocalCardPaymentAttemptStatus.Failed)]
     [InlineData(LocalCardPaymentAttemptStatus.Cancelled)]
@@ -9222,6 +9352,10 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public Exception? AcknowledgeException { get; set; }
 
+        public int PurchaseCallCount { get; private set; }
+
+        public int RefundCallCount { get; private set; }
+
         public Task<LinklyConnectionTestResult> TestConnectionAsync(CardTerminalEnvironment environment, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(new LinklyConnectionTestResult(true, "ok"));
@@ -9234,11 +9368,13 @@ public sealed class CardPaymentRecoveryServiceTests
 
         public Task<PaymentAuthorizationResult> PurchaseAsync(decimal amount, PosSessionState session, CardTerminalSettings settings, CancellationToken cancellationToken = default)
         {
+            PurchaseCallCount++;
             return Task.FromResult(new PaymentAuthorizationResult(false));
         }
 
         public Task<PaymentAuthorizationResult> RefundAsync(decimal amount, PosSessionState session, CardTerminalSettings settings, string? originalReference, CancellationToken cancellationToken = default)
         {
+            RefundCallCount++;
             return Task.FromResult(new PaymentAuthorizationResult(false));
         }
 

@@ -117,6 +117,8 @@
     <Compile Include="WarehouseProductRecordQueryServiceTests.cs" />
     <Compile Include="WarehouseProductRecordAuthorizationTests.cs" />
     <Compile Include="SalesDashboardReportRevenueTests.cs" />
+    <Compile Include="WeeklyReportTests.cs" />
+    <Compile Include="SalesDetailQueryFlightsTests.cs" />
     <Compile Include="SupplierReportReadTests.cs" />
     <Compile Include="ProductReportPagingSqlTests.cs" />
     <Compile Include="ProductReportChinaMappingTests.cs" />

@@ -463,6 +463,22 @@ public interface ILocalCardPaymentAttemptRepository
 
 public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : ILocalCardPaymentAttemptRepository
 {
+    // 与 CardPaymentRecoveryService.IsFinalFailureAwaitingAcknowledgement 保持一致。
+    // 明确失败已耐久落库后，ack 失败仍须可检索；未知结果和未完成的主管结案不能提前释放。
+    private const string FinalFailureAwaitingAcknowledgementSql = """
+        (
+            Processor = 'Linkly' COLLATE NOCASE
+            AND ConnectionMode = 'CloudBackendAsync' COLLATE NOCASE
+            AND OperationKind IN ('Sale', 'Refund')
+            AND Status IN ('Declined', 'Cancelled', 'Failed', 'TimedOut')
+            AND CompletedAt IS NOT NULL
+            AND AcknowledgedAt IS NULL
+            AND LENGTH(TRIM(SessionId)) > 0
+            AND RecoveryPhase = 'None'
+            AND SUBSTR(COALESCE(ResponseCode, ''), 1, 11) <> 'SUPERVISOR_'
+        )
+        """;
+
     private static readonly string[] TerminalStatuses =
     [
         LocalCardPaymentAttemptStatus.Declined.ToString(),
@@ -1828,7 +1844,7 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
     {
         await using var connection = await store.OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = $$"""
             SELECT
                 AttemptGuid,
                 SessionId,
@@ -1865,6 +1881,7 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
               AND OperationKind = $OperationKind
               AND (
                     Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5, $TerminalStatus6)
+                    OR {{FinalFailureAwaitingAcknowledgementSql}}
                     OR (Status = $OrderCompletedStatus AND AcknowledgedAt IS NULL AND SessionId IS NOT NULL)
                     OR (
                         ResponseCode IN ($SupervisorPaidCode, $SupervisorNotPaidCode)
@@ -1946,7 +1963,7 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
     {
         await using var connection = await store.OpenConnectionAsync(cancellationToken);
         await using var command = connection.CreateCommand();
-        command.CommandText = """
+        command.CommandText = $$"""
             SELECT
                 AttemptGuid,
                 SessionId,
@@ -1979,7 +1996,10 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
               AND DeviceCode = $DeviceCode
               AND Environment = $Environment
               AND OperationKind = $OperationKind
-              AND Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5, $TerminalStatus6)
+              AND (
+                    Status NOT IN ($TerminalStatus1, $TerminalStatus2, $TerminalStatus3, $TerminalStatus4, $TerminalStatus5, $TerminalStatus6)
+                    OR {{FinalFailureAwaitingAcknowledgementSql}}
+                  )
             ORDER BY UpdatedAt DESC, CreatedAt DESC;
             """;
         command.Parameters.AddWithValue("$StoreCode", storeCode);
@@ -2011,7 +2031,7 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
         await using var command = connection.CreateCommand();
         // 异常中心队列按同一终端/环境跨收银员列出全部未结 Sale、Refund 与 ActiveSession。
         // 每种操作类型的“未结”语义与既有 latest-only 查询保持一致，避免队列漏掉可恢复记录。
-        command.CommandText = """
+        command.CommandText = $$"""
             SELECT
                 AttemptGuid,
                 SessionId,
@@ -2045,7 +2065,8 @@ public sealed class LocalCardPaymentAttemptRepository(LocalSqliteStore store) : 
               AND Environment = $Environment
               AND OperationKind IN ('Sale', 'Refund', 'ActiveSession')
               AND (
-                    (
+                    {{FinalFailureAwaitingAcknowledgementSql}}
+                    OR (
                         OperationKind = 'ActiveSession'
                         AND (
                             AcknowledgedAt IS NULL

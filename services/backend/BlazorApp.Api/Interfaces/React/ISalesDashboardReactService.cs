@@ -130,6 +130,21 @@ namespace BlazorApp.Api.Interfaces.React
             DateRangeDto dateRange
         );
 
+        Task<SalesDetailSectionResultDto> GetSalesDetailColumnsAsync(
+            DateRangeDto dateRange,
+            SalesDetailKind kind,
+            SalesDetailSection section,
+            List<string>? branchCodes = null,
+            string? selectedBranchCode = null,
+            string? selectedSupplierCode = null,
+            string? selectedProductCode = null,
+            string? search = null,
+            int pageIndex = 1,
+            int pageSize = 20,
+            ProductReportStatisticStatusDto? statisticStatus = null,
+            CancellationToken cancellationToken = default
+        );
+
         Task<
             List<AustralianSupplierStoreSalesDetailDto>
         > GetAustralianSupplierStoreSalesDetailsAsync(
@@ -195,7 +210,8 @@ namespace BlazorApp.Api.Interfaces.React
         /// <param name="dateRange">日期范围</param>
         /// <param name="branchCodes">分店代码列表（可选）</param>
         /// <returns>周业绩层级数据列表</returns>
-        Task<List<WeeklyPerformanceHierarchyDto>> GetWeeklyPerformanceHierarchyAsync(
+        Task<(ExecutiveReportResultDto<WeeklyPerformanceHierarchyDto> Report, string CacheVersion)>
+            GetWeeklyPerformanceHierarchyAsync(
             DateRangeDto dateRange,
             List<string>? branchCodes = null
         );

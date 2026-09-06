@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>销售明细 · HB Admin</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='9' fill='%23003670'/%3E%3Ctext x='20' y='26' text-anchor='middle' font-size='17' font-family='Arial' font-weight='bold' fill='white'%3EHB%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="styles.css" />
+    <script type="module" src="app.mjs"></script>
+  </head>
+  <body>
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand"><span class="brand-logo">HB</span><div>HB GROUP<small>Admin Platform</small></div></div>
+      <div class="nav-label">工作空间</div>
+      <div class="nav-item"><span>▦</span>工作台</div>
+      <div class="nav-item"><span>⚙</span>系统管理</div>
+      <div class="nav-item"><span>▱</span>国内采购</div>
+      <div class="nav-item"><span>▤</span>仓库管理</div>
+      <div class="nav-label sales-label">销售分析</div>
+      <div class="nav-item"><span>▥</span>销售数据</div>
+      <a class="nav-item active" href="./" aria-current="page"><span>▧</span>销售明细</a>
+      <div class="nav-item"><span>▥</span>独立销售看板</div>
+      <div class="nav-item"><span>▨</span>商品经营分析</div>
+      <div class="nav-item"><span>⇄</span>仓库商品流转</div>
+      <div class="sidebar-foot"><span class="status-dot"></span>界面设计预览<span>V2</span></div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar"><div>销售分析 <span class="chevron">/</span> <strong>销售明细</strong></div><div class="topbar-right"><span class="sample-tag">样例数据</span><span>中文</span><span class="avatar">A</span><strong>admin</strong></div></header>
+      <main id="app" tabindex="-1"></main>
+      <div class="prototype-foot">交互设计原型 · 数据仅用于演示 <span>HB GROUP / SALES INTELLIGENCE</span></div>
+    </div>
+    <div id="toast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>

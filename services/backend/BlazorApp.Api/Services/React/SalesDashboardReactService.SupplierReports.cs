@@ -73,9 +73,10 @@ public partial class SalesDashboardReactService
 
     private async Task<ProductReportStatisticStatusDto> GetSupplierBackedProductReportStatusAsync(DateRangeDto range)
     {
-        var dates = EnumerateReportDates(range.StartDate.Date, range.EndDate.Date);
+        // 状态读取支持 Web 允许的最长 366 天；后台分段刷新仍保持原 35 天限制。
+        var dates = EnumerateSupplierReportStatusDates(range.StartDate.Date, range.EndDate.Date);
         if (range.CompareStartDate.HasValue && range.CompareEndDate.HasValue)
-            dates.AddRange(EnumerateReportDates(range.CompareStartDate.Value.Date, range.CompareEndDate.Value.Date));
+            dates.AddRange(EnumerateSupplierReportStatusDates(range.CompareStartDate.Value.Date, range.CompareEndDate.Value.Date));
         var requestedDates = dates.Distinct().OrderBy(date => date).ToList();
         var currentStart = range.StartDate.Date;
         var currentEnd = range.EndDate.Date.AddDays(1);
@@ -132,6 +133,22 @@ public partial class SalesDashboardReactService
         result.StatisticStatus = SalesStatisticRefreshStatus.Fresh;
         result.StatisticMessage = null;
         return result;
+    }
+
+    private static List<DateTime> EnumerateSupplierReportStatusDates(DateTime startDate, DateTime endDate)
+    {
+        startDate = startDate.Date;
+        endDate = endDate.Date;
+        if (startDate > endDate)
+            throw new ArgumentException("供应商统计状态的开始日期不能晚于结束日期。");
+
+        var days = (endDate - startDate).Days + 1;
+        if (days > 366)
+            throw new ArgumentException("供应商统计状态的日期范围不能超过 366 天。");
+
+        return Enumerable.Range(0, days)
+            .Select(offset => startDate.AddDays(offset))
+            .ToList();
     }
 
     private static void CopyReportStatisticStatus(ProductReportStatisticStatusDto source, ProductReportStatisticStatusDto target)
@@ -208,7 +225,8 @@ public partial class SalesDashboardReactService
     }
 
     private async Task<List<SupplierRollupReadRow>> QuerySupplierRollupRowsAsync(bool china, bool byBranch,
-        DateTime start, DateTime end, List<string>? branches, List<string>? suppliers)
+        DateTime start, DateTime end, List<string>? branches, List<string>? suppliers,
+        CancellationToken cancellationToken = default)
     {
         if (branches != null && NormalizeCodes(branches).Count == 0)
             return new();
@@ -246,7 +264,7 @@ public partial class SalesDashboardReactService
             GROUP BY [SupplierCode]{branchGroup}
             {queryOption}
             """;
-        var result = await _context.Db.Ado.SqlQueryAsync<SupplierRollupReadRow>(sql, parameters.ToArray());
+        var result = await _context.Db.Ado.SqlQueryAsync<SupplierRollupReadRow>(sql, parameters.ToArray(), cancellationToken);
         if (result.Any(row => row.InvalidRowCount > 0))
             throw new ReportSnapshotChangedException();
         return result;
