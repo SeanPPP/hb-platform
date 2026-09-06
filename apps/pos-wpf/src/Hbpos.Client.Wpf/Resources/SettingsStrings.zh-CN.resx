@@ -262,4 +262,36 @@
   <data name="settings.linkly.cloudBackend.pairBeforeSelect" xml:space="preserve"><value>请先完成该刷卡机配对，再将其设为付款终端。</value></data>
   <data name="settings.linkly.cloudBackend.selected" xml:space="preserve"><value>已为当前 POS 选择 {0}。</value></data>
   <data name="settings.linkly.cloudBackend.pairedButNotSelected" xml:space="preserve"><value>刷卡机已配对但未选中；请重新选择后再收款。</value></data>
+  <data name="settings.remoteMaintenance.title" xml:space="preserve"><value>远程维护</value></data>
+  <data name="settings.remoteMaintenance.description" xml:space="preserve"><value>在本机配置 RustDesk 和后台状态服务，收银员退出后仍可进行远程维护。</value></data>
+  <data name="settings.remoteMaintenance.install" xml:space="preserve"><value>安装远程维护</value></data>
+  <data name="settings.remoteMaintenance.restore" xml:space="preserve"><value>检查并恢复</value></data>
+  <data name="settings.remoteMaintenance.localStatus" xml:space="preserve"><value>本机服务状态</value></data>
+  <data name="settings.remoteMaintenance.installHint" xml:space="preserve"><value>安装需要 Windows 管理员授权（UAC）；配置完成后服务在后台独立运行，不影响收银。</value></data>
+  <data name="settings.remoteMaintenance.status.notInstalled" xml:space="preserve"><value>未安装</value></data>
+  <data name="settings.remoteMaintenance.status.running" xml:space="preserve"><value>运行中</value></data>
+  <data name="settings.remoteMaintenance.status.starting" xml:space="preserve"><value>正在启动</value></data>
+  <data name="settings.remoteMaintenance.status.stopping" xml:space="preserve"><value>正在停止</value></data>
+  <data name="settings.remoteMaintenance.status.stopped" xml:space="preserve"><value>已停止</value></data>
+  <data name="settings.remoteMaintenance.status.checkFailed" xml:space="preserve"><value>状态检查失败</value></data>
+  <data name="settings.remoteMaintenance.status.unknown" xml:space="preserve"><value>状态未知</value></data>
+  <data name="settings.remoteMaintenance.detail.notInstalled" xml:space="preserve"><value>本机尚未配置远程维护。</value></data>
+  <data name="settings.remoteMaintenance.detail.running" xml:space="preserve"><value>本机 RustDesk 服务正在运行。</value></data>
+  <data name="settings.remoteMaintenance.detail.starting" xml:space="preserve"><value>本机 RustDesk 服务正在启动，请稍后查看。</value></data>
+  <data name="settings.remoteMaintenance.detail.stopping" xml:space="preserve"><value>本机 RustDesk 服务正在停止，请稍后查看。</value></data>
+  <data name="settings.remoteMaintenance.detail.stopped" xml:space="preserve"><value>本机 RustDesk 服务已停止，请点击“检查并恢复”。</value></data>
+  <data name="settings.remoteMaintenance.detail.checkFailed" xml:space="preserve"><value>无法读取本机服务状态，请重试。</value></data>
+  <data name="settings.remoteMaintenance.detail.unknown" xml:space="preserve"><value>无法识别本机服务状态，请重试。</value></data>
+  <data name="settings.remoteMaintenance.detail.serviceUnavailable" xml:space="preserve"><value>远程维护组件不可用，请联系管理员。</value></data>
+  <data name="settings.remoteMaintenance.result.activationRequired" xml:space="preserve"><value>当前设备尚未完成激活，无法配置远程维护。</value></data>
+  <data name="settings.remoteMaintenance.result.serviceRestored" xml:space="preserve"><value>远程维护状态服务已恢复。</value></data>
+  <data name="settings.remoteMaintenance.result.serviceRestoreFailed" xml:space="preserve"><value>远程维护状态服务恢复失败，请稍后重试。</value></data>
+  <data name="settings.remoteMaintenance.result.journalDecryptFailed" xml:space="preserve"><value>远程维护恢复记录无法解密，请联系管理员处理后重试。</value></data>
+  <data name="settings.remoteMaintenance.result.configured" xml:space="preserve"><value>远程维护已完成配置，状态服务将在后台上报设备状态。</value></data>
+  <data name="settings.remoteMaintenance.result.authorizationExpired" xml:space="preserve"><value>远程维护授权已失效，请重新激活设备后重试。</value></data>
+  <data name="settings.remoteMaintenance.result.configurationFailed" xml:space="preserve"><value>远程维护配置未完成，请稍后重试。</value></data>
+  <data name="settings.remoteMaintenance.result.journalIncomplete" xml:space="preserve"><value>远程维护恢复记录不完整，请重新安装。</value></data>
+  <data name="settings.remoteMaintenance.result.journalReinstallRequired" xml:space="preserve"><value>远程维护恢复记录无法解密，请重新安装。</value></data>
+  <data name="settings.remoteMaintenance.result.restored" xml:space="preserve"><value>远程维护已恢复。</value></data>
+  <data name="settings.remoteMaintenance.result.restorePending" xml:space="preserve"><value>远程维护已登记，但状态服务待恢复。</value></data>
 </root>

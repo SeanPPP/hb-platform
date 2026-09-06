@@ -262,4 +262,36 @@
   <data name="settings.linkly.cloudBackend.pairBeforeSelect" xml:space="preserve"><value>Pair this terminal before selecting it for payments.</value></data>
   <data name="settings.linkly.cloudBackend.selected" xml:space="preserve"><value>{0} is selected for this POS.</value></data>
   <data name="settings.linkly.cloudBackend.pairedButNotSelected" xml:space="preserve"><value>Terminal paired but not selected. Select it again before taking payments.</value></data>
+  <data name="settings.remoteMaintenance.title" xml:space="preserve"><value>Remote maintenance</value></data>
+  <data name="settings.remoteMaintenance.description" xml:space="preserve"><value>Set up RustDesk and its background status service on this POS. Remote access remains available after the cashier signs out.</value></data>
+  <data name="settings.remoteMaintenance.install" xml:space="preserve"><value>Install remote maintenance</value></data>
+  <data name="settings.remoteMaintenance.restore" xml:space="preserve"><value>Check and restore</value></data>
+  <data name="settings.remoteMaintenance.localStatus" xml:space="preserve"><value>Local service status</value></data>
+  <data name="settings.remoteMaintenance.installHint" xml:space="preserve"><value>Windows administrator approval (UAC) is required. Once configured, the services run in the background without interrupting checkout.</value></data>
+  <data name="settings.remoteMaintenance.status.notInstalled" xml:space="preserve"><value>Not installed</value></data>
+  <data name="settings.remoteMaintenance.status.running" xml:space="preserve"><value>Running</value></data>
+  <data name="settings.remoteMaintenance.status.starting" xml:space="preserve"><value>Starting</value></data>
+  <data name="settings.remoteMaintenance.status.stopping" xml:space="preserve"><value>Stopping</value></data>
+  <data name="settings.remoteMaintenance.status.stopped" xml:space="preserve"><value>Stopped</value></data>
+  <data name="settings.remoteMaintenance.status.checkFailed" xml:space="preserve"><value>Status check failed</value></data>
+  <data name="settings.remoteMaintenance.status.unknown" xml:space="preserve"><value>Unknown status</value></data>
+  <data name="settings.remoteMaintenance.detail.notInstalled" xml:space="preserve"><value>Remote maintenance has not been set up on this POS.</value></data>
+  <data name="settings.remoteMaintenance.detail.running" xml:space="preserve"><value>The local RustDesk service is running.</value></data>
+  <data name="settings.remoteMaintenance.detail.starting" xml:space="preserve"><value>The local RustDesk service is starting. Check again shortly.</value></data>
+  <data name="settings.remoteMaintenance.detail.stopping" xml:space="preserve"><value>The local RustDesk service is stopping. Check again shortly.</value></data>
+  <data name="settings.remoteMaintenance.detail.stopped" xml:space="preserve"><value>The local RustDesk service is stopped. Select Check and restore to recover it.</value></data>
+  <data name="settings.remoteMaintenance.detail.checkFailed" xml:space="preserve"><value>Unable to read the local service status. Please try again.</value></data>
+  <data name="settings.remoteMaintenance.detail.unknown" xml:space="preserve"><value>The local service status could not be identified. Please try again.</value></data>
+  <data name="settings.remoteMaintenance.detail.serviceUnavailable" xml:space="preserve"><value>The remote maintenance component is unavailable. Contact your administrator.</value></data>
+  <data name="settings.remoteMaintenance.result.activationRequired" xml:space="preserve"><value>Activate this POS before setting up remote maintenance.</value></data>
+  <data name="settings.remoteMaintenance.result.serviceRestored" xml:space="preserve"><value>The remote maintenance status service has been restored.</value></data>
+  <data name="settings.remoteMaintenance.result.serviceRestoreFailed" xml:space="preserve"><value>The status service could not be restored. Please try again.</value></data>
+  <data name="settings.remoteMaintenance.result.journalDecryptFailed" xml:space="preserve"><value>The recovery record could not be decrypted. Contact your administrator before trying again.</value></data>
+  <data name="settings.remoteMaintenance.result.configured" xml:space="preserve"><value>Remote maintenance is configured. The status service will report device status in the background.</value></data>
+  <data name="settings.remoteMaintenance.result.authorizationExpired" xml:space="preserve"><value>Remote maintenance authorization has expired. Reactivate this POS and try again.</value></data>
+  <data name="settings.remoteMaintenance.result.configurationFailed" xml:space="preserve"><value>Remote maintenance setup did not complete. Please try again.</value></data>
+  <data name="settings.remoteMaintenance.result.journalIncomplete" xml:space="preserve"><value>The recovery record is incomplete. Please reinstall remote maintenance.</value></data>
+  <data name="settings.remoteMaintenance.result.journalReinstallRequired" xml:space="preserve"><value>The recovery record could not be decrypted. Please reinstall remote maintenance.</value></data>
+  <data name="settings.remoteMaintenance.result.restored" xml:space="preserve"><value>Remote maintenance has been restored.</value></data>
+  <data name="settings.remoteMaintenance.result.restorePending" xml:space="preserve"><value>Remote maintenance is registered, but the status service still needs to be restored.</value></data>
 </root>
