@@ -18,6 +18,24 @@ def inspect(*names):
     return json.loads(subprocess.check_output(["docker", "inspect", *names]))
 
 
+def rollback_ports(container):
+    # 逐项恢复备份中的协议、宿主端口和绑定地址，避免回滚遗漏 UDP 或扩大监听范围。
+    ports = []
+    for endpoint, bindings in sorted((container["HostConfig"].get("PortBindings") or {}).items()):
+        target, protocol = endpoint.rsplit("/", 1)
+        for binding in bindings or []:
+            published = binding["HostPort"]
+            if protocol not in {"tcp", "udp"} or not (1 <= int(target) <= 65535 and 1 <= int(published) <= 65535):
+                raise ValueError("备份端口映射无效，停止切换")
+            port = {"target": int(target), "published": published, "protocol": protocol}
+            if binding.get("HostIp"):
+                port["host_ip"] = binding["HostIp"]
+            ports.append(port)
+    if not ports:
+        raise ValueError("备份缺少端口映射，停止切换")
+    return ports
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--backup", required=True)
@@ -46,7 +64,7 @@ def main():
             "image": baseline[0]["Image"], "container_name": "rustdesk-server",
             "command": ["hbbs"], "restart": "unless-stopped", "working_dir": "/root",
             "volumes": [str(data) + ":/root"],
-            "ports": [f"{p}:{p}/tcp" for p in [21115, 21116, 21117, 21118]],
+            "ports": rollback_ports(baseline[0]),
         }},
     }
     (backup / "rollback-compose.json").write_text(json.dumps(rollback, indent=2))

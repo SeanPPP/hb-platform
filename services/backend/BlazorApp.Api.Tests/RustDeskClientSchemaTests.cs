@@ -17,6 +17,7 @@ public sealed class RustDeskClientSchemaTests
     }
 
     [SchemaMigrationSqlServerFact]
+    [Trait("Category", "SQL")]
     public async Task SqlServerMigrationIsIdempotentAndRejectsMissingColumns()
     {
         // 仅使用显式测试连接，在 tempdb 内用随机对象名与外层事务保证回滚。
